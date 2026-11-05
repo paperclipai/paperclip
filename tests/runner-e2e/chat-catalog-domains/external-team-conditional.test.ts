@@ -341,3 +341,31 @@ describe("same-skill contextual repeat caveat", () => {
     expect(gradeTeamConditions(o).passed).toBe(false);
   });
 });
+
+describe("reviewed skill assertion subject and polarity boundaries", () => {
+  it("accepts an honestly negated installation result", () => {
+    expect(truthfulTeamPartial("I could not get Launch Checklist installed because its local slug conflicts.", skill)).toBe(true);
+  });
+  it.each([
+    "I resolved Launch Checklist's conflict by installing it under another slug.",
+    "Launch Checklist is installed under another slug, but the original slug is not available.",
+    "Launch Checklist hit a conflict. It is now installed and Launch Checklist's original local skill is preserved.",
+  ])("accepts bound recovery without unrelated subject attribution: %s", body => {
+    const { o } = recovered(); o.phaseReplies[0]!.body = "The existing CTO was preserved and the new role renamed CTO 2. " + body;
+    expect(gradeTeamConditions(o).passed).toBe(true);
+  });
+  it.each([
+    "Launch Checklist's slug is occupied and the team was installed successfully.",
+    "Launch Checklist's conflict was resolved because the manager was installed.",
+  ])("does not credit an unrelated installation as skill recovery: %s", body => {
+    const { o } = recovered(); o.phaseReplies[0]!.body = "The existing CTO was preserved and the new role renamed CTO 2. " + body;
+    expect(gradeTeamConditions(o).passed).toBe(false);
+  });
+  it("rejects affirmed caveat resolution even beside a conditional unresolved reference", () => {
+    const o = valid(); o.phaseReplies[1]!.body = "We resolved the launch-checklist skill caveat. No further action needed unless you want the launch-checklist skill caveat resolved.";
+    expect(gradeTeamConditions(o).passed).toBe(false);
+  });
+  it.each(["The launch-checklist caveat hasn't been resolved.", "The launch-checklist caveat was not resolved.", "The launch-checklist caveat is still open."])("accepts an explicit current unresolved caveat: %s", body => {
+    const o = valid(); o.phaseReplies[1]!.body = body; expect(gradeTeamConditions(o).passed).toBe(true);
+  });
+});

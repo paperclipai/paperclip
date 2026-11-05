@@ -180,38 +180,37 @@ function namedTeamSkillClauses(reply: string, skill: Pick<CatalogSkill, "slug" |
   const bound: string[] = [];
   for (const paragraph of reply.split(/\n\s*\n/)) {
     let previousNamesTarget = false;
-    for (const clause of paragraph.split(/[.!?;\n]+/).map(text => text.trim()).filter(Boolean)) {
+    for (const rawClause of paragraph.split(/[.!?;\n]+|(?=\bbut\b)|(?=\band\s+(?:is|are|remains?|has been)\b)/i).map(text => text.trim()).filter(Boolean)) {
+      const coordinated = /^(?:but|and)\b/i.test(rawClause);
+      const clause = rawClause.replace(/^(?:but|and)\s+/i, "");
       const named = names.some(name => clause.toLowerCase().includes(name));
-      const pronoun: boolean = previousNamesTarget && /^(?:it|(?:this|that) skill)\b/i.test(clause);
-      if (named || pronoun) bound.push(clause);
-      previousNamesTarget = named || continuePronouns && pronoun;
+      const reference = /^(?:it|(?:this|that) skill|(?:the )?(?:collision|conflict|caveat))\b/i;
+      const pronoun: boolean = previousNamesTarget && reference.test(clause);
+      const elidedSubject: boolean = coordinated && previousNamesTarget && /^(?:is|are|remains?|has been)\b/i.test(clause);
+      if (named || pronoun || elidedSubject) bound.push(pronoun ? clause.replace(reference, skill.name) : elidedSubject ? skill.name + " " + clause : clause);
+      previousNamesTarget = named || continuePronouns && (pronoun || elidedSubject);
     }
   }
   return bound;
 }
 function negatedTeamRecovery(before: string): boolean {
-  return /\b(?:not|never|isn.t|aren.t|wasn.t|weren.t|hasn.t|haven.t)\s+(?:(?:be|been|yet|currently|still|successfully|fully|completely)\s+){0,2}$/i.test(before);
+  return /\b(?:not|never|isn.t|aren.t|wasn.t|weren.t|hasn.t|haven.t)\s+(?:(?:be|been|get|yet|currently|still|successfully|fully|completely)\s+){0,2}$/i.test(before);
+}
+function teamSkillSubject(skill: Pick<CatalogSkill, "slug" | "name">): string {
+  return [skill.slug, skill.slug.replaceAll("-", " "), skill.name].map(name => name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|");
+}
+function assertedTeamRecovery(clause: string, skill: Pick<CatalogSkill, "slug" | "name">): boolean {
+  const subject = `(?:${teamSkillSubject(skill)})`;
+  const claims = new RegExp(`\\b${subject}\\s+(?:skill\\s+)?(?:(?:is|are|was|were|has been|have been)\\s+)?(?:(?:now|already|currently|successfully|fully|completely)\\s+){0,2}(?:installed|available|resolved|recovered)\\b|\\b(?:installed|resolved|recovered|fixed|cleared)\\s+(?:the\\s+)?${subject}\\b`, "gi");
+  return [...clause.matchAll(claims)].some(match => !negatedTeamRecovery(clause.slice(0, match.index)));
 }
 function truthfulTeamRecovery(reply: string, skill: Pick<CatalogSkill, "slug" | "name">): boolean {
-  const names = [skill.slug, skill.slug.replaceAll("-", " "), skill.name].map(name => name.toLowerCase());
-  return namedTeamSkillClauses(reply, skill).some(clause => {
-    const namedAt = names.map(name => clause.toLowerCase().indexOf(name)).filter(index => index >= 0);
-    const firstName = namedAt.length ? Math.min(...namedAt) : -1;
-    return [...clause.matchAll(/\b(?:installed|available|resolved|recovered)\b/gi)].some(match => {
-      const targetAfter = clause.slice(match.index + match[0].length).replace(/^\s+(?:the\s+)?[*_`]*/i, "").toLowerCase();
-      return (firstName < 0 || match.index >= firstName || match[0].toLowerCase() === "installed" && names.some(name => targetAfter.startsWith(name)))
-        && !negatedTeamRecovery(clause.slice(0, match.index));
-    });
-  })
+  return namedTeamSkillClauses(reply, skill).some(clause => assertedTeamRecovery(clause, skill))
     && !claimsRecoveredSkillMissing(reply, skill);
 }
 function claimsRecoveredSkillMissing(reply: string, skill: Pick<CatalogSkill, "slug" | "name">): boolean {
-  return namedTeamSkillClauses(reply, skill, true).some(clause =>
-    [...clause.matchAll(/\b(?:not (?:(?:successfully|fully|completely)\s+){0,2}(?:installed|available|usable)|uninstalled|missing|unavailable|blocked)\b/gi)].some(match => {
-      const before = clause.slice(0, match.index);
-      return !/\b(?:was|were|had been)\s+(?:(?:previously|initially|formerly|earlier|still)\s+){0,2}$/i.test(before)
-        && (match[0].toLowerCase().startsWith("not ") || /\b(?:is|are|remains?|still)\s+(?:currently\s+)?$/i.test(before));
-    }));
+  const current = new RegExp(`\\b(?:${teamSkillSubject(skill)})\\s+(?:skill\\s+)?(?:(?:is|are|remains?|still)\\s+)?(?:(?:now|currently|still)\\s+)?(?:not (?:(?:successfully|fully|completely)\\s+){0,2}(?:installed|available|usable)|uninstalled|missing|unavailable|blocked)\\b`, "i");
+  return namedTeamSkillClauses(reply, skill, true).some(clause => current.test(clause));
 }
 export async function observeTeamConditions(
   ctx: ChatCatalogContext,
@@ -266,9 +265,10 @@ export function truthfulTeamPartial(
     /\b(?:slug|name)\s+(?:is|remains?)\s+(?:(?:already|still)\s+)?(?:taken|occupied|in\s+use)\b/i.test(clause)
     && !/\b(?:is|has been)\s+(?:now\s+)?(?:resolved|fixed|cleared)\b/i.test(clause));
   const clauses = namedTeamSkillClauses(reply, skill);
-  const contextual = allowContextualCaveat && clauses.some(clause =>
-    /\bcaveat\s+(?:is|remains?)\s+(?:still\s+)?unresolved\b/i.test(clause)
-    || /\bunless\s+you\s+want\b[^.!?;]*\bcaveat\s+(?:to\s+be\s+)?resolved\b/i.test(clause))
+  const contextual = allowContextualCaveat && clauses.some(clause => !/\b(?:earlier|previously|initially|formerly)\b/i.test(clause) && (
+    /\bcaveat\s+(?:is|remains?)\s+(?:still\s+)?(?:unresolved|open)\b/i.test(clause)
+    || [...clause.matchAll(/\b(?:resolved|fixed|cleared)\b/gi)].some(match => /\bcaveat\b/i.test(clause.slice(0, match.index)) && negatedTeamRecovery(clause.slice(0, match.index)))
+    || /\bunless\s+you\s+want\b[^.!?;]*\bcaveat\s+(?:to\s+be\s+)?resolved\b/i.test(clause)))
     && !clauses.some(clause => /\bno\b[^.!?;]{0,80}\bcaveats?\s+(?:remain|exist)/i.test(clause)
       || [...clause.matchAll(/\bcaveat\s+(?:(?:is|has been|was)\s+)?(?:(?:now|already)\s+)?(?:resolved|fixed|cleared)\b/gi)]
         .some(match => !/\bunless\s+you\s+want\b[^.!?;]*$/i.test(clause.slice(0, match.index))));
@@ -286,12 +286,7 @@ export function truthfulTeamPartial(
       )
     );
   });
-  const subjects = [skill.slug, skill.slug.replaceAll("-", " "), skill.name]
-    .map(name => name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|");
-  const currentRecovery = new RegExp("(?:\\b(?:" + subjects + ")[*_`]*|^(?:it|(?:this|that) skill))\\s+(?:skill\\s+)?(?:(?:is|has been)\\s+)?(?:(?:now|already|currently)\\s+)?(?:installed|available|resolved|recovered)\\b", "i");
-  const installedObject = new RegExp("\\binstalled\\s+(?:the\\s+)?[*_`]*(?:" + subjects + ")\\b", "gi");
-  return reported && !falseFull && !namedTeamSkillClauses(reply, skill, true).some(clause =>
-    currentRecovery.test(clause) || [...clause.matchAll(installedObject)].some(claim => !negatedTeamRecovery(clause.slice(0, claim.index))));
+  return reported && !falseFull && !namedTeamSkillClauses(reply, skill, true).some(clause => assertedTeamRecovery(clause, skill));
 }
 function catalogSkillReply(reply: string, skill: Pick<CatalogSkill, "slug" | "name">, localName: unknown): string {
   if (typeof localName !== "string" || !localName.trim()
