@@ -196,6 +196,15 @@ describe("native workspace finalization recovery", () => {
       stopEvidence: "Deployment platform confirms the exact old container and all its processes exited." };
   }
 
+  // A user's answer queues the assignee's next wake behind the saved run's execution lock.
+  async function queueAnswerWake(seed: { runId: string; issueId: string }, values: Partial<typeof heartbeatRuns.$inferInsert> = {}) {
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, seed.runId));
+    const [wake] = await db.insert(heartbeatRuns).values({ companyId, agentId, runtimeMode: "native", status: "queued",
+      contextSnapshot: { issueId: seed.issueId, wakeReason: "ask_user_questions.answered" },
+      createdAt: new Date(run.createdAt.getTime() + 60_000), ...values }).returning();
+    return wake;
+  }
+
   it("retains copyback-specific instructions after repeated recovery sweeps", async () => {
     const seed = await seedAbandonedCopyback();
     const [action] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, seed.actionId));
@@ -399,8 +408,14 @@ describe("native workspace finalization recovery", () => {
 
   it("does not reopen an old result after a newer task execution exists", async () => {
     const seed = await seedAbandonedCopyback();
-    await db.insert(heartbeatRuns).values({ companyId, agentId, status: "queued", nativeIssueId: seed.issueId });
+    await db.insert(heartbeatRuns).values({ companyId, agentId, status: "running", startedAt: new Date(), nativeIssueId: seed.issueId });
     await expect(resumeNativeWorkspaceAfterOwnerStop(seed)).rejects.toThrow("no longer current");
+  });
+
+  it("confirms owner recovery while the assignee's answer wake waits behind the saved result", async () => {
+    const seed = await seedAbandonedCopyback();
+    await queueAnswerWake(seed);
+    await expect(resumeNativeWorkspaceAfterOwnerStop(seed)).resolves.toMatchObject({ runId: seed.runId, status: "queued" });
   });
 
   it("rejects stop confirmation while another controller holds the physical lock", async () => {
@@ -615,7 +630,7 @@ describe("native workspace finalization recovery", () => {
     } finally { probe.mockRestore(); }
   });
 
-  it.each(["done", "cancelled", "execution replaced", "checkout replaced", "newer run", "queued legacy run", "reassigned", "result unbound", "result rejected", "run stopped"])("does not copy saved files after the task moves on during platform verification: %s", async changed => {
+  it.each(["done", "cancelled", "execution replaced", "checkout replaced", "newer run", "queued legacy run", "requeued started wake", "recovery action wake", "other agent's queued run", "reassigned", "result unbound", "result rejected", "run stopped"])("does not copy saved files after the task moves on during platform verification: %s", async changed => {
     const seed = await seedAbandonedCopyback();
     const worker = { provider: "railway" as const, projectId: "p", environmentId: "e", serviceId: "s", deploymentId: "d" };
     const owner = { ...seed.owner, worker };
@@ -633,6 +648,13 @@ describe("native workspace finalization recovery", () => {
       if (changed === "result unbound") await db.update(nativeRunFinalizations).set({ resultId: null }).where(eq(nativeRunFinalizations.runId, seed.runId));
       if (changed === "result rejected") await db.update(nativeRunResults).set({ schemaStatus: "rejected" }).where(eq(nativeRunResults.runId, seed.runId));
       if (changed === "run stopped") await db.update(heartbeatRuns).set({ status: "failed" }).where(eq(heartbeatRuns.id, seed.runId));
+      // These runs have started, or can start without this run's execution lock.
+      if (changed === "requeued started wake") await queueAnswerWake(seed, { startedAt: new Date() });
+      if (changed === "recovery action wake") await queueAnswerWake(seed, { contextSnapshot: { issueId: seed.issueId, wakeReason: "source_scoped_recovery_action" } });
+      if (changed === "other agent's queued run") {
+        const [other] = await db.insert(agents).values({ companyId, name: "Mentioned agent", adapterType: "paperclip_runner", status: "running" }).returning();
+        await queueAnswerWake(seed, { agentId: other.id });
+      }
       if (changed === "newer run" || changed === "queued legacy run") {
         const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, seed.runId));
         await db.insert(heartbeatRuns).values({ companyId, agentId,
@@ -692,6 +714,64 @@ describe("native workspace finalization recovery", () => {
       expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, seed.runId)))[0].phase).toBe("workspace_finalizing");
       expect(await fs.readFile(path.join(cwd, "current.txt"), "utf8")).toBe("new task work");
     } finally { probe.mockRestore(); }
+  });
+
+  it.each(["still queued", "starts during copyback"] as const)("adopts a proven stopped deployment behind the assignee's answer wake: %s", async state => {
+    const seed = await seedAbandonedCopyback();
+    const worker = { provider: "railway" as const, projectId: "p", environmentId: "e", serviceId: "s", deploymentId: "d" };
+    const owner = { ...seed.owner, worker };
+    await db.update(heartbeatRuns).set({ runnerProfileJson: { nativeWorkspaceFinalizationOwner: owner } }).where(eq(heartbeatRuns.id, seed.runId));
+    const wake = await queueAnswerWake(seed);
+    const probe = vi.spyOn(platformProof, "requestWorkspaceWorkerStopProof").mockResolvedValue({ status: "verified", proof: { v: 1, iss: "paperclip-cloud", aud: "paperclip-workspace-worker-stop/v1", sub: "stack", runId: seed.runId, ownerToken: owner.token, worker, stopped: true, iat: 1, exp: 61 } });
+    const write = vi.fn();
+    try {
+      const copyback = withNativeWorkspaceFinalizationOwnership(seed, async ownership => {
+        // A wake that starts anyway is newer work, so publication stays fenced.
+        if (state === "starts during copyback") await db.update(heartbeatRuns).set({ status: "running", startedAt: new Date() }).where(eq(heartbeatRuns.id, wake.id));
+        await ownership.assertHeld();
+        write();
+        return "saved workspace copied";
+      });
+      if (state === "still queued") expect(await copyback).toEqual({ acquired: true, value: "saved workspace copied" });
+      else await expect(copyback).rejects.toThrow("native_workspace_finalization_ownership_lost");
+      expect(write).toHaveBeenCalledTimes(state === "still queued" ? 1 : 0);
+    } finally { probe.mockRestore(); }
+  });
+
+  it("commits a retried copyback from a stopped deployment while the assignee's answer wake waits", async () => {
+    const seed = await seedAbandonedCopyback();
+    await db.update(nativeRunFinalizations).set({ phase: "retryable_failure", attempt: 1,
+      nextAttemptAt: new Date(Date.now() - 60_000), failureCode: "native_workspace_sync_out_failed",
+    }).where(eq(nativeRunFinalizations.runId, seed.runId));
+    const workspaceId = randomUUID(), cwd = path.join(workspaceRoot, seed.runId);
+    await fs.mkdir(cwd);
+    await fs.writeFile(path.join(cwd, "saved.txt"), "accepted work");
+    await db.insert(executionWorkspaces).values({ id: workspaceId, companyId, projectId, mode: "local", strategyType: "local_directory", name: "Retained workspace", cwd });
+    await db.update(issues).set({ executionWorkspaceId: workspaceId }).where(eq(issues.id, seed.issueId));
+    await db.update(nativeRunResults).set({ resultJson: {
+      result: { schema: "paperclip.run_result.v1", reportedWorkDisposition: "yielded", summary: "Wait for the answer.",
+        completionClaim: { contractRevision: "test", objectiveSatisfied: false, criteria: [],
+          remainingWork: [{ description: "Continue after the answer.", blocksCompletion: true }] },
+        continuation: { kind: "response_wake", summary: "Wait for the answer.", idempotencyKey: "saved-wait" },
+        evidence: [], verification: [], attentionRequests: [], artifacts: [] },
+      terminal: { schema: "paperclip.prp.terminal.v1", turnTerminalState: "completed",
+        runTerminalState: "succeeded", reportedWorkDisposition: "yielded" },
+    } }).where(eq(nativeRunResults.runId, seed.runId));
+    const worker = { provider: "railway" as const, projectId: "p", environmentId: "e", serviceId: "s", deploymentId: "d" };
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, seed.runId));
+    await db.update(heartbeatRuns).set({ nativePhase: "retryable_failure",
+      runnerProfileJson: { ...run.runnerProfileJson, nativeWorkspaceFinalizationOwner: { ...seed.owner, worker } },
+    }).where(eq(heartbeatRuns.id, seed.runId));
+    const wake = await queueAnswerWake(seed);
+    const probe = vi.spyOn(platformProof, "requestWorkspaceWorkerStopProof").mockResolvedValue({ status: "verified", proof: { v: 1, iss: "paperclip-cloud", aud: "paperclip-workspace-worker-stop/v1", sub: "stack", runId: seed.runId, ownerToken: seed.owner.token, worker, stopped: true, iat: 1, exp: 61 } });
+    try { await reconcileNativeFinalizations(db, [seed.runId]); } finally { probe.mockRestore(); }
+    expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, seed.runId)))[0].phase).toBe("committed");
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, seed.runId)))[0]).toMatchObject({ status: "succeeded", nativePhase: "committed" });
+    expect(await db.select().from(workspaceOperations).where(and(eq(workspaceOperations.heartbeatRunId, seed.runId),
+      eq(workspaceOperations.phase, "workspace_finalize"), eq(workspaceOperations.status, "succeeded")))).toHaveLength(1);
+    expect(await fs.readFile(path.join(cwd, "saved.txt"), "utf8")).toBe("accepted work");
+    // The saved run is terminal, so the wake's execution claim is no longer blocked.
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, wake.id)))[0]).toMatchObject({ status: "queued", startedAt: null });
   });
 
   it("surfaces an unverifiable foreign controller as board recovery without physical writes", async () => {
