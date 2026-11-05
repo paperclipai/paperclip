@@ -107,3 +107,16 @@ Cancellation cleanup only settles retained work.
 
 Live qualification still needs to verify that restoring a provider starts no
 work, deployed storage honors fsync, and the old process has exited.
+
+## Recovering ACPX between turns
+
+`paperclip-runnerd --build-metadata` prints `acpxRecoveryIntegrityVersion: 1`
+when the Runner implements these ACPX checks. The hosted ROM build copies
+that field into its manifest. The host driver advertises a separate
+`acpxSourceRecoveryVersion: 1` and checks whether this run qualifies.
+
+The Runner compares the restored session identity, pending requests, turn
+and goal with A’s saved idle state. After reading the goal, it checks updates
+that arrive during the final status read and keeps them queued for delivery.
+As with Codex, a prepared session can continue or be cleaned up. This handoff
+requires a completed turn. Suspended sessions use their usual recovery path.

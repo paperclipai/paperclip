@@ -17,8 +17,9 @@ use sha2::{Digest, Sha256};
 
 use crate::acpx_provider_capabilities::{run_attachment_policy, RunAttachmentPolicy};
 use crate::acpx_provider_session::{
-    AcpxPermissionMode, AcpxProviderRuntimePolicy, AcpxProviderSession, AcpxProviderSessionConfig,
-    AcpxProviderSessionIdentity, AcpxTurnControlCapabilities, PiThinkingLevel,
+    goal_is_dormant, AcpxPermissionMode, AcpxProviderRuntimePolicy, AcpxProviderSession,
+    AcpxProviderSessionConfig, AcpxProviderSessionIdentity, AcpxTurnControlCapabilities,
+    PiThinkingLevel,
 };
 use crate::acpx_sidecar_transport::AcpxSidecarTransportConfig;
 #[cfg(test)]
@@ -885,6 +886,7 @@ pub struct AcpxCommandExecutor {
     #[cfg(test)]
     fail_after_state_rename: bool,
     launch_profile: Option<AcpxLaunchProfile>,
+    recovery_pending_effects: Option<usize>,
 }
 
 // The durable command's turn and the live provider callback have separate IDs.
@@ -923,6 +925,7 @@ impl AcpxCommandExecutor {
             state: None,
             session: None,
             restore_checked: false,
+            recovery_pending_effects: None,
             restore_error: None,
             persistence_error: None,
             #[cfg(test)]
@@ -933,6 +936,10 @@ impl AcpxCommandExecutor {
 
     pub fn state_path(&self) -> PathBuf {
         self.state_dir.join(ACPX_PROVIDER_STATE_FILE)
+    }
+
+    pub(crate) fn observe_recovery_state(&mut self, state: &crate::durable::DurableState) {
+        self.recovery_pending_effects = Some(state.recovery_pending_effects());
     }
 
     fn candidate_admission(
@@ -1032,6 +1039,11 @@ impl AcpxCommandExecutor {
     }
 
     fn restore_once(&mut self) -> Result<(), DurableRunnerError> {
+        self.load_state_without_session()?;
+        self.restore_session_if_needed()
+    }
+
+    fn load_state_without_session(&mut self) -> Result<(), DurableRunnerError> {
         let path = self.state_path();
         let mut file = match open_private_regular_file(&path) {
             Ok(file) => file,
@@ -1078,7 +1090,7 @@ impl AcpxCommandExecutor {
         }
         state.validate(&self.context, &launch_profile_digest)?;
         self.state = Some(state);
-        self.restore_session_if_needed()
+        Ok(())
     }
 
     fn restore_session_if_needed(&mut self) -> Result<(), DurableRunnerError> {
@@ -1154,6 +1166,7 @@ impl AcpxCommandExecutor {
             priority: EventPriority::P0,
             payload: session_event_payload(&state.descriptor, &identity, process_id, turn_controls),
         })?;
+        self.recovery_pending_effects = None;
         self.session = Some(session);
         self.save_state()
     }
@@ -1178,6 +1191,21 @@ impl AcpxCommandExecutor {
             return Err(DurableRunnerError::invalid(
                 "ACPX provider identity did not attest the qualified command digest",
             ));
+        }
+        let expected_dormant = recovering
+            && self.recovery_pending_effects == Some(0)
+            && self.candidate_admission().is_none()
+            && acpx_release_profile(&state.descriptor.agent)
+                .is_some_and(|profile| !profile.qualification_pending)
+            && matches!(state.lifecycle.as_str(), "session_open" | "suspended")
+            && state.active_turn_id.is_none()
+            && !state.provider_exit_unconfirmed
+            && state.pending_runtime_requests.is_empty()
+            && (state.goal_projection.is_null() || goal_is_dormant(&state.goal_projection));
+        if expected_dormant {
+            session
+                .verify_dormant_session()
+                .map_err(|error| DurableRunnerError::invalid(error.to_string()))?;
         }
         Ok(session)
     }
@@ -2513,6 +2541,7 @@ impl CommandExecutor for AcpxCommandExecutor {
     }
 
     fn rotate_authority(&mut self, config: &DurableRunnerConfig) {
+        self.recovery_pending_effects = None;
         self.context.run_id = config.run_id.clone();
         self.context.normalized_session_id = config.normalized_session_id.clone();
         self.context.turn_id = config.turn_id.clone();
@@ -4959,6 +4988,9 @@ mod tests {
         let config = test_config(&directory, Some(launch_profile));
         let mut executor = AcpxCommandExecutor::with_runner_config(&directory, &config);
         executor.state = Some(state);
+        executor.recovery_pending_effects = Some(0);
+        executor.restore_session_if_needed().unwrap();
+        assert!(executor.session.is_none());
         let open_error = executor.open_session().unwrap_err();
         assert!(open_error
             .to_string()
