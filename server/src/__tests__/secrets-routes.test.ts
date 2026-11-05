@@ -155,6 +155,53 @@ describe("secret routes", () => {
     });
   });
 
+  it.each([undefined, "", "agent-supplied-value"])("denies agent secret creation before validating value %j", async (value) => {
+    const res = await request(createApp({
+      type: "agent", agentId: "agent-1", companyId: "company-1", source: "agent_jwt",
+    })).post("/api/companies/company-1/secrets").send({ name: "Deployment key", value });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("Settings → Secrets");
+    expect(res.body.error).toContain("human");
+    expect(res.body.error).toContain("Do not send secret values in chat");
+    expect(res.body).not.toHaveProperty("details");
+    expect(mockSecretService.create).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+
+  it.each([undefined, ""])("validates a board caller's missing or empty managed value %j", async (value) => {
+    const res = await request(createApp()).post("/api/companies/company-1/secrets")
+      .send({ name: "Deployment key", value });
+
+    expect(res.status).toBe(400);
+    expect(res.body.details).toEqual(expect.arrayContaining([expect.objectContaining({ path: ["value"] })]));
+    expect(mockSecretService.create).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+
+  it("keeps authorized board creation and its human activity attribution", async () => {
+    mockSecretService.create.mockResolvedValue({ id: "secret-1", name: "Deployment key", provider: "local_encrypted" });
+    const res = await request(createApp()).post("/api/companies/company-1/secrets")
+      .send({ name: "Deployment key", value: "board-supplied-value" });
+
+    expect(res.status).toBe(201);
+    expect(mockSecretService.create).toHaveBeenCalledWith("company-1",
+      expect.objectContaining({ name: "Deployment key", value: "board-supplied-value" }),
+      { userId: "user-1", agentId: null });
+    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      companyId: "company-1", actorType: "user", actorId: "user-1", action: "secret.created", entityId: "secret-1",
+    }));
+  });
+
+  it.each([undefined, "board-supplied-value"])("denies cross-company board creation before body validation %j", async (value) => {
+    const res = await request(createApp()).post("/api/companies/company-2/secrets")
+      .send({ name: "Deployment key", value });
+
+    expect(res.status).toBe(403);
+    expect(mockSecretService.create).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+
   it("rejects managed secret creation when externalRef is supplied", async () => {
     const res = await request(createApp()).post("/api/companies/company-1/secrets").send({
       name: "OpenAI API Key",

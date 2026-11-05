@@ -884,9 +884,16 @@ export function secretRoutes(db: Db, deps: SecretRoutesDeps = {}) {
     res.json({ ok: true });
   });
 
-  router.post("/companies/:companyId/secrets", validate(createSecretSchema), async (req, res) => {
+  router.post("/companies/:companyId/secrets", (req, _res, next) => {
     const companyId = req.params.companyId as string;
+    if (req.actor.type === "agent") {
+      assertCompanyAccess(req, companyId);
+      throw forbidden("Company secret creation requires a human board operator. Ask the human to enter the value in Settings → Secrets for this company. Do not send secret values in chat or tool calls.");
+    }
     assertCompanySecretWrite(req, companyId);
+    next();
+  }, validate(createSecretSchema), async (req, res) => {
+    const companyId = req.params.companyId as string;
 
     const created = await svc.create(
       companyId,
