@@ -158,7 +158,7 @@ export function TaskChatRunnerTurn({
   finishedAtMs,
   activityUnavailable = false,
   allowSummaryFallback = true,
-  suppressFinal = false,
+  awaitingContinuation = false,
   waitSummary = null,
   continuedAfterSteering = false,
   showHeader = true,
@@ -183,7 +183,7 @@ export function TaskChatRunnerTurn({
    * provider final that only restates the wait is not presented as a reply.
    * Prose the agent wrote for the user stays visible.
    */
-  suppressFinal?: boolean;
+  awaitingContinuation?: boolean;
   /** The accepted yielded result's wait summary, when known. */
   waitSummary?: string | null;
   /** The visible tail resumes the same native run after an accepted steer. */
@@ -204,7 +204,7 @@ export function TaskChatRunnerTurn({
       item.surface === "run_result" &&
       item.disposition === "yielded",
   );
-  const observedFinal = paperclipRunnerFinalResponse(turnItems, suppressFinal
+  const observedFinal = paperclipRunnerFinalResponse(turnItems, awaitingContinuation
     ? { allowFallback: false, yielded: true, waitSummary }
     : { allowFallback: terminal && allowSummaryFallback });
   const observedProviderText = Boolean(
@@ -229,7 +229,7 @@ export function TaskChatRunnerTurn({
   // A provider final can arrive before the accepted yielded result. Clear any
   // replay latch once the control plane establishes that this turn is waiting
   // for continuation; only an authored (non-wait) final is re-latched below.
-  if (yielded || suppressFinal) finalRef.current = { runId };
+  if (yielded || awaitingContinuation) finalRef.current = { runId };
   if (
     observedFinal &&
     (!finalRef.current.item ||

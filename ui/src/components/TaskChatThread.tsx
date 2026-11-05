@@ -2108,35 +2108,53 @@ export function TaskChatThread(props: TaskChatThreadProps) {
           break;
         }
       }
+      // A yielded turn's authored reply renders once, in the segment that
+      // contains it: the last segment with an authored final, which is where
+      // the whole-run scan found it. A steering anchor can split the turn, so
+      // the last populated segment is not always the right one.
+      const yieldedOptions = {
+        runId: source.id,
+        agentName: meta?.agentName,
+        allowFallback: false,
+        yielded: true,
+        waitSummary: acceptedSummary,
+      };
+      const yieldedResponseSegmentIndex = sourceYieldedResponse
+        ? projectedSegments.findLastIndex(({ parsed }) =>
+            Boolean(paperclipRunnerFinalResponse(parsed, yieldedOptions)))
+        : -1;
+      const settledSegmentFinalResponse = (
+        segmentIndex: number,
+        parsed: readonly TaskChatItem[],
+      ): TaskChatMessageItem | undefined => {
+        if (!sourceIsPaperclipRunner) return undefined;
+        const lastSegment = segmentIndex === lastPopulatedSegmentIndex;
+        if (sourceYielded) {
+          if (!sourceYieldedResponse) return undefined;
+          if (yieldedResponseSegmentIndex === -1) return lastSegment ? sourceYieldedResponse : undefined;
+          return segmentIndex === yieldedResponseSegmentIndex
+            ? paperclipRunnerFinalResponse(parsed, yieldedOptions)
+            : undefined;
+        }
+        if (sourceHasPresentationComment) return undefined;
+        // A steering anchor may split acceptance from its terminal. Keep the
+        // whole-run proof and render its answer exactly once.
+        if (sourceAcceptedResponseWake) {
+          return lastSegment
+            ? paperclipRunnerFinalResponse(parsedSource, { runId: source.id, agentName: meta?.agentName })
+            : undefined;
+        }
+        return paperclipRunnerFinalResponse(parsed, {
+          runId: source.id,
+          agentName: meta?.agentName,
+          fallbackSummary: lastSegment ? acceptedSummary : undefined,
+          allowFallback: sourceAllowSummaryFallback,
+        });
+      };
       for (const [segmentIndex, projected] of projectedSegments.entries()) {
         const { segment, parsed } = projected;
         if (segment.entries.length === 0) continue;
-        const finalResponse =
-          sourceIsPaperclipRunner && sourceYielded
-            ? segmentIndex === lastPopulatedSegmentIndex
-              ? sourceYieldedResponse
-              : undefined
-            : sourceIsPaperclipRunner &&
-          !sourceHasPresentationComment
-            ? sourceAcceptedResponseWake
-              ? // A steering anchor may split acceptance from its terminal.
-                // Keep the whole-run proof and render its answer exactly once.
-                segmentIndex === lastPopulatedSegmentIndex
-                ? paperclipRunnerFinalResponse(parsedSource, {
-                    runId: source.id,
-                    agentName: meta?.agentName,
-                  })
-                : undefined
-              : paperclipRunnerFinalResponse(parsed, {
-                  runId: source.id,
-                  agentName: meta?.agentName,
-                  fallbackSummary:
-                    segmentIndex === lastPopulatedSegmentIndex
-                      ? acceptedSummary
-                      : undefined,
-                  allowFallback: sourceAllowSummaryFallback,
-                })
-            : undefined;
+        const finalResponse = settledSegmentFinalResponse(segmentIndex, parsed);
         const runHealth = {
           failures: projectedSegments[segmentIndex]?.mcpStartupFailures ?? [],
           rest: partitionRunHealthItems(timelineItemsBySegment[segmentIndex] ?? []).rest,
@@ -2451,7 +2469,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     ? runs.find((run) => run.id === tailRunId)
     : undefined;
   const paperclipRunnerTail = isNativePaperclipRunnerRun(tailRunSource);
-  const suppressPaperclipRunnerTailFinal = Boolean(
+  const paperclipRunnerTailAwaitingContinuation = Boolean(
     paperclipRunnerTail &&
     (acceptedSemanticResultDisposition(
       tailRunId ? linkedRunMetaById.get(tailRunId)?.resultJson : null,
@@ -3401,8 +3419,8 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                                       startedAtMs={tailStartedAtMs}
                                       finishedAtMs={tailFinishedAtMs}
                                       activityUnavailable={tailActivityUnavailable}
-                                      suppressFinal={
-                                        suppressPaperclipRunnerTailFinal
+                                      awaitingContinuation={
+                                        paperclipRunnerTailAwaitingContinuation
                                       }
                                       waitSummary={acceptedSemanticResultSummary(
                                         tailRunId ? linkedRunMetaById.get(tailRunId)?.resultJson : null,

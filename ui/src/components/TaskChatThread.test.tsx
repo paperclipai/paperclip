@@ -3267,6 +3267,70 @@ describe("TaskChatThread runtime transcript selection", () => {
     );
   });
 
+  it("keeps a steered yielded turn's reply in the segment that wrote it", () => {
+    const runId = "steered-interview";
+    nativeTranscriptState.transcriptByRun.set(runId, [
+      assistantEntry("2026-08-25T18:00:02.000Z", "Here is the question card I just posted for you.", "final"),
+      assistantEntry("2026-08-25T18:00:10.000Z", "Folding in the steering note.", "progress"),
+    ]);
+    renderThread({
+      comments: [
+        {
+          id: "steer",
+          companyId: "company-1",
+          issueId: "issue-1",
+          authorType: "user",
+          authorAgentId: null,
+          authorUserId: "user-1",
+          body: "Steering note from the user.",
+          presentation: null,
+          metadata: null,
+          runId: null,
+          consumedByRunId: runId,
+          steeredIntoRunId: runId,
+          conversationAnchorAt: new Date("2026-08-25T18:00:05.000Z"),
+          createdAt: new Date("2026-08-25T18:00:05.000Z"),
+          updatedAt: new Date("2026-08-25T18:00:05.000Z"),
+        },
+      ],
+      onAdd: async () => {},
+      issueStatus: "in_progress",
+      interactions: [
+        {
+          ...questionInteraction("steered-card", "Pick one", "2026-08-25T18:00:03.000Z"),
+          sourceRunId: runId,
+        } as IssueThreadInteraction,
+      ],
+      linkedRuns: [
+        {
+          runId,
+          runtimeMode: "native",
+          status: "succeeded",
+          agentId: "agent-1",
+          agentName: "Runner",
+          adapterType: "paperclip_runner",
+          createdAt: "2026-08-25T18:00:00.000Z",
+          startedAt: "2026-08-25T18:00:00.000Z",
+          finishedAt: "2026-08-25T18:00:20.000Z",
+          resultJson: {
+            nativeResult: {
+              schema: "paperclip.run_result.v1",
+              reportedWorkDisposition: "yielded",
+              summary: "Waiting for Pick one.",
+            },
+          },
+        },
+      ],
+    });
+    const text = container.textContent ?? "";
+    const replyAt = text.indexOf("Here is the question card I just posted");
+    const steerAt = text.indexOf("Steering note from the user.");
+    expect(replyAt).toBeGreaterThanOrEqual(0);
+    expect(steerAt).toBeGreaterThanOrEqual(0);
+    expect(replyAt).toBeLessThan(steerAt);
+    expect(text.split("Here is the question card I just posted")).toHaveLength(2);
+  });
+
   it("keeps a yielded question turn out of the final-response slot", () => {
     nativeTranscriptState.transcriptByRun.set("native-question", [
       assistantEntry("2026-08-25T18:00:01.000Z", "Preparing the verification question.", "progress"),
