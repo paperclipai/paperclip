@@ -64,6 +64,7 @@ it.skipIf(!appUrl || !cloudUrl || !cloudDist)("normal notifications enroll the f
   let coordinator: ReturnType<typeof createDeliveryWorkCoordinator> | undefined;
   let worker: ReturnType<typeof registerGitHubConnectionEventWork> | undefined;
   const errors: unknown[] = [];
+  const deliveryIds: string[] = [];
   const endpoint = async () => (await db.select().from(chatEndpoints).where(eq(chatEndpoints.id, endpointId)))[0]!;
   const setup = async () => (await endpoint()).setup as InternalSetupState;
   const configureIdentity = (index: number) => {
@@ -166,6 +167,7 @@ it.skipIf(!appUrl || !cloudUrl || !cloudDist)("normal notifications enroll the f
     const timestamp = String(Math.floor(Date.now() / 1000));
     await broker.slackEvents.receive(await broker.slackEvents.current(instanceB, publicId), { rawBody, timestamp,
       signature: `v0=${createHmac("sha256", signingSecret).update(`v0:${timestamp}:`).update(rawBody).digest("hex")}` });
+    deliveryIds.push(...(await pool.query("SELECT delivery_id FROM cloud_harness.connector_webhook_delivery_targets WHERE connector_instance_id=$1", [instanceB])).rows.map((row: { delivery_id: string }) => row.delivery_id));
     await service.configure(endpointId, { action: "remove" }, actor);
     expect((await db.select().from(toolConnections).where(eq(toolConnections.id, connectionId)))[0]!.credentialSecretRefs).toEqual([]);
     await vi.waitFor(async () => expect((await setup()).slackCloudRetiredGeneration).toBe(6), { timeout: 10_000 });
@@ -190,6 +192,7 @@ it.skipIf(!appUrl || !cloudUrl || !cloudDist)("normal notifications enroll the f
       await db.delete(companies).where(eq(companies.id, companyId));
       await db.delete(authUsers).where(eq(authUsers.id, actor));
       await pool.query("DELETE FROM cloud_harness.connector_instances WHERE id=ANY($1::text[])", [stackIds]);
+      await pool.query("DELETE FROM cloud_harness.connector_webhook_deliveries WHERE id=ANY($1::text[])", [deliveryIds]);
     } finally {
       await closeCheckpointDb(db, 1); await closeFileStorageDb(db, 1); await closeLivenessDb(db, 1);
       await db.$client.end({ timeout: 1 }); await registry.close(); await rm(directory, { recursive: true, force: true });
