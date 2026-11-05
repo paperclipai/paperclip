@@ -9,7 +9,6 @@ import {
   activityLog,
   agents,
   agentWakeupRequests,
-  chatEndpoints,
   companySecretBindings,
   companySecrets,
   companySecretVersions,
@@ -51,7 +50,6 @@ import { resolveNativeRuntimeMcpSnapshot } from "../services/native-runtime/runt
 import type { PluginToolDispatcher } from "../services/plugin-tool-dispatcher.js";
 import { mcpGatewayProtocolRoutes, toolGatewayRoutes } from "../routes/tool-gateway.js";
 import { toolAccessService } from "../services/tool-access.js";
-import { migrateLegacyProfileToolNameEntries } from "../services/tool-profile-migration.js";
 import {
   canonicalToolArguments,
   readSignedToolArgumentsPayload,
@@ -170,18 +168,6 @@ async function allowToolsForAgent(db: Db, companyId: string, agentId: string, to
       toolName,
     })));
   }
-  return profile;
-}
-
-async function allowCatalogEntryForAgent(db: Db, companyId: string, agentId: string, catalogEntryId: string) {
-  const profile = await allowToolsForAgent(db, companyId, agentId, []);
-  await db.insert(toolProfileEntries).values({
-    companyId,
-    profileId: profile.id,
-    selectorType: "catalog_entry",
-    effect: "include",
-    catalogEntryId,
-  });
   return profile;
 }
 
@@ -640,7 +626,7 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
       }).returning();
       await db.insert(toolProfileEntries).values({
         companyId: company.id, profileId: profile.id,
-        selectorType: "tool_name", effect: "include", toolName: catalogEntry.toolName,
+        selectorType: "tool_name", effect: "include", toolName,
       });
       const gateway = createTestToolGatewayService(db);
       const named = await gateway.createNamedGateway({
@@ -760,7 +746,7 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
         profileId: profile.id,
         selectorType: "tool_name",
         effect: "include",
-        toolName: catalogEntry.toolName,
+        toolName: gatewayToolName,
       });
 
       const gateway = createTestToolGatewayService(db);
@@ -1302,7 +1288,7 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
         profileId: profile.id,
         selectorType: "tool_name",
         effect: "include",
-        toolName: catalogEntry.toolName,
+        toolName: gatewayToolName,
       });
       // Pin the clock so every request in this test shares one rate-limit
       // window. The window boundary aligns to wall-clock time, so a real clock
@@ -3093,7 +3079,7 @@ rl.on("line", (line) => {
         connectionId: remoteTool.connection.id,
         toolName: remoteTool.catalogEntry.toolName,
       });
-      await allowToolsForAgent(db, company.id, agent.id, [remoteTool.catalogEntry.toolName]);
+      await allowToolsForAgent(db, company.id, agent.id, [targetToolName]);
 
       const gateway = createTestToolGatewayService(db);
       const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
@@ -3677,7 +3663,13 @@ rl.on("line", (line) => {
           methodConfig: { storeDomain: "paperclip-demo.myshopify.com" },
         },
       });
-      await allowCatalogEntryForAgent(db, company.id, agent.id, approvalTool.catalogEntry.id);
+      await allowToolsForAgent(db, company.id, agent.id, [
+        expectedConnectedToolName({
+          applicationKey: approvalTool.application.applicationKey,
+          connectionId: approvalTool.connection.id,
+          toolName: approvalTool.catalogEntry.toolName,
+        }),
+      ]);
       const approvalToolName = (await gateway.listToolsForSession(session.token))
         .find((tool) => tool.connectionId === approvalTool.connection.id)!.name;
       await db.insert(toolPolicies).values({
@@ -3882,7 +3874,13 @@ rl.on("line", (line) => {
         toolName: "kv_set",
         url: fake.url,
       });
-      await allowCatalogEntryForAgent(db, company.id, agent.id, rejectedTool.catalogEntry.id);
+      await allowToolsForAgent(db, company.id, agent.id, [
+        expectedConnectedToolName({
+          applicationKey: rejectedTool.application.applicationKey,
+          connectionId: rejectedTool.connection.id,
+          toolName: rejectedTool.catalogEntry.toolName,
+        }),
+      ]);
       await db.insert(toolPolicies).values({
         companyId: company.id,
         name: "Reject connected writes",
@@ -3930,7 +3928,13 @@ rl.on("line", (line) => {
         toolName: "kv_set",
         url: fake.url,
       });
-      await allowCatalogEntryForAgent(db, company.id, agent.id, rateTool.catalogEntry.id);
+      await allowToolsForAgent(db, company.id, agent.id, [
+        expectedConnectedToolName({
+          applicationKey: rateTool.application.applicationKey,
+          connectionId: rateTool.connection.id,
+          toolName: rateTool.catalogEntry.toolName,
+        }),
+      ]);
       await db.insert(toolPolicies).values({
         companyId: company.id,
         name: "One connected call",
@@ -6124,122 +6128,55 @@ rl.on("line", (line) => {
     expect(called.status).toBe("completed");
   });
 
-  it("converts stored gateway-name tool_name entries to exact catalog entry grants", async () => {
+  it("keeps a stored gateway-name tool_name entry selecting only its own connection", async () => {
     const company = await createCompany(db);
     const agent = await createAgent(db, company.id);
     const { run } = await createIssueAndRun(db, company.id, agent.id);
-    const granted = await createLocalStdioMcpTool(db, company.id, {
-      applicationKey: "legacy-analytics",
-      connectionName: "Legacy analytics",
+    const first = await createLocalStdioMcpTool(db, company.id, {
+      applicationKey: "first-analytics",
+      connectionName: "First analytics",
       toolName: "echo",
     });
-    const sameName = await createLocalStdioMcpTool(db, company.id, {
-      applicationKey: "other-analytics",
-      connectionName: "Other analytics",
+    const second = await createLocalStdioMcpTool(db, company.id, {
+      applicationKey: "second-analytics",
+      connectionName: "Second analytics",
       toolName: "echo",
     });
-    const sameConnectionEntry = (toolName: string, status: "active" | "disabled" = "active") => ({
-      companyId: company.id,
-      applicationId: granted.application.id,
-      connectionId: granted.connection.id,
-      entryKind: "tool" as const,
-      name: toolName,
-      toolName,
-      riskLevel: "read" as const,
-      isReadOnly: true,
-      status,
-      versionHash: randomUUID(),
-      schemaHash: randomUUID(),
+    const firstGatewayName = expectedConnectedToolName({
+      applicationKey: first.application.applicationKey,
+      connectionId: first.connection.id,
+      toolName: "echo",
     });
-    const [dotted] = await db.insert(toolCatalogEntries).values(sameConnectionEntry("read.file")).returning();
-    const [underscored] = await db.insert(toolCatalogEntries).values(sameConnectionEntry("read_file")).returning();
-    const [listed] = await db.insert(toolCatalogEntries).values(sameConnectionEntry("list.files")).returning();
-    await db.insert(toolCatalogEntries).values(sameConnectionEntry("list_files", "disabled"));
-    const slackTool = await createLocalStdioMcpTool(db, company.id, {
-      applicationKey: "slack-workspace",
-      connectionName: "Slack workspace",
-      toolName: "post_message",
-    });
-    const [slackEndpoint] = await db.insert(chatEndpoints).values({
-      companyId: company.id,
-      connectionId: slackTool.connection.id,
-      provider: "slack",
-      publicId: randomUUID(),
-      assignedAgentId: agent.id,
-    }).returning();
-
-    const discovery = await allowToolsForAgent(db, company.id, agent.id, ["echo", "read.file", "list.files"]);
     const gateway = createTestToolGatewayService(db, { runtimeSupervisor: { idleTtlMs: 10_000 } });
-    const discoverySession = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
-    const exposedName = new Map(
-      (await gateway.listToolsForSession(discoverySession.token)).map((tool) => [tool.catalogEntryId, tool.name]),
-    );
-    await db.delete(toolProfileBindings).where(eq(toolProfileBindings.profileId, discovery.id));
-    await db.delete(toolProfiles).where(eq(toolProfiles.id, discovery.id));
-    const echoName = exposedName.get(granted.catalogEntry.id)!;
-    const dottedName = exposedName.get(dotted!.id)!;
-    const listedName = exposedName.get(listed!.id)!;
-    expect(echoName).toBe(`mcp.legacy-analytics-${granted.connection.id.replace(/-/g, "").slice(0, 8)}:echo`);
-    expect(dottedName).toMatch(/-[0-9a-f]{8}$/);
-    const sharedBaseName = dottedName.replace(/-[0-9a-f]{8}$/, "");
-    expect(listedName).not.toMatch(/-[0-9a-f]{8}$/);
-    const slackBotName = `slack-bot.${slackEndpoint!.id}:post_message`;
-    const unknownGatewayName = `mcp.legacy-analytics-${randomUUID().replace(/-/g, "").slice(0, 8)}:echo`;
+    const visibleEchoConnections = async () => {
+      const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+      return (await gateway.listToolsForSession(session.token))
+        .filter((tool) => tool.upstreamToolName === "echo")
+        .map((tool) => tool.connectionId)
+        .sort();
+    };
 
-    const profile = await allowToolsForAgent(db, company.id, agent.id, [
-      echoName,
-      dottedName,
-      listedName,
-      sharedBaseName,
-      slackBotName,
-      "echo",
-      "mcp-stdio-fixture:runtime_status",
-      unknownGatewayName,
-    ]);
-    const [sharedExclude] = await db.insert(toolProfileEntries).values({
+    const included = await allowToolsForAgent(db, company.id, agent.id, [firstGatewayName]);
+    expect(await visibleEchoConnections()).toEqual([first.connection.id]);
+    await db.delete(toolProfileBindings).where(eq(toolProfileBindings.profileId, included.id));
+
+    const allowAll = await allowAllToolsForAgent(db, company.id, agent.id);
+    await db.insert(toolProfileEntries).values({
       companyId: company.id,
-      profileId: profile.id,
+      profileId: allowAll.id,
       selectorType: "tool_name",
       effect: "exclude",
-      toolName: sharedBaseName,
-    }).returning();
-
-    const first = await migrateLegacyProfileToolNameEntries(db);
-    expect(first).toEqual({ scannedEntries: 9, migratedEntries: 5, unresolvedEntries: 1 });
-    const entries = await db
-      .select()
-      .from(toolProfileEntries)
-      .where(eq(toolProfileEntries.profileId, profile.id));
-    const summary = (entry: typeof toolProfileEntries.$inferSelect) =>
-      `${entry.effect} ${entry.selectorType} ${entry.toolName ?? entry.catalogEntryId}`;
-    expect(entries.map(summary).sort()).toEqual([
-      `include catalog_entry ${granted.catalogEntry.id}`,
-      `include catalog_entry ${dotted!.id}`,
-      `include catalog_entry ${listed!.id}`,
-      `include catalog_entry ${slackTool.catalogEntry.id}`,
-      `include tool_name ${sharedBaseName}`,
-      "include tool_name echo",
-      "include tool_name mcp-stdio-fixture:runtime_status",
-      `include tool_name ${unknownGatewayName}`,
-      `exclude catalog_entry ${dotted!.id}`,
-      `exclude catalog_entry ${underscored!.id}`,
-    ].sort());
-    expect(entries.find((entry) => entry.id === sharedExclude!.id)?.selectorType).toBe("catalog_entry");
-    expect(await migrateLegacyProfileToolNameEntries(db)).toEqual({
-      scannedEntries: 4,
-      migratedEntries: 0,
-      unresolvedEntries: 1,
+      toolName: firstGatewayName,
     });
+    expect(await visibleEchoConnections()).toEqual([second.connection.id]);
 
-    await db.delete(toolProfileEntries).where(and(
-      eq(toolProfileEntries.profileId, profile.id),
-      eq(toolProfileEntries.toolName, "echo"),
-    ));
-    const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
-    const visible = (await gateway.listToolsForSession(session.token))
-      .filter((tool) => tool.upstreamToolName === "echo")
-      .map((tool) => tool.connectionId);
-    expect(visible).toEqual([granted.connection.id]);
-    expect(visible).not.toContain(sameName.connection.id);
+    await db.insert(toolProfileEntries).values({
+      companyId: company.id,
+      profileId: allowAll.id,
+      selectorType: "tool_name",
+      effect: "exclude",
+      toolName: "echo",
+    });
+    expect(await visibleEchoConnections()).toEqual([]);
   });
 });

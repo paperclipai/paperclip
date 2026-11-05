@@ -251,7 +251,7 @@ Selector types:
 - `application` — every catalog entry under an application
 - `connection` — every catalog entry under one connection
 - `catalog_entry` — one specific tool
-- `tool_name` — every catalog entry whose tool name, as the connection reports it, is exactly this value (e.g. `"list_items"`)
+- `tool_name` — every tool whose name, as the connection reports it (e.g. `"list_items"`) or as the gateway exposes it, is exactly this value
 - `risk_level` — `read`, `write`, or `destructive`
 
 Effects: `include` adds to the allowed set, `exclude` removes. `defaultAction` is the fallback when no entry matches.
