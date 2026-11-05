@@ -175,9 +175,30 @@ done`,
     for (const relative of files) {
       try {
         const content = await readFile(path.join(directory, relative), "utf8");
+        let inspectedContent = content;
+        if (provider === "anthropic" && config.engine === "cli" && relative === ".claude/settings.json") {
+          let settings: unknown;
+          try {
+            settings = JSON.parse(content);
+            inspectedContent = JSON.stringify(settings);
+          } catch {
+            throw unprocessable(
+              "The project's Claude settings cannot be validated for the selected AI connection",
+              { code: "ai_connection_incompatible" },
+            );
+          }
+          if (settings && typeof settings === "object" && !Array.isArray(settings) &&
+            ["env", "apiKeyHelper", "awsAuthRefresh", "awsCredentialExport", "forceLoginMethod", "otelHeadersHelper"]
+              .some((key) => Object.hasOwn(settings, key))) {
+            throw unprocessable(
+              "Project authentication settings conflict with the selected AI connection",
+              { code: "ai_connection_incompatible" },
+            );
+          }
+        }
         if (
           /apiKeyHelper|ANTHROPIC_API_KEY|ANTHROPIC_AUTH_TOKEN|CLAUDE_CODE_OAUTH_TOKEN|OPENAI_API_KEY|model_provider\s*=|env_key\s*=|experimental_bearer_token|cli_auth_credentials_store/.test(
-            content,
+            inspectedContent,
           )
         ) {
           throw unprocessable(

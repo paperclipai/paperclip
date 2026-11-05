@@ -513,6 +513,13 @@ check shows the account is signed in; only **Connect** creates or reconnects the
 Claude, Codex, and Grok check only their connection-specific login home. The
 health response selects whether a self-hosted user may sign in.
 
+For local managed Claude CLI runs, Paperclip enables user and project setting
+sources so Claude can discover project skills and the selected Paperclip skills.
+Before launch, it rejects project Claude settings containing environment
+overrides or authentication helpers, and settings it cannot parse. Remote CLI
+runs retain user-only sources because their project-auth checks do not yet
+validate the same settings. ACP runs are unchanged.
+
 Leaving and returning to a local sign-in screen resumes its active attempt. Navigation
 does not delete its credential home. **Start sign-in again**
 explicitly cancels the old attempt; abandoned attempts expire after 30 minutes.

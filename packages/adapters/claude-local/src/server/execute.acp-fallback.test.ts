@@ -129,4 +129,12 @@ describe("claude_local ACP startup fallback", () => {
 
     expect(runAdapterExecutionTargetProcess).not.toHaveBeenCalled();
   });
+
+  it("enables user and project sources for local managed Claude CLI runs", async () => {
+    const ctx = buildContext({ engine: "cli", managedAiConnection: { provider: "anthropic", method: "api_key" } });
+    await execute(ctx as never);
+    const calls = runAdapterExecutionTargetProcess.mock.calls as unknown as Array<[string, unknown, string, string[]]>;
+    const args = calls[0]![3];
+    expect(args[args.indexOf("--setting-sources") + 1]).toBe("user,project");
+  });
 });
