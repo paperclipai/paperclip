@@ -47,8 +47,13 @@ describe("TaskChatStatusNotice", () => {
     expect(container.textContent).toContain("Fell back to claude-sonnet-5-5");
   });
 
+  it("does not treat a recoverable error notice from the live adapter as fatal", () => {
+    act(() => root.render(<TaskChatStatusNotice item={notice({ Severity: "error", Category: "error", Recoverable: "Yes" }, "transient")} />));
+    expect(container.querySelector("[role=alert]")).toBeNull();
+  });
+
   it("renders a fatal provider error as an alert with the real message", () => {
-    act(() => root.render(<TaskChatStatusNotice item={notice({ Severity: "error", Category: "error", Recoverable: "false", Reason: "usageLimitExceeded" }, "You've hit your usage limit.")} />));
+    act(() => root.render(<TaskChatStatusNotice item={notice({ Severity: "error", Category: "error", Recoverable: "No", Reason: "usageLimitExceeded" }, "You've hit your usage limit.")} />));
     const alert = container.querySelector("[role=alert]");
     expect(alert?.textContent).toContain("Provider error");
     expect(alert?.textContent).toContain("You've hit your usage limit.");

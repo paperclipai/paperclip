@@ -51,7 +51,7 @@ export function isFatalProviderError(item: TaskChatProviderActivityItem): boolea
   return item.family === "provider_notice"
     && detail(item, "Category") === "error"
     && detail(item, "Severity") === "error"
-    && detail(item, "Recoverable") !== "true";
+    && !["true", "Yes"].includes(detail(item, "Recoverable") ?? "");
 }
 
 /**
