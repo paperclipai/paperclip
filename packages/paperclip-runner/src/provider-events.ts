@@ -1127,9 +1127,9 @@ export function canonicalProviderEventsFromCodex(
       },
     ];
   }
+  if (method === "error") return [codexErrorNotice(params, itemId)];
   if (
     [
-      "error",
       "warning",
       "guardianWarning",
       "deprecationNotice",
@@ -1166,6 +1166,60 @@ export function canonicalProviderEventsFromCodex(
     ];
   }
   return [];
+}
+
+/**
+ * Codex app-server `error` notifications carry a `TurnError` under `error`
+ * plus `willRetry`. A retried error is a transient status notice; only a
+ * final error is fatal. Older shapes kept the text at the top level.
+ */
+function codexErrorNotice(
+  params: Record<string, unknown>,
+  itemId: string,
+): CanonicalProviderEvent {
+  const error = record(params.error);
+  const willRetry = params.willRetry === true;
+  const info = error.codexErrorInfo;
+  const infoKind =
+    typeof info === "string"
+      ? info
+      : Object.keys(record(info))[0] ?? "";
+  const httpStatus = integer(record(record(info)[infoKind]).httpStatusCode);
+  const summary = [error.message, params.summary, params.message, params.details]
+    .map((value) => redactCodexDiagnostic(text(value).trim()))
+    .find(Boolean)
+    ?.slice(0, 4000);
+  // Codex reports stream retries as "Reconnecting... {attempt}/{max}" with
+  // the actual cause in additionalDetails.
+  const attempt = /^Reconnecting\.\.\.\s*(\d+)\s*\/\s*(\d+)$/.exec(summary ?? "");
+  const additional = redactCodexDiagnostic(text(error.additionalDetails).trim()).slice(0, 4000);
+  const chipSummary = attempt && additional ? additional : summary;
+  const details = [
+    ...(attempt ? [{ name: "Attempt", value: attempt[1] }, { name: "Max attempts", value: attempt[2] }] : []),
+    ...(infoKind ? [{ name: "Reason", value: infoKind.slice(0, 160) }] : []),
+    ...(httpStatus !== null ? [{ name: "HTTP status", value: String(httpStatus) }] : []),
+    ...(additional && additional !== chipSummary ? [{ name: "Additional details", value: additional }] : []),
+  ];
+  const turnId = text(params.turnId);
+  return {
+    eventType: "provider.notice.recorded",
+    payload: {
+      schema: "paperclip.provider.notice.v1",
+      // Retries within one turn update one chip; the final error is its own row.
+      noticeId: safeId(
+        `error:${willRetry ? "retry" : "final"}:${turnId || text(params.code, "notice")}`,
+        "provider-notice",
+      ),
+      severity: willRetry ? "warning" : "error",
+      category: willRetry ? "provider_retry" : "error",
+      scope: "turn",
+      recoverable: willRetry,
+      userActionable: false,
+      summary: chipSummary || "Provider notice",
+      ...(details.length > 0 ? { details } : {}),
+    },
+    itemId,
+  };
 }
 
 function openCodeToolExitCode(

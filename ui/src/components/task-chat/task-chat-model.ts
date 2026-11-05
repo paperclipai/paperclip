@@ -398,6 +398,8 @@ export interface TaskChatProviderActivityItem {
   outputTruncated?: boolean;
   /** Index of the latest provider event coalesced into this activity. */
   transcriptIndex?: number;
+  /** A retry status notice the turn has moved past. */
+  resolved?: boolean;
   /** When the provider first reported this activity (ISO timestamp). */
   startedAt?: string;
 }

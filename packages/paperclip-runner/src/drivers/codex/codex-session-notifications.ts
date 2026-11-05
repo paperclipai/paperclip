@@ -281,7 +281,10 @@ async function mapNotificationBody(state: CodexSessionState, notification: Codex
       state.emit("harness.diagnostic", {
         code: notification.method.replaceAll("/", "_"),
         message: redactCodexDiagnostic(
-          text(params.message, JSON.stringify(boundedCodexValue(params))),
+          text(
+            record(params.error).message,
+            text(params.message, JSON.stringify(boundedCodexValue(params))),
+          ),
         ),
       });
       return;
