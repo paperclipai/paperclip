@@ -10,6 +10,16 @@ const stopped = {
   },
 };
 
+it.each(["failed", "cancelled"])("holds an unverified provider stop after %s even for a continuing conversation", (status) => {
+  const run = {
+    runtimeMode: "legacy", status, errorCode: "provider_stop_unconfirmed",
+    resultJson: { conversationContinuation: "continue_conversation_v1", providerStopUnconfirmed: true },
+  };
+  expect(legacyExecutionNeedsReconciliation(run)).toBe(true);
+  expect(legacyExecutionNeedsReconciliation({ ...run, errorCode: "cancelled" })).toBe(true);
+  expect(legacyExecutionNeedsReconciliation({ ...run, resultJson: { conversationContinuation: "continue_conversation_v1" } })).toBe(true);
+});
+
 it.each(["workspace_git_scan_timeout", "workspace_git_scan_saturated", "remote_workspace_prepare_timeout", "reusable_sandbox_resume_failed", "remote_workspace_restore_failed"])("does not invent unknown provider actions after exhausted %s bootstrap retries", (errorCode) => {
   const run = { runtimeMode: "legacy", status: "failed", errorCode, scheduledRetryAttempt: 2,
     resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } } };

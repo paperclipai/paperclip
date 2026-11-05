@@ -12,6 +12,7 @@ import {
 } from "./local-process-sandbox.js";
 import { buildSshSpawnTarget, type SshRemoteExecutionSpec } from "./ssh.js";
 import { redactCommandText } from "./command-redaction.js";
+import { prepareWindowsTerminalJob } from "./windows-terminal-job.js";
 import { paperclipChatFilePreparationDelivery } from "./chat-file-delivery.js";
 import {
   PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES,
@@ -65,11 +66,13 @@ export interface RunProcessResult {
   // duplex control channel died before a clean completion.
   errorCode?: string | null;
   terminalResultCleanup?: TerminalResultCleanupEvidence | null;
+  processTreeStopped?: boolean;
 }
 
 export interface TerminalResultCleanupOptions {
   hasTerminalResult: (output: { stdout: string; stderr: string }) => boolean;
   graceMs?: number;
+  windowsProcessTreeGuard?: boolean;
 }
 
 export const UNMANAGED_BACKGROUND_TASK_STOP_REASON =
@@ -91,6 +94,7 @@ interface RunningProcess {
   child: ChildProcess;
   graceSec: number;
   processGroupId: number | null;
+  cancellationSignal?: AbortSignal;
 }
 
 interface SpawnTarget {
@@ -118,6 +122,27 @@ type ChildProcessWithEvents = ChildProcess & {
 function resolveProcessGroupId(child: ChildProcess) {
   if (process.platform === "win32") return null;
   return typeof child.pid === "number" && child.pid > 0 ? child.pid : null;
+}
+
+function isProcessGroupAlive(processGroupId: number): boolean {
+  try {
+    process.kill(-processGroupId, 0);
+    return true;
+  } catch (error) {
+    // ESRCH is the only positive evidence that the entire group is gone. EPERM
+    // and other inspection failures remain unconfirmed.
+    return (error as NodeJS.ErrnoException).code !== "ESRCH";
+  }
+}
+
+async function waitForProcessGroupExit(processGroupId: number, timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + Math.max(0, timeoutMs);
+  while (true) {
+    if (!isProcessGroupAlive(processGroupId)) return true;
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) return false;
+    await new Promise((resolve) => setTimeout(resolve, Math.min(25, remainingMs)));
+  }
 }
 
 // Exported so the direct-child fallback branch can be unit-tested directly.
@@ -4727,11 +4752,13 @@ export async function runChildProcess(
       startedAt: string;
     }) => Promise<void>;
     terminalResultCleanup?: TerminalResultCleanupOptions;
+    signal?: AbortSignal;
     stdin?: string;
     remoteExecution?: RemoteExecutionSpec | null;
     localProcessSandbox?: LocalProcessSandboxOptions | null;
   },
 ): Promise<RunProcessResult> {
+  opts.signal?.throwIfAborted();
   const onLogError =
     opts.onLogError ??
     ((err, id, msg) => console.warn({ err, runId: id }, msg));
@@ -4765,12 +4792,37 @@ export async function runChildProcess(
       remoteEnv: opts.remoteExecution ? opts.env : null,
       localProcessSandbox: opts.localProcessSandbox ?? null,
     })
-      .then((target) => {
+      .then(async (target) => {
+        if (opts.signal?.aborted) {
+          await target.cleanup?.();
+          opts.signal.throwIfAborted();
+        }
+        let job: Awaited<ReturnType<typeof prepareWindowsTerminalJob>> | null = null;
+        let treeGuardUnavailable = false;
+        try {
+          if (process.platform === "win32" && opts.terminalResultCleanup?.windowsProcessTreeGuard && !opts.remoteExecution) {
+            job = await prepareWindowsTerminalJob(target.command, target.args);
+          }
+        } catch (error) {
+          if (opts.signal?.aborted) {
+            await target.cleanup?.();
+            opts.signal.throwIfAborted();
+          }
+          treeGuardUnavailable = true;
+          onLogError(error, runId, "Windows process-tree verification unavailable");
+          await opts.onLog("stderr", "[paperclip] Windows process-tree verification unavailable; automatic session recovery will be disabled.\n")
+            .catch((err) => onLogError(err, runId, "failed to log Windows process-tree fallback"));
+        }
+        if (opts.signal?.aborted) {
+          await job?.settle();
+          await target.cleanup?.();
+          opts.signal.throwIfAborted();
+        }
         const childEnv = { ...mergedEnv, ...target.env };
         for (const [key, value] of Object.entries(childEnv)) {
           if (value === undefined) delete childEnv[key];
         }
-        const child = spawn(target.command, target.args, {
+        const child = spawn(job?.command ?? target.command, job?.args ?? target.args, {
           cwd: target.cwd ?? opts.cwd,
           env: childEnv,
           detached: process.platform !== "win32",
@@ -4797,6 +4849,9 @@ export async function runChildProcess(
           child,
           graceSec: opts.graceSec,
           processGroupId,
+          cancellationSignal: job || (process.platform !== "win32" && processGroupId !== null)
+            ? opts.signal
+            : undefined,
         });
 
         let timedOut = false;
@@ -4809,6 +4864,8 @@ export async function runChildProcess(
         let terminalCleanupForceKilled = false;
         let terminalCleanupTimer: NodeJS.Timeout | null = null;
         let terminalCleanupKillTimer: NodeJS.Timeout | null = null;
+        let cancellationKillTimer: NodeJS.Timeout | null = null;
+        let cancellationStarted = false;
         let terminalResultStdoutScanOffset = 0;
         let terminalResultStderrScanOffset = 0;
 
@@ -4817,6 +4874,26 @@ export async function runChildProcess(
           if (terminalCleanupKillTimer) clearTimeout(terminalCleanupKillTimer);
           terminalCleanupTimer = null;
           terminalCleanupKillTimer = null;
+        };
+
+        const cancelProcess = () => {
+          if (cancellationStarted) return;
+          cancellationStarted = true;
+          clearTerminalCleanupTimers();
+          if (job) job.stop();
+          else signalRunningProcess({ child, processGroupId }, "SIGTERM");
+          cancellationKillTimer = setTimeout(() => {
+            signalRunningProcess({ child, processGroupId }, "SIGKILL");
+          }, Math.max(1, opts.graceSec) * 1000);
+        };
+        opts.signal?.addEventListener("abort", cancelProcess, { once: true });
+        if (opts.signal?.aborted) cancelProcess();
+        const clearCancellation = (clearKillTimer = true) => {
+          opts.signal?.removeEventListener("abort", cancelProcess);
+          if (clearKillTimer) {
+            if (cancellationKillTimer) clearTimeout(cancellationKillTimer);
+            cancellationKillTimer = null;
+          }
         };
 
         const maybeArmTerminalResultCleanup = () => {
@@ -4864,7 +4941,8 @@ export async function runChildProcess(
             if (terminalCleanupStarted || timedOut) return;
             terminalCleanupStarted = true;
             terminalCleanupSignal = "SIGTERM";
-            signalRunningProcess({ child, processGroupId }, "SIGTERM");
+            if (job) job.stop();
+            else signalRunningProcess({ child, processGroupId }, "SIGTERM");
             terminalCleanupKillTimer = setTimeout(
               () => {
                 terminalCleanupKillTimer = null;
@@ -4882,7 +4960,8 @@ export async function runChildProcess(
             ? setTimeout(() => {
                 timedOut = true;
                 clearTerminalCleanupTimers();
-                signalRunningProcess({ child, processGroupId }, "SIGTERM");
+                if (job) job.stop();
+                else signalRunningProcess({ child, processGroupId }, "SIGTERM");
                 setTimeout(
                   () => {
                     signalRunningProcess({ child, processGroupId }, "SIGKILL");
@@ -4940,8 +5019,10 @@ export async function runChildProcess(
         child.on("error", (err: Error) => {
           if (timeout) clearTimeout(timeout);
           clearTerminalCleanupTimers();
+          clearCancellation();
           runningProcesses.delete(runId);
           void target.cleanup?.();
+          void job?.settle().catch(() => {});
           const errno = (err as NodeJS.ErrnoException).code;
           const pathValue = mergedEnv.PATH ?? mergedEnv.Path ?? "";
           const msg =
@@ -4959,10 +5040,29 @@ export async function runChildProcess(
           "close",
           (code: number | null, signal: NodeJS.Signals | null) => {
             if (timeout) clearTimeout(timeout);
-            clearTerminalCleanupTimers();
+            const verifyPosixGroup = process.platform !== "win32" && processGroupId !== null && (cancellationStarted || terminalCleanupStarted);
+            if (!verifyPosixGroup || !terminalCleanupStarted) clearTerminalCleanupTimers();
+            clearCancellation(!cancellationStarted || Boolean(job) || process.platform === "win32");
             runningProcesses.delete(runId);
             void logChain.finally(() => {
+              let processTreeStopped = false;
               void Promise.resolve()
+                .then(async () => {
+                  if (job) {
+                    processTreeStopped = await job.settle();
+                  } else if (verifyPosixGroup && processGroupId !== null) {
+                    // The direct child may close before descendants in its
+                    // detached group. Keep the SIGKILL escalation alive while
+                    // waiting for a kernel-level ESRCH receipt for the group.
+                    processTreeStopped = await waitForProcessGroupExit(
+                      processGroupId,
+                      Math.max(1, opts.graceSec) * 1_000 + 1_000,
+                    );
+                    clearCancellation();
+                    clearTerminalCleanupTimers();
+                  }
+                })
+                .catch((err) => onLogError(err, runId, "failed to verify process tree stop"))
                 .then(() => target.cleanup?.())
                 .finally(() => {
                   resolve({
@@ -4973,7 +5073,10 @@ export async function runChildProcess(
                     stderr,
                     pid: child.pid ?? null,
                     startedAt,
-                    terminalResultCleanup: terminalCleanupStarted
+                    ...(job || treeGuardUnavailable || cancellationStarted || (terminalCleanupStarted && process.platform !== "win32") ? { processTreeStopped } : {}),
+                    terminalResultCleanup: terminalCleanupStarted &&
+                      (!(job || treeGuardUnavailable) || processTreeStopped) &&
+                      (!(cancellationStarted || (terminalCleanupStarted && process.platform !== "win32")) || processTreeStopped)
                       ? {
                           kind: "terminal_result_cleanup",
                           stopped: true,

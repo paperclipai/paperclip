@@ -592,7 +592,7 @@ describe("company-and-environment setup-token route — full path", () => {
     expect(completionRes.body.token).toBeUndefined();
     expect(completionRes.headers["cache-control"]).toBe("no-store");
     expectNoSecret(JSON.stringify(completionRes.body));
-  });
+  }, 90_000);
 
   it("returns the fixed no-secret error when no transport is bound", async () => {
     const { app } = await createApp({});

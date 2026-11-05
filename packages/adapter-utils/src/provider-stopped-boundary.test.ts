@@ -19,6 +19,12 @@ describe("owned provider process stop boundary", () => {
     await runAdapterExecutionTargetProcess("run", null, "provider", [], options(stopped));
     expect(stopped).toHaveBeenCalledOnce();
   });
+  it("does not claim a local provider stopped when its Windows job has no receipt", async () => {
+    vi.spyOn(serverUtils, "runChildProcess").mockResolvedValue({ ...result, processTreeStopped: false });
+    const stopped = vi.fn();
+    await runAdapterExecutionTargetProcess("run", null, "provider", [], options(stopped));
+    expect(stopped).not.toHaveBeenCalled();
+  });
   it.each([
     { ...result, exitCode: null, timedOut: true },
     { ...result, exitCode: null, timedOut: false },

@@ -284,6 +284,7 @@ export interface PreparedAdapterExecutionTargetRuntime {
 export interface AdapterExecutionTargetProcessOptions {
   cwd: string;
   env: Record<string, string>;
+  signal?: AbortSignal;
   stdin?: string;
   timeoutSec: number;
   graceSec: number;
@@ -971,6 +972,7 @@ export async function runAdapterExecutionTargetProcess(
   const result = await runChildProcess(runId, command, args, {
     cwd: options.cwd,
     env,
+    signal: options.signal,
     stdin: options.stdin,
     timeoutSec: options.timeoutSec,
     graceSec: options.graceSec,
@@ -982,8 +984,9 @@ export async function runAdapterExecutionTargetProcess(
   });
   // Closing an SSH client on timeout/disconnect does not prove the remote
   // provider exited. SSH status 255 is transport failure, never a stop receipt.
-  if (!target || target.kind === "local" ||
-      (!result.timedOut && !result.signal && result.exitCode !== null && result.exitCode >= 0 && result.exitCode < 255)) {
+  if ((!target || target.kind === "local")
+    ? result.processTreeStopped !== false
+    : (!result.timedOut && !result.signal && result.exitCode !== null && result.exitCode >= 0 && result.exitCode < 255)) {
     options.onProcessStopped?.();
   }
   return result;

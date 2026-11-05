@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import { recommendsBrokenExecForm, toLogicalLines } from "./cli-invocation-logical-lines.js";
 import { generateReadme } from "../services/company-export-readme.js";
 
 // The Paperclip CLI is unsafe when an operator or an agent runs it through
@@ -377,7 +378,17 @@ function listGuidanceFiles(rootDir = repoRoot): string[] {
   ).split("\0"));
 
   function walk(absDir: string, relDir: string): void {
-    for (const entry of readdirSync(absDir, { withFileTypes: true })) {
+    let entries;
+    try {
+      entries = readdirSync(absDir, { withFileTypes: true });
+    } catch (error) {
+      // Other tests create and remove temporary plugin packages under the
+      // repository tree. If one disappears between enumeration and descent,
+      // it is not authored guidance and should not fail this scan.
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+      throw error;
+    }
+    for (const entry of entries) {
       if (entry.isSymbolicLink()) continue;
       const relPath = relDir ? `${relDir}/${entry.name}` : entry.name;
       if (entry.isDirectory()) {
@@ -398,48 +409,6 @@ function listGuidanceFiles(rootDir = repoRoot): string[] {
   return found;
 }
 
-// ── Backslash line continuation ───────────────────────────────────────────
-//
-// A shell reads a backslash at the end of a line as a line join. So one
-// command can spread its content-bearing arguments across many physical
-// lines. The scan must see the whole command, not one physical line. If it
-// checks each physical line alone, a `pnpm paperclipai` command whose unsafe
-// argument sits on a later line passes undetected.
-//
-// `toLogicalLines` joins each backslash-continued physical line to the next
-// one. It returns the joined text and the line number of the first physical
-// line, so an offender report still points to the start of the command.
-
-interface LogicalLine {
-  text: string;
-  lineNumber: number;
-}
-
-function toLogicalLines(source: string): LogicalLine[] {
-  const physicalLines = source.split("\n");
-  const logicalLines: LogicalLine[] = [];
-  let buffer: string | null = null;
-  let startLine = 0;
-  physicalLines.forEach((physicalLine, index) => {
-    const continues = /\\\s*$/.test(physicalLine);
-    const body = physicalLine.replace(/\\\s*$/, "");
-    if (buffer === null) {
-      startLine = index + 1;
-      buffer = body;
-    } else {
-      buffer += body;
-    }
-    if (!continues) {
-      logicalLines.push({ text: buffer, lineNumber: startLine });
-      buffer = null;
-    }
-  });
-  if (buffer !== null) {
-    logicalLines.push({ text: buffer, lineNumber: startLine });
-  }
-  return logicalLines;
-}
-
 function scanText(relPath: string, source: string): string[] {
   const offenders: string[] = [];
   for (const { text, lineNumber } of toLogicalLines(source)) {
@@ -450,25 +419,33 @@ function scanText(relPath: string, source: string): string[] {
   return offenders;
 }
 
-function scanForOffenders(): string[] {
+function scanGuidanceFiles(
+  files: string[],
+  readGuidanceFile: (relPath: string) => string,
+  trackedFiles: ReadonlySet<string>,
+): string[] {
   const offenders: string[] = [];
-  for (const relPath of listGuidanceFiles()) {
-    offenders.push(...scanText(relPath, read(relPath)));
+  for (const relPath of files) {
+    try {
+      offenders.push(...scanText(relPath, readGuidanceFile(relPath)));
+    } catch (error) {
+      // Temporary untracked fixtures can disappear after the tree walk. A
+      // tracked file disappearing is a repository integrity failure and must
+      // still fail closed.
+      if ((error as NodeJS.ErrnoException).code === "ENOENT" && !trackedFiles.has(relPath)) continue;
+      throw error;
+    }
   }
   return offenders;
 }
 
-// A line that recommends the broken `pnpm exec paperclipai` form. A warning line
-// names the broken form on purpose to tell the reader not to use it. Skip such a
-// line, so the note itself does not trip the ban.
-function recommendsBrokenExecForm(line: string): boolean {
-  if (!line.includes("pnpm exec paperclipai")) return false;
-  const lower = line.toLowerCase();
-  const warns =
-    lower.includes("broken") ||
-    lower.includes("not found") ||
-    lower.includes("do not use");
-  return !warns;
+function scanForOffenders(): string[] {
+  const trackedFiles = new Set(execFileSync(
+    "git",
+    ["ls-files", "--cached", "-z"],
+    { cwd: repoRoot, encoding: "utf8" },
+  ).split("\0"));
+  return scanGuidanceFiles(listGuidanceFiles(), read, trackedFiles);
 }
 
 function scanForBrokenExecForm(): string[] {
@@ -553,6 +530,30 @@ describe("paperclipai CLI invocation safety", () => {
       for (const name of files) {
         expect(scanText(name, readFileSync(path.join(root, name), "utf8"))).toHaveLength(1);
       }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("ignores vanished untracked guidance but still fails when a tracked file disappears", () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), "paperclip-cli-guidance-race-"));
+    try {
+      execFileSync("git", ["init", "--quiet"], { cwd: root });
+      const trackedPath = "tracked.md";
+      const trackedAbsPath = path.join(root, trackedPath);
+      writeFileSync(trackedAbsPath, "pnpm paperclipai issue get issue-1\n");
+      execFileSync("git", ["add", trackedPath], { cwd: root });
+      rmSync(trackedAbsPath);
+
+      const readFixture = (relPath: string) => readFileSync(path.join(root, relPath), "utf8");
+      expect(() => scanGuidanceFiles([trackedPath], readFixture, new Set([trackedPath]))).toThrow();
+
+      const untrackedPath = "temporary-plugin/package.json";
+      const untrackedAbsPath = path.join(root, untrackedPath);
+      mkdirSync(path.dirname(untrackedAbsPath), { recursive: true });
+      writeFileSync(untrackedAbsPath, "{}");
+      rmSync(untrackedAbsPath);
+      expect(scanGuidanceFiles([untrackedPath], readFixture, new Set())).toEqual([]);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { CONNECTION_INTENT_AGENT_GUIDANCE } from "@paperclipai/shared";
 import {
   readPaperclipRuntimeSkillEntries,
@@ -705,6 +705,92 @@ describe("runChildProcess", () => {
     expect(finishedAt - startedAt).toBeGreaterThanOrEqual(spawnDelayMs);
   });
 
+  it.skipIf(process.platform !== "win32")(
+    "confirms a Windows process tree has stopped before returning a failed terminal result",
+    async () => {
+      const result = await runChildProcess(randomUUID(), process.execPath, ["-e", [
+        "const { spawn } = require('node:child_process');",
+        "const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });",
+        "process.stdout.write(`descendant:${child.pid}\\n`);",
+        "process.stdout.write(`${JSON.stringify({ type: 'result', is_error: true })}\\n`);",
+        "setTimeout(() => process.exit(1), 100);",
+      ].join(' ')], {
+        cwd: process.cwd(), env: {}, timeoutSec: 15, graceSec: 1,
+        onLog: async () => {},
+        terminalResultCleanup: { graceMs: 500, windowsProcessTreeGuard: true, hasTerminalResult: ({ stdout }) => stdout.includes('"type":"result"') },
+      });
+      const pid = Number.parseInt(result.stdout.match(/descendant:(\d+)/)?.[1] ?? "", 10);
+      try {
+        expect(pid).toBeGreaterThan(0);
+        expect(result.exitCode).toBe(1);
+        expect(result.processTreeStopped).toBe(true);
+        expect(await waitForPidExit(pid, 2_000)).toBe(true);
+      } finally {
+        if (Number.isInteger(pid) && isPidAlive(pid)) process.kill(pid, "SIGKILL");
+      }
+    }, 30_000,
+  );
+
+  it.skipIf(process.platform !== "win32")(
+    "does not claim a stopped process tree when the supervisor is killed before its receipt",
+    async () => {
+      let supervisorPid = 0;
+      const result = await runChildProcess(randomUUID(), process.execPath, ["-e", [
+        "const { spawn } = require('node:child_process');",
+        "const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });",
+        "process.stdout.write(`descendant:${child.pid}\\n`);",
+        "setInterval(() => {}, 1000);",
+      ].join(' ')], {
+        cwd: process.cwd(), env: {}, timeoutSec: 10, graceSec: 1,
+        onLog: async (_stream, chunk) => { if (chunk.includes('descendant:')) process.kill(supervisorPid, "SIGKILL"); },
+        onSpawn: async ({ pid }) => { supervisorPid = pid; },
+        terminalResultCleanup: { graceMs: 100, windowsProcessTreeGuard: true, hasTerminalResult: () => false },
+      });
+      const pid = Number.parseInt(result.stdout.match(/descendant:(\d+)/)?.[1] ?? "", 10);
+      try {
+        expect(pid).toBeGreaterThan(0);
+        expect(result.processTreeStopped).toBe(false);
+        expect(await waitForPidExit(pid, 2_000)).toBe(true);
+      } finally {
+        if (Number.isInteger(pid) && isPidAlive(pid)) process.kill(pid, "SIGKILL");
+      }
+    }, 30_000,
+  );
+
+  it.skipIf(process.platform !== "win32")(
+    "stops and settles a running Windows job when its cancellation signal fires",
+    async () => {
+      const controller = new AbortController();
+      const runId = randomUUID();
+      let signalManaged = false;
+      const result = await runChildProcess(runId, process.execPath, ["-e", [
+        "const { spawn } = require('node:child_process');",
+        "const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });",
+        "process.stdout.write(`descendant:${child.pid}\\n`);",
+        "setInterval(() => {}, 1000);",
+      ].join(' ')], {
+        cwd: process.cwd(), env: {}, timeoutSec: 15, graceSec: 3,
+        onLog: async (_stream, chunk) => {
+          if (chunk.includes('descendant:')) {
+            signalManaged = runningProcesses.get(runId)?.cancellationSignal === controller.signal;
+            controller.abort();
+          }
+        },
+        signal: controller.signal,
+        terminalResultCleanup: { windowsProcessTreeGuard: true, hasTerminalResult: () => false },
+      });
+      const pid = Number.parseInt(result.stdout.match(/descendant:(\d+)/)?.[1] ?? "", 10);
+      try {
+        expect(pid).toBeGreaterThan(0);
+        expect(signalManaged).toBe(true);
+        expect(result.processTreeStopped).toBe(true);
+        expect(await waitForPidExit(pid, 2_000)).toBe(true);
+      } finally {
+        if (Number.isInteger(pid) && isPidAlive(pid)) process.kill(pid, "SIGKILL");
+      }
+    }, 30_000,
+  );
+
   it.skipIf(process.platform === "win32")(
     "kills descendant processes on timeout via the process group",
     async () => {
@@ -737,6 +823,112 @@ describe("runChildProcess", () => {
       expect(Number.isInteger(descendantPid) && descendantPid > 0).toBe(true);
 
       expect(await waitForPidExit(descendantPid!, 2_000)).toBe(true);
+    },
+  );
+
+  it.skipIf(process.platform === "win32")("waits for terminal cleanup to stop the POSIX process group", async () => {
+    let descendantPid = 0;
+    const killSpy = vi.spyOn(process, "kill");
+    const result = await runChildProcess(randomUUID(), process.execPath, ["-e", [
+      "const { spawn } = require('node:child_process');",
+      "const child = spawn(process.execPath, ['-e', \"process.on('SIGTERM', () => {}); process.send('ready'); setInterval(() => {}, 1000)\"], { stdio: ['ignore', 'ignore', 'ignore', 'ipc'] });",
+      "process.on('SIGTERM', () => process.exit(0));",
+      "child.on('message', () => { child.disconnect(); process.stdout.write(`descendant:${child.pid} TERMINAL\\n`); });",
+      "setInterval(() => {}, 1000);",
+    ].join(" ")], {
+      cwd: process.cwd(), env: {}, timeoutSec: 0, graceSec: 1,
+      onLog: async (_stream, chunk) => { const match = chunk.match(/descendant:(\d+)/); if (match) descendantPid = Number(match[1]); },
+      terminalResultCleanup: { graceMs: 0, hasTerminalResult: ({ stdout }) => stdout.includes("TERMINAL") },
+    });
+    try {
+      expect(descendantPid).toBeGreaterThan(0);
+      expect(killSpy).toHaveBeenCalledWith(expect.any(Number), "SIGKILL");
+      expect(result.processTreeStopped).toBe(true);
+      expect(result.terminalResultCleanup?.stopped).toBe(true);
+    } finally {
+      killSpy.mockRestore();
+      if (descendantPid && isPidAlive(descendantPid)) process.kill(descendantPid, "SIGKILL");
+    }
+  });
+  it.skipIf(process.platform === "win32")(
+    "confirms a cancelled POSIX process group is gone after SIGKILL escalation",
+    async () => {
+      const controller = new AbortController();
+      const runId = randomUUID();
+      let descendantPid = 0;
+      let signalManaged = false;
+      let groupSigkillSent = false;
+      const originalKill = process.kill.bind(process);
+      const killSpy = vi.spyOn(process, "kill").mockImplementation(((pid: number, signal?: NodeJS.Signals | number) => {
+        if (typeof pid === "number" && pid < 0 && signal === "SIGKILL") groupSigkillSent = true;
+        return originalKill(pid, signal);
+      }) as typeof process.kill);
+      try {
+        const result = await runChildProcess(runId, process.execPath, ["-e", [
+          "const { spawn } = require('node:child_process');",
+          "const child = spawn(process.execPath, ['-e', \"process.on('SIGTERM', () => {}); process.stdout.write('handler-ready'); setInterval(() => {}, 1000)\"], { stdio: ['ignore', 'pipe', 'ignore'] });",
+          "child.stdout.on('data', () => process.stdout.write(`descendant:${child.pid}\\n`));",
+          "process.on('SIGTERM', () => process.exit(0));",
+          "setInterval(() => {}, 1000);",
+        ].join(" ")], {
+          cwd: process.cwd(), env: {}, timeoutSec: 0, graceSec: 1,
+          onLog: async (_stream, chunk) => {
+            const match = chunk.match(/descendant:(\d+)/);
+            if (!match) return;
+            descendantPid = Number.parseInt(match[1]!, 10);
+            signalManaged = runningProcesses.get(runId)?.cancellationSignal === controller.signal;
+            controller.abort();
+          },
+          signal: controller.signal,
+        });
+        expect(descendantPid).toBeGreaterThan(0);
+        expect(signalManaged).toBe(true);
+        expect(groupSigkillSent).toBe(true);
+        expect(result.processTreeStopped).toBe(true);
+        expect(await waitForPidExit(descendantPid, 2_000)).toBe(true);
+      } finally {
+        killSpy.mockRestore();
+        if (descendantPid && isPidAlive(descendantPid)) process.kill(descendantPid, "SIGKILL");
+      }
+    },
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "reports an unconfirmed POSIX process-group stop when liveness inspection is denied",
+    async () => {
+      const controller = new AbortController();
+      let descendantPid = 0;
+      const originalKill = process.kill.bind(process);
+      const killSpy = vi.spyOn(process, "kill").mockImplementation(((pid: number, signal?: NodeJS.Signals | number) => {
+        if (typeof pid === "number" && pid < 0 && signal === 0) {
+          throw Object.assign(new Error("permission denied"), { code: "EPERM" });
+        }
+        return originalKill(pid, signal);
+      }) as typeof process.kill);
+      try {
+        const result = await runChildProcess(randomUUID(), process.execPath, ["-e", [
+          "const { spawn } = require('node:child_process');",
+          "const child = spawn(process.execPath, ['-e', \"process.on('SIGTERM', () => {}); setInterval(() => {}, 1000)\"], { stdio: 'ignore' });",
+          "process.on('SIGTERM', () => process.exit(0));",
+          "process.stdout.write(`descendant:${child.pid}\\n`);",
+          "setInterval(() => {}, 1000);",
+        ].join(" ")], {
+          cwd: process.cwd(), env: {}, timeoutSec: 0, graceSec: 1,
+          onLog: async (_stream, chunk) => {
+            const match = chunk.match(/descendant:(\d+)/);
+            if (!match) return;
+            descendantPid = Number.parseInt(match[1]!, 10);
+            controller.abort();
+          },
+          signal: controller.signal,
+        });
+        expect(descendantPid).toBeGreaterThan(0);
+        expect(result.processTreeStopped).toBe(false);
+      } finally {
+        killSpy.mockRestore();
+        if (descendantPid && isPidAlive(descendantPid)) originalKill(descendantPid, "SIGKILL");
+      }
+      expect(await waitForPidExit(descendantPid, 2_000)).toBe(true);
     },
   );
 
