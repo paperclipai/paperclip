@@ -80,9 +80,11 @@ export function completedActivitySummary(items: Activity[]) {
           notices.push({ summary, severity: providerNoticeSeverity(item), icon: p.icon, order });
           continue;
         }
-        if (item.surface === "provider_activity" && item.family === "verification" && item.status === "failed") {
+        if (item.surface === "provider_activity" && item.family === "verification") {
           // A failed check stays visible even when the compact label truncates.
-          add("Check failed", p.icon, -1);
+          if (item.status === "failed") add("Check failed", p.icon, -1);
+          else if (item.details.find((entry) => entry.label === "Status")?.value === "not_run") add("Skipped checks", p.icon, order);
+          else add("Ran checks", p.icon, order);
           continue;
         }
         if (item.surface === "provider_activity" && item.eventType === "model.route.changed") {

@@ -22,6 +22,7 @@ import {
   TaskChatProtocolActivityDetails,
   WaitCountdown,
   hasTaskChatProtocolActivityDetails,
+  verificationOutcome,
   verificationTone,
 } from "./TaskChatProtocolActivityRow";
 import { TaskChatUsageReadout } from "./TaskChatUsageReadout";
@@ -47,7 +48,7 @@ function providerTrailing(item: Extract<Activity, { kind: "protocol" }>): Pick<A
   if (item.family === "verification") {
     return {
       iconClassName: verificationTone(item),
-      trailing: item.details.find((detail) => detail.label === "Detail")?.value,
+      trailing: verificationOutcome(item),
     };
   }
   if (item.family === "wait" && item.status === "running") {

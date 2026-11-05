@@ -231,9 +231,29 @@ function WorkspaceFileDetails({ item }: { item: TaskChatWorkspaceFileItem }) {
   );
 }
 
+/** One-line outcome for a check: its detail, or why it did not run. */
+export function verificationOutcome(item: TaskChatProviderActivityItem): string | undefined {
+  const detail = item.details.find((entry) => entry.label === "Detail")?.value;
+  if (detail) return detail;
+  const reason = item.details.find((entry) => entry.label === "Reason Code")?.value;
+  return reason ? reason.replaceAll("_", " ").replace(/^\w/, (letter) => letter.toUpperCase()) : undefined;
+}
+
+/** The full check: command and untruncated outcome, wrapped. */
+function VerificationDetails({ item }: { item: TaskChatProviderActivityItem }) {
+  const outcome = verificationOutcome(item);
+  return (
+    <div className="flex min-w-0 flex-col gap-1.5" data-testid="task-chat-verification-details">
+      {item.summary ? <p className="min-w-0 break-all font-mono text-foreground">{item.summary}</p> : null}
+      {outcome ? <p className="min-w-0 whitespace-pre-wrap break-words">{outcome}</p> : null}
+    </div>
+  );
+}
+
 function detailContent(item: TaskChatProtocolItem, neutral = false): ReactNode | null {
   switch (item.surface) {
     case "provider_activity": {
+      if (item.family === "verification") return verificationOutcome(item) ? <VerificationDetails item={item} /> : null;
       const expandable = item.details.length > 0 || item.steps.length > 0 || item.links.length > 0 || item.children.length > 0 || Boolean(item.output) || Boolean(item.outputTruncated);
       return expandable ? <ProviderDetails item={item} neutral={neutral} /> : null;
     }
@@ -260,8 +280,8 @@ function safeActivityHref(value: string | null | undefined): string | undefined 
 }
 
 export function hasTaskChatProtocolActivityDetails(item: TaskChatProtocolItem): boolean {
-  // A check row already shows its command, outcome and detail on one line.
-  if (item.surface === "provider_activity" && item.family === "verification") return false;
+  // A check expands only when it has an outcome that may not fit on one line.
+  if (item.surface === "provider_activity" && item.family === "verification") return detailContent(item) !== null;
   if (item.surface === "resource") return Boolean(safeActivityHref(item.href));
   return detailContent(item) !== null || (item.surface === "provider_activity" && Boolean(item.summary?.trim()));
 }
@@ -272,7 +292,7 @@ export function TaskChatProtocolActivityDetails({ item, neutral = false }: { ite
     const href = safeActivityHref(item.href);
     return href ? <a href={href} className="text-foreground underline">{item.title}</a> : <p>{item.title}</p>;
   }
-  return <>{item.surface === "provider_activity" && item.summary ? <p className="whitespace-pre-wrap break-words">{item.summary}</p> : null}{detail}</>;
+  return <>{item.surface === "provider_activity" && item.family !== "verification" && item.summary ? <p className="whitespace-pre-wrap break-words">{item.summary}</p> : null}{detail}</>;
 }
 
 /** Source domains under a finished web search, so results are visible without expanding. */
@@ -360,7 +380,7 @@ export function TaskChatProtocolActivityRow({ item }: { item: TaskChatProtocolIt
   const verification = item.surface === "provider_activity" && item.family === "verification" ? item : null;
   const runningWait = item.surface === "provider_activity" && item.family === "wait" && item.status === "running" ? item : null;
   const research = item.surface === "provider_activity" && item.family === "research" && item.status !== "running" ? item : null;
-  const detail = verification ? null : detailContent(item);
+  const detail = detailContent(item);
   const expandable = detail !== null;
   const Icon = presentation.icon;
   const label = protocolActivityLabel(item, presentation);
@@ -374,9 +394,9 @@ export function TaskChatProtocolActivityRow({ item }: { item: TaskChatProtocolIt
       <span data-conversation-tool-running={active && shimmer && item.surface === "provider_activity" && item.family === "tool_execution" ? "true" : undefined} className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden">
         <span className={cn("shrink-0 font-medium", active && shimmer && "shimmer-text shimmer-text-muted")}>{label}{active ? "…" : ""}</span>
         {presentation.detail ? <span className="task-chat-collapsed-line-fade min-w-0 flex-1 font-mono text-(length:--text-micro)">{presentation.detail}</span> : null}
-        {verification?.details.find((entry) => entry.label === "Detail") ? (
+        {verification && verificationOutcome(verification) ? (
           <span className="min-w-0 shrink truncate" data-testid="task-chat-verification-detail">
-            {verification.details.find((entry) => entry.label === "Detail")?.value}
+            {verificationOutcome(verification)}
           </span>
         ) : null}
         {runningWait ? <WaitCountdown item={runningWait} /> : null}

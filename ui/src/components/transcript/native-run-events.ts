@@ -571,6 +571,7 @@ function verificationActivityEntry(
   if (!check || !commandOrCheck) return null;
   const status = verificationStatus(check.status);
   const detail = text(check.detail)?.trim() || null;
+  const reasonCode = status === "not_run" ? text(check.reasonCode)?.trim() || null : null;
   return {
     kind: "provider_activity",
     ts,
@@ -584,6 +585,7 @@ function verificationActivityEntry(
       commandOrCheck,
       status,
       detail,
+      reasonCode,
     },
   };
 }

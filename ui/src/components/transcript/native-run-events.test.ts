@@ -969,6 +969,11 @@ describe("nativeRunEventsToTranscript", () => {
         verification: { commandOrCheck: "pnpm typecheck", status: "failed" },
       }),
       itemEvent(3, "item.completed", "result:verification:3", { kind: "verification", text: "malformed" }),
+      itemEvent(4, "item.completed", "result:verification:4", {
+        kind: "verification",
+        text: "not_run: pnpm test:e2e",
+        verification: { commandOrCheck: "pnpm test:e2e", status: "not_run", reasonCode: "policy_restricted", detail: "x".repeat(300) },
+      }),
     ]);
     expect(transcript).toEqual([
       expect.objectContaining({
@@ -979,10 +984,16 @@ describe("nativeRunEventsToTranscript", () => {
         payload: expect.objectContaining({ verificationId: "result:verification:1", status: "passed", detail: "6 tests passed" }),
       }),
       expect.objectContaining({ kind: "provider_activity", family: "verification", status: "failed", summary: "pnpm typecheck" }),
+      expect.objectContaining({ family: "verification", status: "informational", payload: expect.objectContaining({ reasonCode: "policy_restricted" }) }),
     ]);
     const checks = transcriptToTaskChatItems(transcript, { runId: RUN_ID, running: false })
       .filter((item) => item.kind === "protocol" && item.surface === "provider_activity");
-    expect(checks).toHaveLength(2);
+    expect(checks).toHaveLength(3);
+    const skipped = checks[2];
+    expect(skipped.kind === "protocol" && skipped.surface === "provider_activity" && skipped.details).toEqual(expect.arrayContaining([
+      { label: "Reason Code", value: "policy_restricted", mono: true },
+      { label: "Detail", value: "x".repeat(300), mono: false },
+    ]));
   });
 
   it("leaves families owned by other surfaces on the generic activity path", () => {

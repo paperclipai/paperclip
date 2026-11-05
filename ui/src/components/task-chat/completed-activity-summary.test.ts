@@ -192,5 +192,7 @@ describe("completedActivitySummary", () => {
     const failed = { ...provider("verification", "failed"), id: "check-2" };
     expect(completedActivitySummary([route, passed]).fullLabel).toBe("Switched models, ran checks");
     expect(completedActivitySummary([route, passed, failed]).fullLabel).toBe("Check failed, switched models, ran checks");
+    const skipped = { ...provider("verification", "informational"), id: "check-3", details: [{ label: "Status", value: "not_run" }] };
+    expect(completedActivitySummary([skipped]).fullLabel).toBe("Skipped checks");
   });
 });
