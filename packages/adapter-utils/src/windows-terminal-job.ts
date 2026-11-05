@@ -9,26 +9,51 @@ import { WINDOWS_PROCESS_JOB_SOURCE } from "./windows-process-job-source.js";
 const execFileAsync = promisify(execFile);
 let supervisor: Promise<string> | undefined;
 
+async function compileSupervisor(): Promise<string> {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-process-supervisor-"));
+  const source = path.join(dir, "ProcessJob.cs");
+  const executable = path.join(dir, "ProcessJob.exe");
+  try {
+    await fs.writeFile(source, WINDOWS_PROCESS_JOB_SOURCE);
+    const root = process.env.SystemRoot ?? "C:\\Windows";
+    let compiler = path.join(root, "Microsoft.NET", "Framework64", "v4.0.30319", "csc.exe");
+    if (!(await fs.stat(compiler).catch(() => null))?.isFile()) {
+      compiler = path.join(root, "Microsoft.NET", "Framework", "v4.0.30319", "csc.exe");
+    }
+    await execFileAsync(compiler, ["/nologo", "/target:exe", `/out:${executable}`, source], { windowsHide: true, timeout: 30_000 });
+    return executable;
+  } catch (error) {
+    await fs.rm(dir, { recursive: true, force: true }).catch(() => {});
+    throw error;
+  }
+}
+
 async function supervisorPath(): Promise<string> {
-  supervisor ??= (async () => {
-    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-process-supervisor-"));
-    const source = path.join(dir, "ProcessJob.cs");
-    const executable = path.join(dir, "ProcessJob.exe");
-    try {
-      await fs.writeFile(source, WINDOWS_PROCESS_JOB_SOURCE);
-      const root = process.env.SystemRoot ?? "C:\\Windows";
-      let compiler = path.join(root, "Microsoft.NET", "Framework64", "v4.0.30319", "csc.exe");
-      if (!(await fs.stat(compiler).catch(() => null))?.isFile()) {
-        compiler = path.join(root, "Microsoft.NET", "Framework", "v4.0.30319", "csc.exe");
+  while (true) {
+    const cached = supervisor;
+    if (cached) {
+      let executable: string;
+      try {
+        executable = await cached;
+      } catch (error) {
+        if (supervisor === cached) supervisor = undefined;
+        else continue;
+        throw error;
       }
-      await execFileAsync(compiler, ["/nologo", "/target:exe", `/out:${executable}`, source], { windowsHide: true, timeout: 30_000 });
-      return executable;
+      if ((await fs.stat(executable).catch(() => null))?.isFile()) return executable;
+      if (supervisor === cached) supervisor = undefined;
+      continue;
+    }
+
+    const compiling = compileSupervisor();
+    supervisor = compiling;
+    try {
+      return await compiling;
     } catch (error) {
-      await fs.rm(dir, { recursive: true, force: true }).catch(() => {});
+      if (supervisor === compiling) supervisor = undefined;
       throw error;
     }
-  })().catch((error) => { supervisor = undefined; throw error; });
-  return supervisor;
+  }
 }
 
 export async function prepareWindowsTerminalJob(command: string, args: string[]) {
