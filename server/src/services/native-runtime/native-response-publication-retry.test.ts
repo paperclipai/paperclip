@@ -124,6 +124,31 @@ describe.skipIf(!support.supported)("native final reply publication retry", () =
     expect(await comments(f.runId)).toEqual([expect.objectContaining({ body: reply })]);
   });
 
+  it("records an already posted reply without posting again or reporting a failure", async () => {
+    const f = await fixture();
+    await f.saveFinalReply();
+    // The live path wrote the reply but stopped before recording its decision.
+    const [posted] = await db.insert(issueComments).values({ companyId: f.companyId, issueId: f.issueId, authorAgentId: f.agentId,
+      createdByRunId: f.runId, body: reply }).returning();
+    const work = nativeResponsePresentationWork(db);
+    const [entry] = await work.load({ companyId: f.companyId, issueId: f.issueId });
+    await expect(work.check(entry)).resolves.toBeNull();
+    expect(await comments(f.runId)).toEqual([posted]);
+    expect(((await run(f.runId)).resultJson as Record<string, any>).presentationDecision).toMatchObject({
+      commentAction: "reuse", commentId: posted.id });
+    expect(await receipt(f.runId)).toBeUndefined();
+    expect(await work.load({ companyId: f.companyId, issueId: f.issueId })).toEqual([]);
+  });
+
+  it("counts one due attempt once when two workers check it concurrently", async () => {
+    const f = await fixture();
+    const [entry] = await nativeResponsePresentationWork(db).load({ companyId: f.companyId, issueId: f.issueId });
+    const results = await Promise.all([nativeResponsePresentationWork(db).check(entry), nativeResponsePresentationWork(db).check(entry)]);
+    expect(results.every(result => result !== null)).toBe(true);
+    expect(await receipt(f.runId)).toMatchObject({ state: "retrying", attempts: 1 });
+    expect(await comments(f.runId)).toEqual([]);
+  });
+
   it("stops after bounded attempts with a named, owned failure on the run and the task", async () => {
     const f = await fixture();
     const work = nativeResponsePresentationWork(db);

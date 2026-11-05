@@ -79,6 +79,10 @@ export async function recordNativeResponsePublicationAttempt(db: Db, input: {
     const previous = readReceipt(run.resultJson);
     if (previous?.state === "failed") return { state: "failed" as const };
     const now = new Date();
+    // Another worker already counted this due attempt and saved the next
+    // deadline. Keep its schedule instead of counting the attempt twice.
+    const scheduled = previous?.state === "retrying" && previous.nextAttemptAt ? Date.parse(previous.nextAttemptAt) : NaN;
+    if (Number.isFinite(scheduled) && scheduled > now.getTime()) return { state: "retrying" as const, nextAttemptAt: scheduled };
     const attempts = (previous?.state === "retrying" ? previous.attempts : 0) + 1;
     const base = {
       schema: NATIVE_RESPONSE_PUBLICATION_SCHEMA as typeof NATIVE_RESPONSE_PUBLICATION_SCHEMA,
@@ -121,14 +125,12 @@ export async function recordNativeResponsePublicationAttempt(db: Db, input: {
   });
 }
 
-/** A reply that was published (or that no longer needs this owner) settles
- * an open retry receipt so the run does not keep showing a stale retry. */
-export async function resolveNativeResponsePublicationReceipt(db: Db, input: { companyId: string; runId: string }) {
-  await db.update(heartbeatRuns).set({
-    resultJson: sql`jsonb_set(${heartbeatRuns.resultJson}, '{responsePublication}',
-      (${heartbeatRuns.resultJson} -> 'responsePublication') - 'nextAttemptAt'
-        || jsonb_build_object('state', 'resolved', 'resolvedAt', ${new Date().toISOString()}::text))`,
-    updatedAt: new Date(),
-  }).where(and(eq(heartbeatRuns.id, input.runId), eq(heartbeatRuns.companyId, input.companyId),
-    sql`${heartbeatRuns.resultJson} #>> '{responsePublication,state}' = 'retrying'`));
+/** JSON object to merge into `result_json` in the same write that records a
+ * published reply's `commentId`. It settles an open retry receipt atomically
+ * with publication, and is empty when no retry is open. */
+export function settledResponsePublicationSql() {
+  return sql`(case when ${heartbeatRuns.resultJson} #>> '{responsePublication,state}' = 'retrying'
+    then jsonb_build_object('responsePublication', ((${heartbeatRuns.resultJson} -> 'responsePublication') - 'nextAttemptAt')
+      || jsonb_build_object('state', 'resolved', 'resolvedAt', ${new Date().toISOString()}::text))
+    else '{}'::jsonb end)`;
 }

@@ -8,7 +8,7 @@ import { onCommittedChatResponseAuthorityRegistered } from "../durable-chat-wake
 import { registerScopedDeadlineWork } from "../scoped-deadline-work.js";
 import { recoverCommittedNativeChatResponse } from "./native-run-finalizer.js";
 import { measureRunPhase, withRunResponsePresentationTiming } from "../execution-preparation-timing.js";
-import { recordNativeResponsePublicationAttempt, resolveNativeResponsePublicationReceipt } from "./native-response-publication-receipt.js";
+import { recordNativeResponsePublicationAttempt } from "./native-response-publication-receipt.js";
 
 export function registerNativeResponsePresentationWork(db: Db,
   coordinator: ReturnType<typeof createDeliveryWorkCoordinator>, canRun: () => boolean) {
@@ -65,12 +65,11 @@ export function nativeResponsePresentationWork(db: Db) {
       failure = error;
     }
     const [remaining] = await measureRunPhase("response.resolve", () => candidates(scope, undefined, entry.id));
-    if (!remaining) {
-      await resolveNativeResponsePublicationReceipt(db, { companyId: entry.companyId, runId: entry.id });
-      return null;
-    }
-    if (remaining.nextAttemptAt && remaining.nextAttemptAt.getTime() > recoveryStartedAt)
-      return { ...entry, dueAt: remaining.nextAttemptAt.getTime() };
+    // A published reply settles its retry receipt in the same write that
+    // records the comment, so a vanished candidate needs no cleanup here.
+    if (!remaining) return null;
+    // The coordinator, or another worker's saved retry, already moved the deadline.
+    if (dueAt(remaining) > recoveryStartedAt) return { ...entry, dueAt: dueAt(remaining) };
     if (!remaining.taskReply) return null;
     // The accepted reply is still unpublished after a due attempt. Never drop
     // it silently: schedule a bounded retry or record the named failure.
