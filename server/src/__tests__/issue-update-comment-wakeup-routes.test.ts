@@ -621,6 +621,41 @@ describe("issue update comment wakeups", () => {
     );
   });
 
+  it("records an interrupt comment as the board user's acknowledged native Stop", async () => {
+    // An interrupt is a user Stop plus a message. Without the user's stop
+    // identity, release treats the cancelled native run as a failure: it blocks
+    // the task and retires the live finalization owner, so preservation stops
+    // the sandbox under the still-settling runner.
+    const existing = makeIssue({ assigneeAgentId: ASSIGNEE_AGENT_ID, assigneeUserId: null,
+      executionRunId: SOURCE_RUN_ID, status: "in_progress" });
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.addComment.mockResolvedValue({ id: "comment-interrupt-redirect", issueId: existing.id,
+      companyId: existing.companyId, body: "Change of plan: post 5 bullet points instead." });
+    mockHeartbeatService.getRun.mockResolvedValue({ id: SOURCE_RUN_ID, companyId: existing.companyId,
+      agentId: ASSIGNEE_AGENT_ID, runtimeMode: "native", status: "running",
+      nativeIssueId: existing.id, contextSnapshot: { issueId: existing.id } });
+    mockHeartbeatService.cancelRun.mockResolvedValue({ id: SOURCE_RUN_ID, companyId: existing.companyId,
+      agentId: ASSIGNEE_AGENT_ID, status: "cancelled" });
+
+    const res = await request(await createApp()).post(`/api/issues/${existing.id}/comments`)
+      .send({ body: "Change of plan: post 5 bullet points instead.", interrupt: true });
+
+    expect(res.status).toBe(201);
+    expect(mockHeartbeatService.cancelRun).toHaveBeenCalledWith(SOURCE_RUN_ID, "Interrupted by board comment",
+      expect.objectContaining({ errorCode: "operator_interrupted", resultJson: expect.objectContaining({
+        operatorInterrupted: true, interruptionSource: "issue_comment_interrupt",
+        cancelledByActorType: "user", cancelledByUserId: "local-board" }) }));
+    const stopMetadata = mockHeartbeatService.cancelRun.mock.calls[0]![2].resultJson;
+    // Exercise the release consumer with the route's actual producer fields.
+    expect(isAcknowledgedNativeStop({ id: SOURCE_RUN_ID, companyId: existing.companyId,
+      status: "cancelled", nativeIssueId: existing.id, resultJson: { ...stopMetadata,
+        nativeCancellation: { schema: "paperclip.native-cancellation.v1", runId: SOURCE_RUN_ID,
+          companyId: existing.companyId, issueId: existing.id, scope: "run",
+          reasonCode: "cancellation_run_only", dispatchState: "acknowledged", dispatched: true,
+          intentAuditId: "stop-intent", acknowledgementAuditId: "stop-acknowledgement" },
+      } })).toBe(true);
+  });
+
   it("interrupts the active run without waking an agent when the handoff assigns a user", async () => {
     const existing = makeIssue({
       assigneeAgentId: PREVIOUS_AGENT_ID,

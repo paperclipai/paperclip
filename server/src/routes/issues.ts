@@ -7720,6 +7720,13 @@ export function issueRoutes(
         interruptedIssueId: input.issueId,
         interruptedByActorType: input.actor.actorType,
         interruptedByActorId: input.actor.actorId,
+        // An interrupt is the user's Stop plus a message. Record the same stop
+        // identity as the Stop control, so release does not treat the run as
+        // failed while the stopped runner still settles in its sandbox.
+        ...(input.actor.actorType === "user" ? {
+          cancelledByActorType: "user",
+          cancelledByUserId: input.actor.actorId,
+        } : {}),
       },
       eventMessage: "run interrupted by board comment",
       eventPayload: {
