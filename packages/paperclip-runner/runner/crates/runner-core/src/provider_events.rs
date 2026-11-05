@@ -1251,7 +1251,7 @@ pub fn normalize_codex_notification_in(
                     "transport": match item_type { "mcpToolCall" => "mcp", "dynamicToolCall" => "dynamic", "builtinToolCall" => "builtin", _ => "process" },
                     "operation": if item_type == "commandExecution" { codex_command_operation(provider_item) } else { "unknown" },
                     "name": provider_item.get("tool").or_else(|| provider_item.get("command")).and_then(Value::as_str).map(|value| bounded_text(value, 240)),
-                    "target": if item_type == "commandExecution" { codex_command_target(provider_item) } else { Value::Null },
+                    "target": if item_type == "commandExecution" { codex_command_target(provider_item, cwd) } else { Value::Null },
                     "namespace": provider_item.get("server").and_then(Value::as_str).map(|value| bounded_text(value, 240)),
                     "readOnly": provider_item.get("readOnlyHint").and_then(Value::as_bool),
                     "status": provider_status(string(provider_item.get("status")), completed),
@@ -1270,7 +1270,7 @@ pub fn normalize_codex_notification_in(
                     object.extend(output);
                 }
                 if item_type == "commandExecution" {
-                    if let Some(subject) = codex_command_subject(provider_item) {
+                    if let Some(subject) = codex_command_subject(provider_item, cwd) {
                         payload["subject"] = Value::String(subject);
                     }
                 }
@@ -1857,7 +1857,7 @@ fn codex_command_operation(item: &Value) -> &'static str {
 }
 
 /// The single file a read-only command touched, relative to the command's cwd.
-fn codex_command_target(item: &Value) -> Value {
+fn codex_command_target(item: &Value, workspace_root: Option<&str>) -> Value {
     let actions = codex_command_actions(item);
     if actions.len() != 1 {
         return Value::Null;
@@ -1869,31 +1869,59 @@ fn codex_command_target(item: &Value) -> Value {
     {
         return Value::Null;
     }
-    codex_workspace_relative_path(item, string(actions[0].get("path")))
+    codex_workspace_relative_path(item, string(actions[0].get("path")), workspace_root)
         .map_or(Value::Null, Value::String)
 }
 
-/// A Codex action path relative to the command's cwd, or None when it is
-/// empty, absolute outside the cwd, or escapes it. Host paths never reach a
-/// persisted event.
-fn codex_workspace_relative_path(item: &Value, path: &str) -> Option<String> {
+/// A Codex action path relative to the session workspace root. A relative
+/// path is resolved against the command's own cwd first, so `cat server.ts`
+/// run in `<root>/src` becomes `src/server.ts`. Returns None without a known
+/// root, or for a path outside it: host paths never reach a persisted event.
+fn codex_workspace_relative_path(
+    item: &Value,
+    path: &str,
+    workspace_root: Option<&str>,
+) -> Option<String> {
+    let root = workspace_root?.trim().trim_end_matches('/');
     let path = path.trim();
-    let cwd = string(item.get("cwd")).trim_end_matches('/');
-    let relative = if !cwd.is_empty() && path == cwd {
-        "."
-    } else if !cwd.is_empty() && path.starts_with(&format!("{cwd}/")) {
-        &path[cwd.len() + 1..]
+    if root.is_empty() || !root.starts_with('/') || path.is_empty() || path.contains('\0') {
+        return None;
+    }
+    let command_cwd = string(item.get("cwd")).trim();
+    let base = if command_cwd.starts_with('/') {
+        command_cwd
     } else {
-        path
+        root
     };
-    if relative.is_empty()
-        || relative.starts_with('/')
-        || relative.contains('\0')
-        || relative.split('/').any(|segment| segment == "..")
+    let absolute = if path.starts_with('/') {
+        path.to_owned()
+    } else {
+        format!("{base}/{path}")
+    };
+    let mut segments: Vec<&str> = Vec::new();
+    for segment in absolute.split('/') {
+        match segment {
+            "" | "." => {}
+            ".." => {
+                segments.pop()?;
+            }
+            other => segments.push(other),
+        }
+    }
+    let root_segments: Vec<&str> = root
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .collect();
+    if segments.len() < root_segments.len() || segments[..root_segments.len()] != root_segments[..]
     {
         return None;
     }
-    Some(bounded_text(relative, 4_000))
+    let relative = segments[root_segments.len()..].join("/");
+    Some(if relative.is_empty() {
+        ".".to_owned()
+    } else {
+        bounded_text(&relative, 4_000)
+    })
 }
 
 /// Non-flag operands after the program name, ignoring `sed` line ranges.
@@ -1978,12 +2006,16 @@ fn shell_words(command: &str) -> Vec<String> {
 /// The command a person typed, without the `/bin/zsh -lc '…'` wrapper. Codex
 /// already parsed each action's own command, so prefer those. A single search
 /// reads as its query: `"TODO" in src`.
-fn codex_command_subject(item: &Value) -> Option<String> {
+fn codex_command_subject(item: &Value, workspace_root: Option<&str>) -> Option<String> {
     let actions = codex_command_actions(item);
     if let [action] = actions {
         let query = string(action.get("query")).trim();
         if string(action.get("type")).eq_ignore_ascii_case("search") && !query.is_empty() {
-            let scope = match codex_workspace_relative_path(item, string(action.get("path"))) {
+            let scope = match codex_workspace_relative_path(
+                item,
+                string(action.get("path")),
+                workspace_root,
+            ) {
                 Some(path) if path != "." => format!(" in {path}"),
                 _ => String::new(),
             };
@@ -2565,7 +2597,7 @@ mod tests {
 
     #[test]
     fn codex_commands_carry_their_parsed_subject_operation_and_target() {
-        let read = normalize_codex_notification(
+        let read = normalize_codex_notification_in(
             "item/completed",
             &json!({"item": {
                 "id": "exec-read", "type": "commandExecution", "status": "completed",
@@ -2573,6 +2605,7 @@ mod tests {
                 "cwd": "/work/repo", "exitCode": 0, "durationMs": 31,
                 "commandActions": [{"type": "read", "command": "sed -n 1,120p src/server.ts", "name": "server.ts", "path": "/work/repo/src/server.ts"}],
             }}),
+            Some("/work/repo"),
         );
         assert_eq!(read[0].payload["operation"], "read");
         assert_eq!(read[0].payload["target"], "src/server.ts");
@@ -2580,47 +2613,51 @@ mod tests {
         assert_eq!(read[0].payload["exitCode"], 0);
         assert_eq!(read[0].payload["durationMs"], 31);
 
-        let run = normalize_codex_notification(
+        let run = normalize_codex_notification_in(
             "item/completed",
             &json!({"item": {
                 "id": "exec-run", "type": "commandExecution", "status": "failed",
                 "command": "/bin/bash -lc \"node --test\"", "cwd": "/work/repo", "exitCode": 1,
                 "commandActions": [{"type": "unknown"}],
             }}),
+            Some("/work/repo"),
         );
         assert_eq!(run[0].payload["operation"], "execute");
         assert_eq!(run[0].payload["target"], Value::Null);
         assert_eq!(run[0].payload["subject"], "node --test");
         assert_eq!(run[0].payload["exitCode"], 1);
 
-        let escape = normalize_codex_notification(
+        let escape = normalize_codex_notification_in(
             "item/completed",
             &json!({"item": {
                 "id": "exec-escape", "type": "commandExecution", "status": "completed",
                 "command": "cat ../secret", "cwd": "/work/repo",
                 "commandActions": [{"type": "read", "command": "cat ../secret", "path": "../secret"}],
             }}),
+            Some("/work/repo"),
         );
         assert_eq!(escape[0].payload["target"], Value::Null);
 
-        let several = normalize_codex_notification(
+        let several = normalize_codex_notification_in(
             "item/completed",
             &json!({"item": {
                 "id": "exec-several", "type": "commandExecution", "status": "completed",
                 "command": "/bin/zsh -lc \"sed -n '1,20p' notes/a.md notes/b.md\"", "cwd": "/work/repo",
                 "commandActions": [{"type": "read", "command": "sed -n '1,20p' notes/a.md notes/b.md", "path": "notes/a.md"}],
             }}),
+            Some("/work/repo"),
         );
         assert_eq!(several[0].payload["operation"], "read");
         assert_eq!(several[0].payload["target"], Value::Null);
 
-        let quoted = normalize_codex_notification(
+        let quoted = normalize_codex_notification_in(
             "item/completed",
             &json!({"item": {
                 "id": "exec-quoted", "type": "commandExecution", "status": "completed",
                 "command": "cat \"docs/setup guide.md\"", "cwd": "/work/repo",
                 "commandActions": [{"type": "read", "command": "cat \"docs/setup guide.md\"", "path": "docs/setup guide.md"}],
             }}),
+            Some("/work/repo"),
         );
         assert_eq!(quoted[0].payload["target"], "docs/setup guide.md");
         assert_eq!(codex_command_operands("cat 2025 2026"), 2);
@@ -2632,13 +2669,14 @@ mod tests {
             ["sed", "-n", "1,20p", "a b.md", "c d.md"]
         );
 
-        let search = normalize_codex_notification(
+        let search = normalize_codex_notification_in(
             "item/completed",
             &json!({"item": {
                 "id": "exec-search", "type": "commandExecution", "status": "completed",
                 "command": "/bin/zsh -lc \"rg -n TODO src\"", "cwd": "/work/repo",
                 "commandActions": [{"type": "search", "command": "rg -n TODO src", "query": "TODO", "path": "src"}],
             }}),
+            Some("/work/repo"),
         );
         assert_eq!(search[0].payload["operation"], "search");
         assert_eq!(search[0].payload["subject"], "\"TODO\" in src");
@@ -2649,16 +2687,37 @@ mod tests {
             ("/etc", "\"TODO\""),
             ("../outside", "\"TODO\""),
         ] {
-            let scoped = normalize_codex_notification(
+            let scoped = normalize_codex_notification_in(
                 "item/completed",
                 &json!({"item": {
                     "id": "exec-search-abs", "type": "commandExecution", "status": "completed",
                     "command": "rg TODO", "cwd": "/work/repo",
                     "commandActions": [{"type": "search", "command": "rg TODO", "query": "TODO", "path": path}],
                 }}),
+                Some("/work/repo"),
             );
             assert_eq!(scoped[0].payload["subject"], expected, "path {path}");
         }
+
+        let nested = normalize_codex_notification_in(
+            "item/completed",
+            &json!({"item": {
+                "id": "exec-nested", "type": "commandExecution", "status": "completed",
+                "command": "cat server.ts", "cwd": "/work/repo/src",
+                "commandActions": [{"type": "read", "command": "cat server.ts", "path": "server.ts"}],
+            }}),
+            Some("/work/repo"),
+        );
+        assert_eq!(nested[0].payload["target"], "src/server.ts");
+        let rootless = normalize_codex_notification(
+            "item/completed",
+            &json!({"item": {
+                "id": "exec-rootless", "type": "commandExecution", "status": "completed",
+                "command": "cat src/server.ts", "cwd": "/work/repo",
+                "commandActions": [{"type": "read", "command": "cat src/server.ts", "path": "/work/repo/src/server.ts"}],
+            }}),
+        );
+        assert_eq!(rootless[0].payload["target"], Value::Null);
     }
 
     #[test]
