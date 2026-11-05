@@ -5909,6 +5909,41 @@ describe("daytona native file-sync hooks", () => {
     expect(__getDaytonaWritableDirsForTest(params)).toEqual([]);
   });
 
+  it.each((["syncIn", "syncOut"] as const).flatMap(method => [
+    { minimumTimeoutMs: undefined, configured: 300_000, expected: 300 },
+    { minimumTimeoutMs: 900_000, configured: 300_000, expected: 900 },
+    { minimumTimeoutMs: 900_000, configured: 1_200_000, expected: 1200 },
+  ].map(budget => ({ method, ...budget }))))("uses a $method minimum of $minimumTimeoutMs without changing later transfers", async ({ method, minimumTimeoutMs, configured, expected }) => {
+    mockCreate.mockClear();
+    const root = await makeHostDir();
+    const local = path.join(root, "archive.pcws");
+    await fs.writeFile(local, "bytes");
+    const sandbox = createMockSandbox();
+    sandbox.fs.downloadFiles.mockImplementation((...args: unknown[]) => fulfilDownload(args));
+    mockGet.mockResolvedValue(sandbox);
+    const params = method === "syncIn"
+      ? syncInParams({ operationId: "bounded-upload", sourcePath: local, targetPath: `${REMOTE_DIR}/archive.pcws` })
+      : syncOutParams({ operationId: "bounded-download", sourcePath: `${REMOTE_DIR}/archive.pcws`, targetPath: local });
+    params.config.timeoutMs = configured;
+    const hook = method === "syncIn" ? plugin.definition.onEnvironmentSyncIn! : plugin.definition.onEnvironmentSyncOut!;
+    await hook({ ...params, minimumTimeoutMs });
+    const transfer = method === "syncIn" ? sandbox.fs.uploadFiles : sandbox.fs.downloadFiles;
+    expect(transfer.mock.calls[0]?.[1]).toBe(expected);
+    await hook(params);
+    expect(transfer.mock.calls[1]?.[1]).toBe(configured / 1000);
+    expect(params.config.timeoutMs).toBe(configured);
+    expect(mockCreate).not.toHaveBeenCalled();
+  });
+
+  it.each(["syncIn", "syncOut"] as const)("rejects an invalid $0 minimum before sandbox access", async method => {
+    const hook = method === "syncIn" ? plugin.definition.onEnvironmentSyncIn! : plugin.definition.onEnvironmentSyncOut!;
+    for (const minimumTimeoutMs of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, 30 * 60_000 + 1]) {
+      await expect(hook({ ...syncInParams({ operationId: "invalid-budget", sourcePath: "/host", targetPath: REMOTE_DIR }),
+        minimumTimeoutMs })).rejects.toThrow("Invalid sandbox sync timeout");
+    }
+    expect(mockGet).not.toHaveBeenCalled();
+  });
+
   it("syncIn coalesces file mappings into one uploadFiles batch to reserved temp destinations, then one batched mv, applying secret mode via setFilePermissions before the rename", async () => {
     const hostDir = await makeHostDir();
     const secretSource = path.join(hostDir, "auth.json");
