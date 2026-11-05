@@ -3059,6 +3059,7 @@ describe("agent issue mutation checkout ownership", () => {
       expect(res.status, JSON.stringify(res.body)).toBe(200);
       expect(mockHeartbeatService.cancelRun).toHaveBeenCalledWith(ownerRunId, "Cancelled before issue reassignment",
         expect.objectContaining({ errorCode: "issue_reassigned" }));
+      expect(mockHeartbeatService.getRun).toHaveBeenLastCalledWith(ownerRunId, { includeExecutionEvidence: true });
       expect(mockIssueService.update).toHaveBeenCalledTimes(1);
       expect(mockIssueService.update.mock.calls[0]?.[1]).toMatchObject(reassign);
       expect(mockHeartbeatService.cancelRun.mock.invocationCallOrder[0])

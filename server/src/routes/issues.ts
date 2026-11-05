@@ -14832,7 +14832,9 @@ export function issueRoutes(
             // work but drop the reassignment. A run that already finished on its
             // own needs no stop. A failed native run may still own a same-run
             // retry, so it keeps requiring a confirmed stop.
-            const current = await heartbeat.getRun(runToStopForReassignment.id);
+            // Read the server-owned Stop fence through the bounded evidence projection,
+            // which is available even where the presentation projection hides resultJson.
+            const current = await heartbeat.getRun(runToStopForReassignment.id, { includeExecutionEvidence: true });
             const finishedWithoutRetry = Boolean(current) && (
               ["succeeded", "cancelled", "timed_out", "interrupted"].includes(current!.status) ||
               (current!.status === "failed" && current!.runtimeMode !== "native"));
