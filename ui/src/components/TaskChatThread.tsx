@@ -3440,7 +3440,12 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                     {composerAccessory}
                     {dismissError ? <p role="alert" className="text-sm text-destructive">{dismissError}</p> : null}
                     {tailTurnStatus ? (
-                      <TaskChatTurnStatusIsland model={tailTurnStatus} />
+                      <TaskChatTurnStatusIsland
+                        key={tailRunId ?? "turn-status"}
+                        model={tailTurnStatus}
+                        defaultCollapsed={isMobile}
+                        compact={pendingRuntimeRequest != null}
+                      />
                     ) : null}
                     <RunnerGoalWidget control={runnerGoal} />
                     <div

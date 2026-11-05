@@ -4756,7 +4756,13 @@ describe("TaskChatThread live transcript", () => {
     const stack = container.querySelector(
       '[data-testid="task-chat-composer-stack"]',
     )!;
-    expect(island.textContent).toContain("Step 2 / 2");
+    expect(
+      island.querySelector('[data-testid="task-chat-turn-plan-headline"]')?.textContent,
+    ).toBe("Build");
+    expect(
+      island.querySelector('[data-testid="task-chat-turn-plan-progress"]')?.textContent,
+    ).toContain("1/2");
+    expect(island.querySelector('[aria-current="step"]')?.textContent).toContain("Build");
     expect(island.textContent).toContain("1 file changed");
     expect(accessory.compareDocumentPosition(island)).toBe(
       Node.DOCUMENT_POSITION_FOLLOWING,

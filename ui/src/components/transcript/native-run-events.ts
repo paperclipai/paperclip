@@ -841,6 +841,22 @@ export function nativeRunEventsToTranscript(events: readonly HeartbeatRunEvent[]
       continue;
     }
 
+    // The plan carries its steps to the turn plan card, so keep the full
+    // snapshot instead of flattening it into a generic tool row.
+    if (event.eventType === "plan.updated" && payload.schema === "paperclip.plan.updated.v1" && text(payload.planId)) {
+      entries.push({
+        kind: "provider_activity",
+        ts,
+        family: "plan",
+        eventType: event.eventType,
+        status: payload.complete === true ? "completed" : "running",
+        title: "Plan",
+        summary: text(payload.explanation)?.trim() || "Plan",
+        payload,
+      });
+      continue;
+    }
+
     const providerActivity = providerActivityPresentation(event, payload);
     if (providerActivity) {
       if (!startedToolIds.has(providerActivity.id)) {

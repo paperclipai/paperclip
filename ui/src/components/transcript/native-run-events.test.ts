@@ -118,6 +118,36 @@ describe("provider notice presentation", () => {
   });
 });
 
+describe("native plan presentation", () => {
+  it("keeps plan snapshots as plan activity so the turn plan card can read their steps", () => {
+    const plan = (seq: number, statuses: string[]) => event(seq, "plan.updated", {
+      schema: "paperclip.plan.updated.v1",
+      planId: "turn-1",
+      revision: 1,
+      explanation: null,
+      steps: statuses.map((status, index) => ({ stepId: `step-${index + 1}`, body: `Step ${index + 1}`, status })),
+      complete: statuses.every((status) => status === "completed"),
+      syncStatus: "not_applicable",
+      documentRevision: null,
+    });
+    const transcript = nativeRunEventsToTranscript([
+      plan(1, ["in_progress", "pending"]),
+      plan(2, ["completed", "completed"]),
+    ]);
+    expect(transcript).toEqual([
+      expect.objectContaining({ kind: "provider_activity", family: "plan", status: "running", title: "Plan" }),
+      expect.objectContaining({ kind: "provider_activity", family: "plan", status: "completed" }),
+    ]);
+    const items = transcriptToTaskChatItems(transcript, { runId: RUN_ID, agentName: "Claude", running: true });
+    const plans = items.filter((item) => item.kind === "protocol" && item.surface === "provider_activity" && item.family === "plan");
+    expect(plans).toHaveLength(1);
+    expect(plans[0]).toMatchObject({ steps: [
+      { label: "Step 1", status: "completed" },
+      { label: "Step 2", status: "completed" },
+    ] });
+  });
+});
+
 describe("nativeRunEventsToTranscript", () => {
   describe("accepted response-wake authority", () => {
     function fixture() {

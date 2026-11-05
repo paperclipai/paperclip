@@ -1,15 +1,11 @@
-import { useEffect, useRef, useState } from "react";
+import { useId, useState } from "react";
 import {
   CheckCircle2,
+  ChevronDown,
   Circle,
   CircleAlert,
   LoaderCircle,
 } from "lucide-react";
-import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from "@/components/ui/popover";
 import { cn } from "@/lib/utils";
 import type {
   TaskChatItem,
@@ -18,13 +14,35 @@ import type {
   TaskChatWorkspaceChangeItem,
 } from "./task-chat-model";
 
+/**
+ * Active-turn status docked above the composer.
+ *
+ * The plan is the provider-neutral `plan.updated` checklist (Claude task
+ * tools, Codex `turn/plan/updated`, Cursor todos, any ACP `plan` update).
+ * Visibility rules live here so every harness gets the same behavior:
+ *
+ * - Hidden when no plan steps and no workspace changes exist, and hidden once
+ *   the run is terminal (the caller passes `null`; the turn transcript keeps
+ *   the plan record).
+ * - Single-step plans render as a header only: a one-item list adds no
+ *   information beyond the header.
+ * - Expanded by default while work remains; auto-collapses once every step is
+ *   done unless the viewer explicitly reopened it.
+ * - Forced to a header (`compact`) while a question or approval needs the
+ *   viewer, so the decision stays the focus.
+ * - Long plans show a window around the current step with "earlier" and
+ *   "more" rows; "Show all" expands to a bounded scroll region.
+ */
+
+export type TaskChatTurnPlanSegment = {
+  kind: "plan";
+  steps: TaskChatProtocolStep[];
+  currentStepIndex: number;
+  complete: boolean;
+};
+
 export type TaskChatTurnStatusSegment =
-  | {
-      kind: "plan";
-      steps: TaskChatProtocolStep[];
-      currentStepIndex: number;
-      complete: boolean;
-    }
+  | TaskChatTurnPlanSegment
   | {
       kind: "workspace_diff";
       files: number;
@@ -35,6 +53,8 @@ export type TaskChatTurnStatusSegment =
 export interface TaskChatTurnStatusModel {
   segments: TaskChatTurnStatusSegment[];
 }
+
+type WorkspaceSegment = Extract<TaskChatTurnStatusSegment, { kind: "workspace_diff" }>;
 
 function latestPlan(items: readonly TaskChatItem[]): TaskChatProviderActivityItem | null {
   let latest: TaskChatProviderActivityItem | null = null;
@@ -68,17 +88,19 @@ function currentStepIndex(steps: readonly TaskChatProtocolStep[]): number {
   return Math.max(0, steps.length - 1);
 }
 
+export function taskChatTurnPlanSegment(steps: TaskChatProtocolStep[]): TaskChatTurnPlanSegment {
+  return {
+    kind: "plan",
+    steps,
+    currentStepIndex: currentStepIndex(steps),
+    complete: steps.length > 0 && steps.every((step) => step.status === "completed"),
+  };
+}
+
 export function taskChatTurnStatusModel(items: readonly TaskChatItem[]): TaskChatTurnStatusModel | null {
   const segments: TaskChatTurnStatusSegment[] = [];
   const plan = latestPlan(items);
-  if (plan && plan.steps.length > 0) {
-    segments.push({
-      kind: "plan",
-      steps: plan.steps,
-      currentStepIndex: currentStepIndex(plan.steps),
-      complete: plan.steps.every((step) => step.status === "completed"),
-    });
-  }
+  if (plan && plan.steps.length > 0) segments.push(taskChatTurnPlanSegment(plan.steps));
   const workspace = latestWorkspaceDiff(items);
   const files = workspace ? workspace.totals.files || workspace.files.length : 0;
   if (workspace && files > 0) {
@@ -92,13 +114,60 @@ export function taskChatTurnStatusModel(items: readonly TaskChatItem[]): TaskCha
   return segments.length > 0 ? { segments } : null;
 }
 
-function planIcon(plan: Extract<TaskChatTurnStatusSegment, { kind: "plan" }>) {
-  const status = plan.steps[plan.currentStepIndex]?.status;
-  if (plan.complete) return <CheckCircle2 className="size-4 text-(--status-task-icon-done)" aria-hidden />;
-  if (status === "blocked" || status === "failed") {
-    return <CircleAlert className="size-4 text-(--status-task-icon-blocked)" aria-hidden />;
+/** Plans up to this length always list every step. */
+export const PLAN_FULL_LIST_LIMIT = 7;
+const PLAN_WINDOW_SIZE = 5;
+
+export type TaskChatTurnPlanRow =
+  | { kind: "step"; step: TaskChatProtocolStep; index: number; current: boolean }
+  | { kind: "earlier"; count: number; allCompleted: boolean }
+  | { kind: "more"; count: number };
+
+/** Rows to render: every step for short plans, else a window around the current step. */
+export function taskChatTurnPlanRows(plan: TaskChatTurnPlanSegment, showAll: boolean): TaskChatTurnPlanRow[] {
+  const toRow = (step: TaskChatProtocolStep, index: number): TaskChatTurnPlanRow => ({
+    kind: "step",
+    step,
+    index,
+    current: !plan.complete && index === plan.currentStepIndex,
+  });
+  if (showAll || plan.steps.length <= PLAN_FULL_LIST_LIMIT) return plan.steps.map(toRow);
+  const start = Math.max(0, Math.min(plan.currentStepIndex - 1, plan.steps.length - PLAN_WINDOW_SIZE));
+  const end = Math.min(plan.steps.length, start + PLAN_WINDOW_SIZE);
+  const rows: TaskChatTurnPlanRow[] = [];
+  if (start > 0) {
+    rows.push({
+      kind: "earlier",
+      count: start,
+      allCompleted: plan.steps.slice(0, start).every((step) => step.status === "completed"),
+    });
   }
-  return <LoaderCircle className="size-4 text-(--status-agent-running) motion-safe:animate-spin" aria-hidden />;
+  for (let index = start; index < end; index += 1) rows.push(toRow(plan.steps[index]!, index));
+  if (end < plan.steps.length) rows.push({ kind: "more", count: plan.steps.length - end });
+  return rows;
+}
+
+function isProblem(step: TaskChatProtocolStep | undefined): boolean {
+  return step?.status === "blocked" || step?.status === "failed";
+}
+
+export function taskChatTurnPlanHeadline(plan: TaskChatTurnPlanSegment): string {
+  const step = plan.steps[plan.currentStepIndex];
+  if (plan.complete) return plan.steps.length === 1 ? "Step done" : `All ${plan.steps.length} steps done`;
+  if (!step) return "Plan";
+  if (isProblem(step)) return `Blocked: ${step.label}`;
+  if (step.status === "pending") return `Up next: ${step.label}`;
+  return step.label;
+}
+
+function planHeaderIcon(plan: TaskChatTurnPlanSegment) {
+  const status = plan.steps[plan.currentStepIndex]?.status;
+  if (plan.complete) return <CheckCircle2 className="size-4 shrink-0 text-(--status-task-icon-done)" aria-hidden />;
+  if (status === "blocked" || status === "failed") {
+    return <CircleAlert className="size-4 shrink-0 text-(--status-task-icon-blocked)" aria-hidden />;
+  }
+  if (status === "pending") return <Circle className="size-4 shrink-0 text-muted-foreground" aria-hidden />;
+  return <LoaderCircle className="size-4 shrink-0 text-(--status-agent-running) motion-safe:animate-spin" aria-hidden />;
 }
 
 function checklistIcon(step: TaskChatProtocolStep) {
@@ -108,173 +177,227 @@ function checklistIcon(step: TaskChatProtocolStep) {
   if (step.status === "in_progress") {
     return <LoaderCircle className="mt-0.5 size-4 shrink-0 text-(--status-agent-running) motion-safe:animate-spin" aria-hidden />;
   }
-  if (step.status === "blocked" || step.status === "failed") {
+  if (isProblem(step)) {
     return <CircleAlert className="mt-0.5 size-4 shrink-0 text-(--status-task-icon-blocked)" aria-hidden />;
   }
   return <Circle className="mt-0.5 size-4 shrink-0 text-muted-foreground" aria-hidden />;
 }
 
+const STEP_STATUS_LABEL: Record<TaskChatProtocolStep["status"], string> = {
+  completed: "done",
+  in_progress: "in progress",
+  pending: "not started",
+  blocked: "blocked",
+  failed: "failed",
+};
+
 function fileCountLabel(files: number): string {
   return `${files} ${files === 1 ? "file" : "files"} changed`;
 }
 
-function IslandBody({ model }: { model: TaskChatTurnStatusModel }) {
-  const plan = model.segments.find(
-    (segment): segment is Extract<TaskChatTurnStatusSegment, { kind: "plan" }> => segment.kind === "plan",
-  );
-  const workspace = model.segments.find(
-    (segment): segment is Extract<TaskChatTurnStatusSegment, { kind: "workspace_diff" }> => segment.kind === "workspace_diff",
-  );
+function WorkspaceStats({ workspace, compact }: { workspace: WorkspaceSegment; compact?: boolean }) {
   return (
     <span className="flex min-w-0 items-center gap-2">
-      {plan ? (
-        <span className="flex shrink-0 items-center gap-2">
-          {planIcon(plan)}
-          <span className="font-mono text-sm tabular-nums" aria-live="polite" aria-atomic="true">
-            Step {plan.currentStepIndex + 1} / {plan.steps.length}
-            <span className="sr-only">: {plan.steps[plan.currentStepIndex]?.label}</span>
-          </span>
+      <span className={cn("min-w-0 truncate text-sm text-muted-foreground", compact && "sr-only")}>
+        {fileCountLabel(workspace.files)}
+      </span>
+      {workspace.additions != null ? (
+        <span className="shrink-0 font-mono text-sm tabular-nums text-(--status-task-icon-done)">
+          +{workspace.additions}
         </span>
       ) : null}
-      {plan && workspace ? <span className="text-muted-foreground" aria-hidden>·</span> : null}
-      {workspace ? (
-        <span className="flex min-w-0 items-center gap-2">
-          <span className="min-w-0 truncate text-sm text-muted-foreground">
-            {fileCountLabel(workspace.files)}
-          </span>
-          {workspace.additions != null ? (
-            <span className="shrink-0 font-mono text-sm tabular-nums text-(--status-task-icon-done)">
-              +{workspace.additions}
-            </span>
-          ) : null}
-          {workspace.deletions != null ? (
-            <span className="shrink-0 font-mono text-sm tabular-nums text-(--status-task-icon-blocked)">
-              −{workspace.deletions}
-            </span>
-          ) : null}
+      {workspace.deletions != null ? (
+        <span className="shrink-0 font-mono text-sm tabular-nums text-(--status-task-icon-blocked)">
+          −{workspace.deletions}
         </span>
       ) : null}
     </span>
   );
 }
 
-function islandLabel(model: TaskChatTurnStatusModel): string {
-  const parts: string[] = [];
-  for (const segment of model.segments) {
-    if (segment.kind === "plan") {
-      const step = segment.steps[segment.currentStepIndex];
-      parts.push(`Step ${segment.currentStepIndex + 1} of ${segment.steps.length}${step ? `: ${step.label}` : ""}`);
-    } else {
-      parts.push(fileCountLabel(segment.files));
-      if (segment.additions != null) parts.push(`${segment.additions} additions`);
-      if (segment.deletions != null) parts.push(`${segment.deletions} deletions`);
-    }
-  }
-  return parts.join(", ");
-}
-
 const ISLAND_CLASS_NAME = "mx-auto flex min-h-10 max-w-(--sz-turn-status-island) items-center overflow-hidden rounded-full border border-border bg-popover/95 px-4 py-2 text-foreground shadow-sm backdrop-blur";
 
-const HOVER_CLOSE_GRACE_MS = 100;
+const ROW_BUTTON_CLASS_NAME = "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm text-muted-foreground hover:bg-accent/50 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
 
-export function TaskChatTurnStatusIsland({ model }: { model: TaskChatTurnStatusModel }) {
-  const plan = model.segments.find(
-    (segment): segment is Extract<TaskChatTurnStatusSegment, { kind: "plan" }> => segment.kind === "plan",
-  );
-  const [open, setOpen] = useState(false);
-  const [pinned, setPinned] = useState(false);
-  const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  useEffect(() => () => {
-    if (closeTimer.current) clearTimeout(closeTimer.current);
-  }, []);
-
-  const cancelClose = () => {
-    if (closeTimer.current) clearTimeout(closeTimer.current);
-    closeTimer.current = null;
-  };
-  const scheduleClose = () => {
-    cancelClose();
-    if (pinned) return;
-    closeTimer.current = setTimeout(() => setOpen(false), HOVER_CLOSE_GRACE_MS);
-  };
-
-  if (!plan) {
+function PlanRow({ row, onShowAll }: { row: TaskChatTurnPlanRow; onShowAll: () => void }) {
+  if (row.kind === "earlier") {
     return (
-      <div className={ISLAND_CLASS_NAME} role="status" data-testid="task-chat-turn-status-island">
-        <IslandBody model={model} />
-      </div>
+      <li>
+        <button type="button" className={ROW_BUTTON_CLASS_NAME} onClick={onShowAll} data-testid="task-chat-turn-plan-earlier">
+          {row.allCompleted
+            ? <CheckCircle2 className="size-4 shrink-0 text-(--status-task-icon-done)" aria-hidden />
+            : <Circle className="size-4 shrink-0" aria-hidden />}
+          <span>{row.count} earlier {row.count === 1 ? "step" : "steps"}{row.allCompleted ? " done" : ""}</span>
+        </button>
+      </li>
     );
   }
+  if (row.kind === "more") {
+    return (
+      <li>
+        <button type="button" className={ROW_BUTTON_CLASS_NAME} onClick={onShowAll} data-testid="task-chat-turn-plan-more">
+          <Circle className="size-4 shrink-0 opacity-0" aria-hidden />
+          <span>+{row.count} more {row.count === 1 ? "step" : "steps"}</span>
+        </button>
+      </li>
+    );
+  }
+  const { step, current } = row;
+  return (
+    <li
+      className={cn(
+        "flex items-start gap-2 rounded-md px-2 py-1.5 text-sm leading-5",
+        current && "bg-muted font-medium text-foreground",
+        step.status === "completed" && "text-muted-foreground",
+        step.status === "pending" && !current && "text-foreground",
+        isProblem(step) && "text-foreground",
+      )}
+      aria-current={current ? "step" : undefined}
+      data-step-status={step.status}
+    >
+      {checklistIcon(step)}
+      <span className="min-w-0 break-words">
+        {step.label}
+        <span className="sr-only"> ({STEP_STATUS_LABEL[step.status]})</span>
+      </span>
+    </li>
+  );
+}
+
+export interface TaskChatTurnPlanProps {
+  plan: TaskChatTurnPlanSegment;
+  workspace?: WorkspaceSegment | null;
+  /** Start collapsed (used on mobile, where dock height is scarce). */
+  defaultCollapsed?: boolean;
+  /** Force a header-only presentation while the viewer must answer something. */
+  compact?: boolean;
+}
+
+export function TaskChatTurnPlan({ plan, workspace = null, defaultCollapsed = false, compact = false }: TaskChatTurnPlanProps) {
+  const listId = useId();
+  const [expandedOverride, setExpandedOverride] = useState<boolean | null>(null);
+  const [showAll, setShowAll] = useState(false);
+  const completed = plan.steps.filter((step) => step.status === "completed").length;
+  const total = plan.steps.length;
+  const listable = total > 1;
+  const automaticExpanded = !defaultCollapsed && !plan.complete;
+  const expanded = listable && !compact && (expandedOverride ?? automaticExpanded);
+  const headline = taskChatTurnPlanHeadline(plan);
+  const rows = taskChatTurnPlanRows(plan, showAll);
+  const problem = isProblem(plan.steps[plan.currentStepIndex]);
+
+  const headerContent = (
+    <>
+      {planHeaderIcon(plan)}
+      <span
+        className={cn("min-w-0 flex-1 truncate text-left text-sm", !plan.complete && "font-medium")}
+        aria-live="polite"
+        aria-atomic="true"
+        data-testid="task-chat-turn-plan-headline"
+      >
+        {headline}
+      </span>
+      {workspace ? <WorkspaceStats workspace={workspace} compact /> : null}
+      <span
+        className={cn("shrink-0 font-mono text-xs tabular-nums", problem ? "text-(--status-task-icon-blocked)" : "text-muted-foreground")}
+        data-testid="task-chat-turn-plan-progress"
+      >
+        <span aria-hidden>{completed}/{total}</span>
+        <span className="sr-only">{completed} of {total} steps done</span>
+      </span>
+    </>
+  );
 
   return (
-    <Popover
-      open={open}
-      onOpenChange={(nextOpen) => {
-        setOpen(nextOpen);
-        if (!nextOpen) setPinned(false);
-      }}
+    <section
+      aria-label="Agent plan"
+      className="mx-auto w-full max-w-(--sz-turn-status-island) overflow-hidden rounded-xl border border-border bg-popover/95 text-foreground shadow-sm backdrop-blur"
+      data-testid="task-chat-turn-status-island"
+      data-plan-state={plan.complete ? "complete" : problem ? "blocked" : "active"}
+      data-expanded={expanded ? "true" : "false"}
     >
-      <PopoverTrigger asChild>
+      {listable && !compact ? (
         <button
           type="button"
-          aria-label={islandLabel(model)}
-          className={cn(
-            ISLAND_CLASS_NAME,
-            "cursor-pointer transition-colors hover:bg-muted/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background motion-reduce:transition-none",
-          )}
-          data-testid="task-chat-turn-status-island"
-          onPointerEnter={(event) => {
-            if (event.pointerType !== "mouse") return;
-            cancelClose();
-            setOpen(true);
-          }}
-          onPointerLeave={(event) => {
-            if (event.pointerType === "mouse") scheduleClose();
-          }}
-          onFocus={() => setOpen(true)}
-          onClick={(event) => {
-            event.preventDefault();
-            const nextPinned = !pinned;
-            setPinned(nextPinned);
-            setOpen(nextPinned);
-          }}
+          className="flex min-h-10 w-full items-center gap-2 px-3 py-2 transition-colors hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring motion-reduce:transition-none"
+          aria-expanded={expanded}
+          aria-controls={listId}
+          onClick={() => setExpandedOverride(!expanded)}
+          data-testid="task-chat-turn-plan-header"
         >
-          <IslandBody model={model} />
+          {headerContent}
+          <ChevronDown
+            className={cn(
+              "size-4 shrink-0 text-muted-foreground transition-transform motion-reduce:transition-none",
+              expanded && "rotate-180",
+            )}
+            aria-hidden
+          />
         </button>
-      </PopoverTrigger>
-      <PopoverContent
-        side="top"
-        align="center"
-        sideOffset={8}
-        className="w-(--sz-turn-status-popover) p-2"
-        aria-label="Turn plan"
-        onPointerEnter={(event) => {
-          if (event.pointerType === "mouse") cancelClose();
-        }}
-        onPointerLeave={(event) => {
-          if (event.pointerType === "mouse") scheduleClose();
-        }}
-        onEscapeKeyDown={() => setPinned(false)}
-        onInteractOutside={() => setPinned(false)}
+      ) : (
+        <div className="flex min-h-10 w-full items-center gap-2 px-3 py-2" role="status" data-testid="task-chat-turn-plan-header">
+          {headerContent}
+        </div>
+      )}
+      <div
+        className="h-0.5 w-full bg-muted"
+        role="progressbar"
+        aria-label="Plan progress"
+        aria-valuemin={0}
+        aria-valuemax={total}
+        aria-valuenow={completed}
       >
-        <ol className="flex flex-col gap-1" aria-label="Within-turn checklist">
-          {plan.steps.map((step, index) => (
-            <li
-              key={step.id}
-              className={cn(
-                "flex items-start gap-2 rounded-md px-2 py-1.5 text-sm leading-5",
-                index === plan.currentStepIndex && "bg-muted",
-                step.status === "completed" && "text-muted-foreground",
-              )}
-              aria-current={index === plan.currentStepIndex ? "step" : undefined}
-            >
-              {checklistIcon(step)}
-              <span className="min-w-0 break-words">{step.label}</span>
-            </li>
+        <div
+          className={cn(
+            "h-full transition-[width] motion-reduce:transition-none",
+            problem ? "bg-(--status-task-icon-blocked)" : "bg-(--status-task-icon-done)",
+          )}
+          style={{ width: `${total > 0 ? (completed / total) * 100 : 0}%` }}
+        />
+      </div>
+      {expanded ? (
+        <ol
+          id={listId}
+          aria-label="Within-turn checklist"
+          className={cn("flex flex-col gap-0.5 p-1.5", showAll && "max-h-(--sz-turn-plan-list-max-h) overflow-y-auto")}
+        >
+          {rows.map((row) => (
+            <PlanRow
+              key={row.kind === "step" ? row.step.id : row.kind}
+              row={row}
+              onShowAll={() => setShowAll(true)}
+            />
           ))}
+          {showAll && total > PLAN_FULL_LIST_LIMIT ? (
+            <li>
+              <button type="button" className={ROW_BUTTON_CLASS_NAME} onClick={() => setShowAll(false)}>
+                <Circle className="size-4 shrink-0 opacity-0" aria-hidden />
+                <span>Show fewer</span>
+              </button>
+            </li>
+          ) : null}
         </ol>
-      </PopoverContent>
-    </Popover>
+      ) : null}
+    </section>
+  );
+}
+
+export interface TaskChatTurnStatusIslandProps {
+  model: TaskChatTurnStatusModel;
+  defaultCollapsed?: boolean;
+  compact?: boolean;
+}
+
+export function TaskChatTurnStatusIsland({ model, defaultCollapsed, compact }: TaskChatTurnStatusIslandProps) {
+  const plan = model.segments.find((segment): segment is TaskChatTurnPlanSegment => segment.kind === "plan");
+  const workspace = model.segments.find((segment): segment is WorkspaceSegment => segment.kind === "workspace_diff") ?? null;
+  if (plan) {
+    return <TaskChatTurnPlan plan={plan} workspace={workspace} defaultCollapsed={defaultCollapsed} compact={compact} />;
+  }
+  if (!workspace) return null;
+  return (
+    <div className={ISLAND_CLASS_NAME} role="status" data-testid="task-chat-turn-status-island">
+      <WorkspaceStats workspace={workspace} />
+    </div>
   );
 }

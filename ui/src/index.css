@@ -580,9 +580,9 @@
   --tc-shell-max-w: 60rem;
   --sz-66px: 66px;
 
-  /* Active-turn status island and its checklist overlay. */
+  /* Active-turn status island and its docked plan checklist. */
   --sz-turn-status-island: min(100%, 42rem);
-  --sz-turn-status-popover: min(32rem, calc(100vw - 2rem));
+  --sz-turn-plan-list-max-h: min(40dvh, 22rem);
 
   /* Mobile pinned-composer bottom offset (PAP-495). The visible-nav offset
      leaves 6px below the dock; its pb-1 adds 4px for a 10px card-to-nav gap.
