@@ -278,12 +278,19 @@ describe("claude_local ACP lane", () => {
 
   it("accepts the bundled provider for an untrusted managed workspace", async () => {
     const root = await makeTempRoot("paperclip-claude-acp-managed-");
-    const execute = createClaudeAcpExecutor({ createRuntime: (options: FakeRuntimeOptions) => new FakeRuntime(options) as never });
+    let command = "";
+    const execute = createClaudeAcpExecutor({ createRuntime: (options: FakeRuntimeOptions) => {
+      command = (options.agentRegistry as { resolve: (name: string) => string }).resolve("claude");
+      return new FakeRuntime(options) as never;
+    } });
     const result = await execute(buildContext(root, { config: {
       engine: "acp", cwd: root, stateDir: path.join(root, "state"), managedAiConnection: { provider: "anthropic" },
       paperclipRuntimeSkills: [], paperclipSkillSync: { desiredSkills: [] },
     } }));
     expect(result.exitCode).toBe(0);
+    expect(command).toContain(process.execPath);
+    expect(command).toContain("claude-agent-acp");
+    expect(command).toContain("dist");
   });
 
   it("uses the same default model in ACP startup and session identity", async () => {

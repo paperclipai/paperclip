@@ -538,7 +538,7 @@ function readNonEmptyString(value: unknown): string | null {
   return trimmed.length > 0 ? trimmed : null;
 }
 
-function normalizeWorkspaceCwd(value: unknown): string | null {
+export function normalizeWorkspaceCwd(value: unknown): string | null {
   const cwd = readNonEmptyString(value);
   if (!cwd) return null;
   return cwd === REPO_ONLY_CWD_SENTINEL ? null : cwd;

@@ -383,9 +383,10 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
         app.use("/api", projectRoutes(db)); app.use(errorHandler); return app;
       }
       const url = `/api/projects/${f.project.id}/workspaces/${f.workspace.id}/claude-project-trust`;
+      await db.update(projectWorkspaces).set({ repoRef: "main", defaultRef: null }).where(eq(projectWorkspaces.id, f.workspace.id));
       const expectedUpdatedAt = f.workspace.updatedAt.toISOString();
-      const { sourceType, cwd, repoUrl, repoRef, defaultRef, remoteProvider, remoteWorkspaceRef } = f.workspace;
-      const expectedSource = { sourceType, cwd, repoUrl, repoRef, defaultRef, remoteProvider, remoteWorkspaceRef };
+      const { sourceType, cwd, repoUrl, remoteProvider, remoteWorkspaceRef } = f.workspace;
+      const expectedSource = { sourceType, cwd, repoUrl, repoRef: "main", defaultRef: "main", remoteProvider, remoteWorkspaceRef };
       expect((await request(app(true)).put(url).send({ agentIds: [f.input.agentId], expectedUpdatedAt, expectedSource })).status).toBe(403);
       expect((await request(app(false)).put(url).send({ agentIds: [randomUUID()], expectedUpdatedAt, expectedSource })).status).toBe(422);
       expect((await request(app(false)).put(url).send({ agentIds: [f.input.agentId], expectedUpdatedAt, expectedSource })).status).toBe(200);

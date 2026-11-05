@@ -6,6 +6,8 @@ import { Button } from "./ui/button";
 import { Card } from "./ui/card";
 import { Checkbox } from "./ui/checkbox";
 import type { ProjectWorkspace } from "@paperclipai/shared";
+import { describeError } from "../api/errors";
+import { QueryErrorState, useQueryView } from "./QueryView";
 
 export function ClaudeProjectTrust({ companyId, projectId, workspace, disabled, onSaved }: {
   companyId: string; projectId: string; workspace: ProjectWorkspace; disabled: boolean; onSaved: () => void;
@@ -15,6 +17,8 @@ export function ClaudeProjectTrust({ companyId, projectId, workspace, disabled, 
   const key = ["claude-project-trust", companyId, projectId, workspaceId];
   const trust = useQuery({ queryKey: key, queryFn: () => projectsApi.getClaudeProjectTrust(projectId, workspaceId, companyId) });
   const agents = useQuery({ queryKey: ["claude-project-trust-agents", companyId], queryFn: () => agentsApi.list(companyId) });
+  const trustView = useQueryView(trust);
+  const agentsView = useQueryView(agents);
   const [selected, setSelected] = useState<string[]>([]);
   useEffect(() => { if (trust.data) setSelected(trust.data.agentIds); }, [trust.data]);
   const save = useMutation({
@@ -28,15 +32,16 @@ export function ClaudeProjectTrust({ companyId, projectId, workspace, disabled, 
     <h2 className="text-lg font-semibold">Claude project settings</h2>
     <p className="text-sm text-muted-foreground">Allow selected agents to load this workspace's Claude project settings, including skills, permissions, environment and hooks. Hooks can execute commands with the agent's access, and environment settings can affect the model connection. Grant trust only when you trust the workspace contents and the agent. Changing the workspace source removes this trust.</p>
     <p className="text-sm text-muted-foreground">Applies to managed Claude CLI and legacy ACP runs using this exact local workspace. Remote environments, Runner, and worktrees are not covered. Changes apply to subsequent runs.</p>
-    {trust.isError || agents.isError ? <p className="text-sm text-destructive">Could not load Claude trust settings or agents.</p> : null}
+    {trustView.kind === "error" ? <QueryErrorState size="inline" error={trustView.error} onRetry={trustView.retry} /> : null}
+    {agentsView.kind === "error" ? <QueryErrorState size="inline" error={agentsView.error} onRetry={agentsView.retry} /> : null}
     {agents.data?.filter((agent) => agent.adapterType === "claude_local").map((agent) =>
       <label className="flex items-center gap-2 text-sm" key={agent.id}>
         <Checkbox disabled={disabled} checked={selected.includes(agent.id)} onCheckedChange={(checked) => setSelected((current) =>
           checked === true ? [...new Set([...current, agent.id])] : current.filter((id) => id !== agent.id))} />
         {agent.name}
       </label>)}
-    <Button disabled={disabled || trust.isLoading || agents.isLoading || trust.isError || agents.isError || save.isPending} onClick={() => save.mutate()}>Save Claude trust</Button>
-    {save.isError ? <p className="text-sm text-destructive">{save.error instanceof Error ? save.error.message : "Could not save Claude trust settings."}</p> : null}
+    <Button disabled={disabled || !trust.data || !agents.data || trustView.kind === "error" || agentsView.kind === "error" || save.isPending} onClick={() => save.mutate()}>Save Claude trust</Button>
+    {save.error ? <p className="text-sm text-destructive">{describeError(save.error, { action: "save Claude trust" }).body}</p> : null}
     {save.isSuccess ? <p className="text-sm text-muted-foreground">Claude trust settings saved.</p> : null}
   </Card>;
 }

@@ -37,7 +37,7 @@ import { conflict, forbidden, unprocessable } from "../errors.js";
 import { externalObjectService } from "../services/external-objects.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { assertBoard, assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
-import { ensureProjectAccessMember } from "../services/projects.js";
+import { ensureProjectAccessMember, normalizeWorkspaceCwd } from "../services/projects.js";
 import {
   buildWorkspaceRuntimeDesiredStatePatch,
   listConfiguredRuntimeServiceEntries,
@@ -688,8 +688,10 @@ export function projectRoutes(db: Db) {
         )).for("update");
         if (!workspace) return null;
         const sourceKeys = ["sourceType", "cwd", "repoUrl", "repoRef", "defaultRef", "remoteProvider", "remoteWorkspaceRef"] as const;
+        const displayedSource = { ...workspace, cwd: normalizeWorkspaceCwd(workspace.cwd),
+          defaultRef: workspace.defaultRef ?? workspace.repoRef ?? null };
         if (workspace.updatedAt.toISOString() !== req.body.expectedUpdatedAt ||
-          sourceKeys.some((key) => workspace[key] !== req.body.expectedSource[key])) {
+          sourceKeys.some((key) => displayedSource[key] !== req.body.expectedSource[key])) {
           throw conflict("The workspace changed; refresh it before updating Claude trust");
         }
         if (agentIds.length) {
