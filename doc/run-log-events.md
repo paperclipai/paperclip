@@ -127,6 +127,19 @@ native run. Metadata adds an exit only when it is an integer. Conflicting suppli
 legacy exits stay unknown. Existing numeric `state.exit` values remain supported;
 metadata on other tools cannot add process-exit proof.
 
+An edit tool call can carry `fileChanges` on its `tool.execution.*` payload.
+Each entry names one workspace-relative `path`, its `operation` (`create`,
+`modify`, `delete` or `rename`), `previousPath`, `additions`, `deletions`, a
+unified `diff` and `diffTruncated`. The runner drops paths outside the working
+directory, redacts secrets in each patch, and bounds a patch to 32 KiB and one
+call to 32 files. Counts cover the whole patch even when the patch is shortened.
+Codex `fileChange` items produce these rows. Claude Edit and Write calls produce
+them from the ACP `diff` content. Codex `turn/diff/updated` also records the
+whole-turn diff as `workspace.change.updated` (`paperclip.workspace.diff.v1`).
+The task chat shows each patch under its edit row. It ends the turn with the
+change set, or with one built from the edit rows when the harness reports no
+whole-turn diff.
+
 `auth.credentials.updated` is a runner-produced PRP event for a change to a
 supported credential store, including account identity changes and later token
 refreshes on the new account. The bundled transport awaits a host commit callback

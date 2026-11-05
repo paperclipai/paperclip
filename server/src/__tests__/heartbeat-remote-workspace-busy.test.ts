@@ -163,6 +163,56 @@ describe.skipIf(!support.supported)("inherited remote workspace heartbeat wait",
     expect(readRemoteWorkspaceAuthority(f.current.metadata)).toEqual(f.authority);
   });
 
+  async function workspaceBusyRunIds(companyId: string) {
+    return (await db.select({ id: heartbeatRuns.id, status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode })
+      .from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId)))
+      .filter(row => row.status === "cancelled" && row.errorCode === "workspace_busy").map(row => row.id);
+  }
+
+  it("parks one waiter while an ended writer's save settles, then admits it once the hold releases", async () => {
+    // A task reassigned mid-run: the stopped writer ended, but its save has
+    // not settled. The waiter must stay one parked retry, not a new run per check.
+    const f = await terminalWriterFixture(new Date());
+    const [retry] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, f.run.id));
+    expect(retry).toMatchObject({ status: "scheduled_retry", contextSnapshot: { workspaceBusyWait: {
+      key: `execution:${f.workspace.id}`, holderRunId: f.writer.id } } });
+    let checkAt = new Date(retry.scheduledRetryAt!.getTime() + 1_000);
+    for (let check = 0; check < 3; check += 1) {
+      expect((await heartbeat.promoteDueScheduledRetries(checkAt)).runIds).not.toContain(retry.id);
+      const parked = await heartbeat.getRun(retry.id);
+      expect(parked?.status).toBe("scheduled_retry");
+      const recheckAt = new Date(parked!.scheduledRetryAt!);
+      expect(recheckAt.getTime()).toBeGreaterThan(checkAt.getTime());
+      // Bounded by the holder cutoff measured from the writer's end.
+      expect(recheckAt.getTime()).toBeLessThanOrEqual(f.writer.finishedAt!.getTime() + 60 * 60_000 + 1_000);
+      checkAt = new Date(recheckAt.getTime() + 1_000);
+    }
+    expect(await workspaceBusyRunIds(f.run.companyId)).toEqual([f.run.id]);
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, retry.id))).toEqual([]);
+
+    // The save settles: the writer hold is released.
+    await db.update(executionWorkspaces).set({ metadata: { remoteWorkspace: { ...f.authority, writerRunId: null, dirty: false } } })
+      .where(eq(executionWorkspaces.id, f.workspace.id));
+    expect((await heartbeat.promoteDueScheduledRetries(checkAt)).runIds).toContain(retry.id);
+    await heartbeat.cancelRun(retry.id);
+    await heartbeat.drainActiveRunExecutions();
+    expect(await workspaceBusyRunIds(f.run.companyId)).toEqual([f.run.id]);
+  });
+
+  it("stops parking behind an ended writer once its unsettled save reaches the holder cutoff", async () => {
+    const f = await terminalWriterFixture(new Date(Date.now() - 58 * 60_000));
+    const [retry] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, f.run.id));
+    expect(retry?.status).toBe("scheduled_retry");
+    const cutoff = f.writer.finishedAt!.getTime() + 60 * 60_000;
+    if (retry.scheduledRetryAt!.getTime() < cutoff) {
+      expect((await heartbeat.promoteDueScheduledRetries(new Date(retry.scheduledRetryAt!.getTime() + 1))).runIds)
+        .not.toContain(retry.id);
+    }
+    expect((await heartbeat.promoteDueScheduledRetries(new Date(cutoff + 2_000))).runIds).toContain(retry.id);
+    await heartbeat.cancelRun(retry.id);
+    await heartbeat.drainActiveRunExecutions();
+  });
+
   it("stops waiting for an ended writer whose save stayed unsettled past the holder cutoff", async () => {
     const f = await terminalWriterFixture(new Date(Date.now() - 2 * 60 * 60_000));
     expect(f.run).toMatchObject({ status: "failed", error: "The workspace still has an unfinished writer or save operation." });

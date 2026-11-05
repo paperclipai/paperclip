@@ -1033,3 +1033,59 @@ describe("Grok output message boundaries", () => {
     expect(normalize(reasoning)).toBe(reasoning);
   });
 });
+
+describe("edit file changes", () => {
+  it("turns a Codex fileChange item into a schema-valid edit row with its patch", () => {
+    const [started] = canonicalProviderEventsFromCodex(
+      "item/started",
+      {
+        item: {
+          id: "call-1",
+          type: "fileChange",
+          status: "inProgress",
+          changes: [
+            { path: "/work/repo/src/a.js", kind: { type: "update", move_path: null }, diff: "@@ -1 +1 @@\n-a\n+b\n" },
+            { path: "src/new.js", kind: { type: "add" }, diff: "x\ny\n" },
+          ],
+        },
+      },
+      { workingDirectory: "/work/repo" },
+    );
+    expect(started).toMatchObject({
+      eventType: "tool.execution.started",
+      payload: {
+        operation: "edit",
+        name: "apply_patch",
+        target: "src/a.js",
+        fileChanges: [
+          { path: "src/a.js", operation: "modify", additions: 1, deletions: 1 },
+          { path: "src/new.js", operation: "create", additions: 2, deletions: 0, diff: "@@ -0,0 +1,2 @@\n+x\n+y\n" },
+        ],
+      },
+    });
+    expect(validatePrpEvent(envelope(started!)).ok).toBe(true);
+  });
+
+  it("maps Claude ACP diff content to fileChanges and names the edited file", () => {
+    const [event] = canonicalProviderEventsFromAcpxRuntimeEvent(
+      {
+        type: "tool_call",
+        tag: "tool_call_update",
+        toolCallId: "tool-1",
+        title: "Edit price.js",
+        kind: "edit",
+        status: "completed",
+        locations: [{ path: "/work/repo/price.js", line: 3 }],
+        content: [{ type: "diff", path: "/work/repo/price.js", oldText: "a\nb", newText: "a\nc" }],
+      },
+      "fallback",
+      "turn-1",
+      { workingDirectory: ["/work/repo"] },
+    );
+    expect(event?.payload).toMatchObject({
+      target: "price.js",
+      fileChanges: [{ path: "price.js", operation: "modify", additions: 1, deletions: 1, diff: "@@ -3,2 +3,2 @@\n a\n-b\n+c\n" }],
+    });
+    expect(validatePrpEvent(envelope(event!)).ok).toBe(true);
+  });
+});

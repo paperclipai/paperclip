@@ -32,6 +32,7 @@ import { TaskChatReasoningSummary } from "./TaskChatReasoningSummary";
 import { latestReasoningHeadline } from "./reasoning-summary";
 import { toolActivityPresentation, type ToolIcon } from "./tool-taxonomy";
 import { useTaskChatShimmer } from "./TaskChatShimmer";
+import { TaskChatDiffCounts, TaskChatDiffView } from "./TaskChatDiffView";
 
 type Activity = TaskChatActivityPhaseItem["items"][number];
 type ToolActivity = Extract<Activity, { kind: "tool" }>;
@@ -288,6 +289,13 @@ function ActivityContent({
           ) : null}
         </span>
       ) : null}
+      {item.kind === "tool" && item.diff && (item.diff.added > 0 || item.diff.removed > 0) ? (
+        <TaskChatDiffCounts
+          added={item.diff.added}
+          removed={item.diff.removed}
+          className="text-xs"
+        />
+      ) : null}
     </span>
   );
 }
@@ -355,6 +363,10 @@ function ActivityDetails({ item }: { item: Activity }) {
       <p className="whitespace-pre-wrap break-words">
         {item.detail ?? item.label}
       </p>
+    );
+  if (item.diff?.lines?.length)
+    return (
+      <TaskChatDiffView lines={item.diff.lines} truncated={item.diff.truncated} />
     );
   return (
     <>
@@ -525,6 +537,13 @@ export function TaskChatRunnerActivityGroup({
   const summary = completedActivitySummary(activities);
   const SummaryIcon = summary.icon;
   const countLabel = `${activities.length} ${activities.length === 1 ? "activity" : "activities"}`;
+  const editTotals = activities.reduce(
+    (sum, activity) =>
+      activity.kind === "tool" && activity.diff
+        ? { added: sum.added + activity.diff.added, removed: sum.removed + activity.diff.removed }
+        : sum,
+    { added: 0, removed: 0 },
+  );
   return (
     <section
       className="flex min-w-0 flex-col gap-2"
@@ -577,6 +596,13 @@ export function TaskChatRunnerActivityGroup({
               <RollingActivity item={latest} active={item.active} />
             )}
             <span className="flex shrink-0 items-center gap-1 text-xs">
+              {!item.active && (editTotals.added > 0 || editTotals.removed > 0) ? (
+                <TaskChatDiffCounts
+                  added={editTotals.added}
+                  removed={editTotals.removed}
+                  className="mr-1"
+                />
+              ) : null}
               {expanded ? countLabel : item.active ? activities.length : null}
               <ChevronRight
                 className={cn("size-3.5", expanded && "rotate-90")}

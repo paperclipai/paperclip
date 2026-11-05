@@ -375,6 +375,13 @@
   --status-task-icon-blocked: var(--status-task-blocked);         /* #dc2626 both modes */
   --status-task-icon-cancelled: #52585d;
   --status-task-icon-in_queue: var(--status-task-icon-in_progress); /* blocked shape, same mode-aware blue */
+  /* Inline edit diffs (task chat edit rows and the turn changes card). Line
+     tints derive from the status icon hues so both modes stay in step. */
+  --diff-add-fg: var(--status-task-icon-done);
+  --diff-remove-fg: var(--status-task-icon-blocked);
+  --diff-add-bg: color-mix(in oklab, var(--status-task-icon-done) 12%, transparent);
+  --diff-remove-bg: color-mix(in oklab, var(--status-task-icon-blocked) 12%, transparent);
+  --sz-edit-diff-max-h: calc(var(--spacing) * 100);
 
   --folder-color-indigo: #6366f1;
   --folder-color-violet: #8b5cf6;

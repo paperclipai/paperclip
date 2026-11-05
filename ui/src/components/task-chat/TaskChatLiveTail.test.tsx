@@ -73,7 +73,7 @@ describe("TaskChatLiveTail", () => {
     expect(container.querySelector('[data-testid="task-chat-phase-child-rail"]')).toBeNull();
   });
 
-  it("keeps tool diff bodies out of the activity feed", () => {
+  it("shows an edit's diff only when its row is opened", () => {
     const items = parse([
       { kind: "tool_call", ts: TS, name: "Edit", toolUseId: "t1", input: { file_path: "a.ts" } },
       { kind: "diff", ts: TS, changeType: "add", text: "const x = 1;" },
@@ -83,12 +83,11 @@ describe("TaskChatLiveTail", () => {
 
     expect(toggle().getAttribute("aria-expanded")).toBe("false");
     expect(container.textContent).not.toContain("const x = 1;");
-    expect(container.textContent).not.toContain("+1 −1");
 
     expandFirstDetail();
 
-    expect(container.textContent).toContain("+1 −1");
-    expect(container.textContent).not.toContain("const x = 1;");
+    expect(container.querySelector('[data-testid="task-chat-diff-counts"]')?.textContent).toBe("+1−1");
+    expect(container.querySelector('[data-testid="task-chat-diff-view"]')?.textContent).toContain("const x = 1;");
     expect(container.querySelector('[data-testid="task-chat-runner-activity-detail"]')).not.toBeNull();
   });
 

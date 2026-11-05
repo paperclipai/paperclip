@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { resolveGrokDisableWebSearch } from "../drivers/acpx/grok-web-search.js";
+import { toolFileChangesFromAcpContent, workspaceRootsFor, type ToolFileChange } from "../tool-file-changes.js";
 import { redactObservabilityDiagnostic } from "../drivers/agent-observability.js";
 import { resolveClaudeEffort } from "../drivers/acpx/claude-effort.js";
 import { acpxProviderFailure, acpxTerminalResult, type AcpxTerminalSessionFailure } from "../drivers/acpx/provider-failure.js";
@@ -1021,6 +1022,7 @@ type BoundedRuntimeToolEvent = AcpRuntimeEvent & {
   paperclipBoundedTool: true;
   inputUpdated: boolean;
   paperclipOutput: Record<string, unknown>;
+  paperclipFileChanges: ToolFileChange[] | null;
 };
 
 /**
@@ -1040,6 +1042,16 @@ function withSidecarToolDetail(raw: AcpRuntimeEvent, bounded: AcpRuntimeEvent): 
     ...(locations?.length ? { locations } : {}),
     paperclipToolDetail: detail,
   } as AcpRuntimeEvent;
+}
+
+let cachedWorkspaceRoots: { directory: string; roots: string[] } | null = null;
+function sidecarWorkspaceRoots(): string[] {
+  const directory = openParams?.workingDirectory;
+  if (!directory) return [];
+  if (cachedWorkspaceRoots?.directory !== directory) {
+    cachedWorkspaceRoots = { directory, roots: workspaceRootsFor(directory) };
+  }
+  return cachedWorkspaceRoots.roots;
 }
 
 function boundRuntimeEventForNormalization(
@@ -1069,6 +1081,13 @@ function boundRuntimeEventForNormalization(
     inputUpdated: Object.prototype.hasOwnProperty.call(event, "rawInput") && event.rawInput !== undefined,
     paperclipBoundedTool: true,
     paperclipOutput: safeOutput(event.rawOutput),
+    // ACP `diff` content (Claude Edit/Write) as bounded workspace-relative
+    // patches; runner-core re-validates them before the canonical event.
+    paperclipFileChanges: toolFileChangesFromAcpContent(
+      event.content,
+      event.locations,
+      sidecarWorkspaceRoots(),
+    ),
   } as BoundedRuntimeToolEvent;
 }
 
@@ -1172,6 +1191,9 @@ function sanitizeRuntimeEvent(event: PiProjectedMessageEvent<AcpRuntimeEvent> & 
           : safeOutput(event.rawOutput)),
         ...(record(record(event).paperclipToolDetail) && Object.keys(record(record(event).paperclipToolDetail)).length > 0
           ? { toolDetail: record(record(event).paperclipToolDetail) }
+          : {}),
+        ...(boundedTool.paperclipBoundedTool === true && boundedTool.paperclipFileChanges
+          ? { fileChanges: boundedTool.paperclipFileChanges }
           : {}),
       },
       128 * 1024,

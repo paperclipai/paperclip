@@ -3,6 +3,8 @@ import type { TranscriptEntry } from "@/adapters";
 
 type TranscriptToolDetail = NonNullable<Extract<TranscriptEntry, { kind: "tool_call" }>["detail"]>;
 import { isRunLogOnlyProviderEvent } from "./run-log-only-events";
+import { workspaceChangeEntry } from "@/adapters/paperclip-runner";
+import { createUnifiedDiffClassifier } from "@/components/task-chat/diff-lines";
 
 function record(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value)
@@ -692,6 +694,38 @@ function toolPresentation(
  * model already consumed by the task thread. Provider-native envelopes never
  * reach this boundary and unknown event kinds remain safely invisible.
  */
+/** Diff lines for one edit call's bounded `fileChanges`, attached to its row. */
+function fileChangeDiffEntries(
+  value: readonly unknown[] | undefined,
+  toolUseId: string,
+  ts: string,
+): TranscriptEntry[] {
+  if (!value) return [];
+  const entries: TranscriptEntry[] = [];
+  for (const raw of value.slice(0, 32)) {
+    const change = record(raw);
+    const path = text(change?.path);
+    if (!change || !path) continue;
+    // The producer counted the whole patch; the patch itself may be shortened.
+    const count = (value: unknown) => typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
+    entries.push({
+      kind: "diff", ts, changeType: "file_header", text: path, toolUseId,
+      additions: count(change.additions), deletions: count(change.deletions),
+    });
+    const diff = text(change.diff) ?? "";
+    const classify = createUnifiedDiffClassifier();
+    for (const line of diff.endsWith("\n") ? diff.slice(0, -1).split("\n") : diff ? diff.split("\n") : []) {
+      const { kind, text: value } = classify(line);
+      if (kind === "skip" || kind === "file") continue;
+      entries.push({ kind: "diff", ts, changeType: kind, text: value, toolUseId });
+    }
+    if (change.diffTruncated === true) {
+      entries.push({ kind: "diff", ts, changeType: "truncation", text: "Diff shortened for display.", toolUseId });
+    }
+  }
+  return entries;
+}
+
 export function nativeRunEventsToTranscript(events: readonly HeartbeatRunEvent[]): TranscriptEntry[] {
   const entries: TranscriptEntry[] = [];
   const startedToolIds = new Set<string>();
@@ -770,6 +804,17 @@ export function nativeRunEventsToTranscript(events: readonly HeartbeatRunEvent[]
   const completedReasoningIds = new Set<string>();
   const completionItemIdentityById = new Map<string, ItemIdentity>();
   const nativeToolItemsById = new Map<string, NativeToolItemDetails>();
+  // An edit call reports an optimistic patch when it starts and the exact one
+  // when it lands. The row shows the latest one, wherever it first appears.
+  const fileChangesByExecutionId = new Map<string, unknown[]>();
+  for (const event of orderedEvents) {
+    if (!event.eventType.startsWith("tool.execution.")) continue;
+    const payload = record(record(event.payload?.prpEvent)?.payload);
+    const executionId = text(payload?.executionId);
+    if (executionId && Array.isArray(payload?.fileChanges)) {
+      fileChangesByExecutionId.set(executionId, payload.fileChanges);
+    }
+  }
   for (const event of orderedEvents) {
     if (!isItemIdentityEvent(event.eventType)) continue;
     const envelope = record(event.payload?.prpEvent);
@@ -1011,6 +1056,14 @@ export function nativeRunEventsToTranscript(events: readonly HeartbeatRunEvent[]
     }
 
     if (
+      (event.eventType === "workspace.change.updated" || event.eventType === "workspace.diff.recorded")
+      && payload.schema === "paperclip.workspace.diff.v1"
+    ) {
+      entries.push(workspaceChangeEntry(payload, ts));
+      continue;
+    }
+
+    if (
       event.eventType === "tool.execution.started" ||
       event.eventType === "tool.execution.progressed" ||
       event.eventType === "tool.execution.completed"
@@ -1027,16 +1080,25 @@ export function nativeRunEventsToTranscript(events: readonly HeartbeatRunEvent[]
       const signature = JSON.stringify([presentation.name, detail]);
       const refines = Object.keys(detail).some((key) => key !== "operation");
       if (!startedToolIds.has(executionId) || (refines && toolSignatures.get(executionId) !== signature)) {
+        // The latest patch is attached once, with the call's first row; a
+        // refinement only updates the call's facts.
+        const firstEmission = !toolSignatures.has(executionId);
         toolSignatures.set(executionId, signature);
         startedToolIds.add(executionId);
+        const fileChanges = fileChangesByExecutionId.get(executionId);
+        const editedPath = text(record(fileChanges?.[0])?.path);
         entries.push({
           kind: "tool_call",
           ts,
           name: presentation.name,
-          input: presentation.input,
+          // An edit's opening event can precede its path; the patch names the file.
+          input: editedPath && typeof presentation.input === "object"
+            ? { ...presentation.input as Record<string, unknown>, path: editedPath }
+            : presentation.input,
           toolUseId: executionId,
           detail,
         });
+        if (firstEmission) entries.push(...fileChangeDiffEntries(fileChanges, executionId, ts));
       }
       if (event.eventType === "tool.execution.completed" && !completedToolIds.has(executionId)) {
         completedToolIds.add(executionId);

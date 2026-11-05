@@ -404,6 +404,18 @@ export function InstanceExperimentalSettings() {
         ) : null}
 
         <ExperimentalToggleCard
+          title="Command/Ctrl+Enter to Submit"
+          description="Restore the previous keyboard shortcut for task replies and new tasks: Command/Ctrl+Enter submits, and Enter adds a new line."
+          footnote="Off by default: Enter submits, and Shift+Enter adds a new line."
+          checked={experimentalQuery.data?.enableLegacyComposerSubmit === true}
+          onCheckedChange={(checked) => toggleMutation.mutate({ enableLegacyComposerSubmit: checked })}
+          disabled={toggleMutation.isPending}
+          settingKey="enableLegacyComposerSubmit"
+          managed={managedKeys.enableLegacyComposerSubmit}
+          ariaLabel="Toggle Command/Ctrl+Enter to submit"
+        />
+
+        <ExperimentalToggleCard
           title="Decisions"
           description="Show the Decisions item in the main sidebar — the attention home that surfaces the tasks awaiting your input — while the surface is still being evaluated."
           checked={enableDecisions}

@@ -637,6 +637,8 @@ export interface TranscriptWorkspaceChangeFile {
   deletions: number | null;
   binary: boolean;
   diff: string | null;
+  /** The producer shortened or omitted this patch; counts still cover all of it. */
+  diffTruncated?: boolean;
 }
 
 export interface TranscriptRunVerification {
@@ -721,7 +723,7 @@ export type TranscriptEntry =
   | { kind: "stderr"; ts: string; text: string }
   | { kind: "system"; ts: string; text: string }
   | { kind: "stdout"; ts: string; text: string }
-  | { kind: "diff"; ts: string; changeType: "add" | "remove" | "context" | "hunk" | "file_header" | "truncation"; text: string }
+  | { kind: "diff"; ts: string; changeType: "add" | "remove" | "context" | "hunk" | "file_header" | "truncation"; text: string; toolUseId?: string; additions?: number; deletions?: number }
   | { kind: "provider_activity"; ts: string; family: ProviderActivityFamily; eventType: string; status: ProviderActivityStatus; title: string; summary: string; payload: Record<string, unknown> }
   | { kind: "workspace_change"; ts: string; changeSetId: string; revision: number; source: "harness_reported" | "runner_verified"; complete: boolean; files: TranscriptWorkspaceChangeFile[]; totals: { files: number; additions: number | null; deletions: number | null }; patchArtifactRef: string | null }
   | { kind: "workspace_file_reference"; ts: string; referenceId: string; source: "harness_reported" | "runner_verified"; path: string; displayName: string; mediaType: string | null; presentation: "document" | "code" | "image" | "generic"; line: number | null; preview: string | null; previewTruncated: boolean; contentDigest: string | null }
