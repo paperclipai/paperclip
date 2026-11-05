@@ -1,3 +1,5 @@
+import { bindAccount } from "@/lib/account-scope";
+import { connectionIntentsApi } from "@/api/connection-intents";
 import { ConnectionInstructionsEditor } from "../ConnectionInstructions";
 import { useEffect, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -91,20 +93,33 @@ export function RemoteMcpProductionSetup({ providerId, connection, host = "page"
   }, [connection, accessDraftKey, state.grantKind, state.allAgents, state.agentIds]);
   useEffect(() => {
     if (!interactionId) return;
-    const receive = (event: MessageEvent) => {
+    let disposed = false;
+    const receive = async (event: MessageEvent) => {
       const outcome = readConnectionIntentOAuthOutcome(event, window.location.origin, interactionId);
       if (!outcome) return;
       if (outcome === "connected") {
         // The host verifies durable acceptance; a postMessage is never proof.
-        onComplete?.({ resolvedByCallback: true });
+        if (onComplete) onComplete({ resolvedByCallback: true });
+        else if (host === "page") {
+          const account = bindAccount(queries);
+          try {
+            const verified = await connectionIntentsApi.setupOptions(interactionId);
+            if (disposed || !account.isCurrentScope()) return;
+            if (verified.interaction.status !== "accepted") throw new Error("Authorization has not been confirmed yet. Try again.");
+            navigate(`/issues/${verified.interaction.issueId}`);
+          } catch {
+            if (disposed || !account.isCurrentScope()) return;
+            setState((s) => ({ ...s, connectStatus: "oauth_failed" }));
+          }
+        }
       } else {
         setState((s) => ({ ...s, connectStatus: outcome === "declined" ? "cancelled" : "oauth_failed" }));
         onPhaseChange?.("needs_retry");
       }
     };
     window.addEventListener("message", receive);
-    return () => window.removeEventListener("message", receive);
-  }, [host, interactionId, onComplete, onPhaseChange]);
+    return () => { disposed = true; window.removeEventListener("message", receive); };
+  }, [host, interactionId, onComplete, onPhaseChange, navigate, queries, selectedCompanyId]);
   const edit = (patch: Partial<RemoteMcpSetupState>) => setState((s) => ({ ...s, ...patch }));
   const finish = async (id: string) => {
     try { sessionStorage.removeItem(accessDraftKey); } catch { /* Storage can be disabled. */ }

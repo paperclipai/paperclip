@@ -1,3 +1,4 @@
+import { connectionIntentsApi } from "@/api/connection-intents";
 import { readOAuthWindowOutcome } from "@/lib/oauthWindowOutcome";
 import { bindAccount } from "@/lib/account-scope";
 import { StepHeader } from "./ConnectionSetupHeader";
@@ -913,12 +914,26 @@ function StandardConnectionSetupFlow({
 
   useEffect(() => {
     if (!connectionIntentId) return;
-    const receiveOAuthOutcome = (event: MessageEvent) => {
+    let disposed = false;
+    const receiveOAuthOutcome = async (event: MessageEvent) => {
       const outcome = readConnectionIntentOAuthOutcome(event, window.location.origin, connectionIntentId);
       if (outcome === "connected") {
         setOAuthPhase("entry");
         setAuthorizationFallbackUrl(null);
-        onComplete?.({ resolvedByCallback: true });
+        if (onComplete) onComplete({ resolvedByCallback: true });
+        else if (host === "page") {
+          const account = bindAccount(queryClient);
+          try {
+            const verified = await connectionIntentsApi.setupOptions(connectionIntentId);
+            if (disposed || !account.isCurrentScope()) return;
+            if (verified.interaction.status !== "accepted") throw new Error("Authorization has not been confirmed yet. Try again.");
+            navigate(`/issues/${verified.interaction.issueId}`);
+          } catch (error) {
+            if (disposed || !account.isCurrentScope()) return;
+            setOAuthPhase("error");
+            setOAuthError(describeError(error).body);
+          }
+        }
         return;
       }
       if (outcome === "declined") {
@@ -932,8 +947,8 @@ function StandardConnectionSetupFlow({
       setOAuthError("Authorization did not complete. Try again when you’re ready.");
     };
     window.addEventListener("message", receiveOAuthOutcome);
-    return () => window.removeEventListener("message", receiveOAuthOutcome);
-  }, [connectionIntentId, host, onComplete, onOAuthDeclined]);
+    return () => { disposed = true; window.removeEventListener("message", receiveOAuthOutcome); };
+  }, [connectionIntentId, host, onComplete, onOAuthDeclined, navigate, queryClient, selectedCompanyId]);
 
   // Standalone dialog hosts have no task interaction to receive a callback.
   // Wait for this popup to return to our origin, then verify durable state via

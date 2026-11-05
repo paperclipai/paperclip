@@ -15,6 +15,9 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 
 vi.mock("@/api/companies-query", () => ({ useAccountIdentity: () => ({ userId: "board-user", settled: true, failed: false }), resolveAccountUserId: async () => "board-user" }));
 
+const intentSetupMock = vi.hoisted(() => vi.fn());
+vi.mock("@/api/connection-intents", () => ({ connectionIntentsApi: { setupOptions: intentSetupMock } }));
+
 const listGalleryMock = vi.hoisted(() => vi.fn());
 const experimentalMock = vi.hoisted(() => vi.fn());
 vi.mock("@/api/instanceSettings", () => ({ instanceSettingsApi: {
@@ -1724,6 +1727,26 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(startOAuthMock).toHaveBeenCalledWith("gmail-1", { asCurrentUser: false, interactionId: "intent-1" });
     expect(popup.opener).toBe(window);
     expect(navigateTopLevelMock).not.toHaveBeenCalledWith("https://example.test/unbound");
+  });
+
+  it.each(["gmail", "composio"])("returns %s page setup to its task only after verifying callback acceptance", async (provider) => {
+    mockSearch.value = `source=${provider}&stage=setup&intent=intent-1`;
+    listGalleryMock.mockResolvedValue({ apps: [{ ...GMAIL, ownershipAvailability: { ...GMAIL.ownershipAvailability, platform_shared: true } }] });
+    await render();
+    const message = () => window.dispatchEvent(new MessageEvent("message", {
+      origin: window.location.origin,
+      data: { type: "paperclip.connection-intent.oauth", interactionId: "intent-1", outcome: "connected" },
+    }));
+    intentSetupMock.mockResolvedValue({ interaction: { status: "pending", issueId: "task-1" } });
+    await act(async () => { message(); });
+    expect(intentSetupMock).toHaveBeenCalledWith("intent-1");
+    expect(mockNavigate).not.toHaveBeenCalledWith("/issues/task-1");
+    intentSetupMock.mockRejectedValueOnce(new Error("Request failed"));
+    await act(async () => { message(); });
+    expect(mockNavigate).not.toHaveBeenCalledWith("/issues/task-1");
+    intentSetupMock.mockResolvedValue({ interaction: { status: "accepted", issueId: "task-1" } });
+    await act(async () => { message(); });
+    expect(mockNavigate).toHaveBeenCalledWith("/issues/task-1");
   });
 
   it.each(["2020-01-01T00:00:00.000Z", "2099-01-01T00:00:00.000Z"])(
