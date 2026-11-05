@@ -1889,7 +1889,17 @@ async function executeOneShot(
     // attribute a step's exec time to the provider boundary through the
     // free-form `metadata.durationMs`.
     execStart = timingNow();
-    const result = await sandbox.process.executeCommand(command, undefined, undefined, timeoutSeconds);
+    // The SDK passes `timeoutSeconds` to the toolbox but sets no client-side
+    // deadline on the HTTP request, because this client has no
+    // `requestTimeoutMs`. A stalled toolbox request then outlives the command
+    // deadline until the host abandons the RPC with an opaque timeout. Bound the
+    // request just past its own deadline. That is still well inside the host
+    // RPC buffer, so the caller receives this attributed timed-out result.
+    const result = await withLivenessTimeout(
+      "process.executeCommand",
+      timeoutSeconds * 1_000 + LIVENESS_START_TIMEOUT_MARGIN_MS,
+      () => sandbox.process.executeCommand(command, undefined, undefined, timeoutSeconds),
+    );
     const durationMs = timingNow() - execStart;
 
     return {
@@ -1900,6 +1910,21 @@ async function executeOneShot(
       metadata: { durationMs },
     };
   } catch (error) {
+    if (error instanceof SandboxLivenessTimeoutError && execStart != null) {
+      // The command may still be running, or may have finished, in the
+      // sandbox. Report the unconfirmed exit; never treat it as a failure.
+      return {
+        exitCode: null,
+        timedOut: true,
+        stdout: "",
+        stderr: `${error.message}\n`,
+        metadata: {
+          durationMs: timingNow() - execStart,
+          timeoutScope: "provider_exec_request",
+          commandExitConfirmed: false,
+        },
+      };
+    }
     if (error instanceof DaytonaTimeoutError) {
       const timeoutMessage = gitNet
         ? `Git network operation timed out after ${Math.round(effectiveTimeoutMs / 1000)} s — the remote may be unreachable or noninteractive credentials are not configured.`
@@ -1994,7 +2019,7 @@ function createSessionStreamBuffer(
     // Do not publish that suffix or count its replacement bytes until a replay
     // confirms it. A real final U+FFFD is flushed at confirmed command exit.
     const text = stream.pendingReplacement + chunk;
-    stream.pendingReplacement = final ? "" : (text.match(/\uFFFD+$/u)?.[0] ?? "");
+    stream.pendingReplacement = final ? "" : (text.match(/�+$/u)?.[0] ?? "");
     const buf = Buffer.from(text.slice(0, text.length - stream.pendingReplacement.length), "utf8");
     const start = stream.connectionBytes;
     stream.connectionBytes = start + buf.length;
