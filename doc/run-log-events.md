@@ -522,6 +522,19 @@ control channels keep their authoritative failure messages. These diagnostics
 stay in the instance's run records and configured run-log storage. They add no
 Paperclip Telemetry or OpenTelemetry export.
 
+## Hermes gateway run-created event
+
+The Hermes gateway adapter (`packages/adapters/hermes/src/gateway/server/`) emits `hermes_gateway.run_created` (stream `system`, level `info`) once, right after the gateway accepts `POST /v1/runs` and before it starts waiting for the run's events. It is not emitted if run creation fails.
+
+Payload fields:
+
+- `externalRunId`: the run id assigned by the Hermes gateway. Use it to correlate a Paperclip run with the gateway's own logs and `/v1/runs/{id}` status.
+- `sessionId`: a non-secret, stable identifier for the Hermes session. It is the gateway-provided session id when one is available; otherwise it is `hsess-` followed by the first 12 hex characters of the SHA-256 of the session key. Runs in the same session share the value and different sessions differ. The raw session key is never written to run logs, results, or events.
+
+The same `externalRunId` is also reported in the adapter meta context and in `resultJson.external_run_id`.
+
+When `idleTimeoutSec` is greater than 0 and the gateway sends no events for that long, the run ends with error code `hermes_gateway_idle_timeout`. Stop and final-status requests made during that cleanup are bounded by a hard deadline, so the run always settles.
+
 ## Related instrumentation
 
 The sandbox duplex transport also writes one run-log event as one of its three

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type {
   AdapterExecutionContext,
   AdapterExecutionResult,
@@ -247,6 +248,30 @@ function sanitizeSensitiveText(value: string): string {
     .replace(BEARER_TOKEN_PATTERN, "Bearer [redacted]")
     .replace(HERMES_SESSION_KEY_HEADER_PATTERN, "$1[redacted]")
     .replace(PAPERCLIP_SESSION_KEY_PATTERN, "[redacted-session-key]");
+}
+
+const PAPERCLIP_SESSION_KEY_TEST = new RegExp(PAPERCLIP_SESSION_KEY_PATTERN.source, "i");
+
+/** Stable, non-secret session identifier: gateway-provided id when safe, else a hash of the key. */
+function publicSessionId(id: string | null, sessionKey: string | null): string | null {
+  if (!id) return null;
+  if (id !== sessionKey && !PAPERCLIP_SESSION_KEY_TEST.test(id)) return id;
+  return `hsess-${createHash("sha256").update(id).digest("hex").slice(0, 12)}`;
+}
+
+/** Resolve with `fallback` if `work` does not settle within `ms`. */
+async function withDeadline<T>(work: Promise<T>, ms: number, fallback: T): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  try {
+    return await Promise.race([
+      work,
+      new Promise<T>((resolve) => {
+        timer = setTimeout(() => resolve(fallback), ms);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 function escapeRegExp(value: string): string {
@@ -772,8 +797,7 @@ export function mapFinalResultForTest(input: {
   const output = redactText(
     input.terminal.output ?? extractOutput(payload) ?? input.outputChunks.join("").trim(),
   );
-  const sessionId = extractSessionId(payload) ?? input.sessionKey;
-  // The session identifier is an opaque correlation id, not a credential: show it as-is.
+  const sessionId = publicSessionId(extractSessionId(payload) ?? input.sessionKey, input.sessionKey);
   const sessionDisplayId = sessionId;
   const mapped = terminalResultCode(input.terminal.status);
   const usage = parseUsage(payload);
@@ -1049,7 +1073,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     stream: "system",
     level: "info",
     message: `Hermes run created: ${runId}`,
-    payload: { externalRunId: runId, sessionId: sessionKey },
+    payload: { externalRunId: runId, sessionId: publicSessionId(sessionKey, sessionKey) },
   });
 
   const state = createExecutionState(runId);
@@ -1096,8 +1120,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   controller.abort();
 
   if (outcome === "idle") {
-    await stopRun({ ctx, baseUrl, headers: eventHeaders, runId, redactText });
-    const finalStatus = await fetchFinalStatus({ baseUrl, headers: eventHeaders, runId, deadlineMs: STOP_GRACE_MS });
+    const finalStatus = await withDeadline(
+      (async () => {
+        await stopRun({ ctx, baseUrl, headers: eventHeaders, runId, redactText });
+        return fetchFinalStatus({ baseUrl, headers: eventHeaders, runId, deadlineMs: STOP_GRACE_MS });
+      })(),
+      STOP_GRACE_MS * 2,
+      null,
+    );
     return {
       exitCode: 1,
       signal: null,
@@ -1113,13 +1143,19 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         final_status: redactForLog(finalStatus, [], 0, redactText),
       },
       sessionParams: { hermesRunId: runId, externalRunId: runId, strategy },
-      sessionDisplayId: sessionKey,
+      sessionDisplayId: publicSessionId(sessionKey, sessionKey),
     };
   }
 
   if (outcome === "timeout") {
-    await stopRun({ ctx, baseUrl, headers: eventHeaders, runId, redactText });
-    const finalStatus = await fetchFinalStatus({ baseUrl, headers: eventHeaders, runId, deadlineMs: STOP_GRACE_MS });
+    const finalStatus = await withDeadline(
+      (async () => {
+        await stopRun({ ctx, baseUrl, headers: eventHeaders, runId, redactText });
+        return fetchFinalStatus({ baseUrl, headers: eventHeaders, runId, deadlineMs: STOP_GRACE_MS });
+      })(),
+      STOP_GRACE_MS * 2,
+      null,
+    );
     return {
       exitCode: 1,
       signal: null,
@@ -1139,7 +1175,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         externalRunId: runId,
         strategy,
       },
-      sessionDisplayId: sessionKey,
+      sessionDisplayId: publicSessionId(sessionKey, sessionKey),
     };
   }
 

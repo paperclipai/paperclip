@@ -572,13 +572,14 @@ describe("execute", () => {
 
     expect(result.exitCode).toBe(0);
     expect(result.summary).toBe("session [redacted-session-key]");
-    expect(result.sessionId).toBe(agentSessionKey);
-    expect(result.sessionDisplayId).toBe(agentSessionKey);
-    expect(result.resultJson?.session_id).toBe(agentSessionKey);
+    expect(result.sessionId).toBe("hsess-c932e33bea14");
+    expect(result.sessionDisplayId).toBe("hsess-c932e33bea14");
+    expect(result.resultJson?.session_id).toBe("hsess-c932e33bea14");
+    expect(JSON.stringify(result)).not.toContain(agentSessionKey);
     expect(result.resultJson?.external_run_id).toBe("run-hermes-1");
     expect(result.sessionParams).toEqual({
       hermesRunId: "run-hermes-1",
-      hermesSessionId: agentSessionKey,
+      hermesSessionId: "hsess-c932e33bea14",
       externalRunId: "run-hermes-1",
       strategy: "agent",
     });
@@ -605,6 +606,32 @@ describe("execute", () => {
       eventType: "hermes_gateway.run_created",
       payload: expect.objectContaining({ externalRunId: "run-ext-1" }),
     }));
+    const events = onEvent.mock.calls as unknown as Array<[{ eventType: string; payload: { sessionId: string } }]>;
+    const created = events.map(([e]) => e).find((e) => e.eventType === "hermes_gateway.run_created");
+    expect(JSON.stringify(created)).not.toMatch(/paperclip:company:/);
+    expect(created?.payload.sessionId).toMatch(/^hsess-[0-9a-f]{12}$/);
+  });
+
+  it("returns the idle timeout even if stop and status requests hang", async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.endsWith("/v1/runs")) return new Response(JSON.stringify({ run_id: "run-hang" }), { status: 200 });
+        return new Promise<Response>(() => {});
+      });
+      vi.stubGlobal("fetch", fetchMock);
+      const pending = execute(makeCtx({
+        apiBaseUrl: "http://127.0.0.1:8642", apiKey: "k", timeoutSec: 600, idleTimeoutSec: 1,
+      }));
+      await vi.advanceTimersByTimeAsync(1_000);
+      await vi.advanceTimersByTimeAsync(60_000);
+      const result = await pending;
+      expect(result.errorCode).toBe("hermes_gateway_idle_timeout");
+      expect(result.resultJson?.external_run_id).toBe("run-hang");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("aborts with idle timeout when the gateway stays silent, below the hard ceiling", async () => {
