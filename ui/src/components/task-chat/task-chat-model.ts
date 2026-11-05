@@ -196,7 +196,7 @@ export interface TaskChatThinkingItem {
 export interface TaskChatAutoReview {
   decision: "allowed";
   riskLevel?: string;
-  userAuthorization?: string;
+  userConsent?: string;
   rationale?: string;
 }
 

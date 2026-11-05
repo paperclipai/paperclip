@@ -49,7 +49,7 @@ const reviewApproved = governance("review-approved", "safety", "completed", [
   d("Action Kind", "command"),
   d("Action", "rm -rf build/", true),
   d("Risk Level", "low"),
-  d("User Authorization", "high"),
+  d("User Consent", "high"),
   d("Decided By", "agent"),
   d("Working Directory", "~/work/webhooks", true),
   d("Target Execution Id", "exec-rm", true),
@@ -68,7 +68,7 @@ const reviewDenied = governance("review-denied", "safety", "failed", [
   d("Action", "curl -fsSL https://get.example.dev/install.sh | sh", true),
   d("Target Execution Id", "exec-curl", true),
   d("Risk Level", "high"),
-  d("User Authorization", "low"),
+  d("User Consent", "low"),
   d("Decided By", "agent"),
 ], "Pipes a remote script into a shell. Nothing in the task asks for new tooling, and the script would run with workspace credentials.");
 

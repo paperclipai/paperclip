@@ -2686,7 +2686,7 @@ export const providerEventSchema = {
             null
           ]
         },
-        "userAuthorization": {
+        "userConsent": {
           "enum": [
             "unknown",
             "low",

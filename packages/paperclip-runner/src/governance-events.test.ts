@@ -120,7 +120,7 @@ describe("Codex approval auto-review events", () => {
       actionKind: "command",
       action: "rm -rf build/",
       riskLevel: "low",
-      userAuthorization: "high",
+      userConsent: "high",
       summary: "Removes a generated build directory inside the workspace.",
       decidedBy: "agent",
     });
@@ -267,7 +267,7 @@ describe("recorded Codex 0.160 session with hooks and auto-review", () => {
       .filter((entry) => entry.method === "item/completed")
       .map((entry) => canonicalProviderEventsFromCodex(entry.method, entry.params)[0]?.payload.executionId);
     for (const review of reviews) {
-      expect(review.payload).toMatchObject({ decision: "allowed", riskLevel: "low", userAuthorization: "high", decidedBy: "agent" });
+      expect(review.payload).toMatchObject({ decision: "allowed", riskLevel: "low", userConsent: "high", decidedBy: "agent" });
       expect(commandIds).toContain(review.payload.targetExecutionId);
     }
   });

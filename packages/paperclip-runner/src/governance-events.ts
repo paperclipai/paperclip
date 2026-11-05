@@ -236,7 +236,8 @@ export function codexSafetyReviewPayload(method: string, paramsValue: unknown): 
     actionKind: action.kind,
     action: action.summary,
     riskLevel: RISK_LEVELS.has(riskLevel) ? riskLevel : null,
-    userAuthorization: USER_AUTHORIZATION.has(userAuthorization) ? userAuthorization : null,
+    // Not "userAuthorization": durable writers redact keys ending in "authorization".
+    userConsent: USER_AUTHORIZATION.has(userAuthorization) ? userAuthorization : null,
     rationale: nullableClip(review.rationale, MESSAGE_LIMIT),
     decidedBy: nullableClip(params.decisionSource, NAME_LIMIT),
   };

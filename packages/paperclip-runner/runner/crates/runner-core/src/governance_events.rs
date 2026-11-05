@@ -354,7 +354,8 @@ pub(crate) fn codex_safety_review_payload(method: &str, params: &Value) -> Value
         "actionKind": action_kind,
         "action": action,
         "riskLevel": risk_level,
-        "userAuthorization": user_authorization,
+        // Not "userAuthorization": durable writers redact keys ending in "authorization".
+        "userConsent": user_authorization,
         "rationale": nullable_clip(review.get("rationale"), MESSAGE_CHARS),
         "decidedBy": nullable_clip(params.get("decisionSource"), NAME_CHARS),
     })

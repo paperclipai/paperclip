@@ -22,7 +22,7 @@ export function AutoApprovedBadge({ review }: { review: TaskChatAutoReview }) {
 
 /** The review record shown when the approved tool row is expanded. */
 export function AutoReviewDetail({ review }: { review: TaskChatAutoReview }) {
-  const facts = [riskText(review), review.userAuthorization ? `${review.userAuthorization} user authorization` : undefined]
+  const facts = [riskText(review), review.userConsent ? `${review.userConsent} user authorization` : undefined]
     .filter(Boolean)
     .join(" · ");
   return (

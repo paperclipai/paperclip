@@ -320,7 +320,7 @@ const PROVIDER_DETAIL_KEYS: Record<
     "actionKind",
     "action",
     "riskLevel",
-    "userAuthorization",
+    "userConsent",
     "decidedBy",
     "targetExecutionId",
   ],

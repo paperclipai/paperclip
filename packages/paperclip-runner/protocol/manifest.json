@@ -90,7 +90,7 @@
     {
       "path": "schemas/provider-event.schema.json",
       "id": "https://paperclip.dev/schemas/prp/v1/provider-event.schema.json",
-      "sha256": "88b9554d1814f89eea93b2063f194d22128dbd4ba189902a7068773ba97891ba"
+      "sha256": "031d7ac11af480a25d4791fa6770ef92f9c0617e2dfba5e9946a8416cc507b1e"
     },
     {
       "path": "schemas/provider-failure.schema.json",

@@ -58,7 +58,7 @@ export function foldApprovedAutoReviews(items: TaskChatItem[], runId: string): T
     const review: TaskChatAutoReview = {
       decision: "allowed",
       riskLevel: detail(item, "Risk Level"),
-      userAuthorization: detail(item, "User Authorization"),
+      userConsent: detail(item, "User Consent"),
       rationale: item.summary?.trim() || detail(item, "Rationale"),
     };
     if (tool.kind === "tool" || (tool.kind === "protocol" && tool.surface === "provider_activity")) {
