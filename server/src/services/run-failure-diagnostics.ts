@@ -421,7 +421,7 @@ export function sanitizeRunFailureText(input: string, limit: number): string {
   const normalized = input
     .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")
     .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "")
-    .replace(/[\ud800-\udfff]/gu, "�");
+    .replace(/[\ud800-\udfff]/gu, "\\ufffd");
   const clean = redactSensitiveText(redactDiagnosticText(redactCurrentUserText(normalized)));
   if (clean.length <= limit) return clean;
   const suffix = "\n[truncated]";
