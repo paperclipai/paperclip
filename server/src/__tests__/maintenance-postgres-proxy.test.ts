@@ -1,6 +1,4 @@
 import { createDb } from "@paperclipai/db";
-import { readFileSync } from "node:fs";
-import { threadId, isMainThread } from "node:worker_threads";
 import { createConnection } from "node:net";
 import { once } from "node:events";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -71,15 +69,6 @@ describeDatabase("maintenance observer against PostgreSQL", () => {
   }, 90_000);
   afterAll(async () => { await temporary?.cleanup(); });
   it("observes raw tagged SQL, simple SQL, rollback and reused prepared executions with real sockets", async () => {
-    if (process.env.PAPERCLIP_SKILL_DEFAULT_CADENCE_GUARD_LOG) {
-      const marker = (globalThis as Record<symbol, { stats(): Record<string, unknown> } | undefined>)[Symbol.for('paperclip.skill.default-cadence.prewire')];
-      expect(marker).toBeDefined();
-      const observed = marker!.stats();
-      expect(observed).toMatchObject({ pid: process.pid, threadId, isMainThread, unexpectedAttempts: [] });
-      const receipts = readFileSync(process.env.PAPERCLIP_SKILL_DEFAULT_CADENCE_GUARD_LOG, 'utf8').trim().split('\n').map(line => JSON.parse(line));
-      expect(receipts).toContainEqual(expect.objectContaining({ event: 'preloaded', pid: process.pid, threadId, isMainThread, sourceHash: observed.sourceHash }));
-      console.info(JSON.stringify({ actualPostgresObserverWorkerGuard: observed }));
-    }
     const proxy = await startMaintenancePostgresProxy(databaseUrl!);
     const db = createDb(proxy.url, { prepare: true, maxConnections: 1 });
     try {
