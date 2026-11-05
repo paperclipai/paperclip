@@ -52,6 +52,7 @@ import { externalConversationStateSql, nonIdleSlackIssueCondition, resumeSlackCo
 import { documentService } from "./documents.js";
 import { parseTaskSearch, taskSearchCtes, taskSearchScore } from "./task-search.js";
 import { createdFromIssueCondition } from "./issue-creation-origin.js";
+import { loadRunBoundIssue } from "./issue-creation-source.js";
 import { executionProjectionsForRuns } from "./execution-projection.js";
 import type { ExecutionProjection } from "@paperclipai/shared";
 import type { IssueParentAdjustment } from "@paperclipai/shared";
@@ -10686,12 +10687,9 @@ export function issueService(db: Db) {
         if (sourceRunId && isUuidLike(sourceRunId)) {
           const [sourceRun] = await tx.select().from(heartbeatRuns)
             .where(and(eq(heartbeatRuns.id, sourceRunId), eq(heartbeatRuns.companyId, companyId)));
-          const sourceId = sourceRun?.nativeIssueId ?? sourceRun?.issueId ?? sourceRun?.contextSnapshot?.issueId;
-          if (typeof sourceId === "string" && isUuidLike(sourceId)) {
-            const [runSource] = await tx.select({ id: issues.id }).from(issues)
-              .where(and(eq(issues.id, sourceId), eq(issues.companyId, companyId)));
-            runSourceIssueId = runSource?.id ?? null;
-          }
+          // Same binding rules as creation-source reads: native identity, issue
+          // scope, then legacy task context (including identifiers), company-scoped.
+          if (sourceRun) runSourceIssueId = (await loadRunBoundIssue(tx as unknown as Db, sourceRun))?.id ?? null;
         }
         // Privacy follows structure: the requested parent (even when placed
         // beside it), the chat that handed this off, or the run's task.

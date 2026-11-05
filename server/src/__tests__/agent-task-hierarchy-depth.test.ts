@@ -304,6 +304,21 @@ describeEmbeddedPostgres("agent task hierarchy depth", () => {
     expect((await resolveIssueCreationSource(db, created))?.sourceIssue.id).toBe(runTaskId);
   });
 
+  it("originates from a legacy run bound only by a task identifier", async () => {
+    const { companyId, agentId } = await seedCompany();
+    const { childId } = await seedTree(companyId);
+    const identifier = `LEG-${randomUUID().slice(0, 6)}`;
+    const runTaskId = await seedIssue(companyId, { identifier });
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, status: "running", contextSnapshot: { taskKey: identifier } });
+
+    const created = await issueService(db).create(companyId, {
+      title: "From a legacy-bound run", parentId: childId, createdByAgentId: agentId, actorRunId: runId,
+    });
+
+    expect(created.originIssueId).toBe(runTaskId);
+  });
+
   describe("moves", () => {
     it("keeps the requested private parent as the privacy source of a placed move", async () => {
       const { companyId } = await seedCompany();
