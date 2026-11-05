@@ -2063,6 +2063,18 @@ export interface SettledTurnMergeMeta {
  * the merged turn keeps the FIRST run's id (stable across re-renders), and
  * animateFold survives if any merged run was seen live.
  */
+/** One banner line per server; the later run's report wins. */
+function mergeMcpStartupFailures(
+  first: TaskChatTurnItem["mcpStartupFailures"],
+  second: TaskChatTurnItem["mcpStartupFailures"],
+): TaskChatTurnItem["mcpStartupFailures"] {
+  if (!first?.length) return second;
+  if (!second?.length) return first;
+  const byServer = new Map(first.map((failure) => [failure.serverName, failure]));
+  for (const failure of second) byServer.set(failure.serverName, failure);
+  return [...byServer.values()];
+}
+
 export function coalesceSettledTurns(
   items: readonly TaskChatItem[],
   metaById: ReadonlyMap<string, SettledTurnMergeMeta>,
@@ -2087,9 +2099,11 @@ export function coalesceSettledTurns(
       ) {
         out.splice(heldIdx, 1);
         const parts = [...heldMeta.parts, ...meta.parts];
+        const mcpStartupFailures = mergeMcpStartupFailures(held.mcpStartupFailures, item.mcpStartupFailures);
         out.push({
           ...held,
           items: [...held.items, ...item.items],
+          ...(mcpStartupFailures ? { mcpStartupFailures } : {}),
           finalResponse: item.finalResponse ?? held.finalResponse,
           animateFold: held.animateFold || item.animateFold || undefined,
           summary: buildMergedTurnSummary(parts),

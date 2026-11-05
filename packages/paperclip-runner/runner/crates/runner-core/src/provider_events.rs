@@ -608,6 +608,23 @@ fn codex_terminal_error(params: &Value, event_type: &str) -> Value {
     }
 }
 
+/// Codex wraps MCP startup errors in sentences that repeat what the notice
+/// already says, e.g. "MCP client for `github` failed to start: MCP startup
+/// failed: <reason>"; keep only the provider's reason.
+fn mcp_startup_error_reason(error: &str) -> String {
+    let redacted = redact_text(error);
+    let mut reason = redacted.trim();
+    if let Some(rest) = reason.strip_prefix("MCP client for `") {
+        if let Some(index) = rest.find("` failed to start:") {
+            reason = rest[index + "` failed to start:".len()..].trim();
+        }
+    }
+    if let Some(rest) = reason.strip_prefix("MCP startup failed:") {
+        reason = rest.trim();
+    }
+    reason.to_owned()
+}
+
 fn string(value: Option<&Value>) -> &str {
     value.and_then(Value::as_str).unwrap_or("")
 }
@@ -968,6 +985,61 @@ pub fn normalize_codex_notification_in(
                     "receivedThreadId": params.get("receivedThreadId").and_then(Value::as_str).map(|value| bounded_text(value, 256)),
                     "expectedTurnId": params.get("expectedTurnId").and_then(Value::as_str).map(|value| bounded_text(value, 256)),
                     "receivedTurnId": params.get("receivedTurnId").and_then(Value::as_str).map(|value| bounded_text(value, 256)),
+                }),
+            )
+        }
+        // Only a failed start is user-facing: the agent then runs without that
+        // server's tools. starting/ready/cancelled stay in the raw run log.
+        "mcpServer/startupStatus/updated"
+            if params.get("status").and_then(Value::as_str) == Some("failed") =>
+        {
+            let name: String = string(params.get("name"))
+                .trim()
+                .chars()
+                .take(160)
+                .collect();
+            let server_name = if name.is_empty() {
+                "An".to_owned()
+            } else {
+                name
+            };
+            let failure_reason = string(params.get("failureReason"));
+            let reason = if failure_reason == "reauthenticationRequired" {
+                "needs re-authentication".to_owned()
+            } else {
+                mcp_startup_error_reason(string(params.get("error")))
+            };
+            let notice_id = stable_id(&format!("mcp-startup:{server_name}"), "mcp-startup");
+            let mut details = vec![json!({"name": "server", "value": server_name})];
+            if !reason.is_empty() {
+                details.push(
+                    json!({"name": "reason", "value": bounded_text(&reason, MAX_TEXT_CHARS)}),
+                );
+            }
+            if !failure_reason.is_empty() {
+                details.push(
+                    json!({"name": "failureReason", "value": bounded_text(failure_reason, 160)}),
+                );
+            }
+            let summary = if reason.is_empty() {
+                format!("{server_name} MCP server failed to start")
+            } else {
+                format!("{server_name} MCP server failed to start: {reason}")
+            };
+            push(
+                &mut events,
+                "provider.notice.recorded",
+                EventPriority::P0,
+                json!({
+                    "schema": "paperclip.provider.notice.v1",
+                    "noticeId": notice_id,
+                    "severity": "warning",
+                    "category": "mcp_server_startup_failed",
+                    "scope": "session",
+                    "recoverable": true,
+                    "userActionable": true,
+                    "summary": bounded_text(&summary, MAX_TEXT_CHARS),
+                    "details": details,
                 }),
             )
         }
@@ -2028,6 +2100,53 @@ mod tests {
             .event_type,
             "provider.notice.recorded"
         );
+    }
+
+    #[test]
+    fn maps_failed_codex_mcp_startup_to_user_facing_notice() {
+        let events = normalize_codex_notification(
+            "mcpServer/startupStatus/updated",
+            &json!({
+                "threadId": null, "name": "github", "status": "failed",
+                // Codex 0.160's own wording, observed on a live run.
+                "error": "MCP client for `github` failed to start: MCP startup failed: No such file or directory (os error 2)",
+                "failureReason": null,
+            }),
+        );
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event_type, "provider.notice.recorded");
+        assert_eq!(
+            events[0].payload,
+            json!({
+                "schema": "paperclip.provider.notice.v1",
+                "noticeId": "mcp-startup:github",
+                "severity": "warning",
+                "category": "mcp_server_startup_failed",
+                "scope": "session",
+                "recoverable": true,
+                "userActionable": true,
+                "summary": "github MCP server failed to start: No such file or directory (os error 2)",
+                "details": [
+                    {"name": "server", "value": "github"},
+                    {"name": "reason", "value": "No such file or directory (os error 2)"},
+                ],
+            })
+        );
+        let reauth = normalize_codex_notification(
+            "mcpServer/startupStatus/updated",
+            &json!({"name": "linear", "status": "failed", "failureReason": "reauthenticationRequired"}),
+        );
+        assert_eq!(
+            reauth[0].payload["summary"],
+            "linear MCP server failed to start: needs re-authentication"
+        );
+        for status in ["starting", "ready", "cancelled"] {
+            assert!(normalize_codex_notification(
+                "mcpServer/startupStatus/updated",
+                &json!({"name": "github", "status": status}),
+            )
+            .is_empty());
+        }
     }
 
     #[test]
