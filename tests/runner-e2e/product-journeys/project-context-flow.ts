@@ -1,8 +1,13 @@
-import { expect } from "@playwright/test";
+import { expect, type Page } from "@playwright/test";
 import { createTaskThroughUi, withBrowserEvent } from "../user-actions.js";
 import { projectContextEvidencePasses, type ProjectContextObservation } from "./project-context-evidence.js";
 import { openProjectTaskThroughList, reopenProjectThroughList } from "./project-context-readback.js";
 import { JourneyError, type JourneyContext, type JourneyEvidence, type TargetSession } from "./types.js";
+
+/** The toolbar action was renamed from "Add Project" to "Create project"; accept both deployed labels. */
+export function newProjectButton(page: Page) {
+  return page.getByRole("button", { name: /^(?:Add Project|Create project)$/ }).first();
+}
 
 export async function projectTaskContext(context: JourneyContext, session: TargetSession, campaignId: string, evidence: JourneyEvidence) {
   const { page, api, company } = context;
@@ -11,8 +16,7 @@ export async function projectTaskContext(context: JourneyContext, session: Targe
   const prompt = `Keep this task assigned to me in ${projectName}. I will review it myself.`;
   const journeyId = "project-task-context" as const;
   await page.goto(`${api.origin}/${company.issuePrefix}/projects`);
-  // The toolbar action was renamed from "Add Project" to "Create project"; accept both deployed labels.
-  await page.getByRole("button", { name: /^(?:Add Project|Create project)$/ }).first().click();
+  await newProjectButton(page).click();
   const dialog = page.getByRole("dialog");
   await dialog.getByRole("textbox", { name: "Project name", exact: true }).fill(projectName);
   await session.own({ kind: "project", name: projectName, journeyId });

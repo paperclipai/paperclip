@@ -34,14 +34,18 @@ export async function runArtifactOracle(file: string | null, mode: "base" | "sep
 }
 
 /** Download through the visible task control; attachment metadata is not a content oracle. */
+/** Older attachment cards label the link "Download"; Artifacts V1 rows use an icon link named by aria-label. */
+export function storyArtifactDownloadLink(page: Page, attachmentId: string) {
+  const content = `a[href*="/api/attachments/${attachmentId}/content"]`;
+  return page.locator(content).filter({ hasText: /Download/i })
+    .or(page.locator(`${content}[aria-label^="Download" i]`)).first();
+}
+
 export async function downloadStoryArtifact(input: {
   page: Page; attachmentId: string; directory: string; phase: string;
   mode: "base" | "separator" | "max-length"; deadlineAt: number;
 }) {
-  // Older attachment cards label the link "Download"; Artifacts V1 rows use an icon link named by aria-label.
-  const content = `a[href*="/api/attachments/${input.attachmentId}/content"]`;
-  const link = input.page.locator(content).filter({ hasText: /Download/i })
-    .or(input.page.locator(`${content}[aria-label^="Download" i]`)).first();
+  const link = storyArtifactDownloadLink(input.page, input.attachmentId);
   await expect(link).toBeVisible({ timeout: 30_000 });
   const [download] = await Promise.all([input.page.waitForEvent("download", { timeout: 30_000 }), link.click()]);
   await mkdir(input.directory, { recursive: true, mode: 0o700 });
