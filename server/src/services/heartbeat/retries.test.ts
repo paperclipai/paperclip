@@ -26,6 +26,11 @@ function emptyReleasePlan(now = new Date()) {
   return planDueQuotaRecoveryReleases({ due: [], now, inflightByAgent: new Map(), seed: now.getTime() });
 }
 
+/** The plan a sweep produces when the in-flight count could not be read. */
+function degradedReleasePlan(now = new Date()) {
+  return planDueQuotaRecoveryReleases({ due: [], now, inflightByAgent: null, seed: now.getTime() });
+}
+
 function callbacks() {
   return {
     hasCaseHandoffForRun: vi.fn<HeartbeatRetryDependencies["hasCaseHandoffForRun"]>(async () => false),
@@ -46,7 +51,7 @@ function callbacks() {
     runDispatch: {
       nextScheduledRetryAt: vi.fn(async () => null),
       evaluateScheduledRetryGate: vi.fn<HeartbeatRetryDependencies["runDispatch"]["evaluateScheduledRetryGate"]>(async () => ({ allowed: true })),
-      promoteDueScheduledRetries: vi.fn<HeartbeatRetryDependencies["runDispatch"]["promoteDueScheduledRetries"]>(async () => ({ promoted: 0, runIds: [], postCommitEffects: [], releasePlan: emptyReleasePlan(), deferredApplied: 0, deferralSuperseded: 0, deferralSupersededRunIds: [] })),
+      promoteDueScheduledRetries: vi.fn<HeartbeatRetryDependencies["runDispatch"]["promoteDueScheduledRetries"]>(async () => ({ promoted: 0, runIds: [], postCommitEffects: [], releasePlan: emptyReleasePlan(), degraded: false, deferredApplied: 0, deferralSuperseded: 0, deferralSupersededRunIds: [] })),
       promoteScheduledRetry: vi.fn<HeartbeatRetryDependencies["runDispatch"]["promoteScheduledRetry"]>(async () => ({ outcome: "not_promoted" })),
     },
   } satisfies HeartbeatRetryDependencies;
@@ -163,12 +168,23 @@ describe("heartbeat retry module callbacks", () => {
       invocationSource: "automation", triggerDetail: "system", wakeupRequestId: "wake",
     };
     deps.getWorktreeExecutionCutoff.mockResolvedValue(cutoff);
-    deps.runDispatch.promoteDueScheduledRetries.mockResolvedValue({ promoted: 1, runIds: ["retry"], postCommitEffects: [effect], releasePlan: emptyReleasePlan(now), deferredApplied: 0, deferralSuperseded: 0, deferralSupersededRunIds: [] });
-    expect(await extracted.createHeartbeatRetries(database.db, deps).promoteDueScheduledRetries(now)).toEqual({ promoted: 1, runIds: ["retry"] });
+    deps.runDispatch.promoteDueScheduledRetries.mockResolvedValue({ promoted: 1, runIds: ["retry"], postCommitEffects: [effect], releasePlan: emptyReleasePlan(now), degraded: false, deferredApplied: 0, deferralSuperseded: 0, deferralSupersededRunIds: [] });
+    expect(await extracted.createHeartbeatRetries(database.db, deps).promoteDueScheduledRetries(now)).toEqual({ promoted: 1, runIds: ["retry"], degraded: false });
     expect(deps.runDispatch.promoteDueScheduledRetries).toHaveBeenCalledWith({ now, cutoff });
     expect(deps.applyRunDispatchPostCommitEffects).toHaveBeenCalledWith([effect]);
     expect(deps.applyRunDispatchPostCommitEffects).toHaveBeenCalledAfter(deps.runDispatch.promoteDueScheduledRetries);
     expect(database.access).not.toHaveBeenCalled();
+  });
+
+  it("reports a degraded sweep so the coordinator can back off its deadline", async () => {
+    const deps = callbacks();
+    const now = new Date("2026-10-08T12:00:00Z");
+    deps.runDispatch.promoteDueScheduledRetries.mockResolvedValue({
+      promoted: 0, runIds: [], postCommitEffects: [], releasePlan: degradedReleasePlan(now),
+      degraded: true, deferredApplied: 0, deferralSuperseded: 0, deferralSupersededRunIds: [],
+    });
+    expect(await extracted.createHeartbeatRetries(guardedDatabase().db, deps).promoteDueScheduledRetries(now))
+      .toEqual({ promoted: 0, runIds: [], degraded: true });
   });
 
   it("does not publish effects when promotion rejects", async () => {
@@ -368,7 +384,7 @@ describePostgres("heartbeat retry module database wiring", () => {
     const scheduled = await retries.scheduleBoundedRetry(run.id, { now, delayMs: 60_000 });
     expect(scheduled.outcome).toBe("scheduled");
     if (scheduled.outcome !== "scheduled") throw new Error("Expected retry");
-    expect(await retries.promoteDueScheduledRetries(now)).toEqual({ promoted: 0, runIds: [] });
+    expect(await retries.promoteDueScheduledRetries(now)).toEqual({ promoted: 0, runIds: [], degraded: false });
     deps.applyRunDispatchPostCommitEffects.mockClear();
     const committedStatuses: string[] = [];
     const reads: Promise<void>[] = [];
@@ -377,7 +393,7 @@ describePostgres("heartbeat retry module database wiring", () => {
       // The assertion below waits for that read without making publication async.
       reads.push(deps.getRun(scheduled.run.id).then((row) => { committedStatuses.push(row!.status); }));
     });
-    expect(await retries.promoteDueScheduledRetries(scheduled.dueAt)).toEqual({ promoted: 1, runIds: [scheduled.run.id] });
+    expect(await retries.promoteDueScheduledRetries(scheduled.dueAt)).toEqual({ promoted: 1, runIds: [scheduled.run.id], degraded: false });
     await Promise.all(reads);
     expect(committedStatuses).toEqual(["queued"]);
     expect(deps.applyRunDispatchPostCommitEffects).toHaveBeenCalledWith([expect.objectContaining({ kind: "run_queued", runId: scheduled.run.id })]);

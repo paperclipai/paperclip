@@ -227,7 +227,7 @@ describe.skipIf(!support.supported)("run dispatch production wiring (controlled 
       cancellation: { expected: true, reason: "operator stop", source: "operator" } } }).where(eq(heartbeatRuns.id, scheduled.run.id));
     await start(); await quiet();
     expect((await status(scheduled.run.id)).status).toBe("scheduled_retry");
-    expect(await heartbeat.promoteDueScheduledRetries()).toEqual({ promoted: 0, runIds: [] });
+    expect(await heartbeat.promoteDueScheduledRetries()).toEqual({ promoted: 0, runIds: [], degraded: false });
     await quiet();
   });
   it("rejects an error clear without publishing work when the lifecycle is no longer ready", async () => {

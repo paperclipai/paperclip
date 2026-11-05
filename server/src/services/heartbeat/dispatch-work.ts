@@ -3,10 +3,13 @@ import type { createDeliveryWorkCoordinator } from "../delivery-work-coordinator
 import { registerDeadlineWork } from "../deadline-work.js";
 import { DELIVERY_QUEUES } from "../delivery-work-notifications.js";
 
+/** How long a sweep that ran degraded waits before it re-reads in-flight state. */
+const DEGRADED_SWEEP_BACKOFF_MS = 30_000;
+
 export function registerRunDispatchWork(
   coordinator: ReturnType<typeof createDeliveryWorkCoordinator>,
   owner: {
-    promoteDueScheduledRetries(): Promise<unknown>;
+    promoteDueScheduledRetries(): Promise<{ degraded?: boolean } | void>;
     nextScheduledRetryAt(): Promise<number | null>;
     resumeQueuedRunsAfterDrain(scope?: RunDispatchScope): Promise<unknown>;
     schedulingSuppressed(): Promise<boolean>;
@@ -14,6 +17,13 @@ export function registerRunDispatchWork(
   canRun: () => boolean,
 ) {
   let suppressed = false;
+  // A degraded sweep denies quota-recovery releases without rescheduling the
+  // rows, so their due time stays in the past on purpose. `next()` would then
+  // return an instant that has already passed, and the deadline work treats a
+  // past deadline as a 1s continuation: the sweep would re-read the in-flight
+  // count that just failed, once per second, forever. One recovery window of
+  // backoff replaces that spin without touching the parked rows.
+  let degradedBackoffUntil = 0;
   const retries = registerDeadlineWork(coordinator, DELIVERY_QUEUES.scheduledRetryDispatch, {
     retryMs: 30_000,
     continuationMs: 1_000,
@@ -21,9 +31,17 @@ export function registerRunDispatchWork(
     canRun,
     run: async signal => {
       suppressed = await owner.schedulingSuppressed();
-      if (!signal.aborted && !suppressed && canRun()) await owner.promoteDueScheduledRetries();
+      if (!signal.aborted && !suppressed && canRun()) {
+        const sweep = await owner.promoteDueScheduledRetries();
+        degradedBackoffUntil = sweep?.degraded ? Date.now() + DEGRADED_SWEEP_BACKOFF_MS : 0;
+      }
     },
-    next: () => suppressed ? Promise.resolve(null) : owner.nextScheduledRetryAt(),
+    next: async () => {
+      if (suppressed) return null;
+      const next = await owner.nextScheduledRetryAt();
+      if (next === null || degradedBackoffUntil === 0) return next;
+      return Math.max(next, degradedBackoffUntil);
+    },
   });
   const scopes = new Set<string>(["*"]);
   const queue = registerDeadlineWork(coordinator, DELIVERY_QUEUES.queuedRunDispatch, {

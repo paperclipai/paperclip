@@ -130,6 +130,11 @@ export function createPromoteDueScheduledRetries(deps: {
       runIds,
       postCommitEffects,
       releasePlan: plan,
+      // A degraded sweep is the one outcome the caller cannot re-derive from
+      // the counters: every quota-recovery row it denied keeps its own (past)
+      // due time by design, so the caller has to know the sweep failed its
+      // in-flight read before it schedules the next one.
+      degraded: plan.degraded,
       deferredApplied,
       deferralSuperseded,
       deferralSupersededRunIds,

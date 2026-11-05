@@ -1758,7 +1758,12 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
     } else {
       logger.info(summary, "scheduled retry sweep");
     }
-    return { promoted: result.promoted, runIds: result.runIds };
+    // `degraded` leaves the dispatch coordinator: rows denied by this sweep
+    // keep their own past due time, so the deadline it derives next would ask
+    // for an immediate re-run of the count query that just failed. The
+    // coordinator is the only consumer that schedules the next sweep, and it
+    // backs that deadline off (`dispatch-work.ts`).
+    return { promoted: result.promoted, runIds: result.runIds, degraded };
   }
 
   async function getIssueRetryRun(
