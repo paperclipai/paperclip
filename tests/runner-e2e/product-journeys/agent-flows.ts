@@ -42,6 +42,18 @@ export function fixtureReplyStoredOnce(before: Row[], after: Row[], userId: stri
   return added.length === 1 && typeof added[0].body === "string" && added[0].body.replaceAll("\\_", "_") === message;
 }
 
+/**
+ * A wake the control plane retired before admission, for example while completed
+ * runs await accounting. It never started provider work, so it has no runtime
+ * binding to grade. Started, unexpected or user cancellations do not qualify.
+ */
+export function retiredBeforeProviderStart(run: Row) {
+  const result = run.resultJson;
+  return run.status === "cancelled" && run.startedAt === null
+    && result?.cancellation?.source === "control_plane" && result.cancellation.expected === true
+    && result.executionRecovery?.providerWorkStarted === false;
+}
+
 /** Owned-task observations only: other work in a persistent QA company cannot affect this grade. */
 export function validateAgentTaskState(context: JourneyContext, issueId: string, state: TaskState, maxRuns: number, allowedCancelled: string[] = []) {
   const agent = context.agent!;
@@ -51,6 +63,8 @@ export function validateAgentTaskState(context: JourneyContext, issueId: string,
     const provider = run.runnerProfileJson?.nativeExecutionInput?.provider;
     const boundIssueId = run.issueId ?? run.nativeIssueId ?? run.contextSnapshot?.issueId ?? run.contextSnapshot?.taskId;
     if (run.companyId !== context.company.id || run.agentId !== agent.id || boundIssueId !== issueId) throw new JourneyError("failed", "agent_run_binding_mismatch");
+    // The retired wake stays in the raw record and in the run limit above.
+    if (retiredBeforeProviderStart(run)) continue;
     if (!active(run) && (run.runtimeMode !== "native" || run.contextSnapshot?.paperclipEnvironment?.id !== context.environmentId
       || provider?.kind !== agent.provider || provider?.model !== agent.model)) throw new JourneyError("failed", "agent_run_binding_mismatch");
     if (!["queued", "running", "succeeded"].includes(run.status) && !(run.status === "cancelled" && allowedCancelled.includes(run.id))) throw new JourneyError("failed", "agent_run_failed");

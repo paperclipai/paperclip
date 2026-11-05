@@ -75,6 +75,32 @@ describe("deployed agent journey evidence", () => {
     s.taskRuns[0]!.companyId = "other";
     expect(() => validateAgentTaskState(context, "owned-task", s, 3, ["run"])).toThrow();
   });
+  it("ignores only a bound wake the control plane retired before provider work started", () => {
+    // Observed on QA: an automation wake cancelled pre-start while completed runs awaited accounting.
+    const retired = (s: ReturnType<typeof state>) => {
+      (s.taskRuns as Array<Record<string, any>>).push({ id: "retired", companyId: "qa-company", agentId: s.taskRuns[0]!.agentId, issueId: "owned-task", status: "cancelled",
+        startedAt: null, contextSnapshot: {}, resultJson: {
+          executionRecovery: { kind: "accounting_wait", providerWorkStarted: false },
+          cancellation: { source: "control_plane", expected: true, initiator: { type: "system" } } } });
+      return s.taskRuns.at(-1)! as Record<string, any>;
+    };
+    const s = state(); retired(s);
+    expect(() => validateAgentTaskState(context, "owned-task", s, 3)).not.toThrow();
+    expect(s.taskRuns).toHaveLength(2);
+    expect(() => validateAgentTaskState(context, "owned-task", s, 1)).toThrow("agent_task_binding_mismatch");
+    const variants: Array<(run: Record<string, any>) => void> = [
+      run => { run.startedAt = "2026-11-05T19:17:00Z"; },
+      run => { delete run.startedAt; },
+      run => { run.status = "failed"; },
+      run => { run.resultJson.cancellation.expected = false; },
+      run => { run.resultJson.cancellation.source = "operator"; },
+      run => { run.resultJson.executionRecovery.providerWorkStarted = true; },
+      run => { delete run.resultJson.executionRecovery; },
+      run => { run.agentId = "other"; },
+      run => { run.issueId = "other"; },
+    ];
+    for (const change of variants) { const v = state(); change(retired(v)); expect(() => validateAgentTaskState(context, "owned-task", v, 3)).toThrow(); }
+  });
   it("requires explicit paid run limits for a mixed deployment campaign", () => {
     const config = { version: 1, id: "qa", mode: "existing-cloud", adapterModule: "/private/provider.mjs",
       executionEnvironment: "daytona", journeys: ["task-create", "ask-question", "plan-revise-accept", "build-revise", "protected-actions", "create-skill-studio", "stop-redirect"],
