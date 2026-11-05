@@ -1,3 +1,5 @@
+import type {Page} from "@playwright/test";
+import {visibleSecretSettingsURL} from "./external-secret-route.js";
 import { createHash, randomBytes } from "node:crypto";
 import { expect } from "@playwright/test";
 import type { AskUserQuestionsInteraction } from "../../../packages/shared/src/types/issue.js";
@@ -88,6 +90,10 @@ export async function provePersonalSecretMissingBoundary(ctx: ChatCatalogContext
   await ctx.input.evidence("personal-secret-missing-binding-prerequisite.json", { agentId: agent.id, definitionId: state.definitionId, responsibleUserId: state.currentPersonId, status: 422, code: "user_secret_missing", unchangedWorkerConfiguration: true, controllerReady: true, prospectiveResolutionOnly: true });
 }
 
+export async function personalSecretSetupURL(page:Page,reply:{body:string;commentId?:string},origin:string,prefix:string,definitionId:string,timeout:number){
+ if(!personalSecretGuidance(reply.body))return;
+ return visibleSecretSettingsURL(page,reply,origin,prefix,timeout,definitionId);
+}
 export function personalSecretGuidance(reply: string) {
   return (
     /personal|your own|my secrets/i.test(reply) &&
@@ -441,7 +447,7 @@ export const personalSecretExternalCases = [
         if (!o?.state.initialQuestionId || !gradePersonalSecret(value).passed) return;
         return { interactionId: String(o.state.initialQuestionId), sourceRunId: String(o.state.initialRunId), userId: String(o.state.currentPersonId) };
       },
-      oracleVersion: "paperclip.chat-catalog.personal-secret.v8",
+      oracleVersion: "paperclip.chat-catalog.personal-secret.v9",
       setupPolicy: { readiness: "preserve-scenario", invariantCheckIds: ["current-owner-missing-required-personal-value"] },
       expectedRunCount: 3,
       minimumRunCount: 3,
@@ -450,6 +456,7 @@ export const personalSecretExternalCases = [
       sourceFiles: [
         "chat-catalog-domains/external-personal-secret.ts",
         "chat-catalog-domains/external-secret-question.ts",
+      "chat-catalog-domains/external-secret-route.ts",
         "chat-catalog-domains/external-secret-endpoint.ts",
         "chat-catalog-domains/external-private-browser.ts",
         "chat-catalog-domains/external-private-browser-worker.ts",
@@ -588,19 +595,7 @@ export const personalSecretExternalCases = [
             "Current person's value was created before secure human entry",
           );
         const path = `/${ctx.input.fixtures.company.issuePrefix}/company/settings/secrets`,
-          link = initial.links.find((href) => {
-            try {
-              const url = new URL(href, initial.origin);
-              return (
-                url.origin === initial.origin &&
-                url.pathname === path &&
-                (!url.searchParams.has("definition") ||
-                  url.searchParams.get("definition") === state.definitionId)
-              );
-            } catch {
-              return false;
-            }
-          });
+          link = commentHandoff ? await personalSecretSetupURL(ctx.input.page,reply!,initial.origin,String(ctx.input.fixtures.company.issuePrefix),String(state.definitionId),remaining()) : undefined;
         if (!link && !question)
           throw new Error(
             "Actual reply must direct the supported own-value settings path for this definition",
