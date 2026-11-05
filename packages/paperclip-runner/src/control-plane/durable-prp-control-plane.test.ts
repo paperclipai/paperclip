@@ -615,6 +615,30 @@ it("persists authentication and commands before the runner can observe them", as
   }
 });
 
+it("does not dispatch after the authenticated owner changes during checkpoint persistence", async () => {
+  const root = mkdtempSync(resolve(tmpdir(), "runner-tool-owner-race-"));
+  let owner = identity.runId, entered = false, release!: () => void;
+  const barrier = new Promise<void>(resolveWrite => { release = resolveWrite; });
+  const dispatch = vi.fn(async () => ({ result: "must not run" }));
+  const core = new DurablePrpControlPlane({ stateDirectory: root, identity, expectedRunnerVersion, expectedRunnerDigest,
+    get authorityRunId() { return owner; }, onSemanticToolInput: dispatch });
+  core.setCheckpointPersistence(async checkpoint => {
+    if (JSON.parse(checkpoint.records.get("cursor")!).ackedSourceSeq > 0) { entered = true; await barrier; }
+  });
+  try {
+    await core.start();
+    const client = (await authenticate(core, core.issueBootstrapTicket()))!;
+    sendSecure(client, semanticInputEvent());
+    await vi.waitFor(() => expect(entered).toBe(true));
+    owner = "replacement-owner"; release();
+    const ack = await receiveSecure(client);
+    expect(dispatch).not.toHaveBeenCalled();
+    expect(ack!.kind).toBe("ack");
+    expect(core.store.state.commands).toEqual([]);
+    client.socket.destroy();
+  } finally { release(); await core.stop(); rmSync(root, { recursive: true, force: true }); }
+});
+
 it("does not dispatch a semantic effect when external journal persistence fails", async () => {
   const root = mkdtempSync(resolve(tmpdir(), "runner-external-journal-failure-"));
   const dispatch = vi.fn(async () => ({ result: "written" }));
@@ -824,8 +848,9 @@ it.each([true, false])("reconciles a saved semantic input only from an authorita
   }
 });
 
-it("resolves a saved semantic input only once across overlapping recovery calls", async () => {
+it.each([false, true])("resolves a saved semantic input only once across overlapping recovery calls (owner changed: %s)", async changedOwner => {
   const root = mkdtempSync(resolve(tmpdir(), "runner-saved-semantic-race-"));
+  let owner = identity.runId;
   const options = { stateDirectory: root, identity, expectedRunnerVersion, expectedRunnerDigest };
   const original = new DurablePrpControlPlane({ ...options,
     onSemanticToolInput: () => new Promise<{ result: unknown }>(() => undefined) });
@@ -841,17 +866,18 @@ it("resolves a saved semantic input only once across overlapping recovery calls"
     expect((await receiveSecure(client))!.kind).toBe("ack");
     client.socket.destroy();
     await original.stop();
-    replacement = new DurablePrpControlPlane({ ...options, recoverSemanticToolInput: recover });
+    replacement = new DurablePrpControlPlane({ ...options, get authorityRunId() { return owner; }, recoverSemanticToolInput: recover });
     pending.push(replacement.recoverPendingSemanticInputs());
     await vi.waitFor(() => expect(recover).toHaveBeenCalledOnce());
     pending.push(replacement.recoverPendingSemanticInputs());
     await new Promise<void>(resolveTurn => setImmediate(resolveTurn));
     expect(recover).toHaveBeenCalledOnce();
+    if (changedOwner) owner = "replacement-owner";
     resolveOutcome({ result: { receipt: "one-authoritative-outcome" } });
     await Promise.all(pending);
     await replacement.recoverPendingSemanticInputs();
     expect(recover).toHaveBeenCalledOnce();
-    expect(replacement.store.state.commands.filter(command => command.type === "semantic_tool.result")).toHaveLength(1);
+    expect(replacement.store.state.commands.filter(command => command.type === "semantic_tool.result")).toHaveLength(changedOwner ? 0 : 1);
   } finally {
     resolveOutcome({ result: { receipt: "one-authoritative-outcome" } });
     await Promise.allSettled(pending);

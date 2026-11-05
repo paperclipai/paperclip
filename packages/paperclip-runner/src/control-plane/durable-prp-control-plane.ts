@@ -2245,6 +2245,7 @@ export class DurablePrpControlPlane {
     if (this.#retainsSourceInputs() || !this.#recoverSemanticToolInput) return;
     const identity = this.#identity;
     for (const saved of [...this.#store.state.committedEvents]) {
+      if (this.#retainsSourceInputs() || this.#identity !== identity || this.#semanticCallbacksRetired) return;
       if (!unsettledSemanticInput(saved, this.#store.state)) continue;
       const event = saved.envelope.payload as PrpEvent;
       const semantic = (event.payload as Record<string, unknown>).semantic_tool as Record<string, unknown>;
@@ -2259,7 +2260,7 @@ export class DurablePrpControlPlane {
           correlation: { runId: identity.runId, normalizedSessionId: identity.normalizedSessionId,
             turnId: identity.turnId, itemId: event.itemId ?? identity.itemId } };
         const outcome = await this.#recoverSemanticToolInput(call);
-        if (this.#identity !== identity || this.#semanticCallbacksRetired) return;
+        if (this.#identity !== identity || this.#semanticCallbacksRetired || this.#retainsSourceInputs()) return;
         if (!outcome || this.#getCommand(commandId)) continue;
         const { input, ...metadata } = call;
         this.queueCommand("semantic_tool.result", { ...metadata, inputDigest: canonicalDigest(input),
@@ -4173,7 +4174,7 @@ export class DurablePrpControlPlane {
     try {
       await this.flushCheckpoint();
       if (this.#eventOwner !== connection || this.#identity !== identity) return;
-      if (ownsLiveDispatch && liveCall && liveCommandId && this.#onSemanticToolInput && !this.#getCommand(liveCommandId)) {
+      if (!this.#retainsSourceInputs() && ownsLiveDispatch && liveCall && liveCommandId && this.#onSemanticToolInput && !this.#getCommand(liveCommandId)) {
         const call = liveCall;
         const commandId = liveCommandId;
         const recordFailure = (stage: "persist_result" | "dispatch", error: unknown) => {
