@@ -1,3 +1,5 @@
+import { notifyGitHubCredentialChange } from "../../github-connection-notifications.js";
+import { writeToolConnectionHealthChange } from "../../tool-connection-health-notifications.js";
 import type { ActorInfo } from "../types.js";
 import { createOAuthClientProtocol, storedOAuthTokenEndpointAuthMethod } from "./client.js";
 import { oauthConfig, normalizeOauthScopes, resolveGrantedOauthScopes } from "./metadata.js";
@@ -12,7 +14,7 @@ import { secretService } from "../../secrets.js";
 import { isPaperclipCloudConnectorStrategy, PaperclipCloudConnectorError, type PaperclipCloudConnector } from "../../paperclip-cloud-connector.js";
 
 import { actorForSecret, type OAuthCredentialStore } from "./credential-store.js";
-import { withoutOAuthRefreshLease, withoutOAuthGrantRefreshLease, type OAuthRefreshLeases } from "./refresh-leases.js";
+import { withoutOAuthRefreshLease, type OAuthRefreshLeases } from "./refresh-leases.js";
 import { managedConnectorProfile, oauthGrantConfig, oauthGrantExpiresAtMs } from "./client-settings.js";
 import { connectionSetupUrl, connectionReconnectUrl } from "../identifiers.js";
 import { singleFlight } from "../single-flight.js";
@@ -177,10 +179,7 @@ export function createOAuthGrantRefresh(db: Db, { now, store, leases, currentClo
               grant.kind === "user" && grant.subjectUserId
                 ? { actorType: "user", actorId: grant.subjectUserId }
                 : input.actor;
-            const providerTenant = {
-              ...(grant.providerTenant ?? {}),
-              oauth: {
-                ...withoutOAuthGrantRefreshLease(oauthGrantConfig(grant)),
+            const oauthUpdates = {
                 strategy: "paperclip_cloud_connector",
                 accessTokenExpiresAt: credentials.accessTokenExpiresAt,
                 scopes: credentials.scopes,
@@ -189,9 +188,9 @@ export function createOAuthGrantRefresh(db: Db, { now, store, leases, currentClo
                 ...(credentials.refreshTokenExpiresAt
                   ? { refreshTokenExpiresAt: credentials.refreshTokenExpiresAt }
                   : {}),
-              },
             };
             const updated = await db.transaction(async (tx) => {
+              await notifyGitHubCredentialChange(tx, connection);
               const [current] = await tx.select({ id: connectionGrants.id }).from(connectionGrants)
                 .where(and(eq(connectionGrants.id, grant.id), eq(connectionGrants.companyId, grant.companyId),
                   eq(connectionGrants.status, "active"),
@@ -216,7 +215,7 @@ export function createOAuthGrantRefresh(db: Db, { now, store, leases, currentClo
               const [committed] = await tx
                 .update(connectionGrants)
                 .set({
-                  providerTenant,
+                  providerTenant: sql`jsonb_set(coalesce(${connectionGrants.providerTenant}, '{}'::jsonb), '{oauth}', (coalesce(${connectionGrants.providerTenant}->'oauth', '{}'::jsonb) || ${JSON.stringify(oauthUpdates)}::jsonb) - 'refreshLease')`,
                   status: "active",
                   updatedAt: now(),
                 })
@@ -341,18 +340,11 @@ export function createOAuthGrantRefresh(db: Db, { now, store, leases, currentClo
                   ref.configPath !== "oauth.access_token" &&
                   ref.configPath !== "oauth.refresh_token",
               );
-            const providerTenant = {
-              ...(grant.providerTenant ?? {}),
-              oauth: {
-                ...withoutOAuthGrantRefreshLease(grantOauth),
-                accessTokenExpiresAt: undefined,
-              },
-            };
             const [marked] = await db
               .update(connectionGrants)
               .set({
                 status: "needs_reauthorization",
-                providerTenant,
+                providerTenant: sql`${connectionGrants.providerTenant} #- '{oauth,refreshLease}' #- '{oauth,accessTokenExpiresAt}'`,
                 credentialSecretRefs: retainedCredentialSecretRefs,
                 updatedAt: now(),
               })
@@ -393,7 +385,7 @@ export function createOAuthGrantRefresh(db: Db, { now, store, leases, currentClo
                 connection.id,
                 connection.companyId,
               );
-              const [reauthorizationRequired] = await db
+              const [reauthorizationRequired] = await writeToolConnectionHealthChange(db, latestConnection, tx => tx
                 .update(toolConnections)
                 .set({
                   status: "draft",
@@ -417,7 +409,7 @@ export function createOAuthGrantRefresh(db: Db, { now, store, leases, currentClo
                     eq(toolConnections.companyId, latestConnection.companyId),
                   ),
                 )
-                .returning();
+                .returning());
               await syncCredentialBindings(reauthorizationRequired);
               emitConnectionUpdated(
                 reauthorizationRequired,
@@ -522,26 +514,22 @@ export function createOAuthGrantRefresh(db: Db, { now, store, leases, currentClo
         if (connection.config.sourceTemplateKey === "google-workspace") {
           refreshed.scopes = googleWorkspaceEffectiveScopes(normalizeOauthScopes(grantOauth.requestedScopes ?? grantOauth.scopes), refreshed.scopes);
         }
-        const providerTenant = {
-          ...(grant.providerTenant ?? {}),
-          oauth: {
-            ...withoutOAuthGrantRefreshLease(grantOauth),
+        const oauthUpdates = {
             strategy:
               typeof grantOauth.strategy === "string"
                 ? grantOauth.strategy
                 : "direct_oauth",
-            accessTokenExpiresAt: expiresAt ?? undefined,
+            accessTokenExpiresAt: expiresAt ?? null,
             scopes: refreshed.scopes,
             scopeSource: refreshed.scopeSource,
             unrequestedScopes: refreshed.unrequestedScopes,
             tokenType: token.tokenType,
             refreshedAt: now().toISOString(),
-          },
         };
-        const [updated] = await db
+        const [updated] = await writeToolConnectionHealthChange(db, connection, tx => tx
           .update(connectionGrants)
           .set({
-            providerTenant,
+            providerTenant: sql`jsonb_set(coalesce(${connectionGrants.providerTenant}, '{}'::jsonb), '{oauth}', (coalesce(${connectionGrants.providerTenant}->'oauth', '{}'::jsonb) || ${JSON.stringify(oauthUpdates)}::jsonb) - 'refreshLease')`,
             credentialSecretRefs: nextCredentialSecretRefs,
             status: "active",
             updatedAt: now(),
@@ -554,7 +542,7 @@ export function createOAuthGrantRefresh(db: Db, { now, store, leases, currentClo
               sql`${connectionGrants.providerTenant} -> 'oauth' -> 'refreshLease' ->> 'id' = ${lease.leaseId}`,
             ),
           )
-          .returning();
+          .returning());
         if (!updated) {
           throw conflict(
             "OAuth credentials changed while refresh was in progress. Retry the request.",

@@ -8,6 +8,7 @@ import type {
   ToolConnection,
 } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ApiError } from "@/api/client";
 import {
   connectedConnectionIntentInteraction,
   issueThreadInteractionFixtureMeta,
@@ -237,6 +238,21 @@ afterEach(async () => {
 });
 
 describe("ConnectionIntentInteractionBody states and audience", () => {
+  it("opens the saved chat authentication step without another setup form", async () => {
+    const interaction = { ...pendingConnectionIntentInteraction, payload: { ...pendingConnectionIntentInteraction.payload,
+      purpose: "channel" as const, serviceSlug: "slack", serviceName: "Slack", phase: "authorizing" as const,
+      savedSetup: { endpointId: "endpoint", connectionId: "connection" } } };
+    setupOptionsMock.mockResolvedValue({ version: 1, interaction, requestedAgentId: interaction.payload.requestingAgentId,
+      existingConnections: [], service: { service: "slack", name: "Slack", methods: [], state: "needs_user_action" },
+      chatSetup: { endpointId: "endpoint", connectionId: "connection", path: "/ACME/apps/chat/connect?provider=slack&resume=endpoint" } });
+    renderBody(interaction);
+    await waitForAssertion(() =>
+      expect(document.querySelector('a')?.getAttribute("href")).toBe("/ACME/apps/chat/connect?provider=slack&resume=endpoint"),
+    );
+    expect(document.querySelector('[data-testid="shared-connection-setup"]')).toBeNull();
+    expect(completeMock).not.toHaveBeenCalled();
+  });
+
   it.each([
     [pendingConnectionIntentInteraction, "Connect"],
     [
@@ -336,25 +352,50 @@ describe("ConnectionIntentInteractionBody dialog behavior", () => {
     expect(button("Connect new")).toBeDefined();
   });
 
-  it("keeps a load failure open and recovers through the query retry", async () => {
-    setupOptionsMock.mockRejectedValueOnce(new Error("setup unavailable"));
+  it("keeps a load failure open with readable copy and recovers through the query retry", async () => {
+    setupOptionsMock.mockRejectedValueOnce(new ApiError("Request failed: 500", 500, { error: "internal_error" }));
     renderBody();
     await act(() => button("Connect / Use existing")?.click());
     await flush();
 
-    expect(document.body.textContent).toContain(
-      "Couldn’t load connection setup",
-    );
-    expect(document.body.textContent).toContain("setup unavailable");
+    expect(document.querySelector('[data-query-view="error"]')).not.toBeNull();
+    expect(document.body.textContent).toContain("Couldn't load connection setup");
+    expect(document.body.textContent).not.toContain("internal_error");
+    expect(document.body.textContent).not.toContain("Request failed: 500");
     setupOptionsMock.mockResolvedValueOnce({
       requestedAgentId: "agent-requesting",
       existingConnections: [],
     });
-    await act(() => button("Try again")?.click());
+    await act(() => button("Retry")?.click());
     await flush();
     expect(
       document.querySelector('[data-testid="shared-connection-setup"]'),
     ).not.toBeNull();
+    expect(document.querySelector('[data-query-view="error"]')).toBeNull();
+  });
+
+  it("keeps loaded setup options usable when a refetch fails during an outage", async () => {
+    renderBody();
+    await act(() => button("Connect / Use existing")?.click());
+    await flush();
+    expect(
+      document.querySelector('[data-testid="shared-connection-setup"]'),
+    ).not.toBeNull();
+
+    setupOptionsMock.mockRejectedValue(
+      new ApiError("Paperclip is restarting.", 503, { error: "tenant_app_unavailable" }),
+    );
+    await act(async () => {
+      await queryClient.invalidateQueries();
+    });
+    await flush();
+
+    expect(
+      document.querySelector('[data-testid="shared-connection-setup"]'),
+    ).not.toBeNull();
+    expect(document.querySelector('[data-query-view="error"]')).toBeNull();
+    expect(document.body.textContent).not.toContain("Paperclip is restarting.");
+    expect(document.body.textContent).not.toContain("Couldn't load connection setup");
   });
 
   it("completes an existing connection, closes, restores focus, and invalidates each task query once", async () => {

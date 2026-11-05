@@ -1,8 +1,10 @@
-import { and, eq } from "drizzle-orm";
-import { heartbeatRuns, issueRecoveryActions, workspaceOperations, type Db } from "@paperclipai/db";
-import type { ExecutionBlocker } from "@paperclipai/shared";
+import { and, desc, eq, sql, type AnyColumn } from "drizzle-orm";
+import { executionWorkspaces, executionWorkspaceSnapshots, heartbeatRuns, issueRecoveryActions, workspaceOperations, type Db } from "@paperclipai/db";
+import { readRemoteWorkspaceAuthority, remoteWorkspaceRunReferenceSchema, type ExecutionBlocker } from "@paperclipai/shared";
 import { z } from "zod";
 import { readNativeWorkspaceSyncReference } from "./native-runtime/native-workspace-sync.js";
+import { readMigratedLegacyWorkspaceSource } from "./legacy-workspace-recovery-migration.js";
+import { readSnapshot } from "./workspace-recovery-snapshot.js";
 
 export const workspaceRecoverySchema = z.object({
   schema: z.literal("paperclip.workspace-recovery.v1"),
@@ -22,6 +24,33 @@ export function readWorkspaceRecovery(evidence: Record<string, unknown> | null) 
   const parsed = workspaceRecoverySchema.safeParse(evidence?.workspaceRecovery);
   return parsed.success ? parsed.data : null;
 }
+
+export function completedWorkspaceRecoveryCondition(runId: string | AnyColumn) {
+  const operationIds = sql`case when jsonb_typeof(${issueRecoveryActions.evidence}#>'{systemRecovery,preservationOperationIds}') = 'array'
+    then ${issueRecoveryActions.evidence}#>'{systemRecovery,preservationOperationIds}' else '[]'::jsonb end`;
+  return and(
+    sql`${issueRecoveryActions.evidence}#>>'{systemRecovery,schema}' = 'paperclip.system-recovery.v1'`,
+    sql`${issueRecoveryActions.evidence}#>>'{systemRecovery,policyVersion}' = '1'`,
+    sql`${issueRecoveryActions.evidence}#>>'{systemRecovery,sourceRunId}' = ${runId}::text`,
+    sql`${issueRecoveryActions.evidence}#>>'{systemRecovery,state}' = 'complete'`,
+    sql`${issueRecoveryActions.evidence}#>>'{workspaceRecovery,schema}' = 'paperclip.workspace-recovery.v1'`,
+    sql`${issueRecoveryActions.evidence}#>>'{workspaceRecovery,runId}' = ${runId}::text`,
+    sql`${issueRecoveryActions.evidence}#>>'{workspaceRecovery,status}' = 'recovered'`,
+    sql`jsonb_array_length(${operationIds}) > 0`,
+    sql`not exists (select 1 from jsonb_array_elements_text(${operationIds}) saved(id) where not exists (
+      select 1 from ${workspaceOperations} op where op.company_id = ${issueRecoveryActions.companyId}
+        and op.issue_id = ${issueRecoveryActions.sourceIssueId} and op.heartbeat_run_id::text = ${runId}::text
+        and op.id::text = saved.id and op.status = 'succeeded'
+        and op.metadata->>'recoveryActionId' = ${issueRecoveryActions.id}::text
+        and op.phase in ('workspace_recovery', 'workspace_recovery_snapshot')))`,
+    sql`exists (select 1 from ${workspaceOperations} op where op.company_id = ${issueRecoveryActions.companyId}
+      and op.issue_id = ${issueRecoveryActions.sourceIssueId} and op.heartbeat_run_id::text = ${runId}::text
+      and op.phase = 'workspace_finalize' and op.status = 'succeeded'
+      and op.metadata->>'owningService' = 'workspace_recovery'
+      and op.metadata->'preservationOperationIds' = ${operationIds})`,
+  );
+}
+
 export function workspaceRecoveryDisplay(evidence: Record<string, unknown>, runId: string | null): ExecutionBlocker["workspaceRecovery"] {
   const state = readWorkspaceRecovery(evidence);
   if (!state || state.runId !== runId) return undefined;
@@ -40,16 +69,67 @@ export async function verifiedWorkspaceRepairReceipt(db: Db, run: Pick<typeof he
   "id" | "companyId" | "nativeIssueId" | "issueId" | "contextSnapshot" | "runnerProfileJson">) {
   const issueId = run.nativeIssueId ?? run.issueId ?? run.contextSnapshot?.issueId;
   const reference = readNativeWorkspaceSyncReference(run.runnerProfileJson?.nativeWorkspaceSync);
-  if (typeof issueId !== "string" || !reference || reference.state !== "finalized" || !reference.finalHostSha256) return null;
+  const parsedRemote = remoteWorkspaceRunReferenceSchema.safeParse(run.runnerProfileJson?.remoteWorkspace);
+  const remote = parsedRemote.success && parsedRemote.data.state === "saved" ? parsedRemote.data : null;
+  if ((run.runnerProfileJson?.remoteWorkspace != null && !parsedRemote.success) || reference && parsedRemote.success) return null;
+  if (typeof issueId === "string" && (reference?.state === "prepared" || !reference && !parsedRemote.success
+    && run.runnerProfileJson?.legacyWorkspaceRecoveryMigration != null)) {
+    let migrated;
+    try { migrated = await readMigratedLegacyWorkspaceSource(db, { companyId: run.companyId, runId: run.id, reference }); }
+    catch (error) { if (error instanceof Error && error.message === "legacy_workspace_migration_receipt_invalid") return null; throw error; }
+    if (migrated) {
+      const allocations = reference ? [{ leaseId: reference.leaseId, providerLeaseId: reference.providerLeaseId }]
+        : migrated.recoveryAllocations;
+      if (!allocations?.length) return null;
+      let receiptId: string | null = null;
+      for (const allocation of allocations) {
+        // Migration retires the local merge destination. A verified immutable
+        // attachment is the repair receipt; the old copyback remains unresolved.
+        // Provider stop and current execution ownership are checked separately.
+        const [saved] = await db.select({ id: workspaceOperations.id, metadata: workspaceOperations.metadata,
+          evidence: issueRecoveryActions.evidence }).from(workspaceOperations).innerJoin(issueRecoveryActions, and(
+          eq(issueRecoveryActions.companyId, workspaceOperations.companyId), eq(issueRecoveryActions.sourceIssueId, workspaceOperations.issueId),
+          sql`${issueRecoveryActions.id}::text = ${workspaceOperations.metadata}->>'recoveryActionId'`,
+        )).where(and(eq(workspaceOperations.companyId, run.companyId), eq(workspaceOperations.issueId, issueId),
+          eq(workspaceOperations.heartbeatRunId, run.id), eq(workspaceOperations.phase, "workspace_recovery_snapshot"),
+          eq(workspaceOperations.status, "succeeded"),
+          sql`${workspaceOperations.metadata}->>'leaseId' = ${allocation.leaseId}`,
+          sql`${workspaceOperations.metadata}->>'providerLeaseId' = ${allocation.providerLeaseId}`,
+          sql`${issueRecoveryActions.evidence}#>>'{workspaceRecovery,runId}' = ${run.id}`,
+          sql`${issueRecoveryActions.evidence}#>>'{workspaceRecovery,status}' = 'recovered'`,
+        )).orderBy(desc(workspaceOperations.createdAt)).limit(1);
+        if (!saved || readWorkspaceRecovery(saved.evidence)?.status !== "recovered") return null;
+        try { readSnapshot(saved.metadata, run.companyId, run.id); } catch { return null; }
+        receiptId = saved.id;
+      }
+      return receiptId;
+    }
+  }
+  if (typeof issueId !== "string" || (!remote && (!reference || reference.state !== "finalized" || !reference.finalHostSha256))) return null;
   const [receipt] = await db.select({ id: workspaceOperations.id, metadata: workspaceOperations.metadata }).from(workspaceOperations).where(and(
     eq(workspaceOperations.companyId, run.companyId), eq(workspaceOperations.issueId, issueId),
     eq(workspaceOperations.heartbeatRunId, run.id), eq(workspaceOperations.phase, "workspace_recovery"),
     eq(workspaceOperations.status, "succeeded"),
+    remote ? sql`${workspaceOperations.metadata}->>'snapshotId' = ${remote.snapshotId}` : undefined,
   )).limit(1);
   const proof = receipt?.metadata;
-  if (!proof || proof.leaseId !== reference.leaseId || proof.providerLeaseId !== reference.providerLeaseId
-    || proof.descriptorSha256 !== reference.descriptorSha256 || proof.finalHostSha256 !== reference.finalHostSha256
-    || typeof proof.recoveryActionId !== "string") return null;
+  if (!proof || typeof proof.recoveryActionId !== "string") return null;
+  if (remote) {
+    const [workspace] = await db.select({ metadata: executionWorkspaces.metadata }).from(executionWorkspaces).where(and(
+      eq(executionWorkspaces.companyId, run.companyId), eq(executionWorkspaces.id, remote.workspaceId),
+    ));
+    const authority = readRemoteWorkspaceAuthority(workspace?.metadata);
+    if (!authority || authority.dirty || authority.writerRunId || authority.epoch !== remote.epoch
+      || authority.snapshotId !== remote.snapshotId || proof.storage !== "remote_workspace"
+      || proof.leaseId !== remote.leaseId || proof.providerLeaseId !== remote.providerLeaseId || proof.epoch !== remote.epoch) return null;
+    const [snapshot] = await db.select().from(executionWorkspaceSnapshots).where(and(
+      eq(executionWorkspaceSnapshots.companyId, run.companyId), eq(executionWorkspaceSnapshots.executionWorkspaceId, remote.workspaceId),
+      eq(executionWorkspaceSnapshots.id, remote.snapshotId!), eq(executionWorkspaceSnapshots.status, "committed"),
+      eq(executionWorkspaceSnapshots.epoch, remote.epoch), eq(executionWorkspaceSnapshots.sourceRunId, run.id),
+    ));
+    if (!snapshot || snapshot.sha256 !== proof.sha256 || snapshot.generation !== proof.generation) return null;
+  } else if (!reference || proof.leaseId !== reference.leaseId || proof.providerLeaseId !== reference.providerLeaseId
+    || proof.descriptorSha256 !== reference.descriptorSha256 || proof.finalHostSha256 !== reference.finalHostSha256) return null;
   const [action] = await db.select({ evidence: issueRecoveryActions.evidence }).from(issueRecoveryActions).where(and(
     eq(issueRecoveryActions.companyId, run.companyId), eq(issueRecoveryActions.sourceIssueId, issueId),
     eq(issueRecoveryActions.id, proof.recoveryActionId),

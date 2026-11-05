@@ -18,13 +18,14 @@ import type { PrpEvent } from "../vendor/paperclip-runner/index.js";
 import { setupLiveEventsWebSocketServer } from "../realtime/live-events-ws.js";
 import { PaperclipControlPlanePort } from "../services/native-runtime/paperclip-control-plane-port.js";
 import { subscribeCompanyLiveEvents } from "../services/live-events.js";
-import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
+import { startRecoveryPostgres } from "./helpers/recovery-postgres.js";
+import { redactEventPayload } from "../redaction.js";
 import { compareObserverReplays, type ObserverReplayMeasurement } from "./helpers/observer-replay-report.js";
 
 const output = "Synthetic replay output.\n";
 const fixturePayloads = [
   ...Array.from({ length: 6 }, (_, index) => ({
-    eventType: "tool.execution.started",
+    eventType: "tool.execution.started" as const,
     payload: {
       schema: "paperclip.tool.execution.v1", executionId: `fixture-tool-${index + 1}`,
       transport: "builtin", operation: "execute", name: "synthetic-tool", target: null,
@@ -32,21 +33,21 @@ const fixturePayloads = [
       progress: null, output: null, outputBytes: 0, outputTruncated: false, outputDigest: null,
     },
   })),
-  { eventType: "item.delta", payload: { kind: "agentMessage", text: output } },
-  { eventType: "item.completed", payload: { kind: "agentMessage", item: { id: "answer", text: output } } },
+  { eventType: "item.delta" as const, payload: { kind: "agentMessage", text: output } },
+  { eventType: "item.completed" as const, payload: { kind: "agentMessage", item: { id: "answer", text: output } } },
 ];
 const fixture = createHash("sha256").update(JSON.stringify(fixturePayloads)).digest("hex");
-const expectedDeliveries = 7; // item.delta is durable but does not emit a live signal.
+const expectedDeliveries = fixturePayloads.length;
 
 describe("native event replay observation evidence", () => {
-  let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
+  let temporary: Awaited<ReturnType<typeof startRecoveryPostgres>>;
   let db: Db;
   const companyId = randomUUID();
   const agentId = randomUUID();
   const userId = `observer-${randomUUID()}`;
 
   beforeAll(async () => {
-    temporary = await startEmbeddedPostgresTestDatabase("observer-replay-");
+    temporary = await startRecoveryPostgres("observer-replay-");
     db = createDb(temporary.connectionString);
     await db.insert(companies).values({ id: companyId, name: "Synthetic replay", issuePrefix: "REPLAY" });
     await db.insert(agents).values({ id: agentId, companyId, name: "Fixture", adapterType: "codex_local" });
@@ -221,11 +222,12 @@ describe("native event replay observation evidence", () => {
       expect(rows.map(row => row.seq)).toEqual(events.map(event => event.sourceSeq));
       expect(durable.events.at(-1)?.payload).toEqual({ kind: "agentMessage", item: { id: "answer", text: output } });
       for (const messages of received) {
-        expect(messages.map(event => event.payload)).toEqual(events.filter(event => event.eventType !== "item.delta").map(event => ({
+        expect(messages.map(event => event.payload)).toEqual(events.map(event => ({
           runId, agentId, issueId, seq: event.sourceSeq, eventType: event.eventType,
+          stream: "system", level: "info", payload: redactEventPayload({ prpEvent: event }),
         })));
         expect(messages.every(event => event.companyId === companyId)).toBe(true);
-        expect(JSON.stringify(messages)).not.toContain(output.trim());
+        expect(JSON.stringify(messages)).toContain(output.trim());
       }
       expect(activeViewers).toBe(viewerCount);
       if (cadenceMs !== null) expect(pollOffsets.every(offsets => offsets.length >= 2)).toBe(true);

@@ -82,6 +82,13 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
     cloudDefault: false,
     selfHostedDefault: false,
   },
+  remoteWorkspaceStorageEnabled: {
+    title: "Remote workspace storage",
+    description: "Keep eligible new native sandbox workspaces remote when durable storage is configured, and save verified snapshots in object storage.",
+    tier: "managed",
+    cloudDefault: true,
+    selfHostedDefault: true,
+  },
   enableIsolatedWorkspacesByDefault: {
     title: "Isolated Workspaces By Default",
     description:
@@ -195,6 +202,14 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
     title: "Combined Inbox + Task List",
     description:
       "Inbox becomes a set of views inside Tasks: one Tasks row in the nav carries the unread badge, and a Views menu reaches every inbox and task view.",
+    tier: "managed",
+    cloudDefault: false,
+    selfHostedDefault: false,
+  },
+  enableArtifactsV1: {
+    title: "Artifacts V1",
+    description:
+      "The artifact presentation from the artifact directions lab: paper stacks and tiles on the Artifacts page, compact rows in the panel's Artifacts tab, and grouped rows in the task thread.",
     tier: "managed",
     cloudDefault: false,
     selfHostedDefault: false,

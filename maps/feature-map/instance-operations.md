@@ -19,7 +19,7 @@ Agent access: [companion](../agent-access-map/instance-operations.md).
 - `configuration`: `instance-operations/configuration` — configure database, server binding, storage, secrets, and available experimental settings.
 - `diagnostics`: `instance-operations/diagnostics` — use doctor/health output to distinguish readiness from a listening port.
 - `backup`: `instance-operations/backup` — create and inspect backups and verify restore only into a separate disposable target.
-- `runtime-setup`: `instance-operations/runtime-setup` — install verified Pi/Cursor runtime assets or import a release-matched Linux Pi companion into an owned published installation.
+- `runtime-setup`: `instance-operations/runtime-setup` — install verified Pi/Cursor runtime assets, stage pending Antigravity assets on macOS ARM64, or import a release-matched Linux Pi companion into an owned published installation.
 
 ## How to get to it (user POV)
 
@@ -33,7 +33,7 @@ Use currently visible instance settings for experiments/access and `paperclipai 
 
 ### `runtime-provisioning`
 
-On an owned published server installation, use `paperclipai runtime setup pi`, `paperclipai runtime setup cursor`, or `paperclipai runtime import-remote <companion-directory> --sha256 <trusted-companion-json-digest>`. Run as the OS user operating that installation; this is separate from source-checkout dependency installation.
+On an owned published server installation, use `paperclipai runtime setup pi`, `paperclipai runtime setup cursor`, `paperclipai runtime setup antigravity`, or `paperclipai runtime import-remote <companion-directory> --sha256 <trusted-companion-json-digest>`. Run as the OS user operating that installation; this is separate from source-checkout dependency installation. Antigravity setup stages a pinned patched macOS ARM64 runtime; it remains unavailable for tasks until native acceptance passes.
 
 ## Driving it with Playwright and the Paperclip CLI
 
@@ -51,6 +51,12 @@ It remains reachable during an idle drain. Use `/api/health` for explicit databa
 readiness, signed bootstrap, and authorized diagnostics; liveness does not
 establish database health or claim a workspace.
 
+Deployment routing uses public `GET /api/ready` (or `HEAD`). It returns 200 only
+after startup recovery finishes and 503 while starting, recovering, or draining.
+The probe reads in-memory state without SQL or session resolution. Local
+[readiness tests](../../server/src/__tests__/liveness.test.ts) establish that
+boundary; hosted overlap and active-run continuity require separate qualification.
+
 Automated: [static UI idle completion](../../server/src/__tests__/static-ui-idle.test.ts)
 covers real aborted file streams, disconnects before file lookup, nested routers,
 and unfinished parent/fallback writes. Mounted Express applications retain their
@@ -64,6 +70,16 @@ unfinished application write must still prevent sleep after its client leaves.
 ### `settings-backup`
 
 Automated: [experimental settings](../../ui/src/pages/InstanceExperimentalSettings.test.tsx) and [database backup routes](../../server/src/__tests__/instance-database-backups-routes.test.ts) cover their UI/API contracts.
+
+Cloud migration: in one maintenance window, stop legacy file writers and run the
+[configuration/package qualification command](../../doc/cloud-configuration-migration.md).
+Inspect its database receipt, update a saved preference, then repeat against a
+second owned application/image root with the first home unavailable. Use an
+explicit package evidence digest for same-package comparison. Confirm stale
+qualification and missing legacy files cannot clear blockers. This recipe covers
+configuration/packages and does not qualify whole-server zero downtime, secret
+bytes, or volume removal. [Local PostgreSQL evidence path](../../server/src/__tests__/cloud-configuration-migration-postgres.test.ts)
+includes a real fixture worker; it does not establish a hosted replacement.
 
 Manual: Change a harmless experimental setting, reload, and confirm the affected route honors it. Back up a disposable instance, inspect the reported file and metadata, and restore using the documented procedure into a second isolated target. Verify a known record after restoration.
 
@@ -89,6 +105,13 @@ Automated: [Runtime commands](../../cli/src/__tests__/runtime.test.ts), [setup](
 Manual: Use a disposable published installation and its exact runtime release. Run setup for the intended host runtime, inspect verified version/path, and repeat to confirm the existing installation is reused. Test a corrupt, linked, or foreign installation and verify rejection preserves unrelated files. Import a matching Linux x64 Pi companion with an independently trusted manifest digest; repeat for verified_existing, then alter manifest, inventory, source/profile identity, or target files and verify failure without replacing unrelated state. Inspect cleanup/cancellation. Finally use the selected adapter/account to run a bounded task separately: installed bytes do not prove model execution.
 
 Sources: [Runtime CLI](../../cli/src/commands/runtime.ts), [instance-config bypass](../../cli/src/index.ts), [Pi provisioning](../../packages/paperclip-runner/scripts/provision-pi.mjs), [Cursor provisioning](../../packages/paperclip-runner/scripts/provision-cursor.mjs), and [companion importer](../../server/src/services/native-runtime/remote-pi-companion.ts).
+
+Antigravity: [provisioning](../../packages/paperclip-runner/scripts/provision-antigravity.mjs),
+[closure/integrity regressions](../../packages/paperclip-runner/scripts/materialize-antigravity-distribution.test.mjs),
+and [pending admission tests](../../packages/paperclip-runner/src/drivers/acpx/antigravity-models.test.ts).
+Exercise public-layout setup and verify both native files and cleanup; separately
+verify that configuration/API/driver/sidecar reject the pending provider. These
+checks do not establish authenticated task execution.
 
 ## Gotchas
 
@@ -131,3 +154,15 @@ Scope: cli
 Storybook: No authored story required for doctor/health command results.
 Production: Run doctor against an owned data directory; check readiness and nonzero failures. A listening port alone does not prove readiness; repair requires observing the repaired result.
 Sources: Source: [doctor.ts](../../cli/src/commands/doctor.ts). Tests: [doctor.test.ts](../../cli/src/__tests__/doctor.test.ts)
+
+
+Incoming API wake is an optional Cloud deployment capability. On an owned qualified
+stack, close the browser, retain valid saved credentials, let the stack sleep,
+and send an ordinary API request. Check the persisted result and current
+revocation/company authorization after wake, truthful retry failures, and return
+to idle after successful API activity ends. Brokered GitHub bot wake uses the
+existing durable connector queue and exact registration ownership. Direct
+webhooks, persistent transports and personal GitHub credential continuity retain
+their explicit dependencies. [Source protocol](../../doc/idle-incoming-wake.md)
+and [local fixtures](../../server/src/__tests__/idle-incoming-wake.test.ts) cover
+these boundaries; they do not establish deployed host/database suspension.

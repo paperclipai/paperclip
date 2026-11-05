@@ -1,6 +1,8 @@
+import { describeError } from "@/api/errors";
 import { Component, Suspense, type ErrorInfo, type ReactNode } from "react";
 import { useLocation, useNavigate } from "@/lib/router";
 import { Button } from "@/components/ui/button";
+import { onChunkLoadReloadAbandoned, reloadForChunkLoadError } from "@/lib/chunk-load-recovery";
 import { captureBrowserException } from "@/lib/sentry";
 import { PaperclipLoading } from "./AnimatedPaperclipIcon";
 
@@ -12,16 +14,41 @@ type RouteErrorBoundaryInnerProps = {
 
 type RouteErrorBoundaryState = {
   error: Error | null;
+  reloading: boolean;
 };
 
 class RouteErrorBoundaryInner extends Component<RouteErrorBoundaryInnerProps, RouteErrorBoundaryState> {
-  override state: RouteErrorBoundaryState = { error: null };
+  override state: RouteErrorBoundaryState = { error: null, reloading: false };
+  private stopWaitingForReload: (() => void) | null = null;
 
-  static getDerivedStateFromError(error: unknown): RouteErrorBoundaryState {
+  static getDerivedStateFromError(error: unknown): Partial<RouteErrorBoundaryState> {
     return { error: error instanceof Error ? error : new Error(String(error)) };
   }
 
   override componentDidCatch(error: unknown, info: ErrorInfo): void {
+    this.stopWaiting();
+    if (reloadForChunkLoadError(error)) {
+      this.setState({ reloading: true });
+      this.stopWaitingForReload = onChunkLoadReloadAbandoned(() => {
+        this.stopWaitingForReload = null;
+        this.setState({ reloading: false });
+        this.report(error, info);
+      });
+      return;
+    }
+    this.report(error, info);
+  }
+
+  override componentWillUnmount(): void {
+    this.stopWaiting();
+  }
+
+  private stopWaiting(): void {
+    this.stopWaitingForReload?.();
+    this.stopWaitingForReload = null;
+  }
+
+  private report(error: unknown, info: ErrorInfo): void {
     console.error("Page render failed", { error, componentStack: info.componentStack });
     captureBrowserException(error, { boundary: "route", componentStack: info.componentStack });
   }
@@ -31,13 +58,15 @@ class RouteErrorBoundaryInner extends Component<RouteErrorBoundaryInnerProps, Ro
     // away (back button included) can't recover without a hard refresh. We sit
     // above the routed <Outlet />, so reset whenever the route changes.
     if (this.state.error && prevProps.resetKey !== this.props.resetKey) {
-      this.setState({ error: null });
+      this.stopWaiting();
+      this.setState({ error: null, reloading: false });
     }
   }
 
   override render() {
-    const { error } = this.state;
+    const { error, reloading } = this.state;
     if (!error) return this.props.children;
+    if (reloading) return <PaperclipLoading className="min-h-full" />;
 
     return (
       <div className="mx-auto max-w-2xl space-y-4 px-4 py-10">
@@ -48,7 +77,7 @@ class RouteErrorBoundaryInner extends Component<RouteErrorBoundaryInnerProps, Ro
           </p>
         </div>
         <pre className="overflow-auto rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive whitespace-pre-wrap">
-          {error.message}
+          {describeError(error).body}{/* // query-error-ok: error boundary; crash diagnostics, not a query read */}
         </pre>
         <div className="flex items-center gap-2">
           <Button variant="outline" size="sm" onClick={this.props.onReset}>

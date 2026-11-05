@@ -7,11 +7,15 @@ export function needsClaudeSetupQualification(input: {
   savedAgentId?: string | null;
   environment?: Pick<Environment, "driver" | "config"> | null;
 }): boolean {
-  const config = input.environment?.config;
+  return !input.savedAgentId && input.adapterType === "claude_local" && input.runner === "auto"
+    && canQualifyRunnerEnvironment(input.environment);
+}
+
+export function canQualifyRunnerEnvironment(environment?: Pick<Environment, "driver" | "config"> | null): boolean {
+  const config = environment?.config;
   const immutableImage = typeof config?.image === "string" && /^[^\s@]+@sha256:[a-f0-9]{64}$/.test(config.image) && !config.snapshot;
   const daytonaSnapshot = config?.provider === "daytona" && typeof config.snapshot === "string" && !!config.snapshot.trim() && !config.image;
-  return !input.savedAgentId && input.adapterType === "claude_local" && input.runner === "auto"
-    && input.environment?.driver === "sandbox" && (immutableImage || daytonaSnapshot)
+  return environment?.driver === "sandbox" && (immutableImage || daytonaSnapshot)
     && !config?.template && !config?.templateRef;
 }
 
@@ -21,19 +25,28 @@ export async function qualifyClaudeSetup(input: Parameters<typeof needsClaudeSet
   isCurrent: () => boolean;
 }): Promise<{ runner: AgentRunner; adapters: AdapterInfo[] } | undefined> {
   if (!needsClaudeSetupQualification(input)) return undefined;
+  return qualifyRunnerEnvironment(input);
+}
+
+export async function qualifyRunnerEnvironment(input: {
+  adapterType: string;
+  readAdapters: () => Promise<AdapterInfo[]>;
+  probeEnvironment: () => Promise<EnvironmentProbeResult>;
+  isCurrent: () => boolean;
+}): Promise<{ runner: AgentRunner; adapters: AdapterInfo[] } | undefined> {
   const validate = (adapters: AdapterInfo[]) => {
-    const claude = adapters.find(adapter => adapter.type === "claude_local");
-    const runner = claude?.defaultRunner;
-    if (!claude || (runner !== "paperclip" && runner !== "legacy") || !claude.supportedRunners?.includes(runner)) {
-      throw new Error("Could not confirm Claude runner availability for this environment. Retry setup.");
+    const harness = adapters.find(adapter => adapter.type === input.adapterType);
+    const runner = harness?.defaultRunner;
+    if (!harness || (runner !== "paperclip" && runner !== "legacy") || !harness.supportedRunners?.includes(runner)) {
+      throw new Error("Could not confirm runner availability for this environment. Retry setup.");
     }
-    return { runner, claude };
+    return { runner, harness };
   };
   let adapters = await input.readAdapters();
   if (!input.isCurrent()) return undefined;
   const selected = validate(adapters);
   const native = adapters.find(adapter => adapter.type === "paperclip_runner");
-  if (selected.runner === "paperclip" || selected.claude.disabled || selected.claude.overriddenBuiltin
+  if (selected.runner === "paperclip" || selected.harness.disabled || selected.harness.overriddenBuiltin
     || !native || native.disabled || native.overriddenBuiltin) return { runner: selected.runner, adapters };
   const probe = await input.probeEnvironment();
   if (!input.isCurrent()) return undefined;

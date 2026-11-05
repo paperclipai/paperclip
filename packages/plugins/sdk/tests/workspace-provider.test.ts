@@ -50,6 +50,45 @@ const result = {
   branchCreatedByRuntime: true,
 };
 describe("workspace provider SDK", () => {
+  it("bounds recovery hints to an exact PR number and commit", () => {
+    for (const kind of ["inspect", "remove"] as const) {
+      const operation = { kind, binding: result.binding, ...(kind === "remove" ? { expectedHeadSha: "a".repeat(40) } : {}) };
+      const recoveryPullRequest = { number: 42, headSha: "a".repeat(40) };
+      expect(workspaceProviderOperationSchema.parse({ ...operation, recoveryPullRequest })).toMatchObject({ recoveryPullRequest });
+      for (const bad of [{ ...recoveryPullRequest, number: 0 }, { ...recoveryPullRequest, number: 1.5 },
+        { ...recoveryPullRequest, headSha: "a".repeat(41) }, { ...recoveryPullRequest, ref: "refs/heads/main" }]) {
+        expect(() => workspaceProviderOperationSchema.parse({ ...operation, recoveryPullRequest: bad })).toThrow();
+      }
+    }
+  });
+  it("accepts only canonical optional preparation destinations", () => {
+    for (const destinationRef of [undefined, null, "refs/heads/main", "refs/heads/release/one"]) {
+      expect(parseWorkspaceProviderResult(params, { ...result, ...(destinationRef !== undefined ? { destinationRef } : {}) }))
+        .toMatchObject(result);
+    }
+    for (const destinationRef of ["main", "refs/tags/main", "refs/heads/main..other", "refs/heads/main/", "refs/heads/.hidden", "refs/heads/main.lock"]) {
+      expect(() => parseWorkspaceProviderResult(params, { ...result, destinationRef })).toThrow();
+    }
+  });
+  it("preserves a 255-character destination branch through preparation and restoration", () => {
+    const destinationRef = `refs/heads/release/${"a".repeat(247)}`;
+    expect(destinationRef).toHaveLength(266);
+    for (const input of [params, { ...params, operation: { ...params.operation, branchMode: "existing" as const, existing: result.binding } }]) {
+      expect(parseWorkspaceProviderResult(input as PluginWorkspaceParams, { ...result, destinationRef }))
+        .toMatchObject({ destinationRef });
+      expect(() => parseWorkspaceProviderResult(input as PluginWorkspaceParams, { ...result, destinationRef: `${destinationRef}a` })).toThrow();
+    }
+  });
+  it("separates completion acknowledgement from removal safety", () => {
+    const input: PluginWorkspaceParams = { ...params, agentId: id(6), runId: id(7),
+      operation: { kind: "finalize", binding: result.binding } };
+    expect(workspaceProviderOperationSchema.parse(input.operation)).toEqual(input.operation);
+    expect(parseWorkspaceProviderResult(input, { kind: "finalized", headSha: "a".repeat(40), branchName: "task" }))
+      .toEqual({ kind: "finalized", headSha: "a".repeat(40), branchName: "task" });
+    expect(() => parseWorkspaceProviderResult(input, { kind: "removed" })).toThrow();
+    expect(() => parseWorkspaceProviderResult(input, { kind: "finalized", headSha: "bad", branchName: "task" })).toThrow();
+    expect(() => workspaceProviderOperationSchema.parse({ ...input.operation, localPath: "/untrusted" })).toThrow();
+  });
   it("prepares without a VM, lease, or host path", async () => {
     const harness = createWorkspaceProviderHarness(async (input) => {
       expect(input.agentId).toBeNull();
@@ -85,6 +124,15 @@ describe("workspace provider SDK", () => {
       }),
     ).toThrow();
   });
+  it("expresses fresh outcomes without imposing Git storage layout", () => {
+    const fresh = { attemptId: id(6), sourceRunId: id(7), previousWorkspaceId: id(8),
+      recoverySnapshots: [{ operationId: id(9), sourceRunId: id(7),
+        archive: { path: "/controller/recovery/archive.tar", sha256: "a".repeat(64), byteSize: 1024 },
+        manifest: { path: "/controller/recovery/manifest.jsonl", sha256: "b".repeat(64), byteSize: 128 } }] };
+    expect(workspaceProviderOperationSchema.parse({ ...params.operation, fresh })).toMatchObject({ fresh });
+    expect(() => workspaceProviderOperationSchema.parse({ ...params.operation, fresh: { ...fresh, independentGitStorage: true } })).toThrow();
+    expect(() => workspaceProviderOperationSchema.parse({ ...params.operation, fresh: { ...fresh, recoverySnapshots: [{ ...fresh.recoverySnapshots[0], archive: { ...fresh.recoverySnapshots[0].archive, sha256: "invalid" } }] } })).toThrow();
+  });
   it("requires project lifecycle and storage management as one contract", () => {
     const manifest = {
       id: "test.storage",
@@ -103,6 +151,17 @@ describe("workspace provider SDK", () => {
       resourceLifecycle: ["project"],
     };
     expect(pluginManifestV1Schema.safeParse(manifest).success).toBe(true);
+    expect(pluginManifestV1Schema.parse({ ...manifest, workspaceProvider: { ...manifest.workspaceProvider,
+      recoveryPullRequestVersion: 1 } }).workspaceProvider?.recoveryPullRequestVersion).toBe(1);
+    expect(pluginManifestV1Schema.safeParse({ ...manifest, workspaceProvider: { ...manifest.workspaceProvider,
+      recoveryPullRequestVersion: 2 } }).success).toBe(false);
+    const withDefault = { ...manifest, workspaceProvider: { ...manifest.workspaceProvider,
+      defaultForProjects: { mode: "isolated_workspace", strategy: "git_worktree" } } };
+    expect(pluginManifestV1Schema.parse(withDefault).workspaceProvider?.defaultForProjects).toEqual({
+      mode: "isolated_workspace", strategy: "git_worktree",
+    });
+    expect(pluginManifestV1Schema.safeParse({ ...withDefault, workspaceProvider: { ...withDefault.workspaceProvider,
+      defaultForProjects: { mode: "shared_workspace", strategy: "git_worktree" } } }).success).toBe(false);
     expect(
       pluginManifestV1Schema.safeParse({
         ...manifest,

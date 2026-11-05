@@ -2,7 +2,10 @@ import express from "express";
 import request from "supertest";
 import { getTableName } from "drizzle-orm";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { HttpError } from "../errors.js";
+import { HttpError, unprocessable } from "../errors.js";
+import { normalizeIssueExecutionPolicy } from "../services/issue-execution-policy.js";
+import { issueRoutes } from "../routes/issues.js";
+import { errorHandler } from "../middleware/index.js";
 
 vi.mock("../services/fast-responses.js", () => ({
   enqueueFastResponse: vi.fn(async () => undefined),
@@ -32,11 +35,21 @@ const mockAccessService = vi.hoisted(() => ({
 }));
 
 const mockHeartbeatService = vi.hoisted(() => ({
-  wakeup: vi.fn(async () => undefined),
+  wakeup: vi.fn(async (_agentId: string, _wakeup: { reason?: string }) => undefined),
   reportRunActivity: vi.fn(async () => undefined),
-  getRun: vi.fn(async () => null),
+  getRun: vi.fn(async (): Promise<unknown> => null),
   getActiveRunForAgent: vi.fn(async () => null),
-  cancelRun: vi.fn(async () => null),
+  cancelRun: vi.fn(async (): Promise<unknown> => null),
+}));
+
+const mockExecutionWorkspaceService = vi.hoisted(() => ({
+  getStoredById: vi.fn(async (): Promise<unknown> => null),
+  reopenClosedIsolatedExecutionWorkspaceForIssue: vi.fn(),
+}));
+
+vi.mock("../services/execution-workspaces.js", async importOriginal => ({
+  ...await importOriginal<typeof import("../services/execution-workspaces.js")>(),
+  executionWorkspaceService: () => mockExecutionWorkspaceService,
 }));
 
 const mockAgentService = vi.hoisted(() => ({
@@ -46,17 +59,27 @@ const mockAgentService = vi.hoisted(() => ({
 }));
 
 const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
+const mockSyncCommentReferences = vi.hoisted(() => vi.fn(async () => undefined));
 const mockTxInsertValues = vi.hoisted(() => vi.fn(async () => undefined));
 const mockTxInsert = vi.hoisted(() =>
   vi.fn(() => ({ values: mockTxInsertValues })),
 );
 const mockTx = vi.hoisted(() => ({
+  select: () => mockDbSelect(),
   insert: mockTxInsert,
 }));
 const mockDbSelectOrderBy = vi.hoisted(() => vi.fn(async () => []));
 const mockDbSelectWhere = vi.hoisted(() =>
-  vi.fn(() => ({
+  vi.fn((): {
+    orderBy?: () => Promise<unknown[]>;
+    for?: () => Promise<Array<{ id: string }>>;
+    then: (
+      onFulfilled: (rows: unknown[]) => unknown,
+      onRejected?: (reason: unknown) => unknown,
+    ) => Promise<unknown>;
+  } => ({
     orderBy: mockDbSelectOrderBy,
+    for: async () => [{ id: "comment-1" }],
     then: (
       onFulfilled: (rows: unknown[]) => unknown,
       onRejected?: (reason: unknown) => unknown,
@@ -64,7 +87,7 @@ const mockDbSelectWhere = vi.hoisted(() =>
   })),
 );
 const mockDbSelectFrom = vi.hoisted(() =>
-  vi.fn((_table: unknown) => ({ where: mockDbSelectWhere })),
+  vi.fn((_table: unknown): { where: (...args: never[]) => unknown } => ({ where: mockDbSelectWhere })),
 );
 const mockDbSelect = vi.hoisted(() =>
   vi.fn(() => ({ from: mockDbSelectFrom })),
@@ -106,7 +129,7 @@ const mockIssueRecoveryActionService = vi.hoisted(() => ({
   getActiveForIssue: vi.fn(async () => null),
 }));
 const mockIssueTreeControlService = vi.hoisted(() => ({
-  getActivePauseHoldGate: vi.fn(async () => null),
+  getActivePauseHoldGate: vi.fn(async (): Promise<unknown> => null),
 }));
 const mockExternalObjectService = vi.hoisted(() => ({
   syncCommentSafely: vi.fn(async () => undefined),
@@ -184,7 +207,7 @@ vi.mock("../services/index.js", () => ({
     remapOpenThreadsForDocument: async () => [],
   }),
   documentService: () => ({}),
-  executionWorkspaceService: () => ({}),
+  executionWorkspaceService: () => mockExecutionWorkspaceService,
   feedbackService: () => mockFeedbackService,
   goalService: () => ({}),
   heartbeatService: () => mockHeartbeatService,
@@ -200,7 +223,7 @@ vi.mock("../services/index.js", () => ({
     }),
     emptySummary: () => ({ outbound: [], inbound: [] }),
     listIssueReferenceSummary: async () => ({ outbound: [], inbound: [] }),
-    syncComment: async () => undefined,
+    syncComment: mockSyncCommentReferences,
     syncDocument: async () => undefined,
     syncIssue: async () => undefined,
   }),
@@ -233,10 +256,6 @@ async function installActor(
   app: express.Express,
   actor?: Record<string, unknown>,
 ) {
-  const [{ issueRoutes }, { errorHandler }] = await Promise.all([
-    import("../routes/issues.js"),
-    import("../middleware/index.js"),
-  ]);
   app.use((req, _res, next) => {
     (req as any).actor = actor ?? {
       type: "board",
@@ -261,9 +280,9 @@ async function normalizePolicy(input: {
     >;
   }>;
 }) {
-  const { normalizeIssueExecutionPolicy } =
-    await import("../services/issue-execution-policy.js");
-  return normalizeIssueExecutionPolicy(input);
+  const policy = normalizeIssueExecutionPolicy(input);
+  if (!policy) throw new Error("Expected the fixture to normalize to an execution policy");
+  return policy;
 }
 
 function makeIssue(
@@ -396,10 +415,13 @@ describe("issue comment reopen routes", () => {
     mockHeartbeatService.getRun.mockReset();
     mockHeartbeatService.getActiveRunForAgent.mockReset();
     mockHeartbeatService.cancelRun.mockReset();
+    mockExecutionWorkspaceService.getStoredById.mockReset().mockResolvedValue(null);
+    mockExecutionWorkspaceService.reopenClosedIsolatedExecutionWorkspaceForIssue.mockReset();
     mockAgentService.getById.mockReset();
     mockAgentService.list.mockReset();
     mockAgentService.resolveByReference.mockReset();
     mockLogActivity.mockReset();
+    mockSyncCommentReferences.mockReset().mockResolvedValue(undefined);
     mockFeedbackService.listIssueVotesForUser.mockReset();
     mockFeedbackService.saveIssueVote.mockReset();
     mockInstanceSettingsService.get.mockReset();
@@ -425,6 +447,7 @@ describe("issue comment reopen routes", () => {
     mockDbSelectOrderBy.mockResolvedValue([]);
     mockDbSelectWhere.mockImplementation(() => ({
       orderBy: mockDbSelectOrderBy,
+      for: async () => [{ id: "comment-1" }],
       then: (
         onFulfilled: (rows: unknown[]) => unknown,
         onRejected?: (reason: unknown) => unknown,
@@ -574,6 +597,68 @@ describe("issue comment reopen routes", () => {
         };
       },
     );
+  });
+
+  it.each(["comment", "update"])("accepts an authorized cross-task %s without restoring the target's files", async operation => {
+    const issue = { ...makeIssue("done"), executionWorkspaceId: "33333333-3333-4333-8333-333333333333" };
+    const actor = { ...agentActor(), source: "agent_jwt", runId: "66666666-6666-4666-8666-666666666666" };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockResolvedValue({ ...issue, status: "todo" });
+    mockHeartbeatService.getRun.mockResolvedValue({ id: actor.runId, agentId: actor.agentId,
+      companyId: issue.companyId, status: "running", runtimeMode: "native",
+      nativeIssueId: "55555555-5555-4555-8555-555555555555", contextSnapshot: {} });
+    mockExecutionWorkspaceService.getStoredById.mockResolvedValue({ id: issue.executionWorkspaceId,
+      companyId: issue.companyId, sourceIssueId: issue.id, mode: "isolated_workspace", status: "archived",
+      closedAt: new Date("2020-01-01T00:00:00Z"), cleanupReason: "issue_terminal" });
+    // A scanner's run may change this task, but cannot execute in its workspace.
+    mockExecutionWorkspaceService.reopenClosedIsolatedExecutionWorkspaceForIssue.mockRejectedValue(
+      new HttpError(403, "Task workspace run identity is unavailable"));
+    const app = request(await installActor(createApp(), actor));
+    const response = operation === "comment"
+      ? await app.post(`/api/issues/${issue.id}/comments`).send({ body: "New regression evidence", resume: true })
+      : await app.patch(`/api/issues/${issue.id}`).send({ comment: "New regression evidence", resume: true });
+
+    expect(response.status, JSON.stringify(response.body)).toBe(operation === "comment" ? 201 : 200);
+    expect(mockIssueService.update.mock.calls[0]?.slice(0, 2))
+      .toEqual([issue.id, expect.objectContaining({ status: "todo" })]);
+    expect(mockExecutionWorkspaceService.reopenClosedIsolatedExecutionWorkspaceForIssue).not.toHaveBeenCalled();
+    await waitForWakeup(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(issue.assigneeAgentId,
+      expect.objectContaining({ payload: expect.objectContaining({ issueId: issue.id }) })));
+  });
+
+  it("finishes missing reference and activity writes for an accepted comment", async () => {
+    const issue = makeIssue("done");
+    mockIssueService.getById.mockResolvedValue(issue);
+    const selectFrom = mockDbSelectFrom.getMockImplementation()!;
+    mockDbSelectFrom.mockImplementation((table) => getTableName(table as Parameters<typeof getTableName>[0]) === "issue_comments"
+      ? { where: vi.fn(() => Object.assign(Promise.resolve([{ id: "comment-1" }]), { for: async () => [{ id: "comment-1" }] })) } as any : selectFrom(table));
+    const response = await request(await installActor(createApp())).post(`/api/issues/${issue.id}/comments`)
+      .send({ body: "hello", clientRequestId: "77777777-7777-4777-8777-777777777777" });
+    expect(response.status).toBe(201);
+    expect(mockSyncCommentReferences).toHaveBeenCalledWith("comment-1", expect.anything());
+    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: "issue.comment_added", details: expect.objectContaining({ commentId: "comment-1" }),
+    }), expect.anything());
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])("returns a retained comment before reopening completed work (changed body=%s)", async (changed) => {
+    const issue = makeIssue("done");
+    const requestId = "77777777-7777-4777-8777-777777777777";
+    mockIssueService.getById.mockResolvedValue(issue);
+    const selectFrom = mockDbSelectFrom.getMockImplementation()!;
+    mockDbSelectFrom.mockImplementation((table) => getTableName(table as Parameters<typeof getTableName>[0]) === "issue_comments"
+      ? { where: vi.fn(() => Object.assign(Promise.resolve([{ id: "comment-1" }]), { for: async () => [{ id: "comment-1" }] })) } as any : getTableName(table as Parameters<typeof getTableName>[0]) === "activity_log"
+        ? { where: async () => [{ id: "activity-1" }] } as any : selectFrom(table));
+    if (changed) mockIssueService.addComment.mockRejectedValue(new HttpError(409, "Message request ID was already used for different content"));
+    const response = await request(await installActor(createApp())).post(`/api/issues/${issue.id}/comments`)
+      .send({ body: changed ? "Changed body" : "hello", clientRequestId: requestId });
+    expect(response.status).toBe(changed ? 409 : 201);
+    if (!changed) expect(response.body.id).toBe("comment-1");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
 
   it("treats reopen=true as a no-op when the issue is already open", async () => {
@@ -3666,7 +3751,6 @@ describe("issue comment reopen routes", () => {
       authorAgentId: reviewerAgentId,
       authorUserId: null,
     });
-    const { unprocessable } = await import("../errors.js");
     mockIssueService.update.mockRejectedValue(
       unprocessable("Issue can only have one assignee"),
     );

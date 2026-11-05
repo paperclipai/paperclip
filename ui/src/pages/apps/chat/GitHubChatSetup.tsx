@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { ExternalLink, Loader2 } from "lucide-react";
 import type { GitHubAppWizardState } from "@paperclipai/shared";
 import { agentsApi } from "@/api/agents";
@@ -22,8 +23,9 @@ import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { useNavigate, useSearchParams, Link } from "@/lib/router";
 import { buildPermissionsForTrustPreset } from "@/lib/trust-policy-ui";
 import { queryKeys } from "@/lib/queryKeys";
-import { GitHubAppRecovery } from "./GitHubConnectionRecovery";
+import { GITHUB_APP_CREDENTIAL_FIELDS, GitHubAppRecovery } from "./GitHubConnectionRecovery";
 import type { GitHubConnectionCompleteLocationState } from "./GitHubConnectionComplete";
+import { describeError } from "@/api/errors";
 
 /** Restrict native manifest submission to GitHub registration endpoints. */
 export function gitHubAppManifestAction(
@@ -80,7 +82,11 @@ export function GitHubChatSetup() {
   const queryClient = useQueryClient();
   const resume = params.get("resume");
   const identityOnly = params.get("stage") === "identity";
-  const reconnect = params.get("reconnect") === "1";
+  const rotateWebhookSecret = params.get("rotateSecret") === "1";
+  const reconnect = params.get("reconnect") === "1" || rotateWebhookSecret;
+  const credentialFields = reconnect && !rotateWebhookSecret && params.get("stage") === "credentials"
+    ? GITHUB_APP_CREDENTIAL_FIELDS.filter(field => !params.has("credentialFields") || params.get("credentialFields")!.split(",").includes(field))
+    : undefined;
   const [agentId, setAgentId] = useState(params.get("agentId") ?? "");
   const [ownerType, setOwnerType] = useState<"personal" | "organization">(
     "personal",
@@ -91,7 +97,7 @@ export function GitHubChatSetup() {
   const [busy, setBusy] = useState(false);
   const [submitManifest, setSubmitManifest] = useState(false);
   const [error, setError] = useState("");
-  const [existing, setExisting] = useState(params.get("reconnect") === "1");
+  const [existing, setExisting] = useState(reconnect || params.get("stage") === "credentials");
   const [appNotCreated, setAppNotCreated] = useState(false);
   const [legacyAccount, setLegacyAccount] = useState("");
   const [identityLinked, setIdentityLinked] = useState(false);
@@ -109,6 +115,7 @@ export function GitHubChatSetup() {
     enabled: !!resume,
     refetchInterval: 3000,
   });
+  const currentView = useQueryView(current);
   const bot = current.data;
   const progress = useQuery({
     queryKey: ["github-wizard", resume],
@@ -120,13 +127,14 @@ export function GitHubChatSetup() {
       )
         ? false
         : 5000,
-    retry: false,
   });
+  const progressView = useQueryView(progress);
   const accounts = useQuery({
     queryKey: ["github-personal-connections", resume],
     queryFn: () => githubChatApi.personalConnections(resume!),
     enabled: !!bot && (identityOnly || progress.data?.state === "identity"),
   });
+  const accountsView = useQueryView(accounts);
   const selectedAgent = agents.data?.find(
     (agent) => agent.id === (bot?.assignedAgentId ?? agentId),
   );
@@ -138,12 +146,16 @@ export function GitHubChatSetup() {
     enabled: !!selectedCompanyId && choosingAccount,
     staleTime: 30_000,
   });
+  const repositoriesView = useQueryView(repositories);
   const connectedBots = useQuery({
     queryKey: queryKeys.chatEndpoints.list(selectedCompanyId!),
     queryFn: () => chatEndpointsApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId && choosingAccount,
     staleTime: 30_000,
   });
+  const connectedBotsView = useQueryView(connectedBots);
+  const setupReadFailure = accountsView.kind === "error" ? accountsView
+    : !identityOnly && progressView.kind === "error" ? progressView : null;
   const organizations = new Map<string, string>();
   for (const repository of repositories.data?.repositories ?? []) {
     if (repository.ownerType !== "organization") continue;
@@ -210,9 +222,7 @@ export function GitHubChatSetup() {
       await action();
     } catch (error) {
       setError(
-        error instanceof Error
-          ? error.message
-          : "Could not connect GitHub. Try again.",
+        describeError(error).body,
       );
     } finally {
       setBusy(false);
@@ -267,7 +277,7 @@ export function GitHubChatSetup() {
     return (
       <div className="mx-auto w-full max-w-3xl space-y-6 px-4 py-6 sm:px-6">
         <h1 className="text-2xl font-semibold">Resume GitHub setup</h1>
-        {current.error ? (
+        {currentView.kind === "error" ? (
           <p role="alert" className="text-sm text-destructive">
             Could not load this connection. Try again to resume your draft.
           </p>
@@ -276,7 +286,7 @@ export function GitHubChatSetup() {
             Loading your draft…
           </p>
         )}
-        {footer(current.error ? "Try again" : undefined, async () => {
+        {footer(currentView.kind === "error" ? "Try again" : undefined, async () => {
           await current.refetch();
         })}
       </div>
@@ -301,17 +311,19 @@ export function GitHubChatSetup() {
               ? "Connect your account"
               : reconnect && existing ? "Reconnect GitHub" : "Connect GitHub"}
       </h1>
-      {(error || (!identityOnly && !existing && progress.error) || accounts.error) && (
+      {error ? (
         <p role="alert" className="text-sm text-destructive">
-          {error ||
-            (accounts.error instanceof Error
-              ? accounts.error.message
-              : undefined) ||
-            (progress.error instanceof Error
-              ? progress.error.message
-              : "Could not check GitHub setup. Try again.")}
+          {error}
         </p>
-      )}
+      ) : setupReadFailure ? (
+        <QueryErrorState
+          size="inline"
+          error={setupReadFailure.error}
+          action="check GitHub setup"
+          onRetry={setupReadFailure.retry}
+          retrying={setupReadFailure.isFetching}
+        />
+      ) : null}
       {!bot ? (
         <>
           <AgentSelect
@@ -366,7 +378,7 @@ export function GitHubChatSetup() {
             !agentId || !selectedCompanyId,
           )}
         </>
-      ) : !identityOnly && !existing && progress.isPending ? (
+      ) : !identityOnly && !existing && (progress.isPending || progressView.kind === "reconnecting") ? (
         <>
           <p role="status" className="text-sm text-muted-foreground">
             Checking your GitHub connection…
@@ -375,15 +387,21 @@ export function GitHubChatSetup() {
         </>
       ) : existing ? (
         <GitHubAppRecovery
-          key={bot.id}
+          key={`${bot.id}:${rotateWebhookSecret ? params.get("afterRotationId") ?? "unspecified" : credentialFields?.join(",") ?? "credentials"}`}
           endpoint={bot}
           reconnect={reconnect}
+          credentialFields={credentialFields}
+          requireAllCredentialFields={params.get("credentialMode") === "all"}
+          rotateWebhookSecret={rotateWebhookSecret}
+          rotationAlreadyCommitted={params.has("afterRotationId") && !!bot.setup?.credentialRotationId && bot.setup.credentialRotationId !== params.get("afterRotationId")}
           onExit={exit}
           onConnect={async (credentials) => {
             if (reconnect || ["active", "paused", "revoked"].includes(bot.status)) {
               await chatEndpointsApi.setup(bot.id, {
                 action: "reconnect",
-                ...(credentials ? { credentials: { appId: credentials.appId.trim(), privateKey: credentials.privateKey } } : {}),
+                ...(credentials ? { credentials: Object.fromEntries(Object.entries(credentials).filter(([field, value]) =>
+                  value?.trim() && (!credentialFields || credentialFields.some(requested => requested === field) || (field === "appId" && !!credentials.privateKey.trim() && credentialFields.includes("privateKey"))),
+                ).map(([field, value]) => [field, field === "appId" ? value!.trim() : value])) } : {}),
               });
             } else if (credentials) {
               await githubChatApi.connectApp(bot.id, credentials);
@@ -604,7 +622,7 @@ export function GitHubChatSetup() {
               ))}
               <option value="organization">Another organization</option>
             </select>
-            {(repositories.isError || connectedBots.isError) && (
+            {(repositoriesView.kind === "error" || connectedBotsView.kind === "error") && (
               <p role="alert" className="text-sm text-destructive">
                 Could not load some connected GitHub accounts. Choose Another organization to enter a name.
               </p>

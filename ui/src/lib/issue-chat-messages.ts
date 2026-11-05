@@ -26,6 +26,7 @@ import {
 
 type JsonValue = null | string | number | boolean | JsonValue[] | { [key: string]: JsonValue };
 type JsonObject = { [key: string]: JsonValue };
+const TERMINAL_RUN_STATUSES = new Set(["succeeded", "failed", "timed_out", "cancelled", "interrupted"]);
 
 export interface IssueChatComment extends IssueComment {
   runId?: string | null;
@@ -755,7 +756,7 @@ function computeSegmentTimings(entries: readonly IssueChatTranscriptEntry[]): Se
       entry.kind === "tool_result" ||
       entry.kind === "diff" ||
       entry.kind === "provider_activity" ||
-      (entry.kind === "result" && ((entry.isError && !!entry.errors?.length) || !!entry.text));
+      (entry.kind === "result" && ((entry.isError && !!entry.errors?.length) || !!entry.text)); // query-error-ok: chat-message entry flag, not a query read
     const isText = entry.kind === "assistant" && !!entry.text;
 
     if (isCoT) {
@@ -1011,7 +1012,7 @@ export function buildAssistantPartsFromTranscript(entries: readonly IssueChatTra
     if (entry.kind === "stdout") continue;
     if (entry.kind === "system") continue;
     if (entry.kind === "result") {
-      if (entry.isError && entry.errors?.length) {
+      if (entry.isError && entry.errors?.length) { // query-error-ok: chat-message entry flag, not a query read
         for (const error of entry.errors) {
           orderedParts.push({ type: "reasoning", text: `Run error: ${summarizeNotice(error)}` });
         }
@@ -1243,7 +1244,18 @@ export function buildIssueChatMessages(args: {
     });
   }
 
-  for (const run of [...linkedRuns].sort((a, b) => toTimestamp(runTimestamp(a)) - toTimestamp(runTimestamp(b)))) {
+  const linkedRunsById = new Map(linkedRuns.map((run) => [run.runId, run]));
+  const liveRunsById = new Map(normalizeLiveRuns(liveRuns, activeRun, issueId, issueStatus).map((run) => [run.id, run]));
+  // History can settle before the live cache drops the same run. Select one
+  // representation before creating messages: terminal history is authoritative;
+  // otherwise keep the streaming snapshot and its live metadata.
+  for (const [runId, run] of linkedRunsById) {
+    if (!liveRunsById.has(runId)) continue;
+    if (TERMINAL_RUN_STATUSES.has(run.status)) liveRunsById.delete(runId);
+    else linkedRunsById.delete(runId);
+  }
+
+  for (const run of [...linkedRunsById.values()].sort((a, b) => toTimestamp(runTimestamp(a)) - toTimestamp(runTimestamp(b)))) {
     const transcript = transcriptsByRunId?.get(run.runId) ?? [];
     const hasRunOutput = transcript.length > 0 || (hasOutputForRun?.(run.runId) ?? false);
     if (hasRunOutput || run.status !== "succeeded") {
@@ -1270,7 +1282,7 @@ export function buildIssueChatMessages(args: {
     });
   }
 
-  for (const run of normalizeLiveRuns(liveRuns, activeRun, issueId, issueStatus)) {
+  for (const run of liveRunsById.values()) {
     orderedMessages.push({
       createdAtMs: toTimestamp(run.startedAt ?? run.createdAt),
       order: 3,

@@ -1,3 +1,4 @@
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 import express from "express";
@@ -41,6 +42,8 @@ import {
 import {
   ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
   LOW_TRUST_REVIEW_PRESET,
+  type IssueCommentMetadata,
+  type IssueCommentPresentation,
 } from "@paperclipai/shared";
 import {
   getEmbeddedPostgresTestSupport,
@@ -55,12 +58,13 @@ import { issueService } from "../services/issues.js";
 import { heartbeatService } from "../services/heartbeat.js";
 import { LOW_TRUST_QUARANTINED_BODY } from "../services/source-trust.js";
 
+const externalTestDatabaseUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_LOW_TRUST_TEST_DATABASE_URL");
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
-const describeEmbeddedPostgres = embeddedPostgresSupport.supported
+const describeEmbeddedPostgres = externalTestDatabaseUrl || embeddedPostgresSupport.supported
   ? describe
   : describe.skip;
 
-if (!embeddedPostgresSupport.supported) {
+if (!externalTestDatabaseUrl && !embeddedPostgresSupport.supported) {
   console.warn(
     `Skipping embedded Postgres low-trust route tests on this host: ${
       embeddedPostgresSupport.reason ?? "unsupported environment"
@@ -130,6 +134,14 @@ async function deleteCompanySkillsAfterLateHeartbeatWritesDrain(db: Db) {
     }
   }
   throw lastError;
+}
+
+function canaryCommentMetadata(canary: string): IssueCommentMetadata {
+  return { version: 1, sections: [{ title: canary, rows: [{ type: "key_value", label: "Output", value: canary }] }] };
+}
+
+function canaryCommentPresentation(canary: string): IssueCommentPresentation {
+  return { kind: "message", tone: "neutral", title: canary, detailsDefaultOpen: false };
 }
 
 function expectNoCanary(value: unknown, ...markers: string[]) {
@@ -885,10 +897,10 @@ describeEmbeddedPostgres(
     }
 
     beforeAll(async () => {
-      tempDb = await startEmbeddedPostgresTestDatabase(
+      if (!externalTestDatabaseUrl) tempDb = await startEmbeddedPostgresTestDatabase(
         "paperclip-low-trust-red-team-routes-",
       );
-      db = createDb(tempDb.connectionString);
+      db = createDb(externalTestDatabaseUrl ?? tempDb!.connectionString);
     }, 20_000);
 
     afterEach(async () => {
@@ -927,6 +939,7 @@ describeEmbeddedPostgres(
     });
 
     afterAll(async () => {
+      await db?.$client.end({ timeout: 1 });
       await tempDb?.cleanup();
     });
 
@@ -1485,7 +1498,7 @@ describeEmbeddedPostgres(
 
       const standardActor = agentActor(fixture, fixture.agents.standard.id);
       const standardRes = await request(
-        createApp(db, { ...standardActor, runId: null }),
+        createApp(db, { ...standardActor, runId: undefined }),
       ).get("/api/agents/me");
       expect(standardRes.status, JSON.stringify(standardRes.body)).toBe(200);
       expect(JSON.stringify(standardRes.body)).toContain(
@@ -1963,8 +1976,8 @@ describeEmbeddedPostgres(
         await db
           .update(issueComments)
           .set({
-            metadata: { canary: fixture.canaries.raw },
-            presentation: { markdown: fixture.canaries.raw },
+            metadata: canaryCommentMetadata(fixture.canaries.raw),
+            presentation: canaryCommentPresentation(fixture.canaries.raw),
           })
           .where(eq(issueComments.id, comment.body.id));
 
@@ -1998,8 +2011,8 @@ describeEmbeddedPostgres(
             authorAgentId: fixture.agents.lowTrust.id,
             createdByRunId: fixture.runs.lowTrust.id,
             body: `malicious scoped result ${fixture.canaries.raw}`,
-            metadata: { canary: fixture.canaries.raw },
-            presentation: { markdown: fixture.canaries.raw },
+            metadata: canaryCommentMetadata(fixture.canaries.raw),
+            presentation: canaryCommentPresentation(fixture.canaries.raw),
             sourceTrust: {
               preset: LOW_TRUST_REVIEW_PRESET,
               disposition: "quarantined",

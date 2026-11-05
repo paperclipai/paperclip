@@ -561,21 +561,52 @@ diff --git a/dist/live-checkpoint-BSIrfgVo.js b/dist/live-checkpoint-BSIrfgVo.js
  			}));
  			result = claudeAcp ? await withTimeout(createPromise, resolveClaudeAcpSessionCreateTimeoutMs()) : await createPromise;
  		} catch (error) {
-@@ -4589,6 +4808,13 @@
- 		} catch (error) {
+@@ -4454,6 +4673,7 @@
+ 	}
+ 	async loadSessionWithOptions(sessionId, cwd = this.options.cwd, options = {}) {
+ 		const connection = this.getConnection();
++		const { command, args } = resolveAgentCommandParts(this.options.agentCommand, this.options.agentArgv);
+ 		const sessionCwd = await resolveAgentSessionCwd(cwd, this.options.agentCommand);
+ 		const previousSuppression = this.applySessionUpdateSuppression(Boolean(options.suppressReplayUpdates));
+ 		let response;
+@@ -4461,7 +4681,9 @@
+ 			response = await this.runConnectionRequest(() => connection.loadSession({
+ 				sessionId,
+ 				cwd: sessionCwd,
+-				mcpServers: this.options.mcpServers ?? []
++				mcpServers: this.options.mcpServers ?? [],
++				_meta: isClaudeAcpCommand(command, args)
++					? buildClaudeCodeOptionsMeta(this.options.sessionOptions, true) : void 0
+ 			}));
+ 			await this.waitForSessionUpdateDrain(options.replayIdleMs ?? REPLAY_IDLE_MS, options.replayDrainTimeoutMs ?? REPLAY_DRAIN_TIMEOUT_MS);
+ 		} finally {
+@@ -4474,11 +4696,14 @@
+ 	}
+ 	async resumeSession(sessionId, cwd = this.options.cwd) {
+ 		const connection = this.getConnection();
++		const { command, args } = resolveAgentCommandParts(this.options.agentCommand, this.options.agentArgv);
+ 		const sessionCwd = await resolveAgentSessionCwd(cwd, this.options.agentCommand);
+ 		const response = await this.runConnectionRequest(() => connection.resumeSession({
+ 			sessionId,
+ 			cwd: sessionCwd,
+-			mcpServers: this.options.mcpServers ?? []
++			mcpServers: this.options.mcpServers ?? [],
++			_meta: isClaudeAcpCommand(command, args)
++				? buildClaudeCodeOptionsMeta(this.options.sessionOptions, true) : void 0
+ 		}));
+ 		this.loadedSessionId = sessionId;
+ 		const result = toReconnectedSessionResult(response);
+@@ -4590,15 +4815,17 @@
  			throw maybeWrapSessionControlError("session/set_config_option", error, `for "${configId}"="${value}"`);
  		}
-+	}
+ 	}
 +	async requestExtension(method, params) {
 +		closedExtensionMethods([method]);
 +		const payload = boundedExtensionRecord(params);
 +		const connection = this.getConnection();
 +		const result = await this.runConnectionRequest(() => connection.extMethod(method, payload));
 +		return boundedExtensionRecord(result);
- 	}
- 	async setSessionModel(sessionId, modelId, controlOverride) {
- 		const control = this.resolveModelControl(sessionId, controlOverride);
-@@ -4593,12 +4819,7 @@
++	}
  	async setSessionModel(sessionId, modelId, controlOverride) {
  		const control = this.resolveModelControl(sessionId, controlOverride);
  		if (!control) throw new RequestedModelUnsupportedError(`Cannot set model "${modelId}": the ACP session did not advertise a model config option or legacy session/set_model support.`, "missing-capability");
@@ -589,7 +620,7 @@ diff --git a/dist/live-checkpoint-BSIrfgVo.js b/dist/live-checkpoint-BSIrfgVo.js
  	}
  	async setSessionModelThroughConfig(sessionId, modelId, configId) {
  		const connection = this.getConnection();
-@@ -4608,7 +4829,9 @@
+@@ -4608,7 +4835,9 @@
  				configId,
  				value: modelId
  			}));
@@ -600,7 +631,7 @@ diff --git a/dist/live-checkpoint-BSIrfgVo.js b/dist/live-checkpoint-BSIrfgVo.js
  			return response;
  		} catch (error) {
  			return this.throwSessionModelError("session/set_config_option", modelId, error);
-@@ -4864,7 +5087,7 @@
+@@ -4864,7 +5093,7 @@
  	}
  	selectAuthMethod(methods) {
  		for (const method of methods) {
@@ -609,7 +640,7 @@ diff --git a/dist/live-checkpoint-BSIrfgVo.js b/dist/live-checkpoint-BSIrfgVo.js
  			if (envCredential) return {
  				methodId: method.id,
  				credential: envCredential,
-@@ -4890,7 +5113,7 @@
+@@ -4890,7 +5119,7 @@
  	}
  	readAgentSpecificEnvCredential(methodId) {
  		if (!this.isGrokBuildAcpCommand() || methodId !== "xai.api_key") return;
@@ -618,7 +649,7 @@ diff --git a/dist/live-checkpoint-BSIrfgVo.js b/dist/live-checkpoint-BSIrfgVo.js
  		return typeof value === "string" && value.trim().length > 0 ? value : void 0;
  	}
  	selectAgentManagedAuthMethod(methodId) {
-@@ -4915,9 +5138,9 @@
+@@ -4915,9 +5144,9 @@
  		await connection.authenticate({ methodId: selected.methodId });
  		this.log(`authenticated with method ${selected.methodId} (${selected.source})`);
  	}
@@ -630,7 +661,7 @@ diff --git a/dist/live-checkpoint-BSIrfgVo.js b/dist/live-checkpoint-BSIrfgVo.js
  		if (hostResponse) return hostResponse;
  		const { response, recorded } = await this.resolvePermissionRequestFromMode(params);
  		if (!recorded) {
-@@ -4926,14 +5149,81 @@
+@@ -4926,14 +5155,81 @@
  		}
  		return response;
  	}
@@ -714,7 +745,7 @@ diff --git a/dist/live-checkpoint-BSIrfgVo.js b/dist/live-checkpoint-BSIrfgVo.js
  		})).then((response) => ({
  			kind: "response",
  			response
-@@ -4970,7 +5260,7 @@
+@@ -4970,7 +5266,7 @@
  	isElicitationSessionCancelling(sessionId) {
  		return this.closing || this.cancellingSessionIds.has(sessionId);
  	}
@@ -723,7 +754,7 @@ diff --git a/dist/live-checkpoint-BSIrfgVo.js b/dist/live-checkpoint-BSIrfgVo.js
  		if (!this.options.onPermissionRequest) return;
  		const signal = this.cancellationSignalForSession(params.sessionId);
  		try {
-@@ -4978,7 +5268,7 @@
+@@ -4978,7 +5274,7 @@
  				sessionId: params.sessionId,
  				raw: params,
  				inferredKind: inferToolKind(params)
@@ -732,7 +763,7 @@ diff --git a/dist/live-checkpoint-BSIrfgVo.js b/dist/live-checkpoint-BSIrfgVo.js
  			return this.hostPermissionDecisionResponse(params, signal, decision);
  		} catch (error) {
  			return this.hostPermissionErrorResponse(params, signal, error);
-@@ -5028,6 +5318,12 @@
+@@ -5028,6 +5324,12 @@
  	attachAgentLifecycleObservers(child) {
  		child.once("exit", (exitCode, signal) => {
  			this.recordAgentExit("process_exit", exitCode, signal);
@@ -745,7 +776,7 @@ diff --git a/dist/live-checkpoint-BSIrfgVo.js b/dist/live-checkpoint-BSIrfgVo.js
  		});
  		child.once("close", (exitCode, signal) => {
  			this.recordAgentExit("process_close", exitCode, signal);
-@@ -5100,6 +5396,9 @@
+@@ -5100,6 +5402,9 @@
  			return await this.filesystem.readTextFile(params);
  		} catch (error) {
  			this.recordPermissionError(params.sessionId, error);
@@ -755,7 +786,7 @@ diff --git a/dist/live-checkpoint-BSIrfgVo.js b/dist/live-checkpoint-BSIrfgVo.js
  			throw error;
  		}
  	}
-@@ -5239,6 +5538,7 @@
+@@ -5239,6 +5544,7 @@
  	record.cumulative_token_usage = conversation.cumulative_token_usage;
  	record.cumulative_cost = conversation.cumulative_cost;
  	record.request_token_usage = conversation.request_token_usage;
@@ -763,7 +794,7 @@ diff --git a/dist/live-checkpoint-BSIrfgVo.js b/dist/live-checkpoint-BSIrfgVo.js
  }
  //#endregion
  //#region src/runtime/engine/session-options.ts
-@@ -5701,7 +6001,8 @@
+@@ -5701,7 +6007,8 @@
  		updated_at: conversation.updated_at,
  		cumulative_token_usage: deepClone(conversation.cumulative_token_usage ?? {}),
  		cumulative_cost: cloneUsageCost(conversation.cumulative_cost),
@@ -773,7 +804,7 @@ diff --git a/dist/live-checkpoint-BSIrfgVo.js b/dist/live-checkpoint-BSIrfgVo.js
  	};
  }
  function cloneUsageCost(cost) {
-@@ -5771,10 +6072,20 @@
+@@ -5771,10 +6078,20 @@
  	trimConversationForRuntime(conversation);
  	return acpx;
  }
@@ -796,7 +827,7 @@ diff --git a/dist/live-checkpoint-BSIrfgVo.js b/dist/live-checkpoint-BSIrfgVo.js
  	updateConversationTimestamp(conversation, timestamp);
  	trimConversationForRuntime(conversation);
  	return true;
-@@ -6136,6 +6447,7 @@
+@@ -6136,6 +6453,7 @@
  	pendingAgentSessionId = loadState.pendingAgentSessionId;
  	sessionModels = loadState.sessionModels;
  	const preferenceReplay = await replayFreshSessionPreferences({
@@ -804,7 +835,7 @@ diff --git a/dist/live-checkpoint-BSIrfgVo.js b/dist/live-checkpoint-BSIrfgVo.js
  		client,
  		record,
  		createdFreshSession,
-@@ -6193,14 +6505,16 @@
+@@ -6193,14 +6511,16 @@
  	if (shouldReconnect) process.stderr.write(`[acpx] saved session pid ${record.pid} is dead; respawning agent and attempting session reconnect\n`);
  }
  async function replayFreshSessionPreferences(params) {
@@ -823,7 +854,7 @@ diff --git a/dist/live-checkpoint-BSIrfgVo.js b/dist/live-checkpoint-BSIrfgVo.js
  			client: params.client,
  			sessionId: params.sessionId,
  			desiredModeId: params.desiredModeId,
-@@ -6219,7 +6533,7 @@
+@@ -6219,7 +6539,7 @@
  			verbose: params.verbose,
  			suppressWarnings: params.suppressWarnings
  		});
@@ -832,7 +863,7 @@ diff --git a/dist/live-checkpoint-BSIrfgVo.js b/dist/live-checkpoint-BSIrfgVo.js
  			client: params.client,
  			record: params.record,
  			sessionId: params.sessionId,
-@@ -6435,6 +6749,27 @@
+@@ -6435,6 +6755,27 @@
  //#region src/runtime/engine/prompt-turn.ts
  const SESSION_REPLY_IDLE_MS = 1e3;
  const SESSION_REPLY_DRAIN_TIMEOUT_MS = 5e3;
@@ -860,7 +891,7 @@ diff --git a/dist/live-checkpoint-BSIrfgVo.js b/dist/live-checkpoint-BSIrfgVo.js
  async function runPromptTurn(params) {
  	try {
  		const promptPromise = params.client.prompt(params.sessionId, params.prompt, params.onPromptRequestStarted, params.onElicitation);
-@@ -6444,7 +6779,23 @@
+@@ -6444,7 +6785,23 @@
  			idleMs: SESSION_REPLY_IDLE_MS,
  			timeoutMs: SESSION_REPLY_DRAIN_TIMEOUT_MS
  		}).catch(() => {});

@@ -1,5 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
+import { ENVIRONMENT_LEASE_POLICIES, WORKSPACE_SOURCE_VERIFICATION_REASONS,
+  type WorkspaceSourceVerificationFailure } from "@paperclipai/shared";
 
 export const SYSTEM_RECOVERY_POLICY_VERSION = 1;
 export const SYSTEM_RECOVERY_MAX_RETRIES = 5;
@@ -7,6 +9,8 @@ export const SYSTEM_RECOVERY_WINDOW_MS = 30 * 60_000;
 export function infrastructureRetryDelayMs(retryNumber: number, sample: number) {
   return Math.round(30_000 * 2 ** (retryNumber - 1) * (0.8 + Math.min(1, Math.max(0, sample)) * 0.4));
 }
+/** Assumed provider limit cooldown when the provider reports no reset time. */
+export const PROVIDER_LIMIT_DEFAULT_COOLDOWN_MS = 60 * 60_000;
 
 export const recoveryFailureCodes = [
   "historical_source_missing", "source_binding_invalid", "allocation_ownership_ambiguous",
@@ -21,10 +25,16 @@ export const recoveryRetryClasses = [
 export type RecoveryRetryClass = typeof recoveryRetryClasses[number];
 
 export class SystemRecoveryFailure extends Error {
-  constructor(readonly code: RecoveryFailureCode, readonly retryClass: RecoveryRetryClass, message = code) {
+  constructor(readonly code: RecoveryFailureCode, readonly retryClass: RecoveryRetryClass, message = code,
+    readonly sourceVerification?: WorkspaceSourceVerificationFailure) {
     super(message);
   }
 }
+
+export const workspaceSourceVerificationFailureSchema = z.object({
+  reason: z.enum(WORKSPACE_SOURCE_VERIFICATION_REASONS),
+  observedLeasePolicy: z.enum([...ENVIRONMENT_LEASE_POLICIES, "unrecognized"]).optional(),
+});
 
 export const systemRecoverySchema = z.object({
   schema: z.literal("paperclip.system-recovery.v1"),
@@ -46,6 +56,7 @@ export const systemRecoverySchema = z.object({
     code: z.enum(recoveryFailureCodes),
     retryClass: z.enum(recoveryRetryClasses),
     evidenceFingerprint: z.string(),
+    sourceVerification: workspaceSourceVerificationFailureSchema.optional(),
   }).nullable(),
   preservationOperationIds: z.array(z.string().uuid()),
   freshAttemptRunId: z.string().uuid().nullable(),
@@ -94,11 +105,13 @@ export function failSystemRecovery(
   const nextAttemptAt = Math.max(now + delay, options.retryAfterAt ?? 0);
   const retryable = ["retry_transient", "recheck_evidence"].includes(failure.retryClass);
   const retry = retryable && retryNumber <= SYSTEM_RECOVERY_MAX_RETRIES && nextAttemptAt < deadlineAt;
+  const sourceVerification = workspaceSourceVerificationFailureSchema.safeParse(failure.sourceVerification);
   return { ...state, revision: state.revision + 1, firstFailureAt, deadlineAt,
     providerCooldownAt: options.retryAfterAt ?? null,
     state: retry ? failure.retryClass === "recheck_evidence" ? "awaiting_evidence" : "scheduled" : "exhausted",
     nextAttemptAt: retry ? nextAttemptAt : null,
     failure: { code: failure.code, retryClass: failure.retryClass,
+      ...(sourceVerification.success ? { sourceVerification: sourceVerification.data } : {}),
       evidenceFingerprint: options.evidenceFingerprint ?? createHash("sha256").update(`${state.sourceRunId}:${failure.code}`).digest("hex") },
   };
 }

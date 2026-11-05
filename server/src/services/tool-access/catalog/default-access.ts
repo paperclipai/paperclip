@@ -1,3 +1,4 @@
+import { connectionActorUserId } from "../actor.js";
 import { lockManagedAppPolicies, lockToolAssignmentAgents } from "../assignment-locks.js";
 import type { ActorInfo, ToolAccessMutationDb } from "../types.js";
 import { and, eq, inArray } from "drizzle-orm";
@@ -111,9 +112,7 @@ export function createCatalogDefaultAccess(db: Db) {
             ? (input.actor.actorId ?? null)
             : null,
         createdByUserId:
-          input.actor?.actorType === "user"
-            ? (input.actor.actorId ?? null)
-            : null,
+          connectionActorUserId(input.actor),
       });
     } else if (resetToRecommendedDefaults) {
       // Removing an app may retain its profile row when another record still
@@ -163,9 +162,7 @@ export function createCatalogDefaultAccess(db: Db) {
             ? (input.actor.actorId ?? null)
             : null,
         createdByUserId:
-          input.actor?.actorType === "user"
-            ? (input.actor.actorId ?? null)
-            : null,
+          connectionActorUserId(input.actor),
       });
     }
 
@@ -299,9 +296,7 @@ export function createCatalogDefaultAccess(db: Db) {
                 ? (input.actor.actorId ?? null)
                 : null,
             createdByUserId:
-              input.actor?.actorType === "user"
-                ? (input.actor.actorId ?? null)
-                : null,
+              connectionActorUserId(input.actor),
           })
           .returning();
         results.push(toPolicy(created));

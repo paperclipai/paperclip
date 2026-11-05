@@ -44,8 +44,14 @@ footer: do not render Save & exit in a separate parent block below it. Check thi
 alignment in every step and conditional state, not just the first screen.
 
 Completed Slack setup is a success view: show the full agent avatar, success message,
-and one centered Done action. Omit Save & exit after the connection has been
-confirmed. The shared footer rule applies to its unfinished setup steps.
+and one centered Done action. Retain an Open Slack link in the success message
+and on the completed connection page so automatic completion does not remove
+the way to use the bot. Omit Save & exit after the connection has been confirmed.
+The shared footer rule applies to its unfinished setup steps.
+
+The New task form opens immediately. Load its code with the board and fill
+agent and project choices in place as their requests finish. Keep text entered
+while those requests are pending.
 
 ## Mobile navigation and text fields
 
@@ -56,16 +62,31 @@ title sizes remain larger.
 
 The bottom navigation responds to accumulated scrolling, ignoring small
 reversals and Safari's edge bounce. It glides out and eases back in with shared
-motion tokens; the task composer follows the same motion. Keep page padding
-stable while the navigation moves, and honor reduced-motion preferences.
+motion tokens. Keep page padding stable while the navigation moves, and honor
+reduced-motion preferences.
 
-Task conversations reveal their initial comments, interaction cards, plan, and
-relevant run history together after positioning the latest message. Keep the
-mobile loading surface at a stable viewport height while that history loads;
-concealed content must not stretch the document. Background refreshes keep an
-already revealed conversation and composer mounted and visible.
-Bound the initial wait to 15 seconds. If a request stalls, reveal the available
-conversation and composer with a notice that some history is still loading.
+Mobile task conversations size their shell to the visible viewport, with one
+message scroller and a normal flex footer for the composer. Navigation stays at
+the layout viewport bottom, behind the keyboard.
+
+Cold task opens reveal the instruction and recent conversation independently of
+recovery, related metadata, and historical run activity. Saved document cards,
+the saved plan, and the bounded latest turn arrive before first reveal so they
+cannot insert rows into an already readable conversation. Show the latest human
+follow-up, recent saved replies, and text or pending requests from the latest run.
+Put older messages and diagnostic activity behind **More messages**. Fetch those
+only when expanded; never download all history just to calculate a count.
+Retain messages and runs observed while the task stays open, preserve expansion
+on return within the session. Wait for the personal workspace preference before
+selecting Classic full history; loading that preference must not expand a
+Coordinator task. No URL fragment expands history. Document links,
+including continuation summaries, open their pane. Older comment links fetch
+only the requested comment and preserve the recent conversation.
+Background refreshes and history expansion keep the conversation and composer
+mounted. A failed history request shows an inline retry without hiding readable
+content. Full-history and classic views retain the bounded 15-second initial wait.
+
+Standing agent chats open with the latest 20 contiguous messages and hydrate only their runs. Upward scrolling requests earlier pages; a fixed-height status slot says “Loading earlier messages…” while the page is pending. Preserve the logical row anchor and mounted composer through prepends and background refresh. Retry failed history inline without automatic retry loops. Answer receipts and created-task history use the same scrolling affordance.
 
 Only the viewer's own human comments sit on the right in blue bubbles. Agents
 and other humans sit on the left on the page surface, with their own name and
@@ -76,10 +97,20 @@ that relayed a message from another channel.
 
 ## Contextual feedback
 
-Keep the runner turn's avatar, name, Working header and current-activity slot
+Keep the runner turn's avatar, name, status header and current-activity slot
 in place from message submission through queued admission and native startup.
+Saving the human comment does not end startup feedback. Keep the identity mounted
+until its run appears or a newer execution outcome ends admission.
+Use the sent message's selected recipient through reassignment. Choosing the
+recipient for a later draft must not change the response already starting.
 Runtime discovery must not replace the turn with a generic spinner or a
 "run started" receipt. Queued and running headers use the same spacing.
+
+A queued turn shows `Queued`, or `Waiting for maintenance` while the server holds
+admission. Reserve `Working` and `Thinking` for execution. A saved message that
+starts this queued turn stays in history, including when it reopens an older
+task. This placement is not a consumption receipt. Later follow-ups remain in
+the composer queue with their existing edit, order and discard controls.
 
 Stream the provider's final reply as the conversational answer. Completion-tool
 reports remain inspectable run data while work continues. Use their summary as
@@ -87,6 +118,9 @@ an answer fallback only after the run ends and its final transcript fetch
 completes without a provider reply. Preserve the reply through persistence.
 
 Task chat shows execution errors and waits only while they remain relevant.
+Exhausted attempts use a padded, rounded notice with a destructive-tinted background,
+an error icon, and foreground text. A wrapper adds top padding above the tinted
+surface. Automatic retry countdowns keep their quieter inline styling.
 Completing or cancelling a task hides its old execution notices. A newer attempt by
 the same agent or an explicit successor supersedes earlier run notices; an
 unresolved execution hold remains visible. Historical turns keep their responses,
@@ -127,6 +161,12 @@ dismissed, retains drafts, and hides message inputs until the pause is released.
 Confirmations whose source work is still syncing show “Preparing approval…” and
 disable acceptance until the server reports readiness. Refresh that state automatically;
 rejection and revision remain available. Live tool reviews keep their own approval flow.
+
+Confirmation and checkbox confirmation prompts use the shared Markdown renderer.
+Links, lists, emphasis, code and paragraph breaks remain readable in the task
+composer, classic cards and expanded receipts.
+Prompt images appear as references and diagrams as source text. Checkbox groups
+use the rendered prompt as their accessible label.
 
 Pending questions, confirmations, and other task-thread inputs appear in a separate
 card directly above the ordinary composer. The composer stays available for new
@@ -405,21 +445,23 @@ width tokens and configurable column order. Review the complete composition in
   level. Task IDs and names use natural, case-insensitive ordering; timestamps use
   their raw value. Tags sort by their
   alphabetized names; missing values stay last in both directions. Equal values
-  retain their order. The initial collection uses Task ID ascending as its
-  default order, with no active header, direction arrow or persistent highlight.
-  A header becomes active only after the user sorts by it; the first click sorts
-  ascending.
+  retain their order. Task lists default to Last updated descending, with the
+  Last updated header active and its downward arrow visible. Parent tasks stay
+  before their descendants; roots and siblings use newest-first update order.
+  With nesting disabled, all tasks use that order in one flat list. Explicit
+  URL sorting and saved user sorting retain precedence over the default.
+  Subtask lists use the same default while keeping checklist controls available.
 - A horizontal ellipsis stays pinned to the right edge of the header, outside
   horizontal scrolling. Its “Columns” flyout lists all nine columns in their current order
   with checkmarks on the right. Toggling columns updates both header and rows
   immediately and keeps the flyout open. Keep at least one column visible; nesting
   controls remain available even when Task is hidden. Reset defaults shows only
   Task, Task ID, and Last updated and restores the default column order.
-  Reset also clears the active sort, direction arrow and persistent header highlight.
+  Reset also restores Last updated descending and its active header.
   Other columns remain available in the menu; hiding and re-enabling a column
   preserves its position until reset.
   Hiding the sorted column clears the explicit sort and restores the default
-  collection order without highlighting another header.
+  collection order. Last updated shows the active sort when that column is visible.
 - The refresh's compact flyout uses the shared DropdownMenu primitives. The
   Paper reference defines a 200px surface with an 8px radius, 12px content
   padding, 32px items separated by 4px, regular-weight muted labels and 14px
@@ -592,6 +634,18 @@ and full page consume the same `TaskList` collection.
   is clipped on that side; resize and scrolling update the indicators.
   Sidebar links exercise the memory router; destination pages, creation API
   behavior, production preferences and production routes are outside this preview.
+
+Coordinator adopts the same four-option menu with Inbox as its initial and
+fallback view. Its last-used view is stored per user across organizations;
+explicit view URLs take precedence, and organization-filter links without a
+view open All tasks. Unread uses the server's viewer read state. Coordinator's
+Needs attention view retains its canonical pending-decision task feed.
+Status filters preserve Inbox and Unread. Unread loads accessible read ancestors
+as hierarchy context, without counting them as unread matches.
+Its sidebar groups Chat, Tasks and Needs you with space after New task and
+before More, and keeps global search beside the organization menu (below it
+in the collapsed rail).
+Recents appears only when it contains entries, without an empty state.
 
 ### Reuse collection behavior as well as appearance
 
@@ -854,7 +908,9 @@ tokenize motion. Principles — reasoning only; values live in `ui/src/index.css
   block collapses the duration/stagger tokens to zero, cascading to every scoped token,
   in addition to each animation's own component-level guard.
 
-Agent Chat and regular task chats keep pending questions as compact “Unanswered question” entries at their original position in history. Dismissing the form or sending a newer user message clears it from the composer without resolving it. Questions never contribute to composer pending counts or navigation. Opening the history entry restores the original form and its draft; submitting later uses the same durable question response path. Actual permission reviews retain their permission checks.
+Agent Chat and regular task chats keep pending questions and requests as compact, reopenable entries at their original position in history. Dismissing any composer request—including completion reviews, confirmations, choices, suggested tasks, item verdicts, and runtime input—removes its form and pending reminder. Saved interactions record human dismissal on the server; raw runtime requests retain a browser-local preference. Dismissal is not an answer, approval, or rejection. Sending a newer user message also clears an ordinary question from the composer without resolving it. Questions never contribute to composer pending counts or navigation. Opening the history entry restores the original form and its draft; submitting later uses the same durable question response path. Actual permission reviews retain their permission checks.
+
+Desktop properties panels keep a zero-width, noninteractive host while their content is unknown. Late content expands the panel and moves the thread in the same width transition. Removing content on navigation clears the pane immediately, including maximized geometry. The motion uses `--motion-pane-reveal` and `--motion-ease-pane-reveal`; reduced motion disables it. A saved hidden preference stays hidden, and pointer resizing stays immediate.
 
 ## Canonical proposal toolbars
 
@@ -932,14 +988,14 @@ labelled primitive compositions with local state. Page navigation and
 collection filters remain in Tabs. This comparison does not migrate app styles
 or certify backend behavior or keyboard accessibility.
 
-Agents and Connectors compose the same `ToolbarSearch` with canonical Standard filled tabs. `AgentsToolbar` is shared by the roster page and
+Agents and Connectors compose the same `ToolbarSearch`. Connectors also use canonical Standard filled tabs. `AgentsToolbar` is shared by the roster page and
 toolbar references; `ConnectorsToolbar` is shared by Browse and toolbar references. Keep search
-first, status/source selection next, and view/actions last where present.
+first, source selection next where present, and view/actions last. The agent roster uses a harness filter icon without a status selector.
 Connector source choices use radio semantics and preserve Browse's existing
 automatic search expansion; they do not switch separate content panels.
-Agents status navigation retains route-backed Tabs with its associated roster
-panel. Agent search intersects the chosen status/built-in filter, matches name,
-role and title words, and retains ancestor context for matching org-chart nodes.
+Legacy agent status and built-in URLs redirect to the full roster at `/agents/all`.
+Agent search matches name, role and title words, and retains ancestor context
+for matching org-chart nodes.
 
 Projects uses `ProjectsToolbar` for shared search, the existing name/updated/
 created/target-date sort choices and direction toggling, and Add Project. Project
