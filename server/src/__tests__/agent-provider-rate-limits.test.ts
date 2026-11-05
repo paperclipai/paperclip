@@ -88,6 +88,22 @@ describePostgres("agent provider rate limits", () => {
     ]);
   });
 
+  it("merges concurrent reports for one agent without losing a window", async () => {
+    const binding = await seed();
+    await Promise.all([
+      recordAgentProviderRateLimits(db, binding, notice(snapshot({ observedAt: "2026-11-05T15:00:00.000Z", windows: [fiveHour(70)] }))),
+      recordAgentProviderRateLimits(db, binding, notice(snapshot({ observedAt: "2026-11-05T15:00:01.000Z", windows: [weekly(40)] }))),
+    ]);
+    expect((await stored(binding.agentId))?.windows.map((window) => window.id).sort()).toEqual(["codex.primary", "codex.secondary"]);
+  });
+
+  it("reports no change when the same notice is replayed", async () => {
+    const binding = await seed();
+    const value = notice(snapshot({ observedAt: "2026-11-05T15:00:00.000Z", windows: [fiveHour(70)] }));
+    await expect(recordAgentProviderRateLimits(db, binding, value)).resolves.toBe(true);
+    await expect(recordAgentProviderRateLimits(db, binding, value)).resolves.toBe(false);
+  });
+
   it("ignores an older snapshot delivered late", async () => {
     const binding = await seed();
     await recordAgentProviderRateLimits(db, binding, notice(snapshot({ observedAt: "2026-11-05T15:10:00.000Z", windows: [fiveHour(78)] })));

@@ -46,6 +46,17 @@ fn epoch_seconds_iso(value: Option<&Value>) -> Value {
         .unwrap_or(Value::Null)
 }
 
+fn iso_epoch(value: &str) -> Option<i64> {
+    use aws_smithy_types::{date_time::Format, DateTime};
+    DateTime::from_str(value, Format::DateTime)
+        .ok()
+        .map(|date| date.secs())
+}
+
+fn iso_epoch_value(value: &Value) -> Option<i64> {
+    value.as_str().and_then(iso_epoch)
+}
+
 pub fn now_iso() -> String {
     use aws_smithy_types::{date_time::Format, DateTime};
     DateTime::from(std::time::SystemTime::now())
@@ -186,11 +197,23 @@ pub fn codex_rate_limit_snapshot(
     if windows.is_empty() && merged["credits"].is_null() && reason.is_none() {
         return None;
     }
-    let fullest = windows
+    // A retained window whose reset has passed no longer applies.
+    let at = iso_epoch(observed_at);
+    let current: Vec<&Value> = windows
+        .iter()
+        .filter(|window| match (iso_epoch_value(&window["resetsAt"]), at) {
+            (Some(reset), Some(at)) => reset > at,
+            _ => true,
+        })
+        .collect();
+    let fullest = current
         .iter()
         .max_by(|a, b| used(a).total_cmp(&used(b)))
-        .cloned();
-    let exhausted = windows.iter().find(|window| used(window) >= 100.0).cloned();
+        .map(|window| (*window).clone());
+    let exhausted = current
+        .iter()
+        .find(|window| used(window) >= 100.0)
+        .map(|window| (*window).clone());
     let reached = if reason.is_some() {
         fullest
     } else {
@@ -390,6 +413,26 @@ mod tests {
         let mut same = second.clone();
         same["observedAt"] = json!("2026-11-05T16:00:00Z");
         assert!(!rate_limit_snapshot_changed(Some(&second), &same));
+    }
+
+    #[test]
+    fn codex_reached_window_skips_retained_expired_windows() {
+        let first = codex_rate_limit_snapshot(
+            &json!({"rateLimits": {"limitId": "codex",
+                "primary": {"usedPercent": 100, "windowDurationMins": 300, "resetsAt": RESETS}}}),
+            None,
+            T0,
+        )
+        .unwrap();
+        let later = codex_rate_limit_snapshot(
+            &json!({"rateLimits": {"limitId": "codex",
+                "secondary": {"usedPercent": 100, "windowDurationMins": 10080, "resetsAt": RESETS + 86_400},
+                "rateLimitReachedType": "rate_limit_reached"}}),
+            Some(&first),
+            "2026-11-05T16:00:00Z",
+        )
+        .unwrap();
+        assert_eq!(later["limitReached"]["windowId"], "codex.secondary");
     }
 
     #[test]

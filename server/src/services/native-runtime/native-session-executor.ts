@@ -9216,6 +9216,16 @@ async function executePaperclipNativeSessionWithinScope(
     throw error;
   }
   const controlPlaneInstanceId = `${effectiveRunnerInstanceId}:control`;
+  // Display data only; a failure never fails the run. The replay path repeats
+  // it so a snapshot lost between the event commit and this write recovers.
+  const recordRateLimits = async (event: unknown) => {
+    await recordAgentProviderRateLimits(input.db, input.execution.binding, event as {
+      eventType: string;
+      payload: Record<string, unknown>;
+    }).catch((error) => {
+      logger.warn({ err: error, runId: input.execution.binding.runId }, "failed to record provider rate limits");
+    });
+  };
   const planSynchronizations: PlanSynchronization[] = [];
   const upsertPlanSynchronization = (
     synchronization: PlanSynchronization,
@@ -9683,12 +9693,7 @@ async function executePaperclipNativeSessionWithinScope(
           event,
           event.eventType === "item.completed" || questionFallback !== null,
         );
-        await recordAgentProviderRateLimits(input.db, input.execution.binding, event as {
-          eventType: string;
-          payload: Record<string, unknown>;
-        }).catch((error) => {
-          logger.warn({ err: error, runId: input.execution.binding.runId }, "failed to record provider rate limits");
-        });
+        await recordRateLimits(event);
         await recordPlanSynchronization(
           event as {
             sourceEventId: string;
@@ -9715,6 +9720,7 @@ async function executePaperclipNativeSessionWithinScope(
           event,
           event.eventType === "item.completed" || questionFallback !== null,
         );
+        await recordRateLimits(event);
         const planSynchronization = await synchronizeCompletedProviderPlan({
           db: input.db,
           execution: input.execution,

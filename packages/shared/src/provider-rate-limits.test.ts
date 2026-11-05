@@ -60,6 +60,27 @@ describe("provider rate limits", () => {
     expect(parseProviderRateLimitSnapshot({ ...base, provider: "google" })).toBeNull();
   });
 
+  it("keeps known fields and another window's current rejection when merging", () => {
+    const rejected: ProviderRateLimitSnapshot = {
+      ...base,
+      provider: "anthropic",
+      windows: [{ id: "claude.five_hour", label: "5-hour window", shortLabel: "5h", windowMinutes: 300, usedPercent: 100, resetsAt: "2026-11-05T15:40:00.000Z", status: "rejected" }],
+      limitReached: { windowId: "claude.five_hour", reason: "rate_limit_reached", resetsAt: "2026-11-05T15:40:00.000Z" },
+    };
+    const weekly: ProviderRateLimitSnapshot = {
+      ...rejected,
+      windows: [{ id: "claude.seven_day", label: "Weekly", shortLabel: "7d", windowMinutes: 10080, usedPercent: 40, resetsAt: null, status: "allowed" }],
+      limitReached: null,
+      observedAt: "2026-11-05T15:20:00.000Z",
+    };
+    const merged = mergeProviderRateLimitSnapshots(rejected, weekly);
+    expect(merged.limitReached?.windowId).toBe("claude.five_hour");
+    const sparse = { ...weekly, windows: [{ ...rejected.windows[0]!, usedPercent: null, resetsAt: null, status: "warning" as const }], observedAt: "2026-11-05T15:21:00.000Z" };
+    const again = mergeProviderRateLimitSnapshots(merged, sparse);
+    expect(again.windows.find((w) => w.id === "claude.five_hour")).toMatchObject({ usedPercent: 100, resetsAt: "2026-11-05T15:40:00.000Z", status: "warning" });
+    expect(again.limitReached).toBeNull();
+  });
+
   it("merges by window and ignores out-of-order snapshots", () => {
     const next = { ...base, windows: [{ ...base.windows[0]!, usedPercent: 90 }], observedAt: "2026-11-05T15:20:00.000Z" };
     expect(mergeProviderRateLimitSnapshots(base, next).windows.map((w) => w.usedPercent)).toEqual([90, 41]);

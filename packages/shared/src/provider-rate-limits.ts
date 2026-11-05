@@ -123,10 +123,34 @@ export function mergeProviderRateLimitSnapshots(
   next: ProviderRateLimitSnapshot,
 ): ProviderRateLimitSnapshot {
   if (!stored || stored.provider !== next.provider) return next;
-  if (Date.parse(next.observedAt) < Date.parse(stored.observedAt)) return stored;
+  const at = Date.parse(next.observedAt);
+  if (at < Date.parse(stored.observedAt)) return stored;
+  // Claude reports one window per event and Codex updates are sparse: a null
+  // field never clears a known value.
   const windows = new Map(stored.windows.map((window) => [window.id, window]));
-  for (const window of next.windows) windows.set(window.id, window);
-  return { ...next, windows: [...windows.values()].slice(0, 8), credits: next.credits ?? stored.credits };
+  for (const window of next.windows) {
+    const prior = windows.get(window.id);
+    windows.set(window.id, prior ? {
+      ...window,
+      usedPercent: window.usedPercent ?? prior.usedPercent,
+      resetsAt: window.resetsAt ?? prior.resetsAt,
+      windowMinutes: window.windowMinutes ?? prior.windowMinutes,
+      status: window.status ?? prior.status,
+    } : window);
+  }
+  // A report about another window does not clear a still-current rejection.
+  const reportedIds = new Set(next.windows.map((window) => window.id));
+  const storedReached = stored.limitReached;
+  const keepStoredReached = storedReached !== null
+    && storedReached.windowId !== null
+    && !reportedIds.has(storedReached.windowId)
+    && (storedReached.resetsAt === null || Date.parse(storedReached.resetsAt) > at);
+  return {
+    ...next,
+    windows: [...windows.values()].slice(0, 8),
+    credits: next.credits ?? stored.credits,
+    limitReached: next.limitReached ?? (keepStoredReached ? storedReached : null),
+  };
 }
 
 export function readProviderRateLimits(stateJson: Record<string, unknown> | null | undefined): ProviderRateLimitSnapshot | null {

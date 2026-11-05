@@ -434,9 +434,9 @@ export function IssueProperties({
   const { data: assigneeRuntimeState } = useQuery({
     queryKey: queryKeys.agents.runtimeState(assigneeRuntimeAgentId ?? ""),
     queryFn: () => agentsApi.runtimeState(assigneeRuntimeAgentId!, companyId ?? undefined),
+    // Optional detail: a 403 for board users without agent management access
+    // is not retried by the shared policy and simply hides the row.
     enabled: !!assigneeRuntimeAgentId && !!companyId,
-    // Optional detail: board users without agent management access get a 403.
-    retry: false,
   });
   const assigneeRateLimits = readProviderRateLimits(assigneeRuntimeState?.stateJson);
   const assigneeRateLimitAgent = assigneeRuntimeAgentId ? agents?.find((agent) => agent.id === assigneeRuntimeAgentId) : null;

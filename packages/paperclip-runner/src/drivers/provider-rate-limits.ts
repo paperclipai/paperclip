@@ -142,9 +142,12 @@ export function codexRateLimitSnapshot(
     observedAt,
   });
   if (merged.windows.length === 0 && !merged.credits && !reason) return null;
-  // The reached type names no window; attribute it to the fullest one.
-  const fullest = [...merged.windows].sort((a, b) => (b.usedPercent ?? -1) - (a.usedPercent ?? -1))[0] ?? null;
-  const exhausted = merged.windows.find((window) => (window.usedPercent ?? 0) >= 100) ?? null;
+  // The reached type names no window; attribute it to the fullest current one.
+  // A retained window whose reset has passed no longer applies.
+  const at = Date.parse(observedAt);
+  const current = merged.windows.filter((window) => !window.resetsAt || Date.parse(window.resetsAt) > at);
+  const fullest = [...current].sort((a, b) => (b.usedPercent ?? -1) - (a.usedPercent ?? -1))[0] ?? null;
+  const exhausted = current.find((window) => (window.usedPercent ?? 0) >= 100) ?? null;
   const reachedWindow = reason ? fullest : exhausted;
   merged.limitReached = reason || exhausted
     ? { windowId: reachedWindow?.id ?? null, reason: reason ?? "rate_limit_reached", resetsAt: reachedWindow?.resetsAt ?? null }

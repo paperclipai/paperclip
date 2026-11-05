@@ -57,6 +57,17 @@ describe("codexRateLimitSnapshot", () => {
     });
   });
 
+  it("ignores a retained window whose reset has passed when picking the reached one", () => {
+    const first = codexRateLimitSnapshot({ rateLimits: {
+      limitId: "codex", primary: { usedPercent: 100, windowDurationMins: 300, resetsAt },
+    } }, null, T0);
+    const later = codexRateLimitSnapshot({ rateLimits: {
+      limitId: "codex", secondary: { usedPercent: 100, windowDurationMins: 10080, resetsAt: resetsAt + 86400 },
+      rateLimitReachedType: "rate_limit_reached",
+    } }, first, "2026-11-05T16:00:00.000Z");
+    expect(later?.limitReached?.windowId).toBe("codex.secondary");
+  });
+
   it("returns null for an empty update", () => {
     expect(codexRateLimitSnapshot({ rateLimits: { limitId: "codex", primary: null, secondary: null } }, null, T0)).toBeNull();
     expect(codexRateLimitSnapshot({}, null, T0)).toBeNull();
