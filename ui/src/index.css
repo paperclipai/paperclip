@@ -608,6 +608,8 @@
   --agent-detail-tile: color-mix(in oklab, var(--foreground) 4%, var(--background));
   --agent-detail-tile-hover: color-mix(in oklab, var(--foreground) 7%, var(--background));
   --agent-detail-tile-chip: color-mix(in oklab, var(--foreground) 8%, transparent);
+  --agent-identity-chip-bg: var(--muted);
+  --agent-identity-chip-hover: color-mix(in oklab, var(--foreground) 14%, var(--background));
   --agent-detail-tile-input: color-mix(in oklab, var(--foreground) 5%, var(--agent-detail-tile));
   --agent-detail-table-head: color-mix(in oklab, var(--foreground) 3%, transparent);
   --agent-detail-control-border: color-mix(in oklab, var(--foreground) 20%, transparent);
@@ -5271,6 +5273,15 @@ html:not(.dark) .coordinator-sidebar {
   transform: translate(-50%, 0);
   transition: opacity var(--selection-bar-enter) var(--selection-bar-ease-out), transform var(--selection-bar-enter) var(--selection-bar-ease-out), visibility 0s;
 }
+.agent-identity-chip { background: var(--agent-identity-chip-bg); color: var(--foreground); }
+/* Raised modules use the Skills chip surface to keep agent chips distinct from their tile. */
+[data-agent-tile] .agent-identity-chip { --agent-identity-chip-bg: var(--agent-detail-tile-chip); }
+:is(a, button).agent-identity-chip { transition: background-color var(--motion-duration-fast); }
+:is(a, button).agent-identity-chip:hover:not(:disabled) { background: var(--agent-identity-chip-hover); }
+:is(a, button).agent-identity-chip:focus-visible { outline: var(--sz-2px) solid var(--ring); outline-offset: var(--sz-2px); }
+.inline-editor-fit { display: inline-grid; min-width: 0; max-width: 100%; }
+.inline-editor-fit > * { grid-area: 1 / 1; min-width: 0; }
+.inline-editor-fit > textarea { width: 0; min-width: calc(100% + var(--spacing) * 2); }
 .agent-roster .agent-roster-identity { padding-inline: 0; background: transparent; border: 0; }
 .agent-roster [scope="col"] { vertical-align: middle; }
 [data-canonical-toolbar="agent-filters"], [data-canonical-toolbar="gateways"] { justify-content: space-between; }

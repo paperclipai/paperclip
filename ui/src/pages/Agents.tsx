@@ -26,7 +26,8 @@ import { OrgChart } from "./OrgChart";
 import { relativeTime, cn, agentRouteRef, agentUrl } from "../lib/utils";
 import { AgentsToolbar } from "../components/AgentsToolbar";
 import { Button } from "@/components/ui/button";
-import { AlertTriangle, Bot, MessageCircleCheck } from "lucide-react";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { AlertTriangle, Bot, MessagesSquare } from "lucide-react";
 import { AGENT_ROLE_LABELS, type Agent, type Environment, type EnvironmentCapabilities } from "@paperclipai/shared";
 import { usePublishSharedQueryData, useSharedPollingQuery } from "../hooks/useSharedPolling";
 
@@ -431,7 +432,16 @@ export function Agents({ initialView = "list" }: { initialView?: AgentsView } = 
         <AgentBulkRoster key={selectedCompanyId} companyId={selectedCompanyId}
           agents={agents.filter(agent => !HIDDEN_AGENT_STATUSES.has(agent.status))}
           visibleAgents={filtered} renderAgent={renderAgentRow} renderStatus={renderAgentStatus}
-          renderChat={agentChat.enabled ? agent => <Button variant="ghost" size="icon-sm" aria-label={`Chat with ${agent.name}`} onClick={() => navigate(`/chats/${agentRouteRef(agent)}`)}><MessageCircleCheck className="size-4 text-foreground" aria-hidden /></Button> : undefined} />
+          renderChat={agentChat.enabled ? agent => (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button variant="ghost" size="icon-sm" aria-label={`Chat with ${agent.name}`} onClick={() => navigate(`/chats/${agentRouteRef(agent)}`)}>
+                  <MessagesSquare className="size-4 text-foreground" aria-hidden />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>chat with this agent</TooltipContent>
+            </Tooltip>
+          ) : undefined} />
       )}
 
 

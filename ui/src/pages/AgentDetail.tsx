@@ -132,6 +132,7 @@ import { InstructionsBundleSettings } from "./agent-detail/InstructionsBundleSet
 import { AgentAllowedConnectors } from "./agent-detail/AgentAllowedConnectors";
 import { AgentAuditTab } from "./AgentAuditTab";
 import { AgentDirectReports } from "./agent-detail/AgentDirectReports";
+import { AgentReportingManager } from "./agent-detail/AgentReportingManager";
 import { AgentChip, AgentMetricTile, AgentPanel, AgentSectionHeading } from "../components/agent-detail/AgentPanels";
 import { AgentHistoryDialog } from "./agent-detail/AgentHistoryDialog";
 import { countSince, formatWindowCount } from "./agent-detail/overview-counts";
@@ -881,6 +882,7 @@ export function AgentDetail() {
           <div className="flex min-w-0 items-center gap-2">
             <InlineEditor
               as="h1"
+              fitContent
               value={agent.name}
               placeholder="Agent name"
               className="min-w-0 truncate text-3xl font-semibold leading-9 text-foreground"
@@ -897,9 +899,10 @@ export function AgentDetail() {
           <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs leading-4 text-muted-foreground">
             <InlineEditor
               value={agent.title ?? ""}
+              fitContent
               nullable
               placeholder={roleLabels[agent.role] ?? agent.role}
-              className="text-xs leading-4 text-muted-foreground"
+              className="whitespace-nowrap text-xs leading-4 text-muted-foreground"
               onSave={(title) => saveHeaderField({ title: title || null })}
             />
             <span aria-hidden>·</span>
@@ -1490,8 +1493,9 @@ export function AgentOverview({
                 </span>
               )}
             </div>
+            <AgentReportingManager key={agent.id} agent={agent} />
             <div className="flex flex-col gap-1.5 px-(--agent-detail-module-inset) py-1.5 text-sm">
-              <span className="text-muted-foreground">Direct reports</span>
+              <span className="text-muted-foreground">Direct reports:</span>
               {directReports.length === 0 ? (
                 <span className="text-foreground">None</span>
               ) : (
