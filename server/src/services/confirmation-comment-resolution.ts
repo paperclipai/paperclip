@@ -1,6 +1,9 @@
 import { and, desc, eq, isNull } from "drizzle-orm";
-import { heartbeatRuns, issueComments, issueThreadInteractions, issues, type Db } from "@paperclipai/db";
-import { resolveConfirmationFromCommentSchema, type ResolveConfirmationFromComment } from "@paperclipai/shared";
+import { companies, heartbeatRuns, issueComments, issueThreadInteractions, issues, type Db } from "@paperclipai/db";
+import {
+  normalizeIssueThreadInteractionResolverPolicy, resolveConfirmationFromCommentSchema,
+  type InteractionResolverGovernance, type IssueThreadInteractionKind, type ResolveConfirmationFromComment,
+} from "@paperclipai/shared";
 import { assertAgentRunWriteAllowed } from "../agent-run-cancellation.js";
 import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import { persistActivity, publishActivity, type ActivityPublication } from "./activity-log.js";
@@ -95,8 +98,16 @@ export async function resolveConfirmationFromComment(db: Db, args: {
     // A human-only card the agent created for itself may record the bound
     // user's verified decision. Quality reviews keep their on-card decision,
     // and the reply must come from the user this run or conversation serves.
+    // A current company cap of human_only also keeps the card on-card, even
+    // when it tied with the agent's request and so did not become its source.
     const boundUserId = card.addresseeUserId ?? issue.conversationUserId ?? run.responsibleUserId ?? null;
-    const relayedHumanUserId = card.effectiveResolverPolicy === "human_only" && !payload.qualityReview
+    const [company] = card.effectiveResolverPolicy === "human_only"
+      ? await tx.select({ governance: companies.interactionResolverGovernance }).from(companies)
+        .where(eq(companies.id, args.companyId))
+      : [];
+    const cap = (company?.governance as InteractionResolverGovernance | null | undefined)?.[card.kind as IssueThreadInteractionKind]?.cap;
+    const companyRequiresHuman = cap !== undefined && normalizeIssueThreadInteractionResolverPolicy(cap) === "human_only";
+    const relayedHumanUserId = card.effectiveResolverPolicy === "human_only" && !payload.qualityReview && !companyRequiresHuman
       && boundUserId !== null && comment.authorUserId === boundUserId ? comment.authorUserId : null;
     const actor = { ...args.actor, relayedHumanUserId };
     assertIssueThreadInteractionResolverAudience({

@@ -160,19 +160,24 @@ function reviewPolicyDeniedDecision(
 
 /**
  * An agent may record a human-only confirmation only as the relay of a verified
- * human decision, and only when the card's creator itself chose human_only.
- * Company caps, governed actions and binding-flow restrictions (issue review)
- * still require a direct human resolution.
+ * human decision, and only on a card it created with an explicit human_only
+ * request. Company caps (checked again at resolution by the caller), governed
+ * actions and binding-flow restrictions still require a direct human resolution.
  */
 function relayedHumanDecisionAllowed(
   input: IssueThreadInteractionResolverAudienceInput,
   persistedPolicy: IssueThreadInteractionCanonicalResolverPolicy,
   additionalRestriction: IssueThreadInteractionResolverRestriction | null | undefined,
 ) {
-  const userId = input.actor.type === "agent" ? input.actor.relayedHumanUserId : null;
-  return Boolean(userId)
+  if (input.actor.type !== "agent") return false;
+  const userId = input.actor.relayedHumanUserId;
+  return Boolean(userId && input.actor.agentId)
     && !input.governedAction
     && persistedPolicy === "human_only"
+    // Only this agent's own explicit request; a company default, cap or a
+    // human-created card keeps its direct human resolution.
+    && input.interaction.createdByAgentId === input.actor.agentId
+    && input.interaction.resolverPolicyProvenance === "explicit"
     && input.interaction.effectiveResolverPolicySource === "requested"
     && !additionalRestriction
     && (!input.interaction.addresseeUserId || input.interaction.addresseeUserId === userId);

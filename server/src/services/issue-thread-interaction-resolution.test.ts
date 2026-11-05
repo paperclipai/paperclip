@@ -176,7 +176,8 @@ describe("issue-thread interaction resolver audience", () => {
   describe("relayed human decision", () => {
     const relay = { ...agent, relayedHumanUserId: "user-1" };
     const humanOnly = (overrides: Record<string, unknown> = {}) =>
-      interaction({ effectiveResolverPolicy: "human_only", effectiveResolverPolicySource: "requested", ...overrides });
+      interaction({ effectiveResolverPolicy: "human_only", effectiveResolverPolicySource: "requested",
+        resolverPolicyProvenance: "explicit", ...overrides });
 
     it("allows a verified reply on a card whose creator requested human_only", () => {
       expect(evaluateIssueThreadInteractionResolverAudience({ actor: relay, interaction: humanOnly() }))
@@ -191,6 +192,9 @@ describe("issue-thread interaction resolver audience", () => {
       ["a governed action", { governedAction: true }],
       ["an issue-review restriction", { additionalRestriction: "human_only" as const }],
       ["another addressed user", { interaction: humanOnly({ addresseeUserId: "user-2" }) }],
+      ["a human-created card", { interaction: humanOnly({ createdByAgentId: null, createdByUserId: "user-1" }) }],
+      ["another agent's card", { interaction: humanOnly({ createdByAgentId: "agent-2" }) }],
+      ["an inherited company default", { interaction: humanOnly({ resolverPolicyProvenance: "inherited" }) }],
     ])("still denies %s", (_name, override) => {
       const decision = evaluateIssueThreadInteractionResolverAudience({ actor: relay, interaction: humanOnly(), ...override });
       expect(decision).toMatchObject({ allowed: false });

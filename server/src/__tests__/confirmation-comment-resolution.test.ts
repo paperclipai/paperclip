@@ -237,7 +237,7 @@ const support = await getEmbeddedPostgresTestSupport();
   async function seedHumanOnly(binding: "conversation" | "run" | "unbound" = "conversation") {
     const f = await seed(false, binding === "conversation");
     await db.update(issueThreadInteractions).set({ effectiveResolverPolicy: "human_only", requestedResolverPolicy: "human_only",
-      effectiveResolverPolicySource: "requested" }).where(eq(issueThreadInteractions.id, f.card.id));
+      effectiveResolverPolicySource: "requested", resolverPolicyProvenance: "explicit" }).where(eq(issueThreadInteractions.id, f.card.id));
     if (binding === "run") await db.update(heartbeatRuns).set({ responsibleUserId: "operator" }).where(eq(heartbeatRuns.id, f.runId));
     return f;
   }
@@ -251,7 +251,8 @@ const support = await getEmbeddedPostgresTestSupport();
       details: { responseCommentId: f.comment.id, responseUserId: "operator", resolverPolicy: "human_only", resolution: "relayed_human_decision" } }]);
   });
   it.each(["agent-comment", "earlier-comment", "wrong-user", "unbound", "company_cap", "governed_action", "qualityReview",
-    "toolAction", "connectionAuthorization", "review-restriction", "other-addressee"])("keeps a human-only card on its card for %s", async kind => {
+    "toolAction", "connectionAuthorization", "review-restriction", "other-addressee", "human-created", "other-agent-created",
+    "inherited-default"])("keeps a human-only card on its card for %s", async kind => {
     const f = await seedHumanOnly(kind === "unbound" ? "unbound" : "conversation");
     const card = (set: Record<string, unknown>) => db.update(issueThreadInteractions).set(set).where(eq(issueThreadInteractions.id, f.card.id));
     if (kind === "agent-comment") await db.update(issueComments).set({ authorType: "agent", authorAgentId: f.agentId }).where(eq(issueComments.id, f.comment.id));
@@ -260,9 +261,28 @@ const support = await getEmbeddedPostgresTestSupport();
     if (kind === "company_cap" || kind === "governed_action") await card({ effectiveResolverPolicySource: kind });
     if (["qualityReview", "toolAction", "connectionAuthorization"].includes(kind)) await card({ payload: { ...f.card.payload, [kind]: {} } });
     if (kind === "other-addressee") await card({ addresseeUserId: "somebody-else" });
+    if (kind === "human-created") await card({ createdByAgentId: null, createdByUserId: "operator", sourceRunId: null });
+    if (kind === "other-agent-created") {
+      const [other] = await db.insert(agents).values({ companyId: f.companyId, name: "Other", adapterType: "paperclip_runner" }).returning();
+      await card({ createdByAgentId: other.id, sourceRunId: null });
+    }
+    if (kind === "inherited-default") await card({ resolverPolicyProvenance: "inherited" });
     const args = kind === "review-restriction" ? { ...f.args, actor: { ...f.args.actor, resolverPolicyRestriction: "human_only" as const } } : f.args;
     await expect(resolveConfirmationFromComment(db, args)).rejects.toThrow();
     expect((await readCard(f.card.id)).status).toBe("pending");
+    expect(await audit(f.issueId)).toHaveLength(0);
+  });
+  it("keeps a requested human-only card on its card when the company cap ties at human_only", async () => {
+    const f = await seed(false, true);
+    await db.update(companies).set({ interactionResolverGovernance: { request_confirmation: { cap: "human_only" } } }).where(eq(companies.id, f.companyId));
+    const capped = await f.svc.create(f.issue, { kind: "request_confirmation", resolverPolicy: "human_only",
+      payload: { version: 1, prompt: "Approve the capped proposal?" } }, { agentId: f.agentId });
+    expect(capped).toMatchObject({ effectiveResolverPolicy: "human_only", effectiveResolverPolicySource: "requested", resolverPolicyProvenance: "explicit" });
+    const [reply] = await db.insert(issueComments).values({ companyId: f.companyId, issueId: f.issueId, authorUserId: "operator", authorType: "user",
+      body: "Yes, approved.", createdAt: new Date(Date.now() + 1000) }).returning();
+    await expect(resolveConfirmationFromComment(db, { ...f.args, interactionId: capped.id, input: { commentId: reply.id, decision: "accept" } }))
+      .rejects.toThrow();
+    expect((await readCard(capped.id)).status).toBe("pending");
     expect(await audit(f.issueId)).toHaveLength(0);
   });
   it("rechecks narrowed permissions on an otherwise matching retry", async () => {
