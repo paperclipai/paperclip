@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { companyIdentityCases, gradeCompanyRename } from "./identity-companies.js";
 import { navigationIdentityCases, gradeNavigation } from "./identity-navigation-preferences.js";
-import { questionIdentityCases, gradeQuestions } from "./identity-questions-and-approvals.js";
+import { questionIdentityCases, gradeQuestions, multipartVisibleSummaries } from "./identity-questions-and-approvals.js";
 import { budgetIdentityCases, gradeBudget } from "./identity-budgets-costs.js";
 import { accessIdentityCases } from "./identity-access.js";
 import { toolReviewIdentityCases } from "./identity-tool-review.js";
@@ -159,7 +159,9 @@ describe("multipart continuation on the visible question surface", () => {
     return o;
   }
   it("accepts the actual visible bound card summary without an extra comment", () => {
-    expect(gradeQuestions(cardSummary()).passed).toBe(true);
+    const o = cardSummary();
+    expect(gradeQuestions(o).passed).toBe(true);
+    expect(multipartVisibleSummaries(o)).toHaveLength(1);
   });
   it("uses rendered Markdown text rather than its source markup", () => {
     const o = cardSummary(); const card = o.interactions.at(-1)!;
@@ -183,5 +185,6 @@ describe("multipart continuation on the visible question surface", () => {
       o.state.visibleContinuationDescriptions = [{ id: card.id, rawDescription: card.payload.questionSet!.description, visibleText: card.payload.questionSet!.description }];
     }
     expect(gradeQuestions(o).passed).toBe(false);
+    if (mode !== "missing-answer") expect(multipartVisibleSummaries(o)).toHaveLength(0);
   });
 });

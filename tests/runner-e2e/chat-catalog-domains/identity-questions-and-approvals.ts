@@ -53,18 +53,25 @@ async function observeQuestion(ctx: ChatCatalogContext, state: Record<string, un
     for (const card of multipartContinuationCards(observed)) {
       const description = card.payload.questionSet!.description!;
       const row = ctx.input.page.locator(`[id=${JSON.stringify(`interaction-${card.id}`)}]`);
-      if (!await row.isVisible()) continue;
-      await row.click();
+      await expect(row).toBeVisible({ timeout: remainingIdentityObservationBudget(ctx) });
+      await row.click({ timeout: remainingIdentityObservationBudget(ctx) });
       const context = ctx.input.page.getByTestId("task-chat-composer-takeover").getByRole("region", { name: "Question context", exact: true });
-      if (await context.isVisible())
-        (state.visibleContinuationDescriptions as Array<{ id: string; rawDescription: string; visibleText: string }>).push({
-          id: card.id, rawDescription: description, visibleText: await context.innerText(),
-        });
+      await expect(context).toBeVisible({ timeout: remainingIdentityObservationBudget(ctx) });
+      (state.visibleContinuationDescriptions as Array<{ id: string; rawDescription: string; visibleText: string }>).push({
+        id: card.id, rawDescription: description, visibleText: await context.innerText({ timeout: remainingIdentityObservationBudget(ctx) }),
+      });
     }
   }
   const brief = observed.tasks.find(row => `${row.title}\n${row.description}`.includes(String(state.answer)));
   state.taskBrief = brief ? await ctx.input.api.get(`/api/issues/${brief.id}`) : undefined;
   return observed;
+}
+export function multipartVisibleSummaries(value: unknown) {
+  const o = identityObservation(value);
+  if (!o) return [];
+  const visible = o.state.visibleContinuationDescriptions as Array<{ id: string; rawDescription: string; visibleText: string }> | undefined;
+  return multipartContinuationCards(o).flatMap(card => visible?.filter(row => row.id === card.id
+    && row.rawDescription === card.payload.questionSet?.description && typeof row.visibleText === "string" && row.visibleText.trim()) ?? []);
 }
 function multipartContinuationCards(o: NonNullable<ReturnType<typeof identityObservation>>) {
   const original = o.state.original as Interaction | undefined;
@@ -118,10 +125,7 @@ export function gradeQuestions(value: unknown) {
       && answers.some(row => row.questionId === "headline" && row.otherText === o.state.answer), "The submitted choice/choice/custom-text set preserves earlier pages.");
     c.add("no-default-consent", o.state.unsubmittedPending === true && o.state.validationObserved === true && o.state.retainedAudience === true,
       "Missing required input cannot submit, unfinished pages stay pending, and back navigation retains the first selection.");
-    const visible = o.state.visibleContinuationDescriptions as Array<{ id: string; rawDescription: string; visibleText: string }> | undefined;
-    const summary = [String(o.state.afterAnswerReply), ...multipartContinuationCards(o).flatMap(card =>
-      visible?.filter(row => row.id === card.id && row.rawDescription === card.payload.questionSet?.description)
-        .map(row => row.visibleText) ?? [])].join("\n");
+    const summary = [String(o.state.afterAnswerReply), ...multipartVisibleSummaries(o).map(row => row.visibleText)].join("\n");
     c.add("submitted-set-only-continuation", o.runs.filter(run => run.contextSnapshot?.interactionId === original?.id).length === 1
       && /researchers/i.test(summary) && /clear/i.test(summary) && summary.includes(String(o.state.answer)),
       "The submitted set causes one request-bound continuation whose actual later visible chat response accurately summarizes all three answers.");
@@ -228,6 +232,18 @@ export const questionIdentityCases = [
   }),
   identityDefinition("questions-and-approvals.multi-part-question", ctx => questionFixture(ctx, true), gradeQuestions, {
     expectedRunCount: 2, observe: observeQuestion, oracleVersion: "paperclip.chat-catalog.required-question.v3",
+    async verifyResult(ctx, _state, value) {
+      if (await ctx.input.page.getByTestId("task-chat-composer-input").isVisible()) return;
+      const o = identityObservation(value);
+      if (!o) throw new Error("Multipart final UI lacks its original observation");
+      const current = await cards(ctx);
+      const summaries = multipartVisibleSummaries({ ...o, interactions: current });
+      if (!summaries.length) throw new Error("Multipart final UI lacks a bound visible question summary");
+      const context = ctx.input.page.getByTestId("task-chat-composer-takeover").getByRole("region", { name: "Question context", exact: true });
+      await expect(context).toBeVisible({ timeout: remainingIdentityObservationBudget(ctx) });
+      const text = await context.innerText({ timeout: remainingIdentityObservationBudget(ctx) });
+      if (!summaries.some(row => row.visibleText === text)) throw new Error("Multipart final question context changed after observation");
+    },
     async act(ctx, state) {
       const remaining = () => remainingIdentityObservationBudget(ctx);
       remaining();
