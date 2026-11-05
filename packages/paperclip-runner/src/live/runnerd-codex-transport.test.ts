@@ -2049,7 +2049,7 @@ it.each([false, true])("binds a vendored source server to its pnpm dependency ro
     expect(runnerdLaunchProfileInternals.acpxProviderPackageAuthority(
       join(server, "dist/vendor/paperclip-runner/cli/acpx-runtime-sidecar.cjs"),
     )).toEqual({ root: selfRooted ? server : workspace, manifest: join(server, "package.json") });
-    for (const agent of ["pi", "antigravity"] as const) {
+    for (const agent of ["cursor", "copilot", "pi", "kimi", "antigravity"] as const) {
       expect(runnerdLaunchProfileInternals.acpxProviderPackageAuthority(
         join(server, "dist/vendor/paperclip-runner/cli/acpx-runtime-sidecar.cjs"), workspace, agent,
       )).toEqual({ root: server, manifest: join(server, "package.json") });
@@ -2059,7 +2059,7 @@ it.each([false, true])("binds a vendored source server to its pnpm dependency ro
   }
 });
 
-it.each((["copilot", "pi", "antigravity"] as const).flatMap(agent =>
+it.each((["cursor", "copilot", "pi", "kimi", "antigravity"] as const).flatMap(agent =>
   ["source", "scoped-npm", "deployment"].map(layout => ({ agent, layout }))))(
   "admits the controller-selected $agent package authority in a $layout layout",
   async ({ agent, layout }) => {
