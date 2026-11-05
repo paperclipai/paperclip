@@ -616,14 +616,14 @@ test("shared history loads older messages without replacing the latest turn", as
   }
 });
 
-test("disabling the experiment lets an active turn settle and keeps idle history", async ({
+test("disabling Agent Chat lets an active turn settle and keeps idle history", async ({
   page,
   request,
 }) => {
   const original = await json(
     await request.get("/api/instance/settings/experimental"),
   );
-  expect(original.enableAgentChat).toBe(false);
+  expect(original.enableAgentChat).toBe(true);
   const f = await setup(request);
   try {
     await page.goto(f.route);
