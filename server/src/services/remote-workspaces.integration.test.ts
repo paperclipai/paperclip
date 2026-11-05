@@ -470,7 +470,8 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
     try { expect(await fs.readFile(path.join(browse.root, "report.md"), "utf8")).toContain("useful saved result"); } finally { await browse.cleanup(); }
   }, 60_000);
 
-  it.each(["own retired root", "own restored root", "receipt missing", "forged receipt", "later allocation", "never saved here"] as const)(
+  it.each(["own retired root", "own restored root", "read-only folder", "receipt missing", "forged receipt", "later allocation",
+    "unsettled save", "newer checkpoint", "never saved here"] as const)(
     "restores a newer save over this workspace's own retired root on a reused sandbox (%s)", async mode => {
     // A parent prepares on its retained sandbox, then children inherit the
     // workspace on other sandboxes and save newer work. When the parent wakes on
@@ -506,6 +507,21 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
       await fs.writeFile(path.join(runtime, "workspace-restored.json"), JSON.stringify(mode === "forged receipt"
         ? { identity: "not-an-identity" } : { identity: "a".repeat(64), manifestDigest: "b".repeat(64) }));
     }
+    if (mode === "read-only folder") {
+      // A non-root sandbox user must still be able to remove the retired tree.
+      const locked = path.join(prepared.remoteRoot, "locked");
+      await fs.mkdir(path.join(locked, "inner"), { recursive: true });
+      await fs.writeFile(path.join(locked, "inner", "file.txt"), "old\n");
+      await fs.chmod(path.join(locked, "inner"), 0o555); await fs.chmod(locked, 0o555);
+    }
+    if (mode === "unsettled save" || mode === "newer checkpoint") {
+      // The last use of this root ended in a save that is not a settled final save.
+      await db.insert(workspaceOperations).values({ companyId: ids.company, executionWorkspaceId: reserved.id, heartbeatRunId: ids.run,
+        issueId: ids.issue, phase: "remote_workspace_snapshot", status: mode === "unsettled save" ? "running" : "succeeded",
+        metadata: { epoch: 1, boundary: "checkpoint", generation: 99,
+          saveWork: { schema: "paperclip.remote-workspace-save-work.v1", activeIds: [], unknown: false, quiescedAt: new Date().toISOString() },
+          exportCleanup: { ...readRemoteWorkspaceAuthority(prepared.workspace.metadata)!.location, state: "cleaned" } } });
+    }
     if (mode === "later allocation") {
       // A later writer used this root on the parent's sandbox after its last final save.
       await db.insert(workspaceOperations).values({ companyId: ids.company, executionWorkspaceId: reserved.id, heartbeatRunId: child.runId,
@@ -522,7 +538,7 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
     }
     const parent = await writer(mode === "never saved here" ? "allocation-unrelated" : prepared.lease.providerLeaseId!);
     const restoring = prepareRemoteWorkspace({ db, storage, workspace: parent.workspace, runId: parent.runId, lease: parent.lease, target: parentTarget });
-    if (mode !== "own retired root" && mode !== "own restored root") {
+    if (mode !== "own retired root" && mode !== "own restored root" && mode !== "read-only folder") {
       const refused = await restoring.then(() => null, (error: unknown) => error as RemoteWorkspaceRestoreError);
       expect(refused).toBeInstanceOf(RemoteWorkspaceRestoreError);
       expect(refused).toMatchObject({ step: "sandbox_restore", retryable: false });

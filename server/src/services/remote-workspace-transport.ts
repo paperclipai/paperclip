@@ -500,6 +500,12 @@ export async function restoreRemoteWorkspaceDirectory(input: {
     return false;
    };
    const parked=root+'.allocation-'+identity,retired=root+'.retired-'+identity;
+   // Saved directory modes can be read-only. Make the parked tree's own directories
+   // owner-writable without following symlinks, then remove it.
+   const removeRetired=async()=>{if(!await stat(retired))return;
+    const open=async d=>{const s=await fs.lstat(d);if(!s.isDirectory()||s.isSymbolicLink())return;
+     await fs.chmod(d,(s.mode&0o7777)|0o700);for(const name of await fs.readdir(d))await open(path.join(d,name));};
+    await open(retired);await fs.rm(retired,{recursive:true,force:true});};
    stage='allocation';if(await stat(parked)){if(allowEmpty!=='true')throw Error('unexpected_allocation');await allocation(parked);if(!await stat(root))await fs.rename(parked,root);}
    stage='inspect_root';const prior=await stat(root);if(prior)await directory(root);
    const marker=path.join(root,'.paperclip-runtime','workspace-restored.json');
@@ -509,7 +515,7 @@ export async function restoreRemoteWorkspaceDirectory(input: {
     const receipt=JSON.parse(await fs.readFile(marker,'utf8'));
     if(receipt.identity===identity&&receipt.manifestDigest===digest){
      if(await stat(parked)){await allocation(parked);await fs.rm(parked,{recursive:true});}
-     if(replaceRetired==='true'&&await stat(retired))await fs.rm(retired,{recursive:true});return;}
+     if(replaceRetired==='true')await removeRetired();return;}
     if(replaceRetired!=='true')throw Error('workspace_owner_changed');
    }
    stage='inspect_root';
@@ -531,7 +537,7 @@ export async function restoreRemoteWorkspaceDirectory(input: {
      if(await stat(holding))throw Error('occupied_parking');await fs.rename(root,holding);}
     try{await fs.rename(staged,root);}catch(e){if(prior&&!await stat(root))await fs.rename(holding,root);throw e;}
     stage='cleanup_parked';if(prior&&!retire){await allocation(parked);await fs.rm(parked,{recursive:true});}
-    if(replaceRetired==='true'&&await stat(retired))await fs.rm(retired,{recursive:true});
+    if(replaceRetired==='true')await removeRetired();
    }finally{await fs.rm(staged,{recursive:true,force:true});}
   })().catch(error=>{process.stderr.write(setupFailure('remote_workspace_restore_failed',stage,error));process.exitCode=1});`;
   await command(input.target, "restore", ["-e", restore, staged.helper, staged.archive, input.remoteCwd,
