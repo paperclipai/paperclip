@@ -2020,6 +2020,16 @@ and plugin tasks. The running session then owns authority;
 the old receipt must not conflict with a later warm run's journal identity.
 Failed admission retains the receipt. Normal suspension writes a new receipt.
 
+A warm session can lose its reusable lease when Paperclip retires the sandbox,
+for example as an obsolete lease during another run's acquisition. The next run
+then gets a new sandbox while the controller still holds the session's verified
+backup. Paperclip restores that backup into the new sandbox only when all of
+these are true: the backup's source lease is expired or failed with a provider
+`destroyed` termination receipt, the source lease's backup stamp names this
+exact backup manifest, and no provider event for the session was recorded after
+the backup completed. Any other state is ambiguous. The run then fails closed
+with `runner_harness_state_mismatch: backup_without_reusable_lease`.
+
 A per-turn sandbox turn can finish through recovery without a Runner
 suspension receipt or failover backup on the controller. For example, its
 post-turn checkpoint copy can fail on a full sandbox disk. The controller
@@ -2437,6 +2447,14 @@ resolved actions whose retained work may still need attention. This observation
 does not prove provider termination, local descriptor integrity, or successful
 file preservation, and it does not explain an earlier owner state retroactively.
 Recorded system recovery failures retain their original attempt and intent.
+When system workspace recovery exhausts its bounded attempts or deadline, the
+recovery action stays active and its owner changes from system to board. Its
+next action names the attempt count and last failure code and tells the board to
+use **Retry recovery**. The task blocker shows that same text. Retry starts one
+new bounded system generation and returns ownership to the system. A sweep that
+finds an action already exhausted and still system-owned applies the same handoff
+as bookkeeping only; it grants no attempt. Exhaustion never submits a provider
+turn.
 New source-binding failures record a closed reason and, for a rejected lease
 policy, an allowlisted policy value. Neither detail includes paths, provider
 allocation identifiers, credentials, or raw provider errors.
