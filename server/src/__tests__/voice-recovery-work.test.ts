@@ -270,6 +270,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     await db.transaction(tx => notifyVoiceRecovery(tx)); await settled(); expect(inspect).toHaveBeenCalledOnce(); await quiet();
   });
   it("pages saved sessions and drains healthy work while one provider fails", async () => {
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: false });
     const failed = await session();
     for (let index = 0; index < 104; index++) await session();
     let broken = true;
@@ -278,11 +279,18 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
       return { endedAt: true };
     });
     await start();
-    await vi.waitFor(async () => {
+    // Drain each healthy batch before advancing the clock again. Database
+    // latency must not advance us through the failed provider's retry deadline.
+    for (const healthyCount of [24, 49, 74, 99, 104]) {
       await vi.advanceTimersByTimeAsync(1000);
-      const rows = await db.select().from(chatVoiceSessions).where(eq(chatVoiceSessions.companyId, companyId));
-      expect(rows.filter(row => row.state === "ended")).toHaveLength(104);
-    }, { timeout: 5000 });
+      await vi.waitFor(async () => {
+        const rows = await db.select().from(chatVoiceSessions).where(eq(chatVoiceSessions.companyId, companyId));
+        expect(rows.filter(row => row.state === "ended").length).toBeGreaterThanOrEqual(healthyCount);
+        expect(coordinator!.nextWakeAt()).not.toBeNull();
+      }, { timeout: 5000, interval: 0 });
+    }
+    const rows = await db.select().from(chatVoiceSessions).where(eq(chatVoiceSessions.companyId, companyId));
+    expect(rows.filter(row => row.state === "ended")).toHaveLength(104);
     expect(inspect.mock.calls.filter(([row]) => row.id === failed.id)).toHaveLength(1);
     expect(errors).toHaveLength(1);
     broken = false; await settled(); errors.length = 0; await quiet();
