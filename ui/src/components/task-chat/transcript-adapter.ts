@@ -1282,7 +1282,7 @@ export function paperclipRunnerActivityItems(
         return normalizedName !== "paperclip_finish";
       }
       case "marker":
-        return item.variant === "interrupted";
+        return item.variant === "interrupted" || item.variant === "context_compacted";
       case "protocol":
         // Completion is already represented by task state and the final answer.
         // Keep its event in the inspector, but omit it from feed rows and counts.
@@ -1825,6 +1825,10 @@ export function buildTurnTimelineRows(
       current = null;
       rows.push(item);
     } else if (item.kind === "plan_document") {
+      current = null;
+      rows.push(item);
+    } else if (item.kind === "marker" && item.variant === "context_compacted") {
+      // A compaction divides the turn, so it closes the current phase.
       current = null;
       rows.push(item);
     } else if (

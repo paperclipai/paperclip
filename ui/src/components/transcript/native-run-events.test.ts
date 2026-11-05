@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import type { HeartbeatRunEvent } from "@paperclipai/shared";
 import { nativeRunEventsToTranscript } from "./native-run-events";
-import { paperclipRunnerFinalResponse, settledRunChildren, transcriptToTaskChatItems } from "../task-chat/transcript-adapter";
+import { buildTurnTimelineRows, paperclipRunnerFinalResponse, paperclipRunnerTimelineItems, settledRunChildren, transcriptToTaskChatItems } from "../task-chat/transcript-adapter";
 
 const RUN_ID = "10000000-0000-4000-8000-000000000001";
 
@@ -1111,6 +1111,11 @@ describe("context compaction", () => {
     const flat = JSON.stringify(items);
     expect(flat).toContain('"variant":"context_compacted"');
     expect(flat).toContain("230k → 38k tokens");
+    // The live runner turn keeps the divider as its own timeline row.
+    const rows = buildTurnTimelineRows(paperclipRunnerTimelineItems(items), true);
+    expect(rows).toEqual(
+      expect.arrayContaining([expect.objectContaining({ kind: "marker", variant: "context_compacted" })]),
+    );
   });
 
   it("keeps the divider when the provider reports no sizes", () => {
