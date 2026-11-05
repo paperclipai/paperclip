@@ -135,6 +135,7 @@ it('joins an admitted deferred wake and closes its real child listener before br
     const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),os=require('node:os');
     const {fork}=require('node:child_process'),{pathToFileURL}=require('node:url');
     const delay=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+    const ipcErrors=[];process.on('uncaughtException',error=>{if(error.code!=='ERR_IPC_CHANNEL_CLOSED')throw error;ipcErrors.push({code:error.code,message:error.message});});
     const root=fs.mkdtempSync(path.join(os.tmpdir(),'bridge-close-')),app=path.join(root,'app');
     const helpers=path.join(app,'server/src/__tests__/helpers/maintenance');fs.mkdirSync(helpers,{recursive:true});
     fs.writeFileSync(path.join(app,'package.json'),JSON.stringify({type:'module'}));
@@ -175,9 +176,9 @@ it('joins an admitted deferred wake and closes its real child listener before br
       const closedEarly=await Promise.race([closing.then(()=>true),delay(40).then(()=>false)]);
       release();await finished;const closed=await closing;
       let reachable=false;try{reachable=(await fetch(origin)).ok;}catch{}
-      console.log(JSON.stringify({...state.stats(),body,closedEarly,closed,reachable,stops,physicalPid:physical.pid,physicalExitCode:physical.exitCode}));
+      console.log(JSON.stringify({...state.stats(),body,closedEarly,closed,reachable,stops,origin,ipcErrors,physicalPid:physical.pid,physicalExitCode:physical.exitCode}));
       assert.equal(body,'late real child');assert.equal(reachable,false,'Late child listener remained reachable after bridge.close');
-      assert.equal(physical.exitCode,0);assert.equal(stops,1);assert.equal(closedEarly,false);assert.equal(closed.ok,true);
+      assert.equal(physical.exitCode,0);assert.equal(stops,1);assert.equal(closedEarly,false);assert.equal(closed.ok,true);assert.deepEqual(ipcErrors,[]);
     }finally{
       release();if(physical&&physical.exitCode===null)await stop();fs.rmSync(root,{recursive:true,force:true});
     }
@@ -188,7 +189,8 @@ it('joins an admitted deferred wake and closes its real child listener before br
   expect(result.error, diagnostics).toBeUndefined(); expect(result.status, diagnostics).toBe(0);
   const observation = result.stdout.trim().split('\n').at(-1)!;
   expect(observation, diagnostics).toMatch(/^\{/);
+  console.info(JSON.stringify({ cleanupObservation: JSON.parse(observation), guardEvents: events }));
   expect(JSON.parse(observation)).toMatchObject({
-    body: 'late real child', closedEarly: false, closed: { ok: true }, reachable: false, stops: 1, physicalExitCode: 0, unexpectedAttempts: [],
+    body: 'late real child', closedEarly: false, closed: { ok: true }, reachable: false, stops: 1, physicalExitCode: 0, ipcErrors: [], unexpectedAttempts: [],
   });
 });
