@@ -1,4 +1,4 @@
-import { useId, useState } from "react";
+import { useId, useState, type ReactNode } from "react";
 import { completedActivitySummary } from "./completed-activity-summary";
 import {
   Brain,
@@ -18,16 +18,46 @@ import {
   protocolActivityPresentation,
 } from "./task-chat-activity-presentation";
 import {
+  ResearchSourceStrip,
   TaskChatProtocolActivityDetails,
+  WaitCountdown,
   hasTaskChatProtocolActivityDetails,
+  verificationOutcome,
+  verificationTone,
 } from "./TaskChatProtocolActivityRow";
 import { TaskChatUsageReadout } from "./TaskChatUsageReadout";
-import { toolActivityPresentation } from "./tool-taxonomy";
+import { toolActivityPresentation, type ToolIcon } from "./tool-taxonomy";
 import { useTaskChatShimmer } from "./TaskChatShimmer";
 
 type Activity = TaskChatActivityPhaseItem["items"][number];
 
-function presentation(item: Activity, active: boolean) {
+interface ActivityRowPresentation {
+  icon: ToolIcon;
+  label: string;
+  target?: string;
+  mono: boolean;
+  running: boolean;
+  /** Colors the leading icon, e.g. green or red for a verification check. */
+  iconClassName?: string;
+  /** Short plain-text outcome after the target, e.g. "6 tests passed". */
+  trailing?: ReactNode;
+}
+
+function providerTrailing(item: Extract<Activity, { kind: "protocol" }>): Pick<ActivityRowPresentation, "iconClassName" | "trailing"> {
+  if (item.surface !== "provider_activity") return {};
+  if (item.family === "verification") {
+    return {
+      iconClassName: verificationTone(item),
+      trailing: verificationOutcome(item),
+    };
+  }
+  if (item.family === "wait" && item.status === "running") {
+    return { trailing: <WaitCountdown item={item} /> };
+  }
+  return {};
+}
+
+function presentation(item: Activity, active: boolean): ActivityRowPresentation | null {
   if (item.kind === "tool") {
     const tool = toolActivityPresentation({
       name: item.rawName ?? item.name,
@@ -72,6 +102,7 @@ function presentation(item: Activity, active: boolean) {
       target: protocol.detail,
       mono: true,
       running: active && protocolActivityIsRunning(item),
+      ...providerTrailing(item),
     };
   }
   if (item.kind === "marker")
@@ -130,7 +161,7 @@ function ActivityContent({
         className="flex size-5 shrink-0 items-center justify-center"
         data-activity-icon
       >
-        <Icon className="size-3.5" aria-hidden="true" />
+        <Icon className={cn("size-3.5", row.iconClassName)} aria-hidden="true" />
       </span>
       <span data-conversation-tool-running={row.running && shimmer && (item.kind === "tool" || (item.kind === "protocol" && item.surface === "provider_activity" && item.family === "tool_execution")) ? "true" : undefined} className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden whitespace-nowrap">
         <span
@@ -151,6 +182,11 @@ function ActivityContent({
             )}
           >
             {row.target}
+          </span>
+        ) : null}
+        {row.trailing ? (
+          <span className="min-w-0 truncate text-xs text-muted-foreground" data-testid="task-chat-activity-trailing">
+            {row.trailing}
           </span>
         ) : null}
       </span>
@@ -294,6 +330,9 @@ function ExpandedActivity({
           {content}
         </div>
       )}
+      {!open && item.kind === "protocol" && item.surface === "provider_activity" && item.family === "research" && item.status !== "running" ? (
+        <ResearchSourceStrip item={item} />
+      ) : null}
       {expandable && open ? (
         <div
           id={detailId}
