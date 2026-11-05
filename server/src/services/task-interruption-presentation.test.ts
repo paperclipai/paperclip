@@ -7,6 +7,47 @@ const run = { id: "run", agentId: "agent", status: "failed", scheduledRetryAt: n
   resultJson: { projectAccessDenied: { projectId: "22222222-2222-4222-8222-222222222222" } } };
 const agent = { status: "idle", pauseReason: null };
 
+describe("queued dependency wait presentation", () => {
+  const waitingRun = { ...run, status: "cancelled", runtimeMode: "legacy" as const, startedAt: null,
+    errorCode: "issue_dependencies_blocked", resultJson: {
+      stopReason: "issue_dependencies_blocked", timeoutSource: "dependency_gate",
+      cancellation: { source: "unknown", expected: false },
+    } };
+
+  it("keeps a dependency-gated wake out of the failed-attempt UI, including retained input", () => {
+    for (const wait of [undefined, { id: "saved-input", requestedAt: new Date(0) }]) {
+      expect(projectTaskInterruption(issue, { run: waitingRun, agent, wait, paused: false, approval: false }))
+        .toMatchObject({ state: "resolved", canRetry: false });
+    }
+  });
+
+  it.each(["legacy", "native"])("keeps an unstarted %s dispatcher dependency wait neutral", runtimeMode => {
+    const dispatchedWait = { ...waitingRun, runtimeMode,
+      resultJson: { ...waitingRun.resultJson, timeoutSource: "stale_queued_run_gate" } };
+    expect(projectTaskInterruption(issue, { run: dispatchedWait, agent, paused: false, approval: false }))
+      .toMatchObject({ state: "resolved", canRetry: false });
+    expect(projectTaskInterruption(issue, { run: { ...dispatchedWait, startedAt: new Date() }, agent, paused: false, approval: false }))
+      .toMatchObject({ state: "failed", canRetry: true });
+  });
+
+  it("keeps genuine failures and current user gates visible", () => {
+    for (const changed of [{ status: "failed" }, { runtimeMode: "native" }, { startedAt: new Date() },
+      { errorCode: "setup_failed" }, { resultJson: {} }, { resultJson: { ...waitingRun.resultJson, timeoutFired: true } }]) {
+      expect(projectTaskInterruption(issue, { run: { ...waitingRun, ...changed }, agent, paused: false, approval: false }))
+        .toMatchObject({ state: "failed", canRetry: true });
+    }
+    expect(projectTaskInterruption(issue, { run: waitingRun, agent, paused: true, approval: false }))
+      .toMatchObject({ state: "waiting_for_user", userAction: "resume" });
+    expect(projectTaskInterruption(issue, { run: waitingRun, agent, paused: false, approval: true }))
+      .toMatchObject({ state: "waiting_for_user", userAction: "approval" });
+    expect(projectTaskInterruption(issue, { run: waitingRun, agent, paused: false, approval: false,
+      action: { evidence: {}, status: "active" } as never })).toMatchObject({ state: "failed", canRetry: true });
+    expect(projectTaskInterruption(issue, { run: waitingRun, agent, paused: false, approval: false,
+      retryWait: { id: "retry", sourceRunId: waitingRun.id, requestedAt: new Date(), preparationStatus: "failed" } }))
+      .toMatchObject({ state: "failed", canRetry: true });
+  });
+});
+
 describe("unadmitted chat Retry presentation", () => {
   const now = Date.parse("2026-01-01T12:00:00Z");
   const failed = { ...run, errorCode: "native_provider_terminal_failed", resultJson: null };
