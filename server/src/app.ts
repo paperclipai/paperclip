@@ -1,3 +1,4 @@
+import type { IdleDeadlineOwners } from "./services/idle-deadline-types.js";
 import { nativeRunMcpRoutes } from "./routes/native-run-mcp.js";
 import { connectionEventWakeRoutes } from "./routes/connection-event-wake.js";
 import { registerGitHubReviewProjectionWork } from "./services/chat-channels/github/review-projection-work.js";
@@ -440,6 +441,7 @@ export async function createApp(
     };
     databaseBackupService?: InstanceDatabaseBackupService;
     prepareIdleDatabaseBackup?: () => Promise<boolean>;
+    idleDeadlineOwners?: IdleDeadlineOwners;
     databaseBackupHealth?: InspectDatabaseBackupHealthOptions;
     deploymentMode: DeploymentMode;
     deploymentExposure: DeploymentExposure;
@@ -838,7 +840,7 @@ export async function createApp(
   api.use(primaryAgentRoutes(db));
   api.use(workspacePreferenceRoutes(db));
   api.use(inboxDismissalRoutes(db));
-  api.use(instanceSettingsRoutes(db, workerManager, opts.prepareIdleDatabaseBackup));
+  api.use(instanceSettingsRoutes(db, workerManager, opts.prepareIdleDatabaseBackup, opts.idleDeadlineOwners));
   if (opts.databaseBackupService) {
     api.use(instanceDatabaseBackupRoutes(opts.databaseBackupService));
   }

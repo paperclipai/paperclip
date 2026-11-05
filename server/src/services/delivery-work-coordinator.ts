@@ -28,6 +28,7 @@ export function createDeliveryWorkCoordinator(input: {
       hasPending: () => Promise<boolean>;
       // Scoped hints belong to the outer transaction, including uncertainty recovery.
       onSettled?: (hints?: ReadonlySet<string>) => void;
+      onStop?: () => void;
       // Optional maintenance/retry deadline restored from durable state.
       nextRunAt?: () => number | null;
       // Opt in only when run has recorded per-item failure backoffs. Other
@@ -121,6 +122,7 @@ export function createDeliveryWorkCoordinator(input: {
       });
       const worker = { wake, async stop() {
         workerStopped = true;
+        task.onStop?.();
         controller?.abort(new Error("Delivery worker stopped"));
         unsubscribe();
         scheduler.cancel(queue);
