@@ -41,6 +41,25 @@
         "cd ui && export ARTIFACT_DIRECTIONS_OUT_DIR=node_modules/.artifact-directions-dist && npx vite build --config vite.artifact-directions.config.mjs && npx vite preview --config vite.artifact-directions.config.mjs --port 5190 --strictPort"
       ],
       "port": 5190
+    },
+    {
+      "name": "storybook-tool-rows",
+      "runtimeExecutable": "/bin/sh",
+      "runtimeArgs": [
+        "-c",
+        "pnpm --filter @paperclipai/ui exec storybook dev -p 6036 -c storybook/.storybook --no-open --ci"
+      ],
+      "port": 6036
+    },
+    {
+      "name": "paperclip-tool-rows",
+      "runtimeExecutable": "/bin/sh",
+      "runtimeArgs": [
+        "-c",
+        "set -a; . \"$HOME/.secrets\"; set +a; pnpm dev:once"
+      ],
+      "port": 3141,
+      "autoPort": false
     }
   ]
 }

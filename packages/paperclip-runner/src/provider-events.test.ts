@@ -602,7 +602,7 @@ describe("provider-neutral events", () => {
       notFinite: Number.POSITIVE_INFINITY,
       fn: () => undefined,
     })!;
-    expect(JSON.stringify(bounded).length).toBeLessThanOrEqual(17_000);
+    expect(Buffer.byteLength(JSON.stringify(bounded))).toBeLessThanOrEqual(16_000);
     expect(Object.keys(bounded.wide as object)).toHaveLength(64);
     expect((bounded.long as string).length).toBe(4_000);
     expect(bounded).not.toHaveProperty("notFinite");
