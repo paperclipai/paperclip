@@ -711,6 +711,64 @@ fn reasoning_summary_text(provider_item: &Value) -> Option<String> {
     (!parts.is_empty()).then(|| bounded_text(&parts.join("\n\n"), MAX_TEXT_CHARS))
 }
 
+fn optional_bounded_text(value: Option<&Value>, max_chars: usize) -> Value {
+    match value.and_then(Value::as_str) {
+        Some(text) if !text.trim().is_empty() => Value::String(bounded_text(text, max_chars)),
+        _ => Value::Null,
+    }
+}
+
+/// Bounded display fields for Codex activity items that become canonical
+/// research and wait events. Only typed, user-visible fields are kept; result
+/// entries keep an http(s) URL, title and snippet.
+fn codex_activity_item_fields(item_type: &str, provider_item: &Value) -> Option<Value> {
+    match item_type {
+        "webSearch" => {
+            let action = provider_item
+                .get("action")
+                .filter(|value| value.is_object())
+                .map(|action| {
+                    json!({
+                        "type": bounded_text(string(action.get("type")), 64),
+                        "query": optional_bounded_text(action.get("query"), MAX_TEXT_CHARS),
+                        "url": optional_bounded_text(action.get("url"), 8_192),
+                        "pattern": optional_bounded_text(action.get("pattern"), MAX_TEXT_CHARS),
+                    })
+                });
+            let results = provider_item
+                .get("results")
+                .and_then(Value::as_array)
+                .map(|results| {
+                    results
+                        .iter()
+                        .take(64)
+                        .filter_map(|result| {
+                            let url = string(result.get("url"));
+                            if !(url.starts_with("http://") || url.starts_with("https://")) || url.len() > 8_192 {
+                                return None;
+                            }
+                            Some(json!({
+                                "url": url,
+                                "title": optional_bounded_text(result.get("title"), MAX_TEXT_CHARS),
+                                "snippet": optional_bounded_text(result.get("snippet"), MAX_TEXT_CHARS),
+                                "ref_id": optional_bounded_text(result.get("ref_id").or_else(|| result.get("refId")), 240),
+                            }))
+                        })
+                        .collect::<Vec<_>>()
+                });
+            Some(json!({
+                "query": optional_bounded_text(provider_item.get("query"), MAX_TEXT_CHARS),
+                "action": action.unwrap_or(Value::Null),
+                "results": results.map(Value::Array).unwrap_or(Value::Null),
+            }))
+        }
+        "sleep" => Some(json!({
+            "durationMs": provider_item.get("durationMs").and_then(Value::as_u64),
+        })),
+        _ => None,
+    }
+}
+
 pub fn normalize_codex_notification(method: &str, params: &Value) -> Vec<NormalizedProviderEvent> {
     let mut events = Vec::new();
     let push = |events: &mut Vec<NormalizedProviderEvent>,
@@ -1033,6 +1091,16 @@ pub fn normalize_codex_notification(method: &str, params: &Value) -> Vec<Normali
                             .expect("item payload is an object")
                             .insert("item".to_owned(), json!({ "name": name }));
                     }
+                }
+                // Web research and intentional waits are already user-visible
+                // activity. Keep their bounded identity (query, action, cited
+                // sources, planned duration) so the driver's canonical
+                // `research.*` and `wait.*` events are not empty.
+                if let Some(activity) = codex_activity_item_fields(item_type, provider_item) {
+                    payload
+                        .as_object_mut()
+                        .expect("item payload is an object")
+                        .insert("item".to_owned(), activity);
                 }
                 if !provider_phase.is_empty() {
                     payload
@@ -1871,6 +1939,44 @@ mod tests {
         assert_eq!(events[0].event_type, "plan.updated");
         assert_eq!(events[0].payload["steps"][0]["status"], "in_progress");
         assert!(!events[0].payload.to_string().contains("secret-value"));
+    }
+
+    #[test]
+    fn keeps_bounded_web_search_and_sleep_identity() {
+        let search = normalize_codex_notification(
+            "item/completed",
+            &json!({
+                "item": {
+                    "id": "ws-1",
+                    "type": "webSearch",
+                    "query": "iso week date",
+                    "action": {"type": "search", "query": "iso week date", "queries": null, "token": "secret-value"},
+                    "results": [
+                        {"url": "https://example.com/a", "title": "A", "snippet": "first", "raw": "secret-value"},
+                        {"url": "file:///etc/passwd", "title": "local"},
+                    ],
+                },
+            }),
+        );
+        assert_eq!(search[0].event_type, "item.completed");
+        let item = &search[0].payload["item"];
+        assert_eq!(item["query"], "iso week date");
+        assert_eq!(item["action"]["type"], "search");
+        assert_eq!(item["results"].as_array().map(Vec::len), Some(1));
+        assert_eq!(item["results"][0]["url"], "https://example.com/a");
+        assert!(!search[0].payload.to_string().contains("secret-value"));
+
+        let sleep = normalize_codex_notification(
+            "item/started",
+            &json!({"item": {"id": "sleep-1", "type": "sleep", "durationMs": 15000}}),
+        );
+        assert_eq!(sleep[0].payload["item"]["durationMs"], 15000);
+
+        let message = normalize_codex_notification(
+            "item/completed",
+            &json!({"item": {"id": "m-1", "type": "agentMessage", "text": "hi", "query": "x"}}),
+        );
+        assert!(message[0].payload.get("item").is_none());
     }
 
     #[test]
