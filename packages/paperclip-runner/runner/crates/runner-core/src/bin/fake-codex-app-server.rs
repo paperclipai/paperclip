@@ -1788,6 +1788,17 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     )?;
                     continue;
                 }
+                if args.iter().any(|value| value == "--quiet-helper-turn") {
+                    send(json!({"method":"item/completed","params":{
+                        "threadId":state.thread_id,"turnId":provider_turn_id,
+                        "item":{"id":"spawn-quiet-helper","type":"collabAgentToolCall",
+                            "tool":"spawnAgent","status":"completed",
+                            "senderThreadId":state.thread_id,"receiverThreadIds":["descendant-0"]}
+                    }}))?;
+                    send(json!({"method":"turn/started","params":{
+                        "threadId":"descendant-0","turnId":"quiet-helper-turn"
+                    }}))?;
+                }
                 if descendant_notifications {
                     // Real Codex announces a child's MCP startup before its
                     // thread/started notification establishes parent lineage.
@@ -2024,6 +2035,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                             let turn_id = provider_turn_id.clone();
                             let unsafe_tail =
                                 args.iter().any(|arg| arg == "--unsafe-after-late-usage");
+                            let active_goal = args.iter().any(|arg| arg == "--late-active-goal");
+                            let clear_goal = args.iter().any(|arg| arg == "--late-goal-cleared");
                             let duplicate_burst = args
                                 .iter()
                                 .any(|arg| arg == "--late-accounting-duplicate-burst");
@@ -2033,6 +2046,23 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                                     thread::sleep(Duration::from_millis(1));
                                 }
                                 if gate.is_file() {
+                                    if active_goal || clear_goal {
+                                        let method = if clear_goal {
+                                            "thread/goal/cleared"
+                                        } else {
+                                            "thread/goal/updated"
+                                        };
+                                        let goal = if clear_goal {
+                                            Value::Null
+                                        } else {
+                                            json!({"objective":"Continue work","status":"active"})
+                                        };
+                                        let _ = send(
+                                            json!({"method":method,"params":{"threadId":thread_id,"goal":goal}}),
+                                        );
+                                        let _ = fs::write(gate.with_extension("sent"), "sent");
+                                        return;
+                                    }
                                     if duplicate_burst {
                                         for _ in 0..33 {
                                             let _ = send(

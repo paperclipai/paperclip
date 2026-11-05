@@ -157,6 +157,11 @@ An accepted stop does not prove termination. Set `executionStopped: true`
 only after the Runner and all descendants have stopped. A terminal phase alone
 does not permit Core to release execution authority.
 
+Core binds each Runner owner to the physical task ID returned by its description.
+An old owner cannot follow a changed lease to stop or complete its replacement.
+Late stopped-state, retained-session and credential-handoff writes must still
+match that same physical task. A new owner can clean up the replacement.
+
 Core fences new submissions when cleanup starts. It stops the saved task,
 checks termination, saves credential results, and completes the task before it
 releases or destroys the environment lease. An uncertain result leaves a saved

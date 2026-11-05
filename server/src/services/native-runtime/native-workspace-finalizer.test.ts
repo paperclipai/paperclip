@@ -399,7 +399,7 @@ describe("native workspace finalization recovery", () => {
 
   it("does not reopen an old result after a newer task execution exists", async () => {
     const seed = await seedAbandonedCopyback();
-    await db.insert(heartbeatRuns).values({ companyId, agentId, status: "queued", nativeIssueId: seed.issueId });
+    await db.insert(heartbeatRuns).values({ companyId, agentId, status: "running", startedAt: new Date(), nativeIssueId: seed.issueId });
     await expect(resumeNativeWorkspaceAfterOwnerStop(seed)).rejects.toThrow("no longer current");
   });
 
