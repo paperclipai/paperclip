@@ -3730,6 +3730,7 @@ const plugin = definePlugin(trackDaytonaHooks({
         operations: params.operations,
         remoteDir,
         timeoutSeconds,
+        commandTimeoutSeconds: toTimeoutSeconds(config.timeoutMs),
       });
       sandboxHandleCache.markFresh(scope);
       return result;

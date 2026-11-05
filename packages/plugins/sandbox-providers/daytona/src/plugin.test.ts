@@ -5935,6 +5935,28 @@ describe("daytona native file-sync hooks", () => {
     expect(mockCreate).not.toHaveBeenCalled();
   });
 
+  it.each([
+    { minimumTimeoutMs: undefined, transferSeconds: 300 },
+    { minimumTimeoutMs: 900_000, transferSeconds: 900 },
+  ])("keeps command deadlines separate from a $minimumTimeoutMs transfer minimum", async ({ minimumTimeoutMs, transferSeconds }) => {
+    const root = await makeHostDir();
+    const source = path.join(root, "archive.pcws");
+    await fs.writeFile(source, "bytes");
+    const sandbox = createMockSandbox();
+    mockGet.mockResolvedValue(sandbox);
+    const params = syncInParams({ operationId: "transfer-with-commands", sourcePath: source, targetPath: `${REMOTE_DIR}/archive.pcws` });
+    await plugin.definition.onEnvironmentSyncIn!({
+      ...params, minimumTimeoutMs,
+      operations: [{ ...params.operations[0], postUploadCommands: [
+        { command: "check-default-deadline" },
+        { command: "check-explicit-deadline", timeoutMs: 2000 },
+      ] }],
+    });
+    expect(sandbox.fs.uploadFiles.mock.calls[0]?.[1]).toBe(transferSeconds);
+    expect(sandbox.process.executeCommand).toHaveBeenCalledWith("check-default-deadline", REMOTE_DIR, undefined, 300);
+    expect(sandbox.process.executeCommand).toHaveBeenCalledWith("check-explicit-deadline", REMOTE_DIR, undefined, 2);
+  });
+
   it.each(["syncIn", "syncOut"] as const)("rejects an invalid $0 minimum before sandbox access", async method => {
     const hook = method === "syncIn" ? plugin.definition.onEnvironmentSyncIn! : plugin.definition.onEnvironmentSyncOut!;
     for (const minimumTimeoutMs of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, 30 * 60_000 + 1]) {
