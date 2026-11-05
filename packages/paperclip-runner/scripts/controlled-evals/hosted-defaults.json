@@ -1,0 +1,59 @@
+{
+  "schema": "paperclip.runner-eval.hosted-defaults/v1",
+  "maxUsd": "400",
+  "durationMs": 14400000,
+  "route": "braintrust",
+  "models": [
+    {
+      "provider": "anthropic",
+      "maximumInputTokens": 1000000,
+      "maximumOutputTokens": 16384,
+      "timeoutMs": 180000,
+      "price": {
+        "provider": "anthropic",
+        "model": "claude-sonnet-5",
+        "version": "anthropic-standard-2026-11-04",
+        "sourceUrl": "https://platform.claude.com/docs/en/models/sonnet-5/overview",
+        "inputUsdPerMillion": "2",
+        "cachedReadUsdPerMillion": "0.2",
+        "cacheWrite5mUsdPerMillion": "2.5",
+        "cacheWrite1hUsdPerMillion": "4",
+        "outputUsdPerMillion": "10"
+      }
+    }
+  ],
+  "allocations": [
+    {
+      "provider": "acpx",
+      "acpxAgent": "claude",
+      "model": "claude-sonnet-5",
+      "maxUsd": "8",
+      "maxRequests": 20,
+      "maxConcurrent": 1,
+      "timeoutMs": 600000
+    }
+  ],
+  "overhead": {
+    "version": 1,
+    "accountingReadiness": "model_requests",
+    "reference": "committed-hosted-defaults",
+    "runner": "github-hosted",
+    "components": [
+      { "component": "ci_compute", "maxUsd": "1", "reference": "operator-github-hosted-reservation-not-invoice" },
+      { "component": "artifact_storage", "maxUsd": "1", "reference": "operator-private-history-reservation-not-invoice" },
+      { "component": "observability", "maxUsd": "9", "reference": "operator-reservation-pending-vendor-reconciliation" },
+      { "component": "shared_subscription", "maxUsd": "0", "reference": "existing-subscription-shown-separately" }
+    ]
+  },
+  "observability": {
+    "capture": { "assistantResponses": false, "toolContent": false, "toolDetails": false, "userPrompts": false },
+    "nativeLimits": {
+      "maxConcurrent": 1,
+      "maxExpandedBytes": 16777216,
+      "maxRecords": 4096,
+      "maxRequestBytes": 1048576,
+      "maxRequests": 64,
+      "maxTotalBytes": 16777216
+    }
+  }
+}

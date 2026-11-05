@@ -308,6 +308,10 @@ pub enum TerminalDeliveryReconciliation {
 pub trait CommandExecutor {
     fn execute(&mut self, command: &Command) -> Result<CommandExecution, DurableRunnerError>;
 
+    fn observe_recovery_state(&mut self, _state: &DurableState) -> Result<(), DurableRunnerError> {
+        Ok(())
+    }
+
     /// Opt in only when semantic result delivery validates an exact durable
     /// call receipt and cannot dispatch the underlying business operation.
     /// Ordinary commands and providers without this proof remain indeterminate.
@@ -461,6 +465,9 @@ pub fn run_durable_runner<E: CommandExecutor>(
             && state.pending_provider_cleanup.is_none())
     {
         return Ok(());
+    }
+    if recovered {
+        executor.observe_recovery_state(&state)?;
     }
     if recovered && state.warm_transition.is_none() {
         state.reconnect_count = state.reconnect_count.saturating_add(1);

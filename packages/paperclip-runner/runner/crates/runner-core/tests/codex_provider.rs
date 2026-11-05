@@ -7,8 +7,8 @@ use paperclip_runner_core::codex_provider::{
     CodexProvider, CodexProviderConfig, CodexProviderEvent,
 };
 use paperclip_runner_core::durable::{
-    Command, CommandExecutor, DurableRunnerConfig, DurableRunnerError, PolledEvent,
-    TerminalDeliveryReconciliation,
+    Command, CommandDisposition, CommandExecutor, DurableRunnerConfig, DurableRunnerError,
+    DurableStateStore, EventPriority, PolledEvent, TerminalDeliveryReconciliation,
 };
 use paperclip_runner_core::native_provider_backend::NativeProviderCommandExecutor;
 use paperclip_runner_core::provider_backend::CodexCommandExecutor;
@@ -74,6 +74,311 @@ fn provider_config(directory: &Path, switches: &[&str]) -> CodexProviderConfig {
         include_skill_instructions: None,
         conversation_mode: None,
     }
+}
+
+fn dormant_source_fixture(directory: &Path) -> (DurableRunnerConfig, Value) {
+    dormant_source_fixture_with_switches(directory, &[])
+}
+
+fn dormant_source_fixture_with_switches(
+    directory: &Path,
+    switches: &[&str],
+) -> (DurableRunnerConfig, Value) {
+    let mut switches_with_defaults = vec!["--record-process-start", "--durable-turn-ids"];
+    switches_with_defaults.extend_from_slice(switches);
+    let config = durable_config(directory);
+    let mut executor = CodexCommandExecutor::with_runner_config(directory, &config);
+    executor
+        .execute(&command(
+            "prepare-source",
+            1,
+            "run.prepare",
+            json!({"provider":provider_config(directory, &switches_with_defaults)}),
+        ))
+        .unwrap();
+    executor
+        .execute(&command("open-source", 2, "session.open", json!({})))
+        .unwrap();
+    executor
+        .execute(&command(
+            "source-turn",
+            3,
+            "turn.start",
+            json!({"text":"Complete the source turn."}),
+        ))
+        .unwrap();
+    wait_for_executor_event(&mut executor, "turn.completed");
+    while !poll_and_ack(&mut executor).unwrap().is_empty() {}
+    executor.shutdown().unwrap();
+    let provider =
+        serde_json::from_slice(&fs::read(directory.join("codex-provider-state.json")).unwrap())
+            .unwrap();
+    (config, provider)
+}
+
+#[test]
+fn ordinary_recovery_restores_a_completed_idle_session() {
+    let directory = temporary_directory("dormant-recovery");
+    let (config, _) = dormant_source_fixture(&directory);
+    let runner = DurableStateStore::new(&directory)
+        .unwrap()
+        .load_or_create(&config)
+        .unwrap()
+        .0;
+    let mut executor = NativeProviderCommandExecutor::with_runner_config(&directory, &config);
+    executor.observe_recovery_state(&runner).unwrap();
+    executor
+        .execute(&command("restore", 1, "session.snapshot", json!({})))
+        .unwrap();
+    while !poll_and_ack(&mut executor).unwrap().is_empty() {}
+    let snapshot = executor
+        .execute(&command("snapshot", 2, "session.snapshot", json!({})))
+        .unwrap();
+    assert_eq!(
+        snapshot.result["warmAttachReady"], true,
+        "{}",
+        snapshot.result
+    );
+    assert_eq!(call_count(&directory, "process-start"), 2);
+    assert_eq!(call_count(&directory, "turn/start"), 1);
+    executor.shutdown().unwrap();
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn ordinary_recovery_checks_saved_dormant_state_against_live_work() {
+    for fault in ["active", "goal"] {
+        let directory = temporary_directory("dormant-live-recovery");
+        let (config, _) = dormant_source_fixture(&directory);
+        let path = directory.join("fake-state.json");
+        let mut live: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        if fault == "active" {
+            live["activeTurnId"] = json!("unexpected-provider-turn");
+        } else {
+            live["goal"] = json!({"objective":"Unexpected autonomous work", "status":"active"});
+        }
+        fs::write(&path, serde_json::to_vec(&live).unwrap()).unwrap();
+        let runner = DurableStateStore::new(&directory)
+            .unwrap()
+            .load_or_create(&config)
+            .unwrap()
+            .0;
+        let mut recovered = NativeProviderCommandExecutor::with_runner_config(&directory, &config);
+        recovered.observe_recovery_state(&runner).unwrap();
+        assert_eq!(call_count(&directory, "process-start"), 1);
+        let error = recovered
+            .execute(&command("snapshot", 1, "session.snapshot", json!({})))
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("saved dormant Codex"),
+            "{fault}: {error}"
+        );
+        assert_eq!(call_count(&directory, "process-start"), 2);
+        drop(recovered);
+        fs::remove_dir_all(directory).unwrap();
+    }
+}
+
+#[test]
+fn dormant_recovery_rejects_goal_activation_during_the_final_thread_read() {
+    let directory = temporary_directory("dormant-goal-during-read");
+    let trigger = directory.join("activate-goal");
+    let (config, _) = dormant_source_fixture_with_switches(
+        &directory,
+        &["--goal-on-thread-read-file", trigger.to_str().unwrap()],
+    );
+    fs::write(&trigger, b"active").unwrap();
+    let runner = DurableStateStore::new(&directory)
+        .unwrap()
+        .load_or_create(&config)
+        .unwrap()
+        .0;
+    let mut recovered = NativeProviderCommandExecutor::with_runner_config(&directory, &config);
+    recovered.observe_recovery_state(&runner).unwrap();
+    let result = recovered.execute(&command("snapshot", 1, "session.snapshot", json!({})));
+    assert_eq!(call_count(&directory, "late-goal-on-thread-read"), 1);
+    let error = result.expect_err("late goal activation must refuse dormant recovery");
+    assert!(error.to_string().contains("saved dormant Codex"), "{error}");
+    let state: Value =
+        serde_json::from_slice(&fs::read(directory.join("codex-provider-state.json")).unwrap())
+            .unwrap();
+    assert_eq!(state["startupAttempt"]["directChildExitObserved"], true);
+    #[cfg(unix)]
+    assert!(
+        !std::process::Command::new("kill")
+            .args([
+                "-0",
+                &state["startupAttempt"]["processId"]
+                    .as_u64()
+                    .unwrap()
+                    .to_string()
+            ])
+            .output()
+            .unwrap()
+            .status
+            .success(),
+        "provider must be reaped before refusal returns"
+    );
+    assert_eq!(call_count(&directory, "process-start"), 2);
+    assert_eq!(call_count(&directory, "turn/start"), 1);
+    drop(recovered);
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn dormant_recovery_delivers_a_paused_goal_observed_during_the_final_thread_read() {
+    let directory = temporary_directory("paused-goal-during-read");
+    let trigger = directory.join("paused-goal");
+    let (config, _) = dormant_source_fixture_with_switches(
+        &directory,
+        &["--goal-on-thread-read-file", trigger.to_str().unwrap()],
+    );
+    fs::write(&trigger, b"paused").unwrap();
+    let runner = DurableStateStore::new(&directory)
+        .unwrap()
+        .load_or_create(&config)
+        .unwrap()
+        .0;
+    let mut recovered = NativeProviderCommandExecutor::with_runner_config(&directory, &config);
+    recovered.observe_recovery_state(&runner).unwrap();
+    recovered
+        .execute(&command("snapshot", 1, "session.snapshot", json!({})))
+        .unwrap();
+    assert_eq!(call_count(&directory, "late-goal-on-thread-read"), 1);
+    let update = wait_for_executor_event(&mut recovered, "session.goal.updated");
+    assert_eq!(update.payload["goal"]["status"], "paused");
+    drop(recovered);
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn ordinary_recovery_preserves_pending_same_run_goal_effects() {
+    for status in ["pending", "indeterminate"] {
+        let directory = temporary_directory("pending-goal-recovery");
+        let (config, _) = dormant_source_fixture(&directory);
+        let path = directory.join("fake-state.json");
+        let mut live: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        live["goal"] = json!({"objective":"Already authorized same-run goal", "status":"active"});
+        fs::write(&path, serde_json::to_vec(&live).unwrap()).unwrap();
+        let store = DurableStateStore::new(&directory).unwrap();
+        let mut runner = store.load_or_create(&config).unwrap().0;
+        runner
+            .begin_command(&command(
+                "goal-in-flight",
+                1,
+                "session.goal.set",
+                json!({"objective":"Already authorized same-run goal", "status":"active"}),
+            ))
+            .unwrap();
+        if status == "indeterminate" {
+            store.save(&runner).unwrap();
+            runner = store.load_or_create(&config).unwrap().0;
+        }
+        assert_eq!(runner.processed_commands["goal-in-flight"].status, status);
+        let mut recovered = NativeProviderCommandExecutor::with_runner_config(&directory, &config);
+        recovered.observe_recovery_state(&runner).unwrap();
+        recovered
+            .execute(&command("snapshot", 2, "session.snapshot", json!({})))
+            .unwrap();
+        let goal = recovered
+            .execute(&command("goal-read", 3, "session.goal.get", json!({})))
+            .unwrap();
+        assert_eq!(goal.result["goal"]["status"], "active");
+        assert_eq!(call_count(&directory, "turn/start"), 1);
+        recovered.shutdown().unwrap();
+        fs::remove_dir_all(directory).unwrap();
+    }
+}
+
+#[test]
+fn ordinary_recovery_does_not_restore_prepared_during_reads_or_cleanup() {
+    let directory = temporary_directory("prepared-journal-recovery");
+    let (config, mut provider) = dormant_source_fixture(&directory);
+    provider["lifecycle"] = json!("prepared");
+    provider["completedTurnAuthoritative"] = json!(false);
+    provider["completedTurnProcessGeneration"] = Value::Null;
+    provider["completedProviderTurnId"] = Value::Null;
+    fs::write(
+        directory.join("codex-provider-state.json"),
+        serde_json::to_vec(&provider).unwrap(),
+    )
+    .unwrap();
+    let runner = DurableStateStore::new(&directory)
+        .unwrap()
+        .load_or_create(&config)
+        .unwrap()
+        .0;
+    let mut executor = NativeProviderCommandExecutor::with_runner_config(&directory, &config);
+    executor.observe_recovery_state(&runner).unwrap();
+    let snapshot = executor
+        .execute(&command("snapshot", 1, "session.snapshot", json!({})))
+        .unwrap();
+    assert_eq!(snapshot.result["warmAttachReady"], false);
+    executor
+        .execute(&command("drain", 2, "runner.drain", json!({})))
+        .unwrap();
+    executor
+        .execute(&command("stop", 3, "turn.stop", json!({})))
+        .unwrap();
+    assert_eq!(call_count(&directory, "process-start"), 1);
+    executor.shutdown().unwrap();
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn ordinary_recovery_preserves_command_replay_and_collision_checks() {
+    let directory = temporary_directory("recovery-command-replay");
+    let config = durable_config(&directory);
+    let mut runner = DurableStateStore::new(&directory)
+        .unwrap()
+        .load_or_create(&config)
+        .unwrap()
+        .0;
+    let recorded = command(
+        "recorded-attach",
+        1,
+        "run.attach",
+        json!({"paperclipNextAuthority":{}}),
+    );
+    assert!(matches!(
+        runner.begin_command(&recorded).unwrap(),
+        CommandDisposition::Execute
+    ));
+    runner
+        .complete_command(&recorded, json!({"status":"attached"}))
+        .unwrap();
+    runner
+        .enqueue_event(
+            &config,
+            "runner.diagnostic",
+            EventPriority::P0,
+            json!({"message":"unacknowledged fact"}),
+        )
+        .unwrap();
+    assert!(
+        matches!(runner.begin_command(&recorded).unwrap(), CommandDisposition::Replay(result) if result.status == "completed")
+    );
+    let mut collision = recorded.clone();
+    collision.payload["changed"] = json!(true);
+    assert!(runner
+        .begin_command(&collision)
+        .unwrap_err()
+        .to_string()
+        .contains("different command data"));
+    let pending = command(
+        "pending-goal",
+        2,
+        "session.goal.set",
+        json!({"objective":"Original effect"}),
+    );
+    assert!(matches!(
+        runner.begin_command(&pending).unwrap(),
+        CommandDisposition::Execute
+    ));
+    assert!(
+        matches!(runner.begin_command(&pending).unwrap(), CommandDisposition::Replay(result) if result.status == "pending")
+    );
+    fs::remove_dir_all(directory).unwrap();
 }
 
 #[test]
@@ -190,7 +495,12 @@ fn durable_config(directory: &Path) -> DurableRunnerConfig {
 
 fn command(id: &str, sequence: u64, command_type: &str, payload: Value) -> Command {
     Command {
-        schema: "paperclip.prp.command.v1".to_owned(),
+        schema: if command_type.starts_with("session.goal.") {
+            "paperclip.prp.command.v2"
+        } else {
+            "paperclip.prp.command.v1"
+        }
+        .to_owned(),
         command_id: id.to_owned(),
         controller_seq: sequence,
         command_type: command_type.to_owned(),
@@ -428,7 +738,7 @@ fn recorded_tool_responses(directory: &Path) -> Vec<String> {
 }
 
 fn poll_and_ack(
-    executor: &mut CodexCommandExecutor,
+    executor: &mut impl CommandExecutor,
 ) -> Result<Vec<PolledEvent>, DurableRunnerError> {
     let events = executor.poll_events()?;
     executor.acknowledge_events(events.len())?;
@@ -472,7 +782,7 @@ fn wait_for_provider_error(provider: &mut CodexProvider) -> String {
 }
 
 fn wait_for_executor_event(
-    executor: &mut CodexCommandExecutor,
+    executor: &mut impl CommandExecutor,
     expected_event_type: &str,
 ) -> PolledEvent {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);

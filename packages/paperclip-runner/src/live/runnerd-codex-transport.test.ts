@@ -1173,7 +1173,7 @@ it("installs required accounting acceptance before the Runner acknowledgement ca
   }
 });
 
-it("uses the same API result envelope for live dispatch and recovered receipts", async () => {
+it.each([false, true])("uses the same API result envelope and fences handler publication (owner changed: %s)", async changedOwner => {
   const stateDirectory = await mkdtemp(join(tmpdir(), "runnerd-recovered-api-"));
   const OriginalCore = durableControlPlane.DurablePrpControlPlane;
   let callbacks!: ConstructorParameters<typeof OriginalCore>[0];
@@ -1185,17 +1185,31 @@ it("uses the same API result envelope for live dispatch and recovered receipts",
   let outcome: { result: unknown; isError?: boolean } | null = {
     result: { ok: true, apiOperationId: "POST /api/example", data: { saved: true } }, isError: false,
   };
+  let owner: string | undefined;
   const bundle = createCapabilityRunnerdCodexTransport({
+    get authorityRunId() { return owner; },
     runnerBinary: defaultCapabilityRunnerdBinary(), codexCommand: fakeCodex,
     codexArgs: fakeCodexArgs(stateDirectory), stateDirectory,
     recoverSemanticToolInput: async () => outcome,
   });
-  bundle.transport.setServerRequestHandler(async () => ({ success: !outcome?.isError,
-    contentItems: [{ type: "inputText", text: JSON.stringify(outcome?.result) }] }));
+  const handler = vi.fn(async () => ({ success: !outcome?.isError,
+    contentItems: [{ type: "inputText" as const, text: JSON.stringify(outcome?.result) }] }));
+  if (!changedOwner) bundle.transport.setServerRequestHandler(handler);
   try {
     await bundle.transport.request("thread/start", { cwd: tmpdir() });
     const call = { callId: "recovered-api", operationId: "call_api", input: { operationId: "POST /api/example" },
       sourceEventId: "saved-event", sourceEventType: "semantic_tool.input", correlation: core.store.state.identity };
+    if (changedOwner) {
+      owner = core.store.state.identity.runId;
+      const pending = callbacks.onSemanticToolInput!(call);
+      await new Promise<void>(resolveTurn => setImmediate(resolveTurn));
+      owner = "replacement-owner";
+      bundle.transport.setServerRequestHandler(handler);
+      await expect(pending).rejects.toBeInstanceOf(durableControlPlane.SemanticToolNotDispatchedError);
+      expect(handler).not.toHaveBeenCalled();
+      expect(await callbacks.recoverSemanticToolInput!(call)).toBeNull();
+      return;
+    }
     const live = await callbacks.onSemanticToolInput!(call);
     expect(live).toMatchObject({ isError: false, result: { ok: true, operationId: "call_api", callId: call.callId, result: outcome!.result } });
     expect(await callbacks.recoverSemanticToolInput!(call)).toMatchObject({ result: live.result, isError: live.isError });

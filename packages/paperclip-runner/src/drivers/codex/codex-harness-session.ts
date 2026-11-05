@@ -63,6 +63,8 @@ export class CodexHarnessSession
   extends CodexSessionState
   implements HarnessSession
 {
+  #deferredNotificationPump = false;
+
   constructor(input: CodexSessionStateInput) {
     super(input);
     this.transport.setServerRequestHandler((request) =>
@@ -80,6 +82,7 @@ export class CodexHarnessSession
       ));
     }
     if (this.terminal) {
+      this.#deferredNotificationPump = true;
       this.eventQueue.close();
     } else {
       void pumpNotifications(this);
@@ -153,6 +156,11 @@ export class CodexHarnessSession
       this.protocolFailed = false;
       this.protocolFailureCode = null;
       this.protocolFailureMessage = null;
+      if (this.#deferredNotificationPump) {
+        this.eventQueue.reopen();
+        this.#deferredNotificationPump = false;
+        void pumpNotifications(this);
+      }
       this.emit("run.attached", { runId: input.runId, sameSession: true });
     } finally {
       this.pendingRunAttachment = null;
