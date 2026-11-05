@@ -41,7 +41,18 @@ export function createTranscriptProbe(
   };
 }
 
-export const probeTranscript = createTranscriptProbe(async (file) => {
+const probeTranscript = createTranscriptProbe(async (key) => {
+  const input = JSON.parse(key) as { configDir: string; cwd: string; sessionId: string };
+  let cwd = input.cwd;
+  if (process.platform !== "win32") {
+    try {
+      cwd = await fs.realpath(cwd);
+    } catch {
+      return null;
+    }
+  }
+  const encodedCwd = cwd.replace(/[^a-zA-Z0-9-]/g, "-");
+  const file = path.join(input.configDir, "projects", encodedCwd, `${input.sessionId}.jsonl`);
   try {
     return (await fs.stat(file)).isFile();
   } catch (error) {
@@ -49,3 +60,7 @@ export const probeTranscript = createTranscriptProbe(async (file) => {
     return code === "ENOENT" || code === "ENOTDIR" ? false : null;
   }
 });
+
+export function probeClaudeTranscript(input: { configDir: string; cwd: string; sessionId: string }): Promise<boolean | null> {
+  return probeTranscript(JSON.stringify(input));
+}

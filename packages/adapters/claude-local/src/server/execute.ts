@@ -97,7 +97,7 @@ import { prepareCompatibleClaudeCommand } from "./sandbox-cli-version.js";
 import { resolveClaudeDesiredSkillNames } from "./skills.js";
 import { isBedrockModelId } from "./models.js";
 import { prepareClaudePromptBundle } from "./prompt-cache.js";
-import { probeTranscript, resolveTranscriptConfigDir } from "./transcript-probe.js";
+import { probeClaudeTranscript, resolveTranscriptConfigDir } from "./transcript-probe.js";
 import { buildClaudeExecutionPermissionArgs, claudeSandboxPermissionEnv } from "./permissions.js";
 import { resolveClaudeModel, SANDBOX_INSTALL_COMMAND } from "../index.js";
 import {
@@ -116,14 +116,7 @@ async function hasLocalClaudeSessionTranscript(input: {
   // Claude Code stores CLI transcripts under the effective config directory,
   // keyed by its encoded project cwd and session id. Only call this for local
   // execution; a host-side miss says nothing about a remote execution host.
-  const encodedCwd = input.cwd.replace(/[^a-zA-Z0-9-]/g, "-");
-  const transcriptPath = path.join(
-    input.configDir,
-    "projects",
-    encodedCwd,
-    `${input.sessionId}.jsonl`,
-  );
-  return probeTranscript(transcriptPath);
+  return probeClaudeTranscript(input);
 }
 
 interface ClaudeExecutionInput {

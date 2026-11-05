@@ -1,7 +1,26 @@
 import { describe, expect, it, vi } from "vitest";
-import { createTranscriptProbe, resolveTranscriptConfigDir } from "./transcript-probe.js";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { createTranscriptProbe, probeClaudeTranscript, resolveTranscriptConfigDir } from "./transcript-probe.js";
 
 describe("transcript probe", () => {
+  it.skipIf(process.platform === "win32")("finds the transcript under the real path of a symlinked workspace", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "claude-transcript-link-"));
+    try {
+      const real = path.join(root, "real");
+      const link = path.join(root, "link");
+      const config = path.join(root, "config");
+      await fs.mkdir(real);
+      await fs.symlink(real, link);
+      const encoded = real.replace(/[^a-zA-Z0-9-]/g, "-");
+      await fs.mkdir(path.join(config, "projects", encoded), { recursive: true });
+      await fs.writeFile(path.join(config, "projects", encoded, "session.jsonl"), "{}");
+      expect(await probeClaudeTranscript({ configDir: config, cwd: link, sessionId: "session" })).toBe(true);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
   it("prefers the child USERPROFILE over HOME on Windows", () => {
     expect(resolveTranscriptConfigDir({ HOME: "C:\\other", USERPROFILE: "C:\\Users\\agent" }, "C:\\work", "win32", "C:\\server"))
       .toBe("C:\\Users\\agent\\.claude");
