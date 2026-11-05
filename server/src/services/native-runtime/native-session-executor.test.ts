@@ -9937,7 +9937,7 @@ describe("native warm session supervision", () => {
     } as NativeExecutionInputV1;
     let canonicalNote = "original";
     const checkpointWarm = vi.fn(async () => { canonicalNote = "edited during failed turn"; return true; });
-    const close = vi.fn(async () => { throw new Error("provider shutdown failed"); });
+    const close = vi.fn<() => Promise<void>>(async () => { throw new Error("provider shutdown failed"); });
     const collectStopped = vi.fn(async () => undefined);
     state.execute.mockReset().mockImplementationOnce(async options => {
       await options.onSession?.({ close });
@@ -9955,6 +9955,10 @@ describe("native warm session supervision", () => {
     // Failed close is not proof that the process stopped. The preceding warm
     // checkpoint preserves the edits without calling stopped-only collection.
     expect(collectStopped).not.toHaveBeenCalled();
+    expect(readNativeSessionIdleWork()).toBe("present");
+    close.mockResolvedValue(undefined);
+    expect(await closeIdleWarmNativeSessionsForRestart()).toEqual({ closed: 1, busy: 0, failed: 0 });
+    expect(collectStopped).toHaveBeenCalledOnce();
   });
 
   it.each(["failed", "cancelled"] as const)("retires a %s session even if its warm checkpoint rejects", async (runTerminalState) => {
@@ -10171,7 +10175,10 @@ describe("native warm session supervision", () => {
       }
     } finally {
       releaseClose();
-      await closeWarmNativeSessionsForEnvironment({ environmentId: identity, reason: "test cleanup" });
+      close.mockResolvedValue(undefined);
+      expect(await closeWarmNativeSessionsForEnvironment({ environmentId: identity, reason: "test cleanup" }))
+        .toEqual({ closed: changed && !closeFails ? 0 : 1, busy: 0, failed: 0 });
+      expect(collectStopped).toHaveBeenCalledOnce();
     }
   });
 
@@ -10854,6 +10861,187 @@ describe("native warm session supervision", () => {
     } finally { finishClose(); await closeIdleWarmNativeSessionsForRestart(); }
   });
 
+  it.each(["controller restart", "idle timeout", "failed turn"])("retains a warm owner without an instruction working copy after rejected retirement: %s", async retirement => {
+    await closeIdleWarmNativeSessionsForRestart();
+    const failure = new Error("provider retirement unconfirmed");
+    const close = vi.fn(async () => undefined).mockRejectedValue(failure);
+    const warmExecution = { ...execution, binding: { ...execution.binding,
+      runId: "run-retirement-retry", executionWorkspaceId: "workspace-retirement-retry" },
+      session: { ...execution.session, normalizedSessionId: "session-retirement-retry",
+        lifecyclePolicy: { mode: "warm" as const, idleTimeoutMs: retirement === "idle timeout" ? 10 : 60_000 } } } as NativeExecutionInputV1;
+    state.execute.mockReset().mockImplementationOnce(async options => {
+      await options.onSession?.({ close });
+      return { result: { summary: "Completed" }, terminal: { runTerminalState: retirement === "failed turn" ? "failed" : "succeeded" },
+        turnId: "turn-retirement-retry", normalizedSessionId: warmExecution.session.normalizedSessionId,
+        providerSessionId: "provider-retirement-retry", driverKind: "test", driverVersion: "1",
+        nativeEventCount: 1, highestContiguousSourceSeq: 1, usage: null };
+    });
+    try {
+      await executePaperclipNativeSession({ db: leaseDb(warmExecution), execution: warmExecution, runnerInstanceId: "runner" });
+      expect(readNativeSessionIdleWork()).toBe("present");
+      if (retirement === "controller restart") {
+        expect(await closeIdleWarmNativeSessionsForRestart()).toEqual({ closed: 0, busy: 0, failed: 1 });
+      } else {
+        await vi.waitFor(() => expect(close).toHaveBeenCalledOnce());
+      }
+      expect(readNativeSessionIdleWork()).toBe("present");
+      const next = { ...warmExecution, binding: { ...warmExecution.binding, runId: "run-retirement-retry-next" } };
+      await expect(executePaperclipNativeSession({ db: leaseDb(next), execution: next, runnerInstanceId: "runner" }))
+        .rejects.toBe(failure);
+      expect(state.execute).toHaveBeenCalledOnce();
+      expect(readNativeSessionIdleWork()).toBe("present");
+      close.mockResolvedValue(undefined);
+      expect(await closeIdleWarmNativeSessionsForRestart()).toEqual({ closed: 1, busy: 0, failed: 0 });
+      expect(close).toHaveBeenCalledTimes(3);
+      expect(readNativeSessionIdleWork()).toBe("none");
+    } finally {
+      close.mockResolvedValue(undefined);
+      await closeIdleWarmNativeSessionsForRestart();
+    }
+  });
+
+  describe("native idle sleep retirement", () => {
+    async function prepareSleep(input: { canRetire: () => boolean }) {
+      const { heartbeatService } = await import("../heartbeat.js");
+      return heartbeatService(leaseDb()).prepareIdleWarmNativeSessionsForSleep(input);
+    }
+    async function start(name: string, close = vi.fn<() => Promise<void>>(async () => undefined), onTurn?: () => Promise<void>,
+      instructionWorkingCopy?: Parameters<typeof executePaperclipNativeSession>[0]["instructionWorkingCopy"]) {
+      const current = { ...execution, binding: { ...execution.binding,
+        runId: name, agentId: `agent-${name}`, executionWorkspaceId: name }, session: { ...execution.session,
+        normalizedSessionId: name, lifecyclePolicy: { mode: "warm" as const, idleTimeoutMs: 60_000 } } } as NativeExecutionInputV1;
+      const result = { result: { summary: "Completed" }, terminal: { runTerminalState: "succeeded" },
+        turnId: name, normalizedSessionId: name, providerSessionId: name, driverKind: "test", driverVersion: "1",
+        nativeEventCount: 1, highestContiguousSourceSeq: 1, usage: null };
+      state.execute.mockReset().mockImplementationOnce(async options => {
+        await options.onSession?.({ close });
+        await onTurn?.();
+        return result;
+      });
+      await executePaperclipNativeSession({ db: leaseDb(current), execution: current, runnerInstanceId: name, instructionWorkingCopy });
+      return { close, current, result };
+    }
+    afterEach(async () => { await closeIdleWarmNativeSessionsForRestart(); });
+
+    it("does no work when no warm owner exists", async () => {
+      await closeIdleWarmNativeSessionsForRestart();
+      expect(await prepareSleep({ canRetire: () => true }))
+        .toEqual({ closed: 0, busy: 0, failed: 0 });
+      expect(readNativeSessionIdleWork()).toBe("none");
+    });
+
+    it("leaves an idle owner intact without current drain authority", async () => {
+      const f = await start("sleep-stale-hold");
+      expect(await prepareSleep({ canRetire: () => false }))
+        .toEqual({ closed: 0, busy: 0, failed: 0 });
+      expect(f.close).not.toHaveBeenCalled();
+      expect(readNativeSessionIdleWork()).toBe("present");
+      expect(await prepareSleep({ canRetire: () => true }))
+        .toEqual({ closed: 1, busy: 0, failed: 0 });
+      expect(f.close).toHaveBeenCalledExactlyOnceWith({ reason: "tenant idle sleep" });
+      expect(readNativeSessionIdleWork()).toBe("none");
+    });
+
+    it("keeps task-drain reads and local diagnostics passive", async () => {
+      const f = await start("sleep-passive-read");
+      const { heartbeatService } = await import("../heartbeat.js");
+      const heartbeat = heartbeatService(leaseDb());
+      heartbeat.getTaskDrainStatus();
+      expect(readNativeSessionIdleWork()).toBe("present");
+      await readIdleLocalWork({ diagnostic: vi.fn() });
+      heartbeat.getTaskDrainStatus();
+      expect(f.close).not.toHaveBeenCalled();
+      expect(await heartbeat.prepareIdleWarmNativeSessionsForSleep({ canRetire: () => true }))
+        .toEqual({ closed: 1, busy: 0, failed: 0 });
+      expect(readNativeSessionIdleWork()).toBe("none");
+    });
+
+    it("waits for a started checkpoint and stops retiring more owners after authority expires", async () => {
+      let finish!: () => void;
+      const checkpoint = new Promise<void>(resolve => { finish = resolve; });
+      const first = await start("sleep-expiring-first", vi.fn(() => checkpoint));
+      const second = await start("sleep-expiring-second");
+      let current = true;
+      const preparation = prepareSleep({ canRetire: () => current });
+      try {
+        await vi.waitFor(() => expect(first.close).toHaveBeenCalledOnce());
+        expect(readNativeSessionIdleWork()).toBe("present");
+        current = false;
+        finish();
+        expect(await preparation).toEqual({ closed: 1, busy: 0, failed: 0 });
+        expect(second.close).not.toHaveBeenCalled();
+        expect(readNativeSessionIdleWork()).toBe("present");
+        expect(await prepareSleep({ canRetire: () => true }))
+          .toEqual({ closed: 1, busy: 0, failed: 0 });
+        expect(readNativeSessionIdleWork()).toBe("none");
+      } finally { finish(); await preparation; }
+    });
+
+    it("preserves busy turns without closing them on release after an abandoned sleep attempt", async () => {
+      const close = vi.fn(async () => undefined);
+      await start("sleep-busy-turn", close, async () => {
+        expect(await prepareSleep({ canRetire: () => true }))
+          .toEqual({ closed: 0, busy: 1, failed: 0 });
+        expect(close).not.toHaveBeenCalled();
+      });
+      expect(close).not.toHaveBeenCalled();
+      expect(readNativeSessionIdleWork()).toBe("present");
+      expect(await prepareSleep({ canRetire: () => true }))
+        .toEqual({ closed: 1, busy: 0, failed: 0 });
+    });
+
+    it("collects managed edits after the provider checkpoint before clearing the owner", async () => {
+      const root = await mkdtemp(join(tmpdir(), "native-sleep-retirement-"));
+      const saved = join(root, "saved-instructions.md");
+      const providerCheckpoint = join(root, "provider-checkpoint.json");
+      let stopped = false;
+      const close = vi.fn(async () => {
+        await writeFile(providerCheckpoint, JSON.stringify({ session: "sleep-files", resume: "retained" }));
+        stopped = true;
+      });
+      const collectStopped = vi.fn(async () => {
+        expect(stopped).toBe(true);
+        expect(readNativeSessionIdleWork()).toBe("present");
+        await writeFile(saved, "Edits collected from stopped provider");
+      });
+      try {
+        await start("sleep-files", close, undefined, {
+          runId: "sleep-files", root, preparationKey: "sleep-files", hasChanges: async () => false, collectStopped,
+        });
+        expect(await prepareSleep({ canRetire: () => true }))
+          .toEqual({ closed: 1, busy: 0, failed: 0 });
+        expect(await readFile(saved, "utf8")).toBe("Edits collected from stopped provider");
+        expect(JSON.parse(await readFile(providerCheckpoint, "utf8"))).toEqual({ session: "sleep-files", resume: "retained" });
+        expect(collectStopped).toHaveBeenCalledOnce();
+        expect(readNativeSessionIdleWork()).toBe("none");
+      } finally {
+        await closeIdleWarmNativeSessionsForRestart();
+        await rm(root, { recursive: true, force: true });
+      }
+    });
+
+    it("retains a rejected sleep retirement and admits the next ordinary turn after a successful retry", async () => {
+      const failure = new Error("sleep checkpoint unavailable");
+      const close = vi.fn(async () => undefined).mockRejectedValueOnce(failure);
+      const f = await start("sleep-retry", close);
+      expect(await prepareSleep({ canRetire: () => true }))
+        .toEqual({ closed: 0, busy: 0, failed: 1 });
+      expect(readNativeSessionIdleWork()).toBe("present");
+      expect(await prepareSleep({ canRetire: () => true }))
+        .toEqual({ closed: 1, busy: 0, failed: 0 });
+      const next = { ...f.current, binding: { ...f.current.binding, runId: "sleep-retry-next" } };
+      state.execute.mockImplementationOnce(async options => {
+        expect(options.existingSession).toBeUndefined();
+        return { ...f.result, result: { summary: "Continued after sleep retirement" } };
+      });
+      expect(await executePaperclipNativeSession({ db: leaseDb(next), execution: next, runnerInstanceId: "sleep-next" }))
+        .toMatchObject({ exitCode: 0, summary: "Continued after sleep retirement", sessionId: "sleep-retry",
+          resultJson: { nativeResult: { summary: "Continued after sleep retirement" } } });
+      expect(state.execute).toHaveBeenCalledTimes(2);
+      expect(readNativeSessionIdleWork()).toBe("none");
+    });
+  });
+
   it.each(["environment deletion", "controller restart"])("closes an idle warm session before %s", async (shutdownKind) => {
     const close = vi.fn(async () => undefined);
     const warmExecution = {
@@ -11132,7 +11320,13 @@ describe("native warm session supervision", () => {
       if (checkpointFails) await expect(running).rejects.toBe(checkpointError);
       else await running;
     }
-    await expect(closeIdleWarmNativeSessionsForRestart()).resolves.toEqual({ closed: 0, busy: 0, failed: 0 });
+    if (checkpointFails) {
+      expect(readNativeSessionIdleWork()).toBe("present");
+      close.mockResolvedValue(undefined);
+      await expect(closeIdleWarmNativeSessionsForRestart()).resolves.toEqual({ closed: 1, busy: 0, failed: 0 });
+    } else {
+      await expect(closeIdleWarmNativeSessionsForRestart()).resolves.toEqual({ closed: 0, busy: 0, failed: 0 });
+    }
   });
 
   it("preserves the active turn when a warm checkpoint resumes the same run", async () => {

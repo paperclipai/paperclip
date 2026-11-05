@@ -1,12 +1,19 @@
+import { resolveExternalTestDatabaseUrl } from "./external-test-database.js";
 import { randomUUID } from "node:crypto";
 import { applyPendingMigrations, closeRegisteredClients, createDb } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./embedded-postgres.js";
 
-export const recoveryPostgresSupport = process.env.PAPERCLIP_TEST_DATABASE_URL
+export const recoveryPostgresSupport = process.env.PAPERCLIP_TEST_DATABASE_URL || process.env.PAPERCLIP_RECOVERY_TEST_DATABASE_URL
   ? { supported: true } : await getEmbeddedPostgresTestSupport();
 
-/** Optional external host, always a fresh owned database; never reuse its data. */
-export async function startRecoveryPostgres(prefix: string) {
+export async function startRecoveryPostgres(prefix: string, options: { dedicatedDatabaseUrl?: string } = {}) {
+  const dedicated = options.dedicatedDatabaseUrl ?? process.env.PAPERCLIP_RECOVERY_TEST_DATABASE_URL;
+  if (dedicated !== undefined) {
+    const connectionString = resolveExternalTestDatabaseUrl("dedicated recovery database", dedicated);
+    if (!connectionString) throw new Error("Dedicated recovery database URL is required");
+    await applyPendingMigrations(connectionString);
+    return { connectionString, cleanup: () => closeRegisteredClients(connectionString, { scope: "database" }) };
+  }
   const external = process.env.PAPERCLIP_TEST_DATABASE_URL;
   if (!external) return startEmbeddedPostgresTestDatabase(prefix);
   const databaseName = `recovery_${randomUUID().replaceAll("-", "")}`;

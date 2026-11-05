@@ -5,7 +5,7 @@ import type { IdlePluginCatalogEntry } from "./plugin-idle-catalog.js";
 import type { ApiWakeAdmission } from "./idle-api-wake-admission.js";
 import { readIdleIncomingWakeProof, incomingWakeWorkQuery, type IdleIncomingWakeProof } from "./idle-incoming-wake.js";
 import type { VerifiedIdleCapabilities, IdleIncomingWakeCapability } from "./idle-incoming-wake-capability.js";
-import { idleWorkSnapshot } from "./task-admission.js";
+import { beginIdleTrackedWork, idleWorkSnapshot } from "./task-admission.js";
 import { readIdleLocalWork, type IdleLocalWork } from "./idle-local-work.js";
 import { readIdleRoutineSchedule, type ScheduledWake } from "./idle-scheduled-work.js";
 import { combineIdleSchedules, readIdleIssueSchedule } from "./idle-issue-schedule.js";
@@ -280,7 +280,8 @@ function sameQuietHold(before: IdleSleepDrainStatus, after: IdleSleepDrainStatus
   return before.ownerId === after.ownerId && before.draining && after.draining && before.activeRuns === 0 && before.pendingWakes === 0
     && after.activeRuns === 0 && after.pendingWakes === 0
     && before.startedAt !== null && after.startedAt?.getTime() === before.startedAt.getTime()
-    && (after.expiresAt === null || after.expiresAt.getTime() > now);
+    && before.expiresAt !== null && before.expiresAt.getTime() > now
+    && after.expiresAt?.getTime() === before.expiresAt.getTime();
 }
 
 /** Inventory persisted work after the task-drain admission hold lands.
@@ -291,6 +292,7 @@ export interface IdleSleepSafetyOptions {
   deadlineCapability?: VerifiedIdleCapabilities;
   collectDiagnostics?: true;
   deadlineOwners?: IdleDeadlineOwners;
+  prepareLocalWork?: (input: { canPrepare: () => boolean }) => Promise<IdleLocalWork>;
 }
 
 export async function readIdleSleepSafety(
@@ -325,7 +327,7 @@ export async function readIdleSleepSafety(
       ...(diagnostics ? { diagnostics } : {}) };
   };
   const before = getDrainStatus();
-  const localBefore = idleWorkSnapshot();
+  let localBefore = idleWorkSnapshot();
   const owned = () => Boolean(ownerId && ownerId === before.ownerId && before.expiresAt !== null);
   if (!sameQuietHold(before, before, now()) || (diagnostic && !owned())) {
     diagnostic?.record("inspection.hold", "unknown");
@@ -335,6 +337,27 @@ export async function readIdleSleepSafety(
   diagnostic?.record("inspection.hold", "none");
   let failureReason = "local.inspection";
   try {
+    if (options.prepareLocalWork && !diagnostic) {
+      if (!owned() || localBefore.active !== 0) return report("unknown");
+      const finish = beginIdleTrackedWork();
+      const preparation = idleWorkSnapshot();
+      const canPrepare = () => {
+        const current = getDrainStatus();
+        const work = idleWorkSnapshot();
+        return sameQuietHold(before, current, now())
+          && work.active === 1 && work.generation === preparation.generation;
+      };
+      let prepared: IdleLocalWork;
+      let current: boolean;
+      try {
+        if (!canPrepare()) return report("unknown");
+        prepared = await options.prepareLocalWork({ canPrepare });
+        current = canPrepare();
+      } finally { finish(); }
+      if (!current) return report("unknown");
+      if (prepared !== "none") return report(prepared);
+      localBefore = idleWorkSnapshot();
+    }
     const localFirst = await inspectLocalWork(diagnostic?.record);
     diagnostic?.record("local.inspection", localFirst);
     if (localFirst !== "none" && !diagnostic) return report(localFirst);
