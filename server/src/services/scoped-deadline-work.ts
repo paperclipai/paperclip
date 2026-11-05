@@ -161,17 +161,28 @@ export function registerScopedDeadlineWork<Entry extends ScheduledEntry, Scope>(
         return typeof configured === "string" ? [configured] : [...configured];
       };
       // Entries owned by this pass (queued in a group or running) and the
-      // resource keys of running checks. Admission never overlaps either.
+      // resource keys they hold. Every batch group reserves its keys until the
+      // whole group finishes, so admission can neither overlap a queued
+      // sibling nor jump ahead of it. Admission never overlaps either set.
       const owned = new Set(batch.entries.map(entry => entry.id));
       const busyKeys = new Map<string, number>();
+      const reserve = (keys: readonly string[]) => {
+        for (const key of keys) busyKeys.set(key, (busyKeys.get(key) ?? 0) + 1);
+      };
+      const release = (keys: readonly string[]) => {
+        for (const key of keys) {
+          const count = (busyKeys.get(key) ?? 1) - 1;
+          if (count > 0) busyKeys.set(key, count); else busyKeys.delete(key);
+        }
+      };
+      const groupKeys = pending.map(group => [...new Set(group.flatMap(keysOf))]);
+      for (const keys of groupKeys) reserve(keys);
       const lastChecked = new Map<string, number>();
       const spacing = options.minimumPassIntervalMs ?? 1000;
       let running = 0;
       let changed: (() => void) | null = null;
       const notify = () => { const resolve = changed; changed = null; resolve?.(); };
       const checkEntry = async (entry: Entry) => {
-        const keys = keysOf(entry);
-        for (const key of keys) busyKeys.set(key, (busyKeys.get(key) ?? 0) + 1);
         running += 1;
         try {
           const current = await options.check(entry, signal);
@@ -181,10 +192,6 @@ export function registerScopedDeadlineWork<Entry extends ScheduledEntry, Scope>(
         finally {
           running -= 1;
           lastChecked.set(entry.id, Date.now());
-          for (const key of keys) {
-            const count = (busyKeys.get(key) ?? 1) - 1;
-            if (count > 0) busyKeys.set(key, count); else busyKeys.delete(key);
-          }
           notify();
         }
       };
@@ -218,19 +225,23 @@ export function registerScopedDeadlineWork<Entry extends ScheduledEntry, Scope>(
       });
       const checkGroups = async () => {
         while (!signal.aborted && canRun()) {
-          const group = pending[nextGroup++];
+          const index = nextGroup++;
+          const group = pending[index];
           if (group) {
-            for (const entry of group) {
-              if (signal.aborted || !canRun()) return;
-              try { await checkEntry(entry); } finally { owned.delete(entry.id); }
-            }
+            try {
+              for (const entry of group) {
+                if (signal.aborted || !canRun()) return;
+                try { await checkEntry(entry); } finally { owned.delete(entry.id); }
+              }
+            } finally { release(groupKeys[index]); notify(); }
             continue;
           }
           if (!admitDueWhileActive) return;
           const { candidate, wakeAt } = nextAdmission();
           if (candidate) {
-            owned.add(candidate.id);
-            try { await checkEntry(candidate); } finally { owned.delete(candidate.id); }
+            const keys = keysOf(candidate);
+            owned.add(candidate.id); reserve(keys);
+            try { await checkEntry(candidate); } finally { owned.delete(candidate.id); release(keys); notify(); }
             continue;
           }
           // Nothing is admissible now. Stay available only while another
@@ -240,7 +251,11 @@ export function registerScopedDeadlineWork<Entry extends ScheduledEntry, Scope>(
           await waitForChange(wakeAt);
         }
       };
-      const checks = await Promise.allSettled(Array.from({ length: Math.min(options.concurrentChecks?.limit ?? 1, pending.length) }, checkGroups));
+      // With admission enabled, spare slots start too: a pass that begins with
+      // one slow group must still admit other resources that come due later.
+      const workers = admitDueWhileActive ? options.concurrentChecks!.limit
+        : Math.min(options.concurrentChecks?.limit ?? 1, pending.length);
+      const checks = await Promise.allSettled(Array.from({ length: workers }, checkGroups));
       for (const result of checks) if (result.status === "rejected") errors.push(result.reason);
       if (errors.length) throw new AggregateError(errors, `${options.queue} could not settle`);
     },
