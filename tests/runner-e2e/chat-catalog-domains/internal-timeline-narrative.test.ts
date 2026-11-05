@@ -223,3 +223,7 @@ it.each([
 ])("keeps actor, event, negation and chronology boundaries for adjacent repair results: %s", reply => {
   expect(grade(reply)).toBe(false);
 });
+
+it("stops repair subject continuity when a coordinated clause introduces another worker", () => {
+  expect(grade("Morgan ran verification which failed and work paused. You reassigned the task to Riley. Riley added the label, and Avery inspected the saved bytes and then re-ran verify_launch_html. It passed with exit code 0 on the saved bytes.")).toBe(false);
+});

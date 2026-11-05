@@ -21,7 +21,7 @@ export function truthfulTimelineAccount(input: {
         !calendarWords.has(match[1]!.toLowerCase()) && !/^(?:today|tomorrow|yesterday)$/i.test(match[1]!))
       || /\b(?:another|different|other)\s+(?:worker|agent|person|engineer|reviewer|operator)\b/i.test(withoutOwner)
       || /\b(?:run|ran|executed|performed)\s+by\s+[A-Z][a-z]+\b|\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\s+(?:ran|executed|performed)\b/.test(withoutOwner)
-      || /(?:^|[.!?]\s+|\b(?:that|which|while|when)\s+)(?!(?:The|A|An|Then|Next|Later|Finally|He|She|They|You)\b)[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\s+(?:[a-z]+(?:ed|s)|ran|built|made|did|had|was|is)\b/.test(withoutOwner);
+      || /(?:^|[.!?]\s+|\b(?:that|which|while|when|and|but|then)\s+)(?!(?:The|A|An|Then|Next|Later|Finally|He|She|They|You)\b)[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\s+(?:[a-z]+(?:ed|s)|ran|built|made|did|had|was|is)\b/.test(withoutOwner);
   };
   const withinClause = "(?:[^.!?\\n]|\\.(?=\\S))";
   const humanActors = ["you", "human operator", "board member", "human", "person", "user", "operator", "board", input.personName].filter(Boolean).map(name => escape(name!)).join("|");
