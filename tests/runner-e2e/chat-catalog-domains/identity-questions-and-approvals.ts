@@ -48,9 +48,29 @@ async function observeQuestion(ctx: ChatCatalogContext, state: Record<string, un
   const seen = new Set(state.beforeAnswerCommentIds as string[] | undefined);
   state.afterAnswerReply = (await ctx.input.api.get<Array<{ id: string; body: string; authorAgentId?: string }>>(`/api/issues/${ctx.issue()!.id}/comments?order=asc`))
     .filter(row => row.authorAgentId === ctx.input.fixtures.agent.id && !seen.has(row.id)).map(row => row.body).join("\n");
+  if (ctx.scenario.id === "questions-and-approvals.multi-part-question") {
+    state.visibleContinuationDescriptions = [];
+    for (const card of multipartContinuationCards(observed)) {
+      const description = card.payload.questionSet!.description!;
+      const row = ctx.input.page.locator(`[id=${JSON.stringify(`interaction-${card.id}`)}]`);
+      if (!await row.isVisible()) continue;
+      await row.click();
+      const context = ctx.input.page.getByTestId("task-chat-composer-takeover").getByRole("region", { name: "Question context", exact: true });
+      if (await context.getByText(description, { exact: true }).isVisible())
+        (state.visibleContinuationDescriptions as Array<{ id: string; description: string }>).push({ id: card.id, description });
+    }
+  }
   const brief = observed.tasks.find(row => `${row.title}\n${row.description}`.includes(String(state.answer)));
   state.taskBrief = brief ? await ctx.input.api.get(`/api/issues/${brief.id}`) : undefined;
   return observed;
+}
+function multipartContinuationCards(o: NonNullable<ReturnType<typeof identityObservation>>) {
+  const original = o.state.original as Interaction | undefined;
+  return o.interactions.filter(card => card.id !== original?.id && card.companyId === o.companyId && card.issueId === original?.issueId
+    && card.createdByAgentId === o.leadId && card.kind === "ask_user_questions" && card.status === "pending"
+    && typeof card.payload.questionSet?.description === "string" && o.runs.some(run => run.id === card.sourceRunId
+      && run.companyId === o.companyId && run.agentId === o.leadId && run.status === "succeeded"
+      && run.contextSnapshot?.interactionId === original?.id && run.contextSnapshot?.issueId === original?.issueId));
 }
 export function gradeQuestions(value: unknown) {
   const c = checks(); const o = identityObservation(value);
@@ -96,9 +116,12 @@ export function gradeQuestions(value: unknown) {
       && answers.some(row => row.questionId === "headline" && row.otherText === o.state.answer), "The submitted choice/choice/custom-text set preserves earlier pages.");
     c.add("no-default-consent", o.state.unsubmittedPending === true && o.state.validationObserved === true && o.state.retainedAudience === true,
       "Missing required input cannot submit, unfinished pages stay pending, and back navigation retains the first selection.");
+    const visible = o.state.visibleContinuationDescriptions as Array<{ id: string; description: string }> | undefined;
+    const summary = [String(o.state.afterAnswerReply), ...multipartContinuationCards(o).flatMap(card =>
+      visible?.some(row => row.id === card.id && row.description === card.payload.questionSet?.description) ? [card.payload.questionSet!.description!] : [])].join("\n");
     c.add("submitted-set-only-continuation", o.runs.filter(run => run.contextSnapshot?.interactionId === original?.id).length === 1
-      && /researchers/i.test(String(o.state.afterAnswerReply)) && /clear/i.test(String(o.state.afterAnswerReply)) && String(o.state.afterAnswerReply).includes(String(o.state.answer)),
-      "The submitted set causes one request-bound continuation whose actual later response accurately summarizes all three answers.");
+      && /researchers/i.test(summary) && /clear/i.test(summary) && summary.includes(String(o.state.answer)),
+      "The submitted set causes one request-bound continuation whose actual later visible chat response accurately summarizes all three answers.");
   } else {
     c.add("exact-free-text-answer", answers.length === 1 && answers[0]?.otherText === o.state.answer && !answers[0]?.optionIds?.length,
       "The exact human product name is attached once to the existing question.");
@@ -201,7 +224,7 @@ export const questionIdentityCases = [
     },
   }),
   identityDefinition("questions-and-approvals.multi-part-question", ctx => questionFixture(ctx, true), gradeQuestions, {
-    expectedRunCount: 2, observe: observeQuestion, oracleVersion: "paperclip.chat-catalog.required-question.v2",
+    expectedRunCount: 2, observe: observeQuestion, oracleVersion: "paperclip.chat-catalog.required-question.v3",
     async act(ctx, state) {
       const remaining = () => remainingIdentityObservationBudget(ctx);
       remaining();
