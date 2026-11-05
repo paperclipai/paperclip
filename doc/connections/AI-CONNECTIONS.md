@@ -67,12 +67,14 @@ credentials or authentication paths.
 
 Personal defaults are unique per company, user, and provider. A Claude bot can use one user’s subscription and another user’s API key without changing its harness or model. Explicit shared selections remain pinned to the selected account and method.
 
-For managed Claude CLI runs, Paperclip copies the agent's selected Paperclip skills
+For managed Claude CLI runs on local and managed-home sandbox targets, Paperclip copies the agent's selected Paperclip skills
 into the isolated, per-run Claude configuration directory. Claude is still launched
 with `--setting-sources user`, so project settings, hooks and project-local skills
 are not enabled by this mechanism. Existing skill destinations are not overwritten;
 skills containing symbolic links cannot be staged and cause the run to fail. The
-temporary configuration is removed with the managed connection runtime.
+temporary configuration is removed with the managed connection runtime. SSH targets
+do not currently receive this managed configuration seed, so this staging does not
+make selected skills discoverable on SSH.
 The first successful personal connection sets a default only when none exists.
 The additive `ai_provider_defaults` table preserves the legacy per-method preferences. Migration selects each user’s most recently updated provider preference (including unavailable accounts), and rerunning it never overwrites a provider default. New writes maintain the legacy table for older servers. A database trigger propagates older servers’ explicit default updates to the provider default. Inserting an additional method default does not replace an existing provider default.
 
