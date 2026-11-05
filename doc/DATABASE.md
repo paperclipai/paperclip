@@ -225,6 +225,13 @@ indexes concurrently and can resume an interrupted build without blocking run
 writes for the full build. The indexes add storage and run-write overhead; they
 do not change task visibility or secret redaction.
 
+The task Context row reads the agent's latest context-window reading through
+two small partial indexes on `heartbeat_run_events`. One index covers only usage
+items, by run and time. The other index covers only `context.compacted` events,
+by company and normalized session. Migration 0432 builds both indexes
+concurrently. A poll therefore reads a few index entries, not a run's full event
+history.
+
 The chat wake-notice sweep compares UUID columns directly against guarded,
 canonical lowercase UUID payload values. Malformed and noncanonical payloads
 still match nothing. The query can use existing primary keys without adding a

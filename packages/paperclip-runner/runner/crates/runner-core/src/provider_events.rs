@@ -832,9 +832,6 @@ fn measurement(value: &Value) -> Value {
     })
 }
 
-/// Banner the Claude ACP agent streams when a compaction finishes.
-const ACPX_COMPACTION_COMPLETED_BANNER: &str = "Compacting completed.";
-
 /// Context-window occupancy from a Codex `thread/tokenUsage/updated` payload.
 /// Codex sizes the live context by the most recent request's total tokens.
 pub(crate) fn codex_context_usage(params: &Value) -> Option<Value> {
@@ -1553,30 +1550,18 @@ pub fn normalize_acpx_runtime_event(
         .then(|| acpx_compaction_notice_completed(payload, turn_id))
         .flatten();
     let mut events = match kind {
-        AcpxRuntimeEventKind::TextDelta => {
-            let text = string(payload.get("text"));
-            let mut events = vec![NormalizedProviderEvent {
-                event_type: "item.delta".to_owned(),
-                priority: EventPriority::P2,
-                payload: json!({
-                    "provider": "acpx",
-                    "itemId": item_id,
-                    "kind": "agentMessage",
-                    "channel": "progress",
-                    "providerMethod": "runtime.event",
-                    "text": bounded_text(text, MAX_TEXT_CHARS),
-                }),
-            }];
-            // Claude's ACP agent reports a finished compaction only as this
-            // banner text. Sizes come from the surrounding usage updates.
-            if text.trim() == ACPX_COMPACTION_COMPLETED_BANNER {
-                events.push(acpx_context_compacted(&stable_id(
-                    &format!("{turn_id}:{item_id}"),
-                    "acpx-compaction",
-                )));
-            }
-            events
-        }
+        AcpxRuntimeEventKind::TextDelta => vec![NormalizedProviderEvent {
+            event_type: "item.delta".to_owned(),
+            priority: EventPriority::P2,
+            payload: json!({
+                "provider": "acpx",
+                "itemId": item_id,
+                "kind": "agentMessage",
+                "channel": "progress",
+                "providerMethod": "runtime.event",
+                "text": bounded_text(string(payload.get("text")), MAX_TEXT_CHARS),
+            }),
+        }],
         AcpxRuntimeEventKind::Thinking => vec![NormalizedProviderEvent {
             event_type: "item.delta".to_owned(),
             priority: EventPriority::P2,
@@ -2443,7 +2428,9 @@ mod tests {
     }
 
     #[test]
-    fn claude_compaction_banner_emits_context_compacted() {
+    fn compaction_banner_text_alone_is_not_a_compaction() {
+        // The sidecar turns Claude's banner into a `context_compaction`
+        // notice; only that notice marks the compaction, so it is counted once.
         let events = normalize_acpx_runtime_event(
             AcpxRuntimeEventKind::TextDelta,
             &json!({"text": "\n\nCompacting completed."}),
@@ -2452,23 +2439,8 @@ mod tests {
             "turn-1",
             0,
         );
-        assert_eq!(events.len(), 2);
+        assert_eq!(events.len(), 1);
         assert_eq!(events[0].event_type, "item.delta");
-        assert_eq!(events[1].event_type, "context.compacted");
-        assert_eq!(
-            events[1].payload["schema"],
-            "paperclip.context.compacted.v1"
-        );
-        assert_eq!(events[1].payload["preTokens"], Value::Null);
-        let ordinary = normalize_acpx_runtime_event(
-            AcpxRuntimeEventKind::TextDelta,
-            &json!({"text": "Compacting completed. Next I will read the file."}),
-            None,
-            "fallback",
-            "turn-1",
-            0,
-        );
-        assert_eq!(ordinary.len(), 1);
     }
 
     #[test]

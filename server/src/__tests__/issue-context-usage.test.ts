@@ -73,11 +73,26 @@ suite("issue context usage", () => {
     const freshRunId = randomUUID();
     await db.insert(heartbeatRuns).values({ id: freshRunId, companyId, agentId, scopeKind: "issue", issueId, status: "running",
       createdAt: new Date("2026-11-05T11:00:00Z") });
-    await db.insert(heartbeatRunEvents).values({ ...base, runId: freshRunId, seq: 1, eventType: "turn.started",
-      payload: prp(freshRunId, "session-c", "turn.started", {}), createdAt: new Date("2026-11-05T11:00:01Z") });
+    await db.insert(heartbeatRunEvents).values({ ...base, runId: freshRunId, seq: 1, eventType: "item.completed",
+      payload: prp(freshRunId, "session-c", "item.completed", { kind: "usage", usage: { total: {} } }),
+      createdAt: new Date("2026-11-05T11:00:01Z") });
     expect(await issueContextUsage(db, companyId, issue)).toBeNull();
     await db.insert(heartbeatRunEvents).values({ ...base, runId: freshRunId, seq: 2, eventType: "item.completed",
       payload: prp(freshRunId, "session-c", "item.completed", usage(12_000)), createdAt: new Date("2026-11-05T11:00:02Z") });
     expect(await issueContextUsage(db, companyId, issue)).toMatchObject({ sessionId: "session-c", usedTokens: 12_000, compactions: 0 });
+
+    // A session reused across more runs than the lookup window still counts
+    // compactions from its oldest runs.
+    const later = ["2026-11-05T12:00:00Z", "2026-11-05T13:00:00Z", "2026-11-05T14:00:00Z"];
+    for (const [index, at] of later.entries()) {
+      const id = randomUUID();
+      await db.insert(heartbeatRuns).values({ id, companyId, agentId, scopeKind: "issue", issueId, status: "succeeded", createdAt: new Date(at) });
+      await db.insert(heartbeatRunEvents).values({ ...base, runId: id, seq: 1, eventType: "item.completed",
+        payload: prp(id, "session-c", "item.completed", usage(13_000 + index)), createdAt: new Date(at) });
+    }
+    await db.insert(heartbeatRunEvents).values({ ...base, runId: freshRunId, seq: 3, eventType: "context.compacted",
+      payload: prp(freshRunId, "session-c", "context.compacted", { schema: "paperclip.context.compacted.v1", compactionId: "c-2" }),
+      createdAt: new Date("2026-11-05T11:00:03Z") });
+    expect(await issueContextUsage(db, companyId, issue)).toMatchObject({ sessionId: "session-c", usedTokens: 13_002, compactions: 1 });
   });
 });
