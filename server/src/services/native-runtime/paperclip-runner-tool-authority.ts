@@ -1,5 +1,6 @@
 import { budgetServiceInTransaction } from "../budgets.js";
 import { resolveTaskWatchdogMutationScope } from "../task-watchdog-scope.js";
+import { resolveNewTaskParent } from "../issue-hierarchy.js";
 import { DOWNLOAD_ARTIFACT, DOWNLOAD_ARTIFACT_DEFINITION, downloadArtifactSchema, createArtifactInstaller, type ArtifactInstaller } from "./artifact-transfer.js";
 import { notifyStatusCardIssueChange } from "../status-card-notifications.js";
 import { nativeRunKeyScope, nativeSkillTestToolAllowed, assertNativeSkillTestTool } from "./native-skill-test-scope.js";
@@ -1699,6 +1700,17 @@ export class PaperclipRunnerToolAuthority {
     const inputFingerprint = createHash("sha256")
       .update(canonicalJson(input))
       .digest("hex");
+    /** Why this run may not add a child under `parent`, or null when it may. */
+    const parentWriteDenial = async (tx: Db, run: typeof heartbeatRuns.$inferSelect, parent: typeof issues.$inferSelect) => {
+      for (const action of ["issue:read", "issue:mutate"] as const) {
+        const decision = await authorizationService(tx).decide({ actor: this.#privacyActor(run), action, resource: {
+          type: "issue", companyId: this.binding.companyId, issueId: parent.id, projectId: parent.projectId,
+          parentIssueId: parent.parentId, assigneeAgentId: parent.assigneeAgentId, assigneeUserId: parent.assigneeUserId, status: parent.status,
+        }, scope: { issueId: parent.id, projectId: parent.projectId, parentIssueId: parent.parentId } });
+        if (!decision.allowed) return decision.explanation;
+      }
+      return null;
+    };
     const authorizeCreate = async (tx: Db, context: {
       run: typeof heartbeatRuns.$inferSelect;
       issue: typeof issues.$inferSelect;
@@ -1718,16 +1730,32 @@ export class PaperclipRunnerToolAuthority {
         if (parent.conversationAgentId) {
           throw forbidden("A conversation cannot be a parent; omit parentTaskId to create a top-level task");
         }
-        const parentActor = this.#privacyActor(context.run);
-        for (const action of ["issue:read", "issue:mutate"] as const) {
-          const decision = await authorizationService(tx).decide({ actor: parentActor, action, resource: {
-            type: "issue", companyId: this.binding.companyId, issueId: parent.id, projectId: parent.projectId,
-            parentIssueId: parent.parentId, assigneeAgentId: parent.assigneeAgentId, assigneeUserId: parent.assigneeUserId, status: parent.status,
-          }, scope: { issueId: parent.id, projectId: parent.projectId, parentIssueId: parent.parentId } });
-          if (!decision.allowed) throw forbidden(decision.explanation);
-        }
+        const denied = await parentWriteDenial(tx, context.run, parent);
+        if (denied) throw forbidden(denied);
         parentIssueId = parent.id;
         parentProjectId = parent.projectId;
+      }
+      // Place the edge the way createChild will, and authorize the parent that
+      // is actually written. Active watchdog runs keep their requested parent.
+      const parentDepthPolicy = (await resolveTaskWatchdogMutationScope(tx, {
+        type: "agent", agentId: this.binding.agentId, runId: this.binding.runId, companyId: this.binding.companyId,
+      })).kind === "watchdog" ? "allow_nested" as const : "flatten" as const;
+      let placedParentId = parentIssueId;
+      if (parentIssueId) {
+        placedParentId = (await resolveNewTaskParent(tx, this.binding.companyId, parentIssueId, parentDepthPolicy)).effectiveParentId;
+        if (placedParentId && placedParentId !== parentIssueId) {
+          const [placed] = await tx.select().from(issues).where(and(
+            eq(issues.id, placedParentId), eq(issues.companyId, this.binding.companyId),
+          ));
+          const denied = placed ? await parentWriteDenial(tx, context.run, placed) : "Parent issue not found";
+          if (denied) {
+            // A named parent fails closed; the implicit current-task default
+            // falls back to standalone work, as the issues route does.
+            if (requestedParentId) throw forbidden(denied);
+            parentIssueId = null;
+            placedParentId = null;
+          }
+        }
       }
       const projectId = nullableProviderId(input.projectId) ?? parentProjectId;
       if (this.binding.museRuntime && projectId) {
@@ -1735,7 +1763,7 @@ export class PaperclipRunnerToolAuthority {
           resource: { type: "project", companyId: this.binding.companyId, projectId } });
         if (!access.allowed) throw forbidden("Project is unavailable to this Muse run");
       }
-      const scope = { projectId, parentIssueId, assigneeAgentId, assigneeUserId };
+      const scope = { projectId, parentIssueId: placedParentId, assigneeAgentId, assigneeUserId };
       const decision = await authorizationService(tx).decide({
         actor: this.#privacyActor(context.run),
         action: "tasks:assign",
@@ -1753,11 +1781,11 @@ export class PaperclipRunnerToolAuthority {
         run: { companyId: this.binding.companyId, executionPolicy: context.run.contextSnapshot?.executionPolicy },
       });
       if (trust.kind === "denied") throw forbidden(trust.detail);
-      return { projectId, trust, parentIssueId };
+      return { projectId, trust, parentIssueId, placedParentId, parentDepthPolicy };
     };
     let publication: Awaited<ReturnType<typeof persistActivity>>["publication"] | null = null;
     const result = await this.#withMutationReceipt("create_task", idempotencyKey, input, async (tx, context) => {
-      const { projectId, trust, parentIssueId } = await authorizeCreate(tx, context);
+      const { projectId, trust, parentIssueId, placedParentId, parentDepthPolicy } = await authorizeCreate(tx, context);
       const existingChild = await tx.select().from(issues).where(and(
         eq(issues.companyId, this.binding.companyId),
         eq(issues.originId, durableIdempotencyKey),
@@ -1811,12 +1839,9 @@ export class PaperclipRunnerToolAuthority {
         assigneeUserId,
         blockedByIssueIds,
         blockParentUntilDone: false,
-        // Active watchdog runs are authorized for the watched subtree; keep their
-        // tasks under the requested parent. A disabled (invalid) watchdog scope
-        // gets the ordinary agent depth limit.
-        parentDepthPolicy: (await resolveTaskWatchdogMutationScope(tx as unknown as Db, {
-          type: "agent", agentId: this.binding.agentId, runId: this.binding.runId, companyId: this.binding.companyId,
-        })).kind === "watchdog" ? "allow_nested" as const : "flatten" as const,
+        // Placement was authorized above; reject the write if the tree changed since.
+        parentDepthPolicy,
+        ...(parentIssueId ? { expectedParentId: placedParentId } : {}),
         createdByAgentId: this.binding.agentId,
         originKind: "manual" as const,
         originId: durableIdempotencyKey,

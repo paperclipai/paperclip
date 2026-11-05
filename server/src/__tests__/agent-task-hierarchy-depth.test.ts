@@ -267,6 +267,22 @@ describeEmbeddedPostgres("agent task hierarchy depth", () => {
     expect(created.originIssueId).toBe(childId);
   });
 
+  it("rejects a parent from another company on create and move", async () => {
+    const { companyId } = await seedCompany();
+    const { companyId: otherCompanyId } = await seedCompany();
+    const foreignParentId = await seedIssue(otherCompanyId);
+
+    await expect(issueService(db).create(companyId, { title: "Foreign parent", parentId: foreignParentId }))
+      .rejects.toMatchObject({ status: 404 });
+    await expect(issueService(db).create(companyId, {
+      title: "Foreign parent, board", parentId: foreignParentId, parentDepthPolicy: "allow_nested",
+    })).rejects.toMatchObject({ status: 404 });
+
+    const movingId = await seedIssue(companyId);
+    await expect(issueService(db).update(movingId, { parentId: foreignParentId, parentDepthPolicy: "allow_nested" }))
+      .rejects.toMatchObject({ status: 404 });
+  });
+
   describe("moves", () => {
     it("keeps the requested private parent as the privacy source of a placed move", async () => {
       const { companyId } = await seedCompany();

@@ -1416,6 +1416,39 @@ describe("PaperclipRunnerToolAuthority", () => {
     expect(disabled).toMatchObject({ parentId: rootId, originIssueId: disabled.childId });
   });
 
+  it("authorizes the placed parent: a hidden root rejects a named child parent and makes the default standalone", async () => {
+    const hiddenRootId = randomUUID();
+    const openChildId = randomUUID();
+    await db.insert(issues).values({
+      id: hiddenRootId, companyId, title: "Private root", status: "todo", workMode: "standard",
+      visibility: "private", privacyRootIssueId: hiddenRootId, responsibleUserId: "someone-else",
+    });
+    await db.insert(issues).values({
+      id: openChildId, companyId, parentId: hiddenRootId, title: "Open child", status: "in_progress",
+      workMode: "standard", assigneeAgentId: agentId,
+    });
+    const named = new PaperclipRunnerToolAuthority(db, { companyId, agentId, issueId, runId, workMode: "standard" });
+    await expect(named.execute({
+      tool: "create_task", callId: "hidden-root-named",
+      arguments: { idempotencyKey: "hidden-root-named", title: "Under the open child", status: "backlog", parentTaskId: openChildId },
+    })).rejects.toThrow();
+
+    const childRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: childRunId, companyId, agentId, status: "running", runtimeMode: "native", nativeIssueId: openChildId,
+      invocationSource: "assignment", triggerDetail: "system", contextSnapshot: { issueId: openChildId },
+    });
+    await db.update(issues).set({ executionRunId: childRunId }).where(eq(issues.id, openChildId));
+    const fromChild = new PaperclipRunnerToolAuthority(db, { companyId, agentId, issueId: openChildId, runId: childRunId, workMode: "standard" });
+    const created = await fromChild.execute({
+      tool: "create_task", callId: "hidden-root-default",
+      arguments: { idempotencyKey: "hidden-root-default", title: "Default follow-up", status: "backlog" },
+    }) as { task: { id: string; parentId: string | null } };
+    expect(created.task.parentId).toBeNull();
+    const [row] = await db.select({ originIssueId: issues.originIssueId }).from(issues).where(eq(issues.id, created.task.id));
+    expect(row?.originIssueId).toBe(openChildId);
+  });
+
   it("lets a conversation create a top-level task and subtasks with parentTaskId", async () => {
     const conversationId = randomUUID();
     const conversationRunId = randomUUID();
