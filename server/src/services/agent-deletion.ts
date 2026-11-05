@@ -26,10 +26,7 @@ export async function deleteAgentDependencies(tx: Db, companyId: string, id: str
   if (retainedHandoff) throw conflict("Saved case handoff history requires this agent record. Keep the agent terminated instead of permanently deleting it", {
     code: "agent_case_history_retained",
   });
-  // Cost and finance events keep NO ACTION foreign keys to both the agent and its
-  // heartbeat runs. That accounting history must be kept, so refuse the purge
-  // before any mutations instead of failing on a foreign key violation later.
-  const agentRunIds = sql`(select ${heartbeatRuns.id} from ${heartbeatRuns} where ${heartbeatRuns.agentId} = ${id})`;
+  const agentRunIds = sql`(select ${heartbeatRuns.id} from ${heartbeatRuns} where ${heartbeatRuns.companyId} = ${companyId} and ${heartbeatRuns.agentId} = ${id})`;
   const [retainedCost] = await tx.select({ id: costEvents.id }).from(costEvents).where(and(
     eq(costEvents.companyId, companyId), or(eq(costEvents.agentId, id), sql`${costEvents.heartbeatRunId} in ${agentRunIds}`),
   )).limit(1);
