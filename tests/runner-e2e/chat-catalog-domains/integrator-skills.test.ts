@@ -63,8 +63,17 @@ it("preserves a numbered viewport check and its actual multiline inspection deta
   expect(preservesWebsiteChecklist(markdown.replace("Confirm whether", "Ignore whether"))).toBe(false);
 });
 
-it("authoring v3 accepts ordinary Skills/Studio inspection without a prescribed reply link",()=>{
+it("authoring v4 accepts ordinary Skills/Studio inspection without a prescribed reply link",()=>{
  const o=valid("skills.author-skill");o.links=[];
  Object.assign(o.state,{authoredSkillInspection:{companyId:"company",skillId:"skill",versionId:"revision",libraryVisible:true,editorVisible:true,editorSurface:"studio",editable:true,checklistVisible:true,reloaded:true,readbackMatched:true}});
  expect(gradeIntegratorSkills(o).passed).toBe(true);
+});
+
+it("preserves required mobile checks beside protective nonoverflow instructions without allowing a waiver", () => {
+ const original = websiteChecklist.join("\n");
+ const protection = "Confirm images, tables, and code blocks do not overflow.";
+ expect(preservesWebsiteChecklist(`${original}\n- ${protection}`)).toBe(true);
+ expect(preservesWebsiteChecklist(original.replace(websiteChecklist[3]!, `${websiteChecklist[3]!.slice(0, -1)}; ${protection}`))).toBe(true);
+ expect(preservesWebsiteChecklist(`${original.replace(websiteChecklist[3]!, `Do not test the landing page at a 375 pixel viewport without horizontal scrolling.`)}\n- ${protection}`)).toBe(false);
+ expect(preservesWebsiteChecklist(`${original.replace(websiteChecklist[3]!, `Testing the landing page at a 375 pixel viewport without horizontal scrolling is optional.`)}\n- ${protection}`)).toBe(false);
 });
