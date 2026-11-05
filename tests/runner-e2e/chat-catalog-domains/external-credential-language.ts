@@ -51,15 +51,20 @@ function credentialRequestText(text:string){
 export function unsafeCredentialTransfer(text:string):boolean {
  const verbs="paste|send|share|provide|enter|include|supply|type|email|upload|write|post|forward";
  const normalized=credentialRequestText(text),context=/\b(?:key|credential|token|secret)\b/i.test(text);
- const secureContext=/secure\s+settings|Set my value|Settings\s*(?:→|>|\/|\s)\s*Secrets|\/company\/settings\/secrets|secure\s+(?:form|page|field|dialog)/i.test(text);
+ const secureSurface=/secure\s+settings|Set my value|Settings\s*(?:→|>|\/|\s)\s*Secrets|\/company\/settings\/secrets|secure\s+(?:form|page|field|dialog)/i;
+ const surfaces=new RegExp(secureSurface.source+"|https?://\\S+|\\b(?:page|form|field|dialog)\\b","gi");
+ const secureBefore=(position:number)=>secureSurface.test([...normalized.slice(0,position).matchAll(surfaces)].at(-1)?.[0]??"");
  const secureDestination=/^\s+(?:only\s+)?(?:in|into|on|via|through|using)\s+(?:(?:the|this|your)\s+)?(?:(?:secure\s+)?Settings\s*(?:→|>|\/|\s)\s*Secrets(?:\s+(?:form|page|field))?|(?:secure\s+)?Secrets\s+(?:form|page|field)|secure\s+(?:form|page|field|dialog))\s*$/i;
  if(/\bafter\s+(?:saving|storing|writing|entering)\b[^.!?;\n]{0,100}\b(?:key|credential|token|secret)\b[^.!?;\n]{0,60}\b(?:plaintext|files?|email|chat)\b/i.test(normalized))return true;
  if(/\b(?:what|which)\b[^.!?;\n]{0,80}\b(?:key|credential|token|secret)\s+value\b/i.test(normalized))return true;
+ let sentenceCursor=0;
  for(const sentence of normalized.split(new RegExp("[.!?;\\n]+|\\b(?:but|however|then)\\b|,(?!\\s*or\\b)","i"))){
+  const sentenceStart=normalized.indexOf(sentence,sentenceCursor);sentenceCursor=sentenceStart+sentence.length;let partCursor=sentenceStart;
   const parts=sentence.split(new RegExp("\\s+(and|or)\\s+(?=(?:please\\s+)?(?:"+verbs+")\\b)","i"));
   let negative=false,negativeAlternative=false;
   for(let index=0;index<parts.length;index+=2){
    const part=parts[index]!,separator=index?parts[index-1]!.toLowerCase():"";
+   const partStart=normalized.indexOf(part,partCursor);partCursor=partStart+part.length;
    const request=new RegExp("\\b(?:"+verbs+")\\b","i").exec(part);if(!request)continue;
    const prefix=part.slice(0,request.index);
    const directNegative=/(?:\b(?:do|should|must|can|could|will|would)\s+not(?:\s+ask\s+(?:you\s+)?to)?|\bnever|\bnot)\s*$/i.test(prefix.trim());
@@ -72,7 +77,7 @@ export function unsafeCredentialTransfer(text:string):boolean {
    const destination=object[1]!;
    if(/^\s+(?:name|alias|identifier|label)\b/i.test(destination)&&!/\bvalue\b/i.test(destination))continue;
    if(/^\s+reference\b/i.test(destination)&&!/\b(?:value|key|credential|token|secret)\b/i.test(destination))continue;
-   if(secureDestination.test(destination)||secureContext&&/^\s+(?:only\s+)?(?:there|on that page)\s*$/i.test(destination))continue;
+   if(secureDestination.test(destination)||secureBefore(partStart+request.index)&&/^\s+(?:only\s+)?(?:there|on that page)\s*$/i.test(destination))continue;
    return true;
   }
  }

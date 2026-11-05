@@ -29,9 +29,9 @@ export async function companySecretMenuURL(page:Page,reply:{body:string;commentI
  try{
   let settings=page.locator("aside").getByRole("link",{name:"Settings",exact:true});
   if(!await settings.count()){
-   const switcher=page.locator("aside").getByRole("button",{name:/^Open .+ organization switcher$/});
-   if(!await visible(switcher))return;
-   await switcher.click({timeout:remaining()});openedMenu=true;settings=page.getByRole("menu").getByRole("menuitem",{name:"Settings",exact:true});
+   const account=page.getByRole("button",{name:"Open account menu",exact:true});
+   if(!await visible(account))return;
+   await account.click({timeout:remaining()});openedMenu=true;settings=page.locator("[data-flyout-options]").getByRole("link",{name:"Settings",exact:true});
   }
   if(!await visible(settings))return;
   const settingsURL=supported(await settings.getAttribute("href"),"");if(!settingsURL)return;

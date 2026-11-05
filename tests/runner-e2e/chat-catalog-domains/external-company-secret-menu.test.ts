@@ -9,7 +9,7 @@ it.skipIf(process.env.PAPERCLIP_CHAT_EVAL_SECRET_ROUTE_CANARY!=="1")("uses actua
  const browser=await chromium.launch({headless:true,...process.env.PAPERCLIP_RUNNER_E2E_CHROMIUM_EXECUTABLE?{executablePath:process.env.PAPERCLIP_RUNNER_E2E_CHROMIUM_EXECUTABLE}:{}}),page=await browser.newPage();
  const scenarios=[
   {name:"ordinary menu",settings,secrets,accepted:true},
-  {name:"company switcher menu",settings,secrets,accepted:true,menu:true},
+  {name:"streamlined account menu",settings,secrets,accepted:true,account:true},
   {name:"separate Markdown emphasis",settings,secrets,accepted:true,body:"Open **Settings** then **Secrets**, **New secret**. Enter the deployment key in the secure form. After saving, I will bind its secret reference to Morgan's environment.",markup:"<strong>Settings</strong> then <strong>Secrets</strong>, <strong>New secret</strong>"},
   {name:"no route example",settings,secrets,accepted:true,body:"Open Settings then Secrets, New secret. Enter the deployment key in the secure form. After saving, I will bind its secret reference to Morgan's environment.",markup:"Settings then Secrets, New secret"},
   {name:"plain directions",settings,secrets,accepted:true,markup:"Company settings → Secrets (company-prefixed /company/settings/secrets) via New secret"},
@@ -28,7 +28,8 @@ it.skipIf(process.env.PAPERCLIP_CHAT_EVAL_SECRET_ROUTE_CANARY!=="1")("uses actua
    const clicked:string[]=[];
    await page.unroute("**/*");await page.route("**/*",async route=>{
     const path=new URL(route.request().url()).pathname;
-    const content=path===settings?`<aside><nav><a href="${scenario.secrets}">Secrets</a></nav></aside>`:path===secrets?'<h1>Secrets</h1><button>New secret</button>':`<article id="comment-native">${scenario.markup??directions}${scenario.extra??""}</article><aside><nav>${scenario.menu?`<button aria-label="Open Runner organization switcher" onclick="document.querySelector('[role=menu]').hidden=false">Organization</button><div role="menu" hidden><a role="menuitem" href="${scenario.settings}">Settings</a></div>`:scenario.settings?`<a ${scenario.hidden?"hidden":""} href="${scenario.settings}">Settings</a>`:""}</nav></aside>`;
+    const chrome=scenario.account?`<aside><button aria-label="Open Runner organization switcher">Organization</button><button aria-label="Open account menu" onclick="document.querySelector('[role=dialog]').hidden=false">Person</button></aside><div role="dialog" hidden><div data-flyout-options><a href="${scenario.settings}">Settings</a></div></div>`:`<aside><nav>${scenario.settings?`<a ${scenario.hidden?"hidden":""} href="${scenario.settings}">Settings</a>`:""}</nav></aside>`;
+    const content=path===settings?`<aside><nav><a href="${scenario.secrets}">Secrets</a></nav></aside>`:path===secrets?'<h1>Secrets</h1><button>New secret</button>':`<article id="comment-native">${scenario.markup??directions}${scenario.extra??""}</article>${chrome}`;
     if(path!=="/RUN/chat")clicked.push(path);
     await route.fulfill({contentType:"text/html; charset=utf-8",body:content});
    });
