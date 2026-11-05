@@ -89,6 +89,7 @@ import type {
   PromoteScheduledRetryOutcome,
 } from "../application/types.js";
 import { RunDispatchApplicationError } from "../application/types.js";
+import { parkWorkspaceBusyRetryInTx } from "./workspace-busy-wait.js";
 
 type HeartbeatRun = typeof heartbeatRuns.$inferSelect;
 type LoadGateFactsInput = {
@@ -910,6 +911,9 @@ export function createPostgresRunDispatchAdapter(
 
       const issueId = factsResult.facts.issueId;
       if (issueId && (await deferRetryForCleanupInTx(tx, run, issueId, now))) {
+        return { outcome: { outcome: "not_promoted" as const }, telemetryRun: null };
+      }
+      if (await parkWorkspaceBusyRetryInTx(tx, run, now)) {
         return { outcome: { outcome: "not_promoted" as const }, telemetryRun: null };
       }
 
