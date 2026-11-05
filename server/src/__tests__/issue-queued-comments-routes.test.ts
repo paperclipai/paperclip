@@ -1849,7 +1849,7 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
   // BUG-08: a declined connection request (Slack) queued its read-only receipt
   // ahead of the user's next message. The receipt showed raw JSON, could not be
   // edited or discarded, and the next message never appeared in the queue.
-  async function seedDeclinedConnectionReceipt(runState: "running" | "stopped") {
+  async function seedDeclinedConnectionReceipt(runState: "running" | "legacy" | "stopped") {
     const seeded = await seedQueue();
     const interactionId = randomUUID();
     await db.insert(issueThreadInteractions).values({
@@ -1869,6 +1869,15 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
       _paperclipWakeContext: { issueId: seeded.issueId, interactionId, interactionKind: "connection_intent",
         interactionStatus: "rejected", mutation: "interaction", refreshTools: true } },
     }).where(eq(agentWakeupRequests.id, seeded.wakeId));
+    if (runState === "legacy") {
+      // A busy legacy run defers each new message behind the issue execution.
+      await db.update(agents).set({ adapterType: "claude_local",
+        runtimeConfig: { heartbeat: { maxConcurrentRuns: 1 } } }).where(eq(agents.id, seeded.agentId));
+      await db.update(heartbeatRuns).set({ runtimeMode: "legacy" }).where(eq(heartbeatRuns.id, seeded.runId));
+      const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+      testProcesses.set(seeded.runId, child);
+      runningProcesses.set(seeded.runId, { child, graceSec: 1, processGroupId: null });
+    }
     if (runState === "stopped") {
       await db.update(heartbeatRuns).set({ status: "cancelled", finishedAt: new Date(), errorCode: "workspace_busy" })
         .where(eq(heartbeatRuns.id, seeded.runId));
@@ -1914,6 +1923,30 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
       // Declining the connection still reaches the agent on its own receipt.
       const [receipt] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, seeded.wakeId));
       expect(receipt.status).toBe("deferred_issue_execution");
+      await new Promise(resolve => setTimeout(resolve, 250));
+    },
+  );
+
+  it.each(["legacy", "stopped"] as const)(
+    "queues every later message together after a declined connection (%s run)",
+    async (runState) => {
+      const seeded = await seedDeclinedConnectionReceipt(runState);
+      const client = app(seeded.companyId);
+      const first = await request(client).post(`/api/issues/${seeded.issueId}/comments`)
+        .send({ body: "Skip Slack for now" }).expect(201);
+      await vi.waitFor(async () => expect(await db.select().from(agentWakeupRequests)).toHaveLength(2));
+      const second = await request(client).post(`/api/issues/${seeded.issueId}/comments`)
+        .send({ body: "Use email updates instead" }).expect(201);
+      await vi.waitFor(async () => {
+        const queue = await request(client).get(`/api/issues/${seeded.issueId}/queued-comments`).expect(200);
+        expect(queue.body.entries.map((entry: any) => entry.comment.id)).toEqual([first.body.id, second.body.id]);
+      });
+      const queue = await request(client).get(`/api/issues/${seeded.issueId}/queued-comments`).expect(200);
+      expect(queue.body.entries.every((entry: any) => entry.canEdit && entry.canDiscard)).toBe(true);
+      // The receipt is never merged with user input; it keeps its own wake.
+      const [receipt] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, seeded.wakeId));
+      expect(receipt.status).toBe("deferred_issue_execution");
+      expect(receipt.payload?._paperclipWakeContext).not.toHaveProperty("wakeCommentIds");
       await new Promise(resolve => setTimeout(resolve, 250));
     },
   );
