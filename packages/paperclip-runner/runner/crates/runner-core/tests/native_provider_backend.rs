@@ -62,6 +62,17 @@ fn credential_observation_allows_fresh_acpx_session_startup() {
 #[test]
 #[cfg(unix)]
 fn credential_updates_replay_through_the_native_executor_until_durable_ack() {
+    exercise_credential_updates(false);
+}
+
+#[test]
+#[cfg(unix)]
+fn hosted_park_refreshes_credentials_without_selecting_a_provider() {
+    exercise_credential_updates(true);
+}
+
+#[cfg(unix)]
+fn exercise_credential_updates(parking: bool) {
     let root = temporary_directory("credential-updates");
     let root = fs::canonicalize(root).unwrap();
     let auth = root.join("auth.json");
@@ -88,16 +99,21 @@ fn credential_updates_replay_through_the_native_executor_until_durable_ack() {
     let mut executor = NativeProviderCommandExecutor::with_runner_config(&root, &runner_config);
     assert!(executor.poll_events().unwrap().is_empty());
     write_auth("refreshed");
-    let _ = executor.execute(&Command {
-        schema: "paperclip.prp.command.v1".to_owned(),
-        command_id: "close-unselected".to_owned(),
-        controller_seq: 1,
-        command_type: "session.close".to_owned(),
-        issued_at: "2026-10-15T12:00:00.000Z".to_owned(),
-        deadline_at: None,
-        precondition: None,
-        payload: json!({}),
-    });
+    if parking {
+        assert!(!executor.host_park_ready().unwrap());
+    } else {
+        let _ = executor.execute(&Command {
+            schema: "paperclip.prp.command.v1".to_owned(),
+            command_id: "close-unselected".to_owned(),
+            controller_seq: 1,
+            command_type: "session.close".to_owned(),
+            issued_at: "2026-10-15T12:00:00.000Z".to_owned(),
+            deadline_at: None,
+            precondition: None,
+            payload: json!({}),
+        });
+    }
+    assert!(!root.join("codex-provider-state.json").exists());
     let updates = executor.retained_events().unwrap();
     assert_eq!(updates.len(), 1);
     assert_eq!(updates[0].event_type, "auth.credentials.updated");

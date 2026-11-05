@@ -279,6 +279,8 @@ impl NativeProviderCommandExecutor {
 
 impl CommandExecutor for NativeProviderCommandExecutor {
     fn host_park_ready(&mut self) -> Result<bool, DurableRunnerError> {
+        // Observe credentials without selecting or restoring a provider.
+        self.credentials.poll(true)?;
         if self.credentials.pending().is_some() {
             return Ok(false);
         }
