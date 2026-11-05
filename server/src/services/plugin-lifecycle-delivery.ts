@@ -1,6 +1,6 @@
 import { projectInstanceSecretService } from "./project-instance-secrets.js";
 import { and, asc, eq, inArray, isNull, or, sql } from "drizzle-orm";
-import { companies, pluginCompanySettings, pluginConfig, plugins, projects, type Db } from "@paperclipai/db";
+import { agents, companies, pluginCompanySettings, pluginConfig, plugins, projects, type Db } from "@paperclipai/db";
 import { logger } from "../middleware/logger.js";
 import { pluginLifecycleInbox } from "./plugin-lifecycle-inbox.js";
 import { DELIVERY_QUEUES } from "./delivery-work-notifications.js";
@@ -107,6 +107,16 @@ export function registerPluginLifecycleDelivery(
                   const [project] = await db.select({ policy: projects.executionWorkspacePolicy }).from(projects)
                     .where(and(eq(projects.id, event.resourceId), eq(projects.companyId, companyId)));
                   if (project && parseProjectExecutionWorkspacePolicy(project.policy)?.storageProviderPluginId !== plugin.id) {
+                    await inbox.acknowledge(companyId, event.id);
+                    wake();
+                    continue;
+                  }
+                }
+                if (event.resourceType === "agent_runtime" && enabled.manifest.capabilities.includes("agents.lifecycle.manage")) {
+                  stage = "ownership";
+                  const [agent] = await db.select({ requiredPluginIds: agents.lifecycleRequiredPluginIds }).from(agents)
+                    .where(and(eq(agents.id, event.resourceId), eq(agents.companyId, companyId)));
+                  if (agent && !agent.requiredPluginIds?.includes(plugin.id)) {
                     await inbox.acknowledge(companyId, event.id);
                     wake();
                     continue;
