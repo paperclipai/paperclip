@@ -464,6 +464,8 @@ export { preserveEnvironmentSyncErrorDiagnostic, environmentSyncErrorData, readE
 export type { PluginEnvironmentSyncErrorDiagnostic } from "./environment-sync-error.js";
 export { PluginEnvironmentRunnerIngressError, environmentRunnerIngressErrorData, readEnvironmentRunnerIngressFailure } from "./environment-runner-ingress-error.js";
 export type { PluginEnvironmentRunnerIngressFailure } from "./environment-runner-ingress-error.js";
+export { ENVIRONMENT_TASK_ERROR_CODES, PluginEnvironmentTaskError, environmentTaskErrorCodeData, readEnvironmentTaskErrorCode } from "./environment-task-error.js";
+export type { PluginEnvironmentTaskErrorCode } from "./environment-task-error.js";
 export { PluginEnvironmentStopError, environmentStopErrorData, readEnvironmentStopFailure } from "./environment-stop-error.js";
 export type { PluginEnvironmentStopFailure, PluginEnvironmentStopFailureReason } from "./environment-stop-error.js";
 export { environmentResumeErrorData, readEnvironmentResumeErrorDiagnostic } from "./environment-resume-error.js";
