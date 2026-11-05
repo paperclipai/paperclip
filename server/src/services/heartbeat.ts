@@ -1,4 +1,5 @@
 import { resolveProviderApiPlacement } from "./native-runtime/provider-api-placement.js";
+import { matchesClaudeProjectTrustGrant, type ClaudeProjectTrustIdentity } from "./claude-project-trust.js";
 import { registerDeferredReceiptWork } from "./heartbeat/deferred-receipt-work.js";
 import { reconcileTaskChatRetryReceipts } from "./task-retry.js";
 import { registerIssueRecoveryWork } from "./recovery/work.js";
@@ -3068,6 +3069,25 @@ export function heartbeatService(
             ]
           : []),
       ];
+      let claudeProjectSettingsAllowed = false;
+      if (trustPreset.kind === "standard" && executionWorkspace.workspaceId && executionWorkspace.projectId && executionTarget?.kind !== "remote") {
+        const [source] = await db.select().from(projectWorkspaces).where(and(
+          eq(projectWorkspaces.id, executionWorkspace.workspaceId),
+          eq(projectWorkspaces.projectId, executionWorkspace.projectId),
+          eq(projectWorkspaces.companyId, agent.companyId),
+        ));
+        if (source?.cwd && executionWorkspace.cwd && path.resolve(source.cwd) === path.resolve(executionWorkspace.cwd)) {
+          const identity: ClaudeProjectTrustIdentity = {
+            companyId: source.companyId, projectId: source.projectId, workspaceId: source.id,
+            agentId: agent.id, sourceType: source.sourceType, cwd: source.cwd, repoUrl: source.repoUrl,
+            repoRef: source.repoRef, defaultRef: source.defaultRef,
+            remoteProvider: source.remoteProvider, remoteWorkspaceRef: source.remoteWorkspaceRef,
+          };
+          const grants = Array.isArray(source.claudeProjectTrust?.grants) ? source.claudeProjectTrust.grants : [];
+          claudeProjectSettingsAllowed = grants.some((grant) => grant && typeof grant === "object" &&
+            matchesClaudeProjectTrustGrant(grant as ClaudeProjectTrustIdentity, identity));
+        }
+      }
       context.paperclipWorkspace = {
         cwd: executionWorkspace.cwd,
         source: executionWorkspace.source,
@@ -3079,6 +3099,7 @@ export function heartbeatService(
         repoRef: executionWorkspace.repoRef,
         branchName: executionWorkspace.branchName,
         worktreePath: executionWorkspace.worktreePath,
+        claudeProjectSettingsAllowed,
         realization: workspaceRealization,
         agentHome: await (async () => {
           const home = resolveDefaultAgentWorkspaceDir(agent.id);

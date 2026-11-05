@@ -64,6 +64,7 @@ vi.mock("@paperclipai/adapter-utils/execution-target", async () => {
 });
 
 import { execute } from "./execute.js";
+import { sessionCodec } from "./index.js";
 
 function buildContext(config: Record<string, unknown> = {}) {
   return {
@@ -169,6 +170,43 @@ describe("claude_local ACP startup fallback", () => {
       expect(await readFile(path.join(existing, "SKILL.md"), "utf8")).toBe("existing");
       expect(runAdapterExecutionTargetProcess).not.toHaveBeenCalled();
     } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it("loads project settings only when the prepared workspace explicitly permits it", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-ai-test-grant-"));
+    try {
+      const configDir = path.join(root, "provider");
+      await mkdir(configDir);
+      const ctx = buildContext({ engine: "cli", managedAiConnection: true, env: { CLAUDE_CONFIG_DIR: configDir },
+        paperclipRuntimeSkills: [], paperclipSkillSync: { desiredSkills: [] } });
+      ctx.context = { paperclipWorkspace: { claudeProjectSettingsAllowed: true } };
+      await execute(ctx as never);
+      const calls = runAdapterExecutionTargetProcess.mock.calls as unknown as Array<[string, unknown, string, string[]]>;
+      const args = calls[0]![3];
+      expect(args[args.indexOf("--setting-sources") + 1]).toBe("user,project");
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it.each([[true, false], [false, true]])("starts a fresh session when project trust changes from %s to %s", async (before, after) => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-ai-test-grant-"));
+    try {
+      const configDir = path.join(root, "provider");
+      await mkdir(configDir);
+      const ctx = buildContext({ engine: "cli", cwd: root, managedAiConnection: true, env: { CLAUDE_CONFIG_DIR: configDir },
+        paperclipRuntimeSkills: [], paperclipSkillSync: { desiredSkills: [] } });
+      Object.assign(ctx.runtime, { sessionId: "00000000-0000-4000-8000-000000000001", sessionParams: {
+        sessionId: "00000000-0000-4000-8000-000000000001", cwd: root, claudeProjectSettingsAllowed: before,
+      } });
+      ctx.context = { paperclipWorkspace: { claudeProjectSettingsAllowed: after } };
+      await execute(ctx as never);
+      const calls = runAdapterExecutionTargetProcess.mock.calls as unknown as Array<[string, unknown, string, string[]]>;
+      expect(calls[0]![3]).not.toContain("--resume");
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it("preserves project trust in saved Claude session parameters", () => {
+    const params = { sessionId: "00000000-0000-4000-8000-000000000001", claudeProjectSettingsAllowed: true };
+    expect(sessionCodec.deserialize(sessionCodec.serialize(params))).toMatchObject(params);
   });
 
   it("refuses to write skills into a non-managed Claude configuration", async () => {

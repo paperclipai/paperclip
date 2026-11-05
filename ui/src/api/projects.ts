@@ -56,6 +56,10 @@ export const projectsApi = {
       projectPath(projectId, companyId, `/workspaces/${encodeURIComponent(workspaceId)}`),
       data,
     ),
+  getClaudeProjectTrust: (projectId: string, workspaceId: string, companyId?: string) =>
+    api.get<{ agentIds: string[] }>(projectPath(projectId, companyId, `/workspaces/${encodeURIComponent(workspaceId)}/claude-project-trust`)),
+  setClaudeProjectTrust: (projectId: string, workspaceId: string, agentIds: string[], companyId?: string) =>
+    api.put<{ agentIds: string[] }>(projectPath(projectId, companyId, `/workspaces/${encodeURIComponent(workspaceId)}/claude-project-trust`), { agentIds }),
   controlWorkspaceRuntimeServices: (
     projectId: string,
     workspaceId: string,

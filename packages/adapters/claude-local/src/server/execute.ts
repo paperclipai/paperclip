@@ -797,6 +797,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const runtimeRemoteExecution = parseObject(runtimeSessionParams.remoteExecution);
   const runtimePromptBundleKey = asString(runtimeSessionParams.promptBundleKey, "");
   const runtimeMcpServerIdentity = asString(runtimeSessionParams.mcpServerIdentity, "");
+  const claudeProjectSettingsAllowed = config.managedAiConnection === true &&
+    parseObject(context.paperclipWorkspace).claudeProjectSettingsAllowed === true;
+  const matchingProjectTrust = (runtimeSessionParams.claudeProjectSettingsAllowed === true) === claudeProjectSettingsAllowed;
   const hasMatchingPromptBundle =
     runtimePromptBundleKey.length === 0 || runtimePromptBundleKey === promptBundle.bundleKey;
   const hasMatchingMcpServers =
@@ -814,6 +817,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     runtimeSessionId.length > 0 &&
     isValidUuid &&
     hasMatchingPromptBundle &&
+    matchingProjectTrust &&
     // Each CLI invocation loads --mcp-config, including --resume invocations.
     // Refreshing tools does not invalidate the saved conversation.
     hasMatchingSessionCwd &&
@@ -876,7 +880,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     attemptInstructionsFilePath: string | undefined,
   ) => {
     const args = ["--print", "--output-format", "stream-json", "--verbose"];
-    if (config.managedAiConnection) args.push("--setting-sources", "user");
+    if (config.managedAiConnection) args.push("--setting-sources", claudeProjectSettingsAllowed ? "user,project" : "user");
     if (resumeSessionId) args.push("--resume", resumeSessionId);
     args.push(...buildClaudeExecutionPermissionArgs({
       dangerouslySkipPermissions,
@@ -1197,6 +1201,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         cwd,
         promptBundleKey: promptBundle.bundleKey,
         mcpServerIdentity: runtimeMcpIdentity,
+        claudeProjectSettingsAllowed,
         ...(executionTargetIsRemote
           ? {
               remoteExecution: adapterExecutionTargetSessionIdentity(runtimeExecutionTarget),

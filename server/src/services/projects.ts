@@ -1274,6 +1274,10 @@ export function projectService(db: Db, options: { captureWorkspaceUpdates?: bool
       if (data.remoteProvider !== undefined) patch.remoteProvider = readNonEmptyString(data.remoteProvider);
       if (data.remoteWorkspaceRef !== undefined) patch.remoteWorkspaceRef = nextRemoteWorkspaceRef;
       if (data.sharedWorkspaceKey !== undefined) patch.sharedWorkspaceKey = readNonEmptyString(data.sharedWorkspaceKey);
+      if (["cwd", "repoUrl", "repoRef", "defaultRef", "sourceType", "remoteProvider", "remoteWorkspaceRef"].some(key =>
+        key in patch && patch[key as keyof typeof patch] !== existing[key as keyof typeof existing])) {
+        patch.claudeProjectTrust = null;
+      }
       if (data.metadata !== undefined || data.runtimeConfig !== undefined) {
         patch.metadata =
           data.runtimeConfig !== undefined

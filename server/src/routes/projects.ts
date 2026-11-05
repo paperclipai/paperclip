@@ -12,7 +12,7 @@ import { normalizeProjectRepositoryUrl, resolveProjectRepositorySelection } from
 import { toolAccessService } from "../services/tool-access.js";
 import { Router, type Request, type Response } from "express";
 import type { Db } from "@paperclipai/db";
-import { agents, authUsers, companyMemberships, instanceUserRoles, projectAccessMembers } from "@paperclipai/db";
+import { agents, authUsers, companyMemberships, instanceUserRoles, projectAccessMembers, projectWorkspaces } from "@paperclipai/db";
 import { inArray } from "drizzle-orm";
 import {
   addProjectAccessMemberSchema,
@@ -648,6 +648,56 @@ export function projectRoutes(db: Db) {
     });
     res.json(member);
   });
+
+  router.get("/projects/:id/workspaces/:workspaceId/claude-project-trust", async (req, res) => {
+    assertBoard(req);
+    const project = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Project not found");
+    if (!project || !(await assertProjectReadAllowed(req, res, project))) return;
+    const [workspace] = await db.select({ trust: projectWorkspaces.claudeProjectTrust }).from(projectWorkspaces).where(and(
+      eq(projectWorkspaces.id, req.params.workspaceId as string), eq(projectWorkspaces.projectId, project.id),
+      eq(projectWorkspaces.companyId, project.companyId),
+    ));
+    if (!workspace) { res.status(404).json({ error: "Project workspace not found" }); return; }
+    const grants = Array.isArray(workspace.trust?.grants) ? workspace.trust.grants : [];
+    res.json({ agentIds: grants.flatMap((grant) => grant && typeof grant === "object" && typeof (grant as Record<string, unknown>).agentId === "string"
+      ? [(grant as Record<string, string>).agentId] : []) });
+  });
+
+  router.put("/projects/:id/workspaces/:workspaceId/claude-project-trust",
+    validate(z.object({ agentIds: z.array(z.string().uuid()).max(100) }).strict()), async (req, res) => {
+      assertBoard(req);
+      const project = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Project not found");
+      if (!project || !(await assertProjectReadAllowed(req, res, project)) || !(await assertProjectWorkspaceWriteAllowed(req, res, project))) return;
+      const agentIds = [...new Set(req.body.agentIds as string[])];
+      const result = await db.transaction(async (tx) => {
+        const [workspace] = await tx.select().from(projectWorkspaces).where(and(
+          eq(projectWorkspaces.id, req.params.workspaceId as string),
+          eq(projectWorkspaces.projectId, project.id), eq(projectWorkspaces.companyId, project.companyId),
+        )).for("update");
+        if (!workspace) return null;
+        if (agentIds.length) {
+          const matching = await tx.select({ id: agents.id }).from(agents).where(and(
+            eq(agents.companyId, project.companyId), inArray(agents.id, agentIds),
+          ));
+          if (matching.length !== agentIds.length) throw unprocessable("All agents must belong to this company");
+        }
+        const grants = agentIds.map((agentId) => ({
+          companyId: workspace.companyId, projectId: workspace.projectId, workspaceId: workspace.id,
+          agentId, sourceType: workspace.sourceType, cwd: workspace.cwd, repoUrl: workspace.repoUrl,
+          repoRef: workspace.repoRef, defaultRef: workspace.defaultRef,
+          remoteProvider: workspace.remoteProvider, remoteWorkspaceRef: workspace.remoteWorkspaceRef,
+        }));
+        await tx.update(projectWorkspaces).set({ claudeProjectTrust: grants.length ? { grants } : null })
+          .where(and(eq(projectWorkspaces.id, workspace.id), eq(projectWorkspaces.companyId, project.companyId)));
+        return { agentIds };
+      });
+      if (!result) { res.status(404).json({ error: "Project workspace not found" }); return; }
+      const actor = getActorInfo(req);
+      await logActivity(db, { companyId: project.companyId, actorType: actor.actorType, actorId: actor.actorId,
+        agentId: actor.agentId, action: "project.claude_trust_updated", entityType: "project", entityId: project.id,
+        details: { workspaceId: req.params.workspaceId, agentIds } });
+      res.json(result);
+    });
 
   router.get("/projects/:id/workspaces", async (req, res) => {
     const id = req.params.id as string;

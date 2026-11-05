@@ -9,6 +9,7 @@ import { Card } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
 import { Tabs } from "@/components/ui/tabs";
 import { ChoosePathButton } from "../components/PathInstructionsModal";
+import { ClaudeProjectTrust } from "../components/ClaudeProjectTrust";
 import { MissingPluginTabPlaceholder } from "../components/MissingPluginTabPlaceholder";
 import { projectsApi } from "../api/projects";
 import { PageTabBar } from "../components/PageTabBar";
@@ -493,6 +494,7 @@ export function ProjectWorkspaceDetail() {
       {activeTab === "configuration" ? (
       <div className="grid gap-6 lg:grid-cols-(--gtc-53)">
         <div className="space-y-6">
+          <ClaudeProjectTrust companyId={project.companyId} projectId={project.id} workspaceId={workspace.id} />
           <Card className="block p-5">
             <p className="max-w-2xl text-sm text-muted-foreground">
               Configure the concrete workspace Paperclip attaches to this project. These values drive per-workspace
