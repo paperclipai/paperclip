@@ -47,20 +47,33 @@ export async function adoptSystemRecovery(db: Db, source: WorkspaceRecoverySourc
   });
 }
 
+export function exhaustedSystemRecoveryAction(state: SystemRecoveryState): string {
+  const reason = state.failure?.code ? ` (last failure: ${state.failure.code})` : "";
+  return `Automatic recovery of saved work stopped after ${state.attempts} attempts${reason}. `
+    + "Retry recovery to export and merge from the retained sandbox again; no provider turn is submitted. "
+    + "If Retry keeps failing, inspect the run and its environment.";
+}
+
 /** CAS protects a newer manual generation from an old worker's late write.
  * This is bookkeeping authority only; physical writes still require ownership. */
 export async function updateSystemRecovery(db: Db, source: WorkspaceRecoverySourceIdentity,
   previous: SystemRecoveryState, next: SystemRecoveryState) {
   const status = next.state === "complete" ? "recovered" : next.state === "exhausted" ? "blocked"
     : next.state === "running" ? "recovering" : "queued";
+  // A spent budget is not system work any more. Hand it to the board with the
+  // one action that can progress it, instead of leaving an inert system owner.
+  const exhausted = next.state === "exhausted";
+  const handoff = exhausted ? exhaustedSystemRecoveryAction(next) : null;
   const compatibility = {
     schema: "paperclip.workspace-recovery.v1", runId: source.runId, status,
     stage: next.phase === "verify_execution" ? "verifying_stop" : next.phase === "preserve_files" ? "restoring_files" : "saving_receipts",
     attempt: next.attempts, attemptLimit: 6, retryable: true, retryAt: next.nextAttemptAt ?? undefined,
+    ...(handoff ? { message: handoff } : {}),
   };
   return writeExecutionControl(db, DELIVERY_QUEUES.workspaceRecovery, async tx => {
     const [updated] = await tx.update(issueRecoveryActions).set({
-      ownerType: "system", ownerAgentId: null, ownerUserId: null,
+      ownerType: exhausted ? "board" : "system", ownerAgentId: null, ownerUserId: null,
+      ...(handoff ? { nextAction: handoff } : {}),
       evidence: sql`${issueRecoveryActions.evidence} || jsonb_build_object('systemRecovery', ${JSON.stringify(next)}::jsonb ||
         ${next.generationId === previous.generationId && next.intentId === previous.intentId
           ? sql`jsonb_build_object('intentId', ${issueRecoveryActions.evidence}#>'{systemRecovery,intentId}')`

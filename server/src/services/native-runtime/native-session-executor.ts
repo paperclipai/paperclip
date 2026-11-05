@@ -2,6 +2,7 @@ import { NativeSessionDiagnostics, nativeSessionDiagnostics, type NativeDiagnost
 import { nativePostResultFailureCategory, type NativePostResultFailureCategory } from "./native-post-result-failure.js";
 import { logger } from "../../middleware/logger.js";
 import { canRestoreMigratedNativeSession } from "./native-workspace-migration.js";
+import { NATIVE_PROVIDER_DURABLE_EVENT_TYPES, nativeHarnessBackupManifestSha256, retiredSourceAuthorizesNativeBackupRestore } from "./native-retired-backup-source.js";
 import { prepareCursorCloudRuntime } from "./cursor-cloud-runtime.js";
 import { resolveLocalRuntimeApiUrl } from "../../runtime-api.js";
 import { providerFailureFromError } from "../../vendor/paperclip-runner/index.js";
@@ -6752,10 +6753,12 @@ export function shouldRestoreNativeHarnessBackupIntoSandbox(input: {
   reusableLeaseConfigured: boolean | null | undefined;
   backupAvailable: boolean;
   migratedSessionContinuation?: boolean;
+  retiredSourceContinuation?: boolean;
 }): boolean {
   return (
     input.acquisitionOutcome === "created" &&
-    (input.reusableLeaseConfigured === false || input.migratedSessionContinuation === true) &&
+    (input.reusableLeaseConfigured === false || input.migratedSessionContinuation === true
+      || input.retiredSourceContinuation === true) &&
     input.backupAvailable
   );
 }
@@ -7325,15 +7328,7 @@ const NATIVE_STARTUP_MODEL_REJECTED_ACTION =
 const NATIVE_CLEANUP_OPERATOR_RECOVERY_MESSAGE =
   "Send a new message to continue after Paperclip verifies that the previous provider and its tools have stopped. If cleanup cannot be verified, inspect the run and its environment. Clearing a task session does not resolve this quarantine. Automatic retries are stopped.";
 
-const PROVIDER_DURABLE_EVENT_TYPES = new Set([
-  "harness.ready",
-  "session.started",
-  "session.resumed",
-  "session.updated",
-  "turn.started",
-  "provider.event",
-  "provider.rpc_result",
-]);
+const PROVIDER_DURABLE_EVENT_TYPES = NATIVE_PROVIDER_DURABLE_EVENT_TYPES;
 
 type NativeRecoveryMode =
   "bootstrap_retry" | "exact_checkpoint_resume" | "ambiguous_state";
@@ -14103,6 +14098,19 @@ async function createRunnerdBackendWithinSessionClaim(
     if (!updated) throw new Error("runner_harness_backup_lease_missing");
   };
 
+  // A created lease may restore the backup when Paperclip destroyed its
+  // source sandbox and no provider work followed the checkpoint.
+  const retiredSourceBackupAuthorized = async (): Promise<boolean> => {
+    const backup = verifyNativeHarnessBackup({ root, execution: input.execution, runnerInstanceId: input.runnerInstanceId });
+    const sessionId = nativeSessionKey(input.execution);
+    if (!backup || !sessionId) return false;
+    return retiredSourceAuthorizesNativeBackupRestore(input.db, {
+      companyId: input.execution.binding.companyId, currentRunId: input.execution.binding.runId,
+      normalizedSessionId: sessionId, manifest: backup.manifest,
+      manifestSha256: nativeHarnessBackupManifestSha256(readFileSync(resolve(backup.root, "manifest.json"))),
+    });
+  };
+
   const restoreVerifiedHarnessBackup = async () => {
     if (!remoteTarget || !remoteCommandRunner) {
       throw new Error("runner_harness_backup_unavailable");
@@ -14216,6 +14224,8 @@ async function createRunnerdBackendWithinSessionClaim(
                           ...input.execution.binding, workspaceId: input.execution.binding.executionWorkspaceId,
                           sessionId: nativeSessionKey(input.execution), logicalCwd: input.execution.workspace.cwd, remoteCwd: remoteTarget.remoteCwd,
                         }),
+                      retiredSourceContinuation: sandboxLeaseAcquisition?.outcome === "created" && backupAvailable
+                        && remoteTarget.reusableLeaseConfigured === true && await retiredSourceBackupAuthorized(),
                     });
                   await input.trace?.record({
                     name: "sandbox.lease.acquisition",
