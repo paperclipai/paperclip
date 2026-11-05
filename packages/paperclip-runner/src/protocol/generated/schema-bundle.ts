@@ -3471,6 +3471,25 @@ export const usageSchema = {
     },
     "runDelta": {
       "$ref": "#/$defs/measurement"
+    },
+    "context": {
+      "description": "Live context-window occupancy for the provider session after this usage, when the provider reports it.",
+      "type": "object",
+      "required": [
+        "usedTokens",
+        "windowTokens"
+      ],
+      "properties": {
+        "usedTokens": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "windowTokens": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "additionalProperties": false
     }
   },
   "additionalProperties": false,

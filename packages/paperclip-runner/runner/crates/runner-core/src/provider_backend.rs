@@ -30,8 +30,8 @@ use crate::provider_bridge::{
     TOOL_SET_SCHEMA,
 };
 use crate::provider_events::{
-    normalize_codex_notification, normalized_codex_terminal_event_type, with_terminal_outcome,
-    NormalizedProviderEvent,
+    codex_context_usage, normalize_codex_notification, normalized_codex_terminal_event_type,
+    with_terminal_outcome, NormalizedProviderEvent,
 };
 use crate::stable_identity::{is_stable_id, DURABLE_STABLE_ID_CHARS, SHORT_STABLE_ID_CHARS};
 
@@ -698,6 +698,11 @@ fn normalize_provider_notification(
             .codex_usage
             .get_or_insert_with(|| CodexRunUsage::new(true))
             .observe(total, historical);
+        let context = if historical {
+            None
+        } else {
+            codex_context_usage(params)
+        };
         let mut normalized_params = params.clone();
         let emit_usage = !historical || (had_baseline && increases_known_usage);
         if historical && emit_usage {
@@ -718,6 +723,9 @@ fn normalize_provider_notification(
             if event.event_type == "usage.reported" {
                 event.payload["runDeltaAvailable"] = json!(complete);
                 event.payload["runDeltaBasis"] = json!("run");
+                if let Some(context) = &context {
+                    event.payload["context"] = context.clone();
+                }
             }
         }
         return Ok(events);

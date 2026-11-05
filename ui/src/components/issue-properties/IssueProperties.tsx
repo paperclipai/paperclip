@@ -115,6 +115,7 @@ import {
 } from "./helpers";
 import { PropertyPicker } from "./property-picker";
 import { PropertyChip, PropertyRow, PropertySection } from "./primitives";
+import { IssueContextUsageRow } from "./context-usage-row";
 import {
   buildWorkspaceSelectionUpdate,
   currentWorkspaceSelection,
@@ -210,6 +211,8 @@ interface IssuePropertiesProps {
   documentDeepLink?: IssuePropertiesDocumentDeepLink | null;
   /** Render only the Properties body when a parent owns the side-panel tabs. */
   sidePanelContentOnly?: boolean;
+  /** Overrides the fetched Context row (Storybook fixtures); null hides it. */
+  contextUsage?: import("react").ReactNode;
 }
 
 export interface IssuePropertiesDocumentDeepLink {
@@ -248,6 +251,7 @@ export function IssueProperties({
   checkingMonitorNow = false,
   documentDeepLink,
   sidePanelContentOnly = false,
+  contextUsage,
 }: IssuePropertiesProps) {
   const policyResult = useExecutionPolicy(issue.executionPolicy);
   const policyAvailable = policyResult.success;
@@ -2682,6 +2686,10 @@ export function IssueProperties({
             <span className="text-sm truncate min-w-0" title={currentExecutionLabel}>{currentExecutionLabel}</span>
           </PropertyRow>
         )}
+
+        {contextUsage !== undefined
+          ? contextUsage ? <PropertyRow label="Context">{contextUsage}</PropertyRow> : null
+          : <IssueContextUsageRow issueId={issue.id} hasActiveRun={hasActiveRun} />}
 
         {showScheduledRetryRow && scheduledRetry?.scheduledRetryReason === "workspace_busy" ? (
           <PropertyRow label="Workspace">

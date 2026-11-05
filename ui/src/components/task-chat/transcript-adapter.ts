@@ -21,6 +21,7 @@ import type {
   TaskChatMessageItem,
   TaskChatPlanDocumentItem,
   TaskChatRuntimeRequestItem,
+  TaskChatMarkerItem,
 } from "./task-chat-model";
 import {
   humanizeToolName,
@@ -126,6 +127,37 @@ export function flattenSelfTalk(text: string): string {
     .replace(/__/g, "")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function compactTokenCount(value: number): string {
+  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1).replace(/\.0$/, "")}M`;
+  if (value >= 10_000) return `${Math.round(value / 1_000)}k`;
+  if (value >= 1_000) return `${(value / 1_000).toFixed(1).replace(/\.0$/, "")}k`;
+  return String(Math.round(value));
+}
+
+/** "Context compacted · 230k → 38k tokens" divider for a provider compaction. */
+export function contextCompactedMarker(
+  entry: Extract<TranscriptEntry, { kind: "provider_activity" }>,
+  id: string,
+): TaskChatMarkerItem {
+  const count = (value: unknown) =>
+    typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
+  const pre = count(entry.payload.preTokens);
+  const post = count(entry.payload.postTokens);
+  const detail = pre !== null && post !== null
+    ? `${compactTokenCount(pre)} → ${compactTokenCount(post)} tokens`
+    : pre !== null
+      ? `from ${compactTokenCount(pre)} tokens`
+      : undefined;
+  return {
+    id,
+    kind: "marker",
+    variant: "context_compacted",
+    label: "Context compacted",
+    ...(detail ? { detail } : {}),
+    createdAtIso: entry.ts,
+  };
 }
 
 function diffKind(changeType: string): "add" | "remove" | "context" {
@@ -876,6 +908,20 @@ export function transcriptToTaskChatItems(
         break;
       }
       case "provider_activity": {
+        if (entry.eventType === "context.compacted") {
+          const compactionId = String(entry.payload.compactionId ?? i);
+          const key = `compaction:${compactionId}`;
+          const marker = contextCompactedMarker(entry, `${runId}:compaction:${compactionId}`);
+          const existingIndex = protocolIndexByKey.get(key);
+          if (existingIndex == null) {
+            items.push(marker);
+            protocolIndexByKey.set(key, items.length - 1);
+          } else {
+            items[existingIndex] = marker;
+          }
+          resetInline();
+          break;
+        }
         // Use producer classification, including the legacy generic Codex
         // categories, never message-text matching. The run transcript still
         // retains these diagnostics.

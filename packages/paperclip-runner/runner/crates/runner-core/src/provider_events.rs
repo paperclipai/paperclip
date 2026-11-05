@@ -672,6 +672,47 @@ fn measurement(value: &Value) -> Value {
     })
 }
 
+/// Banner the Claude ACP agent streams when a compaction finishes.
+const ACPX_COMPACTION_COMPLETED_BANNER: &str = "Compacting completed.";
+
+/// Context-window occupancy from a Codex `thread/tokenUsage/updated` payload.
+/// Codex sizes the live context by the most recent request's total tokens.
+pub(crate) fn codex_context_usage(params: &Value) -> Option<Value> {
+    let usage = params.get("tokenUsage").unwrap_or(params);
+    let window = usage
+        .get("modelContextWindow")
+        .and_then(Value::as_u64)
+        .filter(|value| *value > 0)?;
+    let last = usage.get("last")?;
+    let used = last
+        .get("totalTokens")
+        .and_then(Value::as_u64)
+        .or_else(|| {
+            let input = last.get("inputTokens").and_then(Value::as_u64)?;
+            Some(
+                input.saturating_add(
+                    last.get("outputTokens")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(0),
+                ),
+            )
+        })?;
+    Some(json!({"usedTokens": used, "windowTokens": window}))
+}
+
+/// Context-window occupancy from an ACP `usage_update` (`used` of `size`).
+fn acpx_context_usage(payload: &Value) -> Option<Value> {
+    let window = payload
+        .get("size")
+        .and_then(Value::as_f64)
+        .filter(|value| value.is_finite() && *value >= 1.0)?;
+    let used = payload
+        .get("used")
+        .and_then(Value::as_f64)
+        .filter(|value| value.is_finite() && *value >= 0.0)?;
+    Some(json!({"usedTokens": used.round() as u64, "windowTokens": window.round() as u64}))
+}
+
 /// Converts Codex app-server notifications into provider-neutral PRP events.
 /// Provider-native envelopes are consumed here and never cross the PRP boundary.
 fn provider_performance_spans(params: &Value) -> Vec<Value> {
@@ -1048,18 +1089,38 @@ pub fn normalize_acpx_runtime_event(
         _ => stable_id(string(payload.get("messageId")), fallback_item_id),
     };
     match kind {
-        AcpxRuntimeEventKind::TextDelta => vec![NormalizedProviderEvent {
-            event_type: "item.delta".to_owned(),
-            priority: EventPriority::P2,
-            payload: json!({
-                "provider": "acpx",
-                "itemId": item_id,
-                "kind": "agentMessage",
-                "channel": "progress",
-                "providerMethod": "runtime.event",
-                "text": bounded_text(string(payload.get("text")), MAX_TEXT_CHARS),
-            }),
-        }],
+        AcpxRuntimeEventKind::TextDelta => {
+            let text = string(payload.get("text"));
+            let mut events = vec![NormalizedProviderEvent {
+                event_type: "item.delta".to_owned(),
+                priority: EventPriority::P2,
+                payload: json!({
+                    "provider": "acpx",
+                    "itemId": item_id,
+                    "kind": "agentMessage",
+                    "channel": "progress",
+                    "providerMethod": "runtime.event",
+                    "text": bounded_text(text, MAX_TEXT_CHARS),
+                }),
+            }];
+            // Claude's ACP agent reports a finished compaction only as this
+            // banner text. Sizes come from the surrounding usage updates.
+            if text.trim() == ACPX_COMPACTION_COMPLETED_BANNER {
+                events.push(NormalizedProviderEvent {
+                    event_type: "context.compacted".to_owned(),
+                    priority: EventPriority::P1,
+                    payload: json!({
+                        "schema": "paperclip.context.compacted.v1",
+                        "compactionId": stable_id(&format!("{turn_id}:{item_id}"), "acpx-compaction"),
+                        "reason": "provider",
+                        "preTokens": Value::Null,
+                        "postTokens": Value::Null,
+                        "sameSession": true,
+                    }),
+                });
+            }
+            events
+        }
         AcpxRuntimeEventKind::Thinking => vec![NormalizedProviderEvent {
             event_type: "item.delta".to_owned(),
             priority: EventPriority::P2,
@@ -1244,7 +1305,7 @@ fn normalize_acpx_status(
             "requests": 1,
             "providerCostUsd": if turn_cost { provider_cost } else { 0.0 },
         });
-        return vec![NormalizedProviderEvent {
+        let mut usage = NormalizedProviderEvent {
             event_type: "usage.reported".to_owned(),
             priority: EventPriority::P0,
             payload: json!({
@@ -1259,7 +1320,11 @@ fn normalize_acpx_status(
                 "runDeltaAvailable": run_delta_available,
                 "runDelta": run_delta,
             }),
-        }];
+        };
+        if let Some(context) = acpx_context_usage(payload) {
+            usage.payload["context"] = context;
+        }
+        return vec![usage];
     }
     if tag == "current_mode_update" {
         let status = string(payload.get("text"));
@@ -1521,6 +1586,78 @@ mod tests {
             0.001
         );
         assert_eq!(cumulative[0].payload["runDelta"]["providerCostUsd"], 0.0);
+    }
+
+    #[test]
+    fn acpx_usage_carries_context_window_occupancy() {
+        let usage = normalize_acpx_status(
+            &json!({"tag": "usage_update", "used": 34076, "size": 200000}),
+            "item",
+            "turn-1",
+            1,
+        );
+        assert_eq!(
+            usage[0].payload["context"],
+            json!({"usedTokens": 34076, "windowTokens": 200000})
+        );
+        for missing in [
+            json!({"tag": "usage_update", "used": 10}),
+            json!({"tag": "usage_update", "used": 10, "size": 0}),
+        ] {
+            let usage = normalize_acpx_status(&missing, "item", "turn-1", 1);
+            assert!(usage[0].payload.get("context").is_none());
+        }
+    }
+
+    #[test]
+    fn codex_context_usage_reads_last_request_and_model_window() {
+        assert_eq!(
+            codex_context_usage(&json!({"tokenUsage": {
+                "total": {"inputTokens": 76682, "outputTokens": 1089},
+                "last": {"inputTokens": 26000, "outputTokens": 672, "totalTokens": 26672},
+                "modelContextWindow": 258400,
+            }})),
+            Some(json!({"usedTokens": 26672, "windowTokens": 258400}))
+        );
+        assert_eq!(
+            codex_context_usage(&json!({"tokenUsage": {
+                "last": {"inputTokens": 100, "outputTokens": 20}, "modelContextWindow": 1000,
+            }})),
+            Some(json!({"usedTokens": 120, "windowTokens": 1000}))
+        );
+        assert_eq!(
+            codex_context_usage(&json!({"tokenUsage": {"last": {"totalTokens": 5}}})),
+            None
+        );
+    }
+
+    #[test]
+    fn claude_compaction_banner_emits_context_compacted() {
+        let events = normalize_acpx_runtime_event(
+            AcpxRuntimeEventKind::TextDelta,
+            &json!({"text": "\n\nCompacting completed."}),
+            None,
+            "fallback",
+            "turn-1",
+            0,
+        );
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].event_type, "item.delta");
+        assert_eq!(events[1].event_type, "context.compacted");
+        assert_eq!(
+            events[1].payload["schema"],
+            "paperclip.context.compacted.v1"
+        );
+        assert_eq!(events[1].payload["preTokens"], Value::Null);
+        let ordinary = normalize_acpx_runtime_event(
+            AcpxRuntimeEventKind::TextDelta,
+            &json!({"text": "Compacting completed. Next I will read the file."}),
+            None,
+            "fallback",
+            "turn-1",
+            0,
+        );
+        assert_eq!(ordinary.len(), 1);
     }
 
     #[test]

@@ -1080,3 +1080,53 @@ describe("nativeRunEventsToTranscript", () => {
     ])).toEqual([]);
   });
 });
+
+describe("context compaction", () => {
+  function usage(seq: number, usedTokens: number) {
+    return itemEvent(seq, "item.completed", `turn-1:usage:${seq}`, {
+      kind: "usage",
+      usage: { total: { inputTokens: 1 }, context: { usedTokens, windowTokens: 258_400 } },
+    });
+  }
+
+  it("sizes a compaction from the usage reported before and after it", () => {
+    const transcript = nativeRunEventsToTranscript([
+      usage(1, 229_500),
+      event(2, "context.compacted", {
+        schema: "paperclip.context.compacted.v1",
+        compactionId: "compaction-1",
+        reason: "provider",
+        preTokens: null,
+        postTokens: null,
+        sameSession: true,
+      }),
+      usage(3, 38_200),
+    ]);
+    const compaction = transcript.find((entry) => entry.kind === "provider_activity");
+    expect(compaction).toMatchObject({
+      eventType: "context.compacted",
+      payload: { preTokens: 229_500, postTokens: 38_200 },
+    });
+    const items = transcriptToTaskChatItems(transcript, { runId: RUN_ID, agentName: "Codex", running: false });
+    const flat = JSON.stringify(items);
+    expect(flat).toContain('"variant":"context_compacted"');
+    expect(flat).toContain("230k → 38k tokens");
+  });
+
+  it("keeps the divider when the provider reports no sizes", () => {
+    const transcript = nativeRunEventsToTranscript([
+      event(1, "context.compacted", {
+        schema: "paperclip.context.compacted.v1",
+        compactionId: "compaction-2",
+        reason: "provider",
+        preTokens: null,
+        postTokens: null,
+        sameSession: true,
+      }),
+    ]);
+    const items = transcriptToTaskChatItems(transcript, { runId: RUN_ID, agentName: "Claude", running: false });
+    const flat = JSON.stringify(items);
+    expect(flat).toContain('"label":"Context compacted"');
+    expect(flat).not.toContain("tokens");
+  });
+});
