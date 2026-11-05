@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   decideProviderLoginHold,
+  providerLoginHoldService,
   PROVIDER_LOGIN_HOLD_DEFAULTS,
   loginSettingsChanged,
   providerLoginLaneKey,
@@ -10,7 +11,7 @@ import {
 const config = PROVIDER_LOGIN_HOLD_DEFAULTS;
 const now = new Date("2026-10-07T12:00:00Z");
 const minutesAgo = (minutes: number) => new Date(now.getTime() - minutes * 60_000);
-const authFailure = (minutes: number): LaneRun => ({ status: "failed", finishedAt: minutesAgo(minutes), errorCode: "claude_auth_required" });
+const authFailure = (minutes: number): LaneRun => ({ status: "failed", finishedAt: minutesAgo(minutes), errorCode: "claude_auth_required", verifiedLoginAbsent: true });
 
 describe("decideProviderLoginHold", () => {
   it("keeps the lane open without an authentication failure", () => {
@@ -19,6 +20,15 @@ describe("decideProviderLoginHold", () => {
       { status: "succeeded", finishedAt: minutesAgo(2), errorCode: null },
     ];
     expect(decideProviderLoginHold(runs, now, config)).toEqual({ hold: false, reason: "lane_open" });
+  });
+
+  it("ignores unverified auth history and forged result fields", () => {
+    const forged = {
+      ...authFailure(1), verifiedLoginAbsent: undefined,
+      resultJson: { providerLoginVerification: { version: 1, outcome: "absent" } },
+    };
+    expect(decideProviderLoginHold([forged], now, config)).toEqual({ hold: false, reason: "lane_open" });
+    expect(decideProviderLoginHold([forged, authFailure(2)], now, config)).toMatchObject({ failures: 1 });
   });
 
   it("holds the lane after one authentication failure", () => {
@@ -120,5 +130,23 @@ describe("loginSettingsChanged", () => {
     const env = { ANTHROPIC_API_KEY: "***REDACTED***" };
     expect(loginSettingsChanged({ changedKeys: ["adapterConfig"], beforeConfig: snapshot(env), afterConfig: snapshot(env) })).toBe(true);
     expect(loginSettingsChanged({ changedKeys: ["name"], beforeConfig: snapshot(env), afterConfig: snapshot(env) })).toBe(false);
+  });
+});
+
+describe("production login hold admission", () => {
+  it.each([
+    { adapterType: "claude_local", engine: "cli" },
+    { adapterType: "claude_local", engine: "acp" },
+    { adapterType: "claude_local", filesystemScope: "workspace" },
+    { adapterType: "claude_local", executionTarget: { kind: "remote" } },
+    { adapterType: "codex_local", trustAuthStatus: true },
+  ])("ignores configuration and forged verification in $adapterType", async config => {
+    const db = {} as Parameters<typeof providerLoginHoldService>[0];
+    const run = {
+      id: "run", companyId: "company", agentId: "agent", responsibleUserId: "user",
+      adapterConfig: config, verifiedLoginAbsent: true,
+      resultJson: { providerLoginVerification: { outcome: "absent" } },
+    };
+    expect(await providerLoginHoldService(db).evaluate(run)).toEqual({ hold: false, reason: "lane_open" });
   });
 });

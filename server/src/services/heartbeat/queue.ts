@@ -375,6 +375,7 @@ export async function claimDueTimerHeartbeatForAgent(
 /** Queue admission and dispatch share the service lifecycle callbacks and execution ownership. */
 export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDependencies) {
   const providerLoginHold = providerLoginHoldService(db);
+  const loginHoldDeadlines = new Map<string, number>();
   const {
     setRunStatus,
     setWakeupStatus,
@@ -924,7 +925,9 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     // rejected, every run in the lane fails the same way. Keep the run queued
     // until one probe run proves that the login works again.
     const loginHold = await providerLoginHold.evaluate(run);
+    loginHoldDeadlines.delete(run.id);
     if (loginHold.hold) {
+      loginHoldDeadlines.set(run.id, loginHold.holdUntil.getTime());
       logger.warn(
         {
           runId: run.id,
@@ -1861,7 +1864,8 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
   // Release admission promptly without first scanning unrelated recovery work.
   // Every run still passes the ordinary per-agent claim and dispatch gates.
   async function resumeQueuedRunsAfterDrain(scope?: { companyId: string }) {
-    if ((await getSchedulingSuppression()).suppressed) return;
+    if ((await getSchedulingSuppression()).suppressed) return null;
+    if (!scope) loginHoldDeadlines.clear();
     const cutoff = await getWorktreeExecutionCutoff();
     const queuedRuns = await db
       .select({ agentId: heartbeatRuns.agentId })
@@ -1880,6 +1884,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     for (const agentId of agentIds) {
       await startNextQueuedRunForAgent(agentId);
     }
+    return loginHoldDeadlines.size ? Math.min(...loginHoldDeadlines.values()) : null;
   }
 
   // A 403 from claimQueuedRun comes from the run's own persisted identity
