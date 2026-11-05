@@ -1066,7 +1066,11 @@ recorded use of that root on this sandbox is an earlier epoch that ended in a
 quiesced, committed final save, and the folder carries a Paperclip preparation or
 restore receipt. Its files are then already part of the saved lineage being
 restored. Any other occupant (no receipt, a later unsaved use, or a sandbox that
-never saved that root) is still refused with `reason=occupied_root`.
+never saved that root) is still refused with `reason=occupied_root`. The replaced
+root's `.paperclip-runtime` state, such as a retained runner session, is never in
+a snapshot and belongs to the sandbox, so it moves into the restored root. Only the
+old preparation or restore receipt and export staging are dropped. A retained
+native continuation then reads its runner state at the same path.
 
 The provider's own idle auto-stop must not coincide with the warm runner idle
 window. The host forwards the run's effective warm idle window (environment

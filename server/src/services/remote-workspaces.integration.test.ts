@@ -27,6 +27,7 @@ import type { createGitRemoteAuthProvider } from "./git-credentials.js";
 import { reconcileSafeNativeReplacements } from "./native-runtime/native-safe-replacement.js";
 import { remoteTerminationReceipt } from "./remote-execution-termination.js";
 import { RemoteWorkspaceRestoreError } from "./remote-workspace-transport.js";
+import { readRemoteRunnerState } from "./native-runtime/native-session-executor.js";
 import { notFound } from "../errors.js";
 import { appendHeartbeatRunEvent } from "./heartbeat-run-events.js";
 import { createRemoteWorkspaceFiles } from "./remote-workspace-files.js";
@@ -479,6 +480,13 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
     const reserved = await reserve({ kind: "empty" }), parentSandbox = await target("sandbox-A");
     const prepared = await prepareRemoteWorkspace({ db, storage, workspace: reserved, runId: ids.run, lease: await lease(), target: parentSandbox });
     await fs.writeFile(path.join(prepared.remoteRoot, "plan.md"), "parent plan\n");
+    // The parent's retained native session keeps its runner state beside the
+    // workspace files. Snapshots exclude it; it belongs to this sandbox.
+    const runnerStateDirectory = path.join(prepared.remoteRoot, ".paperclip-runtime", "paperclip-runner", "sessions",
+      createHash("sha256").update("parent-session").digest("hex"), "runner");
+    const runnerState = { lifecycle: "suspended", outbox: [], pendingTerminalDelivery: null, runId: ids.run };
+    await fs.mkdir(runnerStateDirectory, { recursive: true });
+    await fs.writeFile(path.join(runnerStateDirectory, "runner-state.json"), JSON.stringify(runnerState));
     await saveRemoteWorkspace({ db, storage, workspace: prepared.workspace, runId: ids.run,
       lease: prepared.lease, target: parentSandbox, assertOwned: async () => undefined });
     const writer = async (providerLeaseId: string) => {
@@ -557,11 +565,27 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
       .toEqual([path.basename(restored.remoteRoot)]);
     expect(readRemoteWorkspaceAuthority(restored.workspace.metadata)).toMatchObject({ snapshotId: childSaved.snapshotId, dirty: true,
       writerRunId: parent.runId, location: { providerLeaseId: prepared.lease.providerLeaseId, remoteCwd: prepared.remoteRoot } });
+    // The parent's continuation reads its retained runner state from the restored root.
+    expect(await readRemoteRunnerState({ runner: parentSandbox.runner!, stateDirectory: runnerStateDirectory })).toEqual(runnerState);
+    // Only the new restore receipt identifies the root; the retired preparation receipt is gone.
+    expect(await fs.lstat(path.join(restored.remoteRoot, ".paperclip-runtime", "workspace-ready.json")).catch(() => null)).toBeNull();
+    expect(JSON.parse(await fs.readFile(path.join(restored.remoteRoot, ".paperclip-runtime", "workspace-restored.json"), "utf8")))
+      .toMatchObject({ identity: expect.stringMatching(/^[a-f0-9]{64}$/) });
     // A lost reply repeats the same preparation without replacing the restored root again.
     await fs.writeFile(path.join(restored.remoteRoot, "parent-continued.md"), "unsaved parent edits\n");
+    // An attempt interrupted after publish left its retired root; the repeat keeps its runtime state.
+    const { identity } = JSON.parse(await fs.readFile(path.join(restored.remoteRoot, ".paperclip-runtime", "workspace-restored.json"), "utf8"));
+    const interrupted = `${restored.remoteRoot}.retired-${identity}`;
+    await fs.mkdir(path.join(interrupted, ".paperclip-runtime", "other-session"), { recursive: true });
+    await fs.writeFile(path.join(interrupted, ".paperclip-runtime", "other-session", "state.json"), "{}");
+    await fs.writeFile(path.join(interrupted, "stale.md"), "old\n");
     const repeated = await prepareRemoteWorkspace({ db, storage, workspace: parent.workspace, runId: parent.runId, lease: parent.lease, target: reattach() });
     expect(repeated.remoteRoot).toBe(prepared.remoteRoot);
     expect(await fs.readFile(path.join(restored.remoteRoot, "parent-continued.md"), "utf8")).toBe("unsaved parent edits\n");
+    expect(await fs.readFile(path.join(restored.remoteRoot, ".paperclip-runtime", "other-session", "state.json"), "utf8")).toBe("{}");
+    expect(await fs.lstat(interrupted).catch(() => null)).toBeNull();
+    expect(await fs.lstat(path.join(restored.remoteRoot, "stale.md")).catch(() => null)).toBeNull();
+    expect(await readRemoteRunnerState({ runner: parentSandbox.runner!, stateDirectory: runnerStateDirectory })).toEqual(runnerState);
   }, 60_000);
 
   it.each(["per_turn", "warm", "occupied", "foreign-target", "foreign-allocation", "forged-receipt"])("preserves retained native workspace identity through migration: %s", async scenario => {
