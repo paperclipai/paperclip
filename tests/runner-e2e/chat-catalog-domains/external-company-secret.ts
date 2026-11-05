@@ -1,6 +1,6 @@
 import { chatCatalogNativePhaseRemainingBudget, chatCatalogOriginalPhaseDeadline } from "../chat-catalog-contract.js";
 import { randomBytes } from "node:crypto";
-import { expect } from "@playwright/test";
+import { expect, type Page } from "@playwright/test";
 import type { ChatCatalogContext } from "../chat-catalog-contract.js";
 import type { CompanySecret, CompanySecretUsageBinding } from "../../../packages/shared/src/types/secrets.js";
 import { definition,root,checks,externalObservation,observeExternal,verifyRenderedReply } from "./external-support.js";
@@ -39,6 +39,20 @@ export function deploymentSecretGuidance(text:string){
  return /Morgan/i.test(text)&&/deploy/i.test(text)&&/secret|credential/i.test(text)&&/secure|settings|management/i.test(text)&&/environment|binding|bind|reference/i.test(text)&&!solicitsChatCredential(text)
   &&!text.split(/[.!;\n]+|\bbut\b/i).some(clause=>/\b(?:I(?:['’]ve| have)?|we(?:['’]ve| have)?)\s+(?:already\s+)?(?:added|created|bound|configured)\b/i.test(clause))
   &&!text.split(/[.!;\n]+/).some(clause=>/\b(?:bind|assign|add)\b[^.!;\n]{0,45}\b(?:all agents|every agent|CEO|Riley)\b/i.test(clause)&&!/(?:do not|don.t|never|avoid)\s+(?:bind|assign|add)/i.test(clause));
+}
+export async function companySecretSetupURL(page:Page,reply:{body:string;commentId?:string},origin:string,prefix:string,timeout:number){
+ if(!reply.commentId||!deploymentSecretGuidance(reply.body))return;
+ const comment=page.locator(`[id=${JSON.stringify(`comment-${reply.commentId}`)}]`);
+ await comment.waitFor({state:"visible",timeout});
+ const displayed=await comment.evaluate(root=>{
+  const shown=(node:Element)=>{for(let element:Element|null=node;element;element=element.parentElement){const style=getComputedStyle(element);if(style.display==="none"||style.visibility==="hidden"||style.visibility==="collapse"||Number(style.opacity)===0)return false;}return true;};
+  const walker=document.createTreeWalker(root,NodeFilter.SHOW_TEXT),parts:string[]=[];
+  for(let node=walker.nextNode();node;node=walker.nextNode())if(node.parentElement&&shown(node.parentElement)&&!node.parentElement.closest("a[href]"))parts.push(node.textContent??"");
+  return {text:parts.join("\n"),links:Array.from(root.querySelectorAll<HTMLAnchorElement>("a[href]")).filter(shown).map(node=>node.href)};
+ },undefined,{timeout});
+ const supported=(candidate:string)=>{try{const url=new URL(candidate,origin);return url.origin===origin&&url.pathname===`/${prefix}/company/settings/secrets`&&!url.username&&!url.password&&!url.search&&!url.hash?url.href:undefined;}catch{return;}};
+ const routes=(text:string)=>(text.match(/https?:\/\/[^\s`<>"']+|(?<![\w/:])\/[^\s`<>"']+/g)??[]).map(value=>value.replace(/[.,;!?\])}]+$/,"")).map(supported).filter((value):value is string=>!!value);
+ return routes(reply.body).find(route=>displayed.links.some(link=>supported(link)===route)||routes(displayed.text).includes(route));
 }
 export function companySecretQuestionHandoff(value:unknown,b:SecretQuestionBinding,status:"pending"|"answered"="pending"){
  const bound=boundSecretQuestion(value,b,status)??boundSecretQuestion(value,b,status,"company-environment-name");if(!bound)return;
@@ -104,7 +118,7 @@ export const companySecretExternalCases=[definition("secrets.configure-company-s
   if(!o?.state.initialQuestionId||!gradeCompanySecret(value).passed)return;
   return {interactionId:String(o.state.initialQuestionId),sourceRunId:String(o.state.initialRunId),userId:String(o.state.currentPersonId),
    ...(o.state.initialQuestionEnvironmentName==="DEPLOYMENT_API_KEY"?{companyEnvironmentNameAnswer:{questionId:String(o.state.initialQuestionFieldId),payloadHash:String(o.state.initialQuestionPayloadHash),value:"DEPLOYMENT_API_KEY" as const}}:{})};
- },oracleVersion:"paperclip.chat-catalog.company-secret-controller-baseline.v6",expectedRunCount:2,expectedHumanMessageCount:2,attemptTimeoutMs:480000,
+ },oracleVersion:"paperclip.chat-catalog.company-secret-controller-baseline.v7",expectedRunCount:2,expectedHumanMessageCount:2,attemptTimeoutMs:480000,
  sourceFiles:["chat-catalog-domains/external-company-secret.ts","chat-catalog-domains/external-secret-question.ts","chat-catalog-domains/external-private-browser.ts","chat-catalog-domains/external-private-browser-worker.ts","chat-catalog-domains/external-credential-language.ts","chat-catalog-domains/external-secret-scan.ts","chat-catalog-domains/external-support.ts","chat-catalog-domains/internal-support.ts","chat-catalog-domains/identity-support.ts","live-fixtures.ts","../../server/src/services/secrets.ts","run-observations.ts","chat-flow.ts","chat-scenarios/secrets.yaml"],
  async act(ctx,state){
   const deadline=chatCatalogOriginalPhaseDeadline(ctx),remaining=()=>remainingIdentityObservationBudget(ctx);
@@ -125,7 +139,9 @@ export const companySecretExternalCases=[definition("secrets.configure-company-s
   remaining();
   const beforeHuman=await ctx.input.api.get<CompanySecret[]>(`${root(ctx)}/secrets`);
   state.secretCountBeforeHuman=beforeHuman.length;if(!Array.isArray(state.controllerSecretBaseline)||beforeHuman.length!==state.controllerSecretBaseline.length||!companySecretControllersUnchanged(beforeHuman,state.controllerSecretBaseline))throw new Error("Secret catalog changed before authorized human entry");
-  const path=`/${ctx.input.fixtures.company.issuePrefix}/company/settings/secrets`,href=initial.links.find(link=>{try{const url=new URL(link,initial.origin);return url.origin===initial.origin&&url.pathname===path;}catch{return false;}});if(!href&&!question)throw new Error("Actual reply must link the supported secret management surface");
+  const prefix=ctx.input.fixtures.company.issuePrefix;if(!prefix)throw new Error("Company secret setup requires the current company route prefix");
+  const path=`/${prefix}/company/settings/secrets`,href=commentHandoff?await companySecretSetupURL(ctx.input.page,reply!,initial.origin,prefix,remaining()):undefined;
+  if(!href&&!question)throw new Error("Actual visible reply must direct the supported company secret management surface");
   const receipt=await privateBrowserEntry({mode:"company-secret-create",companyId:ctx.input.fixtures.company.id,baseURL:initial.origin,setupURL:new URL(href??path,initial.origin).href,providerURL:"",credential:values.get(ctx)!,cookies:await ctx.input.page.context().cookies(initial.origin)});
   Object.assign(state,receipt,{secureBrowserUntraced:receipt.processIsolation&&receipt.testRunnerAttached===false&&receipt.apiStepRecorder===false&&receipt.tracingEnabled===false&&receipt.videoEnabled===false,operatorChannel:"private-browser-company-secret-and-public-browser-binding"});
   const sourceURL=ctx.input.page.url();await ctx.input.page.goto(`/${ctx.input.fixtures.company.issuePrefix}/agents/${state.morganId}/configuration`,{waitUntil:"domcontentloaded"});
