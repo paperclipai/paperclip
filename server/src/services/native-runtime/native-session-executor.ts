@@ -328,9 +328,12 @@ class NativePostResultFailureError extends Error {
 }
 
 export class NativeControllerDetachedForRestartError extends Error {
-  constructor() {
+  readonly diagnostic?: Readonly<{ stage: "post_result_cleanup"; postExecutionCleanupFailed: boolean; renewalStopFailed: boolean }>;
+
+  constructor(diagnostic?: { stage: "post_result_cleanup"; postExecutionCleanupFailed: boolean; renewalStopFailed: boolean }) {
     super("native_controller_detached_for_restart");
     this.name = "NativeControllerDetachedForRestartError";
+    if (diagnostic) this.diagnostic = Object.freeze(diagnostic);
   }
 }
 
@@ -10506,7 +10509,6 @@ async function executePaperclipNativeSessionWithinScope(
         expectedCurrentWakeComments,
       );
     }
-    await leaseRenewal.stop();
     await trace.record({
       name: "native.result.finalize",
       parentName: "task.settle",
@@ -11141,62 +11143,117 @@ async function executePaperclipNativeSessionWithinScope(
       await timeController("github_stop", () => githubAccess!.stop());
     }
   }
-  if (
-    planSynchronizations.length === 0 &&
-    "executionMode" in input.execution &&
-    input.execution.executionMode === "plan"
-  ) {
-    const markdown = semanticProviderPlanMarkdown(
-      native.result as unknown as Record<string, unknown>,
-    );
-    if (markdown) {
-      const digest = createHash("sha256").update(markdown).digest("hex");
-      await recordPlanSynchronization({
-        sourceEventId: `semantic-plan:${input.execution.binding.runId}:${digest}`,
-        ...(native.turnId ? { turnId: native.turnId } : {}),
-        eventType: "plan.updated",
-        payload: {
-          schema: "paperclip.plan.updated.v1",
-          planId: `semantic:${native.turnId ?? input.execution.binding.runId}`,
-          revision: 1,
-          complete: true,
-          markdown,
-          source: "semantic_result_artifact",
-        },
-      });
+  let postExecutionFailed = false;
+  let postExecutionCleanupFailed = false;
+  try {
+    if (warmSessionId !== null && lifecyclePolicy.mode === "warm") {
+      const retainSession = native.terminal.runTerminalState === "succeeded" && native.result.continuation?.kind !== "case_handoff";
+      const instructionCopy = input.instructionWorkingCopy;
+      const ownedSession = warmNativeSessions.get(warmSessionId);
+      let collectInstructions: boolean;
+      try {
+        collectInstructions = Boolean(instructionCopy && ownedSession?.ownerToken === warmSessionOwnerToken &&
+          (instructionCopy.checkpointWarm ? !await timeController("instruction_checkpoint", () => instructionCopy.checkpointWarm!()) : await timeController("instruction_changes", () => instructionCopy.hasChanges())));
+      } catch (error) {
+        await releaseWarmNativeSession(warmSessionId, warmSessionOwnerToken, lifecyclePolicy.idleTimeoutMs, true)
+          .catch(() => undefined);
+        throw error;
+      }
+      const collectedByOwner = ownedSession?.instructionCopy?.collectStopped === instructionCopy?.collectStopped
+        || ownedSession?.instructionWorkingCopy?.collectStopped === instructionCopy?.collectStopped;
+      if (collectInstructions && ownedSession) {
+        ownedSession.closeOnReleaseReason = "registered instruction edits require stopped-provider collection";
+      }
+      await timeController("warm_release", () => releaseWarmNativeSession(
+        warmSessionId,
+        warmSessionOwnerToken,
+        lifecyclePolicy.idleTimeoutMs,
+        !retainSession,
+      ));
+      if (collectInstructions && !collectedByOwner) await timeController("instruction_collection", () => instructionCopy!.collectStopped());
+    }
+    assertControllerActive();
+    if (
+      planSynchronizations.length === 0 &&
+      "executionMode" in input.execution &&
+      input.execution.executionMode === "plan"
+    ) {
+      const markdown = semanticProviderPlanMarkdown(
+        native.result as unknown as Record<string, unknown>,
+      );
+      if (markdown) {
+        const digest = createHash("sha256").update(markdown).digest("hex");
+        await recordPlanSynchronization({
+          sourceEventId: `semantic-plan:${input.execution.binding.runId}:${digest}`,
+          ...(native.turnId ? { turnId: native.turnId } : {}),
+          eventType: "plan.updated",
+          payload: {
+            schema: "paperclip.plan.updated.v1",
+            planId: `semantic:${native.turnId ?? input.execution.binding.runId}`,
+            revision: 1,
+            complete: true,
+            markdown,
+            source: "semantic_result_artifact",
+          },
+        });
+      }
+    }
+  } catch (error) {
+    postExecutionFailed = true;
+    postExecutionCleanupFailed = !(error instanceof NativeControllerDetachedForRestartError);
+    throw error;
+  } finally {
+    let renewalStopFailed = false;
+    try {
+      try {
+        await leaseRenewal.stop();
+      } catch (error) {
+        renewalStopFailed = true;
+        throw error;
+      }
+      if (nativeRunsDetachingForRestart.has(input.execution.binding.runId)) {
+        throw new NativeControllerDetachedForRestartError();
+      }
+      const releaseNow = new Date();
+      const released = await timeController("coordinator_release", () => input.db.transaction(async tx => {
+        await notifyNativeFinalizationWork(tx, input.execution.binding);
+        return tx.update(nativeRunFinalizations)
+          .set({
+            leaseOwner: null,
+            leaseExpiresAt: null,
+            recoveryState: null,
+            recoveryRequestId: null,
+            updatedAt: releaseNow,
+          })
+          .where(
+            and(
+              eq(nativeRunFinalizations.runId, input.execution.binding.runId),
+              eq(nativeRunFinalizations.companyId, input.execution.binding.companyId),
+              eq(nativeRunFinalizations.issueId, input.execution.binding.issueId),
+              eq(nativeRunFinalizations.leaseOwner, leaseOwner),
+              eq(nativeRunFinalizations.attempt, attempt),
+              eq(nativeRunFinalizations.controllerBootId, controller.bootId),
+              eq(nativeRunFinalizations.controllerPid, controller.pid),
+              eq(
+                nativeRunFinalizations.controllerProcessStartedAt,
+                controller.processStartedAt,
+              ),
+              gt(nativeRunFinalizations.leaseExpiresAt, sql`now()`),
+            ),
+          )
+          .returning({ runId: nativeRunFinalizations.runId })
+          .then((rows) => rows[0] ?? null);
+      }));
+      if (!released) throw new Error("native_session_lease_lost");
+    } catch (error) {
+      if (nativeRunsDetachingForRestart.has(input.execution.binding.runId)) {
+        throw new NativeControllerDetachedForRestartError({ stage: "post_result_cleanup",
+          postExecutionCleanupFailed, renewalStopFailed });
+      }
+      if (!postExecutionFailed) throw error;
+      logger.warn({ runId: input.execution.binding.runId }, "Native finalization claim release failed after an earlier error");
     }
   }
-  const releaseNow = new Date();
-  const released = await timeController("coordinator_release", () => input.db.transaction(async tx => {
-    await notifyNativeFinalizationWork(tx, input.execution.binding);
-    return tx.update(nativeRunFinalizations)
-      .set({
-        leaseOwner: null,
-        leaseExpiresAt: null,
-        recoveryState: null,
-        recoveryRequestId: null,
-        updatedAt: releaseNow,
-      })
-      .where(
-        and(
-          eq(nativeRunFinalizations.runId, input.execution.binding.runId),
-          eq(nativeRunFinalizations.companyId, input.execution.binding.companyId),
-          eq(nativeRunFinalizations.issueId, input.execution.binding.issueId),
-          eq(nativeRunFinalizations.leaseOwner, leaseOwner),
-          eq(nativeRunFinalizations.attempt, attempt),
-          eq(nativeRunFinalizations.controllerBootId, controller.bootId),
-          eq(nativeRunFinalizations.controllerPid, controller.pid),
-          eq(
-            nativeRunFinalizations.controllerProcessStartedAt,
-            controller.processStartedAt,
-          ),
-          gt(nativeRunFinalizations.leaseExpiresAt, sql`now()`),
-        ),
-      )
-      .returning({ runId: nativeRunFinalizations.runId })
-      .then((rows) => rows[0] ?? null);
-  }));
-  if (!released) throw new Error("native_session_lease_lost");
   const finalization: NativeFinalizationResult = {
     schema: "paperclip.native-finalization.v1",
     runtimeMode: "native",
@@ -11215,45 +11272,6 @@ async function executePaperclipNativeSessionWithinScope(
     highestContiguousSourceSeq: native.highestContiguousSourceSeq,
     workspaceFinalizeStatus: "pending",
   };
-  // A following run cannot attach until the prior run's durable finalization
-  // is committed. Provider completion alone is not an authority boundary.
-  if (warmSessionId !== null && lifecyclePolicy.mode === "warm") {
-    // A structured failed/cancelled result completes the protocol without
-    // throwing. Heartbeat still stops its sandbox, so retire the provider now
-    // while its transport can collect files and checkpoint the suspended runner.
-    // Leaving it in the warm map makes the next turn retire a stopped transport.
-    // A different agent may next use this same task workspace. Persist this
-    // agent's session checkpoint, then close its provider process before the
-    // heartbeat release proof. Returning later resumes its own saved session.
-    const retainSession = native.terminal.runTerminalState === "succeeded" && native.result.continuation?.kind !== "case_handoff";
-    const instructionCopy = input.instructionWorkingCopy;
-    const ownedSession = warmNativeSessions.get(warmSessionId);
-    let collectInstructions: boolean;
-    try {
-      collectInstructions = Boolean(instructionCopy && ownedSession?.ownerToken === warmSessionOwnerToken &&
-        (instructionCopy.checkpointWarm ? !await timeController("instruction_checkpoint", () => instructionCopy.checkpointWarm!()) : await timeController("instruction_changes", () => instructionCopy.hasChanges())));
-    } catch (error) {
-      // A checkpoint or its receipt callback can reject. Retire this owner
-      // before heartbeat stops the sandbox, preserving the initiating error.
-      await releaseWarmNativeSession(warmSessionId, warmSessionOwnerToken, lifecyclePolicy.idleTimeoutMs, true)
-        .catch(() => undefined);
-      throw error;
-    }
-    const collectedByOwner = ownedSession?.instructionCopy?.collectStopped === instructionCopy?.collectStopped
-      || ownedSession?.instructionWorkingCopy?.collectStopped === instructionCopy?.collectStopped;
-    if (collectInstructions && ownedSession) {
-      // Keep the unchanged warm path intact. A changed private instruction copy
-      // requires the existing checkpoint-and-close boundary before collection.
-      ownedSession.closeOnReleaseReason = "registered instruction edits require stopped-provider collection";
-    }
-    await timeController("warm_release", () => releaseWarmNativeSession(
-      warmSessionId,
-      warmSessionOwnerToken,
-      lifecyclePolicy.idleTimeoutMs,
-      !retainSession,
-    ));
-    if (collectInstructions && !collectedByOwner) await timeController("instruction_collection", () => instructionCopy!.collectStopped());
-  }
   const providerFailure = providerFailureObservation.forTerminal(native.turnId, native.terminal);
   const providerExplanation = providerFailureObservation.providerFailureForTerminal(native.turnId, native.terminal);
   // Keep the generic failure behavior, but record why the turn failed.
