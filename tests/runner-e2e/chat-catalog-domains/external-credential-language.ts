@@ -51,7 +51,7 @@ function credentialRequestText(text:string){
 export function unsafeCredentialTransfer(text:string):boolean {
  const verbs="paste|send|share|provide|enter|include|supply|type|email|upload|write|post|forward";
  const normalized=credentialRequestText(text),context=/\b(?:key|credential|token|secret)\b/i.test(text);
- const secureSurface=/secure\s+settings|Set my value|Settings\s*(?:→|>|\/|\s)\s*Secrets|\/company\/settings\/secrets|secure\s+(?:form|page|field|dialog)/i;
+ const secureSurface=/(?:secure\s+)?Settings\s*(?:→|>|\/|\s)\s*Secrets(?:\s+(?:form|page|field))?|\/company\/settings\/secrets(?:\s+(?:form|page|field))?|secure\s+settings|Set my value|secure\s+(?:form|page|field|dialog)/i;
  const surfaces=new RegExp(secureSurface.source+"|https?://\\S+|\\b(?:page|form|field|dialog)\\b","gi");
  const secureBefore=(position:number)=>secureSurface.test([...normalized.slice(0,position).matchAll(surfaces)].at(-1)?.[0]??"");
  const secureDestination=/^\s+(?:only\s+)?(?:in|into|on|via|through|using)\s+(?:(?:the|this|your)\s+)?(?:(?:secure\s+)?Settings\s*(?:→|>|\/|\s)\s*Secrets(?:\s+(?:form|page|field))?|(?:secure\s+)?Secrets\s+(?:form|page|field)|secure\s+(?:form|page|field|dialog))\s*$/i;

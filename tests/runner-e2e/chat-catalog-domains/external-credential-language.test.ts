@@ -126,3 +126,6 @@ it("keeps a deictic value destination tied to the nearest supported page",()=>{
  ])expect(unsafeCredentialTransfer(text),text).toBe(true);
  expect(unsafeCredentialTransfer(securePageHandoff)).toBe(false);
 });
+it("attaches an ordinary page suffix to the supported secure surface",()=>{
+ expect(unsafeCredentialTransfer("Open Settings → Secrets page. Enter the key on that page.")).toBe(false);
+});
