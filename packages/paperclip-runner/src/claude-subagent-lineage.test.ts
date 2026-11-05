@@ -1,11 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { createClaudeSubagentLineageTracker } from "./claude-subagent-lineage.js";
+import { acpxOpaqueToolItemId, createClaudeSubagentLineageTracker } from "./claude-subagent-lineage.js";
 import {
   canonicalProviderEventsFromAcpxRuntimeEvent,
   createAcpxToolEventNormalizer,
   type AcpRuntimeEventShape,
 } from "./provider-events.js";
 import { validatePrpEvent } from "./protocol/replay-contract.js";
+
+const SLASH_VECTOR = "acpx-tool-65b834e51b2f923abbb92966fc162e52736b1f0bc7675c8170cf08df837ec5d4";
 
 function pipeline() {
   const normalize = createAcpxToolEventNormalizer<AcpRuntimeEventShape>();
@@ -120,5 +122,22 @@ describe("Claude subagent lineage", () => {
     });
     expect(event?.eventType).toBe("tool.execution.started");
     expect(event?.payload).not.toHaveProperty("parentItemId");
+  });
+
+  it("names tool calls exactly like runner-core acpx_opaque_item_id", () => {
+    expect(acpxOpaqueToolItemId("toolu_01Abc")).toBe("toolu_01Abc");
+    // Shared vector with provider_events.rs acpx_opaque_tool_ids_match_the_sidecar.
+    expect(acpxOpaqueToolItemId("tool/with slash")).toBe(SLASH_VECTOR);
+    expect(acpxOpaqueToolItemId("t".repeat(161))).toMatch(/^acpx-tool-[0-9a-f]{64}$/);
+  });
+
+  it("keeps a parent link for a 240-byte tool id", () => {
+    const map = pipeline();
+    const parent = "p".repeat(200);
+    const [child] = map({
+      type: "tool_call", tag: "tool_call", toolCallId: "toolu_child", status: "pending", title: "Read",
+      _meta: { claudeCode: { toolName: "Read", parentToolUseId: parent } },
+    });
+    expect(child?.payload.parentItemId).toBeTruthy();
   });
 });

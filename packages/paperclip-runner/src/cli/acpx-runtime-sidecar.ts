@@ -28,7 +28,7 @@ import type {
 import { acpxProfileClientCapabilities, bindAcpxExtensionTurn, validateAcpxRichEvent, createAcpxProfileExtensionAdapter, type AcpxExtensionInput } from "../drivers/acpx/profile-extensions.js";
 import type { PaperclipQuestionSet } from "../contracts/question-set.js";
 import { boundedAcpMeta, canonicalProviderEventsFromAcpxRuntimeEvent, type AcpRuntimeEventShape, createAcpxToolEventNormalizer, createGrokMessageNormalizer } from "../provider-events.js";
-import { createClaudeSubagentLineageTracker } from "../claude-subagent-lineage.js";
+import { acpxOpaqueToolItemId, createClaudeSubagentLineageTracker } from "../claude-subagent-lineage.js";
 import { createPiMessageProjection, type PiProjectedMessageEvent } from "../drivers/acpx/pi-message-projection.js";
 import { createKimiMessageProjection, type KimiProjectedMessageEvent } from "../drivers/acpx/kimi-message-boundary.js";
 import { parseNativeRuntimeContext } from "../contracts/runtime-context.js";
@@ -705,7 +705,11 @@ async function pumpTurn(
       if (lineage?.paperclipParentToolCallId) sanitized.parentToolCallId = lineage.paperclipParentToolCallId;
       emit("runtime.event", sanitized, currentTurnId);
       if (lineage?.paperclipSubagent) {
-        for (const rich of canonicalProviderEventsFromAcpxRuntimeEvent(lineage, `${currentTurnId}:subagent`, currentTurnId)) {
+        // Rust names the tool call (and each child's parentItemId) with
+        // acpx_opaque_item_id; the delegation must use the same identity.
+        const delegationId = acpxOpaqueToolItemId(String(sanitized.toolCallId));
+        for (const mapped of canonicalProviderEventsFromAcpxRuntimeEvent(lineage, `${currentTurnId}:subagent`, currentTurnId)) {
+          const rich = withDelegationIdentity(mapped, delegationId);
           try {
             validateAcpxRichEvent(rich);
             emit("runtime.rich_event", { ...rich }, currentTurnId);
@@ -1043,6 +1047,18 @@ type BoundedRuntimeToolEvent = AcpRuntimeEvent & {
   inputUpdated: boolean;
   paperclipOutput: Record<string, unknown>;
 };
+
+/** Re-key a single-child delegation event to the Rust tool identity. */
+function withDelegationIdentity(
+  event: ReturnType<typeof canonicalProviderEventsFromAcpxRuntimeEvent>[number],
+  id: string,
+): ReturnType<typeof canonicalProviderEventsFromAcpxRuntimeEvent>[number] {
+  if (event.payload.schema !== "paperclip.delegation.v1") return event;
+  const children = Array.isArray(event.payload.children)
+    ? event.payload.children.map((child) => ({ ...(child as Record<string, unknown>), childId: id }))
+    : [];
+  return { ...event, itemId: id, payload: { ...event.payload, delegationId: id, children } };
+}
 
 function boundRuntimeEventForNormalization(
   event: AcpRuntimeEvent,

@@ -1859,6 +1859,16 @@ mod tests {
     }
 
     #[test]
+    fn acpx_opaque_tool_ids_match_the_sidecar() {
+        // Shared vector with claude-subagent-lineage.test.ts acpxOpaqueToolItemId.
+        assert_eq!(acpx_opaque_item_id("toolu_01Abc", "", "tool"), "toolu_01Abc");
+        assert_eq!(
+            acpx_opaque_item_id("tool/with slash", "", "tool"),
+            "acpx-tool-65b834e51b2f923abbb92966fc162e52736b1f0bc7675c8170cf08df837ec5d4"
+        );
+    }
+
+    #[test]
     fn links_a_subagent_child_tool_to_its_parent_call() {
         let events = normalize_acpx_runtime_event(
             AcpxRuntimeEventKind::ToolCall,

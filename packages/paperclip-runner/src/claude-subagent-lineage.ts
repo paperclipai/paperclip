@@ -23,6 +23,7 @@
  * `paperclipParentToolCallId` (child call). The canonical mapper reads only
  * those annotations. All values are producer hints and grant no authority.
  */
+import { createHash } from "node:crypto";
 import type { AcpRuntimeEventShape } from "./provider-events.js";
 
 export type AcpxSubagentState = "running" | "completed" | "failed" | "interrupted";
@@ -48,7 +49,8 @@ export interface AcpxSubagentAnnotations {
 
 const SUBAGENT_TOOL_NAMES = new Set(["agent", "task"]);
 const MAX_TRACKED = 256;
-const MAX_ID_BYTES = 160;
+// Matches the sidecar tool identity bound (MAX_RUNTIME_ITEM_ID_CHARS in Rust).
+const MAX_ID_BYTES = 240;
 
 function record(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
@@ -95,6 +97,20 @@ function subagentState(value: unknown): AcpxSubagentState | null {
   if (status === "failed" || status === "error") return "failed";
   if (["killed", "stopped", "cancelled", "canceled"].includes(status)) return "interrupted";
   return null;
+}
+
+/**
+ * runner-core's `acpx_opaque_item_id(value, _, "tool")`: the PRP item id Rust
+ * gives an ACPX tool call (and a child's `parentItemId`). The sidecar uses it
+ * for delegation ids so a parent and its children always agree.
+ */
+export function acpxOpaqueToolItemId(value: string): string {
+  if (/^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(value) && Buffer.byteLength(value) <= 160) return value;
+  const digest = createHash("sha256")
+    .update("paperclip.acpx.opaque-item.v1\0tool\0")
+    .update(value)
+    .digest("hex");
+  return `acpx-tool-${digest}`;
 }
 
 function boundedId(value: unknown): string | null {
