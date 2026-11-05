@@ -204,6 +204,7 @@ import {
   verifyToolArgumentsSignature,
 } from "./tool-content-guards.js";
 import { extendApprovedExecutionWaitDeadline } from "./approved-execution-wait.js";
+import { classifyProviderToolFailure } from "./tool-access/github-permission-errors.js";
 
 const DEFAULT_SESSION_TTL_MS = 15 * 60 * 1000;
 const MAX_SESSION_TTL_MS = 60 * 60 * 1000;
@@ -7662,8 +7663,13 @@ export function createToolGatewayService(
       });
       const providerResult = asRecord(resultValidation.value);
       if (providerResult?.error) {
-        throw new ToolGatewayHttpError(502, String(providerResult.content || providerResult.error),
-          "tool_error", { execution: connectedMcpExecution.execution });
+        const failure = classifyProviderToolFailure({
+          message: String(providerResult.content || providerResult.error),
+          reasonCode: "tool_error",
+          upstreamToolName: args.tool.upstreamToolName,
+        });
+        throw new ToolGatewayHttpError(502, failure.message, failure.reasonCode,
+          { execution: connectedMcpExecution.execution });
       }
     } catch (err) {
       const status = err instanceof ToolGatewayHttpError ? err.status : 502;
@@ -8468,12 +8474,14 @@ export function createToolGatewayService(
                   );
                 })();
       const resultRecord = asRecord(result);
-      if (resultRecord?.error)
-        throw new ToolGatewayHttpError(
-          502,
-          String(resultRecord.content || resultRecord.error),
-          "tool_execution_failed",
-        );
+      if (resultRecord?.error) {
+        const failure = classifyProviderToolFailure({
+          message: String(resultRecord.content || resultRecord.error),
+          reasonCode: "tool_execution_failed",
+          upstreamToolName: tool.upstreamToolName,
+        });
+        throw new ToolGatewayHttpError(502, failure.message, failure.reasonCode);
+      }
       const resultValidation = await validateToolContent({
         value: result,
         direction: "result",
@@ -11202,10 +11210,15 @@ export function createToolGatewayService(
           ? asRecord(resultValidation.value)
           : null;
         if (validatedMcpResult?.error) {
+          const failure = classifyProviderToolFailure({
+            message: String(validatedMcpResult.content || validatedMcpResult.error),
+            reasonCode: "tool_error",
+            upstreamToolName: tool.upstreamToolName,
+          });
           throw new ToolGatewayHttpError(
             502,
-            String(validatedMcpResult.content || validatedMcpResult.error),
-            "tool_error",
+            failure.message,
+            failure.reasonCode,
             { execution: connectedMcpExecution?.execution },
           );
         }

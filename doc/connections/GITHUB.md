@@ -154,6 +154,18 @@ refresh instead of presenting a stale list. The page links to GitHub's
 installation management page. Selected repositories are recommended; all-
 repository access retains its warning.
 
+### GitHub App permission refusals
+
+GitHub answers `403 Resource not accessible by integration` when the GitHub App
+token lacks the GitHub permission or repository selection an operation needs,
+for example `create_repository` on an account where the App cannot create
+repositories. Approving the action in Paperclip cannot grant that permission.
+The gateway records such failures as `github_app_permission_denied`, with
+next steps on the approval card and in the agent's wake. For repository
+creation, the next steps are: create the repository on GitHub, give the App
+access to it, select **Refresh access**, and have the agent use the existing
+repository. GitHub's original error text stays at the end of the message.
+
 Fresh local test-drives use production Paperclip Cloud. Instance enrollment
 and provider enablement are separate: enrollment alone does not enable GitHub
 OAuth. Production must advertise the `github.code` profile (see Cloud's

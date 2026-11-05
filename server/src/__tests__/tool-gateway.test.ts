@@ -3381,6 +3381,105 @@ rl.on("line", (line) => {
     }
   });
 
+  it("turns GitHub's integration 403 on an approved repository create into actionable guidance (BUG-10)", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { issue, run } = await createIssueAndRun(db, company.id, agent.id);
+    // Recovered from staging (ONB-3, action request 2f92393c): the approved
+    // create ran with the connection's GitHub App user token and GitHub
+    // answered with its integration-permission 403.
+    const githubError =
+      "failed to create repository: POST https://api.github.com/user/repos: 403 Resource not accessible by integration []";
+    const fake = await startFakeRemoteMcpServer((fakeRequest) => ({
+      body: {
+        jsonrpc: "2.0",
+        id: fakeRequest.body?.id,
+        result: { content: [{ type: "text", text: githubError }], isError: true },
+      },
+    }));
+
+    try {
+      const remoteTool = await createRemoteMcpTool(db, company.id, {
+        toolName: "create_repository",
+        url: fake.url,
+        riskLevel: "write",
+      });
+      const toolName = expectedConnectedToolName({
+        applicationKey: remoteTool.application.applicationKey,
+        connectionId: remoteTool.connection.id,
+        toolName: remoteTool.catalogEntry.toolName,
+      });
+      await allowToolsForAgent(db, company.id, agent.id, [toolName]);
+      await db.insert(toolPolicies).values({
+        companyId: company.id,
+        name: "Review repository creation",
+        policyType: "require_approval",
+        selectors: { connectionId: remoteTool.connection.id },
+        priority: 10,
+      });
+
+      const gateway = createTestToolGatewayService(db);
+      const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+      await gateway.executeTool({
+        sessionToken: session.token,
+        tool: toolName,
+        parameters: { name: "brainrot-storefront-prototype", private: true, autoInit: false },
+      }).then(
+        () => {
+          throw new Error("Expected repository creation to require approval");
+        },
+        (error) => expectGatewayError(error, 409, "approval_required"),
+      );
+
+      const [actionRequest] = await db
+        .select()
+        .from(toolActionRequests)
+        .where(eq(toolActionRequests.companyId, company.id));
+      await gateway.approveActionRequest({
+        companyId: company.id,
+        issueId: issue.id,
+        interactionId: actionRequest.interactionId!,
+        actionRequestId: actionRequest.id,
+        actor: { userId: "board-user" },
+      });
+
+      expect(fake.requests.some((req) => req.body?.method === "tools/call")).toBe(true);
+      const [failedRequest] = await db
+        .select()
+        .from(toolActionRequests)
+        .where(eq(toolActionRequests.id, actionRequest.id));
+      expect(failedRequest.status).toBe("failed");
+      const [failedInvocation] = await db
+        .select()
+        .from(toolInvocations)
+        .where(eq(toolInvocations.id, actionRequest.invocationId));
+      const [interaction] = await db
+        .select()
+        .from(issueThreadInteractions)
+        .where(eq(issueThreadInteractions.id, actionRequest.interactionId!));
+      const toolAction = (interaction.result as { toolAction?: Record<string, unknown> } | null)?.toolAction;
+
+      for (const outcome of [
+        { errorCode: failedInvocation.errorCode, errorMessage: failedInvocation.errorMessage },
+        { errorCode: toolAction?.errorCode, errorMessage: toolAction?.errorMessage },
+      ]) {
+        expect(outcome.errorCode).toBe("github_app_permission_denied");
+        const message = String(outcome.errorMessage);
+        // Says what went wrong in product terms, not just GitHub's raw text.
+        expect(message).toMatch(/GitHub App .* not allowed to create repositories/i);
+        // Approving again cannot fix it: the permission lives on GitHub.
+        expect(message).toMatch(/approving .* cannot grant/i);
+        // Gives concrete next steps the person can take.
+        expect(message).toMatch(/github\.com\/new/);
+        expect(message).toMatch(/Refresh access/);
+        // Keeps the provider evidence for support.
+        expect(message).toContain("403 Resource not accessible by integration");
+      }
+    } finally {
+      await fake.close();
+    }
+  });
+
   it("does not expire a managed-connector provider execution already in flight", async () => {
     const company = await createCompany(db);
     const agent = await createAgent(db, company.id);
