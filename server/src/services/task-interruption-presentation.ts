@@ -1,5 +1,5 @@
 import { and, desc, eq, inArray, isNull, sql, type SQL } from "drizzle-orm";
-import { agents, agentWakeupRequests, approvals, companies, heartbeatRuns, issueApprovals, issueRecoveryActions,
+import { agents, agentWakeupRequests, approvals, chatActions, companies, heartbeatRuns, issueApprovals, issueRecoveryActions,
   issues, issueTreeHoldMembers, issueTreeHolds, projects, type Db } from "@paperclipai/db";
 import { unionAll } from "drizzle-orm/pg-core";
 import { HEARTBEAT_RUN_STATUSES, readProviderFailure, type TaskInterruptionPresentation } from "@paperclipai/shared";
@@ -14,15 +14,20 @@ import { createRunSecretRedactionRegistry } from "./run-secret-redaction.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { redactCurrentUserText } from "../log-redaction.js";
 import { logger } from "../middleware/logger.js";
+import { canonicalExecutionUuid } from "./execution-identity.js";
+import { chatActionDeadline } from "./chat-action-work.js";
 
 type ProjectionIssue = Pick<typeof issues.$inferSelect, "id" | "companyId" | "status" | "assigneeAgentId" | "projectId">;
 type ProjectionRun = Pick<typeof heartbeatRuns.$inferSelect,
   "id" | "status" | "scheduledRetryAt" | "errorCode" | "livenessState" | "resultJson"> &
   Partial<Pick<typeof heartbeatRuns.$inferSelect, "agentId" | "error" | "companyId" | "nativeIssueId" | "runtimeMode">>;
+type ProjectionWait = { id: string; requestedAt: Date; sourceRunId?: string | null; executionWaitReason?: string | null;
+  preparationStatus?: string | null; preparationRetryAt?: number | string | null };
 type ProjectionState = {
   run?: ProjectionRun;
   action?: typeof issueRecoveryActions.$inferSelect;
-  wait?: { id: string; requestedAt: Date };
+  wait?: ProjectionWait;
+  retryWait?: ProjectionWait;
   agent?: Pick<typeof agents.$inferSelect, "status" | "pauseReason">;
   projectAccessAllowed?: boolean;
   projectAccessProjectId?: string | null;
@@ -34,8 +39,26 @@ type ProjectionState = {
 };
 
 function boundedJsonString(value: SQL, limit: number) {
-  return sql`case when jsonb_typeof(${value}) = 'string' then left(${value} #>> '{}', ${limit}) else null end`;
+  return sql<string | null>`case when jsonb_typeof(${value}) = 'string' then left(${value} #>> '{}', ${limit}) else null end`;
 }
+
+// Persisted wait messages can contain diagnostics. Ordinary task views expose
+// only these stable categories, never arbitrary payloads or source identifiers.
+const retryWaitMessages: Record<string, string> = {
+  workspace_repair_required: "Retry is waiting for Paperclip to recover the saved files. Your message is saved.",
+  remote_cleanup: "Retry is waiting for the previous environment to stop. Your message is saved.",
+  local_cleanup: "Retry is waiting for the previous execution to finish cleanup. Your message is saved.",
+  cleanup_pending: "Retry is waiting for the previous execution to finish cleanup. Your message is saved.",
+  execution_settling: "Retry is waiting for the previous execution to stop. Your message is saved.",
+  controller_settling: "Retry is waiting for the previous execution to finish recovery. Your message is saved.",
+  process_identity_missing: "Retry is waiting for Paperclip to verify that the previous execution stopped. Your message is saved.",
+  process_running: "Retry is waiting for the previous execution to stop. Your message is saved.",
+  execution_active: "Retry is waiting for the current run to finish. Your message is saved.",
+  decision_pending: "Retry is waiting for a pending approval or question to be resolved. Your message is saved.",
+  finalizing_saved_result: "Paperclip is finishing the saved result before Retry can continue.",
+  cleanup_quarantined: "Retry cannot continue this attempt. Send a new message after the previous execution has stopped.",
+  cancelled_by_operator: "This attempt was stopped. Send a new message to continue from saved work.",
+};
 
 /** Recognize old persisted failures without displaying arbitrary run error text. */
 function deniedProjectId(issue: ProjectionIssue, run?: ProjectionRun): string | null | undefined {
@@ -51,6 +74,7 @@ function deniedProjectId(issue: ProjectionIssue, run?: ProjectionRun): string | 
  * locks. The same projection is used in detail, lists and attention surfaces. */
 export function projectTaskInterruption(issue: ProjectionIssue, input: ProjectionState, now = Date.now()): TaskInterruptionPresentation | null {
   const { run, wait, action, agent, project, company } = input;
+  const retryWait = input.retryWait ?? wait;
   if (!run) return null;
   const system = readSystemRecovery(action?.evidence);
   const base: TaskInterruptionPresentation = { intentId: wait?.id ?? null, responsibility: "system",
@@ -84,12 +108,25 @@ export function projectTaskInterruption(issue: ProjectionIssue, input: Projectio
     if (!ready) return { ...base, responsibility: "user", state: "waiting_for_user",
       userAction: "project_access", projectAccess };
   }
+  if (retryWait?.sourceRunId === run.id && retryWait.preparationStatus) {
+    const deadline = retryWait.preparationRetryAt == null ? NaN : Number(retryWait.preparationRetryAt);
+    if (["issued", "processing"].includes(retryWait.preparationStatus) && Number.isFinite(deadline))
+      return { ...base, state: "retry_scheduled", nextRetryAt: new Date(deadline).toISOString() };
+    return { ...base, state: "failed", canRetry: retryWait.preparationStatus !== "cancelled" };
+  }
   const retryAt = system?.nextAttemptAt ?? run.scheduledRetryAt?.getTime();
   if (retryAt && retryAt > now) return { ...base, state: "retry_scheduled",
     nextRetryAt: new Date(retryAt).toISOString(), canRetry: true };
   const activeObservation = action?.evidence.systemRecoveryActiveAt;
   if (system?.state === "running" && typeof activeObservation === "number" &&
       activeObservation > now - 45_000) return { ...base, state: "working" };
+  if (retryWait?.sourceRunId === run.id && retryWait.executionWaitReason) {
+    const reason = Object.hasOwn(retryWaitMessages, retryWait.executionWaitReason) ? retryWait.executionWaitReason : "execution_recovery";
+    // Keep the latest input receipt so message submission can settle independently.
+    return { ...base, state: "failed",
+      canRetry: !["cleanup_quarantined", "cancelled_by_operator"].includes(reason), retryWait: { reason,
+      message: retryWaitMessages[reason] ?? "Retry is waiting for execution checks. Your message is saved." } };
+  }
   if (wait && wait.requestedAt.getTime() > now - 10_000 && system?.state !== "exhausted")
     return { ...base, state: "working" };
   return { ...base, state: "failed", canRetry: true, ...(projectAccess ? { projectAccess } : {}) };
@@ -118,6 +155,7 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
   const latestRuns = db.select({ id: candidates.id }).from(candidates)
     .orderBy(desc(candidates.createdAt), desc(candidates.id)).limit(1).as("latest_interruption_runs");
   const wakeIssue = sql<string>`${agentWakeupRequests.payload}->>'issueId'`;
+  const isRetryWait = sql<boolean>`coalesce(jsonb_typeof(${agentWakeupRequests.payload}#>'{taskRetry,sourceRunId}') = 'string', false)`;
   const agentIds = selected.flatMap(issue => issue.assigneeAgentId ? [issue.assigneeAgentId] : []);
   const projectIds = selected.flatMap(issue => issue.projectId ? [issue.projectId] : []);
   const [runs, waits, agentRows, projectRows, pauseRows, approvalRows, companyRows] = await Promise.all([
@@ -148,10 +186,22 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
     }).from(requested).innerJoinLateral(latestRuns, sql`true`).innerJoin(heartbeatRuns, and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.id, latestRuns.id)))
       .leftJoin(agents, and(eq(agents.companyId, heartbeatRuns.companyId), eq(agents.id, heartbeatRuns.agentId)))
       .orderBy(requestedIssueId),
-    db.selectDistinctOn([wakeIssue], { issueId: wakeIssue, id: agentWakeupRequests.id, requestedAt: agentWakeupRequests.requestedAt })
-      .from(agentWakeupRequests).where(and(eq(agentWakeupRequests.companyId, companyId), inArray(wakeIssue, ids),
+    // Keep at most two candidates per task: latest Retry and latest other input.
+    // A new message must not hide an existing Retry's admission explanation.
+    db.selectDistinctOn([wakeIssue, isRetryWait], { issueId: wakeIssue, id: agentWakeupRequests.id, requestedAt: agentWakeupRequests.requestedAt,
+      sourceRunId: boundedJsonString(sql`${agentWakeupRequests.payload}#>'{taskRetry,sourceRunId}'`, 160),
+      executionWaitReason: boundedJsonString(sql`${agentWakeupRequests.payload}#>'{executionWait,reason}'`, 80),
+      preparationStatus: chatActions.status, preparationRetryAt: chatActionDeadline("failed_run_retry") })
+      .from(agentWakeupRequests).leftJoin(chatActions, and(eq(chatActions.companyId, agentWakeupRequests.companyId),
+        eq(chatActions.id, canonicalExecutionUuid(sql`${agentWakeupRequests.payload}#>>'{taskRetry,chatActionId}'`)),
+        eq(chatActions.kind, "failed_run_retry"), sql`${chatActions.payload}->>'taskRetryIntentId' = ${agentWakeupRequests.id}::text`,
+        sql`${chatActions.payload}->>'issueId' = ${wakeIssue}`,
+        sql`${chatActions.payload}->>'agentId' = ${agentWakeupRequests.agentId}::text`,
+        sql`${chatActions.payload}->>'failedRunId' = ${agentWakeupRequests.payload}#>>'{taskRetry,sourceRunId}'`,
+        inArray(chatActions.status, ["issued", "processing", "failed", "cancelled"])))
+      .where(and(eq(agentWakeupRequests.companyId, companyId), inArray(wakeIssue, ids),
         eq(agentWakeupRequests.status, "deferred_issue_execution"), eq(agentWakeupRequests.requestedByActorType, "user")))
-      .orderBy(wakeIssue, desc(agentWakeupRequests.requestedAt)),
+      .orderBy(wakeIssue, isRetryWait, desc(agentWakeupRequests.requestedAt), desc(agentWakeupRequests.id)),
     agentIds.length ? db.select({ id: agents.id, status: agents.status, pauseReason: agents.pauseReason }).from(agents)
       .where(and(eq(agents.companyId, companyId), inArray(agents.id, agentIds))) : [],
     projectIds.length ? db.select({ id: projects.id, pausedAt: projects.pausedAt, pauseReason: projects.pauseReason }).from(projects)
@@ -173,7 +223,13 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
     sql`${issueRecoveryActions.evidence} ? 'systemRecovery'`,
   )).orderBy(issueRecoveryActions.sourceIssueId, desc(issueRecoveryActions.createdAt)) : [];
   const byIssue = <T extends { issueId: string }>(rows: T[]) => new Map(rows.map(row => [row.issueId, row]));
-  const runMap = byIssue(runs), waitMap = byIssue(waits);
+  const runMap = byIssue(runs), waitMap = new Map<string, typeof waits[number]>();
+  const retryWaitMap = byIssue(waits.filter(wait => wait.sourceRunId));
+  for (const wait of waits) {
+    const current = waitMap.get(wait.issueId);
+    if (!current || wait.requestedAt > current.requestedAt ||
+        (wait.requestedAt.getTime() === current.requestedAt.getTime() && wait.id > current.id)) waitMap.set(wait.issueId, wait);
+  }
   // Recheck current authority, including standard trust, root-issue grants and
   // project policy. Do not reuse the failed run's frozen policy for a new retry.
   // Only denied tasks need these reads; deduplicate projects and batch per agent.
@@ -205,7 +261,7 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
     const required = requirements.get(issue.id);
     const denied = required?.projectIds.filter(projectId => currentAccess.get(`${issue.assigneeAgentId}:${projectId}`) !== true);
     const presentation = projectTaskInterruption(issue, {
-      run: runMap.get(issue.id), action: actionMap.get(issue.id), wait: waitMap.get(issue.id),
+      run: runMap.get(issue.id), action: actionMap.get(issue.id), wait: waitMap.get(issue.id), retryWait: retryWaitMap.get(issue.id),
       projectAccessAllowed: denied?.length === 0,
       projectAccessProjectId: denied?.includes(issue.projectId ?? "") ? issue.projectId : null,
       workspaceSelectionAvailable: required?.available ?? false,

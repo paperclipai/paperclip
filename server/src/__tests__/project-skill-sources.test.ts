@@ -664,9 +664,10 @@ describe.skipIf(!support.supported)('automatic project skill sources', () => {
     const sourceId = ready!.sourceId!;
     const service = skillSourceService(db);
     const original = await service.detail(companyId, sourceId);
-    const failure: SkillSourceContext = { ...context, read: () => (async () => {
+    const rateLimited = async () => {
       throw unprocessable('GitHub request limit reached.', { retryAfterMs: 7_200_000 });
-    }) as ReturnType<SkillSourceContext['read']> };
+    };
+    const failure: SkillSourceContext = { ...context, read: () => Object.assign(rateLimited, { openSnapshot: rateLimited }) };
     const failedAt = new Date();
     await db.update(companySkillSources).set({ nextSyncAt: failedAt }).where(eq(companySkillSources.id, sourceId));
     await skillSourceSyncService(db, { context: async () => failure }).tick(failedAt);

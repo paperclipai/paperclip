@@ -28,12 +28,13 @@ describe.skipIf(!support.supported)("environment cleanup scheduling", () => {
   let companyId: string, environmentId: string, draining: boolean, failing: boolean;
   let coordinator: ReturnType<typeof createDeliveryWorkCoordinator> | undefined;
   let worker: ReturnType<typeof registerEnvironmentCleanupWork> | undefined;
-  let releases: ReturnType<typeof vi.fn>, inspections: ReturnType<typeof vi.fn>, reads: ReturnType<typeof vi.spyOn>;
+  let releases: ReturnType<typeof vi.fn>, reads: ReturnType<typeof vi.spyOn>;
+  let inspections: ReturnType<typeof vi.fn<(row: { providerLeaseId: string | null }) => Promise<{ providerLeaseId: string | null; state: string }>>>;
   const errors: unknown[] = [], disposers: Array<() => void> = [];
   beforeAll(async () => {
     if (!external) database = await startEmbeddedPostgresTestDatabase("environment-cleanup-work-");
-    db = createDb(external ?? database!.connectionString, { maxConnections: 6, idleTimeoutSeconds: 0, maxLifetimeSeconds: 0 });
-    await Promise.all(Array.from({ length: 6 }, () => db.execute(sql`select pg_sleep(0.01)`)));
+    db = createDb(external ?? database!.connectionString, { maxConnections: 4, idleTimeoutSeconds: 0, maxLifetimeSeconds: 0 });
+    await Promise.all(Array.from({ length: 4 }, () => db.execute(sql`select pg_sleep(0.01)`)));
   }, 90_000);
   beforeEach(async () => {
     await db.execute(sql`TRUNCATE sandbox_creation_operations, companies, environments CASCADE`);
@@ -48,6 +49,9 @@ describe.skipIf(!support.supported)("environment cleanup scheduling", () => {
   afterEach(async () => {
     worker?.stop(); await coordinator?.stop(); coordinator = undefined; worker = undefined;
     for (const stop of disposers.splice(0)) stop();
+    // Creation ownership intentionally survives company deletion; company
+    // cascades therefore cannot isolate this case from the next test suite.
+    await db.delete(sandboxCreationOperations).where(eq(sandboxCreationOperations.companyId, companyId));
     vi.useRealTimers(); vi.restoreAllMocks();
     expect(errors).toEqual([]);
   });
@@ -61,12 +65,13 @@ describe.skipIf(!support.supported)("environment cleanup scheduling", () => {
     let historySettled = !history;
     worker = registerEnvironmentCleanupWork(db, coordinator, {
       sweepPending: sweepOverride ?? (backoffMs => heartbeat.sweepPendingCleanupLeases({ backoffMs })),
-      historical: history ? { hasPending: history.hasPending,
+      historical: history ? { hasPending: () => history.hasPending(),
         sweep: async () => { const result = await history.sweep(); historySettled = true; return result; } } : undefined,
       canRun: () => !draining,
     });
     await worker.ready;
     await vi.waitFor(() => expect(historySettled).toBe(true));
+    return history || undefined;
   }
   async function settle(ms = 30_000, wait = true) {
     await vi.advanceTimersByTimeAsync(ms);
@@ -116,7 +121,7 @@ describe.skipIf(!support.supported)("environment cleanup scheduling", () => {
     ]));
     await quiet();
   });
-  it.each([false, true])("settles a deleted-company creation as manual history across restart without idle polling (contextual=%s)", async contextual => {
+  it.each([false, true])("retains deleted-company creation uncertainty across a quiet worker restart (contextual=%s)", async contextual => {
     await start(); await quiet();
     const created = await createOwnedSandbox(db, { companyId, environmentId, provider: "fixture", driverKey: "fixture", config: {},
       metadata: contextual ? { runnerTaskLease: true, runnerTaskCreationContextId: randomUUID() } : {} },
@@ -126,8 +131,11 @@ describe.skipIf(!support.supported)("environment cleanup scheduling", () => {
     await vi.waitFor(async () => expect(await db.select().from(sandboxCreationOperations)).toEqual([
       expect.objectContaining({ state: "needs_reconciliation", metadata: expect.objectContaining({ creationReconciliationReason: "company_deleted" }) }),
     ]));
-    if (contextual) await recordSandboxCreationResource(db, { id: String(created.metadata!.creationOperationId), companyId, environmentId,
-      providerLeaseId: created.providerLeaseId });
+    if (contextual) {
+      if (!created.providerLeaseId) throw new Error("Fixture creation returned no provider lease identity");
+      await recordSandboxCreationResource(db, { id: String(created.metadata!.creationOperationId), companyId, environmentId,
+        providerLeaseId: created.providerLeaseId });
+    }
     await quiet();
     worker!.stop(); await coordinator!.stop();
     await start(); await quiet();
@@ -135,8 +143,83 @@ describe.skipIf(!support.supported)("environment cleanup scheduling", () => {
     const ownerId = randomUUID();
     const hold = { ownerId, draining: true, startedAt: new Date(Date.now() - 1000), expiresAt: new Date(Date.now() + 60_000), activeRuns: 0, pendingWakes: 0 };
     expect(await readIdleSleepSafety(db, () => hold, Date.now, ownerId, async () => "none"))
-      .toEqual({ version: 1, backgroundWork: "none" });
+      .toEqual({ version: 1, backgroundWork: "present" });
     await quiet();
+  });
+  it("discharges an empty historical metadata notification during provider spacing", async () => {
+    const lease = await pending();
+    await environmentService(db).releaseLease(lease.id, "released", { cleanupStatus: "success" });
+    const history = await start(true);
+    await settle(30_000);
+    expect(await history!.hasPending()).toBe(false);
+    const checked = inspections.mock.calls.length;
+    await environmentService(db).updateLeaseMetadata(lease.id, { driver: "sandbox", presentation: "changed" });
+    await vi.waitFor(() => { expect(idleWorkSnapshot().active).toBe(0); expect(coordinator!.nextWakeAt()).toBeNull(); });
+    expect(inspections).toHaveBeenCalledTimes(checked);
+    expect(await history!.hasPending()).toBe(false);
+    const count = reads.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(300_000);
+    expect(reads).toHaveBeenCalledTimes(count); expect(inspections).toHaveBeenCalledTimes(checked);
+  });
+  it.each([false, true])("preserves historical debt arriving during an empty fast-path read (unresolved transaction=%s)", async unresolved => {
+    const passive = await pending(), debt = await pending();
+    await environmentService(db).releaseLease(passive.id, "released", { cleanupStatus: "success" });
+    await environmentService(db).releaseLease(debt.id, "failed", { cleanupStatus: "success" });
+    const history = (await start(true))!;
+    await settle(30_000); expect(inspections).toHaveBeenCalledTimes(1);
+    let readStarted = false, releaseRead!: () => void, writeReady!: () => void, releaseWrite!: () => void;
+    const readGate = new Promise<void>(resolve => { releaseRead = resolve; });
+    const written = new Promise<void>(resolve => { writeReady = resolve; });
+    const writeGate = new Promise<void>(resolve => { releaseWrite = resolve; });
+    const original = history.hasPending;
+    const check = vi.spyOn(history, "hasPending").mockImplementationOnce(async () => {
+      const pending = await original(); expect(pending).toBe(false); readStarted = true; await readGate; return pending;
+    });
+    let writing: Promise<unknown> | undefined;
+    try {
+      await environmentService(db).updateLeaseMetadata(passive.id, { presentation: "changed" });
+      await vi.waitFor(() => expect(readStarted).toBe(true));
+      writing = db.transaction(async tx => {
+        await environmentService(tx as unknown as Db).updateLeaseMetadata(debt.id, { driver: "sandbox", changed: true });
+        writeReady(); if (unresolved) await writeGate;
+      });
+      await written;
+      if (!unresolved) await writing;
+      releaseRead();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(idleWorkSnapshot().active).toBeGreaterThan(0);
+      expect(inspections).toHaveBeenCalledTimes(1);
+      releaseWrite(); await writing;
+      await vi.waitFor(async () => { await vi.advanceTimersByTimeAsync(1); expect(await original()).toBe(true); });
+      expect(idleWorkSnapshot().active).toBeGreaterThan(0);
+      const ownerId = randomUUID();
+      // One drain hold must retain its identity while the safety read runs.
+      const hold = { ownerId, draining: true, startedAt: new Date(Date.now() - 1000),
+        expiresAt: new Date(Date.now() + 60_000), activeRuns: 0, pendingWakes: 0 };
+      expect((await readIdleSleepSafety(db, () => hold, Date.now, ownerId, async () => "none")).backgroundWork).toBe("present");
+      await settle(300_000);
+      await vi.waitFor(() => { expect(inspections).toHaveBeenCalledTimes(2); expect(idleWorkSnapshot().active).toBe(0); });
+      expect(await original()).toBe(false); await quiet();
+    } finally { releaseRead(); releaseWrite(); await writing; check.mockRestore(); }
+  });
+  it("retains a failed historical fast-path read through drain and clears it after resume", async () => {
+    const lease = await pending();
+    await environmentService(db).releaseLease(lease.id, "released", { cleanupStatus: "success" });
+    const history = (await start(true))!;
+    await settle(30_000);
+    vi.spyOn(history, "hasPending").mockRejectedValueOnce(new Error("historical debt read unavailable"));
+    await environmentService(db).updateLeaseMetadata(lease.id, { presentation: "changed" });
+    await vi.waitFor(() => expect(errors).toHaveLength(1));
+    expect(idleWorkSnapshot().active).toBeGreaterThan(0); expect(coordinator!.nextWakeAt()).not.toBeNull();
+    errors.length = 0; draining = true;
+    const count = reads.mock.calls.length;
+    await settle(60_000, false);
+    expect(reads).toHaveBeenCalledTimes(count); expect(idleWorkSnapshot().active).toBeGreaterThan(0);
+    draining = false; await settle();
+    await vi.waitFor(() => { expect(idleWorkSnapshot().active).toBe(0); expect(coordinator!.nextWakeAt()).toBeNull(); });
+    expect(inspections).not.toHaveBeenCalled(); await quiet();
+    worker!.stop(); await coordinator!.stop();
+    expect(idleWorkSnapshot().active).toBe(0);
   });
   it("verifies ordinary cleanup carrying creation provenance and stops provider polling", async () => {
     const lease = await pending();

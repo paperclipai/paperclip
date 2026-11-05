@@ -31,7 +31,10 @@ import { digestPaperclipSemanticContent } from "../semantic-tools/receipts.js";
 import {
   DurablePrpControlPlane,
   decodeDurablePrpCheckpoint,
+  captureLegacyDurablePrpCheckpoint,
   inspectDurablePrpCheckpointHeader,
+  inspectUnclaimedBootstrapCheckpoint,
+  inspectUnclaimedBootstrapState,
   inspectStagedRunAttachment,
   inspectRetainedRunInstructions,
   inspectStagedRunAttachmentHeader,
@@ -55,6 +58,120 @@ const identity: DurableRecoveryIdentity = {
 };
 const expectedRunnerVersion = "0.3.0";
 const expectedRunnerDigest = `sha256:${"a".repeat(64)}`;
+
+it("recognizes a complete unclaimed bootstrap through cold checkpoint restoration", async () => {
+  const root = mkdtempSync(resolve(tmpdir(), "runner-unclaimed-bootstrap-"));
+  const core = new DurablePrpControlPlane({ stateDirectory: root, identity, expectedRunnerVersion, expectedRunnerDigest });
+  let checkpoint!: DurablePrpCheckpoint;
+  core.setCheckpointPersistence(async value => { checkpoint = value; });
+  try {
+    const template = { provider: { provider: "codex", command: "fixture" }, authorizedTools: {} };
+    core.persistRunAttachTemplate(template);
+    core.queueCommand("run.prepare", template);
+    core.queueCommand("session.open", { reuse: "same_session" });
+    await core.flushCheckpoint();
+    const proof = inspectUnclaimedBootstrapCheckpoint(checkpoint.records, identity);
+    expect(proof).toEqual({ fingerprint: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+      runnerVersion: expectedRunnerVersion, runnerDigest: expectedRunnerDigest });
+    expect(core.unclaimedBootstrapCheckpoint()).toEqual(proof);
+    const projection = resolve(root, "projection");
+    checkpoint.restoreSessionDirectory(projection);
+    const local = JSON.parse(readFileSync(resolve(projection, "control-plane", "control-plane-state.json"), "utf8"));
+    const artifact = { version: expectedRunnerVersion, digest: expectedRunnerDigest };
+    expect(inspectUnclaimedBootstrapState(JSON.stringify(local), identity, artifact)).toEqual(proof);
+    const event = { schema: "paperclip.prp.event.v1", schemaVersion: 1, sourceKind: "runner",
+      sourceInstanceId: identity.runnerInstanceId, sourceEventId: "local-progress", sourceSeq: 1,
+      runId: identity.runId, normalizedSessionId: identity.normalizedSessionId, turnId: identity.turnId,
+      itemId: identity.itemId, eventType: "item.delta", priority: 2, emittedAt: "2026-01-01T00:00:00.000Z",
+      payload: { delta: "Prior local progress" } };
+    const progressed = { ...local, committedEvents: [{ sourceSeq: 1, sourceEventId: event.sourceEventId,
+      eventType: event.eventType, priority: 2, envelope: { kind: "event", payload: event }, deliveryCount: 1, logicalEffectCount: 1 }] };
+    expect(inspectUnclaimedBootstrapState(JSON.stringify(progressed), identity, artifact)).toBeNull();
+    delete local.checkpointEventPolicy;
+    expect(inspectUnclaimedBootstrapState(JSON.stringify(local), identity, artifact)).toBeNull();
+    expect(inspectUnclaimedBootstrapCheckpoint(decodeDurablePrpCheckpoint(checkpoint.records).records, identity)).toEqual(proof);
+    for (const field of Object.keys(identity) as Array<keyof DurableRecoveryIdentity>) {
+      expect(inspectUnclaimedBootstrapCheckpoint(checkpoint.records, { ...identity, [field]: "foreign" })).toBeNull();
+    }
+    for (const omitted of ["header", "cursor", "command:1", "command:2"]) {
+      const truncated = new Map(checkpoint.records); truncated.delete(omitted);
+      expect(inspectUnclaimedBootstrapCheckpoint(truncated, identity)).toBeNull();
+    }
+    for (const mutate of [
+      (header: { state: Record<string, unknown> }) => { delete header.state.freshBootstraps; },
+      (header: { schema: string }) => { header.schema = "unsupported.checkpoint"; },
+      (header: { state: Record<string, unknown> }) => { header.state.schema = "paperclip.runner.durable.control-plane-state.v1"; },
+      (header: { state: Record<string, unknown> }) => { delete header.state.bootstrapHistory; },
+      (header: { state: Record<string, unknown> }) => { delete header.state.checkpointEventPolicy; },
+      (header: { state: Record<string, unknown> }) => { header.state.connectionCount = 1; },
+      (header: { state: Record<string, unknown> }) => { header.state.commandDeliveryCounts = { previouslyDelivered: 1 }; },
+      (header: { state: Record<string, unknown> }) => { header.state.warmTransition = {}; },
+      (header: { state: Record<string, unknown> }) => { header.state.stagedRunAttachment = {}; },
+    ]) {
+      const changed = new Map(checkpoint.records), header = JSON.parse(changed.get("header")!);
+      mutate(header); changed.set("header", JSON.stringify(header));
+      expect(inspectUnclaimedBootstrapCheckpoint(changed, identity)).toBeNull();
+    }
+    core.queueCommand("turn.start", { prompt: "must not be treated as unused" });
+    expect(core.unclaimedBootstrapCheckpoint()).toBeNull();
+    await core.flushCheckpoint();
+    expect(inspectUnclaimedBootstrapCheckpoint(checkpoint.records, identity)).toBeNull();
+  } finally { await core.stop(); rmSync(root, { recursive: true, force: true }); }
+});
+
+it("retains ever-issued bootstrap history after credential pruning and cold restore", async () => {
+  const root = mkdtempSync(resolve(tmpdir(), "runner-issued-bootstrap-"));
+  const core = new DurablePrpControlPlane({ stateDirectory: root, identity, expectedRunnerVersion, expectedRunnerDigest });
+  let checkpoint!: DurablePrpCheckpoint;
+  core.setCheckpointPersistence(async value => { checkpoint = value; });
+  try {
+    const template = { provider: { provider: "codex", command: "fixture" }, authorizedTools: {} };
+    core.persistRunAttachTemplate(template);
+    core.queueCommand("run.prepare", template);
+    core.queueCommand("session.open", { reuse: "same_session" });
+    core.issueBootstrapTicket();
+    expect(core.unclaimedBootstrapCheckpoint()).toBeNull();
+    await core.flushCheckpoint();
+    const records = new Map(checkpoint.records), header = JSON.parse(records.get("header")!);
+    expect(header.state.freshBootstraps).toBe(1);
+    header.state.tickets = {}; records.set("header", JSON.stringify(header));
+    const restored = decodeDurablePrpCheckpoint(records);
+    expect(inspectUnclaimedBootstrapCheckpoint(restored.records, identity)).toBeNull();
+    await core.start();
+    const client = await authenticate(core, core.issueBootstrapTicket());
+    expect(client).not.toBeNull();
+    await core.flushCheckpoint();
+    expect(inspectUnclaimedBootstrapCheckpoint(checkpoint.records, identity)).toBeNull();
+    client!.socket.destroy();
+  } finally { await core.stop(); rmSync(root, { recursive: true, force: true }); }
+});
+
+it("never blesses bootstrap history after run identity reuse or an older producer restore", async () => {
+  const root = mkdtempSync(resolve(tmpdir(), "runner-bootstrap-history-rotation-"));
+  const core = new DurablePrpControlPlane({ stateDirectory: root, identity, expectedRunnerVersion, expectedRunnerDigest });
+  let checkpoint!: DurablePrpCheckpoint;
+  core.setCheckpointPersistence(async value => { checkpoint = value; });
+  try {
+    core.issueBootstrapTicket();
+    core.store.state.tickets = {};
+    const next = { ...identity, runId: "next-run", turnId: "next-turn", itemId: "next-item" };
+    core.rotateRunIdentity(next);
+    core.rotateRunIdentity(identity);
+    const template = { provider: { provider: "codex", command: "fixture" } };
+    core.persistRunAttachTemplate(template);
+    core.queueCommand("run.prepare", template);
+    core.queueCommand("session.open", { reuse: "same_session" });
+    await core.flushCheckpoint();
+    expect(core.store.state.freshBootstraps).toBe(0);
+    expect(core.store.state.bootstrapHistory).toMatchObject({ credentialsIssued: 1, adopted: true });
+    expect(inspectUnclaimedBootstrapCheckpoint(checkpoint.records, identity)).toBeNull();
+    const records = new Map(checkpoint.records), header = JSON.parse(records.get("header")!);
+    delete header.state.bootstrapHistory;
+    header.state.schema = "paperclip.runner.durable.control-plane-state.v1";
+    records.set("header", JSON.stringify(header));
+    expect(inspectUnclaimedBootstrapCheckpoint(decodeDurablePrpCheckpoint(records).records, identity)).toBeNull();
+  } finally { await core.stop(); rmSync(root, { recursive: true, force: true }); }
+});
 
 it("recovers only the matching run's admitted instructions from a valid checkpoint", async () => {
   const root = mkdtempSync(resolve(tmpdir(), "runner-retained-instructions-"));
@@ -98,6 +215,7 @@ it("persists an undispatched source-to-target attachment before bootstrap and pr
     expect(checkpoint.runId).toBe(target.runId);
     expect(checkpoint.predecessor).toEqual({ runId: identity.runId, normalizedSessionId: identity.normalizedSessionId });
     expect(checkpoint.workCommandIds).toEqual([]);
+    expect(inspectUnclaimedBootstrapCheckpoint(checkpoint.records, target)).toBeNull();
     const proof = inspectStagedRunAttachmentHeader(checkpoint.records.get("header")!);
     expect(proof).toMatchObject({ attachment: { sourceIdentity: identity, targetIdentity: target, commandId: null } });
     expect(proof?.attachment).not.toHaveProperty("runAttachTemplate");
@@ -217,6 +335,40 @@ it("restores authentication and commands from opaque checkpoint records", async 
     await restored?.stop();
     await first.stop();
     rmSync(root, { recursive: true, force: true });
+  }
+});
+
+it("imports the authenticated legacy authority without changing its source and restores it in an empty home", async () => {
+  const root = mkdtempSync(resolve(tmpdir(), "runner-legacy-import-"));
+  const options = { stateDirectory: resolve(root, "old/control-plane"), identity, expectedRunnerVersion, expectedRunnerDigest };
+  const core = new DurablePrpControlPlane(options);
+  let restored: DurablePrpControlPlane | undefined;
+  try {
+    await core.start();
+    const client = (await authenticate(core, core.issueBootstrapTicket()))!;
+    core.queueCommand("session.snapshot", {}, "retained-maintenance");
+    client.socket.destroy();
+    await core.stop();
+    const file = resolve(options.stateDirectory, "control-plane-state.json");
+    const source = readFileSync(file, "utf8");
+    const checkpoint = captureLegacyDurablePrpCheckpoint(source, identity);
+    expect(readFileSync(file, "utf8")).toBe(source);
+    expect(checkpoint.runnerDigest).toBe(expectedRunnerDigest);
+    expect(checkpoint.recoveryEvidence.authenticatedConnectionCount).toBe(1);
+    rmSync(resolve(root, "old"), { recursive: true });
+    checkpoint.restoreSessionDirectory(resolve(root, "new"));
+    restored = new DurablePrpControlPlane({ ...options, stateDirectory: resolve(root, "new/control-plane") });
+    expect(restored.getCommand("retained-maintenance")).toMatchObject({ type: "session.snapshot" });
+    expect(() => captureLegacyDurablePrpCheckpoint(source, { ...identity, runId: "another-run" })).toThrow("binding_mismatch");
+    const state = JSON.parse(source);
+    expect(() => captureLegacyDurablePrpCheckpoint(JSON.stringify({ ...state, tickets: {} }), identity)).toThrow("artifact_unproven");
+    expect(captureLegacyDurablePrpCheckpoint(JSON.stringify({ ...state, tickets: {} }), identity,
+      { version: expectedRunnerVersion, digest: expectedRunnerDigest }).runnerDigest).toBe(expectedRunnerDigest);
+    expect(() => captureLegacyDurablePrpCheckpoint(source, identity,
+      { version: expectedRunnerVersion, digest: `sha256:${"0".repeat(64)}` })).toThrow("artifact_unproven");
+    expect(() => captureLegacyDurablePrpCheckpoint(JSON.stringify({ schema: "paperclip.runner.external-control-plane-state.v1", identity }), identity)).toThrow("binding_mismatch");
+  } finally {
+    await restored?.stop(); await core.stop(); rmSync(root, { recursive: true, force: true });
   }
 });
 
@@ -4470,7 +4622,7 @@ describe("DurablePrpControlPlane", () => {
           expect(core.store.state.checkpointEventPolicy).toBe("control-v1");
         }
         expect(core.store.state.schema).toBe(
-          "paperclip.runner.durable.control-plane-state.v1",
+          "paperclip.runner.durable.control-plane-state.v2",
         );
         await expect(receiveSecure(successor!)).resolves.toMatchObject({
           kind: "command",

@@ -1314,7 +1314,7 @@ describe("TaskChatComposer", () => {
     expect(openPicker).toHaveBeenCalledOnce();
   });
 
-  it.each(["picker", "drop"])("uploads images from %s into a preview row above the text", async (source) => {
+  it.each(["picker", "drop", "page drop"])("uploads images from %s into a preview row above the text", async (source) => {
     const onAdd = vi.fn();
     const onAttachImage = vi.fn().mockResolvedValue({ contentPath: "/attachments/shot.png" });
     renderComposer({ onAdd, workMode: "standard", onAttachImage });
@@ -1326,8 +1326,8 @@ describe("TaskChatComposer", () => {
       flushSync(() => input.dispatchEvent(new Event("change", { bubbles: true })));
     } else {
       const event = new Event("drop", { bubbles: true, cancelable: true });
-      Object.defineProperty(event, "dataTransfer", { value: { files: [file] } });
-      flushSync(() => editable().dispatchEvent(event));
+      Object.defineProperty(event, "dataTransfer", { value: { types: ["Files"], files: [file] } });
+      flushSync(() => (source === "page drop" ? document.body : editable()).dispatchEvent(event));
       expect(event.defaultPrevented).toBe(true);
     }
     await flushAsync();
@@ -3184,6 +3184,61 @@ describe("composer Stop", () => {
       } } };
     return observed as HeartbeatRun & { runtimeMode: "native" };
   }
+
+  it.each([{ runIds: ["first"] }, { runIds: ["first", "second"] }])("clears a timed-out Stop only after every exact target is confirmed: $runIds", async ({ runIds }) => {
+    vi.useFakeTimers();
+    try {
+      const onStop = vi.fn(() => waitForStoppedRuns(runIds, {
+        getRun: vi.fn(async id => ({ ...nativeStopAwaitingContainment(), id })), timeoutMs: 1000,
+      }));
+      const onAdd = vi.fn();
+      render(<TaskChatComposer workMode="standard" onAdd={onAdd} onStop={onStop} />);
+      flushSync(() => stopButton()!.click());
+      await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+      expect(container.querySelector('[role="alert"]')?.textContent).toContain("stop was requested");
+      render(<TaskChatComposer workMode="standard" onAdd={onAdd} confirmedStoppedRunIds={new Set(["unrelated"])} />);
+      await act(async () => {});
+      expect(container.querySelector('[role="alert"]')).not.toBeNull();
+      if (runIds.length > 1) {
+        render(<TaskChatComposer workMode="standard" onAdd={onAdd} confirmedStoppedRunIds={new Set([runIds[0]])} />);
+        await act(async () => {});
+        expect(container.querySelector('[role="alert"]')).not.toBeNull();
+      }
+      render(<TaskChatComposer workMode="standard" onAdd={onAdd} confirmedStoppedRunIds={new Set(runIds)} />);
+      await act(async () => {});
+      expect(container.querySelector('[role="alert"]')).toBeNull();
+      expect(onAdd).not.toHaveBeenCalled();
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("keeps a newer Stop attempt independent of an earlier target's confirmation", async () => {
+    vi.useFakeTimers();
+    try {
+      const attempt = (id: string) => () => waitForStoppedRuns([id], {
+        getRun: vi.fn(async () => ({ ...nativeStopAwaitingContainment(), id })), timeoutMs: 1000,
+      });
+      render(<TaskChatComposer workMode="standard" onAdd={vi.fn()} onStop={attempt("first")} />);
+      flushSync(() => stopButton()!.click());
+      await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+      render(<TaskChatComposer workMode="standard" onAdd={vi.fn()} onStop={attempt("second")} />);
+      flushSync(() => stopButton()!.click());
+      await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+      render(<TaskChatComposer workMode="standard" onAdd={vi.fn()} confirmedStoppedRunIds={new Set(["first"])} />);
+      await act(async () => {});
+      expect(container.querySelector('[role="alert"]')).not.toBeNull();
+      render(<TaskChatComposer workMode="standard" onAdd={vi.fn()} confirmedStoppedRunIds={new Set(["second"])} />);
+      await act(async () => {});
+      expect(container.querySelector('[role="alert"]')).toBeNull();
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("retains an ordinary Stop error when unrelated stop proof arrives", async () => {
+    render(<TaskChatComposer workMode="standard" onAdd={vi.fn()} onStop={async () => { throw new Error("Stop permission denied"); }} />);
+    flushSync(() => stopButton()!.click()); await flushAsync();
+    render(<TaskChatComposer workMode="standard" onAdd={vi.fn()} confirmedStoppedRunIds={new Set(["run"])} />);
+    await flushAsync();
+    expect(container.querySelector('[role="alert"]')?.textContent).toBe("Stop permission denied");
+  });
 
   it("finishes one Stop without a stale warning when the server proves containment after native acknowledgement", async () => {
     const requested = nativeStopAwaitingContainment();

@@ -120,7 +120,7 @@ import { preserveCancelledNativeWorkspaces, preserveNativeFailedWorkspace,
     } finally { await worker.stop(); }
   }, 120_000);
 
-  it.each(["native-sync", "remote-workspace"] as const)("preserves %s files when Stop finds no live controller", async kind => {
+  it.each(["native-sync", "remote-workspace", "startup-scan"] as const)("preserves files when Stop finds no live controller (%s)", async kind => {
     const f = await seed();
     const nativeCancellation = { ...f.nativeCancellation, dispatched: false };
     const resultJson = { ...f.run.resultJson, nativeCancellation, cancelledByActorType: "user", cancelledByUserId: "operator" };
@@ -131,15 +131,17 @@ import { preserveCancelledNativeWorkspaces, preserveNativeFailedWorkspace,
       resourceDisposition: "destroy",
     }, nativeResourceDisposition: "destroy" } : f.run.runnerProfileJson;
     await db.update(heartbeatRuns).set({ resultJson, runnerProfileJson }).where(eq(heartbeatRuns.id, f.runId));
+    if (kind === "native-sync") await db.update(executionWorkspaces).set({ metadata: {} })
+      .where(and(eq(executionWorkspaces.companyId, f.companyId), eq(executionWorkspaces.id, f.workspaceId)));
     const worker = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => { throw error; } });
     try {
-      await registerCancelledWorkspacePreservationWork(db, worker, () => true, async () => true).ready;
+      if (kind === "startup-scan") await preserveCancelledNativeWorkspaces(db);
+      else await registerCancelledWorkspacePreservationWork(db, worker, () => true, async () => true).ready;
       const [retained] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
       expect(retained.resultJson).toMatchObject({ ...resultJson,
         workspaceRestoreRecovery: { schema: "paperclip.workspace-restore-recovery.v1", leaseIds: [f.leaseId] } });
       expect(retained).toMatchObject({ status: "cancelled", finishedAt: f.run.finishedAt,
         runnerProfileJson, costAccountingPending: true, usageJson: f.run.usageJson });
-      // A no-op acknowledgement permits preservation, but cannot prove the provider stopped.
       expect(hasAcknowledgedNativeRunStopReceipt(retained)).toBe(false);
       expect(hasAcknowledgedNativeStopIntent(retained)).toBe(false);
       const [lease] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.leaseId));

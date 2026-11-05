@@ -61,8 +61,13 @@ pub(crate) fn runtime_notification_codex_args(
         let Some(filesystem) = config["filesystem"].as_inline_table_mut() else {
             continue;
         };
-        for (path, mode) in paths.iter().zip(["read", "read", "read", "write"]) {
-            filesystem.insert(path.to_string_lossy().as_ref(), mode.into());
+        let Some(channel_directory) = paths[3].parent().filter(|path| path.parent().is_some())
+        else {
+            continue;
+        };
+        filesystem.insert(channel_directory.to_string_lossy().as_ref(), "write".into());
+        for path in &paths[..3] {
+            filesystem.insert(path.to_string_lossy().as_ref(), "read".into());
         }
         extra.extend(["-c".into(), format!("{prefix}{filesystem}")]);
     }
@@ -1502,33 +1507,14 @@ impl CodexProvider {
                         }
                         let names_other_turn = notification_turn_id(&params)
                             .is_some_and(|turn_id| turn_id != completed_turn_id);
-                        let safe_tail_method = matches!(
-                            method.as_str(),
-                            "warning"
-                            | "configWarning"
-                            | "remoteControl/status/changed"
-                            | "mcpServer/startupStatus/updated"
-                            | "account/rateLimits/updated"
-                            | "item/started"
-                            | "item/completed"
-                            | "item/agentMessage/delta"
-                            | "rawResponseItem/completed"
-                            | "rawResponse/completed"
-                            | "thread/goal/updated"
-                            | "thread/goal/cleared"
-                            | "thread/tokenUsage/updated"
-                            // poll() normalizes usage from this settled turn.
-                            // It remains an accounting snapshot, not new work.
-                            | "paperclip/resumeUsageSnapshot"
-                            | "thread/status/changed"
-                            | "turn/diff/updated"
-                            | "turn/plan/updated"
-                        );
-                        if names_other_turn || !safe_tail_method {
+                        // A notification about the settled turn is history. Only
+                        // a new turn means something is live; a provider request
+                        // or process exit has its own fail-closed arm below.
+                        if names_other_turn || method == "turn/started" {
                             return Err(LocalRunnerError::invalid(format!(
-                            "Codex warm run attachment observed unsafe post-terminal provider method {}",
-                            bounded_method(&method)
-                        )));
+                                "Codex warm run attachment observed unsafe post-terminal provider method {}",
+                                bounded_method(&method)
+                            )));
                         }
                         if matches!(
                             method.as_str(),
@@ -1594,6 +1580,28 @@ impl CodexProvider {
             }
         })();
         (accounting, result)
+    }
+
+    /// Provider work that is live or waiting for an answer. Attaching a run now
+    /// could put two actors on one thread or misdirect an answer.
+    pub(crate) fn run_attachment_live_work(&self) -> Vec<&'static str> {
+        let mut blockers = Vec::new();
+        if self.active_provider_turn_id.is_some() {
+            blockers.push("active_turn");
+        }
+        if self.ambiguous_turn_start_pending {
+            blockers.push("ambiguous_turn_start");
+        }
+        if !self.deferred_ambiguous_messages.is_empty() {
+            blockers.push("deferred_messages");
+        }
+        if !self.pending_tool_requests.is_empty() {
+            blockers.push("pending_tool_requests");
+        }
+        if !self.pending_runtime_requests.is_empty() {
+            blockers.push("pending_runtime_requests");
+        }
+        blockers
     }
 
     pub(crate) fn warm_run_attachment_blockers(
@@ -4522,8 +4530,8 @@ mod tests {
         let paths = [
             PathBuf::from("/runtime/runnerd"),
             PathBuf::from("/state/private/runtime-notifications.json"),
-            PathBuf::from("/state/private/runtime-activity.lock"),
-            PathBuf::from("/tmp/prn-channel"),
+            PathBuf::from("/tmp/prn-channel/activity.lock"),
+            PathBuf::from("/tmp/prn-channel/activity.fifo"),
         ];
         let extra =
             runtime_notification_codex_args(&args, "paperclip-runner-workspace-only", &paths);
@@ -4562,7 +4570,7 @@ mod tests {
                 ("/state/private", "none"),
                 ("/runtime/runnerd", "read"),
                 ("/state/private/runtime-notifications.json", "read"),
-                ("/state/private/runtime-activity.lock", "read"),
+                ("/tmp/prn-channel/activity.lock", "read"),
                 ("/tmp/prn-channel", "write"),
             ] {
                 assert_eq!(
@@ -4570,6 +4578,7 @@ mod tests {
                     Some(mode)
                 );
             }
+            assert!(filesystem.get("/tmp/prn-channel/activity.fifo").is_none());
         }
         assert!(!serialized.contains("network."));
         assert!(!serialized.contains("PAPERCLIP_RUN_ID"));
@@ -4640,6 +4649,28 @@ done
             }
         }
         provider
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn warm_attachment_ignores_an_unknown_notification_that_names_no_other_turn() {
+        let mut provider = completion_tail_provider();
+        provider
+            .restore_completed_turn_authority(true, Some(1), Some("reader-tail-1"))
+            .unwrap();
+        provider.active_provider_turn_id = None;
+        provider
+            .pending_messages
+            .push_back(BufferedProviderMessage {
+                value: json!({
+                    "method": "a/future/notification",
+                    "params": {"threadId": "reader-tail-thread"}
+                }),
+                trace_frame_id: None,
+            });
+        let (_, result) = provider.drain_completed_turn_tail_for_warm_attachment();
+        provider.shutdown().unwrap();
+        result.expect("a notification that starts nothing is history");
     }
 
     #[cfg(unix)]

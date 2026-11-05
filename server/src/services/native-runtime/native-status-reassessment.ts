@@ -12,6 +12,7 @@ import { pendingNativeGovernance, resolveNativeFinalizerStatus } from "./native-
 import { NATIVE_STATUS_ARBITER_POLICY_VERSION, type NativeAuthoritativeIssueStatus, type NativeStatusDecision } from "./status-arbiter.js";
 import { commitNativeStatusDecision, NativeStatusRaceError } from "./status-decision-committer.js";
 import { recordNativeWorkAssessment } from "./work-assessments.js";
+import { readPreservedNativeResultFinalization } from "./preserved-native-result-finalization.js";
 
 export type NativeStatusReassessmentSource = {
   runId: string; companyId: string; agentId: string; issueId: string;
@@ -123,6 +124,11 @@ export async function reassessNativeStatusFromSource(
     assessment.priorIssueStatus !== row.issueStatus
     || Number(assessment.priorStatusVersion) !== Number(row.issueStatusVersion)
   );
+  if (authoritativeStatusChanged && row.coordinatorPhase !== "committed") {
+    const preserved = await readPreservedNativeResultFinalization(db, row);
+    if (preserved?.statusRestoration === "owned" && preserved.resultId === assessment.resultId
+      && preserved.contractId === assessment.contractId) return { kind: "unchanged" };
+  }
   const retiredAutomaticReview = issueMatchesCurrentDecision && currentDecision
     ? await decisionHasRetiredAutomaticReview(db, currentDecision) : false;
   let reassessment = null;

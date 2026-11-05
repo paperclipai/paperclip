@@ -509,7 +509,9 @@ describe("AgentMail two-step setup", () => {
     await mount();
     await vi.waitFor(() => expect(button(addressMode === "new" ? "Create email address" : "Connect email address").disabled).toBe(false));
     await click(addressMode === "new" ? "Create email address" : "Connect email address");
-    await vi.waitFor(() => expect(container.textContent).toContain("Could not create runtime key"));
+    // A 502 from the provider is transient, so the shared copy replaces the server text.
+    await vi.waitFor(() => expect(container.querySelector('[role="alert"]')?.textContent).toContain("temporarily unavailable"));
+    expect(container.textContent).not.toContain("Could not create runtime key");
     await vi.waitFor(() => expect(button("Finish connecting").disabled).toBe(false));
     await act(async () => root.unmount());
     client.clear();
@@ -579,13 +581,29 @@ describe("AgentMail two-step setup", () => {
     expect(mocks.setup).not.toHaveBeenCalled();
   });
 
-  it("retries loading setup progress without losing the entered key or reloading", async () => {
-    mocks.listInboxes.mockRejectedValueOnce(new Error("Service unavailable"));
+  it("keeps email setup usable when the inbox list refetch fails transiently", async () => {
     await mount(false);
     await fill('input[type="password"]', "private-test-key");
-    await vi.waitFor(() => expect(container.textContent).toContain("Could not load email setup progress"));
+    await vi.waitFor(() => expect(button("Continue").disabled).toBe(false));
+    mocks.listInboxes.mockRejectedValue(new ApiError("Paperclip is restarting.", 503, { error: "tenant_app_unavailable" }));
+    await act(async () => {
+      await client.refetchQueries({ queryKey: ["email-inboxes", "company"] });
+    });
+    expect(mocks.listInboxes).toHaveBeenCalledTimes(2);
+    expect(button("Continue").disabled).toBe(false);
+    expect(container.querySelector('[data-query-view="error"]')).toBeNull();
+    expect(container.textContent).not.toContain("Paperclip is restarting.");
+    expect(container.textContent).not.toContain("tenant_app_unavailable");
+  });
+
+  it("retries loading setup progress without losing the entered key or reloading", async () => {
+    mocks.listInboxes.mockRejectedValueOnce(new ApiError("Request failed: 500", 500, { error: "internal_error" }));
+    await mount(false);
+    await fill('input[type="password"]', "private-test-key");
+    await vi.waitFor(() => expect(container.textContent).toContain("Couldn't load email setup progress"));
+    expect(container.textContent).not.toContain("internal_error");
     expect(button("Continue").disabled).toBe(true);
-    await click("Retry loading inboxes");
+    await click("Retry");
     await vi.waitFor(() => expect(button("Continue").disabled).toBe(false));
     expect(container.querySelector<HTMLInputElement>('input[type="password"]')?.value).toBe("private-test-key");
     await click("Continue");

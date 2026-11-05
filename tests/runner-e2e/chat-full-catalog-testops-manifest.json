@@ -1,6 +1,6 @@
 {
   "schema": "paperclip.chat-full-catalog-testops-manifest/v1",
-  "targetSha": "ab2019e976076ec0eb60b026844f3d9211cb0208",
+  "targetSha": "5aef4bffa2b106f2066bf2485338798f04a702bd",
   "metadataSourceSha": "de0941835cc8f0d01c982574ee258e110babdbeb",
   "profile": "runner-opencode",
   "model": "openrouter/deepseek/deepseek-v4.1-flash-1017",
@@ -170,9 +170,9 @@
     ],
     "repairMetadata": {
       "baseTargetSha": "3b66c3c144360ddf32714a0742fd774b8ceafb16",
-      "previousTargetSha": "de6d29e025683f5c28125bcaa4f38b41836d8516",
+      "previousTargetSha": "ab2019e976076ec0eb60b026844f3d9211cb0208",
       "definitionSourceSha": "de0941835cc8f0d01c982574ee258e110babdbeb",
-      "candidateDescriptorSha256": "d214f8bf1d6c8c737682999ca9eb9d4ea2a5945bebbccb96e9ac326d538b0629",
+      "candidateDescriptorSha256": "744a566faaa90b8048fff526e0a30b7475b86c2de88d697783f8da9e02f70e20",
       "changedDefinitionFiles": [
         {
           "path": "tests/runner-e2e/chat-scenarios/companies.yaml",
@@ -189,9 +189,13 @@
         {
           "path": "tests/runner-e2e/chat-scenarios/app-permissions.yaml",
           "sha256": "18fbb9419bbdacb46eacdaa62dfa99feb9024faf2d1eef829aa70d43952575a9"
+        },
+        {
+          "path": "tests/runner-e2e/chat-scenarios/activity.yaml",
+          "sha256": "33e98171de19c3151391164ebf266b53806f387164ad3c4e35f600044d4c1db2"
         }
       ],
-      "conditions": "New candidate measurements only; original definitions, failed attempts and previousSource5 de6 remain immutable. Source6 retains all Source5 repairs and adds remaining ORIGINAL deadline plus exact canonical source guards for personal-secret and team-install initial observations, real hire-review link readiness, and genuine skill-update provider checkpoints after cheap native readiness. Candidate-only Core18742/61996 overlay permits only a new Ask-first review for a strictly authenticated later same-person human intent after decline, including issue.comment.reopen; same-intent replay remains denied, with no approval or provider authority granted. All queries/models/human/native counts/clocks remain as de6; earlier Studio144 explicit2..3 accounting remains. CorePRs18717/18734/18742 remain UNMERGED; SDK115 completion remainsUNKNOWN and otherfiveSDK cases stay held.",
+      "conditions": "New candidate measurements only. Original definitions, prior failed attempts and source6 ab201 remain historical. This target retains that catalog and integrates merged runtime fixes #18711, #18713 and #18718, with the prior-run restoration condition adapted to its existing owner. It adds the reviewed previous-question locator, attributed human-only denial and conditional-outcome oracle, and actor-sensitive timeline narrative/recorded-reassignment fixes. Closed finish diagnostics retain an effective schema digest, hashed call correlation and bounded type/category enums only. Historical MCP timeout and continuation-shape causes remain unresolved; no new all-ten PASS is claimed. Queries, model, human/native counts and original clocks remain fixed; the earlier Studio144 explicit 2..3 accounting stays. Core PRs18717/18734/18742 are now merged. SDK115 completion remains UNKNOWN and the other five SDK cases remain held. Full244 runtime catalog is not merged to master and the196/244 gate is unchanged. This successor binds the seven reviewed scenario repairs plus framework evidence: canonical skill navigation, original announcement phase clock, attributed timeline context, bound hire revision history, credential warning and configuration-question admission, completed team visibility, and canonical private framework evidence. Twelve declaration fields across eleven cases change only oracle versions and skill source-file provenance. All original requests, setup, human/native bounds, model and clocks remain fixed. Historical failed attempts and missing-original UNKNOWN grades remain unchanged; no uniform-ten PASS is claimed. The existing SDK506/efa qualification is reused only for byte-identical registered source inputs. This next successor adds reviewed question-surface observation, grounded scenario grading and safe credential-guidance boundaries after the retained uniform attempt. Eleven existing oracle-version leaves advance; all sourceFiles declarations, requests, setup, counts, clocks, model, launcher and private protocol helpers remain fixed. Component qualification does not attest a new uniform-ten pass.",
       "changedFields": [
         {
           "key": "activity.work-timeline",
@@ -214,13 +218,27 @@
             "chat-catalog-domains/internal-activity.ts",
             "chat-scenarios/activity.yaml",
             "chat-catalog-domains/internal-work-timeline.ts",
+            "chat-catalog-domains/internal-timeline-narrative.ts",
             "chat-catalog-domains/internal-timeline-verifier.ts",
             "chat-catalog-domains/internal-privacy.ts",
             "chat-catalog-domains/identity-auth.ts",
             "chat-catalog-domains/internal-routine-audit.ts",
             "../e2e/fetch-allowed-port.ts",
-            "../../server/src/services/native-runtime/status-decision-committer.ts"
+            "../../server/src/services/native-runtime/status-decision-committer.ts",
+            "../../server/src/services/work-timeline.ts"
           ]
+        },
+        {
+          "key": "activity.work-timeline",
+          "field": "oracleVersion",
+          "previous": "paperclip.chat-catalog.internal.v1",
+          "current": "paperclip.chat-catalog.work-timeline.v9"
+        },
+        {
+          "key": "activity.work-timeline",
+          "field": "expectedOutcome",
+          "previous": "The agent builds an ordered account from saved timeline and task events, including pauses and failed attempts. It uses the requested timezone and distinguishes recorded facts from interpretation. Links let the person inspect the major milestones without exposing hidden tasks.",
+          "current": "The agent builds an ordered account from saved timeline and task events, including pauses and failed attempts. It respects any explicitly requested timezone and distinguishes recorded facts from interpretation. Links let the person inspect the major milestones without exposing hidden tasks."
         },
         {
           "key": "agents.choose-primary",
@@ -261,6 +279,10 @@
           ],
           "current": [
             "chat-catalog-domains/external-app-review.ts",
+            "chat-catalog-domains/external-app-review-outcomes.ts",
+            "chat-catalog-domains/external-app-review-probe.ts",
+            "chat-catalog-domains/external-app-review-diagnostic.ts",
+            "../../packages/shared/src/validators/issue.ts",
             "chat-catalog-domains/external-provider.ts",
             "chat-catalog-domains/identity-support.ts",
             "chat-catalog-domains/external-secret-scan.ts",
@@ -286,7 +308,7 @@
           "key": "app-permissions.ask-before-action",
           "field": "oracleVersion",
           "previous": "paperclip.chat-catalog.external.v1",
-          "current": "paperclip.chat-catalog.app-review.v2"
+          "current": "paperclip.chat-catalog.app-review.v6"
         },
         {
           "key": "app-permissions.test-as-agent",
@@ -491,7 +513,7 @@
           "key": "navigation-preferences.dismiss-announcement",
           "field": "oracleVersion",
           "previous": "paperclip.chat-catalog.identity.v1",
-          "current": "paperclip.chat-catalog.announcement-dismissal.v2"
+          "current": "paperclip.chat-catalog.announcement-dismissal.v3"
         },
         {
           "key": "questions-and-approvals.duplicate-answer",
@@ -522,13 +544,13 @@
           "key": "questions-and-approvals.formal-hire-revision",
           "field": "oracleVersion",
           "previous": "paperclip.chat-catalog.hire-revision.native1017.v2",
-          "current": "paperclip.chat-catalog.hire-revision.native1017.v3"
+          "current": "paperclip.chat-catalog.hire-revision.native1017.v5"
         },
         {
           "key": "questions-and-approvals.multi-part-question",
           "field": "oracleVersion",
           "previous": "paperclip.chat-catalog.identity.v1",
-          "current": "paperclip.chat-catalog.required-question.v2"
+          "current": "paperclip.chat-catalog.required-question.v3"
         },
         {
           "key": "questions-and-approvals.reject-and-revise",
@@ -594,6 +616,7 @@
           ],
           "current": [
             "chat-catalog-domains/external-company-secret.ts",
+            "chat-catalog-domains/external-secret-question.ts",
             "chat-catalog-domains/external-private-browser.ts",
             "chat-catalog-domains/external-private-browser-worker.ts",
             "chat-catalog-domains/external-credential-language.ts",
@@ -612,7 +635,66 @@
           "key": "secrets.configure-company-secret",
           "field": "oracleVersion",
           "previous": "paperclip.chat-catalog.external.v1",
-          "current": "paperclip.chat-catalog.company-secret-controller-baseline.v2"
+          "current": "paperclip.chat-catalog.company-secret-controller-baseline.v7"
+        },
+        {
+          "key": "secrets.personal-secret",
+          "field": "sourceFiles",
+          "previous": [
+            "chat-catalog-domains/external-personal-secret.ts",
+            "chat-catalog-domains/external-secret-endpoint.ts",
+            "chat-catalog-domains/external-private-browser.ts",
+            "chat-catalog-domains/external-private-browser-worker.ts",
+            "chat-catalog-domains/external-credential-language.ts",
+            "chat-catalog-domains/external-secret-scan.ts",
+            "chat-catalog-domains/identity-auth.ts",
+            "chat-catalog-domains/identity-private-browser.ts",
+            "chat-catalog-domains/identity-private-browser-worker.ts",
+            "chat-catalog-domains/identity-wizard.ts",
+            "chat-catalog-domains/identity-support.ts",
+            "chat-catalog-domains/external-support.ts",
+            "chat-catalog-domains/internal-support.ts",
+            "run-observations.ts",
+            "chat-flow.ts",
+            "../../server/src/home-paths.ts",
+            "../e2e/fetch-allowed-port.ts",
+            "../../server/src/routes/secrets.ts",
+            "../../server/src/services/secrets.ts",
+            "../../server/src/services/heartbeat/run-preparation.ts",
+            "../../ui/src/pages/secrets/SetMyUserSecretDialog.tsx",
+            "chat-scenarios/secrets.yaml"
+          ],
+          "current": [
+            "chat-catalog-domains/external-personal-secret.ts",
+            "chat-catalog-domains/external-secret-question.ts",
+            "chat-catalog-domains/external-secret-endpoint.ts",
+            "chat-catalog-domains/external-private-browser.ts",
+            "chat-catalog-domains/external-private-browser-worker.ts",
+            "chat-catalog-domains/external-credential-language.ts",
+            "chat-catalog-domains/external-secret-scan.ts",
+            "chat-catalog-domains/identity-auth.ts",
+            "chat-catalog-domains/identity-private-browser.ts",
+            "chat-catalog-domains/identity-private-browser-worker.ts",
+            "chat-catalog-domains/identity-wizard.ts",
+            "chat-catalog-domains/identity-support.ts",
+            "chat-catalog-domains/external-support.ts",
+            "chat-catalog-domains/internal-support.ts",
+            "run-observations.ts",
+            "chat-flow.ts",
+            "../../server/src/home-paths.ts",
+            "../e2e/fetch-allowed-port.ts",
+            "../../server/src/routes/secrets.ts",
+            "../../server/src/services/secrets.ts",
+            "../../server/src/services/heartbeat/run-preparation.ts",
+            "../../ui/src/pages/secrets/SetMyUserSecretDialog.tsx",
+            "chat-scenarios/secrets.yaml"
+          ]
+        },
+        {
+          "key": "secrets.personal-secret",
+          "field": "oracleVersion",
+          "previous": "paperclip.chat-catalog.external.v1",
+          "current": "paperclip.chat-catalog.personal-secret.v8"
         },
         {
           "key": "skills.author-skill",
@@ -631,14 +713,16 @@
             "chat-catalog-domains/integrator-skill-versions.ts",
             "chat-catalog-domains/identity-support.ts",
             "../../ui/src/components/MarkdownEditor.tsx",
-            "../../ui/src/pages/SkillStudio.tsx"
+            "../../ui/src/pages/SkillStudio.tsx",
+            "../../ui/src/pages/CompanySkills.tsx",
+            "../../ui/src/lib/company-skill-routes.ts"
           ]
         },
         {
           "key": "skills.author-skill",
           "field": "oracleVersion",
           "previous": "paperclip.chat-catalog.integrator.v1",
-          "current": "paperclip.chat-catalog.skill-authoring.v2"
+          "current": "paperclip.chat-catalog.skill-authoring.v4"
         },
         {
           "key": "skills.author-skill",
@@ -817,6 +901,36 @@
           "field": "oracleVersion",
           "previous": "paperclip.chat-catalog.external.v1",
           "current": "paperclip.chat-catalog.team-configure.v2"
+        },
+        {
+          "key": "connection-setup.secure-api-key",
+          "field": "oracleVersion",
+          "previous": "paperclip.chat-catalog.external.v1",
+          "current": "paperclip.chat-catalog.external.v4"
+        },
+        {
+          "key": "secrets.least-scope-delivery",
+          "field": "oracleVersion",
+          "previous": "paperclip.chat-catalog.external.v1",
+          "current": "paperclip.chat-catalog.external.v4"
+        },
+        {
+          "key": "secrets.secret-proposal",
+          "field": "oracleVersion",
+          "previous": "paperclip.chat-catalog.external.v1",
+          "current": "paperclip.chat-catalog.external.v4"
+        },
+        {
+          "key": "secrets.vault-reference",
+          "field": "oracleVersion",
+          "previous": "paperclip.chat-catalog.external.v1",
+          "current": "paperclip.chat-catalog.external.v4"
+        },
+        {
+          "key": "teams.install-team",
+          "field": "oracleVersion",
+          "previous": "paperclip.chat-catalog.external.v1",
+          "current": "paperclip.chat-catalog.team-install.v3"
         }
       ],
       "candidateDescriptorSnapshot": "fixtures/chat-repair-candidate-descriptors.json",
@@ -842,13 +956,21 @@
             "chat-catalog-domains/internal-activity.ts",
             "chat-scenarios/activity.yaml",
             "chat-catalog-domains/internal-work-timeline.ts",
+            "chat-catalog-domains/internal-timeline-narrative.ts",
             "chat-catalog-domains/internal-timeline-verifier.ts",
             "chat-catalog-domains/internal-privacy.ts",
             "chat-catalog-domains/identity-auth.ts",
             "chat-catalog-domains/internal-routine-audit.ts",
             "../e2e/fetch-allowed-port.ts",
-            "../../server/src/services/native-runtime/status-decision-committer.ts"
+            "../../server/src/services/native-runtime/status-decision-committer.ts",
+            "../../server/src/services/work-timeline.ts"
           ]
+        },
+        {
+          "key": "activity.work-timeline",
+          "field": "oracleVersion",
+          "previous": "paperclip.chat-catalog.internal.v1",
+          "current": "paperclip.chat-catalog.work-timeline.v9"
         },
         {
           "key": "agents.choose-primary",
@@ -889,6 +1011,10 @@
           ],
           "current": [
             "chat-catalog-domains/external-app-review.ts",
+            "chat-catalog-domains/external-app-review-outcomes.ts",
+            "chat-catalog-domains/external-app-review-probe.ts",
+            "chat-catalog-domains/external-app-review-diagnostic.ts",
+            "../../packages/shared/src/validators/issue.ts",
             "chat-catalog-domains/external-provider.ts",
             "chat-catalog-domains/identity-support.ts",
             "chat-catalog-domains/external-secret-scan.ts",
@@ -914,7 +1040,7 @@
           "key": "app-permissions.ask-before-action",
           "field": "oracleVersion",
           "previous": "paperclip.chat-catalog.external.v1",
-          "current": "paperclip.chat-catalog.app-review.v2"
+          "current": "paperclip.chat-catalog.app-review.v6"
         },
         {
           "key": "app-permissions.test-as-agent",
@@ -1095,7 +1221,7 @@
           "key": "navigation-preferences.dismiss-announcement",
           "field": "oracleVersion",
           "previous": "paperclip.chat-catalog.identity.v1",
-          "current": "paperclip.chat-catalog.announcement-dismissal.v2"
+          "current": "paperclip.chat-catalog.announcement-dismissal.v3"
         },
         {
           "key": "questions-and-approvals.duplicate-answer",
@@ -1126,13 +1252,13 @@
           "key": "questions-and-approvals.formal-hire-revision",
           "field": "oracleVersion",
           "previous": "paperclip.chat-catalog.hire-revision.native1017.v2",
-          "current": "paperclip.chat-catalog.hire-revision.native1017.v3"
+          "current": "paperclip.chat-catalog.hire-revision.native1017.v5"
         },
         {
           "key": "questions-and-approvals.multi-part-question",
           "field": "oracleVersion",
           "previous": "paperclip.chat-catalog.identity.v1",
-          "current": "paperclip.chat-catalog.required-question.v2"
+          "current": "paperclip.chat-catalog.required-question.v3"
         },
         {
           "key": "questions-and-approvals.reject-and-revise",
@@ -1198,6 +1324,7 @@
           ],
           "current": [
             "chat-catalog-domains/external-company-secret.ts",
+            "chat-catalog-domains/external-secret-question.ts",
             "chat-catalog-domains/external-private-browser.ts",
             "chat-catalog-domains/external-private-browser-worker.ts",
             "chat-catalog-domains/external-credential-language.ts",
@@ -1216,7 +1343,60 @@
           "key": "secrets.configure-company-secret",
           "field": "oracleVersion",
           "previous": "paperclip.chat-catalog.external.v1",
-          "current": "paperclip.chat-catalog.company-secret-controller-baseline.v2"
+          "current": "paperclip.chat-catalog.company-secret-controller-baseline.v7"
+        },
+        {
+          "key": "secrets.personal-secret",
+          "field": "sourceFiles",
+          "previous": [
+            "chat-catalog-domains/external-personal-secret.ts",
+            "chat-catalog-domains/external-secret-endpoint.ts",
+            "chat-catalog-domains/external-private-browser.ts",
+            "chat-catalog-domains/external-private-browser-worker.ts",
+            "chat-catalog-domains/external-credential-language.ts",
+            "chat-catalog-domains/external-secret-scan.ts",
+            "chat-catalog-domains/identity-auth.ts",
+            "chat-catalog-domains/identity-private-browser.ts",
+            "chat-catalog-domains/identity-private-browser-worker.ts",
+            "chat-catalog-domains/identity-wizard.ts",
+            "chat-catalog-domains/identity-support.ts",
+            "chat-catalog-domains/external-support.ts",
+            "chat-catalog-domains/internal-support.ts",
+            "run-observations.ts",
+            "chat-flow.ts",
+            "../../server/src/home-paths.ts",
+            "../e2e/fetch-allowed-port.ts",
+            "../../server/src/routes/secrets.ts",
+            "../../server/src/services/secrets.ts",
+            "../../server/src/services/heartbeat/run-preparation.ts",
+            "../../ui/src/pages/secrets/SetMyUserSecretDialog.tsx",
+            "chat-scenarios/secrets.yaml"
+          ],
+          "current": [
+            "chat-catalog-domains/external-personal-secret.ts",
+            "chat-catalog-domains/external-secret-question.ts",
+            "chat-catalog-domains/external-secret-endpoint.ts",
+            "chat-catalog-domains/external-private-browser.ts",
+            "chat-catalog-domains/external-private-browser-worker.ts",
+            "chat-catalog-domains/external-credential-language.ts",
+            "chat-catalog-domains/external-secret-scan.ts",
+            "chat-catalog-domains/identity-auth.ts",
+            "chat-catalog-domains/identity-private-browser.ts",
+            "chat-catalog-domains/identity-private-browser-worker.ts",
+            "chat-catalog-domains/identity-wizard.ts",
+            "chat-catalog-domains/identity-support.ts",
+            "chat-catalog-domains/external-support.ts",
+            "chat-catalog-domains/internal-support.ts",
+            "run-observations.ts",
+            "chat-flow.ts",
+            "../../server/src/home-paths.ts",
+            "../e2e/fetch-allowed-port.ts",
+            "../../server/src/routes/secrets.ts",
+            "../../server/src/services/secrets.ts",
+            "../../server/src/services/heartbeat/run-preparation.ts",
+            "../../ui/src/pages/secrets/SetMyUserSecretDialog.tsx",
+            "chat-scenarios/secrets.yaml"
+          ]
         },
         {
           "key": "secrets.personal-secret",
@@ -1228,6 +1408,12 @@
               "current-owner-missing-required-personal-value"
             ]
           }
+        },
+        {
+          "key": "secrets.personal-secret",
+          "field": "oracleVersion",
+          "previous": "paperclip.chat-catalog.external.v1",
+          "current": "paperclip.chat-catalog.personal-secret.v8"
         },
         {
           "key": "skills.author-skill",
@@ -1246,14 +1432,16 @@
             "chat-catalog-domains/integrator-skill-versions.ts",
             "chat-catalog-domains/identity-support.ts",
             "../../ui/src/components/MarkdownEditor.tsx",
-            "../../ui/src/pages/SkillStudio.tsx"
+            "../../ui/src/pages/SkillStudio.tsx",
+            "../../ui/src/pages/CompanySkills.tsx",
+            "../../ui/src/lib/company-skill-routes.ts"
           ]
         },
         {
           "key": "skills.author-skill",
           "field": "oracleVersion",
           "previous": "paperclip.chat-catalog.integrator.v1",
-          "current": "paperclip.chat-catalog.skill-authoring.v2"
+          "current": "paperclip.chat-catalog.skill-authoring.v4"
         },
         {
           "key": "skills.enable-for-agent",
@@ -1476,16 +1664,46 @@
           "field": "oracleVersion",
           "previous": "paperclip.chat-catalog.external.v1",
           "current": "paperclip.chat-catalog.team-configure.v2"
+        },
+        {
+          "key": "connection-setup.secure-api-key",
+          "field": "oracleVersion",
+          "previous": "paperclip.chat-catalog.external.v1",
+          "current": "paperclip.chat-catalog.external.v4"
+        },
+        {
+          "key": "secrets.least-scope-delivery",
+          "field": "oracleVersion",
+          "previous": "paperclip.chat-catalog.external.v1",
+          "current": "paperclip.chat-catalog.external.v4"
+        },
+        {
+          "key": "secrets.secret-proposal",
+          "field": "oracleVersion",
+          "previous": "paperclip.chat-catalog.external.v1",
+          "current": "paperclip.chat-catalog.external.v4"
+        },
+        {
+          "key": "secrets.vault-reference",
+          "field": "oracleVersion",
+          "previous": "paperclip.chat-catalog.external.v1",
+          "current": "paperclip.chat-catalog.external.v4"
+        },
+        {
+          "key": "teams.install-team",
+          "field": "oracleVersion",
+          "previous": "paperclip.chat-catalog.external.v1",
+          "current": "paperclip.chat-catalog.team-install.v3"
         }
       ],
       "runtimeConditions": {
         "toolGuidance106": {
           "corePR": 18717,
-          "corePRUnmerged": true,
+          "corePRUnmerged": false,
           "sourcePath": "packages/paperclip-runner/src/protocol-actions/create-skill.ts",
           "sourceSha256": "02738a3afec54d7d5f417c10efd96f428409da4748d58d9bd60c2c4a6457916e",
           "queryAndModelUnchanged": true,
-          "condition": "Candidate-only new-authoring versus existing-source-import guidance; own catalogs regenerated, no master inventory transplant."
+          "condition": "Reviewed new-authoring versus existing-source-import guidance; source PR18717 is merged. Own catalog source bytes remain pinned without a master catalog transplant."
         },
         "studio144Accounting": {
           "key": "skills.studio-test",
@@ -1505,8 +1723,8 @@
           "condition": "Reviewed synthetic staging input only; per-worker singleton550 enables it; production feed and global index unchanged."
         },
         "sdkPublicProof": {
-          "previousRegistrySha256": "018b5b15450e84f63920575de3b5903f7838678ef66a1e17aa050e0b21b40319",
-          "registrySha256": "32c7971e1d9c9d31cd6791045b0265f0475c8f10932ff6dd34681681b6a89342",
+          "previousRegistrySha256": "8ecea303821644fa8b7c21d042086096d43dda6c1615b1ca00fbcc4ebb9389c4",
+          "registrySha256": "efa70621e9fb42aa185f7ee616a1a726aa3eccb367e67e28817cedf26ef2ade8",
           "inputCount": 506,
           "scannerAndCanaryCertificatesUnchanged": true,
           "plugin558StillHeld": true,
@@ -1514,17 +1732,72 @@
           "previousExpectedLockSha256": "c7f23021335b60da0cff1dd4c75cf8b948333ef3165d7d1703eb79a589edb798",
           "expectedLockSha256": "54a81b2ed3f1f85eaa085c034560ac248e384db34fbc7aba8c5a3846c29b3ce8",
           "historical43Finding": "detector3 unresolved_context/publicSource null; owning proof rejected stale expected lock",
-          "newCandidate115Unqualified": true
+          "newCandidate115Unqualified": true,
+          "sourceInputsChanged": true,
+          "changedInputPaths": [
+            "packages/shared/src/types/teams-catalog.ts"
+          ],
+          "compileQualification": {
+            "baselineSourceSha": "2c8f1cf44e2fc536c9e8d10852e2f5ac44dd0853",
+            "compiledSourceSha": "ce293f7ac71af1e0f8cc8773c02fc07dc1247f95",
+            "acceptedSourceSha": "25cd5e4ebb6b955701778d2d1d702f86a573cfaa",
+            "all506InputGitBlobsMatched": true,
+            "owningSharedAndPluginSdkTypeScriptBuildsPassed": true,
+            "changedRuntimeJavaScriptFiles": 0,
+            "changedDeclarationFiles": [
+              "packages/shared/dist/types/teams-catalog.d.ts"
+            ],
+            "emittedResourceLinkConsumerCompiled": true,
+            "unknownResourceKindRejected": true,
+            "sourceSdkControlsPassed": 51,
+            "inputAndBuildCustodyControlsPassed": 20,
+            "runtimeHeldCasesRemainHeld": true,
+            "previousQualification": {
+              "baselineSourceSha": "abbde061c7ec9181021858f7b1af21a48637f97f",
+              "compiledSourceSha": "8d19f83b9467bd21d9a1fcd52e10ed372cfa2fbf",
+              "acceptedSourceSha": "2c8f1cf44e2fc536c9e8d10852e2f5ac44dd0853",
+              "all506InputGitBlobsMatched": true,
+              "owningSharedAndPluginSdkTypeScriptBuildsPassed": true,
+              "changedRuntimeJavaScriptFiles": 1,
+              "changedRuntimeJavaScriptPaths": [
+                "packages/shared/dist/connection-intent-guidance.js"
+              ],
+              "changedDeclarationFiles": [
+                "packages/shared/dist/connection-intent-guidance.d.ts"
+              ],
+              "emittedSecureEntryGuidanceConsumerPassed": true,
+              "existingConnectionRequestAuthorityRetained": true,
+              "sourceSdkControlsPassed": 51,
+              "inputAndBuildCustodyControlsPassed": 20,
+              "runtimeHeldCasesRemainHeld": true,
+              "previousQualification": {
+                "baselineSourceSha": "124232037eebe73a513907b08f0e96bfdd454c82",
+                "compiledSourceSha": "6abe5739a713d0a8bb0308b1495846881b82d253",
+                "acceptedSourceSha": "b734393eff0d7ef85b7ad8abd556d2a66ca3a4e6",
+                "all506InputGitBlobsMatched": true,
+                "owningSharedAndPluginSdkTypeScriptBuildsPassed": true,
+                "changedRuntimeJavaScriptFiles": 0,
+                "changedDeclarationFiles": [
+                  "packages/shared/dist/types/work-timeline.d.ts"
+                ],
+                "existingAndUnassignedConsumerCompiled": true,
+                "unknownEventKindRejected": true,
+                "sourceSdkControlsPassed": 51,
+                "inputAndBuildCustodyControlsPassed": 20,
+                "runtimeHeldCasesRemainHeld": true
+              }
+            }
+          }
         },
         "toolProposal487": {
           "corePr": 18734,
           "coreHead": "50600786f755b6602989f3b0f88cd090ff948196",
-          "corePRUnmerged": true,
-          "condition": "Candidate-only reviewed disclosure plus bounded pre-trim guard; no authority change. CorePR18734 remainsunmerged.",
+          "corePRUnmerged": false,
+          "condition": "Reviewed disclosure and bounded pre-trim guard from merged CorePR18734; no authority change.",
           "replay": {
             "corePR": 18742,
             "coreHead": "61996a96dd09e90a5788e8711a94fc5ae631f425",
-            "corePRUnmerged": true,
+            "corePRUnmerged": false,
             "condition": "A new Ask-first request only for an authenticated later same-person human intent after the prior decline; same-intent retry and derived or foreign sources remain denied. No approval/execution authority change.",
             "acceptedDirectSources": [
               "issue.comment",
@@ -1536,9 +1809,9 @@
       },
       "candidateLauncherSnapshot": {
         "path": "fixtures/chat-repair-candidate-launcher.txt",
-        "targetSha": "ab2019e976076ec0eb60b026844f3d9211cb0208",
+        "targetSha": "5aef4bffa2b106f2066bf2485338798f04a702bd",
         "sourcePath": "tests/runner-e2e/launch.ts",
-        "gitBlobOid": "dba1467e211611f37937e9e1fc4c0c5be4329cbc"
+        "gitBlobOid": "c88df15f509b2ac8638af826647a97d45f16bd1f"
       }
     }
   },
@@ -2073,25 +2346,27 @@
       "externalInput": null,
       "installedSource": null,
       "originalQuery": "Walk me through how the launch work progressed this week.",
-      "expectedOutcome": "The agent builds an ordered account from saved timeline and task events, including pauses and failed attempts. It uses the requested timezone and distinguishes recorded facts from interpretation. Links let the person inspect the major milestones without exposing hidden tasks.",
+      "expectedOutcome": "The agent builds an ordered account from saved timeline and task events, including pauses and failed attempts. It respects any explicitly requested timezone and distinguishes recorded facts from interpretation. Links let the person inspect the major milestones without exposing hidden tasks.",
       "originalContext": "Several visible launch tasks have timestamped changes and handoffs.",
       "capabilities": [
         "activity/timeline"
       ],
       "checks": null,
-      "oracleVersion": "paperclip.chat-catalog.internal.v1",
+      "oracleVersion": "paperclip.chat-catalog.work-timeline.v9",
       "sourceFiles": [
         "chat-catalog-domains/internal-definition.ts",
         "chat-catalog-domains/internal-support.ts",
         "chat-catalog-domains/internal-activity.ts",
         "chat-scenarios/activity.yaml",
         "chat-catalog-domains/internal-work-timeline.ts",
+        "chat-catalog-domains/internal-timeline-narrative.ts",
         "chat-catalog-domains/internal-timeline-verifier.ts",
         "chat-catalog-domains/internal-privacy.ts",
         "chat-catalog-domains/identity-auth.ts",
         "chat-catalog-domains/internal-routine-audit.ts",
         "../e2e/fetch-allowed-port.ts",
-        "../../server/src/services/native-runtime/status-decision-committer.ts"
+        "../../server/src/services/native-runtime/status-decision-committer.ts",
+        "../../server/src/services/work-timeline.ts"
       ],
       "screenshot": "final-state.png",
       "evidenceKind": "private-final-state-png",
@@ -3155,9 +3430,13 @@
         "questions-and-approvals/tool-review"
       ],
       "checks": null,
-      "oracleVersion": "paperclip.chat-catalog.app-review.v2",
+      "oracleVersion": "paperclip.chat-catalog.app-review.v6",
       "sourceFiles": [
         "chat-catalog-domains/external-app-review.ts",
+        "chat-catalog-domains/external-app-review-outcomes.ts",
+        "chat-catalog-domains/external-app-review-probe.ts",
+        "chat-catalog-domains/external-app-review-diagnostic.ts",
+        "../../packages/shared/src/validators/issue.ts",
         "chat-catalog-domains/external-provider.ts",
         "chat-catalog-domains/identity-support.ts",
         "chat-catalog-domains/external-secret-scan.ts",
@@ -6295,7 +6574,7 @@
         "connection-setup/credentials"
       ],
       "checks": null,
-      "oracleVersion": "paperclip.chat-catalog.external.v1",
+      "oracleVersion": "paperclip.chat-catalog.external.v4",
       "sourceFiles": [
         "chat-catalog-domains/external-secure-key.ts",
         "chat-query-attachments.ts",
@@ -8287,7 +8566,7 @@
         "navigation-preferences/announcements"
       ],
       "checks": null,
-      "oracleVersion": "paperclip.chat-catalog.announcement-dismissal.v2",
+      "oracleVersion": "paperclip.chat-catalog.announcement-dismissal.v3",
       "sourceFiles": [
         "chat-catalog-domains/identity-navigation-boundaries.ts",
         "chat-catalog-domains/identity-auth.ts",
@@ -9600,7 +9879,7 @@
         "agents/hire"
       ],
       "checks": null,
-      "oracleVersion": "paperclip.chat-catalog.hire-revision.native1017.v3",
+      "oracleVersion": "paperclip.chat-catalog.hire-revision.native1017.v5",
       "sourceFiles": [
         "chat-catalog-domains/identity-hire-revision.ts",
         "chat-catalog-domains/identity-hire-model-choice.ts",
@@ -9644,7 +9923,7 @@
         "questions-and-approvals/questions"
       ],
       "checks": null,
-      "oracleVersion": "paperclip.chat-catalog.required-question.v2",
+      "oracleVersion": "paperclip.chat-catalog.required-question.v3",
       "sourceFiles": [
         "chat-catalog-domains/identity-support.ts",
         "chat-catalog-domains/internal-support.ts",
@@ -10865,9 +11144,10 @@
         "connection-setup/credentials"
       ],
       "checks": null,
-      "oracleVersion": "paperclip.chat-catalog.company-secret-controller-baseline.v2",
+      "oracleVersion": "paperclip.chat-catalog.company-secret-controller-baseline.v7",
       "sourceFiles": [
         "chat-catalog-domains/external-company-secret.ts",
+        "chat-catalog-domains/external-secret-question.ts",
         "chat-catalog-domains/external-private-browser.ts",
         "chat-catalog-domains/external-private-browser-worker.ts",
         "chat-catalog-domains/external-credential-language.ts",
@@ -10916,7 +11196,7 @@
         "secrets/runtime-delivery"
       ],
       "checks": null,
-      "oracleVersion": "paperclip.chat-catalog.external.v1",
+      "oracleVersion": "paperclip.chat-catalog.external.v4",
       "sourceFiles": [
         "chat-catalog-domains/external-secret-delivery.ts",
         "chat-catalog-domains/external-secret-endpoint.ts",
@@ -10980,9 +11260,10 @@
         "secrets/user-secrets"
       ],
       "checks": null,
-      "oracleVersion": "paperclip.chat-catalog.external.v1",
+      "oracleVersion": "paperclip.chat-catalog.personal-secret.v8",
       "sourceFiles": [
         "chat-catalog-domains/external-personal-secret.ts",
+        "chat-catalog-domains/external-secret-question.ts",
         "chat-catalog-domains/external-secret-endpoint.ts",
         "chat-catalog-domains/external-private-browser.ts",
         "chat-catalog-domains/external-private-browser-worker.ts",
@@ -11040,7 +11321,7 @@
         "secrets/proposals"
       ],
       "checks": null,
-      "oracleVersion": "paperclip.chat-catalog.external.v1",
+      "oracleVersion": "paperclip.chat-catalog.external.v4",
       "sourceFiles": [
         "chat-catalog-domains/external-secret-proposal.ts",
         "chat-catalog-domains/external-secret-scan.ts",
@@ -11103,7 +11384,7 @@
         "secrets/vault-import"
       ],
       "checks": null,
-      "oracleVersion": "paperclip.chat-catalog.external.v1",
+      "oracleVersion": "paperclip.chat-catalog.external.v4",
       "sourceFiles": [
         "chat-catalog-domains/external-vault-reference.ts",
         "chat-catalog-domains/external-fixtures.ts",
@@ -11161,7 +11442,7 @@
         "skills/authoring"
       ],
       "checks": null,
-      "oracleVersion": "paperclip.chat-catalog.skill-authoring.v2",
+      "oracleVersion": "paperclip.chat-catalog.skill-authoring.v4",
       "sourceFiles": [
         "chat-catalog-domains/integrator-support.ts",
         "chat-catalog-domains/internal-support.ts",
@@ -11170,7 +11451,9 @@
         "chat-catalog-domains/integrator-skill-versions.ts",
         "chat-catalog-domains/identity-support.ts",
         "../../ui/src/components/MarkdownEditor.tsx",
-        "../../ui/src/pages/SkillStudio.tsx"
+        "../../ui/src/pages/SkillStudio.tsx",
+        "../../ui/src/pages/CompanySkills.tsx",
+        "../../ui/src/lib/company-skill-routes.ts"
       ],
       "screenshot": "final-state.png",
       "evidenceKind": "private-final-state-png",
@@ -12957,7 +13240,7 @@
         "agents/hire"
       ],
       "checks": null,
-      "oracleVersion": "paperclip.chat-catalog.external.v1",
+      "oracleVersion": "paperclip.chat-catalog.team-install.v3",
       "sourceFiles": [
         "chat-catalog-domains/external-team-install.ts",
         "chat-catalog-domains/external-team-conditional.ts",
@@ -13380,5 +13663,5 @@
       "boundaryTarget": null
     }
   ],
-  "launcherSha256": "2f6f1a3c5f646020424477c10ca44ce95b1fa9d46dfc28998698580d09c4fadf"
+  "launcherSha256": "2b9a6953ee51f0ea0dbbd475b0491d9a6c39a1d6835eeaa912e0dbb7cf987724"
 }

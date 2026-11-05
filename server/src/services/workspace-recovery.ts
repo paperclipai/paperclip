@@ -31,6 +31,7 @@ import { SYSTEM_RECOVERY_MAX_RETRIES, createSystemRecovery, failSystemRecovery, 
 import { inspectWorkspaceRecoverySource, workspaceRecoverySourceEligible, workspaceSourceBindingFailure } from "./workspace-recovery-source.js";
 import { preserveWorkspaceSnapshot } from "./workspace-recovery-snapshot.js";
 import { adoptHistoricalWorkspaceRecoveries } from "./workspace-recovery-backfill.js";
+import { canAdoptNativeSourceRetention, retainNativeRecoverySource, settleRecoveredNativeSourceRetention } from "./native-runtime/native-source-retention.js";
 import { saveRemoteWorkspace } from "./remote-workspaces.js";
 
 const exportCauses = ["native_workspace_sync_out_unrecoverable", "native_workspace_sync_out_retry_exhausted"];
@@ -156,11 +157,15 @@ export async function recoverRetainedWorkspace(input: Source & { db: Db; environ
   const { db } = input;
   await adoptSystemRecovery(db, input);
   const initial = await loadSystemRecovery(db, input);
-  if (!initial || initial.state === "complete" || initial.state === "exhausted" ||
+  if (!initial || initial.state === "complete" || (initial.state === "exhausted" && !canAdoptNativeSourceRetention(initial)) ||
       (initial.nextAttemptAt !== null && initial.nextAttemptAt > Date.now())) return;
   const runAttempt = async (ownership: { token: string; assertHeld(): Promise<void> }) => {
     let current = await loadSystemRecovery(db, input);
     if (!current) return;
+    if (current.state === "exhausted") {
+      current = await retainNativeRecoverySource(db, input, current, ownership);
+      if (!current) return;
+    }
     const reserved = reserveSystemRecoveryAttempt(current);
     if (!reserved) {
       if (current.state !== "exhausted" && current.deadlineAt !== null && Date.now() >= current.deadlineAt)
@@ -206,7 +211,7 @@ export async function recoverRetainedWorkspace(input: Source & { db: Db; environ
             continue;
           }
         }
-        let reference = source.reference;
+        let reference = source.preservationOnly ? null : source.reference;
         if (reference) {
           try { await readNativeWorkspaceSyncLocalCwd({ runId: input.runId, companyId: input.companyId,
             workspaceId: reference.workspaceId, reference }); }
@@ -358,6 +363,8 @@ export async function recoverRetainedWorkspace(input: Source & { db: Db; environ
           metadata: { owningService: "workspace_recovery", preservationOperationIds: next.preservationOperationIds } });
         if (!await updateSystemRecovery(tx as unknown as Db, input, current!, next))
           throw new Error("workspace_recovery_generation_changed");
+        if (inspected.action.evidence.nativeSourceRetention && !await settleRecoveredNativeSourceRetention(tx as unknown as Db, input, next.preservationOperationIds))
+          throw new SystemRecoveryFailure("effect_unresolved", "recheck_evidence");
         return persistActivity(tx as unknown as Db, { companyId: input.companyId, actorType: "system", actorId: "workspace-recovery",
           action: "issue.workspace_recovered", entityType: "issue", entityId: input.issueId, runId: input.runId,
           details: { recoveryActionId: input.actionId, summary: "Saved work recovered." } });
@@ -446,6 +453,17 @@ export function retainedWorkspaceCandidates(db: Db, cursor?: string, unfinishedO
     where ${agentWakeupRequests.companyId} = ${issueRecoveryActions.companyId}
     and ${agentWakeupRequests.status} = 'deferred_issue_execution' and ${agentWakeupRequests.requestedByActorType} = 'user'
     and ${agentWakeupRequests.payload}->>'issueId' = ${issueRecoveryActions.sourceIssueId}::text)`;
+  const interruptedPreparation = sql`(${heartbeatRuns.runtimeMode} = 'legacy'
+    and ${heartbeatRuns.status} = 'interrupted'
+    and ${heartbeatRuns.runtimeModeResolvedAt} is null and ${heartbeatRuns.executionStage} = 'preparing'
+    and ${heartbeatRuns.runnerProfileJson}#>>'{adapterDispatch,adapterType}' = 'paperclip_runner'
+    and ${issueRecoveryActions.evidence}#>>'{automaticRecovery,replay}' = 'blocked'
+    and exists (select 1 from ${issues} where ${issues.companyId} = ${heartbeatRuns.companyId}
+      and ${issues.id} = ${issueRecoveryActions.sourceIssueId} and ${issues.assigneeAgentId} = ${heartbeatRuns.agentId}
+      and ${issues.status} in ('todo', 'in_progress', 'in_review', 'blocked')
+      and ${issues.executionRunId} is null and ${issues.checkoutRunId} is null
+      and (${issues.status} <> 'blocked' or
+        ${issueRecoveryActions.evidence}#>>'{nativeBootstrapFailureBlock,statusVersion}' = ${issues.statusVersion}::text)))`;
   return db.select({ action: issueRecoveryActions, run: heartbeatRuns }).from(issueRecoveryActions)
     .innerJoin(heartbeatRuns, and(eq(heartbeatRuns.companyId, issueRecoveryActions.companyId), eq(heartbeatRuns.id,
       sql`case when ${issueRecoveryActions.evidence}->>'runId' ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
@@ -454,12 +472,12 @@ export function retainedWorkspaceCandidates(db: Db, cursor?: string, unfinishedO
       workspaceRecoverySourceEligible(true),
       unfinishedOnly ? sql`${issueRecoveryActions.evidence}#>>'{systemRecovery,state}' in ('scheduled', 'running', 'awaiting_evidence')` : undefined,
       obligationsOnly ? sql`(${issueRecoveryActions.evidence}#>>'{systemRecovery,state}' in ('scheduled', 'running', 'awaiting_evidence')
-        or (${issueRecoveryActions.evidence}#>>'{systemRecovery,state}' = 'complete' and ${cleanup}) or ${waitingInput})` : undefined,
+        or (${issueRecoveryActions.evidence}#>>'{systemRecovery,state}' = 'complete' and (${cleanup} or ${interruptedPreparation})) or ${waitingInput})` : undefined,
       sql`(${issueRecoveryActions.evidence}#>>'{systemRecovery,state}' in ('scheduled', 'running', 'awaiting_evidence', 'complete', 'exhausted')
         and (${issueRecoveryActions.evidence}#>'{systemRecovery,nextAttemptAt}' = 'null'::jsonb
           or ${issueRecoveryActions.evidence}#>'{systemRecovery,nextAttemptAt}' <= to_jsonb(${Date.now()}::bigint)))`,
       sql`(${issueRecoveryActions.evidence}#>>'{workspaceRecovery,status}' is distinct from 'recovered' or
-        ${cleanup} or ${waitingInput})`,
+        ${cleanup} or ${waitingInput} or ${interruptedPreparation})`,
       cursor ? gt(issueRecoveryActions.id, cursor) : undefined,
       inFlightRunIds.length ? notInArray(heartbeatRuns.id, inFlightRunIds) : undefined,
     )).orderBy(asc(issueRecoveryActions.id)).limit(5);

@@ -339,7 +339,7 @@ describe("HTTP logger redaction", () => {
         createHttpLogger(pino({ redact: [...HTTP_LOG_REDACT_PATHS] }, stream)),
       );
       routes.post("/chat-webhooks/:publicId/:provider", (req, _res, next) => {
-        req.params.extra = privateFile;
+        (req.params as Record<string, string>).extra = privateFile;
         req.log.warn({ req }, "Webhook fixture rejected");
         const error = Object.assign(new Error(`SDK echoed ${privateText}`), {
           name: privateFile,

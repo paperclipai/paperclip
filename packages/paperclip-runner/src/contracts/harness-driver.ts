@@ -478,7 +478,7 @@ export interface PersistedHarnessSession {
   activeTurnId?: string | null;
   semanticResult?: PersistedHarnessSemanticResult | null;
   terminalTurns?: PersistedHarnessTurnTerminal[];
-  codexUsageBaseline?: { baseline: Record<string, number>; latest: Record<string, number> };
+  codexUsageBaseline?: { baseline: Record<string, number>; latest: Record<string, number>; accounted?: Record<string, number> };
   /** A result-less terminal task may spend this fail-closed one-shot recovery allowance. */
   dispositionOnlyRecoveryConsumed?: boolean;
   /** Exact accepted provider turn that spent the disposition-only allowance. */
@@ -496,10 +496,29 @@ export interface PersistedHarnessSession {
     | "allow_replacement_after_resume_failure";
 }
 
+/** Runner proof that saved provider state cannot be restored by this runner
+ * build. Restoring the same state again fails the same way. */
+export const PROVIDER_STATE_INCOMPATIBLE = "provider_state_incompatible";
+
 export interface HarnessSessionRecoveryResult {
   recovered: boolean;
   session?: HarnessSession;
   reason?: string;
+  /** Closed runner class of a deterministic recovery failure. */
+  failureClass?: typeof PROVIDER_STATE_INCOMPATIBLE;
+}
+
+/** Reads the closed class of an authenticated runner command failure. */
+export function runnerRecoveryFailureClass(
+  error: unknown,
+  depth = 0,
+): typeof PROVIDER_STATE_INCOMPATIBLE | undefined {
+  if (!error || typeof error !== "object" || depth > 5) return undefined;
+  const value = error as Record<string, unknown>;
+  const result = value.runnerCommandResult as Record<string, unknown> | undefined;
+  const detail = result?.result as Record<string, unknown> | undefined;
+  if (detail?.classification === PROVIDER_STATE_INCOMPATIBLE) return PROVIDER_STATE_INCOMPATIBLE;
+  return runnerRecoveryFailureClass(value.cause, depth + 1);
 }
 
 export interface HarnessSession {

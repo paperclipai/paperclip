@@ -299,7 +299,9 @@ tests this host; it is component coverage, not an end-to-end repair.
 
 Manual: prepare a failed run with error code `workspace_validation_failed`, a
 linked source task, and a live `workspace_validation` recovery action on that
-task. Open that exact run and compare its recovery diagnosis to the source task.
+task. For retained-file export recovery, use a matching active source action and
+terminal run; compare Recover saved files on the task and run inspector.
+Open that exact run and compare its recovery diagnosis to the source task.
 Use an eligible action from the run surface, return to the task,
 and verify the same action state, persisted outcome, and restored execution.
 Repeat with an actor who lacks authority. Verify that the run-page controls are

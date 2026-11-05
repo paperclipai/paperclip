@@ -15,6 +15,7 @@ import { hasAcknowledgedNativeRunStopRequest } from "../acknowledged-native-stop
 import { logger } from "../../middleware/logger.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "../delivery-work-notifications.js";
 import { preserveRemoteWorkspacePreparationFailure } from "./native-workspace-finalization-state.js";
+import { pinFailedObservedWorkspace } from "./native-observed-workspace-preservation.js";
 
 
 function workspaceRecoveryReference(profile: Record<string, unknown> | null | undefined) {
@@ -143,6 +144,7 @@ export async function preserveOrphanedNativeWorkspace(db: Db, lease: Pick<typeof
       return Boolean(retained && hasRequiredWorkspaceRecovery(retained.resultJson));
     }
     if (run.status !== "failed") return false;
+    if (await pinFailedObservedWorkspace(db, run.companyId, run.id)) return true;
     const retained = await preserveNativeFailedWorkspace(db, run);
     return Boolean(retained && hasRequiredWorkspaceRecovery(retained.resultJson));
   } catch (error) {

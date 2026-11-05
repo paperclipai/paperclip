@@ -3,13 +3,19 @@ import { withDatabaseOperation } from "@paperclipai/db";
 
 type BudgetOperation = "budget.accounting.lock_wait" | "budget.accounting.recover"
   | "budget.accounting.settlement" | "budget.accounting.transaction"
-  | "budget.admission.evaluate" | "budget.admission.reserve"
+  | "budget.admission.evaluate" | "budget.admission.inspect" | "budget.admission.reconcile" | "budget.admission.reserve"
   | "budget.cancellation.deliver" | "budget.enforcement.deliver"
   | "budget.enforcement.scope" | "budget.exposure.evaluate";
 
 /** Operator-gated OpenTelemetry only; these spans contain no prompt, receipt,
  * credential, or provider error text. Diagnostics never change accounting. */
-export function withBudgetSpan<T>(name: BudgetOperation, work: () => Promise<T>, attributes?: Record<string, number | boolean>) {
+type BudgetAttributes = {
+  "budget.accounting.owner"?: "run" | "decision" | "classifier" | "fast_response" | "browser";
+  "budget.enforcement.queue_delay_ms"?: number;
+  "budget.policy_count"?: number;
+};
+
+export function withBudgetSpan<T>(name: BudgetOperation, work: () => Promise<T>, attributes?: BudgetAttributes) {
   return withDatabaseOperation(name, async () => {
     if (!process.env.OTEL_EXPORTER_OTLP_ENDPOINT?.trim()) return work();
     let operation: Promise<T> | undefined;

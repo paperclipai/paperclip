@@ -68,7 +68,7 @@ const mockApprovalService = vi.hoisted(() => ({
 const mockInstanceSettingsService = vi.hoisted(() => ({
   get: vi.fn(async () => ({ defaultEnvironmentId: null })),
   getGeneral: vi.fn(async () => ({ censorUsernameInLogs: false })),
-  getExperimental: vi.fn(async (): Promise<{ enableNativeRunner: boolean; enableOpenAiDot?: boolean }> => ({ enableNativeRunner: false })),
+  getExperimental: vi.fn(async (): Promise<{ enableNativeRunner: boolean; enableOpenAiDot?: boolean; enableManagedSandboxOnly?: boolean }> => ({ enableNativeRunner: false })),
 }));
 
 const mockManagedAgentProfileService = vi.hoisted(() => ({
@@ -268,6 +268,7 @@ describe("agent routes adapter validation", () => {
     mockAccessService.setPrincipalPermission.mockResolvedValue(undefined);
     mockLogActivity.mockResolvedValue(undefined);
     mockSecretService.syncEnvBindingsForTarget.mockResolvedValue(undefined);
+    mockInstanceSettingsService.get.mockResolvedValue({ defaultEnvironmentId: null });
     mockInstanceSettingsService.getExperimental.mockResolvedValue({ enableNativeRunner: false });
     mockManagedAgentProfileService.requireQualified.mockResolvedValue({
       id: "managed-primary",
@@ -959,6 +960,46 @@ describe("agent routes adapter validation", () => {
     expect(mockAgentService.create).not.toHaveBeenCalled();
   });
 
+  it("selects the native Cursor API controller from the ordinary held Cloud setup card without a Computer", async () => {
+    const settings = { defaultEnvironmentId: null, experimental: { enableManagedSandboxOnly: true, enableNativeRunner: true } };
+    mockInstanceSettingsService.get.mockResolvedValue(settings);
+    mockInstanceSettingsService.getExperimental.mockResolvedValue(settings.experimental);
+    const environments = await import("../services/environments.js");
+    const findManaged = vi.fn(async () => null);
+    const getEnvironment = vi.fn(async () => null);
+    vi.spyOn(environments, "environmentService").mockReturnValue({ findManagedSandboxEnvironment: findManaged,
+      getById: getEnvironment, listBoundCompanyIds: vi.fn(async () => []) } as never);
+    const existing = { ...(await mockAgentService.getById()), adapterType: "process", adapterConfig: {},
+      status: "paused", lifecycleState: "paused", pauseReason: "setup", lifecycleHolds: ["setup"] };
+    mockAgentService.getById.mockResolvedValue(existing);
+    const app = await createApp();
+    const response = await requestApp(app, base => request(base).patch(`/api/agents/${existing.id}`).send({
+      name: "Cursor setup", adapterType: "cursor_cloud", runner: "auto", adapterConfig: {}, metadata: { setupAdapterPending: false },
+    }));
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    expect(response.body).toMatchObject({ lifecycleState: "paused", pauseReason: "setup", lifecycleHolds: ["setup"] });
+    expect(mockAgentService.update).toHaveBeenCalledWith(existing.id, expect.objectContaining({
+      adapterType: "paperclip_runner", defaultEnvironmentId: null,
+      adapterConfig: expect.objectContaining({ provider: "cursor_cloud", lifecycleMode: "per_turn" }),
+    }), expect.anything());
+    expect(findManaged).not.toHaveBeenCalled();
+    expect(getEnvironment).not.toHaveBeenCalled();
+    mockAgentService.update.mockClear();
+    mockAgentService.getById.mockResolvedValue({ ...existing, status: "idle", lifecycleState: "ready", pauseReason: null, lifecycleHolds: [] });
+    const active = await requestApp(app, base => request(base).patch(`/api/agents/${existing.id}`).send({
+      adapterType: "cursor_cloud", runner: "auto", adapterConfig: {}, setupOnly: true,
+    }));
+    expect(active.status).toBe(422);
+    expect(active.body.details?.code).toBe("managed_sandbox_unavailable");
+    expect(mockAgentService.update).not.toHaveBeenCalled();
+    const incompleteActive = await requestApp(app, base => request(base).patch(`/api/agents/${existing.id}`).send({
+      adapterType: "paperclip_runner", runner: "paperclip", adapterConfig: { provider: "cursor_cloud" }, setupOnly: true,
+    }));
+    expect(incompleteActive.status).toBe(422);
+    expect(incompleteActive.body.details?.code).toBe("paperclip_runner_cursor_cloud_model_required");
+    expect(mockAgentService.update).not.toHaveBeenCalled();
+  });
+
   it.each(["auto", "legacy"] as const)("creates Pi through the public route with %s selection and the experimental flag off", async runner => {
     const selection = await import("../services/agent-runner-selection.js");
     vi.spyOn(selection, "resolveNewAgentRunnerForCompany").mockImplementation(async (_db, _companyId, input) =>
@@ -1107,9 +1148,9 @@ describe("agent routes adapter validation", () => {
     );
   });
 
-  it("saves and reopens an explicit native Cursor Cloud setup without Codex defaults", async () => {
-    mockInstanceSettingsService.getExperimental.mockResolvedValue({ enableNativeRunner: true });
-    let existing = { ...(await mockAgentService.getById()), adapterType: "cursor_cloud", adapterConfig: {},
+  it("saves and reopens native Cursor API setup under managed-only policy without a Computer", async () => {
+    mockInstanceSettingsService.getExperimental.mockResolvedValue({ enableNativeRunner: true, enableManagedSandboxOnly: true });
+    let existing = { ...(await mockAgentService.getById()), adapterType: "cursor_cloud", adapterConfig: {}, defaultEnvironmentId: "33333333-3333-4333-8333-333333333333",
       status: "paused", lifecycleState: "paused", pauseReason: "setup", lifecycleHolds: ["setup"] };
     mockAgentService.getById.mockImplementation(async () => existing);
     mockAgentService.update.mockImplementation(async (_id, patch) => { existing = { ...existing, ...patch }; return existing; });
@@ -1123,6 +1164,7 @@ describe("agent routes adapter validation", () => {
       provider: "cursor_cloud", model: config.model, repoUrl: config.repoUrl, repoRef: "feature", env: config.env, lifecycleMode: "per_turn",
     } });
     expect(saved.body.adapterConfig).not.toHaveProperty("codexPermissionMode");
+    expect(saved.body.defaultEnvironmentId).toBeNull();
     const reopened = await requestApp(app, baseUrl => request(baseUrl).get(`/api/agents/${existing.id}/configuration`));
     expect(reopened.status, JSON.stringify(reopened.body)).toBe(200);
     expect(reopened.body.adapterConfig).toEqual(saved.body.adapterConfig);
