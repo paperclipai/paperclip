@@ -146,3 +146,7 @@ it("accepts an excluded chat destination without hiding a later positive request
   expect(deploymentSecretGuidance(context + "Enter and save the key there — not here in chat.")).toBe(true);
   expect(deploymentSecretGuidance(context + "Enter the key in Settings — then paste it here in chat.")).toBe(false);
 });
+
+it("rejects a company chat destination after an excluded destination", () => {
+  expect(deploymentSecretGuidance("Use secure settings for Morgan's deployment credential environment binding. Enter your credential in the secure form — not here, but in chat.")).toBe(false);
+});
