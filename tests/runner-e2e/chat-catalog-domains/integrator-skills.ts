@@ -17,11 +17,12 @@ function websiteChecklistChecks(markdown: string): boolean[] {
   // separate checks isolated so an unrelated earlier width cannot ground it.
   const blocks = markdown.split(/\n(?=\s*(?:\d+[.)]|#{1,6})\s)/).map(block => block.replace(/\s+/g, " "));
   const forbidden = /\b(?:skip|omit|ignore|don't|do not|need not|not required|optional)\b/i;
+  const mobileWaiver = /\b(?:skip|omit|ignore|need not|not required|optional)\b|\b(?:don't|do not)\s+(?:check|test|verify|confirm|assess|measure|review)\b/i;
   const instruction = (requirements: RegExp[]) => instructions.some(text => requirements.every(pattern => pattern.test(text)) && !forbidden.test(text));
   return [instruction([/\bkeyboard\b/i, /(?:\b(?:all|every)\b.*\b(?:interactive|control|element|action|navigation)|\b(?:interactive|control|element|action|navigation)\b.*\b(?:all|every)\b)/i, /(?:only|alone|without (?:a |the )?mouse|no mouse)/i]),
     instruction([/\b(?:all|every|each)\b/i, /\b(?:form|input)\b/i, /\b(?:field|control|input)s?\b/i, /\bvisible\b/i, /\blabels?\b/i]),
     instruction([/\b(?:text|foreground)\b/i, /\bcontrast\b/i, /\bWCAG(?:\s+2\.\d)?\s+(?:level\s+)?AA\b/i, /\b(?:check|verify|ensure|measure|assess|meet|meets|satisfy)\b/i]),
-    blocks.some(text => !forbidden.test(text) && [/\b375\s*(?:px|pixels?)?\b/i, /\b(?:viewport|wide|width)\b/i, /(?:without horizontal (?:scrolling|overflow)|no horizontal (?:scrolling|overflow)|(?:must not|does not|doesn't) (?:scroll|overflow) horizontally|(?:confirm|check|verify)[^.!?]{0,70}whether[^.!?]{0,70}horizontal scrolling)/i].every(pattern => pattern.test(text)))];
+    blocks.some(text => !mobileWaiver.test(text) && [/\b375\s*(?:px|pixels?)?\b/i, /\b(?:viewport|wide|width)\b/i, /(?:without horizontal (?:scrolling|overflow)|no horizontal (?:scrolling|overflow)|(?:must not|does not|doesn't) (?:scroll|overflow) horizontally|(?:confirm|check|verify)[^.!?]{0,70}whether[^.!?]{0,70}horizontal scrolling)/i].every(pattern => pattern.test(text)))];
 }
 export function preservesWebsiteChecklist(markdown: string): boolean {
   return websiteChecklistChecks(markdown).every(Boolean);
@@ -148,7 +149,7 @@ export async function inspectAuthoredSkill(ctx: ChatCatalogContext, state: Recor
 const define = (id: string, setup: ChatCatalogCase["setup"]): ChatCatalogCase => {
   const base = integratorDefinition("skills", id, setup, observeSkills, gradeIntegratorSkills, verifySkill);
   base.sourceFiles = [...base.sourceFiles, "chat-catalog-domains/integrator-skill-versions.ts"];
-  return id === "skills.author-skill" ? { ...base, authentication: "human-session", oracleVersion: "paperclip.chat-catalog.skill-authoring.v3", sourceFiles: [...base.sourceFiles, "chat-catalog-domains/identity-support.ts", "../../ui/src/components/MarkdownEditor.tsx", "../../ui/src/pages/SkillStudio.tsx", "../../ui/src/pages/CompanySkills.tsx", "../../ui/src/lib/company-skill-routes.ts"], queryAttachments: factualContextQueryAttachment("skill-context.md"),
+  return id === "skills.author-skill" ? { ...base, authentication: "human-session", oracleVersion: "paperclip.chat-catalog.skill-authoring.v4", sourceFiles: [...base.sourceFiles, "chat-catalog-domains/identity-support.ts", "../../ui/src/components/MarkdownEditor.tsx", "../../ui/src/pages/SkillStudio.tsx", "../../ui/src/pages/CompanySkills.tsx", "../../ui/src/lib/company-skill-routes.ts"], queryAttachments: factualContextQueryAttachment("skill-context.md"),
     async act(ctx, state) { remainingIdentityObservationBudget(ctx); await waitForReply(ctx, ctx.observationDeadlineAt); await inspectAuthoredSkill(ctx, state, await observeSkills(ctx, state)); },
     async verifyResult(ctx, state, value) { const o = observation(value); if (!o) throw new Error("Missing authored skill inspection evidence"); await inspectAuthoredSkill(ctx, state, o); },
   } : base;
