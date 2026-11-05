@@ -12,7 +12,11 @@ import {
 } from "./local-process-sandbox.js";
 import { buildSshSpawnTarget, type SshRemoteExecutionSpec } from "./ssh.js";
 import { redactCommandText } from "./command-redaction.js";
-import { prepareWindowsProcessJob, requestWindowsProcessJobStop } from "./windows-process-job.js";
+import {
+  forceWindowsProcessJobStop,
+  prepareWindowsProcessJob,
+  requestWindowsProcessJobStop,
+} from "./windows-process-job.js";
 import { resolveCommandPath, windowsCommandTarget } from "./process-command.js";
 import { paperclipChatFilePreparationDelivery } from "./chat-file-delivery.js";
 import {
@@ -129,7 +133,9 @@ export function signalRunningProcess(
 ) {
   if (process.platform === "win32" && running.child.pid &&
       running.child.exitCode === null && running.child.signalCode === null &&
-      requestWindowsProcessJobStop(running.child)) return;
+      (signal === "SIGKILL"
+        ? forceWindowsProcessJobStop(running.child)
+        : requestWindowsProcessJobStop(running.child, signal))) return;
   if (
     process.platform !== "win32" &&
     running.processGroupId &&

@@ -9,9 +9,20 @@ import { resolveCommandPath, windowsCommandTarget } from "./process-command.js";
 
 const execute = promisify(execFile);
 let supervisor: Promise<string> | undefined;
-type OwnedJob = { child?: ChildProcess; startedAt: string; executable: string; event: string; settled: boolean; closed: boolean };
+type OwnedJob = {
+  child?: ChildProcess;
+  forceKill?: () => boolean;
+  stopTimer?: NodeJS.Timeout;
+  stopRequested?: boolean;
+  startedAt: string;
+  executable: string;
+  event: string;
+  settled: boolean;
+  closed: boolean;
+};
 const ownedJobs = new Map<number, OwnedJob>();
 const closingJobs = new WeakMap<ChildProcess, Promise<void>>();
+const WINDOWS_PROCESS_JOB_STOP_TIMEOUT_MS = 5_000;
 
 async function prepareSupervisor(): Promise<string> {
   supervisor ??= (async () => {
@@ -52,25 +63,59 @@ export async function prepareWindowsProcessJob(command: string, args: string[], 
       if (ownedJobs.size >= 512) {
         for (const [oldPid, job] of ownedJobs) { if (job.closed) { ownedJobs.delete(oldPid); break; } }
       }
-      owned = { child, startedAt, executable, event, settled: false, closed: false };
+      owned = {
+        child,
+        forceKill: child.kill.bind(child, "SIGKILL"),
+        startedAt,
+        executable,
+        event,
+        settled: false,
+        closed: false,
+      };
       ownedJobs.set(pid, owned);
     },
     async settle() {
       if (owned) {
+        if (owned.stopTimer) clearTimeout(owned.stopTimer);
+        owned.stopTimer = undefined;
         owned.settled = await fs.readFile(receipt, "utf8").then(value => value === token, () => false);
         owned.closed = true;
         owned.child = undefined;
+        owned.forceKill = undefined;
       }
       await fs.rm(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
     },
   };
 }
 
-export function requestWindowsProcessJobStop(child: ChildProcess): boolean {
+export function forceWindowsProcessJobStop(child: ChildProcess): boolean {
+  const job = child.pid ? ownedJobs.get(child.pid) : undefined;
+  if (!job || job.child !== child || job.closed || !job.forceKill) return false;
+  if (job.stopTimer) clearTimeout(job.stopTimer);
+  job.stopTimer = undefined;
+  job.stopRequested = true;
+  return job.forceKill();
+}
+
+export function requestWindowsProcessJobStop(child: ChildProcess, signal?: NodeJS.Signals | number): boolean {
   const job = child.pid ? ownedJobs.get(child.pid) : undefined;
   if (!job || job.child !== child || job.closed) return false;
-  const stop = spawn(job.executable, ["stop", job.event], { windowsHide: true, stdio: "ignore", shell: false });
-  stop.on("error", () => {});
+  if (signal === "SIGKILL") return forceWindowsProcessJobStop(child);
+  if (job.stopRequested) return true;
+
+  let stop: ChildProcess;
+  try {
+    stop = spawn(job.executable, ["stop", job.event], { windowsHide: true, stdio: "ignore", shell: false });
+  } catch {
+    return false;
+  }
+
+  job.stopRequested = true;
+  const forceStop = () => { forceWindowsProcessJobStop(child); };
+  stop.once("error", forceStop);
+  stop.once("close", code => { if (code !== 0) forceStop(); });
+  job.stopTimer = setTimeout(forceStop, WINDOWS_PROCESS_JOB_STOP_TIMEOUT_MS);
+  job.stopTimer.unref?.();
   return true;
 }
 
@@ -86,7 +131,7 @@ export async function spawnWindowsProcessJob(command: string, args: string[], op
   const kill = child.kill.bind(child);
   child.kill = signal => {
     if (child.exitCode !== null || child.signalCode !== null) return false;
-    return requestWindowsProcessJobStop(child) || kill(signal);
+    return requestWindowsProcessJobStop(child, signal) || kill(signal);
   };
   const closing = new Promise<void>(resolve => {
     child.once("close", () => { void job.settle().catch(() => {}).finally(resolve); });
