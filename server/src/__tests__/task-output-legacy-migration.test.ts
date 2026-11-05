@@ -11,7 +11,7 @@ import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } fro
 
 const support = await getEmbeddedPostgresTestSupport();
 const describePostgres = support.supported ? describe : describe.skip;
-const migration = readFileSync(new URL("../../../packages/db/src/migrations/0428_medical_alex_power.sql", import.meta.url), "utf8");
+const migration = readFileSync(new URL("../../../packages/db/src/migrations/0432_task_provider_output_policies.sql", import.meta.url), "utf8");
 type Transaction = Parameters<Parameters<ReturnType<typeof createDb>["transaction"]>[0]>[0];
 
 describePostgres("legacy task output migration", () => {

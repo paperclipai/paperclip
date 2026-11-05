@@ -5,6 +5,7 @@ import { getTableName, type SQL } from "drizzle-orm";
 import { PgDialect } from "drizzle-orm/pg-core";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { HttpError } from "../errors.js";
+import type { LogActivityInput } from "../services/activity-log.js";
 import { hoistModuleGraph } from "./helpers/hoist-module-graph.js";
 import { inboxBlockedActivity } from "../../../tests/runner-e2e/product-journeys/inbox-triage-fixture.js";
 
@@ -56,7 +57,7 @@ const mockCompanyService = vi.hoisted(() => ({
 }));
 
 const mockBudgetService = vi.hoisted(() => ({
-  getInvocationBlock: vi.fn(async () => null),
+  getInvocationBlock: vi.fn(async (): Promise<unknown> => null),
 }));
 
 const mockProjectService = vi.hoisted(() => ({
@@ -93,16 +94,20 @@ const mockIssueThreadInteractionService = vi.hoisted(() => ({
 const mockIssueApprovalService = vi.hoisted(() => ({
   link: vi.fn(),
   unlink: vi.fn(),
-  listApprovalsForIssue: vi.fn(async () => []),
+  listApprovalsForIssue: vi.fn(async (): Promise<unknown[]> => []),
 }));
 const mockIssueRecoveryActionService = vi.hoisted(() => ({
-  getActiveForIssue: vi.fn(async () => null),
+  getActiveForIssue: vi.fn(async (): Promise<unknown> => null),
   listActiveForIssues: vi.fn(async () => new Map()),
-  resolveActiveForIssue: vi.fn(async () => null),
+  resolveActiveForIssue: vi.fn(async (): Promise<unknown> => null),
 }));
 const mockTaskWatchdogService = vi.hoisted(() => ({
   getActiveForIssue: vi.fn(async () => null),
-  revalidateMutationScope: vi.fn(async () => ({
+  revalidateMutationScope: vi.fn(async (): Promise<{
+    allowed: boolean;
+    reason?: string;
+    classification: { state: string; stopFingerprint?: string; liveIssueIds?: string[] };
+  }> => ({
     allowed: true,
     classification: { state: "stopped", stopFingerprint: "task_watchdog_stop:test" },
   })),
@@ -118,9 +123,9 @@ const mockTaskWatchdogService = vi.hoisted(() => ({
 const mockHeartbeatService = vi.hoisted(() => ({
   wakeup: vi.fn(async () => undefined),
   reportRunActivity: vi.fn(async () => undefined),
-  getRun: vi.fn(async () => null),
-  getActiveRunForAgent: vi.fn(async () => null),
-  cancelRun: vi.fn(async () => null),
+  getRun: vi.fn(async (): Promise<unknown> => null),
+  getActiveRunForAgent: vi.fn(async (): Promise<unknown> => null),
+  cancelRun: vi.fn(async (): Promise<unknown> => null),
   resumeTaskRetry: vi.fn(async () => undefined),
 }));
 const mockRunnerGoalService = vi.hoisted(() => ({
@@ -159,8 +164,8 @@ const mockExternalObjectService = vi.hoisted(() => ({
   syncDocumentSafely: vi.fn(async () => undefined),
   syncIssueSafely: vi.fn(async () => undefined),
 }));
-const mockIssueTreeControlService = vi.hoisted(() => ({ getActivePauseHoldGate: vi.fn(async () => null) }));
-const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
+const mockIssueTreeControlService = vi.hoisted(() => ({ getActivePauseHoldGate: vi.fn(async (): Promise<unknown> => null) }));
+const mockLogActivity = vi.hoisted(() => vi.fn(async (_db: unknown, _input: LogActivityInput) => undefined));
 const mockObserveCrossIssueInfluence = vi.hoisted(() => vi.fn(async () => null));
 
 const mockRetryWorkspaceExport = vi.hoisted(() => vi.fn());
@@ -412,7 +417,7 @@ function createRunContextDb(
   };
   const dbStub = {
     chatBindingQueries,
-    transaction: async (callback: (tx: typeof dbStub) => Promise<unknown>) => callback(dbStub),
+    transaction: async (callback: (tx: unknown) => Promise<unknown>) => callback(dbStub),
     select: vi.fn((selection: Record<string, unknown> = {}) => ({
       from: vi.fn((table: Parameters<typeof getTableName>[0]) => {
         if (humanInboxFixture && getTableName(table) === "issue_approvals") {
@@ -2852,7 +2857,7 @@ describe("agent issue mutation checkout ownership", () => {
   });
 
   it("uses the authorization decision path for assignment changes", async () => {
-    const decide = vi.fn(async () => ({
+    const decide = vi.fn(async (_input: { action: string }) => ({
       allowed: false,
       action: "tasks:assign",
       reason: "deny_policy_restricted",

@@ -7,9 +7,9 @@ import { promisify } from "node:util";
 import { createServer, type Server } from "node:http";
 import { pathToFileURL } from "node:url";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { eq } from "drizzle-orm";
-import { activityLog, agents, heartbeatRuns, applyPendingMigrations, closeRegisteredClients, companies, createDb, executionWorkspaceSnapshots,
-  executionWorkspaceRuntimeLeases, executionWorkspaces, issues, projects, projectWorkspaces, workspaceOperations, workspaceRuntimeServices } from "@paperclipai/db";
+import { and, eq } from "drizzle-orm";
+import { activityLog, agents, environmentLeases, heartbeatRuns, nativeRunFinalizations, nativeRunResults, completionContracts, applyPendingMigrations, closeRegisteredClients, companies, createDb, executionWorkspaceSnapshots,
+  executionWorkspaceRuntimeLeases, executionWorkspaces, issueRecoveryActions, issues, projects, projectWorkspaces, workspaceOperations, workspaceRuntimeServices } from "@paperclipai/db";
 import { readRemoteWorkspaceAuthority } from "@paperclipai/shared";
 import { createLocalDiskStorageProvider } from "../storage/local-disk-provider.js";
 import { createStorageService } from "../storage/service.js";
@@ -25,8 +25,14 @@ import type { TaskDirectoryRestorePointRef } from "./isolated-task-directory-ret
 import { resolveManagedProjectWorkspaceDir } from "../home-paths.js";
 import { cleanupExecutionWorkspaceArtifacts } from "./workspace-runtime.js";
 import { workspaceOperationService } from "./workspace-operations.js";
+import { resumeNativeWorkspaceSync } from "./native-runtime/native-workspace-sync.js";
+import { claimNativeSessionResumptions } from "./native-runtime/native-finalization-reconciler.js";
+import { claimNativeRestartRecoveries } from "./native-runtime/native-restart-recovery.js";
+import { attemptNativeWorkspaceFinalization } from "./native-runtime/native-workspace-finalizer.js";
 import { managedProjectCheckoutName } from "./managed-project-checkout-name.js";
 import { captureGitWorkspaceContents, readManagedCheckoutContents } from "./git-workspace-contents.js";
+import { isolatedRemoteSourcePath } from "./isolated-remote-workspace-source.js";
+import { verifiedGitCacheSource } from "./git-workspace-restoration.js";
 
 const execute = promisify(execFile);
 const git = async (cwd: string, ...args: string[]) => (await execute("git", ["-C", cwd, ...args], { env: { ...process.env,
@@ -51,7 +57,8 @@ describe.skipIf(!support.supported)("remote workspace migration", () => {
     await Promise.all(servers.splice(0).map(server => new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()))));
     vi.unstubAllEnvs(); await db.delete(activityLog); await db.delete(workspaceOperations); await db.delete(executionWorkspaceSnapshots);
     await db.delete(workspaceRuntimeServices); await db.delete(executionWorkspaceRuntimeLeases);
-    await db.delete(heartbeatRuns); await db.delete(agents); await db.delete(issues); await db.delete(executionWorkspaces); await db.delete(projectWorkspaces); await db.delete(projects);
+    await db.delete(nativeRunFinalizations); await db.delete(nativeRunResults); await db.delete(heartbeatRuns); await db.delete(completionContracts);
+    await db.delete(issues); await db.delete(agents); await db.delete(executionWorkspaces); await db.delete(projectWorkspaces); await db.delete(projects);
     await db.delete(companies); await fs.rm(root, { recursive: true, force: true });
   });
   async function seed() {
@@ -107,12 +114,80 @@ describe.skipIf(!support.supported)("remote workspace migration", () => {
     await expect(migrateRemoteWorkspace({ db, storage, ...parent, apply: true, writersStopped: true })).rejects.toThrow("offline_maintenance_required");
     await expect(migrateWorkspaceTrees(db, { storage, signal: new AbortController().signal, phase: () => {} })).rejects.toThrow("offline_maintenance_required");
   });
-  it.each(["running", "queued"])("refuses offline archived imports while any execution is %s", async status => {
+  it.each(["running", "queued"])("refuses offline archived imports while any execution is running or requeued (%s)", async status => {
     const f = await seed(); await retainDirectory(f); vi.stubEnv("PAPERCLIP_EPHEMERAL_MIGRATION", "true");
     const [agent] = await db.insert(agents).values({ companyId: f.companyId, name: "Unrelated writer" }).returning();
-    await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: agent!.id, status });
+    await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: agent!.id, status, startedAt: status === "queued" ? new Date() : null });
     await expect(migrateWorkspaceTrees(db, { storage, signal: new AbortController().signal, phase: () => {} }))
       .rejects.toThrow("active_execution_requires_drain");
+    expect(readRemoteWorkspaceAuthority((await workspace(f.workspaceId)).metadata)).toBeNull();
+  });
+  it.each(["startedAt", "runtimeModeResolvedAt", "processPid", "processStartedAt", "runnerInstanceId", "nativeSessionId", "nativePhase", "controllerLeaseExpiresAt", "executionStage", "checkpoint", "finalizer", "lease"])("keeps queued execution with %s as an offline blocker", async evidence => {
+    const f = await seed(); vi.stubEnv("PAPERCLIP_EPHEMERAL_MIGRATION", "true");
+    const [agent] = await db.insert(agents).values({ companyId: f.companyId, name: "Retained execution" }).returning();
+    const patch = evidence.endsWith("At") ? { [evidence]: new Date() }
+      : evidence === "processPid" ? { processPid: 123 }
+      : evidence.endsWith("Id") ? { [evidence]: randomUUID() }
+      : evidence === "nativePhase" ? { nativePhase: "observed" }
+      : evidence === "executionStage" ? { executionStage: "dispatch" }
+      : evidence === "checkpoint" ? { runnerProfileJson: { sessionCheckpoint: {} } } : {};
+    const [run] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: agent!.id,
+      nativeIssueId: evidence === "finalizer" ? f.issueId : null, status: "queued", ...patch }).returning();
+    if (evidence === "finalizer") await db.insert(nativeRunFinalizations).values({ companyId: f.companyId,
+      issueId: f.issueId, runId: run!.id, phase: "observed" });
+    if (evidence === "lease") await db.insert(environmentLeases).values({ companyId: f.companyId, heartbeatRunId: run!.id });
+    await expect(migrateWorkspaceTrees(db, { storage, signal: new AbortController().signal, phase: () => {} }))
+      .rejects.toThrow("active_execution_requires_drain");
+    expect(readRemoteWorkspaceAuthority((await workspace(f.workspaceId)).metadata)).toBeNull();
+  });
+  it("preserves an unstarted queued turn during offline import while live migration still refuses it", async () => {
+    const f = await seed();
+    const [agent] = await db.insert(agents).values({ companyId: f.companyId, name: "Queued turn" }).returning();
+    const [run] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: agent!.id,
+      issueId: f.issueId, status: "queued", contextSnapshot: { issueId: f.issueId, executionWorkspaceId: f.workspaceId } }).returning();
+    await expect(migrateRemoteWorkspace({ db, storage, ...f, apply: true })).rejects.toThrow("active_execution");
+    vi.stubEnv("PAPERCLIP_EPHEMERAL_MIGRATION", "true");
+    await migrateRemoteWorkspace({ db, storage, ...f, apply: true, writersStopped: true });
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run!.id)))[0]).toEqual(run);
+    expect(readRemoteWorkspaceAuthority((await workspace(f.workspaceId)).metadata)).not.toBeNull();
+  });
+  it.each([["stranded_assigned_issue", "stranded_assigned_issue"], ["configuration_validation", "configuration_incomplete"],
+    ["missing_disposition", "successful_run_missing_state"], ["deliberate_wait_without_target", "deliberate_wait_without_target"]])("preserves a task-only %s warning through offline file migration", async (kind, cause) => {
+    const f = await seed();
+    const [action] = await db.insert(issueRecoveryActions).values({ companyId: f.companyId, sourceIssueId: f.issueId,
+      kind, cause, fingerprint: randomUUID(), nextAction: "Keep the existing task warning", evidence: { latestRunStatus: "failed" } }).returning();
+    await expect(migrateRemoteWorkspace({ db, storage, ...f, apply: true })).rejects.toThrow("workspace_recovery_unresolved");
+    vi.stubEnv("PAPERCLIP_EPHEMERAL_MIGRATION", "true");
+    await migrateRemoteWorkspace({ db, storage, ...f, apply: true, writersStopped: true });
+    expect((await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, action!.id)))[0]).toEqual(action);
+    const authority = readRemoteWorkspaceAuthority((await workspace(f.workspaceId)).metadata)!;
+    const ref = await getWorkspaceSnapshot(db, { ...f, snapshotId: authority.snapshotId! });
+    const archivePath = path.join(root, "task-warning.pcws"), targetDir = path.join(root, "restored-task-warning");
+    await fs.rm(f.cwd, { recursive: true });
+    await loadWorkspaceSnapshotArchive({ storage, reference: ref!, targetPath: archivePath });
+    await restoreRemoteWorkspaceArchive({ archivePath, targetDir, expectedManifestDigest: ref!.manifestDigest });
+    expect(await fs.readFile(path.join(targetDir, "saved.txt"), "utf8")).toBe("original saved work\n");
+  });
+  it.each(["workspaceRestoreRecovery", "workspaceRecovery", "historicalWorkspaceSource", "systemRecovery", "nativeFailureBlock", "export-cause", "unknown-kind", "workspace_validation", "active_run_watchdog"])("retains unresolved file or execution recovery as an offline blocker (%s)", async mode => {
+    const f = await seed(); vi.stubEnv("PAPERCLIP_EPHEMERAL_MIGRATION", "true");
+    await db.insert(issueRecoveryActions).values({ companyId: f.companyId, sourceIssueId: f.issueId,
+      kind: mode === "unknown-kind" ? "future_recovery" : ["workspace_validation", "active_run_watchdog"].includes(mode) ? mode : "configuration_validation",
+      cause: mode === "export-cause" ? "native_workspace_sync_out_unrecoverable" : mode === "workspace_validation" ? "workspace_validation_failed"
+        : mode === "active_run_watchdog" ? "native_session_interrupted" : "configuration_incomplete",
+      fingerprint: randomUUID(), nextAction: "Preserve unresolved recovery", evidence: ["export-cause", "unknown-kind", "workspace_validation", "active_run_watchdog"].includes(mode) ? {}
+        : { [mode]: mode === "systemRecovery" ? { state: "running" } : { schema: "unverified" } } });
+    await expect(migrateRemoteWorkspace({ db, storage, ...f, apply: true, writersStopped: true })).rejects.toThrow("workspace_recovery_unresolved");
+    expect(readRemoteWorkspaceAuthority((await workspace(f.workspaceId)).metadata)).toBeNull();
+  });
+  it("rechecks a task warning that becomes file recovery during upload", async () => {
+    const f = await seed(); vi.stubEnv("PAPERCLIP_EPHEMERAL_MIGRATION", "true");
+    const [action] = await db.insert(issueRecoveryActions).values({ companyId: f.companyId, sourceIssueId: f.issueId,
+      kind: "configuration_validation", cause: "configuration_incomplete", fingerprint: randomUUID(), nextAction: "Repair configuration" }).returning();
+    const put = storage.putFile.bind(storage);
+    storage.putFile = async input => { const result = await put(input);
+      await db.update(issueRecoveryActions).set({ evidence: { historicalWorkspaceSource: { schema: "paperclip.historical-workspace-source.v1" } } })
+        .where(eq(issueRecoveryActions.id, action!.id)); return result; };
+    await expect(migrateRemoteWorkspace({ db, storage, ...f, apply: true, writersStopped: true })).rejects.toThrow("workspace_recovery_unresolved");
     expect(readRemoteWorkspaceAuthority((await workspace(f.workspaceId)).metadata)).toBeNull();
   });
   it("detects overlapping folders reached through symlinked parent directories", async () => {
@@ -139,6 +214,182 @@ describe.skipIf(!support.supported)("remote workspace migration", () => {
     await loadWorkspaceSnapshotArchive({ storage, reference: reference!, targetPath: archivePath });
     await restoreRemoteWorkspaceArchive({ archivePath, targetDir, expectedManifestDigest: reference!.manifestDigest });
     expect(await fs.readFile(path.join(targetDir, ".paperclip/worktrees/child/child.txt"), "utf8")).toBe("saved child edits\n");
+  });
+  async function failedCopybackFixture() {
+    const f = await seed(), runId = randomUUID();
+    const [agent] = await db.insert(agents).values({ companyId: f.companyId, name: "Historical agent", adapterType: "paperclip_runner" }).returning();
+    const reference = { schema: "paperclip.native-workspace-sync/v3", state: "prepared", workspaceId: f.workspaceId,
+      leaseId: randomUUID(), providerLeaseId: randomUUID(), remoteCwd: "/workspaces/task",
+      descriptorSha256: "12".repeat(32), baselineSha256: "34".repeat(32), finalHostSha256: null, resourceDisposition: "stop_and_retain" };
+    await db.insert(heartbeatRuns).values({ id: runId, companyId: f.companyId, agentId: agent!.id, nativeIssueId: f.issueId,
+      runtimeMode: "native", status: "failed", finishedAt: new Date(), runnerProfileJson: { nativeWorkspaceSync: reference } });
+    await db.insert(nativeRunFinalizations).values({ companyId: f.companyId, issueId: f.issueId, runId, phase: "terminal_failure" });
+    return { ...f, runId, reference };
+  }
+  it("carries unresolved copyback forward during offline migration without declaring recovery complete", async () => {
+    const f = await failedCopybackFixture();
+    await expect(migrateRemoteWorkspace({ db, storage, ...f, apply: true })).rejects.toThrow("remote_copyback_unresolved");
+    vi.stubEnv("PAPERCLIP_EPHEMERAL_MIGRATION", "true");
+    await migrateRemoteWorkspace({ db, storage, ...f, apply: true, writersStopped: true });
+    const row = await workspace(f.workspaceId);
+    expect(readRemoteWorkspaceAuthority(row.metadata)?.snapshotId).toBeTruthy();
+    expect(row.metadata?.remoteWorkspaceRecoverySourceRunIds).toEqual([f.runId]);
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+    expect(run).toMatchObject({ status: "failed", runnerProfileJson: { nativeWorkspaceSync: f.reference } });
+    expect(await fs.readFile(path.join(f.cwd, "saved.txt"), "utf8")).toBe("original saved work\n");
+    // An old copyback must not recreate or mutate the predecessor's local folder.
+    await expect(resumeNativeWorkspaceSync({ db, runId: f.runId, target: { kind: "remote", transport: "sandbox", remoteCwd: f.reference.remoteCwd } }))
+      .rejects.toThrow("native_workspace_sync_source_migrated");
+  });
+  it.each(["controller", "finalizer", "live-finalizer", "task", "descriptor"])("keeps unsafe legacy copyback blocked (%s)", async mode => {
+    const f = await failedCopybackFixture(); vi.stubEnv("PAPERCLIP_EPHEMERAL_MIGRATION", "true");
+    if (mode === "controller") await db.update(heartbeatRuns).set({ controllerLeaseExpiresAt: new Date(Date.now() + 60_000) }).where(eq(heartbeatRuns.id, f.runId));
+    if (mode === "finalizer") await db.update(nativeRunFinalizations).set({ leaseOwner: randomUUID() }).where(eq(nativeRunFinalizations.runId, f.runId));
+    if (mode === "live-finalizer") await db.update(nativeRunFinalizations).set({ phase: "observed", leaseOwner: randomUUID(),
+      leaseExpiresAt: new Date(Date.now() + 60_000) }).where(eq(nativeRunFinalizations.runId, f.runId));
+    if (mode === "task") {
+      const [other] = await db.insert(issues).values({ companyId: f.companyId, title: "Different task" }).returning();
+      await db.update(executionWorkspaces).set({ sourceIssueId: other!.id }).where(eq(executionWorkspaces.id, f.workspaceId));
+    }
+    if (mode === "descriptor") await db.update(heartbeatRuns).set({ runnerProfileJson: { nativeWorkspaceSync: { ...f.reference, descriptorSha256: "invalid" } } }).where(eq(heartbeatRuns.id, f.runId));
+    await expect(migrateRemoteWorkspace({ db, storage, ...f, apply: true, writersStopped: true })).rejects.toThrow("remote_copyback_unresolved");
+    expect(readRemoteWorkspaceAuthority((await workspace(f.workspaceId)).metadata)).toBeNull();
+  });
+  it.each(["retryable_failure", "observed", "no-descriptor"])("preserves an abandoned %s coordinator without replaying its old agent turn", async mode => {
+    const phase = mode === "no-descriptor" ? "observed" : mode;
+    const f = await failedCopybackFixture(); vi.stubEnv("PAPERCLIP_EPHEMERAL_MIGRATION", "true");
+    const [oldRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+    const checkpoint = { providerSessionId: "original-provider-session", sequence: 17 };
+    await db.update(heartbeatRuns).set({ runnerProfileJson: { ...(mode === "no-descriptor" ? {} : oldRun!.runnerProfileJson),
+      sessionCheckpoint: checkpoint } }).where(eq(heartbeatRuns.id, f.runId));
+    await db.update(issues).set({ assigneeAgentId: oldRun!.agentId, status: "in_progress" })
+      .where(eq(issues.id, f.issueId));
+    await db.update(nativeRunFinalizations).set({ phase, leaseOwner: phase === "observed" ? "old-controller" : null,
+      leaseExpiresAt: phase === "observed" ? new Date(Date.now() - 60_000) : null,
+      nextAttemptAt: new Date(Date.now() - 30_000) }).where(eq(nativeRunFinalizations.runId, f.runId));
+    const [before] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId));
+    await migrateRemoteWorkspace({ db, storage, ...f, apply: true, writersStopped: true });
+    expect(readRemoteWorkspaceAuthority((await workspace(f.workspaceId)).metadata)?.snapshotId).toBeTruthy();
+    await db.update(issues).set({ executionRunId: f.runId }).where(eq(issues.id, f.issueId));
+    expect(await claimNativeSessionResumptions({ db, runnerInstanceId: "replacement", runIds: [f.runId] })).toEqual([]);
+    expect(await claimNativeRestartRecoveries({ db, restartKind: "hard", runIds: [f.runId] })).toEqual([]);
+    const [after] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId));
+    if (before!.leaseOwner) {
+      expect(after).toMatchObject({ ...before, leaseOwner: null, leaseExpiresAt: null, updatedAt: expect.any(Date),
+        recoveryHistory: [{ event: "legacy_workspace_migration_owner_released", workspaceId: f.workspaceId,
+          operationId: expect.any(String), previousOwner: { phase, leaseOwner: before!.leaseOwner,
+            leaseExpiresAt: before!.leaseExpiresAt!.toISOString() } }] });
+    } else expect(after).toEqual(before);
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId)))[0]).toMatchObject({
+      status: "failed", runnerProfileJson: { ...(mode === "no-descriptor" ? {} : { nativeWorkspaceSync: f.reference }), sessionCheckpoint: checkpoint,
+        legacyWorkspaceRecoveryMigration: { workspaceId: f.workspaceId } },
+    });
+  });
+  it.each(["prepared", "finalized", "missing-receipt", "failed-receipt"])("keeps accepted-result finalization independent of migrated file storage (%s)", async mode => {
+    const state = mode === "prepared" ? "prepared" : "finalized";
+    const f = await failedCopybackFixture(); vi.stubEnv("PAPERCLIP_EPHEMERAL_MIGRATION", "true");
+    const contractId = randomUUID(), resultId = randomUUID();
+    await db.insert(completionContracts).values({ id: contractId, companyId: f.companyId, issueId: f.issueId, revision: 1,
+      schemaVersion: "v1", policyVersion: "v1", risk: "low", completionAuthority: "agent", incompleteCriteriaPolicy: "block",
+      contractJson: {}, canonicalSha256: "12".repeat(32), createdByActorType: "system", createdByActorId: "test" });
+    await db.update(heartbeatRuns).set({ status: "succeeded", completionContractId: contractId,
+      runnerProfileJson: { nativeWorkspaceSync: { ...f.reference, state, finalHostSha256: state === "finalized" ? "56".repeat(32) : null } } })
+      .where(eq(heartbeatRuns.id, f.runId));
+    await db.insert(nativeRunResults).values({ id: resultId, companyId: f.companyId, issueId: f.issueId, runId: f.runId,
+      completionContractId: contractId, serverFingerprint: "saved-result", schemaStatus: "accepted", resultJson: { saved: true }, canonicalSha256: "34".repeat(32) });
+    await db.update(nativeRunFinalizations).set({ phase: "retryable_failure", resultId }).where(eq(nativeRunFinalizations.runId, f.runId));
+    const operationId = randomUUID();
+    if (mode === "finalized" || mode === "failed-receipt") await db.insert(workspaceOperations).values({ id: operationId,
+      companyId: f.companyId, executionWorkspaceId: f.workspaceId, heartbeatRunId: f.runId, issueId: f.issueId,
+      phase: "workspace_finalize", status: mode === "finalized" ? "succeeded" : "failed" });
+    const [before] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId));
+    const migrate = () => migrateRemoteWorkspace({ db, storage, ...f, apply: true, writersStopped: true });
+    if (mode !== "finalized") await expect(migrate()).rejects.toThrow(state === "prepared"
+      ? "remote_copyback_unresolved" : "execution_finalization_unresolved");
+    else {
+      await migrate();
+      expect(readRemoteWorkspaceAuthority((await workspace(f.workspaceId)).metadata)?.snapshotId).toBeTruthy();
+      expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId)))[0]!.runnerProfileJson)
+        .not.toHaveProperty("legacyWorkspaceRecoveryMigration");
+      expect(await attemptNativeWorkspaceFinalization({ db, runId: f.runId }))
+        .toMatchObject({ kind: "completed", operation: { id: operationId } });
+    }
+    expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId)))[0]).toEqual(before);
+  });
+  it("migrates historical records without borrowing another workspace's finalizer", async () => {
+    const f = await failedCopybackFixture(); vi.stubEnv("PAPERCLIP_EPHEMERAL_MIGRATION", "true");
+    const otherId = randomUUID(), cwd = path.join(root, "longer-historical-folder"); await fs.mkdir(cwd);
+    await fs.writeFile(path.join(cwd, "history.txt"), "prior task files\n");
+    await db.insert(executionWorkspaces).values({ id: otherId, companyId: f.companyId, sourceIssueId: f.issueId,
+      name: "Historical workspace", mode: "isolated_workspace", strategyType: "project_primary", providerType: "local_fs", cwd });
+    await db.update(nativeRunFinalizations).set({ phase: "observed" }).where(eq(nativeRunFinalizations.runId, f.runId));
+    expect(await migrateWorkspaceTrees(db, { storage, signal: new AbortController().signal, phase: () => {} })).toBe(2);
+    for (const id of [f.workspaceId, otherId]) expect(readRemoteWorkspaceAuthority((await workspace(id)).metadata)?.snapshotId).toBeTruthy();
+  });
+  it("rejects a legacy descriptor changed while its local files are uploading", async () => {
+    const f = await failedCopybackFixture(); vi.stubEnv("PAPERCLIP_EPHEMERAL_MIGRATION", "true");
+    const put = storage.putFile.bind(storage);
+    storage.putFile = async input => {
+      const result = await put(input);
+      await db.update(heartbeatRuns).set({ runnerProfileJson: { nativeWorkspaceSync: { ...f.reference, providerLeaseId: randomUUID() } } }).where(eq(heartbeatRuns.id, f.runId));
+      return result;
+    };
+    await expect(migrateRemoteWorkspace({ db, storage, ...f, apply: true, writersStopped: true })).rejects.toThrow("remote_workspace_migration_source_changed");
+    expect(readRemoteWorkspaceAuthority((await workspace(f.workspaceId)).metadata)).toBeNull();
+  });
+  it("rejects a descriptor-free allocation changed during upload", async () => {
+    const f = await failedCopybackFixture(); vi.stubEnv("PAPERCLIP_EPHEMERAL_MIGRATION", "true");
+    await db.insert(environmentLeases).values({ id: f.reference.leaseId, companyId: f.companyId,
+      issueId: f.issueId, heartbeatRunId: f.runId, provider: "daytona", providerLeaseId: f.reference.providerLeaseId,
+      status: "released", metadata: { remoteCwd: f.reference.remoteCwd } });
+    await db.update(heartbeatRuns).set({ runnerProfileJson: {}, resultJson: {
+      workspaceRestoreRecovery: { schema: "paperclip.workspace-restore-recovery.v1", leaseIds: [f.reference.leaseId] },
+    } }).where(eq(heartbeatRuns.id, f.runId));
+    await db.update(nativeRunFinalizations).set({ phase: "observed" }).where(eq(nativeRunFinalizations.runId, f.runId));
+    const put = storage.putFile.bind(storage);
+    storage.putFile = async input => {
+      const result = await put(input);
+      await db.update(environmentLeases).set({ providerLeaseId: randomUUID() }).where(eq(environmentLeases.id, f.reference.leaseId));
+      return result;
+    };
+    await expect(migrateRemoteWorkspace({ db, storage, ...f, apply: true, writersStopped: true }))
+      .rejects.toThrow("remote_workspace_migration_source_changed");
+    expect(readRemoteWorkspaceAuthority((await workspace(f.workspaceId)).metadata)).toBeNull();
+  });
+  it("does not release a coordinator whose expired owner changed during upload", async () => {
+    const f = await failedCopybackFixture(); vi.stubEnv("PAPERCLIP_EPHEMERAL_MIGRATION", "true");
+    await db.update(nativeRunFinalizations).set({ phase: "observed", leaseOwner: "journaled-owner",
+      leaseExpiresAt: new Date(Date.now() - 60_000) }).where(eq(nativeRunFinalizations.runId, f.runId));
+    const put = storage.putFile.bind(storage);
+    storage.putFile = async input => {
+      const result = await put(input);
+      await db.update(nativeRunFinalizations).set({ leaseOwner: "different-owner" }).where(eq(nativeRunFinalizations.runId, f.runId));
+      return result;
+    };
+    await expect(migrateRemoteWorkspace({ db, storage, ...f, apply: true, writersStopped: true }))
+      .rejects.toThrow("remote_workspace_migration_source_changed");
+    expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId)))[0])
+      .toMatchObject({ phase: "observed", leaseOwner: "different-owner", recoveryHistory: [] });
+    expect(readRemoteWorkspaceAuthority((await workspace(f.workspaceId)).metadata)).toBeNull();
+  });
+  it("preserves a child task's recovery reference to its ancestor's workspace", async () => {
+    const f = await failedCopybackFixture(); vi.stubEnv("PAPERCLIP_EPHEMERAL_MIGRATION", "true");
+    const [parent] = await db.insert(issues).values({ companyId: f.companyId, title: "Parent task" }).returning();
+    await db.update(issues).set({ parentId: parent!.id }).where(eq(issues.id, f.issueId));
+    await db.update(executionWorkspaces).set({ sourceIssueId: parent!.id }).where(eq(executionWorkspaces.id, f.workspaceId));
+    await migrateRemoteWorkspace({ db, storage, ...f, apply: true, writersStopped: true });
+    expect((await workspace(f.workspaceId)).sourceIssueId).toBe(parent!.id);
+    expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0]!.executionWorkspaceId).toBe(f.workspaceId);
+    await expect(resumeNativeWorkspaceSync({ db, runId: f.runId, target: { kind: "remote", transport: "sandbox", remoteCwd: f.reference.remoteCwd } }))
+      .rejects.toThrow("native_workspace_sync_source_migrated");
+  });
+  it("fails closed if the durable legacy migration receipt changes", async () => {
+    const f = await failedCopybackFixture(); vi.stubEnv("PAPERCLIP_EPHEMERAL_MIGRATION", "true");
+    await migrateRemoteWorkspace({ db, storage, ...f, apply: true, writersStopped: true });
+    const row = await workspace(f.workspaceId);
+    await db.update(executionWorkspaces).set({ metadata: { ...row.metadata, legacyWorkspaceRecoveryMigration: { operationId: randomUUID() } } }).where(eq(executionWorkspaces.id, f.workspaceId));
+    await expect(resumeNativeWorkspaceSync({ db, runId: f.runId, target: { kind: "remote", transport: "sandbox", remoteCwd: f.reference.remoteCwd } }))
+      .rejects.toThrow("legacy_workspace_migration_receipt_invalid");
   });
   it("blocks distinct legacy records that alias the same folder", async () => {
     const f = await seed(), id = randomUUID();
@@ -201,9 +452,9 @@ describe.skipIf(!support.supported)("remote workspace migration", () => {
     await expect(migrateRemoteWorkspace({ db, storage, ...parent, apply: true, writersStopped: true })).rejects.toThrow("nested_workspace_source_changed");
     expect(readRemoteWorkspaceAuthority((await workspace(parent.workspaceId)).metadata)).toBeNull();
   });
-  async function gitArchiveFixture(repoUrl = "https://example.invalid/repository.git") {
+  async function gitArchiveFixture(repoUrl = "https://example.invalid/repository.git", home = root) {
     const f = await seed(), projectId = randomUUID(), projectWorkspaceId = randomUUID(), branchName = "saved-task";
-    vi.stubEnv("PAPERCLIP_HOME", root); vi.stubEnv("PAPERCLIP_INSTANCE_ID", "default");
+    vi.stubEnv("PAPERCLIP_HOME", home); vi.stubEnv("PAPERCLIP_INSTANCE_ID", "default");
     const base = resolveManagedProjectWorkspaceDir({ companyId: f.companyId, projectId, repoName: "repository" });
     await fs.mkdir(base, { recursive: true }); await git(base, "init", "-q", "-b", "main");
     await fs.writeFile(path.join(base, "base.txt"), "base\n"); await git(base, "add", "."); await git(base, "commit", "-qm", "base");
@@ -247,6 +498,149 @@ describe.skipIf(!support.supported)("remote workspace migration", () => {
     await fs.rm(f.base, { recursive: true });
     const ref = await getWorkspaceSnapshot(db, { ...f, snapshotId: authority.snapshotId! });
     const archivePath = path.join(root, "legacy-git.pcws"), targetDir = path.join(root, "restored-legacy-git");
+    await loadWorkspaceSnapshotArchive({ storage, reference: ref!, targetPath: archivePath });
+    await restoreRemoteWorkspaceArchive({ archivePath, targetDir, expectedManifestDigest: ref!.manifestDigest });
+    expect(await git(targetDir, "rev-parse", "HEAD")).toBe(f.commit);
+    expect(await fs.readFile(path.join(targetDir, "base.txt"), "utf8")).toBe("base\n");
+    expect(await fs.readFile(path.join(targetDir, "saved.txt"), "utf8")).toBe("original saved work\n");
+  });
+  it.each(["valid", "foreign-cache", "wrong-origin", "missing-receipt", "revoked-receipt", "private-cache", "journaled-shared", "journaled-source-changed"])("recovers deleted isolated history only from an authorized receipt and project object cache (%s)", async state => {
+    const f = await gitArchiveFixture(), privateBase = isolatedRemoteSourcePath(f.companyId, f.issueId);
+    const privateCwd = path.join(privateBase, ".paperclip", "worktrees", f.branchName);
+    await fs.mkdir(path.dirname(privateBase), { recursive: true });
+    await git(root, "clone", "--no-hardlinks", f.base, privateBase);
+    await git(privateBase, "remote", "set-url", "origin", f.repoUrl);
+    await git(privateBase, "worktree", "add", "-b", f.branchName, privateCwd, `origin/${f.branchName}`);
+    await git(privateBase, "merge", "--ff-only", f.branchName);
+    await git(privateBase, "worktree", "remove", privateCwd);
+    const receipt = await git(privateBase, "branch", "-d", f.branchName);
+    await git(f.base, "merge", "--ff-only", f.branchName); await git(f.base, "worktree", "remove", f.cwd);
+    await git(f.base, "branch", "-d", f.branchName);
+    if (!["private-cache", "journaled-shared", "journaled-source-changed"].includes(state)) await fs.rm(privateBase, { recursive: true });
+    const closedAt = new Date();
+    await db.update(executionWorkspaces).set({ cwd: privateCwd, providerRef: privateCwd, status: "archived", closedAt,
+      metadata: { createdByRuntime: true, gitBranchOwnershipVersion: 1, isolatedRemoteSource: {
+        schema: "paperclip.isolated-remote-source.v1", companyId: f.companyId, issueId: f.issueId, repoUrl: f.repoUrl } } })
+      .where(eq(executionWorkspaces.id, f.workspaceId));
+    if (state !== "missing-receipt") await db.insert(workspaceOperations).values({ companyId: f.companyId,
+      executionWorkspaceId: f.workspaceId, phase: "worktree_cleanup", status: "succeeded",
+      command: `git --git-dir=temporary branch -d ${f.branchName}`, stdoutExcerpt: receipt,
+      startedAt: new Date(), finishedAt: new Date(), metadata: { cleanupAction: "branch_delete", workspaceId: f.workspaceId,
+        branchName: f.branchName, workspacePath: privateCwd } });
+    // Keep ordinary private-workspace restoration strict. This project cache
+    // supplies immutable Git objects only for the proven deleted commit.
+    await expect(verifiedGitCacheSource(await workspace(f.workspaceId), f.base)).rejects.toThrow();
+    await fs.writeFile(path.join(f.base, "base.txt"), "new shared checkout\n");
+    await fs.writeFile(path.join(f.base, "unrelated.txt"), "not task history\n");
+    await git(f.base, "add", "."); await git(f.base, "commit", "-qm", "new shared default");
+    if (state === "wrong-origin" || state === "private-cache") await git(f.base, "remote", "set-url", "origin", "https://example.invalid/foreign.git");
+    if (state === "foreign-cache") {
+      const foreign = resolveManagedProjectWorkspaceDir({ companyId: randomUUID(), projectId: f.projectId, repoName: "repository" });
+      await fs.mkdir(path.dirname(foreign), { recursive: true }); await fs.rename(f.base, foreign);
+      await db.update(projectWorkspaces).set({ cwd: foreign }).where(eq(projectWorkspaces.id, f.projectWorkspaceId));
+    }
+    if (state === "revoked-receipt") {
+      const put = storage.putFile.bind(storage);
+      storage.putFile = async input => {
+        const result = await put(input);
+        await db.update(workspaceOperations).set({ status: "failed" }).where(and(
+          eq(workspaceOperations.executionWorkspaceId, f.workspaceId), eq(workspaceOperations.phase, "worktree_cleanup")));
+        return result;
+      };
+    }
+    if (state.startsWith("journaled-")) {
+      const put = storage.putFile.bind(storage); let fail = true;
+      storage.putFile = async input => { const saved = await put(input); if (fail) { fail = false; throw new Error("upload reply lost"); } return saved; };
+      await expect(migrateRemoteWorkspace({ db, storage, ...f, apply: true })).rejects.toThrow("upload reply lost");
+      const [operation] = await db.select().from(workspaceOperations).where(and(eq(workspaceOperations.executionWorkspaceId, f.workspaceId), eq(workspaceOperations.phase, "remote_workspace_migration")));
+      await db.update(workspaceOperations).set({ metadata: { ...operation!.metadata,
+        archivedGitSource: { ...(operation!.metadata!.archivedGitSource as object), sourcePath: f.base } } }).where(eq(workspaceOperations.id, operation!.id));
+      if (state === "journaled-source-changed") await git(f.base, "remote", "set-url", "origin", "https://example.invalid/foreign.git");
+    }
+    if (!["valid", "private-cache", "journaled-shared"].includes(state)) {
+      await expect(migrateRemoteWorkspace({ db, storage, companyId: f.companyId, workspaceId: f.workspaceId, apply: true })).rejects.toThrow();
+      expect(readRemoteWorkspaceAuthority((await workspace(f.workspaceId)).metadata)).toBeNull(); return;
+    }
+    await migrateRemoteWorkspace({ db, storage, companyId: f.companyId, workspaceId: f.workspaceId, apply: true });
+    const row = await workspace(f.workspaceId), authority = readRemoteWorkspaceAuthority(row.metadata)!;
+    expect(row.status).toBe("archived"); expect(authority.source).toMatchObject({ kind: "git", ref: f.commit });
+    await fs.rm(f.base, { recursive: true });
+    await fs.rm(privateBase, { recursive: true, force: true });
+    const ref = await getWorkspaceSnapshot(db, { ...f, snapshotId: authority.snapshotId! });
+    const archivePath = path.join(root, "isolated-history.pcws"), targetDir = path.join(root, "restored-isolated-history");
+    await loadWorkspaceSnapshotArchive({ storage, reference: ref!, targetPath: archivePath });
+    await restoreRemoteWorkspaceArchive({ archivePath, targetDir, expectedManifestDigest: ref!.manifestDigest });
+    expect(await git(targetDir, "rev-parse", "HEAD")).toBe(f.commit);
+    expect(await fs.readFile(path.join(targetDir, "saved.txt"), "utf8")).toBe("original saved work\n");
+    expect(await fs.readFile(path.join(targetDir, "base.txt"), "utf8")).toBe("base\n");
+    expect(await fs.stat(path.join(targetDir, "unrelated.txt")).catch(() => null)).toBeNull();
+  });
+  it.each(["valid", "changed-branch", "competing-owner", "registered-branch", "unowned", "missing-branch", "active-online", "active-offline", "user-owned-receipt", "user-owned-force-receipt", "user-owned-revoked-receipt", "user-owned-quoted-receipt", "detached-registration", "orphan-index"])("preserves a missing checkout from its retained owned branch (%s)", async mode => {
+    const f = await gitArchiveFixture(undefined, mode === "user-owned-quoted-receipt" ? path.join(root, "home with spaces") : root), closedAt = new Date();
+    const active = mode.startsWith("active-");
+    await db.update(executionWorkspaces).set({ status: active ? "active" : "archived", closedAt: active ? null : closedAt })
+      .where(eq(executionWorkspaces.id, f.workspaceId));
+    if (mode === "user-owned-quoted-receipt") {
+      await db.update(executionWorkspaces).set({ metadata: { createdByRuntime: false, gitBranchOwnershipVersion: 1 } }).where(eq(executionWorkspaces.id, f.workspaceId));
+      const cleaned = await cleanupExecutionWorkspaceArtifacts({ workspace: await workspace(f.workspaceId),
+        projectWorkspace: { cwd: f.base, cleanupCommand: null }, runCleanupCommands: false, forceWorktreeRemoval: false,
+        recorder: workspaceOperationService(db).createRecorder({ companyId: f.companyId, executionWorkspaceId: f.workspaceId, issueId: f.issueId }) });
+      expect(cleaned.warnings).toEqual([]);
+    } else if (mode === "detached-registration") {
+      await git(f.cwd, "checkout", "--detach");
+      await fs.writeFile(path.join(f.cwd, "newer.txt"), "recoverable detached work");
+      await git(f.cwd, "add", "."); await git(f.cwd, "commit", "-qm", "newer detached work");
+      await fs.rm(f.cwd, { recursive: true });
+    } else await git(f.base, "worktree", "remove", f.cwd);
+    await fs.writeFile(path.join(f.base, "base.txt"), "new shared default branch\n");
+    await git(f.base, "add", "."); await git(f.base, "commit", "-qm", "unrelated shared work");
+    if (mode === "orphan-index") {
+      const admin = path.join(f.base, ".git", "worktrees", "orphan");
+      await fs.mkdir(admin, { recursive: true }); await fs.copyFile(path.join(f.base, ".git", "index"), path.join(admin, "index"));
+      await fs.writeFile(path.join(admin, "locked"), "retained staged recovery work\n");
+    }
+    if (mode === "changed-branch") {
+      const put = storage.putFile.bind(storage);
+      storage.putFile = async input => { const saved = await put(input); await git(f.base, "update-ref", `refs/heads/${f.branchName}`, await git(f.base, "rev-parse", "HEAD")); return saved; };
+    }
+    if (mode === "competing-owner") {
+      const [issue] = await db.insert(issues).values({ companyId: f.companyId, title: "Different branch owner" }).returning();
+      await db.insert(executionWorkspaces).values({ companyId: f.companyId, sourceIssueId: issue!.id, projectId: f.projectId,
+        name: "Other owner", mode: "isolated_workspace", strategyType: "git_worktree", providerType: "git_worktree",
+        repoUrl: f.repoUrl, branchName: f.branchName, cwd: path.join(root, "other-owner") });
+    }
+    if (mode === "registered-branch") await git(f.base, "worktree", "add", path.join(root, "registered"), f.branchName);
+    if (mode.startsWith("user-owned-") && mode !== "user-owned-quoted-receipt") {
+      await db.update(executionWorkspaces).set({ metadata: { createdByRuntime: false, gitBranchOwnershipVersion: 1 } }).where(eq(executionWorkspaces.id, f.workspaceId));
+      const [receipt] = await db.insert(workspaceOperations).values({ companyId: f.companyId, executionWorkspaceId: f.workspaceId,
+        phase: "worktree_cleanup", status: "succeeded", startedAt: new Date(), finishedAt: new Date(),
+        command: `git worktree remove ${mode === "user-owned-force-receipt" ? "--force " : ""}${f.cwd}`,
+        metadata: { cleanupAction: "worktree_remove", workspaceId: f.workspaceId, workspacePath: f.cwd, branchName: f.branchName } }).returning();
+      if (mode === "user-owned-revoked-receipt") {
+        const put = storage.putFile.bind(storage);
+        storage.putFile = async input => { const saved = await put(input); await db.update(workspaceOperations).set({ status: "failed" })
+          .where(eq(workspaceOperations.id, receipt!.id)); return saved; };
+      }
+    }
+    if (mode === "unowned") await db.update(executionWorkspaces).set({ metadata: { gitBranchOwnershipVersion: 1 } }).where(eq(executionWorkspaces.id, f.workspaceId));
+    if (mode === "missing-branch") await git(f.base, "branch", "-D", f.branchName);
+    const offline = mode === "active-offline";
+    if (offline) vi.stubEnv("PAPERCLIP_EPHEMERAL_MIGRATION", "true");
+    const migrate = () => migrateRemoteWorkspace({ db, storage, ...f, apply: true, writersStopped: offline });
+    if (!["valid", "active-offline", "user-owned-receipt", "user-owned-quoted-receipt"].includes(mode)) {
+      await expect(migrate()).rejects.toThrow();
+      expect(readRemoteWorkspaceAuthority((await workspace(f.workspaceId)).metadata)).toBeNull(); return;
+    }
+    await migrate();
+    const row = await workspace(f.workspaceId), authority = readRemoteWorkspaceAuthority(row.metadata)!;
+    expect(row.status).toBe(active ? "active" : "archived");
+    expect(authority.source).toMatchObject({ kind: "git", ref: f.commit });
+    const [operation] = await db.select().from(workspaceOperations).where(and(
+      eq(workspaceOperations.executionWorkspaceId, f.workspaceId), eq(workspaceOperations.phase, "remote_workspace_migration")));
+    expect(operation!.metadata?.archivedGitSource).toMatchObject({ commit: f.commit, retainedBranch: f.branchName });
+    await fs.rm(f.base, { recursive: true });
+    const ref = await getWorkspaceSnapshot(db, { ...f, snapshotId: authority.snapshotId! });
+    const archivePath = path.join(root, "retained-branch.pcws"), targetDir = path.join(root, "restored-retained-branch");
     await loadWorkspaceSnapshotArchive({ storage, reference: ref!, targetPath: archivePath });
     await restoreRemoteWorkspaceArchive({ archivePath, targetDir, expectedManifestDigest: ref!.manifestDigest });
     expect(await git(targetDir, "rev-parse", "HEAD")).toBe(f.commit);
@@ -535,6 +929,20 @@ describe.skipIf(!support.supported)("remote workspace migration", () => {
     await db.insert(workspaceOperations).values({ companyId: f.companyId, executionWorkspaceId: f.workspaceId, phase: "workspace_command", status: "running" });
     await expect(migrateRemoteWorkspace({ db, storage, ...f, apply: true })).rejects.toThrow("workspace_operation_unresolved");
     expect(readRemoteWorkspaceAuthority((await workspace(f.workspaceId)).metadata)).toBeNull();
+  });
+  it.each(["parallel", "orphan", "stale-binding"])("keeps offline enrollment blocked on unresolved workspace semantics (%s)", async mode => {
+    const f = await failedCopybackFixture(); vi.stubEnv("PAPERCLIP_EPHEMERAL_MIGRATION", "true");
+    await db.update(nativeRunFinalizations).set({ phase: "committed" }).where(eq(nativeRunFinalizations.runId, f.runId));
+    await db.update(heartbeatRuns).set({ runnerProfileJson: null }).where(eq(heartbeatRuns.id, f.runId));
+    if (mode === "parallel") {
+      await db.update(executionWorkspaces).set({ mode: "shared_workspace" }).where(eq(executionWorkspaces.id, f.workspaceId));
+      await db.update(issues).set({ executionWorkspaceSettings: { sharedWorkspaceConcurrency: "allow" } }).where(eq(issues.id, f.issueId));
+    } else if (mode === "orphan") await db.update(executionWorkspaces).set({ sourceIssueId: null }).where(eq(executionWorkspaces.id, f.workspaceId));
+    else await db.update(issues).set({ executionRunId: f.runId }).where(eq(issues.id, f.issueId));
+    const reason = mode === "parallel" ? "parallel_shared_writers_unsupported" : mode === "orphan" ? "task_binding_required" : "task_writer_bound";
+    await expect(migrateWorkspaceTrees(db, { storage, signal: new AbortController().signal, phase: () => {} })).rejects.toThrow(reason);
+    expect(readRemoteWorkspaceAuthority((await workspace(f.workspaceId)).metadata)).toBeNull();
+    expect(await fs.readFile(path.join(f.cwd, "saved.txt"), "utf8")).toBe("original saved work\n");
   });
   it.each(["running", "starting", "unknown", "failed"])("blocks a %s local service after its control lease expires", async status => {
     const f = await seed(), serviceId = randomUUID();

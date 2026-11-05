@@ -386,7 +386,15 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
     await db.update(heartbeatRuns).set({ lastOutputAt: new Date(Date.now() - WORKSPACE_BUSY_HOLDER_STALE_AFTER_MS - 1_000) })
       .where(eq(heartbeatRuns.id, writer.id));
     await expect(prepareHeartbeatWorkspace(db, input)).rejects.toMatchObject({ status: 409 });
+    // An ended writer whose save has not settled still holds the workspace:
+    // the next run waits from the writer's end, within the same holder cutoff.
     await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, writer.id));
+    await expect(prepareHeartbeatWorkspace(db, input)).rejects.toMatchObject({
+      constructor: WorkspaceBusyDeferral, code: "workspace_busy", executionWorkspaceId: workspace.id,
+      holder: { runId: writer.id, issueId: parent.id, ended: true },
+    });
+    await db.update(heartbeatRuns).set({ finishedAt: new Date(Date.now() - WORKSPACE_BUSY_HOLDER_STALE_AFTER_MS - 1_000) })
+      .where(eq(heartbeatRuns.id, writer.id));
     await expect(prepareHeartbeatWorkspace(db, input)).rejects.toMatchObject({ status: 409 });
     expect(await readAuthority()).toEqual(authority);
     expect(acquire).not.toHaveBeenCalled();
@@ -444,7 +452,7 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
     const resolve = vi.spyOn(input.services, "resolveWorkspaceForRun").mockRejectedValue(new Error("local folder retained"));
     process.env.PAPERCLIP_EPHEMERAL_SERVER = String(ephemeral);
     await expect(prepareHeartbeatWorkspace(db, input)).rejects.toThrow(ephemeral
-      ? "Volume-free servers require warm Paperclip Runner execution with remote workspace storage." : "local folder retained");
+      ? "Volume-free servers require native Paperclip Runner execution with remote workspace storage." : "local folder retained");
     if (ephemeral) expect(resolve).not.toHaveBeenCalled();
     else expect(resolve).toHaveBeenCalledOnce();
     expect(await db.select().from(executionWorkspaces)).toHaveLength(0);
@@ -795,21 +803,21 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
   });
 
   it.each([
-    { inherited: false, mode: "isolated_workspace" as const, fresh: false },
-    { inherited: false, mode: "isolated_workspace" as const, fresh: true },
-    { inherited: true, mode: "isolated_workspace" as const, fresh: false },
-    { inherited: true, mode: "operator_branch" as const, fresh: false },
-  ])("prepares managed storage before acquisition (inherited: $inherited, mode: $mode, fresh: $fresh) without touching a Core checkout", async ({ inherited, mode: defaultMode, fresh }) => {
+    { fromDefault: false, mode: "isolated_workspace" as const, fresh: false },
+    { fromDefault: false, mode: "isolated_workspace" as const, fresh: true },
+    { fromDefault: true, mode: "isolated_workspace" as const, fresh: false },
+    { fromDefault: true, mode: "operator_branch" as const, fresh: false },
+  ])("prepares managed storage before acquisition (fromDefault: $fromDefault, mode: $mode, fresh: $fresh) without touching a Core checkout", async ({ fromDefault, mode: defaultMode, fresh }) => {
     const { input, source, issue } = await fixture(true);
-    const pluginKey = `test.managed-storage-${inherited}-${defaultMode}-${fresh}`;
+    const pluginKey = `test.managed-storage-${fromDefault}-${defaultMode}-${fresh}`;
     const [plugin] = await db.insert(plugins).values({ pluginKey, packageName: "test-storage", version: "1.0.0", apiVersion: 1, status: "ready", categories: ["workspace"],
       manifestJson: { id: pluginKey, apiVersion: 1, version: "1.0.0", displayName: "Storage", description: "Storage", author: "Test", categories: ["workspace"],
-        workspaceProvider: { freshWorkspaceVersion: 1, modes: ["isolated_workspace", "operator_branch"], strategies: ["git_worktree"], ...(inherited ? { defaultForProjects: { mode: defaultMode, strategy: "git_worktree" as const } } : {}) }, capabilities: ["workspaces.manage", "events.subscribe"], resourceLifecycle: ["project"], entrypoints: { worker: "./worker.js" } } }).returning();
-    const explicitPolicy = { enabled: true, storageProviderPluginId: plugin.id, defaultMode: "isolated_workspace" as const,
+        workspaceProvider: { freshWorkspaceVersion: 1, modes: ["isolated_workspace", "operator_branch"], strategies: ["git_worktree"], ...(fromDefault ? { defaultForProjects: { mode: defaultMode, strategy: "git_worktree" as const } } : {}) }, capabilities: ["workspaces.manage", "events.subscribe"], resourceLifecycle: ["project"], entrypoints: { worker: "./worker.js" } } }).returning();
+    const savedPolicy = fromDefault ? { enabled: true, storageProviderPluginId: plugin.id } : { enabled: true, storageProviderPluginId: plugin.id, defaultMode: "isolated_workspace" as const,
       workspaceStrategy: { type: "git_worktree" as const, baseRef: "main", branchTemplate: "test-{{issue.identifier}}" } };
-    if (!inherited) await db.update(projects).set({ executionWorkspacePolicy: explicitPolicy }).where(eq(projects.id, issue.projectId!));
+    await db.update(projects).set({ executionWorkspacePolicy: savedPolicy }).where(eq(projects.id, issue.projectId!));
     {
-      const policy = await effectiveProjectWorkspacePolicy(db, input.agent.companyId, inherited ? null : explicitPolicy, true);
+      const policy = await effectiveProjectWorkspacePolicy(db, input.agent.companyId, savedPolicy, true);
       const mode = resolveExecutionWorkspaceMode({ projectPolicy: policy, issueSettings: null, legacyUseProjectWorkspace: null });
       input.policy.projectExecutionWorkspacePolicy = policy;
       input.policy.requestedExecutionWorkspaceMode = mode;
@@ -840,7 +848,7 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
     await expect(access(source)).rejects.toThrow();
     const [task] = await db.select().from(issues).where(eq(issues.id, issue.id));
     const [workspace] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, task.executionWorkspaceId!));
-    expect(workspace).toMatchObject({ providerType: "plugin", cwd: null, mode: defaultMode, strategyType: "git_worktree", branchName: fresh ? null : inherited ? "WSP-1-prepare-this-workspace" : "test-WSP-1" });
+    expect(workspace).toMatchObject({ providerType: "plugin", cwd: null, mode: defaultMode, strategyType: "git_worktree", branchName: fresh ? null : fromDefault ? "WSP-1-prepare-this-workspace" : "test-WSP-1" });
   });
   async function installDefault() {
     const [plugin] = await db.insert(plugins).values({ pluginKey: "test.default-storage", packageName: "test-storage", version: "1.0.0", status: "ready",
@@ -1754,12 +1762,16 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
     }
     const reserve = vi.spyOn(input.services.executionWorkspacesSvc, "assertTaskRepositoryRecoveryBinding");
     const prepare = vi.spyOn(input.services.executionWorkspacesSvc, "prepareTaskRepositoriesForAdmission");
-    if (transport !== "daytona" || descriptor === "valid") {
+    if (descriptor !== "corrupt") {
       const result = await prepareHeartbeatWorkspace(db, input);
       expect(result.executionTarget).toEqual(target);
       if (transport === "ssh" || transport === "task") expect(reserve).not.toHaveBeenCalled();
       else expect(reserve).toHaveBeenCalledWith({ companyId: issue.companyId, issueId: issue.id,
-        workspaceId: first.persistedExecutionWorkspace!.id, cwd: admittedRoot, agentId: input.agent.id, runId: input.run.id });
+        workspaceId: first.persistedExecutionWorkspace!.id,
+        // Without a committed sync descriptor the sandbox never received this
+        // run's work, so recovery re-admits the host workspace it will seed from.
+        cwd: transport === "daytona" && descriptor === "absent" ? first.executionWorkspace.cwd : admittedRoot,
+        agentId: input.agent.id, runId: input.run.id });
       if (transport !== "daytona") {
         await expect(prepareNativeWorkspaceSync({ db, runId: input.run.id, companyId: issue.companyId,
           workspaceId: first.persistedExecutionWorkspace!.id, workspaceLocalDir: first.executionWorkspace.cwd,
@@ -1767,8 +1779,7 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
       }
       expect(admittedRoot).not.toBe(first.executionWorkspace.cwd);
     } else {
-      await expect(prepareHeartbeatWorkspace(db, input)).rejects.toThrow(descriptor === "absent"
-        ? "native_workspace_sync_descriptor_binding_missing" : "native_workspace_sync_descriptor_digest_mismatch");
+      await expect(prepareHeartbeatWorkspace(db, input)).rejects.toThrow("native_workspace_sync_descriptor_digest_mismatch");
       expect(reserve).not.toHaveBeenCalled();
       expect(await leases(input.run.id)).toMatchObject([{ status: "active" }]);
     }

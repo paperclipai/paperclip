@@ -240,7 +240,7 @@ async function createRemoteMcpToolFixture(db: ReturnType<typeof createDb>, compa
 
 describe("Honcho workspace configuration", () => {
   const schema = { type: "object", properties: { workspace_id: { type: "string" }, query: { type: "string" } }, required: ["workspace_id", "query"] };
-  const connection = { config: { sourceTemplateKey: "honcho", connectionMethodKey: "mcp-api-key", methodConfig: { workspaceId: "team-workspace" } } } as typeof toolConnections.$inferSelect;
+  const connection = { transport: "mcp_remote" as const, config: { sourceTemplateKey: "honcho", connectionMethodKey: "mcp-api-key", methodConfig: { workspaceId: "team-workspace" } } };
   it("projects the workspace and hides its argument while keeping old unconfigured tools usable", () => {
     expect(projectedConnectionToolArguments(connection, { workspace_id: "forged", query: "decisions" }, "query", schema)).toEqual({ workspace_id: "team-workspace", query: "decisions" });
     expect(projectedConnectionToolInputSchema(connection, schema, "query")).toEqual({ type: "object", properties: { query: { type: "string" } }, required: ["query"] });

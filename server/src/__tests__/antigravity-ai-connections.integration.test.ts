@@ -3,7 +3,7 @@ import { access, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { promises as fs } from "node:fs";
 import { join } from "node:path";
 import { and, eq, sql } from "drizzle-orm";
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
 import {
   agents, authUsers, closeRegisteredClients, companies, companyMemberships, companySecrets, companySecretVersions,
   connectionGrants, createDb, userSecretDefinitions,
@@ -36,7 +36,7 @@ describeDatabase("Google AI connection authority with real PostgreSQL", () => {
   let db: ReturnType<typeof createDb>;
   let embedded: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | undefined;
   let isolatedHome: ReturnType<typeof createIsolatedTestHome>;
-  let request: ReturnType<typeof vi.spyOn<typeof globalThis, "fetch">>;
+  let request: MockInstance<typeof fetch>;
 
   beforeAll(async () => {
     isolatedHome = createIsolatedTestHome();

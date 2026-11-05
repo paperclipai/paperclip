@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { agents, companies, createDb, heartbeatRuns, issueRecoveryActions, issues, nativeRunFinalizations } from "@paperclipai/db";
+import { eq } from "drizzle-orm";
+import { agents, companies, createDb, heartbeatRuns, issueRecoveryActions, issues, nativeRunFinalizations, nativeRunResults, completionContracts } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
 import { executionProjectionsForRuns } from "./execution-projection.js";
 
@@ -36,4 +37,42 @@ describe.skipIf(!support.supported)("persisted stopped-workspace projection", ()
     expect(projections.get(runId)).toMatchObject({ phase: "recovery_needed", label: "Stopped",
       nextAction: "Saved work recovered. Send a message to continue.", permittedActions: ["inspect_run"] });
   });
+  it("advertises Stop for a failed native retry from the real batched coordinator read", async () => {
+    const companyId = randomUUID(), agentId = randomUUID(), issueId = randomUUID(), runId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Pending native retry", issuePrefix: "PNR" });
+    await db.insert(agents).values({ id: agentId, companyId, name: "Worker", adapterType: "paperclip_runner" });
+    await db.insert(issues).values({ id: issueId, companyId, title: "Pending retry", assigneeAgentId: agentId });
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, nativeIssueId: issueId,
+      runtimeMode: "native", status: "failed", finishedAt: new Date(), contextSnapshot: { issueId } });
+    await db.insert(nativeRunFinalizations).values({ companyId, issueId, runId, phase: "retryable_failure", resultId: null });
+    const projections = await executionProjectionsForRuns(db, companyId, [runId]);
+    expect(projections.get(runId)).toMatchObject({ canStop: true });
+    await db.update(heartbeatRuns).set({ driverKind: "grok_bot_mcp" }).where(eq(heartbeatRuns.id, runId));
+    expect((await executionProjectionsForRuns(db, companyId, [runId])).get(runId)?.canStop).toBe(false);
+    await db.update(heartbeatRuns).set({ driverKind: "codex_app_server" }).where(eq(heartbeatRuns.id, runId));
+    for (const status of ["succeeded", "cancelled", "timed_out"] as const) {
+      await db.update(heartbeatRuns).set({ status }).where(eq(heartbeatRuns.id, runId));
+      expect((await executionProjectionsForRuns(db, companyId, [runId])).get(runId)?.canStop).toBe(false);
+    }
+    await db.update(heartbeatRuns).set({ status: "failed", runtimeMode: "legacy" }).where(eq(heartbeatRuns.id, runId));
+    expect((await executionProjectionsForRuns(db, companyId, [runId])).get(runId)?.canStop).toBe(false);
+    await db.update(heartbeatRuns).set({ runtimeMode: "native" }).where(eq(heartbeatRuns.id, runId));
+    for (const phase of ["observed", "terminal_failure", "committed"] as const) {
+      await db.update(nativeRunFinalizations).set({ phase }).where(eq(nativeRunFinalizations.runId, runId));
+      expect((await executionProjectionsForRuns(db, companyId, [runId])).get(runId)?.canStop).toBe(false);
+    }
+    await db.update(nativeRunFinalizations).set({ phase: "retryable_failure" }).where(eq(nativeRunFinalizations.runId, runId));
+    const [contract] = await db.insert(completionContracts).values({ companyId, issueId, revision: 1,
+      schemaVersion: "paperclip.completion-contract.v1", policyVersion: "test", risk: "low", completionAuthority: "server",
+      incompleteCriteriaPolicy: "deny", contractJson: {}, canonicalSha256: randomUUID(), createdByActorType: "agent", createdByActorId: agentId }).returning();
+    await db.update(heartbeatRuns).set({ completionContractId: contract.id }).where(eq(heartbeatRuns.id, runId));
+    const [accepted] = await db.insert(nativeRunResults).values({ companyId, issueId, runId, completionContractId: contract.id,
+      schemaStatus: "accepted", serverFingerprint: randomUUID(), canonicalSha256: randomUUID(), resultJson: { summary: "Accepted result" } }).returning();
+    await db.update(nativeRunFinalizations).set({ resultId: accepted.id }).where(eq(nativeRunFinalizations.runId, runId));
+    expect((await executionProjectionsForRuns(db, companyId, [runId])).get(runId)?.canStop).toBe(false);
+    expect((await executionProjectionsForRuns(db, randomUUID(), [runId])).has(runId)).toBe(false);
+    await db.delete(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, runId));
+    expect((await executionProjectionsForRuns(db, companyId, [runId])).get(runId)?.canStop).toBe(false);
+  });
+
 });

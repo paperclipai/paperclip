@@ -1,5 +1,5 @@
 {
-  "id": "72b54aeb-22e1-4082-a8f9-2bf7081c3df5",
+  "id": "fb4383f6-cbe6-4aff-9fd2-6eeb69a6927a",
   "prevId": "dd860bff-55de-4849-8787-58b9de729258",
   "version": "7",
   "dialect": "postgresql",
@@ -28957,6 +28957,12 @@
           "primaryKey": false,
           "notNull": true
         },
+        "admitted_project_ids": {
+          "name": "admitted_project_ids",
+          "type": "uuid[]",
+          "primaryKey": false,
+          "notNull": false
+        },
         "settlement_id": {
           "name": "settlement_id",
           "type": "uuid",
@@ -29076,6 +29082,10 @@
         "execution_admissions_settlement_check": {
           "name": "execution_admissions_settlement_check",
           "value": "(\"execution_admissions\".\"settlement_id\" is null) = (\"execution_admissions\".\"settled_at\" is null)"
+        },
+        "execution_admissions_project_set_check": {
+          "name": "execution_admissions_project_set_check",
+          "value": "case when \"execution_admissions\".\"admitted_project_ids\" is null\n    then \"execution_admissions\".\"settled_at\" is not null else array_position(\"execution_admissions\".\"admitted_project_ids\", null) is null and cardinality(\"execution_admissions\".\"admitted_project_ids\") <= 100 end"
         }
       },
       "isRLSEnabled": false
@@ -54372,65 +54382,6 @@
       },
       "policies": {},
       "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.task_provider_output_policies": {
-      "name": "task_provider_output_policies",
-      "schema": "",
-      "columns": {
-        "issue_id": {
-          "name": "issue_id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "company_id": {
-          "name": "company_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "disposition": {
-          "name": "disposition",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {
-        "task_provider_output_policies_issue_fk": {
-          "name": "task_provider_output_policies_issue_fk",
-          "tableFrom": "task_provider_output_policies",
-          "tableTo": "issues",
-          "columnsFrom": [
-            "company_id",
-            "issue_id"
-          ],
-          "columnsTo": [
-            "company_id",
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {
-        "task_provider_output_policies_disposition_check": {
-          "name": "task_provider_output_policies_disposition_check",
-          "value": "\"task_provider_output_policies\".\"disposition\" in ('ordinary', 'forbidden')"
-        }
-      },
       "isRLSEnabled": false
     },
     "public.tool_access_audit_events": {

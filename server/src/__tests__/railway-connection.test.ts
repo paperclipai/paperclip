@@ -54,7 +54,7 @@ const initialTools = [
       return new Response("", { status: 404 });
     });
     const service = toolAccessService(db, { remoteHttpRequest: request, remoteHttpEndpointLookup: async () => [{ address: "8.8.8.8", family: 4 }] });
-    const connection = await service.connectGalleryApp(company.id, { galleryKey: "railway", methodKey: "mcp-oauth", name: "Railway" }, actor);
+    const connection = await service.connectGalleryApp(company.id, { galleryKey: "railway", connectionMethodKey: "mcp-oauth", name: "Railway" }, actor);
     const start = await service.startOAuth(company.id, connection.connectionId, { redirectUri, actor });
     const url = new URL(start.authorizationUrl);
     expect(start.registrationSource).toBe("dcr");
@@ -165,7 +165,7 @@ const initialTools = [
     const results = await completed;
     for (const result of results) if (result.status === "rejected") throw result.reason;
     expect(results.map(result => result.status)).toEqual(["fulfilled", "fulfilled"]);
-    expect((await f.service.getConnection(f.connectionId)).config.railwaySsh).toMatchObject({ grantId: grant.id, publicKey: expect.stringMatching(/^ssh-ed25519 /), enabled: false });
+    expect((await f.service.getConnection(f.connectionId)).config!.railwaySsh).toMatchObject({ grantId: grant.id, publicKey: expect.stringMatching(/^ssh-ed25519 /), enabled: false });
     const [updated] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, grant.id));
     expect(updated.credentialSecretRefs.map(ref => ref.configPath)).toEqual(expect.arrayContaining(["oauth.access_token", "oauth.refresh_token", "railway.ssh_private_key"]));
   }, 20000);

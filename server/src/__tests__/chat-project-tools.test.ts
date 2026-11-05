@@ -300,7 +300,7 @@ import { recoveryPostgresSupport as support } from "./helpers/recovery-postgres.
       const token = createLocalAgentJwt(f.agentId, f.companyId, "paperclip_runner", f.runId, f.responsibleUserId)!;
       const before = await server.db.select({ id: issues.id }).from(issues).where(eq(issues.companyId, f.companyId));
       const paths = [`/api/companies/${f.companyId}/issues`, `/api/issues/${f.issueId}/children`];
-      const selections = [{ projectWorkspaceId: f.projectWorkspaceId }, { executionWorkspaceId: executionWorkspace.id },
+      const selections: Array<Record<string, string>> = [{ projectWorkspaceId: f.projectWorkspaceId }, { executionWorkspaceId: executionWorkspace.id },
         { inheritExecutionWorkspaceFromIssueId: f.blockerId }];
       const create = async (path: string, selection: Record<string, string>) => {
         const response = await fetch(`${server.apiUrl}${path}`, {

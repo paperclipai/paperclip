@@ -1,8 +1,10 @@
 import { EMBEDDED_POSTGRES_TEST_TIMEOUT_MS } from "@paperclipai/db";
 import { randomUUID } from "node:crypto";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import path from "node:path";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { agents, authUsers, companies, companyMemberships, createDb, environmentLeases, environments, heartbeatRuns, issues, nativeRunFinalizations } from "@paperclipai/db";
+import { agents, agentWakeupRequests, authUsers, companies, companyMemberships, createDb, environmentLeases, environments, heartbeatRuns, issues, nativeRunFinalizations } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { heartbeatService } from "../services/heartbeat.js";
 import { NativeStartupCleanupPendingError, readNativeStartupCleanup } from "../services/native-runtime/native-startup-cleanup.js";
@@ -10,6 +12,9 @@ import { prepareNativeHeartbeatRun } from "../services/native-runtime/prepare-na
 import { environmentService } from "../services/environments.js";
 import { remoteTerminationReceipt } from "../services/remote-execution-termination.js";
 import { createIsolatedTestHome } from "./helpers/isolated-test-home.js";
+import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
+import { writeEnvironmentCleanup } from "../services/environment-cleanup-notifications.js";
+import { registerRunDispatchWork } from "../services/heartbeat/dispatch-work.js";
 
 const execute = vi.hoisted(() => vi.fn());
 vi.mock("../adapters/index.js", async () => {
@@ -76,6 +81,97 @@ suite("native terminal-run cleanup admission", () => {
     expect(execute).toHaveBeenCalledTimes(3);
   }, 30_000);
 
+  it.each(["continue", "stop", "reassign", "failed cleanup"] as const)(
+    "settles an automatic legacy retry from the committed cleanup event: %s", async mode => {
+      const home = createIsolatedTestHome(), previousHome = process.env.PAPERCLIP_HOME;
+      process.env.PAPERCLIP_HOME = home.home;
+      const companyId = randomUUID(), agentId = randomUUID(), issueId = randomUUID(), sourceId = randomUUID();
+      const successorId = randomUUID(), wakeId = randomUUID(), ownerId = randomUUID();
+      const cwd = path.join(home.home, "saved-task");
+      await mkdir(cwd, { recursive: true });
+      await writeFile(path.join(cwd, "saved.txt"), "Preserved work before preparation failed.\n");
+      await db.insert(authUsers).values({ id: ownerId, name: "Task owner", email: `${ownerId}@example.test`,
+        createdAt: new Date(), updatedAt: new Date() });
+      await db.insert(companies).values({ id: companyId, name: "Automatic cleanup retry", issuePrefix: `R${companyId.slice(0, 6)}`, defaultResponsibleUserId: ownerId });
+      await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: ownerId, status: "active", membershipRole: "owner" });
+      await db.insert(agents).values({ id: agentId, companyId, name: "Continuation worker", status: "idle", adapterType: "process",
+        adapterConfig: { cwd }, runtimeConfig: { heartbeat: { enabled: false, wakeOnDemand: true, maxConcurrentRuns: 1 } } });
+      await db.insert(issues).values({ id: issueId, companyId, title: "Continue preserved work", status: "in_progress",
+        assigneeAgentId: agentId, responsibleUserId: ownerId });
+      await db.insert(heartbeatRuns).values({ id: sourceId, companyId, agentId, issueId, status: "failed", runtimeMode: "legacy",
+        startedAt: new Date(Date.now() - 10_000), finishedAt: new Date(), executionStage: "preparing", errorCode: "adapter_failed",
+        resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } }, contextSnapshot: { issueId } });
+      const [lease] = await db.insert(environmentLeases).values({ companyId, issueId, heartbeatRunId: sourceId,
+        provider: "daytona", providerLeaseId: randomUUID(), status: "active" }).returning();
+      await db.insert(agentWakeupRequests).values({ id: wakeId, companyId, agentId, source: "automation", triggerDetail: "system",
+        reason: "issue_continuation_needed", requestedByActorType: "system", status: "queued", runId: successorId,
+        payload: { issueId } });
+      await db.insert(heartbeatRuns).values({ id: successorId, companyId, agentId, issueId, status: "queued", invocationSource: "automation",
+        responsibleUserId: ownerId, retryOfRunId: sourceId, wakeupRequestId: wakeId,
+        contextSnapshot: { issueId, retryOfRunId: sourceId, source: "issue.continuation_recovery",
+          wakeReason: "issue_continuation_needed", skipIssueComment: true } });
+      await db.update(issues).set({ executionRunId: successorId, executionAgentNameKey: "continuation-worker", executionLockedAt: new Date() })
+        .where(eq(issues.id, issueId));
+      execute.mockReset();
+      execute.mockImplementation(async (context: { runId: string }) => {
+        expect(context.runId).toBe(successorId);
+        expect(await readFile(path.join(cwd, "saved.txt"), "utf8")).toBe("Preserved work before preparation failed.\n");
+        await writeFile(path.join(cwd, "continued.txt"), "Continued once after cleanup.\n");
+        await db.update(issues).set({ status: "done" }).where(eq(issues.id, issueId));
+        return { exitCode: 0, signal: null, timedOut: false, summary: "Continued preserved work after cleanup." };
+      });
+      const heartbeat = heartbeatService(db), errors: unknown[] = [];
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+      let completedCleanupDispatches = 0;
+      const cleanupStatus = mode === "failed cleanup" ? "failed" : "success";
+      try {
+        await registerRunDispatchWork(coordinator, { promoteDueScheduledRetries: async () => undefined,
+          nextScheduledRetryAt: async () => null, schedulingSuppressed: async () => false,
+          resumeQueuedRunsAfterDrain: async () => {
+            const [current] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, lease.id));
+            await heartbeat.resumeQueuedRunsAfterDrain({ companyId });
+            if (current?.status === "released" && current.releasedAt && current.cleanupStatus === cleanupStatus)
+              completedCleanupDispatches++;
+          },
+        }, () => true).ready;
+        expect((await heartbeat.getRun(successorId))?.status).toBe("queued");
+        expect(execute).not.toHaveBeenCalled();
+        if (mode === "stop") await heartbeat.cancelRun(successorId, "Cancelled by a board operator", {
+          resultJson: { cancelledByActorType: "user", cancelledByUserId: ownerId },
+        });
+        if (mode === "reassign") {
+          const [replacement] = await db.insert(agents).values({ companyId, name: "New owner", adapterType: "process" }).returning();
+          await db.update(issues).set({ assigneeAgentId: replacement.id }).where(eq(issues.id, issueId));
+        }
+        await writeEnvironmentCleanup(db, tx => tx.update(environmentLeases).set({ status: "released", releasedAt: new Date(),
+          cleanupStatus }).where(eq(environmentLeases.id, lease.id)),
+        { companyId, runId: sourceId });
+        await vi.waitFor(() => expect(completedCleanupDispatches).toBeGreaterThan(0), { timeout: 10_000 });
+        if (mode === "continue") {
+          await heartbeat.drainActiveRunExecutions();
+          expect((await heartbeat.getRun(successorId))?.status).toBe("succeeded");
+          expect(execute).toHaveBeenCalledTimes(1);
+          expect(await readFile(path.join(cwd, "continued.txt"), "utf8")).toBe("Continued once after cleanup.\n");
+          const [done] = await db.select().from(issues).where(eq(issues.id, issueId));
+          expect(done).toMatchObject({ status: "done", executionRunId: null, checkoutRunId: null });
+        } else {
+          await vi.waitFor(() => expect(coordinator.nextWakeAt()).toBeNull(), { timeout: 10_000 });
+          expect((await heartbeat.getRun(successorId))?.status).toBe(mode === "failed cleanup" ? "queued" : "cancelled");
+          expect(execute).not.toHaveBeenCalled();
+        }
+        expect((await heartbeat.getRun(sourceId))?.status).toBe("failed");
+        expect(await readFile(path.join(cwd, "saved.txt"), "utf8")).toBe("Preserved work before preparation failed.\n");
+        expect(errors).toEqual([]);
+      } finally {
+        await coordinator.stop();
+        await heartbeat.drainActiveRunExecutions();
+        await db.update(agents).set({ status: "paused" }).where(eq(agents.id, agentId));
+        if (previousHome === undefined) delete process.env.PAPERCLIP_HOME; else process.env.PAPERCLIP_HOME = previousHome;
+        home.cleanup();
+      }
+    }, 30_000,
+  );
+
   it("retries a failed startup intent through timer failure and drain before verified cancellation", async () => {
     const home = createIsolatedTestHome(), originalHome = process.env.PAPERCLIP_HOME;
     process.env.PAPERCLIP_HOME = home.home;
@@ -107,7 +203,7 @@ suite("native terminal-run cleanup admission", () => {
       await db.insert(agents).values({ id: agentId, companyId, name: "Worker", role: "engineer", status: "idle", adapterType: "process",
         adapterConfig: {}, permissions: {}, runtimeConfig: { heartbeat: { enabled: false, wakeOnDemand: true } } });
       await db.insert(issues).values({ id: issueId, companyId, title: "Recover startup", status: "todo", assigneeAgentId: agentId, responsibleUserId: "owner" });
-      const [environment] = await db.insert(environments).values({ companyId, name: "Controlled provider", driver: "plugin", config: {} }).returning();
+      const [environment] = await db.insert(environments).values({ name: "Controlled provider", driver: "plugin", config: {} }).returning();
       await db.execute(sql`create table test_cleanup_intent_fault (enabled boolean not null)`);
       await db.execute(sql`insert into test_cleanup_intent_fault values (true)`);
       await db.execute(sql`create sequence test_cleanup_intent_attempts`);

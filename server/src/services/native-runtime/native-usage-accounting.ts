@@ -51,6 +51,7 @@ export function nativeUsageBiller(provider: NativeExecutionInput["provider"]): s
     if (provider.agent === "cursor") return "cursor";
     if (provider.agent === "copilot") return "github";
     if (provider.agent === "pi") return "openrouter";
+    if (provider.agent === "grok") return "xai";
   }
   return "openai";
 }

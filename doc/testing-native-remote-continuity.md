@@ -49,8 +49,13 @@ They do not qualify distinct application releases or complete webserver disk los
 
 `native-controller-recovery.integration.test.ts` separately verifies encrypted
 database discovery, one-source import, idempotency, live-owner waiting, corrupt
-bindings and paginated inventory. `native-session-resume-projection.test.ts`
-retains the 32-candidate and newer-progress barrier checks. Snapshot transaction
+bindings and paginated inventory. `native-recovered-owner-followup.test.ts`
+admits a per-turn follow-up after recovery committed an owner that never saved
+a suspension receipt, and keeps unsettled or ambiguous owners held. It also
+retries from that owner after an earlier follow-up failed before provider work,
+and keeps any follow-up with provider or controller evidence as the source.
+`native-session-resume-projection.test.ts` retains the 32-candidate and
+newer-progress barrier checks. Snapshot transaction
 counts and stale-generation rejection are exercised by the control-plane port
 tests; incomplete-publication retention is exercised by the expiration tests.
 
@@ -63,7 +68,7 @@ without target tool dispatch or a fabricated response. The staged restart helper
 and classifier tests cover target discovery before its first session snapshot,
 exact encrypted source/header/artifact bindings and the existing compatibility
 rebinder. Source accounting tests use real PostgreSQL to distinguish immutable
-receipt replay, equal finalized usage and late usage requiring reconciliation.
+receipt replay, equal finalized usage and late usage posted to its owning run.
 Handoff crash tests must restore the exact queued command or authenticated
 receipt, reuse the verified physical Runner and preserve endpoint binding. Test
 both direct callbacks and the same guest listener when that ingress is enabled;
@@ -535,3 +540,26 @@ explicit incomplete usage report before failure; this preserves known budget
 exposure without settling ambiguous usage. That required report and its receipt
 retain the accounting measurements and matching saved prior identity, so an
 optional diagnostic acknowledgement cannot discard reconciliation evidence.
+
+## Shared allocation ingress retirement
+
+The `retires the completed child listener` cases in
+`native-session-executor.test.ts` use the actual executor and warm registry,
+PostgreSQL ownership rows, and real local TCP listeners. The provider process
+boundary is supplied by the fixture. The listeners use an ephemeral test port;
+production provider ingress keeps its fixed port. A completed child's listener
+must close before a distinct parent session binds in that allocation. The child's
+accepted result stays unchanged.
+
+```sh
+pnpm --filter @paperclipai/server exec vitest run \
+  src/services/native-runtime/native-session-executor.test.ts \
+  -t 'retires the completed child listener'
+```
+
+Controls cover foreign companies, allocations and workspaces; live or unaccounted
+owners; changed controllers, reassignment and competing leases; workspace-lock
+and cancellation races; unconfirmed close; and controller, Stop and writer
+changes inside awaited close. The latter must prevent parent backend invocation
+even when the old listener has closed. These local checks do not identify
+a hosted conflicting PID or prove a hosted provider Stop or recovery.

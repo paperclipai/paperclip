@@ -305,8 +305,9 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
       remoteHttpEndpointLookup: async () => [{ address: "8.8.8.8", family: 4 }], remoteHttpRequest: requests,
     });
     await start(tools.scheduledHealth); await quiet();
-    const row = await tools.createConnection(companyId, { applicationId, name: "Real producer", transport: "mcp_remote", status: "active", enabled: true,
-      config: { url: "https://health.example.test/mcp" } });
+    const row = await tools.createConnection(companyId, { applicationId, name: "Real producer", connectionPurpose: "tool", transport: "mcp_remote", authKind: "none", ownership: "customer",
+      status: "active", connectionKind: "managed", enabled: true, credentialSecretRefs: [],
+      config: { url: "https://health.example.test/mcp" }, transportConfig: { url: "https://health.example.test/mcp" } });
     await vi.waitFor(async () => {
       await vi.advanceTimersByTimeAsync(1000);
       const [stored] = await db.select().from(toolConnections).where(eq(toolConnections.id, row.id));

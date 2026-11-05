@@ -223,6 +223,9 @@ export function projectExecution(
   const detail = coordinator?.failureDetail ?? {};
   const successorRunId = text(detail.successorRunId);
   const projection: ExecutionProjection = {
+    canStop: run.runtimeMode === "native" && run.status === "failed" && run.driverKind !== "grok_bot_mcp" && !!run.nativeIssueId
+      && coordinator?.runId === run.id && coordinator.issueId === run.nativeIssueId && coordinator.resultId === null
+      && coordinator.phase === "retryable_failure",
     phase: "queued",
     label: "Queued",
     cause: run.errorCode ?? coordinator?.failureCode ?? null,

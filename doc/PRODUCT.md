@@ -459,3 +459,14 @@ The agent performs authorized setup, reuses saved accounts and drafts, and hands
 Authorized policy administration includes user-requested changes that loosen the acting agent’s own tool controls. These writes remain bounded by management grants, resource scope and the responsible user’s current authority; they do not need an additional approval solely because the agent is a target. Subsequent tool calls obey the resulting policy. Agents cannot approve their own governed action requests or edit their own principal permission grants.
 
 The implementation, operation inventory, permission matrix and fixture qualification are recorded in [Agent API parity for connection configuration](plans/2026-10-13-connection-api-parity.md). Provider fixtures establish API behavior; they do not constitute live provider setup or an empirical agent-success claim.
+
+## Budget control behavior
+
+Paperclip records paid-operation charges durably and avoids company-wide
+serialization during receipt ingestion and settlement. Budget checks and
+threshold enforcement are best effort. Concurrent operations can start from
+the same observed balance; estimates and provider caps do not replace the
+actual bill. A background worker applies threshold holds and scoped Stop intent.
+Manual Stop and authorization remain independently enforced. Unknown charges
+remain visible, and stale unevaluated accounting blocks new limited-budget work
+until reconciliation catches up.

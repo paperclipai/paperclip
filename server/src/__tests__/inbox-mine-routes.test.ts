@@ -170,7 +170,7 @@ describeEmbeddedPostgres("Mine inbox snapshot routes", () => {
     await request(appFor(null)).get(`/api/companies/${f.companyId}/inbox/mine`).expect(403);
     await request(appFor(null, {}, { type: "agent", agentId: runAgents[0]!.id, companyId: f.companyId, source: "agent_key" }))
       .get(`/api/companies/${f.companyId}/inbox/mine`).expect(403);
-    await request(appFor(null, {}, { ...f.actor, userId: undefined }))
+    await request(appFor(null, {}, { ...f.actor, userId: undefined } as Express.Request["actor"]))
       .get(`/api/companies/${f.companyId}/inbox/mine`).expect(401);
     await ctx.db.update(companyMemberships).set({ status: "archived" }).where(eq(companyMemberships.principalId, f.userId));
     await request(app).get(`/api/companies/${f.companyId}/inbox/mine`).expect(403);

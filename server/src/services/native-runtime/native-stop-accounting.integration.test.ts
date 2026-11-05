@@ -222,7 +222,9 @@ describe("native Stop accounting after the last usage receipt", () => {
       const sync = vi.spyOn(workspaceSync, "prepareNativeWorkspaceSync").mockResolvedValue(null);
       const stage = vi.spyOn(attachmentStaging, "stageNativeRunnerWakeAttachments").mockRejectedValue(new Error("Stop cleanup must not stage attachments"));
       const acquire = vi.fn(async () => { throw new Error("Stop cleanup cannot acquire a new sandbox"); });
+      const resume = vi.fn(async () => ({ providerLeaseId: "existing-sandbox" }));
       const runtime = environmentRuntimeService(db, { drivers: [{ driver: "sandbox", acquireRunLease: acquire,
+        resumeRunLease: resume,
         resolveCapabilities: async () => classifyEnvironmentCapabilities({}),
         realizeWorkspace: async () => ({ cwd: home.home }),
         retryPendingSandboxTeardown: async ({ lease }) => {
@@ -244,6 +246,11 @@ describe("native Stop accounting after the last usage receipt", () => {
           const holds = await db.select().from(budgetReservations).where(eq(budgetReservations.runId, runId));
           expect(await readClaimedNativeStopRecovery(db, current, owner.leaseOwner ?? undefined)).toBe(true);
           expect(holds).toMatchObject([{ id: hold.id, state: "held" }]);
+          expect(resume).toHaveBeenCalledOnce();
+          expect(resume).toHaveBeenCalledWith(expect.objectContaining({
+            lease: expect.objectContaining({ id: native.environmentLeaseId, providerLeaseId: "existing-sandbox" }),
+            requestedCwd: "/workspace",
+          }));
           reachedSelection = true;
         } });
       try {

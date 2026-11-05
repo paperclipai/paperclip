@@ -1,4 +1,5 @@
-import { budgetService, computeObservedSpend } from "../services/budgets.js";
+import { budgetService, computeObservedSpend, flushBudgetEvaluationWork } from "../services/budgets.js";
+import * as costAccounting from "../services/costs.js";
 import { buildPaperclipRuntimeMcpServers } from "../services/heartbeat.js";
 import { resolveNativeRuntimeMcpSnapshot } from "../services/native-runtime/runtime-context.js";
 import express from "express";
@@ -293,6 +294,7 @@ const actor = { actorType: "user" as const, actorId: "browser-reviewer" };
           .set({ nextPollAt: new Date(0) })
           .where(eq(browserUseSessions.companyId, company.id));
         await service.sweep(connection.connectionId);
+        await flushBudgetEvaluationWork(db, { companyId: company.id });
       };
       return {
         company,
@@ -1169,10 +1171,10 @@ const actor = { actorType: "user" as const, actorId: "browser-reviewer" };
       const resizePath = path.replace("/viewer", "/viewport");
       const resizeSpy = vi
         .spyOn(browserUseViewports, "resize")
-        .mockResolvedValue({ preset: "phone" });
+        .mockResolvedValue({ preset: "phone", applied: true });
       expect(
         (await http(app).post(resizePath).send({ preset: "phone" })).body,
-      ).toEqual({ preset: "phone" });
+      ).toEqual({ preset: "phone", applied: true });
       expect(resizeSpy).toHaveBeenCalledTimes(1);
       const viewerId = randomUUID();
       resizeSpy.mockResolvedValueOnce({
@@ -1774,7 +1776,7 @@ const actor = { actorType: "user" as const, actorId: "browser-reviewer" };
         )[0].status,
       ).toBe("closed");
     });
-    it("serializes browser holds with parent reservations while provider work is delayed", async () => {
+    it("counts browser holds with parent reservations while provider work is delayed", async () => {
       const f = await fixture();
       const policy = await budgetService(db).upsertPolicy(f.company.id,
         { scopeType: "company", scopeId: f.company.id, amount: 100, hardStopEnabled: true }, actor.actorId);
@@ -1796,6 +1798,71 @@ const actor = { actorType: "user" as const, actorId: "browser-reviewer" };
         // Accounting lock is not held while the hosted browser is waiting.
         expect(await db.select({ id: companies.id }).from(companies).where(eq(companies.id, f.company.id))).toHaveLength(1);
       } finally { release(); await first; }
+    });
+    it("keeps manual Stop authoritative when a paid create response arrives later", async () => {
+      const f = await fixture();
+      let release!: () => void, entered!: () => void;
+      const accepted = new Promise<void>(resolve => { entered = resolve; });
+      const barrier = new Promise<void>(resolve => { release = resolve; });
+      f.delayCreate(async () => { entered(); await barrier; });
+      const starting = f.service.execute(f.binding, f.grant, randomUUID(), "browser_start", { task: "Stop during dispatch" });
+      await accepted;
+      try {
+        const [session] = await db.select().from(browserUseSessions).where(eq(browserUseSessions.companyId, f.company.id));
+        await f.service.control(session, "end");
+      } finally { release(); }
+      await expect(starting).resolves.toMatchObject({ status: "stopping" });
+      await f.tick();
+      expect((await db.select().from(browserUseSessions).where(eq(browserUseSessions.companyId, f.company.id)))[0].status).toBe("closed");
+      expect(f.request.mock.calls.filter(([url]) => url.endsWith("/cancel"))).toHaveLength(1);
+      expect(await db.select().from(costEvents).where(eq(costEvents.companyId, f.company.id))).toHaveLength(1);
+    });
+    it("replays simultaneous invocation retries without submitting another paid create", async () => {
+      const f = await fixture();
+      const invocation = randomUUID();
+      const another = browserUseService(db, f.request);
+      const results = await Promise.all([f.service, another].map(service =>
+        service.execute(f.binding, f.grant, invocation, "browser_start", { task: "One invocation" })));
+      expect((results[0] as { sessionId: string }).sessionId).toBe((results[1] as { sessionId: string }).sessionId);
+      expect(await db.select().from(browserUseRuns).where(eq(browserUseRuns.invocationId, invocation))).toHaveLength(1);
+      expect(await db.select().from(browserUseSessions).where(eq(browserUseSessions.companyId, f.company.id))).toHaveLength(1);
+      expect(f.request.mock.calls.filter(([url, init]) => url.endsWith("/runs") && init.method === "POST")).toHaveLength(1);
+    });
+    it.each([
+      { scope: "company", phase: "initial" }, { scope: "project", phase: "initial" },
+      { scope: "company", phase: "handoff" }, { scope: "project", phase: "handoff" },
+    ])("honors a $scope pause committed after the $phase admission snapshot", async ({ scope, phase }) => {
+      const f = await fixture();
+      const [project] = await db.insert(projects).values({ companyId: f.company.id, name: "Browser authority" }).returning();
+      await db.update(issues).set({ projectId: project.id }).where(eq(issues.id, f.issue.id));
+      const invocation = randomUUID();
+      const transaction = db.transaction.bind(db);
+      let injected = false;
+      const race = vi.spyOn(db, "transaction").mockImplementation(async (callback, config) => {
+        const [run] = await db.select().from(browserUseRuns).where(eq(browserUseRuns.invocationId, invocation));
+        const intercept = !injected && config?.isolationLevel === "repeatable read" && config.accessMode !== "read only"
+          && (phase === "initial" ? !run : run?.status === "creating");
+        return transaction(async tx => {
+          if (intercept) {
+            injected = true;
+            // Establish the real RR snapshot before the independent operator
+            // transaction commits. An unfenced read would keep seeing active.
+            await tx.select({ id: companies.id }).from(companies).where(eq(companies.id, f.company.id));
+            if (scope === "company") await db.update(companies).set({ status: "paused", pauseReason: "manual", pausedAt: new Date() })
+              .where(eq(companies.id, f.company.id));
+            else await db.update(projects).set({ pauseReason: "manual", pausedAt: new Date() }).where(eq(projects.id, project.id));
+          }
+          return callback(tx);
+        }, config);
+      });
+      try {
+        await expect(f.service.execute(f.binding, f.grant, invocation, "browser_start", { task: "Stopped authority" })).rejects.toThrow();
+      } finally { race.mockRestore(); }
+      expect(injected).toBe(true);
+      expect(f.request.mock.calls.filter(([url, init]) => url.endsWith("/runs") && init.method === "POST")).toHaveLength(0);
+      const rows = await db.select().from(browserUseRuns).where(eq(browserUseRuns.invocationId, invocation));
+      if (phase === "initial") expect(rows).toHaveLength(0);
+      else expect(rows[0]).toMatchObject({ status: "failed", eventsDrained: 1, result: { paperclipBudgetHold: { state: "released" } } });
     });
     it.each(["reduction", "new_policy", "config", "charge", "cancel", "session_end", "policy_deny"])("rechecks %s at the actual provider handoff", async race => {
       const f = await fixture();
@@ -1832,7 +1899,7 @@ const actor = { actorType: "user" as const, actorId: "browser-reviewer" };
     });
     it.each(["default_allow", "tool_name"])("retains valid %s profile authorization at browser admission", async selector => {
       const f = await fixture();
-      await db.update(toolProfiles).set({ status: "inactive" }).where(eq(toolProfiles.companyId, f.company.id));
+      await db.update(toolProfiles).set({ status: "disabled" }).where(eq(toolProfiles.companyId, f.company.id));
       const [profile] = await db.insert(toolProfiles).values({ companyId: f.company.id, name: "Scoped browser access",
         profileKey: randomUUID(), defaultAction: selector === "default_allow" ? "allow" : "deny" }).returning();
       await db.insert(toolProfileBindings).values({ companyId: f.company.id, profileId: profile.id, targetType: "agent", targetId: f.agent.id });
@@ -1973,6 +2040,65 @@ const actor = { actorType: "user" as const, actorId: "browser-reviewer" };
       expect(JSON.stringify(replay)).not.toContain("paperclipBudgetHold");
       expect(await db.select().from(costEvents).where(eq(costEvents.companyId, f.company.id))).toHaveLength(1);
     });
+    it("settles while company, agent and policy rows are held by unrelated writers", async () => {
+      const f = await fixture();
+      const policy = await budgetService(db).upsertPolicy(f.company.id,
+        { scopeType: "company", scopeId: f.company.id, amount: 100, hardStopEnabled: true }, actor.actorId);
+      await f.service.execute(f.binding, f.grant, randomUUID(), "browser_start", { task: "Independent settlement" });
+      f.complete();
+      await db.update(browserUseSessions).set({ nextPollAt: new Date(0) }).where(eq(browserUseSessions.companyId, f.company.id));
+      let release!: () => void, locked!: () => void;
+      const held = new Promise<void>(resolve => { locked = resolve; });
+      const barrier = new Promise<void>(resolve => { release = resolve; });
+      const blocker = db.transaction(async tx => {
+        await tx.select({ id: companies.id }).from(companies).where(eq(companies.id, f.company.id)).for("no key update");
+        await tx.select({ id: agents.id }).from(agents).where(eq(agents.id, f.agent.id)).for("no key update");
+        await tx.select({ id: budgetPolicies.id }).from(budgetPolicies).where(eq(budgetPolicies.id, policy.policyId)).for("no key update");
+        locked();
+        await barrier;
+      });
+      await held;
+      let timeout: ReturnType<typeof setTimeout> | undefined;
+      const settlement = f.service.sweep(f.connection.connectionId);
+      try {
+        await Promise.race([settlement, new Promise<never>((_resolve, reject) => {
+          timeout = setTimeout(() => reject(new Error("Browser settlement waited for a shared accounting row")), 3000);
+        })]);
+        const [event] = await db.select().from(costEvents).where(eq(costEvents.companyId, f.company.id));
+        expect(event).toMatchObject({ provider: "browser-use-cloud", costCents: 15 });
+        const [run] = await db.select().from(browserUseRuns).where(eq(browserUseRuns.companyId, f.company.id));
+        expect(run).toMatchObject({ eventsDrained: 1, result: { paperclipBudgetHold: { state: "settled" } } });
+      } finally {
+        if (timeout) clearTimeout(timeout);
+        release();
+        await blocker;
+        await settlement;
+      }
+    });
+    it("replays a captured terminal receipt after ledger failure without refetching or moving its attribution", async () => {
+      const f = await fixture();
+      const [project] = await db.insert(projects).values({ companyId: f.company.id, name: "Original browser project" }).returning();
+      const [laterProject] = await db.insert(projects).values({ companyId: f.company.id, name: "Later task project" }).returning();
+      await db.update(issues).set({ projectId: project.id }).where(eq(issues.id, f.issue.id));
+      const invocation = randomUUID();
+      await f.service.execute(f.binding, f.grant, invocation, "browser_start", { task: "Capture once" });
+      f.usage("0.150000001"); f.complete();
+      const failedLedger = vi.spyOn(costAccounting, "createCostEventInTransaction").mockRejectedValueOnce(new Error("Accounting unavailable"));
+      try { await f.tick(); } finally { failedLedger.mockRestore(); }
+      const [pending] = await db.select().from(browserUseRuns).where(eq(browserUseRuns.invocationId, invocation));
+      const receipt = (pending.result as { paperclipBudgetHold: { receipt: { occurredAt: string } } }).paperclipBudgetHold.receipt;
+      expect(pending.eventsDrained).toBe(0);
+      expect(await db.select().from(costEvents).where(eq(costEvents.companyId, f.company.id))).toHaveLength(0);
+      await db.update(issues).set({ projectId: laterProject.id }).where(eq(issues.id, f.issue.id));
+      f.usage("0.99"); f.request.mockClear();
+      await f.tick();
+      const [event] = await db.select({ projectId: costEvents.projectId, occurredAt: costEvents.occurredAt,
+        cents: sql<string>`${costEvents.costCents}::text` }).from(costEvents).where(eq(costEvents.companyId, f.company.id));
+      expect(event).toMatchObject({ projectId: project.id, cents: "15.0000001" });
+      expect(event.occurredAt.toISOString()).toBe(receipt.occurredAt);
+      expect(f.request.mock.calls.some(([url]) => /\/runs\/[^/]+$/.test(new URL(url).pathname))).toBe(false);
+      expect(await db.select().from(financeEvents).where(eq(financeEvents.companyId, f.company.id))).toHaveLength(1);
+    });
     it("retains exact cumulative accounting when an older browser row has no hold projection", async () => {
       const f = await fixture();
       const invocation = randomUUID();
@@ -1986,6 +2112,39 @@ const actor = { actorType: "user" as const, actorId: "browser-reviewer" };
       expect(total.cents).toBe("15.0000002");
       expect((await db.select().from(browserUseRuns).where(eq(browserUseRuns.id, run.id)))[0].result)
         .toMatchObject({ paperclipBudgetHold: { state: "settled", accountedCentsExact: "15.0000002" } });
+      await db.update(browserUseRuns).set({ eventsDrained: 0 }).where(eq(browserUseRuns.id, run.id));
+      f.usage("0.10"); await f.tick();
+      expect(await db.select().from(costEvents).where(eq(costEvents.companyId, f.company.id))).toHaveLength(2);
+      expect((await db.select().from(browserUseRuns).where(eq(browserUseRuns.id, run.id)))[0].result)
+        .toMatchObject({ paperclipBudgetHold: { state: "settled", accountedCentsExact: "15.0000002" } });
+    });
+    it("dates a new cumulative delta in its capture month and keeps that receipt's retry time stable", async () => {
+      const f = await fixture();
+      const before = new Date("2026-11-30T23:59:59.900Z"), after = new Date("2026-12-01T00:00:00.100Z");
+      vi.useFakeTimers({ toFake: ["Date"] });
+      try {
+        vi.setSystemTime(before);
+        const invocation = randomUUID();
+        await f.service.execute(f.binding, f.grant, invocation, "browser_start", { task: "Cumulative usage across UTC rollover" });
+        f.usage("0.15"); f.complete(); await f.tick();
+        const [run] = await db.select().from(browserUseRuns).where(eq(browserUseRuns.invocationId, invocation));
+        await db.update(browserUseRuns).set({ eventsDrained: 0 }).where(eq(browserUseRuns.id, run.id));
+        vi.setSystemTime(after);
+        f.usage("0.20");
+        const failed = vi.spyOn(costAccounting, "createCostEventInTransaction").mockRejectedValueOnce(new Error("Retry this receipt"));
+        try { await f.tick(); } finally { failed.mockRestore(); }
+        const [captured] = await db.select().from(browserUseRuns).where(eq(browserUseRuns.id, run.id));
+        expect(captured).toMatchObject({ eventsDrained: 0, result: { paperclipBudgetHold: {
+          accountedCentsExact: "15.0000000", receipt: { totalCentsExact: "20.0000000", occurredAt: after.toISOString() },
+        } } });
+        vi.setSystemTime(new Date("2026-12-01T00:00:05.100Z"));
+        f.usage("0.99");
+        await f.tick(); await f.tick();
+        const events = await db.select({ cents: sql<string>`${costEvents.costCents}::text`, occurredAt: costEvents.occurredAt })
+          .from(costEvents).where(eq(costEvents.companyId, f.company.id)).orderBy(costEvents.occurredAt);
+        expect(events).toEqual([{ cents: "15.0000000", occurredAt: before }, { cents: "5.0000000", occurredAt: after }]);
+        expect(await db.select().from(financeEvents).where(eq(financeEvents.companyId, f.company.id))).toHaveLength(2);
+      } finally { vi.useRealTimers(); }
     });
     it("caps paid work at the remaining hard budget and enforces reported spend", async () => {
       const f = await fixture();
@@ -2023,7 +2182,10 @@ const actor = { actorType: "user" as const, actorId: "browser-reviewer" };
       await f.tick();
       expect(
         (await db.select().from(agents).where(eq(agents.id, f.agent.id)))[0],
-      ).toMatchObject({ status: "paused", spentMonthlyCents: 15 });
+      ).toMatchObject({ status: "paused" });
+      const [charged] = await db.select({ cents: sql<string>`sum(${costEvents.costCents})::text` }).from(costEvents)
+        .where(eq(costEvents.companyId, f.company.id));
+      expect(charged.cents).toBe("15.0000000");
       expect(
         (
           await db

@@ -1,6 +1,7 @@
 import express from "express";
 import request from "supertest";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import type { AdapterEnvironmentTestContext } from "@paperclipai/adapter-utils";
 import type { ServerAdapterModule } from "../adapters/index.js";
 
 const mockAgentService = vi.hoisted(() => ({
@@ -837,7 +838,7 @@ describe("agent test-environment route", () => {
     const { registerServerAdapter, getServerAdapter, unregisterServerAdapter } = await import("../adapters/index.js");
     const previous = getServerAdapter("claude_local");
     unregisterServerAdapter("claude_local");
-    const cliProbeSpy = vi.fn(async () => ({
+    const cliProbeSpy = vi.fn(async (_context: AdapterEnvironmentTestContext) => ({
       adapterType: "claude_local",
       status: "fail" as const,
       checks: [{ code: "adapter_command_missing", level: "error" as const, message: 'Command not found in PATH: "claude"' }],

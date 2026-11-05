@@ -121,4 +121,26 @@ describe("enrichPromotedWakeContext", () => {
     expect(result.contextSnapshot.acceptedPlanWakeRouting).toEqual({ targetAgentId: "agent-1" });
     expect(result.contextSnapshot.workspaceRefreshReason).toBe("accepted_plan_confirmation");
   });
+
+  it("restores the issue scope of a payload-only receipt without overwriting a queued context", () => {
+    const payloadOnly = enrichPromotedWakeContext({
+      contextSnapshot: {},
+      reason: "task_retry",
+      source: "on_demand",
+      triggerDetail: "manual",
+      payload: { issueId: "issue-1", taskRetry: { schema: "paperclip.task-retry.v1" } },
+    });
+    expect(payloadOnly.contextSnapshot).toMatchObject({
+      issueId: "issue-1", taskId: "issue-1", taskKey: "issue-1", wakeReason: "task_retry",
+    });
+
+    const queued = enrichPromotedWakeContext({
+      contextSnapshot: { issueId: "issue-1", taskId: "task-1", taskKey: "TASK-1" },
+      reason: "issue_commented",
+      source: "automation",
+      triggerDetail: null,
+      payload: { issueId: "issue-2" },
+    });
+    expect(queued.contextSnapshot).toMatchObject({ issueId: "issue-1", taskId: "task-1", taskKey: "TASK-1" });
+  });
 });

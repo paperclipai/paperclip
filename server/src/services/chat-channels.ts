@@ -515,6 +515,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
   const runtimeInitializations = new Map<
     string,
     {
+      context: RuntimeContext;
       discordGatewayOwned: boolean;
       promise: Promise<ChatEndpointRuntime>;
       version: string;
@@ -576,7 +577,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
   const discordGatewayStopTasks = new Set<Promise<void>>();
   let shuttingDown = false;
   let receiverWork: ReturnType<typeof registerChatReceiverWork> | undefined;
-  const { discordGatewayNotOwnedError, isDiscordGatewayNotOwnedError, releaseDiscordGatewayLeaseRow, stopDiscordGatewayOwnership, renewDiscordGatewayOwnershipForMessageAdmission, ensureDiscordGatewayRuntimeIsCurrent, acquireDiscordGatewayOwnership, discordGatewayRuntimeIsCurrent } = createChatReceiverOwnership(db, { runtime, runtimeVersions, runtimeCallbackEndpoint, redactError, leasedChatProvider, discordGatewayOwnerships, discordGatewayStopTasks, isShuttingDown: () => shuttingDown, onStopped: id => receiverWork?.changed(id), get discordGatewayLeaseTtlMs() { return options.discordGatewayLeaseTtlMs; }, get discordGatewayLeaseRenewalIntervalMs() { return options.discordGatewayLeaseRenewalIntervalMs; }, get discordGatewayLeaseWaitMs() { return options.discordGatewayLeaseWaitMs; }, get renewDiscordGatewayLease() { return options.renewDiscordGatewayLease; } });
+  const { discordGatewayNotOwnedError, isDiscordGatewayNotOwnedError, releaseDiscordGatewayLeaseRow, stopDiscordGatewayOwnership, renewDiscordGatewayOwnershipForMessageAdmission, ensureDiscordGatewayRuntimeIsCurrent, acquireDiscordGatewayOwnership, discordGatewayRuntimeIsCurrent } = createChatReceiverOwnership(db, { runtime, runtimeVersions, runtimeCallbackEndpoint, redactError, leasedChatProvider, discordGatewayOwnerships, discordGatewayStopTasks, isShuttingDown: () => shuttingDown, isRuntimeInitializing: (endpointId, context) => { const pending = runtimeInitializations.get(endpointId); return pending?.context === context && pending.discordGatewayOwned; }, onStopped: id => receiverWork?.changed(id), get discordGatewayLeaseTtlMs() { return options.discordGatewayLeaseTtlMs; }, get discordGatewayLeaseRenewalIntervalMs() { return options.discordGatewayLeaseRenewalIntervalMs; }, get discordGatewayLeaseWaitMs() { return options.discordGatewayLeaseWaitMs; }, get renewDiscordGatewayLease() { return options.renewDiscordGatewayLease; } });
   const { receiveSdkMessages } = createChatSdkMessageReceiver({
     endpointRecord, processMessage,
     ingressOnly: (provider) => provider === "imessage-photon"
@@ -987,10 +988,12 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       }
 
       const initialization: {
+        context: RuntimeContext;
         discordGatewayOwned: boolean;
         promise: Promise<ChatEndpointRuntime>;
         version: string;
       } = {
+        context,
         discordGatewayOwned: false,
         promise: undefined as unknown as Promise<ChatEndpointRuntime>,
         version: context.version,
@@ -1093,6 +1096,9 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           });
           context.endpointRuntime = instance;
           runtimeContexts.set(instance as object, context);
+          if (discordOwnership && !(await ensureDiscordGatewayRuntimeIsCurrent(endpoint.id, context, { renewLease: true }))) {
+            throw discordGatewayNotOwnedError();
+          }
           await instance.initialize();
           const latest = await endpointRecord(endpoint.id);
           const stillRegistered = runtime.get(endpoint.id) === instance;

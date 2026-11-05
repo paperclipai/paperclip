@@ -50,20 +50,23 @@ The operator-gated `paperclip.budgets` tracer records
 `budget.accounting.transaction`, `budget.accounting.settlement`, `budget.accounting.lock_wait`,
 `budget.exposure.evaluate`, `budget.enforcement.deliver`,
 `budget.enforcement.scope`, `budget.cancellation.deliver`, and `budget.accounting.recover`.
-Inspection spans cover the preliminary read-only snapshot. Reconciliation spans
-exist only when that inspection finds a transition requiring the company lock;
-compare their counts to measure how often preliminary checks bypass the lock.
-Authoritative reservation and transactional evaluation retain their own spans.
-Transaction spans include commit time. Lock-wait spans cover acquisition of the
-company accounting lock. Settlement spans cover the ledger and reservation
-transaction. Enforcement spans measure asynchronous delivery; cancellation
-delivery spans start after acquiring a concurrency slot and cover the external
-Stop attempt. Both remain separate from provider inference.
+Inspection and admission spans cover read-only eligibility. Paid reservations,
+receipts and all five settlement owners avoid the company accounting mutex.
+`budget.admission.reconcile` remains a historical span name; eligibility no longer
+publishes budget transitions. `budget.accounting.lock_wait` still describes the
+legacy low-frequency configuration/control wrapper, not paid settlement.
+Transaction spans include commit time. Settlement spans cover the atomic ledger,
+reservation and owner acknowledgement. Acquisition duration is not a pure
+PostgreSQL lock-wait measurement: it can include network and Node scheduling.
+Enforcement spans cover asynchronous evaluation/delivery; cancellation delivery
+covers the external Stop attempt, separate from provider inference.
 
-The closed attribute list is `budget.policy_count` (number of applicable
-policies) and `budget.enforcement.queue_delay_ms` (time since the pending policy's
-last intent or retry timestamp). These spans contain no tool content, usage
-receipt bodies, credentials, or provider error bodies. They do not change
+The closed attribute list is `budget.policy_count` (applicable policy count),
+`budget.enforcement.queue_delay_ms` (time since pending intent/retry), and
+`budget.accounting.owner` (`run`, `decision`, `classifier`, `fast_response`,
+`browser`). The owner tag identifies the shared settlement span's emitter.
+These spans contain no prompts, usage receipt bodies, credentials or provider
+error bodies. They remain gated by the operator OTLP endpoint and do not change
 Paperclip's separate first-party Telemetry contract.
 
 ## Slack receipt reactions
@@ -210,7 +213,8 @@ diagnostic line on boot and continues without tracing — your server stays up.
 ## Scope
 
 The OpenTelemetry export carries **traces only**. Metrics and log exporters
-are out of scope and intentionally not configured here. Auto-instrumentations
+are out of scope. The SDK receives explicit empty metric-reader and log-processor
+lists so its default OTLP exporters cannot emit unrequested metrics or logs. Auto-instrumentations
 for `fs`, `dns`, and `net` are disabled by default because they are too chatty
 for this workload; everything else from
 `@opentelemetry/auto-instrumentations-node` is on (HTTP, Express, PG, etc.).
@@ -1009,10 +1013,15 @@ a new terminal run transition. The event keeps the actual observed run status,
 the adapter and the company, agent, task and run references. It uses fixed error
 text and includes no message bodies, prompts or raw run diagnostics. Working,
 scheduled-retry, resolved and user-action states do not produce this event.
-Repeated reads of the same company/task/run/intent are suppressed by a bounded
-process-local cache of the latest 1,000 reports. A server restart or cache eviction
-can report an old failure again. This task-state event can accompany a separate
-terminal run-failure report; the `failure_source` tag distinguishes them.
+Repeated reads of the same company/task/run/intent are suppressed after the SDK
+receives a successful HTTP delivery response. The process retains the latest
+1,000 confirmed reports. An SDK capture ID alone does not confirm delivery:
+processing backpressure, network errors and rate limits can discard the event.
+Unconfirmed captures wait 60 seconds before a later task read can try again;
+this pending cache also holds at most 1,000 entries and starts no background
+timer. A server restart or cache eviction can report an old failure again.
+This task-state event can accompany a separate terminal run-failure report;
+the `failure_source` tag distinguishes them.
 
 The versioned `paperclip` context supplies company and agent IDs and relative
 API paths for the saved run, events, log, and optional task. A valid HTTP(S)
@@ -1125,10 +1134,11 @@ untyped capacity text, and Codex CLI transient upstream failures remain reportab
 The run keeps its failed state and its terminal diagnostic.
 
 A native Codex model capacity failure stays local only while its automatic
-retry owns recovery. The run must carry `native_provider_overloaded`, the closed
-`codex`/`server_overloaded` diagnostic, and a committed finalization whose
-reason is `native_provider_overloaded`. The report also requires the
-`native_provider_overloaded` retry run that the same status transaction created.
+retry owns recovery. The run must carry `native_provider_overloaded` and the
+closed `codex`/`server_overloaded` diagnostic. The proof of the retry is the
+`native_provider_overloaded` successor run for the same task, which only the
+committed capacity status decision creates. The run's own finalization fields
+are not required: a late terminal write can replace them with an earlier result.
 Exhausted or held capacity failures, other retry lanes, setup failures, signals,
 and unreadable retry evidence remain reportable. A failed retry reports its own
 outcome.
@@ -1377,6 +1387,18 @@ different tools with different permission rules. Read them this way:
 
 Both fields hold only counts.
 
+A sandbox ACP run also records how its agent process session ended, when the
+host bridge saw it end before finalization. Startup failures (`create_runtime`,
+`ensure_session`, `configure_session`) carry the same fields, so an agent process
+that dies during the handshake is reported too. `acpProcessTerminalSource` is one of
+`remote_event`, `input_delivery`, `output_poll`, `output_stream`, or
+`proxy_close`, and `acpProcessTerminalOutcome` is `exit` or `error`.
+`acpProcessTerminalExitCode` (0–255) and `acpProcessTerminalSignal` (a closed
+POSIX signal name) are present only when known. These are the same values as the
+run log's `ACP process session terminal:` line. They separate a killed or exited
+agent process from a host proxy close after a generic ACP connection failure. The
+server drops all of them if the source is not a closed label.
+
 ACP and legacy OpenCode results retain the adapter's resolved wall-clock timeout as
 `adapterExecutionTimeout` in the instance run result. Finalization uses it for
 `effectiveTimeoutSec`, `timeoutSource`, and `timeoutConfigured`. Sources are
@@ -1616,6 +1638,20 @@ These fields contain build identifiers; they add no tenant or user identity.
   event carries five context fields: `taskId`, `runId`, `errorMessage`,
   `errorCode`, and `agentAdapter`. The server redacts the error message and
   the error code before it sends the event.
+
+A server event whose original error has the code
+`ERR_VM_DYNAMIC_IMPORT_CALLBACK_MISSING` gets bounded provenance. The tag
+`dynamic_import_inspector` holds `open`, `closed`, or `unavailable`. The
+`dynamic_import_provenance` context holds the same state, the process id, the
+parent process id, the main-thread flag, the uptime in seconds, and the names
+of inspector-related Node flags from `execArgv` and `NODE_OPTIONS`. The event
+never holds the inspector URL, because that URL contains a session secret. It
+also never holds a flag value or any other flag. This error has reached
+Sentry with no first-party frame. The state shows whether an inspector
+session was open when the server reported the event. It does not prove which
+code caused the error: code compiled without a filename fails the same way
+while a debugger is attached. A `closed` state rules out an expression that a
+still-open session evaluated. Other events do not change.
 
 Native runner identity and harness failures retain their existing error prefixes.
 Their terminal messages now include a bounded guard reason, such as
