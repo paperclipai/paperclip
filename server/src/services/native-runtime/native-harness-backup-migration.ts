@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { lstat, readFile, readdir } from "node:fs/promises";
+import { readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { and, eq, inArray, or, sql } from "drizzle-orm";
 import { environmentLeases, heartbeatRuns, issues, nativeHarnessBackups, nativeRunFinalizations, type Db } from "@paperclipai/db";
@@ -8,6 +8,7 @@ import { nativeHarnessStateBase, readNativeHarnessBackupStamp, verifyNativeHarne
 import { nativeHarnessBackupOwner, persistNativeHarnessBackup, verifyDurableNativeHarnessBackup } from "./native-harness-backup-storage.js";
 import { MAX_NATIVE_HARNESS_BYTES, MAX_NATIVE_HARNESS_OBJECT_BYTES, nativeHarnessArchiveSizeLimit } from "./native-harness-backup-archive.js";
 import { offlineMigrationExecutionWhere } from "../offline-migration-execution.js";
+import { NativeHarnessBackupSourceError, readNativeHarnessBackupSource } from "./native-harness-backup-source.js";
 
 export async function hasLocalNativeHarnessObligations(db: Db): Promise<boolean> {
   const rows = await db.execute(sql`select 1 from agent_task_sessions s
@@ -29,14 +30,9 @@ const MAX_SCRATCH_BYTES = 2 * MAX_NATIVE_HARNESS_OBJECT_BYTES;
 
 async function prepareSource(base: string, scopeDigest: string) {
   const root = join(base, scopeDigest, "failover-backups", "current");
-  const stat = await lstat(root).catch((error: NodeJS.ErrnoException) => {
-    if (error.code === "ENOENT") return null; throw error;
-  });
-  if (!stat) return null;
-  if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error("native_harness_migration_unsafe_source");
-  const manifestBytes = await readFile(join(root, "manifest.json"));
-  const manifest = JSON.parse(manifestBytes.toString("utf8")) as Record<string, unknown>;
-  const state = JSON.parse(await readFile(join(root, "runner", "runner-state.json"), "utf8"));
+  const files = await readNativeHarnessBackupSource(root);
+  if (!files) return null;
+  const { manifestBytes, manifest, state } = files;
   if (state.lifecycle !== "suspended" || typeof state.runId !== "string"
     || manifest.schema !== "paperclip.native-harness-backup.v1") throw new Error("native_harness_migration_source_unsettled");
   const names = new Set<string>();
@@ -105,7 +101,7 @@ async function migrateSource(db: Db, input: { storage: StorageService; signal: A
 }
 
 async function mapSources<T>(input: { signal: AbortSignal; concurrency?: number;
-  unavailableSource?: (error: unknown) => T | undefined }, visit: (source: Source, signal: AbortSignal) => Promise<T>) {
+  unavailableSource?: (error: unknown, scopeDigest: string) => T | undefined }, visit: (source: Source, signal: AbortSignal) => Promise<T>) {
   const base = nativeHarnessStateBase();
   const directories = await readdir(base).catch((error: NodeJS.ErrnoException) => {
     if (error.code === "ENOENT") return [] as string[]; throw error;
@@ -134,7 +130,7 @@ async function mapSources<T>(input: { signal: AbortSignal; concurrency?: number;
     try { source = await prepareSource(base, scopeDigest); }
     catch (error) {
       input.signal.throwIfAborted();
-      const deferred = input.unavailableSource?.(error);
+      const deferred = input.unavailableSource?.(error, scopeDigest);
       if (deferred === undefined) throw error;
       results.push(deferred); continue;
     }
@@ -162,9 +158,20 @@ export async function migrateNativeHarnessBackups(db: Db, input: {
 export async function prestageNativeHarnessBackups(db: Db, input: { storage: StorageService; signal: AbortSignal }) {
   // Keep preparatory work below offline throughput so the serving process can
   // continue handling real work. This finite operation has no idle schedule.
-  const outcomes = await mapSources({ ...input, concurrency: 1, unavailableSource: error =>
-    (error as NodeJS.ErrnoException)?.code === "ENOENT" || error instanceof Error && error.message === "native_harness_migration_source_unsettled"
-      ? "source_unavailable" : undefined }, async (source, signal) => {
+  const deferSource = (scopeDigest: string, reason: string, outcome: string) => {
+    console.warn(JSON.stringify({ schema: "paperclip.native-harness-prestage-source.v1", scopeDigest, reason }));
+    return outcome;
+  };
+  const outcomes = await mapSources({ ...input, concurrency: 1, unavailableSource: (error, scopeDigest) => {
+    if (error instanceof NativeHarnessBackupSourceError || error instanceof Error && error.message === "native_harness_migration_source_unsettled") {
+      return deferSource(scopeDigest, error.message, "source_unavailable");
+    }
+    // This callback only receives preparation filesystem failures, never DB errors.
+    if (["ENOENT", "ENOTDIR", "EISDIR", "ELOOP", "EACCES", "EPERM"].includes((error as NodeJS.ErrnoException)?.code ?? "")) {
+      return deferSource(scopeDigest, "native_harness_migration_source_unavailable", "source_unavailable");
+    }
+    return undefined;
+  } }, async (source, signal) => {
     signal.throwIfAborted();
     const run = await sourceRun(db, source).catch(error => {
       if (error instanceof Error && error.message === "native_harness_migration_binding_mismatch") return null;
@@ -201,9 +208,11 @@ export async function prestageNativeHarnessBackups(db: Db, input: { storage: Sto
       return "published";
     } catch (error) {
       signal.throwIfAborted();
-      if ((error as NodeJS.ErrnoException)?.code === "ENOENT" || error instanceof Error && ["native_runner_checkpoint_owner_lost", "native_harness_storage_owner_missing",
+      if (error instanceof NativeHarnessBackupSourceError || error instanceof Error && ["native_runner_checkpoint_owner_lost", "native_harness_storage_owner_missing",
         "native_harness_storage_prestage_source_active", "native_harness_storage_prestage_source_changed",
-        "native_harness_storage_owner_superseded", "native_harness_archive_invalid"].includes(error.message)) return "source_changed";
+        "native_harness_storage_owner_superseded", "native_harness_archive_invalid"].includes(error.message)) {
+        return deferSource(source.scopeDigest, error.message, "source_changed");
+      }
       throw error;
     }
   });

@@ -18,6 +18,7 @@ import { captureNativeHarnessArchive, restoreNativeHarnessArchive, MAX_NATIVE_HA
 import { removeNativeHarnessBackup } from "./native-harness-backup-cleanup.js";
 import { hasRemoteTerminationReceipt, resolveRemoteTerminationLease } from "../remote-execution-termination.js";
 import { offlineMigrationExecutionWhere } from "../offline-migration-execution.js";
+import { readNativeHarnessBackupSource } from "./native-harness-backup-source.js";
 
 const SCHEMA = "paperclip.native-harness-object.v1";
 type Binding = { companyId: string; scopeDigest: string; id: string };
@@ -165,9 +166,9 @@ async function fence(tx: Parameters<Parameters<Db["transaction"]>[0]>[0], owner:
     }
     // The task share lock serializes publication with execution checkout. A
     // turn that ran during upload also changes the immutable backup manifest.
-    const manifest = await readFile(join(inactiveSource.root, "manifest.json"));
-    const identity = JSON.parse(manifest.toString("utf8"));
-    const state = JSON.parse(await readFile(join(inactiveSource.root, "runner", "runner-state.json"), "utf8"));
+    const source = await readNativeHarnessBackupSource(inactiveSource.root);
+    if (!source) fail("prestage_source_changed");
+    const { manifestBytes: manifest, manifest: identity, state } = source;
     if (`sha256:${createHash("sha256").update(manifest).digest("hex")}` !== inactiveSource.manifestSha256
       || identity.normalizedSessionId !== stamp.normalizedSessionId || identity.runnerInstanceId !== stamp.runnerInstanceId
       || identity.sourceProviderLeaseId !== stamp.sourceProviderLeaseId || identity.completedAt !== stamp.completedAt
@@ -181,7 +182,9 @@ export async function persistNativeHarnessBackup(input: {
   inactiveSource?: { normalizedSessionId: string; runnerInstanceId: string; providerLeaseId: string };
 }): Promise<void> {
   if (!/^[a-f0-9]{64}$/.test(input.scopeDigest)) fail("scope_invalid");
-  const manifestBytes = await readFile(join(input.root, "manifest.json"));
+  const source = input.inactiveSource ? await readNativeHarnessBackupSource(input.root) : undefined;
+  if (source === null) fail("prestage_source_changed");
+  const manifestBytes = source?.manifestBytes ?? await readFile(join(input.root, "manifest.json"));
   const manifestSha256 = `sha256:${createHash("sha256").update(manifestBytes).digest("hex")}`;
   const inactiveSource = input.inactiveSource ? { ...input.inactiveSource, root: input.root, manifestSha256, scopeDigest: input.scopeDigest } : undefined;
   const binding = { companyId: input.owner.companyId, scopeDigest: input.scopeDigest, id: randomUUID() };

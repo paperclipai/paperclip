@@ -1,4 +1,7 @@
 import { afterEach, expect, it, vi } from "vitest";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
+import { build } from "esbuild";
 
 const mocks = vi.hoisted(() => ({ close: vi.fn(async () => {}), prestage: vi.fn(), key: vi.fn(async () => {}) }));
 vi.mock("@paperclipai/db", () => ({ createDb: () => ({}), closeRegisteredClients: mocks.close }));
@@ -14,6 +17,36 @@ vi.mock("./native-harness-prestage-runtime.js", async importOriginal => ({
 
 const initialExitCode = process.exitCode;
 afterEach(() => { process.exitCode = initialExitCode; vi.useRealTimers(); vi.unstubAllEnvs(); vi.restoreAllMocks(); vi.resetModules(); mocks.close.mockClear(); });
+
+it("reports a failed deadline with real timers when the dependency holds no event-loop handle", async () => {
+  const bundled = await build({
+    entryPoints: [fileURLToPath(new URL("./native-harness-prestage.ts", import.meta.url))],
+    bundle: true, platform: "node", format: "esm", write: false,
+    // Shorten only the command's deadlines. These remain real Node timers in
+    // a separate process, so an unreferenced fallback cannot be advanced by us.
+    banner: { js: "const realTimeout = globalThis.setTimeout; globalThis.setTimeout = (fn, ms, ...args) => realTimeout(fn, ms === 5400000 ? 10 : ms === 10000 ? 50 : ms, ...args);" },
+    plugins: [{ name: "prestage-dependencies", setup(builder) {
+      builder.onResolve({ filter: /.*/ }, args => args.importer ? { path: "dependencies", namespace: "fixture" } : undefined);
+      builder.onLoad({ filter: /.*/, namespace: "fixture" }, () => ({ contents: `
+        export const createDb = () => ({}), closeRegisteredClients = async () => {};
+        export const loadConfig = () => ({ secretsMasterKeyFilePath: '/fixture/key' });
+        export const cloudRuntimeConfigService = () => ({}), setCloudRuntimeConfigSnapshot = () => {};
+        export const isCloudManagedInstance = () => false, getStorageService = () => ({ provider: 's3' });
+        export const initializeNativeHarnessPrestageKey = async () => {}, nativeHarnessPrestageDatabaseUrl = url => url;
+        export const prestageNativeHarnessBackups = () => new Promise(() => {});
+      ` }));
+    } }],
+  });
+  const child = spawnSync(process.execPath, ["--input-type=module"], {
+    input: bundled.outputFiles[0].text, encoding: "utf8", timeout: 5000,
+    env: { ...process.env, PAPERCLIP_NATIVE_HARNESS_PRESTAGE: "true", DATABASE_URL: "postgres://fixture:fixture@localhost/fixture" },
+  });
+  expect(child.error).toBeUndefined();
+  expect(child.status).toBe(1);
+  expect(child.stdout).toBe("");
+  expect(JSON.parse(child.stderr.trim())).toEqual({ schema: "paperclip.native-harness-prestage.v1",
+    state: "blocked", failure: "native_harness_prestage_deadline", enrollmentReady: false });
+});
 
 it.each(["SIGTERM", "deadline"])("bounds shutdown if a dependency does not settle after %s", async mode => {
   vi.useFakeTimers();

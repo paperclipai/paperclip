@@ -224,6 +224,71 @@ describeEmbeddedPostgres("durable native provider backups", () => {
     await expect(migrateNativeHarnessBackups(f.db, { storage: f.storage, writersStopped: true, signal: AbortSignal.timeout(15_000) }))
       .rejects.toThrow("native_harness_migration_source_unsettled");
   });
+  async function releasedFixtures() {
+    const fixtures = await offlineFixtures(2);
+    for (const f of fixtures) {
+      await commitWarmRun(f);
+      await f.db.update(issues).set({ executionRunId: null, checkoutRunId: null }).where(eq(issues.id, f.issueId));
+    }
+    return fixtures;
+  }
+  async function damageSource(f: Awaited<ReturnType<typeof offlineFixture>>, kind: string) {
+    if (kind === "unsafe") {
+      await rename(f.root, f.root + "-retained");
+      await symlink(f.root + "-retained", f.root);
+    } else await writeFile(join(f.root, kind === "manifest" ? "manifest.json" : "runner/runner-state.json"), "{");
+  }
+  it.each(["manifest", "runner", "unsafe"])("defers a damaged %s source and still copies the next eligible backup", async kind => {
+    const [bad, good] = await releasedFixtures(), warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      await damageSource(bad, kind);
+      expect(await prestageNativeHarnessBackups(bad.db, { storage: bad.storage, signal: AbortSignal.timeout(15_000) }))
+        .toEqual({ inspected: 2, published: 1, current: 0, deferred: { source_unavailable: 1 } });
+      expect(warning).toHaveBeenCalledWith(expect.stringContaining(bad.scopeDigest));
+      expect(JSON.parse(warning.mock.calls[0][0])).toMatchObject({ scopeDigest: bad.scopeDigest,
+        reason: kind === "unsafe" ? "native_harness_migration_unsafe_source" : "native_harness_migration_source_invalid_json" });
+      expect(await bad.db.select().from(nativeHarnessBackups).where(eq(nativeHarnessBackups.scopeDigest, bad.scopeDigest))).toHaveLength(0);
+      expect((await good.db.select().from(nativeHarnessBackups).where(eq(nativeHarnessBackups.scopeDigest, good.scopeDigest)))[0].status).toBe("current");
+      await expect(migrateNativeHarnessBackups(bad.db, { storage: bad.storage, writersStopped: true, signal: AbortSignal.timeout(15_000) }))
+        .rejects.toThrow(kind === "unsafe" ? "native_harness_migration_unsafe_source" : /JSON|json/);
+    } finally { warning.mockRestore(); }
+  });
+  it.each(["manifest", "runner", "unsafe"])("defers %s damage at the publication fence and copies the next backup", async kind => {
+    const [bad, good] = await releasedFixtures(), put = bad.storage.putFile.bind(bad.storage);
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const upload = vi.spyOn(bad.storage, "putFile").mockImplementation(async input => {
+      const result = await put(input);
+      if (input.objectKey?.includes(bad.scopeDigest)) await damageSource(bad, kind);
+      return result;
+    });
+    try {
+      expect(await prestageNativeHarnessBackups(bad.db, { storage: bad.storage, signal: AbortSignal.timeout(15_000) }))
+        .toEqual({ inspected: 2, published: 1, current: 0, deferred: { source_changed: 1 } });
+      expect(JSON.parse(warning.mock.calls[0][0])).toMatchObject({ scopeDigest: bad.scopeDigest,
+        reason: kind === "unsafe" ? "native_harness_migration_unsafe_source" : "native_harness_migration_source_invalid_json" });
+      expect((await bad.db.select().from(nativeHarnessBackups).where(eq(nativeHarnessBackups.scopeDigest, bad.scopeDigest))).some(row => row.status === "current")).toBe(false);
+      expect((await good.db.select().from(nativeHarnessBackups).where(eq(nativeHarnessBackups.scopeDigest, good.scopeDigest)))[0].status).toBe("current");
+    } finally { upload.mockRestore(); warning.mockRestore(); }
+  });
+  it("keeps a database SyntaxError fatal instead of deferring it as source damage", async () => {
+    const fixtures = await releasedFixtures(), f = fixtures[0], failure = new SyntaxError("database result decoding failed");
+    const transaction = vi.spyOn(f.db, "transaction").mockRejectedValueOnce(failure);
+    try {
+      await expect(prestageNativeHarnessBackups(f.db, { storage: f.storage, signal: AbortSignal.timeout(15_000) })).rejects.toBe(failure);
+      for (const source of fixtures) expect(await f.db.select().from(nativeHarnessBackups).where(eq(nativeHarnessBackups.scopeDigest, source.scopeDigest))).toHaveLength(0);
+    } finally { transaction.mockRestore(); }
+  });
+  it("keeps cancellation fatal when a source also changes during upload", async () => {
+    const [f] = await releasedFixtures(), cancellation = new AbortController(), failure = new Error("operator stopped");
+    const put = f.storage.putFile.bind(f.storage);
+    const upload = vi.spyOn(f.storage, "putFile").mockImplementation(async input => {
+      const result = await put(input); await damageSource(f, "manifest"); cancellation.abort(failure); return result;
+    });
+    try {
+      await expect(prestageNativeHarnessBackups(f.db, { storage: f.storage, signal: cancellation.signal })).rejects.toBe(failure);
+      expect((await f.db.select().from(nativeHarnessBackups).where(eq(nativeHarnessBackups.scopeDigest, f.scopeDigest))).some(row => row.status === "current")).toBe(false);
+    } finally { upload.mockRestore(); }
+  });
   it.each(["source_advanced", "queued_turn", "lease_revoked", "owner_changed", "run_failed"])("keeps the published source when %s happens during pre-copy upload", async change => {
     const f = await inactiveFixture(); await persistNativeHarnessBackup(f);
     const [before] = await f.db.select().from(nativeHarnessBackups).where(eq(nativeHarnessBackups.scopeDigest, f.scopeDigest));
