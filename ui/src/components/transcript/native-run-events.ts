@@ -1,6 +1,10 @@
 import type { HeartbeatRunEvent } from "@paperclipai/shared";
 import type { TranscriptEntry } from "@/adapters";
+
+type TranscriptToolDetail = NonNullable<Extract<TranscriptEntry, { kind: "tool_call" }>["detail"]>;
 import { isRunLogOnlyProviderEvent } from "./run-log-only-events";
+import { workspaceChangeEntry } from "@/adapters/paperclip-runner";
+import { createUnifiedDiffClassifier } from "@/components/task-chat/diff-lines";
 
 function record(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value)
@@ -642,6 +646,27 @@ function serializedNativeToolResult(item: NativeToolItemDetails): string {
   }
 }
 
+/** Names the task-chat tool taxonomy already knows, for a process that only read, searched or listed. */
+const PROCESS_OPERATION_NAMES: Record<string, string> = { read: "Read", search: "Grep", list: "Glob" };
+
+function toolExecutionDetail(payload: Record<string, unknown>): TranscriptToolDetail {
+  const status = text(payload.status);
+  const number = (value: unknown) => (typeof value === "number" && Number.isSafeInteger(value) ? value : null);
+  return {
+    ...(text(payload.operation) ? { operation: text(payload.operation)! } : {}),
+    ...(text(payload.subject) ? { subject: text(payload.subject)! } : {}),
+    ...(text(payload.target) ? { target: text(payload.target)! } : {}),
+    ...(text(payload.description) ? { description: text(payload.description)! } : {}),
+    ...(text(payload.blockedReason) ? { blockedReason: text(payload.blockedReason)! } : {}),
+    ...(status && status !== "running" && number(payload.exitCode) !== null
+      ? { exitCode: number(payload.exitCode) }
+      : {}),
+    ...(status && status !== "running" && number(payload.durationMs) !== null
+      ? { durationMs: number(payload.durationMs) }
+      : {}),
+  };
+}
+
 function toolPresentation(
   payload: Record<string, unknown>,
   item?: NativeToolItemDetails,
@@ -651,17 +676,16 @@ function toolPresentation(
   const reportedName = text(payload.name) ?? item?.name ?? null;
   if (transport === "process") {
     return {
-      name: "Bash",
+      // A read or listing without one concrete file stays a visible command.
+      name: (operation && (operation === "search" || text(payload.target)) && PROCESS_OPERATION_NAMES[operation]) || "Bash",
       input: reportedName ? { command: reportedName } : { operation: operation ?? "execute" },
     };
   }
   return {
     name: reportedName ?? operation ?? "Tool",
-    input: item?.input ?? {
-      ...(operation ? { operation } : {}),
-      ...(text(payload.namespace) ? { namespace: text(payload.namespace) } : {}),
-      ...(text(payload.target) ? { target: text(payload.target) } : {}),
-    },
+    // Operation and namespace are classification data, not something a
+    // person reads; only a concrete target belongs in the row's input summary.
+    input: item?.input ?? (text(payload.target) ? { path: text(payload.target) } : {}),
   };
 }
 
@@ -670,9 +694,50 @@ function toolPresentation(
  * model already consumed by the task thread. Provider-native envelopes never
  * reach this boundary and unknown event kinds remain safely invisible.
  */
+/** Diff lines for one edit call's bounded `fileChanges`, attached to its row. */
+function fileChangeDiffEntries(
+  value: readonly unknown[] | undefined,
+  toolUseId: string,
+  ts: string,
+): TranscriptEntry[] {
+  if (!value) return [];
+  const entries: TranscriptEntry[] = [];
+  for (const raw of value.slice(0, 32)) {
+    const change = record(raw);
+    const path = text(change?.path);
+    if (!change || !path) continue;
+    // The producer counted the whole patch; the patch itself may be shortened.
+    const count = (value: unknown) => typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
+    entries.push({
+      kind: "diff", ts, changeType: "file_header", text: path, toolUseId,
+      additions: count(change.additions), deletions: count(change.deletions),
+    });
+    const diff = text(change.diff) ?? "";
+    const classify = createUnifiedDiffClassifier();
+    for (const line of diff.endsWith("\n") ? diff.slice(0, -1).split("\n") : diff ? diff.split("\n") : []) {
+      const { kind, text: value } = classify(line);
+      if (kind === "skip" || kind === "file") continue;
+      entries.push({ kind: "diff", ts, changeType: kind, text: value, toolUseId });
+    }
+    if (change.diffTruncated === true) {
+      entries.push({ kind: "diff", ts, changeType: "truncation", text: "Diff shortened for display.", toolUseId });
+    }
+  }
+  return entries;
+}
+
 export function nativeRunEventsToTranscript(events: readonly HeartbeatRunEvent[]): TranscriptEntry[] {
   const entries: TranscriptEntry[] = [];
+  // A subagent's spawning call also arrives as a tool lifecycle on some
+  // transports. Its delegation card owns it, so the tool row is hidden.
+  const delegationIds = new Set<string>();
+  for (const event of events) {
+    if (!event.eventType.startsWith("delegation.")) continue;
+    const id = text(record(record(record(event.payload)?.prpEvent)?.payload)?.delegationId);
+    if (id) delegationIds.add(id);
+  }
   const startedToolIds = new Set<string>();
+  const toolSignatures = new Map<string, string>();
   const completedToolIds = new Set<string>();
   let usageSummary: {
     ts: string;
@@ -747,6 +812,17 @@ export function nativeRunEventsToTranscript(events: readonly HeartbeatRunEvent[]
   const completedReasoningIds = new Set<string>();
   const completionItemIdentityById = new Map<string, ItemIdentity>();
   const nativeToolItemsById = new Map<string, NativeToolItemDetails>();
+  // An edit call reports an optimistic patch when it starts and the exact one
+  // when it lands. The row shows the latest one, wherever it first appears.
+  const fileChangesByExecutionId = new Map<string, unknown[]>();
+  for (const event of orderedEvents) {
+    if (!event.eventType.startsWith("tool.execution.")) continue;
+    const payload = record(record(event.payload?.prpEvent)?.payload);
+    const executionId = text(payload?.executionId);
+    if (executionId && Array.isArray(payload?.fileChanges)) {
+      fileChangesByExecutionId.set(executionId, payload.fileChanges);
+    }
+  }
   for (const event of orderedEvents) {
     if (!isItemIdentityEvent(event.eventType)) continue;
     const envelope = record(event.payload?.prpEvent);
@@ -956,6 +1032,33 @@ export function nativeRunEventsToTranscript(events: readonly HeartbeatRunEvent[]
       continue;
     }
 
+    // A delegation carries its children (subagent type, prompt, progress,
+    // result) to the task-chat subagent card, so keep the full snapshot.
+    if (
+      event.eventType.startsWith("delegation.")
+      && payload.schema === "paperclip.delegation.v1"
+      && text(payload.delegationId)
+    ) {
+      const status = text(payload.status);
+      entries.push({
+        kind: "provider_activity",
+        ts,
+        family: "delegation",
+        eventType: event.eventType,
+        status: status === "failed"
+          ? "failed"
+          : status === "interrupted"
+            ? "interrupted"
+            : status === "completed" || status === "closed"
+              ? "completed"
+              : "running",
+        title: "Subagent",
+        summary: "Subagent",
+        payload,
+      });
+      continue;
+    }
+
     const cardActivity = cardProviderActivityEntry(event, payload, ts);
     if (cardActivity) {
       entries.push(cardActivity);
@@ -987,21 +1090,52 @@ export function nativeRunEventsToTranscript(events: readonly HeartbeatRunEvent[]
       continue;
     }
 
-    if (event.eventType === "tool.execution.started" || event.eventType === "tool.execution.completed") {
+    if (
+      (event.eventType === "workspace.change.updated" || event.eventType === "workspace.diff.recorded")
+      && payload.schema === "paperclip.workspace.diff.v1"
+    ) {
+      entries.push(workspaceChangeEntry(payload, ts));
+      continue;
+    }
+
+    if (
+      event.eventType === "tool.execution.started" ||
+      event.eventType === "tool.execution.progressed" ||
+      event.eventType === "tool.execution.completed"
+    ) {
       if (payload.schema !== TOOL_EXECUTION_SCHEMA) continue;
       const executionId = text(payload.executionId);
-      if (!executionId) continue;
+      if (!executionId || delegationIds.has(executionId)) continue;
       const nativeToolItem = nativeToolItemsById.get(executionId);
       const presentation = toolPresentation(payload, nativeToolItem);
-      if (!startedToolIds.has(executionId)) {
+      const parentToolUseId = text(payload.parentItemId);
+      const detail = toolExecutionDetail(payload);
+      // Providers refine a call as its input streams in ("Terminal" becomes
+      // "node --test") and report the outcome at the end. Re-emit the call
+      // whenever its canonical facts change; the adapter merges by id.
+      const signature = JSON.stringify([presentation.name, detail]);
+      const refines = Object.keys(detail).some((key) => key !== "operation");
+      if (!startedToolIds.has(executionId) || (refines && toolSignatures.get(executionId) !== signature)) {
+        // The latest patch is attached once, with the call's first row; a
+        // refinement only updates the call's facts.
+        const firstEmission = !toolSignatures.has(executionId);
+        toolSignatures.set(executionId, signature);
         startedToolIds.add(executionId);
+        const fileChanges = fileChangesByExecutionId.get(executionId);
+        const editedPath = text(record(fileChanges?.[0])?.path);
         entries.push({
           kind: "tool_call",
           ts,
           name: presentation.name,
-          input: presentation.input,
+          // An edit's opening event can precede its path; the patch names the file.
+          input: editedPath && typeof presentation.input === "object"
+            ? { ...presentation.input as Record<string, unknown>, path: editedPath }
+            : presentation.input,
           toolUseId: executionId,
+          detail,
+          ...(parentToolUseId ? { parentToolUseId } : {}),
         });
+        if (firstEmission) entries.push(...fileChangeDiffEntries(fileChanges, executionId, ts));
       }
       if (event.eventType === "tool.execution.completed" && !completedToolIds.has(executionId)) {
         completedToolIds.add(executionId);

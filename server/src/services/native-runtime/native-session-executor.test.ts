@@ -13435,6 +13435,33 @@ describe("runnerd provider runtime wiring", () => {
     return state.createTransport.mock.calls[0]![0].stateDirectory!;
   }
 
+  it("keeps physical task cleanup binding after the startup context finishes", async () => {
+    const current = scopedNativeExecution("physical-task-cleanup");
+    const context = new NativeExecutionContext(current, 1_000);
+    const owner = vi.spyOn(pluginTaskRuntime, "createPluginRunnerTaskOwner");
+    const db = leaseDb(current), update = db.update.bind(db);
+    db.update = ((table: unknown) => table === environmentLeases
+      ? { set: () => ({ where: () => ({ returning: async () => [] }) }) }
+      : update(table as never)) as typeof db.update;
+    db.transaction = (async callback => callback(db as never)) as typeof db.transaction;
+    const task = vi.fn(async (_operation: unknown, _options?: { executionContext?: unknown; expectedTaskId?: string }) => ({
+      kind: "description", taskId: "physical-task", launchPreparationVersion: 1, projectAuthCheckVersion: 1,
+      runner: { version: "fixture", digest: `sha256:${"a".repeat(64)}` },
+    }));
+    try {
+      await createRunnerdBackend({ db, execution: current, runnerInstanceId: "physical-task-runner",
+        executionContext: context, runnerIngressAuthorized: true, runnerExecutionTarget: {
+          kind: "remote", transport: "sandbox", remoteCwd: ".", leaseId: "lease", runnerTask: task,
+        } });
+      const input = owner.mock.calls.at(-1)![0];
+      expect(input.taskId).toBe("physical-task");
+      context.finish();
+      await input.task({ kind: "stop" }, { expectedTaskId: "physical-task" });
+      expect(task).toHaveBeenLastCalledWith({ kind: "stop" }, { expectedTaskId: "physical-task" });
+      await expect(input.onSessionRetained!({})).rejects.toThrow("physical task changed");
+    } finally { context.finish(); owner.mockRestore(); }
+  });
+
   it("rejects a late backend factory after its startup context has finished", async () => {
     const current = scopedNativeExecution("late-context-factory");
     state.createBackend.mockClear();

@@ -16,6 +16,10 @@ import { logger } from "../../middleware/logger.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "../delivery-work-notifications.js";
 import { preserveRemoteWorkspacePreparationFailure } from "./native-workspace-finalization-state.js";
 import { pinFailedObservedWorkspace } from "./native-observed-workspace-preservation.js";
+import { hasConfirmedSandboxStopAndRetain } from "../sandbox-stop-and-retain.js";
+import { preparedRemoteWorkspaceSource } from "../remote-workspace-lifecycle.js";
+
+const reusableLeasePolicies = ["reuse_by_environment", "reuse_by_execution_workspace"];
 
 
 function workspaceRecoveryReference(profile: Record<string, unknown> | null | undefined) {
@@ -93,6 +97,10 @@ export async function preserveNativeFailedWorkspace(db: Db, selected: Pick<typeo
     )).limit(1);
     if (!source || source.issueId !== issueId || source.metadata?.remoteCwd !== currentReference.remoteCwd
       || (source.executionWorkspaceId && source.executionWorkspaceId !== currentReference.workspaceId)) return;
+    // A stopped reusable sandbox is retained only with its exact stop receipt
+    // while the workspace is still bound to this writer. Otherwise record nothing.
+    if (source.status !== "active" && reusableLeasePolicies.includes(source.leasePolicy) && (!hasConfirmedSandboxStopAndRetain(source)
+      || !await preparedRemoteWorkspaceSource(tx as unknown as Db, source))) return;
     // Ownership settlement still applies to workspace-less external sessions.
     // Their Runner descriptor is not evidence that user files need exporting.
     const retainFiles = !nativeRunHasNoWorkspaceAccess(run);
@@ -169,6 +177,20 @@ function retentionContentionCode(error: unknown): string | null {
 
 const cancelledWorkspaceCursors = new WeakMap<Db, string>();
 
+/** Leases that may still hold a cancelled writer's prepared files. A reusable
+ * (warm) lease that ends without success is stopped and kept `released` under
+ * its reusable policy; a reassignment Stop leaves the writer's unsaved files
+ * there. Admission only finds candidates: retention still requires the exact
+ * stop-and-retain receipt and the workspace still bound to this writer. */
+function cancelledWorkspaceSourceLease() {
+  return or(eq(environmentLeases.status, "active"),
+    and(inArray(environmentLeases.status, ["pending_cleanup", "released"]), eq(environmentLeases.leasePolicy, "ephemeral")),
+    and(eq(environmentLeases.status, "released"), eq(environmentLeases.cleanupStatus, "success"),
+      inArray(environmentLeases.leasePolicy, reusableLeasePolicies),
+      sql`${environmentLeases.metadata}->'remoteExecutionTermination'->>'state' = 'stopped'`,
+      sql`${environmentLeases.metadata} ? 'sandboxStopAndRetainReceipt'`));
+}
+
 /** Older controllers could acknowledge Stop without pinning prepared files.
  * Record only the file obligation; the existing stop-only cleanup worker owns
  * provider teardown. This never resumes a turn or changes the task's status. */
@@ -178,9 +200,7 @@ export async function preserveCancelledNativeWorkspaces(db: Db) {
       eq(heartbeatRuns.id, environmentLeases.heartbeatRunId), eq(heartbeatRuns.companyId, environmentLeases.companyId),
     )).innerJoin(nativeRunFinalizations, and(eq(nativeRunFinalizations.runId, heartbeatRuns.id),
       eq(nativeRunFinalizations.companyId, heartbeatRuns.companyId), eq(nativeRunFinalizations.issueId, heartbeatRuns.nativeIssueId)))
-    .where(and(or(eq(environmentLeases.status, "active"), and(
-      inArray(environmentLeases.status, ["pending_cleanup", "released"]), eq(environmentLeases.leasePolicy, "ephemeral"),
-    )), eq(heartbeatRuns.runtimeMode, "native"),
+    .where(and(cancelledWorkspaceSourceLease(), eq(heartbeatRuns.runtimeMode, "native"),
       eq(heartbeatRuns.status, "cancelled"), eq(nativeRunFinalizations.phase, "terminal_failure"),
       isNull(nativeRunFinalizations.resultId), isNull(nativeRunFinalizations.leaseOwner),
       sql`(${heartbeatRuns.runnerProfileJson}->'nativeWorkspaceSync'->>'state' = 'prepared' OR ${heartbeatRuns.runnerProfileJson}->'remoteWorkspace'->>'state' = 'prepared')`,
@@ -259,8 +279,7 @@ export function registerCancelledWorkspacePreservationWork(db: Db,
       return { ...entry, dueAt: Date.now() + 30_000 };
     const [source] = await db.select({ id: environmentLeases.id }).from(environmentLeases).where(and(
       eq(environmentLeases.companyId, run.companyId), eq(environmentLeases.heartbeatRunId, run.id),
-      or(eq(environmentLeases.status, "active"), and(inArray(environmentLeases.status, ["pending_cleanup", "released"]),
-        eq(environmentLeases.leasePolicy, "ephemeral"))),
+      cancelledWorkspaceSourceLease(),
     )).limit(1);
     if (source) await preserveNativeFailedWorkspace(db, run, { allowPreterminal: true, requireCancelledStop: true });
     const [current] = await db.select().from(heartbeatRuns)

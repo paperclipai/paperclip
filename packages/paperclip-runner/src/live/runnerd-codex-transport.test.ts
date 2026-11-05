@@ -2063,17 +2063,22 @@ it.each([false, true])("binds a vendored source server to its pnpm dependency ro
     expect(runnerdLaunchProfileInternals.acpxProviderPackageAuthority(
       join(server, "dist/vendor/paperclip-runner/cli/acpx-runtime-sidecar.cjs"),
     )).toEqual({ root: selfRooted ? server : workspace, manifest: join(server, "package.json") });
-    for (const agent of ["pi", "antigravity"] as const) {
+    for (const agent of ["cursor", "copilot", "pi", "kimi", "antigravity"] as const) {
       expect(runnerdLaunchProfileInternals.acpxProviderPackageAuthority(
         join(server, "dist/vendor/paperclip-runner/cli/acpx-runtime-sidecar.cjs"), workspace, agent,
       )).toEqual({ root: server, manifest: join(server, "package.json") });
+    }
+    for (const agent of ["claude", "codex", "grok"] as const) {
+      expect(runnerdLaunchProfileInternals.acpxProviderPackageAuthority(
+        join(server, "dist/vendor/paperclip-runner/cli/acpx-runtime-sidecar.cjs"), workspace, agent,
+      )).toEqual({ root: selfRooted ? server : workspace, manifest: join(server, "package.json") });
     }
   } finally {
     await rm(workspace, { recursive: true, force: true });
   }
 });
 
-it.each((["copilot", "pi", "antigravity"] as const).flatMap(agent =>
+it.each((["cursor", "copilot", "pi", "kimi", "antigravity"] as const).flatMap(agent =>
   ["source", "scoped-npm", "deployment"].map(layout => ({ agent, layout }))))(
   "admits the controller-selected $agent package authority in a $layout layout",
   async ({ agent, layout }) => {
@@ -2736,7 +2741,7 @@ it.each(["reuse", "large-instructions", "rotated-recovery", "removed-context", "
     await expect(stat(join(root, "runtime-context.json"))).rejects.toHaveProperty("code", "ENOENT");
     await transport.close();
     if (mode === "removed-context") {
-      const rotated = create(5_000, "run-prepared-removed");
+      const rotated = create(undefined, "run-prepared-removed");
       try {
         await expect(rotated.transport.request("thread/read", { threadId: (opened.thread as { id: string }).id }))
           .rejects.toThrow("cannot change the durable Codex provider profile");
@@ -2753,7 +2758,11 @@ it.each(["reuse", "large-instructions", "rotated-recovery", "removed-context", "
     }
     if (mode === "rotated-recovery" || mode === "omitted-context") {
       for (let attempt = 0; attempt < 2; attempt++) {
-        const rotated = create(5_000, "run-prepared-rotated");
+        // Close settlement is bounded by the close grace and must prove the
+        // provider drain. A recovered successor needs several drain receipts,
+        // each a runner round trip, so keep the production close budget here.
+        // A shortened budget fails closed on a loaded CI runner.
+        const rotated = create(undefined, "run-prepared-rotated");
         try {
           await rotated.transport.request("thread/read", { threadId: (opened.thread as { id: string }).id });
           expect(requestedRun).toBe("run-prepared-rotated");
@@ -2764,7 +2773,7 @@ it.each(["reuse", "large-instructions", "rotated-recovery", "removed-context", "
       }
       return;
     }
-    const resumed = create(mode === "timeout-attachment" ? 500 : 5_000);
+    const resumed = create(mode === "timeout-attachment" ? 500 : undefined);
     try {
       await resumed.transport.request("thread/read", { threadId: (opened.thread as { id: string }).id });
       expect(recovered).toBe(true);
@@ -2821,7 +2830,9 @@ it.each(["reuse", "large-instructions", "rotated-recovery", "removed-context", "
     materialize.mockRestore(); discover.mockRestore();
     await rm(root, { recursive: true, force: true });
   }
-}, 30_000);
+  // Up to three closes run under the 10s production close budget. Keep a close
+  // regression visible as its settlement error, not as a bare test timeout.
+}, 60_000);
 
 it("rejects an environment-prepared policy change before registration or process launch", async () => {
   const root = await mkdtemp(join(tmpdir(), "runner-environment-policy-"));

@@ -38,7 +38,7 @@ it.skipIf(!existsSync(defaultCapabilityRunnerdBinary()) || !existsSync(fakeCodex
         runner: { version: "fixture", digest: `sha256:${"a".repeat(64)}` } };
       return { kind: "accepted", taskId: "warm-task" };
     };
-    const input = { task, harness: "codex", projectIds: [], projectAuthCheckVersion: 1 as const,
+    const input = { taskId: "warm-task", task, harness: "codex", projectIds: [], projectAuthCheckVersion: 1 as const,
       authorityRunId: source.runId, accountIdentity: "synthetic-account", warmTaskVersion: 1 as const, pollMs: 5 };
     const owner = createPluginRunnerTaskOwner(input);
     const launcher = owner.driver.runnerProcessLauncher!;

@@ -1941,7 +1941,11 @@ async function executeOneShot(
     // attribute a step's exec time to the provider boundary through the
     // free-form `metadata.durationMs`.
     execStart = timingNow();
-    const result = await sandbox.process.executeCommand(command, undefined, undefined, timeoutSeconds);
+    const result = await withLivenessTimeout(
+      "process.executeCommand",
+      timeoutSeconds * 1_000 + LIVENESS_START_TIMEOUT_MARGIN_MS,
+      () => sandbox.process.executeCommand(command, undefined, undefined, timeoutSeconds),
+    );
     const durationMs = timingNow() - execStart;
 
     return {
@@ -1952,6 +1956,19 @@ async function executeOneShot(
       metadata: { durationMs },
     };
   } catch (error) {
+    if (error instanceof SandboxLivenessTimeoutError && execStart != null) {
+      return {
+        exitCode: null,
+        timedOut: true,
+        stdout: "",
+        stderr: `${error.message}\n`,
+        metadata: {
+          durationMs: timingNow() - execStart,
+          timeoutScope: "provider_exec_request",
+          commandExitConfirmed: false,
+        },
+      };
+    }
     if (error instanceof DaytonaTimeoutError) {
       const timeoutMessage = gitNet
         ? `Git network operation timed out after ${Math.round(effectiveTimeoutMs / 1000)} s — the remote may be unreachable or noninteractive credentials are not configured.`
@@ -1972,7 +1989,8 @@ async function executeOneShot(
     throw error;
   } finally {
     if (stdinPath) {
-      await sandbox.fs.deleteFile(stdinPath).catch(() => undefined);
+      await withLivenessTimeout("fs.deleteFile", LIVENESS_START_TIMEOUT_MARGIN_MS,
+        () => sandbox.fs.deleteFile(stdinPath)).catch(() => undefined);
     }
   }
 }

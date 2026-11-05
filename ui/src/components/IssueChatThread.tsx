@@ -227,6 +227,7 @@ import {
 } from "../lib/transcriptPresentation";
 import { buildAgentMentionHref } from "@paperclipai/shared";
 import { useComposerStop } from "@/hooks/useComposerStop";
+import { useComposerSubmitKey } from "@/hooks/useComposerSubmitKey";
 import { cn, formatDateTime, formatShortDate } from "../lib/utils";
 import { liveBlueBadge } from "../lib/status-colors";
 import {
@@ -4691,6 +4692,7 @@ const IssueChatComposer = forwardRef<
   forwardedRef,
 ) {
   const stopControl = useComposerStop(onStop, stopPending);
+  const submitKey = useComposerSubmitKey();
   const restoredRecovery = useMemo(() => {
     const key = sharedDraftKey && loadDraftRecoveryKey(sharedDraftKey);
     return key ? { sourceKey: sharedDraftKey!, key, persisted: true } : null;
@@ -5537,6 +5539,7 @@ const IssueChatComposer = forwardRef<
         placeholder="Reply"
         mentions={mentions}
         onSubmit={handleSubmit}
+        submitKey={submitKey}
         imageUploadHandler={
           canAcceptFiles
             ? async (file) => {

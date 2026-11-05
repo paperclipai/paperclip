@@ -56,6 +56,9 @@ import {
 } from "./codex-session-terminal.js";
 import { boundedText, record, text, userInput } from "./codex-driver-values.js";
 
+/** TurnStartParams.summary: provider-written reasoning summaries for every turn. */
+export const CODEX_REASONING_SUMMARY = "auto";
+
 export class CodexHarnessSession
   extends CodexSessionState
   implements HarnessSession
@@ -259,6 +262,10 @@ export class CodexHarnessSession
         threadId: this.opened.threadId,
         ...(input.reasoningMode === undefined ? {} : { reasoningMode: input.reasoningMode }),
         ...(this.reasoningEffort ? { effort: this.reasoningEffort } : {}),
+        // Codex resolves an unset summary from the model, and current models
+        // resolve it to "none": reasoning items then carry no text at all.
+        // Request provider-written summaries so the task chat can show them.
+        ...(this.driverKind === "codex_app_server" ? { summary: CODEX_REASONING_SUMMARY } : {}),
         cwd: this.opened.context.workingDirectory,
         permissions:
           text(record(record(this.opened.context.sandbox).permissionProfile).id) || (requestedMode === "plan"

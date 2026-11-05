@@ -1028,7 +1028,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const inheritedEnvironmentLabel = instanceDefaultEnvironment
     ? environmentDisplayLabel(instanceDefaultEnvironment)
     : managedSandboxOnly
-      ? "Paperclip Computer"
+      ? "Paperclip Sandbox"
       : "Local";
 
   const modelProvider = adapterType === "opencode_local" && aiConnectionBindingSchema.safeParse(

@@ -470,9 +470,11 @@ describeEmbeddedPostgres("reportRunFailure", () => {
   it.each([
     ["no finalization fields", { finalizationPhase: undefined, finalizationReasonCode: undefined }],
     ["an earlier finalization phase", { finalizationPhase: "retryable_failure", finalizationReasonCode: undefined }],
+    ["only the adapter's resultJson", { nativeProviderFailure: undefined, finalizationPhase: undefined, finalizationReasonCode: undefined }],
   ] as const)("keeps a scheduled native capacity retry local when the run row has %s", async (_label, resultJson) => {
-    // A late terminal write can replace the finalizer's fields with an earlier
-    // resultJson. The successor created by the committed decision still proves it.
+    // The live heartbeat's failed-status write replaces the finalizer's
+    // resultJson with the adapter's copy. The successor created by the
+    // committed decision still proves the scheduled retry.
     const run = await nativeCapacityFailure({ resultJson });
     await reportRunFailure(db, run);
     expect(mockCaptureRunFailure).not.toHaveBeenCalled();
@@ -486,8 +488,7 @@ describeEmbeddedPostgres("reportRunFailure", () => {
     ["the successor belongs to another task", { retry: { contextSnapshot: { issueId: randomUUID() } } }],
     ["the run has no native task", { run: { nativeIssueId: null } }],
     ["finalization has no fields and no retry run exists", { resultJson: { finalizationPhase: undefined, finalizationReasonCode: undefined }, retry: null }],
-    ["the diagnostic is not typed capacity evidence", { resultJson: { nativeProviderFailure: { provider: "codex", category: "turn_failed" } } }],
-    ["the diagnostic is missing", { resultJson: { nativeProviderFailure: undefined } }],
+    ["the diagnostic is missing and no retry run exists", { resultJson: { nativeProviderFailure: undefined }, retry: null }],
     ["the run is legacy", { run: { runtimeMode: "legacy" } }],
     ["the run has a signal", { run: { signal: "SIGTERM" } }],
     ["the run timed out", { run: { status: "timed_out" } }],

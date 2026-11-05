@@ -13257,10 +13257,11 @@ async function createRunnerdBackendWithinSessionClaim(
   const cloudArtifactRoot = input.execution.provider.kind === "cursor_cloud" ? join(runnerdStateRoot(input.execution), "cursor-cloud", "artifacts") : undefined;
   if (input.execution.provider.kind === "cursor_cloud" && remoteTarget) throw new Error("cursor_cloud_local_controller_required");
   const rawPluginTask = remoteTarget?.transport === "sandbox" ? remoteTarget.runnerTask : undefined;
-  const pluginTask = rawPluginTask && input.executionContext ? (operation: unknown) => {
+  const pluginTask = rawPluginTask && input.executionContext ? (operation: unknown, options?: { expectedTaskId?: string }) => {
     const startupOperation = ["describe", "prepare", "check_project_auth", "connection"].includes(String(record(operation).kind));
     if (startupOperation) input.executionContext?.signal.throwIfAborted();
-    return rawPluginTask(operation, input.executionContext?.active && startupOperation ? { executionContext: input.executionContext } : undefined);
+    return rawPluginTask(operation, { ...options,
+      ...(input.executionContext?.active && startupOperation ? { executionContext: input.executionContext } : {}) });
   } : rawPluginTask;
   let runnerControlPlane: DurablePrpControlPlane | undefined;
   if (pluginTask && input.runnerIngressAuthorized !== true) throw new Error("runner_ingress_unavailable");
@@ -13493,7 +13494,7 @@ async function createRunnerdBackendWithinSessionClaim(
       await registerPluginTaskCredentialHandoff(input.db, { companyId: input.execution.binding.companyId, leaseId: remoteTarget.leaseId },
         credentials.accountIdentity, input.managedAiCredentialWriteback);
     }
-    const ownerInput: Parameters<typeof createPluginRunnerTaskOwner>[0] = { ...credentials,
+    const ownerInput: Parameters<typeof createPluginRunnerTaskOwner>[0] = { ...credentials, taskId: description.taskId,
       executionContext: input.executionContext?.pluginSupported ? input.executionContext : undefined,
       // Warm retirement can outlive the run's temporary credential home; complete uses the durable handoff.
       onCredentials: input.execution.session.lifecyclePolicy.mode === "warm" ? undefined : credentials.onCredentials,
@@ -13511,14 +13512,19 @@ async function createRunnerdBackendWithinSessionClaim(
       } : undefined,
       credentialIdentity: input.managedAiCredentialIdentity,
       onSessionRetained: async state => {
-        savePluginRunnerCheckpoint(root, state, state);
-        await input.db.update(environmentLeases).set({ metadata: sql`coalesce(${environmentLeases.metadata}, '{}'::jsonb) || ${JSON.stringify({
-          runnerTaskSessionRetained: true, runnerTaskIdentity: {
-            runnerId: state.runnerInstanceId, leaseId: state.environmentLeaseId,
-            runId: state.runId, sessionId: state.normalizedSessionId, turnId: state.turnId, itemId: state.itemId,
-          },
-        })}::jsonb` })
-          .where(and(eq(environmentLeases.id, remoteTarget.leaseId!), eq(environmentLeases.companyId, input.execution.binding.companyId)));
+        await input.db.transaction(async tx => {
+          const saved = await tx.update(environmentLeases).set({ metadata: sql`coalesce(${environmentLeases.metadata}, '{}'::jsonb) || ${JSON.stringify({
+            runnerTaskSessionRetained: true, runnerTaskIdentity: {
+              runnerId: state.runnerInstanceId, leaseId: state.environmentLeaseId,
+              runId: state.runId, sessionId: state.normalizedSessionId, turnId: state.turnId, itemId: state.itemId,
+            },
+          })}::jsonb` })
+            .where(and(eq(environmentLeases.id, remoteTarget.leaseId!), eq(environmentLeases.companyId, input.execution.binding.companyId),
+              eq(environmentLeases.providerLeaseId, description.taskId))).returning({ id: environmentLeases.id });
+          if (saved.length !== 1) throw new Error("Plugin Runner physical task changed");
+          // Keep the lease row locked until its local checkpoint has been saved.
+          savePluginRunnerCheckpoint(root, state, state);
+        });
       }, onDispatched: input.onTaskDispatched,
     };
     if (input.execution.session.lifecyclePolicy.mode === "warm" && (!credentials.accountIdentity || description.warmTaskVersion !== 1)) throw new Error("Plugin warm task capability or account unavailable");

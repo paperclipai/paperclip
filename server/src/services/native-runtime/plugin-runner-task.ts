@@ -29,7 +29,8 @@ export async function verifyPluginRunnerTaskReattachment(
  */
 export function createPluginRunnerTaskOwner(input: {
   executionContext?: NativeExecutionContext;
-  task: (operation: unknown) => Promise<unknown>;
+  taskId: string;
+  task: (operation: unknown, options?: { expectedTaskId?: string }) => Promise<unknown>;
   projectIds: readonly string[];
   harness: string;
   projectAuthCheckVersion?: 1;
@@ -49,6 +50,8 @@ export function createPluginRunnerTaskOwner(input: {
   githubBroker?: { url: string; token: string };
   adoptIdentity?: DurableRecoveryIdentity;
 }) {
+  const taskId = input.taskId;
+  if (!taskId) throw new Error("Plugin Runner physical task unavailable");
   const pollMs = input.pollMs ?? 500;
   let registrationGeneration = 0;
   let activeOutbound: ReturnType<typeof connectRunnerPrpIngress> | null = null;
@@ -76,7 +79,7 @@ export function createPluginRunnerTaskOwner(input: {
     const phase = ({ prepare: "execution.plugin_prepare", check_project_auth: "execution.plugin_project_auth",
       submit: "execution.plugin_submit", connection: "execution.plugin_connection" } as const)[operation.kind as "prepare" | "check_project_auth" | "submit" | "connection"];
     const result = environmentTaskResultSchema.parse(await (phase
-      ? measureRunPhase(phase, () => input.task(operation)) : input.task(operation)));
+      ? measureRunPhase(phase, () => input.task(operation, { expectedTaskId: taskId })) : input.task(operation, { expectedTaskId: taskId })));
     if (result.kind !== (operation.kind === "read_file" ? "file" : operation.kind === "describe" ? "description" : operation.kind === "prepare" ? "prepared" : operation.kind === "check_project_auth" ? "project_auth" : ["read_state", "archive_state"].includes(operation.kind) ? "state" : ["status", "connection", "credentials"].includes(operation.kind) ? operation.kind : "accepted")) {
       throw new Error("Plugin Runner returned an invalid operation result");
     }
@@ -368,7 +371,7 @@ export function createPluginRunnerTaskOwner(input: {
     // stop request. Completion also proves credential/writeback obligations ran.
     isRetired: () => stoppedState?.executionStopped === true && completed && !detached,
     rebind(next: typeof input) {
-      if (!launched || stopRequested || stoppedState || detached || next.harness !== input.harness ||
+      if (!launched || stopRequested || stoppedState || detached || next.taskId !== taskId || next.harness !== input.harness ||
           input.accountIdentity !== next.accountIdentity || input.credentialIdentity !== next.credentialIdentity ||
           JSON.stringify(input.projectIds) !== JSON.stringify(next.projectIds)) throw new Error("Plugin warm task cannot be rebound");
       input = next;
