@@ -126,14 +126,18 @@ export function nativeExecutionRecoveryActionPredicate() {
       and ${heartbeatRuns.runtimeMode} = 'native')`;
 }
 
-// Runner startup lifecycle families: they open no turn. Every other event the
-// runner sourced counts as provider work, so a new or unlisted family keeps
-// the hold (fail closed). Server-side records without a source event (spans,
-// process identity, lifecycle) count only when they name turn or provider work.
-export const PROVIDER_STARTUP_EVENT_PREFIXES = ["harness.", "session.", "workspace.", "runtime.phase.",
-  "runtime.activity.", "provider.notice.", "auth.credentials.", "mcp_app.discovered", "mcp_app.initializing", "mcp_app.ready",
-  "mcp_app.resource.", "mcp_app.host_context.", "mcp_app.teardown", "mcp_app.failed"] as const;
-export const PROVIDER_STARTUP_EVENT_TYPES = ["run.attached", "run.detached"] as const;
+// Exact runner startup lifecycle events (event-v3 schema): they open no turn.
+// Every other runner-sourced event counts as provider work, so a new, unlisted
+// or turn-scoped event (for example workspace.diff.recorded or a session goal)
+// keeps the hold (fail closed). Server-side records without a source event
+// (spans, process identity, lifecycle) count only when they name turn or
+// provider work.
+export const PROVIDER_STARTUP_EVENT_TYPES = ["harness.starting", "harness.ready", "harness.diagnostic", "harness.exited",
+  "session.starting", "session.started", "session.resuming", "session.resumed", "session.reconciled", "session.updated",
+  "session.capabilities.updated", "session.closed", "session.failed", "workspace.ready", "runtime.phase.changed",
+  "runtime.activity.recorded", "provider.notice.recorded", "auth.credentials.updated", "run.attached", "run.detached",
+  "mcp_app.discovered", "mcp_app.initializing", "mcp_app.ready", "mcp_app.resource.resolved",
+  "mcp_app.host_context.changed", "mcp_app.teardown", "mcp_app.failed"] as const;
 const SERVER_TURN_WORK_EVENT_PREFIXES = ["turn.", "item.", "tool.", "semantic_tool.", "run.result."] as const;
 const SERVER_TURN_WORK_EVENT_TYPES = ["provider.event", "provider.rpc_result"] as const;
 
@@ -144,8 +148,7 @@ const anyType = (eventType: SQL, types: readonly string[]) =>
 
 /** SQL truth for an event row (alias columns) that may prove provider turn work. */
 export function providerTurnWorkEventCondition(eventType: SQL, sourceEventId: SQL) {
-  return sql`((${sourceEventId} is not null and not (${anyType(eventType, PROVIDER_STARTUP_EVENT_TYPES)}
-      or ${anyPrefix(eventType, PROVIDER_STARTUP_EVENT_PREFIXES)}))
+  return sql`((${sourceEventId} is not null and not ${anyType(eventType, PROVIDER_STARTUP_EVENT_TYPES)})
     or ${anyType(eventType, SERVER_TURN_WORK_EVENT_TYPES)} or ${anyPrefix(eventType, SERVER_TURN_WORK_EVENT_PREFIXES)})`;
 }
 

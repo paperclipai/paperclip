@@ -2158,7 +2158,7 @@ A Stop or reassignment can reach a native run while its provider session is
 still opening. The startup owner then fences the late handle before any prompt,
 and the Stop acknowledgement records `nativeCancellation.beforeProviderTurn`.
 A reattached provider from restart recovery never gets this proof. When the run
-also has no runner event outside the startup lifecycle (harness, session, workspace,
+also has no runner event outside the exact startup lifecycle events (harness, session, workspace ready,
 runtime phase, credential refresh), no turn or provider event, and
 no native result, no provider outcome
 is unknown. The completed copyback receipt then releases the hold for the stopped
