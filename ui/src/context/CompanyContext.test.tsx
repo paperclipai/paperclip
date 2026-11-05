@@ -55,6 +55,7 @@ function makeCompany(id: string): Company {
     budgetMonthlyCents: 0,
     spentMonthlyCents: 0,
     defaultResponsibleUserId: null,
+    intakeAgentId: null,
     requireBoardApprovalForNewAgents: false,
     interactionResolverGovernance: {},
     feedbackDataSharingEnabled: false,
@@ -234,6 +235,102 @@ describe("CompanyProvider", () => {
     queryClient.clear();
     container.remove();
     vi.clearAllMocks();
+  });
+
+  it("seeds navigation from the session and preserves ordinary company invalidation", async () => {
+    queryClient.setDefaultOptions({ queries: { retry: false, staleTime: 30_000 } });
+    mockAuthApi.getSession.mockResolvedValue({ ...sessionFor("one"), boardBootstrap: {
+      userId: "one", companies: [makeCompany("bootstrap-company")],
+      boardAccess: { userId: "one", isInstanceAdmin: false, companyIds: ["bootstrap-company"] },
+    } });
+    await act(() => root.render(<QueryClientProvider client={queryClient}><CompanyProvider>
+      <Probe onSelectedCompanyId={() => {}} />
+    </CompanyProvider></QueryClientProvider>));
+    await vi.waitFor(() => expect(captured?.selectedCompanyId).toBe("bootstrap-company"));
+    expect(mockCompaniesApi.list).not.toHaveBeenCalled();
+    expect(queryClient.getQueryData(queryKeys.companies.list("one"))).toMatchObject({ companies: [{ id: "bootstrap-company" }] });
+    mockCompaniesApi.list.mockResolvedValue([makeCompany("fresh-company")]);
+    await act(() => queryClient.invalidateQueries({ queryKey: queryKeys.companies.all }));
+    await vi.waitFor(() => expect(captured?.selectedCompanyId).toBe("fresh-company"));
+    expect(mockCompaniesApi.list).toHaveBeenCalledOnce();
+  });
+
+  it("never exposes the previous account's selection while a new bootstrap is ready", async () => {
+    queryClient.setDefaultOptions({ queries: { retry: false, staleTime: 30_000 } });
+    const boot = (userId: string) => ({ ...sessionFor(userId), boardBootstrap: {
+      userId, companies: [makeCompany(`company-${userId}`)],
+      boardAccess: { userId, isInstanceAdmin: false, companyIds: [`company-${userId}`] },
+    } });
+    mockAuthApi.getSession.mockResolvedValue(boot("one"));
+    const snapshots: Array<{ selected: string | null; company: string | undefined }> = [];
+    function AccountProbe() {
+      const current = useCompany();
+      snapshots.push({ selected: current.selectedCompanyId, company: current.companies[0]?.id });
+      return null;
+    }
+    await act(() => root.render(<QueryClientProvider client={queryClient}><CompanyProvider><AccountProbe /></CompanyProvider></QueryClientProvider>));
+    await vi.waitFor(() => expect(snapshots.at(-1)?.selected).toBe("company-one"));
+    await act(() => { queryClient.setQueryData(queryKeys.auth.session, boot("two")); });
+    await vi.waitFor(() => expect(snapshots.at(-1)?.selected).toBe("company-two"));
+    expect(snapshots.filter(value => value.company === "company-two").some(value => value.selected === "company-one")).toBe(false);
+    expect(mockCompaniesApi.list).not.toHaveBeenCalled();
+  });
+
+  it("replaces a returning account's cached companies with its revoked session snapshot once", async () => {
+    queryClient.setDefaultOptions({ queries: { retry: false, staleTime: Infinity } });
+    const boot = (userId: string, ids: string[]) => ({ ...sessionFor(userId), boardBootstrap: {
+      userId, companies: ids.map(makeCompany),
+      boardAccess: { userId, isInstanceAdmin: false, companyIds: ids },
+    } });
+    const seen: Array<{ selected: string | null; companies: string[] }> = [];
+    function AccountProbe() {
+      const current = useCompany();
+      seen.push({ selected: current.selectedCompanyId, companies: current.companies.map(company => company.id) });
+      return null;
+    }
+    mockAuthApi.getSession.mockResolvedValue(boot("one", ["revoked-company"]));
+    await act(() => root.render(<QueryClientProvider client={queryClient}><CompanyProvider><AccountProbe /></CompanyProvider></QueryClientProvider>));
+    await vi.waitFor(() => expect(seen.at(-1)?.selected).toBe("revoked-company"));
+    await act(() => { queryClient.setQueryData(queryKeys.auth.session, boot("two", ["company-two"])); });
+    await vi.waitFor(() => expect(seen.at(-1)?.selected).toBe("company-two"));
+    const returningAt = seen.length;
+    await act(() => { queryClient.setQueryData(queryKeys.auth.session, boot("one", [])); });
+    await vi.waitFor(() => expect(seen.at(-1)).toEqual({ selected: null, companies: [] }));
+    expect(seen.slice(returningAt).some(value => value.companies.includes("revoked-company"))).toBe(false);
+    expect(queryClient.getQueryData(queryKeys.companies.list("one"))).toEqual({ companies: [], unauthorized: false });
+    expect(mockCompaniesApi.list).not.toHaveBeenCalled();
+
+    // The session seed must not overwrite a later authoritative read.
+    mockCompaniesApi.list.mockResolvedValue([makeCompany("new-membership")]);
+    await act(() => queryClient.invalidateQueries({ queryKey: queryKeys.companies.all }));
+    await vi.waitFor(() => expect(seen.at(-1)?.selected).toBe("new-membership"));
+    expect(mockCompaniesApi.list).toHaveBeenCalledOnce();
+  });
+
+  it("reseeds a collected bootstrap query and restores ordinary reads after remount", async () => {
+    queryClient.setDefaultOptions({ queries: { retry: false, staleTime: Infinity, gcTime: 0 } });
+    const bootstrap = {
+      userId: "one", companies: [makeCompany("bootstrap-company")],
+      boardAccess: { userId: "one", isInstanceAdmin: false, companyIds: ["bootstrap-company"] },
+    };
+    mockAuthApi.getSession.mockResolvedValue({ ...sessionFor("one"), boardBootstrap: bootstrap });
+    const render = (mounted: boolean) => root.render(<QueryClientProvider client={queryClient}>
+      {mounted ? <CompanyProvider><Probe onSelectedCompanyId={() => {}} /></CompanyProvider> : null}
+    </QueryClientProvider>);
+    await act(() => render(true));
+    await vi.waitFor(() => expect(captured?.selectedCompanyId).toBe("bootstrap-company"));
+    expect(mockCompaniesApi.list).not.toHaveBeenCalled();
+    await act(() => render(false));
+    await vi.waitFor(() => expect(queryClient.getQueryState(queryKeys.companies.list("one"))).toBeUndefined());
+    captured = null;
+    await act(() => render(true));
+    await vi.waitFor(() => expect(captured?.selectedCompanyId).toBe("bootstrap-company"));
+
+    mockCompaniesApi.list.mockResolvedValue([makeCompany("ordinary-reader-company")]);
+    await act(() => queryClient.invalidateQueries({ queryKey: queryKeys.companies.all }));
+    await vi.waitFor(() => expect(mockCompaniesApi.list).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(captured?.selectedCompanyId).toBe("ordinary-reader-company"));
+    expect(queryClient.getQueryData(queryKeys.companies.list("one"))).toMatchObject({ companies: [{ id: "ordinary-reader-company" }] });
   });
 
   it("publishes the URL company without first exposing the remembered company", async () => {
