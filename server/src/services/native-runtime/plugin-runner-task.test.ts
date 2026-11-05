@@ -56,18 +56,18 @@ function provider() {
 describe("plugin native Runner ownership", () => {
   it("publishes current trusted recovery authority through warm owner rebind", () => {
     const { task } = provider();
-    const input = { task, projectIds: [], harness: "codex", authorityRunId: "first-owner", sourceRecoveryVersion: 1 as const, adoptIdentity: requirements.identity };
+    const input = { task, projectIds: [], harness: "codex", authorityRunId: "first-owner", codexSourceRecoveryVersion: 1 as const, adoptIdentity: requirements.identity };
     const owner = createPluginRunnerTaskOwner(input);
     expect(owner.driver.authorityRunId).toBe("first-owner");
-    expect(owner.driver.sourceRecoveryVersion).toBe(1);
-    owner.rebind({ ...input, authorityRunId: "next-owner", sourceRecoveryVersion: undefined });
+    expect(owner.driver.codexSourceRecoveryVersion).toBe(1);
+    owner.rebind({ ...input, authorityRunId: "next-owner", codexSourceRecoveryVersion: undefined });
     expect(owner.driver.authorityRunId).toBe("next-owner");
-    expect(owner.driver.sourceRecoveryVersion).toBeUndefined();
+    expect(owner.driver.codexSourceRecoveryVersion).toBeUndefined();
   });
   it.each(["capability", "source", "identity", "account", "provider", "adoption"])("refuses an unqualified predecessor preparation: %s", async mode => {
     const { task } = provider();
     const owner = createPluginRunnerTaskOwner({ task, projectIds: [], harness: mode === "provider" ? "claude" : "codex",
-      authorityRunId: "next", sourceRecoveryVersion: mode === "capability" ? undefined : 1,
+      authorityRunId: "next", codexSourceRecoveryVersion: mode === "capability" ? undefined : 1,
       resumeFrom: mode === "source" ? undefined : "source-task", priorIdentity: mode === "identity" ? undefined : requirements.identity,
       accountIdentity: mode === "account" ? undefined : "selected-account", ...(mode === "adoption" ? { adoptIdentity: requirements.identity } : {}),
     });
@@ -110,7 +110,7 @@ describe("plugin native Runner ownership", () => {
   it("prepares and submits exact A, then prepares B without copying or reconciling A again", async () => {
     const { task } = provider();
     const owner = createPluginRunnerTaskOwner({ task, projectIds: [], harness: "codex", projectAuthCheckVersion: 1, pollMs: 1,
-      authorityRunId: "next", sourceRecoveryVersion: 1, resumeFrom: "source-task", priorIdentity: requirements.identity,
+      authorityRunId: "next", codexSourceRecoveryVersion: 1, resumeFrom: "source-task", priorIdentity: requirements.identity,
       accountIdentity: "selected-account" });
     await expect(prepare(owner, { ...requirements, identity: { ...requirements.identity, runId: "foreign" } })).rejects.toThrow("source reconciliation unavailable");
     await prepare(owner);

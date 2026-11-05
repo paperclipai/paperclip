@@ -86,10 +86,12 @@ and saves the result before it submits its configuration ID.
 
 ### Stopped source reconciliation
 
-`sourceRecoveryVersion: 1` in `describe` declares support for restoring a stopped
-Codex source without starting another turn. `acpxSourceRecoveryVersion: 1` is a
-separate ACPX capability; Codex support never implies ACPX support. These
-descriptions do not activate a provider without its matching Core admission.
+A plugin’s `describe` response advertises `codexSourceRecoveryVersion: 1` for
+Codex App Server and `acpxSourceRecoveryVersion: 1` for ACPX. It can advertise
+either, both, or neither. Each field means the host can verify and restore a
+stopped source for that provider without starting another turn. Core requires
+the field for the selected provider and verifies the run’s eligibility.
+
 The authenticated request belongs to
 the current run while `prepare` and `submit` carry the predecessor Runner identity.
 Core derives this relationship from its saved source-consumer claim; a mismatched

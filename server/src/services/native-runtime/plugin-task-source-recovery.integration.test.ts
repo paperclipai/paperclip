@@ -91,7 +91,7 @@ describe.skipIf(!recoveryPostgresSupport.supported)("stopped source admission un
     await db.insert(environmentLeases).values({ id: leaseId, companyId, environmentId, issueId, heartbeatRunId: runId,
       provider: sourceLease.provider, providerLeaseId: "replacement-task", leasePolicy: "reuse_by_environment", status: "active", metadata });
     const context = new NativeExecutionContext(execution, 60_000); context.bindNativeLease(owner); contexts.push(context);
-    const input = { companyId, leaseId, context, identity, resumeFrom: "source-task", sourceRecoveryVersion: 1 as const,
+    const input = { companyId, leaseId, context, identity, resumeFrom: "source-task", selectedSourceRecoveryVersion: 1 as const,
       accountIdentity: "current-selected-account", matchesExecution: (previous: typeof sourceExecution) => previous.provider.kind === execution.provider.kind && previous.workspace.cwd === execution.workspace.cwd };
     const workers = { getWorker: () => ({ supportedMethods: ["environmentTask"] }), call: vi.fn(async (_id: string, _method: string, p: any) => {
       if (p.operation.kind === "prepare") return { kind: "prepared", taskId: p.taskId,
@@ -223,7 +223,7 @@ describe.skipIf(!recoveryPostgresSupport.supported)("stopped source admission un
     if (mode === "legacy-settlement") await db.update(environmentLeases).set({ metadata: sql`${environmentLeases.metadata} || ${JSON.stringify({ legacyShutdownWorkspaceSettlement: {
       schema: "paperclip.legacy-shutdown-workspace-settlement.v1", state: "pending", runId: f.sourceRunId, deadlineAt: new Date(Date.now() + 60_000).toISOString(),
     } })}::jsonb` }).where(eq(environmentLeases.id, f.sourceLeaseId));
-    await expect(claimPluginTaskSourceRecovery(db, { ...f, ...(mode === "capability" ? { sourceRecoveryVersion: undefined } : {}) })).rejects.toThrow();
+    await expect(claimPluginTaskSourceRecovery(db, { ...f, ...(mode === "capability" ? { selectedSourceRecoveryVersion: undefined } : {}) })).rejects.toThrow();
     const [source] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.sourceLeaseId));
     expect(source.metadata?.runnerTaskSourceConsumer).toBeUndefined(); expect(f.workers.call).not.toHaveBeenCalled();
   });

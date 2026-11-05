@@ -115,10 +115,10 @@ async function inspect(tx: Transaction, input: {
 /** Only current B's native authority can consume succeeded A for maintenance. */
 export async function claimPluginTaskSourceRecovery(db: Db, input: {
   companyId: string; leaseId: string; context: NativeExecutionContext; identity: Identity; resumeFrom: string; accountIdentity: string;
-  sourceRecoveryVersion?: 1;
+  selectedSourceRecoveryVersion?: 1;
   matchesExecution(source: NativeExecutionInput): boolean;
 }): Promise<PluginTaskSourceRecovery> {
-  if (input.sourceRecoveryVersion !== 1 || !input.accountIdentity) return deny();
+  if (input.selectedSourceRecoveryVersion !== 1 || !input.accountIdentity) return deny();
   return db.transaction(async tx => {
     const inspected = await inspect(tx, input);
     if (!input.matchesExecution(inspected.sourceExecution)) return deny();

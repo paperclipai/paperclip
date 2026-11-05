@@ -76,7 +76,7 @@ the conversation. Core uses ordinary recovery for A, then attaches B with
 authenticated `run.attach`. If the original process is alive, its owner can
 verify and adopt it instead.
 
-**Is A idle?** Before launch, the host driver (`sourceRecoveryVersion: 1`)
+**Is A idle?** Before launch, the host driver (`codexSourceRecoveryVersion: 1`)
 checks that A’s process stopped and its saved session was idle. After launch,
 the Runner (`recoveryIntegrityVersion: 1`) verifies that Codex restored an idle
 session when no command effect is uncertain. It reads the goal, then the

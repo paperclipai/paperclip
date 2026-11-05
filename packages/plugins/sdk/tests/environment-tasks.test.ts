@@ -31,17 +31,21 @@ describe("retained source launch fields", () => {
       expect(environmentTaskOperationSchema.parse(recovery)).toEqual(recovery);
       expect(environmentTaskOperationSchema.safeParse({ ...recovery, recoveryPurpose: "source_reconcile" }).success).toBe(false);
     }
-    expect(environmentTaskResultSchema.parse({ kind: "description", taskId: "task", sourceRecoveryVersion: 1,
-      runner: { version: "fixture", digest: `sha256:${"a".repeat(64)}` } })).toHaveProperty("sourceRecoveryVersion", 1);
   });
 });
 
 describe("provider-specific source recovery capability", () => {
   const description = { kind: "description", taskId: "task", runner: { version: "fixture", digest: `sha256:${"a".repeat(64)}` } };
-  it("keeps ACPX opt-in separate from Codex support", () => {
-    expect(environmentTaskResultSchema.parse({ ...description, acpxSourceRecoveryVersion: 1 })).toHaveProperty("acpxSourceRecoveryVersion", 1);
-    expect(environmentTaskResultSchema.parse({ ...description, sourceRecoveryVersion: 1 })).not.toHaveProperty("acpxSourceRecoveryVersion");
-    expect(environmentTaskResultSchema.safeParse({ ...description, acpxSourceRecoveryVersion: 2 }).success).toBe(false);
+  it.each(["codexSourceRecoveryVersion", "acpxSourceRecoveryVersion"] as const)("accepts %s independently", key => {
+    const advertised = { ...description, [key]: 1 };
+    expect(environmentTaskResultSchema.parse(advertised)).toEqual(advertised);
+    expect(environmentTaskResultSchema.safeParse({ ...description, [key]: 2 }).success).toBe(false);
+  });
+  it("accepts both or neither and rejects an unqualified recovery flag", () => {
+    const both = { ...description, codexSourceRecoveryVersion: 1, acpxSourceRecoveryVersion: 1 };
+    expect(environmentTaskResultSchema.parse(both)).toEqual(both);
+    expect(environmentTaskResultSchema.parse(description)).toEqual(description);
+    expect(environmentTaskResultSchema.safeParse({ ...description, sourceRecoveryVersion: 1 }).success).toBe(false);
   });
 });
 
