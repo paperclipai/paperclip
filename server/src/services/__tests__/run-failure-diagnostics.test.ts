@@ -223,6 +223,22 @@ describe("run failure diagnostics", () => {
     expect(collectRunFailureDiagnostics(run({ errorCode: "adapter_failed" }), {}).execution).toEqual({});
   });
 
+  it("exports only the closed reviewed-chat denial label of a setup failure", () => {
+    const result = sanitizeRunFailureDiagnostics(collectRunFailureDiagnostics(run({
+      errorCode: "setup_failed", error: "reviewed_chat_execution_binding_not_authorized",
+      resultJson: { reviewedChatBinding: { denialReason: "owner_mismatch", runId: "private-run", commentId: "private-comment" } },
+    }), {}));
+    expect(result.execution).toEqual({ reviewedChatBindingDenialReason: "owner_mismatch" });
+    expect(JSON.stringify(result)).not.toContain("private");
+    for (const value of [null, [], { denialReason: "private-reason" },
+      Object.defineProperty({}, "denialReason", { get() { throw new Error("private"); } })]) {
+      expect(collectRunFailureDiagnostics(run({ errorCode: "setup_failed",
+        resultJson: { reviewedChatBinding: value } }), {}).execution).toEqual({});
+    }
+    expect(collectRunFailureDiagnostics(run({ errorCode: "adapter_failed",
+      resultJson: { reviewedChatBinding: { denialReason: "owner_mismatch" } } }), {}).execution).toEqual({});
+  });
+
   it("exports the remote recovery stage and reason from an error thrown before the result was saved", () => {
     const thrown = Object.assign(new RemoteRunnerRecoveryError({ stage: "process_verification", reason: "process_not_running" }),
       { path: "private-path", pid: 123 });
