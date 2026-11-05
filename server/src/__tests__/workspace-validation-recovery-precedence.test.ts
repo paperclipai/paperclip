@@ -4,7 +4,9 @@ import { and, desc, eq } from "drizzle-orm";
 import {
   activityLog,
   agents,
+  authUsers,
   companies,
+  companyMemberships,
   createDb,
   heartbeatRuns,
   issueComments,
@@ -573,6 +575,20 @@ describe("workspace validation recovery precedence", () => {
 
       it("records a workspace-validation failure that the adapter wrapped in another error", async () => {
         const issueId = randomUUID();
+        await db.insert(authUsers).values({
+          id: "responsible-user",
+          name: "Responsible user",
+          email: "responsible-user@example.test",
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        });
+        await db.insert(companyMemberships).values({
+          companyId,
+          principalId: "responsible-user",
+          principalType: "user",
+          status: "active",
+          membershipRole: "member",
+        });
         await db.insert(issues).values({
           id: issueId,
           companyId,
