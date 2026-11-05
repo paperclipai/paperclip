@@ -84,7 +84,7 @@ import { preserveRemoteWorkspacePreparationFailure } from "./native-runtime/nati
 import { canonicalProviderPackJson } from "./native-runtime/remote-provider-pack-verification.js";
 import { REMOTE_WORKSPACE_SANDBOX_DISK_FULL } from "./remote-workspace-transport.js";
 import { withDedicatedDbConnection } from "@paperclipai/db";
-import { getExecutionBlocker } from "./execution-blocker.js";
+import { getExecutionBlocker, hasPendingRunCleanup } from "./execution-blocker.js";
 import { buildExecutionContinuation } from "./execution-continuation.js";
 import { createHeartbeatRunOutput } from "./heartbeat/run-output.js";
 import { objectLogFixture } from "./heartbeat/__tests__/object-log-fixture.js";
@@ -3756,17 +3756,28 @@ describe("automatic retained workspace recovery", () => {
     }
     const [comment] = await db.insert(issueComments).values({ companyId: f.companyId, issueId: f.issueId,
       authorType: "user", authorUserId: "operator", body: "Use the other approach instead." }).returning();
-    const reasons: string[] = [];
-    const admitted = await admitExplicitNativeContinuation({ db, companyId: f.companyId, issueId: f.issueId,
-      agentId: source.agentId, actorType: "user", actorId: "operator", reason: "issue_commented",
-      commentId: comment.id, successorRunId: randomUUID(), dryRun: true, onBlocked: reason => reasons.push(reason) });
-    if (kind === "verified-stop") {
-      // Destroying a stopped sandbox whose files are saved is cleanup, not ownership.
-      expect(reasons).not.toContain("remote_cleanup");
-      expect(admitted).toMatchObject({ previousRunId: f.runId, commentId: comment.id });
-    } else {
-      expect(admitted).toBeNull();
-      expect(reasons).toContain("remote_cleanup");
+    // The same input as a plain message and as a saved native interrupt send.
+    const queueId = randomUUID();
+    await db.insert(agentWakeupRequests).values({ id: queueId, companyId: f.companyId, agentId: source.agentId,
+      source: "automation", reason: "issue_execution_deferred", status: "deferred_issue_execution",
+      requestedByActorType: "system", requestedByActorId: "heartbeat",
+      payload: { issueId: f.issueId, _paperclipWakeContext: { wakeCommentIds: [comment.id] },
+        queuedCommentInterrupt: { actorId: "operator", requestedAt: new Date().toISOString() } } });
+    expect(await hasPendingRunCleanup(db, f.companyId, f.runId)).toBe(kind !== "verified-stop");
+    for (const interrupt of [false, true]) {
+      const reasons: string[] = [];
+      const admitted = await admitExplicitNativeContinuation({ db, companyId: f.companyId, issueId: f.issueId,
+        agentId: source.agentId, actorType: "user", actorId: "operator", reason: "issue_commented",
+        commentId: comment.id, successorRunId: randomUUID(), dryRun: true, onBlocked: reason => reasons.push(reason),
+        ...(interrupt ? { queuedCommentInterruptId: queueId } : {}) });
+      if (kind === "verified-stop") {
+        // Destroying a stopped sandbox whose files are saved is cleanup, not ownership.
+        expect(reasons, JSON.stringify({ interrupt, reasons })).toEqual([]);
+        expect(admitted).toMatchObject({ previousRunId: f.runId, commentId: comment.id });
+      } else {
+        expect(admitted).toBeNull();
+        expect(reasons).toContain("remote_cleanup");
+      }
     }
   }, 30_000);
 
