@@ -460,7 +460,7 @@ impl VerifiedProcessLaunch {
         environment: &std::collections::BTreeMap<String, String>,
     ) -> Result<Child, LocalRunnerError> {
         let inherited = self.inherited_command()?;
-        Command::new(&inherited.program)
+        let child = Command::new(&inherited.program)
             .args(&inherited.args)
             .env_clear()
             .envs(environment)
@@ -468,7 +468,9 @@ impl VerifiedProcessLaunch {
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
             .spawn()
-            .map_err(|_| LocalRunnerError::invalid("failed to spawn verified stdio MCP server"))
+            .map_err(|_| LocalRunnerError::invalid("failed to spawn verified stdio MCP server"))?;
+        crate::oom_score::release_supervised_process(child.id());
+        Ok(child)
     }
 
     pub fn with_inherited_runtime_executable(mut self) -> Self {
@@ -1077,6 +1079,7 @@ impl SupervisedProcess {
             ))
         })?;
         let process_group_id = child.id();
+        crate::oom_score::release_supervised_process(process_group_id);
         let stdin = child
             .stdin
             .take()

@@ -98,6 +98,8 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
   readonly #nativeRecovery?: { compatibility: NativeControllerCompatibility; owner: NativeRunnerCheckpointOwner };
   readonly #taskSessionPublication?: NativeTaskSessionPublicationContext;
   readonly #taskSessionPublicationOwner?: NativeRunnerCheckpointOwner;
+  readonly #deferredEventObservers = new Map<string, Promise<void>>();
+  #deferredObserverFailure: { error: unknown } | null = null;
 
   constructor(
     db: Db,
@@ -135,6 +137,33 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
   #assertActive(options?: { signal: AbortSignal }): void {
     this.#assertControllerActive?.();
     options?.signal.throwIfAborted();
+  }
+
+  async #settleDeferredObservers(options?: { signal: AbortSignal }): Promise<void> {
+    const assertActive = () => {
+      this.#assertActive(options);
+      if (this.#deferredObserverFailure) throw this.#deferredObserverFailure.error;
+    };
+    assertActive();
+    if (this.#deferredEventObservers.size === 0) return;
+    const signal = options?.signal;
+    let removeAbort = () => {};
+    const aborted = new Promise<never>((_resolve, reject) => {
+      if (!signal) return;
+      const abort = () => reject(signal.reason ?? new Error("native event observation aborted"));
+      signal.addEventListener("abort", abort, { once: true });
+      removeAbort = () => signal.removeEventListener("abort", abort);
+      if (signal.aborted) abort();
+    });
+    try {
+      // Aborting a checkpoint revokes its writes, not already-owned accounting
+      // or output observation. Each retained promise remains observed below.
+      while (this.#deferredEventObservers.size > 0) {
+        await Promise.race([Promise.all([...this.#deferredEventObservers.values()]), aborted]);
+        assertActive();
+      }
+    } finally { removeAbort(); }
+    assertActive();
   }
 
   #matchesPersistedBinding(run: Pick<typeof heartbeatRuns.$inferSelect,
@@ -207,6 +236,7 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
 
   async checkpointSession(snapshot: PersistedNativeSession, options?: { signal: AbortSignal }): Promise<void> {
     this.#assertActive(options);
+    if (this.#deferredEventObservers.size > 0 || this.#deferredObserverFailure) await this.#settleDeferredObservers(options);
     snapshot = redactRunnerApiPayloads(this.#identityRedactor.redact(snapshot));
     const identity = snapshot.identity;
     if (
@@ -324,7 +354,7 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
     });
   }
 
-  async appendEvent(value: NativeRunEvent | PrpEvent, options?: { signal: AbortSignal }) {
+  async appendEvent(value: NativeRunEvent | PrpEvent, options?: { signal: AbortSignal; deferPostCommitObservers?: true }) {
     const persistenceStartedAt = Date.now(), persistenceClock = performance.now();
     this.#assertActive(options);
     if (!isPrpEvent(value)) throw new Error("native_legacy_event_not_supported");
@@ -340,6 +370,10 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
     if (event.sourceInstanceId !== expectedSourceInstanceId) {
       throw new Error("native_event_source_binding_mismatch");
     }
+    if (options?.deferPostCommitObservers && (
+      !["turn.completed", "turn.interrupted", "turn.cancelled"].includes(event.eventType)
+      || !event.turnId || event.payload.providerTerminalObserved === false
+    )) throw new Error("native_deferred_observer_terminal_required");
     const terminalItem = /^item\.(completed|failed|cancelled)$/.test(event.eventType);
     const terminalTurn = /^(turn|session)\.(completed|failed|cancelled|interrupted|closed)$/.test(event.eventType);
     if ((event.eventType === "item.delta" || terminalItem || terminalTurn) && this.#identityRedactor.values.length > 0) {
@@ -396,32 +430,48 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
       return receipt;
     });
     this.#assertActive(options);
-    try { await this.#onEventPersistence?.(event, persistenceStartedAt, persistenceStartedAt + performance.now() - persistenceClock); } catch {}
-    if (persisted.disposition === "committed") {
-      try {
-        publishLiveEvent({
-          companyId: this.#binding.companyId,
-          type: "heartbeat.run.event",
-          payload: {
-            runId: this.#binding.runId,
-            agentId: this.#binding.agentId,
-            issueId: this.#binding.issueId,
-            seq: persisted.row.seq,
-            eventType: persisted.row.eventType,
-            stream: persisted.row.stream,
-            level: persisted.row.level,
-            payload: persisted.row.payload,
-          },
-        });
-      } catch {
+    const persistenceEndedAt = persistenceStartedAt + performance.now() - persistenceClock;
+    const observerKey = JSON.stringify([event.sourceInstanceId, event.sourceEventId]);
+    let observation = this.#deferredEventObservers.get(observerKey);
+    if (!observation) observation = (async () => {
+      try { await this.#onEventPersistence?.(event, persistenceStartedAt, persistenceEndedAt); } catch {}
+      if (persisted.disposition === "committed") {
+        try {
+          publishLiveEvent({
+            companyId: this.#binding.companyId,
+            type: "heartbeat.run.event",
+            payload: {
+              runId: this.#binding.runId,
+              agentId: this.#binding.agentId,
+              issueId: this.#binding.issueId,
+              seq: persisted.row.seq,
+              eventType: persisted.row.eventType,
+              stream: persisted.row.stream,
+              level: persisted.row.level,
+              payload: persisted.row.payload,
+            },
+          });
+        } catch {
+        }
+        await this.#onCommittedEvent?.(event, persisted.row.seq);
+      } else {
+        // A recovered runner may replay the event whose durable side effects
+        // parked the prior attempt. Do not repeat those effects, but let the
+        // embedding runtime refresh observational state before appendEvent
+        // returns to its synchronous governed-wait boundary.
+        await this.#onDuplicateEvent?.(event, persisted.row.seq);
       }
-      await this.#onCommittedEvent?.(event, persisted.row.seq);
+    })();
+    if (options?.deferPostCommitObservers) {
+      this.#deferredEventObservers.set(observerKey, observation);
+      void observation.then(() => {
+        if (this.#deferredEventObservers.get(observerKey) === observation) this.#deferredEventObservers.delete(observerKey);
+      }, error => {
+        this.#deferredObserverFailure ??= { error };
+        if (this.#deferredEventObservers.get(observerKey) === observation) this.#deferredEventObservers.delete(observerKey);
+      });
     } else {
-      // A recovered runner may replay the event whose durable side effects
-      // parked the prior attempt. Do not repeat those effects, but let the
-      // embedding runtime refresh observational state before appendEvent
-      // returns to its synchronous governed-wait boundary.
-      await this.#onDuplicateEvent?.(event, persisted.row.seq);
+      await observation;
     }
     return {
       cursor: persisted.row.seq,
@@ -462,6 +512,7 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
 
   async completeRun(value: NativeRunResult | CompleteControlPlaneRunInput, options?: { signal: AbortSignal }): Promise<void> {
     this.#assertActive(options);
+    if (this.#deferredEventObservers.size > 0 || this.#deferredObserverFailure) await this.#settleDeferredObservers(options);
     value = redactRunnerApiPayloads(this.#identityRedactor.redact(value));
     if (!isCompleteInput(value)) throw new Error("native_structured_result_required");
     // Capture compatibility diagnostics before canonical validation removes
@@ -568,6 +619,9 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
         nativePhaseUpdatedAt: new Date(),
         resultJson: {
           ...record(run.resultJson),
+          // Publish the accepted contract with its durable receipt. Recovery
+          // may settle this run without the original adapter ever returning.
+          nativeTerminal: value.terminal,
           prpTurnTerminalState: value.terminal.turnTerminalState,
           prpRunTerminalState: value.terminal.runTerminalState,
           prpReportedWorkDisposition: value.terminal.reportedWorkDisposition,

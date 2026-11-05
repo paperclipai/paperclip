@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import type { AgentPermissions, TrustPreset } from "@paperclipai/shared";
-import { Lock, ShieldAlert } from "lucide-react";
+import { Check, Lock, ShieldAlert } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Field, CollapsibleSection } from "./agent-config-primitives";
 import {
@@ -60,6 +60,8 @@ export function TrustPresetSection({
   candidatesLoading,
   allowSingleIssue = true,
   projectAccessEditor,
+  layout = "select",
+  aside,
 }: {
   permissions: Partial<AgentPermissions> | null | undefined;
   onChange: (permissions: Partial<AgentPermissions>) => void;
@@ -70,6 +72,9 @@ export function TrustPresetSection({
   candidatesLoading?: boolean;
   allowSingleIssue?: boolean;
   projectAccessEditor?: ReactNode;
+  /** "cards" shows the presets as selectable cards beside `aside` (the agent page). */
+  layout?: "select" | "cards";
+  aside?: ReactNode;
 }) {
   const [policyOpen, setPolicyOpen] = useState(false);
   const preset = getTrustPreset(permissions);
@@ -106,24 +111,7 @@ export function TrustPresetSection({
   const targetCandidates = targetType === "project" ? projectCandidates : issueCandidates;
   const boundaryValue = boundaryTarget?.type === targetType ? boundaryTarget.id : "";
 
-  return (
-    <div>
-      <h3 className="mb-3 text-sm font-medium">Trust</h3>
-      <div className="rounded-lg border border-border p-4 space-y-3">
-        <Field label="Trust preset" hint="Choose how broadly this agent can read and act on Paperclip work objects.">
-          <select
-            className={inputClass}
-            value={preset}
-            onChange={(event) => handlePresetChange(event.target.value)}
-            disabled={disabled}
-          >
-            <option value="standard">{TRUST_PRESET_LABELS.standard}</option>
-            <option value="low_trust_review">{TRUST_PRESET_LABELS.low_trust_review}</option>
-          </select>
-        </Field>
-        <p className="text-xs text-muted-foreground">{TRUST_PRESET_DESCRIPTIONS[preset]}</p>
-
-        {lowTrust ? (
+  const containment = lowTrust ? (
           <div
             role={hasScope ? "status" : "alert"}
             aria-live="polite"
@@ -249,7 +237,69 @@ export function TrustPresetSection({
               </CollapsibleSection>
             </div>
           </div>
-        ) : null}
+        ) : null;
+
+  if (layout === "cards") {
+    return (
+      <div className="flex flex-col gap-(--agent-detail-module-gap)">
+        <div className="grid gap-(--agent-detail-module-gap) sm:grid-cols-3">
+          <div role="radiogroup" aria-label="Trust preset" className="contents">
+            {(["low_trust_review", "standard"] as const).map((value) => {
+              const selected = preset === value;
+              return (
+                <button
+                  key={value}
+                  type="button"
+                  role="radio"
+                  aria-checked={selected}
+                  data-agent-tile=""
+                  disabled={disabled}
+                  onClick={() => (selected ? undefined : handlePresetChange(value))}
+                  className={cn(
+                    "flex min-h-(--agent-detail-tile-min-h) flex-col gap-2 rounded-lg border bg-(--agent-detail-tile) p-(--agent-detail-module-inset) text-left transition-colors outline-none hover:bg-(--agent-detail-tile-hover) focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60",
+                    selected ? "border-foreground" : "border-transparent",
+                  )}
+                >
+                  <span className="flex items-center justify-between gap-2">
+                    <span className="text-sm font-semibold text-foreground">{TRUST_PRESET_LABELS[value]}</span>
+                    {selected ? <Check className="size-4 text-foreground" aria-hidden /> : null}
+                  </span>
+                  <span className="text-sm leading-5 text-muted-foreground">{TRUST_PRESET_DESCRIPTIONS[value]}</span>
+                </button>
+              );
+            })}
+          </div>
+          {aside}
+        </div>
+        {containment}
+        {lowTrust ? projectAccessEditor : null}
+        {managedPermissions.authorizationPolicy?.reviewPreset ? null : (
+          <p className="text-xs text-muted-foreground">
+            Advanced permissions remain editable through the EE permissions extension when installed.
+          </p>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <h3 className="mb-3 text-sm font-medium">Trust</h3>
+      <div className="rounded-lg border border-border p-4 space-y-3">
+        <Field label="Trust preset" hint="Choose how broadly this agent can read and act on Paperclip work objects.">
+          <select
+            className={inputClass}
+            value={preset}
+            onChange={(event) => handlePresetChange(event.target.value)}
+            disabled={disabled}
+          >
+            <option value="standard">{TRUST_PRESET_LABELS.standard}</option>
+            <option value="low_trust_review">{TRUST_PRESET_LABELS.low_trust_review}</option>
+          </select>
+        </Field>
+        <p className="text-xs text-muted-foreground">{TRUST_PRESET_DESCRIPTIONS[preset]}</p>
+
+        {containment}
 
         {lowTrust && projectAccessEditor}
 

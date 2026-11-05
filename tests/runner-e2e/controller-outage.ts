@@ -3,6 +3,7 @@ import type { ServingArtifact } from "./upgrade-artifacts.js";
 import type { ControllerRecoveryReceipt } from "./controller-recovery-observer.js";
 import { setTimeout as delay } from "node:timers/promises";
 import type { MatrixExecution } from "./types.js";
+import { isRollingWebDeployment } from "./controller-rolling-deployment.js";
 
 export interface ControllerOutage {
   signal: "SIGTERM" | "SIGKILL";
@@ -40,6 +41,7 @@ export function configuredControllerOutage(env: NodeJS.ProcessEnv, defaultHoldMs
 }
 
 export function controllerOutageForExecution(execution: MatrixExecution, env: NodeJS.ProcessEnv): ControllerOutage | undefined {
+  if (isRollingWebDeployment(execution)) return undefined;
   if (execution.task.flow !== "everyday_workflow" || execution.task.id !== "recover-controller"
     || execution.environment.id !== "daytona" || execution.profile.generation !== "native"
     || (execution.profile.provider !== "codex" && execution.profile.provider !== "acpx")) return undefined;

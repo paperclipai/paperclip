@@ -1,3 +1,4 @@
+import { hireDelegateReuse } from "./hire-delegate-flow.js";
 import { createHash } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -19,7 +20,16 @@ import { agentJourneyRuns } from "./catalog.js";
 import { JourneyError, type JourneyContext, type JourneyEvidence, type TargetSession } from "./types.js";
 
 type Row = Record<string, any>;
-type AgentJourney = Exclude<keyof typeof agentJourneyRuns, "ask-question" | "question-answer-resume" | "followup-while-running">;
+type AgentJourney = Exclude<keyof typeof agentJourneyRuns,
+  "ask-question"
+  | "question-answer-resume"
+  | "followup-while-running"
+  | "chat-continuity"
+  | "file-input-answer"
+  | "routine-scheduled-run"
+  | "agent-settings-persistence"
+  | "repository-continuation"
+  | "saved-skill-use">;
 interface TaskState { currentIssue: Row & { id: string; status: string }; taskRuns: Array<Row & { status: string }>; comments: Row[]; interactions: Array<Row & { id: string; status: string }>; attachments: StoryDelivery[] }
 interface Options { deadlineAt: number; directory: string; capture(id: string, label: string, file: string): Promise<void> }
 const active = (run: Row) => ["queued", "running"].includes(run.status);
@@ -58,6 +68,7 @@ export async function waitFor<T>(deadlineAt: number, load: () => Promise<T>, acc
 
 export async function runAgentJourney(id: AgentJourney, context: JourneyContext, session: TargetSession,
   campaignId: string, evidence: JourneyEvidence, options: Options) {
+  if (id === "hire-delegate-reuse") return hireDelegateReuse(context, session, campaignId, evidence, options);
   const agent = context.agent;
   if (!agent || agent.runtimeMode !== "native" || !context.environmentId) throw new JourneyError("unsupported", "native_agent_and_environment_required");
   const nonce = campaignId.replaceAll("-", "_");

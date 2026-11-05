@@ -12,12 +12,24 @@ export function registerScopedDeadlineWork<Entry extends ScheduledEntry, Scope>(
     queue: DeliveryQueue;
     batchSize?: number;
     minimumPassIntervalMs?: number;
-    concurrentChecks?: { limit: number; key(entry: Entry): string };
+    concurrentChecks?: {
+      limit: number;
+      key(entry: Entry): string | readonly string[];
+      // A pass otherwise ends only after its slowest check. Owners whose checks
+      // can legitimately run for minutes may let idle slots keep admitting
+      // entries that become due meanwhile, so one slow resource cannot hold
+      // every other resource's saved deadline until it finishes. check() must
+      // revalidate each entry against durable state, because an entry admitted
+      // this way is not reconstructed first.
+      admitDueWhileActive?: boolean;
+    };
     reconstructionIntervalMs?: number | ((scope: Scope | undefined) => number);
     beforePass?(): Promise<void>;
     decodeScope(hint: string): Scope | undefined;
     matches(entry: Entry, scope?: Scope): boolean;
     load(scope?: Scope, signal?: AbortSignal): Promise<Entry[] | { rows: Entry[] | null; complete: boolean }>;
+    // Owners may retain pending queue priority while refreshing eligibility.
+    mergeEntry?(pending: Entry, loaded: Entry): Entry;
     check(entry: Entry, signal?: AbortSignal): Promise<Entry | null>;
   },
   canRun: () => boolean,
@@ -90,7 +102,8 @@ export function registerScopedDeadlineWork<Entry extends ScheduledEntry, Scope>(
           const loaded = await options.load(scope, signal);
           const result = Array.isArray(loaded) ? { rows: loaded, complete: true } : loaded;
           for (const entry of result.rows ?? []) {
-            entries.set(entry.id, entry);
+            const pending = entries.get(entry.id);
+            entries.set(entry.id, pending && options.mergeEntry ? options.mergeEntry(pending, entry) : entry);
             for (const [other, progress] of scans) if (options.matches(entry, options.decodeScope(other))) progress.seen.add(entry.id);
           }
           if (!result.complete) { dirty.add(hint); continue; }
@@ -116,29 +129,133 @@ export function registerScopedDeadlineWork<Entry extends ScheduledEntry, Scope>(
         && Math.max(entry.dueAt, failures.get(entry.id)?.retryAt ?? 0) <= Date.now())
         .sort((a, b) => a.dueAt - b.dueAt || a.id.localeCompare(b.id));
       const batch = takeCompanyWorkBatch(due, options.batchSize ?? 25, lastCompany); lastCompany = batch.lastCompany;
-      const groups = new Map<string, Entry[]>();
-      for (const entry of batch.entries) {
-        const key = options.concurrentChecks?.key(entry) ?? "";
+      // An owner may share more than one resource (for example a task and an
+      // endpoint). Merge intersecting keys before dispatch so waiting siblings
+      // do not occupy the bounded check slots ahead of independent work.
+      const parents = batch.entries.map((_, index) => index);
+      const root = (index: number): number => {
+        while (parents[index] !== index) index = parents[index];
+        return index;
+      };
+      const owners = new Map<string, number>();
+      for (const [index, entry] of batch.entries.entries()) {
+        const configured = options.concurrentChecks?.key(entry) ?? "";
+        const keys = typeof configured === "string" ? [configured] : configured;
+        for (const key of keys) {
+          const previous = owners.get(key);
+          if (previous === undefined) owners.set(key, index);
+          else parents[root(index)] = root(previous);
+        }
+      }
+      const groups = new Map<number, Entry[]>();
+      for (const [index, entry] of batch.entries.entries()) {
+        const key = root(index);
         const group = groups.get(key) ?? [];
         group.push(entry); groups.set(key, group);
       }
       const pending = [...groups.values()];
       let nextGroup = 0;
-      const checkGroups = async () => {
-        while (!signal.aborted && canRun()) {
-          const group = pending[nextGroup++];
-          if (!group) return;
-          for (const entry of group) {
-            if (signal.aborted || !canRun()) return;
-            try {
-              const current = await options.check(entry, signal);
-              if (current) entries.set(entry.id, current); else entries.delete(entry.id);
-              failures.delete(entry.id);
-            } catch (error) { failed(failures, entry.id); errors.push(error); }
-          }
+      const admitDueWhileActive = options.concurrentChecks?.admitDueWhileActive === true;
+      const keysOf = (entry: Entry) => {
+        const configured = options.concurrentChecks?.key(entry) ?? "";
+        return typeof configured === "string" ? [configured] : [...configured];
+      };
+      // Entries owned by this pass (queued in a group or running) and the
+      // resource keys they hold. Every batch group reserves its keys until the
+      // whole group finishes, so admission can neither overlap a queued
+      // sibling nor jump ahead of it. Admission never overlaps either set.
+      const owned = new Set(batch.entries.map(entry => entry.id));
+      const busyKeys = new Map<string, number>();
+      const reserve = (keys: readonly string[]) => {
+        for (const key of keys) busyKeys.set(key, (busyKeys.get(key) ?? 0) + 1);
+      };
+      const release = (keys: readonly string[]) => {
+        for (const key of keys) {
+          const count = (busyKeys.get(key) ?? 1) - 1;
+          if (count > 0) busyKeys.set(key, count); else busyKeys.delete(key);
         }
       };
-      const checks = await Promise.allSettled(Array.from({ length: Math.min(options.concurrentChecks?.limit ?? 1, pending.length) }, checkGroups));
+      const groupKeys = pending.map(group => [...new Set(group.flatMap(keysOf))]);
+      for (const keys of groupKeys) reserve(keys);
+      const lastChecked = new Map<string, number>();
+      const spacing = options.minimumPassIntervalMs ?? 1000;
+      let running = 0;
+      let changed: (() => void) | null = null;
+      const notify = () => { const resolve = changed; changed = null; resolve?.(); };
+      const checkEntry = async (entry: Entry) => {
+        running += 1;
+        try {
+          const current = await options.check(entry, signal);
+          if (current) entries.set(entry.id, current); else entries.delete(entry.id);
+          failures.delete(entry.id);
+        } catch (error) { failed(failures, entry.id); errors.push(error); }
+        finally {
+          running -= 1;
+          lastChecked.set(entry.id, Date.now());
+          notify();
+        }
+      };
+      const nextAdmission = () => {
+        // Mid-pass settlements mark scopes dirty, but reconstruction waits for
+        // the next pass. Admission therefore relies on check() revalidating
+        // the entry against durable state, as the option requires.
+        const now = Date.now();
+        let wakeAt: number | null = null;
+        let candidate: Entry | null = null;
+        for (const item of entries.values()) {
+          if (owned.has(item.id)) continue;
+          if (keysOf(item).some(key => busyKeys.has(key))) continue;
+          const at = Math.max(item.dueAt, failures.get(item.id)?.retryAt ?? 0, (lastChecked.get(item.id) ?? -Infinity) + spacing);
+          if (at > now) { wakeAt = wakeAt === null ? at : Math.min(wakeAt, at); continue; }
+          if (!candidate || item.dueAt < candidate.dueAt || (item.dueAt === candidate.dueAt && item.id < candidate.id)) candidate = item;
+        }
+        return { candidate, wakeAt };
+      };
+      const waitForChange = (wakeAt: number | null) => new Promise<void>(resolve => {
+        const timer = wakeAt === null ? undefined : setTimeout(finish, Math.max(0, wakeAt - Date.now()));
+        function finish() {
+          if (timer !== undefined) clearTimeout(timer);
+          signal.removeEventListener("abort", finish);
+          if (changed === finish) changed = null;
+          resolve();
+        }
+        const previous = changed;
+        changed = previous ? () => { previous(); finish(); } : finish;
+        signal.addEventListener("abort", finish, { once: true });
+      });
+      const checkGroups = async () => {
+        while (!signal.aborted && canRun()) {
+          const index = nextGroup++;
+          const group = pending[index];
+          if (group) {
+            try {
+              for (const entry of group) {
+                if (signal.aborted || !canRun()) return;
+                try { await checkEntry(entry); } finally { owned.delete(entry.id); }
+              }
+            } finally { release(groupKeys[index]); notify(); }
+            continue;
+          }
+          if (!admitDueWhileActive) return;
+          const { candidate, wakeAt } = nextAdmission();
+          if (candidate) {
+            const keys = keysOf(candidate);
+            owned.add(candidate.id); reserve(keys);
+            try { await checkEntry(candidate); } finally { owned.delete(candidate.id); release(keys); notify(); }
+            continue;
+          }
+          // Nothing is admissible now. Stay available only while another
+          // check still holds this pass open; otherwise the pass ends and the
+          // coordinator schedules the next saved deadline as usual.
+          if (running === 0) return;
+          await waitForChange(wakeAt);
+        }
+      };
+      // With admission enabled, spare slots start too: a pass that begins with
+      // one slow group must still admit other resources that come due later.
+      const workers = admitDueWhileActive ? options.concurrentChecks!.limit
+        : Math.min(options.concurrentChecks?.limit ?? 1, pending.length);
+      const checks = await Promise.allSettled(Array.from({ length: workers }, checkGroups));
       for (const result of checks) if (result.status === "rejected") errors.push(result.reason);
       if (errors.length) throw new AggregateError(errors, `${options.queue} could not settle`);
     },

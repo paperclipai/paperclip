@@ -238,7 +238,7 @@ describe("native reassessment worker lifecycle", () => {
       backlog.push(seeded);
     }
     const work = nativeStatusReassessmentWork(db), scope = { companyId };
-    const expected = new Set(backlog.map(row => row.runId));
+    const expected = new Set<string>(backlog.map(row => row.runId));
     const discovered = await work.load(scope);
     expect(discovered.filter(row => expected.has(row.id))).toHaveLength(103);
     const debug = db.$client.options.debug;

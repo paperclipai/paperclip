@@ -9,32 +9,38 @@ import { MemoryRouter } from "@/lib/router";
 import { useLocation, useNavigate } from "react-router-dom";
 import { CoordinatorTasks } from "./CoordinatorTasks";
 import { queryKeys } from "@/lib/queryKeys";
+import type { TaskListSort } from "@/lib/task-list";
+import { taskListViews, taskListViewStorageKey, type TaskListView } from "@/lib/task-list-views";
 
-const mocks = vi.hoisted(() => ({ list: vi.fn(), get: vi.fn(), attention: vi.fn(), breadcrumbs: vi.fn(), liveRuns: vi.fn() }));
+const mocks = vi.hoisted(() => ({ list: vi.fn(), get: vi.fn(), attention: vi.fn(), breadcrumbs: vi.fn(), liveRuns: vi.fn(), localTrusted: false, identity: { userId: "person" as string | null, settled: true } }));
 vi.mock("@/api/heartbeats", () => ({ heartbeatsApi: { liveRunsForCompany: mocks.liveRuns } }));
 vi.mock("@/api/issues", () => ({ issuesApi: { list: mocks.list, listCompact: mocks.list, get: mocks.get, listLabels: async () => [], update: vi.fn() } }));
 vi.mock("@/api/attention", () => ({ attentionApi: { taskIndex: mocks.attention } }));
 vi.mock("@/api/agents", () => ({ agentsApi: { list: async () => [] } }));
 vi.mock("@/api/projects", () => ({ projectsApi: { list: async () => [] } }));
 vi.mock("@/api/access", () => ({ accessApi: { listUserDirectory: async () => ({ users: [] }) } }));
-vi.mock("@/api/companies-query", () => ({ useAccountIdentity: () => ({ userId: "person" }) }));
+vi.mock("@/api/companies-query", () => ({ useAccountIdentity: () => mocks.identity }));
+vi.mock("@/hooks/useCoordinatorWorkspaceEnabled", () => ({ useCoordinatorWorkspaceEnabled: () => ({ userId: mocks.identity.userId ?? (mocks.localTrusted ? "local-board" : null), loaded: mocks.identity.settled }) }));
 vi.mock("@/context/CompanyContext", () => ({ useCompany: () => ({ selectedCompanyId: "company" }) }));
 vi.mock("@/context/DialogContext", () => ({ useDialogActions: () => ({ openNewIssue: vi.fn() }) }));
 vi.mock("@/context/BreadcrumbContext", () => ({ useBreadcrumbs: () => ({ setBreadcrumbs: mocks.breadcrumbs }) }));
-vi.mock("@/components/TaskListToolbar", () => ({ TaskListToolbar: ({ filters, onViewChange, onLayoutChange }: { filters: { onChange: (value: { liveOnly?: boolean; priorities?: string[]; assignees?: string[]; statuses?: string[]; routineTasksOnly?: boolean }) => void }; onViewChange: (view: "blocked") => void; onLayoutChange: (layout: "board") => void }) => <>
+vi.mock("@/components/TaskListToolbar", () => ({ TaskListToolbar: ({ filters, view, onViewChange, onLayoutChange }: { filters: { onChange: (value: { liveOnly?: boolean; priorities?: string[]; assignees?: string[]; statuses?: string[]; routineTasksOnly?: boolean }) => void }; view: TaskListView; onViewChange: (view: TaskListView) => void; onLayoutChange: (layout: "list" | "board") => void }) => <>
+  <span data-selected-view>{view}</span>
+  {taskListViews.map(option => <button key={option.value} onClick={() => onViewChange(option.value)}>{option.label}</button>)}
   <button onClick={() => filters.onChange({ routineTasksOnly: true })}>Routine tasks</button>
   <button onClick={() => filters.onChange({ routineTasksOnly: false })}>Show other tasks</button>
   <button onClick={() => filters.onChange({ liveOnly: true })}>Live runs only</button>
   <button onClick={() => filters.onChange({ priorities: ["high"] })}>High priority</button>
+  <button onClick={() => filters.onChange({ statuses: ["in_progress"] })}>In progress only</button>
   <button onClick={() => filters.onChange({ assignees: [], statuses: [] })}>Clear assignee and status</button>
   <button onClick={() => filters.onChange({ assignees: ["first", "second"], statuses: ["todo"] })}>Change assignee and status</button>
-  <button onClick={() => onViewChange("blocked")}>Needs attention</button>
   <button onClick={() => onLayoutChange("board")}>Board view</button>
+  <button onClick={() => onLayoutChange("list")}>List view</button>
 </> }));
 vi.mock("@/components/TaskList", async importOriginal => ({
   ...await importOriginal<typeof import("@/components/TaskList")>(),
-  TaskList: ({ items, emptyState }: { items: { issue: { id: string; title: string } }[]; emptyState: React.ReactNode }) =>
-    <div>{items.length ? items.map(item => <p key={item.issue.id} data-task-id={item.issue.id}>{item.issue.title}</p>) : emptyState}</div>,
+  TaskList: ({ items, emptyState, onSortChange }: { onSortChange?: (sort: TaskListSort) => void; items: { issue: { id: string; title: string } }[]; emptyState: React.ReactNode }) =>
+    <div><button onClick={() => onSortChange?.({ column: "taskId", direction: "descending" })}>Sort by task ID</button><output>{useLocation().search}</output>{items.length ? items.map(item => <p key={item.issue.id} data-task-id={item.issue.id}>{item.issue.title}</p>) : emptyState}</div>,
 }));
 
 describe("Coordinator tasks using the proposed table", () => {
@@ -42,6 +48,8 @@ describe("Coordinator tasks using the proposed table", () => {
   const pending = createIssue({ id: "pending", companyId: "company", status: "todo", parentId: null, title: "Needs a channel answer" });
   beforeEach(() => {
     vi.clearAllMocks(); localStorage.clear();
+    mocks.identity = { userId: "person", settled: true };
+    mocks.localTrusted = false;
     mocks.liveRuns.mockResolvedValue([]);
     mocks.attention.mockResolvedValue({ taskIds: [pending.id] });
     mocks.get.mockResolvedValue(pending);
@@ -54,8 +62,78 @@ describe("Coordinator tasks using the proposed table", () => {
     flushSync(() => root.render(<QueryClientProvider client={client}><MemoryRouter initialEntries={[url]}><CoordinatorTasks /></MemoryRouter></QueryClientProvider>));
     await vi.waitFor(() => expect(host.textContent).not.toContain("Loading tasks"));
   }
-  it("loads the task index without descriptions or historical diagnostics", async () => {
+  it("starts new users in Inbox and keeps contextual parents of their created or assigned tasks", async () => {
+    mocks.list.mockResolvedValue([
+      createIssue({ id: "parent", companyId: "company", parentId: null, createdByUserId: "other" }),
+      createIssue({ id: "mine", companyId: "company", parentId: "parent", createdByUserId: "person" }),
+      createIssue({ id: "assigned", companyId: "company", parentId: null, assigneeUserId: "person" }),
+      createIssue({ id: "unrelated", companyId: "company", parentId: null, createdByUserId: "other" }),
+    ]);
     await mount("/issues");
+    expect(host.querySelector("[data-selected-view]")?.textContent).toBe("inbox");
+    expect([...host.querySelectorAll("[data-task-id]")].map(row => row.getAttribute("data-task-id"))).toEqual(["parent", "mine", "assigned"]);
+  });
+  it.each(taskListViews)("remembers $label when leaving Tasks and returning without a view URL", async ({ value, label }) => {
+    await mount("/issues");
+    flushSync(() => [...host.querySelectorAll("button")].find(button => button.textContent === label)!.click());
+    await vi.waitFor(() => expect(localStorage.getItem(taskListViewStorageKey("coordinator", "person"))).toBe(value));
+    flushSync(() => root.unmount()); root = createRoot(host);
+    await mount("/issues");
+    expect(host.querySelector("[data-selected-view]")?.textContent).toBe(value);
+  });
+  it("uses the resolved local-board principal when no account session exists", async () => {
+    mocks.identity = { userId: null, settled: true }; mocks.localTrusted = true;
+    mocks.list.mockResolvedValue([createIssue({ id: "local", companyId: "company", parentId: null, createdByUserId: "local-board" })]);
+    await mount("/issues");
+    expect(host.querySelector('[data-task-id="local"]')).not.toBeNull();
+    expect(localStorage.getItem(taskListViewStorageKey("coordinator", "local-board"))).toBe("inbox");
+  });
+  it.each(["inbox", "unread"])("keeps %s selected when applying a status filter", async view => {
+    const mine = createIssue({ id: "mine-running", companyId: "company", parentId: null, createdByUserId: "person", status: "in_progress" });
+    const other = createIssue({ id: "other-running", companyId: "company", parentId: null, createdByUserId: "other", status: "in_progress" });
+    const todo = createIssue({ id: "todo", companyId: "company", parentId: null, createdByUserId: "person", status: "todo" });
+    const read = createIssue({ id: "read-running", companyId: "company", parentId: null, createdByUserId: "other", status: "in_progress" });
+    mocks.list.mockImplementation(async (_company, filters) => filters.unreadForUserId === "me" ? [mine, other, todo] : [mine, other, todo, read]);
+    await mount(`/issues?view=${view}`);
+    flushSync(() => [...host.querySelectorAll("button")].find(button => button.textContent === "In progress only")!.click());
+    await vi.waitFor(() => expect(host.querySelector("output")?.textContent).toContain("status=in_progress"));
+    expect(host.querySelector("[data-selected-view]")?.textContent).toBe(view);
+    expect([...host.querySelectorAll("[data-task-id]")].map(row => row.getAttribute("data-task-id"))).toEqual(view === "inbox" ? [mine.id] : [mine.id, other.id]);
+  });
+  it("loads read ancestor chains as context for unread subtasks", async () => {
+    const grandparent = createIssue({ id: "read-grandparent", companyId: "company", parentId: null });
+    const parent = createIssue({ id: "read-parent", companyId: "company", parentId: grandparent.id });
+    const child = createIssue({ id: "unread-child", companyId: "company", parentId: parent.id });
+    mocks.list.mockImplementation(async (_company, filters) => filters.unreadForUserId === "me" ? [child] : [parent, grandparent].filter(issue => filters.ids?.includes(issue.id)));
+    await mount("/issues?view=unread");
+    await vi.waitFor(() => {
+      expect([...host.querySelectorAll("[data-task-id]")].map(row => row.getAttribute("data-task-id"))).toEqual([child.id, parent.id, grandparent.id]);
+    });
+    expect(mocks.get).not.toHaveBeenCalled();
+    expect(mocks.list).toHaveBeenCalledWith("company", expect.objectContaining({ projection: "index", ids: [parent.id] }), expect.anything());
+    expect(mocks.list).toHaveBeenCalledWith("company", expect.objectContaining({ projection: "index", ids: [grandparent.id] }), expect.anything());
+  });
+  it("queries the server's unread set and does not mark every task unread", async () => {
+    const unread = createIssue({ id: "unread", companyId: "company", parentId: null });
+    const read = createIssue({ id: "read", companyId: "company", parentId: null });
+    mocks.list.mockImplementation(async (_company, filters) => filters.unreadForUserId === "me" ? [unread] : [unread, read]);
+    await mount("/issues?view=unread");
+    expect(mocks.list).toHaveBeenCalledWith("company", expect.objectContaining({ unreadForUserId: "me", projection: "index" }), expect.anything());
+    expect([...host.querySelectorAll("[data-task-id]")].map(row => row.getAttribute("data-task-id"))).toEqual(["unread"]);
+  });
+  it("waits for the viewer identity before resolving their saved view", async () => {
+    const key = taskListViewStorageKey("coordinator", "person");
+    localStorage.setItem(key, "all");
+    mocks.identity = { userId: null, settled: false };
+    await mount("/issues");
+    expect(localStorage.getItem(key)).toBe("all");
+    mocks.identity = { userId: "person", settled: true };
+    await mount("/issues");
+    expect(host.querySelector("[data-selected-view]")?.textContent).toBe("all");
+    expect(localStorage.getItem(key)).toBe("all");
+  });
+  it("loads the task index without descriptions or historical diagnostics", async () => {
+    await mount("/issues?view=all");
     expect(mocks.list).toHaveBeenCalledWith("company", expect.objectContaining({ projection: "index", limit: 200 }), expect.anything());
     expect(mocks.get).not.toHaveBeenCalled();
   });
@@ -72,6 +150,43 @@ describe("Coordinator tasks using the proposed table", () => {
     expect(mocks.list.mock.lastCall?.[1].originKind).toBeUndefined();
     flushSync(() => Array.from(host.querySelectorAll("button")).find(button => button.textContent === "Routine tasks")!.click());
     await vi.waitFor(() => expect(host.querySelector('[data-task-id="manual-task"]')).toBeNull());
+  });
+
+  it("reads newest-first sorting and puts column sort clicks in the URL", async () => {
+    mocks.list.mockResolvedValue([createIssue({ companyId: "company", parentId: null, originKind: "routine_execution" })]);
+    await mount("/issues?view=all&originKind=routine_execution&sortField=created&sortDir=desc");
+    expect(mocks.list).toHaveBeenCalledWith("company", expect.objectContaining({ sortField: "created", sortDir: "desc", originKind: "routine_execution", offset: 0 }), expect.anything());
+    flushSync(() => [...host.querySelectorAll("button")].find(button => button.textContent === "Sort by task ID")!.click());
+    await vi.waitFor(() => expect(host.querySelector("output")?.textContent).toContain("sortField=taskId"));
+    expect(Object.fromEntries(new URLSearchParams(host.querySelector("output")!.textContent!))).toMatchObject({
+      view: "all", originKind: "routine_execution", sortField: "taskId", sortDir: "desc",
+    });
+  });
+
+  it("keeps search relevance when a shared link selects creation order", async () => {
+    await mount("/issues?sortField=created&sortDir=asc&q=report");
+    expect(mocks.list).toHaveBeenCalledWith("company", expect.objectContaining({ q: "report", sortField: "updated", sortDir: "desc" }), expect.anything());
+  });
+
+  it.each(["updated&sortDir=asc", "created&sortDir=asc", "created&sortDir=desc"])("keeps recent board tasks when the list selects %s", async order => {
+    const older = createIssue({ id: "older-task", companyId: "company", parentId: null, originKind: "routine_execution", title: "Older board task" });
+    const recent = createIssue({ id: "recent-task", companyId: "company", parentId: null, originKind: "routine_execution", title: "Recently active board task" });
+    mocks.list.mockImplementation(async (_company, filters) => filters.ids
+      ? [older, recent].filter(issue => filters.ids.includes(issue.id))
+      : filters.sortField === "updated" && filters.sortDir === "desc" ? [recent] : [older]);
+    await mount(`/issues?sortField=${order}&originKind=routine_execution`);
+    expect(host.textContent).toContain(older.title);
+    flushSync(() => [...host.querySelectorAll("button")].find(button => button.textContent === "Board view")!.click());
+    await vi.waitFor(() => expect(host.textContent).toContain(recent.title));
+    expect(mocks.list.mock.calls.filter(call => call[1].projection === "index").at(-1)?.[1]).toMatchObject({ sortField: "updated", sortDir: "desc", originKind: "routine_execution", offset: 0 });
+    expect(host.querySelector("output")?.textContent).toContain(`sortField=${order}`);
+    flushSync(() => [...host.querySelectorAll("button")].find(button => button.textContent === "List view")!.click());
+    await vi.waitFor(() => expect(host.textContent).toContain(older.title));
+  });
+
+  it("requests dependency edges for shared workflow links", async () => {
+    await mount("/issues?sortField=workflow&sortDir=asc");
+    expect(mocks.list).toHaveBeenCalledWith("company", expect.objectContaining({ includeBlockedBy: true }), expect.anything());
   });
 
   it("filters pending-decision batches by routine origin without treating excluded IDs as missing", async () => {
@@ -97,7 +212,7 @@ describe("Coordinator tasks using the proposed table", () => {
       assigneeAgentId: null, detectedProgressSummary: null, createdAt: null,
     } };
     mocks.list.mockImplementation(async (_company, filters) => filters.projection === "rows" ? [details] : [index]);
-    await mount("/issues");
+    await mount("/issues?view=all");
     flushSync(() => Array.from(host.querySelectorAll("button")).find(button => button.textContent === "Board view")!.click());
     await vi.waitFor(() => expect(host.querySelector('[aria-label="Needs next step"]')).not.toBeNull());
     expect(mocks.list).toHaveBeenCalledWith("company", expect.objectContaining({ projection: "rows", ids: [index.id] }), expect.anything());
@@ -109,7 +224,7 @@ describe("Coordinator tasks using the proposed table", () => {
       ? indexes.filter(issue => filters.ids.includes(issue.id)).map(issue => ({ ...issue, successfulRunHandoff: {
         required: issue.id === "board-task-10", hasLiveContinuation: false,
       } })) : indexes);
-    await mount("/issues");
+    await mount("/issues?view=all");
     flushSync(() => Array.from(host.querySelectorAll("button")).find(button => button.textContent === "Board view")!.click());
     await vi.waitFor(() => expect(mocks.list.mock.calls.some(call => call[1].projection === "rows")).toBe(true));
     expect(host.querySelector('[aria-label="Needs next step"]')).toBeNull();
@@ -147,7 +262,7 @@ describe("Coordinator tasks using the proposed table", () => {
       createIssue({ id: "done", companyId: "company", status: "done", parentId: null }),
     ]);
     mocks.liveRuns.mockResolvedValue([{ issueId: "live", status: "running" }, { issueId: "done", status: "running" }]);
-    await mount("/issues");
+    await mount("/issues?view=all");
     await vi.waitFor(() => expect(mocks.liveRuns).toHaveBeenCalledWith("company"));
     flushSync(() => Array.from(host.querySelectorAll("button")).find(button => button.textContent === "Live runs only")!.click());
     await vi.waitFor(() => expect([...host.querySelectorAll("[data-task-id]")].map(node => node.getAttribute("data-task-id"))).toEqual(["live"]));

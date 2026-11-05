@@ -29,9 +29,7 @@ Open `/routines`, create one, and inspect `/routines/:routineId` and its edit se
 ### `trigger-history`
 
 Use the routine's trigger controls and Runs/Recent Runs/Audit links; lists also
-offer Run now. **View all tasks** opens the Tasks list with **Routine tasks**
-selected, using `/issues?view=all&originKind=routine_execution`. Uncheck the
-filter to return to other tasks. **History** records configuration versions, not executions.
+offer Run now. **History** records configuration versions, not executions.
 
 ## Driving it with Playwright and the Paperclip CLI
 
@@ -53,6 +51,11 @@ complete the generated task or establish a useful task output.
 Automated: [trigger wizard](../../ui/src/components/routine-triggers/TriggerWizard.test.tsx) is component coverage; [routine integration](../../server/src/__tests__/routines-e2e.test.ts) is server integration rather than a provider-wide browser proof.
 
 Manual: Set a near-term disposable schedule or authorized test webhook, verify one eligible execution and its source trigger, then disable it and confirm further invocations stop. Inspect a failed execution without losing its history. Remove the temporary trigger after testing.
+
+Sentry alerts use the ordinary
+`/api/routine-triggers/public/:publicId/fire` webhook and its trigger authentication.
+Configure loop-prevention filters in Sentry as described in the
+[Sentry repair tutorial](../../docs/guides/board-operator/sentry-run-failure-repairs.md).
 
 ## Gotchas
 

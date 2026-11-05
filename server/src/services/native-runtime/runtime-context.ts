@@ -169,7 +169,7 @@ async function materializeInstructionBundle(db: Db, agent: RuntimeAgent, agentFi
     const entryPath = safeRelativePath(current.revision.entryFile, "instruction entry path");
     return { entryPath, bundle: await materializeAsset([{ path: entryPath, content: Buffer.from(current.content, "utf8"), mode: 0o444 }]) };
   }
-  const exported = await agentInstructionsService().exportFiles(agent, { rejectSymlinks: true });
+  const exported = await agentInstructionsService(db).exportFiles(agent, { rejectSymlinks: true });
   if (agentInstructionsBundleMode(agent) === "managed") {
     // The database head remains authoritative when a saved revision could not
     // update its disk projection. Overlay the exact committed snapshot directly;

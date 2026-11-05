@@ -25,7 +25,9 @@ import { waitForTaskChatRendered, waitForTaskIdentity } from "./continuation-scr
 import { hasPersistedSource, isSavedSourceCheckpoint } from "./everyday-interruption.js";
 import { collectRunEvents } from "./run-observations.js";
 import { gradeRemoteRestart, observeRemoteRestartBoundary, projectRemoteRestartEvents, projectRemoteRestartRun, waitForRemoteRestartBoundary, type RemoteRestartEvidence } from "./everyday-remote-restart.js";
-import { controllerOutageForExecution, type ControllerOutageReceipt } from "./controller-outage.js";
+import { controllerOutageForExecution } from "./controller-outage.js";
+import type { ControllerReplacementReceipt } from "./controller-replacement.js";
+import { isRollingWebDeployment } from "./controller-rolling-deployment.js";
 import { gradeRemoteWorkspaceStorage, isRemoteWorkspaceStorageExecution, readRemoteWorkspaceStorageCheckpoint,
   REMOTE_WORKSPACE_PROOF_FILE, type RemoteWorkspaceStorageEvidence } from "./remote-workspace-storage.js";
 import { gradeRetainedControllerContinuation, retainedControllerRun, retainedControllerFollowupTransport, submitRetainedControllerComment, onePersistedRetainedControllerComment } from "./retained-controller-continuation.js";
@@ -37,7 +39,7 @@ import {
   StoryDecisionError,
   type StoryInteraction,
 } from "./everyday-decisions.js";
-import { LATE_REQUIREMENT, SLUGIFY_REVISION, requiresEverydayArtifactOracle } from "./everyday-cases.js";
+import { LATE_REQUIREMENT, SLUGIFY_REVISION, SLUGIFY_DEPLOYMENT_SOAK, requiresEverydayArtifactOracle } from "./everyday-cases.js";
 import {
   isActiveStoryRun,
   isStoryWorkspaceDeferral,
@@ -102,7 +104,7 @@ interface Input {
   privateDir: string;
   deadlineAt: number;
   restartCount?: number;
-  restart(binding?: import("./controller-recovery-observer.js").RecoveryBinding, controllerDowntimeMs?: number): Promise<ControllerOutageReceipt | void>;
+  restart(binding?: import("./controller-recovery-observer.js").RecoveryBinding, controllerDowntimeMs?: number): Promise<ControllerReplacementReceipt | void>;
   observe(issue: StoryIssue, runs: StoryRun[]): void;
   capture(id: string, label: string, file: string): Promise<void>;
   evidence(name: string, value: unknown): Promise<void>;
@@ -182,9 +184,14 @@ export async function runEverydayFlow(input: Input) {
   let project = fixtures.project;
   const caseId = execution.task.id;
   const controllerOutage = controllerOutageForExecution(execution, process.env);
-  const requireRemoteRestart = controllerOutage !== undefined;
+  const requireRemoteRestart = controllerOutage !== undefined || isRollingWebDeployment(execution);
   const remoteWorkspaceStorage = isRemoteWorkspaceStorageExecution(execution);
-  if (remoteWorkspaceStorage) ev.remoteWorkspaceStorage = { browserReadPhases: [] };
+  if (remoteWorkspaceStorage) {
+    const perTurn = execution.suite.definitionMetadata?.lifecycleCoverage === "per-turn-disposable";
+    ev.remoteWorkspaceStorage = { browserReadPhases: [],
+      expectedFileSource: perTurn || execution.suite.definitionMetadata?.lifecycleCoverage === "warm-reusable" ? "saved" : "live",
+      expectedLocation: perTurn ? "released" : "retained" };
+  }
   const providerChoice = caseId === "provider-decline" || caseId === "provider-second";
   const nativeProviderCase = caseId === "provider-native";
   let aggregatorFixture: Awaited<ReturnType<typeof setupAggregatorFixture>> | undefined;
@@ -560,7 +567,9 @@ export async function runEverydayFlow(input: Input) {
     const point = await pollUntil({
       label: `remote workspace ${phase} saved version`, deadlineAt: input.deadlineAt,
       load: () => readRemoteWorkspaceStorageCheckpoint({ api, companyId: fixtures.company.id,
-        agentId: fixtures.agent.id, issueId: parent!.id, environmentId: fixtures.environment.id }),
+        agentId: fixtures.agent.id, issueId: parent!.id, environmentId: fixtures.environment.id,
+        expectedFileSource: ev.remoteWorkspaceStorage!.expectedFileSource,
+        expectedLocation: ev.remoteWorkspaceStorage!.expectedLocation }),
       accept: observed => Boolean(observed.point),
     });
     ev.remoteWorkspaceStorage![phase] = point.point!;
@@ -568,7 +577,8 @@ export async function runEverydayFlow(input: Input) {
     const browserPhase = phase === "initial" ? "before-restart" : "after-restart";
     await page.goto(`${taskUrl(parent!)}?browse=1&q=${REMOTE_WORKSPACE_PROOF_FILE}`);
     await expect(page.getByRole("combobox", { name: "Search workspace files" })).toBeVisible();
-    await expect(page.getByLabel("Workspace file source", { exact: true })).toHaveText("Live workspace");
+    await expect(page.getByLabel("Workspace file source", { exact: true })).toHaveText(
+      ev.remoteWorkspaceStorage!.expectedFileSource === "saved" ? /^Saved copy(?: from .+)?$/ : "Live workspace");
     await page.getByRole("treeitem").filter({ hasText: REMOTE_WORKSPACE_PROOF_FILE }).last().click();
     await expect(page.getByText(point.content!.trim(), { exact: true })).toBeVisible();
     await input.capture(`remote-workspace-${browserPhase}`, `Remote workspace file ${browserPhase}`, `remote-workspace-${browserPhase}.png`);
@@ -610,6 +620,9 @@ export async function runEverydayFlow(input: Input) {
       "everyday-remote-restart.ts",
       "retained-controller-continuation.ts",
       "controller-outage.ts",
+      "controller-rolling-deployment.ts",
+      "controller-replacement.ts",
+      "rolling-deployment-supervisor.ts",
       "controller-recovery-observer.ts",
       "upgrade-artifacts.ts",
       "server.ts",
@@ -931,7 +944,7 @@ export async function runEverydayFlow(input: Input) {
           throw new Error(
             "Remote fault boundary unexercised: no verified saved project",
           );
-        await reply(SLUGIFY_REVISION);
+        await reply(isRollingWebDeployment(execution) ? `${SLUGIFY_REVISION}\n\n${SLUGIFY_DEPLOYMENT_SOAK}` : SLUGIFY_REVISION);
         note("remote-revision-submitted");
         await pollUntil({
           label: "remote revision executing",

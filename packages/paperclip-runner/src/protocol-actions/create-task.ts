@@ -29,15 +29,19 @@ export const createTaskAction = {
   },
   "documentation": {
     "title": "Create task",
-    "description": "Create a project task from a conversation, or a child from an ordinary task. Persist initialPlan before execution. Set status to backlog when the user wants to save or plan work without starting it; backlog tasks never wake an agent. Omitted status means todo, subject to blockers. Include the actual required inputs and constraints in self-contained child instructions.",
+    "description": "Create a project task from a conversation, or a child from an ordinary task. When the user names an existing teammate or project, resolve their IDs with list_agents or list_projects and set assigneeActorId or projectId in this creation call. A todo task can start its assignee immediately; creating it for yourself and reassigning later can start the wrong agent. Persist initialPlan before execution. Use backlog to save or plan without starting work; backlog tasks never wake an agent. Omitted status means todo, subject to blockers. Include required inputs and constraints in self-contained child instructions.",
     "note": null
   },
   "examples": {
     "call": {
       "operationId": "create_task",
       "input": {
-        "idempotencyKey": "example",
-        "title": "example"
+        "idempotencyKey": "delegate-api-change-v1",
+        "title": "Implement the approved API change",
+        "description": "Implement the agreed API change in this project. Run the relevant tests and report the result.",
+        "assigneeActorId": "example-agent",
+        "projectId": "example-project",
+        "initialPlan": "1. Implement the agreed change.\n2. Run the relevant tests.\n3. Report the verified result."
       }
     },
     "scenarioCall": {
@@ -77,7 +81,7 @@ export const createTaskAction = {
       "operationId": "create_task",
       "version": 1,
       "title": "Create task",
-      "description": "Create a project task from a conversation, or a child from an ordinary task. Persist initialPlan before execution. Set status to backlog when the user wants to save or plan work without starting it; backlog tasks never wake an agent. Omitted status means todo, subject to blockers. Include the actual required inputs and constraints in self-contained child instructions.",
+      "description": "Create a project task from a conversation, or a child from an ordinary task. When the user names an existing teammate or project, resolve their IDs with list_agents or list_projects and set assigneeActorId or projectId in this creation call. A todo task can start its assignee immediately; creating it for yourself and reassigning later can start the wrong agent. Persist initialPlan before execution. Use backlog to save or plan without starting work; backlog tasks never wake an agent. Omitted status means todo, subject to blockers. Include required inputs and constraints in self-contained child instructions.",
       "exposure": "optional",
       "requiredClaims": [
         "delegation:tasks:create"
@@ -115,7 +119,7 @@ export const createTaskAction = {
               "string",
               "null"
             ],
-            "description": "Optional agent assignee. Omit to assign the current agent.",
+            "description": "Existing company agent ID from list_agents. Set the requested teammate here during creation. Omit or use null to assign the current agent; a todo task can start that agent before a later reassignment. Mutually exclusive with assigneeUserId.",
             "maxLength": 20000
           },
           "status": {
@@ -145,7 +149,7 @@ export const createTaskAction = {
               "string",
               "null"
             ],
-            "description": "Project ID for the task."
+            "description": "Project ID from list_projects. Set the requested project in this creation call so the task does not inherit a different project."
           },
           "initialPlan": {
             "type": [

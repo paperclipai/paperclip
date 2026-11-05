@@ -13,11 +13,11 @@ import { isConversation } from "../agent-conversations.js";
 import { issueTreeControlService } from "../issue-tree-control.js";
 import { isPublishedGitHubReviewCompletionContinuation, readPublishedGitHubReviewCompletionContinuation, resolveExternalChatResponseWaitAuthorization } from "./chat-attachment-reuse.js";
 import { getNativeReviewAssignment, readNativeReviewAssignmentContext } from "./native-review-participant.js";
+import { assertCurrentWakeCommentsRead, NATIVE_CURRENT_WAKE_COMMENTS_CHANGED_AFTER_READ, NATIVE_CURRENT_WAKE_COMMENTS_UNREAD, resolveCurrentWakeCommentsBinding } from "./current-wake-comments.js";
 import { and, eq, inArray, notInArray } from "drizzle-orm";
 import {
   approvals,
   agents,
-  companies,
   heartbeatRuns,
   completionContracts,
   issueApprovals,
@@ -40,10 +40,7 @@ function record(value: unknown): Record<string, unknown> {
 /** Reconstruct links from current task state, never from provider-supplied URLs. */
 async function savedDocumentLinks(db: Db, run: typeof heartbeatRuns.$inferSelect, issue: typeof issues.$inferSelect) {
   const saved = await publishedTaskDocuments(db, { companyId: run.companyId, issueId: issue.id });
-  if (!saved.length) return [];
-  const [company] = await db.select({ issuePrefix: companies.issuePrefix }).from(companies).where(eq(companies.id, run.companyId));
-  if (!company) return [];
-  return saved.map(document => `[Saved document](/${encodeURIComponent(company.issuePrefix)}/issues/${encodeURIComponent(issue.identifier ?? issue.id)}#document-${encodeURIComponent(document.key)})`);
+  return saved.map(document => `[Saved document](${document.href})`);
 }
 
 /** Read current constraints before accepting the report, not a premature status commit. */
@@ -70,6 +67,24 @@ export async function nativeCompletionFeedback(
     )
     .then((rows) => rows[0]);
   if (!issue) throw new Error("Completion task no longer exists.");
+  const wakeScope = { companyId: run.companyId, issueId: issue.id, runId, agentId: run.agentId };
+  const currentWake = await resolveCurrentWakeCommentsBinding(db, wakeScope);
+  if (currentWake) {
+    try {
+      await assertCurrentWakeCommentsRead(db, wakeScope, currentWake);
+    } catch (error) {
+      if (error instanceof Error && (error.message === NATIVE_CURRENT_WAKE_COMMENTS_UNREAD || error.message === NATIVE_CURRENT_WAKE_COMMENTS_CHANGED_AFTER_READ)) {
+        const reason = error.message === NATIVE_CURRENT_WAKE_COMMENTS_UNREAD
+          ? "The accepted comments have not been fully read."
+          : "The accepted comments changed after the complete read.";
+        const cursorInstruction = error.message === NATIVE_CURRENT_WAKE_COMMENTS_UNREAD
+          ? "If you have an unfinished read, continue with its most recent nextCursor; otherwise start without a cursor. If the reader reports that the snapshot changed, restart without a cursor."
+          : "Start without a cursor.";
+        throw new Error(`${reason} Call read_current_wake_comments. ${cursorInstruction} Follow each returned nextCursor until complete=true. Reassess the complete current request and resubmit the completion report in this turn. Preserve completed work and do not repeat completed actions.`);
+      }
+      throw error;
+    }
+  }
   if (result.reportedWorkDisposition === "yielded" && isPublishedGitHubReviewCompletionContinuation(result.continuation)) {
     const current = await readPublishedGitHubReviewCompletionContinuation({ db,
       binding: { companyId: run.companyId, issueId: issue.id, runId, agentId: run.agentId } });

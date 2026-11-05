@@ -64,6 +64,7 @@ export interface SavedWorkspaceFiles {
 
 export interface RemoteWorkspaceFileOptions {
   environmentRuntime?: Pick<EnvironmentRuntimeService, "execute" | "syncOut">;
+  /** Verify the exact company-owned, committed snapshot before exposing files. */
   loadSavedWorkspace?(input: {
     companyId: string;
     workspaceId: string;
@@ -268,16 +269,27 @@ export function createRemoteWorkspaceFiles(db: Db, options: RemoteWorkspaceFileO
       const authority = readRemoteWorkspaceAuthority(workspace.metadata);
       if (!authority) return null;
       const initialAuthority = JSON.stringify(authority);
+      let saved: SavedWorkspaceFiles | undefined;
+      let savedLocationReleased = false;
       const checkCurrent = async () => {
         input.signal?.throwIfAborted();
         const [current] = await db.select({ metadata: executionWorkspaces.metadata }).from(executionWorkspaces).where(and(
           eq(executionWorkspaces.companyId, input.companyId), eq(executionWorkspaces.id, input.workspaceId),
         )).limit(1);
-        if (!current || JSON.stringify(readRemoteWorkspaceAuthority(current.metadata)) !== initialAuthority) {
+        const currentAuthority = current ? readRemoteWorkspaceAuthority(current.metadata) : null;
+        // An extracted committed save no longer depends on the allocation.
+        // Allow only its monotonic location removal; every logical field stays
+        // pinned, and a foreign or reintroduced location remains a conflict.
+        if (saved && authority.location && currentAuthority?.location === null
+          && JSON.stringify({ ...currentAuthority, location: authority.location }) === initialAuthority) {
+          savedLocationReleased = true;
+          return;
+        }
+        if (!currentAuthority || JSON.stringify(currentAuthority) !== initialAuthority
+          || savedLocationReleased && currentAuthority.location !== null) {
           throw fileFailure("workspace_changed");
         }
       };
-      let saved: SavedWorkspaceFiles | undefined;
       let environment: Environment | undefined;
       let lease: EnvironmentLease | undefined;
       let source: WorkspaceFileSource;
@@ -290,7 +302,11 @@ export function createRemoteWorkspaceFiles(db: Db, options: RemoteWorkspaceFileO
           ...(input.signal ? { signal: input.signal } : {}) });
         return { root: saved.root, source: { kind: "saved", savedAt: saved.savedAt, snapshotId: authority.snapshotId } as WorkspaceFileSource };
       };
-      if (authority.location) {
+      // A final save clears dirty state and writer authority. Its accepted
+      // bytes do not depend on an allocation that can already be closing.
+      if (authority.snapshotId && !authority.dirty && !authority.writerRunId && options.loadSavedWorkspace) {
+        ({ root, source } = await loadSaved());
+      } else if (authority.location) {
         const [leaseRow] = await db.select().from(environmentLeases).where(and(
           eq(environmentLeases.companyId, input.companyId), eq(environmentLeases.id, authority.location.leaseId),
         )).limit(1);
