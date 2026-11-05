@@ -87,7 +87,7 @@ async function inspect(db: ReadDb, input: { companyId: string; workspaceId: stri
       }
     }
     if (!entry && !retainedDirectory && (workspace.status === "archived" || input.writersStopped)) {
-      try { archivedGitSource = await inspectArchivedGitMigrationSource(db, workspace, { allowActiveRetainedBranch: input.writersStopped }); }
+      try { archivedGitSource = await inspectArchivedGitMigrationSource(db, workspace, { allowActiveRetainedBranch: input.writersStopped, operationId: allowedOperation }); }
       catch (error) { reasons.push(error instanceof Error && error.message === "remote_workspace_migration_restore_point_expired"
         ? "restore_point_expired" : "archived_git_source_unavailable"); }
     }

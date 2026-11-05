@@ -15,6 +15,8 @@ import { ensureSavedGitCommit, gitRestorePointExpired, managedSourcePaths, readG
 import { localRepositoryPath } from "./local-repository-path.js";
 import { materializeManagedProjectWorkspace } from "./managed-repository-checkout.js";
 import { isRuntimeOwnedGitBranch } from "./execution-workspace-branch-ownership.js";
+import { physicalPath } from "./remote-workspace-migration-tree.js";
+import { formatCommandForDisplay } from "./workspace-command-display.js";
 import { recordedIsolatedRemoteSource } from "./isolated-remote-workspace-source.js";
 
 type Workspace = typeof executionWorkspaces.$inferSelect;
@@ -39,10 +41,42 @@ async function git(cwd: string, args: string[]) {
   })).stdout.trim();
 }
 
+async function assertNoRetainedWorktree(sourcePath: string, expected: string, branch: string) {
+  const target = await physicalPath(expected);
+  const common = await git(sourcePath, ["rev-parse", "--path-format=absolute", "--git-common-dir"]);
+  const admin = path.join(common, "worktrees");
+  const entries = await fs.readdir(admin, { withFileTypes: true }).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return [];
+    throw error;
+  });
+  for (const entry of entries) {
+    if (entry.isSymbolicLink()) throw unavailable();
+    if (!entry.isDirectory()) continue;
+    const root = path.join(admin, entry.name);
+    const pointer = await fs.readFile(path.join(root, "gitdir"), "utf8").catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") return null;
+      throw error;
+    });
+    if (pointer && await physicalPath(pointer.trim()) === path.join(target, ".git")) throw unavailable();
+    // An index without its registration can still own staged work. It has no
+    // reliable checkout identity, so a branch-only import cannot discard it.
+    if (!pointer && await fs.lstat(path.join(root, "index")).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") return null;
+      throw error;
+    })) throw unavailable();
+  }
+  const records = (await git(sourcePath, ["worktree", "list", "--porcelain", "-z"])).split("\0\0");
+  for (const record of records) {
+    const fields = record.split("\0");
+    const worktree = fields.find(field => field.startsWith("worktree "))?.slice(9);
+    if (fields.includes(`branch refs/heads/${branch}`) || worktree && await physicalPath(worktree) === target) throw unavailable();
+  }
+}
+
 /** A removed branch must be reconstructed from its saved commit or its exact
  * successful deletion receipt. Today's default branch is never a substitute. */
 export async function inspectArchivedGitMigrationSource(db: Pick<Db, "select">, workspace: Workspace,
-  options: { allowActiveRetainedBranch?: boolean } = {}): Promise<ArchivedGitMigrationSource | null> {
+  options: { allowActiveRetainedBranch?: boolean; operationId?: string } = {}): Promise<ArchivedGitMigrationSource | null> {
   const archived = workspace.status === "archived";
   if ((!archived && !options.allowActiveRetainedBranch) || !workspace.repoUrl || !workspace.branchName || !workspace.sourceIssueId) return null;
   const recipe = readGitCacheRestoration(workspace);
@@ -60,7 +94,14 @@ export async function inspectArchivedGitMigrationSource(db: Pick<Db, "select">, 
     if (error.code === "ENOENT") return null;
     throw error;
   }) : null;
-  const sourcePath = privatePresent && privateSource ? privateSource : projectWorkspace?.cwd ?? managedSourcePaths(workspace)[0];
+  const [journal] = options.operationId ? await db.select({ metadata: workspaceOperations.metadata }).from(workspaceOperations).where(and(
+    eq(workspaceOperations.companyId, workspace.companyId), eq(workspaceOperations.executionWorkspaceId, workspace.id),
+    eq(workspaceOperations.id, options.operationId), eq(workspaceOperations.phase, "remote_workspace_migration"),
+  )) : [];
+  const saved = journal?.metadata?.archivedGitSource;
+  const savedPath = saved && typeof saved === "object" && !Array.isArray(saved)
+    && typeof (saved as { sourcePath?: unknown }).sourcePath === "string" ? (saved as { sourcePath: string }).sourcePath : null;
+  const sourcePath = savedPath ?? (privatePresent && privateSource ? privateSource : projectWorkspace?.cwd ?? managedSourcePaths(workspace)[0]);
   if (!sourcePath || !privatePresent && projectWorkspace?.repoUrl && projectWorkspace.repoUrl !== workspace.repoUrl) throw unavailable();
   const [operation] = archived && workspace.closedAt ? await db.select().from(workspaceOperations).where(and(
     eq(workspaceOperations.companyId, workspace.companyId), eq(workspaceOperations.executionWorkspaceId, workspace.id),
@@ -89,7 +130,7 @@ export async function inspectArchivedGitMigrationSource(db: Pick<Db, "select">, 
       const [removal] = await db.select({ id: workspaceOperations.id }).from(workspaceOperations).where(and(
         eq(workspaceOperations.companyId, workspace.companyId), eq(workspaceOperations.executionWorkspaceId, workspace.id),
         eq(workspaceOperations.phase, "worktree_cleanup"), eq(workspaceOperations.status, "succeeded"),
-        eq(workspaceOperations.command, `git worktree remove ${expected}`), isNotNull(workspaceOperations.finishedAt),
+        eq(workspaceOperations.command, formatCommandForDisplay("git", ["worktree", "remove", expected])), isNotNull(workspaceOperations.finishedAt),
         gte(workspaceOperations.startedAt, workspace.closedAt),
         sql`${workspaceOperations.metadata}->>'cleanupAction' = 'worktree_remove'`,
         sql`${workspaceOperations.metadata}->>'workspaceId' = ${workspace.id}`,
@@ -105,8 +146,8 @@ export async function inspectArchivedGitMigrationSource(db: Pick<Db, "select">, 
       eq(executionWorkspaces.repoUrl, workspace.repoUrl), eq(executionWorkspaces.branchName, workspace.branchName),
       ne(executionWorkspaces.id, workspace.id),
     )).limit(1);
-    if (other || (await git(sourcePath, ["worktree", "list", "--porcelain", "-z"]))
-      .split("\0").includes(`branch refs/heads/${workspace.branchName}`)) throw unavailable();
+    if (other) throw unavailable();
+    await assertNoRetainedWorktree(sourcePath, expected, workspace.branchName);
     const commit = await git(sourcePath, ["rev-parse", "--verify", `refs/heads/${workspace.branchName}^{commit}`]);
     if (!/^[a-f0-9]{40}$/.test(commit)) throw unavailable();
     return { commit, sourcePath, cleanupOperationId: removalId, recipe: null, retainedBranch: workspace.branchName };
