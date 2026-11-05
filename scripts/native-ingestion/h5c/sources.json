@@ -1,0 +1,106 @@
+{
+  "schema": "paperclip.native-ingestion.h5c-helper-sources.v1",
+  "scope": "Exact reviewed task-helper source snapshots. Per-run owner receipts identify executed bytes; packaging executes no application, qualification or performance arm.",
+  "frozenDriver": {
+    "tag": "native-ingestion-h5c",
+    "tagObject": "0ff37cd81dd922ce9def66fa656549e8e68d6a50",
+    "commit": "e431ec63d41fe90c6fd68bd2fc2bb969feeca917",
+    "lockSha256": "54a81b2ed3f1f85eaa085c034560ac248e384db34fbc7aba8c5a3846c29b3ce8",
+    "measurementSha256": "2265aabe9c7344f5d4b9c8b08a5c6bbd5571a6e2de9ae7b72a8d1733250e609f",
+    "comparatorSha256": "9e01acaae40251cb9730aa8a7e548d451b986112c20eae7ffc31759cf221393c",
+    "inventoryHelperSha256": "76b897dd6b7a90e784e228d78d79633a6d7011fe3ea01737f3bef9c6113298e9",
+    "protocolDocumentSha256": "5c78466770ecc3664339015d382ad6941109082976910a0f8ca2b88f78638c1f",
+    "workloadSha256": "3eea2f24c0c0c38134492a0a17e1b9a398335c085dd248f03b14c14bb5a19835"
+  },
+  "recordedLayout": {
+    "base": "/home/ubuntu/native-ingestion",
+    "driver": "harness-h5c",
+    "helperDirectory": "helpers",
+    "appDirectories": {
+      "B0": "aligned-baseline",
+      "B1": "aligned-cursors",
+      "B2": "aligned-batching"
+    }
+  },
+  "recordedAppRevisions": {
+    "B0": "bac53ec3bfeaf6546e7aaeaee516487b30534654",
+    "B1": "07061a601cdc20603c8c7a46f9ddbad7ac5f5939",
+    "B2": "ca7cba171cd5198ed569d75012edc858041cbc44"
+  },
+  "recordedQualifiedBuildReceiptSha256": "a1259ba760f3cbbe44817e333f9f620bcf3769fb0a6c16f9ce2f0f5b2ed60d94",
+  "recordedInventorySummarySha256": "d3766fc4206d569d10fd02224433f1e9a2caa6992a7c62216e80af368aa4e44d",
+  "rawB2Role": "Unoptimized batching base only. Final B2 needs its own immutable source, normal build and qualified inventory; none is supplied here.",
+  "deliveryLockSha256AtPackaging": "7540075e96f9a93924a1e54775c17346c5760dd5d02902d83fb5228f918996ba",
+  "deliveryLockWasExecutedDriver": false,
+  "sourceOverlay": [
+    {
+      "file": "scripts/compare-native-ingestion-browser.ts",
+      "sha256": "9e01acaae40251cb9730aa8a7e548d451b986112c20eae7ffc31759cf221393c",
+      "byteIdenticalToFrozenDriver": true
+    },
+    {
+      "file": "scripts/describe-native-ingestion-h5.mjs",
+      "sha256": "e8c62f672f1fd67343abf3f05889a4ce4d1a926a07f391e9c4ef1d701f8c5eb3",
+      "byteIdenticalToFrozenDriver": true
+    },
+    {
+      "file": "scripts/native-ingestion-h5.test.mjs",
+      "sha256": "b7dfee091a4b0a9c9af68e4b14cbb138c50fd07a49e77a6d08b122a550223921",
+      "byteIdenticalToFrozenDriver": true
+    },
+    {
+      "file": "scripts/native-ingestion-performance-gates.test.mjs",
+      "sha256": "27782c2cd14d1ec7f680337ebe8ea4a9beebabe80915ae90fe01ea236a785abd",
+      "byteIdenticalToFrozenDriver": true
+    },
+    {
+      "file": "tests/e2e/fixtures/native-ingestion-h5.md",
+      "sha256": "5c78466770ecc3664339015d382ad6941109082976910a0f8ca2b88f78638c1f",
+      "byteIdenticalToFrozenDriver": true
+    },
+    {
+      "file": "tests/e2e/fixtures/native-ingestion-h5.mjs",
+      "sha256": "6d629f6eb3440aa089b35d683bbb20da894aafa9e4f29626ff199b0eaeffcb56",
+      "byteIdenticalToFrozenDriver": true
+    },
+    {
+      "file": "tests/e2e/native-event-ingestion.journey.ts",
+      "sha256": "b49535ae6189a0891785f4c0ddbfe0c1c3490f610e752e60c912fea74852d53f",
+      "byteIdenticalToFrozenDriver": true
+    }
+  ],
+  "files": [
+    {
+      "file": "native-ingestion-run-h5c-browser.mjs",
+      "originalTaskFile": "/private/tmp/native-ingestion-run-h5c-browser.mjs",
+      "bytes": 53940,
+      "sha256": "6b6376b01de6cdc15ca05343a0bdd5c00424f1d6c546b9b4d61cd76716b253c4",
+      "byteIdenticalToReviewedOriginal": true,
+      "packagingChanges": []
+    },
+    {
+      "file": "native-ingestion-linux-h5c-qualification.py",
+      "originalTaskFile": "/private/tmp/native-ingestion-linux-h5c-qualification.py",
+      "bytes": 6915,
+      "sha256": "8349384d5a3f429536f80415238fd276e505cdbc2d9fb97798797188a3eb8f39",
+      "byteIdenticalToReviewedOriginal": true,
+      "packagingChanges": []
+    },
+    {
+      "file": "native-ingestion-h5c-linux-readiness.mjs",
+      "originalTaskFile": "/private/tmp/native-ingestion-h5c-linux-readiness.mjs",
+      "bytes": 3446,
+      "sha256": "57b336b01b0f36ffe9355993c04237f79a92a43c49b84fadb66630ccb18b54f4",
+      "byteIdenticalToReviewedOriginal": true,
+      "packagingChanges": []
+    },
+    {
+      "file": "native-ingestion-validate-h5c-evidence.mjs",
+      "originalTaskFile": "/private/tmp/native-ingestion-validate-h5c-evidence.mjs",
+      "bytes": 6438,
+      "sha256": "dd69f0932472f548396644f72a9cad3862b758837652102aa840b852cb8c08ad",
+      "byteIdenticalToReviewedOriginal": true,
+      "packagingChanges": []
+    }
+  ]
+}

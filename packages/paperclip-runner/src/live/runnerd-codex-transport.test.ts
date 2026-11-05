@@ -77,6 +77,77 @@ import {
   assignedRuntimeContext,
 } from "../../test/support/runnerd-transport.js";
 
+// Failure-only metadata; never establishes that this checkout produced the binary.
+function nativeTestFailureProvenance(binaryPath: string) {
+  const errors: Array<{ stage: string; message: string }> = [];
+  const observe = (stage: string, read: () => unknown) => {
+    try { return read(); }
+    catch (error) { errors.push({ stage, message: String(error).slice(0, 1024) }); return null; }
+  };
+  const root = fileURLToPath(new URL("../..", import.meta.url));
+  const inputs = ["runner","runner/Cargo.toml","runner/Cargo.lock","runner/crates/runner-core/Cargo.toml","package.json","rust-toolchain.toml","protocol","protocol/manifest.json","generated/semantic-action-catalog.json","antigravity-distributions.json","scripts","acpx-profiles.json","cursor-distributions.json","cursor-contract.json","src/drivers/acpx/kimi-closure-pins.ts"];
+  return {
+    capturedAt: new Date().toISOString(), binaryPath,
+    binarySha256: observe("binarySha256", () => createHash("sha256").update(readFileSync(binaryPath)).digest("hex")),
+    buildMetadata: observe("buildMetadata", () => JSON.parse(execFileSync(binaryPath, ["--build-metadata"],
+      { encoding: "utf8", timeout: 1_000, maxBuffer: 32 * 1024, stdio: ["ignore", "pipe", "pipe"] }))),
+    checkoutInputs: observe("checkoutInputs", () => {
+      const values = execFileSync("git", ["rev-parse", "HEAD", ...inputs.map(input => "HEAD:packages/paperclip-runner/" + input)],
+        { cwd: root, encoding: "utf8", timeout: 1_000, maxBuffer: 32 * 1024, stdio: ["ignore", "pipe", "pipe"] }).trim().split(String.fromCharCode(10)).map(value => value.trim());
+      if (values.length !== inputs.length + 1) throw new Error("Incomplete native checkout input observation");
+      return { revision: values[0], nativeInputObjects: Object.fromEntries(inputs.map((input, index) => [input, values[index + 1]])) };
+    }),
+    checkoutInputsAreNotCompiledBinaryProof: true, errors,
+  };
+}
+
+type PreparedCloseCommandReader = () => readonly {
+  type: string; status: string; controllerSeq: number; result: unknown;
+}[];
+
+// Failure-only, closed fields. Never print provider messages, arguments or payloads.
+function preparedCloseFailureFields(error: unknown, present = true) {
+  const row = (value: unknown): Record<string, unknown> => value !== null && typeof value === "object"
+    ? value as Record<string, unknown> : {};
+  const bool = (value: unknown) => typeof value === "boolean" ? value : null;
+  const value = row(error), settlement = row(value.settlement), cause = row(value.cause), tools = row(settlement.semanticTools);
+  const count = (value: unknown) => Array.isArray(value) ? value.length : null;
+  const messageHash = (message: unknown) => typeof message === "string"
+    ? createHash("sha256").update(message.slice(0, 4096)).digest("hex") : null;
+  const name = (value: unknown) => typeof value === "string" && ["Error", "TypeError", "AssertionError", "NativeSessionCloseUnrecoverableError"].includes(value)
+    ? value : "other";
+  return { present, name: name(value.name),
+    code: typeof value.code === "string" && ["native_session_close_unrecoverable", "ERR_ASSERTION"].includes(value.code) ? value.code : null,
+    messagePrefixSha256: messageHash(typeof error === "string" ? error : value.message),
+    sourceLocation: typeof value.stack === "string"
+      ? value.stack.slice(0, 32768).match(/runnerd-codex-transport\.test\.ts:\d+:\d+/)?.[0] ?? null : null,
+    cause: { present: value.cause !== undefined, name: name(cause.name), messagePrefixSha256: messageHash(cause.message) },
+    settlement: { runnerSuspended: bool(settlement.runnerSuspended), providerDrained: bool(settlement.providerDrained),
+      suspensionStatePresent: settlement.suspensionState != null,
+      finalProviderStateKind: settlement.finalProviderState === null ? "null" : settlement.finalProviderState === "unreadable" ? "unreadable"
+        : settlement.finalProviderState && typeof settlement.finalProviderState === "object" ? "snapshot" : "unknown",
+      semanticToolsSettled: bool(value.semanticToolsSettled), semanticTools: { persistenceFailed: bool(tools.persistenceFailed),
+        failures: count(tools.failures), pending: count(tools.pending), deliveries: count(tools.deliveries) } } };
+}
+
+function preparedCloseCommandFields(read?: PreparedCloseCommandReader) {
+  try {
+    if (!read) return { available: false, commands: [] };
+    const all = read(), commands = [];
+    for (let index = all.length - 1; index >= Math.max(0, all.length - 64) && commands.length < 8; index--) {
+      const command = all[index]!;
+      if (command.type !== "runner.drain" && command.type !== "runner.suspend") continue;
+      const result = command.result as { result?: { retainedEventsDrained?: unknown } } | null;
+      const proof = result?.result?.retainedEventsDrained;
+      commands.push({ type: command.type,
+        status: ["pending", "completed", "failed", "rejected", "indeterminate"].includes(command.status) ? command.status : "other",
+        controllerSeq: Number.isSafeInteger(command.controllerSeq) ? command.controllerSeq : null,
+        retainedEventsDrained: typeof proof === "boolean" ? proof : null });
+    }
+    return { available: true, commands, trailingCommandWindow: Math.min(all.length, 64), earlierCommandsOmitted: all.length > 64 };
+  } catch { return { available: false, commands: [] }; }
+}
+
 it("attributes opened candidate sessions to the harness biller instead of the model vendor", () => {
   const provider = runnerdLaunchProfileInternals.openedThreadModelProvider;
   for (const model of ["gpt-5.6-luna[context=272k,reasoning=medium,fast=false]", "claude-sonnet-5"]) {
@@ -2653,7 +2724,7 @@ it.each(["reuse", "large-instructions", "rotated-recovery", "removed-context", "
   const checkpoint = vi.fn();
   const releaseRoute = vi.fn();
   let currentRun = () => "";
-  const create = (closeGraceMs?: number, runId = "run-prepared") => createCapabilityRunnerdCodexTransport({ provider: "codex", runnerArtifact: artifact,
+  const create = (closeGraceMs?: number, runId = "run-prepared", observeCloseCommands?: (read: PreparedCloseCommandReader) => void) => createCapabilityRunnerdCodexTransport({ provider: "codex", runnerArtifact: artifact,
     ...(closeGraceMs === undefined ? {} : { closeGraceMs }),
     stateDirectory: root, runtimeContext: runId === "run-prepared" ? context
       : mode === "removed-context" ? null : mode === "omitted-context" ? undefined : context,
@@ -2687,6 +2758,7 @@ it.each(["reuse", "large-instructions", "rotated-recovery", "removed-context", "
       }),
     }; },
     controlPlaneRegistration: async authority => {
+      observeCloseCommands?.(() => authority.store.state.commands);
       configuration = authority.store.state.runAttachTemplate;
       currentRun = () => authority.store.state.identity.runId;
       if (!registered.has(authority)) {
@@ -2739,14 +2811,30 @@ it.each(["reuse", "large-instructions", "rotated-recovery", "removed-context", "
     }
     if (mode === "rotated-recovery" || mode === "omitted-context") {
       for (let attempt = 0; attempt < 2; attempt++) {
-        const rotated = create(5_000, "run-prepared-rotated");
+        let readCloseCommands: PreparedCloseCommandReader | undefined;
+        let bodyFailed = false, bodyError: unknown;
+        const rotated = create(5_000, "run-prepared-rotated", mode === "rotated-recovery"
+          ? read => { readCloseCommands = read; } : undefined);
         try {
           await rotated.transport.request("thread/read", { threadId: (opened.thread as { id: string }).id });
           expect(requestedRun).toBe("run-prepared-rotated");
           expect(requestedContext).toEqual(context);
           expect(requestedInstructions).toBe(coreInstructions);
           expect(recovered).toBe(attempt > 0);
-        } finally { await rotated.transport.close(); }
+        } catch (error) { bodyFailed = true; bodyError = error; throw error; }
+        finally {
+          try { await rotated.transport.close(); }
+          catch (closeError) {
+            if (mode === "rotated-recovery") {
+              try {
+                console.error("Prepared rotated close failure diagnostics: " + JSON.stringify({ attempt,
+                  bodyError: preparedCloseFailureFields(bodyError, bodyFailed), closeError: preparedCloseFailureFields(closeError),
+                  authority: preparedCloseCommandFields(readCloseCommands), nativeBinary: nativeTestFailureProvenance(binary) }));
+              } catch { /* Diagnostics must not replace the original close error or its cause. */ }
+            }
+            throw closeError;
+          }
+        }
       }
       return;
     }
@@ -3800,7 +3888,11 @@ it.each(["admission-only", "admission-only-mismatched-model", "complete", "api-k
   let registrationReleased = false;
   let refreshed = false;
   let cleanupConfirmed = false;
+  const phases = { probeCalledAtMs: 0, registrationEnteredAtMs: null as number | null,
+    registrationReadyAtMs: null as number | null, registrationReleaseAtMs: null as number | null,
+    registrationAbortAtMs: null as number | null };
   try {
+    phases.probeCalledAtMs = Date.now();
     const probe = probeNativeRunnerEnvironment({
       runtimeDirectory, provider: "codex", model: mode === "default-model" ? null : "gpt-6.1-sol", reasoningEffort: "low",
       ...(mode.startsWith("admission-only") ? { admissionOnly: true } : {}),
@@ -3811,14 +3903,17 @@ it.each(["admission-only", "admission-only-mismatched-model", "complete", "api-k
         ...(remote ? {
           runnerFilesystemRoot: remoteFilesystem, runnerStateDirectory: join(remoteRoot, "runner"),
           readRunnerState: async () => JSON.parse(await readFile(join(remoteRoot, "runner", "runner-state.json"), "utf8")),
-          controlPlaneRegistration: async authority => {
+          controlPlaneRegistration: async (authority, _identity, signal) => {
+            phases.registrationEnteredAtMs = Date.now();
+            signal?.addEventListener("abort", () => { phases.registrationAbortAtMs = Date.now(); }, { once: true });
             await mkdir(remoteWorkspace, { recursive: true, mode: 0o700 });
             const remoteHome = join(remoteFilesystem, "codex-home");
             await mkdir(remoteHome, { mode: 0o700 });
             for (const name of ["auth.json", "config.toml"] as const) await cp(join(runtimeDirectory, "codex-home", name), join(remoteHome, name));
             if (mode.startsWith("late-remote-")) await new Promise(resolve => setTimeout(resolve, 1000));
             await authority.start();
-            return { connectUrl: authority.connectUrl, release: async () => { registrationReleased = true; await authority.stop(); if (mode === "late-remote-release-error") throw new Error("PRP registration release failed"); } };
+            phases.registrationReadyAtMs = Date.now();
+            return { connectUrl: authority.connectUrl, release: async () => { phases.registrationReleaseAtMs = Date.now(); registrationReleased = true; await authority.stop(); if (mode === "late-remote-release-error") throw new Error("PRP registration release failed"); } };
           },
         } : {}),
         runnerBinary: mode === "missing-runtime" ? join(root, "missing-runner") : resolve("runner/target/debug/paperclip-runnerd"),
@@ -3882,6 +3977,15 @@ it.each(["admission-only", "admission-only-mismatched-model", "complete", "api-k
         expect(requests.some(value => value.method === "turn/start")).toBe(false);
       }
     }
+  } catch (error) {
+    if (mode === "late-remote-release-error") {
+      const observation = { failedAtMs: Date.now(), phases: { ...phases }, registrationReleased, cleanupConfirmed, refreshed };
+      try {
+        console.error("Native probe failure diagnostics: " + JSON.stringify({ ...observation,
+          nativeBinary: nativeTestFailureProvenance(resolve("runner/target/debug/paperclip-runnerd")) }));
+      } catch { /* Diagnostics must not replace the original probe assertion. */ }
+    }
+    throw error;
   } finally { await rm(root, { recursive: true, force: true }); }
 }, 20_000);
 

@@ -1,0 +1,119 @@
+{
+  "schema": "native-ingestion-resource-pins/v1",
+  "qualificationSha256": "a1259ba760f3cbbe44817e333f9f620bcf3769fb0a6c16f9ce2f0f5b2ed60d94",
+  "inventorySummarySha256": "d3766fc4206d569d10fd02224433f1e9a2caa6992a7c62216e80af368aa4e44d",
+  "variants": {
+    "B0": {
+      "revision": "bac53ec3bfeaf6546e7aaeaee516487b30534654",
+      "manifestSha256": "a1c797a75dd3174f414fc5529acf56783e1a3dfe7b22f1e460a87b60f6bff01d",
+      "aggregateSha256": "a50720be2ce53f9222187d63609c5936f94b6a00c60df2ca112261abd1bf921e",
+      "modules": {
+        "queue": {
+          "bytes": 19850,
+          "path": "server/dist/vendor/paperclip-runner/drivers/codex/codex-session-state.js",
+          "sha256": "f8cb9fd06a567831cff886251c79eb73810a83d1384fb2b61851587a30832869"
+        },
+        "port": {
+          "bytes": 30401,
+          "path": "server/dist/services/native-runtime/paperclip-control-plane-port.js",
+          "sha256": "49a971a961d831dc4dbea39c715abb371609464797bbfcc58ac911792d8b945c"
+        },
+        "resolver": {
+          "bytes": 4307,
+          "path": "server/dist/vendor/paperclip-runner/drivers/codex/codex-command.js",
+          "sha256": "92031b6800bfb2356812d6fdc28af89143e1ffea37d2060879515d04667c5f3c"
+        },
+        "runlog": {
+          "bytes": 26870,
+          "path": "server/dist/services/run-log-store.js",
+          "sha256": "b52995bbeec431c687a35d073a0a2aeb27513a239909a0dc7844e893146e6cc5"
+        }
+      }
+    },
+    "B1": {
+      "revision": "07061a601cdc20603c8c7a46f9ddbad7ac5f5939",
+      "manifestSha256": "df48e5c511a2f31e31180e05f18e2322ca4f384ea06f6f96a57de24d39849ef8",
+      "aggregateSha256": "bca5b6fad62e70631c135a9ff377efeb587aba17ef0842c8fd82804ed99a81ab",
+      "modules": {
+        "queue": {
+          "bytes": 19850,
+          "path": "server/dist/vendor/paperclip-runner/drivers/codex/codex-session-state.js",
+          "sha256": "f8cb9fd06a567831cff886251c79eb73810a83d1384fb2b61851587a30832869"
+        },
+        "port": {
+          "bytes": 30401,
+          "path": "server/dist/services/native-runtime/paperclip-control-plane-port.js",
+          "sha256": "49a971a961d831dc4dbea39c715abb371609464797bbfcc58ac911792d8b945c"
+        },
+        "resolver": {
+          "bytes": 4307,
+          "path": "server/dist/vendor/paperclip-runner/drivers/codex/codex-command.js",
+          "sha256": "92031b6800bfb2356812d6fdc28af89143e1ffea37d2060879515d04667c5f3c"
+        },
+        "runlog": {
+          "bytes": 26870,
+          "path": "server/dist/services/run-log-store.js",
+          "sha256": "b52995bbeec431c687a35d073a0a2aeb27513a239909a0dc7844e893146e6cc5"
+        }
+      }
+    },
+    "B2": {
+      "revision": "ca7cba171cd5198ed569d75012edc858041cbc44",
+      "manifestSha256": "58271cae47fa497665f6cd21aab8b3466f2b08c2c9629da50c45b858aa826ffd",
+      "aggregateSha256": "5d3ddc210c0200739dbba6ebc45f916f036fcd2a16860de874ec166ced0a16f4",
+      "modules": {
+        "queue": {
+          "bytes": 19850,
+          "path": "server/dist/vendor/paperclip-runner/drivers/codex/codex-session-state.js",
+          "sha256": "f8cb9fd06a567831cff886251c79eb73810a83d1384fb2b61851587a30832869"
+        },
+        "port": {
+          "bytes": 33500,
+          "path": "server/dist/services/native-runtime/paperclip-control-plane-port.js",
+          "sha256": "d3cf1203feb7f0b74c6799a289799990b932a837475e857732c7340876fd4f66"
+        },
+        "resolver": {
+          "bytes": 4307,
+          "path": "server/dist/vendor/paperclip-runner/drivers/codex/codex-command.js",
+          "sha256": "92031b6800bfb2356812d6fdc28af89143e1ffea37d2060879515d04667c5f3c"
+        },
+        "runlog": {
+          "bytes": 26870,
+          "path": "server/dist/services/run-log-store.js",
+          "sha256": "b52995bbeec431c687a35d073a0a2aeb27513a239909a0dc7844e893146e6cc5"
+        }
+      }
+    }
+  },
+  "postgres": {
+    "version": "3.4.9",
+    "files": {
+      "package.json": "944d492614959389a5739ef2893bc1830fb773ff042159d9b331d43b2f6792e9",
+      "src/index.js": "07dee80154d83ca9163a4a8790ef0281602ffca682e2387b3487bf20395d2adf",
+      "src/connection.js": "b57261592f135d127b8e7267c78981eb2c5f4751259641b782ba621b89d939d1"
+    }
+  },
+  "harness": {
+    "revision": "2df9897e1ce2ca90be29fa097d776c3766e217ad",
+    "measurementSha256": "e1d8930c47b4d3a287aa0f3baf09fbd3aa04ac30b9313b707616dea7a3fec5d4",
+    "comparatorSha256": "09daef50fad5eef4dbda4e63a191749d0d167d3ae9d38bfd22df8721e2aac4a3",
+    "driverLockSha256": "54a81b2ed3f1f85eaa085c034560ac248e384db34fbc7aba8c5a3846c29b3ce8",
+    "mode": "h5c-observe-original-sla-independent-agents-settlement",
+    "workloadSha256": "3eea2f24c0c0c38134492a0a17e1b9a398335c085dd248f03b14c14bb5a19835",
+    "existingComposerStopLoaderSha256": "a826429e302672f4bc115fc88599e59678aacf1530e31e85b245cc3b289b3a8a"
+  },
+  "runtime": {
+    "node": "v26.4.0",
+    "playwright": "1.62.1",
+    "nativeBinarySha256": "abb65bdc073991e428bd37f9809603ee7564543cca0ed0305dc231137c93070f",
+    "rustSourceTree": "bbe29bba574ce8d5cfddf2f7461ae0eb5983df07"
+  },
+  "references": {
+    "/private/tmp/native-ingestion-resource-coverage-plan.md": "485f1db0aeac8fb3c5a46a16fd2b0395942dd948bcc0a446d6c4e077c2490ac4",
+    "/private/tmp/native-ingestion-diagnostic-preload-h4c.mjs": "7a4992a1bddabd9b322d946f39dfd1f3c7196eb741c437043ef36b4e330be659",
+    "/private/tmp/native-ingestion-diagnostic-run-h4c-host.mjs": "03abd8525bce734fe733ce2337fd4803e5583b0fb772f05fd56567cd9c54d946",
+    "/private/tmp/native-ingestion-diagnostic-run-h4c.mjs": "207299a9ec2b59ec762797470a4c48b3a5feb52c4226e6f29ce1d31580dd2204",
+    "/private/tmp/native-ingestion-failure-replay-observer.mjs": "5536dec1b0b39c3777eeda7b11822e6b5ef6bc902985d654a5128ee8eb20291f",
+    "/private/tmp/native-ingestion-profile-h4c-capture-client.mjs": "fe5f9e248b0c7d8e180f6330c7b01baf025c0f2932ade2def1aef7c79c86b50e"
+  }
+}

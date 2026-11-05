@@ -1,0 +1,20 @@
+{
+  "recordedAt": "2026-11-03T23:44:11.117779+00:00",
+  "leadExplicitRelease": true,
+  "releaseFile": "/home/ubuntu/native-ingestion/helpers/native-ingestion-interleaved-full-release.md",
+  "hashes": {
+    "native-ingestion-run-interleaved-service.mjs": "ecf9adcf9fef440fc10c049199dabb8ece59f6811bef526f2c775435a1c62f8b",
+    "native-ingestion-launch-interleaved-service.py": "152d477f2b3bbe4a29c12feca38b0a0c52bc2ca6488027e2724f006042bc3abd",
+    "native-ingestion-interleaved-full-release.md": "904434a688bbfc0b1de0673d06941881a28f6ec81b8b6153d733b8ab58a4803e"
+  },
+  "measurementSourceSha256": "c8adaf5ac16cab67513d6c8b888afa44d95fa3688d4831b8126fe3d997f1d039",
+  "protocolSha256": "302c11ec61d5170822c08e47f798ca582b8e5afefd9d223fb9023d9ead7a2ad3",
+  "allPriorFixturesCleanupVerified": true,
+  "stages": [
+    "service-aa-b0",
+    "service-b0-b1",
+    "service-aa-b1",
+    "service-b1-b2",
+    "service-b0-b2"
+  ]
+}

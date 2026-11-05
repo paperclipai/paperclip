@@ -1,0 +1,492 @@
+{
+  "schema": "native-ingestion-h5e-resource-source/v1",
+  "packetVersion": 3,
+  "createdAt": "2026-11-04T13:14:57.305415+00:00",
+  "sourceOnly": true,
+  "diagnosticOnly": true,
+  "performanceAcceptanceEligible": false,
+  "executionReleased": false,
+  "independentSourceClear": false,
+  "servingQualification": "UNQUALIFIED",
+  "runtimeAbiTag": "combined-h5e-resource-v2",
+  "parent": {
+    "packet": "/private/tmp/native-ingestion-h5e-resource-tools-v2/source-packet.json",
+    "sha256": "5e51a40ba0d531e190ec651a7190dff4c40e10f5bfbbfe82640966f4b34cd8f8",
+    "reviewPatchSha256": "4697f63d83a14379a7b9dd240eaf2e69a68eae4592c4c4c35b33bf1554a495a5",
+    "allSourcesAndChecksUnchanged": true
+  },
+  "parentIndependentReview": {
+    "path": "/private/tmp/native-ingestion-h5e-resource-tools-v2-peer-review.json",
+    "sha256": "37929bd2593e8638875a7e0783407d540b83874aec9859a442c337345793dce3",
+    "priorCleanupFindings": "SOURCE_REPAIRED per V2 peer; unchanged here",
+    "B2PinTransformProof": "Source-qualified per V2 peer; unchanged here",
+    "soleRemainingFinding": "P2 PG preload requires old v1 tag while actual launcher and counter preload require v2"
+  },
+  "sourceFiles": [
+    {
+      "path": "B2-source-provenance.json",
+      "bytes": 1581,
+      "sha256": "6367725b908c07b85aef3b97566769a2eeb225f49c1a1ebfa5b85522317f67a7"
+    },
+    {
+      "path": "DEFINITIONS.md",
+      "bytes": 6535,
+      "sha256": "e5f6af57372b8f1edd8458781f72d6fbbd716cc74c0d6854958bd559a2bd138e"
+    },
+    {
+      "path": "README.md",
+      "bytes": 17042,
+      "sha256": "e1f4349d84bec41948203029e4d7c6e44a68672299c0200075d3f73672e8dd97"
+    },
+    {
+      "path": "analyze-pg-windows.py",
+      "bytes": 3340,
+      "sha256": "53a40f7ce7fe0d048bb2b65a9e1d9376056b94e3e093b0e765196b8177d57313"
+    },
+    {
+      "path": "analyze-pg-windows.test.py",
+      "bytes": 3333,
+      "sha256": "bede61fdbde00a8e350fabed1a0c1971dc4fe644798867d9d409def0a9655dc2"
+    },
+    {
+      "path": "baseline-metadata/B0-artifact-inventory.json.gz",
+      "bytes": 648737,
+      "sha256": "de7f87acba29b26cdd76367f1358aef5d1fb3bcb967c2eed027d266d04dce3ad"
+    },
+    {
+      "path": "baseline-metadata/B1-artifact-inventory.json.gz",
+      "bytes": 649461,
+      "sha256": "5dd499b896425a9afc5776c2e76214027a9d146f2ee32f8554e7fe9873f1b7bc"
+    },
+    {
+      "path": "baseline-metadata/B2-artifact-inventory-summary.json",
+      "bytes": 358,
+      "sha256": "330b0f843a5b44ccf940267e61ab5b401d99aa53206586feeabb73aff73f7b29"
+    },
+    {
+      "path": "baseline-metadata/B2-artifact-inventory.json.gz",
+      "bytes": 649837,
+      "sha256": "7d93503b747c769a0260ebe9f630cf17c1e4182aca94ab4fa4335c4f155cbd85"
+    },
+    {
+      "path": "baseline-metadata/B2-build-descriptor.json",
+      "bytes": 974,
+      "sha256": "6cb9946cf2d62cd95c85283129c2979894a2fb12ee1ab3d87ed1b43a0efbd3aa"
+    },
+    {
+      "path": "baseline-metadata/B2-build-qualified.json",
+      "bytes": 5002,
+      "sha256": "86bf7cd284b4ac0672ed5d99de2319962946e365216277a253ff18b4c93bf9d1"
+    },
+    {
+      "path": "baseline-metadata/Mac-B2-build-receipt-snapshot.json",
+      "bytes": 1650,
+      "sha256": "a67202281bb02fdd4aa839204efcd033c3308397d3f3937a50666f8dc075f155"
+    },
+    {
+      "path": "baseline-metadata/aligned-cf-builds-qualified.json",
+      "bytes": 7614,
+      "sha256": "5a849da1bc307f4f1fd05c70a75813f6f78acc9941a54cc01e945652a5a79d6b"
+    },
+    {
+      "path": "baseline-metadata/artifact-inventory-summary.json",
+      "bytes": 928,
+      "sha256": "e29a9a1a2b9481ef79f47c6b135e1d207e19d1ffc00833aa28b1f9163a210c5d"
+    },
+    {
+      "path": "cleanup-faults.test.mjs",
+      "bytes": 14847,
+      "sha256": "e12aa0ea5bf072548c6d2535adc947c30a6043cb413e4e5b7f9c2c0b881ddc82"
+    },
+    {
+      "path": "counter-capture-client.mjs",
+      "bytes": 15587,
+      "sha256": "d5cb42713a2dba1af1d15a879aa9b9a0adb1f8e8a0317f9fa1c69973e51a6741"
+    },
+    {
+      "path": "counter-flush.test.mjs",
+      "bytes": 11928,
+      "sha256": "11e7b1b0c521aec9a55ab5af068684bd1cfd4212a211e42f636431e36a237bd7"
+    },
+    {
+      "path": "counter-pin-export-template.unauthorized.json",
+      "bytes": 1619,
+      "sha256": "e02d99d1a92b3efb342687114387742a3c4f22ef83a414fd3fa71fcdc36566c5"
+    },
+    {
+      "path": "counter-preload.mjs",
+      "bytes": 12620,
+      "sha256": "dbf9d4c3ae04ec754795d5a2fed673b3f0bc92939c899b6b35e3ee3c56e18534"
+    },
+    {
+      "path": "counter-proof-sources.json",
+      "bytes": 990,
+      "sha256": "58edc977f746031dc1aa8612183c0b236726bb42f651e63a9a62548f2e5fe35f"
+    },
+    {
+      "path": "counter-proofs.mjs",
+      "bytes": 4505,
+      "sha256": "3784fa8e928087fba8d9274cafcd38e1e5a3b63dd0e9ff838e347664f2957e5a"
+    },
+    {
+      "path": "counter-semantics.test.mjs",
+      "bytes": 12799,
+      "sha256": "58c49ef49d7816b32134d3cec01866cc7ec81930a357288c8872676e61d129ce"
+    },
+    {
+      "path": "counters.mjs",
+      "bytes": 4414,
+      "sha256": "91de72c53829e13fe5c9a33f43fd7b9f20dbc01933e0392645603270371876d0"
+    },
+    {
+      "path": "embedded-source-pins.json",
+      "bytes": 434,
+      "sha256": "304a22bc4881ea3a9e54562ffd675c4d1d23afb0f5bffab7595f7d6da0cd6b50"
+    },
+    {
+      "path": "export-counter-pins.mjs",
+      "bytes": 4155,
+      "sha256": "b6e6d3430a506fa559ba8a53b61537f62325704aa0778042d83588814d1916cf"
+    },
+    {
+      "path": "export-pg-inputs.mjs",
+      "bytes": 3542,
+      "sha256": "34b7dfe3381914cf2795525761125a2ca5a297059d08d8754719910f33063be7"
+    },
+    {
+      "path": "external/external_resources.py",
+      "bytes": 21718,
+      "sha256": "1a040299087b85b4e50f63fc8c45783241fe9893c709359cd56e200451d4ae57"
+    },
+    {
+      "path": "external/pg-snapshot.sql",
+      "bytes": 2134,
+      "sha256": "dfc702d531f51da75ae0f49fa19a46c5f5d04e61e9c790bddae8d8fcd1403bbf"
+    },
+    {
+      "path": "external/pg_cluster_binding.mjs",
+      "bytes": 11561,
+      "sha256": "75b9713aaa5e89099947b6e4d3864bc105f82852f6718cb6d2f9935f13a23c63"
+    },
+    {
+      "path": "external/pg_resources.mjs",
+      "bytes": 11289,
+      "sha256": "e90ce40fdb45f7f789f29c20c0ff8a57f1e915ca1e8fa8f4cce6b2d19084b6d3"
+    },
+    {
+      "path": "known-builds.json",
+      "bytes": 3224,
+      "sha256": "c1dc00935ab24c4c42f80058917cc5f8c2fee9f6615c9924def1cad5de383d9e"
+    },
+    {
+      "path": "main-helper-approval-template.unauthorized.json",
+      "bytes": 467,
+      "sha256": "d8ff8d67c251075f645481c632ff71559b9b2a49fdbdb3528569da644fb74a24"
+    },
+    {
+      "path": "pg-exit-receipt.mjs",
+      "bytes": 4459,
+      "sha256": "e0db58a1fb8287ff83830123aadf2c9597c420be3186e9f823631e8834d00be0"
+    },
+    {
+      "path": "pg-service-preload.mjs",
+      "bytes": 1233,
+      "sha256": "607e7e4272e31619e0bc55c3f1c737edbc4c288093ac017da51f93f552483c92"
+    },
+    {
+      "path": "pg-service.mjs",
+      "bytes": 22013,
+      "sha256": "3266341d23869db920ce0155cbda6f91dfac49c95c464c3b18e9f339726ecf88"
+    },
+    {
+      "path": "pins.json",
+      "bytes": 5613,
+      "sha256": "a9697e71a8baff93c0dec67eec6fb5bc0015c266bf4ebf53c165327bb3e39984"
+    },
+    {
+      "path": "preload-tag-contract.test.mjs",
+      "bytes": 4185,
+      "sha256": "68b22d4be6879e6df8be640bf98e6e87c12831250ec63ac53c56587d74da27c0"
+    },
+    {
+      "path": "release-template.unauthorized.json",
+      "bytes": 3218,
+      "sha256": "de09c38cce3853d0f3fda92b6c83fdf881790fc70d0eb03f8ae46b00a71a2abc"
+    },
+    {
+      "path": "resource-capture.mjs",
+      "bytes": 15603,
+      "sha256": "7f3fd79913b12c91d87e8c3a9178d54ec6308148cbbdfd03996260549ab2cddd"
+    },
+    {
+      "path": "resource-contract.mjs",
+      "bytes": 9796,
+      "sha256": "53174552b3772d61de19fb486db235cae5dc58ecc42c4f45716bc870f521aec5"
+    },
+    {
+      "path": "resource-tools.test.mjs",
+      "bytes": 16885,
+      "sha256": "c09b8c9f0cbabbe7ec5821324cf45852bd3826a71b335fa4dd4c962fc7094099"
+    },
+    {
+      "path": "resource-wrapper.config.mts",
+      "bytes": 484,
+      "sha256": "f38042056e4008de83a1db29a9b722a59e85abcd0afb4e509fdbb96252049f92"
+    },
+    {
+      "path": "resource-wrapper.spec.mts",
+      "bytes": 1141,
+      "sha256": "caf3d7864e731bd6348248eaca15bf6720f77b7e67cd66f0a8a097faa8402759"
+    },
+    {
+      "path": "run-resource-diagnostic.mjs",
+      "bytes": 15937,
+      "sha256": "8f5123dfdaf721de3b54f17bce158b6c2966bdb87825a0b83ceffa1014985c81"
+    },
+    {
+      "path": "test-fixtures/modules/port-B2.js",
+      "bytes": 33500,
+      "sha256": "d3cf1203feb7f0b74c6799a289799990b932a837475e857732c7340876fd4f66"
+    },
+    {
+      "path": "test-fixtures/modules/port.js",
+      "bytes": 30401,
+      "sha256": "49a971a961d831dc4dbea39c715abb371609464797bbfcc58ac911792d8b945c"
+    },
+    {
+      "path": "test-fixtures/modules/queue.js",
+      "bytes": 19850,
+      "sha256": "f8cb9fd06a567831cff886251c79eb73810a83d1384fb2b61851587a30832869"
+    },
+    {
+      "path": "test-fixtures/modules/resolver.js",
+      "bytes": 4307,
+      "sha256": "92031b6800bfb2356812d6fdc28af89143e1ffea37d2060879515d04667c5f3c"
+    },
+    {
+      "path": "test-fixtures/modules/runlog.js",
+      "bytes": 26870,
+      "sha256": "b52995bbeec431c687a35d073a0a2aeb27513a239909a0dc7844e893146e6cc5"
+    },
+    {
+      "path": "test-fixtures/modules/server-index-B1.js",
+      "bytes": 111636,
+      "sha256": "7db3ab75d39e5d6a467f961a267991cc55781439572cc37e45b4599908d1e23b"
+    },
+    {
+      "path": "test-fixtures/old-wrapper-pins.json",
+      "bytes": 5858,
+      "sha256": "fe669525dbb158e4720b4c61b2b51b077e763810b9dfddeeda0c11882ed34f98"
+    },
+    {
+      "path": "test-fixtures/postgres/package.json",
+      "bytes": 1814,
+      "sha256": "944d492614959389a5739ef2893bc1830fb773ff042159d9b331d43b2f6792e9"
+    },
+    {
+      "path": "test-fixtures/postgres/src/connection.js",
+      "bytes": 28806,
+      "sha256": "b57261592f135d127b8e7267c78981eb2c5f4751259641b782ba621b89d939d1"
+    },
+    {
+      "path": "test-fixtures/postgres/src/index.js",
+      "bytes": 15989,
+      "sha256": "07dee80154d83ca9163a4a8790ef0281602ffca682e2387b3487bf20395d2adf"
+    },
+    {
+      "path": "test-fixtures/v1/pg-service.mjs",
+      "bytes": 18963,
+      "sha256": "db1f89a2e0021932a184628f1ffa55e96be8003a50fcab6f17bf0c7eb7f674a0"
+    },
+    {
+      "path": "test-fixtures/v1/resource-capture.mjs",
+      "bytes": 13021,
+      "sha256": "943514f0955860052f7f2d2b36793483f303177cf32e42f22236431664e0d981"
+    },
+    {
+      "path": "test-fixtures/v2/pg-service-preload.mjs",
+      "bytes": 1233,
+      "sha256": "228aef635832803dd48219b402978ad41e7fc051f0ac223b7a02aea249b00d03"
+    },
+    {
+      "path": "transforms.mjs",
+      "bytes": 6564,
+      "sha256": "ed0a07c4775b99f7f2a0f7861e3ca40a360fe4d7cb23822cfcaa6338da0af1cc"
+    }
+  ],
+  "reviewPatch": {
+    "path": "review.patch",
+    "sha256": "424e365066b0b0d2d0e62ba39b093d3eaa7a26ab03e18c2ac00056aba3121890",
+    "bytes": 4975,
+    "scope": "Only production change: PG preload release guard v1 -> existing v2. New actual-source contract test; exact prior preload fixture separately hashed."
+  },
+  "change": {
+    "productionFile": "pg-service-preload.mjs",
+    "before": "assert.equal(process.env.PAPERCLIP_RESOURCE_COUNTER_RELEASE, 'combined-h5e-resource-v1');",
+    "after": "assert.equal(process.env.PAPERCLIP_RESOURCE_COUNTER_RELEASE, 'combined-h5e-resource-v2');",
+    "other55ParentSourcesUnchanged": true,
+    "newTest": "preload-tag-contract.test.mjs",
+    "actualPriorFixture": "test-fixtures/v2/pg-service-preload.mjs"
+  },
+  "checks": [
+    {
+      "path": "checks/fault-attempt-1.json",
+      "bytes": 2678,
+      "sha256": "89ac906eb66cb5e175d441be38c4c43f0cb61b0c711e75835ca496c5390f51df"
+    },
+    {
+      "path": "checks/portable-final.json",
+      "bytes": 6101,
+      "sha256": "b823c263c66cd691808c711d0d5113f0b18d7fa3c711679da0dec12f9bb65021"
+    },
+    {
+      "path": "checks/pure-attempt-2.json",
+      "bytes": 6087,
+      "sha256": "bed0e313e4683034d7f607b5fc3640986155d31bd14b58bcd8d42e7c96263e96"
+    },
+    {
+      "path": "checks/pure-before-absent-mainpid-guard.json",
+      "bytes": 10078,
+      "sha256": "e70bb602bb5c3ec1b4a12ebd2631969c3d5a13e662b9f7518a4f1d9f366ac41a"
+    },
+    {
+      "path": "checks/pure-final.json",
+      "bytes": 22359,
+      "sha256": "b6805d2caaeb58dedab99ff72bf950988e2877b887b2d20619292599ae56b119"
+    },
+    {
+      "path": "checks/reference-integrity-final.json",
+      "bytes": 1870,
+      "sha256": "7b2e1523b1a47205e5cef85203dfbbfa23b50ea83a5f329545647cd3b77699b1"
+    },
+    {
+      "path": "checks/type-discovery-final.json",
+      "bytes": 2505,
+      "sha256": "b08cb3a2536f1643a5ffa8d5f3cd64a1c203add1e80b9068c35605c7f77f830b"
+    },
+    {
+      "path": "checks/type-final.json",
+      "bytes": 766,
+      "sha256": "1858c20b791a3d3e5ccda9c9d7b37aa04465918a493c2869d408d24de6c663e8"
+    },
+    {
+      "path": "checks/v1/frozen-reference-integrity.json",
+      "bytes": 2770,
+      "sha256": "f9bc4b848f4c3f988158d8dec358ed0a2d9fa841b2809b8e533247fb834b7876"
+    },
+    {
+      "path": "checks/v1/portable-final.json",
+      "bytes": 4982,
+      "sha256": "07799cbc6c9782e486fa0c1b2417c47e69c13f0a2f6b2ac1924b2cd46efc781f"
+    },
+    {
+      "path": "checks/v1/pure-attempt-1.json",
+      "bytes": 4264,
+      "sha256": "9c5c4efb92b1daed617d244924ee6ce0288f8ef49e0f6d773737ac447a654147"
+    },
+    {
+      "path": "checks/v1/pure-attempt-2.json",
+      "bytes": 8205,
+      "sha256": "031eaa048beaec215ee5b23b80c3a300e15b2b49dc9791dab1e02f96c7e395df"
+    },
+    {
+      "path": "checks/v1/pure-final.json",
+      "bytes": 8444,
+      "sha256": "4b36842904847ca87aefddfc74304338c64610dba67af76928873acd4a907425"
+    },
+    {
+      "path": "checks/v1/setup-source-fixture-mismatch.json",
+      "bytes": 393,
+      "sha256": "2c7c849fdf7f70641c46ac022e44329ff76c9395fae7054d3bf7eec3918bed21"
+    },
+    {
+      "path": "checks/v1/type-discovery-final.json",
+      "bytes": 2493,
+      "sha256": "7ab4c4775cc2531cc53223e71761fc3e5ccd19db0a21a6f2d1c7341b5f939d7e"
+    },
+    {
+      "path": "checks/v1/type-final-after-cleanup-guards.json",
+      "bytes": 834,
+      "sha256": "070d3793b01acdfad2889b2d21307f49d9fa9742037265bd3a1a3a7d62c94271"
+    },
+    {
+      "path": "checks/v1-peer-faults.json",
+      "bytes": 1141,
+      "sha256": "11a2f28c0a40a1d84412fe175b35f5dce87c0a90b1b092b41e8e310a895cbbd5"
+    },
+    {
+      "path": "checks/v1-peer-faults.source.mjs",
+      "bytes": 7329,
+      "sha256": "5bdb4c8ecc78e5d0c056955b80dca3350481e1119522ea22a79df919054a3fb2"
+    },
+    {
+      "path": "checks/v1-peer-review.json",
+      "bytes": 10548,
+      "sha256": "f65ba95208b118622149fadacf3165dc6dc3b977f678f1e7a2e6315fd50be500"
+    },
+    {
+      "path": "checks/v3-integrity-final.json",
+      "bytes": 632,
+      "sha256": "f10fffc1f3f4eb56b06095d5681baee863d86a7c095fc404d982798e4ca7d8b4"
+    },
+    {
+      "path": "checks/v3-parent-native-ingestion-h5e-resource-tools-v2-peer-tag-proof.json",
+      "bytes": 807,
+      "sha256": "177326e3af5db676ba19d04a4009be79d0efcb9df82283a495a72a26182ea71d"
+    },
+    {
+      "path": "checks/v3-parent-native-ingestion-h5e-resource-tools-v2-peer-tag-proof.mjs",
+      "bytes": 2075,
+      "sha256": "94a46b87ccfb64c16975bd0a6cf480be7443d0f4e4b4ab5b70290c10a4a9bd91"
+    },
+    {
+      "path": "checks/v3-parent-peer-review.json",
+      "bytes": 7846,
+      "sha256": "37929bd2593e8638875a7e0783407d540b83874aec9859a442c337345793dce3"
+    },
+    {
+      "path": "checks/v3-pure-final.json",
+      "bytes": 7768,
+      "sha256": "df6879860bf24ec4f53ddab2218b331dc0c3c25b9dd343c475735d3261b0681b"
+    },
+    {
+      "path": "checks/v3-setup-guard.json",
+      "bytes": 313,
+      "sha256": "211cebb2e598bae32ae7170911a5e04435a6cc04a7dda271a0357b3266c53c11"
+    }
+  ],
+  "pureChecks": {
+    "newTagContractTests": 3,
+    "totalNodeTestsPassed": 46,
+    "prior43NodeCasesUnchangedAndRerun": true,
+    "priorPythonTestsPassed": 3,
+    "changedAndNewSourceSyntaxChecks": 2,
+    "inheritedUnchangedSourceSyntaxTypeAndDiscoveryReceiptsPreserved": true,
+    "actualRedGreen": "Actual diagnosticPlan supplies existing v2 tag; actual counter entry guard passes; actual V2 PG preload rejects before registration. Corrected complete PG entry registers exactly one stub hook without invoking its SUT load callback. Both guards reject absent/old/invented-v3/arbitrary tags and production NODE_ENV.",
+    "simulationOnly": "Node:vm actual source with registerHooks/fs stubs; no real hook registration, OS inspection or SUT loading."
+  },
+  "numericalDefinitionsChanged": false,
+  "counterTransformsChanged": false,
+  "cleanupFixesChanged": false,
+  "B2SourcePinsOrProvenanceChanged": false,
+  "workloadTimingOrQualificationGatesChanged": false,
+  "definitionsSha256": "e5f6af57372b8f1edd8458781f72d6fbbd716cc74c0d6854958bd559a2bd138e",
+  "inheritedOpenGates": [
+    "Root and independent exact V2 source review",
+    "Actual Linux service ExecStopPost/environment/permissions/effective controls/exited-child CPU accounting qualification",
+    "Concrete current reviewed main helper approval and actual installed Linux postgres3.4.9 package/index/connection hash guards",
+    "Separate SMALL serving qualification: actual B2 or selected arm own inventory/compiled hash, all six hooks, unchanged fixture, same SQL cluster, complete independent flush, normal PG exit proof and physical cleanup",
+    "Only then quiet matched completed FULL diagnostics; every original six-interior/ten-percent numerator precision, original deadlines, complete clocks/commit/drain/flush/no-overflow requirement retained",
+    "No source-only/SMALL/resource-improvement claim; production and application acceptance remain separately required"
+  ],
+  "notExecuted": [
+    "Actual OS/process/proc/VM/network/systemd/cgroup/PG/app/provider/browser operations",
+    "Product builds/tests/profiles/benchmarks",
+    "Credentials access"
+  ],
+  "reproduction": {
+    "targeted": "node --test --test-concurrency=1 preload-tag-contract.test.mjs",
+    "regression": "node --test --test-concurrency=1 counter-semantics.test.mjs counter-flush.test.mjs resource-tools.test.mjs cleanup-faults.test.mjs preload-tag-contract.test.mjs; python3 analyze-pg-windows.test.py"
+  },
+  "handoff": "Authored source repair only. Root and independent one-change review before any separately released SMALL serving qualification."
+}

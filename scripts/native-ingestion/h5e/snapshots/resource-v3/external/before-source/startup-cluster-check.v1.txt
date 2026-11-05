@@ -1,0 +1,4 @@
+    assert.ok(identity.version >= 140000, 'PostgreSQL >=14 required');
+    assert.equal(identity.database_oid, config.expectedDatabaseOid);
+    const proc = await readFile(`/proc/${config.expectedPostmasterPid}/stat`, 'utf8');
+    assert.equal(proc.slice(proc.lastIndexOf(')') + 1).trim().split(/\s+/)[19], config.expectedPostmasterBirthTicks);

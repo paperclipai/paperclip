@@ -1,0 +1,61 @@
+{
+  "schema": "paperclip.native-ingestion.h5e-packaging-verification.v1",
+  "scope": "Offline packaging/source checks only. No product build, application/provider/DB/browser/VM/network/resource execution.",
+  "packagingBranch": "codex/native-ingestion-evidence-packaging",
+  "baseDeliveryRevision": "b578b95d3257af93d3f2696b0203bb4bcb0c6bcf",
+  "servingCandidateRevision": "75b3578cfccf040b087a55a624e01baa2bca37f9",
+  "sourceManifestSha256": "fc47f0d6787788462e908ab79314558f824a9773528680ecb9d48d22081fe632",
+  "exactOriginalCopies": 167,
+  "exactBytes": 3976785,
+  "allOriginalSourceBytesEqual": true,
+  "sourcePackets": {
+    "h5e-v4": "d0db3b84bcc73867dd6fe94afd68cadc956ba073c1a388678fa03748820be1b7",
+    "resource-v3": "f660208e118aa0e899a111fabfadac07c8da139051b5737105896b369d15e124"
+  },
+  "freshChecks": {
+    "portableH5eGuards": {
+      "passed": 91,
+      "failed": 0
+    },
+    "actualV3Red": {
+      "expectedFailed": 2,
+      "unexpectedFailed": 0
+    },
+    "frozenComparatorCli": {
+      "passed": 6,
+      "failed": 0
+    },
+    "packageAndUnauthorizedRelocation": {
+      "passed": 2,
+      "failed": 0
+    },
+    "markdownRelativeLinks": "Passed for new/current READMEs/report",
+    "diffCheck": "Passed; one exact immutable retained TAP log has a narrowly scoped whitespace attribute"
+  },
+  "logs": [
+    {
+      "originalPath": "/private/tmp/native-ingestion-evidence-packaging-source-checks-final.log",
+      "sha256": "2723f89eccc9d8804cfc359a977d90b59e9e9b3ffc3aaf5b4b84a10ccc5aa5d8",
+      "publicStatus": "Not copied; command and concise result retained here"
+    },
+    {
+      "originalPath": "/private/tmp/native-ingestion-evidence-packaging-unit.log",
+      "sha256": "b62595ebfdff788f039c8f8689d1e80ed4f58c6634871bb5a3607a1706fad1cd",
+      "publicStatus": "Not copied; command and concise result retained here"
+    }
+  ],
+  "unchangedChecksReused": {
+    "resource": "46 Node +3 Python; exact source/fixture and original passing check/review receipts retained",
+    "external": "20 Node +18 Python; exact external-v2 source/test bytes retained"
+  },
+  "changedScope": "Benchmark tools and related docs only; product source, migrations, dependency lock and native build inputs unchanged",
+  "unfinished": [
+    "Root review and no commit/push yet",
+    "Final delivery-head parity receipt, CI and review after packaging commits",
+    "Actual Linux resource/SMALL qualification and completed resource captures",
+    "All current A/A/comparison/performance gates, original-SLA confirmation and final-source live/cloud journeys",
+    "Durable scanned artifact URLs and final campaign evidence/status refresh"
+  ],
+  "performanceAcceptance": false,
+  "runtimeExecutionReleased": false
+}

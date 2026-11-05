@@ -32,6 +32,30 @@ beforeAll(() => {
   expectedRunnerDigest = digest(binary);
 }, 150_000);
 
+// Failure-only metadata; never establishes that this checkout produced the binary.
+function nativeTestFailureProvenance(binaryPath: string) {
+  const errors: Array<{ stage: string; message: string }> = [];
+  const observe = (stage: string, read: () => unknown) => {
+    try { return read(); }
+    catch (error) { errors.push({ stage, message: String(error).slice(0, 1024) }); return null; }
+  };
+  const root = fileURLToPath(new URL("../..", import.meta.url));
+  const inputs = ["runner","runner/Cargo.toml","runner/Cargo.lock","runner/crates/runner-core/Cargo.toml","package.json","rust-toolchain.toml","protocol","protocol/manifest.json","generated/semantic-action-catalog.json","antigravity-distributions.json","scripts","acpx-profiles.json","cursor-distributions.json","cursor-contract.json","src/drivers/acpx/kimi-closure-pins.ts"];
+  return {
+    capturedAt: new Date().toISOString(), binaryPath,
+    binarySha256: observe("binarySha256", () => createHash("sha256").update(readFileSync(binaryPath)).digest("hex")),
+    buildMetadata: observe("buildMetadata", () => JSON.parse(execFileSync(binaryPath, ["--build-metadata"],
+      { encoding: "utf8", timeout: 1_000, maxBuffer: 32 * 1024, stdio: ["ignore", "pipe", "pipe"] }))),
+    checkoutInputs: observe("checkoutInputs", () => {
+      const values = execFileSync("git", ["rev-parse", "HEAD", ...inputs.map(input => "HEAD:packages/paperclip-runner/" + input)],
+        { cwd: root, encoding: "utf8", timeout: 1_000, maxBuffer: 32 * 1024, stdio: ["ignore", "pipe", "pipe"] }).trim().split(String.fromCharCode(10)).map(value => value.trim());
+      if (values.length !== inputs.length + 1) throw new Error("Incomplete native checkout input observation");
+      return { revision: values[0], nativeInputObjects: Object.fromEntries(inputs.map((input, index) => [input, values[index + 1]])) };
+    }),
+    checkoutInputsAreNotCompiledBinaryProof: true, errors,
+  };
+}
+
 function sidecarSource(root: string, selectedProfile = profile, agent = "claude") {
   return [
     "const fs = require('node:fs'); const net = require('node:net'); const rl = require('node:readline'); const {randomInt}=require('node:crypto');",
@@ -144,6 +168,7 @@ async function fixture(maxLifetimeMs?: number, candidateAdmission?: AcpxCandidat
   let commandNumber=0;
   async function command(type:string,payload:Record<string,unknown>={}) {
     const id="command-"+(++commandNumber);
+    const queuedAtMs = Date.now();
     controller.queueCommand(type,payload,id,true);
     try {
       await vi.waitFor(()=>{
@@ -152,12 +177,24 @@ async function fixture(maxLifetimeMs?: number, candidateAdmission?: AcpxCandidat
         expect(["completed","failed"]).toContain(controller.getCommand(id)?.status);
       },{timeout:8000});
     } catch (error) {
+      const failedAtMs = Date.now();
       let runnerDiagnostics: unknown;
       try { runnerDiagnostics = JSON.parse(readFileSync(resolve(root, "runner/runner-state.json"), "utf8")).diagnostics?.slice(-8); } catch { /* Startup may not have created state. */ }
-      throw new Error("Hermetic Runner command did not settle: " + JSON.stringify({ id, type,
+      const failure = new Error("Hermetic Runner command did not settle: " + JSON.stringify({ id, type,
         authenticatedConnections: controller.activeRunnerConnectionCount(), command: controller.getCommand(id),
         remainingLifetimeMs: deadlineAt === undefined ? null : deadlineAt - Date.now(),
         exitCode: child.exitCode, signalCode: child.signalCode, stderr: diagnostics, runnerDiagnostics }).slice(-8192), { cause: error });
+      try {
+        let sidecarLaunches: unknown;
+        try { sidecarLaunches = readFileSync(resolve(root, "launches.jsonl"), "utf8").trim().split(String.fromCharCode(10)).map(line => JSON.parse(line)); }
+        catch (captureError) { sidecarLaunches = { unavailable: String(captureError).slice(0, 1024) }; }
+        let sidecarBinding: unknown;
+        try { sidecarBinding = { command: nodeCommand, commandDigest: digest(nodeCommand), scriptDigest: digest(script), nodeVersion: process.version, nodeExecutable: process.execPath }; }
+        catch (captureError) { sidecarBinding = { unavailable: String(captureError).slice(0, 1024) }; }
+        console.error("Hermetic Runner failure diagnostics: " + JSON.stringify({ id, type, queuedAtMs, failedAtMs,
+          elapsedMs: failedAtMs - queuedAtMs, sidecarLaunches, sidecarBinding, nativeBinary: nativeTestFailureProvenance(binary) }));
+      } catch { /* Diagnostics must not replace the original command failure. */ }
+      throw failure;
     }
     return controller.getCommand(id)!;
   }

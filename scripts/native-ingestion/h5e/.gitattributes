@@ -1,0 +1,2 @@
+# Preserve the exact retained TAP failure log, including four blank-line spaces.
+snapshots/h5e-v4/checks/red-v3-rejects-prospective-qualified-source.stdout -whitespace

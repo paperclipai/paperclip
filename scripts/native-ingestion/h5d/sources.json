@@ -1,0 +1,165 @@
+{
+  "schema": "paperclip.native-ingestion.h5d-helper-sources.v1",
+  "scope": "Exact frozen sources and reviewed helper snapshots; packaging makes no performance claim.",
+  "repository": "https://github.com/paperclipai/paperclip.git",
+  "deliveryLockSha256AtPackaging": "7540075e96f9a93924a1e54775c17346c5760dd5d02902d83fb5228f918996ba",
+  "deliveryCheckoutWasExecutedDriver": false,
+  "mixedDeliveryTreeCannotReplaceEitherFrozenDriver": true,
+  "recordedVmRuntime": {
+    "node": "v26.4.0",
+    "pnpm": "9.15.4",
+    "otherRuntimeOutputs": "Exact absolute executable, argument and output pins from sealed runtime receipts; never guessed."
+  },
+  "rawB2Role": "ca7cba171cd5198ed569d75012edc858041cbc44 is unoptimized B2 provenance, not a final candidate.",
+  "frozenDriver": {
+    "commit": "2df9897e1ce2ca90be29fa097d776c3766e217ad",
+    "tree": "d0604f6fb899715f7ed623494fab24d64445e12b",
+    "baseRevision": "e431ec63d41fe90c6fd68bd2fc2bb969feeca917",
+    "annotatedTag": "native-ingestion-h5d",
+    "tagObject": "47ef6d1a5d81c31d4602aad50666f67c58f4cdb4",
+    "measurementSha256": "e1d8930c47b4d3a287aa0f3baf09fbd3aa04ac30b9313b707616dea7a3fec5d4",
+    "driverLockSha256": "54a81b2ed3f1f85eaa085c034560ac248e384db34fbc7aba8c5a3846c29b3ce8",
+    "comparatorSha256": "09daef50fad5eef4dbda4e63a191749d0d167d3ae9d38bfd22df8721e2aac4a3",
+    "preservedWorkloadSha256": "3eea2f24c0c0c38134492a0a17e1b9a398335c085dd248f03b14c14bb5a19835"
+  },
+  "sourceFreezeReceiptSha256": "d1b7a8d5a18bada9bf12aefb2ee98dbf3e5daef8e8a9adadab65c991004d091f",
+  "sourceOverlay": [
+    {
+      "file": "scripts/compare-native-ingestion-browser.ts",
+      "sha256": "09daef50fad5eef4dbda4e63a191749d0d167d3ae9d38bfd22df8721e2aac4a3",
+      "byteIdenticalToFrozenDriver": true
+    },
+    {
+      "file": "scripts/native-ingestion-performance-gates.test.mjs",
+      "sha256": "0724e6ed30ad0ad79851dbdd475e1f9e94c2028572b7b70b0c91af620227532e",
+      "byteIdenticalToFrozenDriver": true
+    },
+    {
+      "file": "scripts/native-ingestion-h5.test.mjs",
+      "sha256": "47fe63eff16017db43f146e3e88991801ee2f97efc5e757754b2076e843a4fd5",
+      "byteIdenticalToFrozenDriver": true
+    },
+    {
+      "file": "tests/e2e/fixtures/native-ingestion-h5.md",
+      "sha256": "c647cfb68b360882a3bf42771b35e37c52e0aba7bca01511f4ebfb9482bf45bc",
+      "byteIdenticalToFrozenDriver": true
+    },
+    {
+      "file": "tests/e2e/fixtures/native-ingestion-h5.mjs",
+      "sha256": "7d0629849fe776faa51a2ca1d987429be1a529df38efa8d92466bff6a8dabff2",
+      "byteIdenticalToFrozenDriver": true
+    },
+    {
+      "file": "tests/e2e/native-event-ingestion.journey.ts",
+      "sha256": "de0e8613e85aa9dc76cbd87b0f8418f25807266c60fa79fdf87ceec5b819711a",
+      "byteIdenticalToFrozenDriver": true
+    }
+  ],
+  "helpers": [
+    {
+      "file": "native-ingestion-run-h5d-browser.mjs",
+      "originalTaskFile": "/private/tmp/native-ingestion-run-h5d-browser.mjs",
+      "bytes": 58316,
+      "sha256": "4afaa8ffcd764b498bada29c8916715b73d34462fd49152e44ab8437ffb330eb",
+      "packagingChanges": []
+    },
+    {
+      "file": "native-ingestion-linux-h5d-qualification.py",
+      "originalTaskFile": "/private/tmp/native-ingestion-linux-h5d-qualification.py",
+      "bytes": 7779,
+      "sha256": "9df879140eda2953e1794bf9d68e1e09457fd33d8ca397731b8bba255c8f8c6d",
+      "packagingChanges": []
+    },
+    {
+      "file": "native-ingestion-h5d-linux-readiness.mjs",
+      "originalTaskFile": "/private/tmp/native-ingestion-h5d-linux-readiness.mjs",
+      "bytes": 3278,
+      "sha256": "9a5b4ae1a543d937f4811e41fc814b8528df2adb8602f931dc7b4166f0c8e9c7",
+      "packagingChanges": []
+    },
+    {
+      "file": "native-ingestion-h5d-full-linux-readiness.mjs",
+      "originalTaskFile": "/private/tmp/native-ingestion-h5d-full-linux-readiness.mjs",
+      "bytes": 3286,
+      "sha256": "7ffae7a9aa278837be3e40e2e4ca2d77c3c76cfd881b492b76dd861fc80e7040",
+      "packagingChanges": []
+    },
+    {
+      "file": "native-ingestion-validate-h5d-evidence.mjs",
+      "originalTaskFile": "/private/tmp/native-ingestion-validate-h5d-evidence.mjs",
+      "bytes": 7590,
+      "sha256": "a733ea5af01fa25c2fba1af83110bbaec1a2de5a003b4c4e137b8654dec93c11",
+      "packagingChanges": []
+    },
+    {
+      "file": "native-ingestion-extract-h5d-qualification-foreground.py",
+      "originalTaskFile": "/private/tmp/native-ingestion-extract-h5d-qualification-foreground.py",
+      "bytes": 6339,
+      "sha256": "b1e74ffd6696d28ce0b5a060f98310c4f1963e40d860486cc1962898e8cfdcc1",
+      "packagingChanges": []
+    }
+  ],
+  "sourceQualifiedAppRevisions": {
+    "B0": "bac53ec3bfeaf6546e7aaeaee516487b30534654",
+    "B1": "07061a601cdc20603c8c7a46f9ddbad7ac5f5939",
+    "B2": "ca7cba171cd5198ed569d75012edc858041cbc44"
+  },
+  "qualifiedBuildReceiptSha256": "a1259ba760f3cbbe44817e333f9f620bcf3769fb0a6c16f9ce2f0f5b2ed60d94",
+  "postreaderRepair": {
+    "reviewedAtUtc": "2026-11-04T09:17:11.678514+00:00",
+    "oldReaderSha256": "968fbbfce1942e96495f299b69c77ac904db72facf112664f54be6fc9b4e0cc1",
+    "newReaderSha256": "b1e74ffd6696d28ce0b5a060f98310c4f1963e40d860486cc1962898e8cfdcc1",
+    "diffSha256": "60314f2893acd3b34bda9f3864f323a225fd6cdcda4c389ab73f3cd1e4aef628",
+    "rawReportSha256": "d12ad9128d6a30bc335a69761d6004b2b3618fc275a07a84ef5434cfdb00b1e1",
+    "owningPlaywrightPassed": true,
+    "oldInvalidArrayPositionAssumptionRed": true,
+    "actualPreludeRunIndex": 9,
+    "checks": [
+      "actual immutable foreground run correlation",
+      "run-array permutation stays valid",
+      "reject wrong-prelude-member",
+      "reject wrong-provider-clock",
+      "reject wrong-foreground-token",
+      "reject wrong-authority-issue",
+      "reject duplicate-foreground-proof",
+      "reject missing-prelude-event",
+      "reject nonunique-prelude",
+      "reject prelude-not-before-epoch",
+      "reject short-retained-history"
+    ],
+    "correctedExtractorExit": 0,
+    "rawOwnerSourceAndMeasurementUnchanged": true,
+    "originalSealUntouched": true,
+    "scope": "Offline postreader defect repair only; qualification remains ineligible for noise/performance. No owning failed trial regraded; no runtime/test rerun."
+  },
+  "qualificationAsOfUtc": "2026-11-04T09:30:00Z",
+  "qualificationFacts": {
+    "small": {
+      "passed": true,
+      "deltas": 48,
+      "results": 3,
+      "stopDeltas": 9,
+      "stopResults": 0,
+      "sealedFiles": 40
+    },
+    "full": {
+      "ownerPassed": true,
+      "ownerDurationMs": 853339,
+      "original900BudgetPassed": true,
+      "originalSlaMisses": [
+        "burst512:streaming120"
+      ],
+      "loadedDeltasNearOriginalDeadline": 41,
+      "foregroundExpected": 512,
+      "loadedDurableDeltas": 51200,
+      "loadedResults": 100,
+      "recoveredProviderTransportFailures": 43,
+      "verifiedCompletionDurationMs": 402584,
+      "allLeasesClosed": true,
+      "cleanupQuietPassed": true
+    },
+    "performanceNoiseOrGainPassed": false,
+    "historyTopology": "One 1000-delta foreground history under nine fresh background runs; not ten history-bearing runs."
+  },
+  "excluded": "Unqualified counter wrapper and resource instrumentation are not packaged."
+}

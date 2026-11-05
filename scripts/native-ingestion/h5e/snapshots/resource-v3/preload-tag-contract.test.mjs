@@ -1,0 +1,64 @@
+// Actual source entry guards; registerHooks/fs are synthetic. No operating-system
+// inspection, real hook registration, application import or SUT module load.
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import vm from 'node:vm';
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { diagnosticPlan } from './run-resource-diagnostic.mjs';
+
+const here = path.dirname(fileURLToPath(import.meta.url));
+const read = name => readFileSync(path.join(here, name), 'utf8');
+const counterSource = read('counter-preload.mjs');
+const counterGuards = counterSource.slice(counterSource.indexOf("assert.equal(process.env.NODE_ENV, 'test');"),
+  counterSource.indexOf('assert.equal(process.version, pins.runtime.node);'));
+assert.ok(counterGuards.includes('PAPERCLIP_RESOURCE_COUNTER_RELEASE'));
+const current = read('pg-service-preload.mjs'), prior = read('test-fixtures/v2/pg-service-preload.mjs');
+const known = JSON.parse(read('known-builds.json'));
+const release = { workload: 'SMALL', variant: 'B0', build: known.B0, appRoot: known.B0.appRoot,
+  harnessRoot: '/fixture/frozen-main73', nodeExecutable: '/fixture/node', output: '/fixture/output',
+  counterPinsFile: '/fixture/pins.json', counterPinsSha256: 'a'.repeat(64),
+  releaseFile: '/fixture/release.json', releaseSha256: 'b'.repeat(64) };
+const environment = () => diagnosticPlan(release, 31000).environment;
+
+function pgEntry(source, env) {
+  const state = { registrations: 0, sourceReads: 0, realpathCalls: 0 };
+  // Replace only static imports and the module URL literal; every actual entry
+  // assertion and registration body remains. Never call the SUT load callback.
+  const body = source.replace(/^import .*;\n/gm, '')
+    .replaceAll('import.meta.url', JSON.stringify(pathToFileURL(path.join(here, 'pg-service-preload.mjs')).href));
+  const execute = () => vm.runInNewContext(body, { assert, path, URL, fileURLToPath,
+    process: { env },
+    realpathSync(value) { state.realpathCalls++; return value; },
+    readFileSync() { state.sourceReads++; throw new Error('No real SUT source loading'); },
+    registerHooks(hooks) { assert.equal(typeof hooks.load, 'function'); state.registrations++; },
+    startupTransform() { throw new Error('No application transformation executes in this contract test'); },
+    pins: { variants: { B0: { serverIndex: { path: 'server/dist/index.js', sha256: 'a'.repeat(64) } } } },
+  });
+  return { execute, state };
+}
+const counterEntry = env => vm.runInNewContext(counterGuards, { assert, process: { env } });
+
+test('actual V2 launcher/counter tag rejects V2 PG preload RED; one-tag V3 correction registers GREEN without loading SUT', () => {
+  const env = environment(); assert.equal(env.PAPERCLIP_RESOURCE_COUNTER_RELEASE, 'combined-h5e-resource-v2');
+  counterEntry(env);
+  const old = pgEntry(prior, env); assert.throws(old.execute); assert.equal(old.state.registrations, 0); assert.equal(old.state.realpathCalls, 0);
+  const corrected = pgEntry(current, env); corrected.execute();
+  assert.equal(corrected.state.registrations, 1); assert.equal(corrected.state.sourceReads, 0);
+  assert.equal(current, prior.replace("'combined-h5e-resource-v1'", "'combined-h5e-resource-v2'"));
+});
+
+test('both actual preload guards reject absent, old, invented-v3 and arbitrary tags before hook registration', () => {
+  for (const tag of [undefined, '', 'combined-h5e-resource-v1', 'combined-h5e-resource-v3', 'unreviewed']) {
+    const env = { ...environment(), PAPERCLIP_RESOURCE_COUNTER_RELEASE: tag };
+    assert.throws(() => counterEntry(env)); const pg = pgEntry(current, env); assert.throws(pg.execute);
+    assert.equal(pg.state.registrations, 0); assert.equal(pg.state.sourceReads, 0); assert.equal(pg.state.realpathCalls, 0);
+  }
+});
+
+test('both actual preload guards still require test environment with the valid shared v2 ABI tag', () => {
+  const env = { ...environment(), NODE_ENV: 'production' };
+  assert.throws(() => counterEntry(env)); const pg = pgEntry(current, env); assert.throws(pg.execute);
+  assert.equal(pg.state.registrations, 0); assert.equal(pg.state.sourceReads, 0);
+});

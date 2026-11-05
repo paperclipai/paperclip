@@ -10,6 +10,16 @@ type RunIssueBinding = {
   issueId?: string | null;
 };
 
+/** Keep derived ingestion state out of the public run response contract. */
+export function toPublicHeartbeatRun<T extends Record<string, unknown>>(run: T) {
+  const {
+    eventCursorProjectionSeq: _eventCursorProjectionSeq,
+    eventCursorRebuildPending: _eventCursorRebuildPending,
+    ...response
+  } = run;
+  return response;
+}
+
 export async function canActorReadHeartbeatRun(
   db: Db,
   access: {

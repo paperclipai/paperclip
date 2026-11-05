@@ -6,10 +6,13 @@ import { isNativeResponseEvidence, notifyNativeResponsePresentation } from "./na
 import { isSafeNativeChatProgressEventType } from "./safe-native-chat-progress.js";
 import { notifyChatNativeProgress } from "./chat-native-progress-notifications.js";
 import { boundRunIssueIdSql } from "./run-task-binding.js";
-import { and, asc, eq, getTableColumns, or, sql } from "drizzle-orm";
+import { and, eq, getTableColumns, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { heartbeatRunEvents, heartbeatRuns } from "@paperclipai/db";
 import { nativeSha256 } from "./native-runtime/canonical.js";
+import { nativeEventCursorProjectionCurrent, projectNativeEventSourceRange, readNativeEventSourceCursor,
+  readRetainedNativeEventCursor, requestNativeEventCursorRebuild, type NativeEventCursorRun,
+} from "./heartbeat/native-event-cursors.js";
 
 export const RETRY_EXHAUSTION_MESSAGE_PREFIX = "Bounded retry exhausted";
 
@@ -57,15 +60,22 @@ export class HeartbeatRunEventConflictError extends Error {
  * ingestion and legacy/direct-adapter writers use this allocator so the
  * database uniqueness invariant cannot turn a concurrent log/cancel/recovery
  * race into a failed run.
+ * Set projectionApplied only for a legacy event or after incorporating its
+ * native source metadata in this same transaction. Otherwise leave the marker
+ * stale so a subsequent native reader safely falls back and requests rebuild.
  */
 export async function allocateHeartbeatRunEventSeq(
   db: Db,
   runId: string,
+  projectionApplied = false,
 ): Promise<number> {
   const [updated] = await db
     .update(heartbeatRuns)
     .set({
       nextEventSeq: sql`${heartbeatRuns.nextEventSeq} + 1`,
+      ...(projectionApplied ? { eventCursorProjectionSeq: sql`case
+        when ${heartbeatRuns.eventCursorProjectionSeq} = ${heartbeatRuns.nextEventSeq} - 1
+        then ${heartbeatRuns.nextEventSeq} else ${heartbeatRuns.eventCursorProjectionSeq} end` } : {}),
       updatedAt: new Date(),
     })
     .where(eq(heartbeatRuns.id, runId))
@@ -90,6 +100,9 @@ export async function appendHeartbeatRunEvent(
     const allocated = db.$with("allocated_run_event", {}).as(sql`
       update ${heartbeatRuns}
       set next_event_seq = ${heartbeatRuns.nextEventSeq} + 1,
+          event_cursor_projection_seq = case
+            when ${heartbeatRuns.eventCursorProjectionSeq} = ${heartbeatRuns.nextEventSeq} - 1
+            then ${heartbeatRuns.nextEventSeq} else ${heartbeatRuns.eventCursorProjectionSeq} end,
           updated_at = ${sql.param(new Date(), heartbeatRuns.updatedAt)}
       where ${heartbeatRuns.id} = ${input.runId}
         and ${heartbeatRuns.companyId} = ${input.companyId}
@@ -113,6 +126,9 @@ export async function appendHeartbeatRunEvent(
   return db.transaction(async (tx) => {
     const run = await tx
       .select({ companyId: heartbeatRuns.companyId, agentId: heartbeatRuns.agentId,
+        ...(input.nativeSource ? { nextEventSeq: heartbeatRuns.nextEventSeq,
+          eventCursorProjectionSeq: heartbeatRuns.eventCursorProjectionSeq,
+          eventCursorRebuildPending: heartbeatRuns.eventCursorRebuildPending } : {}),
         // Only progress needs the task binding. Other native/recovery events
         // must not read a potentially large context snapshot to append a log.
         ...(projectsProgress || projectsResponse || projectsReassessment ? { runtimeMode: heartbeatRuns.runtimeMode } : {}),
@@ -126,6 +142,10 @@ export async function appendHeartbeatRunEvent(
       throw new Error("heartbeat_run_event_binding_mismatch");
     }
 
+    const cursorRun = input.nativeSource ? { ...run, id: input.runId } as NativeEventCursorRun : null;
+    const sourceScope = input.nativeSource ? { companyId: input.companyId, runId: input.runId,
+      sourceInstanceId: input.nativeSource.sourceInstanceId } : null;
+    const projectionCurrent = cursorRun !== null && nativeEventCursorProjectionCurrent(cursorRun);
     if (projectsRecovery) await notifyLiveRunRecovery(tx, input);
 
     if (input.retryExhaustion && !input.nativeSource) {
@@ -158,7 +178,7 @@ export async function appendHeartbeatRunEvent(
       ? nativeSha256(input.nativeSource.canonicalPayload)
       : null;
     if (input.nativeSource) {
-      const existing = await tx
+      const existingRows = await tx
         .select()
         .from(heartbeatRunEvents)
         .where(and(
@@ -171,20 +191,21 @@ export async function appendHeartbeatRunEvent(
             ),
           ),
         ))
-        .limit(1)
-        .then((rows) => rows[0] ?? null);
+        .limit(2);
+      const existing = existingRows[0];
       if (existing) {
-        if (existing.sourcePayloadSha256 !== sourceHash) {
+        if (existingRows.some(row => row.sourcePayloadSha256 !== sourceHash
+          || row.sourceInstanceId !== input.nativeSource!.sourceInstanceId
+          || row.sourceEventId !== input.nativeSource!.sourceEventId
+          || row.sourceSeq !== input.nativeSource!.sourceSeq)) {
           throw new HeartbeatRunEventConflictError();
         }
+        if (!projectionCurrent) await requestNativeEventCursorRebuild(tx as unknown as Db, cursorRun!);
         return {
           row: existing,
           disposition: "duplicate" as const,
-          highestContiguousSourceSeq: await contiguousCursor(
-            tx as unknown as Db,
-            input.runId,
-            input.nativeSource.sourceInstanceId,
-          ),
+          highestContiguousSourceSeq: await (projectionCurrent ? readNativeEventSourceCursor : readRetainedNativeEventCursor)(
+            tx as unknown as Db, sourceScope!),
         };
       }
     }
@@ -199,9 +220,16 @@ export async function appendHeartbeatRunEvent(
       await notifyNativeResponsePresentation(tx, { companyId: run.companyId, runId: input.runId });
     }
     if (projectsRetention) await notifyAttentionRetentionWork(tx, { companyId: input.companyId, sourceKind: "failed_run" });
+    let projectedSourceCursor = 0;
+    if (input.nativeSource) {
+      if (projectionCurrent) projectedSourceCursor = await projectNativeEventSourceRange(
+        tx as unknown as Db, sourceScope!, input.nativeSource.sourceSeq);
+      else await requestNativeEventCursorRebuild(tx as unknown as Db, cursorRun!);
+    }
     const seq = await allocateHeartbeatRunEventSeq(
       tx as unknown as Db,
       input.runId,
+      !input.nativeSource || projectionCurrent,
     );
     const [row] = await tx.insert(heartbeatRunEvents).values({
       companyId: input.companyId,
@@ -225,47 +253,8 @@ export async function appendHeartbeatRunEvent(
       row,
       disposition: "committed" as const,
       highestContiguousSourceSeq: input.nativeSource
-        ? await contiguousCursor(
-            tx as unknown as Db,
-            input.runId,
-            input.nativeSource.sourceInstanceId,
-          )
+        ? projectionCurrent ? projectedSourceCursor : await readRetainedNativeEventCursor(tx as unknown as Db, sourceScope!)
         : 0,
     };
   });
-}
-
-async function contiguousCursor(db: Db, runId: string, sourceInstanceId: string): Promise<number> {
-  const scope = and(
-    eq(heartbeatRunEvents.runId, runId),
-    eq(heartbeatRunEvents.sourceInstanceId, sourceInstanceId),
-    sql`${heartbeatRunEvents.sourceSeq} >= 1`,
-  );
-  const [range] = await db
-    .select({
-      count: sql<number>`count(*)`.mapWith(Number),
-      max: sql<number | null>`max(${heartbeatRunEvents.sourceSeq})`.mapWith(Number),
-    })
-    .from(heartbeatRunEvents)
-    .where(scope);
-  if (!range || !range.count) return 0;
-  if (range.max === range.count) return range.count;
-  const [first] = await db
-    .select({ sourceSeq: heartbeatRunEvents.sourceSeq })
-    .from(heartbeatRunEvents)
-    .where(and(scope, eq(heartbeatRunEvents.sourceSeq, 1)))
-    .limit(1);
-  if (!first) return 0;
-  const [last] = await db
-    .select({ sourceSeq: heartbeatRunEvents.sourceSeq })
-    .from(heartbeatRunEvents)
-    .where(and(scope, sql`not exists (
-      select 1 from heartbeat_run_events next_event
-      where next_event.run_id = heartbeat_run_events.run_id
-        and next_event.source_instance_id = heartbeat_run_events.source_instance_id
-        and next_event.source_seq = heartbeat_run_events.source_seq + 1
-    )`))
-    .orderBy(asc(heartbeatRunEvents.sourceSeq))
-    .limit(1);
-  return last?.sourceSeq ?? 0;
 }

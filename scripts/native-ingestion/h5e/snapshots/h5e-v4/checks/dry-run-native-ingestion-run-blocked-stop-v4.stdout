@@ -1,0 +1,35 @@
+{
+  "draft": true,
+  "executionReleased": false,
+  "stages": [
+    "qualification-b0",
+    "b0-aa",
+    "b1-aa",
+    "b0-b1",
+    "b1-b2",
+    "b0-b2"
+  ],
+  "registeredTimingArms": 50,
+  "qualificationArms": 1,
+  "note": "Exact companion source/revision, calibration rules and runtime command outputs are not frozen by this draft. No candidate or qualification result is invented.",
+  "requiredReleaseFields": [
+    "authorized",
+    "stage",
+    "outputRoot",
+    "orchestratorSha256",
+    "h5HelperFile",
+    "h5HelperSha256",
+    "harnessRoot",
+    "harnessRevision",
+    "inheritedH5cRevision",
+    "lockSha256",
+    "companionFiles(11 exact SHA256)",
+    "workloadSha256",
+    "precisionRuleSha256",
+    "resourceWatchdogMillis:1800000",
+    "runtimeChecks(exact executable/args/expected for node26.4.0,pnpm9.15.4,postgres,chromium,rustc,cargo)",
+    "perVariantBuilds(actual qualified H5c-compatible descriptors)",
+    "priorStageReports(exact passed owner/raw/proof/seal reports by file/SHA256)",
+    "noiseReports(exact b0-aa and b1-aa noise JSON file/SHA256 pins before comparisons)"
+  ]
+}

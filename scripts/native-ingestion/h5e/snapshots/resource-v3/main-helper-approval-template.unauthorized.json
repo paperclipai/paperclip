@@ -1,0 +1,10 @@
+{
+  "schema": "native-ingestion-resource-main-helper-approval/v1",
+  "sourceClear": false,
+  "harnessRevision": "73ea8516739e81fa7f37cd67651b4a2c73674014",
+  "helperSha256": null,
+  "packetSha256": null,
+  "independentReviewSha256": null,
+  "templateOnly": true,
+  "instructions": "An independent reviewer supplies actual exact digests only after reviewing the future main-helper source policy. This is source provenance, not user permission or execution release."
+}

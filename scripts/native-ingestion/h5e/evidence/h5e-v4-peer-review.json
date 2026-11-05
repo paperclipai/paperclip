@@ -1,0 +1,110 @@
+{
+  "schema": "paperclip.native-ingestion.candidate-neutral-source-peer-review.v1",
+  "reviewedAtUtc": "2026-11-04T12:52:08.469673+00:00",
+  "verdict": "SOURCE_CLEAR",
+  "findings": [],
+  "scope": "Independent review of candidate-neutral V4 helper source and compatibility only. No application, provider, browser, database, product build, network, VM, release, accepted evidence or performance execution.",
+  "packet": {
+    "file": "/private/tmp/native-ingestion-h5e-tools-v4/source-packet.json",
+    "sha256": "d0db3b84bcc73867dd6fe94afd68cadc956ba073c1a388678fa03748820be1b7",
+    "reviewPatchSha256": "6157332aeed91242a28e911a36f93babb9f8e2fc68afb0bac8a1de681b4a65c3",
+    "sealedSourceFilesVerified": 23,
+    "sealedVerificationFilesVerified": 33,
+    "exactParentDerivedHelpersVerified": 8
+  },
+  "minimalDiff": {
+    "mainHelperSha256": "191de2cbebab6936433778a2348f61a242a2f29c006b0aa5794443cb040c3347",
+    "dependencySha256": "8c803ecd1e711cc1cd953e7a006c5195122595792c31bdf710249a447cab07cf",
+    "companionOrchestratorSha256": "b17e7a164e9c4e828a9dca27e02440b327c1457ac540130d3e046308b3b566fa",
+    "changes": [
+      "Both byte-identical candidate/native validators remove only the fixed current75 source constant and replace its source-equality assertion with rejection of either frozen B0/B1 revision as B2.",
+      "The dry-run pending-input text describes prospective exact root-release registration.",
+      "Readiness/qualification wrappers propagate the new main hash; the companion propagates the exact new dependency hash. Remaining helper bytes equal their immutable V3 parents."
+    ],
+    "sourceReferences": [
+      "native-ingestion-run-h5e-browser.mjs:175-224; native-ingestion-h5c-cf-build-guards.mjs:175-224",
+      "native-ingestion-run-h5e-browser.mjs:302-328",
+      "native-ingestion-run-blocked-stop-v4.mjs:8,58-69"
+    ]
+  },
+  "candidateAuthority": {
+    "currentRegisteredRevision": "75b3578cfccf040b087a55a624e01baa2bca37f9",
+    "futureCandidateRegistered": false,
+    "allFourTemplatesUnauthorizedWithoutB2Descriptor": true,
+    "prospectiveAuthority": "Exact authorized root-release perVariantBuilds.B2 descriptor and matching actual independently qualified receipt, validated against the live clean Git source, compiled stamp, native input/configuration/artifact, isolated canonical target and complete inventory before the arm.",
+    "baselinePinsUnchanged": true,
+    "bothBaselineSourcesForbiddenAsB2": true,
+    "nativeFifteenInputRuntimeInventoryAndWithinRoleGuardsUnchanged": true,
+    "priorCandidateComparisonsCannotBeRetargeted": true,
+    "priorComparisonReferences": [
+      "native-ingestion-run-h5e-browser.mjs:369-387 binds prior candidate revision, receipt and inventory to current release; failed prior comparisons remain rejected.",
+      "native-ingestion-run-blocked-stop-v4.mjs:136-148,192-215 revalidate prior actual candidate source/stamp/inventory and recompute comparisons under their fixed identity."
+    ]
+  },
+  "controlCompatibility": {
+    "retainedCompatibilityReportSha256": "4cf441b57d438ea20b5d475127603c8337935da805ce9f756fb3fa216ef6d852",
+    "documentationMatchesPriorFinding": true,
+    "mainV3B0AaMustContinueUnderItsImmutableExistingHelperReleaseAndEvidence": true,
+    "mainV3ControlReuse": "Permitted only through unchanged normal workload/measurement/comparator/baseline/receipt/inventory/suitability/evidence checks. The main comparison/noise identity does not bind the orchestrator SHA; its own exact release remains bound to its own helper bytes.",
+    "oldCompanionQualificationOrAaReusableWithV4": false,
+    "reason": "Companion identity still includes both h5HelperSha256 and orchestratorSha256; unchanged readSeries/prerequisites require exact identity before consuming prior raw evidence/noise.",
+    "requiredNextGate": "After review and the sole operator's quiet boundary, one fresh companion B0 functional qualification under the new dependency8c803/orchestratorb17 identity and fresh output path, then companion AAs. All four main/companion B0/B1 AAs must establish fixed observed noise before any further product optimization.",
+    "noExistingDataRegradeOrRunningSourceRewrite": true
+  },
+  "unchangedExperiment": {
+    "mainDriverRevision": "73ea8516739e81fa7f37cd67651b4a2c73674014",
+    "companionDriverRevision": "a89f321ab5654211cbff7be1ee15c110b8db4a5f",
+    "mainComparatorSha256": "3deceda0ef909829dfc3c2169d5d88ccb7c1ce9aa2881998e8ee07d23c1b56dc",
+    "companionProtocolComparatorSha256": "fcb83d72d6ab609fbd6a7e765a756989ece681f27d97675271f8d1f2c9c2ee0c",
+    "checked": "Exact parent composition and unchanged frozen source seals preserve measured drivers, workload/oracle/timers, noise metrics/suitability, original SLA, control/durability rules, five alternating pairs, four-of-five wins, stage order, runtime guards, inventory and arm artifact seals.",
+    "noMetricNoiseSlaOrAcceptanceGateChange": true
+  },
+  "independentChecks": {
+    "logs": "/private/tmp/native-ingestion-h5e-tools-v4-peer-review.logs/checks.json",
+    "green": {
+      "nativeProvenanceTests": 61,
+      "sourceGuardTests": 30,
+      "passed": 91,
+      "failed": 0
+    },
+    "actualImmutableV3Red": {
+      "tests": 2,
+      "expectedFailures": 2,
+      "passed": 0,
+      "cause": "Both real V3 helper imports accept the current75 portion but reject the coherent prospective-source fixture at the removed fixed75 assertion."
+    },
+    "existingComparatorCli": {
+      "authorVerifiedTests": 6,
+      "passed": 6,
+      "failed": 0,
+      "rerunByPeer": false,
+      "reason": "Author command/log seals and all six PASS outcomes verified; actual comparator/protocol and test source hashes equal the previously verified frozen source. No changed comparator behavior requires another run.",
+      "testFileSha256": "96396cb32292ec9e3a8602bcfd63ff006b0e12955435d372ee632b9b52f0b1e5"
+    },
+    "ancestorPacketsPreserved": [
+      {
+        "version": "V3",
+        "sha256": "caab406f96294313b9ab05ed4f26a083023cbb4d61075993cfbf9b8fc15129c7",
+        "sealedFilesVerified": 58
+      },
+      {
+        "version": "V2",
+        "sha256": "013f84de7bfcacf989eba3932044eb1c3c52d2182efc843e65180cc71468297c",
+        "sealedFilesVerified": 58
+      },
+      {
+        "version": "V1",
+        "sha256": "18a991b486d40cf7c40519de0d98b232e7971c65ae94ba0b61bd28b971ff9949",
+        "sealedFilesVerified": 56
+      }
+    ]
+  },
+  "limitations": [
+    "Source clearance does not authorize VM execution or establish serving qualification, acceptable noise, throughput/latency improvement or cloud Stop acceptance.",
+    "No future candidate commit, descriptor, native optimization or build was created or registered. Completed candidate measurements must retain their own exact source and qualified artifacts."
+  ],
+  "writesByReviewer": [
+    "/private/tmp/native-ingestion-h5e-tools-v4-peer-review.json",
+    "/private/tmp/native-ingestion-h5e-tools-v4-peer-review.logs/"
+  ]
+}

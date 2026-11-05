@@ -6,6 +6,8 @@ import { notifyUnsafeWorkspaceExportRecovery } from "../unsafe-workspace-export-
 import { isSafeNativeChatProgressEventType } from "../safe-native-chat-progress.js";
 import { notifyChatNativeProgress } from "../chat-native-progress-notifications.js";
 import { createHash } from "node:crypto";
+import { nativeEventCursorProjectionCurrent, projectNativeEventSourceRange, requestNativeEventCursorRebuild,
+} from "../heartbeat/native-event-cursors.js";
 
 import { and, desc, eq, inArray, lt } from "drizzle-orm";
 
@@ -243,6 +245,7 @@ export class NativeRunCoordinatorStore {
         .limit(1);
       if (!run) throw new Error("native_event_run_not_authorized");
 
+      const projectionCurrent = nativeEventCursorProjectionCurrent(run);
       const [existing] = await tx
         .select()
         .from(heartbeatRunEvents)
@@ -263,6 +266,7 @@ export class NativeRunCoordinatorStore {
             "source_event_replay_conflict",
           );
         }
+        if (!projectionCurrent) await requestNativeEventCursorRebuild(tx as unknown as Db, run);
         const [latest] = await tx
           .select({ sourceSeq: heartbeatRunEvents.sourceSeq })
           .from(heartbeatRunEvents)
@@ -303,6 +307,9 @@ export class NativeRunCoordinatorStore {
       if (isNativeResponseEvidence(event.eventType, canonicalPayload)) {
         await notifyNativeResponsePresentation(tx, this.#binding);
       }
+      if (projectionCurrent) await projectNativeEventSourceRange(tx as unknown as Db,
+        { companyId: run.companyId, runId: run.id, sourceInstanceId: event.sourceInstanceId }, event.sourceSeq);
+      else await requestNativeEventCursorRebuild(tx as unknown as Db, run);
       const cursor = run.nextEventSeq;
       const [inserted] = await tx
         .insert(heartbeatRunEvents)
@@ -325,7 +332,8 @@ export class NativeRunCoordinatorStore {
       if (!inserted) throw new Error("native_event_not_persisted");
       await tx
         .update(heartbeatRuns)
-        .set({ nextEventSeq: cursor + 1, updatedAt: new Date() })
+        .set({ nextEventSeq: cursor + 1, updatedAt: new Date(),
+          ...(projectionCurrent ? { eventCursorProjectionSeq: cursor } : {}) })
         .where(eq(heartbeatRuns.id, this.#binding.runId));
       return {
         disposition: "committed" as const,

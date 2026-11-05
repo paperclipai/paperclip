@@ -1,0 +1,296 @@
+{
+  "sourceOnly": true,
+  "applicationProviderDatabaseBrowserVmStagingNetworkBuildOrMeasurementsExecuted": false,
+  "startedAtUtc": "2026-11-04T12:45:26.223947+00:00",
+  "commands": [
+    {
+      "name": "syntax-native-ingestion-run-h5e-browser",
+      "argv": [
+        "/private/tmp/native-ingestion-node24/bin/node",
+        "--check",
+        "/private/tmp/native-ingestion-h5e-tools-v4/native-ingestion-run-h5e-browser.mjs"
+      ],
+      "cwd": "/private/tmp/native-ingestion-h5e-tools-v4",
+      "expectedExit": 0,
+      "exit": 0,
+      "passed": true,
+      "stdoutSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderrSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "syntax-native-ingestion-h5c-cf-build-guards",
+      "argv": [
+        "/private/tmp/native-ingestion-node24/bin/node",
+        "--check",
+        "/private/tmp/native-ingestion-h5e-tools-v4/native-ingestion-h5c-cf-build-guards.mjs"
+      ],
+      "cwd": "/private/tmp/native-ingestion-h5e-tools-v4",
+      "expectedExit": 0,
+      "exit": 0,
+      "passed": true,
+      "stdoutSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderrSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "syntax-native-ingestion-h5e-linux-readiness",
+      "argv": [
+        "/private/tmp/native-ingestion-node24/bin/node",
+        "--check",
+        "/private/tmp/native-ingestion-h5e-tools-v4/native-ingestion-h5e-linux-readiness.mjs"
+      ],
+      "cwd": "/private/tmp/native-ingestion-h5e-tools-v4",
+      "expectedExit": 0,
+      "exit": 0,
+      "passed": true,
+      "stdoutSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderrSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "syntax-native-ingestion-h5e-full-linux-readiness",
+      "argv": [
+        "/private/tmp/native-ingestion-node24/bin/node",
+        "--check",
+        "/private/tmp/native-ingestion-h5e-tools-v4/native-ingestion-h5e-full-linux-readiness.mjs"
+      ],
+      "cwd": "/private/tmp/native-ingestion-h5e-tools-v4",
+      "expectedExit": 0,
+      "exit": 0,
+      "passed": true,
+      "stdoutSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderrSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "syntax-native-ingestion-run-blocked-stop-v4",
+      "argv": [
+        "/private/tmp/native-ingestion-node24/bin/node",
+        "--check",
+        "/private/tmp/native-ingestion-h5e-tools-v4/native-ingestion-run-blocked-stop-v4.mjs"
+      ],
+      "cwd": "/private/tmp/native-ingestion-h5e-tools-v4",
+      "expectedExit": 0,
+      "exit": 0,
+      "passed": true,
+      "stdoutSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderrSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "red-v3-rejects-prospective-qualified-source",
+      "argv": [
+        "/private/tmp/native-ingestion-node24/bin/node",
+        "--test",
+        "--test-reporter=tap",
+        "--test-name-pattern=qualified current75 and prospective sources use exact descriptor receipts",
+        "/private/tmp/native-ingestion-h5e-tools-v4/native-provenance.test.mjs"
+      ],
+      "cwd": "/private/tmp/native-ingestion-h5e-tools-v4",
+      "expectedExit": 1,
+      "exit": 1,
+      "passed": true,
+      "stdoutSha256": "03ad4284f1422bf8461ce148f899599be45ea7490e613246c1003ff60a0457a6",
+      "stderrSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "green-native-provenance.test",
+      "argv": [
+        "/private/tmp/native-ingestion-node24/bin/node",
+        "--test",
+        "--test-reporter=tap",
+        "/private/tmp/native-ingestion-h5e-tools-v4/native-provenance.test.mjs"
+      ],
+      "cwd": "/private/tmp/native-ingestion-h5e-tools-v4",
+      "expectedExit": 0,
+      "exit": 0,
+      "passed": true,
+      "stdoutSha256": "31d94725b5c4a9b1a309a13a69cd43bd3c7edca2854e92e8dda06af7bc63bacf",
+      "stderrSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "green-source-guards.test",
+      "argv": [
+        "/private/tmp/native-ingestion-node24/bin/node",
+        "--test",
+        "--test-reporter=tap",
+        "/private/tmp/native-ingestion-h5e-tools-v4/source-guards.test.mjs"
+      ],
+      "cwd": "/private/tmp/native-ingestion-h5e-tools-v4",
+      "expectedExit": 0,
+      "exit": 0,
+      "passed": true,
+      "stdoutSha256": "9d9c5848439d234aed35d2a84bc59e78b2054336195392d14dc4158807c08881",
+      "stderrSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "existing-qualified-native-comparator-cli",
+      "argv": [
+        "/private/tmp/native-ingestion-node24/bin/node",
+        "--test",
+        "--test-reporter=tap",
+        "--test-name-pattern=H5 CLI retains baseline SLA failure",
+        "/private/tmp/paperclip-native-event-harness-h5e/scripts/native-ingestion-performance-gates.test.mjs"
+      ],
+      "cwd": "/private/tmp/native-ingestion-h5e-tools-v4",
+      "expectedExit": 0,
+      "exit": 0,
+      "passed": true,
+      "stdoutSha256": "2b209c928b9ef68b0511ac962fcfa819a945759da65f2e7ae6d84e5422e6074c",
+      "stderrSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "dry-run-native-ingestion-run-h5e-browser",
+      "argv": [
+        "/private/tmp/native-ingestion-node24/bin/node",
+        "/private/tmp/native-ingestion-h5e-tools-v4/native-ingestion-run-h5e-browser.mjs"
+      ],
+      "cwd": "/private/tmp/native-ingestion-h5e-tools-v4",
+      "expectedExit": 0,
+      "exit": 0,
+      "passed": true,
+      "stdoutSha256": "a217983b6b767f110929c7ec3a2bdc57ca063d48cb1f4773c8668309ae5877b1",
+      "stderrSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "dry-run-native-ingestion-h5c-cf-build-guards",
+      "argv": [
+        "/private/tmp/native-ingestion-node24/bin/node",
+        "/private/tmp/native-ingestion-h5e-tools-v4/native-ingestion-h5c-cf-build-guards.mjs"
+      ],
+      "cwd": "/private/tmp/native-ingestion-h5e-tools-v4",
+      "expectedExit": 0,
+      "exit": 0,
+      "passed": true,
+      "stdoutSha256": "103794e2bb37530ab20c663aab0b8bd2e47e03e91ee6a8f5517c0b7c7e68495c",
+      "stderrSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "dry-run-native-ingestion-run-blocked-stop-v4",
+      "argv": [
+        "/private/tmp/native-ingestion-node24/bin/node",
+        "/private/tmp/native-ingestion-h5e-tools-v4/native-ingestion-run-blocked-stop-v4.mjs"
+      ],
+      "cwd": "/private/tmp/native-ingestion-h5e-tools-v4",
+      "expectedExit": 0,
+      "exit": 0,
+      "passed": true,
+      "stdoutSha256": "705cf50833d7c874ef164f27ded181b9cb7bb0da337643823979dad3ab9c21fd",
+      "stderrSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "dependency-reject-execute",
+      "argv": [
+        "/private/tmp/native-ingestion-node24/bin/node",
+        "/private/tmp/native-ingestion-h5e-tools-v4/native-ingestion-h5c-cf-build-guards.mjs",
+        "--execute"
+      ],
+      "cwd": "/private/tmp/native-ingestion-h5e-tools-v4",
+      "expectedExit": 1,
+      "exit": 1,
+      "passed": true,
+      "stdoutSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderrSha256": "bc0032422480e05f6c41539faadf509517e1bc64cbd862a5ab6947e9bd415f42"
+    },
+    {
+      "name": "dependency-reject-validate-release",
+      "argv": [
+        "/private/tmp/native-ingestion-node24/bin/node",
+        "/private/tmp/native-ingestion-h5e-tools-v4/native-ingestion-h5c-cf-build-guards.mjs",
+        "--validate-release"
+      ],
+      "cwd": "/private/tmp/native-ingestion-h5e-tools-v4",
+      "expectedExit": 1,
+      "exit": 1,
+      "passed": true,
+      "stdoutSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderrSha256": "bc0032422480e05f6c41539faadf509517e1bc64cbd862a5ab6947e9bd415f42"
+    },
+    {
+      "name": "reject-main-aa-b0.unauthorized.json",
+      "argv": [
+        "/private/tmp/native-ingestion-node24/bin/node",
+        "/private/tmp/native-ingestion-h5e-tools-v4/native-ingestion-run-h5e-browser.mjs",
+        "--validate-release",
+        "--stage=browser-aa-b0",
+        "--release=/private/tmp/native-ingestion-h5e-tools-v4/templates/main-aa-b0.unauthorized.json",
+        "--output-root=/home/ubuntu/native-ingestion/evidence/h5e/series"
+      ],
+      "cwd": "/private/tmp/native-ingestion-h5e-tools-v4",
+      "expectedExit": 1,
+      "exit": 1,
+      "passed": true,
+      "stdoutSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderrSha256": "e6c39f170a8fe630d0bbd5e1adc080704b34ca4dc8ae2d7c38b77edd3826193f"
+    },
+    {
+      "name": "reject-companion-v4-qualification-b0.unauthorized.json",
+      "argv": [
+        "/private/tmp/native-ingestion-node24/bin/node",
+        "/private/tmp/native-ingestion-h5e-tools-v4/native-ingestion-run-blocked-stop-v4.mjs",
+        "--validate-release",
+        "--stage=qualification-b0",
+        "--release=/private/tmp/native-ingestion-h5e-tools-v4/templates/companion-v4-qualification-b0.unauthorized.json",
+        "--output-root=/home/ubuntu/native-ingestion/evidence/blocked-stop-v4/series",
+        "--release-sha256=bf454d1a7ebef0dcb7d4e5708d3891c7a27617b19f32861a77697cb47a340fdf"
+      ],
+      "cwd": "/private/tmp/native-ingestion-h5e-tools-v4",
+      "expectedExit": 1,
+      "exit": 1,
+      "passed": true,
+      "stdoutSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderrSha256": "d74ac077d5a7396ea1ed6ee92f8dd45b415462d310040c697d4afef37b8601ca"
+    }
+  ],
+  "heldForRootAndPeerReview": true,
+  "nodeVersion": "v24.22.2",
+  "pythonAstFiles": [
+    "compose.py",
+    "generate_templates.py",
+    "native-ingestion-extract-h5e-qualification-foreground.py",
+    "native-ingestion-linux-h5e-qualification.py",
+    "run_checks.py"
+  ],
+  "expectedRed": {
+    "tests": 2,
+    "failed": 2,
+    "reason": "V3 hardcodes current75 source and rejects an otherwise coherent future qualified descriptor before any live app could start."
+  },
+  "existingComparatorChecks": {
+    "file": "/private/tmp/paperclip-native-event-harness-h5e/scripts/native-ingestion-performance-gates.test.mjs",
+    "fileSha256": "96396cb32292ec9e3a8602bcfd63ff006b0e12955435d372ee632b9b52f0b1e5",
+    "tests": 6,
+    "passed": 6,
+    "failed": 0,
+    "purpose": "Actual frozen CLI checks qualified cross-role binaries, serving/receipt mismatches, within-role changes, A/A stability and later original proof identity."
+  },
+  "unchangedAncestorPackets": [
+    {
+      "file": "/private/tmp/native-ingestion-h5e-tools-v3/source-packet.json",
+      "sha256": "caab406f96294313b9ab05ed4f26a083023cbb4d61075993cfbf9b8fc15129c7"
+    },
+    {
+      "file": "/private/tmp/native-ingestion-h5e-tools-v2/source-packet.json",
+      "sha256": "013f84de7bfcacf989eba3932044eb1c3c52d2182efc843e65180cc71468297c"
+    },
+    {
+      "file": "/private/tmp/native-ingestion-h5e-tools/source-packet.json",
+      "sha256": "18a991b486d40cf7c40519de0d98b232e7971c65ae94ba0b61bd28b971ff9949"
+    }
+  ],
+  "passed": true,
+  "greenSuites": [
+    {
+      "file": "native-provenance.test.mjs",
+      "tests": 61,
+      "passed": 61,
+      "failed": 0
+    },
+    {
+      "file": "source-guards.test.mjs",
+      "tests": 30,
+      "passed": 30,
+      "failed": 0
+    }
+  ],
+  "greenTests": 91,
+  "templatesAuthorized": false,
+  "parentPacketAndFrozenDriversUnchanged": true,
+  "finishedAtUtc": "2026-11-04T12:45:40.392337+00:00"
+}

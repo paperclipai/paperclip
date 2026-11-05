@@ -1,0 +1,87 @@
+{
+  "schema": "native-ingestion-resource-block-protocol/v1",
+  "frozenAtUtc": "2026-11-04T13:30:29.507086+00:00",
+  "owner": "root",
+  "sourceOnly": true,
+  "executionReleased": false,
+  "scope": "Separate resource diagnostics; never substitute for unprofiled application or blocked-control acceptance",
+  "workload": "Exact frozen main73 six FULL cases; providers emit through normal ingestion; each role gets fresh owned data and complete drainage",
+  "blocks": [
+    {
+      "block": 1,
+      "order": [
+        "B0",
+        "B1",
+        "B2"
+      ],
+      "newCompleteFullInvocations": 3
+    },
+    {
+      "block": 2,
+      "order": [
+        "B2",
+        "B1",
+        "B0"
+      ],
+      "newCompleteFullInvocations": 3
+    },
+    {
+      "block": 3,
+      "order": [
+        "B0",
+        "B1",
+        "B2"
+      ],
+      "newCompleteFullInvocations": 3
+    },
+    {
+      "block": 4,
+      "order": [
+        "B2",
+        "B1",
+        "B0"
+      ],
+      "newCompleteFullInvocations": 3
+    },
+    {
+      "block": 5,
+      "order": [
+        "B0",
+        "B1",
+        "B2"
+      ],
+      "newCompleteFullInvocations": 3
+    }
+  ],
+  "totalNewFullDiagnosticInvocations": 15,
+  "pairedContrasts": [
+    "B0->B1",
+    "B1->B2",
+    "B0->B2"
+  ],
+  "design": "Five independent matched blocks. Each contains one full run of each role. Reverse the three-role order in alternating blocks. Each contrast thus has five alternating-order matched pairs. The same role observation is explicitly shared across contrasts within its block; do not count those contrasts as independent extra trials.",
+  "roleRegistration": "B0/B1 exact frozen source/build receipts. B2 exact reviewed candidate/source/build/native/pins frozen before its first resource comparison; current qualified75 is the only registered candidate. Never retarget completed candidate captures.",
+  "prerequisites": [
+    "Exact source and independent review pass",
+    "Actual Linux service/controls/environment/exit-proof/accounting qualification",
+    "One SMALL actual serving qualification exercises all six hooks, correct SQL/postmaster binding, independent final flush, normal functional oracle and complete cleanup",
+    "Immutable counter definitions and identical instrumentation/topology/resource limits for all roles",
+    "Quiet host between invocations; no competing builds/profiles/benchmarks; finite owner and actual guard readback"
+  ],
+  "captureRules": [
+    "Keep all failures, retries, timeouts, ineligible windows and cleanup failures; never silently replace a trial",
+    "Use frozen terminal and independent verified-drain windows separately",
+    "Use at least six interior samples and at most10% numerator boundary uncertainty exactly as fixed definitions require",
+    "Report raw counters with ineligibility reasons for short/Stop windows; no invented ratios",
+    "Primary fixed workload denominator: independently verified unique committed text deltas, including all background/recovery/observer cost in numerator; show normalized-event/postcommit/transaction counts separately",
+    "Report five samples per role/contrast, absolute values, medians, spread and paired percentage bounds; no p99 from five run-level ratios",
+    "Bound CPU/event from cumulative-counter interval bounds; proc process CPU remains lowerbound-only; whole-PG cgroup CPU includes SQL observer",
+    "Keep observer overhead explicit; diagnostic timings do not establish application gains or replace original-SLA proof",
+    "Do not claim CPU improvement beyond a certified CPU-specific noise envelope when no such calibration exists; publish measured resource costs/tradeoffs with repeat spread and boundaries"
+  ],
+  "unchangedMetricDefinitionsSha256": "e5f6af57372b8f1edd8458781f72d6fbbd716cc74c0d6854958bd559a2bd138e",
+  "sourcePacket": "/private/tmp/native-ingestion-h5e-resource-tools-v3/source-packet.json",
+  "sourcePacketSha256": "f660208e118aa0e899a111fabfadac07c8da139051b5737105896b369d15e124",
+  "sampleFiles": [],
+  "resourceMeasurementOrImprovementClaim": false
+}

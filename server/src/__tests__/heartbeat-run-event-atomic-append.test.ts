@@ -148,7 +148,9 @@ describeEmbeddedPostgres("atomic ordinary run events", () => {
       query.includes('from "heartbeat_runs"') && query.endsWith("for update"));
     expect(lockReads).toHaveLength(2);
     for (const query of lockReads) {
-      expect(query).toMatch(/^select "company_id", "agent_id" from "heartbeat_runs" /);
+      expect(query).toMatch(kind === "native"
+        ? /^select "company_id", "agent_id", "next_event_seq", "event_cursor_projection_seq", "event_cursor_rebuild_pending" from "heartbeat_runs" /
+        : /^select "company_id", "agent_id" from "heartbeat_runs" /);
       expect(query).not.toMatch(/context_snapshot|runner_profile_json|result_json|stdout_excerpt/);
     }
   });

@@ -1,0 +1,172 @@
+{
+  "schema": "native-ingestion-h5e-resource-independent-source-review/v1",
+  "reviewer": "/root/resource_v2_review",
+  "reviewedAtUtc": "2026-11-04T12:52:30.413406+00:00",
+  "verdict": "CHANGES_REQUIRED",
+  "sourceOnly": true,
+  "executionReleased": false,
+  "servingQualification": false,
+  "performanceAcceptance": false,
+  "packet": {
+    "path": "/private/tmp/native-ingestion-h5e-resource-tools/source-packet.json",
+    "sha256": "dbc565017889b995880ee05a0b4bffae5c4c5fc56a7ed538226c4ea7bea6c960"
+  },
+  "patchSha256": "5df1e3fad498c306cd5582e1b021125dae3ec92e7e4557758951fe54ddd0264e",
+  "verification": {
+    "sourceFilesVerified": 45,
+    "referencesVerified": 6,
+    "unchangedCopiesVerified": 6,
+    "checkReceiptsVerified": 8,
+    "nodePureTestsPassed": 34,
+    "pythonPureTestsPassed": 3,
+    "oldDefinitionsSha256": "e5f6af57372b8f1edd8458781f72d6fbbd716cc74c0d6854958bd559a2bd138e",
+    "definitionsAndCounterNumericalSemanticsUnchanged": true,
+    "installedEmbeddedPostgresJsSourceMatchesPinnedPackageDistIndexAndBinaryFiles": true,
+    "installedEmbeddedPostgresVersion": "18.1.0-beta.16",
+    "frozenMain9FilesSha256": "7995ffdbf14b772e4c39444f6b89ba8684bcd86ef8ae866ffb0f5dbd89f35ccd",
+    "frozenComparatorSha256": "3deceda0ef909829dfc3c2169d5d88ccb7c1ce9aa2881998e8ee07d23c1b56dc"
+  },
+  "operations": {
+    "actualCloudVmCalls": 0,
+    "actualProcessOrProcInspection": 0,
+    "postgresCgroupSystemdAppProviderBrowserOrBuildOperations": 0,
+    "productOrPacketSourceEdits": 0,
+    "credentialAccess": 0,
+    "network": "Only primary freedesktop systemd documentation browsing, as explicitly allowed for this review; no SUT/VM/service network operations.",
+    "faultInjection": "Node node:vm executes extracted actual functions with synthetic filesystem, process, systemctl and child-handle stubs; it is not an actual virtual-machine run."
+  },
+  "findings": [
+    {
+      "priority": "P2",
+      "title": "Retain shutdown evidence and finish private-file cleanup when the transient unit is collected",
+      "file": "/private/tmp/native-ingestion-h5e-resource-tools/pg-service.mjs",
+      "line": 212,
+      "relatedLines": [
+        207,
+        208,
+        209,
+        214,
+        217,
+        226,
+        228
+      ],
+      "trigger": "Owned transient PG unit stops successfully and is garbage-collected before the subsequent systemctl show, or is already collected when cleanup begins.",
+      "actualBehavior": "stopPgService calls serviceState without allowMissing after the successful stop. The documented not-found/code1 response throws before recorded PID/scope checks, private environment/password removal and pg-cleanup receipt. The separate initial not-found branch returns complete:true,unitNeverStarted:true even when a ready pg-service receipt exists, without PID/scope checks or normal-shutdown proof.",
+      "impact": "A valid successful shutdown can fail the diagnostic and leave the full private PG environment file behind; the already-collected branch can instead misclassify a known started service as never started. No file was actually created or uploaded by this review.",
+      "sourceProof": {
+        "actualSourceFunctions": [
+          "serviceState",
+          "stopPgService"
+        ],
+        "stopCommandSucceeded": true,
+        "postStopShowReturnedNotFound": true,
+        "cleanupRejected": true,
+        "privateFilesUnlinked": [],
+        "independentPidChecks": [],
+        "scopeChecks": [],
+        "cleanupReceiptWritten": false,
+        "noSystemctlOrFilesystemRuntimeExecuted": true
+      },
+      "additionalSourceProof": {
+        "readyReceiptExists": true,
+        "unitAbsentAtCleanup": true,
+        "returnedComplete": true,
+        "incorrectlyClassifiedNeverStarted": true,
+        "independentPidChecks": [],
+        "scopeChecks": [],
+        "normalPgShutdownProven": false
+      },
+      "requiredCorrection": "Preserve independently qualified final exit/result evidence before unit state can be unloaded, or retain a valid unit reference through the needed readback. A missing unit may establish unit absence, not successful normal PG exit. Verify recorded process and scope retirement in both branches, classify missing result honestly as unknown/unqualified, and guarantee removal or explicitly excluded retention of owned private files on error while retaining the original failure. Merely setting allowMissing cannot reconstruct lost Result metadata."
+    },
+    {
+      "priority": "P2",
+      "title": "Own spawned collectors and attach exit/error handlers before awaiting startup work",
+      "file": "/private/tmp/native-ingestion-h5e-resource-tools/resource-capture.mjs",
+      "line": 26,
+      "relatedLines": [
+        27,
+        28,
+        29,
+        33,
+        113,
+        116,
+        120,
+        148,
+        150,
+        152
+      ],
+      "trigger": "A collector has spawned but its birth read fails or startup aborts before launchCollector returns; output.close also creates an await before error/close listeners are registered.",
+      "actualBehavior": "startResourceCapture only pushes a collector into state.children after awaited launchCollector returns. Birth-read EACCES leaves the already spawned handle unregistered. finishResourceCapture cleans only state.children, so its finally path never retires that child. There are zero error handlers during the first post-spawn await, so an early spawn error can also escape the intended exit promise.",
+      "impact": "A failed serving smoke can leave an external proc/SQL observer alive outside the cleanup owner and contaminate later quiet windows until its deadline or external cleanup. Existing pure partial-startup test exercises only validateCleanupUnit predicates and does not cover this acquisition path.",
+      "sourceProof": {
+        "actualSourceFunctions": [
+          "poll",
+          "launchCollector",
+          "startResourceCapture tail",
+          "finishResourceCapture"
+        ],
+        "childSpawned": true,
+        "birthReadRejected": "EACCES",
+        "cleanupChildrenRegistered": 0,
+        "cleanupKillCalls": 0,
+        "fakeChildStillLive": true,
+        "errorListenersDuringFirstPostSpawnAwait": 0,
+        "combinedReceiptComplete": false,
+        "noProcessOrProcRuntimeExecuted": true
+      },
+      "requiredCorrection": "Attach error/close handlers synchronously with child creation before the first await, register every spawned handle immediately with the acquisition owner, and ensure partial-start failure performs finite identity-safe teardown/join even when birth capture never succeeds. Preserve the startup error and cleanup uncertainty; an empty children list is not proof that no process was started."
+    }
+  ],
+  "primaryDocumentation": [
+    {
+      "title": "systemd-run: RemainAfterExit and transient-unit collection",
+      "url": "https://www.freedesktop.org/software/systemd/man/255/systemd-run.html",
+      "supports": "RemainAfterExit retains a completed service until it is explicitly stopped; successful transient units are normally unloaded."
+    },
+    {
+      "title": "systemd.unit: Unit Garbage Collection",
+      "url": "https://www.freedesktop.org/software/systemd/man/260/systemd.unit.html",
+      "supports": "Unused inactive units may be unloaded and execution results, exit codes/signals and resource statistics are lost except logs."
+    }
+  ],
+  "positiveSourceObservations": [
+    "Normal compiled embedded-postgres reuse seam, initdb flags and direct PG argv match the pinned installed JS path; environment remains private-file-only and actual-process hash comparison is required. Type=exec places PG in its root-owned nondelegated scope before descendants fork; actual Linux permissions, effective controls and exited-child accounting remain unqualified.",
+    "External same-cluster SQL/backend/postmaster binding and proc/cgroup CPU helpers remain byte-identical to the reviewed V2 packet. PG scope contains database observer work; proc CPU remains lower-bound-only with no full provider/Runner CPU claim.",
+    "Before/after hooks bracket owning emissions and require external completion plus independent Node flush before normal app teardown. Complete failed-start ownership is not yet established because of the two findings.",
+    "Terminal and fully-verified windows remain separate, Stop is excluded from ratios, and independent six-interior-sample/ten-percent uncertainty requirements are retained. Actual six-hook serving qualification remains explicitly unqualified.",
+    "Current CF B0/B1 module/source pins and frozen main73/comparator remain exact; B2 pins remain null and future helper/candidate exports require actual qualified metadata and reviewed approval."
+  ],
+  "evidence": [
+    {
+      "path": "/private/tmp/native-ingestion-h5e-resource-tools-peer-pure.log",
+      "bytes": 4094,
+      "sha256": "d3630c2514300ceeefab1e8077cec7d4885fa04a40f2a050755d98b16b3e4561"
+    },
+    {
+      "path": "/private/tmp/native-ingestion-h5e-resource-tools-peer-python.log",
+      "bytes": 101,
+      "sha256": "33060fd73862c5e1af97335504d5b45211fce6d229657f556d8deceeadc52ce4"
+    },
+    {
+      "path": "/private/tmp/native-ingestion-h5e-resource-tools-peer-faults.mjs",
+      "bytes": 7329,
+      "sha256": "5bdb4c8ecc78e5d0c056955b80dca3350481e1119522ea22a79df919054a3fb2"
+    },
+    {
+      "path": "/private/tmp/native-ingestion-h5e-resource-tools-peer-faults.json",
+      "bytes": 1141,
+      "sha256": "11a2f28c0a40a1d84412fe175b35f5dce87c0a90b1b092b41e8e310a895cbbd5"
+    },
+    {
+      "path": "/private/tmp/native-ingestion-h5e-resource-tools-peer-faults.log",
+      "bytes": 1141,
+      "sha256": "11a2f28c0a40a1d84412fe175b35f5dce87c0a90b1b092b41e8e310a895cbbd5"
+    }
+  ],
+  "reviewFixtureCorrection": "The first reviewer-only fault harness omitted a synthetic release.output field, causing an unrelated TypeError in its finish path. The synthetic input was corrected; no packet bytes changed. Final actual-source fault reproductions pass and prove both reported behaviors.",
+  "remainingGates": [
+    "Repair in a NEW packet preserving this sealed failure/source. Root and independent re-review before any execution release.",
+    "Actual Linux metadata, direct-unit/env/control/accounting qualification, one SMALL serving smoke with all six hooks and complete cleanup, then matched completed FULL diagnostics.",
+    "Fresh final B2 pins/build/receipt and resource/outcome/overhead evidence remain required. This review establishes no resource or performance improvement."
+  ]
+}

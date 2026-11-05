@@ -1,0 +1,76 @@
+{
+  "report": "/home/ubuntu/native-ingestion/evidence/fixture2/interleaved-service/service-aa-b0.json",
+  "limits": {
+    "maximumPairedRelativeDifference": 0.2,
+    "maximumMedianArmDrift": 0.1
+  },
+  "eligible": true,
+  "eligibilityFailures": [],
+  "cases": [
+    {
+      "history": 1000,
+      "scenario": "ordered",
+      "maximumPairedRelativeDifference": 0.014079047972212447,
+      "medianArmDrift": 0.012275859436574102,
+      "passed": true
+    },
+    {
+      "history": 1000,
+      "scenario": "replay",
+      "maximumPairedRelativeDifference": 0.03982212020678522,
+      "medianArmDrift": 0.001509348380207063,
+      "passed": true
+    },
+    {
+      "history": 1000,
+      "scenario": "warm-suffix",
+      "maximumPairedRelativeDifference": 0.018842439321434798,
+      "medianArmDrift": 0.012182094590722805,
+      "passed": true
+    },
+    {
+      "history": 10000,
+      "scenario": "ordered",
+      "maximumPairedRelativeDifference": 0.017474622955774097,
+      "medianArmDrift": 0.0016529478530073213,
+      "passed": true
+    },
+    {
+      "history": 10000,
+      "scenario": "replay",
+      "maximumPairedRelativeDifference": 0.016304743570125815,
+      "medianArmDrift": 0.0064856671560466796,
+      "passed": true
+    },
+    {
+      "history": 10000,
+      "scenario": "warm-suffix",
+      "maximumPairedRelativeDifference": 0.11830110496052082,
+      "medianArmDrift": 0.061328132942894305,
+      "passed": true
+    },
+    {
+      "history": 100000,
+      "scenario": "ordered",
+      "maximumPairedRelativeDifference": 0.010693214938958221,
+      "medianArmDrift": 0.009308917031380358,
+      "passed": true
+    },
+    {
+      "history": 100000,
+      "scenario": "replay",
+      "maximumPairedRelativeDifference": 0.009332642395176317,
+      "medianArmDrift": 0.0028535574402402016,
+      "passed": true
+    },
+    {
+      "history": 100000,
+      "scenario": "warm-suffix",
+      "maximumPairedRelativeDifference": 0.007615089382403567,
+      "medianArmDrift": 0.005994934834498225,
+      "passed": true
+    }
+  ],
+  "passed": true,
+  "excluded": "Late-gap single-operation latency is structural-only; its complete paired evidence is still required"
+}

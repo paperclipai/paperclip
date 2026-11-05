@@ -1,0 +1,403 @@
+{
+  "schema": "paperclip.native-ingestion.h5e-v4-helper-source-packet.v4",
+  "generatedAtUtc": "2026-11-04T12:48:08.579863+00:00",
+  "sourceOnly": true,
+  "executionReleased": false,
+  "servingQualification": false,
+  "performanceAcceptance": false,
+  "owningApplicationProviderDatabaseBrowserVmStagingNetworkOrBuildExecution": false,
+  "parentPacket": {
+    "file": "/private/tmp/native-ingestion-h5e-tools-v3/source-packet.json",
+    "sha256": "caab406f96294313b9ab05ed4f26a083023cbb4d61075993cfbf9b8fc15129c7",
+    "unchanged": true
+  },
+  "frozenDrivers": {
+    "main": "73ea8516739e81fa7f37cd67651b4a2c73674014",
+    "companion": "a89f321ab5654211cbff7be1ee15c110b8db4a5f",
+    "freezeFile": "/private/tmp/native-ingestion-cf-driver-source-freeze.json",
+    "freezeSha256": "77efe5e4477dea52689d1c1da43b791d4905ab2279b5539f5cd2d37d5d143d81"
+  },
+  "candidateRegistration": {
+    "currentlyRegisteredSourceRevision": "75b3578cfccf040b087a55a624e01baa2bca37f9",
+    "futureCandidateRegistered": false,
+    "authority": "Exact authorized root release perVariantBuilds.B2 descriptor and its actual qualified receipt; live Git/clean/build/native/inventory checks remain.",
+    "qualifiedCandidateDescriptorIncluded": false,
+    "registerBeforeFirstCandidateComparison": true,
+    "retargetCompletedCandidateComparisons": false,
+    "noNewRustOptimizationAssumed": true
+  },
+  "compatibilityReview": {
+    "file": "/private/tmp/native-ingestion-candidate-registration-compatibility.json",
+    "sha256": "4cf441b57d438ea20b5d475127603c8337935da805ce9f756fb3fa216ef6d852",
+    "mainV3ControlsMayContinueUnchanged": true,
+    "oldCompanionQualificationOrNoiseReusableWithNewHelper": false,
+    "newCompanionB0FunctionalQualificationRequiredBeforeCompanionAa": true,
+    "retainedCopy": "candidate-registration-compatibility.json"
+  },
+  "preservedExperiment": "Frozen drivers, comparator, workload/oracle/timers/SLA/gap/control/durable rules/stage order/five pairs/four wins/noise/thresholds/runtime checks/inventory comparisons/arm seal set unchanged.",
+  "helpers": [
+    {
+      "file": "native-ingestion-run-h5e-browser.mjs",
+      "bytes": 68900,
+      "sha256": "191de2cbebab6936433778a2348f61a242a2f29c006b0aa5794443cb040c3347",
+      "parent": "/private/tmp/native-ingestion-h5e-tools-v3/native-ingestion-run-h5e-browser.mjs",
+      "parentSha256": "ef7f2807d24bb94e996588ed576fd2ee8914856c7b53eeb9e1b1c3f316559642"
+    },
+    {
+      "file": "native-ingestion-h5c-cf-build-guards.mjs",
+      "bytes": 62077,
+      "sha256": "8c803ecd1e711cc1cd953e7a006c5195122595792c31bdf710249a447cab07cf",
+      "parent": "/private/tmp/native-ingestion-h5e-tools-v3/native-ingestion-h5c-cf-build-guards.mjs",
+      "parentSha256": "2b0ea48178d20f00bcf4d1fd45c647204be0f2d9c18639fa98a96e3b188c8a7d"
+    },
+    {
+      "file": "native-ingestion-h5e-linux-readiness.mjs",
+      "bytes": 3292,
+      "sha256": "3f7eaeeefaebab26a348314f4dc6eef7cd041f02a330cc5d9b9a410f724005fc",
+      "parent": "/private/tmp/native-ingestion-h5e-tools-v3/native-ingestion-h5e-linux-readiness.mjs",
+      "parentSha256": "f07d10221f28116fae37ca0cd3510ee71bd5d6b36d88b8f783319eeff10657e3"
+    },
+    {
+      "file": "native-ingestion-h5e-full-linux-readiness.mjs",
+      "bytes": 3291,
+      "sha256": "04bd5fd05bea8ef6d0d83a5d75d5a894030dc974a04fee7be167860c1a9225aa",
+      "parent": "/private/tmp/native-ingestion-h5e-tools-v3/native-ingestion-h5e-full-linux-readiness.mjs",
+      "parentSha256": "7a0f0dd78fb6a48af79a63b45cbd20eed2b9b2552bc8d649860b39981802c8cf"
+    },
+    {
+      "file": "native-ingestion-linux-h5e-qualification.py",
+      "bytes": 7804,
+      "sha256": "f1a1a2936c4663ca97429c1f6d8e42b6704561c5be27847b65dc8b5c7365e9d5",
+      "parent": "/private/tmp/native-ingestion-h5e-tools-v3/native-ingestion-linux-h5e-qualification.py",
+      "parentSha256": "97a27b73554d7e11f4ffa78c62615ed300385b13ed7206e0a3147491195e77b3"
+    },
+    {
+      "file": "native-ingestion-extract-h5e-qualification-foreground.py",
+      "bytes": 6339,
+      "sha256": "7cb6eb848dcf1642e9a588b654c611e32c250a29cbd83609a344d7f7fdd1ff12",
+      "parent": "/private/tmp/native-ingestion-h5e-tools-v3/native-ingestion-extract-h5e-qualification-foreground.py",
+      "parentSha256": "7cb6eb848dcf1642e9a588b654c611e32c250a29cbd83609a344d7f7fdd1ff12"
+    },
+    {
+      "file": "native-ingestion-validate-h5e-evidence.mjs",
+      "bytes": 7590,
+      "sha256": "4a92ad32dacd7c1b8f1daba8ecb5ed664f7cfeae6e7d14c9a538c0f1b65b41bb",
+      "parent": "/private/tmp/native-ingestion-h5e-tools-v3/native-ingestion-validate-h5e-evidence.mjs",
+      "parentSha256": "4a92ad32dacd7c1b8f1daba8ecb5ed664f7cfeae6e7d14c9a538c0f1b65b41bb"
+    },
+    {
+      "file": "native-ingestion-run-blocked-stop-v4.mjs",
+      "bytes": 28940,
+      "sha256": "b17e7a164e9c4e828a9dca27e02440b327c1457ac540130d3e046308b3b566fa",
+      "parent": "/private/tmp/native-ingestion-h5e-tools-v3/native-ingestion-run-blocked-stop-v4.mjs",
+      "parentSha256": "22c5dd91ecf40a44a0ed02324ae80838a761cffe43f3a6a8dad53f5b0780d470"
+    }
+  ],
+  "sourceFiles": [
+    {
+      "path": "README.md",
+      "bytes": 5647,
+      "sha256": "7bf6cc152b9f55985d297d9179705f919ff6ab5d83d8237de09a7dc03008b0b4"
+    },
+    {
+      "path": "candidate-registration-compatibility.json",
+      "bytes": 6442,
+      "sha256": "4cf441b57d438ea20b5d475127603c8337935da805ce9f756fb3fa216ef6d852"
+    },
+    {
+      "path": "compose.py",
+      "bytes": 4003,
+      "sha256": "c9d15eacdef1fac317e82549ef7ce97b50741864acf190217661687d12cdf2b2"
+    },
+    {
+      "path": "composition.json",
+      "bytes": 7030,
+      "sha256": "aeab192005d1d0d0412807d55de1242f44c74ad30e9d8f22aee7dad4d9de0198"
+    },
+    {
+      "path": "finalize_packet.py",
+      "bytes": 3687,
+      "sha256": "d8e00da65253acce9f70dc88a6dc058179239a37110fe26406ff8d00c92321c1"
+    },
+    {
+      "path": "generate_templates.py",
+      "bytes": 9068,
+      "sha256": "cb1b0107572c4c1649b108993227f71eaa31c8f4a691eb07ee1dd29c566b2210"
+    },
+    {
+      "path": "native-ingestion-extract-h5e-qualification-foreground.py",
+      "bytes": 6339,
+      "sha256": "7cb6eb848dcf1642e9a588b654c611e32c250a29cbd83609a344d7f7fdd1ff12"
+    },
+    {
+      "path": "native-ingestion-h5c-cf-build-guards.mjs",
+      "bytes": 62077,
+      "sha256": "8c803ecd1e711cc1cd953e7a006c5195122595792c31bdf710249a447cab07cf"
+    },
+    {
+      "path": "native-ingestion-h5e-full-linux-readiness.mjs",
+      "bytes": 3291,
+      "sha256": "04bd5fd05bea8ef6d0d83a5d75d5a894030dc974a04fee7be167860c1a9225aa"
+    },
+    {
+      "path": "native-ingestion-h5e-linux-readiness.mjs",
+      "bytes": 3292,
+      "sha256": "3f7eaeeefaebab26a348314f4dc6eef7cd041f02a330cc5d9b9a410f724005fc"
+    },
+    {
+      "path": "native-ingestion-linux-h5e-qualification.py",
+      "bytes": 7804,
+      "sha256": "f1a1a2936c4663ca97429c1f6d8e42b6704561c5be27847b65dc8b5c7365e9d5"
+    },
+    {
+      "path": "native-ingestion-run-blocked-stop-v4.mjs",
+      "bytes": 28940,
+      "sha256": "b17e7a164e9c4e828a9dca27e02440b327c1457ac540130d3e046308b3b566fa"
+    },
+    {
+      "path": "native-ingestion-run-h5e-browser.mjs",
+      "bytes": 68900,
+      "sha256": "191de2cbebab6936433778a2348f61a242a2f29c006b0aa5794443cb040c3347"
+    },
+    {
+      "path": "native-ingestion-validate-h5e-evidence.mjs",
+      "bytes": 7590,
+      "sha256": "4a92ad32dacd7c1b8f1daba8ecb5ed664f7cfeae6e7d14c9a538c0f1b65b41bb"
+    },
+    {
+      "path": "native-provenance.test.mjs",
+      "bytes": 13605,
+      "sha256": "c048769724101a823897707ce10a9765dc7cf760b7281b4e6c381754615b7d38"
+    },
+    {
+      "path": "review.patch",
+      "bytes": 9302,
+      "sha256": "6157332aeed91242a28e911a36f93babb9f8e2fc68afb0bac8a1de681b4a65c3"
+    },
+    {
+      "path": "run_checks.py",
+      "bytes": 6663,
+      "sha256": "b4d301b142f44d211ec4c3607aca175904c2edd42cf6299e89b42d18d1ea3cad"
+    },
+    {
+      "path": "runtime-checks.json",
+      "bytes": 3325,
+      "sha256": "22f67b4d30250032350c81e79f2e66e84bededee009408ae0f6533ace8416710"
+    },
+    {
+      "path": "source-guards.test.mjs",
+      "bytes": 13018,
+      "sha256": "59c76d5f9a1d5eb6820bb149872807b7d232da3584e27bfdfe605672534af971"
+    },
+    {
+      "path": "templates/companion-v4-qualification-b0.unauthorized.json",
+      "bytes": 7256,
+      "sha256": "bf454d1a7ebef0dcb7d4e5708d3891c7a27617b19f32861a77697cb47a340fdf"
+    },
+    {
+      "path": "templates/main-aa-b0.unauthorized.json",
+      "bytes": 6528,
+      "sha256": "d59f9c5667ecdf727ecbcfc12f8ea8fdc0dc6b961b604b068778103a68507133"
+    },
+    {
+      "path": "templates/qualification-full-b0.unauthorized.json",
+      "bytes": 6439,
+      "sha256": "3a3c2c6de5cfcf0c19bdb279c624cbad13b709b5f0da5cd8dd42d5dd1e754f31"
+    },
+    {
+      "path": "templates/qualification-small-b0.unauthorized.json",
+      "bytes": 6429,
+      "sha256": "7a851bc51e6e3abb61729aee378e312dadc2eaa3f073fc934582919cdd3c7df6"
+    }
+  ],
+  "verificationFiles": [
+    {
+      "path": "checks/dependency-reject-execute.stderr",
+      "bytes": 617,
+      "sha256": "bc0032422480e05f6c41539faadf509517e1bc64cbd862a5ab6947e9bd415f42"
+    },
+    {
+      "path": "checks/dependency-reject-execute.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "checks/dependency-reject-validate-release.stderr",
+      "bytes": 617,
+      "sha256": "bc0032422480e05f6c41539faadf509517e1bc64cbd862a5ab6947e9bd415f42"
+    },
+    {
+      "path": "checks/dependency-reject-validate-release.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "checks/dry-run-native-ingestion-h5c-cf-build-guards.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "checks/dry-run-native-ingestion-h5c-cf-build-guards.stdout",
+      "bytes": 250,
+      "sha256": "103794e2bb37530ab20c663aab0b8bd2e47e03e91ee6a8f5517c0b7c7e68495c"
+    },
+    {
+      "path": "checks/dry-run-native-ingestion-run-blocked-stop-v4.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "checks/dry-run-native-ingestion-run-blocked-stop-v4.stdout",
+      "bytes": 1100,
+      "sha256": "705cf50833d7c874ef164f27ded181b9cb7bb0da337643823979dad3ab9c21fd"
+    },
+    {
+      "path": "checks/dry-run-native-ingestion-run-h5e-browser.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "checks/dry-run-native-ingestion-run-h5e-browser.stdout",
+      "bytes": 3749,
+      "sha256": "a217983b6b767f110929c7ec3a2bdc57ca063d48cb1f4773c8668309ae5877b1"
+    },
+    {
+      "path": "checks/existing-qualified-native-comparator-cli.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "checks/existing-qualified-native-comparator-cli.stdout",
+      "bytes": 2161,
+      "sha256": "2b209c928b9ef68b0511ac962fcfa819a945759da65f2e7ae6d84e5422e6074c"
+    },
+    {
+      "path": "checks/green-native-provenance.test.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "checks/green-native-provenance.test.stdout",
+      "bytes": 13256,
+      "sha256": "31d94725b5c4a9b1a309a13a69cd43bd3c7edca2854e92e8dda06af7bc63bacf"
+    },
+    {
+      "path": "checks/green-source-guards.test.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "checks/green-source-guards.test.stdout",
+      "bytes": 6747,
+      "sha256": "9d9c5848439d234aed35d2a84bc59e78b2054336195392d14dc4158807c08881"
+    },
+    {
+      "path": "checks/receipt.json",
+      "bytes": 11956,
+      "sha256": "380d74f5bce6875f4b942d0ed279bd25b921cc682353b25c7f7a90cee3e08261"
+    },
+    {
+      "path": "checks/red-v3-rejects-prospective-qualified-source.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "checks/red-v3-rejects-prospective-qualified-source.stdout",
+      "bytes": 2619,
+      "sha256": "03ad4284f1422bf8461ce148f899599be45ea7490e613246c1003ff60a0457a6"
+    },
+    {
+      "path": "checks/reject-companion-v4-qualification-b0.unauthorized.json.stderr",
+      "bytes": 650,
+      "sha256": "d74ac077d5a7396ea1ed6ee92f8dd45b415462d310040c697d4afef37b8601ca"
+    },
+    {
+      "path": "checks/reject-companion-v4-qualification-b0.unauthorized.json.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "checks/reject-main-aa-b0.unauthorized.json.stderr",
+      "bytes": 641,
+      "sha256": "e6c39f170a8fe630d0bbd5e1adc080704b34ca4dc8ae2d7c38b77edd3826193f"
+    },
+    {
+      "path": "checks/reject-main-aa-b0.unauthorized.json.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "checks/syntax-native-ingestion-h5c-cf-build-guards.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "checks/syntax-native-ingestion-h5c-cf-build-guards.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "checks/syntax-native-ingestion-h5e-full-linux-readiness.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "checks/syntax-native-ingestion-h5e-full-linux-readiness.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "checks/syntax-native-ingestion-h5e-linux-readiness.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "checks/syntax-native-ingestion-h5e-linux-readiness.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "checks/syntax-native-ingestion-run-blocked-stop-v4.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "checks/syntax-native-ingestion-run-blocked-stop-v4.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "checks/syntax-native-ingestion-run-h5e-browser.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "checks/syntax-native-ingestion-run-h5e-browser.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ],
+  "reviewPatchSha256": "6157332aeed91242a28e911a36f93babb9f8e2fc68afb0bac8a1de681b4a65c3",
+  "checksReceiptSha256": "380d74f5bce6875f4b942d0ed279bd25b921cc682353b25c7f7a90cee3e08261",
+  "checks": {
+    "commands": 16,
+    "greenTests": 91,
+    "expectedRedFailures": 2,
+    "existingComparatorCli": {
+      "file": "/private/tmp/paperclip-native-event-harness-h5e/scripts/native-ingestion-performance-gates.test.mjs",
+      "fileSha256": "96396cb32292ec9e3a8602bcfd63ff006b0e12955435d372ee632b9b52f0b1e5",
+      "tests": 6,
+      "passed": 6,
+      "failed": 0,
+      "purpose": "Actual frozen CLI checks qualified cross-role binaries, serving/receipt mismatches, within-role changes, A/A stability and later original proof identity."
+    }
+  },
+  "openGates": [
+    "Peer/root review before any companion A/A",
+    "One new companion V4 B0 functional qualification with v4 dependency/orchestrator identity after quiet boundary",
+    "Fresh companion A/A controls and fixed noise before any new optimization",
+    "Actual candidate release registration and qualification before unstarted comparisons",
+    "Original application performance/correctness/live/cloud Stop acceptance"
+  ],
+  "historicalDataAndCurrentV3MainRunUnchanged": true
+}

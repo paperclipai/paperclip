@@ -1,0 +1,637 @@
+{
+  "scope": "Read-only immutable Git source comparison for selected core paths only; not whole application or transitive closure equivalence",
+  "refs": {
+    "SOURCE_B0": "5337df423e622755d44f3ece5447d1e0beef5f40",
+    "SOURCE_B1": "e9b909015ad3d517f28c45f0c66c8f41d6112b4b",
+    "SOURCE_B2": "fcb5d94848b3c4b0b32096ff5e023618e0f0637b",
+    "APP_B0": "a36567f9fbf805ad72207d54f539516e3121741e",
+    "APP_B1": "d8cd3be0aeed4f9fb93ecc3cf725f1d46d5a0310",
+    "APP_B2": "914129afb141d81c0d6d8c5f0ea11c20bd69a3da"
+  },
+  "pairs": [
+    {
+      "lane": "B0",
+      "before": "5337df423e622755d44f3ece5447d1e0beef5f40",
+      "after": "a36567f9fbf805ad72207d54f539516e3121741e",
+      "corePaths": [
+        {
+          "path": "server/src/services/heartbeat-run-events.ts",
+          "beforeSha256": "9f38c6c875918f54ae1505a5a8c8dc38ac705185b9dc5ac4cb92f2ecadc69fc1",
+          "afterSha256": "9f38c6c875918f54ae1505a5a8c8dc38ac705185b9dc5ac4cb92f2ecadc69fc1",
+          "equal": true,
+          "absentBoth": false
+        },
+        {
+          "path": "server/src/services/heartbeat/native-event-cursors.ts",
+          "beforeSha256": null,
+          "afterSha256": null,
+          "equal": true,
+          "absentBoth": true
+        },
+        {
+          "path": "server/src/services/heartbeat/native-event-cursor-work.ts",
+          "beforeSha256": null,
+          "afterSha256": null,
+          "equal": true,
+          "absentBoth": true
+        },
+        {
+          "path": "server/src/services/native-runtime/paperclip-control-plane-port.ts",
+          "beforeSha256": "b0b017e19b6808c600a18ea4f47d728e8d41608b3b26b5c42d4a2eafe0a8588c",
+          "afterSha256": "b0b017e19b6808c600a18ea4f47d728e8d41608b3b26b5c42d4a2eafe0a8588c",
+          "equal": true,
+          "absentBoth": false
+        },
+        {
+          "path": "server/src/services/native-runtime/native-run-coordinator-store.ts",
+          "beforeSha256": "458a65844efedc35130f701f11e689560ab0d1c131f347d0741346faeb2fe9b0",
+          "afterSha256": "458a65844efedc35130f701f11e689560ab0d1c131f347d0741346faeb2fe9b0",
+          "equal": true,
+          "absentBoth": false
+        },
+        {
+          "path": "packages/paperclip-runner/src/native-session-runtime.ts",
+          "beforeSha256": "e916df31032785a9f4ce98df8d703c974391dbbb0ddf7a4e34ea43d231f9abdb",
+          "afterSha256": "e916df31032785a9f4ce98df8d703c974391dbbb0ddf7a4e34ea43d231f9abdb",
+          "equal": true,
+          "absentBoth": false
+        },
+        {
+          "path": "packages/paperclip-runner/src/native-event-persistence.ts",
+          "beforeSha256": null,
+          "afterSha256": null,
+          "equal": true,
+          "absentBoth": true
+        },
+        {
+          "path": "packages/paperclip-runner/src/contracts/control-plane-port.ts",
+          "beforeSha256": "f200d8b9a9bc8cdcad918761e8ad3776663f4d129a8e20e8289b5148f6509923",
+          "afterSha256": "f200d8b9a9bc8cdcad918761e8ad3776663f4d129a8e20e8289b5148f6509923",
+          "equal": true,
+          "absentBoth": false
+        },
+        {
+          "path": "packages/paperclip-runner/src/control-plane/durable-prp-control-plane.ts",
+          "beforeSha256": "fb3ee3d87ad7824cc8a986bc433f00c73150a70f51e6f6dfe67ed5da976a350c",
+          "afterSha256": "fb3ee3d87ad7824cc8a986bc433f00c73150a70f51e6f6dfe67ed5da976a350c",
+          "equal": true,
+          "absentBoth": false
+        },
+        {
+          "path": "packages/db/src/client.ts",
+          "beforeSha256": "a4f89bf5ed8144c685d3e2113ca377f98734df8f68300f8d381ed5eaf509dfa0",
+          "afterSha256": "a4f89bf5ed8144c685d3e2113ca377f98734df8f68300f8d381ed5eaf509dfa0",
+          "equal": true,
+          "absentBoth": false
+        },
+        {
+          "path": "packages/db/src/work-signals.ts",
+          "beforeSha256": "f402f868c4cbbb19f78a8cfccc1cfe226d102a93ccff8efcf06a604ed09dc6f0",
+          "afterSha256": "f402f868c4cbbb19f78a8cfccc1cfe226d102a93ccff8efcf06a604ed09dc6f0",
+          "equal": true,
+          "absentBoth": false
+        },
+        {
+          "path": "packages/db/src/run-event-payload.ts",
+          "beforeSha256": "88b89c582d292ce91a1e053ad4d8b1ab73316dff035eee3dab65b0fe9c2717c4",
+          "afterSha256": "88b89c582d292ce91a1e053ad4d8b1ab73316dff035eee3dab65b0fe9c2717c4",
+          "equal": true,
+          "absentBoth": false
+        },
+        {
+          "path": "packages/db/src/schema/heartbeat_runs.ts",
+          "beforeSha256": "8b4bfa006d999d4e27c8dc3678431544fb77d167e623b8421370571ab15b0f2d",
+          "afterSha256": "8b4bfa006d999d4e27c8dc3678431544fb77d167e623b8421370571ab15b0f2d",
+          "equal": true,
+          "absentBoth": false
+        },
+        {
+          "path": "packages/db/src/schema/heartbeat_run_events.ts",
+          "beforeSha256": "f887d01bfb4173faa88f62f9df680b7710b57336221af70fc988e35968998388",
+          "afterSha256": "f887d01bfb4173faa88f62f9df680b7710b57336221af70fc988e35968998388",
+          "equal": true,
+          "absentBoth": false
+        },
+        {
+          "path": "packages/db/src/schema/heartbeat_run_event_cursors.ts",
+          "beforeSha256": null,
+          "afterSha256": null,
+          "equal": true,
+          "absentBoth": true
+        },
+        {
+          "path": "packages/db/src/schema/native_runner_checkpoints.ts",
+          "beforeSha256": "5691cfd49e50434d3d9d3acf95cbeaa3436c1aa734876d0b3a29d2e731c50c64",
+          "afterSha256": "5691cfd49e50434d3d9d3acf95cbeaa3436c1aa734876d0b3a29d2e731c50c64",
+          "equal": true,
+          "absentBoth": false
+        },
+        {
+          "path": "packages/db/src/schema/native_run_results.ts",
+          "beforeSha256": "a6b790e6dbf42a4eba34057738e7db6cc13e0e762f9d005db225733a8e37b449",
+          "afterSha256": "a6b790e6dbf42a4eba34057738e7db6cc13e0e762f9d005db225733a8e37b449",
+          "equal": true,
+          "absentBoth": false
+        },
+        {
+          "path": "packages/db/src/schema/native_run_finalizations.ts",
+          "beforeSha256": "d9431cecdd839994a1b3fd142a8741d9cbee7da39e297265c269abc344cbf940",
+          "afterSha256": "d9431cecdd839994a1b3fd142a8741d9cbee7da39e297265c269abc344cbf940",
+          "equal": true,
+          "absentBoth": false
+        },
+        {
+          "path": "server/src/services/native-runtime/native-runner-checkpoint.ts",
+          "beforeSha256": "3eb4c694b44ac9932d2c395438c1664d78bb1d00d8371359b062a1af5f039ad7",
+          "afterSha256": "3eb4c694b44ac9932d2c395438c1664d78bb1d00d8371359b062a1af5f039ad7",
+          "equal": true,
+          "absentBoth": false
+        },
+        {
+          "path": "server/src/services/native-runtime/native-runner-recovery.ts",
+          "beforeSha256": null,
+          "afterSha256": null,
+          "equal": true,
+          "absentBoth": true
+        },
+        {
+          "path": "server/src/services/live-events.ts",
+          "beforeSha256": "63ddefcd3bbd7c5dcdc59e248d2d78f14f5b668d38b8585cac8a0d417e0ec115",
+          "afterSha256": "63ddefcd3bbd7c5dcdc59e248d2d78f14f5b668d38b8585cac8a0d417e0ec115",
+          "equal": true,
+          "absentBoth": false
+        },
+        {
+          "path": "server/src/services/native-runtime/canonical.ts",
+          "beforeSha256": "6d2fa843f7710f55ced02715111d80e467a8a4ad0929cfcdef3a7bbaf7f3f993",
+          "afterSha256": "6d2fa843f7710f55ced02715111d80e467a8a4ad0929cfcdef3a7bbaf7f3f993",
+          "equal": true,
+          "absentBoth": false
+        }
+      ],
+      "allPresentCorePathsByteEqual": true,
+      "explicitOutsideCorePaths": [
+        {
+          "path": "server/src/vendor/paperclip-runner/index.ts",
+          "beforeSha256": "991a7fd75ea23226a6c4c6a4b8992d6b28bd2c9825aca889b68e60e145c574c0",
+          "afterSha256": "c14c8e4ab505164bc84c4d0305f614b2fd6a91cd6daf128ae98c9a9a63f54e6e",
+          "equal": false,
+          "absentBoth": false
+        },
+        {
+          "path": "packages/paperclip-runner/src/live/runnerd-codex-transport.ts",
+          "beforeSha256": "3813d933b871ad15d052a8f03246b30bbaf03b989c3ac6436e184dda46186561",
+          "afterSha256": "e8e878ac88f09673d6e33abba98c9841218a55522bd3d752171f5fb14a5c5f5a",
+          "equal": false,
+          "absentBoth": false
+        },
+        {
+          "path": "packages/adapter-utils/src/acpx-engine/execute.ts",
+          "beforeSha256": "00635e57744c7407070618453852ede5002382159a81a4f31ceeac0551d3e725",
+          "afterSha256": "f7e6dc787eaddb8767bd0b9f52d4ec50ec57c9add4b9fbe94ace6d4745343fdc",
+          "equal": false,
+          "absentBoth": false
+        },
+        {
+          "path": "server/src/services/run-log-store.ts",
+          "beforeSha256": "39c8da235b46a81ea478a6fa3a3e43acedd107cc4835c37912452451ffe050c0",
+          "afterSha256": "b7ab36de4df505492ee109cbac377b359126a3a29c48db343e1ce82a44d9a488",
+          "equal": false,
+          "absentBoth": false
+        },
+        {
+          "path": "server/src/services/native-runtime/native-run-finalizer.ts",
+          "beforeSha256": "7706b8632519e6bfeb06e9b224e49a14fa1d8b1e4b0a1e3d5cdf025864cf29f8",
+          "afterSha256": "07bc941d5796870fbd6d96e2a30f8409b389c4f1fc7232c745d1a83d376b9b4d",
+          "equal": false,
+          "absentBoth": false
+        },
+        {
+          "path": "server/src/services/native-runtime/native-session-executor.ts",
+          "beforeSha256": "0abf1aed7d1a8637e5469b4e8ee3a5a018e571c675078621dc30c0d54e09b48c",
+          "afterSha256": "9f94c6d5b22b4a429c9d86eee8bb3f29644d3a45040730bbe4c8db3a5399e6e6",
+          "equal": false,
+          "absentBoth": false
+        }
+      ]
+    },
+    {
+      "lane": "B1",
+      "before": "e9b909015ad3d517f28c45f0c66c8f41d6112b4b",
+      "after": "d8cd3be0aeed4f9fb93ecc3cf725f1d46d5a0310",
+      "corePaths": [
+        {
+          "path": "server/src/services/heartbeat-run-events.ts",
+          "beforeSha256": "9dfb7309a1e3b8feee654c645f13b603d48ebadc08a70783269caa8ef79daef5",
+          "afterSha256": "9dfb7309a1e3b8feee654c645f13b603d48ebadc08a70783269caa8ef79daef5",
+          "equal": true,
+          "absentBoth": false
+        },
+        {
+          "path": "server/src/services/heartbeat/native-event-cursors.ts",
+          "beforeSha256": "3eda23353aff44b4c8b75a19f3628ebb59dd57874b5e6dee62425b6ee1305d42",
+          "afterSha256": "3eda23353aff44b4c8b75a19f3628ebb59dd57874b5e6dee62425b6ee1305d42",
+          "equal": true,
+          "absentBoth": false
+        },
+        {
+          "path": "server/src/services/heartbeat/native-event-cursor-work.ts",
+          "beforeSha256": "b4ac1ed260a1cb66419a9b3e57f674aeb0bcf911c9a65a63e5a4c460a89522f9",
+          "afterSha256": "b4ac1ed260a1cb66419a9b3e57f674aeb0bcf911c9a65a63e5a4c460a89522f9",
+          "equal": true,
+          "absentBoth": false
+        },
+        {
+          "path": "server/src/services/native-runtime/paperclip-control-plane-port.ts",
+          "beforeSha256": "b0b017e19b6808c600a18ea4f47d728e8d41608b3b26b5c42d4a2eafe0a8588c",
+          "afterSha256": "b0b017e19b6808c600a18ea4f47d728e8d41608b3b26b5c42d4a2eafe0a8588c",
+          "equal": true,
+          "absentBoth": false
+        },
+        {
+          "path": "server/src/services/native-runtime/native-run-coordinator-store.ts",
+          "beforeSha256": "9cd659ee0d5f01d43fe2ba40c575b15ce65d2c535075a1d4d77ce45155676254",
+          "afterSha256": "9cd659ee0d5f01d43fe2ba40c575b15ce65d2c535075a1d4d77ce45155676254",
+          "equal": true,
+          "absentBoth": false
+        },
+        {
+          "path": "packages/paperclip-runner/src/native-session-runtime.ts",
+          "beforeSha256": "e916df31032785a9f4ce98df8d703c974391dbbb0ddf7a4e34ea43d231f9abdb",
+          "afterSha256": "e916df31032785a9f4ce98df8d703c974391dbbb0ddf7a4e34ea43d231f9abdb",
+          "equal": true,
+          "absentBoth": false
+        },
+        {
+          "path": "packages/paperclip-runner/src/native-event-persistence.ts",
+          "beforeSha256": null,
+          "afterSha256": null,
+          "equal": true,
+          "absentBoth": true
+        },
+        {
+          "path": "packages/paperclip-runner/src/contracts/control-plane-port.ts",
+          "beforeSha256": "f200d8b9a9bc8cdcad918761e8ad3776663f4d129a8e20e8289b5148f6509923",
+          "afterSha256": "f200d8b9a9bc8cdcad918761e8ad3776663f4d129a8e20e8289b5148f6509923",
+          "equal": true,
+          "absentBoth": false
+        },
+        {
+          "path": "packages/paperclip-runner/src/control-plane/durable-prp-control-plane.ts",
+          "beforeSha256": "fb3ee3d87ad7824cc8a986bc433f00c73150a70f51e6f6dfe67ed5da976a350c",
+          "afterSha256": "fb3ee3d87ad7824cc8a986bc433f00c73150a70f51e6f6dfe67ed5da976a350c",
+          "equal": true,
+          "absentBoth": false
+        },
+        {
+          "path": "packages/db/src/client.ts",
+          "beforeSha256": "a4f89bf5ed8144c685d3e2113ca377f98734df8f68300f8d381ed5eaf509dfa0",
+          "afterSha256": "a4f89bf5ed8144c685d3e2113ca377f98734df8f68300f8d381ed5eaf509dfa0",
+          "equal": true,
+          "absentBoth": false
+        },
+        {
+          "path": "packages/db/src/work-signals.ts",
+          "beforeSha256": "f402f868c4cbbb19f78a8cfccc1cfe226d102a93ccff8efcf06a604ed09dc6f0",
+          "afterSha256": "f402f868c4cbbb19f78a8cfccc1cfe226d102a93ccff8efcf06a604ed09dc6f0",
+          "equal": true,
+          "absentBoth": false
+        },
+        {
+          "path": "packages/db/src/run-event-payload.ts",
+          "beforeSha256": "88b89c582d292ce91a1e053ad4d8b1ab73316dff035eee3dab65b0fe9c2717c4",
+          "afterSha256": "88b89c582d292ce91a1e053ad4d8b1ab73316dff035eee3dab65b0fe9c2717c4",
+          "equal": true,
+          "absentBoth": false
+        },
+        {
+          "path": "packages/db/src/schema/heartbeat_runs.ts",
+          "beforeSha256": "d56a9a7a76933a9a2a117df939a6457440ff0b388ff6665a165fd2e756434e93",
+          "afterSha256": "d56a9a7a76933a9a2a117df939a6457440ff0b388ff6665a165fd2e756434e93",
+          "equal": true,
+          "absentBoth": false
+        },
+        {
+          "path": "packages/db/src/schema/heartbeat_run_events.ts",
+          "beforeSha256": "f887d01bfb4173faa88f62f9df680b7710b57336221af70fc988e35968998388",
+          "afterSha256": "f887d01bfb4173faa88f62f9df680b7710b57336221af70fc988e35968998388",
+          "equal": true,
+          "absentBoth": false
+        },
+        {
+          "path": "packages/db/src/schema/heartbeat_run_event_cursors.ts",
+          "beforeSha256": "2abce984dd65dfb275f5ce6545fcc6258c1d22d6e69374dead5caa27b1d96baf",
+          "afterSha256": "2abce984dd65dfb275f5ce6545fcc6258c1d22d6e69374dead5caa27b1d96baf",
+          "equal": true,
+          "absentBoth": false
+        },
+        {
+          "path": "packages/db/src/schema/native_runner_checkpoints.ts",
+          "beforeSha256": "5691cfd49e50434d3d9d3acf95cbeaa3436c1aa734876d0b3a29d2e731c50c64",
+          "afterSha256": "5691cfd49e50434d3d9d3acf95cbeaa3436c1aa734876d0b3a29d2e731c50c64",
+          "equal": true,
+          "absentBoth": false
+        },
+        {
+          "path": "packages/db/src/schema/native_run_results.ts",
+          "beforeSha256": "a6b790e6dbf42a4eba34057738e7db6cc13e0e762f9d005db225733a8e37b449",
+          "afterSha256": "a6b790e6dbf42a4eba34057738e7db6cc13e0e762f9d005db225733a8e37b449",
+          "equal": true,
+          "absentBoth": false
+        },
+        {
+          "path": "packages/db/src/schema/native_run_finalizations.ts",
+          "beforeSha256": "d9431cecdd839994a1b3fd142a8741d9cbee7da39e297265c269abc344cbf940",
+          "afterSha256": "d9431cecdd839994a1b3fd142a8741d9cbee7da39e297265c269abc344cbf940",
+          "equal": true,
+          "absentBoth": false
+        },
+        {
+          "path": "server/src/services/native-runtime/native-runner-checkpoint.ts",
+          "beforeSha256": "3eb4c694b44ac9932d2c395438c1664d78bb1d00d8371359b062a1af5f039ad7",
+          "afterSha256": "3eb4c694b44ac9932d2c395438c1664d78bb1d00d8371359b062a1af5f039ad7",
+          "equal": true,
+          "absentBoth": false
+        },
+        {
+          "path": "server/src/services/native-runtime/native-runner-recovery.ts",
+          "beforeSha256": null,
+          "afterSha256": null,
+          "equal": true,
+          "absentBoth": true
+        },
+        {
+          "path": "server/src/services/live-events.ts",
+          "beforeSha256": "63ddefcd3bbd7c5dcdc59e248d2d78f14f5b668d38b8585cac8a0d417e0ec115",
+          "afterSha256": "63ddefcd3bbd7c5dcdc59e248d2d78f14f5b668d38b8585cac8a0d417e0ec115",
+          "equal": true,
+          "absentBoth": false
+        },
+        {
+          "path": "server/src/services/native-runtime/canonical.ts",
+          "beforeSha256": "6d2fa843f7710f55ced02715111d80e467a8a4ad0929cfcdef3a7bbaf7f3f993",
+          "afterSha256": "6d2fa843f7710f55ced02715111d80e467a8a4ad0929cfcdef3a7bbaf7f3f993",
+          "equal": true,
+          "absentBoth": false
+        }
+      ],
+      "allPresentCorePathsByteEqual": true,
+      "explicitOutsideCorePaths": [
+        {
+          "path": "server/src/vendor/paperclip-runner/index.ts",
+          "beforeSha256": "991a7fd75ea23226a6c4c6a4b8992d6b28bd2c9825aca889b68e60e145c574c0",
+          "afterSha256": "c14c8e4ab505164bc84c4d0305f614b2fd6a91cd6daf128ae98c9a9a63f54e6e",
+          "equal": false,
+          "absentBoth": false
+        },
+        {
+          "path": "packages/paperclip-runner/src/live/runnerd-codex-transport.ts",
+          "beforeSha256": "3813d933b871ad15d052a8f03246b30bbaf03b989c3ac6436e184dda46186561",
+          "afterSha256": "e8e878ac88f09673d6e33abba98c9841218a55522bd3d752171f5fb14a5c5f5a",
+          "equal": false,
+          "absentBoth": false
+        },
+        {
+          "path": "packages/adapter-utils/src/acpx-engine/execute.ts",
+          "beforeSha256": "00635e57744c7407070618453852ede5002382159a81a4f31ceeac0551d3e725",
+          "afterSha256": "f7e6dc787eaddb8767bd0b9f52d4ec50ec57c9add4b9fbe94ace6d4745343fdc",
+          "equal": false,
+          "absentBoth": false
+        },
+        {
+          "path": "server/src/services/run-log-store.ts",
+          "beforeSha256": "39c8da235b46a81ea478a6fa3a3e43acedd107cc4835c37912452451ffe050c0",
+          "afterSha256": "b7ab36de4df505492ee109cbac377b359126a3a29c48db343e1ce82a44d9a488",
+          "equal": false,
+          "absentBoth": false
+        },
+        {
+          "path": "server/src/services/native-runtime/native-run-finalizer.ts",
+          "beforeSha256": "7706b8632519e6bfeb06e9b224e49a14fa1d8b1e4b0a1e3d5cdf025864cf29f8",
+          "afterSha256": "07bc941d5796870fbd6d96e2a30f8409b389c4f1fc7232c745d1a83d376b9b4d",
+          "equal": false,
+          "absentBoth": false
+        },
+        {
+          "path": "server/src/services/native-runtime/native-session-executor.ts",
+          "beforeSha256": "0abf1aed7d1a8637e5469b4e8ee3a5a018e571c675078621dc30c0d54e09b48c",
+          "afterSha256": "9f94c6d5b22b4a429c9d86eee8bb3f29644d3a45040730bbe4c8db3a5399e6e6",
+          "equal": false,
+          "absentBoth": false
+        }
+      ]
+    },
+    {
+      "lane": "B2",
+      "before": "fcb5d94848b3c4b0b32096ff5e023618e0f0637b",
+      "after": "914129afb141d81c0d6d8c5f0ea11c20bd69a3da",
+      "corePaths": [
+        {
+          "path": "server/src/services/heartbeat-run-events.ts",
+          "beforeSha256": "699f1eda0806de94b49ea11f2dee56e9a3a7687eb94050feec2fa41e60089aed",
+          "afterSha256": "699f1eda0806de94b49ea11f2dee56e9a3a7687eb94050feec2fa41e60089aed",
+          "equal": true,
+          "absentBoth": false
+        },
+        {
+          "path": "server/src/services/heartbeat/native-event-cursors.ts",
+          "beforeSha256": "3eda23353aff44b4c8b75a19f3628ebb59dd57874b5e6dee62425b6ee1305d42",
+          "afterSha256": "3eda23353aff44b4c8b75a19f3628ebb59dd57874b5e6dee62425b6ee1305d42",
+          "equal": true,
+          "absentBoth": false
+        },
+        {
+          "path": "server/src/services/heartbeat/native-event-cursor-work.ts",
+          "beforeSha256": "b4ac1ed260a1cb66419a9b3e57f674aeb0bcf911c9a65a63e5a4c460a89522f9",
+          "afterSha256": "b4ac1ed260a1cb66419a9b3e57f674aeb0bcf911c9a65a63e5a4c460a89522f9",
+          "equal": true,
+          "absentBoth": false
+        },
+        {
+          "path": "server/src/services/native-runtime/paperclip-control-plane-port.ts",
+          "beforeSha256": "d5dee911af746f010d78162f02c3f866892e41c41fb41fcb8fbeeefe3a816573",
+          "afterSha256": "d5dee911af746f010d78162f02c3f866892e41c41fb41fcb8fbeeefe3a816573",
+          "equal": true,
+          "absentBoth": false
+        },
+        {
+          "path": "server/src/services/native-runtime/native-run-coordinator-store.ts",
+          "beforeSha256": "9cd659ee0d5f01d43fe2ba40c575b15ce65d2c535075a1d4d77ce45155676254",
+          "afterSha256": "9cd659ee0d5f01d43fe2ba40c575b15ce65d2c535075a1d4d77ce45155676254",
+          "equal": true,
+          "absentBoth": false
+        },
+        {
+          "path": "packages/paperclip-runner/src/native-session-runtime.ts",
+          "beforeSha256": "fc46351d0e554c970715da291768d148c6fed7cd44e2401f00293001cd85c627",
+          "afterSha256": "fc46351d0e554c970715da291768d148c6fed7cd44e2401f00293001cd85c627",
+          "equal": true,
+          "absentBoth": false
+        },
+        {
+          "path": "packages/paperclip-runner/src/native-event-persistence.ts",
+          "beforeSha256": "1237704030d270992612c06cfd4f9872145f28c7caaf2fbd130378f31d84216d",
+          "afterSha256": "1237704030d270992612c06cfd4f9872145f28c7caaf2fbd130378f31d84216d",
+          "equal": true,
+          "absentBoth": false
+        },
+        {
+          "path": "packages/paperclip-runner/src/contracts/control-plane-port.ts",
+          "beforeSha256": "96a35ce3208f9edbc5aac26dbef0e44184a14906953af43f7506ac23f1b255ec",
+          "afterSha256": "96a35ce3208f9edbc5aac26dbef0e44184a14906953af43f7506ac23f1b255ec",
+          "equal": true,
+          "absentBoth": false
+        },
+        {
+          "path": "packages/paperclip-runner/src/control-plane/durable-prp-control-plane.ts",
+          "beforeSha256": "fb3ee3d87ad7824cc8a986bc433f00c73150a70f51e6f6dfe67ed5da976a350c",
+          "afterSha256": "fb3ee3d87ad7824cc8a986bc433f00c73150a70f51e6f6dfe67ed5da976a350c",
+          "equal": true,
+          "absentBoth": false
+        },
+        {
+          "path": "packages/db/src/client.ts",
+          "beforeSha256": "a4f89bf5ed8144c685d3e2113ca377f98734df8f68300f8d381ed5eaf509dfa0",
+          "afterSha256": "a4f89bf5ed8144c685d3e2113ca377f98734df8f68300f8d381ed5eaf509dfa0",
+          "equal": true,
+          "absentBoth": false
+        },
+        {
+          "path": "packages/db/src/work-signals.ts",
+          "beforeSha256": "f402f868c4cbbb19f78a8cfccc1cfe226d102a93ccff8efcf06a604ed09dc6f0",
+          "afterSha256": "f402f868c4cbbb19f78a8cfccc1cfe226d102a93ccff8efcf06a604ed09dc6f0",
+          "equal": true,
+          "absentBoth": false
+        },
+        {
+          "path": "packages/db/src/run-event-payload.ts",
+          "beforeSha256": "88b89c582d292ce91a1e053ad4d8b1ab73316dff035eee3dab65b0fe9c2717c4",
+          "afterSha256": "88b89c582d292ce91a1e053ad4d8b1ab73316dff035eee3dab65b0fe9c2717c4",
+          "equal": true,
+          "absentBoth": false
+        },
+        {
+          "path": "packages/db/src/schema/heartbeat_runs.ts",
+          "beforeSha256": "d56a9a7a76933a9a2a117df939a6457440ff0b388ff6665a165fd2e756434e93",
+          "afterSha256": "d56a9a7a76933a9a2a117df939a6457440ff0b388ff6665a165fd2e756434e93",
+          "equal": true,
+          "absentBoth": false
+        },
+        {
+          "path": "packages/db/src/schema/heartbeat_run_events.ts",
+          "beforeSha256": "f887d01bfb4173faa88f62f9df680b7710b57336221af70fc988e35968998388",
+          "afterSha256": "f887d01bfb4173faa88f62f9df680b7710b57336221af70fc988e35968998388",
+          "equal": true,
+          "absentBoth": false
+        },
+        {
+          "path": "packages/db/src/schema/heartbeat_run_event_cursors.ts",
+          "beforeSha256": "2abce984dd65dfb275f5ce6545fcc6258c1d22d6e69374dead5caa27b1d96baf",
+          "afterSha256": "2abce984dd65dfb275f5ce6545fcc6258c1d22d6e69374dead5caa27b1d96baf",
+          "equal": true,
+          "absentBoth": false
+        },
+        {
+          "path": "packages/db/src/schema/native_runner_checkpoints.ts",
+          "beforeSha256": "5691cfd49e50434d3d9d3acf95cbeaa3436c1aa734876d0b3a29d2e731c50c64",
+          "afterSha256": "5691cfd49e50434d3d9d3acf95cbeaa3436c1aa734876d0b3a29d2e731c50c64",
+          "equal": true,
+          "absentBoth": false
+        },
+        {
+          "path": "packages/db/src/schema/native_run_results.ts",
+          "beforeSha256": "a6b790e6dbf42a4eba34057738e7db6cc13e0e762f9d005db225733a8e37b449",
+          "afterSha256": "a6b790e6dbf42a4eba34057738e7db6cc13e0e762f9d005db225733a8e37b449",
+          "equal": true,
+          "absentBoth": false
+        },
+        {
+          "path": "packages/db/src/schema/native_run_finalizations.ts",
+          "beforeSha256": "d9431cecdd839994a1b3fd142a8741d9cbee7da39e297265c269abc344cbf940",
+          "afterSha256": "d9431cecdd839994a1b3fd142a8741d9cbee7da39e297265c269abc344cbf940",
+          "equal": true,
+          "absentBoth": false
+        },
+        {
+          "path": "server/src/services/native-runtime/native-runner-checkpoint.ts",
+          "beforeSha256": "3eb4c694b44ac9932d2c395438c1664d78bb1d00d8371359b062a1af5f039ad7",
+          "afterSha256": "3eb4c694b44ac9932d2c395438c1664d78bb1d00d8371359b062a1af5f039ad7",
+          "equal": true,
+          "absentBoth": false
+        },
+        {
+          "path": "server/src/services/native-runtime/native-runner-recovery.ts",
+          "beforeSha256": null,
+          "afterSha256": null,
+          "equal": true,
+          "absentBoth": true
+        },
+        {
+          "path": "server/src/services/live-events.ts",
+          "beforeSha256": "63ddefcd3bbd7c5dcdc59e248d2d78f14f5b668d38b8585cac8a0d417e0ec115",
+          "afterSha256": "63ddefcd3bbd7c5dcdc59e248d2d78f14f5b668d38b8585cac8a0d417e0ec115",
+          "equal": true,
+          "absentBoth": false
+        },
+        {
+          "path": "server/src/services/native-runtime/canonical.ts",
+          "beforeSha256": "6d2fa843f7710f55ced02715111d80e467a8a4ad0929cfcdef3a7bbaf7f3f993",
+          "afterSha256": "6d2fa843f7710f55ced02715111d80e467a8a4ad0929cfcdef3a7bbaf7f3f993",
+          "equal": true,
+          "absentBoth": false
+        }
+      ],
+      "allPresentCorePathsByteEqual": true,
+      "explicitOutsideCorePaths": [
+        {
+          "path": "server/src/vendor/paperclip-runner/index.ts",
+          "beforeSha256": "991a7fd75ea23226a6c4c6a4b8992d6b28bd2c9825aca889b68e60e145c574c0",
+          "afterSha256": "c14c8e4ab505164bc84c4d0305f614b2fd6a91cd6daf128ae98c9a9a63f54e6e",
+          "equal": false,
+          "absentBoth": false
+        },
+        {
+          "path": "packages/paperclip-runner/src/live/runnerd-codex-transport.ts",
+          "beforeSha256": "3813d933b871ad15d052a8f03246b30bbaf03b989c3ac6436e184dda46186561",
+          "afterSha256": "e8e878ac88f09673d6e33abba98c9841218a55522bd3d752171f5fb14a5c5f5a",
+          "equal": false,
+          "absentBoth": false
+        },
+        {
+          "path": "packages/adapter-utils/src/acpx-engine/execute.ts",
+          "beforeSha256": "00635e57744c7407070618453852ede5002382159a81a4f31ceeac0551d3e725",
+          "afterSha256": "f7e6dc787eaddb8767bd0b9f52d4ec50ec57c9add4b9fbe94ace6d4745343fdc",
+          "equal": false,
+          "absentBoth": false
+        },
+        {
+          "path": "server/src/services/run-log-store.ts",
+          "beforeSha256": "39c8da235b46a81ea478a6fa3a3e43acedd107cc4835c37912452451ffe050c0",
+          "afterSha256": "b7ab36de4df505492ee109cbac377b359126a3a29c48db343e1ce82a44d9a488",
+          "equal": false,
+          "absentBoth": false
+        },
+        {
+          "path": "server/src/services/native-runtime/native-run-finalizer.ts",
+          "beforeSha256": "7706b8632519e6bfeb06e9b224e49a14fa1d8b1e4b0a1e3d5cdf025864cf29f8",
+          "afterSha256": "07bc941d5796870fbd6d96e2a30f8409b389c4f1fc7232c745d1a83d376b9b4d",
+          "equal": false,
+          "absentBoth": false
+        },
+        {
+          "path": "server/src/services/native-runtime/native-session-executor.ts",
+          "beforeSha256": "0abf1aed7d1a8637e5469b4e8ee3a5a018e571c675078621dc30c0d54e09b48c",
+          "afterSha256": "9f94c6d5b22b4a429c9d86eee8bb3f29644d3a45040730bbe4c8db3a5399e6e6",
+          "equal": false,
+          "absentBoth": false
+        }
+      ]
+    }
+  ],
+  "limits": [
+    "Extra vendor index exports, Runner Codex diagnostics and ACPX environment/Claude-key handling differ outside this core selection",
+    "Run-log wrapper, native executor and native finalizer are real application-path changes; fresh app/Stop proof remains separate",
+    "Locked DB/pg/tsx graph comparisons are separate static receipts, not installed-binary/OS/build/runtime equality",
+    "Heartbeat event cursor/range table declarations share one schema source; native checkpoints/results/finalizations and heartbeatRuns are separately compared"
+  ]
+}

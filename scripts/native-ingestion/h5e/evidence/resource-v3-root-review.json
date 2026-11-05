@@ -1,0 +1,25 @@
+{
+  "atUtc": "2026-11-04T13:34:55.203416+00:00",
+  "reviewer": "root",
+  "verdict": "SOURCE_CLEAR",
+  "executionReleased": false,
+  "sourcePacketSha256": "f660208e118aa0e899a111fabfadac07c8da139051b5737105896b369d15e124",
+  "peerReviewSha256": "ca41d0a24993243823b6c4880f1e173d5582d27a8d5b10b908bea4628dae52c2",
+  "filesAndChecksVerified": 83,
+  "criticalSourcesRead": [
+    "pg-service.mjs",
+    "pg-exit-receipt.mjs",
+    "resource-capture.mjs",
+    "pg-service-preload.mjs"
+  ],
+  "priorFindingsSourceRepaired": true,
+  "failClosedUnknownShutdownAndPrivateFileFinallyCleanup": true,
+  "collectorOwnedBeforeAwaitAndCooperativeUnknownBirthRetirement": true,
+  "noRuntimeQualificationImplied": true,
+  "openGates": [
+    "Actual Linux systemd effective controls/env/ExecStopPost proof/cgroup exited-child accounting",
+    "Actual installed Linux dependency hashes",
+    "One SMALL all-six-hook serving/cluster/flush/cleanup qualification",
+    "Completed matched FULL diagnostic blocks under frozen definitions"
+  ]
+}

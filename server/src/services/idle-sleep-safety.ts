@@ -73,6 +73,7 @@ export type InspectIdlePlugins = (hold: { ownerId: string; expiresAt: number }) 
 const workCheck = (reason: string, query: string | SQLWrapper) => ({ reason, query: typeof query === "string" ? sql.raw(query) : query });
 
 const WORK_CHECKS = [
+  workCheck("native_event_cursor_rebuild", `SELECT 1 FROM heartbeat_runs WHERE event_cursor_rebuild_pending = true`),
   workCheck("agents.execution_or_timer", `SELECT 1 FROM agents WHERE status = 'running' OR
     (status NOT IN ('terminated', 'paused', 'pending_approval') AND
      runtime_config->'heartbeat'->>'enabled' = 'true' AND

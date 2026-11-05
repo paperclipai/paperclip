@@ -1,0 +1,174 @@
+{
+  "schema": "paperclip.native-ingestion.source-evidence.v1",
+  "scope": "Frozen SOURCE B0 A/A and B0\u2192B1 cursor active append-service cost only; no browser/batching/production/full-task completion claim",
+  "sourceRefs": {
+    "B0": "5337df423e622755d44f3ece5447d1e0beef5f40",
+    "B1": "e9b909015ad3d517f28c45f0c66c8f41d6112b4b",
+    "B2": "fcb5d94848b3c4b0b32096ff5e023618e0f0637b"
+  },
+  "separateAppRefs": {
+    "B0": "a36567f9fbf805ad72207d54f539516e3121741e",
+    "B1": "d8cd3be0aeed4f9fb93ecc3cf725f1d46d5a0310",
+    "B2": "914129afb141d81c0d6d8c5f0ea11c20bd69a3da"
+  },
+  "protocolSha256": "302c11ec61d5170822c08e47f798ca582b8e5afefd9d223fb9023d9ead7a2ad3",
+  "measurementSha256": "c8adaf5ac16cab67513d6c8b888afa44d95fa3688d4831b8126fe3d997f1d039",
+  "workloadSha256": "ca4894b0723d0bffff0fc88d1596d64aa8fd75aa1dd8d861372ea993db24e164",
+  "gateSha256": "ded8bcbb8f05732348f6520b9c5e41b7c35bc098997eb263a9dcb174eede75fc",
+  "rawProjection": "None. Exact original decompressed bytes retained; historical Linux paths are disposable owned fixture locations. Adapted static helper declares its original/public hashes separately.",
+  "excludedPriorAaSha256": "cfcfeb3c12812dbe48c2afe6013320922d5670a410d033d6ad9a3a2f91236ef8",
+  "files": [
+    {
+      "path": "README.md",
+      "bytes": 2545,
+      "sha256": "1f70726000fea330bc3251b20c43cfde80aae255110320be8fb5d301a62a9c90"
+    },
+    {
+      "path": "compare-runtime-dependencies.cjs",
+      "bytes": 4390,
+      "sha256": "c3f8207cc2199be4eec09b1b4cb08781ff6658e05415b304d75b41aa961d1c3a"
+    },
+    {
+      "path": "cursor-result-table.json",
+      "bytes": 3869,
+      "sha256": "026fc500c3c56fc2e84fb46ca43eed8b54f8647fa3d6054a48e4513dbec1bdab"
+    },
+    {
+      "path": "dependency-helper-projection.json",
+      "bytes": 394,
+      "sha256": "39bdb57f8ce001f82daf9c41bb91acfdfa344fcc61f1b11fed2f90a466b195da"
+    },
+    {
+      "path": "excluded-monolithic-service-aa-b0.json.gz",
+      "bytes": 160758,
+      "sha256": "dd1508b0fece27dade320fcddeb4bf0e81ecef7c3dffd01b7ee110dbd9949258",
+      "decompressedBytes": 3175715,
+      "decompressedSha256": "cfcfeb3c12812dbe48c2afe6013320922d5670a410d033d6ad9a3a2f91236ef8"
+    },
+    {
+      "path": "full-release.md",
+      "bytes": 2794,
+      "sha256": "904434a688bbfc0b1de0673d06941881a28f6ec81b8b6153d733b8ab58a4803e"
+    },
+    {
+      "path": "gates.mjs",
+      "bytes": 3553,
+      "sha256": "ded8bcbb8f05732348f6520b9c5e41b7c35bc098997eb263a9dcb174eede75fc"
+    },
+    {
+      "path": "measurement-source.ts",
+      "bytes": 51618,
+      "sha256": "c8adaf5ac16cab67513d6c8b888afa44d95fa3688d4831b8126fe3d997f1d039"
+    },
+    {
+      "path": "packaging-verification.json",
+      "bytes": 1659,
+      "sha256": "81f0d4234bc251dcc806e3b20568080ea729d23774a19aea10fda3bf3e65ffe9"
+    },
+    {
+      "path": "prospective-protocol.md",
+      "bytes": 13425,
+      "sha256": "302c11ec61d5170822c08e47f798ca582b8e5afefd9d223fb9023d9ead7a2ad3"
+    },
+    {
+      "path": "root-release.json",
+      "bytes": 920,
+      "sha256": "85477defaf8e9b26b25b95fc15b3eb3124e6b7b809d76a40cce86b83c776feae"
+    },
+    {
+      "path": "service-aa-b0-commands.json",
+      "bytes": 949,
+      "sha256": "fd94dbf1fa4875ab689712ff259bdae52fa6eed667664c9b5dc3c044a6dcf3a6"
+    },
+    {
+      "path": "service-aa-b0.json.blocks.jsonl.gz",
+      "bytes": 153031,
+      "sha256": "799782ba8c0fe609567c22ed3ddbe831b9a561872ad4ea9b0ae9c28b24379331",
+      "decompressedBytes": 1493345,
+      "decompressedSha256": "744620da2dfff459f1fff9574837d11bb60a2f243923f526529b6a476d653148"
+    },
+    {
+      "path": "service-aa-b0.json.gz",
+      "bytes": 357150,
+      "sha256": "05beeda33d75794169199d37f6d721f87474c9043dfb1bcd70b35398efc63a7b",
+      "decompressedBytes": 4328699,
+      "decompressedSha256": "1d88dea61820d5555af08dc1f6079f3820ccb0e3b429105951ad06eca426d08a"
+    },
+    {
+      "path": "service-aa-b0.repeatability.json",
+      "bytes": 2177,
+      "sha256": "ebdae0417c10b81550e6791d2c246becae8fc7edeee31fa7a103f2142d7abef1"
+    },
+    {
+      "path": "service-b0-b1-commands.json",
+      "bytes": 1063,
+      "sha256": "a10f64f755425852252bafd5fc2397dcc62565be45e2733f2e86a95ec50cb5e5"
+    },
+    {
+      "path": "service-b0-b1.json.blocks.jsonl.gz",
+      "bytes": 153649,
+      "sha256": "6502f2f3e41363e584d52988090d7df16420d7a4c5a84f57abb0fdc8d8f50b98",
+      "decompressedBytes": 1493184,
+      "decompressedSha256": "382b0f7ca51cc855c0bf0d8b1685cb01cbf0dde1d55ecf4c90dc527c32db7f57"
+    },
+    {
+      "path": "service-b0-b1.json.gz",
+      "bytes": 375350,
+      "sha256": "00f8e4a49a77aaa65417fcf5b328ccdcb50795675bd490332a8849f817b6df12",
+      "decompressedBytes": 4776091,
+      "decompressedSha256": "283eef0a9d5cf3b39bb7ebf7444ced40025f499e51847c2cc205f3101c1f1470"
+    },
+    {
+      "path": "service-b0-b1.quiet.json",
+      "bytes": 316,
+      "sha256": "f50d903380fc1daff6c2d4c1b27311513b2caaaa2b770f8c444718dab4571fc6"
+    },
+    {
+      "path": "source-app-core-equivalence.json",
+      "bytes": 29118,
+      "sha256": "2407b0f92eb70778d910ae8130d74cc64d9e47ba4aaed09d2ff54414e3b28e61"
+    },
+    {
+      "path": "source-b1-app-b1-dependency-graph.json",
+      "bytes": 82820,
+      "sha256": "c6f8ad70c3cf774a0ebe29f71b5847b14430a34bcb3532ef2dd1d66816220552"
+    },
+    {
+      "path": "source-b2-app-b2-dependency-graph.json",
+      "bytes": 82820,
+      "sha256": "6ba611d3331121146f2c7d744fea8f5fc00eff348cb2bdcb8d0975d68886f7b8"
+    },
+    {
+      "path": "summary.json",
+      "bytes": 14339,
+      "sha256": "8c2a5c760175867a36fe4222b444fb0ce7234142d934699cbf0deeb4478db3b4"
+    },
+    {
+      "path": "upstream-dependency-graph.json",
+      "bytes": 82860,
+      "sha256": "733f23dea1a6657fd75b9394a12451ddd7d78938dde9011ffa5b421092d8cdc9"
+    },
+    {
+      "path": "upstream-table-snapshot-equality.json",
+      "bytes": 1409,
+      "sha256": "1f8eaede3ce8ec77b83909efc465d5adbdef97595fba8f0ee6c2e8c0e19b3774"
+    }
+  ],
+  "externalOwnedFiles": [
+    {
+      "repositoryPath": "doc/benchmarks/2026-11-03-native-event-ingestion-interleaved.md",
+      "bytes": 13923,
+      "sha256": "3e8308f0abb33036388f2c88f8f1e87732279cc0490215fdf5a935fc59a61dae"
+    },
+    {
+      "repositoryPath": "doc/benchmarks/2026-11-03-native-event-ingestion.md",
+      "bytes": 5850,
+      "sha256": "a98c829eb271ee2319dd8ce7eca17910377ddd2c8848c6cb5f0ee973781fd7a3"
+    },
+    {
+      "repositoryPath": "scripts/benchmark-native-event-ingestion-interleaved.ts",
+      "bytes": 51618,
+      "sha256": "c8adaf5ac16cab67513d6c8b888afa44d95fa3688d4831b8126fe3d997f1d039"
+    }
+  ]
+}

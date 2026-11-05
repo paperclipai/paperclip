@@ -1,0 +1,60 @@
+{
+  "scope": "Focused source typecheck and test discovery only; no hooks, app, browser, DB or network executed",
+  "checks": [
+    {
+      "command": [
+        "/private/tmp/native-ingestion-node24/bin/node",
+        "/private/tmp/paperclip-native-event-harness-h5e/node_modules/typescript/bin/tsc",
+        "--noEmit",
+        "--ignoreConfig",
+        "--target",
+        "ES2022",
+        "--module",
+        "esnext",
+        "--moduleResolution",
+        "bundler",
+        "--esModuleInterop",
+        "--allowSyntheticDefaultImports",
+        "--skipLibCheck",
+        "--allowJs",
+        "--types",
+        "node",
+        "--typeRoots",
+        "/private/tmp/paperclip-native-event-harness-h5e/node_modules/.pnpm/@types+node@24.13.3/node_modules/@types",
+        "resource-wrapper.config.mts",
+        "resource-wrapper.spec.mts",
+        "resource-capture.mjs",
+        "run-resource-diagnostic.mjs"
+      ],
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "/private/tmp/native-ingestion-node24/bin/node",
+        "/private/tmp/paperclip-native-event-harness-h5e/node_modules/@playwright/test/cli.js",
+        "test",
+        "--config",
+        "/private/tmp/native-ingestion-h5e-resource-tools/resource-wrapper.config.mts",
+        "--list"
+      ],
+      "envOverrides": {
+        "NODE_OPTIONS": "",
+        "TMPDIR": "/private/tmp/native-ingestion-h5e-resource-tools/checks/discovery-scratch/tmp",
+        "NODE_ENV": "test",
+        "PAPERCLIP_CI_PROFILE": "false",
+        "PAPERCLIP_INGESTION_HARNESS_ROOT": "/private/tmp/paperclip-native-event-harness-h5e",
+        "PAPERCLIP_INGESTION_APP_ROOT": "/private/tmp/native-ingestion-cf-integration-cursors",
+        "PAPERCLIP_INGESTION_EVIDENCE_DIR": "/private/tmp/native-ingestion-h5e-resource-tools/checks/discovery-scratch/evidence",
+        "PAPERCLIP_INGESTION_OBSERVATION_MODE": "h5c-observe-original-sla-independent-agents-settlement",
+        "PAPERCLIP_INGESTION_SMOKE": "1",
+        "PAPERCLIP_NATIVE_INGESTION_DIAGNOSTIC_DIR": "/private/tmp/native-ingestion-h5e-resource-tools/checks/discovery-scratch/evidence/profile",
+        "PAPERCLIP_RESOURCE_VARIANT": "B0"
+      },
+      "exit": 0,
+      "stdout": "Listing tests:\n  [chromium] \u203a ../paperclip-native-event-harness-h5e/tests/e2e/native-event-ingestion.journey.ts:171:1 \u203a native ingestion reaches the shipped UI promptly and survives reload\nTotal: 1 test in 1 file\n",
+      "stderr": ""
+    }
+  ]
+}

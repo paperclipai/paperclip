@@ -1,0 +1,73 @@
+{
+  "schema": "paperclip.native-ingestion.h5b-helper-sources.v1",
+  "scope": "Exact reviewed task-helper source snapshots. Per-run owner receipts remain authoritative for executed file hashes. This packaging did not execute a new driver, application, qualification or performance arm.",
+  "frozenDriver": {
+    "tag": "native-ingestion-h5b",
+    "tagObject": "34498d7e09b61493e0f6703c354291c485836298",
+    "commit": "179fe6fa6da1b24ca08c1162301538d3e3788af6",
+    "lockSha256": "54a81b2ed3f1f85eaa085c034560ac248e384db34fbc7aba8c5a3846c29b3ce8",
+    "measurementSha256": "452a5c8f0ad449b2db4ea3ca0bb6a6d19e8e6642eaac7b898caa55d1cedff40e",
+    "comparatorSha256": "0c3ecc2e992a84a010e0132e8efb129f6b9c02e478c2f45028235fc67b5e6168",
+    "inventoryHelperSha256": "76b897dd6b7a90e784e228d78d79633a6d7011fe3ea01737f3bef9c6113298e9",
+    "protocolDocumentSha256": "60ae7052b9a58514d326109cdcf9f0c408d73acbff5d23be1fa92de1fcde8f54"
+  },
+  "recordedLayout": {
+    "base": "/home/ubuntu/native-ingestion",
+    "driver": "harness-h5b",
+    "helperDirectory": "helpers",
+    "appDirectories": {
+      "B0": "aligned-baseline",
+      "B1": "aligned-cursors",
+      "B2": "aligned-batching"
+    }
+  },
+  "recordedAppRevisions": {
+    "B0": "bac53ec3bfeaf6546e7aaeaee516487b30534654",
+    "B1": "07061a601cdc20603c8c7a46f9ddbad7ac5f5939",
+    "B2": "ca7cba171cd5198ed569d75012edc858041cbc44"
+  },
+  "rawB2Role": "Unoptimized batching base only. No future Rust candidate or matching build is supplied by this package.",
+  "deliveryLockSha256AtPackaging": "7540075e96f9a93924a1e54775c17346c5760dd5d02902d83fb5228f918996ba",
+  "deliveryLockWasExecutedDriver": false,
+  "files": [
+    {
+      "file": "native-ingestion-run-h5b-browser.mjs",
+      "originalTaskFile": "/private/tmp/native-ingestion-run-h5b-browser.mjs",
+      "bytes": 53930,
+      "sha256": "522d4fc718665ef484dec40ff56e463efe11b4ddf0c632c2d3f4811092d63fa6",
+      "byteIdenticalToReviewedOriginal": true,
+      "packagingChanges": []
+    },
+    {
+      "file": "native-ingestion-linux-h5b-qualification.py",
+      "originalTaskFile": "/private/tmp/native-ingestion-linux-h5b-qualification.py",
+      "bytes": 6904,
+      "sha256": "0d19a505ca860a7e8eb3975c4cef5a509b2ae449fab0d8d90dce830cb787219b",
+      "byteIdenticalToReviewedOriginal": true,
+      "packagingChanges": []
+    },
+    {
+      "file": "native-ingestion-h5b-linux-readiness.mjs",
+      "originalTaskFile": "/private/tmp/native-ingestion-h5b-linux-readiness.mjs",
+      "bytes": 3446,
+      "sha256": "5694d9ee274dfd0a1c77ac917c2bca84f6f0a858f4eabdd73e03241e02eda62e",
+      "byteIdenticalToReviewedOriginal": true,
+      "packagingChanges": []
+    },
+    {
+      "file": "native-ingestion-extract-h5b-qualification.py",
+      "originalTaskFile": "/private/tmp/native-ingestion-extract-h5b-qualification.py",
+      "bytes": 5704,
+      "sha256": "a052375a80b3abad4513cdf019325e83fed63c67d935f1dc2accba753ce589f0",
+      "byteIdenticalToReviewedOriginal": true,
+      "packagingChanges": [],
+      "reviewedSourceRevision": "Root-approved post-read strengthening; no measured driver/source/workload/deadline change",
+      "historicalSmallValidator": {
+        "sha256": "00930574798e3d56257a4913d82400ccd739b4bb52e9a24d5cb18a36892be970",
+        "bytes": 5445,
+        "usedBy": "Recorded SMALL independent post-read proof; source retained in the owning raw23-fileSMALLartifactmanifest",
+        "difference": "Packaged validator adds3existing-historypreludeProof assertions: run identity,1000losslessunique deltas, pre-epochverification/retainedhead. This packagedvalidator did not produce the SMALL result."
+      }
+    }
+  ]
+}

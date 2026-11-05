@@ -1,0 +1,26 @@
+[
+  {
+    "index": 1,
+    "stage": "service-b0-b1",
+    "cwd": "/home/ubuntu/native-ingestion/fixture2-cursors",
+    "executable": "/opt/native-ingestion/node-v26.4.0-linux-x64/bin/node",
+    "args": [
+      "--import",
+      "./server/node_modules/tsx/dist/loader.mjs",
+      "/home/ubuntu/native-ingestion/helpers/benchmark-native-event-ingestion-interleaved.mts",
+      "--app-root=/home/ubuntu/native-ingestion/fixture2-cursors",
+      "--baseline-ref=5337df423e622755d44f3ece5447d1e0beef5f40",
+      "--phase=compare",
+      "--output=/home/ubuntu/native-ingestion/evidence/fixture2/interleaved-service/service-b0-b1.json",
+      "--noise-report=/home/ubuntu/native-ingestion/evidence/fixture2/interleaved-service/service-aa-b0.json",
+      "--require-acceptance"
+    ],
+    "environmentOverrides": {},
+    "startedAt": "2026-11-04T00:20:41.130Z",
+    "log": "/home/ubuntu/native-ingestion/evidence/fixture2/interleaved-service/service-b0-b1.log",
+    "childPid": 112072,
+    "finishedAt": "2026-11-04T00:31:49.701Z",
+    "code": 0,
+    "signal": null
+  }
+]

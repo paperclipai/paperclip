@@ -1,0 +1,107 @@
+{
+  "scope": "Instrumented failed historical local-process baseline replay; no acceptance comparison",
+  "sampleCount": 2105,
+  "firstAtMs": 1793741807203,
+  "lastAtMs": 1793742403990,
+  "sampleSpanMs": 596787,
+  "maxObservedNormalizedQueueDepth": 22992,
+  "maxObservedRssBytes": 3234127872,
+  "lastSample": {
+    "atMs": 1793742403990,
+    "kind": "app-sample",
+    "intervalMs": 396.07483800000045,
+    "cpuMicros": 126479,
+    "rssBytes": 1705947136,
+    "heapUsedBytes": 1085192912,
+    "externalBytes": 93966649,
+    "eventLoopUtilization": 1,
+    "eventLoopDelayCount": 3,
+    "eventLoopDelayMaxMs": 63.143935,
+    "eventLoopDelayP95Ms": 63.143935,
+    "actualNormalizedQueueDepth": 22992,
+    "liveQueueObjects": 112,
+    "queuePeakSinceSample": 22992,
+    "counters": {
+      "normalizedEvents": 34720,
+      "committedEvents": 9197,
+      "duplicateReceipts": 0,
+      "committedMarkers": 7869,
+      "sqlCalls": 232476,
+      "begins": 17190,
+      "commits": 17183,
+      "rollbacks": 0,
+      "savepoints": 10172,
+      "releases": 0,
+      "queueHighWater": 22992
+    },
+    "filesystem": {
+      "fullSnapshotSerialization": {
+        "calls": 36552,
+        "successes": 36552,
+        "errors": 0,
+        "millis": 50971.382787009425,
+        "bytesAttempted": 13740085068
+      },
+      "atomicWrite": {
+        "calls": 3216,
+        "successes": 3216,
+        "errors": 0,
+        "millis": 1035.6515519998793,
+        "bytesAttempted": 515122207
+      },
+      "atomicFileFsync": {
+        "calls": 3216,
+        "successes": 3216,
+        "errors": 0,
+        "millis": 16744.279251000335,
+        "bytesAttempted": 0
+      },
+      "directoryFsync": {
+        "calls": 36720,
+        "successes": 36720,
+        "errors": 0,
+        "millis": 149033.220497999,
+        "bytesAttempted": 0
+      },
+      "stagedWrite": {
+        "calls": 33537,
+        "successes": 33536,
+        "errors": 0,
+        "millis": 2727536.487238994,
+        "bytesAttempted": 13208582362
+      },
+      "stagedFileFsync": {
+        "calls": 33536,
+        "successes": 33532,
+        "errors": 0,
+        "millis": 3608792.627418981,
+        "bytesAttempted": 0
+      }
+    },
+    "sqlVerbs": {
+      "select": 150235,
+      "create": 1314,
+      "begin": 17190,
+      "alter": 1090,
+      "insert": 12608,
+      "commit": 17183,
+      "other": 97,
+      "drop": 77,
+      "do": 624,
+      "update": 16324,
+      "with": 5319,
+      "delete": 238,
+      "analyze": 2,
+      "savepoint": 10172,
+      "set": 3
+    },
+    "fatalDiagnosticErrors": 0
+  },
+  "limits": [
+    "Queue counts the normalized upstream queue, excluding collector/pending-read/in-flight/transport queues",
+    "Observed peaks are sample based",
+    "Cumulative filesystem elapsed times overlap across async operations and include scheduling; do not sum or interpret async sync elapsed as blocked CPU",
+    "Serialization elapsed ends before byte-counting probe; sampled wrapper residence includes byte counting",
+    "Diagnostic instrumentation and its observer work are excluded from acceptance"
+  ]
+}

@@ -1,0 +1,218 @@
+{
+  "schema": "paperclip.native-ingestion.h5e-current-evidence-index.v1",
+  "asOf": "2026-11-04 packaging snapshot",
+  "scope": "Compact projection of exact root-reviewed local receipts. Not raw evidence or a performance result; original hashes and pending durable publication remain explicit.",
+  "sourcePublication": {
+    "receiptSha256": "9fd707f893805faa4b3bf0f96ae886e0fe57e9f3e327ecc676ce0af4674cf379",
+    "recordedAtomicPushAndReadbackPassed": true,
+    "tags": [
+      {
+        "role": "B0",
+        "tag": "native-ingestion-benchmark-2026-11-04-cf-b0",
+        "tagObject": "eb46414f286b36064cdf84285c73c4c2d8a599d8",
+        "commit": "7550ffa5d6447d2615bc89fc5313f4cbb958b615",
+        "tree": "de94c89a41b0f9286716de411738f3260a83b507"
+      },
+      {
+        "role": "B1",
+        "tag": "native-ingestion-benchmark-2026-11-04-cf-b1",
+        "tagObject": "85e036e1e02ae3bc0e2be5c41ced41e2e83e593f",
+        "commit": "2cf1454406cbd582a11f04476713eceb746eada5",
+        "tree": "062e621dec274d80af8a1b20d33b6814cbe6af9e"
+      },
+      {
+        "role": "B2",
+        "tag": "native-ingestion-benchmark-2026-11-04-cf-b2-ts",
+        "tagObject": "8bee124b684196a986227fb8dd157910d0af659b",
+        "commit": "75b3578cfccf040b087a55a624e01baa2bca37f9",
+        "tree": "4f6f8d687b896de33cf669f3d74f91b2c1fa3d75"
+      },
+      {
+        "role": "main",
+        "tag": "native-ingestion-h5e",
+        "tagObject": "86688373df32d4d460b90885357c29f992bbc21b",
+        "commit": "73ea8516739e81fa7f37cd67651b4a2c73674014",
+        "tree": "6cd855045456c5a7f84fb088babba332c1e7689c"
+      },
+      {
+        "role": "V4",
+        "tag": "native-ingestion-blocked-stop-v4",
+        "tagObject": "db469817cf23d755bbc8c34e1ef5c7451608e1d6",
+        "commit": "a89f321ab5654211cbff7be1ee15c110b8db4a5f",
+        "tree": "a47e5afb80c631325c5c4c949c419ab9e815e397"
+      }
+    ]
+  },
+  "qualifiedLocalRecords": [
+    {
+      "name": "h5e-small-b0",
+      "rootReviewSha256": "d4cd14dbb589bfbd649526921b84b7147d120c74455486f422c2a6e5fde2c4f2",
+      "rootReviewOriginalPath": "/private/tmp/native-ingestion-evidence-cf/h5e-small-b0/root-independent-review.json",
+      "archive": {
+        "archive": "/home/ubuntu/native-ingestion/h5e-small-b0-evidence.tgz",
+        "bytes": 923643,
+        "sha256": "e1314bf4065592ecd9bfaca583b9ce697c70e7c8f58faeeadc47d110e7bf3685",
+        "manifest": "/home/ubuntu/native-ingestion/evidence/h5e/small-b0-manifest.json",
+        "manifestSha256": "7f3c10cbca1b397985361e4d3fa5367dbea7278d56e5bd018681db7885014561",
+        "fileCount": 118,
+        "ownerProcessExit": 0,
+        "postreaderComplete": true,
+        "reportSha256": "094effc88a787ca70a6c8af728c08cc519946acea8c96091a0b648804e6feb3c",
+        "qualificationOnly": true,
+        "performanceAcceptanceEligible": false
+      },
+      "durableArtifactUrl": null,
+      "publicationStatus": "Pending artifact publication; private paths are provenance only",
+      "performanceAcceptanceEligible": false,
+      "summary": {
+        "oneOwningAttempt": true,
+        "deltas": 48,
+        "results": 3,
+        "stopDeltas": 6,
+        "stopResults": 0,
+        "reloadLeasePhysicalCleanup": true,
+        "originalFailedSetupRetained": true
+      }
+    },
+    {
+      "name": "h5e-full-b0",
+      "rootReviewSha256": "973566a3a9ecd0d210357a3830f7ca1fd305e1a54c96ba7b4542017d894040d4",
+      "rootReviewOriginalPath": "/private/tmp/native-ingestion-evidence-cf/h5e-full-b0/root-independent-review.json",
+      "archive": {
+        "archive": "/home/ubuntu/native-ingestion/h5e-full-b0-evidence.tgz",
+        "bytes": 5041484,
+        "sha256": "68f9b94bdc6242096f255237e34dd3766e246a6215fee392c9312eff842840ac",
+        "manifest": "/home/ubuntu/native-ingestion/evidence/h5e/full-b0-manifest.json",
+        "manifestSha256": "a3ab3528e802302bf623e94a003b25cb53985de2fb117c7ef8c279ae812513ec",
+        "fileCount": 60,
+        "ownerProcessExit": 0,
+        "postreaderComplete": true,
+        "reportSha256": "338fc95e18bbc63d673832f0467ca8df29f04f042e2014b46f53128eb8d09ad1",
+        "qualificationOnly": true,
+        "performanceAcceptanceEligible": false
+      },
+      "durableArtifactUrl": null,
+      "publicationStatus": "Pending artifact publication; private paths are provenance only",
+      "performanceAcceptanceEligible": false,
+      "summary": {
+        "oneOwningAttempt": true,
+        "testDurationMs": 853299,
+        "normalDeltas": 53904,
+        "normalResults": 122,
+        "historyPreludeDeltas": 1000,
+        "stopDeltas": 8,
+        "stopResults": 0,
+        "originalLoadedStreamingStatus": "failed",
+        "originalLoadedVisible": 63,
+        "loadedTarget": 512,
+        "loadedVerifiedDrainMs": 390608,
+        "loadedRecoveredProviderTransportFailures": 28,
+        "reloadLeasePhysicalCleanup": true
+      }
+    },
+    {
+      "name": "v4-functional",
+      "rootReviewSha256": "837852ee2ff9c5dbbcb31aa4293286c6126727043a5311b6186f91792991e91b",
+      "rootReviewOriginalPath": "/private/tmp/native-ingestion-evidence-cf/v4-functional/root-independent-review.json",
+      "archive": {
+        "archive": "/home/ubuntu/native-ingestion/v4-b0-functional-evidence.tgz",
+        "bytes": 985221,
+        "sha256": "678ae16fb6de822576a48bc918a0a76620eff0719eb475835b2f67e33ac793e2",
+        "manifestSha256": "92acc356ab394f47940fb22cec3562bee8a6351c139d4cd4149751834056e40d",
+        "fileCount": 57,
+        "reportSha256": "a152cbbccea97a36a76e674be784f6428fa3aa67919ace441c92de54f91f293a",
+        "evidenceSha256": "fae67af1e1e836044712d3ffaefba972a57d54f3238d4a1300644a4021e18326",
+        "complete": true,
+        "qualificationOnly": true,
+        "performanceAcceptanceEligible": false
+      },
+      "durableArtifactUrl": null,
+      "publicationStatus": "Pending artifact publication; private paths are provenance only",
+      "performanceAcceptanceEligible": false,
+      "summary": {
+        "source": "7550ffa5d6447d2615bc89fc5313f4cbb958b615",
+        "harness": "a89f321ab5654211cbff7be1ee15c110b8db4a5f",
+        "prelude": 1000,
+        "heldSamples": 15,
+        "forcedHoldAfterHttpRequestMs": 1021,
+        "noConsequentialDispatchWhileBarrierHeld": true,
+        "metrics": {
+          "actionToAckMs": 1252,
+          "releaseAckToAbsenceMs": 1288,
+          "releaseAckToAckMs": 165,
+          "releaseRequestToAbsenceMs": 1290,
+          "releaseRequestToAckMs": 167
+        },
+        "stopDeltas": 8,
+        "results": 0,
+        "retirementState": "retained-identity-after-physical-exit",
+        "postQuietAndCleanup": true
+      },
+      "identityLimit": "Old V3 helper/orchestrator identity. Does not qualify new neutral V4 companion helpers."
+    },
+    {
+      "name": "b2-build",
+      "rootReviewSha256": "ea15cc65f1d2704fe8cf6cbec969cbae788625c6684deceb7db9478e8a025afd",
+      "rootReviewOriginalPath": "/private/tmp/native-ingestion-evidence-cf/b2-build/root-independent-review.json",
+      "archive": {
+        "archive": "/home/ubuntu/native-ingestion/cf-ts-b2-build-evidence.tgz",
+        "bytes": 17808938,
+        "sha256": "b5afb033d50802b3d85fb9b5e39b896ab943fe4812ecab1b30d3fb5c95a4fdd4",
+        "manifestSha256": "aa8756ed30a43a34661302387fd4406a3b32c540a05c2021e34c1c4fa0f66746",
+        "fileCount": 41,
+        "qualifiedReceiptSha256": "86bf7cd284b4ac0672ed5d99de2319962946e365216277a253ff18b4c93bf9d1",
+        "inventorySummarySha256": "330b0f843a5b44ccf940267e61ab5b401d99aa53206586feeabb73aff73f7b29",
+        "binarySha256": "512875bd051b7f7a97c93d2aa63648c675a8a991e745c79bc7481ad2d2f02c66",
+        "complete": true,
+        "buildOnlyNoPerformanceQualification": true
+      },
+      "durableArtifactUrl": null,
+      "publicationStatus": "Pending artifact publication; private paths are provenance only",
+      "performanceAcceptanceEligible": false,
+      "summary": {
+        "qualifiedReceiptSha256": "86bf7cd284b4ac0672ed5d99de2319962946e365216277a253ff18b4c93bf9d1",
+        "nativeBinarySha256": "512875bd051b7f7a97c93d2aa63648c675a8a991e745c79bc7481ad2d2f02c66",
+        "nativeInputsCompilerEnvironmentMetadataAndBinaryEqualCf": true,
+        "ownIndependentCanonicalTarget": "/home/ubuntu/native-ingestion/aligned-cf-batching-ts/packages/paperclip-runner/runner/target",
+        "all6ProtectedTargetsUnchanged": true,
+        "fourRootFileCount": 12952,
+        "fourRootAggregate": "2df789c77a7939ead10f8789f3c60ac8e6addcbc25f263650f0e9478c33e32ee",
+        "normalBuildAndOwnerPassed": true,
+        "strictQuietPassed": true,
+        "applicationAcceptanceComplete": false
+      }
+    }
+  ],
+  "activeMainB0Aa": {
+    "status": "ACTIVE at packaging snapshot; no completed noise or gain claim",
+    "helperVersion": "V3 unchanged",
+    "releaseSha256": "13cc7e1c310c482d310877137179eaa6989dbb1d6db8015008e2d1f39cc5067c",
+    "releaseOriginalPath": "/private/tmp/native-ingestion-h5e-v3-qualification-release-prep/main-aa-b0.root-release.json",
+    "completedNoiseReport": null,
+    "acceptedPerformanceSamples": null
+  },
+  "sourceClearedRuntimePending": {
+    "neutralH5eV4": "New companion identity requires fresh functional qualification then its own A/As. Main V3 controls may carry forward only under unchanged ordinary identity and suitability checks.",
+    "resourceV3": "Actual Linux unit/control/environment/accounting/installed postgres triple and one SMALL six-hook/cluster/flush/normal-exit/cleanup qualification remain open. Fifteen matched FULL diagnostic invocations are unreleased."
+  },
+  "remainingEvidenceToAdd": [
+    "Current main and companion B0/B1 A/A noise reports with exact raw/seal links and failures",
+    "Five alternating pairs for all three application/control contrasts with complete drainage and original SLA assessment",
+    "Qualified completed resource blocks and interval bounds, no CPU improvement beyond uncalibrated noise",
+    "Final-source original-SLA confirmation and real-provider/long-history/real-cloud Stop journeys",
+    "Durable artifact URLs plus hashes after the existing artifact/credential scan; all material failed/censored attempts retained",
+    "Final-head repository checks/review and updated claims at handoff"
+  ],
+  "notClaimed": [
+    "Application improvement",
+    "Production or deployed improvement",
+    "10,000-agent qualification",
+    "Completed acceptance"
+  ],
+  "deliveryParityPlan": {
+    "servingCandidateRevision": "75b3578cfccf040b087a55a624e01baa2bca37f9",
+    "packagingParent": "b578b95d3257af93d3f2696b0203bb4bcb0c6bcf",
+    "scope": "Only tools/docs. Retain existing B1 frozen-to-parent equivalence; compare final packaging delivery inputs/lock/build/native objects and changed paths to their actual built source. Serving source stamps and artifact receipts stay unchanged; no rebuild solely for tools/docs. Fresh delivery-head CI/review remains required.",
+    "newLivePrepHelperIncludedOrQualified": false
+  }
+}

@@ -387,6 +387,30 @@ describeEmbeddedPostgres("heartbeat run privacy routes", { concurrent: false }, 
     }
   });
 
+  it("keeps cursor projection state out of public run responses", async () => {
+    const fixture = await seedFixture();
+    const resultJson = { summary: "Maintenance complete", eventCursorProjectionSeq: "payload value" };
+    await db.update(heartbeatRuns).set({
+      eventCursorProjectionSeq: 41,
+      eventCursorRebuildPending: true,
+      resultJson,
+    }).where(eq(heartbeatRuns.id, fixture.maintenanceRunId));
+    const app = createBoardApp(fixture.companyId, fixture.ownerUserId);
+    const detail = await request(app).get(`/api/heartbeat-runs/${fixture.maintenanceRunId}`).expect(200);
+    const history = await request(app).get(`/api/companies/${fixture.companyId}/heartbeat-runs`).expect(200);
+    const cancelled = await request(app).post(`/api/heartbeat-runs/${fixture.maintenanceRunId}/cancel`).expect(200);
+    const listed = history.body.find((run: { id: string }) => run.id === fixture.maintenanceRunId);
+    for (const response of [detail.body, listed, cancelled.body]) {
+      expect(response).toMatchObject({ id: fixture.maintenanceRunId, status: "succeeded" });
+      expect(response).not.toHaveProperty("eventCursorProjectionSeq");
+      expect(response).not.toHaveProperty("eventCursorRebuildPending");
+    }
+    expect(detail.body.resultJson).toEqual(resultJson);
+    expect(cancelled.body.resultJson).toEqual(resultJson);
+    const [stored] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.maintenanceRunId));
+    expect(stored).toMatchObject({ eventCursorProjectionSeq: 41, eventCursorRebuildPending: true, resultJson });
+  });
+
   it("filters private task links from a readable company run while preserving authorized links", async () => {
     const fixture = await seedFixture();
     const publicIssueId = randomUUID();

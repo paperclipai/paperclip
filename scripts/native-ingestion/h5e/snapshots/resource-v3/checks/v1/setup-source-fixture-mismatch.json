@@ -1,0 +1,6 @@
+{
+  "scope": "source-copy guard only; no execution/measurement",
+  "expectedRunlogSha256": "b52995bbeec431c687a35d073a0a2aeb27513a239909a0dc7844e893146e6cc5",
+  "rejectedOldLocalBaselineSha256": "1273bb78c4738a958ccff22a1ff7b7d50db6d21f619519e39e16ddd3d12804ac",
+  "action": "Preserved failure; use independently hash-matched local CF compiled bytes for source-only syntax/anchor fixtures."
+}

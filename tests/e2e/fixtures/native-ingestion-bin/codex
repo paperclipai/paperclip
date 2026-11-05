@@ -1,0 +1,4 @@
+#!/bin/sh
+export PAPERCLIP_INGESTION_FIXTURE_LAUNCHER=host-local
+export PAPERCLIP_INGESTION_FIXTURE_PID=$$
+exec node "$(dirname "$0")/../in-feed-codex.mjs" --ingestion-stream-fixture "$@"

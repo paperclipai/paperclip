@@ -215,6 +215,7 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
         .resolves.toMatchObject({ claims: [], awaitingEvidenceRunIds: [waiting.runId] });
     } finally { await heartbeat.drainActiveRunExecutions(); }
     expect(await state()).toEqual({ ...before, run: [{ ...before.run[0],
+      eventCursorProjectionSeq: before.run[0].nextEventSeq,
       nextEventSeq: before.run[0].nextEventSeq + 1, updatedAt: expect.any(Date) }] });
 
     await waiting.db.update(issues).set({ executionRunId: null }).where(eq(issues.id, holder.issueId));

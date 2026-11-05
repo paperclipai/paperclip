@@ -249,6 +249,15 @@ if (!support.supported) console.warn(`Skipping idle sleep Postgres tests: ${supp
     expect(await read()).toEqual(none);
   });
 
+  it("retains an explicitly pending event cursor rebuild until it settles", async () => {
+    const f = await seed();
+    expect(await read()).toEqual(none);
+    await db.update(heartbeatRuns).set({ eventCursorRebuildPending: true }).where(eq(heartbeatRuns.id, f.runId));
+    expect(await read()).toEqual(present);
+    await db.update(heartbeatRuns).set({ eventCursorRebuildPending: false }).where(eq(heartbeatRuns.id, f.runId));
+    expect(await read()).toEqual(none);
+  });
+
   async function feedbackHistory(status: string, change: Partial<typeof feedbackExports.$inferInsert> = {}) {
     const f = await seed();
     const [issue] = await db.insert(issues).values({ companyId: f.companyId, title: "Finished fixture", status: "done" }).returning();

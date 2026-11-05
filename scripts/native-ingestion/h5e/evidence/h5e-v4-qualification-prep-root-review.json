@@ -1,0 +1,16 @@
+{
+  "atUtc": "2026-11-04T13:34:55.208177+00:00",
+  "reviewer": "root",
+  "verdict": "SOURCE_CLEAR",
+  "executionReleased": false,
+  "sourcePacketSha256": "b5c755f472e60d7e29085bc680856b3f5ff6a6e119404921346bdfde97ac1e7f",
+  "filesAndChecksVerified": 29,
+  "archiveStagingPlanRead": true,
+  "freshPrefixOnly": true,
+  "activeV3StageMustFinishUnchanged": true,
+  "qualificationRequiresNewCompanionIdentity": true,
+  "oneFunctionalArmOnly": true,
+  "mainB1PriorHashRemainsUnsetUntilActualB0Completion": true,
+  "templatesRemainUnauthorized": true,
+  "sourceReviewSha256": "32f5857f5377af573f2bef1631df0379cfb5836598bea38ec3d79b25c9f6d4ea"
+}

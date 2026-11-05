@@ -1,0 +1,48 @@
+TAP version 13
+# Subtest: H5 CLI retains baseline SLA failure, rejects final SLA misses and requires complete owning evidence
+    # Subtest: each arm accepts its distinct qualified Runner binary
+    ok 1 - each arm accepts its distinct qualified Runner binary
+      ---
+      duration_ms: 0.710875
+      type: 'test'
+      ...
+    # Subtest: a serving binary outside its qualified receipt is rejected
+    ok 2 - a serving binary outside its qualified receipt is rejected
+      ---
+      duration_ms: 143.116667
+      type: 'test'
+      ...
+    # Subtest: a second qualified binary within one arm is rejected
+    ok 3 - a second qualified binary within one arm is rejected
+      ---
+      duration_ms: 156.644375
+      type: 'test'
+      ...
+    # Subtest: A/A cannot compare two qualified Runner binaries
+    ok 4 - A/A cannot compare two qualified Runner binaries
+      ---
+      duration_ms: 149.951
+      type: 'test'
+      ...
+    # Subtest: later original-deadline proof must use the candidate's qualified binary
+    ok 5 - later original-deadline proof must use the candidate's qualified binary
+      ---
+      duration_ms: 99.133333
+      type: 'test'
+      ...
+    1..5
+ok 1 - H5 CLI retains baseline SLA failure, rejects final SLA misses and requires complete owning evidence
+  ---
+  duration_ms: 13203.984083
+  type: 'test'
+  ...
+# {"regression":"browser and terminal faster but independently verified completion slower","comparatorSha256":"3deceda0ef909829dfc3c2169d5d88ccb7c1ce9aa2881998e8ee07d23c1b56dc","exit":1,"performancePassed":false,"baselineVerifiedMs":180010,"candidateVerifiedMs":200000,"verifiedCompletionGate":{"name":"burst512","metric":"h5.independentDrain.elapsedFromEpochMs","improvementRequired":true,"noiseEnvelopeRelative":0.005555246930726071,"noiseEnvelopeAbsoluteMs":1000,"representationLimited":false,"percentageGainClaimAllowed":true,"sub2msOrP99GainClaimAllowed":false,"nonregressionScale":"observed-relative","requiredAbsoluteImprovementAboveMs":2,"noiseExceedingPairedWins":0,"requiredPairedWins":4,"passed":false}}
+1..1
+# tests 6
+# suites 0
+# pass 6
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 13242.557208

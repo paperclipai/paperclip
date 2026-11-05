@@ -300,6 +300,7 @@ import {
   getHeartbeatRunReadDecisions,
   canActorReadWorkspaceOperation,
   redactHeartbeatRunListRow,
+  toPublicHeartbeatRun,
 } from "../services/heartbeat-run-privacy.js";
 import {
   PaperclipRunnerProviderProfileError,
@@ -6356,7 +6357,7 @@ export function agentRoutes(
       });
     }
 
-    res.status(202).json(run);
+    res.status(202).json(toPublicHeartbeatRun(run));
   };
 
   router.post("/agents/:id/wakeup", validate(wakeAgentSchema), async (req, res) => {
@@ -6481,7 +6482,7 @@ export function agentRoutes(
       });
     }
 
-    res.status(202).json(run);
+    res.status(202).json(toPublicHeartbeatRun(run));
   });
 
   router.post("/agents/:id/claude-login", async (req, res) => {
@@ -7194,7 +7195,7 @@ export function agentRoutes(
       run.companyId,
       run.id,
       redactCurrentUserValue(
-        { ...decoratedRun, execution: await executionProjectionForRun(db, run.companyId, run.id), identityHistory: await listRunIdentityContexts(db, run.companyId, run.id), retryExhaustedReason, outputSilence: await heartbeat.buildRunOutputSilence(run) },
+        toPublicHeartbeatRun({ ...decoratedRun, execution: await executionProjectionForRun(db, run.companyId, run.id), identityHistory: await listRunIdentityContexts(db, run.companyId, run.id), retryExhaustedReason, outputSilence: await heartbeat.buildRunOutputSilence(run) }),
         await getCurrentUserRedactionOptions(),
       ),
       req.actor.type === "board" ? getActorInfo(req).actorId : null,
@@ -7231,7 +7232,7 @@ export function agentRoutes(
       });
     }
 
-    res.json(run ? await runRedactions.redactForRun(run.companyId, run.id, run,
+    res.json(run ? await runRedactions.redactForRun(run.companyId, run.id, toPublicHeartbeatRun(run),
       getActorInfo(req).actorId) : null);
   });
 

@@ -1,0 +1,190 @@
+TAP version 13
+# Subtest: every clone equals its immutable parent plus the exact declared review changes
+ok 1 - every clone equals its immutable parent plus the exact declared review changes
+  ---
+  duration_ms: 3.918958
+  type: 'test'
+  ...
+# Subtest: the dependency exposes exactly six checked functions and no main stage entry
+ok 2 - the dependency exposes exactly six checked functions and no main stage entry
+  ---
+  duration_ms: 0.295375
+  type: 'test'
+  ...
+# Subtest: main accepts the actual locally sealed CF B0 metadata
+ok 3 - main accepts the actual locally sealed CF B0 metadata
+  ---
+  duration_ms: 12.616834
+  type: 'test'
+  ...
+# Subtest: main accepts the actual locally sealed CF B1 metadata
+ok 4 - main accepts the actual locally sealed CF B1 metadata
+  ---
+  duration_ms: 6.98825
+  type: 'test'
+  ...
+# Subtest: dependency accepts the actual locally sealed CF B0 metadata
+ok 5 - dependency accepts the actual locally sealed CF B0 metadata
+  ---
+  duration_ms: 6.764416
+  type: 'test'
+  ...
+# Subtest: dependency accepts the actual locally sealed CF B1 metadata
+ok 6 - dependency accepts the actual locally sealed CF B1 metadata
+  ---
+  duration_ms: 5.5725
+  type: 'test'
+  ...
+# Subtest: main rejects mixed revision, receipt and inventory metadata
+ok 7 - main rejects mixed revision, receipt and inventory metadata
+  ---
+  duration_ms: 13.364625
+  type: 'test'
+  ...
+# Subtest: dependency rejects mixed revision, receipt and inventory metadata
+ok 8 - dependency rejects mixed revision, receipt and inventory metadata
+  ---
+  duration_ms: 10.884417
+  type: 'test'
+  ...
+# Subtest: main checkFrozen consumes the six-runtime guard and keeps the ten sealed artifact files
+ok 9 - main checkFrozen consumes the six-runtime guard and keeps the ten sealed artifact files
+  ---
+  duration_ms: 1.601167
+  type: 'test'
+  ...
+# Subtest: all six valid outputs pass before the actual main consumer reaches only its injected launch seam
+ok 10 - all six valid outputs pass before the actual main consumer reaches only its injected launch seam
+  ---
+  duration_ms: 1.004458
+  type: 'test'
+  ...
+# Subtest: missing node blocks the actual main consumer before its launch seam
+ok 11 - missing node blocks the actual main consumer before its launch seam
+  ---
+  duration_ms: 0.438583
+  type: 'test'
+  ...
+# Subtest: missing pnpm blocks the actual main consumer before its launch seam
+ok 12 - missing pnpm blocks the actual main consumer before its launch seam
+  ---
+  duration_ms: 0.268417
+  type: 'test'
+  ...
+# Subtest: missing postgres blocks the actual main consumer before its launch seam
+ok 13 - missing postgres blocks the actual main consumer before its launch seam
+  ---
+  duration_ms: 0.240667
+  type: 'test'
+  ...
+# Subtest: missing chromium blocks the actual main consumer before its launch seam
+ok 14 - missing chromium blocks the actual main consumer before its launch seam
+  ---
+  duration_ms: 0.216541
+  type: 'test'
+  ...
+# Subtest: missing rustc blocks the actual main consumer before its launch seam
+ok 15 - missing rustc blocks the actual main consumer before its launch seam
+  ---
+  duration_ms: 0.230959
+  type: 'test'
+  ...
+# Subtest: missing cargo blocks the actual main consumer before its launch seam
+ok 16 - missing cargo blocks the actual main consumer before its launch seam
+  ---
+  duration_ms: 0.207417
+  type: 'test'
+  ...
+# Subtest: changed node output blocks the actual main consumer before its launch seam
+ok 17 - changed node output blocks the actual main consumer before its launch seam
+  ---
+  duration_ms: 0.255666
+  type: 'test'
+  ...
+# Subtest: changed pnpm output blocks the actual main consumer before its launch seam
+ok 18 - changed pnpm output blocks the actual main consumer before its launch seam
+  ---
+  duration_ms: 0.241584
+  type: 'test'
+  ...
+# Subtest: changed postgres output blocks the actual main consumer before its launch seam
+ok 19 - changed postgres output blocks the actual main consumer before its launch seam
+  ---
+  duration_ms: 0.223625
+  type: 'test'
+  ...
+# Subtest: changed chromium output blocks the actual main consumer before its launch seam
+ok 20 - changed chromium output blocks the actual main consumer before its launch seam
+  ---
+  duration_ms: 0.189917
+  type: 'test'
+  ...
+# Subtest: changed rustc output blocks the actual main consumer before its launch seam
+ok 21 - changed rustc output blocks the actual main consumer before its launch seam
+  ---
+  duration_ms: 0.19525
+  type: 'test'
+  ...
+# Subtest: changed cargo output blocks the actual main consumer before its launch seam
+ok 22 - changed cargo output blocks the actual main consumer before its launch seam
+  ---
+  duration_ms: 0.193208
+  type: 'test'
+  ...
+# Subtest: a PATH-selected Node different from the approved runtime blocks all version commands and launch
+ok 23 - a PATH-selected Node different from the approved runtime blocks all version commands and launch
+  ---
+  duration_ms: 0.211083
+  type: 'test'
+  ...
+# Subtest: extra runtime label fails before any runtime command or application launch
+ok 24 - extra runtime label fails before any runtime command or application launch
+  ---
+  duration_ms: 0.216375
+  type: 'test'
+  ...
+# Subtest: relative executable fails before any runtime command or application launch
+ok 25 - relative executable fails before any runtime command or application launch
+  ---
+  duration_ms: 0.190875
+  type: 'test'
+  ...
+# Subtest: missing argument list fails before any runtime command or application launch
+ok 26 - missing argument list fails before any runtime command or application launch
+  ---
+  duration_ms: 0.184417
+  type: 'test'
+  ...
+# Subtest: missing expected output fails before any runtime command or application launch
+ok 27 - missing expected output fails before any runtime command or application launch
+  ---
+  duration_ms: 0.172666
+  type: 'test'
+  ...
+# Subtest: fixed main and companion stage order is unchanged and V4 accepts only its new frozen revision
+ok 28 - fixed main and companion stage order is unchanged and V4 accepts only its new frozen revision
+  ---
+  duration_ms: 1.326708
+  type: 'test'
+  ...
+# Subtest: V4 preserves eight inherited main files and only replaces the two baseline literals in the ninth
+ok 29 - V4 preserves eight inherited main files and only replaces the two baseline literals in the ninth
+  ---
+  duration_ms: 62.075375
+  type: 'test'
+  ...
+# Subtest: all prepared templates remain unauthorized and neither main nor companion can load them as a release
+ok 30 - all prepared templates remain unauthorized and neither main nor companion can load them as a release
+  ---
+  duration_ms: 0.697916
+  type: 'test'
+  ...
+1..30
+# tests 30
+# suites 0
+# pass 30
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 165.770458

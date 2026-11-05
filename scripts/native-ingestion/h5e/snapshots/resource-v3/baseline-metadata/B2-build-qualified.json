@@ -1,0 +1,98 @@
+{
+  "completedAt": "2026-11-04T12:11:37.532920+00:00",
+  "results": [
+    {
+      "variant": "B2",
+      "directory": "aligned-cf-batching-ts",
+      "revision": "75b3578cfccf040b087a55a624e01baa2bca37f9",
+      "compiledBuildRevision": "75b3578cfccf040b087a55a624e01baa2bca37f9",
+      "sourceClean": true
+    }
+  ],
+  "rustSourceTree": "11a7ac118a438159c252dc0df4779aa56fec80d6",
+  "rustInputObjects": {
+    "runner": "11a7ac118a438159c252dc0df4779aa56fec80d6",
+    "runner/Cargo.toml": "e5ea7fb7c65397eab9ba3f4e69b0beff80d59aaf",
+    "runner/Cargo.lock": "809b81962dbabf3aa3dce11aa4a4b3384c55f31d",
+    "runner/crates/runner-core/Cargo.toml": "08ded319dbaf35e7d63e143f6dd0fc9a3a24388f",
+    "package.json": "ae8b5a3ad0d89e3e2bc387fca1a3d11676212ac0",
+    "rust-toolchain.toml": "cf01515b3a12ae24e658a2a30c47b2d4b8f97dfb",
+    "protocol": "3acc326f96d180a51a82668d7acd7adbe55b0155",
+    "protocol/manifest.json": "b0c918e3514e8f1d6a32a6bdcdd069db840a7622",
+    "generated/semantic-action-catalog.json": "10800237d17af2eb0839220f98c8ec58a49bce83",
+    "antigravity-distributions.json": "c6836e59b9888d99cfdfe0f8f48c01a5f566ff33",
+    "scripts": "811ef12892e752dfd59fddb4a7c7765eb2cdac36",
+    "acpx-profiles.json": "a3993363cd05df1c158ede0ba798d10506cceaec",
+    "cursor-distributions.json": "c049c080192c62f9300953d7a28f617e45555812",
+    "cursor-contract.json": "a7f8eca443cd7bbaf094da808be0650edf063db9",
+    "src/drivers/acpx/kimi-closure-pins.ts": "f7942c01f1eaa18c592c41344f15710b0507732c"
+  },
+  "runtimeVersions": {
+    "node": "v26.4.0\n",
+    "pnpm": "9.15.4\n",
+    "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)\nbinary: rustc\ncommit-hash: 8bab26f4f68e0e26f0bb7960be334d5b520ea452\ncommit-date: 2026-07-14\nhost: x86_64-unknown-linux-gnu\nrelease: 1.97.1\nLLVM version: 22.1.6\n",
+    "cargo": "cargo 1.97.1 (c980f4866 2026-06-30)\nrelease: 1.97.1\ncommit-hash: c980f4866141969fab6254a680546a277789d6f0\ncommit-date: 2026-06-30\nhost: x86_64-unknown-linux-gnu\nlibgit2: 1.9.2 (sys:0.20.4 vendored)\nlibcurl: 8.20.0-DEV (sys:0.4.88+curl-8.20.0 vendored ssl:OpenSSL/3.6.2)\nssl: OpenSSL 3.6.2 7 Apr 2026\nos: Ubuntu 24.4.0 (noble) [64-bit]\n"
+  },
+  "rustcVersion": "rustc 1.97.1 (8bab26f4f 2026-07-14)\nbinary: rustc\ncommit-hash: 8bab26f4f68e0e26f0bb7960be334d5b520ea452\ncommit-date: 2026-07-14\nhost: x86_64-unknown-linux-gnu\nrelease: 1.97.1\nLLVM version: 22.1.6\n",
+  "cargoVersion": "cargo 1.97.1 (c980f4866 2026-06-30)\nrelease: 1.97.1\ncommit-hash: c980f4866141969fab6254a680546a277789d6f0\ncommit-date: 2026-06-30\nhost: x86_64-unknown-linux-gnu\nlibgit2: 1.9.2 (sys:0.20.4 vendored)\nlibcurl: 8.20.0-DEV (sys:0.4.88+curl-8.20.0 vendored ssl:OpenSSL/3.6.2)\nssl: OpenSSL 3.6.2 7 Apr 2026\nos: Ubuntu 24.4.0 (noble) [64-bit]\n",
+  "effectiveRustEnvironment": {
+    "RUSTUP_TOOLCHAIN": "1.97.1",
+    "CARGO_TARGET_DIR": null,
+    "RUSTFLAGS": null,
+    "CARGO_ENCODED_RUSTFLAGS": null,
+    "CARGO_BUILD_TARGET": null,
+    "releaseProfile": "Cargo defaults; no custom target/features"
+  },
+  "binarySha256": "512875bd051b7f7a97c93d2aa63648c675a8a991e745c79bc7481ad2d2f02c66",
+  "nativeStageHashes": [
+    {
+      "variant": "B2",
+      "binarySha256": "512875bd051b7f7a97c93d2aa63648c675a8a991e745c79bc7481ad2d2f02c66",
+      "metadata": {
+        "binaryContractVersion": 2,
+        "binaryName": "paperclip-runnerd",
+        "durableSessionCapabilities": [
+          "unlimited_runtime",
+          "connection_lease_renewal"
+        ],
+        "externalProviderCapabilities": [
+          "openai_dot_mcp",
+          "grok_bot_mcp",
+          "muse_external_v1"
+        ],
+        "harnessDriverVersion": 1,
+        "nativeExecutionVersion": 1,
+        "packageName": "@paperclipai/paperclip-runner",
+        "packageVersion": "0.0.0",
+        "providerPacks": [],
+        "prp": {
+          "maximumVersion": 2,
+          "minimumVersion": 1,
+          "name": "paperclip.runner"
+        },
+        "prpTransportModes": [
+          "dial_ws_loopback",
+          "dial_wss",
+          "listen_ws"
+        ],
+        "schema": "paperclip-runner/runnerd-build-metadata/v1"
+      },
+      "targetRealPath": "/home/ubuntu/native-ingestion/aligned-cf-batching-ts/packages/paperclip-runner/runner/target"
+    }
+  ],
+  "oldRustTargetNotReused": true,
+  "newSharedTarget": "/home/ubuntu/native-ingestion/aligned-cf-batching-ts/packages/paperclip-runner/runner/target",
+  "ownIndependentNativeTarget": true,
+  "baselineTargetsNotWrittenOrReused": true,
+  "artifactInventorySummary": "/home/ubuntu/native-ingestion/evidence/aligned-cf-ts-b2/artifact-inventory-summary.json",
+  "artifactInventorySummarySha256": "330b0f843a5b44ccf940267e61ab5b401d99aa53206586feeabb73aff73f7b29",
+  "noAcceptanceLoadDuringBuild": true,
+  "postBuildQuiet": {
+    "at": "2026-11-04T12:11:37.532905+00:00",
+    "passed": true,
+    "blockers": []
+  },
+  "rustProductChange": false,
+  "baselineBinaryEqualityNotAssumed": true,
+  "releaseSha256": "f09db428bbf25cc87f25896e5c0f0a46083e4a2af9236d6a169030e57af620f0"
+}

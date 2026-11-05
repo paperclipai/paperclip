@@ -1,0 +1,30 @@
+[
+  {
+    "name": "assertNoCpuProfiles",
+    "parentSha256": "7c980944af6702e40974d63eea39af858294f6048c459027bae64e0f9b3e90aa",
+    "start": 1752,
+    "end": 2158,
+    "sha256": "2f08e821e415981066e35026d559bf4ea7a3afa35649a97f9e58a71b9693f523"
+  },
+  {
+    "name": "owningAttempt",
+    "parentSha256": "7c980944af6702e40974d63eea39af858294f6048c459027bae64e0f9b3e90aa",
+    "start": 5611,
+    "end": 6830,
+    "sha256": "845bc4a7bd6df46ff6da8b53b7a5bb050568408e11c7a9bf3a52985ab1fd18ed"
+  },
+  {
+    "name": "markerCoverage",
+    "parentSha256": "7c980944af6702e40974d63eea39af858294f6048c459027bae64e0f9b3e90aa",
+    "start": 6831,
+    "end": 9184,
+    "sha256": "5f272cbe03b72607bfd1cc9fd12603644994a374705009e8dce670554438cd23"
+  },
+  {
+    "name": "bindAcknowledgement",
+    "parentSha256": "7c980944af6702e40974d63eea39af858294f6048c459027bae64e0f9b3e90aa",
+    "start": 11001,
+    "end": 11479,
+    "sha256": "6c7c68bc4e3cef600abd889a90f41a7fd8a8bb184065a45c351f0855e8bbc21c"
+  }
+]

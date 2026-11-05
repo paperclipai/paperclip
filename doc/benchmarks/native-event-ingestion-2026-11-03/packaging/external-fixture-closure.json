@@ -1,0 +1,45 @@
+{
+  "sourceRevisionBeforeFix": "e1094ca75490039be5e65a242a4c683d0a87c82c",
+  "verifiedAtUtc": "2026-11-04T15:17:20.742207+00:00",
+  "scope": "Packaged external regression fixture closure only; no application or measurement change.",
+  "problem": "Documented external source checks failed ENOENT because two original before-source fragments and their manifest were not packaged.",
+  "fix": "Include the original three files byte-for-byte and add their hashes to sources.json. All original 167 rows and source assertions remain unchanged.",
+  "fixtures": [
+    {
+      "path": "snapshots/resource-v3/external/before-source/startup-cluster-check.v1.txt",
+      "bytes": 344,
+      "sha256": "6206301be18a94cac6fbcaa5dbc0af2a60533a4dea77c271f07bc9bc77e420b2",
+      "originalPath": "/private/tmp/native-ingestion-external-resource-tools-v2/before-source/startup-cluster-check.v1.txt"
+    },
+    {
+      "path": "snapshots/resource-v3/external/before-source/validate-snapshot.v1.txt",
+      "bytes": 797,
+      "sha256": "012014edfce88a7e0b14fc3b526d542c3da5ac74b4354e2aa721cc5d7399bcfe",
+      "originalPath": "/private/tmp/native-ingestion-external-resource-tools-v2/before-source/validate-snapshot.v1.txt"
+    },
+    {
+      "path": "snapshots/resource-v3/external/before-source/manifest.json",
+      "bytes": 919,
+      "sha256": "1190131268b96da7a57189924e2dac4dab3f59c88ce3c3c9adb66d1353793abc",
+      "originalPath": "/private/tmp/native-ingestion-external-resource-tools-v2/before-source/manifest.json"
+    }
+  ],
+  "checks": [
+    {
+      "command": "node scripts/native-ingestion/h5e/run-source-checks.mjs --suite=external",
+      "before": "FAIL: missing before-source fixture",
+      "after": "PASS: 20/20, zero skipped"
+    },
+    {
+      "command": "Same external command in isolated repository-relative package copy without .git or node_modules",
+      "result": "PASS: 20/20, zero skipped"
+    },
+    {
+      "command": "node --test scripts/native-ingestion/h5e/packaging.test.mjs",
+      "result": "PASS: 3/3"
+    }
+  ],
+  "retainedSetupFailure": "Initial isolated copy used the wrong directory depth. Its materialization was correctly rejected as inside the inferred repository. Correct repository-relative layout passed without changing code.",
+  "peerReviewSha256": "5a92461858cae3e6b2bc7b4ac5c55276644d77d06a8dfd7d692a554e41c17fa8",
+  "performanceAcceptance": false
+}

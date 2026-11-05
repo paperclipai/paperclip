@@ -3462,6 +3462,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
             const eventSeq = await allocateHeartbeatRunEventSeq(
               tx as unknown as Db,
               cancelled.id,
+              true,
             );
 
             await tx.insert(heartbeatRunEvents).values({

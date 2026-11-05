@@ -3011,6 +3011,13 @@
       "when": 1793798006496,
       "tag": "0431_magenta_vanisher",
       "breakpoints": true
+    },
+    {
+      "idx": 432,
+      "version": "7",
+      "when": 1793802983541,
+      "tag": "0432_brave_king_cobra",
+      "breakpoints": true
     }
   ]
 }

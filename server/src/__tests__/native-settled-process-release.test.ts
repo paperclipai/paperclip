@@ -230,7 +230,8 @@ suite("settled native run process identity", () => {
     expect(summary.responseValueBytes).toBeLessThan(8192);
     const after = await readRun(runId);
     expect(after).toEqual({ ...saved, processPid: null, processGroupId: null, processStartedAt: null,
-      nextEventSeq: saved.nextEventSeq + 1, updatedAt: after.updatedAt });
+      nextEventSeq: saved.nextEventSeq + 1, eventCursorProjectionSeq: saved.eventCursorProjectionSeq + 1,
+      updatedAt: after.updatedAt });
     expect(await hasNativeLocalProcessStop(db, companyId, runId)).toBe(true);
     expect(JSON.stringify(events)).not.toContain(bulk.slice(0, 64));
   });
