@@ -1,5 +1,11 @@
 # @paperclipai/adapter-utils
 
+## Unreleased
+
+### Patch Changes
+
+- Allow the Paperclip host to route adapter sandbox-sync full-tree Git enumeration through its process-wide bounded scheduler.
+
 ## 0.3.1
 
 ### Patch Changes

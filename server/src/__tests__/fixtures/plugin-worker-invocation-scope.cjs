@@ -22,6 +22,25 @@ function sendNestedHostRequest(originalRequest, invocationId) {
         },
         configPath: params.configPath || "apiKeyRef",
       }
+    : hostMethod === "state.get"
+    ? {
+        // Company-scoped state key — the shape a proactive gateway loop uses
+        // (ctx.state.get with scopeKind "company"). The host derives the
+        // requested company from scopeId, not companyId.
+        scopeKind: "company",
+        scopeId: requestedCompanyId,
+        namespace: params.namespace || "ns",
+        stateKey: params.stateKey || "key",
+      }
+    : hostMethod === "events.subscribe"
+    ? {
+        // The subscribe shape the SDK issues from setup() via
+        // ctx.events.on(name, { companyId }, fn): the requested company lives in
+        // filter.companyId, NOT a top-level companyId. The host resolver must
+        // mirror the SDK gate and read it from there (LOOA-695).
+        eventPattern: params.eventPattern || "issue.updated",
+        filter: { companyId: requestedCompanyId },
+      }
     : {
         companyId: requestedCompanyId,
       };
@@ -79,13 +98,13 @@ rl.on("line", (line) => {
       id: message.id,
       result: {
         ok: true,
-        supportedMethods: ["getData", "performAction"],
+        supportedMethods: ["getData", "performAction", "resourceLifecycle", "workspaceOperation"],
       },
     });
     return;
   }
 
-  if (method === "getData" || method === "performAction") {
+  if (["getData", "performAction", "resourceLifecycle", "workspaceOperation"].includes(method)) {
     sendNestedHostRequest(message, message.paperclipInvocation?.id);
     return;
   }

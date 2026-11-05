@@ -56,6 +56,15 @@ if [ "$keep_sandbox" -eq 1 ] && [ -f "$preserve_auth" ]; then
   source_auth="$preserve_auth"
 fi
 
+# When neither the shipped host home nor a preserved prior-lease credential
+# provides auth.json, fall back to the sandbox image's own Codex login so an
+# image signed in to Codex works on hosts with no credentials (managed cloud
+# hosts never have one). Host and preserved credentials always win over the
+# image login, preserving the existing shadowing precedence.
+if [ ! -f "$source_auth" ] && [ -f "${HOME:-/nonexistent}/.codex/$auth_name" ]; then
+  source_auth="${HOME:-/nonexistent}/.codex/$auth_name"
+fi
+
 if [ -f "$source_auth" ]; then
   target_auth="$asset_dir/$auth_name"
   target_tmp="$asset_dir/.auth.json.paperclip.$$"

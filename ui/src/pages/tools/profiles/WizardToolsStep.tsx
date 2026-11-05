@@ -89,7 +89,7 @@ export function WizardToolsStep(props: WizardToolsStepProps) {
           </p>
         </div>
         <Button asChild variant="outline">
-          <Link to="/apps/browse">Browse app connections</Link>
+          <Link to="/apps">Browse app connections</Link>
         </Button>
       </div>
     );

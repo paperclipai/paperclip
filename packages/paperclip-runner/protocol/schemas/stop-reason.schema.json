@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://paperclip.dev/schemas/prp/v1/stop-reason.schema.json",
+  "title": "PRP terminal stop reason receipt",
+  "type": "object",
+  "required": [
+    "schema",
+    "schemaVersion",
+    "receiptId",
+    "kind",
+    "code",
+    "retryable",
+    "decisionId",
+    "limitClass",
+    "aggregate"
+  ],
+  "properties": {
+    "schema": { "const": "paperclip.prp.stop_reason.v1" },
+    "schemaVersion": { "const": 1 },
+    "receiptId": { "$ref": "#/$defs/stableId" },
+    "kind": { "enum": ["budget", "cost"] },
+    "code": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160,
+      "pattern": "^[a-z][a-z0-9_.:-]*$"
+    },
+    "retryable": { "type": "boolean" },
+    "decisionId": { "$ref": "#/$defs/stableId" },
+    "limitClass": {
+      "enum": [
+        "company_monthly",
+        "actor_monthly",
+        "project_monthly",
+        "run_cost",
+        "provider_quota"
+      ]
+    },
+    "aggregate": {
+      "type": "object",
+      "required": ["unit", "observed", "limit", "window"],
+      "properties": {
+        "unit": { "enum": ["cents", "usd_micros", "tokens"] },
+        "observed": { "type": "integer", "minimum": 0 },
+        "limit": { "type": "integer", "minimum": 0 },
+        "window": { "enum": ["run", "monthly_utc", "provider_window"] }
+      },
+      "additionalProperties": true
+    },
+    "relatedReceiptIds": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/stableId" },
+      "uniqueItems": true
+    }
+  },
+  "additionalProperties": true,
+  "$defs": {
+    "stableId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 240,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+    }
+  }
+}

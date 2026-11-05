@@ -1,3 +1,4 @@
+import { getPageVisibility } from "./page-visibility";
 import type { InvalidateQueryFilters, QueryClient } from "@tanstack/react-query";
 
 /**
@@ -59,10 +60,12 @@ export function createInvalidationBatcher(
       deferred?.resolve();
       return;
     }
-    const filtersList = [...pending.values()];
+    const filtersList = removeCoveredFilters([...pending.values()]);
     pending.clear();
     try {
-      await Promise.all(filtersList.map((filters) => queryClient.invalidateQueries(filters)));
+      await Promise.all(filtersList.map((filters) => queryClient.invalidateQueries(
+        getPageVisibility().visible ? filters : { ...filters, refetchType: "none" },
+      )));
     } finally {
       deferred?.resolve();
     }
@@ -95,6 +98,42 @@ export function createInvalidationBatcher(
 
 let uniqueFilterCounter = 0;
 
+function filterBehaviorKey(filters: InvalidateQueryFilters): string {
+  return JSON.stringify([
+    filters.type ?? "all",
+    filters.refetchType ?? filters.type ?? "active",
+    filters.stale ?? null,
+    filters.fetchStatus ?? null,
+  ]);
+}
+
+/** A collection prefix already refreshes its children in the same batch. */
+function removeCoveredFilters(filters: InvalidateQueryFilters[]): InvalidateQueryFilters[] {
+  const prefixesByBehavior = new Map<string, Set<string>>();
+  const isScalar = (value: unknown) => value === null || typeof value === "string"
+    || typeof value === "boolean" || typeof value === "number" && Number.isFinite(value);
+  for (const filter of filters) {
+    if (filter.predicate || filter.exact || !filter.queryKey?.every(isScalar)) continue;
+    const behavior = filterBehaviorKey(filter);
+    const prefixes = prefixesByBehavior.get(behavior) ?? new Set<string>();
+    prefixes.add(JSON.stringify(filter.queryKey));
+    prefixesByBehavior.set(behavior, prefixes);
+  }
+  return filters.filter(filter => {
+    if (filter.predicate || !filter.queryKey) return true;
+    const prefixes = prefixesByBehavior.get(filterBehaviorKey(filter));
+    if (!prefixes) return true;
+    const key = filter.queryKey;
+    // A non-exact filter covers itself, so only check its shorter prefixes.
+    const last = filter.exact ? key.length : key.length - 1;
+    for (let length = 0; length <= last; length += 1) {
+      if (length > 0 && !isScalar(key[length - 1])) break;
+      if (prefixes.has(JSON.stringify(key.slice(0, length)))) return false;
+    }
+    return true;
+  });
+}
+
 function serializeFilters(filters: InvalidateQueryFilters): string {
   // A predicate is an opaque function — two predicate-based filters can never be
   // proven equal, so never coalesce them (that would silently drop one). Give
@@ -102,14 +141,14 @@ function serializeFilters(filters: InvalidateQueryFilters): string {
   if (typeof filters.predicate === "function") {
     return `__predicate__:${(uniqueFilterCounter += 1)}`;
   }
-  // queryKey drives the identity; refetchType/exact/type change the behavior, so
-  // keep them distinct while still collapsing exact repeats.
+  // Query selection and refetch behavior both belong to the identity. In
+  // particular, dropping an idle/fresh filter in favor of a paused/stale one
+  // can lose the only refresh that actually matches a cached query.
   try {
     return JSON.stringify([
       filters.queryKey ?? null,
-      filters.refetchType ?? null,
-      filters.exact ?? null,
-      filters.type ?? null,
+      filterBehaviorKey(filters),
+      filters.exact ?? false,
     ]);
   } catch {
     // Non-serializable filter (shouldn't happen for our query keys) — fall back

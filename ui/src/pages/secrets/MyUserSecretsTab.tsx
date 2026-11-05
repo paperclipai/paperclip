@@ -1,20 +1,23 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { CompanySecret } from "@paperclipai/shared";
-import { AlertCircle, KeyRound, Trash2, UserRound } from "lucide-react";
+import { KeyRound, Trash2, UserRound } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { EmptyState } from "../../components/EmptyState";
 import { secretsApi, type MyUserSecretEntry } from "../../api/secrets";
 import { queryKeys } from "../../lib/queryKeys";
 import { cn } from "../../lib/utils";
 import { useToastActions } from "../../context/ToastContext";
 import { SetMyUserSecretDialog } from "./SetMyUserSecretDialog";
+import { SecretPathName } from "./SecretPathName";
 import {
   myValueLabel,
   myValueState,
   myValueTone,
 } from "./my-value-state";
+import { describeError } from "@/api/errors";
 
 /**
  * Secrets → My secrets tab. Lists every company user-secret definition paired
@@ -31,6 +34,7 @@ export function MyUserSecretsTab({ companyId }: { companyId: string }) {
     queryKey: queryKeys.secrets.myUserSecrets(companyId),
     queryFn: () => secretsApi.listMyUserSecrets(companyId),
   });
+  const mySecretsView = useQueryView(mySecretsQuery);
   const entries = mySecretsQuery.data ?? [];
 
   const clear = useMutation({
@@ -42,7 +46,7 @@ export function MyUserSecretsTab({ companyId }: { companyId: string }) {
     onError: (err) =>
       pushToast({
         title: "Could not clear value",
-        body: err instanceof Error ? err.message : undefined,
+        body: describeError(err).body,
         tone: "error",
       }),
   });
@@ -52,7 +56,7 @@ export function MyUserSecretsTab({ companyId }: { companyId: string }) {
   ).length;
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden">
+    <div className="flex flex-col gap-3">
       <div className="flex items-start gap-2 rounded-md border border-violet-500/30 bg-violet-500/5 px-4 py-3 text-xs text-violet-800 dark:text-violet-200">
         <UserRound className="h-4 w-4 mt-0.5 shrink-0" />
         <p>
@@ -68,19 +72,20 @@ export function MyUserSecretsTab({ companyId }: { companyId: string }) {
         </p>
       </div>
 
-      <div className="min-h-0 flex-1 overflow-y-auto">
-        {mySecretsQuery.isError ? (
-          <div className="flex items-center gap-2 py-4 text-sm text-destructive">
-            <AlertCircle className="h-4 w-4" /> Failed to load your secrets:{" "}
-            {(mySecretsQuery.error as Error).message}
-            <Button variant="ghost" size="sm" onClick={() => mySecretsQuery.refetch()}>
-              Retry
-            </Button>
+      <div>
+        {mySecretsView.kind === "error" ? (
+          <div className="py-4">
+            <QueryErrorState
+              error={mySecretsQuery.error}
+              action="load your secrets"
+              onRetry={mySecretsView.retry}
+              retrying={mySecretsView.isFetching}
+            />
           </div>
-        ) : entries.length === 0 && !mySecretsQuery.isPending ? (
+        ) : entries.length === 0 && !mySecretsQuery.isPending && mySecretsView.kind !== "reconnecting" ? (
           <EmptyState
             icon={KeyRound}
-            message="No user secrets are defined for this company yet. An admin defines which credentials each member supplies."
+            message="No user secrets are defined for this organization yet. An admin defines which credentials each member supplies."
           />
         ) : (
           <ul className="space-y-2">
@@ -136,7 +141,7 @@ function MyUserSecretRow({
     >
       <div className="min-w-0 flex-1">
         <div className="flex min-w-0 flex-wrap items-center gap-2">
-          <span className="font-medium text-foreground">{definition.name}</span>
+          <SecretPathName name={definition.name} />
           <code className="rounded bg-muted px-1.5 py-0.5 text-(length:--text-micro) text-muted-foreground">
             {definition.key}
           </code>

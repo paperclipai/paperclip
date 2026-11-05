@@ -1,4 +1,4 @@
-import { ChevronsUpDown, Plus, Settings } from "lucide-react";
+import { ChevronsUpDown, Plus, RefreshCw, Settings } from "lucide-react";
 import { Link } from "@/lib/router";
 import { useCompany } from "../context/CompanyContext";
 import {
@@ -32,7 +32,8 @@ interface CompanySwitcherProps {
 
 export function CompanySwitcher({ open: controlledOpen, onOpenChange }: CompanySwitcherProps = {}) {
   const [internalOpen, setInternalOpen] = useState(false);
-  const { companies, selectedCompany, setSelectedCompanyId } = useCompany();
+  const { companies, selectedCompany, setSelectedCompanyId, companyListUnavailable, retryCompanies } =
+    useCompany();
   const sidebarCompanies = companies.filter((company) => company.status !== "archived");
   const open = controlledOpen ?? internalOpen;
   const setOpen = onOpenChange ?? setInternalOpen;
@@ -49,14 +50,14 @@ export function CompanySwitcher({ open: controlledOpen, onOpenChange }: CompanyS
               <span className={`h-2 w-2 rounded-full shrink-0 ${statusDotColor(selectedCompany.status)}`} />
             )}
             <span className="text-sm font-medium truncate">
-              {selectedCompany?.name ?? "Select company"}
+              {selectedCompany?.name ?? "Select organization"}
             </span>
           </div>
           <ChevronsUpDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start" className="w-(--sz-220px)">
-        <DropdownMenuLabel>Companies</DropdownMenuLabel>
+        <DropdownMenuLabel>Organizations</DropdownMenuLabel>
         <DropdownMenuSeparator />
         {sidebarCompanies.map((company) => (
           <DropdownMenuItem
@@ -69,19 +70,38 @@ export function CompanySwitcher({ open: controlledOpen, onOpenChange }: CompanyS
           </DropdownMenuItem>
         ))}
         {sidebarCompanies.length === 0 && (
-          <DropdownMenuItem disabled>No companies</DropdownMenuItem>
+          // "No companies" is a claim about the account, and after a failed list
+          // request it is one we cannot make — say what actually happened and
+          // give the customer the way out, since nothing else in the app does.
+          companyListUnavailable ? (
+            <>
+              <DropdownMenuItem disabled>Couldn't load organizations</DropdownMenuItem>
+              <DropdownMenuItem
+                onSelect={(event) => {
+                  // Keep the menu open so the result of the retry is visible.
+                  event.preventDefault();
+                  void retryCompanies?.();
+                }}
+              >
+                <RefreshCw className="h-4 w-4 mr-2" />
+                Try again
+              </DropdownMenuItem>
+            </>
+          ) : (
+            <DropdownMenuItem disabled>No organizations</DropdownMenuItem>
+          )
         )}
         <DropdownMenuSeparator />
         <DropdownMenuItem asChild>
           <Link to="/company/settings" className="no-underline text-inherit">
             <Settings className="h-4 w-4 mr-2" />
-            Company Settings
+            Settings
           </Link>
         </DropdownMenuItem>
         <DropdownMenuItem asChild>
           <Link to="/companies" className="no-underline text-inherit">
             <Plus className="h-4 w-4 mr-2" />
-            Manage Companies
+            Manage Organizations
           </Link>
         </DropdownMenuItem>
       </DropdownMenuContent>

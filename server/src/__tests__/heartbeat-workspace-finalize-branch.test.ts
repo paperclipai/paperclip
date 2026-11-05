@@ -1,3 +1,4 @@
+import { EMBEDDED_POSTGRES_TEST_TIMEOUT_MS } from "@paperclipai/db";
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -7,12 +8,15 @@ import { promisify } from "node:util";
 import { and, asc, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
+  costEvents,
   activityLog,
   agentRuntimeState,
   agentTaskSessions,
   agentWakeupRequests,
   agents,
   companies,
+  authUsers,
+  companyMemberships,
   companySkills,
   createDb,
   documentRevisions,
@@ -34,13 +38,14 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
+import { drainHeartbeatRunsToQuiescence } from "./helpers/drain-heartbeat-runs.js";
 import { heartbeatService } from "../services/heartbeat.ts";
 import { instanceSettingsService } from "../services/instance-settings.ts";
 
 const execFileAsync = promisify(execFile);
 
 const adapterExecute = vi.hoisted(() =>
-  vi.fn(async () => ({
+  vi.fn(async (_input?: unknown) => ({
     exitCode: 0,
     signal: null,
     timedOut: false,
@@ -61,7 +66,6 @@ vi.mock("../adapters/index.js", () => ({
     execute: adapterExecute,
     supportsLocalAgentJwt: false,
   }),
-  listAdapterModelProfiles: async () => [],
   runningProcesses: new Map(),
 }));
 
@@ -102,15 +106,6 @@ async function waitForRunToFinish(heartbeat: Heartbeat, runId: string, timeoutMs
   return heartbeat.getRun(runId);
 }
 
-async function waitForHeartbeatIdle(db: Db, timeoutMs = 5_000) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const runs = await db.select({ status: heartbeatRuns.status }).from(heartbeatRuns);
-    if (!runs.some((run) => run.status === "queued" || run.status === "running")) return;
-    await new Promise((resolve) => setTimeout(resolve, 50));
-  }
-}
-
 async function waitForRuntimeStateLastRun(db: Db, agentId: string, runId: string, timeoutMs = 5_000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -130,6 +125,7 @@ async function deleteHeartbeatRowsAfterActivityLogDrains(db: Db) {
     await db.delete(activityLog);
     await db.delete(heartbeatRunEvents);
     try {
+      await db.delete(costEvents);
       await db.delete(heartbeatRuns);
       await db.delete(agentWakeupRequests);
       return;
@@ -173,6 +169,8 @@ async function seedRunTarget(db: Db, repoRoot: string) {
     createdAt: new Date(),
     updatedAt: new Date(),
   });
+  await db.insert(authUsers).values({ id: "responsible-user", name: "Fixture user", email: "responsible-user@example.test", createdAt: new Date(), updatedAt: new Date() }).onConflictDoNothing();
+  await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: "responsible-user", status: "active", membershipRole: "member" });
   await db.insert(projects).values({
     id: projectId,
     companyId,
@@ -272,10 +270,17 @@ describeEmbeddedPostgres("heartbeat workspace finalization branch guard", () => 
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-finalize-branch-");
     db = createDb(tempDb.connectionString);
-  }, 20_000);
+  }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
 
   afterEach(async () => {
-    await waitForHeartbeatIdle(db);
+    // Await every in-flight background heartbeat run to quiescence before the
+    // deletes below. A wakeup claims a run and dispatches its execution
+    // fire-and-forget, and finalization success can dispatch a follow-up
+    // wakeup, so a run or wakeup can still write heartbeat_runs and issues rows
+    // when teardown starts. The shared drain also awaits an in-flight wakeup
+    // that is still before run registration, which a plain run table status
+    // poll cannot see.
+    await drainHeartbeatRunsToQuiescence(db, heartbeatService(db));
     adapterExecute.mockReset();
     adapterExecute.mockImplementation(async () => ({
       exitCode: 0,
@@ -299,15 +304,17 @@ describeEmbeddedPostgres("heartbeat workspace finalization branch guard", () => 
     await deleteHeartbeatRowsAfterActivityLogDrains(db);
     await db.delete(issueComments);
     await db.delete(issues);
+    await db.delete(executionWorkspaces);
     await db.delete(projectWorkspaces);
     await db.delete(projects);
     await db.delete(agentWakeupRequests);
     await db.delete(agentRuntimeState);
     await db.delete(agents);
-    await db.delete(executionWorkspaces);
     await db.delete(environments);
     await db.delete(companySkills);
+    await db.delete(companyMemberships);
     await db.delete(companies);
+    await db.delete(authUsers).where(eq(authUsers.id, "responsible-user"));
   });
 
   afterAll(async () => {

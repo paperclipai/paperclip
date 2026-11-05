@@ -8,7 +8,6 @@ type InviteSummary = {
   companyId: string | null;
   companyName?: string | null;
   companyLogoUrl?: string | null;
-  companyBrandColor?: string | null;
   inviteType: "company_join" | "bootstrap_ceo";
   allowedJoinTypes: "human" | "agent" | "both";
   humanRole?: HumanCompanyRole | null;

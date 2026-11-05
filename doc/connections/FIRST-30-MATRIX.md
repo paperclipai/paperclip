@@ -9,6 +9,11 @@ review gates for a provider before writing a connector ticket or playbook entry.
 Source: harvested from [PAP-2432](/PAP/issues/PAP-2432) and made canonical for
 the [PAP-13211](/PAP/issues/PAP-13211) Apps v2 unification program.
 
+> Every provider here is a **plane P2** connection: a resource token in the
+> instance vault, acquired via the connect broker — never a sign-in method. See
+> [Identity vs. connections](./README.md#identity-vs-connections) for the P1/P2/P3
+> boundary and the D7 standing rule.
+
 ## Batch Recommendation
 
 First implementation batch after the proof providers:
@@ -84,7 +89,7 @@ PagerDuty.
 | 12 | PagerDuty | E | Direct MCP with REST wrapper for events | OAuth | Account, service, escalation policy, incident urgency filters | Read incidents/on-call, ack/resolve with approval | Incident webhooks | S3 |
 | 13 | Cloudflare | E | Direct MCP with vendor-deep wrapper for Workers/DNS | OAuth or scoped API token | Account, zone, Worker/project filters | Read zones/deployments/logs, draft DNS/Worker change | Audit/deployment sync optional | S4 |
 | 14 | Vercel | A | Direct MCP or thin REST wrapper | Vercel OAuth | Team, project, environment, deployment filters | Read projects/deployments/log metadata, redeploy/cancel gated | Deployment webhooks | S3 |
-| 15 | PostHog | C | Direct MCP/API-key provider | Project/personal API key secret ref | Project, environment, dashboard/feature flag filters | Query events/insights/flags, create annotation | Optional insight/flag sync | S2 |
+| 15 | PostHog | C | Hosted MCP OAuth or personal API key | OAuth token or personal API key secret ref | Project, read-only, feature-group, and tool filters | Query insights/errors/flags/experiments; governed writes | Optional insight/flag sync | S3 |
 | 16 | Datadog | C | OpenAPI-to-MCP shim first, deep wrapper later | API key + app key secret refs | Site, org, service, monitor, dashboard filters | Read metrics/logs/monitors, mute/unmute gated | Monitor/webhook events | S3 |
 | 17 | Figma | C | Vendor-deep wrapper; MCP for Dev Mode reads | Figma OAuth | Team, project, file, branch filters | Read files/comments/dev data, create comment | File/comment webhooks optional | S3 |
 | 18 | Canva | C | Direct app/MCP where available; Connect API wrapper | Canva OAuth | Team, folder, brand/template filters | Search/read designs, create design from template | Asset sync optional | S2 |

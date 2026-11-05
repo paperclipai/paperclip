@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { useToast } from "@/context/ToastContext";
 import { cn } from "@/lib/utils";
+import { copyTextToClipboard } from "@/lib/clipboard";
 import {
   activeTokenCount,
   allowedToolsLabel,
@@ -52,7 +53,7 @@ export function OverviewPanel({
 
   async function copy(value: string, label: string) {
     try {
-      await navigator.clipboard.writeText(value);
+      await copyTextToClipboard(value);
       pushToast({ title: "Copied", body: label, tone: "success" });
     } catch {
       pushToast({ title: "Copy failed", body: "Clipboard access is unavailable.", tone: "error" });
@@ -146,7 +147,9 @@ function Chip({ children }: { children: React.ReactNode }) {
 }
 
 function AppRow({ app }: { app: GatewayAppRow }) {
-  const href = app.connection ? `/apps/${app.connection.id}/setup` : `/apps/app/${app.application.id}/setup`;
+  const href = app.connection
+    ? `/apps/${app.connection.id}/permissions`
+    : `/apps/app/${app.application.id}/permissions`;
   return (
     <li className="flex items-center justify-between gap-3 py-2.5">
       <div className="min-w-0">

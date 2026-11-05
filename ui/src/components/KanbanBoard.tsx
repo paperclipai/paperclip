@@ -1,3 +1,4 @@
+import { AgentIdentity } from "@/components/AgentIdentity";
 import { useMemo, useState } from "react";
 import { Link } from "@/lib/router";
 import {
@@ -19,14 +20,16 @@ import {
 } from "@dnd-kit/sortable";
 import { StatusIcon } from "./StatusIcon";
 import { PriorityIcon } from "./PriorityIcon";
+import { SHOW_TASK_PRIORITY_UI } from "../lib/ui-flags";
 import { Identity } from "./Identity";
-import type { Issue, IssueStatus } from "@paperclipai/shared";
+import type { Issue, IssueDisplayStatus, IssueStatus } from "@paperclipai/shared";
 import { AlertTriangle } from "lucide-react";
 import { isSuccessfulRunHandoffRequired } from "../lib/successful-run-handoff";
 import { collectSubtreeLiveCounts } from "../lib/liveIssueIds";
 import { cn } from "../lib/utils";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { HorizontalScrollViewport } from "./HorizontalScrollViewport";
 
 export const KANBAN_BOARD_HIGH_VOLUME_THRESHOLD = 100;
 export const KANBAN_COLUMN_PAGE_SIZE_OPTIONS = [10, 25, 50] as const;
@@ -40,11 +43,12 @@ export const boardStatuses = [
   "backlog",
   "todo",
   "in_progress",
+  "monitoring",
   "in_review",
   "blocked",
   "done",
   "cancelled",
-] as const satisfies readonly IssueStatus[];
+] as const satisfies readonly IssueDisplayStatus[];
 
 const defaultKanbanColumnTone = {
   rail: "border-border bg-muted/20",
@@ -59,7 +63,7 @@ const defaultKanbanColumnTone = {
 // Every column carries a status-hued tint (matching the app-wide status
 // vocabulary: gray backlog, amber todo, blue in-progress, violet review,
 // red blocked, green done) so no column reads as accidentally unstyled.
-export const kanbanColumnTones: Partial<Record<IssueStatus, typeof defaultKanbanColumnTone>> = {
+export const kanbanColumnTones: Partial<Record<IssueDisplayStatus, typeof defaultKanbanColumnTone>> = {
   backlog: {
     rail: "border-border bg-muted/30",
     railOver: "bg-muted/50 ring-1 ring-neutral-400/25",
@@ -125,8 +129,8 @@ export const kanbanColumnTones: Partial<Record<IssueStatus, typeof defaultKanban
   },
 };
 
-export function getKanbanColumnTone(status: IssueStatus) {
-  return kanbanColumnTones[status] ?? defaultKanbanColumnTone;
+export function getKanbanColumnTone(status: IssueDisplayStatus) {
+  return kanbanColumnTones[status === "monitoring" ? "in_progress" : status] ?? defaultKanbanColumnTone;
 }
 
 function statusLabel(status: string): string {
@@ -135,9 +139,10 @@ function statusLabel(status: string): string {
 
 export function resolveKanbanTargetStatus(overId: string, issues: Issue[]): IssueStatus | null {
   if ((boardStatuses as readonly string[]).includes(overId)) {
-    return overId as IssueStatus;
+    return overId === "monitoring" ? null : overId as IssueStatus;
   }
-  return issues.find((issue) => issue.id === overId)?.status ?? null;
+  const target = issues.find((issue) => issue.id === overId);
+  return target?.displayStatus === "monitoring" ? null : target?.status ?? null;
 }
 
 interface Agent {
@@ -153,6 +158,8 @@ interface KanbanBoardProps {
   collapsedStatuses?: string[];
   initialVisibleCount?: number;
   revealIncrement?: number;
+  /** Proposed clipping indicators, with a single horizontal scroll owner. */
+  showOverflowFades?: boolean;
   onUpdateIssue: (id: string, data: Record<string, unknown>) => void;
 }
 
@@ -170,7 +177,7 @@ function KanbanColumn({
   revealIncrement,
   onShowMore,
 }: {
-  status: IssueStatus;
+  status: IssueDisplayStatus;
   issues: Issue[];
   agents?: Agent[];
   liveIssueIds?: Set<string>;
@@ -181,7 +188,7 @@ function KanbanColumn({
   revealIncrement: number;
   onShowMore: () => void;
 }) {
-  const { setNodeRef, isOver } = useDroppable({ id: status });
+  const { setNodeRef, isOver } = useDroppable({ id: status, disabled: status === "monitoring" });
 
   const isEmpty = issues.length === 0;
   const visibleIssues = collapsed ? [] : issues.slice(0, visibleCount);
@@ -306,6 +313,7 @@ function KanbanCard({
   return (
     <Card
       ref={setNodeRef}
+      data-issue-row-details={issue.id}
       style={style}
       {...attributes}
       {...listeners}
@@ -361,11 +369,12 @@ function KanbanCard({
         </div>
         <p className={`${compact ? "mb-1.5 text-xs" : "mb-2 text-sm"} leading-snug line-clamp-2`}>{issue.title}</p>
         <div className="flex items-center gap-2 min-w-0">
-          <PriorityIcon priority={issue.priority} />
+          {/* PAP-411: priority UI hidden behind SHOW_TASK_PRIORITY_UI. */}
+          {SHOW_TASK_PRIORITY_UI && <PriorityIcon priority={issue.priority} />}
           {issue.assigneeAgentId && (() => {
             const name = agentName(issue.assigneeAgentId);
             return name ? (
-              <Identity name={name} size="xs" />
+              <AgentIdentity agent={agents?.find((agent) => agent.id === issue.assigneeAgentId) ?? { id: issue.assigneeAgentId, name }} size="xs" />
             ) : (
               <span className="text-xs text-muted-foreground font-mono">
                 {issue.assigneeAgentId.slice(0, 8)}
@@ -388,6 +397,7 @@ export function KanbanBoard({
   collapsedStatuses = [],
   initialVisibleCount = KANBAN_COLUMN_INITIAL_VISIBLE_LIMIT,
   revealIncrement = KANBAN_COLUMN_REVEAL_INCREMENT,
+  showOverflowFades = false,
   onUpdateIssue,
 }: KanbanBoardProps) {
   const [activeId, setActiveId] = useState<string | null>(null);
@@ -404,13 +414,14 @@ export function KanbanBoard({
   );
 
   const columnIssues = useMemo(() => {
-    const grouped: Record<IssueStatus, Issue[]> = {} as Record<IssueStatus, Issue[]>;
+    const grouped: Record<IssueDisplayStatus, Issue[]> = {} as Record<IssueDisplayStatus, Issue[]>;
     for (const status of boardStatuses) {
       grouped[status] = [];
     }
     for (const issue of issues) {
-      if (grouped[issue.status]) {
-        grouped[issue.status].push(issue);
+      const status = issue.displayStatus ?? issue.status;
+      if (grouped[status]) {
+        grouped[status].push(issue);
       }
     }
     return grouped;
@@ -452,6 +463,28 @@ export function KanbanBoard({
     // Could be used for visual feedback; keeping simple for now
   }
 
+  const columns = boardStatuses.map((status) => (
+    <KanbanColumn
+      key={status}
+      status={status}
+      issues={columnIssues[status] ?? []}
+      agents={agents}
+      liveIssueIds={liveIssueIds}
+      subtreeLiveCounts={subtreeLiveCounts}
+      compactCards={compactCards}
+      // Compact mode also collapses empty lanes to labeled rails.
+      collapsed={collapsedStatusSet.has(status) || (collapsedStatusSet.size > 0 && columnIssues[status].length === 0)}
+      visibleCount={visibleCountByStatus[status] ?? initialVisibleCount}
+      revealIncrement={revealIncrement}
+      onShowMore={() => {
+        setVisibleState((current) => {
+          const counts = current.paginationKey === paginationKey ? current.counts : {};
+          return { paginationKey, counts: { ...counts, [status]: (counts[status] ?? initialVisibleCount) + revealIncrement } };
+        });
+      }}
+    />
+  ));
+
   return (
     <DndContext
       sensors={sensors}
@@ -459,37 +492,9 @@ export function KanbanBoard({
       onDragOver={handleDragOver}
       onDragEnd={handleDragEnd}
     >
-      <div className="flex gap-3 overflow-x-auto pb-4 -mx-2 px-2">
-        {boardStatuses.map((status) => (
-          <KanbanColumn
-            key={status}
-            status={status}
-            issues={columnIssues[status] ?? []}
-            agents={agents}
-            liveIssueIds={liveIssueIds}
-            subtreeLiveCounts={subtreeLiveCounts}
-            compactCards={compactCards}
-            // Compact mode (any lane explicitly collapsed) also collapses
-            // empty lanes to the same labeled rail, so an empty In Progress
-            // reads like the other rails instead of a lone expanded column.
-            collapsed={collapsedStatusSet.has(status) || (collapsedStatusSet.size > 0 && columnIssues[status].length === 0)}
-            visibleCount={visibleCountByStatus[status] ?? initialVisibleCount}
-            revealIncrement={revealIncrement}
-            onShowMore={() => {
-              setVisibleState((current) => {
-                const counts = current.paginationKey === paginationKey ? current.counts : {};
-                return {
-                  paginationKey,
-                  counts: {
-                    ...counts,
-                    [status]: (counts[status] ?? initialVisibleCount) + revealIncrement,
-                  },
-                };
-              });
-            }}
-          />
-        ))}
-      </div>
+      {showOverflowFades
+        ? <HorizontalScrollViewport label="Task board columns" contentClassName="flex gap-3 pb-4 px-2">{columns}</HorizontalScrollViewport>
+        : <div className="flex gap-3 overflow-x-auto pb-4 -mx-2 px-2">{columns}</div>}
       <DragOverlay>
         {activeIssue ? (
           <KanbanCard issue={activeIssue} agents={agents} isOverlay compact={compactCards} />

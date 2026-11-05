@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { updateResourceMembershipSchema } from "./validators/resource-memberships.js";
+import {
+  updateDocumentResourceMembershipSchema,
+  updateResourceMembershipSchema,
+} from "./validators/resource-memberships.js";
 
 describe("resource membership contract", () => {
   it("accepts legacy state-only membership updates", () => {
@@ -17,5 +20,12 @@ describe("resource membership contract", () => {
     expect(() => updateResourceMembershipSchema.parse({ state: "left", starred: true })).toThrow(
       "starred resources must be joined",
     );
+  });
+
+  it("accepts document star updates without join state", () => {
+    expect(updateDocumentResourceMembershipSchema.parse({ starred: true })).toEqual({ starred: true });
+    expect(updateDocumentResourceMembershipSchema.parse({ starred: false })).toEqual({ starred: false });
+    expect(() => updateDocumentResourceMembershipSchema.parse({ state: "joined", starred: true })).toThrow();
+    expect(() => updateDocumentResourceMembershipSchema.parse({})).toThrow();
   });
 });

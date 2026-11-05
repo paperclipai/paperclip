@@ -23,7 +23,7 @@ Configure exe.dev from `Instance Settings -> Environments`, not from the plugin'
 
 To use the provider successfully, the environment/host needs all of the following:
 
-- An exe.dev API token that allows the lifecycle commands the provider uses: `new`, `ls`, and `rm`. `whoami` and `help` are recommended for manual debugging. `restart` is only needed if you extend the provider to restart retained VMs.
+- An exe.dev API token that allows the lifecycle commands the provider uses: `new`, `ls`, and `rm`, plus `cp` when `sourceVm` is set. exe.dev answers 403 for a command the token does not list. `whoami` and `help` are recommended for manual debugging. `restart` is only needed if you extend the provider to restart retained VMs.
 - SSH access from the Paperclip host to the resulting `*.exe.xyz` VMs.
 - An SSH private key that exe.dev already recognizes. You can either:
   - paste the private key into the environment config via `sshPrivateKey`
@@ -37,7 +37,8 @@ Operational notes:
 - Reusable leases keep the VM alive between runs. exe.dev does not expose a documented "stop and later resume" command in the public CLI docs, so `reuseLease: true` means "retain the VM" rather than "suspend it."
 - The provisioning path uses `https://exe.dev/exec`, which exe.dev documents as a command-style HTTPS API with a 30-second request timeout. Typical `new` calls are expected to fit inside that limit; command execution itself does not use `/exec`.
 - Probes still create and delete a real exe.dev VM through `/exec`, and so do the `new`/`rm` calls inside the normal acquire/release lifecycle. Treat all of those as real provisioning cost, not just probes.
-- exe.dev runs `--setup-script` as the unprivileged `exedev` user, not as root. That user has passwordless `sudo`, so any system-level steps in a custom `setupScript` must invoke `sudo` explicitly (for example `sudo apt-get install -y …`). When you omit `setupScript`, the plugin supplies a default that installs Node 20 via the official nodesource script — Paperclip's sandbox callback bridge is a Node program, so the VM needs `node` on `PATH` before the bridge can launch.
+- Set `sourceVm` ("Source VM" in the form) to the name of an existing exe.dev VM to copy it for each run with `exe.dev cp`, disk and config included, instead of creating a fresh VM with `exe.dev new`. This lets you prepare one VM with your toolchain and caches and start every run from it. `cp` accepts only the VM name, `cpu`, `memory`, and `disk`, so config validation rejects `sourceVm` together with `image`, `command`, `comment`, `env`, `integrations`, `tags`, `setupScript`, or `prompt`. The default setup script does not run either, so the source VM must already have Node 24.11+ and accept the configured SSH key. Do not keep secrets on the source VM: every copy inherits its disk. `cp` also goes through `/exec`, so a large disk copy must finish inside the same 30-second limit.
+- exe.dev runs `--setup-script` as the unprivileged `exedev` user, not as root. That user has passwordless `sudo`, so any system-level steps in a custom `setupScript` must invoke `sudo` explicitly (for example `sudo apt-get install -y …`). When you omit `setupScript`, the plugin supplies a default that installs Node 24 via the official nodesource script — Paperclip's sandbox callback bridge is a Node program, so the VM needs `node` on `PATH` before the bridge can launch.
 
 ## Local development
 

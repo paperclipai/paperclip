@@ -6,9 +6,15 @@ import { parseAcpxStdoutLine } from "@paperclipai/adapter-utils/acpx-engine/ui";
 import { buildTranscript, type RunLogChunk, type TranscriptEntry } from "../../adapters";
 import type { ToolRunDecision } from "@paperclipai/shared";
 import { ThemeProvider } from "../../context/ThemeContext";
-import { RunTranscriptView, normalizeTranscript } from "./RunTranscriptView";
+import { RunTranscriptView, keyTranscriptBlocks, normalizeTranscript } from "./RunTranscriptView";
 
 describe("RunTranscriptView", () => {
+  it("renders provider activity semantically without dumping the payload", () => {
+    const html = renderToStaticMarkup(<RunTranscriptView entries={[{ kind: "provider_activity", ts: "2026-08-21T12:00:00.000Z", family: "plan", eventType: "plan.updated", status: "completed", title: "Plan", summary: "Plan completed", payload: { steps: [{ stepId: "s1", body: "Validate schemas", status: "completed" }], hiddenSecret: "must-not-render" } }]} />);
+    expect(html).toContain("Plan");
+    expect(html).toContain("Plan completed");
+    expect(html).not.toContain("must-not-render");
+  });
   it("folds repeated tool_call status updates for the same toolUseId into one block", () => {
     const entries: TranscriptEntry[] = [
       {
@@ -321,5 +327,49 @@ describe("RunTranscriptView", () => {
     expect(html).toContain("line-179");
     expect(html).not.toContain("line-250");
     expect(html).not.toContain("line-499");
+  });
+
+  it("keeps the streaming tail block's key stable as deltas merge in", () => {
+    // A streaming assistant message accumulates deltas; each delta advances the
+    // block's `ts`. The React key must stay anchored to the block's opening
+    // timestamp so the tail does not unmount/remount (restarting its fade).
+    const firstDelta: TranscriptEntry[] = [
+      { kind: "assistant", ts: "2026-03-12T00:00:00.000Z", text: "Hel", delta: true },
+    ];
+    const withMoreDeltas: TranscriptEntry[] = [
+      ...firstDelta,
+      { kind: "assistant", ts: "2026-03-12T00:00:00.400Z", text: "lo the", delta: true },
+      { kind: "assistant", ts: "2026-03-12T00:00:00.900Z", text: "re", delta: true },
+    ];
+
+    const keyOf = (entries: TranscriptEntry[]) => {
+      const keyed = keyTranscriptBlocks(normalizeTranscript(entries, true));
+      return keyed[keyed.length - 1]!.key;
+    };
+
+    // Same opening timestamp → identical key even though `ts` advanced.
+    expect(keyOf(withMoreDeltas)).toBe(keyOf(firstDelta));
+    // And that key is anchored to the opening ts, not the latest one.
+    expect(keyOf(withMoreDeltas)).toContain("2026-03-12T00:00:00.000Z");
+    expect(keyOf(withMoreDeltas)).not.toContain("2026-03-12T00:00:00.900Z");
+  });
+
+  it("assigns unique keys and does not remount earlier blocks when a new tail arrives", () => {
+    const base: TranscriptEntry[] = [
+      { kind: "assistant", ts: "2026-03-12T00:00:00.000Z", text: "first message", delta: true },
+      { kind: "thinking", ts: "2026-03-12T00:00:01.000Z", text: "pondering", delta: true },
+    ];
+    const withNewTail: TranscriptEntry[] = [
+      ...base,
+      { kind: "assistant", ts: "2026-03-12T00:00:02.000Z", text: "second message", delta: true },
+    ];
+
+    const baseKeys = keyTranscriptBlocks(normalizeTranscript(base, true)).map((b) => b.key);
+    const nextKeys = keyTranscriptBlocks(normalizeTranscript(withNewTail, true)).map((b) => b.key);
+
+    // Keys are unique within a render.
+    expect(new Set(nextKeys).size).toBe(nextKeys.length);
+    // Existing blocks keep their identity when a new block appends after them.
+    expect(nextKeys.slice(0, baseKeys.length)).toEqual(baseKeys);
   });
 });

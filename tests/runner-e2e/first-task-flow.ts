@@ -1,0 +1,909 @@
+import { runsCompletionUpdateProbe } from "./completion-quality.js";
+import { gradeConfirmationReply, assertConfirmationReceipt } from "./confirmation-replies.js";
+import { firstTaskUserRequest } from "./first-task-transcript.js";
+import { isBlockedUnstartedWake, isTerminalUnstartedWake } from "./non-execution-wake.js";
+import { firstTaskRejectionReplyRecorded, isFirstTaskRejectionCancellation } from "./first-task-rejection.js";
+import { answerableRuntimeRunIds } from "./runtime-question-readiness.js";
+import { captureFirstTaskAttachments } from "./first-task-attachments.js";
+import { waitForFirstTaskReply } from "./first-task-replies.js";
+import { observeCompletionUpdate } from "./completion-update-flow.js";
+import {
+  provisionFirstTaskFixtures,
+  isManagedFirstTask,
+  startFirstTaskWithRuntimeBound,
+  type FirstTaskFixtureValues,
+} from "./first-task-fixtures.js";
+import { execFileSync } from "node:child_process";
+import { expect, type Page, type Request, type Response } from "@playwright/test";
+import { readFile } from "node:fs/promises";
+import { pollUntil, type RunnerApi } from "./api.js";
+import {
+  sendChatMessage,
+  chatQuestionPresentation,
+  collectChatRunEvidence,
+} from "./chat-flow.js";
+import type { LiveFixtureValues } from "./live-fixtures.js";
+import type { CredentialName, MatrixExecution, RunnerE2EResult } from "./types.js";
+import { firstTaskScenario } from "./first-task-cases.js";
+import {
+  activeRuns,
+  digestText,
+  snapshotInstruction,
+  gradeFirstTask,
+  firstTaskCompletionSettled,
+  type FirstTaskEvidence,
+  type FirstTaskCheckpoint,
+  type Row,
+} from "./first-task-scoring.js";
+
+export function projectFirstTaskResult(result: RunnerE2EResult): RunnerE2EResult {
+  const e = result.firstTask;
+  if (!e) return result;
+  const pick = (value: unknown, fields: readonly string[]): Row => {
+    const row = value && typeof value === "object" ? value as Record<string, unknown> : {};
+    return Object.fromEntries(fields.flatMap(key => {
+      const item = row[key];
+      return item === null || ["string", "number", "boolean"].includes(typeof item)
+        ? [[key, item]] : [];
+    })) as Row;
+  };
+  const rows = (value: unknown): Row[] => Array.isArray(value)
+    ? value.filter(row => row && typeof row === "object") : [];
+  const strings = (value: unknown): string[] => Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === "string") : [];
+  const usage = (value: unknown) => {
+    const u = value as Row | undefined;
+    const measurements = ["inputTokens", "outputTokens", "cachedInputTokens", "cacheWriteTokens", "cacheReadTokens", "cachedReadTokens", "input", "output", "promptTokens", "completionTokens", "cacheAdjustedCostUsd", "costUsd", "providerCostUsd", "costUsdExact"];
+    return {
+      ...pick(u, [...measurements, "model", "provider", "biller", "billingType", "costStatus", "usageSource", "accountingReceiptReady"]),
+      ...Object.fromEntries(["runDelta", "total", "cumulative"].filter(key => u?.[key]).map(key => [key, pick(u?.[key], measurements)])),
+      ...(u?.cost ? { cost: pick(u.cost, ["currency", "amount", "total"]) } : {}),
+      ...(u?.pricingProvenance ? { pricingProvenance: pick(u.pricingProvenance, ["source", "version", "contextTier", "serviceTier", "inputCentsPerMillion", "outputCentsPerMillion", "cacheWriteCentsPerMillion", "cachedInputCentsPerMillion"]) } : {}),
+    };
+  };
+  const questionSet = (value: unknown) => {
+    const set = value as Row | undefined;
+    return { ...pick(set, ["title", "description", "submitLabel"]), questions: rows(set?.questions).map(q => ({
+      ...pick(q, ["id", "prompt", "header", "helpText", "required", "answerMode", "selectionMode", "allowOther"]),
+      options: rows(q.options).map(option => pick(option, ["id", "label", "description", "recommended", "freeText"])),
+      ...(q.customAnswer ? { customAnswer: pick(q.customAnswer, ["enabled", "label", "placeholder"]) } : {}),
+    })) };
+  };
+  const interaction = (row: Row): Row => {
+    const payload = row.payload as Row | undefined;
+    const answers = row.result?.answers;
+    const answerRows: Row[] = Array.isArray(answers) ? rows(answers) : answers && typeof answers === "object"
+      ? Object.entries(answers).map(([questionId, answer]) => ({ ...answer as Row, questionId })) : [];
+    return {
+      ...pick(row, ["id", "issueId", "kind", "status", "createdAt", "resolvedAt", "resolvedByAgentId"]),
+      ...(row.resolvedByUserId ? { resolvedByUserId: "fixture-board" } : {}),
+      payload: {
+        ...pick(payload, ["version", "title", "prompt", "detailsMarkdown", "acceptLabel", "rejectLabel", "rejectRequiresReason", "rejectReasonLabel", "submitLabel"]),
+        ...(payload?.questions ? questionSet(payload) : {}),
+        ...(payload?.questionSet ? { questionSet: questionSet(payload.questionSet) } : {}),
+        ...(payload?.target ? { target: pick(payload.target, ["type", "key", "label", "revisionNumber"]) } : {}),
+      },
+      ...(row.result ? { result: {
+        ...pick(row.result, ["outcome", "reason", "commentId"]),
+        answers: answerRows.map(answer => ({
+          ...pick(answer, ["id", "questionId", "text", "otherText", "customText"]),
+          optionIds: strings(answer.optionIds ?? answer.selectedOptionIds),
+        })),
+      } } : {}),
+    };
+  };
+  const privateInstructions = "Full instructions are retained in the access-controlled first-task snapshot.";
+  const settings = e.runtimeSettings as Record<string, any> | undefined;
+  const checkpointIds = new Set(e.checkpoints.map(c => c.id));
+  const firstTask: FirstTaskEvidence = {
+    caseId: e.caseId, nonce: e.nonce, onboardingIssueId: e.onboardingIssueId,
+    agentId: e.agentId, initialTaskIds: [...e.initialTaskIds],
+    ...(e.source ? { source: { sha: e.source.sha, ref: e.source.ref, dirty: e.source.dirty } } : {}),
+    configuredModel: e.configuredModel, observedModels: [...e.observedModels],
+    instructions: e.instructions.map(i => ({
+      path: /^(?:\/|[A-Za-z]:)|(?:^|\/)\.\.(?:\/|$)/.test(i.path) ? "private-instruction-path" : i.path,
+      sha256: i.sha256, content: privateInstructions, contentSha256: digestText(privateInstructions), redacted: true,
+    })),
+    runtimeSettings: {
+      ...pick(settings, ["adapterType", "completionDeliveryProbe"]),
+      adapterConfig: pick(settings?.adapterConfig, ["provider", "model", "modelReasoningEffort", "lifecycleMode", "codexPermissionMode"]),
+      ...(settings?.onboardingRuntime ? { onboardingRuntime: pick(settings.onboardingRuntime, ["mode", "originalAdapterType", "testedAdapterType", "originalModel"]) } : {}),
+    },
+    checkpoints: e.checkpoints.map(c => ({
+      id: c.id, at: c.at, phase: c.phase, issueId: c.issueId,
+      tasks: c.tasks.map(t => pick(t, ["id", "identifier", "title", "description", "status", "parentId", "assigneeAgentId", "createdAt", "completedAt"])),
+      agents: c.agents.map(a => ({ ...pick(a, ["id", "name", "adapterType"]),
+        adapterConfig: pick(a.adapterConfig, ["provider", "model", "modelReasoningEffort", "lifecycleMode", "codexPermissionMode"]) })),
+      comments: c.comments.map(comment => ({ ...pick(comment, ["id", "issueId", "body", "authorAgentId", "createdAt"]),
+        ...(comment.authorUserId ? { authorUserId: "fixture-board" } : {}) })),
+      interactions: c.interactions.map(interaction),
+      documents: c.documents.map(d => pick(d, ["id", "issueId", "key", "title", "body", "format", "latestRevisionId", "latestRevisionNumber", "createdAt", "updatedAt"])),
+      attachments: (c.attachments ?? []).map(a => pick(a, ["id", "issueId", "title", "originalFilename", "filename", "body", "contentVerified", "contentSha256", "byteSize", "createdAt"])),
+      runs: c.runs.map(run => ({ ...pick(run, ["id", "issueId", "status", "startedAt", "finishedAt", "runtimeMode", "driverKind"]),
+        ...pick({ model: run.resultJson?.model ?? run.usageJson?.model }, ["model"]) })),
+    })),
+    checks: e.checks.map(check => ({
+      id: check.id, passed: check.passed,
+      ...(check.notReached ? { notReached: "The journey did not reach this check; private evidence retains the reason." } : {}),
+      evidence: check.evidence.filter(ref => checkpointIds.has(ref)),
+      detail: `${check.id}: ${check.notReached ? "not reached" : check.passed ? "passed" : "failed"}. Full diagnostic evidence is retained in the access-controlled snapshot.`,
+    })),
+  };
+  return {
+    ...result, firstTask,
+    ...(result.usage ? { usage: Array.isArray(result.usage.runs)
+      ? { runs: rows(result.usage.runs).map(run => ({ runId: run.runId, usage: run.usage ? usage(run.usage) : null })) }
+      : usage(result.usage) } : {}),
+    ...(result.error ? { error: "First-task journey failed; inspect the recorded checks and access-controlled evidence for the original error." } : {}),
+    matcherResults: (result.matcherResults ?? []).map(matcher => ({
+      ...matcher,
+      detail: matcher.matcher.kind === "json_path"
+        ? firstTask.checks.find(check => matcher.matcher.kind === "json_path" && matcher.matcher.path === `firstTask.checks.${check.id}`)?.detail
+          ?? `${matcher.matcher.kind}: ${matcher.passed ? "passed" : "failed"}. Private evidence retains diagnostics.`
+        : `${matcher.matcher.kind}: ${matcher.passed ? "passed" : "failed"}. Private evidence retains diagnostics.`,
+    })),
+  };
+}
+
+export function managedFirstTaskFileCheck(e: FirstTaskEvidence) {
+  const last = e.checkpoints.at(-1);
+  const children = last?.tasks.filter(task => task.parentId === e.onboardingIssueId && task.status === "done") ?? [];
+  const marker = firstTaskScenario(e.caseId, e.nonce).marker;
+  const passed = children.length === 1 && (last?.attachments ?? []).some(attachment =>
+    attachment.issueId === children[0]!.id && attachment.originalFilename === "garden-welcome.txt"
+    && /^text\/(?:plain|markdown)(?:;|$)/i.test(String(attachment.contentType))
+    && attachment.contentVerified === true && typeof attachment.body === "string"
+    && attachment.contentSha256 === digestText(attachment.body) && attachment.body.includes(marker));
+  return { id: "managed-onboarding-physical-artifact", passed, evidence: last ? [last.id] : [],
+    detail: "The completed child has a downloaded, size/hash-verified garden-welcome.txt attachment with the requested marker." };
+}
+
+export async function observeManagedFirstTaskSetup(page: Page, api: RunnerApi, fixtures: LiveFixtureValues, deadlineAt: number) {
+  const before = new Set((await api.get<Row[]>(`/api/environments/${fixtures.environment.id}/leases`)).map(lease => lease.id));
+  const startedAt = Date.now();
+  const qualification = fixtures.setupQualification!;
+  const operations: Promise<void>[] = [];
+  let rejectFailure!: (error: unknown) => void;
+  const failure = new Promise<never>((_resolve, reject) => { rejectFailure = reject; });
+  void failure.catch(() => undefined);
+  const requestStarts = new WeakMap<Request, number>();
+  const pendingSetupRequests = new Set<Request>();
+  let platformEndedAt = Infinity;
+  let qualifiedDefault = false;
+  let automaticRequest = false;
+  function phase(request: Request): "platform" | "adapter" | "discovery" | null {
+    const url = new URL(request.url());
+    if (request.method() === "POST" && url.pathname === `/api/environments/${fixtures.environment.id}/probe`
+      && url.searchParams.get("companyId") === fixtures.company.id) return "platform";
+    if (request.method() === "POST" && url.pathname === `/api/companies/${fixtures.company.id}/adapters/codex_local/test-environment`) return "adapter";
+    if (request.method() === "GET" && url.pathname === "/api/adapters" && url.searchParams.get("companyId") === fixtures.company.id
+      && url.searchParams.get("environmentId") === fixtures.environment.id) return "discovery";
+    return null;
+  }
+  const onRequest = (request: Request) => {
+    const kind = phase(request);
+    if (kind) requestStarts.set(request, Date.now());
+    if (kind === "platform" || kind === "adapter") pendingSetupRequests.add(request);
+  };
+  const onRequestFailed = (request: Request) => {
+    if (pendingSetupRequests.has(request)) fixtures.setupLeaseAccountingIncomplete = true;
+  };
+  const onResponse = (response: Response) => {
+    const request = response.request();
+    const kind = phase(request);
+    if (!kind) return;
+    const responseAt = Date.now();
+    if (kind === "platform") { qualification.platformResponses++; platformEndedAt = responseAt; }
+    if (kind === "adapter") qualification.adapterResponses++;
+    if (qualification.platformResponses > 1 || qualification.adapterResponses > 1) rejectFailure(new Error("The UI repeated a managed setup request"));
+    const operation = (async () => {
+      const body = await response.json() as Row | Row[];
+      if (kind === "discovery") {
+        if (Array.isArray(body) && responseAt >= platformEndedAt) {
+          const codex = body.find(adapter => adapter.type === "codex_local");
+          qualifiedDefault = codex?.defaultRunner === "paperclip" && codex?.supportedRunners?.includes("paperclip") === true;
+          if (!qualifiedDefault) rejectFailure(new Error("The selected image is not qualified for native Codex onboarding"));
+        }
+        return;
+      }
+      const data = body as Row;
+      if (kind === "platform") {
+        qualification.recorded = response.ok() && data.ok === true && data.details?.platformQualificationRecorded === true;
+        if (!qualification.recorded) rejectFailure(new Error("The UI environment qualification did not pass"));
+      }
+      else {
+        qualification.adapterType = response.ok() && data.status === "pass" ? data.adapterType : null;
+        if (qualification.adapterType !== "paperclip_runner") rejectFailure(new Error("The UI native runtime setup did not pass"));
+        automaticRequest = request.postDataJSON()?.runner === undefined && (requestStarts.get(request) ?? 0) >= platformEndedAt;
+      }
+      const leaseId = kind === "platform" ? data.details?.leaseId
+        : /(?:^|;\s*)paperclipLeaseId=([a-zA-Z0-9-]+)(?:;|$)/.exec(String(data.checks?.find((check: Row) => check.code === "sandbox_test_identity")?.detail ?? ""))?.[1];
+      if (typeof leaseId !== "string" || !leaseId) {
+        fixtures.setupLeaseAccountingIncomplete = true;
+        return;
+      }
+      const lease = await api.get<Row>(`/api/environment-leases/${encodeURIComponent(leaseId)}`, { timeout: 10_000 });
+      if (before.has(leaseId) || lease.companyId !== fixtures.company.id || lease.environmentId !== fixtures.environment.id
+        || lease.provider !== "daytona" || lease.heartbeatRunId || lease.issueId) throw new Error("Setup response references a foreign or non-setup lease");
+      pendingSetupRequests.delete(request);
+      if (!fixtures.setupLeases!.some(entry => entry.leaseId === leaseId)) fixtures.setupLeases!.push({ leaseId, phase: kind,
+        durationMs: responseAt - (requestStarts.get(request) ?? startedAt) });
+    })();
+    void operation.catch(error => { fixtures.setupLeaseAccountingIncomplete = true; rejectFailure(error); });
+    operations.push(operation);
+  };
+  page.on("request", onRequest);
+  page.on("response", onResponse);
+  page.on("requestfailed", onRequestFailed);
+  const stop = async (requireSuccess: boolean) => {
+    page.off("request", onRequest);
+    page.off("response", onResponse);
+    page.off("requestfailed", onRequestFailed);
+    const settled = await Promise.allSettled(operations);
+    if (pendingSetupRequests.size > 0) fixtures.setupLeaseAccountingIncomplete = true;
+    const failures = settled.flatMap(result => result.status === "rejected" ? [result.reason] : []);
+    let leases: Row[];
+    try { leases = await api.get<Row[]>(`/api/environments/${fixtures.environment.id}/leases`, { timeout: 10_000 }); }
+    catch (error) { fixtures.setupLeaseAccountingIncomplete = true; throw error; }
+    for (const lease of leases) {
+      if (before.has(lease.id) || lease.companyId !== fixtures.company.id || lease.environmentId !== fixtures.environment.id
+        || lease.provider !== "daytona" || lease.heartbeatRunId || lease.issueId) continue;
+      if (!fixtures.setupLeases!.some(entry => entry.leaseId === lease.id)) fixtures.setupLeaseAccountingIncomplete = true;
+    }
+    if (failures.length) throw new AggregateError(failures, "Managed onboarding setup evidence could not be verified");
+    if (!requireSuccess) return;
+    if (!qualification.recorded || qualification.platformResponses !== 1 || qualification.adapterResponses !== 1
+      || qualification.adapterType !== "paperclip_runner" || !automaticRequest || !qualifiedDefault
+      || fixtures.setupLeaseAccountingIncomplete || fixtures.setupLeases!.length !== 2 || !["platform", "adapter"].every(kind => fixtures.setupLeases!.some(lease => lease.phase === kind))) {
+      throw new Error("The UI did not prove one qualified automatic native setup with both owned leases");
+    }
+    await pollUntil({ label: "managed onboarding setup lease cleanup", deadlineAt: Math.min(deadlineAt, Date.now() + 120_000),
+      load: () => api.get<Row[]>(`/api/environments/${fixtures.environment.id}/leases`),
+      accept: rows => fixtures.setupLeases!.every(entry => rows.some(row => row.id === entry.leaseId
+        && row.companyId === fixtures.company.id && row.environmentId === fixtures.environment.id
+        && row.status === "released" && row.cleanupStatus === "success")),
+    });
+  };
+  return Object.assign(stop, { failure });
+}
+
+export async function setupFirstTaskFixtures(input: {
+  page: Page;
+  api: RunnerApi;
+  execution: MatrixExecution;
+  nonce: string;
+  credentials: Partial<Record<CredentialName, string>>;
+  daytonaImage?: string;
+  deadlineAt?: number;
+  observe: (fixtures: LiveFixtureValues) => void;
+  onCompanyCreated?: (companyId: string) => Promise<void>;
+}): Promise<FirstTaskFixtureValues> {
+  const { page, api, execution, nonce } = input;
+  await api.patch("/api/instance/settings/experimental", {
+    enableClassicTaskInterface: false,
+  });
+  await page.goto("/onboarding", { waitUntil: "domcontentloaded" });
+  const launcher = page.getByRole("button", {
+    name: /Start Onboarding|New Organization|Add Agent/,
+  });
+  if (await launcher.count()) await launcher.first().click();
+  const create = page.getByRole("button", { name: /Build a new organization/ });
+  if (await create.count()) await create.first().click();
+  await page
+    .getByPlaceholder("e.g. Northwind Labs")
+    .fill(`First task ${nonce}`);
+  await page.getByRole("button", { name: "Continue", exact: true }).click();
+  await expect(page.locator("#onboarding-agent-name")).toBeVisible();
+  const companies = await api.get<Row[]>("/api/companies");
+  const company = companies.find((c) => c.name === `First task ${nonce}`);
+  if (!company) throw new Error("Onboarding fixture company missing");
+  await input.onCompanyCreated?.(company.id);
+  const fixtures = await provisionFirstTaskFixtures({
+    api,
+    execution,
+    nonce,
+    credentials: input.credentials,
+    daytonaImage: input.daytonaImage,
+    company: {
+      id: company.id,
+      name: company.name,
+      issuePrefix: company.issuePrefix,
+    },
+  });
+  const secret = fixtures.secretRefs[execution.profile.credential]!;
+  input.observe(fixtures);
+  await page.locator("#onboarding-agent-name").fill(fixtures.agent.name);
+  await page.getByRole("button", { name: "Next", exact: true }).click();
+  await expect(
+    page.getByRole("heading", { name: "Connect a model" }),
+  ).toBeVisible();
+  await page
+    .getByRole("radio", {
+      name:
+        execution.profile.credential === "OPENAI_API_KEY"
+          ? /^OpenAI/
+          : /^Claude/,
+    })
+    .click();
+  const useKey = page.getByRole("button", {
+    name: "Use API key instead",
+    exact: true,
+  });
+  const savedKey = page.getByRole("combobox", { name: "Saved API key" });
+  if (["legacy-codex", "legacy-claude"].includes(execution.profile.id)) {
+    await page.getByText("Advanced", { exact: true }).click();
+    await page.getByRole("button", { name: "Runner", exact: true }).click();
+    await page.getByRole("option", { name: "Legacy runner", exact: true }).click();
+  }
+  // Credential mode depends on the selected provider and its asynchronous key lookup.
+  await expect(savedKey.or(useKey).first()).toBeVisible();
+  if (await useKey.isVisible()) await useKey.click();
+  await page
+    .getByRole("combobox", { name: "Saved API key" })
+    .selectOption(`company:${secret.secretId}`);
+  const managed = isManagedFirstTask(execution);
+  if (managed && (!input.deadlineAt || input.deadlineAt - Date.now() <= 120_000)) throw new Error("Managed onboarding has no bounded setup deadline");
+  const stopSetup = managed ? await observeManagedFirstTaskSetup(page, api, fixtures, input.deadlineAt! - 60_000) : null;
+  let setupError: unknown;
+  try {
+    await page.getByRole("button", { name: /^(Connect|Next)$/, exact: true }).last().click();
+    const visible = expect(page.getByRole("button", { name: "Get started", exact: true })).toBeVisible({
+      timeout: managed ? input.deadlineAt! - Date.now() - 120_000 : 120_000,
+    });
+    if (stopSetup) await Promise.race([visible, stopSetup.failure]); else await visible;
+  } catch (error) { setupError = error; }
+  try { await stopSetup?.(!setupError); }
+  catch (error) { setupError = setupError ? new AggregateError([setupError, error], "Managed onboarding and setup evidence failed") : error; }
+  if (setupError) throw setupError;
+  const agents = await api.get<Row[]>(`/api/companies/${company.id}/agents`);
+  expect(agents).toHaveLength(1);
+  const wizardAdapter =
+    execution.profile.credential === "OPENAI_API_KEY"
+      ? execution.profile.id === "runner-codex" ? "paperclip_runner" : "codex_local"
+      : execution.profile.id === "runner-acpx-claude" ? "paperclip_runner" : "claude_local";
+  expect(agents[0].adapterType).toBe(wizardAdapter);
+  if (execution.profile.id === "runner-codex") {
+    expect(agents[0].adapterConfig?.provider).toBe("codex");
+  }
+  fixtures.onboardingRuntime = {
+    mode: "production-wizard",
+    originalAdapterType: wizardAdapter,
+    testedAdapterType: wizardAdapter,
+    originalModel: agents[0].adapterConfig?.model ?? null,
+  };
+  if (execution.profile.id === "runner-acpx-claude") {
+    expect(agents[0].adapterConfig?.provider).toBe("acpx");
+    expect(agents[0].adapterConfig?.acpxAgent).toBe("claude");
+    expect(agents[0].adapterConfig?.model).toBe("claude-opus-5-5");
+  }
+  fixtures.agent = {
+    id: agents[0].id,
+    companyId: company.id,
+    name: agents[0].name,
+  };
+  input.observe(fixtures);
+  if (managed) {
+    await page.reload({ waitUntil: "domcontentloaded" });
+    const persisted = await api.get<Row>(`/api/agents/${fixtures.agent.id}`);
+    expect(persisted.adapterType).toBe("paperclip_runner");
+    expect(persisted.adapterConfig?.provider).toBe("codex");
+  }
+  await startFirstTaskWithRuntimeBound({
+    api, execution, agent: agents[0],
+    observe: bound => { fixtures.onboardingRuntimeBound = bound; input.observe(fixtures); },
+    start: () => page.getByRole("button", { name: "Get started", exact: true }).click(),
+  });
+  return fixtures;
+}
+
+export async function runFirstTaskFlow(input: {
+  page: Page;
+  api: RunnerApi;
+  fixtures: FirstTaskFixtureValues;
+  execution: MatrixExecution;
+  nonce: string;
+  deadlineAt?: number;
+  observe: (issue: any, runs: any[], evidence: FirstTaskEvidence) => void;
+  secrets: readonly string[];
+  createOrdinary: (title: string, prompt: string) => Promise<Row>;
+  capture: (id: string, label: string, file: string) => Promise<void>;
+  evidence: (name: string, value: unknown) => Promise<void>;
+}) {
+  const { page, api, fixtures, execution, nonce } = input;
+  const scenario = firstTaskScenario(execution.task.id, nonce);
+  const managed = isManagedFirstTask(execution);
+  if (managed) {
+    const attachment = "Attach the finished note as a UTF-8 text file named garden-welcome.txt.";
+    scenario.prompt += ` ${attachment}`;
+    scenario.facts += ` ${attachment}`;
+  }
+  const deadlineAt = managed ? (input.deadlineAt ?? Date.now()) - 120_000
+    : Date.now() + execution.task.attemptTimeoutMs.local - 120_000;
+  const tasksPath = `/api/companies/${fixtures.company.id}/issues?limit=100`;
+  const allRuns = async () => {
+    const runs = await api.get<Row[]>(
+      `/api/companies/${fixtures.company.id}/heartbeat-runs?limit=100`,
+    );
+    return Promise.all(
+      runs.map((r) => api.get<Row>(`/api/heartbeat-runs/${r.id}`)),
+    );
+  };
+  const initial = await pollUntil({
+    label: "onboarding first task",
+    deadlineAt,
+    load: () => api.get<Row[]>(tasksPath),
+    accept: (rows) => rows.length === 1,
+  });
+  let issue = initial[0];
+  expect(issue.assigneeAgentId).toBe(fixtures.agent.id);
+  expect(issue.description).toContain("/first-task");
+  expect(await allRuns()).toHaveLength(0);
+  const e: FirstTaskEvidence = {
+    caseId: scenario.id,
+    nonce,
+    onboardingIssueId: issue.id,
+    agentId: fixtures.agent.id,
+    initialTaskIds: initial.map((t) => t.id),
+    instructions: [],
+    configuredModel: null,
+    observedModels: [],
+    checkpoints: [],
+    checks: [],
+  };
+  input.observe(issue, [], e);
+  const snapshot = async (
+    phase: FirstTaskCheckpoint["phase"],
+    at = new Date().toISOString(),
+  ) => {
+    const [tasks, agents, comments, interactions, runs] = await Promise.all([
+      api.get<Row[]>(tasksPath),
+      api.get<Row[]>(`/api/companies/${fixtures.company.id}/agents`),
+      api.get<Row[]>(`/api/issues/${issue.id}/comments?order=asc`),
+      api.get<Row[]>(`/api/issues/${issue.id}/interactions`),
+      allRuns(),
+    ]);
+    const documents = (
+      await Promise.all(
+        tasks.map(async (t) => {
+          const summaries = await api.get<Row[]>(
+            `/api/issues/${t.id}/documents`,
+          );
+          return Promise.all(
+            summaries.map(async (d) => ({
+              ...(await api.get<Row>(
+                `/api/issues/${t.id}/documents/${encodeURIComponent(d.key)}`,
+              )),
+              key: d.key,
+              issueId: t.id,
+            })),
+          );
+        }),
+      )
+    ).flat();
+    issue = tasks.find((t) => t.id === issue.id) ?? issue;
+    e.observedModels = [
+      ...new Set(
+        runs
+          .map((r) => r.resultJson?.model ?? r.usageJson?.model)
+          .filter((m): m is string => typeof m === "string"),
+      ),
+    ];
+    const checkpoint: FirstTaskCheckpoint = {
+      id: `${phase}-${e.checkpoints.length}`,
+      at,
+      phase,
+      issueId: issue.id,
+      tasks,
+      agents,
+      comments,
+      interactions,
+      documents,
+      attachments: await captureFirstTaskAttachments(api, tasks, input.secrets),
+      runs,
+    };
+    e.checkpoints.push(checkpoint);
+    e.checks = gradeFirstTask(e);
+    if (managed && e.checkpoints.at(-1)?.phase === "finished") e.checks.push(managedFirstTaskFileCheck(e));
+    if (execution.suite.id === "confirmation-replies" && scenario.id !== "task-card-accept") e.checks.push(...gradeConfirmationReply(e));
+    input.observe(issue, runs, e);
+    await input.evidence("first-task.json", e);
+    await input.evidence("api-state.json", checkpoint);
+    return checkpoint;
+  };
+  let pausedRuntimeRunIds = new Set<string>();
+  const settle = async (priorRunIds: Set<string>, completion = false, rejection = false) => {
+    const previousPaused = pausedRuntimeRunIds;
+    let stable = 0;
+    await pollUntil({
+      label: "first-task response and durable outcome",
+      deadlineAt: Math.min(deadlineAt, Date.now() + 300_000),
+      intervalMs: 1000,
+      load: async () => ({
+        runs: await allRuns(),
+        tasks: await api.get<Row[]>(tasksPath),
+        interactions: await api.get<Row[]>(`/api/issues/${issue.id}/interactions`),
+        comments: rejection ? await api.get<Row[]>(`/api/issues/${issue.id}/comments?order=asc`) : [],
+      }),
+      reject: ({ runs, tasks }) => {
+        const bad = runs.find((r) =>
+          ["failed", "timed_out", "cancelled"].includes(r.status) && !isBlockedUnstartedWake(r) &&
+          !isTerminalUnstartedWake(r, tasks) && !(rejection && isFirstTaskRejectionCancellation(r, e, tasks)),
+        );
+        if (bad)
+          return `run status ${bad.status}: ${bad.errorCode ?? ""} ${bad.error ?? ""}`;
+        if (runs.length > 12) return "first-task run count exceeded 12";
+      },
+      accept: ({ runs, tasks, interactions, comments }) => {
+        const paused = answerableRuntimeRunIds(interactions);
+        const active = activeRuns(runs);
+        const waitingForAnswer = !completion && active.length > 0 && active.every((r) => paused.has(r.id));
+        const progressed = runs.some((r) => !priorRunIds.has(r.id) || previousPaused.has(r.id));
+        const settled = progressed && (active.length === 0 || waitingForAnswer);
+        pausedRuntimeRunIds = waitingForAnswer ? paused : new Set();
+        const done =
+          !completion ||
+          firstTaskCompletionSettled(
+            tasks,
+            e.initialTaskIds,
+            e.onboardingIssueId,
+          );
+        const replied = !rejection || firstTaskRejectionReplyRecorded(e, comments, runs);
+        stable = settled && done && replied ? stable + 1 : 0;
+        return stable >= 3;
+      },
+    });
+  };
+  const turn = async (
+    message: string,
+    phase: FirstTaskCheckpoint["phase"],
+    complete = false,
+  ) => {
+    const before = new Set((await allRuns()).map((r) => r.id));
+    const loadComments = () =>
+      api.get<Row[]>(`/api/issues/${issue.id}/comments?order=asc`);
+    const previousIds = new Set(
+      (await loadComments()).map((comment) => comment.id),
+    );
+    const at = new Date().toISOString();
+    await sendChatMessage(page, message);
+    await waitForFirstTaskReply({
+      load: loadComments,
+      previousIds,
+      message,
+      deadlineAt: Math.min(deadlineAt, Date.now() + 30_000),
+    });
+    const decision = phase === "accepted" || phase === "rejected";
+    if (decision) await snapshot(phase, at);
+    await settle(before, complete, phase === "rejected");
+    return snapshot(decision ? "finished" : phase);
+  };
+  let failure: unknown;
+  try {
+    const git = (args: string[]) =>
+      execFileSync("git", args, {
+        cwd: new URL("../../", import.meta.url),
+        encoding: "utf8",
+      }).trim();
+    e.source = {
+      sha: git(["rev-parse", "HEAD"]),
+      ref: git(["branch", "--show-current"]),
+      dirty: Boolean(git(["status", "--porcelain"])),
+    };
+    const agent = await api.get<Row>(`/api/agents/${fixtures.agent.id}`);
+    e.configuredModel = agent.adapterConfig?.model ?? null;
+    e.runtimeSettings = {
+      completionDeliveryProbe: runsCompletionUpdateProbe(execution),
+      onboardingRuntime: fixtures.onboardingRuntime,
+      ...(fixtures.onboardingRuntimeBound ? { onboardingRuntimeBound: fixtures.onboardingRuntimeBound } : {}),
+      adapterType: agent.adapterType,
+      adapterConfig: agent.adapterConfig,
+      runtimeConfig: agent.runtimeConfig,
+      permissions: agent.permissions,
+    };
+    const desired =
+      agent.adapterConfig?.paperclipSkillSync?.desiredSkills ?? [];
+    expect(
+      desired.map((s: string | { key: string }) =>
+        typeof s === "string" ? s : s.key,
+      ),
+    ).toContain("paperclipai/paperclip/first-task");
+    const bundle = await api.get<{ files: Array<{ path: string }> }>(
+      `/api/agents/${fixtures.agent.id}/instructions-bundle`,
+    );
+    for (const file of bundle.files) {
+      const detail = await api.get<{ content: string }>(
+        `/api/agents/${fixtures.agent.id}/instructions-bundle/file?path=${encodeURIComponent(file.path)}`,
+      );
+      e.instructions.push(
+        snapshotInstruction(file.path, detail.content, input.secrets),
+      );
+    }
+    const skills = await api.get<Row[]>(
+      `/api/companies/${fixtures.company.id}/skills`,
+    );
+    for (const selection of desired) {
+      const key = typeof selection === "string" ? selection : selection.key;
+      const skill = skills.find((s) => s.key === key);
+      if (!skill) throw new Error(`Missing assigned skill ${key}`);
+      const file = await api.get<{ content: string }>(
+        `/api/companies/${fixtures.company.id}/skills/${skill.id}/files?path=SKILL.md`,
+      );
+      e.instructions.push(
+        snapshotInstruction(
+          `${skill.slug}/SKILL.md`,
+          file.content,
+          input.secrets,
+        ),
+      );
+    }
+    // The execution contract is appended by production runners outside the managed persona.
+    const contract = await readFile(
+      new URL(
+        "../../server/src/onboarding-assets/default/AGENTS.md",
+        import.meta.url,
+      ),
+      "utf8",
+    );
+    e.instructions.push(
+      snapshotInstruction("runtime/default/AGENTS.md", contract, input.secrets),
+    );
+    await snapshot("opening");
+    await page.goto(
+      `/${fixtures.company.issuePrefix}/issues/${issue.identifier ?? issue.id}`,
+    );
+    if (scenario.opening === "ordinary") {
+      const before = new Set((await allRuns()).map((r) => r.id));
+      issue = await input.createOrdinary(
+        execution.task.buildTitle(nonce),
+        scenario.prompt,
+      );
+      e.initialTaskIds.push(issue.id);
+      input.observe(issue, [], e);
+      expect(issue.description).not.toContain("/first-task");
+      await page.goto(
+        `/${fixtures.company.issuePrefix}/issues/${issue.identifier ?? issue.id}`,
+      );
+      await settle(before);
+      await snapshot("response");
+    } else if (scenario.opening === "message") {
+      await turn(scenario.prompt, "response");
+    } else {
+      const opening = e.checkpoints[0].interactions.find(
+        (i) => i.kind === "ask_user_questions" && i.status === "pending",
+      );
+      expect(opening, "deterministic opening card").toBeTruthy();
+      const option = opening!.payload.questions[0].options.find(
+        (o: any) =>
+          o.id === (scenario.opening === "interview" ? "interview" : "task"),
+      );
+      await page
+        // Paperclip includes the option description in the accessible name.
+        .getByRole("radio", { name: option.label })
+        .last()
+        .click();
+      if (scenario.opening !== "interview")
+        await page
+          .getByTestId("question-other-answer-composer")
+          .last()
+          .locator('[contenteditable="true"],textarea')
+          .first()
+          .fill(scenario.prompt);
+      const before = new Set((await allRuns()).map((r) => r.id));
+      await page
+        .getByRole("button", {
+          name: opening!.payload.submitLabel ?? "Continue",
+          exact: true,
+        })
+        .last()
+        .click();
+      if (scenario.id === "accept-while-running") {
+        await pollUntil({
+          label: "approval card published before the source run finishes",
+          deadlineAt: Math.min(deadlineAt, Date.now() + 300_000), intervalMs: 100,
+          load: async () => ({ interactions: await api.get<Row[]>(`/api/issues/${issue.id}/interactions`), runs: await allRuns() }),
+          accept: ({ interactions, runs }) => interactions.some(i => i.status === "pending" &&
+            ["request_confirmation", "request_checkbox_confirmation"].includes(i.kind) &&
+            runs.some(r => r.id === i.sourceRunId && r.status === "running")),
+          reject: ({ runs }) => runs.some(r => !before.has(r.id)) && !activeRuns(runs).length
+            ? "Acceptance overlap was not exercised: source run finished before a live approval card was observed" : undefined,
+        });
+      } else await settle(before);
+      await snapshot("response");
+    }
+    // Screenshots can take longer than the source turn's final handoff. In the
+    // overlap case, accept first and retain the response checkpoint as evidence.
+    if (scenario.id !== "accept-while-running") await input.capture(
+      "first-task-response",
+      "First onboarding response",
+      "first-task-response.png",
+    );
+    const assertBeforeAcceptance = () => {
+      const check = gradeFirstTask(e).find((c) => c.id === "no-premature-work");
+      expect(
+        check?.passed ?? true,
+        "Behavior failure: work executed before acceptance",
+      ).toBe(true);
+    };
+    assertBeforeAcceptance();
+    if (!scenario.firstResponseOnly) {
+      if (["interview", "ambiguous"].includes(scenario.opening)) {
+        const facts =
+          scenario.id === "interview-plan-accept"
+            ? `${scenario.facts} Please write a plan for me to review, before doing the work.`
+            : scenario.facts;
+        const pending = (
+          await api.get<Row[]>(`/api/issues/${issue.id}/interactions`)
+        ).find(
+          (i) => i.status === "pending" && i.kind === "ask_user_questions",
+        );
+        if (!pending) await turn(facts, "clarified");
+        else {
+          const set = chatQuestionPresentation(pending.payload);
+          const before = new Set((await allRuns()).map((r) => r.id));
+          for (const [index, question] of set.questions.entries()) {
+            const text = page
+              .getByTestId("question-text-answer-composer")
+              .last();
+            if (await text.isVisible())
+              await text
+                .locator('[contenteditable="true"],textarea')
+                .first()
+                .fill(facts);
+            else {
+              await page
+                .getByRole(
+                  question.answerMode === "multi_select" ? "checkbox" : "radio",
+                  {
+                    name: question.customAnswer?.label ?? "Other",
+                    exact: true,
+                  },
+                )
+                .last()
+                .click();
+              await page
+                .getByTestId("question-other-answer-composer")
+                .last()
+                .locator('[contenteditable="true"],textarea')
+                .first()
+                .fill(facts);
+            }
+            await page
+              .getByRole("button", {
+                name:
+                  index === set.questions.length - 1
+                    ? (set.submitLabel ?? "Submit answers")
+                    : "Next",
+                exact: true,
+              })
+              .last()
+              .click();
+          }
+          await settle(before);
+          await snapshot("clarified");
+        }
+      }
+      if (scenario.id === "revise-accept")
+        await turn(scenario.revision, "revised");
+      assertBeforeAcceptance();
+      if (scenario.id === "reject-no-execution")
+        await turn(scenario.rejection, "rejected");
+      else if (["task-card-accept", "accept-while-running"].includes(scenario.id)) {
+        const pending = (
+          await api.get<Row[]>(`/api/issues/${issue.id}/interactions`)
+        ).find(
+          (i) =>
+            i.status === "pending" &&
+            ["request_confirmation", "request_checkbox_confirmation"].includes(
+              i.kind,
+            ),
+        );
+        expect(
+          pending,
+          "proposal must offer an acceptance card in this case",
+        ).toBeTruthy();
+        const before = new Set((await allRuns()).map((r) => r.id));
+        const at = new Date().toISOString();
+        if (pending!.kind === "request_checkbox_confirmation") {
+          for (const item of pending!.payload.options ?? [])
+            await page
+              .getByRole("checkbox", { name: item.label, exact: true })
+              .last()
+              .check();
+        }
+        await page
+          .getByRole("button", {
+            name:
+              pending!.payload.acceptLabel ??
+              (pending!.kind === "request_confirmation"
+                ? "Approve"
+                : "Confirm selection"),
+            exact: true,
+          })
+          .last()
+          .click();
+        await pollUntil({
+          label: "first-task confirmation acceptance",
+          deadlineAt: Math.min(deadlineAt, Date.now() + 30_000),
+          intervalMs: 250,
+          load: () => api.get<Row[]>(`/api/issues/${issue.id}/interactions`),
+          accept: (interactions) =>
+            interactions.find((i) => i.id === pending!.id)?.status ===
+            "accepted",
+          reject: (interactions) => {
+            const status = interactions.find(
+              (i) => i.id === pending!.id,
+            )?.status;
+            return status && !["pending", "accepted"].includes(status)
+              ? `Confirmation ended as ${status}`
+              : undefined;
+          },
+        });
+        await snapshot("accepted", at);
+        await settle(before, true);
+        await snapshot("finished");
+      } else
+        await turn(
+          scenario.acceptance,
+          "accepted",
+          scenario.id !== "interview-plan-accept",
+        );
+    }
+    if (execution.suite.id === "confirmation-replies" && scenario.id !== "task-card-accept") {
+      const last = e.checkpoints.at(-1)!;
+      const decisionCard = last.interactions.find(card => card.result?.commentId && ["accepted", "rejected"].includes(card.status));
+      if (decisionCard) {
+        await page.reload({ waitUntil: "domcontentloaded" });
+        await assertConfirmationReceipt(page, decisionCard);
+      }
+      await input.evidence("confirmation-audit.json", await api.get(`/api/issues/${issue.id}/activity`));
+    }
+    if (runsCompletionUpdateProbe(execution)) {
+      const children = (await api.get<Row[]>(tasksPath)).filter(t => t.parentId === issue.id);
+      expect(children).toHaveLength(1);
+      const completion = await observeCompletionUpdate({ ...input, sourceId: issue.id, workerId: children[0]!.id,
+        marker: scenario.marker, fixtureRequest: firstTaskUserRequest(e), allRuns });
+      e.runtimeSettings!.completionRenderedLinks = completion.renderedLinks ?? [];
+      await snapshot("finished");
+    }
+    e.checks = gradeFirstTask(e);
+    if (managed && e.checkpoints.at(-1)?.phase === "finished") e.checks.push(managedFirstTaskFileCheck(e));
+    if (execution.suite.id === "confirmation-replies" && scenario.id !== "task-card-accept") e.checks.push(...gradeConfirmationReply(e));
+    await input.evidence("first-task.json", e);
+    await input.capture(
+      "final-state",
+      "First-task final state",
+      "final-state.png",
+    );
+    const failures = e.checks.filter((c) => !c.passed);
+    expect(
+      failures,
+      failures.map((c) => `${c.id}: ${c.detail}`).join("\n"),
+    ).toEqual([]);
+    return { issue, runs: e.checkpoints.at(-1)!.runs, evidence: e };
+  } catch (error) {
+    failure = error;
+    throw error;
+  } finally {
+    // Save failed journeys without replacing the original assertion/transport error.
+    try {
+      await snapshot("finished");
+      const runs = await allRuns();
+      await input.evidence(
+        "first-task-run-evidence.json",
+        await Promise.all(
+          runs.map((r) =>
+            collectChatRunEvidence(
+              api,
+              r as Parameters<typeof collectChatRunEvidence>[1],
+            ),
+          ),
+        ),
+      );
+    } catch (error) {
+      if (!failure) throw error;
+      await input.evidence("first-task-evidence-error.json", {
+        captureFailed: true,
+      });
+    }
+  }
+}

@@ -79,7 +79,6 @@ each one).
 
 ## Hard rules
 
-* **YOU DO NOT MERGE THE PR YOURSELF. NEVER MERGE THE PR YOURSELF.**
 * Never lose work: no orphaned stashes, no dropped files, no force-pushes
   that discard commits.
 * Always post the URLs to every pull request you created.

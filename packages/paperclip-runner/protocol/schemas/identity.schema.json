@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://paperclip.dev/schemas/prp/v1/identity.schema.json",
+  "title": "PRP identity graph",
+  "type": "object",
+  "required": [
+    "schema",
+    "companyId",
+    "issueId",
+    "runId",
+    "environmentLeaseId",
+    "runnerInstanceId",
+    "normalizedSessionId",
+    "driverSessionId"
+  ],
+  "properties": {
+    "schema": { "const": "paperclip.prp.identity.v1" },
+    "companyId": { "$ref": "#/$defs/stableId" },
+    "issueId": { "$ref": "#/$defs/stableId" },
+    "runId": { "$ref": "#/$defs/stableId" },
+    "environmentLeaseId": { "$ref": "#/$defs/stableId" },
+    "runnerInstanceId": { "$ref": "#/$defs/stableId" },
+    "normalizedSessionId": { "$ref": "#/$defs/stableId" },
+    "driverSessionId": { "$ref": "#/$defs/stableId" },
+    "providerSessionId": { "$ref": "#/$defs/stableId" }
+  },
+  "additionalProperties": true,
+  "$defs": {
+    "stableId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+    }
+  }
+}

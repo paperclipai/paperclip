@@ -8,6 +8,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, "..");
 const manifestPath = join(repoRoot, "scripts", "release-package-manifest.json");
 const roots = ["packages", "server", "ui", "cli"];
+const CHANNEL_ENTRYPOINT_PACKAGE = "paperclipai";
 
 function readJson(filePath) {
   return JSON.parse(readFileSync(filePath, "utf8"));
@@ -211,7 +212,22 @@ function sortTopologically(packages) {
 }
 
 function getReleasePackages() {
-  return sortTopologically(buildReleasePackagePlan().filter((pkg) => pkg.publishFromCi));
+  const ordered = sortTopologically(buildReleasePackagePlan().filter((pkg) => pkg.publishFromCi));
+  const entrypoint = ordered.find((pkg) => pkg.name === CHANNEL_ENTRYPOINT_PACKAGE);
+
+  if (!entrypoint) {
+    throw new Error(
+      `release package graph is missing channel entrypoint ${CHANNEL_ENTRYPOINT_PACKAGE}`,
+    );
+  }
+
+  // npm trusted publishing can authenticate `npm publish`, but not a later
+  // `npm dist-tag add`. Publish the user-facing CLI last so its channel tag
+  // cannot advance until every other release package has been accepted by npm.
+  return [
+    ...ordered.filter((pkg) => pkg.name !== CHANNEL_ENTRYPOINT_PACKAGE),
+    entrypoint,
+  ];
 }
 
 function replaceWorkspaceDeps(deps, version) {

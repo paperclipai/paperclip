@@ -1,7 +1,22 @@
 import { describe, expect, it } from "vitest";
-import { shouldAutoCheckoutIssueForWake } from "../services/heartbeat.ts";
+import {
+  shouldAutoCheckoutIssueForWake,
+} from "../services/heartbeat.ts";
 
 describe("shouldAutoCheckoutIssueForWake", () => {
+  it.each([
+    { issueAssigneeAgentId: "another-agent" }, { isDependencyReady: false },
+    { issueStatus: "done" }, { issueStatus: "cancelled" }, { issueStatus: "in_review" },
+    { contextSnapshot: {} }, { contextSnapshot: { wakeReason: "issue_comment_mentioned" } },
+    { contextSnapshot: { wakeReason: "source_scoped_recovery_action" } },
+    { contextSnapshot: { wakeReason: "execution_resumed" } },
+  ])("does not grant an automatic checkout outside the eligible assigned wake: %j", override => {
+    expect(shouldAutoCheckoutIssueForWake({
+      contextSnapshot: { wakeReason: "issue_assigned" }, issueStatus: "todo",
+      issueAssigneeAgentId: "agent-1", isDependencyReady: true, agentId: "agent-1", ...override,
+    })).toBe(false);
+  });
+
   it("auto-checks out an assigned todo issue for an actionable wake", () => {
     expect(shouldAutoCheckoutIssueForWake({
       contextSnapshot: { wakeReason: "issue_assigned" },
@@ -10,6 +25,16 @@ describe("shouldAutoCheckoutIssueForWake", () => {
       isDependencyReady: true,
       agentId: "agent-1",
     })).toBe(true);
+  });
+
+  it("leaves an idle review issue in review without an actionable wake", () => {
+    expect(shouldAutoCheckoutIssueForWake({
+      contextSnapshot: {},
+      issueStatus: "in_review",
+      issueAssigneeAgentId: "agent-1",
+      isDependencyReady: true,
+      agentId: "agent-1",
+    })).toBe(false);
   });
 
   it("does not auto-checkout pending execution-review state even if the row status is todo", () => {

@@ -1,0 +1,13 @@
+{
+  "version": "1.0.13",
+  "platforms": {
+    "darwin-arm64": {
+      "artifact": "macos-aarch64",
+      "sha256": "8669e0fdadceec25b8c159c355f427ffbd82583525d774b6ab1522197ea83b80"
+    },
+    "linux-x64": {
+      "artifact": "linux-x86_64",
+      "sha256": "edf79521581bb5e6b95abef848491a6a742e860da3e237ebe86a280d30dce4c1"
+    }
+  }
+}

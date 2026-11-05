@@ -13,9 +13,11 @@ import {
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { cn } from "@/lib/utils";
+import { copyTextToClipboard } from "@/lib/clipboard";
 
 export type WorkspaceServiceControlState =
   | "stopped"
+  | "provisioning"
   | "starting"
   | "running"
   | "stopping"
@@ -33,6 +35,9 @@ export type WorkspaceServiceControlEntry = {
   port?: number | null;
   /** Short human-readable failure summary, e.g. "dev exited with code 1, 12s ago". */
   failureDetail?: string | null;
+  /** HTTPS exposure lifecycle, intentionally separate from process health. */
+  exposureState?: "pending" | "ready" | "failed" | "cleanup_pending" | "removed" | null;
+  exposureDetail?: string | null;
   canStart?: boolean;
 };
 
@@ -48,7 +53,7 @@ export type WorkspaceServiceControlBarProps = {
   className?: string;
 };
 
-const TRANSITIONAL_STATES: WorkspaceServiceControlState[] = ["starting", "stopping", "restarting"];
+const TRANSITIONAL_STATES: WorkspaceServiceControlState[] = ["provisioning", "starting", "stopping", "restarting"];
 
 function isTransitional(state: WorkspaceServiceControlState) {
   return TRANSITIONAL_STATES.includes(state);
@@ -61,6 +66,8 @@ function formatServiceUrl(url: string | null | undefined) {
 
 function statusMeta(entry: WorkspaceServiceControlEntry): { label: string; unhealthy: boolean } {
   switch (entry.state) {
+    case "provisioning":
+      return { label: "Provisioning…", unhealthy: false };
     case "starting":
       return { label: "Starting…", unhealthy: false };
     case "stopping":
@@ -118,8 +125,7 @@ function CopyUrlButton({ url, disabled }: { url: string; disabled?: boolean }) {
       className="text-muted-foreground hover:text-foreground"
       onClick={async () => {
         try {
-          if (!navigator.clipboard) throw new Error("Clipboard API unavailable");
-          await navigator.clipboard.writeText(url);
+          await copyTextToClipboard(url);
           setCopyState("copied");
         } catch {
           setCopyState("failed");
@@ -273,18 +279,20 @@ function ActionSlots({
   );
 }
 
-function FailureDetail({
+function ServiceDetail({
   entry,
   onViewLogs,
 }: {
   entry: WorkspaceServiceControlEntry;
   onViewLogs?: () => void;
 }) {
-  if (entry.state !== "failed" || !entry.failureDetail) return null;
+  const detail = entry.exposureDetail ?? (entry.state === "failed" ? entry.failureDetail : null);
+  if (!detail) return null;
+  const exposureFailed = entry.exposureState === "failed" || entry.exposureState === "cleanup_pending";
   return (
-    <div className="flex items-center gap-1 text-xs text-muted-foreground">
-      <span>{entry.failureDetail}</span>
-      {onViewLogs ? (
+    <div className={cn("flex items-center gap-1 text-xs", exposureFailed ? "text-destructive" : "text-muted-foreground")}>
+      <span>{detail}</span>
+      {onViewLogs && entry.state === "failed" ? (
         <>
           <span aria-hidden>·</span>
           <button
@@ -336,7 +344,7 @@ function SingleServiceBar({
           <UrlSegment entry={entry} compact />
         </div>
       </div>
-      <FailureDetail entry={entry} onViewLogs={onViewLogs} />
+      <ServiceDetail entry={entry} onViewLogs={onViewLogs} />
     </div>
   );
 }
@@ -351,8 +359,11 @@ function ServicePopoverRow({
   const meta = statusMeta(entry);
   const displayUrl = formatServiceUrl(entry.url);
   const live = entry.state === "running" && Boolean(entry.url);
-  const secondary = live
-    ? displayUrl
+  const exposureFailed = entry.exposureState === "failed" || entry.exposureState === "cleanup_pending";
+  const secondary = entry.exposureDetail
+    ? entry.exposureDetail
+    : live
+      ? displayUrl
     : entry.state === "starting" && entry.port
       ? `starting on :${entry.port}…`
       : entry.state === "failed" && entry.failureDetail
@@ -379,7 +390,16 @@ function ServicePopoverRow({
               <CopyUrlButton url={entry.url} />
             </>
           ) : (
-            <span className="min-w-0 truncate text-xs text-muted-foreground">{secondary}</span>
+            <span
+              className={cn(
+                "min-w-0 text-xs",
+                exposureFailed
+                  ? "whitespace-normal break-words text-destructive"
+                  : "truncate text-muted-foreground",
+              )}
+            >
+              {secondary}
+            </span>
           )}
         </div>
       </div>

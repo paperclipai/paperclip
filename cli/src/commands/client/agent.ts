@@ -57,6 +57,7 @@ interface AgentWakeOptions extends BaseClientOptions {
 }
 
 interface AgentJsonPayloadOptions extends BaseClientOptions {
+  runner?: "auto" | "paperclip" | "legacy";
   companyId?: string;
   payloadJson: string;
 }
@@ -71,10 +72,12 @@ interface AgentResetSessionOptions extends BaseClientOptions {
 
 interface AgentSkillsSyncOptions extends BaseClientOptions {
   desiredSkills: string;
+  mode: string;
 }
 
 interface AgentInstructionsFileOptions extends BaseClientOptions {
   path: string;
+  yes?: boolean;
 }
 
 interface AgentInstructionsFilePutOptions extends BaseClientOptions {
@@ -92,7 +95,7 @@ interface CreatedAgentKey {
 }
 
 interface SkillsInstallSummary {
-  tool: "codex" | "claude";
+  tool: "codex" | "claude" | "kimi";
   target: string;
   linked: string[];
   removed: string[];
@@ -114,10 +117,16 @@ function claudeSkillsHome(): string {
   return path.join(base, "skills");
 }
 
+function kimiSkillsHome(): string {
+  const fromEnv = process.env.KIMI_CODE_HOME?.trim();
+  const base = fromEnv && fromEnv.length > 0 ? fromEnv : path.join(os.homedir(), ".kimi-code");
+  return path.join(base, "skills");
+}
+
 async function installSkillsForTarget(
   sourceSkillsDir: string,
   targetSkillsDir: string,
-  tool: "codex" | "claude",
+  tool: "codex" | "claude" | "kimi",
 ): Promise<SkillsInstallSummary> {
   const summary: SkillsInstallSummary = {
     tool,
@@ -341,10 +350,11 @@ export function registerAgentCommands(program: Command): void {
       .description("Create an agent from a JSON payload")
       .option("-C, --company-id <id>", "Company ID")
       .requiredOption("--payload-json <json>", "CreateAgent JSON payload")
+      .option("--runner <runner>", "Runner: auto (default), paperclip, or legacy")
       .action(async (opts: AgentJsonPayloadOptions) => {
         try {
           const ctx = resolveCommandContext(opts, { requireCompany: true });
-          const payload = createAgentSchema.parse(parseJson(opts.payloadJson));
+          const payload = createAgentSchema.parse({ ...parseJsonObject(opts.payloadJson), ...(opts.runner ? { runner: opts.runner } : {}) });
           const created = await ctx.api.post<Agent>(apiPath`/api/companies/${ctx.companyId}/agents`, payload);
           printOutput(created, { json: ctx.json });
         } catch (err) {
@@ -360,10 +370,11 @@ export function registerAgentCommands(program: Command): void {
       .description("Create an agent hire request")
       .option("-C, --company-id <id>", "Company ID")
       .requiredOption("--payload-json <json>", "CreateAgentHire JSON payload")
+      .option("--runner <runner>", "Runner: auto (default), paperclip, or legacy")
       .action(async (opts: AgentJsonPayloadOptions) => {
         try {
           const ctx = resolveCommandContext(opts, { requireCompany: true });
-          const result = await ctx.api.post(apiPath`/api/companies/${ctx.companyId}/agent-hires`, parseJson(opts.payloadJson));
+          const result = await ctx.api.post(apiPath`/api/companies/${ctx.companyId}/agent-hires`, { ...parseJsonObject(opts.payloadJson), ...(opts.runner ? { runner: opts.runner } : {}) });
           printOutput(result, { json: ctx.json });
         } catch (err) {
           handleCommandError(err);
@@ -589,10 +600,17 @@ export function registerAgentCommands(program: Command): void {
       .description("Sync desired skills onto an agent")
       .argument("<agentId>", "Agent ID")
       .requiredOption("--desired-skills <csv>", "Desired skill names")
+      .requiredOption(
+        "--mode <mode>",
+        "Merge mode: add keeps other skills; remove deletes only named skills; replace destructively overwrites the complete set",
+      )
       .action(async (agentId: string, opts: AgentSkillsSyncOptions) => {
         try {
           const ctx = resolveCommandContext(opts);
-          const payload = agentSkillSyncSchema.parse({ desiredSkills: parseCsv(opts.desiredSkills) });
+          const payload = agentSkillSyncSchema.parse({
+            desiredSkills: parseCsv(opts.desiredSkills),
+            mode: opts.mode,
+          });
           const result = await ctx.api.post(apiPath`/api/agents/${agentId}/skills/sync`, payload);
           printOutput(result, { json: ctx.json });
         } catch (err) {
@@ -703,8 +721,10 @@ export function registerAgentCommands(program: Command): void {
       .description("Delete an agent instructions file")
       .argument("<agentId>", "Agent ID")
       .requiredOption("--path <path>", "Bundle-relative file path")
+      .option("--yes", "Confirm deletion")
       .action(async (agentId: string, opts: AgentInstructionsFileOptions) => {
         try {
+          if (!opts.yes) throw new Error("Refusing to delete without --yes");
           const ctx = resolveCommandContext(opts);
           const query = new URLSearchParams({ path: opts.path });
           const result = await ctx.api.delete(`${apiPath`/api/agents/${agentId}/instructions-bundle/file`}?${query.toString()}`);
@@ -763,7 +783,7 @@ export function registerAgentCommands(program: Command): void {
       .option("--key-name <name>", "API key label", "local-cli")
       .option(
         "--no-install-skills",
-        "Skip installing Paperclip skills into ~/.codex/skills and ~/.claude/skills",
+        "Skip installing Paperclip skills into ~/.codex/skills, ~/.claude/skills, and ~/.kimi-code/skills",
       )
       .action(async (agentRef: string, opts: AgentLocalCliOptions) => {
         try {
@@ -795,6 +815,7 @@ export function registerAgentCommands(program: Command): void {
             installSummaries.push(
               await installSkillsForTarget(skillsDir, codexSkillsHome(), "codex"),
               await installSkillsForTarget(skillsDir, claudeSkillsHome(), "claude"),
+              await installSkillsForTarget(skillsDir, kimiSkillsHome(), "kimi"),
             );
           }
 

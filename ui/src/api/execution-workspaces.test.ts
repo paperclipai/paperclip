@@ -28,6 +28,13 @@ describe("executionWorkspacesApi.listSummaries", () => {
     );
   });
 
+  it("delegates task selection eligibility to the server", async () => {
+    await executionWorkspacesApi.listSummaries("company-1", { selectableForTask: true });
+    expect(mockApi.get).toHaveBeenCalledWith(
+      "/companies/company-1/execution-workspaces?selectableForTask=true&summary=true",
+    );
+  });
+
   it("requests and normalizes the bounded overview payload", async () => {
     mockApi.get.mockResolvedValue({
       items: [
