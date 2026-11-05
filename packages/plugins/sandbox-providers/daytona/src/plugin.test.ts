@@ -35,6 +35,7 @@ import plugin, {
   __resetDaytonaSandboxHandleCacheForTest,
   __getDaytonaWritableDirsForTest,
   __setDaytonaPluginContextForTest,
+  WARM_IDLE_AUTO_STOP_MARGIN_MINUTES,
 } from "./plugin.js";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { environmentSyncErrorData, readEnvironmentSyncErrorDiagnostic, withEnvironmentSyncErrorCapture, environmentCreationCleanupErrorData, readEnvironmentCreationCleanupError, readEnvironmentAcquisitionDiagnostic, PluginEnvironmentStopError, environmentStopErrorData, readEnvironmentStopFailure } from "@paperclipai/plugin-sdk";
@@ -353,6 +354,8 @@ function createMockSandbox(overrides: {
     autoDestroyAt: overrides.autoDestroyAt ?? undefined,
     updatedAt: overrides.updatedAt,
     autoDeleteInterval: -1,
+    autoStopInterval: 15,
+    setAutostopInterval: vi.fn().mockResolvedValue(undefined),
     getWorkDir: vi.fn().mockResolvedValue(overrides.workDir ?? "/home/daytona"),
     getUserHomeDir: vi.fn().mockResolvedValue("/home/daytona"),
     start: vi.fn().mockResolvedValue(undefined),
@@ -950,6 +953,72 @@ describe("Daytona sandbox provider plugin", () => {
       autoStopInterval: 15,
       autoArchiveInterval: 60,
       autoDeleteInterval: 10080,
+    });
+  });
+
+  describe("warm idle window versus Daytona auto-stop", () => {
+    // The host keeps a warm runner on a reusable sandbox for runnerIdleTimeoutMs.
+    // Daytona must never auto-stop that sandbox inside (or at the edge of) the
+    // warm window, or a follow-up at the window's end races the provider stop.
+    const acquire = async (config: Record<string, unknown>) => {
+      process.env.DAYTONA_API_KEY = "host-key";
+      mockCreate.mockResolvedValue(createMockSandbox());
+      await plugin.definition.onEnvironmentAcquireLease?.({
+        driverKey: "daytona", companyId: "company-1", environmentId: "env-1", runId: "run-1",
+        config: { image: "node:20", timeoutMs: 300000, ...config },
+      });
+      const [createParams] = mockCreate.mock.calls.at(-1) as [Record<string, unknown>];
+      return createParams.autoStopInterval as number;
+    };
+    const resume = async (config: Record<string, unknown>) => {
+      process.env.DAYTONA_API_KEY = "host-key";
+      const sandbox = createMockSandbox({ id: "sandbox-warm", state: "started" });
+      sandbox.process.executeCommand.mockImplementation(async (command: string) => ({ exitCode: 0,
+        result: command.startsWith("cat ") ? JSON.stringify({ token: "sentinel-token" }) : "bash" }));
+      mockGet.mockResolvedValue(sandbox);
+      await plugin.definition.onEnvironmentResumeLease!({
+        driverKey: "daytona", companyId: "company-1", environmentId: "env-1", providerLeaseId: sandbox.id,
+        config,
+        leaseMetadata: { workspaceSentinel: {
+          path: "/home/daytona/paperclip-workspace/.paperclip-runtime/reusable-sandbox-lease.json",
+          token: "sentinel-token", result: "written" } },
+      });
+      return sandbox;
+    };
+    const marginMs = WARM_IDLE_AUTO_STOP_MARGIN_MINUTES * 60_000;
+
+    it.each([
+      [{ runnerLifecycleMode: "warm", runnerIdleTimeoutMs: 900_000 }, 900_000],
+      [{ runnerLifecycleMode: "warm", runnerIdleTimeoutMs: 900_000, autoStopInterval: 15 }, 900_000],
+      [{ runnerLifecycleMode: "inherit", runnerIdleTimeoutMs: 1_800_000 }, 1_800_000],
+      [{ runnerLifecycleMode: "warm", runnerIdleTimeoutMs: 125_000, autoStopInterval: 2 }, 125_000],
+      [{ runnerLifecycleMode: "warm" }, 300_000],
+    ])("auto-stops a warm reusable sandbox only after the warm idle window plus a margin (%o)", async (config, warmIdleMs) => {
+      expect(marginMs).toBeGreaterThan(0);
+      const autoStopMs = (await acquire({ reuseLease: true, ...config })) * 60_000;
+      expect(autoStopMs).toBeGreaterThanOrEqual(warmIdleMs + marginMs);
+    });
+
+    it("keeps a longer configured auto-stop and an explicit 0 (disabled)", async () => {
+      expect(await acquire({ reuseLease: true, runnerLifecycleMode: "warm", runnerIdleTimeoutMs: 300_000, autoStopInterval: 60 })).toBe(60);
+      expect(await acquire({ reuseLease: true, runnerLifecycleMode: "warm", runnerIdleTimeoutMs: 900_000, autoStopInterval: 0 })).toBe(0);
+    });
+
+    it("leaves per-turn and non-reusable sandboxes on the configured auto-stop", async () => {
+      expect(await acquire({ reuseLease: false, runnerLifecycleMode: "warm", runnerIdleTimeoutMs: 900_000 })).toBe(15);
+      expect(await acquire({ reuseLease: true, runnerLifecycleMode: "per_turn", runnerIdleTimeoutMs: 900_000 })).toBe(15);
+    });
+
+    it("raises the auto-stop of an existing warm sandbox on resume", async () => {
+      const sandbox = await resume({ reuseLease: true, runnerLifecycleMode: "warm", runnerIdleTimeoutMs: 900_000 });
+      expect(sandbox.setAutostopInterval).toHaveBeenCalledTimes(1);
+      const [minutes] = sandbox.setAutostopInterval.mock.calls[0] as [number];
+      expect(minutes * 60_000).toBeGreaterThanOrEqual(900_000 + marginMs);
+    });
+
+    it("does not change auto-stop on resume of a per-turn reusable sandbox", async () => {
+      const sandbox = await resume({ reuseLease: true, runnerLifecycleMode: "per_turn" });
+      expect(sandbox.setAutostopInterval).not.toHaveBeenCalled();
     });
   });
 

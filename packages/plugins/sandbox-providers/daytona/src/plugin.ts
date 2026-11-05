@@ -194,6 +194,12 @@ interface DaytonaDriverConfig {
   ttlMinutes: number | null;
   reuseLease: boolean;
   archiveOnRelease: boolean;
+  /**
+   * Host-owned warm runner idle window (ms) for a reusable warm lease, or null
+   * when the host keeps no warm runner on this sandbox. Never persisted in the
+   * normalized provider config; it only raises the effective auto-stop.
+   */
+  warmIdleTimeoutMs: number | null;
 }
 
 type WorkspaceSentinelResult = {
@@ -238,6 +244,38 @@ const WORKSPACE_SENTINEL_RELATIVE_PATH = ".paperclip-runtime/reusable-sandbox-le
 // - autoArchive: archive *stopped* sandboxes so they leave the disk quota.
 // - autoDelete: backstop reaper for sandboxes nobody resumes.
 const DEFAULT_AUTO_STOP_INTERVAL_MINUTES = 15;
+
+// The host keeps a warm paperclip_runner on a reusable sandbox for
+// `runnerIdleTimeoutMs` after a turn (host default 300000 ms). If Daytona's
+// idle auto-stop fires at the same moment, a follow-up that arrives at the end
+// of the warm window resumes a sandbox the provider is stopping and the resume
+// is refused. Derive the provider auto-stop from the warm window so the
+// provider backstop always fires strictly after the host's own idle handling:
+// effective auto-stop >= ceil(warm idle) + this margin. Idle sandboxes still
+// stop; only the backstop moves later by the margin.
+export const DEFAULT_WARM_RUNNER_IDLE_TIMEOUT_MS = 300_000;
+export const WARM_IDLE_AUTO_STOP_MARGIN_MINUTES = 5;
+
+/**
+ * Effective Daytona auto-stop (minutes) for a sandbox. An explicit 0 (disabled)
+ * is preserved. A warm reusable lease never auto-stops before the host's warm
+ * idle window plus {@link WARM_IDLE_AUTO_STOP_MARGIN_MINUTES}.
+ */
+export function effectiveAutoStopIntervalMinutes(
+  config: Pick<DaytonaDriverConfig, "autoStopInterval" | "warmIdleTimeoutMs">,
+): number | null {
+  const configured = config.autoStopInterval;
+  if (configured === 0 || config.warmIdleTimeoutMs == null) return configured;
+  const floor = Math.ceil(config.warmIdleTimeoutMs / 60_000) + WARM_IDLE_AUTO_STOP_MARGIN_MINUTES;
+  return Math.max(configured ?? DEFAULT_AUTO_STOP_INTERVAL_MINUTES, floor);
+}
+
+function parseWarmIdleTimeoutMs(raw: Record<string, unknown>): number | null {
+  // Only a reusable lease can host a warm runner; per_turn never keeps one.
+  if (raw.reuseLease !== true || raw.runnerLifecycleMode === "per_turn") return null;
+  const configured = parseOptionalInteger(raw.runnerIdleTimeoutMs);
+  return configured != null && configured > 0 ? configured : DEFAULT_WARM_RUNNER_IDLE_TIMEOUT_MS;
+}
 const DEFAULT_AUTO_ARCHIVE_INTERVAL_MINUTES = 60;
 const DEFAULT_AUTO_DELETE_INTERVAL_MINUTES = 7 * 24 * 60; // 7 days
 
@@ -319,6 +357,7 @@ function parseDriverConfig(raw: Record<string, unknown>): DaytonaDriverConfig {
     ttlMinutes: raw.ttlMinutes == null || raw.ttlMinutes === "" ? null : Number(raw.ttlMinutes),
     reuseLease: raw.reuseLease === true,
     archiveOnRelease: raw.archiveOnRelease === true,
+    warmIdleTimeoutMs: parseWarmIdleTimeoutMs(raw),
   };
 }
 
@@ -361,7 +400,7 @@ function buildCreateParams(
   const base: CreateSandboxBaseParams = {
     labels,
     language: config.language ?? undefined,
-    autoStopInterval: config.autoStopInterval ?? undefined,
+    autoStopInterval: effectiveAutoStopIntervalMinutes(config) ?? undefined,
     autoArchiveInterval: config.autoArchiveInterval ?? undefined,
     autoDeleteInterval: config.autoDeleteInterval ?? undefined,
     ...(config.ttlMinutes != null ? { ttlMinutes: config.ttlMinutes } : {}),
@@ -1494,7 +1533,7 @@ const sandboxHandleCache = (() => {
       // since we last confirmed it, so the cached `state` snapshot can't hide a
       // provider-initiated stop from `ensureSandboxStarted`. A failed refresh
       // means the handle is no longer trustworthy — evict and fail closed.
-      const thresholdMs = staleHandleRefreshThresholdMs(scope.config.autoStopInterval);
+      const thresholdMs = staleHandleRefreshThresholdMs(effectiveAutoStopIntervalMinutes(scope.config));
       if (thresholdMs != null && handleFreshnessNow() - entry.verifiedAtMs >= thresholdMs) {
         try {
           await withLivenessTimeout("sandbox.refreshData", scope.config.livenessTimeoutMs, () =>
@@ -2667,9 +2706,11 @@ const plugin = definePlugin(trackDaytonaHooks({
       return { ok: false, errors };
     }
 
+    // The warm idle window is host-owned; keep it out of the saved provider config.
+    const { warmIdleTimeoutMs: _warmIdleTimeoutMs, ...normalizedConfig } = config;
     return {
       ok: true,
-      normalizedConfig: { ...config },
+      normalizedConfig,
     };
   },
 
@@ -2949,6 +2990,16 @@ const plugin = definePlugin(trackDaytonaHooks({
         }
         const resumedFromState = sandbox.state ?? null;
         await ensureSandboxStarted(sandbox, toTimeoutSeconds(config.timeoutMs), scope);
+        // A sandbox created before the warm floor (or under a shorter warm
+        // window) keeps its old auto-stop. Raise it on resume so the provider
+        // backstop cannot race the host's warm idle window. Best effort: the
+        // host's bounded resume retry still covers a refused resume.
+        const autoStopInterval = effectiveAutoStopIntervalMinutes(config);
+        const currentAutoStop = sandbox.autoStopInterval;
+        if (autoStopInterval != null && autoStopInterval > 0 && config.warmIdleTimeoutMs != null
+          && typeof currentAutoStop === "number" && currentAutoStop > 0 && currentAutoStop < autoStopInterval) {
+          await Promise.resolve().then(() => sandbox.setAutostopInterval(autoStopInterval)).catch(() => undefined);
+        }
         try {
           return await traceLeaseStep("lease.verify", async () => {
             const remoteCwd = await traceLeaseStep("lease.workspace", () => resolveSandboxWorkingDirectory(sandbox, false));
