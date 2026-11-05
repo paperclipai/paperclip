@@ -221,6 +221,14 @@ databaseSuite("Core plugin Runner task lifecycle", () => {
         await setup.testManagedEnvironment("paperclip_runner", { companyId, adapterType: "paperclip_runner", config: {}, executionTarget: probe.executionTarget },
           { provider: "openai" } as any, selected as any);
         expect(verify).toHaveBeenCalledWith(expect.anything(), { identity: selected.identity, accountIdentity: selected.sessionIdentity, home: "/core-owned-home/provider" });
+        verify.mockClear();
+        // A preconfigured Runner home does not use the selected connection, so the probe refuses it.
+        const operationsBefore = calls.length;
+        await expect(setup.testManagedEnvironment("paperclip_runner", { companyId, adapterType: "paperclip_runner", config: { homeMode: "preconfigured" }, executionTarget: probe.executionTarget },
+          { provider: "openai" } as any, selected as any)).resolves.toMatchObject({ status: "fail",
+          checks: [{ code: "ai_connection_required", message: expect.stringContaining("isolated Runner home") }] });
+        expect(verify).not.toHaveBeenCalled();
+        expect(calls).toHaveLength(operationsBefore);
       } finally { verify.mockRestore(); }
     await probe.executionTarget.runnerTask!({ kind: "check_project_auth", configurationId: "probe-config", provider: "openai", projectIds: [] });
     await probe.executionTarget.runnerTask!({ kind: "submit", preparedLaunchId: "probe-config", bootstrapTicket: "synthetic-probe-ticket", projectIds: [],

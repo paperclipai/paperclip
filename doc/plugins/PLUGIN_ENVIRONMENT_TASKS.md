@@ -267,9 +267,10 @@ after the probe and its descendants stop. A lost reply keeps the task available
 for `stop`, `status`, and `complete`. Core checks the profile and model before
 it accepts the account. Do not store the token in task metadata or logs.
 
-For a native hello probe, select a saved AI account or use the installed account.
-Core rejects local environment overrides when no saved account is selected.
-This includes draft credentials. The probe uses the installed VM environment. Core does not test a different installed account in their place.
+A native hello probe requires a managed AI connection and an isolated Runner home.
+Without them, the probe fails the `ai_connection_required` check before Core
+acquires a lease or calls a task operation. See
+[Managed AI connection required](PLUGIN_RUNNER_EXECUTION.md#managed-ai-connection-required).
 Only Core can supply the selected account identity and local credential home.
 
 ## Fresh attempts

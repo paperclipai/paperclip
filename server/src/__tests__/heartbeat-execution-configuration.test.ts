@@ -320,8 +320,9 @@ describePostgres("heartbeat execution configuration through adapter dispatch", (
     });
     if (refused) {
       await expect(opening).rejects.toMatchObject({ name: "ConfigurationIncompleteFailure", code: "configuration_incomplete",
-        message: expect.stringContaining("requires a managed AI connection"),
-        resultJson: { configurationIncomplete: { reason: "ai_connection_required", actionUrl: `/agents/${f.agentId}/runtime` } } });
+        message: expect.stringContaining(homeMode ? "isolated Runner home" : "Choose an AI connection"),
+        resultJson: { configurationIncomplete: { reason: "ai_connection_required", actionUrl: `/agents/${f.agentId}/runtime`,
+          ...(homeMode ? { homeMode: "preconfigured" } : {}) } } });
       // Refused before observability, secrets, or the managed runtime.
       expect(redactorPrepared).not.toHaveBeenCalled();
       expect(secretsResolved).not.toHaveBeenCalled();

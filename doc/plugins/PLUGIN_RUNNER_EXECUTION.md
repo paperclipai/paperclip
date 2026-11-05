@@ -9,12 +9,15 @@ Core owns run identity, selected policy, assigned tools, and the PRP journal.
 A task-capable environment runs only agents with a managed AI connection.
 Core does not use an account installed on the plugin's execution host.
 Before it acquires a lease or calls the plugin, Core fails a new run that has
-no managed AI connection. This includes an agent whose `homeMode: "preconfigured"`
-setting drops its connection. The run fails as `configuration_incomplete` with
-reason `ai_connection_required`, and the task is blocked with a notice to choose
-an AI connection. A setup or verification probe without a managed AI connection
-fails the `ai_connection_required` check and calls no task operation.
-Verification then waits for the configuration to change.
+no managed AI connection. A `homeMode: "preconfigured"` Runner home does not use
+the agent's AI connection, so Core refuses it in the same way. The run fails as
+`configuration_incomplete` with reason `ai_connection_required`. The task is
+blocked with a notice that names the fix: choose an AI connection, or switch to
+an isolated Runner home. Agent verification applies the same rule before it
+resolves the probe target, so it acquires no lease. A setup probe without a
+managed AI connection, or with a preconfigured home, fails the
+`ai_connection_required` check and calls no task operation. Verification then
+waits for the configuration to change.
 A resumed native run keeps the contract it was admitted under.
 
 ## Required hooks
@@ -237,8 +240,7 @@ plugin runs without an explicit policy prefer warm execution. There is no
 provider-specific warm gate or additional setting. Existing runs retain their
 admitted lifecycle policy during restart recovery. The existing
 `runnerIdleTimeoutMs` controls bounded retention. Fresh warm admission requires
-a Core-managed credential identity before lease acquisition. Plugin-owned installed
-accounts continue per-turn until such an identity is available; the saved warm
+a Core-managed credential identity before lease acquisition. The saved warm
 preference does not bypass account ownership checks. Drivers without warm
 capability and setup probes remain ephemeral.
 

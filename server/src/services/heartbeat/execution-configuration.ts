@@ -19,7 +19,7 @@ import { AI_AUTH_ENV_KEYS, isAiConnectionBusy, prepareManagedAiRuntime, stripAiA
 import { managedAiSessionIdentityCompatible } from "../ai-connection-session.js";
 import type { companySkillService } from "../company-skills.js";
 import { connectionIntentService } from "../connection-intents.js";
-import { PLUGIN_RUNNER_AI_CONNECTION_REQUIRED, PLUGIN_RUNNER_AI_CONNECTION_REQUIRED_MESSAGE, pluginEnvironmentRunnerTaskDriver } from "../plugin-runner-ai-connection.js";
+import { PLUGIN_RUNNER_AI_CONNECTION_REQUIRED, pluginEnvironmentRunnerTaskDriver, pluginRunnerAiConnectionRequiredMessage } from "../plugin-runner-ai-connection.js";
 import { prepareConnectionInstructionDelivery } from "../connection-instructions.js";
 import { applyConnectorSkills, prepareConnectorSkillDelivery, resolveConnectorAssignments } from "../connector-runtime.js";
 import { resolveManagedGitHubIdentitySelection } from "../git-credentials.js";
@@ -112,8 +112,9 @@ export async function prepareHeartbeatExecutionConfiguration(db: Db, input: Hear
   // the contract it was admitted under.
   if (agent.adapterType === "paperclip_runner" && (preconfiguredHome || !input.config.aiBinding) && !persistedNativeExecutionInput
     && selectedEnvironmentForConfig && await pluginEnvironmentRunnerTaskDriver(db, selectedEnvironmentForConfig)) {
-    throw new ConfigurationIncompleteFailure(PLUGIN_RUNNER_AI_CONNECTION_REQUIRED_MESSAGE, {
-      configurationIncomplete: { reason: PLUGIN_RUNNER_AI_CONNECTION_REQUIRED, actionUrl: `/agents/${agent.id}/runtime` },
+    throw new ConfigurationIncompleteFailure(pluginRunnerAiConnectionRequiredMessage(preconfiguredHome), {
+      configurationIncomplete: { reason: PLUGIN_RUNNER_AI_CONNECTION_REQUIRED, actionUrl: `/agents/${agent.id}/runtime`,
+        ...(preconfiguredHome ? { homeMode: "preconfigured" } : {}) },
     });
   }
   const initialHarness = agentHarnessType(agent.adapterType, sourceWorkspaceConfig);

@@ -351,3 +351,10 @@ it("names the managed AI connection a plugin Runner-task environment requires", 
   expect(notice.nextAction).toContain("Choose an AI connection");
   expect(notice.body).not.toContain("secret/env");
 });
+
+it("tells the operator to switch a preconfigured Runner home to an isolated one", () => {
+  const notice = buildConfigurationIncompleteRecoveryNoticeSeed({ reason: "ai_connection_required", homeMode: "preconfigured" });
+  expect(notice.title).toBe("Isolated Runner home required");
+  expect(notice.nextAction).toContain("isolated Runner home");
+  expect(notice.nextAction).not.toContain("Choose an AI connection");
+});

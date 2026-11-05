@@ -3,7 +3,7 @@ import type { LifecycleFailure } from "./ports.js";
 // Only fixed text may leave this boundary. Provider errors can contain secrets.
 const reasons = {
   harness_test_failed: "The execution test did not pass. Open Configuration and run the agent test to inspect the failed checks.",
-  ai_connection_required: "This agent's environment requires a managed AI connection. Choose an AI connection in Configuration, then retry.",
+  ai_connection_required: "This agent's environment requires a managed AI connection and an isolated Runner home. Check both in Configuration, then retry.",
   harness_auth_failed: "Authentication failed. Check the agent's AI connection or sign in to its execution tool, then retry.",
   harness_model_unavailable: "The selected model is unavailable. Choose a model supported by the agent's AI connection in Configuration, then retry.",
   harness_command_unavailable: "The execution command was not found. Check the command and its installation in the agent's environment, then retry.",
