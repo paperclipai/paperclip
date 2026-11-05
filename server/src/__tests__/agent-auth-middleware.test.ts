@@ -643,8 +643,7 @@ describe("actorMiddleware run-scoped bearer authentication", () => {
       .set("Authorization", `Bearer ${BOARD_TOKEN}`)
       .set("X-Paperclip-Run-Id", "run-1");
 
-    expect(res.status).toBe(200);
-    expect(res.body.type).toBe("none");
+    expect(res.status).toBe(401);
     expect(res.body.type).not.toBe("board");
   });
 
