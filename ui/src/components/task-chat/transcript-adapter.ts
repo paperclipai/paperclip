@@ -5,6 +5,7 @@
  * thinking → tool → diff → responding while a run is in flight, rather than
  * only showing a response after the turn settles.
  */
+import { foldApprovedAutoReviews } from "./fold-auto-reviews";
 import { isFatalProviderError, isStatusNotice, isStatusNoticePayload, statusNoticeCategory } from "./status-notice-presentation";
 import type { TranscriptEntry } from "@/adapters";
 import { turnChangesFromEditRows } from "./turn-file-changes";
@@ -317,9 +318,17 @@ const PROVIDER_DETAIL_KEYS: Record<
     "failure",
   ],
   review: ["state", "scope"],
-  hook: ["event", "scope", "status", "blocking", "durationMs", "summary"],
+  hook: ["event", "toolName", "outcome", "status", "source", "durationMs", "blocking", "scope"],
   memory: ["label", "available", "reference"],
-  safety: ["status", "decision", "targetExecutionId", "summary"],
+  safety: [
+    "decision",
+    "actionKind",
+    "action",
+    "riskLevel",
+    "userConsent",
+    "decidedBy",
+    "targetExecutionId",
+  ],
   terminal: ["origin", "inputClass", "byteCount"],
   wait: ["reason", "status", "plannedDurationMs", "elapsedDurationMs"],
   verification: ["status", "detail", "reasonCode"],
@@ -386,7 +395,8 @@ function providerActivityItem(
         (entry.family === "provider_notice" && (key === "summary" || key === "message")) ||
           (entry.family === "verification" && key === "detail")
           ? 4000
-          : key === "message" || key === "summary" || key === "reason" ? 320 : 160,
+          : key === "message" || key === "summary" || key === "reason" ? 320
+            : entry.family === "safety" && key === "action" ? 1000 : 160,
       ),
       mono: /(?:id|model|target|reference|url|code|bytes)$/i.test(key),
     });
@@ -976,7 +986,16 @@ export function transcriptToTaskChatItems(
           : `provider:${providerActivityKey(entry)}`;
         const item = providerActivityItem(entry, runId, i);
         const existingIndex = protocolIndexByKey.get(key);
-        if (existingIndex == null) {
+        const previous = existingIndex == null ? undefined : items[existingIndex];
+        // A harness can reuse one hook id for two calls (for example two
+        // calls in the same second). Once a hook row has finished, a later
+        // record with that id is a new call: keep both rows, so a later pass
+        // can never hide an earlier block reason.
+        const newHookCall = entry.family === "hook"
+          && previous?.kind === "protocol"
+          && previous.surface === "provider_activity"
+          && previous.status !== "running";
+        if (existingIndex == null || newHookCall) {
           items.push(item);
           protocolIndexByKey.set(key, items.length - 1);
         } else {
@@ -1203,17 +1222,18 @@ export function transcriptToTaskChatItems(
   // Every turn that edited files ends with its changed files, just before its
   // final answer. A harness that reports only per-edit patches gets the card
   // assembled from its edit rows.
-  const changeIndex = items.findIndex((item) => item.kind === "protocol" && item.surface === "workspace_change");
+  const folded = foldApprovedAutoReviews(items, runId);
+  const changeIndex = folded.findIndex((item) => item.kind === "protocol" && item.surface === "workspace_change");
   const changes = changeIndex >= 0
-    ? items.splice(changeIndex, 1)[0]
-    : turnChangesFromEditRows(items, runId ?? "run", !running);
+    ? folded.splice(changeIndex, 1)[0]
+    : turnChangesFromEditRows(folded, runId ?? "run", !running);
   if (changes) {
-    const last = items.at(-1);
+    const last = folded.at(-1);
     const beforeFinal = last?.kind === "message" && last.channel === "final";
-    items.splice(beforeFinal ? items.length - 1 : items.length, 0, changes);
+    folded.splice(beforeFinal ? folded.length - 1 : folded.length, 0, changes);
   }
 
-  return items;
+  return folded;
 }
 
 /**

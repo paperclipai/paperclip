@@ -196,3 +196,25 @@ describe("completedActivitySummary", () => {
     expect(completedActivitySummary([skipped]).fullLabel).toBe("Skipped checks");
   });
 });
+
+describe("completedActivitySummary governance", () => {
+  const hook = (outcome: string, status: TaskChatProviderActivityItem["status"] = "completed"): TaskChatProviderActivityItem => ({
+    ...provider("hook", status),
+    id: `hook-${outcome}`,
+    details: [
+      { label: "Event", value: "preToolUse" },
+      { label: "Outcome", value: outcome },
+    ],
+  });
+
+  it("leads with a hook that blocked an action", () => {
+    expect(completedActivitySummary([tool("Bash"), hook("passed"), hook("blocked")]).label)
+      .toBe("PreToolUse hook blocked a tool call, ran commands");
+  });
+
+  it("keeps routine hook passes out of a summary that has other work", () => {
+    expect(completedActivitySummary([hook("passed"), tool("Bash"), hook("passed")]).label).toBe("Ran commands");
+    expect(completedActivitySummary([hook("passed")]).label).toBe("PreToolUse hook ran");
+    expect(completedActivitySummary([hook("passed"), hook("context")]).label).toBe("Ran hooks");
+  });
+});

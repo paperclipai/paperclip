@@ -13,7 +13,8 @@ import { useReducedMotion } from "motion/react";
 import { MarkdownBody } from "@/components/MarkdownBody";
 import { cn } from "@/lib/utils";
 import { useTaskChatExpansion } from "./expansion-state";
-import type { TaskChatActivityPhaseItem } from "./task-chat-model";
+import type { TaskChatActivityPhaseItem, TaskChatAutoReview } from "./task-chat-model";
+import { AutoApprovedBadge, AutoReviewDetail } from "./TaskChatAutoReview";
 import {
   protocolActivityIsRunning,
   protocolActivityLabel,
@@ -80,6 +81,8 @@ interface ActivityRowPresentation {
   iconClassName?: string;
   /** Short plain-text outcome after the target, e.g. "6 tests passed". */
   trailing?: ReactNode;
+  /** A governance row's reason, shown under the row when an action was stopped. */
+  note?: string;
   /** Process exit code shown as a chip; null hides it. */
   exitCode?: number | null;
   /** Tool duration shown after the chip; null hides it. */
@@ -176,6 +179,8 @@ function presentation(item: Activity, active: boolean): ActivityRowPresentation 
       mono: true,
       running: active && protocolActivityIsRunning(item),
       ...providerTrailing(item),
+      ...(protocol.tone === "blocked" || protocol.tone === "failed" ? { iconClassName: "text-destructive" } : {}),
+      note: protocol.note,
     };
   }
   if (item.kind === "marker")
@@ -218,6 +223,7 @@ function ActivityContent({
   const shimmer = useTaskChatShimmer(item.id);
   if (!row) return null;
   const Icon = row.icon;
+  const autoReview = itemAutoReview(item);
   const exitCode = "exitCode" in row ? row.exitCode : null;
   const durationMs = "durationMs" in row ? row.durationMs : null;
   const blocked = "blocked" in row ? row.blocked : undefined;
@@ -296,6 +302,7 @@ function ActivityContent({
           className="text-xs"
         />
       ) : null}
+      {autoReview ? <AutoApprovedBadge review={autoReview} /> : null}
     </span>
   );
 }
@@ -352,7 +359,24 @@ function RollingActivity({
   );
 }
 
+function itemAutoReview(item: Activity): TaskChatAutoReview | undefined {
+  if (item.kind === "tool") return item.autoReview;
+  if (item.kind === "protocol" && item.surface === "provider_activity") return item.autoReview;
+  return undefined;
+}
+
 function ActivityDetails({ item }: { item: Activity }) {
+  // Protocol rows render their review inside TaskChatProtocolActivityDetails.
+  const autoReview = item.kind === "tool" ? item.autoReview : undefined;
+  return (
+    <>
+      <ActivityDetailsBody item={item} />
+      {autoReview ? <AutoReviewDetail review={autoReview} /> : null}
+    </>
+  );
+}
+
+function ActivityDetailsBody({ item }: { item: Activity }) {
   if (item.kind === "thinking")
     return <TaskChatReasoningSummary text={item.lines.join("\n")} streaming={Boolean(item.streaming)} />;
   if (item.kind === "usage") return <TaskChatUsageReadout item={item} />;
@@ -391,6 +415,7 @@ function ActivityDetails({ item }: { item: Activity }) {
 }
 
 function hasActivityDetails(item: Activity): boolean {
+  if (itemAutoReview(item)) return true;
   if (item.kind === "protocol") return hasTaskChatProtocolActivityDetails(item);
   if (item.kind === "thinking") return item.lines.some((line) => line.trim());
   if (item.kind === "tool")
@@ -421,6 +446,8 @@ function ExpandedActivity({
   const detailId = useId();
   const expandable = hasActivityDetails(item);
   const content = <ActivityContent item={item} active={active} />;
+  const row = presentation(item, active);
+  const note = row?.note;
   return (
     <li className="min-w-0" data-activity-item-id={item.id}>
       {expandable ? (
@@ -442,6 +469,14 @@ function ExpandedActivity({
           {content}
         </div>
       )}
+      {note ? (
+        <p
+          className="-mt-1 mb-1 min-w-0 whitespace-pre-wrap break-words pl-7 text-xs text-muted-foreground"
+          data-testid="task-chat-governance-note"
+        >
+          {note}
+        </p>
+      ) : null}
       {!open && item.kind === "protocol" && item.surface === "provider_activity" && item.family === "research" && item.status !== "running" ? (
         <ResearchSourceStrip item={item} />
       ) : null}

@@ -155,7 +155,7 @@
     "hook": {
       "type": "object",
       "required": ["schema", "hookId", "event", "scope", "status", "blocking", "durationMs", "summary"],
-      "properties": { "schema": { "const": "paperclip.hook.v1" }, "hookId": { "$ref": "#/$defs/id" }, "event": { "type": "string", "minLength": 1, "maxLength": 160 }, "scope": { "type": "string", "minLength": 1, "maxLength": 160 }, "status": { "enum": ["running", "completed", "failed", "cancelled"] }, "blocking": { "type": "boolean" }, "durationMs": { "type": ["integer", "null"], "minimum": 0 }, "summary": { "$ref": "#/$defs/nullableShortText" } },
+      "properties": { "schema": { "const": "paperclip.hook.v1" }, "hookId": { "$ref": "#/$defs/id" }, "event": { "type": "string", "minLength": 1, "maxLength": 160 }, "scope": { "type": "string", "minLength": 1, "maxLength": 160 }, "status": { "enum": ["running", "completed", "failed", "cancelled", "blocked", "stopped"] }, "blocking": { "type": "boolean" }, "durationMs": { "type": ["integer", "null"], "minimum": 0 }, "summary": { "$ref": "#/$defs/nullableShortText" }, "outcome": { "enum": ["running", "passed", "context", "feedback", "blocked", "stopped", "failed"] }, "message": { "$ref": "#/$defs/nullableShortText" }, "source": { "type": ["string", "null"], "maxLength": 160 }, "toolName": { "type": ["string", "null"], "maxLength": 160 } },
       "additionalProperties": false
     },
     "memoryCitation": {
@@ -167,7 +167,7 @@
     "safetyReview": {
       "type": "object",
       "required": ["schema", "reviewId", "targetExecutionId", "status", "decision", "summary"],
-      "properties": { "schema": { "const": "paperclip.safety.review.v1" }, "reviewId": { "$ref": "#/$defs/id" }, "targetExecutionId": { "anyOf": [{ "$ref": "#/$defs/id" }, { "type": "null" }] }, "status": { "enum": ["running", "completed", "failed"] }, "decision": { "enum": ["pending", "allowed", "denied", "user_required", "unknown"] }, "summary": { "$ref": "#/$defs/nullableShortText" } },
+      "properties": { "schema": { "const": "paperclip.safety.review.v1" }, "reviewId": { "$ref": "#/$defs/id" }, "targetExecutionId": { "anyOf": [{ "$ref": "#/$defs/id" }, { "type": "null" }] }, "status": { "enum": ["running", "completed", "failed"] }, "decision": { "enum": ["pending", "allowed", "denied", "user_required", "timed_out", "aborted", "unknown"] }, "summary": { "$ref": "#/$defs/nullableShortText" }, "actionKind": { "enum": ["command", "execve", "writeStdin", "applyPatch", "networkAccess", "mcpToolCall", "requestPermissions", "unknown"] }, "action": { "type": ["string", "null"], "maxLength": 1000 }, "riskLevel": { "enum": ["low", "medium", "high", "critical", null] }, "userConsent": { "enum": ["unknown", "low", "medium", "high", null] }, "rationale": { "$ref": "#/$defs/nullableShortText" }, "decidedBy": { "type": ["string", "null"], "maxLength": 160 } },
       "additionalProperties": false
     },
     "terminalInput": {
