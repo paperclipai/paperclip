@@ -479,7 +479,7 @@ async function resolveAgentEnvironmentForCompany(db: Db, companyId: string, defa
   let environment = environmentId ? await envs.getById(environmentId) : null;
   if (settings.experimental?.enableManagedSandboxOnly && (!environment || environment.driver === "local")) {
     environment = await envs.findManagedSandboxEnvironment(companyId);
-    if (!environment) throw unprocessable("The managed sandbox is unavailable. Restore Paperclip Computer and retry.", {
+    if (!environment) throw unprocessable("The managed sandbox is unavailable. Restore Paperclip Sandbox and retry.", {
       code: "managed_sandbox_unavailable", ...(executionMode ? { executionMode } : {}),
     });
   }
