@@ -48,7 +48,8 @@ export async function adoptSystemRecovery(db: Db, source: WorkspaceRecoverySourc
 }
 
 export function exhaustedSystemRecoveryAction(state: SystemRecoveryState): string {
-  const reason = state.failure?.code ? ` (last failure: ${state.failure.code})` : "";
+  const cause = state.failure?.cause ? `, cause: ${state.failure.cause.label}` : "";
+  const reason = state.failure?.code ? ` (last failure: ${state.failure.code}${cause})` : "";
   return `Automatic recovery of saved work stopped after ${state.attempts} attempts${reason}. `
     + "Retry recovery to export and merge from the retained sandbox again; no provider turn is submitted. "
     + "If Retry keeps failing, inspect the run and its environment.";

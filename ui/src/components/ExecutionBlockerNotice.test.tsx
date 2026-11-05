@@ -41,6 +41,17 @@ describe("ordinary task interruption", () => {
   it.each(["working", "resolved"] as const)("does not duplicate the thread indicator for %s", async state => {
     await render({ ...failed, state }); expect(container.textContent).toBe("");
   });
+  it("names the saved-work recovery step instead of a bare queue", async () => {
+    await render({ ...failed, state: "working", canRetry: false, recoveryStep: "saving_previous_files" });
+    expect(container.textContent).toBe("Saving files from the previous attempt…");
+    expect(container.querySelector("button")).toBeNull();
+  });
+  it("names the step a scheduled recovery will retry", async () => {
+    vi.useFakeTimers(); vi.setSystemTime(new Date("2026-10-20T00:00:00Z"));
+    await render({ ...failed, state: "retry_scheduled", nextRetryAt: "2026-10-20T00:00:30Z", recoveryStep: "checking_previous_run" });
+    expect(container.textContent).toContain("Checking that the previous attempt stopped. Trying again in 30s…");
+    expect(container.querySelector("button")?.textContent).toBe("Retry");
+  });
   it("leaves genuine user decisions to their specific action surface", async () => {
     await render({ ...failed, responsibility: "user", state: "waiting_for_user", userAction: "approval", canRetry: false });
     expect(container.textContent).toBe("");

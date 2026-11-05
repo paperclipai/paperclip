@@ -114,12 +114,16 @@ export function projectTaskInterruption(issue: ProjectionIssue, input: Projectio
       return { ...base, state: "retry_scheduled", nextRetryAt: new Date(deadline).toISOString() };
     return { ...base, state: "failed", canRetry: retryWait.preparationStatus !== "cancelled" };
   }
+  const recoveryStep: TaskInterruptionPresentation["recoveryStep"] = !system ? undefined
+    : system.phase === "verify_execution" ? "checking_previous_run"
+      : system.phase === "preserve_files" ? "saving_previous_files" : "finishing_recovery";
   const retryAt = system?.nextAttemptAt ?? run.scheduledRetryAt?.getTime();
   if (retryAt && retryAt > now) return { ...base, state: "retry_scheduled",
-    nextRetryAt: new Date(retryAt).toISOString(), canRetry: true };
+    nextRetryAt: new Date(retryAt).toISOString(), canRetry: true,
+    ...(system?.nextAttemptAt && recoveryStep ? { recoveryStep } : {}) };
   const activeObservation = action?.evidence.systemRecoveryActiveAt;
   if (system?.state === "running" && typeof activeObservation === "number" &&
-      activeObservation > now - 45_000) return { ...base, state: "working" };
+      activeObservation > now - 45_000) return { ...base, state: "working", ...(recoveryStep ? { recoveryStep } : {}) };
   if (retryWait?.sourceRunId === run.id && retryWait.executionWaitReason) {
     const reason = Object.hasOwn(retryWaitMessages, retryWait.executionWaitReason) ? retryWait.executionWaitReason : "execution_recovery";
     // Keep the latest input receipt so message submission can settle independently.
