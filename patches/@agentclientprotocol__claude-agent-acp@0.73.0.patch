@@ -83,7 +83,7 @@ diff --git a/dist/acp-agent.js b/dist/acp-agent.js
                                      },
                                  });
                              }
-@@ -4506,6 +4545,47 @@
+@@ -4506,6 +4545,48 @@
       *  `$/cancel_request`, and our local abort race settles even if the client
       *  ignores it. A `cancelled` outcome, request rejection, and local abort all
       *  surface the same "Tool use aborted" the callers already expect. */
@@ -121,7 +121,8 @@ diff --git a/dist/acp-agent.js b/dist/acp-agent.js
 +                    claudeCode: {
 +                        subagentState: {
 +                            status: String(status ?? "completed").slice(0, 40),
-+                            ...(summary ? { summary: String(summary).slice(0, 4000) } : {}),
++                            // One character past the display bound lets the client mark a cut.
++                            ...(summary ? { summary: String(summary).slice(0, 4001) } : {}),
 +                        },
 +                    },
 +                },
@@ -131,7 +132,7 @@ diff --git a/dist/acp-agent.js b/dist/acp-agent.js
      async requestPermissionFromClient(params, toolName, signal, parentToolUseId, ownerSessionId = params.sessionId) {
          if (signal.aborted)
              throw new Error("Tool use aborted");
-@@ -5311,6 +5391,12 @@
+@@ -5311,6 +5392,12 @@
              settingSources: ["user", "project", "local"],
              ...(thinking !== undefined && { thinking }),
              ...userProvidedOptions,
@@ -144,7 +145,7 @@ diff --git a/dist/acp-agent.js b/dist/acp-agent.js
              ...(settings && { settings }),
              env,
              // Override certain fields that must be controlled by ACP
-@@ -5318,7 +5404,9 @@
+@@ -5318,7 +5405,9 @@
              includePartialMessages: true,
              forwardSubagentText,
              mcpServers: {
@@ -155,7 +156,7 @@ diff --git a/dist/acp-agent.js b/dist/acp-agent.js
                  ...mcpServers,
                  ...(fileChangeAuditSupport
                      ? { [FILE_CHANGE_AUDIT_SERVER_NAME]: fileChangeAuditSupport.mcpServer }
-@@ -5329,6 +5417,16 @@
+@@ -5329,6 +5418,16 @@
              allowDangerouslySkipPermissions: ALLOW_BYPASS,
              permissionMode: initialPermissionMode,
              canUseTool: this.canUseTool(sessionId),

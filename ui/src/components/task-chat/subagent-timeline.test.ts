@@ -139,4 +139,12 @@ describe("subagent timeline rows", () => {
     const group = timeline[0] as TaskChatSubagentGroupItem;
     expect(group.subagents.map((subagent) => subagent.activity.length)).toEqual([1, 0]);
   });
+
+  it("keeps a settled child's activity text when the provider sends no result", () => {
+    const timeline = rows([
+      delegation(1, "cursor_child", "completed", { role: "explore", summary: "Find tests", activitySummary: "Look for tests\nDuration: 1200 ms" }),
+    ], false);
+    const group = timeline[0] as TaskChatSubagentGroupItem;
+    expect(group.subagents[0]).toMatchObject({ status: "completed", result: "Look for tests\nDuration: 1200 ms" });
+  });
 });

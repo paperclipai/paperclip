@@ -1772,7 +1772,9 @@ function subagentsFromDelegation(
       startedAtMs: item.startedAtMs ?? null,
       finishedAtMs: status === "running" ? null : (item.updatedAtMs ?? null),
       activity: [],
-      result: child.result,
+      // Providers without a dedicated result (Cursor) keep their activity
+      // text in `activitySummary`; keep it readable once the child settles.
+      result: child.result ?? (status === "running" ? undefined : child.progress),
     };
   });
 }

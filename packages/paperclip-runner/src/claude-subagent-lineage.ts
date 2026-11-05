@@ -62,8 +62,19 @@ function shortText(value: unknown, max: number): string | null {
   return trimmed ? trimmed.slice(0, max) : null;
 }
 
-/** Text of an ACP tool result: a string or text content blocks. */
-export function acpToolResultText(rawOutput: unknown, max = 4_000): string | null {
+const MAX_RESULT_CHARS = 4_000;
+const TRUNCATED_RESULT_MARKER = "\n\n[Result truncated]";
+
+/** Bound a result to the schema limit, marking a cut so it never reads as complete. */
+function boundedResult(value: string | null): string | null {
+  if (!value) return null;
+  return value.length > MAX_RESULT_CHARS
+    ? `${value.slice(0, MAX_RESULT_CHARS - TRUNCATED_RESULT_MARKER.length).trimEnd()}${TRUNCATED_RESULT_MARKER}`
+    : value;
+}
+
+/** Text of an ACP tool result: a string or text content blocks, untruncated. */
+export function acpToolResultText(rawOutput: unknown, max = 256_000): string | null {
   if (typeof rawOutput === "string") return rawOutput.trim().slice(0, max) || null;
   const blocks = Array.isArray(rawOutput) ? rawOutput : [];
   const joined = blocks
@@ -137,9 +148,9 @@ export function createClaudeSubagentLineageTracker<
           known?.state ??
           (known?.async === true || launchedAsync ? "running" : null),
         result:
-          shortText(terminal.summary, 4_000) ??
+          boundedResult(shortText(terminal.summary, MAX_RESULT_CHARS + 1)) ??
           known?.result ??
-          (launchedAsync ? null : output),
+          (launchedAsync ? null : boundedResult(output)),
       };
       remember(subagents, toolCallId, next);
       return { ...event, paperclipSubagent: next };

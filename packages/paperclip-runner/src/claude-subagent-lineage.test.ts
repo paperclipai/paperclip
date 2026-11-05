@@ -99,6 +99,20 @@ describe("Claude subagent lineage", () => {
     expect(valid(settled[0]!).ok).toBe(true);
   });
 
+  it("marks a result cut at the schema bound so it never reads as complete", () => {
+    const map = pipeline();
+    map({
+      type: "tool_call", tag: "tool_call", toolCallId: "toolu_long", status: "pending",
+      rawInput: { subagent_type: "Explore", description: "Long answer" },
+      _meta: { claudeCode: { toolName: "Agent" } },
+    });
+    const done = map({ type: "tool_call", tag: "tool_call_update", toolCallId: "toolu_long", status: "completed", rawOutput: "x".repeat(9_000) });
+    const result = (done[0]!.payload.children as Array<{ result: string }>)[0]!.result;
+    expect(result.length).toBeLessThanOrEqual(4_000);
+    expect(result.endsWith("[Result truncated]")).toBe(true);
+    expect(valid(done[0]!).ok).toBe(true);
+  });
+
   it("leaves top-level tools unchanged", () => {
     const [event] = pipeline()({
       type: "tool_call", tag: "tool_call", toolCallId: "toolu_top", title: "Read a.ts", status: "pending", kind: "read",
