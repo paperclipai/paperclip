@@ -62,6 +62,8 @@ Configure loop-prevention filters in Sentry as described in the
 - Saving a schedule does not prove the scheduler invoked it.
 - Timezone, overlap/concurrency rules, and plugin ownership affect behavior.
 - A routine run’s task must still respect pause, access, and budget gates.
+- Automatic runs use the saved revision's responsible person. Run now uses the
+  clicking person's execution authority and personal AI account selection.
 - Managed idle hosts may use the [routine wake protocol](../../doc/idle-sleep-safety.md#scheduled-routine-wake-protocol)
   to sleep between supported future runs. The host must save a durable alarm
   and verify the same generation before stopping. Local execution and catch-up

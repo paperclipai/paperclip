@@ -28,7 +28,10 @@ Agent access: `available` — Agent REST / native `call_api` / CLI routine creat
 optional installed MCP generic request.
 
 Policy: Agents may read company routines but only create/manage routines assigned to
-themselves; trigger secrets need secure handling.
+themselves; trigger secrets need secure handling. Creation uses the server-resolved
+on-behalf-of user from the authenticated run or API key, separately from agent
+creator attribution. Client fields cannot select that user. Without a bound
+identity, the service retains parent-task then company-default responsibility.
 
 Evidence: `source-only` — [implementation](../../server/src/routes/routines.ts#L99) at
 the reviewed commit above.
@@ -39,8 +42,10 @@ Assert the relevant denied actor, owner, company or mode from Policy. Review the
 remaining operations before qualifying the whole capability.
 
 Gaps: No dedicated production manage_routine binding; generic `call_api` provides
-the permitted REST path. Creation needs a responsible user resolved from the parent
-issue or company default.
+the permitted REST path. Creation requires a responsible user; missing agent-key
+identity still fails authentication. [Native API integration](../../server/src/services/native-runtime/runner-api.integration.test.ts)
+covers creation, responsibility, replay and denials locally; this does not prove
+a live scheduled or manual provider execution.
 
 ## `triggers`
 

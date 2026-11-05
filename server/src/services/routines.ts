@@ -154,7 +154,12 @@ async function resolveRoutineResponsibleUserId(db: Db, companyId: string, actorU
   return resolveCompanyDefaultResponsibleUserId(db, companyId);
 }
 
-type Actor = { agentId?: string | null; userId?: string | null; runId?: string | null };
+type Actor = {
+  agentId?: string | null;
+  userId?: string | null;
+  actorResponsibleUserId?: string | null;
+  runId?: string | null;
+};
 type RoutineRow = typeof routines.$inferSelect;
 type RoutineTriggerRow = typeof routineTriggers.$inferSelect;
 
@@ -2217,7 +2222,12 @@ export function routineService(
       );
       assertRoutineVariableDefinitions(variables);
       const status = normalizeDraftRoutineStatus(input.status, input.assigneeAgentId);
-      const responsibleUserId = await resolveRoutineResponsibleUserId(db, companyId, actor.userId, input.parentIssueId ?? null);
+      const responsibleUserId = await resolveRoutineResponsibleUserId(
+        db,
+        companyId,
+        actor.userId ?? actor.actorResponsibleUserId,
+        input.parentIssueId ?? null,
+      );
       if (!responsibleUserId) {
         throw unprocessable("Routine requires a responsible user");
       }
