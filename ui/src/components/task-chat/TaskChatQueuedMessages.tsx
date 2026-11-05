@@ -412,7 +412,7 @@ export function TaskChatQueuedMessages({
         <SortableContext items={ids} strategy={verticalListSortingStrategy}>
           {/* Bounded so a long queue scrolls here instead of covering the conversation. */}
           <div
-            className="max-h-40 overflow-y-auto overscroll-contain"
+            className="max-h-(--tc-queued-list-max-h) overflow-y-auto overscroll-contain"
             data-testid="task-chat-queued-messages-list"
           >
           {entries.map((entry) => {

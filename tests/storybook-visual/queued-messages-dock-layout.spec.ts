@@ -17,6 +17,7 @@ const CASES: LayoutCase[] = [
   { name: "desktop", story: "coordinator-dock-queued-messages--many-queued-messages", width: 1245, height: 760 },
   { name: "desktop dark", story: "coordinator-dock-queued-messages--many-queued-messages-dark", width: 1245, height: 760, theme: "dark" },
   { name: "short desktop window", story: "coordinator-dock-queued-messages--many-queued-messages", width: 1024, height: 600 },
+  { name: "very short desktop window", story: "coordinator-dock-queued-messages--many-queued-messages", width: 1024, height: 420 },
   { name: "narrow phone", story: "coordinator-dock-queued-messages--many-queued-messages-phone", width: 390, height: 700 },
 ];
 
@@ -82,3 +83,21 @@ for (const layout of CASES) {
     expect(latest.y, "latest transcript message is pushed above the thread").toBeGreaterThanOrEqual(thread.y - 1);
   });
 }
+
+test("queued messages still reorder by drag inside the scrolling list", async ({ page }) => {
+  await renderStory(page, CASES[0]);
+  const rowOrder = () => page.locator("[data-testid^=task-chat-queued-message-]").evaluateAll((rows) =>
+    rows.map((row) => row.getAttribute("data-testid")!.replace("task-chat-queued-message-", "")));
+  expect((await rowOrder()).slice(0, 3)).toEqual(["queued-1", "queued-2", "queued-3"]);
+
+  const handle = page.getByRole("button", { name: /^Reorder queued message: Before you continue/ });
+  const from = (await handle.boundingBox())!;
+  const to = (await page.getByTestId("task-chat-queued-message-queued-3").boundingBox())!;
+  await page.mouse.move(from.x + from.width / 2, from.y + from.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(from.x + from.width / 2, from.y + from.height / 2 + 8, { steps: 4 });
+  await page.mouse.move(from.x + from.width / 2, to.y + to.height / 2 + 4, { steps: 12 });
+  await page.mouse.up();
+
+  await expect.poll(async () => (await rowOrder()).slice(0, 3)).toEqual(["queued-2", "queued-3", "queued-1"]);
+});
