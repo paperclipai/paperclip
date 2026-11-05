@@ -38,7 +38,10 @@ export const WORKSPACE_BUSY_HOLDER_STALE_AFTER_MS = 60 * 60 * 1000;
 export const WORKSPACE_BUSY_PARKED_RECHECK_MS = 5 * 60 * 1000;
 // Re-check for a wait behind an ended remote writer whose save or sandbox
 // release has not settled. Settling has no single completion point to wake
-// from, so the parked run re-checks on this cadence (one DB read, no new run).
+// from, so the parked run re-checks on this cadence. Each check creates no run.
+// It reads the workspace, the writer run, its task, and the writer's leases
+// (one row per sandbox lease of that run, so a small set) in the promotion
+// transaction. The checks last only while the wait exists, up to the cutoff.
 export const WORKSPACE_BUSY_SETTLING_RECHECK_MS = 60 * 1000;
 export const WORKSPACE_BUSY_WAIT_KEY = "workspaceBusyWait";
 
