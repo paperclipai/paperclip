@@ -137,6 +137,11 @@ describePostgres("agent task hierarchy depth through the issue routes", () => {
     expect(byAgent.status, JSON.stringify(byAgent.body)).toBe(200);
     expect(byAgent.body.parentId).toBe(rootId);
     expect(byAgent.body.parentAdjusted).toEqual(expectedAdjustment);
+    expect((await activity(agentMoved, "issue.updated"))?.details).toMatchObject({
+      parentId: rootId,
+      requestedParentId: childId,
+      parentAdjusted: expectedAdjustment,
+    });
 
     const byBoard = await request(app(boardActor))
       .patch(`/api/issues/${boardMoved}`)

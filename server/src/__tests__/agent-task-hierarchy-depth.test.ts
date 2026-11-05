@@ -6,7 +6,8 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
-import { issueService, planIssueParentChange, resolveNewTaskParent } from "../services/issues.ts";
+import { issueService } from "../services/issues.ts";
+import { planIssueParentChange, resolveNewTaskParent } from "../services/issue-hierarchy.ts";
 import { resolveIssueCreationSource } from "../services/issue-creation-source.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -212,7 +213,73 @@ describeEmbeddedPostgres("agent task hierarchy depth", () => {
     expect(created.parentAdjusted).toMatchObject({ reason: "max_agent_depth", effectiveParent: null });
   });
 
+  it("rejects a create whose locked placement differs from the authorized one", async () => {
+    const { companyId } = await seedCompany();
+    const { rootId, childId } = await seedTree(companyId);
+    const otherRootId = await seedIssue(companyId);
+    // The route authorized placement under rootId; the child then moved.
+    await db.update(issues).set({ parentId: otherRootId }).where(eq(issues.id, childId));
+
+    await expect(issueService(db).create(companyId, {
+      title: "Stale placement",
+      parentId: childId,
+      expectedParentId: rootId,
+    })).rejects.toMatchObject({ status: 409 });
+  });
+
+  it("dedupes recent titles per requester, not across siblings placed under the same root", async () => {
+    const { companyId } = await seedCompany();
+    const { rootId, childId } = await seedTree(companyId);
+    const otherChildId = await seedIssue(companyId, { parentId: rootId });
+
+    const first = await issueService(db).create(companyId, { title: "Write tests", parentId: childId, allowDuplicate: false });
+    const second = await issueService(db).create(companyId, { title: "Write tests", parentId: otherChildId, allowDuplicate: false });
+    const repeat = await issueService(db).create(companyId, { title: "Write tests", parentId: childId, allowDuplicate: false });
+
+    expect(second.id).not.toBe(first.id);
+    expect(second.originIssueId).toBe(otherChildId);
+    expect(repeat.id).toBe(first.id);
+  });
+
+  it("ignores caller-supplied originIssueId", async () => {
+    const { companyId } = await seedCompany();
+    const { childId } = await seedTree(companyId);
+    const forgedId = await seedIssue(companyId);
+
+    const created = await issueService(db).create(companyId, {
+      title: "Provenance is server-derived",
+      parentId: childId,
+      ...({ originIssueId: forgedId } as Record<string, unknown>),
+    });
+
+    expect(created.originIssueId).toBe(childId);
+  });
+
   describe("moves", () => {
+    it("keeps the requested private parent as the privacy source of a placed move", async () => {
+      const { companyId } = await seedCompany();
+      const rootId = await seedIssue(companyId);
+      const privateChildId = randomUUID();
+      await seedIssue(companyId, { id: privateChildId, parentId: rootId, visibility: "private", privacyRootIssueId: privateChildId });
+      const movingId = await seedIssue(companyId);
+
+      const updated = await issueService(db).update(movingId, { parentId: privateChildId });
+
+      expect(updated?.parentId).toBe(rootId);
+      expect(updated?.privacyParentIssueId).toBe(privateChildId);
+      expect(updated?.visibility).toBe("private");
+      expect(updated?.privacyRootIssueId).toBe(privateChildId);
+    });
+
+    it("rejects a move whose placement differs from the authorized one", async () => {
+      const { companyId } = await seedCompany();
+      const { childId } = await seedTree(companyId);
+      const movingId = await seedIssue(companyId);
+
+      await expect(issueService(db).update(movingId, { parentId: childId, expectedParentId: childId }))
+        .rejects.toMatchObject({ status: 409 });
+    });
+
     it("places an agent move into a child beside it", async () => {
       const { companyId } = await seedCompany();
       const { rootId, childId } = await seedTree(companyId);

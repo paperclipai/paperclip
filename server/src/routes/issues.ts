@@ -324,11 +324,15 @@ import {
   ISSUE_WAKE_DIAGNOSTICS_MAX_ACTIVITY_RECORDS,
   ISSUE_WAKE_DIAGNOSTICS_MAX_WAKE_REQUESTS,
   readAcceptedPlanConfirmationTarget,
-  planIssueParentChange,
-  resolveNewTaskParent,
-  type IssueParentDepthPolicy,
   type IssuePostCommitAction,
 } from "../services/issues.js";
+import {
+  loadParentChainWith,
+  placeTaskParent,
+  planParentChange,
+  type IssueParentDepthPolicy,
+  type ParentPlacement,
+} from "../services/issue-hierarchy.js";
 import {
   authorizationDeniedDetails,
   issueReadSqlCondition,
@@ -3819,6 +3823,39 @@ export function issueRoutes(
     );
   }
 
+  /** A requested parent's ancestor chain, read through the issue service (company-scoped). */
+  function loadRouteParentChain(companyId: string, parentId: string) {
+    return loadParentChainWith(async (id) => {
+      const row = await svc.getById(id);
+      if (!row || row.companyId !== companyId) return null;
+      return {
+        id: row.id,
+        identifier: row.identifier ?? null,
+        parentId: row.parentId ?? null,
+        conversationAgentId: row.conversationAgentId ?? null,
+        executionPolicy: row.executionPolicy ?? null,
+      };
+    }, parentId);
+  }
+
+  /**
+   * Where a new parent edge lands for this actor. Routes authorize this
+   * placement and pass it to the service as `expectedParentId`, which rejects
+   * the write if the tree changed before the service's locked placement.
+   */
+  async function resolveRouteParentPlacement(
+    companyId: string,
+    requestedParentId: string | null | undefined,
+    policy: IssueParentDepthPolicy,
+  ): Promise<ParentPlacement> {
+    if (!requestedParentId || policy === "allow_nested") {
+      return { effectiveParentId: requestedParentId ?? null, adjustment: null };
+    }
+    const chain = await loadRouteParentChain(companyId, requestedParentId);
+    if (chain.length === 0) return { effectiveParentId: requestedParentId, adjustment: null };
+    return placeTaskParent(chain, policy);
+  }
+
   /**
    * Default structural parent for a delegated follow-up: the task the agent's
    * run is executing. Returns null when the new task should stay standalone:
@@ -3876,8 +3913,8 @@ export function issueRoutes(
     // Under the agent depth limit a run on a child task delegates beside it.
     // The placed parent must also accept the edge, or the default falls back
     // to standalone work.
-    const { effectiveParentId: placedParentId } = await resolveNewTaskParent(
-      db, companyId, source.id, "flatten",
+    const { effectiveParentId: placedParentId } = await resolveRouteParentPlacement(
+      companyId, source.id, "flatten",
     );
     if (!placedParentId) return null;
     if (placedParentId !== source.id) {
@@ -12666,8 +12703,7 @@ export function issueRoutes(
       // requested parent and the parent that is actually written.
       const parentDepthPolicy: IssueParentDepthPolicy =
         req.actor.type === "board" ? "allow_nested" : "flatten";
-      const parentPlacement = await resolveNewTaskParent(
-        db,
+      const parentPlacement = await resolveRouteParentPlacement(
         companyId,
         effectiveParentId ?? null,
         parentDepthPolicy,
@@ -12743,6 +12779,9 @@ export function issueRoutes(
         ...rawCreateBody,
         parentId: effectiveParentId,
         parentDepthPolicy,
+        ...(parentDepthPolicy === "flatten" && effectiveParentId
+          ? { expectedParentId: parentPlacement.effectiveParentId }
+          : {}),
         ...(normalizedAssigneeAgentId !== undefined
           ? { assigneeAgentId: normalizedAssigneeAgentId }
           : {}),
@@ -13197,8 +13236,8 @@ export function issueRoutes(
         await resolveWatchdogFollowUpSerializationContext(req, parent);
       const childParentDepthPolicy: IssueParentDepthPolicy =
         req.actor.type === "board" || childSerializationContext ? "allow_nested" : "flatten";
-      const childPlacement = await resolveNewTaskParent(
-        db, parent.companyId, parent.id, childParentDepthPolicy,
+      const childPlacement = await resolveRouteParentPlacement(
+        parent.companyId, parent.id, childParentDepthPolicy,
       );
       if (
         req.actor.type === "agent" &&
@@ -13272,6 +13311,7 @@ export function issueRoutes(
       const { issue, parentBlockerAdded } = await svc.createChild(parent.id, {
         ...createBody,
         parentDepthPolicy: childParentDepthPolicy,
+        ...(childParentDepthPolicy === "flatten" ? { expectedParentId: childPlacement.effectiveParentId } : {}),
         workspaceSelectionActor: req.actor,
         projectId: childAssignmentScope.projectId,
         ...(taskBridgeOriginForActor(req) ?? {}),
@@ -14224,28 +14264,52 @@ export function issueRoutes(
       // Board users move tasks to any depth. An agent move into a child is
       // placed beside it, and an agent move of a task with children is skipped,
       // both with a notice instead of an error.
+      // The service places the move again and rejects it if the tree changed
+      // after this check (`expectedParentId`); it also keeps the requested
+      // parent as the privacy source when the move is placed beside it.
+      const parentDepthPolicy: IssueParentDepthPolicy = req.actor.type === "board" ? "allow_nested" : "flatten";
       let parentAdjusted: IssueParentAdjustment | null = null;
-      if (typeof updateFields.parentId === "string" && updateFields.parentId !== existing.parentId) {
-        const parentPlan = await planIssueParentChange(
-          db,
+      let expectedParentId: string | null | undefined;
+      if (
+        parentDepthPolicy === "flatten" &&
+        typeof updateFields.parentId === "string" &&
+        updateFields.parentId !== existing.parentId
+      ) {
+        const requestedParentId = updateFields.parentId;
+        const [existingChild] = await db
+          .select({ id: issueRows.id })
+          .from(issueRows)
+          .where(and(eq(issueRows.companyId, existing.companyId), eq(issueRows.parentId, existing.id)))
+          .limit(1);
+        const currentParent = existingChild && existing.parentId ? await svc.getById(existing.parentId) : null;
+        const parentPlan = planParentChange(
           existing,
-          updateFields.parentId,
-          req.actor.type === "board" ? "allow_nested" : "flatten",
+          await loadRouteParentChain(existing.companyId, requestedParentId),
+          requestedParentId,
+          Boolean(existingChild),
+          currentParent ? { id: currentParent.id, identifier: currentParent.identifier ?? null } : null,
+          parentDepthPolicy,
         );
         parentAdjusted = parentPlan.adjustment;
-        if (parentPlan.parentId === undefined || parentPlan.parentId === existing.parentId) {
-          delete updateFields.parentId;
-        } else {
-          if (req.actor.type === "agent" && parentPlan.parentId && parentPlan.parentId !== updateFields.parentId) {
-            const placedParent = await svc.getById(parentPlan.parentId);
-            if (!placedParent || !(await assertIssueWriteInfluenceAllowed(req, res, placedParent))) {
-              if (!res.headersSent) res.status(404).json({ error: "Parent issue not found" });
-              return;
-            }
+        expectedParentId = parentPlan.parentId ?? existing.parentId;
+        if (
+          req.actor.type === "agent" &&
+          parentPlan.parentId &&
+          parentPlan.parentId !== requestedParentId
+        ) {
+          const placedParent = await svc.getById(parentPlan.parentId);
+          if (!placedParent || !(await assertIssueWriteInfluenceAllowed(req, res, placedParent))) {
+            if (!res.headersSent) res.status(404).json({ error: "Parent issue not found" });
+            return;
           }
-          updateFields.parentId = parentPlan.parentId;
         }
       }
+      /** The parent this update will actually write, for checks that depend on it. */
+      const plannedParentId = expectedParentId !== undefined ? expectedParentId : updateFields.parentId;
+      // Activity records the parent actually written and why it differs from the request.
+      const parentAdjustedActivityDetails = parentAdjusted
+        ? { parentId: plannedParentId ?? null, requestedParentId: parentAdjusted.requestedParent?.id ?? null, parentAdjusted }
+        : {};
     if (req.body.visibility === "private" && !existing.projectId && updateFields.projectId === undefined) {
       const responsibleUserId = existing.responsibleUserId ?? (req.actor.type === "board"
         ? req.actor.userId ?? null
@@ -14857,13 +14921,13 @@ export function issueRoutes(
                 updateFields.projectId === undefined
                   ? existing.projectId
                   : (updateFields.projectId as string | null | undefined),
-              parentIssueId: (updateFields.parentId === undefined
+              parentIssueId: (plannedParentId === undefined
                 ? existing.parentId
-                : updateFields.parentId) as string | null | undefined,
+                : plannedParentId) as string | null | undefined,
             }),
-            parentIssueId: (updateFields.parentId === undefined
+            parentIssueId: (plannedParentId === undefined
               ? existing.parentId
-              : updateFields.parentId) as string | null | undefined,
+              : plannedParentId) as string | null | undefined,
             assigneeAgentId: nextAssigneeAgentId,
             assigneeUserId: nextAssigneeUserId,
           });
@@ -14972,9 +15036,9 @@ export function issueRoutes(
       }
 
       const nextParentId =
-        updateFields.parentId === undefined
+        plannedParentId === undefined
           ? existing.parentId
-          : (updateFields.parentId as string | null);
+          : (plannedParentId as string | null);
       const shouldRelayStop =
         Boolean(nextParentId) &&
         existing.status !== updateFields.status &&
@@ -15001,8 +15065,8 @@ export function issueRoutes(
       const postCommitIssueActions: IssuePostCommitAction[] = [];
       const issueUpdateData = {
         ...updateFields,
-        // Placement was resolved above for this actor.
-        parentDepthPolicy: "allow_nested" as const,
+        ...(updateFields.parentId !== undefined ? { parentDepthPolicy } : {}),
+        ...(expectedParentId !== undefined ? { expectedParentId } : {}),
         workspaceSelectionActor: req.actor,
         expectedExecutionPolicy,
         expectedStatusVersion,
@@ -15092,6 +15156,7 @@ export function issueRoutes(
             entityId: updated.id,
             details: {
               ...updateFields,
+              ...parentAdjustedActivityDetails,
               identifier: updated.identifier,
               authorizationReason: issueMutationAuthorizationReason,
               changes,
@@ -15478,6 +15543,7 @@ export function issueRoutes(
           entityId: issue.id,
           details: {
             ...updateFields,
+            ...parentAdjustedActivityDetails,
             identifier: issue.identifier,
             authorizationReason: issueMutationAuthorizationReason,
             changes: issueChanges,
