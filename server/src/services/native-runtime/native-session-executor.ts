@@ -1,4 +1,5 @@
 import { NativeSessionDiagnostics, nativeSessionDiagnostics, type NativeDiagnosticLease } from "./native-session-diagnostics.js";
+import { recordAgentProviderRateLimits } from "../agent-provider-rate-limits.js";
 import { nativePostResultFailureCategory, type NativePostResultFailureCategory } from "./native-post-result-failure.js";
 import { logger } from "../../middleware/logger.js";
 import { canRestoreMigratedNativeSession } from "./native-workspace-migration.js";
@@ -9673,6 +9674,12 @@ async function executePaperclipNativeSessionWithinScope(
           event,
           event.eventType === "item.completed" || questionFallback !== null,
         );
+        await recordAgentProviderRateLimits(input.db, input.execution.binding, event as {
+          eventType: string;
+          payload: Record<string, unknown>;
+        }).catch((error) => {
+          logger.warn({ err: error, runId: input.execution.binding.runId }, "failed to record provider rate limits");
+        });
         await recordPlanSynchronization(
           event as {
             sourceEventId: string;

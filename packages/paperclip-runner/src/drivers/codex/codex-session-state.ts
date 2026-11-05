@@ -1,4 +1,5 @@
 import { type CodexUsageBaseline, codexRunUsage } from "./codex-usage-baseline.js";
+import type { ProviderRateLimitSnapshot } from "../provider-rate-limits.js";
 import type {
   HarnessRuntimeRequest,
   HarnessSessionRecoveryOptions,
@@ -112,6 +113,9 @@ export class CodexSessionState {
   activeTurnId: string | null;
   usageSnapshot: Record<string, unknown> | null = null;
   codexUsageBaseline: CodexUsageBaseline | null = null;
+  /** Latest account rate-limit snapshot, merged across sparse updates. */
+  rateLimits: ProviderRateLimitSnapshot | null = null;
+  rateLimitNoticeSequence = 0;
   result: PrpStructuredRunResult | null = null;
   resultFingerprint: string | null = null;
   readonly normalizeReplayPayload?: HarnessSessionRecoveryOptions["normalizeReplayPayload"];

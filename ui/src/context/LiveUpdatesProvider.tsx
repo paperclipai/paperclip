@@ -1378,6 +1378,10 @@ function invalidateHeartbeatQueries(
     queryClient.invalidateQueries({
       queryKey: queryKeys.heartbeats(companyId, agentId),
     });
+    // Provider rate limits reported during the run live in runtime state.
+    queryClient.invalidateQueries({
+      queryKey: queryKeys.agents.runtimeState(agentId),
+    });
   }
   const runId = readString(payload.runId);
   if (runId) {

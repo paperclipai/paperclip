@@ -1,4 +1,5 @@
 import { observeCodexUsage, codexRunUsage } from "./codex-usage-baseline.js";
+import { codexRateLimitSnapshot, rateLimitNoticeEvent, rateLimitSnapshotChanged } from "../provider-rate-limits.js";
 import { classifyCodexNotification } from "./codex-notification-identity.js";
 import { paperclipWorkspaceFileReferencesFromText } from "../../live/workspace-file-reference.js";
 import { canonicalProviderEventsFromCodex, isCanonicalProviderEventType } from "../../provider-events.js";
@@ -150,6 +151,20 @@ async function mapNotificationBody(state: CodexSessionState, notification: Codex
       const pending = state.pendingRunAttachment;
       if (pending && params.runId === pending.runId && params.runId !== state.runId) await pending.settled;
       if (params.runId === state.runId) state.emit("runtime.activity.recorded", record(params.payload));
+      return;
+    }
+    if (notification.method === "account/rateLimits/updated") {
+      // Account-scoped: it names no thread or turn, so it bypasses thread binding.
+      const next = codexRateLimitSnapshot(record(notification.params), state.rateLimits, state.now().toISOString());
+      if (next && rateLimitSnapshotChanged(state.rateLimits, next)) {
+        const itemId = `codex-rate-limits:${++state.rateLimitNoticeSequence}`;
+        const notice = rateLimitNoticeEvent(next, itemId);
+        state.emit(notice.eventType, notice.payload, {
+          ...(state.activeTurnId ? { turnId: state.activeTurnId } : {}),
+          itemId,
+        });
+      }
+      if (next) state.rateLimits = next;
       return;
     }
     if (!isSupportedCodexNotificationMethod(notification.method)) return;
