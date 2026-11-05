@@ -550,7 +550,9 @@ from the default branch and provide:
   selection; `all` never spends against a lane that the eval program has
   marked disabled;
 - `accounting_mode`: `controlled` by default; `legacy` is an explicit manual
-  qualification path. Controlled mode supports native Codex and ACPX Claude.
+  qualification path. Controlled mode supports the profiles that have a
+  committed allocation in `hosted-defaults.json`; today that is ACPX Claude
+  Sonnet 5. Native Codex also needs a committed OpenAI price and allocation.
 - `max_infrastructure_retries`: zero by default and required for controlled
   mode. Legacy mode allows up to three retries only when an attempt explicitly
   reports a retryable infrastructure failure.
@@ -843,9 +845,10 @@ forced stop still leaves cleanup unverified and retains the full allocation.
 ## Controlled hosted workflow
 
 `accounting_mode=controlled` is the default for manual dispatch and the only
-scheduled mode. It supports explicitly selected native Codex and ACPX Claude
-rosters. `all` still means the entire maintained suite; unsupported cells fail
-admission rather than being omitted. Use `accounting_mode=legacy` explicitly
+scheduled mode. It supports explicitly selected rosters whose profiles have a
+committed allocation, today ACPX Claude Sonnet 5. `all` still means the entire
+maintained suite; unsupported cells fail the catalog step before any build
+rather than being omitted. Use `accounting_mode=legacy` explicitly
 for a manual qualification of other providers. Legacy runs retain their
 existing public artifact and publication behavior and do not claim complete
 controller cost coverage.
@@ -861,7 +864,9 @@ This change does not set either variable or enable paid recurrence.
 Controlled runs derive their campaign policy from committed defaults in
 `packages/paperclip-runner/scripts/controlled-evals/hosted-defaults.json`.
 Changing a price, allocation, overhead reservation or trace limit is a reviewed
-pull request, not a repository variable. The file holds:
+pull request, not a repository variable. The controller runtime packages the
+file, and `hosted.mjs prepare` reads that verified copy, never the workspace
+that the private evals program can modify. The file holds:
 
 - `maxUsd`, the default campaign spend cap. The optional repository variable
   `RUNNER_PROTOCOL_EVAL_MAX_USD` overrides it; it is the only setting.

@@ -432,12 +432,18 @@ test('controlled capacity counts the filtered selection before any provider work
   const upload = workflow.indexOf('      - name: Upload immutable campaign catalog');
   assert.ok(filter > 0 && filter < limit && limit < upload);
   const script = workflowShell(workflow, 'Enforce controlled limits against the selected catalog');
-  const cell = { provider: 'acpx', acpxAgent: 'claude', driver: 'acpx_runtime' };
+  const cell = { provider: 'acpx', acpxAgent: 'claude', driver: 'acpx_runtime', model: 'claude-sonnet-5' };
+  const codex = { provider: 'codex', driver: 'codex_app_server', model: 'gpt-6' };
   const root = await mkdtemp(resolve(tmpdir(), 'runner-selected-capacity-'));
   try {
+    const defaults = resolve(root, 'packages/paperclip-runner/scripts/controlled-evals/hosted-defaults.json');
+    await mkdir(resolve(defaults, '..'), { recursive: true });
+    await writeFile(defaults, await readFile(resolve(repositoryRoot, 'packages/paperclip-runner/scripts/controlled-evals/hosted-defaults.json')));
     // Campaign size is the selection itself; the spend cap is enforced during manifest preparation.
     for (const [cells, expected] of [[[cell], 0], [Array(41).fill(cell), 0], [Array(512).fill(cell), 0],
-      [Array(513).fill(cell), 1], [[{ ...cell, provider: 'unsupported' }], 1], [[], 1]]) {
+      [Array(513).fill(cell), 1], [[{ ...cell, provider: 'unsupported' }], 1], [[], 1],
+      // A supported driver without a committed allocation fails here, not after the builds.
+      [[cell, codex], 1], [[{ ...cell, model: 'claude-other' }], 1]]) {
       await writeFile(resolve(root, 'runner-protocol-eval-catalog.json'), JSON.stringify({ cells }));
       const result = spawnSync('bash', ['-euc', script], { cwd: root, encoding: 'utf8', env: { PATH: process.env.PATH,
         CONTROLLER_POLICY_JSON: JSON.stringify({ maxCells: 1 }) } });
@@ -492,7 +498,8 @@ test('private archive jobs consume verified controller code without resolving de
   assert.match(builder, /git diff --quiet HEAD -- pnpm-lock\.yaml/u);
   assert.match(preparer, /committed="\$\(sha256sum pnpm-lock\.yaml/u);
   assert.match(preparer, /PAPERCLIP_RUNNER_EVAL_CONTROLLER_LOCK_SHA256: \$\{\{ steps\.controller_lock\.outputs\.sha256 \}\}/u);
-  assert.match(preparer, /scripts\/controlled-evals\/hosted-defaults\.json/u);
+  // Defaults come from the verified controller runtime, not the workspace that evals code can modify.
+  assert.doesNotMatch(preparer, /hosted-defaults\.json/u);
   assert.doesNotMatch(workflow, /RUNNER_PROTOCOL_EVAL_CONTROLLER_POLICY_JSON/u);
   assert.match(builder, /pnpm install --frozen-lockfile --ignore-scripts --store-dir/u);
   assert.doesNotMatch(preparer, /pnpm install|build-runtime.mjs|cache: pnpm/u);

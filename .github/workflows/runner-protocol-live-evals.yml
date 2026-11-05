@@ -412,6 +412,12 @@ jobs:
           jq -e 'all(.cells[]; (.provider == "codex" and (.acpxAgent // "") == "" and .driver == "codex_app_server") or (.provider == "acpx" and .acpxAgent == "claude" and .driver == "acpx_runtime"))' runner-protocol-eval-catalog.json >/dev/null || {
             echo 'Controlled selection supports native Codex and ACPX Claude only; select their rosters explicitly.' >&2; exit 1;
           }
+          # Every selected profile needs a committed allocation. No evals code has run in this job yet.
+          jq -e --slurpfile defaults packages/paperclip-runner/scripts/controlled-evals/hosted-defaults.json \
+            '($defaults[0].allocations | map([.provider, (.acpxAgent // ""), .model])) as $allowed | all(.cells[]; [.provider, (.acpxAgent // ""), .model] as $profile | any($allowed[]; . == $profile))' \
+            runner-protocol-eval-catalog.json >/dev/null || {
+            echo 'Controlled selection includes a profile without a committed allocation in hosted-defaults.json.' >&2; exit 1;
+          }
           # The campaign size is the selected catalog; the spend cap is enforced when the manifest is prepared.
           jq -e '(.cells | length) >= 1 and (.cells | length) <= 512' runner-protocol-eval-catalog.json >/dev/null
 
@@ -717,7 +723,6 @@ jobs:
           control="$RUNNER_TEMP/runner-protocol-control"
           node "$RUNNER_TEMP/runner-protocol-runtime/controlled-evals/hosted.mjs" prepare \
             runner-protocol-catalog/runner-protocol-eval-catalog.json "$RUNNER_TEMP/prepared-requests.json" \
-            packages/paperclip-runner/scripts/controlled-evals/hosted-defaults.json \
             runner-protocol-build/extracted "$control" > "$RUNNER_TEMP/control-preparation.json"
           echo "manifest_sha256=$(jq -r .manifestSha256 "$RUNNER_TEMP/control-preparation.json")" >> "$GITHUB_OUTPUT"
 

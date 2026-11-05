@@ -182,7 +182,8 @@ test('the campaign policy is derived from the selection and committed defaults',
 });
 
 test('the committed defaults admit the full 41-case Claude plan within their spend cap', async () => {
-  const defaults = JSON.parse(await readFile(new URL('./hosted-defaults.json', import.meta.url), 'utf8'));
+  // Under the portable runtime this reads the packaged copy that hosted.mjs prepare uses.
+  const defaults = JSON.parse(await readFile(new URL('./hosted-defaults.json', runtime), 'utf8'));
   const now = Date.now(), projectId = '4dcaad06-b1ce-4416-ac28-482f1443d5ea';
   const manifestFor = cells => {
     const policy = hostedPolicy(defaults, { cellCount: cells, now, projectId, controllerLockSha256: 'e'.repeat(64) });

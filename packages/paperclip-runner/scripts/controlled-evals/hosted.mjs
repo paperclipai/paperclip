@@ -1,5 +1,6 @@
 import { readFile, mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { isEntrypoint } from './entrypoint.mjs';
 import { assertHostedAdmission, canonical, fields, requestBindingSha256, sha256, units, validateManifest } from './manifest.mjs';
 import { readRegularFile } from './evidence-files.mjs';
@@ -126,8 +127,11 @@ export function hostedAdmissionDiagnostic(error) {
 if (await isEntrypoint(import.meta.url)) {
   try {
     const [command, ...args] = process.argv.slice(2);
-    if (command === 'prepare' && args.length === 5) {
-      const [catalogPath, preparedPath, defaultsPath, runner, output] = args;
+    if (command === 'prepare' && args.length === 4) {
+      // Defaults are read beside this verified controller code, never from the workspace,
+      // which the private evals program can modify during preparation.
+      const [catalogPath, preparedPath, runner, output] = args;
+      const defaultsPath = fileURLToPath(new URL('./hosted-defaults.json', import.meta.url));
       const json = async path => JSON.parse((await readRegularFile(path, 16 * 1_048_576)).toString('utf8'));
       const catalogBytes = await readRegularFile(catalogPath, 16 * 1_048_576);
       const prepared = await json(preparedPath), paths = hostedPaths(process.env.GITHUB_RUN_ID), artifacts = {};
@@ -145,7 +149,7 @@ if (await isEntrypoint(import.meta.url)) {
         maxUsd: result.manifest.maxUsd, allocatedUsd: result.allocatedUsd, providerCalls: 0 }));
     } else if (command === 'verify' && args.length === 3) {
       await verifyHostedCell({ manifestPath: args[0], manifestSha256: args[1], cellId: args[2], environment: process.env });
-    } else throw new Error('Usage: hosted.mjs <prepare catalog prepared defaults runner output | verify manifest digest cell>');
+    } else throw new Error('Usage: hosted.mjs <prepare catalog prepared runner output | verify manifest digest cell>');
   } catch (error) {
     console.error(`Hosted campaign admission failed: ${hostedAdmissionDiagnostic(error)}. No provider work was started by this command.`); process.exitCode = 2;
   }
