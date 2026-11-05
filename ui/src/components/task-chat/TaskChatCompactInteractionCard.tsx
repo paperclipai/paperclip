@@ -361,6 +361,17 @@ function PlanReviewPreview({
   );
 }
 
+/** Plan approvals read as decisions on a named plan revision, not a generic confirmation. */
+function planReviewReceiptSummary(interaction: IssueThreadInteraction, reason: string | null): string | null {
+  if (interaction.kind !== "request_confirmation") return null;
+  const target = interaction.payload.target;
+  if (target?.type !== "issue_document" || target.key !== "plan") return null;
+  const plan = target.revisionNumber == null ? "the plan" : `Plan v${target.revisionNumber}`;
+  if (interaction.status === "accepted") return `Approved ${plan}`;
+  if (interaction.status === "rejected") return reason ? `Requested changes to ${plan}: ${reason}` : `Requested changes to ${plan}`;
+  return null;
+}
+
 function receiptReason(interaction: IssueThreadInteraction): string | null {
   const result = interaction.result;
   if (!result) return null;
@@ -621,7 +632,8 @@ function ReceiptDisclosure({
       interaction.kind === "ask_user_questions" &&
       interaction.status === "answered"
         ? "Questions answered"
-        : buildIssueThreadInteractionSummary(interaction);
+        : planReviewReceiptSummary(interaction, answerReason)
+          ?? buildIssueThreadInteractionSummary(interaction);
     return (
       <details
         className="group"
