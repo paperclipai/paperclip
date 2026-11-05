@@ -12,6 +12,7 @@ import { readTransientRecoveryContractFromRun, readHeartbeatRunErrorFamily, isTr
 import { RemoteWorkspacePreparationTimeoutError, REMOTE_WORKSPACE_RESTORE_FAILED_CODE, findRemoteWorkspaceRestoreError } from "../remote-workspace-transport.js";
 import { escalateRemoteWorkspaceRestoreFailure } from "../remote-workspace-restore-recovery.js";
 import { findReusableSandboxResumeError } from "../reusable-sandbox-resume-error.js";
+import { findPluginWorkerUnavailableError } from "../plugin-worker-unavailable-error.js";
 import { type RunSessionOutcome, resolveNextSessionState, normalizeUsageTotals, resolveCacheAdjustedCostUsd, resolveLedgerBiller, resolveLedgerCostStatus, normalizeLedgerBillingType } from "./run-state.js";
 import { readGitConnectionFailure } from "../git-connection-failure.js";
 import { CONFIGURATION_INCOMPLETE_FAILURE_CODE, ConfigurationIncompleteFailure } from "./run-preparation.js";
@@ -1370,11 +1371,17 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
     // on exhaustion, the board gets a named recovery action.
     const remoteWorkspaceRestoreFailure = !providerDispatchStarted && run.runtimeMode === "legacy"
       && run.nativeSessionId === null && run.runnerInstanceId === null ? findRemoteWorkspaceRestoreError(outerErr) : null;
+    // A plugin worker that was not running refused the call before sending it,
+    // so no provider work or plugin side effect started. Retry within the
+    // bootstrap budget; the worker is restarted or replaced meanwhile.
+    const pluginWorkerUnavailableFailure = !providerDispatchStarted && run.runtimeMode === "legacy"
+      && run.nativeSessionId === null && run.runnerInstanceId === null ? findPluginWorkerUnavailableError(outerErr) : null;
     const setupFailureErrorCode =
       (controllerLeaseLost ? CONTROLLER_LEASE_LOST_FAILURE_CODE : null) ??
       remoteWorkspacePreparationTimeout?.code ??
       reusableSandboxResumeFailure?.code ??
       remoteWorkspaceRestoreFailure?.code ??
+      pluginWorkerUnavailableFailure?.code ??
       workspaceGitScanFailure?.code ??
       workspaceValidationSetupFailure?.code ??
       configurationIncompleteSetupFailure?.code ??
