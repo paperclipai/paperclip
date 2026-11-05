@@ -283,6 +283,24 @@ describeEmbeddedPostgres("agent task hierarchy depth", () => {
       .rejects.toMatchObject({ status: 404 });
   });
 
+  it("lists a placed task only under its recorded origin, not its creating run's task", async () => {
+    const { companyId, agentId } = await seedCompany();
+    const { childId } = await seedTree(companyId);
+    const runTaskId = await seedIssue(companyId);
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, status: "running", issueId: runTaskId });
+
+    const created = await issueService(db).create(companyId, {
+      title: "Named parent from another run", parentId: childId, createdByAgentId: agentId, actorRunId: runId,
+    });
+    expect(created.originIssueId).toBe(childId);
+
+    const fromRunTask = await issueService(db).list(companyId, { createdFromIssueId: runTaskId });
+    const fromChild = await issueService(db).list(companyId, { createdFromIssueId: childId });
+    expect(fromRunTask.map((row) => row.id)).not.toContain(created.id);
+    expect(fromChild.map((row) => row.id)).toContain(created.id);
+  });
+
   describe("moves", () => {
     it("keeps the requested private parent as the privacy source of a placed move", async () => {
       const { companyId } = await seedCompany();

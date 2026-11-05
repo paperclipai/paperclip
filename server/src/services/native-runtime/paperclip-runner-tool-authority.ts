@@ -1741,6 +1741,9 @@ export class PaperclipRunnerToolAuthority {
         type: "agent", agentId: this.binding.agentId, runId: this.binding.runId, companyId: this.binding.companyId,
       })).kind === "watchdog" ? "allow_nested" as const : "flatten" as const;
       let placedParentId = parentIssueId;
+      // Set when the structural parent is dropped; the follow-up still works in
+      // the requester's workspace.
+      let workspaceSourceIssueId: string | null = null;
       if (parentIssueId) {
         placedParentId = (await resolveNewTaskParent(tx, this.binding.companyId, parentIssueId, parentDepthPolicy)).effectiveParentId;
         if (placedParentId && placedParentId !== parentIssueId) {
@@ -1752,6 +1755,7 @@ export class PaperclipRunnerToolAuthority {
             // A named parent fails closed; the implicit current-task default
             // falls back to standalone work, as the issues route does.
             if (requestedParentId) throw forbidden(denied);
+            workspaceSourceIssueId = parentIssueId;
             parentIssueId = null;
             placedParentId = null;
           }
@@ -1781,11 +1785,11 @@ export class PaperclipRunnerToolAuthority {
         run: { companyId: this.binding.companyId, executionPolicy: context.run.contextSnapshot?.executionPolicy },
       });
       if (trust.kind === "denied") throw forbidden(trust.detail);
-      return { projectId, trust, parentIssueId, placedParentId, parentDepthPolicy };
+      return { projectId, trust, parentIssueId, placedParentId, parentDepthPolicy, workspaceSourceIssueId };
     };
     let publication: Awaited<ReturnType<typeof persistActivity>>["publication"] | null = null;
     const result = await this.#withMutationReceipt("create_task", idempotencyKey, input, async (tx, context) => {
-      const { projectId, trust, parentIssueId, placedParentId, parentDepthPolicy } = await authorizeCreate(tx, context);
+      const { projectId, trust, parentIssueId, placedParentId, parentDepthPolicy, workspaceSourceIssueId } = await authorizeCreate(tx, context);
       const existingChild = await tx.select().from(issues).where(and(
         eq(issues.companyId, this.binding.companyId),
         eq(issues.originId, durableIdempotencyKey),
@@ -1842,6 +1846,7 @@ export class PaperclipRunnerToolAuthority {
         // Placement was authorized above; reject the write if the tree changed since.
         parentDepthPolicy,
         ...(parentIssueId ? { expectedParentId: placedParentId } : {}),
+        ...(workspaceSourceIssueId ? { inheritExecutionWorkspaceFromIssueId: workspaceSourceIssueId } : {}),
         createdByAgentId: this.binding.agentId,
         originKind: "manual" as const,
         originId: durableIdempotencyKey,

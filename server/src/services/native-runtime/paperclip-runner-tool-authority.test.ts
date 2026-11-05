@@ -21,6 +21,8 @@ import {
   issueThreadInteractions,
   issueWatchdogs,
   issues,
+  projectWorkspaces,
+  projects,
 } from "@paperclipai/db";
 import { createFullDatabaseResponseCapture, installDatabaseResponseCapture } from "../../__tests__/helpers/full-database-response-capture.js";
 import { startRecoveryPostgres } from "../../__tests__/helpers/recovery-postgres.js";
@@ -1419,13 +1421,20 @@ describe("PaperclipRunnerToolAuthority", () => {
   it("authorizes the placed parent: a hidden root rejects a named child parent and makes the default standalone", async () => {
     const hiddenRootId = randomUUID();
     const openChildId = randomUUID();
+    const projectId = randomUUID();
+    const featureWorkspaceId = randomUUID();
+    await db.insert(projects).values({ id: projectId, companyId, name: "Depth workspace project" });
+    await db.insert(projectWorkspaces).values([
+      { companyId, projectId, name: "Default checkout", isPrimary: true },
+      { id: featureWorkspaceId, companyId, projectId, name: "Feature checkout" },
+    ]);
     await db.insert(issues).values({
       id: hiddenRootId, companyId, title: "Private root", status: "todo", workMode: "standard",
       visibility: "private", privacyRootIssueId: hiddenRootId, responsibleUserId: "someone-else",
     });
     await db.insert(issues).values({
       id: openChildId, companyId, parentId: hiddenRootId, title: "Open child", status: "in_progress",
-      workMode: "standard", assigneeAgentId: agentId,
+      workMode: "standard", assigneeAgentId: agentId, projectId, projectWorkspaceId: featureWorkspaceId,
     });
     const named = new PaperclipRunnerToolAuthority(db, { companyId, agentId, issueId, runId, workMode: "standard" });
     await expect(named.execute({
@@ -1445,8 +1454,11 @@ describe("PaperclipRunnerToolAuthority", () => {
       arguments: { idempotencyKey: "hidden-root-default", title: "Default follow-up", status: "backlog" },
     }) as { task: { id: string; parentId: string | null } };
     expect(created.task.parentId).toBeNull();
-    const [row] = await db.select({ originIssueId: issues.originIssueId }).from(issues).where(eq(issues.id, created.task.id));
+    const [row] = await db.select({ originIssueId: issues.originIssueId, projectWorkspaceId: issues.projectWorkspaceId })
+      .from(issues).where(eq(issues.id, created.task.id));
     expect(row?.originIssueId).toBe(openChildId);
+    // Dropping the structural parent keeps the requester's workspace.
+    expect(row?.projectWorkspaceId).toBe(featureWorkspaceId);
   });
 
   it("lets a conversation create a top-level task and subtasks with parentTaskId", async () => {

@@ -11247,6 +11247,9 @@ export function issueService(db: Db) {
       let parentAdjustment: IssueParentAdjustment | null = null;
       // A move placed beside its requested parent still inherits that parent's privacy.
       let privacySourceParentId: string | null = null;
+      // Re-checked under the privacy-tree lock: a concurrent child create can
+      // change whether this move is allowed after the unlocked plan.
+      let lockedParentPlan: { requestedParentId: string; policy: IssueParentDepthPolicy; plannedParentId: string | null } | null = null;
       if (data.parentId && data.parentId !== existing.parentId) {
         // A skipped move drops only `parentId`; the rest of the patch applies.
         const requestedParentId = data.parentId;
@@ -11259,6 +11262,7 @@ export function issueService(db: Db) {
         }
         parentAdjustment = plan.adjustment;
         if (plan.adjustment?.applied) privacySourceParentId = requestedParentId;
+        lockedParentPlan = { requestedParentId, policy: data.parentDepthPolicy ?? "flatten", plannedParentId };
         const { parentId: _requestedParentId, ...rest } = data;
         data = plan.parentId === undefined || plan.parentId === existing.parentId
           ? rest
@@ -11543,6 +11547,15 @@ export function issueService(db: Db) {
         const changesPrivacy = issueData.visibility !== undefined || issueData.parentId !== undefined || issueData.projectId !== undefined;
         if (changesPrivacy) await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`issue-privacy-tree:${existing.companyId}`}, 0))`);
         if (issueData.parentId) await assertParentInCompany(tx, existing.companyId, issueData.parentId);
+        if (lockedParentPlan && issueData.parentId !== undefined) {
+          const relocked = await planIssueParentChange(tx, existing, lockedParentPlan.requestedParentId, lockedParentPlan.policy);
+          const relockedParentId = relocked.parentId === undefined ? existing.parentId : relocked.parentId;
+          if (relockedParentId !== lockedParentPlan.plannedParentId) {
+            throw conflict("The task tree changed while this move was checked. Read the tasks again and retry.", {
+              code: "issue_parent_placement_changed",
+            });
+          }
+        }
         // The receipt baseline must be read under the same row lock as the
         // write. Otherwise a concurrent update can be mistaken for a change
         // made by this request.
