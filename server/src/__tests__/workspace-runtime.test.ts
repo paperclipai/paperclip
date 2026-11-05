@@ -1455,50 +1455,102 @@ process.stderr.write(${JSON.stringify(stderr)}, () => { process.exitCode = ${cod
     expect(error.defaultBranch).toBeNull();
   });
 
-  it("recreates a managed worktree whose directory exists but git no longer registers it", async () => {
-    const repoRoot = await createTempRepo();
+  describe("a managed worktree directory that git no longer registers", () => {
     const branchName = "PAP-447-add-worktree-support";
-    const stalePath = path.join(repoRoot, ".paperclip", "worktrees", branchName);
-    await execFileAsync("git", ["worktree", "add", "-b", branchName, stalePath, "HEAD"], { cwd: repoRoot });
-    await fs.writeFile(path.join(stalePath, "committed.txt"), "kept\n");
-    await execFileAsync("git", ["add", "committed.txt"], { cwd: stalePath });
-    await execFileAsync("git", ["commit", "-m", "task work"], { cwd: stalePath });
-    await fs.writeFile(path.join(stalePath, "uncommitted.txt"), "lost\n");
-    await fs.rm(path.join(repoRoot, ".git", "worktrees"), { recursive: true, force: true });
 
-    const realized = await realizeExecutionWorkspace({
-      base: {
-        baseCwd: repoRoot,
-        source: "project_primary",
-        projectId: "project-1",
-        workspaceId: "workspace-1",
-        repoUrl: null,
-        repoRef: "HEAD",
-      },
-      config: {
-        workspaceStrategy: {
-          type: "git_worktree",
-          branchTemplate: "{{issue.identifier}}-{{slug}}",
+    async function createStaleManagedWorktree(repoRoot: string) {
+      const stalePath = path.join(repoRoot, ".paperclip", "worktrees", branchName);
+      await execFileAsync("git", ["worktree", "add", "-b", branchName, stalePath, "HEAD"], { cwd: repoRoot });
+      await fs.writeFile(path.join(stalePath, "committed.txt"), "kept\n");
+      await execFileAsync("git", ["add", "committed.txt"], { cwd: stalePath });
+      await execFileAsync("git", ["commit", "-m", "task work"], { cwd: stalePath });
+      await fs.writeFile(path.join(stalePath, "uncommitted.txt"), "lost\n");
+      await fs.rm(path.join(repoRoot, ".git", "worktrees"), { recursive: true, force: true });
+      return stalePath;
+    }
+
+    function realizeForTask(repoRoot: string, recorder?: WorkspaceOperationRecorder) {
+      return realizeExecutionWorkspace({
+        base: {
+          baseCwd: repoRoot,
+          source: "project_primary",
+          projectId: "project-1",
+          workspaceId: "workspace-1",
+          repoUrl: null,
+          repoRef: "HEAD",
         },
-      },
-      issue: {
-        id: "issue-1",
-        identifier: "PAP-447",
-        title: "Add Worktree Support",
-      },
-      agent: {
-        id: "agent-1",
-        name: "Codex Coder",
-        companyId: "company-1",
-      },
+        config: {
+          workspaceStrategy: {
+            type: "git_worktree",
+            branchTemplate: "{{issue.identifier}}-{{slug}}",
+          },
+        },
+        issue: {
+          id: "issue-1",
+          identifier: "PAP-447",
+          title: "Add Worktree Support",
+        },
+        agent: {
+          id: "agent-1",
+          name: "Codex Coder",
+          companyId: "company-1",
+        },
+        recorder,
+      });
+    }
+
+    it("is recreated on the task branch", async () => {
+      const repoRoot = await createTempRepo();
+      const stalePath = await createStaleManagedWorktree(repoRoot);
+
+      const realized = await realizeForTask(repoRoot);
+
+      expect(await fs.realpath(realized.worktreePath!)).toBe(await fs.realpath(stalePath));
+      expect(realized.branchName).toBe(branchName);
+      await expect(fs.readFile(path.join(stalePath, "committed.txt"), "utf8")).resolves.toBe("kept\n");
+      await expect(fs.access(path.join(stalePath, "uncommitted.txt"))).rejects.toThrow();
+      const { stdout } = await execFileAsync("git", ["worktree", "list", "--porcelain"], { cwd: repoRoot });
+      expect(stdout).toContain(await fs.realpath(stalePath));
     });
 
-    expect(await fs.realpath(realized.worktreePath!)).toBe(await fs.realpath(stalePath));
-    expect(realized.branchName).toBe(branchName);
-    await expect(fs.readFile(path.join(stalePath, "committed.txt"), "utf8")).resolves.toBe("kept\n");
-    await expect(fs.access(path.join(stalePath, "uncommitted.txt"))).rejects.toThrow();
-    const { stdout } = await execFileAsync("git", ["worktree", "list", "--porcelain"], { cwd: repoRoot });
-    expect(stdout).toContain(await fs.realpath(stalePath));
+    it("is removed inside the recorded cleanup operation", async () => {
+      const repoRoot = await createTempRepo();
+      const stalePath = await createStaleManagedWorktree(repoRoot);
+      const { recorder, operations } = createWorkspaceOperationRecorderDouble();
+      const directoryExistedWhenRecorded: boolean[] = [];
+      const observingRecorder: WorkspaceOperationRecorder = {
+        ...recorder,
+        recordOperation: async (input) => {
+          if (input.metadata?.cleanupAction === "remove_unregistered_worktree_directory") {
+            directoryExistedWhenRecorded.push(await fs.access(path.join(stalePath, "uncommitted.txt")).then(() => true, () => false));
+          }
+          return recorder.recordOperation(input);
+        },
+      };
+
+      await realizeForTask(repoRoot, observingRecorder);
+
+      expect(directoryExistedWhenRecorded).toEqual([true]);
+      expect(operations.filter((operation) => operation.metadata?.cleanupAction === "remove_unregistered_worktree_directory")).toHaveLength(1);
+    });
+
+    it("is never removed when the directory is an unrelated clone", async () => {
+      const repoRoot = await createTempRepo();
+      const clonePath = path.join(repoRoot, ".paperclip", "worktrees", branchName);
+      await fs.mkdir(clonePath, { recursive: true });
+      await execFileAsync("git", ["init"], { cwd: clonePath });
+      await execFileAsync("git", ["config", "user.email", "test@example.com"], { cwd: clonePath });
+      await execFileAsync("git", ["config", "user.name", "Test"], { cwd: clonePath });
+      await fs.writeFile(path.join(clonePath, "own-history.txt"), "mine\n");
+      await execFileAsync("git", ["add", "own-history.txt"], { cwd: clonePath });
+      await execFileAsync("git", ["commit", "-m", "unrelated history"], { cwd: clonePath });
+
+      await expect(realizeForTask(repoRoot)).rejects.toThrow(/not a reusable git worktree/);
+
+      await expect(fs.readFile(path.join(clonePath, "own-history.txt"), "utf8")).resolves.toBe("mine\n");
+      const { stdout } = await execFileAsync("git", ["log", "--format=%s"], { cwd: clonePath });
+      expect(stdout.trim()).toBe("unrelated history");
+    });
   });
 
   it("reuses the current linked worktree instead of nesting another worktree inside it", async () => {
