@@ -14,6 +14,11 @@ type ParsedIssueAssigneeAdapterOverrides = ReturnType<typeof parseIssueAssigneeA
 
 export const PLUGIN_RUN_CONFIGURATION_TIMEOUT_MS = 1500;
 const ISSUE_DESCRIPTION_MAX_CHARS = 16_000;
+const EFFORT_KEYS: ReadonlySet<string> = new Set(["modelReasoningEffort", "reasoningEffort", "effort", "variant"]);
+
+function setsEffort(config: PluginRunAdapterConfig): boolean {
+  return Object.keys(config).some((key) => EFFORT_KEYS.has(key));
+}
 
 export interface PluginRunConfigurator {
   id: string;
@@ -87,9 +92,11 @@ export async function requestPluginRunConfiguration(
 export function mergePluginRunDecisions(decisions: readonly PluginRunConfigurationDecision[]): PluginRunAdapterConfig {
   const merged: PluginRunAdapterConfig = {};
   for (const decision of decisions) {
+    const effortTaken = setsEffort(merged);
     for (const key of PLUGIN_RUN_ADAPTER_CONFIG_KEYS) {
       const value = decision.adapterConfig[key];
-      if (value !== undefined && merged[key] === undefined) merged[key] = value;
+      if (value === undefined || merged[key] !== undefined || (effortTaken && EFFORT_KEYS.has(key))) continue;
+      merged[key] = value;
     }
   }
   return merged;
@@ -99,9 +106,11 @@ export function applyPluginRunAdapterConfig(
   overrides: ParsedIssueAssigneeAdapterOverrides,
   adapterConfig: PluginRunAdapterConfig,
 ): ParsedIssueAssigneeAdapterOverrides {
-  if (Object.keys(adapterConfig).length === 0) return overrides;
+  const operatorConfig = pickPluginRunAdapterConfig(overrides?.adapterConfig ?? null);
+  const pluginEntries = Object.entries(adapterConfig).filter(([key]) => !setsEffort(operatorConfig) || !EFFORT_KEYS.has(key));
+  if (pluginEntries.length === 0) return overrides;
   return {
-    adapterConfig: { ...adapterConfig, ...(overrides?.adapterConfig ?? {}) },
+    adapterConfig: { ...Object.fromEntries(pluginEntries), ...(overrides?.adapterConfig ?? {}) },
     useProjectWorkspace: overrides?.useProjectWorkspace ?? null,
   };
 }

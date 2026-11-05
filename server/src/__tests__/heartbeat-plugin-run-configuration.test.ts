@@ -106,6 +106,13 @@ describePostgres("plugin run configuration through adapter dispatch", () => {
     expect(input?.config).toMatchObject({ model: "operator-model", modelReasoningEffort: "low" });
   });
 
+  it("keeps an operator effort when the plugin uses another effort alias", async () => {
+    const f = await seed({ effort: "operator-effort" });
+    prepare.mockResolvedValue({ adapterConfig: { model: "plugin-model", modelReasoningEffort: "low" } });
+    const { input } = await run(f);
+    expect(input?.config).toMatchObject({ model: "plugin-model", effort: "operator-effort", modelReasoningEffort: "high" });
+  });
+
   it("runs with the agent configuration when the plugin fails", async () => {
     const f = await seed();
     prepare.mockRejectedValue(new Error("classifier unavailable"));

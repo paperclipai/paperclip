@@ -719,7 +719,11 @@ Rules:
 - An error, a timeout or an invalid result has no effect. The run continues with
   the configuration it would have had without the plugin.
 - If two plugins set the same key, the plugin with the lower install order wins.
-- Per-issue overrides that an operator sets on the issue win over the plugin.
+  The effort keys (`effort`, `modelReasoningEffort`, `reasoningEffort`,
+  `variant`) count as one setting: the first plugin that sets one of them owns
+  effort, and it can set more than one key.
+- Per-issue overrides that an operator sets on the issue win over the plugin. If
+  an operator sets any effort key, the host ignores all effort keys from plugins.
 - The host does not call the hook for agents that use an AI connection router.
   The router owns model and effort for those agents.
 - The host records the merged result in the run context snapshot, also when the

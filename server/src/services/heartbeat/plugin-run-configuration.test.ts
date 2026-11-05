@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Db } from "@paperclipai/db";
 import type { PluginPrepareAgentRunRequest } from "@paperclipai/shared";
+import { projectPaperclipRunnerTaskConfig } from "../native-runtime/provider-profile.js";
 import type { PluginWorkerManager } from "../plugin-worker-manager.js";
 import {
   PLUGIN_RUN_CONFIGURATION_TIMEOUT_MS, applyPluginRunAdapterConfig, applyPluginRunConfiguration, mergePluginRunDecisions, requestPluginRunConfiguration,
@@ -72,6 +73,13 @@ describe("plugin run configuration", () => {
     ])).toEqual({ model: "first-model", effort: "medium" });
   });
 
+  it("treats effort aliases as one setting across plugins", () => {
+    expect(mergePluginRunDecisions([
+      { pluginKey: "a", adapterConfig: { effort: "low", modelReasoningEffort: "low" } },
+      { pluginKey: "b", adapterConfig: { model: "second-model", reasoningEffort: "high", variant: "max" } },
+    ])).toEqual({ model: "second-model", effort: "low", modelReasoningEffort: "low" });
+  });
+
   it("reuses the decision recorded for the same run without calling plugins again", async () => {
     const { manager, call } = workers({ a: () => ({ adapterConfig: { model: "other-model" } }) });
     const run = { id: "run", companyId: "company", invocationSource: "assignment", scheduledRetryAttempt: 0 } as Parameters<typeof applyPluginRunConfiguration>[1]["run"];
@@ -95,6 +103,22 @@ describe("plugin run configuration", () => {
     expect(recorded).toBeNull();
     expect(call).not.toHaveBeenCalled();
     expect(appendRunEvent).not.toHaveBeenCalled();
+  });
+
+  it("keeps an operator effort when the plugin sets any effort alias", () => {
+    for (const operatorKey of ["effort", "modelReasoningEffort", "reasoningEffort", "variant"]) {
+      expect(applyPluginRunAdapterConfig({ adapterConfig: { [operatorKey]: "high" }, useProjectWorkspace: null },
+        { model: "small-model", effort: "low", modelReasoningEffort: "low", reasoningEffort: "low", variant: "low" }))
+        .toEqual({ adapterConfig: { model: "small-model", [operatorKey]: "high" }, useProjectWorkspace: null });
+    }
+    const operatorOnly = { adapterConfig: { effort: "high" }, useProjectWorkspace: null };
+    expect(applyPluginRunAdapterConfig(operatorOnly, { modelReasoningEffort: "low" })).toBe(operatorOnly);
+  });
+
+  it("projects the operator effort to a runner task when the plugin uses another alias", () => {
+    const applied = applyPluginRunAdapterConfig({ adapterConfig: { effort: "high" }, useProjectWorkspace: null }, { modelReasoningEffort: "low" });
+    expect(projectPaperclipRunnerTaskConfig("codex_app_server", { modelReasoningEffort: "medium" }, applied?.adapterConfig))
+      .toMatchObject({ modelReasoningEffort: "high" });
   });
 
   it("lets per-issue overrides win over the plugin decision", () => {
