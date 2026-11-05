@@ -72,14 +72,15 @@ export async function verifiedWorkspaceRepairReceipt(db: Db, run: Pick<typeof he
   const parsedRemote = remoteWorkspaceRunReferenceSchema.safeParse(run.runnerProfileJson?.remoteWorkspace);
   const remote = parsedRemote.success && parsedRemote.data.state === "saved" ? parsedRemote.data : null;
   if ((run.runnerProfileJson?.remoteWorkspace != null && !parsedRemote.success) || reference && parsedRemote.success) return null;
-  if (typeof issueId === "string" && (reference?.state === "prepared" || !reference && !parsedRemote.success
+  if (typeof issueId === "string" && (reference?.state === "prepared" || reference?.state === "finalized"
+    && run.runnerProfileJson?.finalizedWorkspaceRecoveryMigration != null || !reference && !parsedRemote.success
     && run.runnerProfileJson?.legacyWorkspaceRecoveryMigration != null)) {
     let migrated;
     try { migrated = await readMigratedLegacyWorkspaceSource(db, { companyId: run.companyId, runId: run.id, reference }); }
     catch (error) { if (error instanceof Error && error.message === "legacy_workspace_migration_receipt_invalid") return null; throw error; }
     if (migrated) {
-      const allocations = reference ? [{ leaseId: reference.leaseId, providerLeaseId: reference.providerLeaseId }]
-        : migrated.recoveryAllocations;
+      const allocations = migrated.recoveryAllocations ?? (reference
+        ? [{ leaseId: reference.leaseId, providerLeaseId: reference.providerLeaseId }] : null);
       if (!allocations?.length) return null;
       let receiptId: string | null = null;
       for (const allocation of allocations) {
@@ -98,11 +99,16 @@ export async function verifiedWorkspaceRepairReceipt(db: Db, run: Pick<typeof he
           sql`${issueRecoveryActions.evidence}#>>'{workspaceRecovery,runId}' = ${run.id}`,
           sql`${issueRecoveryActions.evidence}#>>'{workspaceRecovery,status}' = 'recovered'`,
         )).orderBy(desc(workspaceOperations.createdAt)).limit(1);
-        if (!saved || readWorkspaceRecovery(saved.evidence)?.status !== "recovered") return null;
+        if (!saved || readWorkspaceRecovery(saved.evidence)?.status !== "recovered") {
+          receiptId = null; break;
+        }
         try { readSnapshot(saved.metadata, run.companyId, run.id); } catch { return null; }
         receiptId = saved.id;
       }
-      return receiptId;
+      if (receiptId) return receiptId;
+      // A completed legacy copyback is still a valid receipt after its host
+      // files move. Migration must not erase that independent recovery proof.
+      if (reference?.state !== "finalized") return null;
     }
   }
   if (typeof issueId !== "string" || (!remote && (!reference || reference.state !== "finalized" || !reference.finalHostSha256))) return null;

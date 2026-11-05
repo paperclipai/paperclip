@@ -63,24 +63,31 @@ export async function readLegacyWorkspaceRecoveryAllocations(db: Pick<Db, "selec
 export async function readMigratedLegacyWorkspaceSource(db: Pick<Db, "select">, input: {
   companyId: string; runId: string; reference: NativeWorkspaceSyncReference | null;
 }): Promise<LegacyWorkspaceRecoverySource | null> {
-  if (input.reference && input.reference.state !== "prepared") return null;
   const [run] = await db.select({ id: heartbeatRuns.id, companyId: heartbeatRuns.companyId,
     nativeIssueId: heartbeatRuns.nativeIssueId,
     resultJson: sql<Record<string, unknown>>`jsonb_build_object('workspaceRestoreRecovery', ${heartbeatRuns.resultJson}->'workspaceRestoreRecovery')`,
     runnerProfileJson: sql<Record<string, unknown>>`jsonb_build_object(
       'legacyWorkspaceRecoveryMigration', ${heartbeatRuns.runnerProfileJson}->'legacyWorkspaceRecoveryMigration',
+      'finalizedWorkspaceRecoveryMigration', ${heartbeatRuns.runnerProfileJson}->'finalizedWorkspaceRecoveryMigration',
       'nativeWorkspaceSync', ${heartbeatRuns.runnerProfileJson}->'nativeWorkspaceSync',
       'remoteWorkspace', ${heartbeatRuns.runnerProfileJson}->'remoteWorkspace')`,
   }).from(heartbeatRuns).where(and(
     eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.id, input.runId),
   ));
-  const runMarker = run?.runnerProfileJson?.legacyWorkspaceRecoveryMigration as { workspaceId?: unknown } | undefined;
+  const runMarker = run?.runnerProfileJson?.[input.reference?.state === "finalized"
+    ? "finalizedWorkspaceRecoveryMigration" : "legacyWorkspaceRecoveryMigration"] as { workspaceId?: unknown } | undefined;
+  if (input.reference?.state === "finalized" && runMarker == null) return null;
+  if (input.reference?.state === "finalized" && !isDeepStrictEqual(input.reference, run?.runnerProfileJson?.nativeWorkspaceSync))
+    throw new Error("legacy_workspace_migration_receipt_invalid");
   const workspaceId = input.reference?.workspaceId ?? runMarker?.workspaceId;
   if (typeof workspaceId !== "string") return null;
   const [workspace] = await db.select({ metadata: executionWorkspaces.metadata }).from(executionWorkspaces).where(and(
     eq(executionWorkspaces.companyId, input.companyId), eq(executionWorkspaces.id, workspaceId),
   ));
-  if (!readRemoteWorkspaceAuthority(workspace?.metadata)) return null;
+  if (!readRemoteWorkspaceAuthority(workspace?.metadata)) {
+    if (input.reference?.state === "finalized" && runMarker != null) throw new Error("legacy_workspace_migration_receipt_invalid");
+    return null;
+  }
   const marker = workspace?.metadata?.legacyWorkspaceRecoveryMigration as { schema?: unknown; operationId?: unknown } | undefined;
   if (marker?.schema !== LEGACY_WORKSPACE_RECOVERY_MIGRATION || typeof marker.operationId !== "string")
     throw new Error("legacy_workspace_migration_receipt_invalid");
@@ -100,6 +107,16 @@ export async function readMigratedLegacyWorkspaceSource(db: Pick<Db, "select">, 
     || run?.runnerProfileJson?.remoteWorkspace != null
     || !isDeepStrictEqual(source.recoveryAllocations ?? null, run ? await readLegacyWorkspaceRecoveryAllocations(db, run) : null)))
     throw new Error("legacy_workspace_migration_receipt_invalid");
+  if (source?.recoveryAllocations) {
+    for (const allocation of source.recoveryAllocations) {
+      const [lease] = await db.select({ providerLeaseId: environmentLeases.providerLeaseId, metadata: environmentLeases.metadata })
+        .from(environmentLeases).where(and(eq(environmentLeases.companyId, input.companyId),
+          eq(environmentLeases.id, allocation.leaseId), eq(environmentLeases.heartbeatRunId, input.runId),
+          eq(environmentLeases.issueId, source.issueId)));
+      if (!lease || lease.providerLeaseId !== allocation.providerLeaseId || lease.metadata?.remoteCwd !== allocation.remoteCwd)
+        throw new Error("legacy_workspace_migration_receipt_invalid");
+    }
+  }
   if (!source) throw new Error("legacy_workspace_migration_receipt_invalid");
   return source as LegacyWorkspaceRecoverySource;
 }
