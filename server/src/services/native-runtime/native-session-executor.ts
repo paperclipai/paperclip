@@ -11236,7 +11236,9 @@ async function executePaperclipNativeSessionWithinScope(
       if (!released) throw new Error("native_session_lease_lost");
     } catch (error) {
       if (!postExecutionFailed) throw error;
-      logger.warn({ runId: input.execution.binding.runId }, "Native finalization claim release failed after an earlier error");
+      if (!(error instanceof NativeControllerDetachedForRestartError)) {
+        logger.warn({ runId: input.execution.binding.runId }, "Native finalization claim release failed after an earlier error");
+      }
     }
   }
   const finalization: NativeFinalizationResult = {
