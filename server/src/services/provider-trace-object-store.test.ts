@@ -1,9 +1,12 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { Readable } from "node:stream";
 import { promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createS3StorageProvider } from "../storage/s3-provider.js";
+import type { StorageProvider } from "../storage/types.js";
+import { ObjectJournalBusyError } from "./object-byte-journal.js";
 import { createProviderTraceObjectStore } from "./provider-trace-object-store.js";
 import {
   S3Client,
@@ -92,4 +95,82 @@ describe.skipIf(!endpoint)("encrypted object provider traces (S3 integration)", 
     },
     30_000,
   );
+});
+
+describe("encrypted object provider trace reads under load", () => {
+  function memory() {
+    const objects = new Map<string, Buffer>();
+    const etag = (b: Buffer) => createHash("sha256").update(b).digest("hex");
+    const provider: StorageProvider = {
+      id: "s3",
+      async putObject() {
+        throw Error("unconditional");
+      },
+      async putObjectConditional(i) {
+        const old = objects.get(i.objectKey);
+        if (i.ifNoneMatch ? old : !old || etag(old) !== i.ifMatch)
+          throw Object.assign(Error("conflict"), { name: "PreconditionFailed" });
+        const chunks: Buffer[] = [];
+        if (Buffer.isBuffer(i.body)) chunks.push(i.body);
+        else for await (const bytes of i.body) chunks.push(Buffer.from(bytes));
+        const b = Buffer.concat(chunks);
+        objects.set(i.objectKey, b);
+        return { etag: etag(b) };
+      },
+      async getObject(i) {
+        const b = objects.get(i.objectKey);
+        if (!b) throw Object.assign(Error("missing"), { name: "NoSuchKey" });
+        return { stream: Readable.from([b]), etag: etag(b) };
+      },
+      async headObject(i) {
+        return { exists: objects.has(i.objectKey) };
+      },
+      async deleteObject(i) {
+        objects.delete(i.objectKey);
+      },
+      async listObjects(i) {
+        return { keys: [...objects.keys()].filter((k) => k.startsWith(i.prefix)) };
+      },
+    };
+    return provider;
+  }
+
+  it("never sheds a finalization read while client reads are shed", async () => {
+    const directory = await fs.mkdtemp(path.join(tmpdir(), "object-trace-load-"));
+    vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY", "a".repeat(64));
+    vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY_FILE", path.join(directory, "unused.key"));
+    try {
+      const provider = memory(),
+        store = createProviderTraceObjectStore(provider),
+        file = path.join(directory, "trace.ndjson"),
+        ref = `s3-segments-v1:company/run/${randomUUID()}.ndjson`,
+        bytes = Buffer.from('{"kind":"frame","frameId":1}\n');
+      await store.open(ref, file, async () => undefined);
+      await fs.appendFile(file, bytes);
+      await store.finish(ref);
+      const get = provider.getObject;
+      let open!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        open = resolve;
+      });
+      provider.getObject = async (i) => {
+        await gate;
+        return get(i);
+      };
+      // 8 active plus 32 waiting fills the interactive class.
+      const clients = Array.from({ length: 40 }, () => store.read(ref, undefined, "interactive"));
+      await expect(store.read(ref, undefined, "interactive")).rejects.toBeInstanceOf(
+        ObjectJournalBusyError,
+      );
+      const finalization = store.read(ref);
+      open();
+      // A client read may still be shed on a later range read; the client retries it.
+      for (const read of await Promise.allSettled(clients))
+        if (read.status === "rejected") expect(read.reason).toBeInstanceOf(ObjectJournalBusyError);
+        else expect(read.value).toEqual(bytes);
+      expect(await finalization).toEqual(bytes);
+    } finally {
+      await fs.rm(directory, { recursive: true, force: true });
+    }
+  });
 });

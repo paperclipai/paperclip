@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { Readable } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
 import type { StorageProvider } from "../storage/types.js";
+import { ObjectJournalBusyError } from "./object-byte-journal.js";
 import { createObjectRunLogStore } from "./object-run-log-store.js";
 
 async function readBody(body: AsyncIterable<Uint8Array>) {
@@ -481,5 +482,36 @@ describe("S3 run log store", () => {
     await Promise.all([first.committed, second]);
     await store.append(h, event(3));
     expect((await store.finalize(h)).bytes).toBeGreaterThan(9 * 1024 * 1024);
+  });
+  it("sheds only client reads that opt in while internal reads keep queuing", async () => {
+    const m = memory(),
+      store = createObjectRunLogStore({
+        provider: m.provider,
+        keyPrefix: "logs",
+        assertWriterAuthority: async () => undefined,
+      });
+    const handle = await store.begin(input);
+    await store.append(handle, event(1));
+    await store.finalize(handle);
+    const get = m.provider.getObject;
+    let open!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      open = resolve;
+    });
+    m.provider.getObject = async (i) => {
+      await gate;
+      return get(i);
+    };
+    // 8 active plus 32 waiting fills the interactive class.
+    const polls = Array.from({ length: 40 }, () => store.read(handle, { priority: "interactive" }));
+    await expect(store.read(handle, { priority: "interactive" })).rejects.toBeInstanceOf(
+      ObjectJournalBusyError,
+    );
+    const internal = store.read(handle);
+    open();
+    // A poll may still be shed on a later range read; the client retries it.
+    for (const poll of await Promise.allSettled(polls))
+      if (poll.status === "rejected") expect(poll.reason).toBeInstanceOf(ObjectJournalBusyError);
+    expect((await internal).content.trim().split("\n")).toHaveLength(1);
   });
 });
