@@ -242,6 +242,19 @@ and the matching server-issued scheduling receipt on the source run. Company,
 task, agent, requester, schedule identity, and current delivery authorization
 remain enforced. Provider-supplied source IDs do not establish that lineage.
 
+An accepted ordinary task result (`done` or `needs_review`) commits its status
+decision independently of its final reply comment. If the reply is not yet
+published when background presentation recovery is due, a refused or failed
+attempt is recorded on the run as `resultJson.responsePublication` and retried
+with bounded backoff (six attempts, at most five minutes apart). The reply stays
+idempotent through the presentation decision's `commentId`, so a retry never
+posts twice. Exhausted retries record the named failure
+`native_response_publication_failed` with the run's agent as owner, a
+`run.response_publication.failed` run event, and an
+`issue.response_publication_failed` task activity, so the task cannot close
+silently without its answer. Agent Chat conversations keep their completion
+outbox as the bounded owner.
+
 An accepted same-agent continuation retains the same presentation contract.
 Its successor inherits conversation provenance only through the applied status
 decision, delivered continuation effect, and admitted wake that name the same
