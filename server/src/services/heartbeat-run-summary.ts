@@ -57,6 +57,18 @@ function splitProposedPlanBlock(value: string): { plan: string | null; rest: str
   return { plan: null, rest: value };
 }
 
+/**
+ * The posted reply leaves a proposal to its Plan document. A stored message
+ * preview can be cut inside the block; its cut-off remainder is hidden too.
+ */
+function withoutProposedPlanBlock(value: string): string {
+  const { plan, rest } = splitProposedPlanBlock(value);
+  if (plan !== null) return rest;
+  if (!value.endsWith("…[truncated]")) return value;
+  const open = value.search(/(^|\n)[ \t]*<proposed_plan>[ \t]*(\n|$)/i);
+  return open < 0 ? value : value.slice(0, open).trim();
+}
+
 function readCommentText(value: unknown) {
   if (typeof value !== "string") return null;
   return value.trim().length > 0 ? value : null;
@@ -275,7 +287,7 @@ export function readCompletedAssistantMessageCandidate(input: {
   // A harness's `<proposed_plan>` block becomes the task's Plan document and
   // approval card; the posted reply keeps only the surrounding prose.
   const text = readCommentText(
-    typeof payload.text === "string" ? splitProposedPlanBlock(payload.text).rest : payload.text,
+    typeof payload.text === "string" ? withoutProposedPlanBlock(payload.text) : payload.text,
   );
   if (!text) return null;
   return {

@@ -222,6 +222,29 @@ describe("native proposed-plan presentation", () => {
     ]);
   });
 
+  it("keeps a message's plan text when no proposal was recorded for it", () => {
+    const text = "Draft plan below.\n<proposed_plan>\n# Fix\n1. Ship\n</proposed_plan>";
+    const transcript = nativeRunEventsToTranscript([
+      itemEvent(1, "item.completed", "msg-old", { kind: "agentMessage", channel: "final", text }),
+    ]);
+    expect(transcript).toEqual([expect.objectContaining({ kind: "assistant", text })]);
+  });
+
+  it("hides the cut-off remainder of a proposal in a shortened message preview", () => {
+    const transcript = nativeRunEventsToTranscript([
+      itemEvent(1, "item.completed", "msg-1", {
+        kind: "agentMessage",
+        channel: "final",
+        text: "Plan ready.\n<proposed_plan>\n# Fix\n1. Ship…[truncated]",
+      }),
+      event(2, "plan.proposed", {
+        schema: "paperclip.plan.proposed.v1", proposalId: "msg-1", status: "completed",
+        markdown: "# Fix\n1. Ship\n2. Verify", source: "codex_plan_item",
+      }),
+    ]);
+    expect(transcript[0]).toMatchObject({ kind: "assistant", text: "Plan ready." });
+  });
+
   it("keeps a Claude ExitPlanMode proposal out of the turn checklist", () => {
     const transcript = nativeRunEventsToTranscript([event(1, "plan.proposed", {
       schema: "paperclip.plan.proposed.v1",

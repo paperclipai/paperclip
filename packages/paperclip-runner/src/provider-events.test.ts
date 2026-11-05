@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import { RUNNERD_CANONICAL_ITEM } from "./drivers/codex/codex-driver-values.js";
 import {
   CODEX_THREAD_ITEM_CLASSIFICATION,
   claudePlanProposalEvent,
@@ -515,6 +516,16 @@ describe("provider-neutral events", () => {
         item: { id: "msg-5", type: "agentMessage", phase: "commentary", text: "<proposed_plan>\n# Plan\n</proposed_plan>" },
       }),
     ).toEqual([]);
+  });
+
+  it("leaves runnerd-forwarded items to the proposal Rust already emitted", () => {
+    const item = { id: "plan-1", type: "plan", text: "<proposed_plan>\n# Cut\n", [RUNNERD_CANONICAL_ITEM]: true };
+    expect(canonicalProviderEventsFromCodex("item/completed", { item })).toEqual([]);
+    const message = {
+      id: "msg-1", type: "agentMessage", phase: "final_answer",
+      text: "<proposed_plan>\n# Plan\n</proposed_plan>", [RUNNERD_CANONICAL_ITEM]: true,
+    };
+    expect(canonicalProviderEventsFromCodex("item/completed", { item: message })).toEqual([]);
   });
 
   it("maps a captured Claude ExitPlanMode plan to a completed proposal", () => {

@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { redactCodexDiagnostic } from "./drivers/codex/diagnostic-redaction.js";
+import { RUNNERD_CANONICAL_ITEM } from "./drivers/codex/codex-driver-values.js";
 import {
   toolFileChangesFromAcpContent,
   toolFileChangesFromCodexChanges,
@@ -873,13 +874,16 @@ export function canonicalProviderEventsFromCodex(
   // Codex plan mode turns a `<proposed_plan>` block into its own plan item;
   // agents can also write the block in an ordinary message to ask for plan
   // approval, so read it there as well.
-  if (completed && type === "agentMessage" && (!text(item.phase) || text(item.phase) === "final_answer")) {
+  // On the runnerd path Rust already emitted the proposal from the full item;
+  // its forwarded item text is a short display preview and must not repeat it.
+  const runnerdCanonical = (item as Record<PropertyKey, unknown>)[RUNNERD_CANONICAL_ITEM] === true;
+  if (!runnerdCanonical && completed && type === "agentMessage" && (!text(item.phase) || text(item.phase) === "final_answer")) {
     const { plan } = splitProposedPlanBlock(text(item.text));
     if (plan) {
       return [{ eventType: "plan.proposed", payload: planProposalPayload(itemId, "completed", plan, "codex_plan_item"), itemId }];
     }
   }
-  if ((method === "item/started" || completed) && type === "plan") {
+  if (!runnerdCanonical && (method === "item/started" || completed) && type === "plan") {
     return [
       {
         eventType: "plan.proposed",

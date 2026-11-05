@@ -125,7 +125,11 @@ function splitProposedPlanBlock(value: string): { plan: string | null; rest: str
 }
 
 function withoutProposedPlanBlock(value: string): string {
-  return splitProposedPlanBlock(value).rest;
+  const { plan, rest } = splitProposedPlanBlock(value);
+  if (plan !== null) return rest;
+  // A stored preview can end inside the block; hide its cut-off remainder.
+  const open = value.search(/(^|\n)[ \t]*<proposed_plan>[ \t]*(\n|$)/i);
+  return open < 0 ? value : value.slice(0, open).trim();
 }
 
 function planProposalEntry(
@@ -841,6 +845,15 @@ export function nativeRunEventsToTranscript(events: readonly HeartbeatRunEvent[]
   // An edit call reports an optimistic patch when it starts and the exact one
   // when it lands. The row shows the latest one, wherever it first appears.
   const fileChangesByExecutionId = new Map<string, unknown[]>();
+  // Messages whose `<proposed_plan>` block became a completed proposal show
+  // it through the proposal card; any other message keeps its text.
+  const proposedMessageIds = new Set<string>();
+  for (const event of orderedEvents) {
+    if (event.eventType !== "plan.proposed") continue;
+    const payload = record(record(event.payload?.prpEvent)?.payload);
+    const proposalId = text(payload?.proposalId);
+    if (proposalId && payload?.status === "completed") proposedMessageIds.add(proposalId);
+  }
   for (const event of orderedEvents) {
     if (!event.eventType.startsWith("tool.execution.")) continue;
     const payload = record(record(event.payload?.prpEvent)?.payload);
@@ -935,7 +948,8 @@ export function nativeRunEventsToTranscript(events: readonly HeartbeatRunEvent[]
 
     if (event.eventType === "item.completed" && isAssistantItemKind(itemKind)) {
       // A `<proposed_plan>` block is shown by its plan proposal card instead.
-      const value = withoutProposedPlanBlock(normalizedItemText(payload) ?? "");
+      const raw = normalizedItemText(payload) ?? "";
+      const value = itemId && proposedMessageIds.has(itemId) ? withoutProposedPlanBlock(raw) : raw;
       if (!value) continue;
       const channel = itemIdentity.assistantChannel;
       entries.push({ kind: "assistant", ts, text: value, channel, ...(itemId ? { itemId } : {}) });

@@ -3,7 +3,7 @@ use sha2::{Digest, Sha256};
 
 use crate::acpx_event_payload::{AcpxRuntimeEventKind, AcpxTurnStatus};
 use crate::acpx_provider_state::{is_reserved_terminal_operation, AcpxProviderStateEvent};
-use crate::durable::{redact_text, sanitize_value, EventPriority};
+use crate::durable::{redact_sensitive_text_values, redact_text, sanitize_value, EventPriority};
 use crate::local_runner::LocalRunnerError;
 use crate::provider_bridge::{semantic_value_digest, ToolResult};
 use crate::stable_identity::{
@@ -549,6 +549,66 @@ fn require_projected_turn(
         ));
     }
     Ok(())
+}
+
+/// Matches the `plan.proposed` schema bound: a proposed-plan document stays
+/// complete through this boundary so the TypeScript mapper can save it.
+const MAX_PLAN_PROPOSAL_CHARS: usize = 60_000;
+
+/// Splits one `<proposed_plan>` block out of a message. The tags must sit on
+/// their own lines outside fenced code, so quoting or documenting the tag
+/// never creates a proposal. Mirrors `splitProposedPlanBlock` in TypeScript.
+fn proposed_plan_block(value: &str) -> Option<String> {
+    let lines: Vec<&str> = value.split('\n').collect();
+    let mut fence: Option<char> = None;
+    let mut start: Option<usize> = None;
+    for (index, line) in lines.iter().enumerate() {
+        let trimmed = line.trim();
+        let marker = trimmed.chars().next().filter(|first| {
+            (*first == '`' || *first == '~') && trimmed.starts_with(&first.to_string().repeat(3))
+        });
+        if start.is_none() {
+            if let Some(marker) = marker {
+                fence = match fence {
+                    None => Some(marker),
+                    Some(open) if open == marker => None,
+                    Some(open) => Some(open),
+                };
+                continue;
+            }
+        }
+        if fence.is_some() {
+            continue;
+        }
+        if start.is_none() && trimmed.eq_ignore_ascii_case("<proposed_plan>") {
+            start = Some(index);
+        } else if let Some(open) = start {
+            if trimmed.eq_ignore_ascii_case("</proposed_plan>") {
+                return Some(lines[open + 1..index].join("\n").trim().to_owned());
+            }
+        }
+    }
+    None
+}
+
+/// A proposed-plan document, redacted and bounded by the `plan.proposed`
+/// schema rather than the short display bound, which would cut it.
+fn plan_proposal_markdown(value: &str) -> String {
+    let lower = value.to_ascii_lowercase();
+    let body = match lower.find("<proposed_plan>") {
+        Some(open) => {
+            let inner = &value[open + "<proposed_plan>".len()..];
+            match inner.to_ascii_lowercase().find("</proposed_plan>") {
+                Some(close) => &inner[..close],
+                None => inner,
+            }
+        }
+        None => value,
+    };
+    redact_sensitive_text_values(body.trim())
+        .chars()
+        .take(MAX_PLAN_PROPOSAL_CHARS)
+        .collect()
 }
 
 fn bounded_text(value: &str, max_chars: usize) -> String {
@@ -1197,6 +1257,41 @@ pub fn normalize_codex_notification_in(
             let item_type = string(provider_item.get("type"));
             let provider_phase = string(provider_item.get("phase"));
             let completed = method == "item/completed";
+            // A proposed plan travels as a schema-bounded rich event, so the
+            // durable display bound never cuts the document.
+            let proposal = match (item_type, method) {
+                ("plan", "item/started") => Some((false, String::new())),
+                ("plan", "item/completed") => Some((
+                    true,
+                    plan_proposal_markdown(string(provider_item.get("text"))),
+                )),
+                ("agentMessage", "item/completed")
+                    if provider_phase.is_empty() || provider_phase == "final_answer" =>
+                {
+                    proposed_plan_block(string(provider_item.get("text")))
+                        .map(|block| (true, plan_proposal_markdown(&block)))
+                        .filter(|(_, markdown)| !markdown.is_empty())
+                }
+                _ => None,
+            };
+            if let Some((proposal_completed, markdown)) = proposal {
+                push(
+                    &mut events,
+                    "plan.proposed",
+                    if proposal_completed {
+                        EventPriority::P1
+                    } else {
+                        EventPriority::P2
+                    },
+                    json!({
+                        "schema": "paperclip.plan.proposed.v1",
+                        "proposalId": item_id,
+                        "status": if proposal_completed { "completed" } else { "streaming" },
+                        "markdown": markdown,
+                        "source": "codex_plan_item",
+                    }),
+                );
+            }
             if item_type == "fileChange" {
                 let file_changes =
                     crate::tool_file_changes::codex_file_changes(provider_item.get("changes"), cwd);
@@ -2318,6 +2413,59 @@ mod tests {
                 assert!(events[0].payload.get("inputUpdated").is_none());
             }
             assert!(!events[0].payload.to_string().contains("secret"));
+        }
+    }
+
+    #[test]
+    fn emits_complete_long_plan_proposals_as_rich_events() {
+        let body = format!("# Plan\n{}", "- step\n".repeat(1_000).trim_end());
+        let message = format!("Ready for review.\n<proposed_plan>\n{body}\n</proposed_plan>");
+        assert!(message.chars().count() > MAX_TEXT_CHARS);
+        for kind in ["agentMessage", "plan"] {
+            let events = normalize_codex_notification(
+                "item/completed",
+                &json!({"item": {"id": "item-1", "type": kind, "phase": "final_answer", "text": message}}),
+            );
+            let proposal = events
+                .iter()
+                .find(|event| event.event_type == "plan.proposed")
+                .unwrap_or_else(|| panic!("{kind} emits a proposal"));
+            assert_eq!(
+                proposal.payload["markdown"].as_str(),
+                Some(body.as_str()),
+                "{kind}"
+            );
+            assert_eq!(proposal.payload["proposalId"], "item-1");
+            assert_eq!(proposal.payload["status"], "completed");
+        }
+        let started = normalize_codex_notification(
+            "item/started",
+            &json!({"item": {"id": "plan-1", "type": "plan", "text": ""}}),
+        );
+        assert_eq!(started[0].event_type, "plan.proposed");
+        assert_eq!(started[0].payload["status"], "streaming");
+        // Quoted, fenced or non-final mentions never become proposals.
+        for (phase, text) in [
+            (
+                "final_answer",
+                "Use:\n```\n<proposed_plan>\n# P\n</proposed_plan>\n```",
+            ),
+            (
+                "final_answer",
+                "Inline <proposed_plan>x</proposed_plan> mention.",
+            ),
+            ("commentary", "<proposed_plan>\n# P\n</proposed_plan>"),
+        ] {
+            let events = normalize_codex_notification(
+                "item/completed",
+                &json!({"item": {"id": "m", "type": "agentMessage", "phase": phase, "text": text}}),
+            );
+            assert!(
+                events
+                    .iter()
+                    .all(|event| event.event_type != "plan.proposed"),
+                "{text}"
+            );
         }
     }
 

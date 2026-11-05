@@ -187,6 +187,7 @@ describe("readCompletedAssistantMessageCandidate", () => {
     expect(candidate("<proposed_plan>\n# Fix\n</proposed_plan>")).toBeNull();
     const documented = "Use this format:\n```\n<proposed_plan>\n# Plan\n</proposed_plan>\n```";
     expect(candidate(documented)?.text).toBe(documented);
+    expect(candidate("Plan ready.\n<proposed_plan>\n# Fix\n1. Ship…[truncated]")?.text).toBe("Plan ready.");
   });
 
   it("keeps the persisted PRP v1 assistant_message alias readable", () => {
