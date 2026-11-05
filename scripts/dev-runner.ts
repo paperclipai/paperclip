@@ -518,7 +518,7 @@ async function maybePreflightMigrations(options: { interactive?: boolean; autoAp
 async function buildPluginSdk() {
   console.log("[paperclip] building plugin sdk...");
   const result = await runPnpm(
-    ["--filter", "@paperclipai/plugin-sdk", "build"],
+    ["--filter", "@paperclipai/plugin-sdk", "ensure-build-deps"],
     { stdio: "inherit" },
   );
   if (result.signal) {
@@ -713,8 +713,8 @@ async function stopChildForRestart() {
 }
 
 async function startServerChild() {
-  await buildPaperclipRunner();
   await buildPluginSdk();
+  await buildPaperclipRunner();
 
   const serverScript = mode === "watch" ? "dev:watch" : "dev";
   child = spawn(

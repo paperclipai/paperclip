@@ -21,6 +21,7 @@ const buildTargets = [
     completion: path.join(rootDir, "packages/shared/dist/.paperclip-build-complete"),
     sourceDir: path.join(rootDir, "packages/shared/src"),
     tsconfig: path.join(rootDir, "packages/shared/tsconfig.json"),
+    assets: ["cliplab/LICENSE", "cliplab/PROVENANCE.md"],
     dependencies: [],
   },
   {
@@ -78,6 +79,7 @@ function outputFingerprint(target) {
 
 function needsBuild(target) {
   if (!fs.existsSync(target.output)) return true;
+  if (target.assets?.some(asset => !fs.existsSync(path.join(path.dirname(target.output), asset)))) return true;
   try {
     const completed = JSON.parse(fs.readFileSync(target.completion, "utf8"));
     // Content fingerprints detect partial direct builds even on filesystems
@@ -213,7 +215,14 @@ async function build(target) {
   // tsc emits index.js before it finishes the package. A failed or interrupted
   // compile must not make the next startup accept that partial build as current.
   if (code !== 0) fs.rmSync(target.output, { force: true });
-  else fs.writeFileSync(target.completion, JSON.stringify({ sources, outputs: outputFingerprint(target) }) + "\n");
+  else {
+    for (const asset of target.assets ?? []) {
+      const destination = path.join(path.dirname(target.output), asset);
+      fs.mkdirSync(path.dirname(destination), { recursive: true });
+      fs.copyFileSync(path.join(target.sourceDir, asset), destination);
+    }
+    fs.writeFileSync(target.completion, JSON.stringify({ sources, outputs: outputFingerprint(target) }) + "\n");
+  }
   return code;
 }
 

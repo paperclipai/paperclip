@@ -37,6 +37,10 @@ setTimeout(() => {
     fs.writeFileSync(path.join(root, target, "src/index.ts"), "export {};\n");
     fs.writeFileSync(path.join(root, target, "tsconfig.json"), "{}");
   }
+  fs.mkdirSync(path.join(root, "packages/shared/src/cliplab"));
+  for (const asset of ["LICENSE", "PROVENANCE.md"]) {
+    fs.writeFileSync(path.join(root, "packages/shared/src/cliplab", asset), `original ${asset}\n`);
+  }
   const lock = path.join(root, "node_modules/.cache/paperclip-plugin-build-deps.lock");
   const launch = (env = {}) => {
     const child = spawn(process.execPath, ["scripts/ensure-plugin-build-deps.mjs"], {
@@ -51,6 +55,48 @@ setTimeout(() => {
   };
   return { root, lock, launch };
 }
+
+test("copies shared notices and repairs a missing notice before certifying output", async (t) => {
+  const f = fixture(t);
+  assert.equal((await f.launch().done).code, 0);
+  for (const asset of ["LICENSE", "PROVENANCE.md"]) {
+    const output = path.join(f.root, "packages/shared/dist/cliplab", asset);
+    assert.equal(fs.readFileSync(output, "utf8"), `original ${asset}\n`);
+    fs.unlinkSync(output);
+    const retry = await f.launch().done;
+    assert.equal(retry.code, 0, retry.output);
+    assert.equal(fs.readFileSync(output, "utf8"), `original ${asset}\n`);
+  }
+});
+
+test("upgrades a certified build created before shared asset copying", async (t) => {
+  const f = fixture(t);
+  const helper = path.join(f.root, "scripts/ensure-plugin-build-deps.mjs");
+  const current = fs.readFileSync(helper, "utf8");
+  const previous = current.replace(/^\s*assets: \["cliplab\/LICENSE", "cliplab\/PROVENANCE.md"\],\r?\n/m, "");
+  assert.notEqual(previous, current);
+  fs.writeFileSync(helper, previous);
+  assert.equal((await f.launch().done).code, 0);
+  const notice = path.join(f.root, "packages/shared/dist/cliplab/LICENSE");
+  assert.equal(fs.existsSync(notice), false);
+  fs.writeFileSync(helper, current);
+  const upgraded = await f.launch().done;
+  assert.equal(upgraded.code, 0, upgraded.output);
+  assert.equal(fs.readFileSync(notice, "utf8"), "original LICENSE\n");
+});
+
+test("does not certify or build the SDK when a required notice cannot be copied", async (t) => {
+  const f = fixture(t);
+  const license = path.join(f.root, "packages/shared/src/cliplab/LICENSE");
+  fs.unlinkSync(license);
+  assert.notEqual((await f.launch().done).code, 0);
+  assert.equal(fs.existsSync(path.join(f.root, "packages/shared/dist/.paperclip-build-complete")), false);
+  assert.equal(fs.existsSync(path.join(f.root, "packages/plugins/sdk/dist/index.js")), false);
+  fs.writeFileSync(license, "original LICENSE\n");
+  const retry = await f.launch().done;
+  assert.equal(retry.code, 0, retry.output);
+  assert.equal(fs.readFileSync(path.join(f.root, "packages/shared/dist/cliplab/LICENSE"), "utf8"), "original LICENSE\n");
+});
 
 async function until(predicate) {
   const deadline = Date.now() + 5000;
