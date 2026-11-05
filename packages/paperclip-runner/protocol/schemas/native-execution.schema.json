@@ -1,0 +1,188 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://paperclip.dev/schemas/prp/v1/native-execution.schema.json",
+  "title": "Paperclip runner native execution bundle",
+  "type": "object",
+  "required": [
+    "schema",
+    "provenance",
+    "identity",
+    "input",
+    "runner",
+    "events",
+    "semanticTools",
+    "terminal",
+    "observations",
+    "usage",
+    "transcript",
+    "artifactRoot",
+    "artifacts",
+    "failure"
+  ],
+  "properties": {
+    "schema": { "const": "paperclip-runner/native-execution/v1" },
+    "provenance": { "enum": ["seeded", "replay", "live"] },
+    "identity": {
+      "type": "object",
+      "required": ["runId", "caseId", "configId", "attemptId"],
+      "properties": {
+        "runId": { "$ref": "#/$defs/nonEmpty" },
+        "caseId": { "$ref": "#/$defs/nonEmpty" },
+        "configId": { "$ref": "#/$defs/nonEmpty" },
+        "attemptId": { "$ref": "#/$defs/nonEmpty" }
+      },
+      "additionalProperties": true
+    },
+    "input": {
+      "type": "object",
+      "required": ["caseSha256", "configSha256", "deterministicSeed"],
+      "properties": {
+        "caseSha256": { "$ref": "#/$defs/sha256" },
+        "configSha256": { "$ref": "#/$defs/sha256" },
+        "deterministicSeed": { "$ref": "#/$defs/nonEmpty" }
+      },
+      "additionalProperties": true
+    },
+    "runner": {
+      "type": "object",
+      "required": [
+        "package",
+        "binary",
+        "prpVersion",
+        "nativeExecutionVersion",
+        "catalogVersion",
+        "catalogSha256",
+        "driverContractVersion",
+        "driverKind",
+        "driverVersion"
+      ],
+      "properties": {
+        "package": {
+          "type": "object",
+          "required": ["name", "version"],
+          "properties": {
+            "name": { "$ref": "#/$defs/nonEmpty" },
+            "version": { "$ref": "#/$defs/nonEmpty" }
+          },
+          "additionalProperties": true
+        },
+        "binary": {
+          "type": "object",
+          "required": ["name", "sha256"],
+          "properties": {
+            "name": { "$ref": "#/$defs/nonEmpty" },
+            "sha256": { "$ref": "#/$defs/sha256" }
+          },
+          "additionalProperties": true
+        },
+        "prpVersion": { "$ref": "#/$defs/version" },
+        "nativeExecutionVersion": { "$ref": "#/$defs/version" },
+        "catalogVersion": { "$ref": "#/$defs/version" },
+        "catalogSha256": { "$ref": "#/$defs/sha256" },
+        "driverContractVersion": { "$ref": "#/$defs/version" },
+        "driverKind": { "$ref": "#/$defs/nonEmpty" },
+        "driverVersion": { "$ref": "#/$defs/nonEmpty" }
+      },
+      "additionalProperties": true
+    },
+    "events": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "https://paperclip.dev/schemas/prp/v1/event.schema.json" }
+    },
+    "semanticTools": {
+      "type": "object",
+      "required": ["definitions", "calls", "results", "denials"],
+      "properties": {
+        "definitions": { "type": "array", "items": { "type": "object" } },
+        "calls": { "type": "array", "items": { "type": "object" } },
+        "results": { "type": "array", "items": { "type": "object" } },
+        "denials": { "type": "array", "items": { "type": "object" } }
+      },
+      "additionalProperties": true
+    },
+    "terminal": { "$ref": "https://paperclip.dev/schemas/prp/v1/terminal.schema.json" },
+    "observations": { "type": "object", "additionalProperties": true },
+    "usage": {
+      "type": "object",
+      "required": [
+        "inputTokens",
+        "outputTokens",
+        "totalTokens",
+        "requestCount",
+        "durationMs",
+        "cost"
+      ],
+      "properties": {
+        "inputTokens": { "type": "integer", "minimum": 0 },
+        "outputTokens": { "type": "integer", "minimum": 0 },
+        "totalTokens": { "type": "integer", "minimum": 0 },
+        "requestCount": { "type": "integer", "minimum": 0 },
+        "durationMs": { "type": "integer", "minimum": 0 },
+        "cost": {
+          "oneOf": [
+            { "type": "null" },
+            {
+              "type": "object",
+              "required": ["currency", "amountMicros"],
+              "properties": {
+                "currency": { "$ref": "#/$defs/nonEmpty" },
+                "amountMicros": { "type": "integer", "minimum": 0 }
+              },
+              "additionalProperties": true
+            }
+          ]
+        }
+      },
+      "additionalProperties": true
+    },
+    "transcript": {
+      "allOf": [
+        { "$ref": "#/$defs/contentRef" },
+        {
+          "type": "object",
+          "required": ["complete", "eventCount", "omissionReason"],
+          "properties": {
+            "complete": { "type": "boolean" },
+            "eventCount": { "type": "integer", "minimum": 0 },
+            "omissionReason": { "type": ["string", "null"] }
+          }
+        }
+      ]
+    },
+    "artifactRoot": { "$ref": "#/$defs/contentRef" },
+    "artifacts": { "type": "array", "items": { "$ref": "#/$defs/contentRef" } },
+    "failure": {
+      "oneOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "required": ["classification", "code", "message"],
+          "properties": {
+            "classification": { "$ref": "#/$defs/nonEmpty" },
+            "code": { "$ref": "#/$defs/nonEmpty" },
+            "message": { "$ref": "#/$defs/nonEmpty" }
+          },
+          "additionalProperties": true
+        }
+      ]
+    }
+  },
+  "additionalProperties": true,
+  "$defs": {
+    "nonEmpty": { "type": "string", "minLength": 1 },
+    "version": { "type": "integer", "minimum": 1 },
+    "sha256": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+    "contentRef": {
+      "type": "object",
+      "required": ["uri", "sha256", "byteSize", "mediaType"],
+      "properties": {
+        "uri": { "$ref": "#/$defs/nonEmpty" },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "byteSize": { "type": "integer", "minimum": 0 },
+        "mediaType": { "$ref": "#/$defs/nonEmpty" }
+      },
+      "additionalProperties": true
+    }
+  }
+}

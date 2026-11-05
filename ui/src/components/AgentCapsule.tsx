@@ -1,3 +1,4 @@
+import { motion, useReducedMotion } from "motion/react";
 import * as React from "react";
 
 import { cn } from "@/lib/utils";
@@ -60,9 +61,23 @@ export interface AgentCapsuleProps
   size?: AgentCapsuleSizePreset | { width: number; height: number };
   /** Online-pulse colour (only applies in the `online` state). Defaults to `green`. */
   glow?: AgentCapsuleGlow;
+  /**
+   * Render the slot→configured morph as a draw-on: the solid outline is traced
+   * around the perimeter over the still-visible dashed outline, which fades
+   * once the draw completes, instead of the two layers cross-fading.
+   *
+   * This is the agent's "birth" moment in the onboarding wizard, where the
+   * customer has just named it and the capsule should read as being drawn into
+   * existence. Everywhere else the cross-fade is the right, quieter default.
+   */
+  strokeDraw?: boolean;
   /** Accessible label; defaults to a description of the state. */
   "aria-label"?: string;
 }
+
+/** Duration of the strokeDraw perimeter trace; the dashed layer fades after it. */
+const STROKE_DRAW_SECONDS = 0.9;
+const STROKE_DRAW_EASE = [0.16, 1, 0.3, 1] as const;
 
 /** Normalize a (possibly out-of-range) gradient index to 1…AGENT_GRADIENT_COUNT. */
 function normalizeGradient(gradient: number): number {
@@ -75,12 +90,15 @@ export function AgentCapsule({
   gradient = 1,
   size = "md",
   glow = "green",
+  strokeDraw = false,
   className,
   style,
   "aria-label": ariaLabel,
   ...rest
 }: AgentCapsuleProps) {
   const dims = typeof size === "string" ? SIZE_PRESETS[size] : size;
+  const reducedMotion = useReducedMotion();
+  const drawn = state === "configured" || state === "online";
   const idx = normalizeGradient(gradient);
   const fill = `linear-gradient(to bottom, var(--agent-${idx}a), var(--agent-${idx}b))`;
 
@@ -107,16 +125,53 @@ export function AgentCapsule({
           "agent-cap-dash agent-cap-layer pointer-events-none absolute inset-0 rounded-full border-2 border-dashed border-muted-foreground/60",
           state === "slot" ? "agent-cap-slot opacity-100" : "opacity-0",
         )}
+        // In strokeDraw mode the dashed outline stays put while the solid one
+        // is traced over it, and only then fades — otherwise the capsule would
+        // be briefly outline-less midway through its own birth.
+        style={
+          strokeDraw && state === "configured" && !reducedMotion
+            ? { transitionDelay: `${STROKE_DRAW_SECONDS}s` }
+            : undefined
+        }
       />
-      {/* Solid stroke — agent configured, not yet live. Cross-fades in on top
-          of the dashed layer, then out as the liquid rises. */}
-      <span
-        aria-hidden="true"
-        className={cn(
-          "agent-cap-stroke agent-cap-layer pointer-events-none absolute inset-0 rounded-full border-2 border-solid border-foreground/70",
-          state === "configured" ? "opacity-100" : "opacity-0",
-        )}
-      />
+      {/* Solid stroke — agent configured, not yet live. Default: cross-fades in
+          on top of the dashed layer, then out as the liquid rises. strokeDraw:
+          an SVG outline traced around the perimeter (pathLength 0→1). */}
+      {strokeDraw ? (
+        <svg
+          aria-hidden="true"
+          className="pointer-events-none absolute inset-0"
+          width="100%"
+          height="100%"
+          viewBox={`0 0 ${dims.width} ${dims.height}`}
+          fill="none"
+        >
+          <motion.rect
+            x={1}
+            y={1}
+            width={dims.width - 2}
+            height={dims.height - 2}
+            rx={(dims.width - 2) / 2}
+            strokeWidth={2}
+            className="stroke-foreground/70"
+            initial={false}
+            animate={{ pathLength: drawn ? 1 : 0 }}
+            transition={
+              reducedMotion
+                ? { duration: 0 }
+                : { duration: STROKE_DRAW_SECONDS, ease: STROKE_DRAW_EASE }
+            }
+          />
+        </svg>
+      ) : (
+        <span
+          aria-hidden="true"
+          className={cn(
+            "agent-cap-stroke agent-cap-layer pointer-events-none absolute inset-0 rounded-full border-2 border-solid border-foreground/70",
+            state === "configured" ? "opacity-100" : "opacity-0",
+          )}
+        />
+      )}
       {/* Brand-gradient liquid — rises to fill the capsule when online. */}
       {state === "online" ? (
         <span

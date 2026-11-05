@@ -1,11 +1,14 @@
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { randomUUID } from "node:crypto";
 import express from "express";
 import request from "supertest";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
+  applyPendingMigrations,
   activityLog,
   agents,
   authUsers,
+  connectionGrants,
   companies,
   companyMemberships,
   createDb,
@@ -26,7 +29,8 @@ import { smokeLabRoutes } from "../routes/smoke-lab.js";
 import { SMOKE_LAB_OAUTH_SCOPE } from "../services/smoke-lab.js";
 import { errorHandler } from "../middleware/index.js";
 
-const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+const externalTestDatabaseUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_SMOKE_LAB_TEST_DATABASE_URL");
+const embeddedPostgresSupport = externalTestDatabaseUrl ? { supported: true } : await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
 type TestDb = ReturnType<typeof createDb>;
@@ -103,8 +107,9 @@ describeEmbeddedPostgres("smoke lab service pack and results API", () => {
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
 
   beforeAll(async () => {
-    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-smoke-lab-");
-    db = createDb(tempDb.connectionString);
+    if (!externalTestDatabaseUrl) tempDb = await startEmbeddedPostgresTestDatabase("paperclip-smoke-lab-");
+    if (externalTestDatabaseUrl) await applyPendingMigrations(externalTestDatabaseUrl);
+    db = createDb(externalTestDatabaseUrl ?? tempDb!.connectionString);
   }, 20_000);
 
   afterEach(async () => {
@@ -127,6 +132,7 @@ describeEmbeddedPostgres("smoke lab service pack and results API", () => {
   });
 
   afterAll(async () => {
+    await db?.$client.end({ timeout: 1 });
     await tempDb?.cleanup();
   });
 
@@ -354,10 +360,13 @@ describeEmbeddedPostgres("smoke lab service pack and results API", () => {
 
     const applications = await db.select().from(toolApplications).where(eq(toolApplications.companyId, company.id));
     const connections = await db.select().from(toolConnections).where(eq(toolConnections.companyId, company.id));
+    const grants = await db.select().from(connectionGrants).where(eq(connectionGrants.companyId, company.id));
     const catalog = await db.select().from(toolCatalogEntries).where(eq(toolCatalogEntries.companyId, company.id));
     const profiles = await db.select().from(toolProfiles).where(eq(toolProfiles.companyId, company.id));
     expect(applications).toHaveLength(2);
     expect(connections).toHaveLength(2);
+    expect(grants).toHaveLength(2);
+    expect(grants.every((grant) => grant.kind === "organization" && grant.isDefault)).toBe(true);
     expect(catalog.some((entry) => entry.toolName === "todo.add" && entry.riskLevel === "write")).toBe(true);
     expect(catalog.some((entry) => entry.toolName === "time.now" && entry.riskLevel === "read")).toBe(true);
     expect(profiles).toHaveLength(1);

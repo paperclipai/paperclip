@@ -240,10 +240,13 @@ describe("E2B sandbox provider plugin", () => {
     expect(mockCreate).toHaveBeenCalledWith("base", expect.objectContaining({ apiKey: "host-key" }));
   });
 
-  it("kills the sandbox if resume setup fails after reconnect", async () => {
+  it.each(([true, false] as const).flatMap(reuseLease =>
+    (["timeout", "workspace"] as const).map(phase => ({ reuseLease, phase }))))(
+    "preserves the retained sandbox after resume $phase failure (reuse=$reuseLease)", async ({ reuseLease, phase }) => {
     const sandbox = createMockSandbox();
-    const failure = new Error("set-timeout failed");
-    sandbox.setTimeout.mockRejectedValueOnce(failure);
+    const failure = new Error("retained sandbox readiness failed");
+    if (phase === "timeout") sandbox.setTimeout.mockRejectedValueOnce(failure);
+    else sandbox.commands.run.mockRejectedValueOnce(failure);
     mockConnect.mockResolvedValue(sandbox);
 
     await expect(plugin.definition.onEnvironmentResumeLease?.({
@@ -256,11 +259,13 @@ describe("E2B sandbox provider plugin", () => {
         template: "base",
         apiKey: "resolved-key",
         timeoutMs: 300000,
-        reuseLease: false,
+        reuseLease,
       },
-    })).rejects.toThrow("set-timeout failed");
+    })).rejects.toBe(failure);
 
-    expect(sandbox.kill).toHaveBeenCalled();
+    expect(sandbox.kill).not.toHaveBeenCalled();
+    expect(sandbox.files.remove).not.toHaveBeenCalled();
+    expect(mockCreate).not.toHaveBeenCalled();
   });
 
   it("executes commands through a connected sandbox when stdin is provided", async () => {
@@ -364,6 +369,9 @@ describe("E2B sandbox provider plugin", () => {
     expect(fgCall).toBeDefined();
     if (!fgCall) throw new Error("fgCall not found");
     expect(fgCall[0]).toMatch(/\.profile/);
+    // The wrapper sources no `nvm.sh`; the sandbox image supplies node on PATH.
+    expect(fgCall[0]).not.toMatch(/nvm\.sh/);
+    expect(fgCall[0]).not.toMatch(/NVM_DIR/);
     expect(fgCall[0]).toMatch(/exec env FOO='bar' 'printf' 'hello'$/);
     expect(fgCall[1]).toEqual(expect.objectContaining({ cwd: "/workspace", timeoutMs: 1000 }));
     expect(fgCall[1]).not.toHaveProperty("envs");

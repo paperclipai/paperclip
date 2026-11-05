@@ -19,6 +19,8 @@ interface FoldCurtainProps {
   lessLabel?: string;
   className?: string;
   contentClassName?: string;
+  /** Extra classes for the Show more/less button (e.g. contrast lift on a colored bubble). */
+  toggleClassName?: string;
 }
 
 const MOBILE_BREAKPOINT = 640;
@@ -64,6 +66,7 @@ export function FoldCurtain({
   lessLabel = "Show less",
   className,
   contentClassName,
+  toggleClassName,
 }: FoldCurtainProps) {
   const collapsedHeight = useResponsiveCollapsedHeight(explicitCollapsedHeight);
   const contentRef = useRef<HTMLDivElement>(null);
@@ -129,7 +132,7 @@ export function FoldCurtain({
               setAllowTransition(true);
               setExpanded((v) => !v);
             }}
-            className="h-7 px-2 text-xs text-muted-foreground hover:text-foreground"
+            className={cn("h-7 px-2 text-xs text-muted-foreground hover:text-foreground", toggleClassName)}
           >
             {expanded ? lessLabel : moreLabel}
             {expanded ? (

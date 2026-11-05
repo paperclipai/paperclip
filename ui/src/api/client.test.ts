@@ -1,5 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { __inflightGetCount, api } from "./client";
+import {
+  createTenantSessionRecoveryCoordinator,
+  tenantSessionRecovery,
+} from "@/lib/tenant-session-recovery";
+import { api, detachInflightGet } from "./client";
+import { toolsApi } from "./tools";
+import { museInvitationsApi } from "./museInvitations";
 
 interface Deferred<T> {
   promise: Promise<T>;
@@ -21,6 +27,10 @@ function jsonResponse(body: unknown) {
   return { ok: true, status: 200, json: async () => body } as unknown as Response;
 }
 
+function errorResponse(body: unknown, status = 401) {
+  return { ok: false, status, json: async () => body } as unknown as Response;
+}
+
 const fetchMock = vi.fn();
 
 beforeEach(() => {
@@ -29,10 +39,136 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.restoreAllMocks();
   vi.unstubAllGlobals();
+  vi.useRealTimers();
+});
+
+describe("tenant-session recovery", () => {
+  it("loads anonymous Dot consent despite concurrent protected background probes", async () => {
+    const reload = vi.fn();
+    const requestId = `pcmcp_request_${"a".repeat(43)}`;
+    const recovery = createTenantSessionRecoveryCoordinator(reload, () => `/dot-connect/${requestId}`);
+    vi.spyOn(tenantSessionRecovery, "recoverIfNeeded").mockImplementation(recovery.recoverIfNeeded);
+    fetchMock.mockImplementation((url: string) => Promise.resolve(
+      url.includes("/dot-mcp/requests/")
+        ? jsonResponse({ id: requestId, agentConnection: true })
+        : errorResponse({ error: "tenant_session_required" }),
+    ));
+
+    const background = api.get("/health");
+    const consent = api.get(`/dot-mcp/requests/${requestId}`);
+    await expect(background).rejects.toMatchObject({ status: 401 });
+    await expect(consent).resolves.toEqual({ id: requestId, agentConnection: true });
+    expect(reload).not.toHaveBeenCalled();
+  });
+
+  it("keeps concurrent failures pending and schedules one top-level reload", async () => {
+    const reload = vi.fn();
+    const recovery = createTenantSessionRecoveryCoordinator(reload);
+    vi.spyOn(tenantSessionRecovery, "recoverIfNeeded").mockImplementation(recovery.recoverIfNeeded);
+    fetchMock.mockResolvedValue(errorResponse({ error: "tenant_session_required" }));
+
+    const first = api.post("/tenant-session-a", { value: 1 });
+    const second = api.post("/tenant-session-b", { value: 2 });
+
+    await vi.waitFor(() => {
+      expect(tenantSessionRecovery.recoverIfNeeded).toHaveBeenCalledTimes(2);
+      expect(reload).toHaveBeenCalledTimes(1);
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    let settled = false;
+    void Promise.all([first, second]).then(
+      () => { settled = true; },
+      () => { settled = true; },
+    );
+    await Promise.resolve();
+    expect(settled).toBe(false);
+  });
+
+  it("preserves ApiError handling for an unrelated 401", async () => {
+    fetchMock.mockResolvedValue(errorResponse({ error: "unauthorized" }));
+
+    await expect(api.get("/ordinary-401")).rejects.toMatchObject({
+      name: "ApiError",
+      status: 401,
+      code: "unauthorized",
+      message: "Your session has ended. Sign in again to continue.",
+    });
+
+    fetchMock.mockResolvedValue(jsonResponse({ recovered: true }));
+    await expect(api.get("/ordinary-401")).resolves.toEqual({ recovered: true });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
 });
 
 describe("in-tab GET coalescing", () => {
+  it("keeps fresh validation reads separate from older and concurrent requests", async () => {
+    const old = deferred<Response>();
+    fetchMock.mockReturnValueOnce(old.promise).mockResolvedValue(jsonResponse({ title: "Current C" }));
+    const stale = api.get("/fresh-validation");
+    const first = api.get("/fresh-validation", { cache: "no-store", fresh: true });
+    const second = api.get("/fresh-validation", { cache: "no-store", fresh: true });
+    const joined = api.get("/fresh-validation");
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock.mock.calls[1][1]).toMatchObject({ cache: "no-store" });
+    await expect(first).resolves.toEqual({ title: "Current C" });
+    await expect(second).resolves.toEqual({ title: "Current C" });
+    old.resolve(jsonResponse({ title: "Old A" }));
+    await expect(stale).resolves.toEqual({ title: "Old A" });
+    await expect(joined).resolves.toEqual({ title: "Old A" });
+  });
+
+  it("times out a caller without cancelling another and starts a fresh fetch on retry", async () => {
+    vi.useFakeTimers();
+    const first = deferred<Response>();
+    fetchMock.mockReturnValueOnce(first.promise);
+    const survivorController = new AbortController();
+    const survivor = api.get("/deadline-shared", { signal: survivorController.signal });
+    const timed = api.get("/deadline-shared", { timeoutMs: 100 }).catch(error => error);
+    const sharedSignal = fetchMock.mock.calls[0][1].signal as AbortSignal;
+    await vi.advanceTimersByTimeAsync(100);
+    expect(await timed).toMatchObject({ status: 408, body: { error: "TIMEOUT" } });
+    expect(sharedSignal.aborted).toBe(false);
+    fetchMock.mockResolvedValueOnce(jsonResponse({ fresh: true }));
+    await expect(api.get("/deadline-shared", { timeoutMs: 100 })).resolves.toEqual({ fresh: true });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    survivorController.abort();
+    await expect(survivor).rejects.toMatchObject({ name: "AbortError" });
+    expect(sharedSignal.aborted).toBe(true);
+    first.resolve(jsonResponse({ stale: true }));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("bounds response-body reads and aborts the last caller's fetch", async () => {
+    vi.useFakeTimers();
+    const body = deferred<unknown>();
+    fetchMock.mockResolvedValue({ ok: true, status: 200, json: () => body.promise });
+    const result = api.get("/deadline-body", { timeoutMs: 100 }).catch(error => error);
+    const signal = fetchMock.mock.calls[0][1].signal as AbortSignal;
+    await vi.advanceTimersByTimeAsync(100);
+    expect(await result).toMatchObject({ status: 408 });
+    expect(signal.aborted).toBe(true);
+    body.resolve({ tooLate: true });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("clears a successful or cancelled caller's deadline", async () => {
+    vi.useFakeTimers();
+    fetchMock.mockResolvedValueOnce(jsonResponse({ ok: true }));
+    await expect(api.get("/deadline-success", { timeoutMs: 100 })).resolves.toEqual({ ok: true });
+    expect(vi.getTimerCount()).toBe(0);
+    const controller = new AbortController();
+    fetchMock.mockReturnValueOnce(deferred<Response>().promise);
+    const result = api.get("/deadline-cancel", { signal: controller.signal, timeoutMs: 100 });
+    controller.abort();
+    await expect(result).rejects.toMatchObject({ name: "AbortError" });
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it("shares one underlying fetch for identical in-flight GETs", async () => {
     const d = deferred<Response>();
     fetchMock.mockReturnValue(d.promise);
@@ -40,13 +176,10 @@ describe("in-tab GET coalescing", () => {
     const p1 = api.get("/coalesce-a");
     const p2 = api.get("/coalesce-a");
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(__inflightGetCount()).toBe(1);
 
     d.resolve(jsonResponse({ value: 1 }));
     expect(await p1).toEqual({ value: 1 });
     expect(await p2).toEqual({ value: 1 });
-    // Entry cleared once settled.
-    expect(__inflightGetCount()).toBe(0);
   });
 
   it("issues a fresh fetch after the previous one settles", async () => {
@@ -68,6 +201,27 @@ describe("in-tab GET coalescing", () => {
     c2.abort();
     await expect(p1).rejects.toMatchObject({ name: "AbortError" });
     await expect(p2).rejects.toMatchObject({ name: "AbortError" });
+  });
+
+  it("stops later callers joining a detached in-flight GET", async () => {
+    // A GET issued under one account's session must not answer a caller that
+    // runs after the account changed.
+    const first = deferred<Response>();
+    fetchMock.mockReturnValueOnce(first.promise);
+    const previousAccount = api.get("/detach-me");
+
+    detachInflightGet("/detach-me");
+
+    const second = deferred<Response>();
+    fetchMock.mockReturnValueOnce(second.promise);
+    const currentAccount = api.get("/detach-me");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    // Each caller gets its own response, not the other's.
+    first.resolve(jsonResponse({ companies: ["previous"] }));
+    second.resolve(jsonResponse({ companies: ["current"] }));
+    expect(await previousAccount).toEqual({ companies: ["previous"] });
+    expect(await currentAccount).toEqual({ companies: ["current"] });
   });
 
   it("never coalesces mutations", async () => {
@@ -100,7 +254,7 @@ describe("per-caller abort semantics", () => {
     expect(await p2).toEqual({ value: 2 });
   });
 
-  it("aborts the shared fetch once every caller has aborted", async () => {
+  it("aborts the shared fetch after all callers cancel and permits a fresh request", async () => {
     const d = deferred<Response>();
     let sharedSignal: AbortSignal | undefined;
     fetchMock.mockImplementation((_url: string, init: RequestInit) => {
@@ -118,7 +272,11 @@ describe("per-caller abort semantics", () => {
     await expect(p1).rejects.toMatchObject({ name: "AbortError" });
     await expect(p2).rejects.toMatchObject({ name: "AbortError" });
     expect(sharedSignal?.aborted).toBe(true);
-    expect(__inflightGetCount()).toBe(0);
+
+    fetchMock.mockResolvedValueOnce(jsonResponse({ value: "fresh" }));
+    const fresh = api.get("/abort-b");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(await fresh).toEqual({ value: "fresh" });
   });
 
   it("rejects immediately if the caller signal is already aborted", async () => {
@@ -128,5 +286,41 @@ describe("per-caller abort semantics", () => {
       name: "AbortError",
     });
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+
+describe("managed-account request isolation", () => {
+  it("does not share a previous viewing user's pending account response", async () => {
+    const previous = deferred<Response>();
+    const current = deferred<Response>();
+    fetchMock.mockReturnValueOnce(previous.promise).mockReturnValueOnce(current.promise);
+    const previousUser = toolsApi.listAggregatorApps("shared-gateway");
+    const currentUser = toolsApi.listAggregatorApps("shared-gateway");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls.every(([, options]) => options.cache === "no-store")).toBe(true);
+    current.resolve(jsonResponse({ apps: ["current-user-account"] }));
+    previous.resolve(jsonResponse({ apps: ["previous-user-account"] }));
+    expect(await currentUser).toEqual({ apps: ["current-user-account"] });
+    expect(await previousUser).toEqual({ apps: ["previous-user-account"] });
+  });
+});
+
+describe("Muse operator request isolation", () => {
+  it.each([
+    ["invitation resume", () => museInvitationsApi.resume("company")],
+    ["connection evidence", () => museInvitationsApi.connection("company", "agent")],
+  ] as const)("does not join the previous operator's %s request", async (_name, read) => {
+    const previous = deferred<Response>();
+    const current = deferred<Response>();
+    fetchMock.mockReturnValueOnce(previous.promise).mockReturnValueOnce(current.promise);
+    const previousOperator = read();
+    const currentOperator = read();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls.every(([, options]) => options.cache === "no-store")).toBe(true);
+    current.resolve(jsonResponse({ operator: "current" }));
+    previous.resolve(jsonResponse({ operator: "previous" }));
+    expect(await currentOperator).toEqual({ operator: "current" });
+    expect(await previousOperator).toEqual({ operator: "previous" });
   });
 });

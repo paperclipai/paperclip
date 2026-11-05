@@ -57,7 +57,7 @@ function mapMetadataRow(
       };
     }
     case "run_link": {
-      const runAgentId = ctx.runAgentId ?? null;
+      const runAgentId = row.agentId ?? ctx.runAgentId ?? null;
       const href = runAgentId ? `/agents/${runAgentId}/runs/${row.runId}` : undefined;
       return {
         kind: "run",

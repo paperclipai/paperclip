@@ -1,8 +1,14 @@
-import { and, asc, desc, eq } from "drizzle-orm";
+import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
+import { notifyIssueRecovery } from "./issue-recovery-notifications.js";
+import { randomUUID } from "node:crypto";
+import { and, asc, desc, eq, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { documentRevisions, documents, issueDocuments, issues } from "@paperclipai/db";
 import { isSystemIssueDocumentKey, issueDocumentKeySchema } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
+import { isUniqueViolation } from "../db-errors.js";
+import { insertRowsInChunks } from "./batch-insert.js";
+import type { ImportIssueDocumentRow } from "./import-write-types.js";
 
 function normalizeDocumentKey(key: string) {
   const normalized = key.trim().toLowerCase();
@@ -11,10 +17,6 @@ function normalizeDocumentKey(key: string) {
     throw unprocessable("Invalid document key", parsed.error.issues);
   }
   return parsed.data;
-}
-
-function isUniqueViolation(error: unknown): boolean {
-  return !!error && typeof error === "object" && "code" in error && (error as { code?: string }).code === "23505";
 }
 
 function nextAvailableDocumentKey(sourceKey: string, existingKeys: string[]) {
@@ -125,7 +127,7 @@ export function documentService(db: Db) {
           .where(and(eq(issueDocuments.issueId, issue.id), eq(issueDocuments.key, "plan")))
           .then((rows) => rows[0] ?? null),
         db
-          .select(issueDocumentSelect)
+          .select({ ...issueDocumentSelect, latestBody: sql<string>`''` })
           .from(issueDocuments)
           .innerJoin(documents, eq(issueDocuments.documentId, documents.id))
           .where(eq(issueDocuments.issueId, issue.id))
@@ -169,6 +171,23 @@ export function documentService(db: Db) {
       return row ? mapIssueDocumentRow(row, true) : null;
     },
 
+    /** Bounded receipt read: never load every historical body for one revision. */
+    getIssueDocumentRevision: async (issueId: string, rawKey: string, revisionId: string) => {
+      const key = normalizeDocumentKey(rawKey);
+      const [revision] = await db.select({
+        id: documentRevisions.id, companyId: documentRevisions.companyId,
+        documentId: documentRevisions.documentId, issueId: issueDocuments.issueId, key: issueDocuments.key,
+        revisionNumber: documentRevisions.revisionNumber, title: documentRevisions.title,
+        format: documentRevisions.format, body: documentRevisions.body, changeSummary: documentRevisions.changeSummary,
+        createdByAgentId: documentRevisions.createdByAgentId, createdByUserId: documentRevisions.createdByUserId,
+        createdByRunId: documentRevisions.createdByRunId, createdAt: documentRevisions.createdAt,
+      }).from(issueDocuments)
+        .innerJoin(documents, eq(issueDocuments.documentId, documents.id))
+        .innerJoin(documentRevisions, and(eq(documentRevisions.documentId, documents.id), eq(documentRevisions.companyId, documents.companyId)))
+        .where(and(eq(issueDocuments.issueId, issueId), eq(issueDocuments.key, key), eq(documentRevisions.id, revisionId))).limit(1);
+      return revision ?? null;
+    },
+
     listIssueDocumentRevisions: async (issueId: string, rawKey: string) => {
       const key = normalizeDocumentKey(rawKey);
       return db
@@ -185,6 +204,7 @@ export function documentService(db: Db) {
           changeSummary: documentRevisions.changeSummary,
           createdByAgentId: documentRevisions.createdByAgentId,
           createdByUserId: documentRevisions.createdByUserId,
+          createdByRunId: documentRevisions.createdByRunId,
           createdAt: documentRevisions.createdAt,
         })
         .from(issueDocuments)
@@ -220,6 +240,7 @@ export function documentService(db: Db) {
       for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
         try {
           return await db.transaction(async (tx) => {
+          await notifyStatusCardIssueChange(tx, issue.companyId);
           const now = new Date();
           const existing = await tx
             .select({
@@ -257,6 +278,7 @@ export function documentService(db: Db) {
                   .where(eq(issueDocuments.issueId, issue.id));
                 const fallbackKey = nextAvailableDocumentKey(key, issueDocumentKeys.map((row) => row.key));
 
+                await notifyIssueRecovery(tx, { companyId: issue.companyId });
                 const [document] = await tx
                   .insert(documents)
                   .values({
@@ -348,7 +370,7 @@ export function documentService(db: Db) {
             }
 
             if (!input.baseRevisionId) {
-              throw conflict("Document update requires baseRevisionId", {
+              throw conflict("Document update requires baseRevisionId. GET the current document, read its body and latestRevisionId, then set baseRevisionId to that latestRevisionId when updating.", {
                 currentRevisionId: existing.latestRevisionId,
               });
             }
@@ -358,6 +380,7 @@ export function documentService(db: Db) {
               });
             }
 
+            await notifyIssueRecovery(tx, { companyId: issue.companyId });
             const nextRevisionNumber = existing.latestRevisionNumber + 1;
             const [revision] = await tx
               .insert(documentRevisions)
@@ -420,6 +443,7 @@ export function documentService(db: Db) {
             throw conflict("Document does not exist yet", { key });
           }
 
+          await notifyIssueRecovery(tx, { companyId: issue.companyId });
           const [document] = await tx
             .insert(documents)
             .values({
@@ -499,7 +523,7 @@ export function documentService(db: Db) {
           };
           });
         } catch (error) {
-          if (isUniqueViolation(error)) {
+          if (isUniqueViolation(error, "issue_documents_company_issue_key_uq")) {
             if (input.lockedDocumentStrategy === "create_new_document" && attempt < maxAttempts - 1) {
               continue;
             }
@@ -510,6 +534,78 @@ export function documentService(db: Db) {
       }
 
       throw conflict("Unable to choose a new document key for locked document", { key });
+    },
+
+    /**
+     * Batched issue-document insert for company import.
+     *
+     * Every imported document is a fresh create (the issue is brand new), so we
+     * skip {@link upsertIssueDocument}'s per-row existence/lock/base-revision
+     * dance and the follow-up latest-revision update: ids are pre-generated so
+     * `latest_revision_id` can be written inline. Documents, their initial
+     * revisions, and the issue links are each inserted in chunked statements.
+     */
+    createIssueDocumentsForImport: async (rows: ImportIssueDocumentRow[]): Promise<void> => {
+      if (rows.length === 0) return;
+      const now = new Date();
+      const documentRows: Array<Record<string, unknown>> = [];
+      const revisionRows: Array<Record<string, unknown>> = [];
+      const linkRows: Array<Record<string, unknown>> = [];
+      for (const row of rows) {
+        const key = normalizeDocumentKey(row.key);
+        const documentId = randomUUID();
+        const revisionId = randomUUID();
+        documentRows.push({
+          id: documentId,
+          companyId: row.companyId,
+          title: row.title ?? null,
+          format: row.format,
+          latestBody: row.body,
+          latestRevisionId: revisionId,
+          latestRevisionNumber: 1,
+          createdByAgentId: row.createdByAgentId ?? null,
+          createdByUserId: row.createdByUserId ?? null,
+          updatedByAgentId: row.createdByAgentId ?? null,
+          updatedByUserId: row.createdByUserId ?? null,
+          lockedAt: null,
+          lockedByAgentId: null,
+          lockedByUserId: null,
+          sourceTrust: row.sourceTrust ?? null,
+          createdAt: now,
+          updatedAt: now,
+        });
+        revisionRows.push({
+          id: revisionId,
+          companyId: row.companyId,
+          documentId,
+          revisionNumber: 1,
+          title: row.title ?? null,
+          format: row.format,
+          body: row.body,
+          changeSummary: null,
+          createdByAgentId: row.createdByAgentId ?? null,
+          createdByUserId: row.createdByUserId ?? null,
+          createdByRunId: row.createdByRunId ?? null,
+          createdAt: now,
+        });
+        linkRows.push({
+          companyId: row.companyId,
+          issueId: row.issueId,
+          documentId,
+          key,
+          createdAt: now,
+          updatedAt: now,
+        });
+      }
+      await db.transaction(async (tx) => {
+        for (const companyId of new Set(rows.map(row => row.companyId))) {
+          await notifyStatusCardIssueChange(tx, companyId);
+          await notifyIssueRecovery(tx, { companyId });
+        }
+        await insertRowsInChunks(tx, documents, documentRows);
+        await insertRowsInChunks(tx, documentRevisions, revisionRows);
+        await insertRowsInChunks(tx, issueDocuments, linkRows);
+      });
     },
 
     restoreIssueDocumentRevision: async (input: {
@@ -558,6 +654,7 @@ export function documentService(db: Db) {
           });
         }
 
+        await notifyIssueRecovery(tx, { companyId: existing.companyId });
         const now = new Date();
         const nextRevisionNumber = existing.latestRevisionNumber + 1;
         const [restoredRevision] = await tx
@@ -576,6 +673,7 @@ export function documentService(db: Db) {
           })
           .returning();
 
+        await notifyStatusCardIssueChange(tx, existing.companyId);
         await tx
           .update(documents)
           .set({
@@ -636,6 +734,7 @@ export function documentService(db: Db) {
           };
         }
 
+        await notifyIssueRecovery(tx, { companyId: existing.companyId });
         const now = new Date();
         await tx
           .update(documents)
@@ -683,6 +782,7 @@ export function documentService(db: Db) {
           };
         }
 
+        await notifyIssueRecovery(tx, { companyId: existing.companyId });
         const now = new Date();
         await tx
           .update(documents)
@@ -731,7 +831,9 @@ export function documentService(db: Db) {
           });
         }
 
+        await notifyIssueRecovery(tx, { companyId: existing.companyId });
         await tx.delete(issueDocuments).where(eq(issueDocuments.documentId, existing.id));
+        await notifyStatusCardIssueChange(tx, existing.companyId);
         await tx.delete(documents).where(eq(documents.id, existing.id));
 
         return {

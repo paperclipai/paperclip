@@ -1,0 +1,4 @@
+interface:
+  display_name: "Set Up Code Maintenance Bot"
+  short_description: "Set up Paperclip maintenance agents and routines"
+  default_prompt: "Use $setup-code-maintenance-bot to configure a Paperclip routine that applies my chosen maintenance skill and opens pull requests."

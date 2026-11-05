@@ -51,6 +51,8 @@ export interface BuiltInAgentDefinition {
   defaultInstructions: string;
   defaultRole: string;
   allowedAdapterTypes?: string[];
+  defaultAdapterType?: string;
+  defaultAdapterConfig?: Record<string, unknown>;
   defaultBudgetMonthlyCents?: number;
   bundle?: BuiltInAgentBundleMeta;
 }
@@ -106,6 +108,7 @@ export interface BuiltInAgentState {
 }
 
 export interface BuiltInAgentProvisionInput {
+  runner?: import("@paperclipai/shared").AgentRunnerChoice;
   adapterType?: string;
   adapterConfig?: Record<string, unknown>;
   budgetMonthlyCents?: number;

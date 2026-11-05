@@ -1,3 +1,4 @@
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { randomUUID } from "node:crypto";
 import { sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
@@ -8,9 +9,12 @@ import {
   documents,
   issueComments,
   issueDocuments,
+  issueAccessGrants,
   issueLabels,
+  issueWorkProducts,
   issues,
   labels,
+  projectAccessMembers,
   projects,
 } from "@paperclipai/db";
 import { companySearchQuerySchema, COMPANY_SEARCH_MAX_QUERY_LENGTH } from "@paperclipai/shared";
@@ -23,13 +27,16 @@ import {
   companySearchBranchFetchLimit,
   companySearchService,
 } from "../services/company-search.js";
+import { issueReadSqlCondition, projectReadSqlCondition } from "../services/authorization.js";
+import { issueService } from "../services/issues.js";
 
-const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+const externalDatabaseUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_COMPANY_SEARCH_TEST_DATABASE_URL");
+const embeddedPostgresSupport = externalDatabaseUrl ? { supported: true } : await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
 if (!embeddedPostgresSupport.supported) {
   console.warn(
-    `Skipping embedded Postgres company search tests on this host: ${embeddedPostgresSupport.reason ?? "unsupported environment"}`,
+    `Skipping embedded Postgres company search tests on this host: ${("reason" in embeddedPostgresSupport ? embeddedPostgresSupport.reason : "unsupported environment")}`,
   );
 }
 
@@ -76,8 +83,11 @@ describeEmbeddedPostgres("companySearchService", () => {
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
 
   beforeAll(async () => {
-    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-company-search-");
-    db = createDb(tempDb.connectionString);
+    if (!externalDatabaseUrl) tempDb = await startEmbeddedPostgresTestDatabase("paperclip-company-search-");
+    db = createDb(externalDatabaseUrl ?? tempDb!.connectionString, { maxConnections: 6 });
+    // External suites can reuse this dedicated database sequentially. Match
+    // the fresh embedded fixture before this suite creates its own rows.
+    if (externalDatabaseUrl) await db.execute(sql`TRUNCATE TABLE companies CASCADE`);
     svc = companySearchService(db);
     await db.execute(sql.raw("CREATE EXTENSION IF NOT EXISTS pg_trgm"));
   }, 20_000);
@@ -87,6 +97,7 @@ describeEmbeddedPostgres("companySearchService", () => {
     await db.delete(documents);
     await db.delete(issueComments);
     await db.delete(issueLabels);
+    await db.delete(issueAccessGrants);
     await db.delete(issues);
     await db.delete(labels);
     await db.delete(projects);
@@ -95,6 +106,7 @@ describeEmbeddedPostgres("companySearchService", () => {
   });
 
   afterAll(async () => {
+    await db?.$client.end({ timeout: 1 });
     await tempDb?.cleanup();
   });
 
@@ -163,6 +175,100 @@ describeEmbeddedPostgres("companySearchService", () => {
     return id;
   }
 
+  it("paginates issue-result-only searches before unrelated entity competition", async () => {
+    const companyId = await createCompany();
+    const now = Date.now();
+    const older = await createIssue(companyId, { title: "Launch older", updatedAt: new Date(now - 2_000) });
+    await createIssue(companyId, { title: "Launch newer", updatedAt: new Date(now - 1_000) });
+    await createAgent(companyId, { name: "Launch agent", updatedAt: new Date(now) });
+    await createProject(companyId, { name: "Launch project", updatedAt: new Date(now + 1_000) });
+    const holder = await createIssue(companyId, { title: "Artifact holder" });
+    await db.insert(issueWorkProducts).values({ companyId, issueId: holder, type: "artifact", provider: "paperclip",
+      title: "Launch artifact", status: "ready", updatedAt: new Date(now + 2_000) });
+    const query = companySearchQuerySchema.parse({ q: "launch", scope: "all", sort: "updated", limit: 1, offset: 1 });
+    const mixed = await svc.search(companyId, { ...query, limit: 10, offset: 0 });
+    expect(new Set(mixed.results.map(row => row.type))).toEqual(new Set(["issue", "agent", "project", "artifact"]));
+    const result = await svc.search(companyId, query, { issueResultsOnly: true });
+    expect(result.results.map(row => row.id)).toEqual([older]);
+    expect(result.countsByType).toMatchObject({ issue: 2, agent: 0, project: 0, artifact: 0 });
+    expect(result.filterOptionCounts.status.todo).toBe(2);
+    expect(result.hasMore).toBe(false);
+    for (const scope of ["agents", "projects", "artifacts"] as const) {
+      let membership: Date | null | undefined;
+      const excluded = await svc.search(companyId, { ...query, scope }, {
+        issueResultsOnly: true, onNextMembershipChange: at => { membership = at; },
+      });
+      expect(excluded.results).toEqual([]);
+      expect(Object.values(excluded.countsByType).every(count => count === 0)).toBe(true);
+      expect(excluded.filterOptionCounts.status).toEqual({});
+      expect(excluded.hasMore).toBe(false);
+      expect(membership).toBeNull();
+    }
+    let deadline: Date | null = null;
+    await svc.search(companyId, { ...query, updatedWithin: "1h" }, {
+      issueResultsOnly: true, onNextMembershipChange: at => { deadline = at; },
+    });
+    expect(deadline).toEqual(new Date(now - 2_000 + 3_600_001));
+  });
+
+  it.each(["all", "comments", "documents"] as const)("preserves issue-result-only %s text matching and read boundaries", async scope => {
+    const previous = process.env.PAPERCLIP_ISSUE_PRIVACY_MODE;
+    process.env.PAPERCLIP_ISSUE_PRIVACY_MODE = "enforce";
+    try {
+      const companyId = await createCompany();
+      const comment = await createIssue(companyId, { title: "Comment context" });
+      const document = await createIssue(companyId, { title: "Document context" });
+      const privateId = randomUUID();
+      await createIssue(companyId, { id: privateId, title: "Private context", visibility: "private",
+        privacyRootIssueId: privateId, responsibleUserId: "private-owner" });
+      const foreign = await createIssue(await createCompany(), { title: "Foreign context" });
+      const hidden = await createIssue(companyId, { title: "Hidden context", hiddenAt: new Date() });
+      for (const issueId of [comment, privateId, hidden]) await db.insert(issueComments).values({ companyId, issueId, body: "Needle context" });
+      const foreignCompany = await db.select({ companyId: issues.companyId }).from(issues).where(sql`${issues.id} = ${foreign}`);
+      await db.insert(issueComments).values({ companyId: foreignCompany[0]!.companyId, issueId: foreign, body: "Needle context" });
+      for (const issueId of [document, privateId, hidden]) {
+        const id = randomUUID();
+        await db.insert(documents).values({ id, companyId, title: "Context", latestBody: "Needle context", format: "markdown" });
+        await db.insert(issueDocuments).values({ companyId, issueId, documentId: id, key: "brief" });
+      }
+      const condition = await issueReadSqlCondition(db, { type: "board", userId: "reader", source: "session" });
+      const result = await svc.search(companyId, companySearchQuerySchema.parse({ q: "needle", scope }), {
+        issueResultsOnly: true, issueReadCondition: condition,
+      });
+      expect(new Set(result.results.map(row => row.id))).toEqual(new Set(scope === "all" ? [comment, document] : [scope === "comments" ? comment : document]));
+      expect(result.results.every(row => row.type === "issue")).toBe(true);
+      expect(result.countsByType).toMatchObject({ agent: 0, project: 0, artifact: 0 });
+    } finally {
+      if (previous === undefined) delete process.env.PAPERCLIP_ISSUE_PRIVACY_MODE;
+      else process.env.PAPERCLIP_ISSUE_PRIVACY_MODE = previous;
+    }
+  });
+
+  it("keeps issue-result-only loosen counts inside the selected result kinds", async () => {
+    const companyId = await createCompany();
+    await createIssue(companyId, { title: "Launch done", status: "done" });
+    await createAgent(companyId, { name: "Launch agent" });
+    await createProject(companyId, { name: "Launch project" });
+    const result = await svc.search(companyId, companySearchQuerySchema.parse({ q: "launch", status: "todo" }), { issueResultsOnly: true });
+    expect(result.results).toEqual([]);
+    expect(result.zeroResults).toMatchObject({ unfilteredTotal: 1,
+      loosenSuggestions: [{ filter: "status", resultCount: 1, additionalCount: 1 }] });
+    expect(result.filterOptionCounts.status.done).toBe(1);
+  });
+
+  it("keeps exact entity names ahead of speculative task typos and rejects empty quotes", async () => {
+    const companyId = await createCompany();
+    const agentId = await createAgent(companyId, { name: "Mibile" });
+    const projectId = await createProject(companyId, { name: "Mibile" });
+    const taskId = await createIssue(companyId, { title: "Mobile navigation" });
+    const result = await svc.search(companyId, companySearchQuerySchema.parse({ q: "mibile" }));
+    const ids = result.results.map((row) => row.id);
+    expect(ids).toContain(taskId);
+    expect(ids.indexOf(agentId)).toBeLessThan(ids.indexOf(taskId));
+    expect(ids.indexOf(projectId)).toBeLessThan(ids.indexOf(taskId));
+    expect((await svc.search(companyId, companySearchQuerySchema.parse({ q: '""' }))).results).toEqual([]);
+  });
+
   it("ranks exact issue identifiers before weaker title matches", async () => {
     const companyId = await createCompany();
     const exactId = await createIssue(companyId, {
@@ -180,7 +286,7 @@ describeEmbeddedPostgres("companySearchService", () => {
     expect(result.results[0]?.matchedFields).toContain("identifier");
   });
 
-  it("ranks phrase and all-token issue matches before partial scattered-token matches", async () => {
+  it("ranks phrase before reordered title words and rejects partial matches", async () => {
     const companyId = await createCompany();
     const base = new Date("2026-01-01T00:00:00.000Z").getTime();
     const partialTokenId = await createIssue(companyId, {
@@ -201,7 +307,8 @@ describeEmbeddedPostgres("companySearchService", () => {
 
     const result = await svc.search(companyId, companySearchQuerySchema.parse({ q: "alpha beta", scope: "issues" }));
 
-    expect(result.results.map((row) => row.id)).toEqual([phraseId, allTokenId, partialTokenId]);
+    expect(result.results.map((row) => row.id)).toEqual([phraseId, allTokenId]);
+    expect(result.results.map((row) => row.id)).not.toContain(partialTokenId);
   });
 
   it("matches multiple tokens across the same issue thread and returns comment snippets", async () => {
@@ -682,6 +789,83 @@ describeEmbeddedPostgres("companySearchService", () => {
     }
   });
 
+  it("does not interpret short UI terms as the middle of unrelated words", async () => {
+    const companyId = await createCompany();
+    const target = await createIssue(companyId, { title: "Improve mobile UI" });
+    await createIssue(companyId, { title: "Build billing reports" });
+    const result = await svc.search(companyId, companySearchQuerySchema.parse({ q: "UI" }));
+    expect(result.results.map((row) => row.id)).toEqual([target]);
+  });
+
+  it("keeps typo fallback inside the requested filters", async () => {
+    const companyId = await createCompany();
+    await createIssue(companyId, { title: "Mibile API", status: "done" });
+    const target = await createIssue(companyId, { title: "Mobile API", status: "todo" });
+    const result = await svc.search(companyId, companySearchQuerySchema.parse({ q: "mibile api", status: "todo" }));
+    expect(result.results.map((row) => row.id)).toEqual([target]);
+  });
+
+  it("keeps exact title hits on the task and chooses the most complete context evidence", async () => {
+    const companyId = await createCompany();
+    const task = await createIssue(companyId, { title: "Aurora callback" });
+    await db.insert(issueComments).values({ companyId, issueId: task, body: "Aurora callback is mentioned here too." });
+    const exact = await svc.search(companyId, companySearchQuerySchema.parse({ q: "Aurora callback" }));
+    expect(exact.results[0]?.href).not.toContain("#comment-");
+
+    const holder = await createIssue(companyId, { title: "Connection investigation" });
+    await db.insert(issueComments).values({ companyId, issueId: holder, body: "Aurora was discussed.", updatedAt: new Date("2026-06-01") });
+    const strongest = randomUUID();
+    await db.insert(issueComments).values({ id: strongest, companyId, issueId: holder,
+      body: "Aurora loses the callback state.", updatedAt: new Date("2026-01-01") });
+    const result = await svc.search(companyId, companySearchQuerySchema.parse({ q: "aurora state callback" }));
+    expect(result.results[0]?.href).toContain(`#comment-${strongest}`);
+    expect(result.results[0]?.snippet).toContain("state");
+  });
+
+  it.each(["comment", "document"] as const)("preserves %s evidence when title and identifier both match", async (source) => {
+    const companyId = await createCompany();
+    const task = await createIssue(companyId, {
+      identifier: "CTX-123", title: "CTX callback investigation", description: "CTX callback details",
+    });
+    const sourceId = randomUUID();
+    if (source === "comment") {
+      await db.insert(issueComments).values({ id: sourceId, companyId, issueId: task, body: "The missing signal is quasar." });
+    } else {
+      await db.insert(documents).values({ id: sourceId, companyId, title: "Investigation plan", latestBody: "The missing signal is quasar.", format: "markdown" });
+      await db.insert(issueDocuments).values({ companyId, issueId: task, documentId: sourceId, key: "plan" });
+    }
+
+    const result = await svc.search(companyId, companySearchQuerySchema.parse({ q: "CTX quasar" }));
+    const match = result.results.find((row) => row.id === task)!;
+    expect(match.matchedFields).toEqual(expect.arrayContaining(["identifier", "title", source]));
+    expect(match.score).toBeGreaterThanOrEqual(2000);
+    expect(match.score).toBeLessThan(3000);
+    expect(match.snippets).toHaveLength(2);
+    expect(match.snippets[0]).toMatchObject({ field: source, text: expect.stringContaining("quasar") });
+    expect(match.snippet).toContain("quasar");
+    expect(match.href).toContain(source === "comment" ? `#comment-${sourceId}` : "#document-plan");
+  });
+
+  it("reflects edits, deleted comments and document updates immediately", async () => {
+    const companyId = await createCompany();
+    const task = await createIssue(companyId, { title: "Old uniquequartz title" });
+    const find = () => svc.search(companyId, companySearchQuerySchema.parse({ q: '"uniquequartz"' }));
+    expect((await find()).results.map((row) => row.id)).toEqual([task]);
+    await db.update(issues).set({ title: "New title" }).where(sql`${issues.id} = ${task}`);
+    expect((await find()).results).toEqual([]);
+    const comment = randomUUID();
+    await db.insert(issueComments).values({ id: comment, companyId, issueId: task, body: "uniquequartz" });
+    expect((await find()).results.map((row) => row.id)).toEqual([task]);
+    await db.update(issueComments).set({ deletedAt: new Date() }).where(sql`${issueComments.id} = ${comment}`);
+    expect((await find()).results).toEqual([]);
+    const doc = randomUUID();
+    await db.insert(documents).values({ id: doc, companyId, title: "Findings", latestBody: "uniquequartz", format: "markdown" });
+    await db.insert(issueDocuments).values({ companyId, issueId: task, documentId: doc, key: "plan" });
+    expect((await find()).results.map((row) => row.id)).toEqual([task]);
+    await db.update(documents).set({ latestBody: "Updated findings" }).where(sql`${documents.id} = ${doc}`);
+    expect((await find()).results).toEqual([]);
+  });
+
   it("uses pg_trgm for conservative fuzzy title matches", async () => {
     const companyId = await createCompany();
     const issueId = await createIssue(companyId, {
@@ -721,6 +905,101 @@ describeEmbeddedPostgres("companySearchService", () => {
       const ids = result.results.map((row) => row.id);
       expect(ids, `query=${query}`).toContain(expectedId);
       expect(ids, `query=${query} should not match unrelated issue`).not.toContain(rejected);
+    }
+  });
+
+  it("pushes private issue filtering into list, count, and company search queries", async () => {
+    const previousMode = process.env.PAPERCLIP_ISSUE_PRIVACY_MODE;
+    process.env.PAPERCLIP_ISSUE_PRIVACY_MODE = "enforce";
+    try {
+      const companyId = await createCompany();
+      const ownerId = `owner-${randomUUID()}`;
+      const otherId = `other-${randomUUID()}`;
+      const granteeId = `grantee-${randomUUID()}`;
+      const openId = await createIssue(companyId, { title: "privacy needle open" });
+      const privateId = randomUUID();
+      await createIssue(companyId, {
+        id: privateId,
+        title: "privacy needle private",
+        visibility: "private",
+        privacyRootIssueId: privateId,
+        responsibleUserId: ownerId,
+});
+      await db.insert(issueAccessGrants).values({
+        issueId: privateId,
+        subjectType: "user",
+        subjectId: granteeId,
+        source: "explicit",
+        grantedByUserId: ownerId,
+      });
+
+      const issuesSvc = issueService(db);
+      const conditionFor = (userId: string) => issueReadSqlCondition(db, {
+        type: "board",
+        userId,
+        source: "session",
+      });
+      const otherCondition = await conditionFor(otherId);
+      const ownerCondition = await conditionFor(ownerId);
+      const granteeCondition = await conditionFor(granteeId);
+
+      await expect(issuesSvc.list(companyId, { readCondition: otherCondition })).resolves.toMatchObject([
+        { id: openId },
+      ]);
+      await expect(issuesSvc.count(companyId, { readCondition: otherCondition })).resolves.toBe(1);
+      await expect(issuesSvc.count(companyId, { readCondition: ownerCondition })).resolves.toBe(2);
+      await expect(issuesSvc.count(companyId, { readCondition: granteeCondition })).resolves.toBe(2);
+
+      const result = await svc.search(
+        companyId,
+        companySearchQuerySchema.parse({ q: "privacy needle", scope: "issues" }),
+        { issueReadCondition: otherCondition },
+      );
+      expect(result.results.map((row) => row.id)).toEqual([openId]);
+    } finally {
+      if (previousMode === undefined) delete process.env.PAPERCLIP_ISSUE_PRIVACY_MODE;
+      else process.env.PAPERCLIP_ISSUE_PRIVACY_MODE = previousMode;
+    }
+  });
+
+  it("pushes private project filtering into project search and counts", async () => {
+    const previousMode = process.env.PAPERCLIP_ISSUE_PRIVACY_MODE;
+    process.env.PAPERCLIP_ISSUE_PRIVACY_MODE = "enforce";
+    try {
+      const companyId = await createCompany();
+      const memberId = `member-${randomUUID()}`;
+      const outsiderId = `outsider-${randomUUID()}`;
+      const openId = await createProject(companyId, { name: "privacy project open" });
+      const privateId = await createProject(companyId, {
+        name: "privacy project private",
+        visibility: "private",
+      });
+      await db.insert(projectAccessMembers).values({
+        companyId,
+        projectId: privateId,
+        subjectType: "user",
+        subjectId: memberId,
+      });
+      const conditionFor = (userId: string) => projectReadSqlCondition(db, {
+        type: "board",
+        userId,
+        source: "session",
+      });
+      const query = companySearchQuerySchema.parse({ q: "privacy project", scope: "projects" });
+      const outsiderResult = await svc.search(companyId, query, {
+        projectReadCondition: await conditionFor(outsiderId),
+      });
+      expect(outsiderResult.results.map((row) => row.id)).toEqual([openId]);
+      expect(outsiderResult.countsByType.project).toBe(1);
+
+      const memberResult = await svc.search(companyId, query, {
+        projectReadCondition: await conditionFor(memberId),
+      });
+      expect(memberResult.results.map((row) => row.id)).toEqual(expect.arrayContaining([openId, privateId]));
+      expect(memberResult.countsByType.project).toBe(2);
+    } finally {
+      if (previousMode === undefined) delete process.env.PAPERCLIP_ISSUE_PRIVACY_MODE;
+      else process.env.PAPERCLIP_ISSUE_PRIVACY_MODE = previousMode;
     }
   });
 });

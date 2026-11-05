@@ -9,9 +9,11 @@ function installDocumentStub(execCommand: () => boolean) {
     focus: vi.fn(),
     select: vi.fn(),
     setSelectionRange: vi.fn(),
+    remove: vi.fn(),
   };
   const doc = {
     createElement: vi.fn(() => textarea),
+    querySelector: vi.fn(() => null),
     body: { appendChild: vi.fn(), removeChild: vi.fn() },
     activeElement: null,
     getSelection: vi.fn(() => null),
@@ -58,6 +60,20 @@ describe("copyTextToClipboard", () => {
     // `readonly` or `opacity: 0` textarea, so the fallback must use neither.
     expect(textarea.setAttribute).not.toHaveBeenCalledWith("readonly", expect.anything());
     expect(textarea.style.opacity).toBeUndefined();
+  });
+
+  it("falls back when the secure-context Clipboard API rejects the write", async () => {
+    const writeText = vi.fn(async () => {
+      throw new Error("permission denied");
+    });
+    vi.stubGlobal("window", { isSecureContext: true });
+    vi.stubGlobal("navigator", { clipboard: { writeText } });
+    const { doc } = installDocumentStub(() => true);
+
+    await copyTextToClipboard("retry through fallback");
+
+    expect(writeText).toHaveBeenCalledWith("retry through fallback");
+    expect(doc.execCommand).toHaveBeenCalledWith("copy");
   });
 
   it("throws when the execCommand fallback reports failure", async () => {

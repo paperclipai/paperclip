@@ -1,0 +1,19 @@
+{
+  "source": "e75fde6098b0ddd8cec765bfb6ecaeecb88a26a6",
+  "profile": {
+    "driverKind": "acpx_runtime",
+    "protocolVersion": 1,
+    "acpxVersion": "0.13.1",
+    "agent": "cursor",
+    "agentProfileVersion": 11,
+    "agentServerPackage": "cursor-agent",
+    "agentServerVersion": "2026.09.26-dd393fe",
+    "agentRuntimePackage": null,
+    "agentRuntimeVersion": null,
+    "commandDigest": "sha256:2feb50c7b0a317dff454c00115a5bbe4d5c757189691586577be9c80234d477e",
+    "permissionPolicy": "interactive",
+    "qualificationModel": "explicit-test-model",
+    "reportedModelId": "explicit-test-model"
+  },
+  "profileDigest": "sha256:801bf9f450a2776ec879f2d85c05d8950172565a87f8f79177e0fc1211ae0bab"
+}

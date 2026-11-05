@@ -1,8 +1,34 @@
 import type { Request, RequestHandler } from "express";
+import { isIP } from "node:net";
+
+function numericAddress(value: string | undefined): string | null {
+  const address = value?.trim().toLowerCase().replace(/^\[([^\]]+)\]$/, "$1");
+  if (!address || isIP(address) === 0) return null;
+  if (isIP(address) === 4) return address;
+  try {
+    const canonical = new URL(`http://[${address}]`).hostname.slice(1, -1);
+    const mapped = /^::ffff:([\da-f]+):([\da-f]+)$/.exec(canonical);
+    if (!mapped) return canonical;
+    const high = parseInt(mapped[1]!, 16), low = parseInt(mapped[2]!, 16);
+    return [high >> 8, high & 255, low >> 8, low & 255].join(".");
+  } catch { return null; }
+}
 
 function isLoopbackHostname(hostname: string): boolean {
   const normalized = hostname.trim().toLowerCase();
-  return normalized === "localhost" || normalized === "127.0.0.1" || normalized === "::1";
+  const address = numericAddress(normalized);
+  return normalized === "localhost" || address === "127.0.0.1" || address === "::1";
+}
+
+function isDirectLocalApiRequest(req: Request, hostname: string): boolean {
+  if (req.path !== "/api" && !req.path.startsWith("/api/")) return false;
+  if (Object.keys(req.headers ?? {}).some(key => key.toLowerCase() === "forwarded" || key.toLowerCase().startsWith("x-forwarded-"))) return false;
+  // Only a numeric Host is eligible; URL userinfo or a DNS name cannot borrow
+  // the listener's address. Socket metadata supplies the actual local authority.
+  if (!/^(?:\[[\da-f:.]+\]|[\d.]+)(?::\d+)?$/i.test(req.header("host")?.trim() ?? "")) return false;
+  const host = numericAddress(hostname), local = numericAddress(req.socket?.localAddress), remote = numericAddress(req.socket?.remoteAddress);
+  if (!host || !local || !remote || host !== local) return false;
+  return remote === local || remote === "::1" || remote.startsWith("127.");
 }
 
 function extractHostname(req: Request): string | null {
@@ -42,12 +68,16 @@ export function resolvePrivateHostnameAllowSet(opts: { allowedHostnames: string[
   return allowSet;
 }
 
-function blockedHostnameMessage(hostname: string): string {
-  return (
-    `Hostname '${hostname}' is not allowed for this Paperclip instance. ` +
-    `If you want to allow this hostname, please run pnpm paperclipai allowed-hostname ${hostname}`
-  );
-}
+// The hostname comes from the request Host header, so an unauthenticated
+// requester controls it. Never put that value into the guidance command. An
+// operator or an agent can paste the guidance into a shell, and that outer
+// shell evaluates a backtick, `$( )`, or `$NAME` span in the host before any
+// CLI receives argv. A direct-exec form such as `npx` does not stop the
+// outer shell. Emit a static `<host>` placeholder and do not echo the raw request
+// value. The operator supplies the real hostname.
+const BLOCKED_HOSTNAME_MESSAGE =
+  "This hostname is not allowed for this Paperclip instance. " +
+  "If you want to allow a hostname, run npx paperclipai allowed-hostname <host>.";
 
 export function privateHostnameGuard(opts: {
   enabled: boolean;
@@ -68,7 +98,7 @@ export function privateHostnameGuard(opts: {
     const wantsJson = req.path.startsWith("/api") || req.accepts(["json", "html", "text"]) === "json";
 
     if (!hostname) {
-      const error = "Missing Host header. If you want to allow a hostname, run pnpm paperclipai allowed-hostname <host>.";
+      const error = "Missing Host header. If you want to allow a hostname, run npx paperclipai allowed-hostname <host>.";
       if (wantsJson) {
         res.status(403).json({ error });
       } else {
@@ -77,12 +107,12 @@ export function privateHostnameGuard(opts: {
       return;
     }
 
-    if (isLoopbackHostname(hostname) || allowSet.has(hostname)) {
+    if (isLoopbackHostname(hostname) || allowSet.has(hostname) || isDirectLocalApiRequest(req, hostname)) {
       next();
       return;
     }
 
-    const error = blockedHostnameMessage(hostname);
+    const error = BLOCKED_HOSTNAME_MESSAGE;
     if (wantsJson) {
       res.status(403).json({ error });
     } else {

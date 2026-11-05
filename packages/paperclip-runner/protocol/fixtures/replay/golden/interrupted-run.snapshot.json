@@ -1,0 +1,138 @@
+{
+  "schema": "paperclip.prp.session-snapshot.v1",
+  "fixtureName": "Interrupted run",
+  "identity": {
+    "schema": "paperclip.prp.identity.v1",
+    "companyId": "company_replay",
+    "issueId": "issue_replay_interrupted",
+    "runId": "run_replay_interrupted",
+    "environmentLeaseId": "lease_replay_interrupted",
+    "runnerInstanceId": "runner_replay",
+    "normalizedSessionId": "session_replay_interrupted",
+    "driverSessionId": "driver_replay_interrupted"
+  },
+  "capabilities": {
+    "schema": "paperclip.prp.capabilities.v1",
+    "sessionReusePolicy": "reuse_per_issue",
+    "driver": {
+      "kind": "fake",
+      "version": "1.0.0"
+    },
+    "steer": true,
+    "interrupt": true,
+    "resume": true,
+    "runtimeRequests": true,
+    "structuredResult": true,
+    "typedEvents": true
+  },
+  "runPhase": "terminal",
+  "sessionState": "running",
+  "turnState": "interrupted",
+  "activeTurnId": null,
+  "items": [],
+  "requests": [
+    {
+      "requestId": "request_interrupted_permission",
+      "requestKind": "runtime",
+      "type": "permission",
+      "status": "pending",
+      "prompt": "Allow the fake command?"
+    }
+  ],
+  "proposedResult": {
+    "schema": "paperclip.run_result.v1",
+    "reportedWorkDisposition": "yielded",
+    "summary": "The turn was interrupted.",
+    "completionClaim": {
+      "contractRevision": "replay-contract-v1",
+      "objectiveSatisfied": false,
+      "criteria": [],
+      "remainingWork": [
+        {
+          "description": "Resume the interrupted turn",
+          "blocksCompletion": true
+        }
+      ]
+    },
+    "evidence": [],
+    "verification": [],
+    "attentionRequests": [],
+    "artifacts": [],
+    "continuation": {
+      "kind": "same_agent",
+      "summary": "Resume in the same normalized session",
+      "idempotencyKey": "resume_replay_interrupted"
+    }
+  },
+  "terminal": {
+    "schema": "paperclip.prp.terminal.v1",
+    "turnTerminalState": "interrupted",
+    "runTerminalState": "cancelled",
+    "reportedWorkDisposition": "yielded"
+  },
+  "timeline": [
+    {
+      "position": 1,
+      "sourceEventId": "event_interrupted_01",
+      "sourceSeq": 1,
+      "eventType": "session.started",
+      "emittedAt": "2026-08-07T12:20:00.020Z",
+      "summary": "session started"
+    },
+    {
+      "position": 2,
+      "sourceEventId": "event_interrupted_02",
+      "sourceSeq": 2,
+      "eventType": "turn.started",
+      "emittedAt": "2026-08-07T12:20:00.030Z",
+      "summary": "turn started"
+    },
+    {
+      "position": 3,
+      "sourceEventId": "event_interrupted_03",
+      "sourceSeq": 3,
+      "eventType": "runtime_request.created",
+      "emittedAt": "2026-08-07T12:20:00.040Z",
+      "summary": "permission: Allow the fake command?"
+    },
+    {
+      "position": 4,
+      "sourceEventId": "event_interrupted_04",
+      "sourceSeq": 4,
+      "eventType": "turn.interrupted",
+      "emittedAt": "2026-08-07T12:20:00.060Z",
+      "summary": "turn interrupted"
+    },
+    {
+      "position": 5,
+      "sourceEventId": "event_interrupted_05",
+      "sourceSeq": 5,
+      "eventType": "run.result.proposed",
+      "emittedAt": "2026-08-07T12:20:00.070Z",
+      "summary": "The turn was interrupted."
+    },
+    {
+      "position": 6,
+      "sourceEventId": "event_interrupted_06",
+      "sourceSeq": 6,
+      "eventType": "run.terminal",
+      "emittedAt": "2026-08-07T12:20:00.080Z",
+      "summary": "Run cancelled"
+    }
+  ],
+  "sourceCursors": {
+    "runner:runner_replay": 6
+  },
+  "processedEventIds": [
+    "event_interrupted_01",
+    "event_interrupted_02",
+    "event_interrupted_03",
+    "event_interrupted_04",
+    "event_interrupted_05",
+    "event_interrupted_06"
+  ],
+  "duplicateEventIds": [],
+  "outOfOrderEventIds": [],
+  "gaps": [],
+  "integrity": "complete"
+}

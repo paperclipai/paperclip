@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { AgentAvatar } from "@/components/AgentAvatar";
+import { useState, type ReactElement } from "react";
 import type { Agent } from "@paperclipai/shared";
 import {
   Popover,
@@ -8,7 +9,6 @@ import {
 import { User } from "lucide-react";
 import { cn } from "../lib/utils";
 import { roleLabels } from "./agent-config-primitives";
-import { AgentIcon } from "./AgentIconPicker";
 
 export function ReportsToPicker({
   agents,
@@ -18,6 +18,8 @@ export function ReportsToPicker({
   excludeAgentIds = [],
   disabledEmptyLabel = "Reports to: N/A (CEO)",
   chooseLabel = "Reports to...",
+  trigger,
+  disabledAgentIds = [],
 }: {
   agents: Agent[];
   value: string | null;
@@ -26,6 +28,8 @@ export function ReportsToPicker({
   excludeAgentIds?: string[];
   disabledEmptyLabel?: string;
   chooseLabel?: string;
+  trigger?: ReactElement;
+  disabledAgentIds?: string[];
 }) {
   const [open, setOpen] = useState(false);
   const exclude = new Set(excludeAgentIds);
@@ -39,7 +43,7 @@ export function ReportsToPicker({
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
-        <button
+        {trigger ?? <button
           type="button"
           className={cn(
             "inline-flex max-w-full min-w-0 items-center gap-1.5 overflow-hidden rounded-md border border-border px-2 py-1 text-xs hover:bg-accent/50 transition-colors",
@@ -55,7 +59,7 @@ export function ReportsToPicker({
             </>
           ) : current ? (
             <>
-              <AgentIcon icon={current.icon} className="h-3 w-3 shrink-0 text-muted-foreground" />
+              <AgentAvatar agent={current} size={16} className="h-3 w-3 shrink-0 text-muted-foreground"/>
               <span
                 className={cn(
                   "min-w-0 truncate",
@@ -73,9 +77,9 @@ export function ReportsToPicker({
               </span>
             </>
           )}
-        </button>
+        </button>}
       </PopoverTrigger>
-      <PopoverContent className="w-48 p-1" align="start">
+      <PopoverContent className={trigger ? "w-64 max-h-80 overflow-y-auto p-1" : "w-48 p-1"} align="start" aria-label="Choose manager">
         <button
           type="button"
           className={cn(
@@ -91,7 +95,7 @@ export function ReportsToPicker({
         </button>
         {terminatedManager && (
           <div className="flex min-w-0 items-center gap-2 overflow-hidden px-2 py-1.5 text-xs text-muted-foreground border-b border-border mb-0.5">
-            <AgentIcon icon={current.icon} className="shrink-0 h-3 w-3" />
+            <AgentAvatar agent={current} size={16} className="shrink-0 h-3 w-3"/>
             <span className="min-w-0 truncate">
               Current: {current.name} (terminated)
             </span>
@@ -99,15 +103,17 @@ export function ReportsToPicker({
         )}
         {unknownManager && (
           <div className="px-2 py-1.5 text-xs text-muted-foreground border-b border-border mb-0.5">
-            Saved manager is missing from this company. Choose a new manager or clear.
+            Saved manager is missing from this organization. Choose a new manager or clear.
           </div>
         )}
         {rows.map((a) => (
           <button
             type="button"
             key={a.id}
+            disabled={disabledAgentIds.includes(a.id)}
+            title={disabledAgentIds.includes(a.id) ? "Would create a reporting loop" : undefined}
             className={cn(
-              "flex items-center gap-2 w-full min-w-0 px-2 py-1.5 text-xs rounded hover:bg-accent/50 overflow-hidden",
+              "flex items-center gap-2 w-full min-w-0 px-2 py-1.5 text-xs rounded hover:bg-accent/50 overflow-hidden disabled:opacity-50 disabled:cursor-not-allowed",
               a.id === value && "bg-accent",
             )}
             onClick={() => {
@@ -115,7 +121,7 @@ export function ReportsToPicker({
               setOpen(false);
             }}
           >
-            <AgentIcon icon={a.icon} className="shrink-0 h-3 w-3 text-muted-foreground" />
+            <AgentAvatar agent={a} size={16} className="shrink-0 h-3 w-3 text-muted-foreground"/>
             <span className="min-w-0 truncate">{a.name}</span>
             <span className="text-muted-foreground ml-auto shrink-0">{roleLabels[a.role] ?? a.role}</span>
           </button>

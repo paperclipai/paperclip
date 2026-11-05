@@ -1,0 +1,1 @@
+ALTER TABLE "external_objects" ADD COLUMN "refresh_started_at" timestamp with time zone;

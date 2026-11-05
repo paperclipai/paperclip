@@ -51,6 +51,7 @@ export function inboxAgentPolicyRoutes(db: Db) {
       actorId: actor.actorId,
       agentId: actor.agentId,
       runId: actor.runId,
+      agentApiKeyId: actor.agentApiKeyId,
       action: "inbox.agent_policy_updated",
       entityType: "user_inbox_agent_policy",
       entityId: userId,

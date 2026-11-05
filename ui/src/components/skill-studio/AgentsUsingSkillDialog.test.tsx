@@ -37,7 +37,6 @@ vi.mock("@/adapters/use-adapter-capabilities", () => ({
     supportsSkills: true,
     supportsLocalAgentJwt: true,
     requiresMaterializedRuntimeSkills: false,
-    supportsModelProfiles: false,
   }),
 }));
 vi.mock("@/context/ToastContext", () => ({
@@ -122,6 +121,9 @@ function makeVersion(overrides: Partial<CompanySkillVersion> = {}): CompanySkill
     companySkillId: "skill-1",
     revisionNumber: 1,
     label: null,
+    releaseId: null,
+    releaseName: null,
+    releasedAt: null,
     fileInventory: [],
     authorAgentId: null,
     authorUserId: null,

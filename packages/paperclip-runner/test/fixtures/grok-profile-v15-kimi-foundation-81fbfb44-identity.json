@@ -1,0 +1,35 @@
+{
+  "commandDigest": "sha256:99a7c5a38e3786fc08cc27e54902b0d36b07be15c61e3ca5645088c301c35067",
+  "sourceDigest": "sha256:1c16b81b5743471f4b5143943fcfc860f14f8ae0ca9255bc8b2fc8542bdede5a",
+  "declaration": {
+    "schema": "paperclip.grok-profile-identity.v1",
+    "agent": "grok",
+    "agentProfileVersion": 15,
+    "agentServerPackage": "builtin:grok-acp",
+    "agentServerVersion": "1",
+    "agentRuntimePackage": "native:grok",
+    "agentRuntimeVersion": "1.0.13",
+    "requiresProviderPolicy": false,
+    "acpxVersion": "0.13.1",
+    "sources": {
+      "patches/acpx@0.13.1.patch": "sha256:1e7dae8c83bf8620f53f2bea13c175eeff95e7e955783f6f529bb1dcbdcdb6d2",
+      "packages/paperclip-runner/src/cli/acpx-runtime-sidecar.ts": "sha256:6816fe12cdd274746b5241b75823b3c347b245f3cc03cdbe70f05ec1a0250663",
+      "packages/paperclip-runner/src/cli/acpx-sidecar-input.ts": "sha256:17948ad74350dc487ab20d24a0fb89daf0b426b98396454fff0e3856e922d82c",
+      "packages/paperclip-runner/src/drivers/acpx/admission-diagnostics.ts": "sha256:df8f1aa4f2d1bc63b2635bdd09cb8165c8b7681ddcc2618435c7c08ca90475af",
+      "packages/paperclip-runner/src/drivers/acpx/grok-effort.ts": "sha256:f1e46cf2e1e36b7704bd797b678e3db8db2003f97bdb9d827cfa3d7662698777",
+      "packages/paperclip-runner/src/drivers/acpx/grok-web-search.ts": "sha256:754b5ca2345c045421f6007f34999508d996e1cea035f0f1952b3d5f00072b9c",
+      "packages/paperclip-runner/src/drivers/acpx/grok-credentials.ts": "sha256:1c4ff0be6da798b6fcc604d20a9198dcc8523a3806d563b5b5345b7260549f73",
+      "packages/paperclip-runner/src/drivers/acpx/codex-runtime-adapter.ts": "sha256:c676b83d9dbef86d781069a8b25e160615b288177729974267fe0c2da25afb71",
+      "packages/paperclip-runner/src/drivers/acpx/runtime-host.ts": "sha256:f44e5555b722553ab7ea1c982d355b1694d3c5fe1cdf19b9868e4bfbaa587b72",
+      "packages/paperclip-runner/src/drivers/preconfigured-home.ts": "sha256:bb286f7ddc6e9597c56d46bf7ff6e3b556c5b680d7e147fd46518724432b083e",
+      "packages/paperclip-runner/src/drivers/acpx/runtime-sandbox.ts": "sha256:86dcc0abbbe2e32f88febbbab22f662d8490d438a9e9cb5df04589fdf66ebd88",
+      "packages/paperclip-runner/src/drivers/acpx/sidecar-protocol.ts": "sha256:26b6b21dad582810d00f46e947e682a9615ee9761c487f6315970d6d014c05ab",
+      "packages/paperclip-runner/src/drivers/acpx/native-distribution-integrity.ts": "sha256:aed327c389e957483a503cb1bb8b247ee7cd7ff4b528fb4567c39bcb4577690b",
+      "packages/paperclip-runner/src/providers/grok/launcher.cjs": "sha256:f0b698395a3704ed2ffaf84ea19bdb20c36c8a0a70b7c629c7b6ffe144e59e55",
+      "packages/paperclip-runner/src/providers/grok/platforms.json": "sha256:931eed3abbf2bf041e6c72e6e9486d976f4352613cf069b216ddf010c9a8e704",
+      "packages/paperclip-runner/runner/crates/runner-core/src/acpx_provider_backend.rs": "sha256:8c1d2bdc1cdd808b51b624b1bd1b576b8f72e72e89fbac3ff1f9beef14878480",
+      "packages/paperclip-runner/runner/crates/runner-core/src/acpx_provider_session.rs": "sha256:fc8d7cce62e0c02efddece8696e8d24f6a9fe19e5288a5e67a01ffbf931a3f6e",
+      "packages/paperclip-runner/runner/crates/runner-core/src/acpx_sidecar_transport.rs": "sha256:37a552c1a8a59b1815df99b79552e0fda711cfa934055073ffd682cd17d7fb54"
+    }
+  }
+}

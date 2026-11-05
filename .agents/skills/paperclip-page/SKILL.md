@@ -19,10 +19,20 @@ host, for example `https://pages.paperclip.ing/<slug>/`.
   - `PAPERCLIP_PAGE_BUCKET`
   - `PAPERCLIP_PAGE_BASE_URL`
   - `AWS_REGION`
-  - AWS credentials via Paperclip Secrets or an approved AWS vault
+  - `PAPERCLIP_PAGE_AWS_ACCESS_KEY_ID` and `PAPERCLIP_PAGE_AWS_SECRET_ACCESS_KEY`
+    with the page-uploader credentials from Paperclip Secrets
 - Optional environment variables:
   - `PAPERCLIP_PAGE_DEFAULT_PREFIX`
-  - `PAPERCLIP_PAGE_AWS_PROFILE`
+  - `PAPERCLIP_PAGE_AWS_PROFILE` (alternative to the namespaced key pair)
+  - `PAPERCLIP_PAGE_AWS_SESSION_TOKEN` (only together with the namespaced key
+    pair)
+
+Do not bind the page-uploader credentials as global `AWS_ACCESS_KEY_ID` /
+`AWS_SECRET_ACCESS_KEY`: static env keys take precedence over `AWS_PROFILE` in
+every AWS SDK, so global names silently replace the host identity for every
+process in the agent run. The namespaced variables scope the uploader identity
+to this helper only. The ambient credential chain still works as a fallback
+when none of the `PAPERCLIP_PAGE_AWS_*` credential variables are set.
 
 ## Workflow
 

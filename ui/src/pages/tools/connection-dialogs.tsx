@@ -9,7 +9,7 @@ import type {
 import { queryKeys } from "@/lib/queryKeys";
 import { toolsApi, type CreateToolConnectionInput } from "@/api/tools";
 import { secretsApi } from "@/api/secrets";
-import { ApiError } from "@/api/client";
+import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -32,15 +32,15 @@ import { useToast } from "@/context/ToastContext";
 import { redactUrlSecrets } from "@/lib/redact-url-secrets";
 import {
   LoadingState,
-  ErrorState,
   HealthBadge,
   RiskBadge,
   CapabilityBadges,
   QuarantineBadge,
 } from "./shared";
+import { describeError } from "@/api/errors";
 
 export const TRANSPORT_LABEL: Record<string, string> = {
-  remote_http: "remote http",
+  mcp_remote: "remote http",
   local_stdio: "local stdio",
 };
 
@@ -73,16 +73,22 @@ export function CatalogDialog({ connection, onClose }: { connection: ToolConnect
     queryKey: queryKeys.tools.catalog(connection.id),
     queryFn: () => toolsApi.listCatalog(connection.id),
   });
+  const catalogView = useQueryView(catalog);
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
       <DialogContent className="max-w-2xl">
         <DialogHeader>
           <DialogTitle>Tool catalog — {connection.name}</DialogTitle>
         </DialogHeader>
-        {catalog.isLoading ? (
+        {catalog.isLoading || catalogView.kind === "reconnecting" ? (
           <LoadingState />
-        ) : catalog.error ? (
-          <ErrorState error={catalog.error} onRetry={() => catalog.refetch()} />
+        ) : catalogView.kind === "error" ? (
+          <QueryErrorState
+            error={catalog.error}
+            action="load the tool catalog"
+            onRetry={catalogView.retry}
+            retrying={catalogView.isFetching}
+          />
         ) : (catalog.data?.catalog ?? []).length === 0 ? (
           <p className="py-6 text-sm text-muted-foreground">
             No tools discovered yet. Use “Refresh catalog” to discover tools from this connection.
@@ -158,7 +164,7 @@ export function AddConnectionDialog({
   const [applicationId, setApplicationId] = useState(defaultApplicationId ?? "");
   const [applicationName, setApplicationName] = useState("");
   const [name, setName] = useState("");
-  const [transport, setTransport] = useState<"remote_http" | "local_stdio">("remote_http");
+  const [transport, setTransport] = useState<"mcp_remote" | "local_stdio">("mcp_remote");
   const [endpointUrl, setEndpointUrl] = useState("");
   const [templateId, setTemplateId] = useState("");
   const [creds, setCreds] = useState<CredentialDraft[]>([]);
@@ -208,7 +214,7 @@ export function AddConnectionDialog({
   const create = useMutation({
     mutationFn: () => {
       const config: Record<string, unknown> =
-        transport === "remote_http" ? { url: endpointUrl.trim() } : { templateId };
+        transport === "mcp_remote" ? { url: endpointUrl.trim() } : { templateId };
       const input: CreateToolConnectionInput = {
         ...(applicationMode === "existing" ? { applicationId } : { applicationName: applicationName.trim() }),
         name: name.trim(),
@@ -227,7 +233,7 @@ export function AddConnectionDialog({
     onError: (err) =>
       pushToast({
         title: "Could not create connection",
-        body: err instanceof ApiError ? err.message : String(err),
+        body: describeError(err).body,
         tone: "error",
       }),
   });
@@ -241,7 +247,7 @@ export function AddConnectionDialog({
     onError: (err) =>
       pushToast({
         title: "Probe failed",
-        body: err instanceof ApiError ? err.message : String(err),
+        body: describeError(err).body,
         tone: "error",
       }),
   });
@@ -257,7 +263,7 @@ export function AddConnectionDialog({
     onError: (err) =>
       pushToast({
         title: "Activation failed",
-        body: err instanceof ApiError ? err.message : String(err),
+        body: describeError(err).body,
         tone: "error",
       }),
   });
@@ -269,11 +275,11 @@ export function AddConnectionDialog({
   };
 
   const transportConfigValid =
-    transport === "remote_http" ? endpointUrl.trim().length > 0 : templateId.length > 0;
+    transport === "mcp_remote" ? endpointUrl.trim().length > 0 : templateId.length > 0;
   const appChoiceValid = applicationMode === "existing" ? !!applicationId : applicationName.trim().length > 0;
   const canCreate = appChoiceValid && name.trim().length > 0 && transportConfigValid && !create.isPending;
   const locked = !!draft;
-  const inferredType = transport === "remote_http" ? "MCP HTTP" : "MCP stdio";
+  const inferredType = transport === "mcp_remote" ? "MCP HTTP" : "MCP stdio";
 
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
@@ -365,20 +371,20 @@ export function AddConnectionDialog({
                 <Label>Transport</Label>
                 <Select
                   value={transport}
-                  onValueChange={(v) => setTransport(v as "remote_http" | "local_stdio")}
+                  onValueChange={(v) => setTransport(v as "mcp_remote" | "local_stdio")}
                   disabled={locked}
                 >
                   <SelectTrigger>
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="remote_http">Remote HTTP (no local process)</SelectItem>
+                    <SelectItem value="mcp_remote">Remote HTTP (no local process)</SelectItem>
                     <SelectItem value="local_stdio">Local stdio (approved template)</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
 
-              {transport === "remote_http" ? (
+              {transport === "mcp_remote" ? (
                 <div className="space-y-1.5">
                   <Label htmlFor="conn-url">Endpoint URL</Label>
                   <Input
@@ -489,8 +495,12 @@ export function AddConnectionDialog({
               <div className="rounded-md border border-border bg-muted/40 p-3">
                 <LoadingState label="Probing connection…" />
               </div>
-            ) : probe.isError ? (
-              <ErrorState error={probe.error} onRetry={() => draft && probe.mutate(draft.id)} />
+            ) : probe.error ? (
+              <QueryErrorState
+                error={probe.error}
+                action="probe the connection"
+                onRetry={() => draft && probe.mutate(draft.id)}
+              />
             ) : probeResult ? (
               <div className="rounded-md border border-border bg-muted/40 p-3">
                 <div className="flex items-center gap-2 text-sm">

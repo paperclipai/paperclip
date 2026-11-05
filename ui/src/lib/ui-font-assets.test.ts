@@ -18,7 +18,7 @@ describe("bundled UI font assets", () => {
       expect(existsSync(fontPath), `${fileName} should exist in ui/public/fonts`).toBe(true);
       expect(statSync(fontPath).isFile(), `${fileName} should be a file`).toBe(true);
       expect(readFileSync(fontPath).subarray(0, 4).toString("ascii")).toBe("wOF2");
-      expect(css).toContain(`url("../fonts/${fileName}")`);
+      expect(css).toContain(`url("/fonts/${fileName}")`);
     }
 
     expect(css).toContain('--font-sans: "InterVariable"');

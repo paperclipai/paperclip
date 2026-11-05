@@ -1,63 +1,171 @@
 import { describe, expect, it, vi } from "vitest";
-import type { InstanceExperimentalSettings } from "@paperclipai/shared";
+import { INSTANCE_FEATURE_CATALOG, instanceExperimentalSettingsSchema, type InstanceExperimentalSettings } from "@paperclipai/shared";
 import {
   applyExperimentalSettingsPatch,
+  applyCloudCatalogDefaults,
+  applyManagedExperimentalOverlay,
   normalizeExperimentalSettings,
   resolveWorktreeRunExecutionActivationState,
 } from "../services/instance-settings.js";
+import type { ManagedInstanceConfig } from "../services/managed-config.js";
 
 describe("instance settings service", () => {
+  it("defaults remote workspace enrollment on while preserving explicit operator choices", () => {
+    expect(instanceExperimentalSettingsSchema.parse({}).remoteWorkspaceStorageEnabled).toBe(true);
+    expect(INSTANCE_FEATURE_CATALOG.remoteWorkspaceStorageEnabled).toMatchObject({ cloudDefault: true, selfHostedDefault: true });
+    for (const stored of [undefined, null, {}, { enableApps: true }, { remoteWorkspaceStorageEnabled: "invalid" }]) {
+      expect(normalizeExperimentalSettings(stored).remoteWorkspaceStorageEnabled).toBe(true);
+    }
+    const disabled = applyExperimentalSettingsPatch({}, { remoteWorkspaceStorageEnabled: false });
+    expect(normalizeExperimentalSettings(JSON.parse(JSON.stringify(disabled))).remoteWorkspaceStorageEnabled).toBe(false);
+    expect(normalizeExperimentalSettings({ remoteWorkspaceStorageEnabled: false, enableCases: "invalid" }).remoteWorkspaceStorageEnabled).toBe(false);
+    expect(applyExperimentalSettingsPatch(disabled, { enableStatusCards: true }).remoteWorkspaceStorageEnabled).toBe(false);
+    expect(applyExperimentalSettingsPatch(disabled, { remoteWorkspaceStorageEnabled: true }).remoteWorkspaceStorageEnabled).toBe(true);
+  });
+
+  it.each([
+    { stored: {}, managed: undefined, expected: true },
+    { stored: { remoteWorkspaceStorageEnabled: false }, managed: undefined, expected: false },
+    { stored: { remoteWorkspaceStorageEnabled: false }, managed: true, expected: true },
+    { stored: { remoteWorkspaceStorageEnabled: true }, managed: false, expected: false },
+  ])("respects Cloud enrollment defaults and managed choices: $expected", ({ stored, managed, expected }) => {
+    const config: ManagedInstanceConfig = {
+      v: 1, mode: "cloud", catalogVersion: "test", plugins: { autoInstall: [] }, environments: [],
+      features: managed === undefined ? {} : { remoteWorkspaceStorageEnabled: managed },
+    };
+    const normalized = normalizeExperimentalSettings(stored);
+    const result = applyManagedExperimentalOverlay(applyCloudCatalogDefaults(normalized, stored, config), config);
+    expect(result.experimental.remoteWorkspaceStorageEnabled).toBe(expected);
+    expect(normalized.remoteWorkspaceStorageEnabled).toBe("remoteWorkspaceStorageEnabled" in stored ? stored.remoteWorkspaceStorageEnabled : true);
+    expect(result.managedKeys.remoteWorkspaceStorageEnabled).toEqual(managed === undefined
+      ? undefined : { managed: true, managedBy: "paperclip-cloud" });
+  });
+  it("keeps Notebook off for legacy or invalid settings and round-trips explicit operator choices", () => {
+    for (const stored of [undefined, null, {}, { enableApps: true },
+      { enablePaperclipNotebook: "true" }, { enablePaperclipNotebook: 1 },
+      { enablePaperclipNotebook: true, enableCases: "invalid" }]) {
+      expect(normalizeExperimentalSettings(stored).enablePaperclipNotebook).toBe(false);
+    }
+    const enabled = applyExperimentalSettingsPatch({}, { enablePaperclipNotebook: true });
+    const restored = normalizeExperimentalSettings(JSON.parse(JSON.stringify(enabled)));
+    expect(restored).toMatchObject({ enablePaperclipNotebook: true, enableMemoryConnectors: false });
+    const disabled = applyExperimentalSettingsPatch(restored, { enablePaperclipNotebook: false });
+    expect(normalizeExperimentalSettings(JSON.parse(JSON.stringify(disabled))).enablePaperclipNotebook).toBe(false);
+  });
+  it("keeps OpenAI Dot opt-in and persists its setting independently of its prerequisites", () => {
+    expect(normalizeExperimentalSettings({}).enableOpenAiDot).toBe(false);
+    const enabled = applyExperimentalSettingsPatch({}, { enableOpenAiDot: true });
+    expect(normalizeExperimentalSettings(JSON.parse(JSON.stringify(enabled)))).toMatchObject({
+      enableOpenAiDot: true, enablePublicMcp: false,
+    });
+    expect(applyExperimentalSettingsPatch(enabled, { enableOpenAiDot: false }).enableOpenAiDot).toBe(false);
+  });
+  it("keeps chat connectors opt-in across legacy storage and patches without disabling Apps", () => {
+    for (const stored of [undefined, {}, { enableApps: true }, { enableConferenceRoomChat: true }]) {
+      expect(normalizeExperimentalSettings(stored).enableChatConnectors).toBe(false);
+    }
+    const enabled = applyExperimentalSettingsPatch({}, { enableChatConnectors: true });
+    expect(normalizeExperimentalSettings(JSON.parse(JSON.stringify(enabled))).enableChatConnectors).toBe(true);
+    const disabled = applyExperimentalSettingsPatch(enabled, { enableChatConnectors: false });
+    expect(disabled).toMatchObject({ enableApps: true, enableChatConnectors: false });
+  });
+  it("keeps GitHub review bots independent across legacy normalization and persistence", () => {
+    expect(normalizeExperimentalSettings({ enableChatConnectors: true })).toMatchObject({ enableChatConnectors: true, enableGitHubReviewBots: false });
+    const saved = applyExperimentalSettingsPatch({}, { enableGitHubReviewBots: true });
+    expect(normalizeExperimentalSettings(JSON.parse(JSON.stringify(saved)))).toMatchObject({ enableChatConnectors: false, enableGitHubReviewBots: true });
+  });
   it("ignores retired experimental flags without resetting current settings", () => {
     expect(normalizeExperimentalSettings({
       enableEnvironments: true,
+      enableNativeRunner: false,
+      enableAiConnectionRouters: false,
+      enableManagedSandboxOnly: false,
       enableIsolatedWorkspaces: true,
       enableIssuePlanDecompositions: true,
       enableExperimentalFileViewer: true,
-      enableTaskWatchdogs: true,
-      enableCloudSync: true,
       enableBuiltInAgents: true,
       enableGoalsSidebarLink: true,
       enableServerInfoDebugView: true,
+      enablePaperclipDeveloperMode: true,
       autoRestartDevServerWhenIdle: true,
-      enableIssueGraphLivenessAutoRecovery: true,
       enableWorkspaceBranchReconcileForward: true,
       enableWorkspaceDirtyQuarantineRepair: false,
-      issueGraphLivenessAutoRecoveryLookbackHours: 48,
       enableNewestFirstIssueThread: true,
+      enablePipelines: true,
     })).toEqual({
       enableEnvironments: true,
+      enableNativeRunner: false,
+      remoteWorkspaceStorageEnabled: true,
+      enableAiConnectionRouters: false,
+      enableManagedSandboxOnly: false,
       enableIsolatedWorkspaces: true,
+      enableIsolatedWorkspacesByDefault: false,
       enableStreamlinedLeftNavigation: true,
-      enableApps: false,
+      enableStreamlinedUi: true,
+      enableApps: true,
+    enableMcpAggregators: true,
+      enableAgentChat: false,
+      enablePublicMcp: false,
+      enableOpenAiDot: false,
+      enableMuse: false,
+      enableGrokBot: false,
+      enableCombinedInboxTasks: false,
+      enableArtifactsV1: true,
+      enableChatConnectors: false,
+      enableGitHubReviewBots: false,
+      enableMemoryConnectors: false,
+      enablePaperclipNotebook: false,
       enableConferenceRoomChat: false,
+      enableClassicTaskInterface: false,
       enableExternalObjects: false,
       enableSmokeLab: false,
-      enablePipelines: false,
       enableCases: false,
       enableIssuePlanDecompositions: true,
       enableExperimentalFileViewer: true,
-      enableTaskWatchdogs: true,
-      enableCloudSync: true,
-      enableSmokeLab: false,
       enableBuiltInAgents: true,
+      enableBetaSkills: false,
+      enableSummaries: false,
+      enableStatusCards: false,
       enableDecisions: false,
+      enableFastResponses: false,
       enableGoalsSidebarLink: true,
       enableServerInfoDebugView: true,
+      enablePaperclipDeveloperMode: true,
+      enableSimplifiedEnglishInteractions: false,
+      enableFirstTaskPlanProposal: false,
       autoRestartDevServerWhenIdle: true,
-      enableIssueGraphLivenessAutoRecovery: true,
       enableWorkspaceBranchReconcileForward: true,
       enableWorkspaceDirtyQuarantineRepair: false,
+      enableOwnerInstanceAdmin: false,
+      enableSandboxDuplexBridge: false,
+      enableRunnerPreviewIngress: false,
       enableWorktreeRunExecution: false,
       worktreeRunExecutionActivatedAt: null,
       worktreeRunExecutionActivationInstanceId: null,
-      issueGraphLivenessAutoRecoveryLookbackHours: 48,
     });
   });
 
-  it("defaults enableApps to false for empty and legacy stored settings", () => {
-    expect(normalizeExperimentalSettings(undefined).enableApps).toBe(false);
-    expect(normalizeExperimentalSettings({}).enableApps).toBe(false);
-    expect(normalizeExperimentalSettings({ enablePipelines: true }).enableApps).toBe(false);
+  it("defaults streamlined UI on without inheriting the retired navigation preference", () => {
+    expect(normalizeExperimentalSettings(undefined).enableStreamlinedUi).toBe(true);
+    expect(normalizeExperimentalSettings({}).enableStreamlinedUi).toBe(true);
+    expect(
+      normalizeExperimentalSettings({ enableStreamlinedLeftNavigation: false }).enableStreamlinedUi,
+    ).toBe(true);
+    expect(normalizeExperimentalSettings({ enableStreamlinedUi: false }).enableStreamlinedUi).toBe(false);
+  });
+
+  it("keeps Apps on for empty, legacy, and explicitly disabled stored settings", () => {
+    expect(normalizeExperimentalSettings(undefined).enableApps).toBe(true);
+    expect(normalizeExperimentalSettings({}).enableApps).toBe(true);
+    expect(normalizeExperimentalSettings({ enableCases: true }).enableApps).toBe(true);
+    expect(normalizeExperimentalSettings({ enableApps: false }).enableApps).toBe(true);
+  });
+
+  it("retains the deprecated ingress key for stored-settings compatibility", () => {
+    expect(
+      normalizeExperimentalSettings({ enableRunnerPreviewIngress: true })
+        .enableRunnerPreviewIngress,
+    ).toBe(true);
   });
 
   it("defaults enableConferenceRoomChat to false for empty and legacy stored settings", () => {
@@ -69,12 +177,31 @@ describe("instance settings service", () => {
     ).toBe(false);
   });
 
-  it("defaults enableTaskWatchdogs to false for empty and legacy stored settings", () => {
-    expect(normalizeExperimentalSettings(undefined).enableTaskWatchdogs).toBe(false);
-    expect(normalizeExperimentalSettings({}).enableTaskWatchdogs).toBe(false);
+  it("defaults enableClassicTaskInterface to false for empty and legacy stored settings", () => {
+    expect(normalizeExperimentalSettings(undefined).enableClassicTaskInterface).toBe(false);
+    expect(normalizeExperimentalSettings({}).enableClassicTaskInterface).toBe(false);
+    // The retired enableTaskChatRedesign key must not bleed into the new flag:
+    // an install that had the chat redesign ON opted into chat-style, which is
+    // now the default — not into the classic view.
     expect(
-      normalizeExperimentalSettings({ enableExperimentalFileViewer: true }).enableTaskWatchdogs,
+      normalizeExperimentalSettings({ enableTaskChatRedesign: true }).enableClassicTaskInterface,
     ).toBe(false);
+    expect(
+      normalizeExperimentalSettings({ enableClassicTaskInterface: true }).enableClassicTaskInterface,
+    ).toBe(true);
+  });
+
+  it("defaults enableSimplifiedEnglishInteractions to false for empty and legacy stored settings", () => {
+    expect(normalizeExperimentalSettings(undefined).enableSimplifiedEnglishInteractions).toBe(false);
+    expect(normalizeExperimentalSettings({}).enableSimplifiedEnglishInteractions).toBe(false);
+    expect(
+      normalizeExperimentalSettings({ enableStreamlinedLeftNavigation: true })
+        .enableSimplifiedEnglishInteractions,
+    ).toBe(false);
+    expect(
+      normalizeExperimentalSettings({ enableSimplifiedEnglishInteractions: true })
+        .enableSimplifiedEnglishInteractions,
+    ).toBe(true);
   });
 
   it("defaults enableSmokeLab to false for empty and legacy stored settings", () => {
@@ -90,6 +217,15 @@ describe("instance settings service", () => {
     expect(normalizeExperimentalSettings({}).enableServerInfoDebugView).toBe(false);
     expect(
       normalizeExperimentalSettings({ autoRestartDevServerWhenIdle: true }).enableServerInfoDebugView,
+    ).toBe(false);
+  });
+
+  it("defaults enablePaperclipDeveloperMode to false for empty and legacy settings", () => {
+    expect(normalizeExperimentalSettings(undefined).enablePaperclipDeveloperMode).toBe(false);
+    expect(normalizeExperimentalSettings({}).enablePaperclipDeveloperMode).toBe(false);
+    expect(
+      normalizeExperimentalSettings({ enableServerInfoDebugView: true })
+        .enablePaperclipDeveloperMode,
     ).toBe(false);
   });
 
@@ -113,7 +249,7 @@ describe("instance settings service", () => {
     expect(normalizeExperimentalSettings(undefined).enableWorkspaceBranchReconcileForward).toBe(true);
     expect(normalizeExperimentalSettings({}).enableWorkspaceBranchReconcileForward).toBe(true);
     expect(
-      normalizeExperimentalSettings({ enableIssueGraphLivenessAutoRecovery: true })
+      normalizeExperimentalSettings({ enableExperimentalFileViewer: true })
         .enableWorkspaceBranchReconcileForward,
     ).toBe(true);
     expect(normalizeExperimentalSettings(undefined).enableWorkspaceDirtyQuarantineRepair).toBe(true);
@@ -147,6 +283,12 @@ describe("instance settings service", () => {
     expect(normalizeExperimentalSettings(undefined).enableBuiltInAgents).toBe(false);
     expect(normalizeExperimentalSettings({}).enableBuiltInAgents).toBe(false);
     expect(normalizeExperimentalSettings({ enableExternalObjects: true }).enableBuiltInAgents).toBe(false);
+  });
+
+  it("preserves enableBetaSkills and defaults it off for legacy stored settings", () => {
+    expect(normalizeExperimentalSettings(undefined).enableBetaSkills).toBe(false);
+    expect(normalizeExperimentalSettings({}).enableBetaSkills).toBe(false);
+    expect(normalizeExperimentalSettings({ enableBetaSkills: true }).enableBetaSkills).toBe(true);
   });
 
   it("sets worktree run execution activation fields on a false to true transition", () => {

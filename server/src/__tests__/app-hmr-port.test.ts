@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { resolveViteHmrHost, resolveViteHmrPort } from "../app.ts";
+import { createServer } from "node:http";
+import {
+  listenViteHmrServer,
+  resolveViteHmrHost,
+  resolveViteHmrPort,
+  resolveViteHmrProtocol,
+} from "../app.ts";
 
 describe("resolveViteHmrPort", () => {
   it("uses serverPort + 10000 when the result stays in range", () => {
@@ -24,8 +30,30 @@ describe("resolveViteHmrHost", () => {
     expect(resolveViteHmrHost("::")).toBeUndefined();
   });
 
-  it("keeps concrete bind hosts", () => {
-    expect(resolveViteHmrHost("127.0.0.1")).toBe("127.0.0.1");
+  it("uses the browser hostname for loopback while keeping non-loopback concrete hosts", () => {
+    expect(resolveViteHmrHost("127.0.0.1")).toBeUndefined();
+    expect(resolveViteHmrHost("localhost")).toBeUndefined();
     expect(resolveViteHmrHost("paperclip-dev")).toBe("paperclip-dev");
+  });
+});
+
+describe("resolveViteHmrProtocol", () => {
+  it("selects secure WebSockets for HTTPS branch runtimes", () => {
+    expect(resolveViteHmrProtocol("wss")).toBe("wss");
+    expect(resolveViteHmrProtocol(undefined)).toBeUndefined();
+    expect(() => resolveViteHmrProtocol("https")).toThrow(/ws or wss/);
+  });
+});
+
+describe("listenViteHmrServer", () => {
+  it("binds the dedicated middleware-mode HMR listener to loopback", async () => {
+    const server = createServer();
+    await listenViteHmrServer(server, 0, "127.0.0.1");
+
+    expect(server.address()).toMatchObject({ address: "127.0.0.1" });
+
+    await new Promise<void>((resolve, reject) => {
+      server.close((error) => error ? reject(error) : resolve());
+    });
   });
 });

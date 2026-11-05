@@ -1,8 +1,11 @@
+import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import {
   trackAgentCreated,
   trackAgentFirstHeartbeat,
   trackAgentTaskCompleted,
+  trackAgentTaskRun,
+  trackInteractionCreated,
   trackInteractionResolved,
   trackInstallCompleted,
 } from "@paperclipai/shared/telemetry";
@@ -11,7 +14,7 @@ import type { EventDimensionsMap, TelemetryClient } from "@paperclipai/shared/te
 function createClient(): TelemetryClient {
   return {
     track: vi.fn(),
-    hashPrivateRef: vi.fn((value: string) => `hashed:${value}`),
+    hashPrivateRef: vi.fn((value: string) => createHash("sha256").update(value).digest("hex").slice(0, 16)),
   } as unknown as TelemetryClient;
 }
 
@@ -78,6 +81,89 @@ describe("shared telemetry agent events", () => {
     });
   });
 
+  it("hashes the task id for agent.task_completed and never sends the raw value", () => {
+    const client = createClient();
+    const rawTaskId = "11111111-1111-4111-8111-111111111111";
+
+    trackAgentTaskCompleted(client, {
+      agentRole: "qa",
+      agentId: "33333333-3333-4333-8333-333333333333",
+      adapterType: "codex_local",
+      taskId: rawTaskId,
+    });
+
+    expect(client.hashPrivateRef).toHaveBeenCalledWith(rawTaskId);
+    const sentDimensions = vi.mocked(client.track).mock.calls[0]?.[1] as Record<string, unknown>;
+    expect(sentDimensions.task_id).toMatch(/^[0-9a-f]{16}$/);
+    expect(sentDimensions.task_id).not.toBe(rawTaskId);
+    expect(JSON.stringify(sentDimensions)).not.toContain(rawTaskId);
+  });
+
+  it("omits task_id for agent.task_completed when the caller gives no task id", () => {
+    const client = createClient();
+
+    trackAgentTaskCompleted(client, {
+      agentRole: "qa",
+      agentId: "33333333-3333-4333-8333-333333333333",
+      adapterType: "codex_local",
+    });
+
+    expect(client.hashPrivateRef).not.toHaveBeenCalled();
+    expect(client.track).toHaveBeenCalledWith("agent.task_completed", {
+      agent_role: "qa",
+      agent_id: "33333333-3333-4333-8333-333333333333",
+      adapter_type: "codex_local",
+    });
+  });
+
+  it("sends all ten dimensions for agent.task_run when present", () => {
+    const client = createClient();
+    const rawTaskId = "22222222-2222-4222-8222-222222222222";
+
+    trackAgentTaskRun(client, {
+      agentId: "44444444-4444-4444-8444-444444444444",
+      state: "succeeded",
+      adapterType: "claude_local",
+      agentRole: "engineer",
+      model: "claude-sonnet-5",
+      durationSeconds: 12.5,
+      inputTokens: 100,
+      outputTokens: 200,
+      cachedTokens: 50,
+      taskId: rawTaskId,
+    });
+
+    expect(client.hashPrivateRef).toHaveBeenCalledWith(rawTaskId);
+    const sentDimensions = vi.mocked(client.track).mock.calls[0]?.[1] as Record<string, unknown>;
+    expect(sentDimensions).toMatchObject({
+      agent_id: "44444444-4444-4444-8444-444444444444",
+      state: "succeeded",
+      adapter_type: "claude_local",
+      agent_role: "engineer",
+      model: "claude-sonnet-5",
+      duration_seconds: 12.5,
+      input_tokens: 100,
+      output_tokens: 200,
+      cached_tokens: 50,
+    });
+    expect(sentDimensions.task_id).toMatch(/^[0-9a-f]{16}$/);
+  });
+
+  it("omits every absent optional dimension for agent.task_run", () => {
+    const client = createClient();
+
+    trackAgentTaskRun(client, {
+      agentId: "55555555-5555-4555-8555-555555555555",
+      state: "failed",
+    });
+
+    expect(client.hashPrivateRef).not.toHaveBeenCalled();
+    expect(client.track).toHaveBeenCalledWith("agent.task_run", {
+      agent_id: "55555555-5555-4555-8555-555555555555",
+      state: "failed",
+    });
+  });
+
   it("keeps non-agent event dimensions unchanged", () => {
     const client = createClient();
 
@@ -111,6 +197,7 @@ describe("shared telemetry agent events", () => {
       optionCount: 2,
       selectedOptionCount: 1,
       skippedTaskCount: 3,
+      legacyInheritedRestriction: true,
     });
 
     expect(client.track).toHaveBeenCalledWith("interaction.resolved", {
@@ -125,6 +212,21 @@ describe("shared telemetry agent events", () => {
       option_count: 2,
       selected_option_count: 1,
       skipped_task_count: 3,
+      legacy_inherited_restriction: true,
+    });
+  });
+
+  it("emits only enum and boolean dimensions for interaction creation compatibility", () => {
+    const client = createClient();
+
+    trackInteractionCreated(client, {
+      interactionKind: "request_confirmation",
+      usedDeprecatedResolverPolicyAlias: true,
+    });
+
+    expect(client.track).toHaveBeenCalledWith("interaction.created", {
+      interaction_kind: "request_confirmation",
+      used_deprecated_resolver_policy_alias: true,
     });
   });
 });

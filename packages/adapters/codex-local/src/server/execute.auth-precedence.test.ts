@@ -131,9 +131,16 @@ describe("codex sandbox auth precedence warning", () => {
       },
     });
 
-    expect(prepareAdapterExecutionTargetRuntime).toHaveBeenCalledWith(expect.objectContaining({
-      assets: [expect.objectContaining({ key: "home", localDir: hostCodexHome })],
-    }));
+    // The home asset now ships a curated *staged* allowlist dir (not the raw
+    // host CODEX_HOME) and carries no `exclude` denylist.
+    const runtimeCall = (prepareAdapterExecutionTargetRuntime.mock.calls[0] as unknown[])?.[0] as {
+      assets: Array<{ key: string; localDir: string; exclude?: string[] }>;
+    };
+    const homeAsset = runtimeCall.assets.find((asset) => asset.key === "home");
+    expect(homeAsset).toBeDefined();
+    expect(homeAsset?.localDir).not.toBe(hostCodexHome);
+    expect(homeAsset?.localDir).toContain("paperclip-codex-home-sync");
+    expect(homeAsset?.exclude).toBeUndefined();
     expect(runAdapterExecutionTargetShellCommand).toHaveBeenCalledWith(
       "run-auth-precedence",
       expect.objectContaining({ kind: "remote", transport: "sandbox", remoteCwd: "/sandbox/workspace" }),
