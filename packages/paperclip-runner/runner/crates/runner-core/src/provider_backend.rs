@@ -625,6 +625,30 @@ fn normalize_provider_notification(
     method: &str,
     params: &Value,
 ) -> Result<Vec<NormalizedProviderEvent>, DurableRunnerError> {
+    if state.config.provider == "codex" && method == "account/rateLimits/updated" {
+        // Account-scoped and sparse: merge into the last snapshot and report
+        // only a changed one, so repeated identical updates stay out of the log.
+        let Some(next) = crate::provider_rate_limits::codex_rate_limit_snapshot(
+            params,
+            state.codex_rate_limits.as_ref(),
+            &crate::provider_rate_limits::now_iso(),
+        ) else {
+            return Ok(Vec::new());
+        };
+        let changed = crate::provider_rate_limits::rate_limit_snapshot_changed(
+            state.codex_rate_limits.as_ref(),
+            &next,
+        );
+        state.codex_rate_limits = Some(next.clone());
+        if !changed {
+            return Ok(Vec::new());
+        }
+        state.rate_limit_notice_seq = state.rate_limit_notice_seq.saturating_add(1);
+        return Ok(vec![crate::provider_rate_limits::rate_limit_notice(
+            &next,
+            &format!("codex-rate-limits-{}", state.rate_limit_notice_seq),
+        )]);
+    }
     if state.config.provider == "codex"
         && ["thread/tokenUsage/updated", "paperclip/resumeUsageSnapshot"].contains(&method)
     {
@@ -1145,6 +1169,11 @@ struct CodexProviderState {
     cursor_cloud_terminal_receipt: Option<Value>,
     #[serde(default)]
     codex_usage: Option<CodexRunUsage>,
+    /// Latest Codex account rate-limit snapshot, merged across sparse updates.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    codex_rate_limits: Option<Value>,
+    #[serde(default)]
+    rate_limit_notice_seq: u64,
     #[serde(default)]
     previous_accounting_origin: Option<CodexAccountingOrigin>,
     #[serde(default)]
@@ -1259,6 +1288,8 @@ impl CodexProviderState {
             provider_termination_receipt: None,
             cursor_cloud_terminal_receipt: None,
             codex_usage,
+            codex_rate_limits: None,
+            rate_limit_notice_seq: 0,
             previous_accounting_origin: None,
             completion_contract,
             tool_bridge,
@@ -5791,6 +5822,32 @@ mod tests {
         state
     }
 
+    #[test]
+    fn codex_rate_limit_updates_emit_only_changed_account_notices() {
+        let mut state = opencode_result_state();
+        state.config.provider = "codex".to_owned();
+        let update = json!({"rateLimits": {"limitId": "codex",
+            "primary": {"usedPercent": 78, "windowDurationMins": 300, "resetsAt": 1_793_893_200_i64}}});
+        let first = normalize_provider_notification(&mut state, "account/rateLimits/updated", &update).unwrap();
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].event_type, "provider.notice.recorded");
+        assert_eq!(first[0].payload["category"], "provider.rate_limits");
+        assert_eq!(first[0].payload["noticeId"], "codex-rate-limits-1");
+        assert!(normalize_provider_notification(&mut state, "account/rateLimits/updated", &update)
+            .unwrap()
+            .is_empty());
+        let sparse = json!({"rateLimits": {"limitId": "codex",
+            "secondary": {"usedPercent": 41, "windowDurationMins": 10080, "resetsAt": null}}});
+        let second = normalize_provider_notification(&mut state, "account/rateLimits/updated", &sparse).unwrap();
+        let snapshot: Value =
+            serde_json::from_str(second[0].payload["details"][0]["value"].as_str().unwrap()).unwrap();
+        assert_eq!(snapshot["windows"].as_array().unwrap().len(), 2);
+        assert_eq!(snapshot["windows"][0]["usedPercent"], 78.0);
+        // Restored checkpoints keep the merged snapshot.
+        let restored: CodexProviderState = serde_json::from_value(serde_json::to_value(&state).unwrap()).unwrap();
+        assert_eq!(restored.codex_rate_limits, state.codex_rate_limits);
+    }
+
     fn valid_opencode_result() -> Value {
         json!({
             "schema": "paperclip.run_result.v1",
@@ -6793,6 +6850,8 @@ mod tests {
             provider_termination_receipt: None,
             cursor_cloud_terminal_receipt: None,
             codex_usage: Some(CodexRunUsage::new(false)),
+            codex_rate_limits: None,
+            rate_limit_notice_seq: 0,
             previous_accounting_origin: None,
             completion_contract: None,
             tool_bridge: ProviderToolBridge::default(),

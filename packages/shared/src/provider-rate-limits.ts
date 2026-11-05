@@ -140,6 +140,11 @@ export interface ProviderRateLimitSummary {
   /** Set while the provider is refusing work and the reset is still ahead. */
   limitedUntil: string | null;
   limited: boolean;
+  /**
+   * The provider reports a window as used up but the account has credits, so
+   * work continues on credits (Codex) instead of waiting for the reset.
+   */
+  usingCredits: boolean;
   /** Windows whose reset has not passed yet, fullest first. */
   current: ProviderRateLimitWindow[];
 }
@@ -158,18 +163,23 @@ export function summarizeProviderRateLimits(
     .filter((window) => window.usedPercent !== null && live(window.resetsAt))
     .sort((a, b) => (b.usedPercent ?? 0) - (a.usedPercent ?? 0));
   const reached = snapshot.limitReached;
-  if (reached && live(reached.resetsAt) && (reached.resetsAt || now - Date.parse(snapshot.observedAt) < 3_600_000)) {
+  const hasCredits = snapshot.credits?.unlimited === true || snapshot.credits?.hasCredits === true;
+  const reachedNow = reached !== null && live(reached.resetsAt)
+    && (reached.resetsAt !== null || now - Date.parse(snapshot.observedAt) < 3_600_000);
+  if (reached && reachedNow && !hasCredits) {
     const window = snapshot.windows.find((candidate) => candidate.id === reached.windowId) ?? current[0] ?? null;
-    return { tone: "reached", window, limitedUntil: reached.resetsAt, limited: true, current };
+    return { tone: "reached", window, limitedUntil: reached.resetsAt, limited: true, usingCredits: false, current };
   }
   const window = current[0] ?? null;
   if (!window) return null;
   const pct = window.usedPercent ?? 0;
+  const usingCredits = hasCredits && (reachedNow || pct >= 100);
   return {
-    tone: pct >= 100 ? "reached" : pct > PROVIDER_RATE_LIMIT_WARN_PERCENT ? "warn" : "normal",
+    tone: usingCredits ? "warn" : pct >= 100 ? "reached" : pct > PROVIDER_RATE_LIMIT_WARN_PERCENT ? "warn" : "normal",
     window,
     limitedUntil: null,
     limited: false,
+    usingCredits,
     current,
   };
 }

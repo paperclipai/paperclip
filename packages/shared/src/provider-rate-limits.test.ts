@@ -39,6 +39,16 @@ describe("provider rate limits", () => {
     expect(summarizeProviderRateLimits(limited, Date.parse("2026-11-05T15:41:00.000Z"))?.limited).toBe(false);
   });
 
+  it("treats a used-up window with credits as working on credits, not limited", () => {
+    const onCredits = {
+      ...base,
+      windows: [{ ...base.windows[1]!, id: "codex.primary", usedPercent: 100 }],
+      credits: { hasCredits: true, unlimited: false, balance: null },
+      limitReached: { windowId: "codex.primary", reason: "rate_limit_reached", resetsAt: "2026-11-09T09:00:00.000Z" },
+    };
+    expect(summarizeProviderRateLimits(onCredits, NOW)).toMatchObject({ tone: "warn", limited: false, usingCredits: true });
+  });
+
   it("reads the snapshot from a rate-limit notice and rejects other shapes", () => {
     const payload = {
       schema: "paperclip.provider.notice.v1", category: "provider.rate_limits",

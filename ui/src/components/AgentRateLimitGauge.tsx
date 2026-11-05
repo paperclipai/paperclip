@@ -51,12 +51,13 @@ export function AgentRateLimitPanel({ snapshot, summary, now }: {
   now: number;
 }) {
   const reachedId = summary.limited ? snapshot.limitReached?.windowId ?? null : null;
+  const creditTone = summary.usingCredits ? "warn" : null;
   const credits = snapshot.credits;
   return (
     <div className="space-y-2">
       {summary.current.map((window) => {
         const pct = window.usedPercent ?? 0;
-        const tone = windowTone(pct, window.id === reachedId);
+        const tone = window.id === summary.window?.id && creditTone ? creditTone : windowTone(pct, window.id === reachedId);
         return (
           <div key={window.id} className="space-y-1">
             <div className="flex items-baseline justify-between gap-3 text-xs">
@@ -72,6 +73,9 @@ export function AgentRateLimitPanel({ snapshot, summary, now }: {
           </div>
         );
       })}
+      {summary.usingCredits && (
+        <div className="text-xs text-(--status-task-icon-todo)">Limit reached; work continues on account credits.</div>
+      )}
       {credits && (credits.unlimited || credits.balance !== null || credits.hasCredits === false) && (
         <div className="text-xs text-muted-foreground">
           {credits.unlimited ? "Unlimited credits" : credits.hasCredits === false ? "No credits remaining" : `${credits.balance} credits`}
@@ -83,7 +87,8 @@ export function AgentRateLimitPanel({ snapshot, summary, now }: {
 
 /**
  * One-line "Usage limit" property value: "5h 78% · resets 15:40", amber above
- * 80%, "Limited until 15:40" while the provider refuses work. Click opens the
+ * 80%, "Limited until 15:40" while the provider refuses work, "using credits"
+ * when a used-up window falls back to account credits. Click opens the
  * full window breakdown. Renders nothing when no current limit data exists.
  */
 export function AgentRateLimitPropertyValue({ snapshot, now = Date.now(), defaultOpen, detailsHref, className }: {
@@ -99,7 +104,9 @@ export function AgentRateLimitPropertyValue({ snapshot, now = Date.now(), defaul
   const { window, tone } = summary;
   const label = summary.limited
     ? `Limited${summary.limitedUntil ? ` until ${formatRateLimitClock(summary.limitedUntil, now)}` : ""}`
-    : `${window!.shortLabel} ${Math.round(window!.usedPercent ?? 0)}%${window!.resetsAt ? ` · resets ${formatRateLimitClock(window!.resetsAt, now)}` : ""}`;
+    : summary.usingCredits
+      ? `${window!.shortLabel} ${Math.round(window!.usedPercent ?? 0)}% · using credits`
+      : `${window!.shortLabel} ${Math.round(window!.usedPercent ?? 0)}%${window!.resetsAt ? ` · resets ${formatRateLimitClock(window!.resetsAt, now)}` : ""}`;
   return (
     <Popover defaultOpen={defaultOpen}>
       <PopoverTrigger asChild>
