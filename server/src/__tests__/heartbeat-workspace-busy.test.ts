@@ -832,6 +832,20 @@ describeEmbeddedPostgres("shared-workspace run serialization", () => {
       expect((await heartbeat.getRun(retryRun.id))?.status).toBe("scheduled_retry");
     });
 
+    it("keeps an execution-workspace wait parked when only the project workspace changes", async () => {
+      const fixture = await seedInheritedWorkspace();
+      const retryRun = await deferredRetryFor(fixture.agentId, fixture.issueId);
+      const otherProjectWorkspaceId = randomUUID();
+      await db.insert(projectWorkspaces).values({
+        id: otherProjectWorkspaceId, companyId: fixture.companyId, projectId: fixture.projectId,
+        name: "Other workspace", sourceType: "local_path", cwd: workspaceCwd,
+      });
+      await db.update(issues).set({ projectWorkspaceId: otherProjectWorkspaceId }).where(eq(issues.id, fixture.issueId));
+      const dueAt = new Date(new Date(retryRun.scheduledRetryAt!).getTime() + 1_000);
+      expect((await heartbeat.promoteDueScheduledRetries(dueAt)).runIds).not.toContain(retryRun.id);
+      expect(await countWorkspaceBusyCancellations(fixture.companyId)).toBe(1);
+    });
+
     it("still lets the user stop a parked waiter", async () => {
       const fixture = await seedInheritedWorkspace();
       const retryRun = await deferredRetryFor(fixture.agentId, fixture.issueId);

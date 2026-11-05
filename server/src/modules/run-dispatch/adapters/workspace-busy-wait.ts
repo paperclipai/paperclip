@@ -96,9 +96,13 @@ async function taskStillUsesWaitedWorkspace(tx: Db, run: HeartbeatRun, wait: Wor
     .select({ executionWorkspaceId: issues.executionWorkspaceId, projectWorkspaceId: issues.projectWorkspaceId })
     .from(issues)
     .where(and(eq(issues.companyId, run.companyId), eq(issues.id, issueId)));
-  return Boolean(issue) &&
-    (issue!.executionWorkspaceId ?? null) === wait.issueExecutionWorkspaceId &&
-    (issue!.projectWorkspaceId ?? null) === wait.issueProjectWorkspaceId;
+  if (!issue) return false;
+  // An execution-workspace wait depends only on that binding. A project wait
+  // also ends when the task gains an execution workspace, which takes precedence.
+  const executionUnchanged = (issue.executionWorkspaceId ?? null) === wait.issueExecutionWorkspaceId;
+  return wait.key.startsWith("execution:")
+    ? executionUnchanged
+    : executionUnchanged && (issue.projectWorkspaceId ?? null) === wait.issueProjectWorkspaceId;
 }
 
 /**

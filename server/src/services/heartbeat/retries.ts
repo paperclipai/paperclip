@@ -63,6 +63,7 @@ import {
   WORKSPACE_BUSY_WAIT_KEY,
   readWorkspaceBusyWait,
   workspaceBusyWaitKey,
+  type WorkspaceBusyWait,
   isNonAssigneeWorkspaceBusyRetry,
   isResolvedInteractionContinuationWakeContext,
 } from "../../modules/run-dispatch/index.js";
@@ -1501,6 +1502,32 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
     }
   }
 
+  // The wait applies only while the task keeps the workspace binding it had
+  // when it deferred; run dispatch compares the same binding before parking.
+  async function readWorkspaceBusyWaitForRetry(
+    run: typeof heartbeatRuns.$inferSelect,
+    runContext: Record<string, unknown>,
+    deferral: WorkspaceBusyDeferral,
+    now: Date,
+  ): Promise<WorkspaceBusyWait | null> {
+    const key = workspaceBusyWaitKey(deferral);
+    const issueId = readNonEmptyString(runContext.issueId);
+    if (!key || !issueId) return null;
+    const [issue] = await db
+      .select({ executionWorkspaceId: issues.executionWorkspaceId, projectWorkspaceId: issues.projectWorkspaceId })
+      .from(issues)
+      .where(and(eq(issues.companyId, run.companyId), eq(issues.id, issueId)));
+    if (!issue) return null;
+    const priorWait = readWorkspaceBusyWait(run.scheduledRetryReason, runContext);
+    return {
+      key,
+      holderRunId: deferral.holder.runId,
+      waitingSince: priorWait?.key === key ? priorWait.waitingSince : now.toISOString(),
+      issueExecutionWorkspaceId: issue.executionWorkspaceId ?? null,
+      issueProjectWorkspaceId: issue.projectWorkspaceId ?? null,
+    };
+  }
+
   // Terminal handling for a WorkspaceBusyDeferral thrown by the pre-dispatch
   // gate: cancel the run (contention is not a failure), schedule a
   // workspace_busy retry, and leave the agent idle. The issue execution lock
@@ -1516,28 +1543,7 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
     deferral: WorkspaceBusyDeferral,
   ) {
     const now = new Date();
-    // Record what the retry waits behind, so run dispatch can keep it parked
-    // in place until the holder ends instead of re-dispatching it on a timer.
     const runContext = parseObject(run.contextSnapshot);
-    const waitKey = workspaceBusyWaitKey(deferral);
-    const priorWait = readWorkspaceBusyWait(run.scheduledRetryReason, runContext);
-    const waitIssueId = readNonEmptyString(runContext.issueId);
-    const [waitIssue] = waitKey && waitIssueId
-      ? await db
-          .select({ executionWorkspaceId: issues.executionWorkspaceId, projectWorkspaceId: issues.projectWorkspaceId })
-          .from(issues)
-          .where(and(eq(issues.companyId, run.companyId), eq(issues.id, waitIssueId)))
-      : [];
-    const workspaceBusyWait = waitKey && waitIssue
-      ? {
-          key: waitKey,
-          holderRunId: deferral.holder.runId,
-          waitingSince: priorWait?.key === waitKey ? priorWait.waitingSince : now.toISOString(),
-          // Parking is valid only while this binding is unchanged.
-          issueExecutionWorkspaceId: waitIssue.executionWorkspaceId ?? null,
-          issueProjectWorkspaceId: waitIssue.projectWorkspaceId ?? null,
-        }
-      : null;
     const cancelWrite = await setRunStatusIfRunning(run.id, "cancelled", {
       error: deferral.message,
       errorCode: WORKSPACE_BUSY_ERROR_CODE,
@@ -1568,7 +1574,6 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
       contextSnapshot: {
         ...runContext,
         workspaceBusyDeferredWhileAssignee: deferral.wasIssueAssignee,
-        [WORKSPACE_BUSY_WAIT_KEY]: workspaceBusyWait,
       },
     });
     if (!cancelWrite.updated) {
@@ -1588,8 +1593,17 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
     const agentRow = await getAgent(run.agentId).catch(() => null);
     let scheduleOutcome: string | null = null;
     if (cancelledRun && agentRow) {
+      // Record what the retry waits behind, so run dispatch can keep it parked
+      // in place until the holder ends instead of re-dispatching it on a timer.
+      const workspaceBusyWait = await readWorkspaceBusyWaitForRetry(run, runContext, deferral, now)
+        .catch((waitErr) => {
+          logger.warn({ err: waitErr, runId: run.id }, "failed to record the workspace wait; the retry re-checks on its timer");
+          return null;
+        });
       const scheduleResult = await scheduleBoundedRetryForRun(
-        cancelledRun,
+        workspaceBusyWait
+          ? { ...cancelledRun, contextSnapshot: { ...parseObject(cancelledRun.contextSnapshot), [WORKSPACE_BUSY_WAIT_KEY]: workspaceBusyWait } }
+          : cancelledRun,
         agentRow,
         {
           now,
