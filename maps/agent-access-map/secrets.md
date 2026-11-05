@@ -64,8 +64,6 @@ API: `present` — `POST /api/companies/{companyId}/secrets`.
 
 Agent access: `restricted`; board API/CLI `secrets create -C ... --name ... --value-env <env-name>` or `secrets link -C ... --name ... --provider ... --external-ref ...`. Agent alternative is proposed secret creation, not direct write.
 
-Create authorization runs before body validation. A same-company agent receives HTTP 403 with a human Settings → Secrets handoff and a warning against sending values in chat or tool calls. Authorized board callers still receive HTTP 400 for malformed bodies. Cross-company callers remain denied. Route regression tests cover these boundaries; a live agent handoff remains unverified.
-
 Policy: same company, same-provider selectable vault, valid unique path/name/key. Managed values require value and prohibit externalRef; external_reference requires supported provider/ref and stores provider reference metadata without fetching plaintext. Defaults use configured provider; GCP/Vault placeholders are not operational providers. New remote writes reserve/persist provider material with cleanup on DB failure; do not describe failed remote create as necessarily having no external effect.
 
 Evidence: `source-only` — Reviewed at `3bbc2104b65caf9f7763938a01260a5673e12f7a`. [routes/secrets.ts:887](../../server/src/routes/secrets.ts); [services/secrets.ts:2176-2395](../../server/src/services/secrets.ts); [cli/.../secrets.ts:415,443](../../cli/src/commands/client/secrets.ts).
