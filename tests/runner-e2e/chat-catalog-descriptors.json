@@ -4892,6 +4892,9 @@
     "sourceFiles": [
       "chat-catalog-domains/external-company-secret.ts",
       "chat-catalog-domains/external-secret-question.ts",
+      "chat-catalog-domains/external-secret-route.ts",
+      "chat-catalog-contract.ts",
+      "chat-catalog-flow.ts",
       "chat-catalog-domains/external-private-browser.ts",
       "chat-catalog-domains/external-private-browser-worker.ts",
       "chat-catalog-domains/external-credential-language.ts",
@@ -4905,7 +4908,7 @@
       "chat-flow.ts",
       "chat-scenarios/secrets.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.company-secret-controller-baseline.v7",
+    "oracleVersion": "paperclip.chat-catalog.company-secret-controller-baseline.v8",
     "expectedRunCount": 2,
     "expectedHumanMessageCount": 2,
     "turnTimeoutMs": 120000,

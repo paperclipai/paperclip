@@ -6,7 +6,7 @@ import { askUserQuestionsPayloadSchema } from "../../../packages/shared/src/vali
 export interface SecretQuestionBinding {
   companyId: string; issueId: string; agentId: string; userId: string; runId: string;
 }
-export function boundSecretQuestion(value: unknown, b: SecretQuestionBinding, status: "pending" | "answered" = "pending", mode?: "company-environment-name") {
+export function boundSecretQuestion(value: unknown, b: SecretQuestionBinding, status: "pending" | "answered" = "pending", mode?: "company-environment-name" | "company-saved-secret-name") {
   const row = value as Partial<AskUserQuestionsInteraction> | undefined;
   if (!row || typeof row.id !== "string" || row.kind !== "ask_user_questions" || row.status !== status
     || row.companyId !== b.companyId || row.issueId !== b.issueId || row.sourceRunId !== b.runId
@@ -16,10 +16,10 @@ export function boundSecretQuestion(value: unknown, b: SecretQuestionBinding, st
   const parsed = askUserQuestionsPayloadSchema.safeParse(row.payload), qs = parsed.success ? parsed.data.questionSet : undefined;
   if (!qs || qs.questions.length !== 1) return;
   const q = qs.questions[0]!;
-  if (!q.required || (mode === "company-environment-name"
+  if (!q.required || (mode
     ? q.answerMode !== "text" || !!q.options?.length || !!q.customAnswer?.enabled || q.initialText !== undefined
-      || q.textValidation?.pattern !== "^[A-Za-z_][A-Za-z0-9_]*$" || q.textValidation.minLength !== 1
-      || !q.textValidation.maxLength || q.textValidation.maxLength > 120 || q.textValidation.maxLength < "DEPLOYMENT_API_KEY".length
+      || (mode === "company-environment-name" && (q.textValidation?.pattern !== "^[A-Za-z_][A-Za-z0-9_]*$" || q.textValidation.minLength !== 1
+      || !q.textValidation.maxLength || q.textValidation.maxLength > 120 || q.textValidation.maxLength < "DEPLOYMENT_API_KEY".length))
     : q.answerMode !== "single_select" || !q.options?.length)) return;
   return { row: { ...row, id: row.id }, questionSet: qs, question: { ...q, options: q.options ?? [] },
     text: [qs.title, qs.description, q.header, q.prompt, q.helpText, q.customAnswer?.enabled ? q.customAnswer.label : undefined, q.customAnswer?.enabled ? q.customAnswer.placeholder : undefined, qs.submitLabel].filter(Boolean).join("\n"),
