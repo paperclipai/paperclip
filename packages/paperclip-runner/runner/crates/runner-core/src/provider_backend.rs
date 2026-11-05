@@ -1126,6 +1126,15 @@ fn normalize_codex_goal(value: &Value, working_now: bool) -> Option<SessionGoalS
     })
 }
 
+fn codex_goal_is_dormant(value: &Value) -> bool {
+    [value.get("workingNow"), value.pointer("/goal/workingNow")]
+        .into_iter()
+        .flatten()
+        .all(|working| working.as_bool() == Some(false))
+        && (value.get("goal") == Some(&Value::Null)
+            || normalize_codex_goal(value, false).is_some_and(|goal| goal.status != "active"))
+}
+
 fn goal_event_payload(
     goal: Option<&SessionGoalSnapshot>,
     capability: Option<&SessionGoalCapability>,
@@ -1887,6 +1896,7 @@ pub struct CodexCommandExecutor {
     cursor_cloud_launch_profile: Option<CursorCloudLaunchProfile>,
     startup_command: Option<ProviderStartupCommand>,
     startup_evidence_error: Option<DurableRunnerError>,
+    recovery_pending_effects: Option<usize>,
 }
 
 impl CodexCommandExecutor {
@@ -1902,6 +1912,7 @@ impl CodexCommandExecutor {
             cursor_cloud_launch_profile: None,
             startup_command: None,
             startup_evidence_error: None,
+            recovery_pending_effects: None,
         }
     }
 
@@ -1911,6 +1922,10 @@ impl CodexCommandExecutor {
         executor.opencode_launch_profile = config.opencode_launch_profile.clone();
         executor.cursor_cloud_launch_profile = config.cursor_cloud_launch_profile.clone();
         executor
+    }
+
+    pub(crate) fn observe_recovery_state(&mut self, state: &crate::durable::DurableState) {
+        self.recovery_pending_effects = Some(state.recovery_pending_effects());
     }
 
     fn bind_opencode_launch_profile(
@@ -2252,6 +2267,21 @@ impl CodexCommandExecutor {
         {
             return Ok(());
         }
+        let expected_dormant = state.config.provider == "codex"
+            && self
+                .recovery_pending_effects
+                .as_ref()
+                .is_some_and(|count| *count == 0)
+            && state.completed_turn_authoritative
+            && state.active_provider_turn_id.is_none()
+            && !state.ambiguous_turn_start_pending
+            && state.startup_attempt.is_none()
+            && !state.receipt_limit_interrupt_pending
+            && state.tool_bridge.pending_calls().next().is_none()
+            && state
+                .goal
+                .as_ref()
+                .is_none_or(|goal| goal.status != "active" && !goal.working_now);
         let provider_label = state.config.provider.clone();
         let provider_name = facade_provider_name(&provider_label);
         let provider_had_exited = state.lifecycle == "provider_exited";
@@ -2337,6 +2367,39 @@ impl CodexCommandExecutor {
                 return Ok(());
             }
             let recovered_active_turn_id = provider.active_provider_turn_id().map(str::to_owned);
+            if expected_dormant && recovered_active_turn_id.is_some() {
+                return Err(DurableRunnerError::invalid(
+                    "saved dormant Codex session resumed unexpected active work",
+                ));
+            }
+            if expected_dormant {
+                let live_goal = provider.get_goal().map_err(|error| {
+                    DurableRunnerError::invalid(format!(
+                        "dormant recovery goal probe failed: {error}"
+                    ))
+                })?;
+                if !codex_goal_is_dormant(&live_goal) {
+                    return Err(DurableRunnerError::invalid(
+                        "saved dormant Codex session resumed an active or unknown goal",
+                    ));
+                }
+                let live_thread = provider
+                    .read_thread_after_recovery_goal(codex_goal_is_dormant)
+                    .map_err(|error| {
+                        DurableRunnerError::invalid(format!(
+                            "dormant recovery thread probe failed: {error}"
+                        ))
+                    })?;
+                if live_thread
+                    .pointer("/thread/status/type")
+                    .and_then(Value::as_str)
+                    != Some("idle")
+                {
+                    return Err(DurableRunnerError::invalid(
+                        "saved dormant Codex session resumed unexpected active work",
+                    ));
+                }
+            }
             let recovered_turn_ended_with_result = active_provider_result_authoritative
                 && previous_active_turn_id.is_some()
                 && recovered_active_turn_id.is_none();
@@ -2641,6 +2704,7 @@ impl CodexCommandExecutor {
         {
             self.fail_started_provider(&mut provider);
         } else {
+            self.recovery_pending_effects = None;
             self.provider = Some(provider);
         }
         admission
@@ -5326,6 +5390,7 @@ impl CommandExecutor for CodexCommandExecutor {
     }
 
     fn rotate_authority(&mut self, config: &DurableRunnerConfig) {
+        self.recovery_pending_effects = None;
         self.event_identity = Some(ProviderEventIdentity::from_config(config));
     }
 

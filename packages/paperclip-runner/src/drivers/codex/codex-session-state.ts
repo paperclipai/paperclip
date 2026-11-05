@@ -57,6 +57,11 @@ class AsyncQueue<T> implements AsyncIterable<T> {
       waiter.resolve({ value: undefined, done: true });
   }
 
+  reopen(): void {
+    if (this.#failure !== null) throw this.#failure;
+    this.#closed = false;
+  }
+
   fail(error: Error): void {
     this.#failure ??= error;
     this.#closed = true;
