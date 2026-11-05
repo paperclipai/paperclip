@@ -114,9 +114,16 @@ it("recovers the real native backend before attaching the next run", async () =>
     await recovered.session!.attachRun!({ identity: { ...f.nativeIdentity, runId: "run-target" } });
     expect(source.evidence().runnerPid).toBe(before.runnerPid);
     await recovered.session!.startTurn({ message: { role: "user", text: "Continue under the next run." } });
-    for await (const event of recovered.session!.events()) if (event.eventType === "turn.completed") break;
+    let completed = false;
+    for await (const event of recovered.session!.events()) {
+      if (event.eventType === "turn.completed" && event.runId === "run-target") { completed = true; break; }
+    }
+    expect(completed).toBe(true);
     await f.settled();
-    expect((await recovered.session!.snapshot()).sessionId).toBe(f.thread.id);
+    const snapshot = await recovered.session!.snapshot();
+    expect(snapshot.sessionId).toBe(f.thread.id);
+    expect(snapshot.terminal).toMatchObject({ runTerminalState: "succeeded" });
+    expect(snapshot.semanticResult?.reportedWorkDisposition).toBe("done");
     expect(await f.calls("turn/start")).toBe(2); expect(await f.calls("process-start")).toBe(2);
     expect(await f.calls("thread/resume")).toBe(1);
     await recovered.session!.close({ reason: "test complete" });
@@ -167,7 +174,9 @@ it.each(["launch", "adopt", "adopt-denied"] as const)("prepares a cacheless sour
   await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
   const address = server.address();
   if (!address || typeof address === "string") throw new Error("missing source listener");
-  const registration: NonNullable<CapabilityRunnerdCodexTransportOptions["controlPlaneRegistration"]> = async next => {
+  const registeredIdentities: unknown[] = [];
+  const registration: NonNullable<CapabilityRunnerdCodexTransportOptions["controlPlaneRegistration"]> = async (next, identity) => {
+    registeredIdentities.push(identity);
     authority = next;
     return { connectUrl: `ws://127.0.0.1:${address.port}/runner`, release: () => { if (authority === next) authority = null; } };
   };
@@ -201,6 +210,7 @@ it.each(["launch", "adopt", "adopt-denied"] as const)("prepares a cacheless sour
     let resumed = fixture.recover(sourceOptions);
     expect((await resumed.transport.request("thread/read", {})).thread).toMatchObject(fixture.thread);
     expect(prepare).toHaveBeenCalledExactlyOnceWith(requirements, undefined);
+    expect(registeredIdentities.at(-1)).toEqual(fixture.identity);
     expect((await read(fixture.coreFile)).preparedLaunchConfigurations).toEqual(before.preparedLaunchConfigurations);
     await expect(readFile(join(fixture.root, "launch-preparation.json"))).rejects.toHaveProperty("code", "ENOENT");
     if (mode !== "launch") {
@@ -224,6 +234,7 @@ it.each(["launch", "adopt", "adopt-denied"] as const)("prepares a cacheless sour
       }
       expect((await resumed.transport.request("thread/read", {})).thread).toMatchObject(fixture.thread);
       expect(resumed.evidence().runnerPid).toBe(evidence.runnerPid);
+      expect(registeredIdentities.at(-1)).toEqual(fixture.identity);
       expect(prepare).toHaveBeenCalledExactlyOnceWith(requirements, undefined);
       expect(authorizeOldConfiguration).not.toHaveBeenCalled(); expect(launch).not.toHaveBeenCalled();
       expect((await read(fixture.coreFile)).preparedLaunchConfigurations).toEqual(before.preparedLaunchConfigurations);

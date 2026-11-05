@@ -6148,7 +6148,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       ? recoveryIdentityMatches(warmRecovery?.runnerIdentity ?? queuedSourceAttachment!.sourceIdentity, recoverySource!)
         ? oldTransitionRegistration : newTransitionRegistration
       : this.options.controlPlaneRegistration
-        ? await this.options.controlPlaneRegistration(core, this.#sourceRecoveryIdentity ?? undefined) : null;
+        ? await this.options.controlPlaneRegistration(core, this.#sourceReconciliationPending ? identity : this.#sourceRecoveryIdentity ?? undefined) : null;
     this.#startupFailureCode =
       registration?.startupFailureCode ?? "runner_local_connect_failed";
     if (registration === null) {
