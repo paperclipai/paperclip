@@ -77,6 +77,47 @@ describe("provider-neutral events", () => {
     })[0].eventType).toBe("provider.notice.recorded");
   });
 
+  it("maps Codex TurnError text, retries and error info into the notice", () => {
+    const [retry] = canonicalProviderEventsFromCodex("error", {
+      threadId: "thread-1",
+      turnId: "turn-1",
+      willRetry: true,
+      error: {
+        message: "Reconnecting... 2/5",
+        codexErrorInfo: { responseStreamDisconnected: { httpStatusCode: 502 } },
+        additionalDetails: "stream closed before response.completed",
+      },
+    });
+    expect(retry.payload).toMatchObject({
+      severity: "warning",
+      category: "provider_retry",
+      recoverable: true,
+      summary: "stream closed before response.completed",
+      details: [
+        { name: "Attempt", value: "2" },
+        { name: "Max attempts", value: "5" },
+        { name: "Reason", value: "responseStreamDisconnected" },
+        { name: "HTTP status", value: "502" },
+      ],
+    });
+    expect(validatePrpEvent(envelope(retry)).ok).toBe(true);
+
+    const [fatal] = canonicalProviderEventsFromCodex("error", {
+      turnId: "turn-1",
+      willRetry: false,
+      error: { message: "You've hit your usage limit.", codexErrorInfo: "usageLimitExceeded", additionalDetails: null },
+    });
+    expect(fatal.payload).toMatchObject({
+      severity: "error",
+      category: "error",
+      recoverable: false,
+      summary: "You've hit your usage limit.",
+      details: [{ name: "Reason", value: "usageLimitExceeded" }],
+    });
+    expect(fatal.payload.noticeId).not.toBe(retry.payload.noticeId);
+    expect(validatePrpEvent(envelope(fatal)).ok).toBe(true);
+  });
+
   it("preserves Codex notice summaries with legacy and empty-message fallbacks", () => {
     for (const method of ["configWarning", "deprecationNotice", "warning"]) {
       for (const [params, expected] of [
@@ -91,6 +132,48 @@ describe("provider-neutral events", () => {
         expect(event.payload.userActionable).toBe(false);
         expect(validatePrpEvent(envelope(event)).ok).toBe(true);
       }
+    }
+  });
+
+  it("maps a failed Codex MCP server start to a user-facing notice", () => {
+    const [event] = canonicalProviderEventsFromCodex("mcpServer/startupStatus/updated", {
+      threadId: null,
+      name: "paperclip",
+      status: "failed",
+      error: "MCP client for `paperclip` failed to start: program not found: paperclip-mcp",
+      failureReason: null,
+    });
+    expect(event).toMatchObject({
+      eventType: "provider.notice.recorded",
+      itemId: "mcp-startup:paperclip",
+      payload: {
+        severity: "warning",
+        category: "mcp_server_startup_failed",
+        scope: "session",
+        userActionable: true,
+        summary: "paperclip MCP server failed to start: program not found: paperclip-mcp",
+        details: [
+          { name: "server", value: "paperclip" },
+          { name: "reason", value: "program not found: paperclip-mcp" },
+        ],
+      },
+    });
+    expect(validatePrpEvent(envelope(event)).ok).toBe(true);
+
+    const [reauth] = canonicalProviderEventsFromCodex("mcpServer/startupStatus/updated", {
+      name: "linear", status: "failed", error: null, failureReason: "reauthenticationRequired",
+    });
+    expect(reauth.payload.summary).toBe("linear MCP server failed to start: needs re-authentication");
+    // Codex 0.160's own wording, observed on a live run.
+    const [live] = canonicalProviderEventsFromCodex("mcpServer/startupStatus/updated", {
+      name: "github", status: "failed",
+      error: "MCP client for `github` failed to start: MCP startup failed: No such file or directory (os error 2)",
+    });
+    expect(live.payload.summary).toBe("github MCP server failed to start: No such file or directory (os error 2)");
+    expect(validatePrpEvent(envelope(reauth)).ok).toBe(true);
+
+    for (const status of ["starting", "ready", "cancelled"]) {
+      expect(canonicalProviderEventsFromCodex("mcpServer/startupStatus/updated", { name: "paperclip", status })).toEqual([]);
     }
   });
 

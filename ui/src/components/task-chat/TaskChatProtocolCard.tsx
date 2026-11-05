@@ -1,4 +1,6 @@
 import { useContext, useEffect, useMemo, useState } from "react";
+import { TaskChatStatusNotice } from "./TaskChatStatusNotice";
+import { isStatusNotice } from "./status-notice-presentation";
 import {
   AlertTriangle,
   Bot,
@@ -1119,7 +1121,9 @@ export function TaskChatProtocolCard({
 }: TaskChatProtocolCardProps) {
   switch (item.surface) {
     case "provider_activity":
-      return <ProviderActivityCard item={item} />;
+      return isStatusNotice(item)
+        ? <TaskChatStatusNotice item={item} resolved={item.resolved} />
+        : <ProviderActivityCard item={item} />;
     case "workspace_change":
       return <WorkspaceChangeCard item={item} />;
     case "workspace_file":

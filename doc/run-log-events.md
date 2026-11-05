@@ -591,6 +591,19 @@ changes, and unrelated thread information do not create a provider notice in
 chat. Chat also omits the matching notice stored by older runners. Real provider
 warnings and errors remain visible.
 
+Harness status notices use `provider.notice.recorded` with a status category.
+Codex `error` notifications read `error.message`. A notification with
+`willRetry: true` becomes a recoverable `provider_retry` notice. A final error
+keeps category `error`. The `CodexErrorInfo` kind, the HTTP status, and the
+reconnect attempt count become notice details. Claude compaction, model
+fallback, and SDK informational banners arrive as ACP message text without a
+message identity. The ACPX layer records them as `context_compaction`,
+`model_fallback`, or `provider_informational` notices instead of answer text.
+Compaction start and end share one notice identity and carry a `Phase` detail.
+The task chat shows these notices as inline status chips. A retry chip fades
+after later provider work. A final provider error shows the real provider
+message. Generic warnings stay out of chat as before.
+
 Recovery lifecycle events retain the original structured failure code, retry attempt, next retry time, and predecessor/successor identifiers. Durable status delivery uses an idempotency marker; delivery grants no provider authority. Failed publication is retried without repeating provider work. These records are not first-party Telemetry.
 
 An unstarted legacy conversation retry waiting for execution cleanup retains

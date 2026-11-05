@@ -219,9 +219,13 @@ async function workspaceArchive(input: {
         const source = path.join(root, next);
         const stat = await fs.lstat(source);
         if (skipGit && name === ".git") { if (stat.isSymbolicLink()) fail("unsafe_git_link"); directories.push(relative); continue; }
-        if (stat.isDirectory() && name === "node_modules") {
-          const packageManifest = await fs.lstat(path.join(directory, "package.json")).catch(() => null);
-          if (packageManifest?.isFile() && !packageManifest.isSymbolicLink()) {
+        if (stat.isDirectory()) {
+          // Reinstallable dependency trees: npm packages beside package.json, and
+          // a Python virtual environment, which links its interpreter by absolute
+          // path and has a PEP 405 pyvenv.cfg at its root.
+          const marker = await fs.lstat(name === "node_modules" ? path.join(directory, "package.json")
+            : path.join(source, "pyvenv.cfg")).catch(() => null);
+          if (marker?.isFile() && !marker.isSymbolicLink()) {
             // A failing Git read cannot establish that data is untracked.
             const tracked = inRepository ? await git(directory, ["ls-files", "-z", "--", name]) : "";
             if (!tracked) { excludedPaths.add(next); continue; }
