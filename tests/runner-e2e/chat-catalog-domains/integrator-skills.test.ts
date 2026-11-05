@@ -172,3 +172,9 @@ it("preserves a negation that directly governs the assignment verb", () => {
     expect(gradeIntegratorSkills(o).passed).toBe(true);
   }
 });
+
+it("preserves an explicitly qualified direct denial of global assignment", () => {
+  const o = authoredSelfUse();
+  o.reply += " Created the reusable skill. I have not explicitly enabled it for all agents.";
+  expect(gradeIntegratorSkills(o).passed).toBe(true);
+});
