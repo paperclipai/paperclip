@@ -924,9 +924,9 @@ pub fn normalize_codex_notification(method: &str, params: &Value) -> Vec<Normali
                     "schema": "paperclip.tool.execution.v1",
                     "executionId": item_id,
                     "transport": match item_type { "mcpToolCall" => "mcp", "dynamicToolCall" => "dynamic", "builtinToolCall" => "builtin", _ => "process" },
-                    "operation": if item_type == "commandExecution" { "execute" } else { "unknown" },
+                    "operation": if item_type == "commandExecution" { codex_command_operation(provider_item) } else { "unknown" },
                     "name": provider_item.get("tool").or_else(|| provider_item.get("command")).and_then(Value::as_str).map(|value| bounded_text(value, 240)),
-                    "target": Value::Null,
+                    "target": if item_type == "commandExecution" { codex_command_target(provider_item) } else { Value::Null },
                     "namespace": provider_item.get("server").and_then(Value::as_str).map(|value| bounded_text(value, 240)),
                     "readOnly": provider_item.get("readOnlyHint").and_then(Value::as_bool),
                     "status": provider_status(string(provider_item.get("status")), completed),
@@ -943,6 +943,11 @@ pub fn normalize_codex_notification(method: &str, params: &Value) -> Vec<Normali
                     )),
                 ) {
                     object.extend(output);
+                }
+                if item_type == "commandExecution" {
+                    if let Some(subject) = codex_command_subject(provider_item) {
+                        payload["subject"] = Value::String(subject);
+                    }
                 }
                 push(
                     &mut events,
@@ -1341,7 +1346,17 @@ fn normalize_acpx_tool_call(
     let native_status = string(payload.get("status"));
     let status = provider_status(native_status, native_status == "completed");
     let terminal = status != "running";
-    let raw_title = string(payload.get("title")).trim();
+    let detail = payload.get("toolDetail").filter(|value| value.is_object());
+    let detail_text = |key: &str| {
+        detail
+            .and_then(|detail| detail.get(key))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+    };
+    // The native tool name ("Bash", "Write", "mcp__server__tool") beats the
+    // free-text display title ("Terminal", a command line, "Preparing file…").
+    let raw_title = detail_text("toolName").unwrap_or_else(|| string(payload.get("title")).trim());
     let mcp = acpx_mcp_tool_identity(raw_title);
     let name = bounded_text(mcp.map_or(raw_title, |(_, name)| name), 240);
     let output = match payload.get("rawOutput").or_else(|| payload.get("output")) {
@@ -1359,8 +1374,16 @@ fn normalize_acpx_tool_call(
         "namespace": mcp.map(|(namespace, _)| bounded_text(namespace, 240)),
         "readOnly": matches!(operation, "read" | "search" | "list"),
         "status": status,
-        "durationMs": Value::Null,
-        "exitCode": Value::Null,
+        "durationMs": if terminal {
+            detail.and_then(|detail| detail.get("durationMs")).and_then(Value::as_u64).map_or(Value::Null, Value::from)
+        } else {
+            Value::Null
+        },
+        "exitCode": if terminal {
+            detail.and_then(|detail| detail.get("exitCode")).and_then(Value::as_i64).map_or(Value::Null, Value::from)
+        } else {
+            Value::Null
+        },
         "progress": if terminal {
             Value::Null
         } else {
@@ -1374,6 +1397,11 @@ fn normalize_acpx_tool_call(
     });
     if let Some(input_updated) = payload.get("inputUpdated").and_then(Value::as_bool) {
         normalized["inputUpdated"] = Value::Bool(input_updated);
+    }
+    for key in ["subject", "description", "blockedReason"] {
+        if let Some(value) = detail_text(key) {
+            normalized[key] = Value::String(bounded_text(value, MAX_TEXT_CHARS));
+        }
     }
     if let (Some(object), Value::Object(output)) =
         (normalized.as_object_mut(), bounded_output(&output))
@@ -1431,6 +1459,115 @@ fn acpx_notice(
             },
         }),
     }
+}
+
+fn codex_command_actions(item: &Value) -> &[Value] {
+    item.get("commandActions")
+        .and_then(Value::as_array)
+        .map_or(&[], Vec::as_slice)
+}
+
+/// Codex parses each shell command into read, search, list and unknown
+/// actions. A command made only of reads is a read, and so on; anything
+/// mixed or unparsed stays an execution.
+fn codex_command_operation(item: &Value) -> &'static str {
+    let actions = codex_command_actions(item);
+    let kind = |action: &Value| match string(action.get("type")).to_ascii_lowercase().as_str() {
+        "read" => "read",
+        "search" => "search",
+        "listfiles" | "list_files" => "list",
+        _ => "execute",
+    };
+    match actions.first().map(kind) {
+        Some(first) if actions.iter().all(|action| kind(action) == first) => first,
+        _ => "execute",
+    }
+}
+
+/// The single file a read-only command touched, relative to the command's cwd.
+fn codex_command_target(item: &Value) -> Value {
+    let actions = codex_command_actions(item);
+    if actions.len() != 1 {
+        return Value::Null;
+    }
+    // One parsed action can still name several files (`sed -n 1,20p a b c`);
+    // naming only the first would misstate what was read.
+    if string(actions[0].get("type")).eq_ignore_ascii_case("read")
+        && codex_command_operands(string(actions[0].get("command"))) > 1
+    {
+        return Value::Null;
+    }
+    let path = string(actions[0].get("path")).trim();
+    let cwd = string(item.get("cwd")).trim_end_matches('/');
+    let relative = if !cwd.is_empty() && path.starts_with(&format!("{cwd}/")) {
+        &path[cwd.len() + 1..]
+    } else {
+        path
+    };
+    if relative.is_empty()
+        || relative.starts_with('/')
+        || relative.contains('\0')
+        || relative.split('/').any(|segment| segment == "..")
+    {
+        return Value::Null;
+    }
+    Value::String(bounded_text(relative, 4_000))
+}
+
+/// Non-flag operands after the program name, ignoring `sed` line ranges.
+fn codex_command_operands(command: &str) -> usize {
+    command
+        .split_whitespace()
+        .skip(1)
+        .map(|token| token.trim_matches(|character| character == '\'' || character == '"'))
+        .filter(|token| {
+            !token.is_empty()
+                && !token.starts_with('-')
+                && !token.trim_end_matches('p').split(',').all(|part| !part.is_empty() && part.chars().all(|c| c.is_ascii_digit() || c == '$'))
+        })
+        .count()
+}
+
+/// The command a person typed, without the `/bin/zsh -lc '…'` wrapper. Codex
+/// already parsed each action's own command, so prefer those. A single search
+/// reads as its query: `"TODO" in src`.
+fn codex_command_subject(item: &Value) -> Option<String> {
+    let actions = codex_command_actions(item);
+    if let [action] = actions {
+        let query = string(action.get("query")).trim();
+        if string(action.get("type")).eq_ignore_ascii_case("search") && !query.is_empty() {
+            let path = string(action.get("path")).trim();
+            let scope = if path.is_empty() || path == "." { String::new() } else { format!(" in {path}") };
+            return Some(bounded_text(&format!("\"{query}\"{scope}"), MAX_TEXT_CHARS));
+        }
+    }
+    let parsed: Vec<&str> = codex_command_actions(item)
+        .iter()
+        .map(|action| string(action.get("command")).trim())
+        .collect();
+    let joined = if !parsed.is_empty() && parsed.iter().all(|command| !command.is_empty()) {
+        parsed.join(" && ")
+    } else {
+        unwrap_shell_command(string(item.get("command")).trim()).to_owned()
+    };
+    (!joined.is_empty()).then(|| bounded_text(&joined, MAX_TEXT_CHARS))
+}
+
+fn unwrap_shell_command(command: &str) -> &str {
+    for shell in ["/bin/zsh", "/bin/bash", "/bin/sh", "zsh", "bash", "sh", "/usr/bin/env bash", "/usr/bin/env zsh"] {
+        for flag in [" -lc ", " -c "] {
+            if let Some(rest) = command.strip_prefix(shell).and_then(|rest| rest.strip_prefix(flag)) {
+                let rest = rest.trim();
+                for quote in ['\'', '"'] {
+                    if rest.len() >= 2 && rest.starts_with(quote) && rest.ends_with(quote) {
+                        return &rest[1..rest.len() - 1];
+                    }
+                }
+                return rest;
+            }
+        }
+    }
+    command
 }
 
 fn nonnegative_u64(value: Option<&Value>) -> u64 {
@@ -1824,6 +1961,107 @@ mod tests {
         assert_eq!(events[0].event_type, "plan.updated");
         assert_eq!(events[0].payload["steps"][0]["status"], "in_progress");
         assert!(!events[0].payload.to_string().contains("secret-value"));
+    }
+
+    #[test]
+    fn codex_commands_carry_their_parsed_subject_operation_and_target() {
+        let read = normalize_codex_notification(
+            "item/completed",
+            &json!({"item": {
+                "id": "exec-read", "type": "commandExecution", "status": "completed",
+                "command": "/bin/zsh -lc 'sed -n 1,120p src/server.ts'",
+                "cwd": "/work/repo", "exitCode": 0, "durationMs": 31,
+                "commandActions": [{"type": "read", "command": "sed -n 1,120p src/server.ts", "name": "server.ts", "path": "/work/repo/src/server.ts"}],
+            }}),
+        );
+        assert_eq!(read[0].payload["operation"], "read");
+        assert_eq!(read[0].payload["target"], "src/server.ts");
+        assert_eq!(read[0].payload["subject"], "sed -n 1,120p src/server.ts");
+        assert_eq!(read[0].payload["exitCode"], 0);
+        assert_eq!(read[0].payload["durationMs"], 31);
+
+        let run = normalize_codex_notification(
+            "item/completed",
+            &json!({"item": {
+                "id": "exec-run", "type": "commandExecution", "status": "failed",
+                "command": "/bin/bash -lc \"node --test\"", "cwd": "/work/repo", "exitCode": 1,
+                "commandActions": [{"type": "unknown"}],
+            }}),
+        );
+        assert_eq!(run[0].payload["operation"], "execute");
+        assert_eq!(run[0].payload["target"], Value::Null);
+        assert_eq!(run[0].payload["subject"], "node --test");
+        assert_eq!(run[0].payload["exitCode"], 1);
+
+        let escape = normalize_codex_notification(
+            "item/completed",
+            &json!({"item": {
+                "id": "exec-escape", "type": "commandExecution", "status": "completed",
+                "command": "cat ../secret", "cwd": "/work/repo",
+                "commandActions": [{"type": "read", "command": "cat ../secret", "path": "../secret"}],
+            }}),
+        );
+        assert_eq!(escape[0].payload["target"], Value::Null);
+
+        let several = normalize_codex_notification(
+            "item/completed",
+            &json!({"item": {
+                "id": "exec-several", "type": "commandExecution", "status": "completed",
+                "command": "/bin/zsh -lc \"sed -n '1,20p' notes/a.md notes/b.md\"", "cwd": "/work/repo",
+                "commandActions": [{"type": "read", "command": "sed -n '1,20p' notes/a.md notes/b.md", "path": "notes/a.md"}],
+            }}),
+        );
+        assert_eq!(several[0].payload["operation"], "read");
+        assert_eq!(several[0].payload["target"], Value::Null);
+
+        let search = normalize_codex_notification(
+            "item/completed",
+            &json!({"item": {
+                "id": "exec-search", "type": "commandExecution", "status": "completed",
+                "command": "/bin/zsh -lc \"rg -n TODO src\"", "cwd": "/work/repo",
+                "commandActions": [{"type": "search", "command": "rg -n TODO src", "query": "TODO", "path": "src"}],
+            }}),
+        );
+        assert_eq!(search[0].payload["operation"], "search");
+        assert_eq!(search[0].payload["subject"], "\"TODO\" in src");
+    }
+
+    #[test]
+    fn acpx_tool_detail_supplies_native_name_outcome_and_refusal() {
+        let completed = normalize_acpx_runtime_event(
+            AcpxRuntimeEventKind::ToolCall,
+            &json!({
+                "type": "tool_call", "toolCallId": "toolu_1", "status": "completed", "title": "Terminal",
+                "toolDetail": {"toolName": "Bash", "subject": "node --test", "description": "Run the tests", "exitCode": 0, "durationMs": 1840},
+            }),
+            Some("execute"), "fallback", "turn-1", 0,
+        );
+        let payload = &completed[0].payload;
+        assert_eq!(payload["name"], "Bash");
+        assert_eq!(payload["subject"], "node --test");
+        assert_eq!(payload["description"], "Run the tests");
+        assert_eq!(payload["exitCode"], 0);
+        assert_eq!(payload["durationMs"], 1840);
+
+        let running = normalize_acpx_runtime_event(
+            AcpxRuntimeEventKind::ToolCall,
+            &json!({"type": "tool_call", "toolCallId": "toolu_2", "status": "in_progress", "title": "Terminal",
+                "toolDetail": {"toolName": "Bash", "exitCode": 1, "durationMs": 5}}),
+            Some("execute"), "fallback", "turn-1", 0,
+        );
+        assert_eq!(running[0].payload["exitCode"], Value::Null);
+        assert_eq!(running[0].payload["durationMs"], Value::Null);
+
+        let blocked = normalize_acpx_runtime_event(
+            AcpxRuntimeEventKind::ToolCall,
+            &json!({"type": "tool_call", "toolCallId": "toolu_3", "status": "failed", "title": "rm -rf build",
+                "toolDetail": {"toolName": "mcp__paperclip__delete", "blockedReason": "Denied by rule"}}),
+            Some("unknown"), "fallback", "turn-1", 0,
+        );
+        assert_eq!(blocked[0].payload["name"], "delete");
+        assert_eq!(blocked[0].payload["namespace"], "paperclip");
+        assert_eq!(blocked[0].payload["transport"], "mcp");
+        assert_eq!(blocked[0].payload["blockedReason"], "Denied by rule");
     }
 
     #[test]

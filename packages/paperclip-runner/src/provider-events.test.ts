@@ -6,6 +6,7 @@ import {
   canonicalProviderEventsFromAcpxRuntimeEvent,
   canonicalProviderEventsFromCodex,
   canonicalProviderEventsFromOpenCodePart,
+  acpxToolDetailFromRuntimeEvent,
   boundedAcpMeta,
   createAcpxToolEventNormalizer,
   createGrokMessageNormalizer,
@@ -586,6 +587,50 @@ describe("provider-neutral events", () => {
     expect(
       normalize({ type: "status", text: "x", _meta: "not an object" } as never),
     ).not.toHaveProperty("_meta");
+  });
+
+  it("reads Claude tool facts and keeps the refined title with a measured duration", () => {
+    let clock = 1_000;
+    const normalize = createAcpxToolEventNormalizer({ now: () => clock });
+    normalize({
+      type: "tool_call", tag: "tool_call", toolCallId: "toolu_bash", title: "Terminal", kind: "execute", status: "pending",
+      _meta: { claudeCode: { toolName: "Bash" } },
+    } as never);
+    const refined = normalize({
+      type: "tool_call", tag: "tool_call_update", toolCallId: "toolu_bash", title: "node --test", kind: "execute",
+      rawInput: { command: "node --test", description: "Run the unit tests" },
+      _meta: { claudeCode: { toolName: "Bash", title: "Run the unit tests" } },
+    } as never);
+    expect(refined.title).toBe("node --test");
+    clock = 2_840;
+    const failed = normalize({
+      type: "tool_call", tag: "tool_call_update", toolCallId: "toolu_bash", title: "tool call", status: "failed",
+      content: [{ type: "content", content: { type: "text", text: "```console\nExit code 2\nnot ok 2\n```" } }],
+      _meta: { claudeCode: { toolName: "Bash" } },
+    } as never);
+    expect(failed).toMatchObject({
+      title: "node --test",
+      paperclipToolDetail: { toolName: "Bash", subject: "node --test", description: "Run the unit tests", exitCode: 2, durationMs: 1_840 },
+    });
+    const [mapped] = canonicalProviderEventsFromAcpxRuntimeEvent(failed as never, "fallback", "turn-1");
+    expect(mapped.payload).toMatchObject({ name: "Bash", operation: "execute", subject: "node --test", exitCode: 2, durationMs: 1_840 });
+    expect(validatePrpEvent(envelope(mapped as never)).ok).toBe(true);
+  });
+
+  it("marks Claude permission denials as blocked instead of failed commands", () => {
+    expect(acpxToolDetailFromRuntimeEvent({
+      type: "tool_call", toolCallId: "toolu_rm", status: "failed",
+      content: [{ type: "content", content: { type: "text", text: "Permission denied: Bash(rm:*) is denied by settings" } }],
+      _meta: { claudeCode: { toolName: "Bash", toolResponse: { decisionReasonType: "rule", decisionReason: "Bash(rm:*) is denied by settings" } } },
+    } as never)).toEqual({ toolName: "Bash", blockedReason: "Bash(rm:*) is denied by settings" });
+    expect(acpxToolDetailFromRuntimeEvent({
+      type: "tool_call", toolCallId: "toolu_ok", status: "completed", rawInput: { command: "ls" },
+      _meta: { claudeCode: { toolName: "Bash" } },
+    } as never)).toEqual({ toolName: "Bash", subject: "ls", exitCode: 0 });
+    // Another ACP agent's completed command makes no exit-code claim.
+    expect(acpxToolDetailFromRuntimeEvent({
+      type: "tool_call", toolCallId: "cursor_ok", status: "completed", kind: "execute", rawInput: { command: "ls" },
+    } as never)).toEqual({ subject: "ls" });
   });
 
   it("bounds ACP _meta depth, breadth, string size and total size", () => {

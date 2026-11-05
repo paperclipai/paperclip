@@ -27,7 +27,12 @@ import type {
 
 import { acpxProfileClientCapabilities, bindAcpxExtensionTurn, validateAcpxRichEvent, createAcpxProfileExtensionAdapter, type AcpxExtensionInput } from "../drivers/acpx/profile-extensions.js";
 import type { PaperclipQuestionSet } from "../contracts/question-set.js";
-import { createAcpxToolEventNormalizer, createGrokMessageNormalizer } from "../provider-events.js";
+import {
+  acpxToolDetailFromRuntimeEvent,
+  acpxToolInputPath,
+  createAcpxToolEventNormalizer,
+  createGrokMessageNormalizer,
+} from "../provider-events.js";
 import { createPiMessageProjection, type PiProjectedMessageEvent } from "../drivers/acpx/pi-message-projection.js";
 import { createKimiMessageProjection, type KimiProjectedMessageEvent } from "../drivers/acpx/kimi-message-boundary.js";
 import { parseNativeRuntimeContext } from "../contracts/runtime-context.js";
@@ -684,7 +689,7 @@ async function pumpTurn(
       emit(
         "runtime.event",
         sanitizeRuntimeEvent(
-          normalizeMessage(normalizeToolEvent(boundRuntimeEventForNormalization(event))),
+          normalizeMessage(normalizeToolEvent(withSidecarToolDetail(event, boundRuntimeEventForNormalization(event)))),
         ),
         currentTurnId,
       );
@@ -1018,6 +1023,25 @@ type BoundedRuntimeToolEvent = AcpRuntimeEvent & {
   paperclipOutput: Record<string, unknown>;
 };
 
+/**
+ * Read tool facts (native name, command, exit, refusal reason) from the raw
+ * update before rawInput is dropped, and attest a file-path argument as a
+ * workspace-relative location when the provider sent no location.
+ */
+function withSidecarToolDetail(raw: AcpRuntimeEvent, bounded: AcpRuntimeEvent): AcpRuntimeEvent {
+  if (raw.type !== "tool_call" || bounded.type !== "tool_call") return bounded;
+  const detail = acpxToolDetailFromRuntimeEvent(raw);
+  const inputPath = bounded.locations?.length ? undefined : acpxToolInputPath(raw);
+  const locations = inputPath
+    ? safeAcpxLocations([{ path: inputPath }], openParams?.workingDirectory, bounded.kind, bounded.title)
+    : undefined;
+  return {
+    ...bounded,
+    ...(locations?.length ? { locations } : {}),
+    paperclipToolDetail: detail,
+  } as AcpRuntimeEvent;
+}
+
 function boundRuntimeEventForNormalization(
   event: AcpRuntimeEvent,
 ): AcpRuntimeEvent {
@@ -1146,6 +1170,9 @@ function sanitizeRuntimeEvent(event: PiProjectedMessageEvent<AcpRuntimeEvent> & 
         ...(boundedTool.paperclipBoundedTool === true
           ? boundedTool.paperclipOutput
           : safeOutput(event.rawOutput)),
+        ...(record(record(event).paperclipToolDetail) && Object.keys(record(record(event).paperclipToolDetail)).length > 0
+          ? { toolDetail: record(record(event).paperclipToolDetail) }
+          : {}),
       },
       128 * 1024,
       toolCallIdentity,

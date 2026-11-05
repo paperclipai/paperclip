@@ -67,7 +67,7 @@ describe("TaskChatLiveTail", () => {
       "Looking into the failing test.",
     );
     expect(toggle().getAttribute("aria-expanded")).toBe("false");
-    expect(viewport().textContent).toContain("Read a file");
+    expect(viewport().textContent).toContain("Read");
     expect(viewport().textContent).toContain("src/app.ts");
     expect(container.querySelector('[data-testid="task-chat-tool-card"]')).toBeNull();
     expect(container.querySelector('[data-testid="task-chat-phase-child-rail"]')).toBeNull();
@@ -171,12 +171,12 @@ describe("TaskChatLiveTail", () => {
     entries.push({ kind: "tool_result", ts: TS, toolUseId: "t1", content: "clean", isError: false });
     render(parse(entries));
     expect(viewport().querySelector("[data-activity-row]")).toBe(first);
-    expect(viewport().textContent).toContain("Ran a command");
+    expect(viewport().textContent).toContain("$ git status");
     expect(container.querySelector(".runner-activity-roll-in")).toBeNull();
 
     entries.push({ kind: "tool_call", ts: TS, name: "Bash", toolUseId: "t2", input: { command: "pnpm test" } });
     render(parse(entries));
-    expect(container.querySelector(".runner-activity-roll-in")?.textContent).toContain("Running a command");
+    expect(container.querySelector(".runner-activity-roll-in")?.textContent).toContain("Running$ pnpm test");
     const outgoing = container.querySelector(".runner-activity-roll-out")!;
     expect(outgoing.getAttribute("aria-hidden")).toBe("true");
     flushSync(() => outgoing.dispatchEvent(new Event("webkitAnimationEnd", { bubbles: true })));

@@ -1080,3 +1080,52 @@ describe("nativeRunEventsToTranscript", () => {
     ])).toEqual([]);
   });
 });
+
+describe("tool execution facts", () => {
+  const tool = (seq: number, eventType: string, fields: Record<string, unknown>) =>
+    event(seq, eventType, {
+      schema: "paperclip.tool.execution.v1",
+      executionId: "toolu_bash",
+      transport: "builtin",
+      operation: "execute",
+      name: "Bash",
+      target: null,
+      status: "running",
+      durationMs: null,
+      exitCode: null,
+      output: null,
+      outputBytes: 0,
+      outputTruncated: false,
+      outputDigest: null,
+      ...fields,
+    });
+
+  it("carries the refined command, exit code, duration and refusal into the task-chat row", () => {
+    const transcript = nativeRunEventsToTranscript([
+      tool(1, "tool.execution.started", { name: "Terminal" }),
+      tool(2, "tool.execution.progressed", { subject: "node --test", description: "Run the unit tests" }),
+      tool(3, "tool.execution.completed", {
+        subject: "node --test", description: "Run the unit tests", status: "failed", exitCode: 1, durationMs: 1840,
+        output: "not ok 2", outputBytes: 8,
+      }),
+      event(4, "tool.execution.completed", {
+        schema: "paperclip.tool.execution.v1", executionId: "toolu_rm", transport: "builtin", operation: "execute",
+        name: "Bash", target: null, status: "failed", durationMs: 3, exitCode: null, subject: "rm -rf build",
+        blockedReason: "Denied by rule", output: null, outputBytes: 0, outputTruncated: false, outputDigest: null,
+      }),
+      event(5, "tool.execution.completed", {
+        schema: "paperclip.tool.execution.v1", executionId: "exec-read", transport: "process", operation: "read",
+        name: "/bin/zsh -lc 'cat src/db.ts'", target: "src/db.ts", subject: "cat src/db.ts", status: "completed",
+        durationMs: 19, exitCode: 0, output: "", outputBytes: 0, outputTruncated: false, outputDigest: null,
+      }),
+    ]);
+    const tools = transcriptToTaskChatItems(transcript, { runId: RUN_ID, running: false }).filter((item) => item.kind === "tool");
+    expect(tools).toEqual([
+      expect.objectContaining({
+        rawName: "Bash", target: "node --test", description: "Run the unit tests", status: "failed", exitCode: 1, durationMs: 1840,
+      }),
+      expect.objectContaining({ rawName: "Bash", target: "rm -rf build", blockedReason: "Denied by rule" }),
+      expect.objectContaining({ rawName: "Read", operation: "read", target: "src/db.ts", exitCode: 0, durationMs: 19 }),
+    ]);
+  });
+});

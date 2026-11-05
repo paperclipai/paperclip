@@ -4,8 +4,10 @@ import {
   Brain,
   ChevronDown,
   ChevronRight,
+  BookOpen,
   CirclePause,
   Gauge,
+  ShieldX,
 } from "lucide-react";
 import { useReducedMotion } from "motion/react";
 import { MarkdownBody } from "@/components/MarkdownBody";
@@ -26,28 +28,75 @@ import { toolActivityPresentation } from "./tool-taxonomy";
 import { useTaskChatShimmer } from "./TaskChatShimmer";
 
 type Activity = TaskChatActivityPhaseItem["items"][number];
+type ToolActivity = Extract<Activity, { kind: "tool" }>;
+
+/** Families whose rows read as "<verb> <subject>", for example "Ran $ node --test". */
+const SUBJECT_FAMILIES = new Set(["terminal", "read", "edit", "grep", "search", "web"]);
+const READ_RUN_MIN = 3;
+
+/** "120ms", "1.2s", "14s", "2m 03s". */
+export function formatToolDuration(ms: number): string {
+  if (ms < 1_000) return `${Math.max(0, Math.round(ms))}ms`;
+  if (ms < 10_000) return `${(ms / 1_000).toFixed(1)}s`;
+  const seconds = Math.round(ms / 1_000);
+  if (seconds < 60) return `${seconds}s`;
+  return `${Math.floor(seconds / 60)}m ${String(seconds % 60).padStart(2, "0")}s`;
+}
+
+function toolPresentation(item: ToolActivity) {
+  return toolActivityPresentation({
+    name: item.rawName ?? item.name,
+    operation: item.operation ?? item.toolKind,
+    target: item.target,
+  });
+}
+
+function isReadTool(item: Activity): item is ToolActivity {
+  return item.kind === "tool" && item.status === "completed" && !item.blockedReason && toolPresentation(item).family === "read";
+}
 
 function presentation(item: Activity, active: boolean) {
   if (item.kind === "tool") {
-    const tool = toolActivityPresentation({
-      name: item.rawName ?? item.name,
-      target: item.target,
-    });
+    const tool = toolPresentation(item);
     const running =
       active && (item.status === "pending" || item.status === "in_progress");
+    const label =
+      item.status === "failed"
+        ? tool.failedLabel
+        : item.status === "interrupted"
+          ? tool.interruptedLabel
+          : running
+            ? tool.runningLabel
+            : tool.completedLabel;
+    const terminal = tool.family === "terminal";
+    const subject = item.target?.trim();
+    // With a concrete subject, the verb alone reads better: "Read README.md".
+    // A finished command needs no verb at all: the icon and "$" say it ran.
+    const verb = subject && SUBJECT_FAMILIES.has(tool.family)
+      ? terminal && !running && (item.status === "completed" || item.exitCode != null) ? "" : label.split(" ")[0]!
+      : label;
+    // Exit 0 is only news for commands; for reads and searches it is noise.
+    const exitCode = item.exitCode ?? null;
+    const shownExit = exitCode === 0 && !terminal ? null : exitCode;
+    if (item.blockedReason) {
+      return {
+        icon: ShieldX,
+        label: "Blocked",
+        target: subject ? (terminal ? `$ ${subject}` : subject) : undefined,
+        mono: true,
+        running: false,
+        blocked: item.blockedReason,
+      };
+    }
     return {
       icon: tool.icon,
-      label:
-        item.status === "failed"
-          ? tool.failedLabel
-          : item.status === "interrupted"
-            ? tool.interruptedLabel
-            : running
-              ? tool.runningLabel
-              : tool.completedLabel,
-      target: item.target,
+      label: verb,
+      target: subject ? (terminal ? `$ ${subject}` : subject) : undefined,
       mono: true,
       running,
+      exitCode: running ? null : shownExit,
+      // Codex reports 0 for calls it did not time; 0ms is never informative.
+      durationMs: running || !item.durationMs ? null : item.durationMs,
     };
   }
   if (item.kind === "thinking") {
@@ -114,6 +163,9 @@ function ActivityContent({
   const shimmer = useTaskChatShimmer(item.id);
   if (!row) return null;
   const Icon = row.icon;
+  const exitCode = "exitCode" in row ? row.exitCode : null;
+  const durationMs = "durationMs" in row ? row.durationMs : null;
+  const blocked = "blocked" in row ? row.blocked : undefined;
   return (
     <span
       className="flex min-w-0 flex-1 items-center gap-2"
@@ -130,10 +182,10 @@ function ActivityContent({
         className="flex size-5 shrink-0 items-center justify-center"
         data-activity-icon
       >
-        <Icon className="size-3.5" aria-hidden="true" />
+        <Icon className={cn("size-3.5", blocked && "text-destructive")} aria-hidden="true" />
       </span>
       <span data-conversation-tool-running={row.running && shimmer && (item.kind === "tool" || (item.kind === "protocol" && item.surface === "provider_activity" && item.family === "tool_execution")) ? "true" : undefined} className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden whitespace-nowrap">
-        <span
+        {row.label ? <span
           className={cn(
             "max-w-full shrink-0 truncate text-xs",
             row.running && "text-foreground",
@@ -141,7 +193,7 @@ function ActivityContent({
           )}
         >
           {row.label}
-        </span>
+        </span> : null}
         {row.target ? (
           <span
             title={row.target}
@@ -153,7 +205,30 @@ function ActivityContent({
             {row.target}
           </span>
         ) : null}
+        {blocked ? (
+          <span title={blocked} className="min-w-0 truncate text-xs text-destructive" data-tool-blocked-reason>
+            {blocked}
+          </span>
+        ) : null}
       </span>
+      {exitCode != null || durationMs != null ? (
+        <span className="flex shrink-0 items-center gap-2 text-(length:--text-micro) tabular-nums" data-tool-outcome>
+          {exitCode != null ? (
+            <span
+              className={cn(
+                "rounded-sm px-1 font-mono leading-4",
+                exitCode === 0 ? "bg-muted text-muted-foreground" : "bg-destructive/10 text-destructive",
+              )}
+              data-tool-exit-code={exitCode}
+            >
+              exit {exitCode}
+            </span>
+          ) : null}
+          {durationMs != null ? (
+            <span className="text-muted-foreground" data-tool-duration>{formatToolDuration(durationMs)}</span>
+          ) : null}
+        </span>
+      ) : null}
     </span>
   );
 }
@@ -224,9 +299,11 @@ function ActivityDetails({ item }: { item: Activity }) {
     );
   return (
     <>
+      {item.description ? <p>{item.description}</p> : null}
       {item.target ? (
         <p className="break-all font-mono">{item.target}</p>
       ) : null}
+      {item.blockedReason ? <p className="text-destructive">Blocked: {item.blockedReason}</p> : null}
       {item.detail ? (
         <pre className="whitespace-pre-wrap break-words font-mono">
           {item.detail}
@@ -247,7 +324,7 @@ function hasActivityDetails(item: Activity): boolean {
   if (item.kind === "thinking") return item.lines.some((line) => line.trim());
   if (item.kind === "tool")
     return Boolean(
-      item.target?.trim() || item.detail?.trim() || item.diff || item.decision,
+      item.target?.trim() || item.detail?.trim() || item.diff || item.decision || item.blockedReason || item.description,
     );
   if (item.kind === "marker") return Boolean(item.detail?.trim());
   return Boolean(
@@ -302,6 +379,65 @@ function ExpandedActivity({
         >
           <ActivityDetails item={item} />
         </div>
+      ) : null}
+    </li>
+  );
+}
+
+type HistoryRow = { kind: "single"; item: Activity; index: number } | { kind: "reads"; items: ToolActivity[]; index: number };
+
+/** Fold runs of completed file reads into one row; everything else stays one row per activity. */
+export function foldReadRuns(activities: Activity[]): HistoryRow[] {
+  const rows: HistoryRow[] = [];
+  for (let index = 0; index < activities.length; ) {
+    let end = index;
+    while (end < activities.length && isReadTool(activities[end]!)) end += 1;
+    if (end - index >= READ_RUN_MIN) {
+      rows.push({ kind: "reads", items: activities.slice(index, end) as ToolActivity[], index: end - 1 });
+      index = end;
+    } else {
+      rows.push({ kind: "single", item: activities[index]!, index });
+      index += 1;
+    }
+  }
+  return rows;
+}
+
+function readRunPreview(items: ToolActivity[]): string {
+  const names = items.flatMap((item) => item.target?.trim() ? [item.target.trim().split("/").at(-1)!] : []);
+  return names.length > 3 ? `${names.slice(0, 3).join(", ")} +${names.length - 3}` : names.join(", ");
+}
+
+function ReadRunActivity({ items }: { items: ToolActivity[] }) {
+  const id = `runner-reads:${items[0]!.id}`;
+  const [open, setOpen] = useTaskChatExpansion(id, false);
+  const listId = useId();
+  return (
+    <li className="min-w-0" data-activity-read-run={items.length}>
+      <button
+        type="button"
+        className="flex h-8 w-full min-w-0 items-center gap-2 rounded-sm text-left text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        onClick={() => setOpen(!open)}
+        aria-expanded={open}
+        aria-controls={open ? listId : undefined}
+      >
+        <span className="flex min-w-0 flex-1 items-center gap-2">
+          <span className="flex size-5 shrink-0 items-center justify-center">
+            <BookOpen className="size-3.5" aria-hidden="true" />
+          </span>
+          <span className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden whitespace-nowrap">
+            <span className="shrink-0 text-xs">Read {items.length} files</span>
+            <span className="truncate font-mono text-xs text-muted-foreground">{readRunPreview(items)}</span>
+          </span>
+        </span>
+        <ChevronRight className={cn("size-3.5 shrink-0", open && "rotate-90")} aria-hidden="true" />
+      </button>
+      {open ? (
+        <ol id={listId} className="ml-2.5 flex min-w-0 flex-col border-l border-border pl-2" aria-label="Files read">
+          {items.map((item) => (
+            <ExpandedActivity key={item.id} item={item} active={false} />
+          ))}
+        </ol>
       ) : null}
     </li>
   );
@@ -393,13 +529,17 @@ export function TaskChatRunnerActivityGroup({
               aria-label="Activity history"
               data-testid="task-chat-runner-activity-list"
             >
-              {activities.map((activity, index) => (
-                <ExpandedActivity
-                  key={activity.id}
-                  item={activity}
-                  active={item.active && index === activities.length - 1}
-                />
-              ))}
+              {foldReadRuns(activities).map((row) =>
+                row.kind === "reads" ? (
+                  <ReadRunActivity key={row.items[0]!.id} items={row.items} />
+                ) : (
+                  <ExpandedActivity
+                    key={row.item.id}
+                    item={row.item}
+                    active={item.active && row.index === activities.length - 1}
+                  />
+                ),
+              )}
             </ol>
           ) : null}
         </div>
