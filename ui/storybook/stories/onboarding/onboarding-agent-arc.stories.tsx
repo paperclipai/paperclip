@@ -43,7 +43,7 @@ const meta = {
       ],
       "implementation": "production",
       "boundary": "fixtures",
-      "notes": "Production wizard with simulated accounts, immutable-target discovery, native/Legacy setup and refused/unconfirmed cleanup. Fixtures do not prove isolation, lease cleanup, runtime limits, draft reload persistence or model execution."
+      "notes": "Production wizard with simulated accounts, failed/expired sign-in and retry, immutable-target discovery, native/Legacy setup and refused/unconfirmed cleanup. Fixtures do not prove isolation, lease cleanup, runtime limits, draft reload persistence or model execution."
     },
   },
 } satisfies Meta;
@@ -382,14 +382,16 @@ function signedOutConnectionFixture() {
   return () => { clearOnboardingDraft(); resetOnboardingFixtureState(); };
 }
 
-async function openProviderConnection(provider: "Claude" | "OpenAI", mode: "subscription" | "api") {
+async function openProviderConnection(provider: "Claude" | "OpenAI", mode: "subscription" | "api", loginState: "ready" | "failed" = "ready") {
   await advance("Connect a model");
   await userEvent.click(await screen.findByRole("button", { name: "Use API key instead" }, { timeout: STEP_TIMEOUT_MS }));
   if (mode === "subscription") {
     await userEvent.click(await screen.findByRole("button", { name: "Use subscription instead" }, { timeout: STEP_TIMEOUT_MS }));
   }
   await userEvent.click(await screen.findByRole("radio", { name: new RegExp(`^${provider} `) }, { timeout: STEP_TIMEOUT_MS }));
-  if (mode === "api") {
+  if (loginState === "failed") {
+    await screen.findByRole("button", { name: "Retry sign-in" }, { timeout: STEP_TIMEOUT_MS });
+  } else if (mode === "api") {
     await screen.findByLabelText("API key", {}, { timeout: STEP_TIMEOUT_MS });
   } else if (provider === "Claude") {
     await screen.findByLabelText("Authorization code", {}, { timeout: STEP_TIMEOUT_MS });
@@ -404,6 +406,78 @@ export const ClaudeSubscription: StoryObj = {
   render: () => <WizardArc />,
   play: () => openProviderConnection("Claude", "subscription"),
 };
+function claudeLoginFailureStory(failure: "failed" | "timed_out"): StoryObj {
+  return {
+    name: failure === "timed_out" ? "Connect · Claude sign-in expired" : "Connect · Claude sign-in failed",
+    beforeEach: () => {
+      const reset = signedOutConnectionFixture();
+      const previous = window.fetch;
+      const base = `/api/companies/${STORYBOOK_COMPANY_ID}/setup-token-login-sessions`;
+      let attempts = 0;
+      let setupAgent: Record<string, unknown> | null = null;
+      const released = new Set<string>();
+      const fixtureFetch: typeof fetch = async (input, init) => {
+        const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url, window.location.origin);
+        const method = init?.method ?? (input instanceof Request ? input.method : "GET");
+        const session = (id: string, status: string) => ({
+          sessionId: id, environmentId: "environment-storybook-sandbox", status,
+          expiresAt: new Date(Date.now() + 600_000).toISOString(), failure: null,
+        });
+        if (url.pathname === `/api/companies/${STORYBOOK_COMPANY_ID}/agents`) {
+          if (method === "GET") return Response.json(setupAgent ? [setupAgent] : []);
+          if (method === "POST") {
+            const body = JSON.parse(typeof init?.body === "string" ? init.body : input instanceof Request ? await input.clone().text() : "{}");
+            setupAgent = { ...storybookHiredAgent, ...body, id: body.setupId, status: "paused", pauseReason: "setup" };
+            return Response.json(setupAgent, { status: 201 });
+          }
+        }
+        if (setupAgent && url.pathname === `/api/agents/${setupAgent.id}` && url.searchParams.get("companyId") === STORYBOOK_COMPANY_ID) {
+          if (method === "PATCH") {
+            const body = JSON.parse(typeof init?.body === "string" ? init.body : input instanceof Request ? await input.clone().text() : "{}");
+            setupAgent = { ...setupAgent, ...body };
+          }
+          return Response.json(setupAgent);
+        }
+        if (url.pathname === base && method === "POST") {
+          if (attempts > 0 && !released.has(`claude-storybook-${attempts}`)) {
+            return Response.json({ error: "Release the previous attempt first." }, { status: 409 });
+          }
+          attempts += 1;
+          return Response.json(session(`claude-storybook-${attempts}`, "awaiting_browser_code"), { status: 201 });
+        }
+        if (url.pathname === `${base}/active`) return new Response(null, { status: 404 });
+        const match = url.pathname.slice(base.length).match(/^\/(claude-storybook-\d+)(?:\/(prompt|cancel))?$/);
+        if (url.pathname.startsWith(`${base}/`) && match) {
+          const id = match[1]!;
+          if (match[2] === "cancel" && method === "POST") {
+            released.add(id);
+            return Response.json(session(id, "cancelled"));
+          }
+          if (match[2] === "prompt") return Response.json({ authorizationUrl: `https://claude.example.test/authorize?attempt=${attempts}`, transportAdvisory: null });
+          return Response.json(session(id, id === "claude-storybook-1" ? failure : "awaiting_browser_code"));
+        }
+        return previous(input, init);
+      };
+      window.fetch = fixtureFetch;
+      return () => {
+        if (window.fetch === fixtureFetch) window.fetch = previous;
+        reset();
+      };
+    },
+    render: () => <WizardArc />,
+    play: async () => {
+      await openProviderConnection("Claude", "subscription", "failed");
+      await expect(screen.getByRole("button", { name: "Retry sign-in" })).toBeEnabled();
+      await expect(screen.getByRole("alert")).toHaveTextContent("Retry sign-in to get a fresh code. Your setup is saved.");
+      await expect(screen.queryByRole("link", { name: "Sign in to Claude" })).not.toBeInTheDocument();
+      await expect(screen.queryByLabelText("Authorization code")).not.toBeInTheDocument();
+    },
+  };
+}
+
+export const ClaudeSignInFailed = claudeLoginFailureStory("failed");
+export const ClaudeSignInExpired = claudeLoginFailureStory("timed_out");
+
 export const CodexSubscription: StoryObj = {
   name: "Connect · Codex / OpenAI subscription",
   beforeEach: signedOutConnectionFixture,
