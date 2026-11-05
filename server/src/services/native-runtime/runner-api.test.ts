@@ -79,6 +79,17 @@ describe("connection setup response protection", () => {
 });
 
 describe("runner API catalog", () => {
+  it("guides the observed comments lookup toward saved progress and ownership history", () => {
+    const comments = searchRunnerApi({ query: "issue comments list", limit: 5 }).results[0]!;
+    expect(comments.operationId).toBe("GET /api/issues/{id}/comments");
+    expect(comments.description).toContain("/api/companies/{companyId}/timeline");
+    expect(comments.description).toContain("/api/issues/{id}/activity");
+    expect(comments.description).toMatch(/assignment history/);
+    const timeline = searchRunnerApi({ query: "work timeline", limit: 1 }).results[0]!;
+    expect(timeline.operationId).toBe("GET /api/companies/{companyId}/timeline");
+    expect(timeline.description).toMatch(/progress history/);
+    expect(timeline.description).toMatch(/recorded actors/);
+  });
   it("discovers the real handoff schema and recovery endpoints with standard-mode mutation authority", () => {
     const operation = runnerApiOperation("POST /api/companies/{companyId}/case-handoffs");
     expect(operation.dedicatedTools).toEqual(["handoff_case", "create_case"]);
