@@ -110,6 +110,29 @@ export function collectDeliveryFacts(snapshot: IssueSnapshot): DeliveryFacts {
 }
 
 /**
+ * ¿La issue está dentro de la frontera del agente que pregunta?
+ *
+ * El host sólo aplica el predicado de PRIVACIDAD a las lecturas de un plugin
+ * (público/privado). Eso no es la frontera de un AGENTE: un agente de confianza
+ * baja tiene su propio alcance (los issues de su proyecto y los que tiene
+ * asignados) y no debe poder leer los metadatos de entrega de issues ajenas.
+ *
+ * Se acepta cuando la issue:
+ *   - está asignada al agente que pregunta, o
+ *   - pertenece al proyecto del run del agente.
+ */
+export function issueIsWithinAgentScope(
+  snapshot: Pick<IssueSnapshot, "projectId" | "assigneeAgentId">,
+  scope: { agentId?: string | null; projectId?: string | null },
+): boolean {
+  const agentId = scope.agentId?.trim();
+  if (agentId && snapshot.assigneeAgentId === agentId) return true;
+  const projectId = scope.projectId?.trim();
+  if (projectId && snapshot.projectId && snapshot.projectId === projectId) return true;
+  return false;
+}
+
+/**
  * Decide el nivel de revisión de una tarea. Éste es el corazón de "EGM sólo
  * cuando hace falta":
  *   - sin entrega        -> `off`   (no hay nada que revisar)

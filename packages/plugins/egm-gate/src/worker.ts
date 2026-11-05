@@ -5,7 +5,7 @@ import {
   type PluginEvent,
 } from "@paperclipai/plugin-sdk";
 import { DEFAULT_CONFIG, type EgmGateConfig, type IssueSnapshot } from "./contracts.js";
-import { buildGateComment, evaluateIssue, parseRepoSlug } from "./evidence.js";
+import { buildGateComment, evaluateIssue, issueIsWithinAgentScope, parseRepoSlug } from "./evidence.js";
 import { JOB_KEY_SWEEP, TOOL_KEY_LEVEL } from "./manifest.js";
 
 const PLUGIN_NAME = "egm-gate";
@@ -102,6 +102,8 @@ async function snapshotIssue(ctx: PluginContext, issueId: string, companyId: str
       description: issue.description ?? null,
       status: issue.status,
       priority: issue.priority,
+      projectId: issue.projectId ?? null,
+      assigneeAgentId: issue.assigneeAgentId ?? null,
       comments: comments.map((c) => ({ id: c.id, body: c.body, createdAt: String(c.createdAt ?? "") })),
       attachments: attachments.map((a) => ({
         id: a.id,
@@ -285,10 +287,22 @@ const plugin = definePlugin({
       },
       async (params, runCtx) => {
         const issueId = String((params as { issueId?: unknown }).issueId ?? "");
-        const companyId = String((params as { companyId?: unknown }).companyId ?? runCtx?.companyId ?? "");
+        const companyId = String(runCtx?.companyId ?? (params as { companyId?: unknown }).companyId ?? "");
         if (!issueId || !companyId) return { error: "issueId es obligatorio" };
         const result = await snapshotIssue(ctx, issueId, companyId);
         if (!result.ok) return { error: result.reason };
+        // La frontera del AGENTE que pregunta, no solo la privacidad: el host
+        // aplica el predicado publico/privado a las lecturas de un plugin, pero
+        // un agente de confianza baja no debe leer los metadatos de entrega de
+        // issues que no son suyas.
+        if (
+          !issueIsWithinAgentScope(result.snapshot, {
+            agentId: runCtx?.agentId ?? null,
+            projectId: runCtx?.projectId ?? null,
+          })
+        ) {
+          return { error: "esa issue está fuera del alcance de este agente" };
+        }
         const evaluation = evaluateIssue(result.snapshot, await readConfig(ctx, companyId));
         return {
           content: `nivel=${evaluation.level} entrega=${evaluation.kind} evidencia=${evaluation.signals.length}`,
@@ -344,11 +358,14 @@ const plugin = definePlugin({
       }
     });
 
-    // 4. Datos para la UI: estado del gate por issue.
+    // 4. Datos para la UI: estado del gate por issue. Lo llama el board (el host
+    //    acota la compañía del puente), asi que no necesita la frontera de un
+    //    agente: si la compañía no viene, se dice en vez de leer a ciegas.
     ctx.data.register("gate-status", async (params) => {
       const issueId = String(params.issueId ?? "");
       const companyId = String(params.companyId ?? "");
       if (!issueId) throw new Error("issueId es obligatorio");
+      if (!companyId) throw new Error("companyId es obligatorio");
       const result = await snapshotIssue(ctx, issueId, companyId);
       if (!result.ok) return { found: false, reason: result.reason };
       const evaluation = evaluateIssue(result.snapshot, await readConfig(ctx, companyId));

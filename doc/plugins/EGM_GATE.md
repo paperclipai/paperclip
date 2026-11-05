@@ -85,6 +85,12 @@ paperclipai plugin enable paperclip.egm-gate
 - **Una lectura fallida no es evidencia ausente**: si no se puede leer, el gate
   no toca el estado de la issue; no puede afirmar que no hay entrega porque no
   pudo leer.
+- **La tool respeta la frontera del agente**: el host sólo aplica el predicado
+  de *privacidad* (público/privado) a las lecturas de un plugin. Un agente de
+  confianza baja tiene además su propio alcance, así que la tool
+  `egm_level` sólo responde por issues asignadas a ese agente o del proyecto
+  de su run. Sin ese recorte, un agente podía pedir los metadatos de entrega
+  de una issue pública de otro proyecto.
 - **El estado más reciente gana**: durante la gracia de 4 s, si la issue cambió
   de estado (la cancelaron, la reiniciaron), el gate no la toca.
 

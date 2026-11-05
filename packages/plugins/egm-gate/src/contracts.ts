@@ -46,6 +46,10 @@ export type IssueSnapshot = {
   description?: string | null;
   status: string;
   priority: string;
+  /** Proyecto al que pertenece la issue (frontera de acceso de un agente). */
+  projectId?: string | null;
+  /** Agente asignado a la issue (frontera de acceso de un agente). */
+  assigneeAgentId?: string | null;
   comments: { id: string; body: string; createdAt?: string }[];
   attachments: { id: string; fileName?: string | null; contentType?: string | null }[];
   /** Cuerpo del documento `plan` de la issue, si existe. */

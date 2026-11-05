@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { DEFAULT_CONFIG, type IssueSnapshot } from "../src/contracts.js";
-import { collectDeliveryFacts, decideLevel, evaluateIssue, parseRepoSlug } from "../src/evidence.js";
+import { collectDeliveryFacts, decideLevel, evaluateIssue, issueIsWithinAgentScope, parseRepoSlug } from "../src/evidence.js";
 
 function snapshot(overrides: Partial<IssueSnapshot> = {}): IssueSnapshot {
   return {
@@ -191,6 +191,51 @@ describe("nivel de revision (EGM solo cuando hace falta)", () => {
     );
     expect(decideLevel(facts, DEFAULT_CONFIG)).toBe("full");
     expect(decideLevel(facts, { ...DEFAULT_CONFIG, fullDiffLines: 1000 })).toBe("lite");
+  });
+});
+
+describe("frontera del agente (el tool no lee issues ajenas)", () => {
+  it("acepta la issue asignada al agente que pregunta", () => {
+    expect(
+      issueIsWithinAgentScope(
+        { projectId: "proj-a", assigneeAgentId: "agent-1" },
+        { agentId: "agent-1", projectId: "proj-b" },
+      ),
+    ).toBe(true);
+  });
+
+  it("acepta la issue del proyecto del run del agente", () => {
+    expect(
+      issueIsWithinAgentScope(
+        { projectId: "proj-a", assigneeAgentId: null },
+        { agentId: "agent-1", projectId: "proj-a" },
+      ),
+    ).toBe(true);
+  });
+
+  it("RECHAZA una issue de otro proyecto y de otro agente", () => {
+    expect(
+      issueIsWithinAgentScope(
+        { projectId: "proj-b", assigneeAgentId: "agent-2" },
+        { agentId: "agent-1", projectId: "proj-a" },
+      ),
+    ).toBe(false);
+  });
+
+  it("rechaza cuando no hay contexto de agente (no se puede afirmar nada)", () => {
+    expect(issueIsWithinAgentScope({ projectId: "proj-a", assigneeAgentId: null }, {})).toBe(false);
+    expect(
+      issueIsWithinAgentScope({ projectId: "proj-a", assigneeAgentId: null }, { agentId: "agent-1" }),
+    ).toBe(false);
+  });
+
+  it("una issue sin proyecto solo pasa si esta asignada al agente", () => {
+    expect(
+      issueIsWithinAgentScope({ projectId: null, assigneeAgentId: "agent-1" }, { agentId: "agent-1" }),
+    ).toBe(true);
+    expect(
+      issueIsWithinAgentScope({ projectId: null, assigneeAgentId: null }, { agentId: "agent-1", projectId: "proj-a" }),
+    ).toBe(false);
   });
 });
 
