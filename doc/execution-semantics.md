@@ -1711,6 +1711,9 @@ can be off by those tokens.
 Every remote Runner transport, including one on a plugin-owned VM, delivers usage to
 Core as events commit. Reports still in the Runner's outbox when a run finishes
 settle on that run when the next run drains them, even if it has no receipts yet.
+Codex reports the whole run's delta, so one such report can settle a finished run
+whose terminal event was already acknowledged. Other providers report per turn and
+still need their terminal event.
 
 ### Session settlement after a run
 

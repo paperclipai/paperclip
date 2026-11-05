@@ -7906,7 +7906,10 @@ describe("native terminal-turn accounting", () => {
       await retainedHook(secondReport);
       expect(secondCapture).toHaveBeenCalledExactlyOnceWith(secondReport);
       expect(firstCapture).toHaveBeenCalledTimes(1);
-      await expect(retainedHook(firstReport)).rejects.toThrow("native_usage_run_binding_mismatch");
+      await retainedHook(firstReport);
+      expect(firstCapture).toHaveBeenCalledTimes(2);
+      expect(secondCapture).toHaveBeenCalledTimes(1);
+      await expect(retainedHook({ ...firstReport, runId: "unrelated-run" })).rejects.toThrow("native_usage_run_binding_mismatch");
     } finally {
       if (previous === undefined) delete process.env.PAPERCLIP_RUNNER_STATE_DIR; else process.env.PAPERCLIP_RUNNER_STATE_DIR = previous;
       await rm(directory, { recursive: true, force: true });

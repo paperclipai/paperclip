@@ -46,7 +46,7 @@ export async function createNativeUsageDelivery(db: Db, input: NativeUsageDelive
  * and reconciliation rules; this grants no business/tool execution authority. */
 export async function createNativeUsageContinuationDelivery(db: Db, input: Omit<NativeUsageDeliveryInput, "billing">) {
   const sourceId = uuid(`${input.runId}:${input.runnerInstanceId}`);
-  const [source] = await db.select({ runnerInstanceId: heartbeatRuns.runnerInstanceId, usage: heartbeatRuns.usageJson })
+  const [source] = await db.select({ runnerInstanceId: heartbeatRuns.runnerInstanceId, usage: heartbeatRuns.usageJson, finishedAt: heartbeatRuns.finishedAt })
     .from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.id, input.runId)));
   if (source?.runnerInstanceId !== input.runnerInstanceId || source.usage?.accountingReceiptOwner !== "native_producer"
     || source.usage.accountingReceiptSourceId !== sourceId) throw new Error("native_usage_continuation_source_mismatch");
@@ -60,7 +60,9 @@ export async function createNativeUsageContinuationDelivery(db: Db, input: Omit<
   const billing = classification(receipts[0] ?? recorded as AdapterUsageCheckpoint);
   if (receipts.some(receipt => receiptFingerprint(classification(receipt)) !== receiptFingerprint(billing)
     || receipt.model !== (input.provider.model ?? "unknown"))) throw new Error("native_usage_source_conflict");
-  return createNativeUsageReceiver(db, { ...input, billing }, sourceId, saved, true);
+  const terminalAcknowledged = source.finishedAt !== null && input.provider.kind === "codex"
+    && !saved.some(row => terminal.has((row.receipt as UsageReceiptEnvelope).producerEvent?.eventType ?? ""));
+  return createNativeUsageReceiver(db, { ...input, billing }, sourceId, saved, true, terminalAcknowledged);
 }
 
 function loadNativeUsageReceipts(db: Db, input: Pick<NativeUsageDeliveryInput, "companyId" | "runId">, sourceId: string) {
@@ -110,7 +112,7 @@ async function captureLateUsageForOwner(db: Db, input: NativeUsageDeliveryInput,
 }
 
 function createNativeUsageReceiver(db: Db, input: NativeUsageDeliveryInput, sourceId: string,
-  saved: Awaited<ReturnType<typeof loadNativeUsageReceipts>>, verifySaved = false) {
+  saved: Awaited<ReturnType<typeof loadNativeUsageReceipts>>, verifySaved = false, terminalAcknowledged = false) {
   const accepted = new Map<string, UsageReceiptEnvelope>();
   const turnAccounting = ["opencode", "acpx"].includes(input.provider.kind) ? createNativeTurnAccounting(input.provider) : null;
   let observedUsage: Record<string, unknown> | null = null;
@@ -134,7 +136,8 @@ function createNativeUsageReceiver(db: Db, input: NativeUsageDeliveryInput, sour
       observedUsage = interpretedUsage;
       observedTurn = normalizeNativeUsage(observedUsage, { inputIncludesCacheReads: input.provider.kind === "codex" }) ? accountingTurn : undefined;
     }
-    return { usage: observedUsage, complete: terminal.has(fact.eventType) && observedTurn !== undefined && observedTurn === accountingTurn };
+    const closesRun = terminal.has(fact.eventType) || (terminalAcknowledged && interpretedUsage !== undefined);
+    return { usage: observedUsage, complete: closesRun && observedTurn !== undefined && observedTurn === accountingTurn };
   };
   for (const row of saved) {
     const envelope = row.receipt as UsageReceiptEnvelope;
