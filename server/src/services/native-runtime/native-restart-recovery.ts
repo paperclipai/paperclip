@@ -47,6 +47,7 @@ import { legacyWorkspaceRecoveryNotMigrated } from "../legacy-workspace-recovery
 import { requestNativeStartupCleanup, readNativeStartupContext, promoteNativeStartupCleanup } from "./native-startup-cleanup.js";
 import { createSystemRecovery, failSystemRecovery, readSystemRecovery, reserveSystemRecoveryAttempt,
   SystemRecoveryFailure, type SystemRecoveryState } from "../system-recovery-state.js";
+import { readPendingPluginSourceRecovery } from "./stopped-plugin-source-recovery.js";
 
 export type NativeControllerIdentity = {
   bootId: string;
@@ -86,6 +87,8 @@ export type NativeRestartRecoveryClaim =
         | { kind: "plugin_task"; leaseId: string };
       /** Discovery evidence only; executor revalidates the encrypted header. */
       stagedAttachment?: Pick<NativeStagedAttachmentRecovery, "sourceIdentity" | "targetIdentity" | "templateDigest">;
+      /** Pending A authority owned by this B lease; no current-run work was admitted. */
+      sourceReconciliation?: true;
     }
   | {
       kind: "resume_dead_runner";
@@ -348,6 +351,7 @@ export function classifyNativeRunnerRecoveryEvidence(input: {
   hasProviderEvidence: boolean;
   checkpointFailed?: boolean;
   stagedAttachmentVerified?: boolean;
+  sourceReconciliationVerified?: boolean;
   providerAttempt?: number;
 }): {
   claimKind: NativeRestartRecoveryClaim["kind"] | null;
@@ -362,6 +366,9 @@ export function classifyNativeRunnerRecoveryEvidence(input: {
   // inspection; the executor must prove the original lease and authenticate
   // the surviving runner before it can resume delivery.
   if (input.remoteSandbox) {
+    if (input.sourceReconciliationVerified === true) {
+      return { claimKind: "reattach_remote_runner", reason: "source_reconciliation_requires_sandbox_verification" };
+    }
     if (input.stagedAttachmentVerified === true) {
       return { claimKind: "reattach_remote_runner", reason: "staged_remote_attachment_requires_sandbox_verification" };
     }
@@ -651,7 +658,10 @@ export async function claimNativeRestartRecoveries(input: {
       const remoteWorkspace = readNativeWorkspaceSyncReference(profile.nativeWorkspaceSync)
         ?? (storedRemoteWorkspace.success ? storedRemoteWorkspace.data : null);
       const [pluginTask] = await tx.select({ id: environmentLeases.id,
-        metadata: sql<Record<string, unknown>>`jsonb_build_object('runnerTaskStartup', ${environmentLeases.metadata}->'runnerTaskStartup')`,
+        metadata: sql<Record<string, unknown>>`jsonb_build_object('runnerTaskStartup', ${environmentLeases.metadata}->'runnerTaskStartup',
+          'runnerTaskSourceRecovery', ${environmentLeases.metadata}->'runnerTaskSourceRecovery',
+          'runnerTaskIdentity', ${environmentLeases.metadata}->'runnerTaskIdentity',
+          'runnerTaskDispatched', ${environmentLeases.metadata}->'runnerTaskDispatched')`,
       }).from(environmentLeases).where(and(
         eq(environmentLeases.companyId, row.run.companyId), eq(environmentLeases.issueId, issue.id),
         eq(environmentLeases.heartbeatRunId, row.run.id), sql`${environmentLeases.metadata}->>'runnerTaskLease' = 'true'`,
@@ -767,9 +777,16 @@ export async function claimNativeRestartRecoveries(input: {
       }
       const remoteSandbox = profile.nativeWorkspaceSync != null || profile.remoteWorkspace != null;
       const remoteProcess = remoteSandbox || !!pluginTask;
-      const durableAuthority = (remoteWorkspace || pluginTask) && await hasNativeRunnerCheckpoint(tx, {
+      const ownCheckpoint = Boolean((remoteWorkspace || pluginTask) && await hasNativeRunnerCheckpoint(tx, {
         companyId: row.run.companyId, issueId: row.coordinator.issueId, runId: row.run.id,
+      }));
+      const sourceRecovery = pluginTask && await readPendingPluginSourceRecovery(tx as unknown as Db, {
+        run: row.run, lease: pluginTask, ownCheckpoint,
       });
+      if (sourceRecovery?.kind === "unproven") {
+        return { kind: "awaiting_evidence", runId: row.run.id, reason: "source_recovery_reference_unproven" } as const;
+      }
+      const durableAuthority = ownCheckpoint || sourceRecovery?.kind === "source";
       const takeover = await evaluateNativeControllerTakeover({
         owner: row.coordinator,
         now,
@@ -1019,6 +1036,7 @@ export async function claimNativeRestartRecoveries(input: {
           providerProcesses.ambiguousLivePids.length > 0,
         hasCheckpoint,
         stagedAttachmentVerified: stagedAttachment !== null,
+        sourceReconciliationVerified: sourceRecovery?.kind === "source",
         checkpointIdentityMatches:
           checkpointIdentityMatches &&
           (!remoteSandbox || remoteWorkspace !== null),
@@ -1296,6 +1314,7 @@ export async function claimNativeRestartRecoveries(input: {
         return {
           kind: claimKind,
           ...common,
+          ...(sourceRecovery?.kind === "source" ? { sourceReconciliation: true as const } : {}),
           ...(stagedAttachment ? { stagedAttachment: {
             sourceIdentity: stagedAttachment.sourceIdentity, targetIdentity: stagedAttachment.targetIdentity,
             templateDigest: stagedAttachment.templateDigest,

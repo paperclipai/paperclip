@@ -3358,6 +3358,11 @@ function createPluginEnvironmentDriver(
           : {}),
       } as PluginEnvironmentAcquireLeaseParams, ...timeoutOverride));
 
+      const previousTaskMetadata = resumed && previous ? { ...previous.metadata } : {};
+      if (previous?.heartbeatRunId !== input.heartbeatRunId) {
+        delete previousTaskMetadata.runnerTaskSourceRecovery;
+        delete previousTaskMetadata.runnerTaskSourceConsumer;
+      }
       return await environmentsSvc.acquireLease({
         creationOperationId: resumed ? undefined : providerLease.metadata?.creationOperationId as string | undefined,
         companyId: input.companyId,
@@ -3371,7 +3376,7 @@ function createPluginEnvironmentDriver(
         providerLeaseId: providerLease.providerLeaseId,
         expiresAt: providerAttestedLeaseExpiry(input.requestedExpiresAt, parseExpiresAt(providerLease.expiresAt)),
         metadata: {
-          ...(resumed && previous ? { ...previous.metadata, runnerTaskReused: true, runnerTaskPreviousLeaseId: previous.id } : {}),
+          ...(resumed && previous ? { ...previousTaskMetadata, runnerTaskReused: true, runnerTaskPreviousLeaseId: previous.id } : {}),
           runnerTaskLifecyclePolicy: lifecyclePolicy, runnerTaskFingerprint: fingerprint,
           runnerTaskRequestedExpiresAt:requestedExpiresAtParam(input.requestedExpiresAt) ?? null,
           ...(warm ? {runnerTaskProjectIds:[...input.runnerTaskProjectIds ?? []]} : {}),remoteCwd:".",

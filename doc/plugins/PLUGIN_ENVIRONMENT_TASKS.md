@@ -98,6 +98,11 @@ run ID alone never grants recovery. Both operations must name the same `resumeFr
 Preparation must save this source binding with its new configuration. Submission
 must verify the same binding before it starts the source process.
 
+An already authorized retained suspension uses ordinary continuation, including
+when the next lease has a fresh physical task. The stopped-source extension is
+for a completed provider session; prepared-only state keeps existing cleanup
+and suspension behavior.
+
 Core requires the source run to have a committed successful result, an encrypted
 PRP journal, confirmed physical termination, and no other source consumer. Core
 claims the source under the current native controller lease. This does not change
@@ -105,6 +110,20 @@ the source run's status or result. A stale source controller cannot write its
 journal after this claim. Workspace export and settlement holds still apply.
 After source submission, the same current owner can prepare its attachment with
 the exact source as `priorIdentity`. This does not grant ordinary warm reuse.
+
+Recovered accounting keeps its original producer and saved billing. Replaying a
+source receipt does not reopen its successful run or charge the current run.
+Each later warm attachment uses the current authority's accounting delivery.
+
+Core restores the source journal after it claims the consumer lease, so an old
+controller's final cleanup write cannot leave a stale local cut. Fresh source
+preparation uses the frozen source instructions and current account authority.
+It does not replace the old source's preparation cache. The existing session
+attachment admits the current run only after source reconciliation completes.
+A controller restart before attachment follows that same saved source claim.
+Once the current run has its own journal, recovery must use that authority.
+An unproven or stopped pending incarnation stays held for exact task recovery;
+it cannot select an earlier ancestor as a fresh source.
 
 The provider must verify the original account, workspace, runtime, and source
 ownership before launch. The provider must reject saved active goals, pending tools, ambiguous starts, and

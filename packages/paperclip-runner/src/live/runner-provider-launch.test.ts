@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { DurablePrpControlPlane } from "../control-plane/durable-prp-control-plane.js";
 import { createRunnerProviderLaunch, preparedRunnerLaunchWorkingDirectory, runnerLaunchRequirementsDigest, runnerLaunchSettingsMatch, validatePreparedRunnerLaunch,
-  runnerProviderLaunchRequirements, type RunnerProviderLaunchEnvironment, type RunnerProviderLaunchRequirements } from "./runner-provider-launch.js";
+  inspectSourceReconciliationLaunchRequirements, runnerProviderLaunchRequirements, type RunnerProviderLaunchEnvironment, type RunnerProviderLaunchRequirements } from "./runner-provider-launch.js";
 
 const requirements: RunnerProviderLaunchRequirements = {
   schema: "paperclip.runner.launch-requirements.v1",
@@ -19,6 +23,43 @@ const environment: RunnerProviderLaunchEnvironment = {
 };
 
 describe("built-in provider launch preparation", () => {
+  it.each([false, true])("keeps the exact Codex profile when preparing recovered instructions (collaboration=%s)", async include => {
+    const root = mkdtempSync(join(tmpdir(), "source-launch-instructions-"));
+    const original = { ...requirements, includeCollaborationModeInstructions: include };
+    const provider = createRunnerProviderLaunch(original, environment);
+    const core = new DurablePrpControlPlane({ stateDirectory: root, identity: original.identity,
+      expectedRunnerVersion: "test", expectedRunnerDigest: `sha256:${"a".repeat(64)}` });
+    try {
+      core.persistRunAttachTemplate({ provider });
+      const recovered = inspectSourceReconciliationLaunchRequirements(core.store.state, { identity: original.identity,
+        provider: "codex", runtimeContextDigest: null, settings: {} });
+      expect(recovered).toEqual(original);
+      expect(createRunnerProviderLaunch(recovered!, environment)).toEqual(provider);
+    } finally { await core.stop(); rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it("recovers only frozen source requirements from a valid untransitioned authority", async () => {
+    const root = mkdtempSync(join(tmpdir(), "source-launch-policy-"));
+    const core = new DurablePrpControlPlane({ stateDirectory: root, identity: requirements.identity,
+      expectedRunnerVersion: "fixture", expectedRunnerDigest: `sha256:${"a".repeat(64)}` });
+    const expected = { identity: requirements.identity, provider: "codex" as const, runtimeContextDigest: null, settings: {} };
+    try {
+      core.persistRunAttachTemplate({ provider: createRunnerProviderLaunch(requirements, environment) });
+      const frozen = inspectSourceReconciliationLaunchRequirements(core.store.state, expected);
+      expect(frozen).toEqual(requirements);
+      expect(JSON.stringify(frozen)).not.toContain("/runtime/");
+      for (const key of Object.keys(requirements.identity)) {
+        expect(inspectSourceReconciliationLaunchRequirements(core.store.state, { ...expected,
+          identity: { ...expected.identity, [key]: "foreign" } })).toBeNull();
+      }
+      expect(inspectSourceReconciliationLaunchRequirements(core.store.state, { ...expected, runtimeContextDigest: "b".repeat(64) })).toBeNull();
+      expect(inspectSourceReconciliationLaunchRequirements({ ...core.store.state, commands: null }, expected)).toBeNull();
+      expect(inspectSourceReconciliationLaunchRequirements({ ...core.store.state, warmTransition: {} }, expected)).toBeNull();
+      core.stageRunAttachment({ ...requirements.identity, runId: "target", turnId: "target-turn", itemId: "target-item" },
+        { provider: createRunnerProviderLaunch({ ...requirements, instructions: "Current target instructions." }, environment) });
+      expect(inspectSourceReconciliationLaunchRequirements(core.store.state, expected)).toBeNull();
+    } finally { await core.stop(); rmSync(root, { recursive: true, force: true }); }
+  });
   it("compares effective ACPX defaults without changing the saved requirements", () => {
     const frozen = { ...requirements, provider: "acpx" as const, model: "gpt-5.4", settings: {} };
     expect(runnerLaunchSettingsMatch(frozen, { acpxAgent: "codex", acpxPermissionMode: "approve-all", acpxPermissionModePinned: true })).toBe(true);

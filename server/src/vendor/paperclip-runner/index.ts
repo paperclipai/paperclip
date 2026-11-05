@@ -104,6 +104,7 @@ export const runnerCodexDynamicToolsFit = runner.runnerCodexDynamicToolsFit;
 export const inspectWarmRunTransition = runner.inspectWarmRunTransition;
 export const inspectStagedRunAttachment = runner.inspectStagedRunAttachment;
 export const inspectRetainedRunInstructions = runner.inspectRetainedRunInstructions;
+export const inspectSourceReconciliationLaunchRequirements = runner.inspectSourceReconciliationLaunchRequirements;
 export const inspectStagedRunAttachmentHeader = runner.inspectStagedRunAttachmentHeader;
 export type StagedRunAttachment = import("@paperclipai/paperclip-runner").StagedRunAttachment;
 export const readRunnerdArtifactBinding = runner.readRunnerdArtifactBinding;
