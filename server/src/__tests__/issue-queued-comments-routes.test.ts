@@ -1846,4 +1846,75 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
       .get(`/api/issues/${seeded.issueId}/queued-comments`);
     expect(after.body.entries.map((entry: any) => entry.comment.id)).toEqual(seeded.commentIds);
   });
+  // BUG-08: a declined connection request (Slack) queued its read-only receipt
+  // ahead of the user's next message. The receipt showed raw JSON, could not be
+  // edited or discarded, and the next message never appeared in the queue.
+  async function seedDeclinedConnectionReceipt(runState: "running" | "stopped") {
+    const seeded = await seedQueue();
+    const interactionId = randomUUID();
+    await db.insert(issueThreadInteractions).values({
+      id: interactionId, companyId: seeded.companyId, issueId: seeded.issueId,
+      kind: "connection_intent", status: "rejected", createdByAgentId: seeded.agentId,
+      sourceRunId: seeded.runId, resolvedByUserId: "queue-owner", resolvedAt: new Date(),
+      continuationPolicy: "wake_assignee", requestedResolverPolicy: "human_only",
+      effectiveResolverPolicy: "human_only", resolverPolicyProvenance: "explicit",
+      title: "Connect Slack", summary: "The agent needs this connection to continue.",
+      payload: { version: 1, serviceSlug: "slack", serviceName: "Slack", phase: "requested",
+        requestingAgentId: seeded.agentId, requestingAgentName: "Paperclip Runner" },
+      result: { version: 1, outcome: "declined", reason: null },
+    });
+    // Same receipt shape as wakeConnectionIntentAfterResolution.
+    await db.update(agentWakeupRequests).set({ payload: { issueId: seeded.issueId,
+      mutation: "interaction", interactionId, interactionKind: "connection_intent", interactionStatus: "rejected",
+      _paperclipWakeContext: { issueId: seeded.issueId, interactionId, interactionKind: "connection_intent",
+        interactionStatus: "rejected", mutation: "interaction", refreshTools: true } },
+    }).where(eq(agentWakeupRequests.id, seeded.wakeId));
+    if (runState === "stopped") {
+      await db.update(heartbeatRuns).set({ status: "cancelled", finishedAt: new Date(), errorCode: "workspace_busy" })
+        .where(eq(heartbeatRuns.id, seeded.runId));
+      await db.update(issues).set({ executionRunId: null }).where(eq(issues.id, seeded.issueId));
+      // Occupy the agent on another task so admission holds new work without
+      // invoking a provider (the staging agent was busy on ONB-2/ONB-3).
+      await db.update(agents).set({ runtimeConfig: { heartbeat: { maxConcurrentRuns: 1 } } })
+        .where(eq(agents.id, seeded.agentId));
+      await db.insert(heartbeatRuns).values({ companyId: seeded.companyId, agentId: seeded.agentId,
+        status: "running", contextSnapshot: { issueId: randomUUID() } });
+    }
+    return { ...seeded, interactionId };
+  }
+
+  it("shows a declined connection receipt as a readable status, not its JSON", async () => {
+    const seeded = await seedDeclinedConnectionReceipt("running");
+    const queue = await request(app(seeded.companyId)).get(`/api/issues/${seeded.issueId}/queued-comments`).expect(200);
+    expect(queue.body.entries).toHaveLength(1);
+    const [entry] = queue.body.entries;
+    expect(entry.source).toMatchObject({ kind: "interaction", interactionKind: "connection_intent",
+      summary: "Declined: Slack connection" });
+    // The agent still receives the typed receipt in the steering body.
+    expect(entry.comment.body).toContain('"outcome": "declined"');
+  });
+
+  it.each(["running", "stopped"] as const)(
+    "keeps the next message visible and actionable after a declined connection (%s run)",
+    async (runState) => {
+      const seeded = await seedDeclinedConnectionReceipt(runState);
+      const client = app(seeded.companyId);
+      const sent = await request(client).post(`/api/issues/${seeded.issueId}/comments`)
+        .send({ body: "Skip Slack for now and continue" }).expect(201);
+      await vi.waitFor(async () => expect(await db.select().from(agentWakeupRequests)).toHaveLength(2));
+      const queue = await request(client).get(`/api/issues/${seeded.issueId}/queued-comments`).expect(200);
+      const next = queue.body.entries.find((entry: any) => entry.comment.id === sent.body.id);
+      expect(next, JSON.stringify(queue.body.entries.map((entry: any) => entry.comment.body.split("\n")[0])))
+        .toMatchObject({ canEdit: true, canDiscard: true });
+      expect(next.source).toBeUndefined();
+      expect(queue.body.queueId).not.toBe(seeded.wakeId);
+      // The message is the user's own queue entry, so its controls work.
+      await request(client).delete(`/api/issues/${seeded.issueId}/queued-comments/${sent.body.id}`)
+        .send({ queueId: queue.body.queueId, revision: queue.body.revision }).expect(200);
+      // Declining the connection still reaches the agent on its own receipt.
+      const [receipt] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, seeded.wakeId));
+      expect(receipt.status).toBe("deferred_issue_execution");
+      await new Promise(resolve => setTimeout(resolve, 250));
+    },
+  );
 });

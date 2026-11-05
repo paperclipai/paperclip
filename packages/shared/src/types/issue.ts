@@ -1099,6 +1099,8 @@ export interface IssueQueuedCommentEntry {
     interactionId: string;
     interactionKind: string;
     requiresFreshSession?: boolean;
+    /** Readable one-line status, such as "Declined: Slack connection". */
+    summary?: string;
   };
   comment: IssueComment;
   position: number;

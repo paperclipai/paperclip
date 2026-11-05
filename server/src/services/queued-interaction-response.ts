@@ -16,6 +16,24 @@ export function queuedInteractionId(payload: unknown): string | null {
     ? p.interactionId : null;
 }
 
+/**
+ * One readable line for a queued response. The steering body also carries the
+ * typed JSON receipt for the agent; people only ever see this line.
+ */
+export function queuedInteractionSummary(interaction: {
+  kind: string; status: string; title?: string | null; payload?: unknown;
+}): string {
+  const p = record(interaction.payload);
+  if (interaction.kind === "connection_intent") {
+    const service = typeof p.serviceName === "string" && p.serviceName.trim() ? p.serviceName.trim() : null;
+    const subject = service ? `${service} connection` : interaction.title ?? "Connection request";
+    return interaction.status === "rejected" ? `Declined: ${subject}` : `Connected: ${subject}`;
+  }
+  const label = interaction.status === "accepted" ? "Accepted" : interaction.status === "rejected" ? "Rejected" : "Answered";
+  const subject = interaction.title ?? (typeof p.prompt === "string" ? p.prompt : null) ?? "Questions";
+  return `${label}: ${subject}`;
+}
+
 export async function readQueuedInteractionResponse(db: Db, companyId: string, issueId: string, payload: unknown) {
   const id = queuedInteractionId(payload);
   if (!id) return null;
@@ -27,8 +45,7 @@ export async function readQueuedInteractionResponse(db: Db, companyId: string, i
   if (!interaction || interaction.status !== record(payload).interactionStatus) return null;
   const p = record(interaction.payload);
   const result = record(interaction.result);
-  const label = interaction.status === "accepted" ? "Accepted" : interaction.status === "rejected" ? "Rejected" : "Answered";
-  const heading = `${label}: ${interaction.title ?? p.prompt ?? "Questions"}`;
+  const heading = queuedInteractionSummary(interaction);
   // Preserve the question labels, selected options, custom answers, approval
   // target and exact revision. This is also the explicit steering message.
   const body = `${heading}\n\n${JSON.stringify({
@@ -44,6 +61,7 @@ export async function readQueuedInteractionResponse(db: Db, companyId: string, i
   const source: NonNullable<IssueQueuedCommentEntry["source"]> = {
     kind: "interaction", interactionId: interaction.id, interactionKind: interaction.kind,
     requiresFreshSession: record(record(payload)._paperclipWakeContext).forceFreshSession === true,
+    summary: heading,
   };
   return { comment, source };
 }
