@@ -9,10 +9,6 @@ import {
 
 const DEFAULT_PORTFOLIO_CACHE_TTL_MS = 30_000;
 const CLOUD_PORTFOLIO_PATH = "/v1/tenant/portfolio";
-// The Cloud edge can close a pooled keep-alive connection just as a request is
-// written. The reset arrives before any response and the GET is idempotent, so
-// one more attempt within the same deadline is safe. Other failures, including
-// the deadline itself, are reported without a retry.
 const RETRYABLE_FETCH_RESET_CODES = new Set(["ECONNRESET", "UND_ERR_SOCKET"]);
 
 type PortfolioCacheEntry = {
