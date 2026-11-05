@@ -103,7 +103,7 @@ test('repair source metadata binds the corrected candidate and explicit changed 
   const repair = manifest.source.repairMetadata;
   assert.equal(repair.baseTargetSha, '3b66c3c144360ddf32714a0742fd774b8ceafb16');
   assert.equal(repair.previousTargetSha, 'ab2019e976076ec0eb60b026844f3d9211cb0208');
-  assert.equal(manifest.targetSha, '91310507eb0d1063d315ad3a5f6bfd1fd3dfc730');
+  assert.equal(manifest.targetSha, '5aef4bffa2b106f2066bf2485338798f04a702bd');
   assert.equal(repair.definitionSourceSha, manifest.metadataSourceSha);
   assert.equal(repair.candidateDescriptorSnapshot, 'fixtures/chat-repair-candidate-descriptors.json');
   const descriptorBytes = readFileSync(new URL(repair.candidateDescriptorSnapshot, import.meta.url));
