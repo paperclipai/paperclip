@@ -60,6 +60,7 @@ export {
 export type { DurableRecoveryIdentity } from "./control-plane/prp-transport-types.js";
 export * from "./drivers/codex/app-server-transport.js";
 export * from "./drivers/codex/codex-app-server-driver.js";
+export { codexUsageBaselineForNextRun } from "./drivers/codex/codex-usage-baseline.js";
 export { resolveCodexCommand, resolvePinnedCodexCommand } from "./drivers/codex/codex-command.js";
 export { runnerBinaryTarget } from "./live/runner-binary.js";
 export * from "./drivers/opencode/opencode-server-driver.js";

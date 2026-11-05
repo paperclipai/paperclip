@@ -57,6 +57,7 @@ import { isCloudManagedInstance } from "../cloud-instance.js";
 import { dotRunnerBroker } from "../dot-runner-broker.js";
 import { CURSOR_DISTRIBUTION_PINS, KIMI_DISTRIBUTION_CLOSURE_SHA256, QUALIFIED_ACPX_PROFILES, QUALIFIED_ACPX_VERSION } from "../../vendor/paperclip-runner/index.js";
 import { isProviderMode } from "../../vendor/paperclip-runner/index.js";
+import { codexUsageBaselineForNextRun } from "../../vendor/paperclip-runner/index.js";
 import { PROVIDER_PACK_COMPATIBILITY, bundledRemoteProviderPackManifestPath, bundledRemoteRunnerBinary, runnerBinaryTarget } from "../../vendor/paperclip-runner/index.js";
 import { nativeRetryCancellationEligible, rethrowNativeCancellationLockConflict, assertCancellationRequest, cancellationIntentId as callerCancellationIntentId, cancellationRequestId } from "./native-cancellation-request.js";
 import { readNativePlanWait } from "./native-plan-wait.js";
@@ -7035,6 +7036,11 @@ function loadWarmNativeCheckpoint(
         terminalTurns: [],
         pendingRuntimeRequests: [],
         governedWait: undefined,
+        // The previous run's starting point is run-scoped too. Keeping it would
+        // report that run's usage again as part of this one.
+        ...(envelope.snapshot.codexUsageBaseline
+          ? { codexUsageBaseline: codexUsageBaselineForNextRun(envelope.snapshot.codexUsageBaseline) }
+          : {}),
       };
   if (path !== scopedPath || envelope.configDigest !== configDigest) {
     // Upgrade the validated checkpoint atomically. When moving from a legacy

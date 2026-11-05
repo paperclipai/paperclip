@@ -1692,6 +1692,9 @@ future execution until Resume, and missing stop proof still blocks continuation.
 
 ### Late provider usage
 
+Each run measures its usage from the total the previous run accounted for, whether
+it continues in the same process or resumes from a saved session in a new one.
+
 A provider can report more usage after its run's charge was posted. That usage
 already happened, so it never fails a run or blocks a session. Codex usage totals
 are cumulative, so the Runner reports the exact increment above the known total and

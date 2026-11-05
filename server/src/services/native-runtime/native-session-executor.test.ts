@@ -10983,6 +10983,7 @@ describe("native warm session supervision", () => {
       terminal: null,
       terminalTurns: [],
       pendingRuntimeRequests: [],
+      codexUsageBaseline: { baseline: { inputTokens: 40, outputTokens: 4 }, latest: { inputTokens: 100, outputTokens: 10 } },
     };
     const result = {
       result: { summary: "completed" },
@@ -11011,6 +11012,8 @@ describe("native warm session supervision", () => {
             driverSessionId: checkpoint.driverSessionId,
             providerSessionId: checkpoint.providerSessionId,
             activeTurnId: checkpoint.activeTurnId,
+            // The same run is still measuring from its own starting point.
+            codexUsageBaseline: checkpoint.codexUsageBaseline,
           }),
         );
         return result;
@@ -11032,6 +11035,104 @@ describe("native warm session supervision", () => {
           runnerInstanceId: "runner-warm-same-run-recovery",
         }),
       ).resolves.toBeDefined();
+    } finally {
+      if (previousPaperclipHome === undefined) {
+        delete process.env.PAPERCLIP_HOME;
+      } else {
+        process.env.PAPERCLIP_HOME = previousPaperclipHome;
+      }
+      await rm(stateBase, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    { name: "every report accounted", accounted: { inputTokens: 100, outputTokens: 10 }, latest: { inputTokens: 100, outputTokens: 10 } },
+    { name: "late usage not yet charged", accounted: { inputTokens: 100, outputTokens: 10 }, latest: { inputTokens: 130, outputTokens: 12 } },
+    { name: "no accounted total", accounted: undefined, latest: { inputTokens: 100, outputTokens: 10 } },
+  ])("starts a new run's usage from the prior run's total when a warm checkpoint resumes: $name", async ({ accounted, latest }) => {
+    const stateBase = await mkdtemp(join(tmpdir(), "paperclip-warm-next-run-usage-"));
+    const previousPaperclipHome = process.env.PAPERCLIP_HOME;
+    process.env.PAPERCLIP_HOME = stateBase;
+    const firstRun = {
+      ...execution,
+      binding: {
+        ...execution.binding,
+        runId: "run-warm-next-run-usage-first",
+        executionWorkspaceId: "workspace-warm-next-run-usage",
+      },
+      session: {
+        ...execution.session,
+        normalizedSessionId: "session-warm-next-run-usage",
+        lifecyclePolicy: { mode: "warm" as const, idleTimeoutMs: 20 },
+      },
+    } as NativeExecutionInputV1;
+    const secondRun = {
+      ...firstRun,
+      binding: { ...firstRun.binding, runId: "run-warm-next-run-usage-second" },
+    } as NativeExecutionInputV1;
+    // A fresh thread's first run has an empty baseline. Keeping it would report
+    // the whole thread total as the next run's usage.
+    const checkpoint = {
+      identity: {
+        runId: firstRun.binding.runId,
+        sessionId: firstRun.session.normalizedSessionId,
+        companyId: firstRun.binding.companyId,
+        issueId: firstRun.binding.issueId,
+        agentId: firstRun.binding.agentId,
+      },
+      sessionId: firstRun.session.normalizedSessionId,
+      driverSessionId: "driver-warm-next-run-usage",
+      providerSessionId: "provider-warm-next-run-usage",
+      activeTurnId: null,
+      semanticResult: null,
+      terminal: null,
+      terminalTurns: [],
+      pendingRuntimeRequests: [],
+      codexUsageBaseline: { baseline: {}, latest, ...(accounted ? { accounted } : {}) },
+    };
+    const result = {
+      result: { summary: "completed" },
+      terminal: { runTerminalState: "succeeded" },
+      turnId: "provider-turn-warm-next-run-usage",
+      normalizedSessionId: firstRun.session.normalizedSessionId,
+      providerSessionId: checkpoint.providerSessionId,
+      driverKind: "test",
+      driverVersion: "1",
+      nativeEventCount: 1,
+      highestContiguousSourceSeq: 1,
+      usage: null,
+    };
+    const firstClose = vi.fn(async () => undefined);
+    let resumedBaseline: unknown;
+    state.execute
+      .mockReset()
+      .mockImplementationOnce(async (options) => {
+        await options.onCheckpoint?.(checkpoint);
+        options.onSession?.({ close: firstClose });
+        return result;
+      })
+      .mockImplementationOnce(async (options) => {
+        resumedBaseline = options.persistedSession?.codexUsageBaseline;
+        return result;
+      });
+
+    try {
+      await executePaperclipNativeSession({
+        db: leaseDb(firstRun),
+        execution: firstRun,
+        runnerInstanceId: "runner-warm-next-run-usage",
+      });
+      await vi.waitFor(() => expect(firstClose).toHaveBeenCalled(), { timeout: 500 });
+      await executePaperclipNativeSession({
+        db: leaseDb(secondRun),
+        execution: secondRun,
+        runnerInstanceId: "runner-warm-next-run-usage",
+      });
+      expect(resumedBaseline).toEqual({
+        baseline: accounted ?? latest,
+        latest,
+        ...(accounted ? { accounted } : {}),
+      });
     } finally {
       if (previousPaperclipHome === undefined) {
         delete process.env.PAPERCLIP_HOME;
