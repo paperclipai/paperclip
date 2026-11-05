@@ -43,6 +43,7 @@ import {
   verifyRenderedReply,
 } from "./external-support.js";
 import type { Entity } from "./internal-support.js";
+export const personalSecretSavedAcknowledgement = "I saved my personal publishing value through the secure UI. Please continue and check the task.";
 type OwnEntry = {
   definition: UserSecretDefinition;
   secret: CompanySecret | null;
@@ -738,7 +739,7 @@ export const personalSecretExternalCases = [
             form.getByRole("button", { name: question.submitLabel, exact: true }).click({ timeout: remaining() }),
           ]);
           if (!response.ok()) throw new Error("Secure-entry human question response failed");
-        } else if (!confirmation) await sendChatMessage(ctx.input.page, ctx.scenario.query);
+        } else if (!confirmation) await sendChatMessage(ctx.input.page, personalSecretSavedAcknowledgement);
       },
       async observe(ctx, state) {
         const fixture = fixtures.get(ctx)!;
