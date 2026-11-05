@@ -90,9 +90,7 @@ Automated: [task-list helpers](../../ui/src/pages/Issues.test.tsx) cover search 
 
 Manual: Seed human-created, agent-created, scheduled routine, human-initiated chat-channel, and creator-less tasks. Confirm automation is hidden by default, **Show agent-created tasks** reveals it, reload preserves the choice, and Clear filters hides it again. Verify list and board search with automation newer than the human results, and expand contextual ancestors/subtasks without promoting unrelated automated roots. Repeat in project task lists. Agent profiles and task-detail subtasks retain complete history.
 
-Automated: [Coordinator tasks](../../ui/src/pages/CoordinatorTasks.test.tsx) covers label checkbox selection, URL persistence after sorting and remount, repeated labels, history navigation, and clearing unknown labels with mocked API data. This is component evidence, not a live browser result.
-
-Manual: Filter by status, assignee, and label, change grouping/sort, open a task, and return. Verify the correct records and selected view survive navigation and reload. Include an empty result and a failed request.
+Manual: Filter by status and assignee, change grouping/sort, open a task, and return. Verify the correct records and selected view survive navigation and reload. Include an empty result and a failed request.
 
 ### `task-detail`
 
