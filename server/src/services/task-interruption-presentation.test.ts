@@ -202,6 +202,11 @@ describe("saved-work recovery step", () => {
     const running = action({ systemRecovery: system("preserve_files", "running", null), systemRecoveryActiveAt: now - 1_000 });
     expect(projectTaskInterruption(issue, { run: failed, agent, wait, paused: false, approval: false, action: running }, now))
       .toMatchObject({ state: "working", recoveryStep: "saving_previous_files" });
+    const scheduled = action({ systemRecovery: system("verify_execution", "scheduled", now + 30_000) });
+    expect(projectTaskInterruption(issue, { run: failed, agent, wait, paused: false, approval: false, action: scheduled }, now))
+      .toMatchObject({ state: "retry_scheduled", recoveryStep: "checking_previous_run", canRetry: false });
+    expect(projectTaskInterruption(issue, { run: failed, agent, paused: false, approval: false, action: scheduled }, now))
+      .toMatchObject({ state: "retry_scheduled", canRetry: true });
     expect(projectTaskInterruption(issue, { run: failed, agent, wait: { ...wait, preparationStatus: "failed" },
       paused: false, approval: false, action: running }, now)).toMatchObject({ state: "failed" });
     expect(projectTaskInterruption(issue, { run: failed, agent, wait, paused: false, approval: false }, now))

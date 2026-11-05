@@ -17,6 +17,7 @@ import { admittedPiThinkingLevel, resolvePiThinkingLevel } from "../drivers/acpx
 import { configuredEnvironment } from "../configured-environment.js";
 import { githubCredentialEnvironment } from "../github-credential-environment.js";
 import { resolveAcpxProviderMode } from "../drivers/acpx/provider-mode.js";
+import { NATIVE_ASSET_PROVIDERS } from "../drivers/acpx/provider-assets-root.js";
 import { preconfiguredHomeEnvironment, preconfiguredCodexHome, usesPreconfiguredHome } from "../drivers/preconfigured-home.js";
 import { isAcpxCanonicalInputMethod } from "../drivers/acpx/profile-extensions.js";
 import { RunnerdTraceFrameIndex } from "./runnerd-trace-frame-index.js";
@@ -3070,6 +3071,12 @@ function resolveBuildOwnedCliArtifact(
   );
 }
 
+// Providers whose pinned native closures resolve through
+// resolveRunnerProviderAssetsRoot. That guard requires the bound manifest to be
+// the package.json directly inside the bound root, so these providers must never
+// receive the workspace dependency root used by JS-package providers.
+const NATIVE_ASSET_ACPX_AGENTS: ReadonlySet<QualifiedAcpxAgent> = new Set(NATIVE_ASSET_PROVIDERS);
+
 function acpxProviderPackageAuthority(
   sidecarScript: string,
   ownerPackageRoot = packageRoot,
@@ -3089,7 +3096,7 @@ function acpxProviderPackageAuthority(
     const workspaceRoot = dirname(serverRoot);
     // Source/Docker builds share the workspace's pnpm store. Published npm
     // bundles and self-rooted pnpm deployments retain their server authority.
-    if (agent !== "pi" && agent !== "antigravity" && basename(serverRoot) === "server" &&
+    if ((agent === undefined || !NATIVE_ASSET_ACPX_AGENTS.has(agent)) && basename(serverRoot) === "server" &&
         !existsSync(resolve(serverRoot, "node_modules/.pnpm")) &&
         existsSync(resolve(workspaceRoot, "node_modules/.pnpm")) &&
         existsSync(resolve(workspaceRoot, "pnpm-workspace.yaml")) &&
@@ -3115,7 +3122,7 @@ function acpxProviderPackageAuthority(
   // Native provider closures belong to the runner package itself. Their asset
   // guard requires the bound manifest directly inside that same package root;
   // the workspace dependency root used by JS providers is a different owner.
-  if (agent === "copilot" || agent === "pi" || agent === "kimi" || agent === "antigravity") {
+  if (agent !== undefined && NATIVE_ASSET_ACPX_AGENTS.has(agent)) {
     return {
       root: sidecarPackageRoot,
       manifest: resolve(sidecarPackageRoot, "package.json"),
@@ -5605,8 +5612,9 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       })))) {
       throw new Error("native_runner_source_reconciliation_requires_exact_authority");
     }
-    if (lostPredecessor && (this.options.provider ?? "codex") !== "codex") throw new Error("native_runner_recovery_integrity_unsupported");
-    if (lostPredecessor && this.options.sourceRecoveryVersion !== 1) {
+    if (lostPredecessor && (!["codex", "acpx"].includes(this.options.provider ?? "codex") || this.options.acpxCandidateAdmission)) throw new Error("native_runner_recovery_integrity_unsupported");
+    const recoveryCapability = this.options.provider === "acpx" ? this.options.acpxSourceRecoveryVersion : this.options.sourceRecoveryVersion;
+    if (lostPredecessor && recoveryCapability !== 1) {
       throw new Error("native_runner_recovery_integrity_unsupported");
     }
     const hasControlPlaneWarmBoundary =

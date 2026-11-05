@@ -793,3 +793,33 @@ fn claude_rate_limit_on_usage_update_becomes_an_account_notice() {
         "usage without rate-limit data stays a single event"
     );
 }
+
+#[test]
+fn claude_status_notices_pair_by_key_and_keep_details() {
+    let notice = |phase: &str| {
+        normalize(
+            AcpxRuntimeEventKind::ProviderNotice,
+            json!({
+                "type": "provider_notice", "severity": "info", "category": "context_compaction",
+                "summary": "Compacting context", "noticeKey": "compaction-1",
+                "details": [{"name": "Phase", "value": phase}]
+            }),
+        )
+    };
+    let started = notice("running");
+    let completed = notice("completed");
+    assert_eq!(
+        started[0].payload["noticeId"],
+        completed[0].payload["noticeId"]
+    );
+    assert_eq!(started[0].payload["category"], "context_compaction");
+    assert_eq!(
+        completed[0].payload["details"],
+        json!([{"name": "Phase", "value": "completed"}])
+    );
+    let plain = normalize(
+        AcpxRuntimeEventKind::ProviderNotice,
+        json!({"type": "provider_notice", "category": "acpx_x", "summary": "x"}),
+    );
+    assert!(plain[0].payload.get("details").is_none());
+}

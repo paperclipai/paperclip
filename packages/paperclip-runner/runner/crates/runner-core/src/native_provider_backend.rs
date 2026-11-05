@@ -278,6 +278,18 @@ impl NativeProviderCommandExecutor {
 }
 
 impl CommandExecutor for NativeProviderCommandExecutor {
+    fn host_park_ready(&mut self) -> Result<bool, DurableRunnerError> {
+        // Observe credentials without selecting or restoring a provider.
+        self.credentials.poll(true)?;
+        if self.credentials.pending().is_some() {
+            return Ok(false);
+        }
+        match self.selected.as_mut() {
+            Some(SelectedExecutor::LocalFacade(executor)) => executor.host_park_ready(),
+            _ => Ok(false),
+        }
+    }
+
     fn observe_recovery_state(
         &mut self,
         state: &crate::durable::DurableState,
@@ -286,8 +298,10 @@ impl CommandExecutor for NativeProviderCommandExecutor {
             return Ok(());
         }
         self.select_recovery()?;
-        if let Some(SelectedExecutor::LocalFacade(executor)) = self.selected.as_mut() {
-            executor.observe_recovery_state(state);
+        match self.selected.as_mut() {
+            Some(SelectedExecutor::LocalFacade(executor)) => executor.observe_recovery_state(state),
+            Some(SelectedExecutor::Acpx(executor)) => executor.observe_recovery_state(state),
+            _ => {}
         }
         Ok(())
     }

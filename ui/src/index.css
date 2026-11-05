@@ -375,6 +375,13 @@
   --status-task-icon-blocked: var(--status-task-blocked);         /* #dc2626 both modes */
   --status-task-icon-cancelled: #52585d;
   --status-task-icon-in_queue: var(--status-task-icon-in_progress); /* blocked shape, same mode-aware blue */
+  /* Inline edit diffs (task chat edit rows and the turn changes card). Line
+     tints derive from the status icon hues so both modes stay in step. */
+  --diff-add-fg: var(--status-task-icon-done);
+  --diff-remove-fg: var(--status-task-icon-blocked);
+  --diff-add-bg: color-mix(in oklab, var(--status-task-icon-done) 12%, transparent);
+  --diff-remove-bg: color-mix(in oklab, var(--status-task-icon-blocked) 12%, transparent);
+  --sz-edit-diff-max-h: calc(var(--spacing) * 100);
 
   --folder-color-indigo: #6366f1;
   --folder-color-violet: #8b5cf6;
@@ -440,6 +447,8 @@
   --motion-diff-reveal: var(--motion-duration-base);
   --motion-status-enter: var(--motion-duration-fast);
   --motion-status-exit: var(--motion-duration-fast);
+  /* Harness status chip fading to a receipt once a retry recovers. */
+  --motion-status-notice-fade: var(--motion-duration-deliberate);
   --motion-approval-pulse: 1.6s;
   --motion-plan-entry-stagger: 40ms;
   --motion-plan-check: var(--motion-duration-fast);
@@ -562,6 +571,12 @@
   --tc-mode-plan: var(--status-task-todo);
   --tc-mode-ask: #3b82f6;
 
+  /* Harness status chips (retry, model fallback, provider warnings) in the
+     task-chat timeline: a quiet amber outline on the page surface. */
+  --tc-status-notice-warning-fg: var(--status-task-icon-todo);
+  --tc-status-notice-warning-border: color-mix(in oklch, var(--status-task-todo) 40%, transparent);
+  --tc-status-notice-warning-bg: color-mix(in oklch, var(--status-task-todo) 8%, transparent);
+
   /* Agent-comment comparison fill used by TaskChatLab. The chosen production
      treatment sits directly on the page surface; this token keeps the darker
      card available as an explicit lab alternative. */
@@ -583,6 +598,8 @@
   /* Active-turn status island and its docked plan checklist. */
   --sz-turn-status-island: min(100%, 42rem);
   --sz-turn-plan-list-max-h: min(40dvh, 22rem);
+  /* A subagent result scrolls inside its card instead of taking over the thread. */
+  --sz-subagent-result-max-h: min(40dvh, 22rem);
 
   /* Mobile pinned-composer bottom offset (PAP-495). The visible-nav offset
      leaves 6px below the dock; its pb-1 adds 4px for a 10px card-to-nav gap.
@@ -1759,7 +1776,13 @@ html:has(.paperclip-app-shell[data-mobile="true"] [data-task-chat-shell]) #root 
   );
 }
 
+/* Reasoning section prose is supporting text under its provider headline. */
+.paperclip-markdown.task-chat-reasoning-section-body {
+  color: inherit;
+}
+
 .task-chat-expanded-line-wrap,
+.task-chat-reasoning-headline,
 .paperclip-markdown.task-chat-reasoning-markdown,
 .paperclip-markdown.task-chat-reasoning-markdown :is(p, strong, em, a, code) {
   overflow-wrap: anywhere;

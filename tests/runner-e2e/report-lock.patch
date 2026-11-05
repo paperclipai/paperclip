@@ -1,24 +1,58 @@
 diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml
-index f586e6f..ad6952c 100644
+index 321b7a2..a1e7b3e 100644
 --- a/pnpm-lock.yaml
 +++ b/pnpm-lock.yaml
-@@ -1216,6 +1216,9 @@ importers:
-       '@dnd-kit/utilities':
-         specifier: ^3.2.2
-         version: 3.2.2(react@19.2.8)
-+      '@lexical/clipboard':
-+        specifier: 0.48.0
-+        version: 0.48.0(typescript@7.0.2)
-       '@lexical/link':
-         specifier: 0.48.0
-         version: 0.48.0(typescript@7.0.2)
-@@ -1343,6 +1346,9 @@ importers:
-         specifier: 13.6.32
-         version: 13.6.32
-     devDependencies:
-+      '@lexical/rich-text':
-+        specifier: 0.48.0
-+        version: 0.48.0(typescript@7.0.2)
-       '@paperclipai/plugin-sdk':
-         specifier: workspace:*
-         version: link:../packages/plugins/sdk
+@@ -16,7 +16,7 @@ overrides:
+ 
+ patchedDependencies:
+   '@agentclientprotocol/claude-agent-acp@0.73.0':
+-    hash: xjlrz3rllh2ztafbdiywpfh2rq
++    hash: wvw4m3xxjfiu27h5sav6rurgva
+     path: patches/@agentclientprotocol__claude-agent-acp@0.73.0.patch
+   '@agentclientprotocol/codex-acp@1.6.2':
+     hash: 2iynuypg76nxmydiylgtffhr7e
+@@ -189,7 +189,7 @@ importers:
+     dependencies:
+       '@agentclientprotocol/claude-agent-acp':
+         specifier: ^0.73.0
+-        version: 0.73.0(patch_hash=xjlrz3rllh2ztafbdiywpfh2rq)(@anthropic-ai/sdk@0.129.0(zod@4.6.5))(@modelcontextprotocol/sdk@1.31.0(zod@4.6.5))
++        version: 0.73.0(patch_hash=wvw4m3xxjfiu27h5sav6rurgva)(@anthropic-ai/sdk@0.129.0(zod@4.6.5))(@modelcontextprotocol/sdk@1.31.0(zod@4.6.5))
+       '@anthropic-ai/sdk':
+         specifier: 0.129.0
+         version: 0.129.0(zod@4.6.5)
+@@ -514,7 +514,7 @@ importers:
+     dependencies:
+       '@agentclientprotocol/claude-agent-acp':
+         specifier: 0.73.0
+-        version: 0.73.0(patch_hash=xjlrz3rllh2ztafbdiywpfh2rq)(@anthropic-ai/sdk@0.129.0(zod@4.6.5))(@modelcontextprotocol/sdk@1.31.0(zod@4.6.5))
++        version: 0.73.0(patch_hash=wvw4m3xxjfiu27h5sav6rurgva)(@anthropic-ai/sdk@0.129.0(zod@4.6.5))(@modelcontextprotocol/sdk@1.31.0(zod@4.6.5))
+       '@agentclientprotocol/codex-acp':
+         specifier: 1.6.2
+         version: 1.6.2(patch_hash=2iynuypg76nxmydiylgtffhr7e)
+@@ -904,7 +904,7 @@ importers:
+         version: 0.5.0
+       '@agentclientprotocol/claude-agent-acp':
+         specifier: 0.73.0
+-        version: 0.73.0(patch_hash=xjlrz3rllh2ztafbdiywpfh2rq)(@anthropic-ai/sdk@0.129.0(zod@4.4.3))(@modelcontextprotocol/sdk@1.31.0(zod@4.4.3))
++        version: 0.73.0(patch_hash=wvw4m3xxjfiu27h5sav6rurgva)(@anthropic-ai/sdk@0.129.0(zod@4.4.3))(@modelcontextprotocol/sdk@1.31.0(zod@4.4.3))
+       '@agentclientprotocol/codex-acp':
+         specifier: 1.6.2
+         version: 1.6.2(patch_hash=2iynuypg76nxmydiylgtffhr7e)
+@@ -9401,7 +9401,7 @@ snapshots:
+ 
+   '@adobe/css-tools@4.5.0': {}
+ 
+-  '@agentclientprotocol/claude-agent-acp@0.73.0(patch_hash=xjlrz3rllh2ztafbdiywpfh2rq)(@anthropic-ai/sdk@0.129.0(zod@4.4.3))(@modelcontextprotocol/sdk@1.31.0(zod@4.4.3))':
++  '@agentclientprotocol/claude-agent-acp@0.73.0(patch_hash=wvw4m3xxjfiu27h5sav6rurgva)(@anthropic-ai/sdk@0.129.0(zod@4.4.3))(@modelcontextprotocol/sdk@1.31.0(zod@4.4.3))':
+     dependencies:
+       '@agentclientprotocol/sdk': 1.4.0(zod@4.4.3)
+       '@anthropic-ai/claude-agent-sdk': 0.3.286(@anthropic-ai/sdk@0.129.0(zod@4.4.3))(@modelcontextprotocol/sdk@1.31.0(zod@4.4.3))(zod@4.4.3)
+@@ -9410,7 +9410,7 @@ snapshots:
+       - '@anthropic-ai/sdk'
+       - '@modelcontextprotocol/sdk'
+ 
+-  '@agentclientprotocol/claude-agent-acp@0.73.0(patch_hash=xjlrz3rllh2ztafbdiywpfh2rq)(@anthropic-ai/sdk@0.129.0(zod@4.6.5))(@modelcontextprotocol/sdk@1.31.0(zod@4.6.5))':
++  '@agentclientprotocol/claude-agent-acp@0.73.0(patch_hash=wvw4m3xxjfiu27h5sav6rurgva)(@anthropic-ai/sdk@0.129.0(zod@4.6.5))(@modelcontextprotocol/sdk@1.31.0(zod@4.6.5))':
+     dependencies:
+       '@agentclientprotocol/sdk': 1.4.0(zod@4.4.3)
+       '@anthropic-ai/claude-agent-sdk': 0.3.286(@anthropic-ai/sdk@0.129.0(zod@4.6.5))(@modelcontextprotocol/sdk@1.31.0(zod@4.6.5))(zod@4.4.3)
