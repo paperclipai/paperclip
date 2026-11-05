@@ -5295,6 +5295,7 @@ impl CommandExecutor for CodexCommandExecutor {
                 .as_ref()
                 .is_some_and(|goal| goal.status == "active" || goal.working_now)
             || state.tool_bridge.pending_calls().next().is_some()
+            || !state.descendant_thread_ids.is_empty()
             || !state.pending_events.is_empty()
             || !state.queued_events.is_empty()
             || state.lifecycle == "reconciliation_required"
@@ -5316,6 +5317,8 @@ impl CommandExecutor for CodexCommandExecutor {
         // Tail draining can consume a late goal update before the executor
         // journal sees it. Check the live provider after that drain.
         if provider.has_active_goal()
+            || provider.has_known_descendants()
+            || provider.observed_completed_turn_authority() != provider.completed_turn_authority()
             || provider.completed_turn_authority()
                 != state
                     .completed_turn_process_generation

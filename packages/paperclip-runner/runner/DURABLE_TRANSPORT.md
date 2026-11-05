@@ -126,11 +126,14 @@ requires a completed turn. Suspended sessions use their usual recovery path.
 `CommandExecutor::host_park_ready` defaults to false. Native Codex opts in only
 for the existing process that completed the current turn. An eligibility check
 never selects or restores a provider. A restored process must complete its own
-authoritative turn before it can be eligible.
+authoritative turn before it can be eligible. Reconstructing an accepted finish
+during recovery preserves result delivery but does not qualify that process.
 ACPX remains ineligible in this slice, including after qualified recovery.
 Active turns, goals, startup attempts, tool calls, pending credentials, and
-unsettled events block parking. The bounded completed-turn tail drain retains
-late accounting and goal changes for durable state and normal event delivery.
+unsettled events block parking. Known helper threads also block it: their
+diagnostic lineage does not prove that their work finished. The bounded
+completed-turn tail drain retains late accounting and goal changes for durable
+state and normal event delivery.
 The check also inspects the live provider
 after that drain, so a late active-goal notification cannot be hidden by the
 older executor journal. This hook does not detach a controller, stop a process,

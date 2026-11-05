@@ -1786,6 +1786,17 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     )?;
                     continue;
                 }
+                if args.iter().any(|value| value == "--quiet-helper-turn") {
+                    send(json!({"method":"item/completed","params":{
+                        "threadId":state.thread_id,"turnId":provider_turn_id,
+                        "item":{"id":"spawn-quiet-helper","type":"collabAgentToolCall",
+                            "tool":"spawnAgent","status":"completed",
+                            "senderThreadId":state.thread_id,"receiverThreadIds":["descendant-0"]}
+                    }}))?;
+                    send(json!({"method":"turn/started","params":{
+                        "threadId":"descendant-0","turnId":"quiet-helper-turn"
+                    }}))?;
+                }
                 if descendant_notifications {
                     // Real Codex announces a child's MCP startup before its
                     // thread/started notification establishes parent lineage.
