@@ -122,6 +122,13 @@ function firstNonEmptyString(...values: unknown[]): string | undefined {
   return undefined;
 }
 
+function approvesAllToolCalls(config: Record<string, unknown>): boolean {
+  const permissionMode =
+    firstNonEmptyString(config.permissionMode, config.acpPermissionMode) ??
+    DEFAULT_ACP_ENGINE_PERMISSION_MODE;
+  return permissionMode === "approve-all" || permissionMode === "default";
+}
+
 export function buildClaudeAcpConfig(
   config: Record<string, unknown>,
   inheritedEnv: Record<string, unknown> = {},
@@ -271,9 +278,12 @@ async function prepareClaudeRemoteManagedHome(
 
   // Content-addressed sanitized seed (managed cache under the instance root, not
   // a temp dir — reused across runs, so no teardown cleanup).
+  const bypassPermissions = approvesAllToolCalls(input.config);
   const claudeConfigSeedDir = input.config.managedAiConnection
     ? explicitClaudeConfigDir
-    : await prepareClaudeConfigSeed(process.env, onLog, input.companyId);
+    : await prepareClaudeConfigSeed(process.env, onLog, input.companyId, {
+      permissionDefaultMode: bypassPermissions ? "bypassPermissions" : "default",
+    });
   // Ship the per-run skill bundle, staged only when the run selected at
   // least one skill. The bundle directory holds a plain copy of each
   // selected skill's files (`materializePaperclipSkillCopy` never copies a
@@ -316,6 +326,9 @@ async function prepareClaudeRemoteManagedHome(
   });
   // Repoint CLAUDE_CONFIG_DIR onto the in-sandbox config dir.
   env.CLAUDE_CONFIG_DIR = remoteClaudeConfigDir;
+  if (bypassPermissions && !input.config.managedAiConnection) {
+    Object.assign(env, claudeSandboxPermissionEnv({ dangerouslySkipPermissions: true, targetIsSandbox: true }));
+  }
   if (toolShellPrefixInstalled && remoteToolShellPrefixPath) {
     env.CLAUDE_CODE_SHELL_PREFIX = remoteToolShellPrefixPath;
   }
