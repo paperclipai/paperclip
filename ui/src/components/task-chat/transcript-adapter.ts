@@ -899,7 +899,16 @@ export function transcriptToTaskChatItems(
         const key = `provider:${providerActivityKey(entry)}`;
         const item = providerActivityItem(entry, runId, i);
         const existingIndex = protocolIndexByKey.get(key);
-        if (existingIndex == null) {
+        const previous = existingIndex == null ? undefined : items[existingIndex];
+        // A harness can reuse one hook id for two calls (for example two
+        // calls in the same second). Once a hook row has finished, a later
+        // record with that id is a new call: keep both rows, so a later pass
+        // can never hide an earlier block reason.
+        const newHookCall = entry.family === "hook"
+          && previous?.kind === "protocol"
+          && previous.surface === "provider_activity"
+          && previous.status !== "running";
+        if (existingIndex == null || newHookCall) {
           items.push(item);
           protocolIndexByKey.set(key, items.length - 1);
         } else {

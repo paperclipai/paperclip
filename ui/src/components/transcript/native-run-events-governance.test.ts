@@ -153,6 +153,18 @@ describe("governance activity", () => {
     });
   });
 
+  it("keeps two calls that share a hook id as two rows, so a later pass cannot hide a block", () => {
+    const blocked = { status: "blocked", outcome: "blocked", message: "Migrations are append-only." };
+    const rows = governance(items([
+      event(1, "hook.started", { schema: "paperclip.hook.v1", hookId: "same", event: "preToolUse", scope: "turn", status: "running", blocking: true, durationMs: null, summary: null, outcome: "running" }),
+      hook(2, { hookId: "same", ...blocked }),
+      event(3, "hook.started", { schema: "paperclip.hook.v1", hookId: "same", event: "preToolUse", scope: "turn", status: "running", blocking: true, durationMs: null, summary: null, outcome: "running" }),
+      hook(4, { hookId: "same" }),
+    ]));
+    expect(rows.map((row) => label(row).label)).toEqual(["PreToolUse hook blocked a tool call", "PreToolUse hook ran"]);
+    expect(label(rows[0]!).note).toBe("Migrations are append-only.");
+  });
+
   it("keeps a passing hook to one quiet line", () => {
     const [row] = governance(items([hook(1, {})]));
     expect(label(row!)).toEqual({ label: "PreToolUse hook ran", detail: "user hooks · 41 ms", tone: "neutral", note: undefined });

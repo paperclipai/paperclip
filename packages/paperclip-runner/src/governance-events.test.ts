@@ -85,6 +85,16 @@ describe("Codex hook events", () => {
     expect(outcome("hook/completed", { status: "failed", entries: [{ kind: "error", text: "op: command not found" }] })).toBe("failed");
   });
 
+  it("records a cancelled hook as a failure, never as a pass", () => {
+    const event = one("hook/completed", { threadId: "t", turnId: "turn-1", run: hookRun({ status: "cancelled" }) });
+    expect(event.payload).toMatchObject({ status: "cancelled", outcome: "failed", message: "The hook was cancelled." });
+  });
+
+  it("keys the same hook in different turns apart", () => {
+    const id = (turnId: string) => one("hook/completed", { threadId: "t", turnId, run: hookRun({}) }).payload.hookId;
+    expect(id("turn-1")).not.toBe(id("turn-2"));
+  });
+
   it("marks async hooks as non-blocking", () => {
     expect(one("hook/completed", { threadId: "t", turnId: null, run: hookRun({ executionMode: "async" }) }).payload.blocking).toBe(false);
   });

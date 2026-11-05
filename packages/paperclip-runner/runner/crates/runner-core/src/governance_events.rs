@@ -75,7 +75,7 @@ fn safe_id(value: &str, fallback: &str) -> String {
 /// Codex reuses `run.id` (`<event>:<order>:<config path>`) for every call of
 /// the same configured hook, and it embeds a host path. One invocation is a
 /// digest of that id plus the start time that started and completed share.
-fn codex_hook_run_id(run: &Value) -> String {
+fn codex_hook_run_id(run: &Value, turn_id: &str) -> String {
     let definition = match text(run.get("id")) {
         "" => format!(
             "{}:{}",
@@ -86,7 +86,7 @@ fn codex_hook_run_id(run: &Value) -> String {
         ),
         id => id.to_owned(),
     };
-    let digest = Sha256::digest(definition.as_bytes());
+    let digest = Sha256::digest(format!("{turn_id}|{definition}").as_bytes());
     let short: String = digest
         .iter()
         .take(8)
@@ -146,7 +146,7 @@ pub(crate) fn codex_hook_payload(method: &str, params: &Value) -> Value {
         }
     };
     let status = match raw_status {
-        "running" | "failed" | "blocked" | "stopped" => raw_status,
+        "running" | "failed" | "blocked" | "stopped" | "cancelled" => raw_status,
         _ => "completed",
     };
     let entries: Vec<(String, String)> = run
@@ -170,6 +170,7 @@ pub(crate) fn codex_hook_payload(method: &str, params: &Value) -> Value {
     let outcome = match status {
         "running" => "running",
         "blocked" | "stopped" | "failed" => status,
+        "cancelled" => "failed",
         _ if has("feedback") => "feedback",
         _ if has("context") => "context",
         _ => "passed",
@@ -186,7 +187,7 @@ pub(crate) fn codex_hook_payload(method: &str, params: &Value) -> Value {
     };
     json!({
         "schema": "paperclip.hook.v1",
-        "hookId": codex_hook_run_id(run),
+        "hookId": codex_hook_run_id(run, text(params.get("turnId"))),
         "event": clip(match text(run.get("eventName")) { "" => "unknown", name => name }, NAME_CHARS),
         "scope": clip(match text(run.get("scope")) { "" => "provider", scope => scope }, NAME_CHARS),
         "status": status,
@@ -197,7 +198,10 @@ pub(crate) fn codex_hook_payload(method: &str, params: &Value) -> Value {
         "outcome": outcome,
         "message": match message {
             Some(message) => Value::String(clip(message, MESSAGE_CHARS)),
-            None => nullable_clip(run.get("statusMessage"), MESSAGE_CHARS),
+            None => match nullable_clip(run.get("statusMessage"), MESSAGE_CHARS) {
+                Value::Null if status == "cancelled" => Value::String("The hook was cancelled.".to_owned()),
+                value => value,
+            },
         },
         "source": hook_source(run.get("sourcePath"), run.get("source")),
         "toolName": Value::Null,
@@ -412,6 +416,21 @@ mod tests {
         assert_ne!(first["hookId"], second["hookId"]);
         assert_eq!(second["hookId"], started["hookId"]);
         assert_eq!(started["outcome"], "running");
+    }
+
+    #[test]
+    fn records_a_cancelled_hook_as_failed_and_keys_turns_apart() {
+        let cancelled =
+            codex_hook_payload("hook/completed", &hook_run(json!({"status": "cancelled"})));
+        assert_eq!(cancelled["status"], "cancelled");
+        assert_eq!(cancelled["outcome"], "failed");
+        assert_eq!(cancelled["message"], "The hook was cancelled.");
+        let mut other_turn = hook_run(json!({}));
+        other_turn["turnId"] = json!("turn-2");
+        assert_ne!(
+            codex_hook_payload("hook/completed", &hook_run(json!({})))["hookId"],
+            codex_hook_payload("hook/completed", &other_turn)["hookId"]
+        );
     }
 
     #[test]

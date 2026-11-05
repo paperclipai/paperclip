@@ -957,7 +957,7 @@ export function canonicalProviderEventsFromCodex(
     ];
   }
   if (method === "hook/started" || method === "hook/completed") {
-    const payload = codexHookPayload(method, params.run);
+    const payload = codexHookPayload(method, params.run, text(params.turnId));
     return [
       {
         eventType:

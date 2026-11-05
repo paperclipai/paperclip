@@ -101,8 +101,8 @@ function firstEntry(entries: HookEntry[], kinds: string[]): string | undefined {
  * the same configured hook, and it embeds a host path. Key one invocation by
  * a digest of that id plus its start time, which started and completed share.
  */
-function codexHookRunId(run: Record<string, unknown>): string {
-  const definition = text(run.id) || `${text(run.eventName)}:${String(run.displayOrder ?? "")}`;
+function codexHookRunId(run: Record<string, unknown>, turnId: string): string {
+  const definition = `${turnId}|${text(run.id) || `${text(run.eventName)}:${String(run.displayOrder ?? "")}`}`;
   const digest = createHash("sha256").update(definition).digest("hex").slice(0, 16);
   const startedAt = nonNegativeInteger(run.startedAt);
   return `hook-${digest}${startedAt != null ? `-${startedAt}` : ""}`;
@@ -115,13 +115,13 @@ function unwrapShellCommand(command: string): string {
 }
 
 /** Codex `hook/started` and `hook/completed` (HookRunSummary in `params.run`). */
-export function codexHookPayload(method: string, runValue: unknown): Record<string, unknown> {
+export function codexHookPayload(method: string, runValue: unknown, turnId = ""): Record<string, unknown> {
   const run = record(runValue);
   const started = method === "hook/started";
   const rawStatus = started ? "running" : text(run.status) || "completed";
   const entries = hookEntries(run.entries);
   const status: HookStatus =
-    rawStatus === "running" || rawStatus === "failed" || rawStatus === "blocked" || rawStatus === "stopped"
+    rawStatus === "running" || rawStatus === "failed" || rawStatus === "blocked" || rawStatus === "stopped" || rawStatus === "cancelled"
       ? rawStatus
       : "completed";
   const outcome: HookOutcome =
@@ -129,6 +129,8 @@ export function codexHookPayload(method: string, runValue: unknown): Record<stri
       ? "running"
       : status === "blocked" || status === "stopped" || status === "failed"
         ? status
+        : status === "cancelled"
+          ? "failed"
         : entries.some((entry) => entry.kind === "feedback")
           ? "feedback"
           : entries.some((entry) => entry.kind === "context")
@@ -146,7 +148,7 @@ export function codexHookPayload(method: string, runValue: unknown): Record<stri
             : firstEntry(entries, ["warning"]);
   return {
     schema: "paperclip.hook.v1",
-    hookId: codexHookRunId(run),
+    hookId: codexHookRunId(run, turnId),
     event: clip(text(run.eventName) || "unknown", NAME_LIMIT),
     scope: clip(text(run.scope) || "provider", NAME_LIMIT),
     status,
@@ -155,7 +157,9 @@ export function codexHookPayload(method: string, runValue: unknown): Record<stri
     durationMs: nonNegativeInteger(run.durationMs),
     summary: nullableClip(run.statusMessage, MESSAGE_LIMIT),
     outcome,
-    message: message ? clip(message, MESSAGE_LIMIT) : nullableClip(run.statusMessage, MESSAGE_LIMIT),
+    message: message
+      ? clip(message, MESSAGE_LIMIT)
+      : nullableClip(run.statusMessage, MESSAGE_LIMIT) ?? (status === "cancelled" ? "The hook was cancelled." : null),
     source: hookSource(run.sourcePath, run.source),
     toolName: null,
   };
