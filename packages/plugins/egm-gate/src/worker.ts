@@ -11,8 +11,12 @@ import { JOB_KEY_SWEEP, TOOL_KEY_LEVEL } from "./manifest.js";
 const PLUGIN_NAME = "egm-gate";
 /** Ventana del barrido: solo issues cerradas hace poco (el cierre viejo ya no se toca). */
 const SWEEP_WINDOW_MS = 1000 * 60 * 60 * 3;
-/** Tope de issues revisadas por barrido, para no cargar la API. */
-const SWEEP_LIMIT = 100;
+/** Paginacion del barrido: se avanza hasta salir de la ventana, no solo la 1ª pagina. */
+const SWEEP_PAGE = 100;
+/** Techo de issues por compania en un barrido (6 paginas de 100). */
+const SWEEP_MAX_ISSUES = 600;
+/** Techo de companias recorridas por barrido. */
+const SWEEP_MAX_COMPANIES = 200;
 const MAX_COMMENTS_PER_ISSUE = 3;
 /** El registro por issue vive en su propia clave de state: dos issues no se pisan. */
 const stateKeyFor = (issueId: string) => `gate:issue:${issueId}`;
@@ -303,20 +307,34 @@ const plugin = definePlugin({
     //    (por ejemplo, si una lectura fallo en el momento del cierre).
     ctx.jobs.register(JOB_KEY_SWEEP, async () => {
       try {
-        // El job no viene con company: el barrido recorre las companias
-        // visibles para el plugin.
-        const companies = await ctx.companies.list({ limit: 20 });
+        // El job no viene con company: el barrido recorre las companias visibles.
+        // Se PAGINA companies e issues. El host ordena las issues por prioridad y
+        // despues por recencia, asi que leer solo la primera pagina dejaria fuera
+        // un cierre nuevo de baja prioridad detras de 100 cierres viejos de alta.
         const cutoff = Date.now() - SWEEP_WINDOW_MS;
         let checked = 0;
-        for (const company of companies) {
-          const companyId = String(company.id);
-          const list = await ctx.issues.list({ companyId, status: "done", limit: SWEEP_LIMIT });
-          for (const issue of list) {
-            const updatedAt = Date.parse(String((issue as { updatedAt?: unknown }).updatedAt ?? ""));
-            if (!Number.isFinite(updatedAt) || updatedAt < cutoff) continue;
-            checked++;
-            await runGate(ctx, issue.id, companyId);
+        for (let companyOffset = 0; companyOffset < SWEEP_MAX_COMPANIES; companyOffset += SWEEP_PAGE) {
+          const companies = await ctx.companies.list({ limit: SWEEP_PAGE, offset: companyOffset });
+          if (companies.length === 0) break;
+          for (const company of companies) {
+            const companyId = String(company.id);
+            // Dentro de la compania se avanza hasta salir de la ventana de tiempo.
+            for (let offset = 0; offset < SWEEP_MAX_ISSUES; offset += SWEEP_PAGE) {
+              const list = await ctx.issues.list({ companyId, status: "done", limit: SWEEP_PAGE, offset });
+              if (list.length === 0) break;
+              let sawRecent = false;
+              for (const issue of list) {
+                const updatedAt = Date.parse(String((issue as { updatedAt?: unknown }).updatedAt ?? ""));
+                if (!Number.isFinite(updatedAt) || updatedAt < cutoff) continue;
+                sawRecent = true;
+                checked++;
+                await runGate(ctx, issue.id, companyId);
+              }
+              // Toda la pagina es vieja: mas alla no hay nada que revisar.
+              if (!sawRecent || list.length < SWEEP_PAGE) break;
+            }
           }
+          if (companies.length < SWEEP_PAGE) break;
         }
         ctx.logger.info("gate: barrido de cierres", { checked, windowHours: SWEEP_WINDOW_MS / 3600000 });
       } catch (error) {
