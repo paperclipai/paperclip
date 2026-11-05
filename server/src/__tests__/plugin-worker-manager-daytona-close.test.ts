@@ -1,10 +1,9 @@
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { build } from "esbuild";
 import { expect, it } from "vitest";
-import manifest from "../../../packages/plugins/sandbox-providers/daytona/src/manifest.js";
 import { createPluginWorkerManager } from "../services/plugin-worker-manager.js";
 
 const repoRoot = fileURLToPath(new URL("../../..", import.meta.url));
@@ -19,8 +18,9 @@ it.each(["release", "cancel", "stop", "destroy", "resume", "stalled-close"] as c
   try {
     await writeFile(savedFile, "saved work remains intact", { mode: 0o600 });
     await build({
-      entryPoints: [path.join(providerRoot, "src/worker.ts")],
-      outfile: workerFile,
+      entryPoints: { worker: path.join(providerRoot, "src/worker.ts"), manifest: path.join(providerRoot, "src/manifest.ts") },
+      outdir: root,
+      outExtension: { ".js": ".mjs" },
       platform: "node",
       format: "esm",
       target: "node24",
@@ -33,6 +33,7 @@ it.each(["release", "cancel", "stop", "destroy", "resume", "stalled-close"] as c
       },
       banner: { js: 'import { createRequire } from "node:module"; const require = createRequire(import.meta.url);' },
     });
+    const { default: manifest } = await import(pathToFileURL(path.join(root, "manifest.mjs")).href);
     const worker = await manager.startWorker(pluginId, {
       entrypointPath: workerFile,
       manifest,
