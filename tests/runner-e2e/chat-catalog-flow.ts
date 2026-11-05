@@ -68,16 +68,17 @@ export async function runChatCatalogFlow(context: ChatCatalogContext) {
       ? implementation!.expectedHumanQuestionAnswer?.(observation) : undefined;
     let questionAnswer: ReturnType<typeof verifyChatCatalogHumanQuestionAnswer>;
     if (expectedAnswer && evidence.issue && canonicalHuman) {
-      const [interactions, activity, companySecrets] = await Promise.all([
+      const [interactions, activity, companySecrets, personalSecrets] = await Promise.all([
         input.api.get<AskUserQuestionsInteraction[]>(`/api/issues/${evidence.issue.id}/interactions`),
         input.api.get<ChatCatalogHumanQuestionAudit[]>(`/api/issues/${evidence.issue.id}/activity`),
-        expectedAnswer.companySavedSecretNameAnswer ? input.api.get<NonNullable<Parameters<typeof verifyChatCatalogHumanQuestionAnswer>[0]["companySecrets"]>>(`/api/companies/${input.fixtures.company.id}/secrets`) : undefined,
+        expectedAnswer.personalSecretConfirmation ? undefined : expectedAnswer.companySavedSecretNameAnswer ? input.api.get<NonNullable<Parameters<typeof verifyChatCatalogHumanQuestionAnswer>[0]["companySecrets"]>>(`/api/companies/${input.fixtures.company.id}/secrets`) : undefined,
+        expectedAnswer.personalSecretConfirmation ? input.api.get<NonNullable<Parameters<typeof verifyChatCatalogHumanQuestionAnswer>[0]["personalSecrets"]>>(`/api/companies/${input.fixtures.company.id}/me/user-secrets`) : undefined,
       ]);
       questionAnswer = verifyChatCatalogHumanQuestionAnswer({ expected: expectedAnswer, companyId: input.fixtures.company.id,
         issueId: evidence.issue.id, agentId: input.fixtures.agent.id, canonicalComment: canonicalHuman,
-        interactions, activity, companySecrets, runs: evidence.runs });
+        interactions, activity, companySecrets, personalSecrets, runs: evidence.runs });
     }
-    const humanAccounting = { basis: expectedAnswer ? "comments_and_declared_credential_question_answer" : "comments", rawHumanCommentCount: human.length, verifiedHumanQuestionAnswerCount: questionAnswer ? 1 : 0,
+    const humanAccounting = { basis: expectedAnswer?.personalSecretConfirmation ? "comments_and_declared_personal_secure_confirmation" : expectedAnswer ? "comments_and_declared_credential_question_answer" : "comments", rawHumanCommentCount: human.length, verifiedHumanQuestionAnswerCount: questionAnswer ? 1 : 0,
       accountedHumanActionCount: human.length + (questionAnswer ? 1 : 0), declaredHumanActionCount: implementation!.expectedHumanMessageCount ?? 1,
       questionAnswer: questionAnswer ?? null, expectedQuestionAnswerVerified: expectedAnswer ? !!questionAnswer : null };
 
