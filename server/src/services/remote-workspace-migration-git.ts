@@ -43,7 +43,7 @@ async function git(cwd: string, args: string[]) {
 
 async function assertNoRetainedWorktree(sourcePath: string, expected: string, branch: string) {
   const target = await physicalPath(expected);
-  const common = await git(sourcePath, ["rev-parse", "--path-format=absolute", "--git-common-dir"]);
+  const common = path.join(sourcePath, ".git");
   const admin = path.join(common, "worktrees");
   const entries = await fs.readdir(admin, { withFileTypes: true }).catch((error: NodeJS.ErrnoException) => {
     if (error.code === "ENOENT") return [];
@@ -118,6 +118,7 @@ export async function inspectArchivedGitMigrationSource(db: Pick<Db, "select">, 
     // not certify lost untracked files. Any surviving worktree registration
     // can retain additional index/files authority and must stay blocked.
     if (workspace.mode !== "isolated_workspace" || !workspace.projectId || !managedSourcePaths(workspace).includes(sourcePath)) return null;
+    await assertNoRetainedWorktree(sourcePath, path.join(sourcePath, ".paperclip", "worktrees", workspace.branchName), workspace.branchName);
     await git(sourcePath, ["check-ref-format", `refs/heads/${workspace.branchName}`]);
     const expected = path.join(sourcePath, ".paperclip", "worktrees", workspace.branchName);
     if (workspace.cwd !== expected || workspace.providerRef && workspace.providerRef !== expected) return null;
@@ -147,7 +148,6 @@ export async function inspectArchivedGitMigrationSource(db: Pick<Db, "select">, 
       ne(executionWorkspaces.id, workspace.id),
     )).limit(1);
     if (other) throw unavailable();
-    await assertNoRetainedWorktree(sourcePath, expected, workspace.branchName);
     const commit = await git(sourcePath, ["rev-parse", "--verify", `refs/heads/${workspace.branchName}^{commit}`]);
     if (!/^[a-f0-9]{40}$/.test(commit)) throw unavailable();
     return { commit, sourcePath, cleanupOperationId: removalId, recipe: null, retainedBranch: workspace.branchName };

@@ -597,6 +597,7 @@ describe.skipIf(!support.supported)("remote workspace migration", () => {
     if (mode === "orphan-index") {
       const admin = path.join(f.base, ".git", "worktrees", "orphan");
       await fs.mkdir(admin, { recursive: true }); await fs.copyFile(path.join(f.base, ".git", "index"), path.join(admin, "index"));
+      await fs.writeFile(path.join(admin, "locked"), "retained staged recovery work\n");
     }
     if (mode === "changed-branch") {
       const put = storage.putFile.bind(storage);
