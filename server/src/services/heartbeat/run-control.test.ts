@@ -808,6 +808,46 @@ describe.skipIf(!runControlPostgresSupport.supported)("heartbeat run-control dat
     return { run, control };
   }
 
+  it.each(["matching", "missing", "different"] as const)("routes Stop through the appropriate process owner (signal=%s)", async (signalKind) => {
+    const { run, control } = await ownedAdapterRun();
+    const deps = callbacks(db);
+    const signalManagedCancellation = signalKind === "matching";
+    runningProcesses.set(run.id, {
+      child: { pid: 424242 } as never, graceSec: 4, processGroupId: null,
+      cancellationSignal: signalManagedCancellation ? control.controller.signal : signalKind === "different" ? new AbortController().signal : undefined,
+    });
+    vi.mocked(waitForAdapterStop).mockImplementationOnce(async () => {
+      expect(control.controller.signal.aborted).toBe(true);
+      if (signalManagedCancellation) {
+        expect(runningProcesses.has(run.id)).toBe(true);
+        expect(terminateLocalService).not.toHaveBeenCalled();
+      } else {
+        expect(terminateLocalService).toHaveBeenCalledOnce();
+      }
+      await db.update(heartbeatRuns).set({ status: "cancelled", resultJson: {
+        executionCancellation: { state: "acknowledged" },
+      } }).where(eq(heartbeatRuns.id, run.id));
+      control.finish();
+    });
+    try {
+      expect(await createHeartbeatRunControl(db, deps).cancelRunInternal(run.id)).toMatchObject({ status: "cancelled" });
+      expect(terminateLocalService).toHaveBeenCalledTimes(signalManagedCancellation ? 0 : 1);
+    } finally {
+      control.finish();
+      adapterExecutionControls.delete(run.id);
+    }
+  });
+
+  it("uses the ordinary process stop when a signal-managed process has no adapter control", async () => {
+    const { company, agent } = await fixture();
+    const run = await liveRun(company.id, agent.id);
+    const running = runningProcesses.get(run.id)!;
+    running.cancellationSignal = new AbortController().signal;
+    const deps = callbacks(db);
+    expect(await createHeartbeatRunControl(db, deps).cancelRunInternal(run.id)).toMatchObject({ status: "cancelled" });
+    expect(terminateLocalService).toHaveBeenCalledOnce();
+  });
+
   it("answers an owned adapter Stop that is still settling with a pending conflict", async () => {
     const { run, control } = await ownedAdapterRun();
     const deps = callbacks(db);

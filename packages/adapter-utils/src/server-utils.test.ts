@@ -750,20 +750,28 @@ describe("runChildProcess", () => {
     "stops and settles a running Windows job when its cancellation signal fires",
     async () => {
       const controller = new AbortController();
-      const result = await runChildProcess(randomUUID(), process.execPath, ["-e", [
+      const runId = randomUUID();
+      let signalManaged = false;
+      const result = await runChildProcess(runId, process.execPath, ["-e", [
         "const { spawn } = require('node:child_process');",
         "const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });",
         "process.stdout.write(`descendant:${child.pid}\\n`);",
         "setInterval(() => {}, 1000);",
       ].join(' ')], {
         cwd: process.cwd(), env: {}, timeoutSec: 15, graceSec: 3,
-        onLog: async (_stream, chunk) => { if (chunk.includes('descendant:')) controller.abort(); },
+        onLog: async (_stream, chunk) => {
+          if (chunk.includes('descendant:')) {
+            signalManaged = runningProcesses.get(runId)?.cancellationSignal === controller.signal;
+            controller.abort();
+          }
+        },
         signal: controller.signal,
         terminalResultCleanup: { windowsProcessTreeGuard: true, hasTerminalResult: () => false },
       });
       const pid = Number.parseInt(result.stdout.match(/descendant:(\d+)/)?.[1] ?? "", 10);
       try {
         expect(pid).toBeGreaterThan(0);
+        expect(signalManaged).toBe(true);
         expect(result.processTreeStopped).toBe(true);
         expect(await waitForPidExit(pid, 2_000)).toBe(true);
       } finally {

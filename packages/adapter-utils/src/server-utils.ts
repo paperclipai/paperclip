@@ -94,6 +94,7 @@ interface RunningProcess {
   child: ChildProcess;
   graceSec: number;
   processGroupId: number | null;
+  cancellationSignal?: AbortSignal;
 }
 
 interface SpawnTarget {
@@ -4820,6 +4821,7 @@ export async function runChildProcess(
           child,
           graceSec: opts.graceSec,
           processGroupId,
+          cancellationSignal: job ? opts.signal : undefined,
         });
 
         let timedOut = false;
