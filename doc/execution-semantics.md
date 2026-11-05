@@ -2154,6 +2154,23 @@ is the current review participant. Before the receipt, the hold prevents a secon
 executor on the workspace. A snapshot-only save does not release the hold,
 because the task workspace does not contain the saved files.
 
+A Stop or reassignment can reach a native run while its provider session is
+still opening. The startup owner then fences the late handle before any prompt,
+and the Stop acknowledgement records `nativeCancellation.beforeProviderTurn`.
+A reattached provider from restart recovery never gets this proof. When the run
+also has no runner event outside the startup lifecycle (harness, session, workspace,
+runtime phase, credential refresh), no turn or provider event, and
+no native result, no provider outcome
+is unknown. The completed copyback receipt then releases the hold for the stopped
+run's own agent as well, so the user's redirect continues once. The hold row and
+its evidence are unchanged.
+
+A queued turn for the same task that never started is not a workspace writer for
+automatic recovery. The hold gates its dispatch until the recovery receipt is
+complete, so recovery and that turn cannot both wait for each other. Running
+turns, and queued turns for other tasks that share the workspace, still block
+recovery.
+
 The deadline is a backstop, not the normal failure path. When native task
 preparation fails after a fresh controller claim and before any provider turn,
 the controller stops renewal and releases only that exact claim. Ordinary

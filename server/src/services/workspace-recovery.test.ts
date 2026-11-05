@@ -3619,6 +3619,116 @@ describe("automatic retained workspace recovery", () => {
     expect(await getExecutionBlocker(db, f.companyId, f.issueId)).toMatchObject({ runId: f.runId, workspaceRepairRequired: false });
   }, 30_000);
 
+  // Shape of a Stop or reassignment that reached a remote native run while its
+  // provider session was still opening: the startup owner fenced the handle, the
+  // run settled cancelled with a file-preservation hold, and the follow-up turn
+  // (the redirect comment, or the new owner's wake) was already queued.
+  async function stopBeforeSessionOpen(f: Awaited<ReturnType<typeof seed>>, options: { errorCode: string; proof?: boolean }) {
+    const nativeCancellation = { schema: "paperclip.native-cancellation.v1", runId: f.runId, companyId: f.companyId,
+      issueId: f.issueId, scope: "run", reasonCode: "cancellation_run_only", dispatchState: "acknowledged", dispatched: true,
+      intentAuditId: randomUUID(), acknowledgementAuditId: randomUUID(), acknowledgedAt: new Date().toISOString(),
+      ...(options.proof === false ? {} : { beforeProviderTurn: true }) };
+    const stopped = await run(f.runId);
+    await db.update(heartbeatRuns).set({ status: "cancelled", errorCode: options.errorCode, finishedAt: new Date(),
+      resultJson: { ...stopped.resultJson, nativeCancellation, startupCancellation: { errorCode: options.errorCode, beforeNativeSelection: false } },
+    }).where(eq(heartbeatRuns.id, f.runId));
+    const held = await action(f.actionId);
+    await db.update(issueRecoveryActions).set({ status: "resolved", outcome: "blocked", resolvedAt: new Date(),
+      fingerprint: `native-workspace:${f.runId}`, evidence: { ...held.evidence, continuationDelivery: "invalidated",
+        automaticRecovery: { policy: "preserve_without_replay_v1", runId: f.runId, replay: "blocked", actionOutcome: "unknown" } },
+    }).where(eq(issueRecoveryActions.id, f.actionId));
+    await db.update(issues).set({ status: "in_progress" }).where(eq(issues.id, f.issueId));
+  }
+  const queueFollowUp = async (f: Awaited<ReturnType<typeof seed>>, agentId: string) =>
+    (await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId, runtimeMode: "legacy", status: "queued",
+      invocationSource: "on_demand", contextSnapshot: { issueId: f.issueId, wakeReason: "issue_commented" } }).returning())[0]!;
+  const pendingTurns = (f: Awaited<ReturnType<typeof seed>>) => db.select().from(heartbeatRuns).where(and(
+    eq(heartbeatRuns.companyId, f.companyId), inArray(heartbeatRuns.status, ["queued", "scheduled_retry", "running"])));
+
+  it("continues the same agent's redirect once after a Stop that landed before the provider session opened", async () => {
+    const f = await seed();
+    const agentId = (await run(f.runId)).agentId;
+    await stopBeforeSessionOpen(f, { errorCode: "cancelled" });
+    // Startup lifecycle from the runner opens no turn and is not provider work.
+    for (const [seq, eventType] of ["harness.starting", "harness.ready", "workspace.ready", "runtime.phase.changed",
+      "session.starting", "session.started", "session.updated", "auth.credentials.updated"].entries()) await db.insert(heartbeatRunEvents).values({
+      companyId: f.companyId, runId: f.runId, agentId, seq: 9_000 + seq, eventType, stream: "system", level: "info",
+      message: eventType, sourceEventId: randomUUID() });
+    const followUp = await queueFollowUp(f, agentId);
+    // No executor may touch the workspace while its files are unrecovered.
+    expect(await getExecutionBlocker(db, f.companyId, f.issueId)).toMatchObject({ runId: f.runId, workspaceRepairRequired: true });
+    // The queued follow-up never started and is gated by this hold, so it is not
+    // a workspace writer. Recovery must not wait for it.
+    await recoverRetainedWorkspace(f.input);
+    expect(readSystemRecovery((await action(f.actionId)).evidence)).toMatchObject({ state: "complete" });
+    expect(await hasVerifiedWorkspaceRepair(db, await run(f.runId))).toBe(true);
+    // No provider turn ran, so no outcome is unknown: the same agent continues.
+    expect(await getExecutionBlocker(db, f.companyId, f.issueId)).toBeNull();
+    // Exactly once: the queued follow-up is the only turn, and a sweep adds none.
+    await heartbeatService(db).reconcileStrandedAssignedIssues({ companyId: f.companyId, issueId: f.issueId });
+    expect((await pendingTurns(f)).map(item => item.id)).toEqual([followUp.id]);
+    // The audit row keeps its no-replay evidence.
+    expect(await action(f.actionId)).toMatchObject({ status: "resolved", outcome: "blocked",
+      evidence: { automaticRecovery: { replay: "blocked" } } });
+  }, 30_000);
+
+  it("hands a task reassigned before the provider session opened to its new owner once", async () => {
+    const f = await seed();
+    await stopBeforeSessionOpen(f, { errorCode: "issue_reassigned" });
+    const newOwnerId = randomUUID();
+    await db.insert(agents).values({ id: newOwnerId, companyId: f.companyId, name: "Reviewer", adapterType: "paperclip_runner",
+      status: "idle", runtimeConfig: { heartbeat: { maxConcurrentRuns: 1 } } });
+    await db.update(issues).set({ assigneeAgentId: newOwnerId }).where(eq(issues.id, f.issueId));
+    const handoff = await queueFollowUp(f, newOwnerId);
+    expect(await getExecutionBlocker(db, f.companyId, f.issueId)).toMatchObject({ runId: f.runId, workspaceRepairRequired: true });
+    await recoverRetainedWorkspace(f.input);
+    expect(readSystemRecovery((await action(f.actionId)).evidence)).toMatchObject({ state: "complete" });
+    expect(await getExecutionBlocker(db, f.companyId, f.issueId)).toBeNull();
+    await heartbeatService(db).reconcileStrandedAssignedIssues({ companyId: f.companyId, issueId: f.issueId });
+    expect((await pendingTurns(f)).map(item => item.id)).toEqual([handoff.id]);
+  }, 30_000);
+
+  it.each(["no-proof", "turn-event", "provider-event", "unlisted-provider-event", "running-writer", "other-task-writer",
+    "unscoped-queued-writer", "non-gating-hold"] as const)
+  ("keeps the stopped agent held when provider work cannot be excluded (%s)", async kind => {
+    const f = await seed();
+    const agentId = (await run(f.runId)).agentId;
+    await stopBeforeSessionOpen(f, { errorCode: "cancelled", proof: kind !== "no-proof" });
+    if (kind === "turn-event") await appendHeartbeatRunEvent(db, { companyId: f.companyId, runId: f.runId, agentId,
+      eventType: "turn.started", stream: "system", level: "info", message: "turn started" });
+    if (kind === "provider-event") await db.insert(heartbeatRunEvents).values({ companyId: f.companyId, runId: f.runId, agentId,
+      seq: 9_999, eventType: "item.completed", stream: "system", level: "info", message: "provider item", sourceEventId: randomUUID() });
+    // A runner family outside the startup lifecycle counts as work even when unlisted.
+    if (kind === "unlisted-provider-event") await db.insert(heartbeatRunEvents).values({ companyId: f.companyId, runId: f.runId,
+      agentId, seq: 9_999, eventType: "delegation.completed", stream: "system", level: "info", message: "delegated",
+      sourceEventId: randomUUID() });
+    if (kind === "running-writer" || kind === "other-task-writer" || kind === "unscoped-queued-writer") {
+      // A started turn, or a queued one that this task's dispatch gate does not cover, is a real writer.
+      await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId, runtimeMode: "legacy",
+        status: kind === "running-writer" ? "running" : "queued",
+        ...(kind === "unscoped-queued-writer" ? { issueId: f.issueId } : {}),
+        contextSnapshot: kind === "running-writer" ? { issueId: f.issueId }
+          : kind === "other-task-writer" ? { issueId: randomUUID(), executionWorkspaceId: f.issueId } : {} });
+      await expect(recoverySources.inspectWorkspaceRecoverySource(db, f)).rejects.toMatchObject({ code: "workspace_writer_active" });
+      return;
+    }
+    if (kind === "non-gating-hold") {
+      // A resolved action without a no-replay hold does not gate dispatch, so a
+      // queued turn for the task can start and must still count as a writer.
+      const held = await action(f.actionId);
+      await db.update(issueRecoveryActions).set({ evidence: { ...held.evidence,
+        automaticRecovery: { policy: "preserve_without_replay_v1", runId: f.runId, replay: "allowed" } } })
+        .where(eq(issueRecoveryActions.id, f.actionId));
+      await queueFollowUp(f, agentId);
+      await expect(recoverySources.inspectWorkspaceRecoverySource(db, f)).rejects.toMatchObject({ code: "workspace_writer_active" });
+      return;
+    }
+    await queueFollowUp(f, agentId);
+    await recoverRetainedWorkspace(f.input);
+    expect(await hasVerifiedWorkspaceRepair(db, await run(f.runId))).toBe(true);
+    expect(await getExecutionBlocker(db, f.companyId, f.issueId)).toMatchObject({ recoveryActionId: f.actionId, runId: f.runId });
+  }, 30_000);
+
   it("keeps a snapshot-only recovery held for a new assignee because the task workspace lacks the saved files", async () => {
     const f = await seed("native", false);
     await db.update(heartbeatRuns).set({ status: "cancelled", errorCode: "issue_reassigned" }).where(eq(heartbeatRuns.id, f.runId));
