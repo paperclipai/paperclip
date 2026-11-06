@@ -939,7 +939,7 @@ Wake snapshots and handoff excerpts are copies of these sources; prior run
 output, agent instructions and content an agent fetches through tools are not
 part of the set.
 
-Migration `0432` adds triggers that run in the statement of every source write,
+Migration `0438` adds triggers that run in the statement of every source write,
 whatever service, route, tool, import or direct SQL performs it:
 
 - `issues.context_reference_revision` advances once per changed source. Edits to

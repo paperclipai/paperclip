@@ -15,6 +15,7 @@ import {
   parseRoutineMentionHref,
   parseSkillMentionHref,
   parseUserMentionHref,
+  scanProjectMentions,
 } from "./project-mentions.js";
 
 describe("project-mentions", () => {
@@ -59,5 +60,17 @@ describe("project-mentions", () => {
       routineId: "routine-123",
     });
     expect(extractRoutineMentionIds(`[/routine:Weekly review](${href})`)).toEqual(["routine-123"]);
+  });
+
+  it("counts every project link target that is not a well-formed project UUID link", () => {
+    const id = "6f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b";
+    const valid = `[A](project://${id.toUpperCase()}?c=fff) [again](${buildProjectMentionHref(id)})`;
+    expect(scanProjectMentions(valid)).toEqual({ projectIds: [id], malformed: 0 });
+    for (const target of ["project://", "project:// ", ` project://${id}`, `project://${id} "title"`, "project://nope",
+      `PROJECT://${id}`, `project://${id}/extra`]) {
+      expect(scanProjectMentions(`${valid} [broken](${target})`)).toEqual({ projectIds: [id], malformed: 1 });
+    }
+    expect(scanProjectMentions(`[unclosed](project://${id}`)).toEqual({ projectIds: [], malformed: 1 });
+    expect(scanProjectMentions(`plain project://${id} text`)).toEqual({ projectIds: [], malformed: 0 });
   });
 });
