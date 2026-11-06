@@ -1010,6 +1010,72 @@ describe("claude_local ACP lane", () => {
     },
   );
 
+  it.each([
+    { name: "a host edit during the run", editHost: true },
+    { name: "an agent edit in the sandbox", editHost: false },
+  ])("keeps $name to the workspace Claude settings and never copies bypassPermissions home", async ({ editHost }) => {
+    const root = await makeTempRoot("paperclip-claude-acp-local-settings-");
+    const localCwd = path.join(root, "worktree");
+    const remoteCwd = path.join(root, "remote-workspace");
+    await fs.mkdir(localCwd, { recursive: true });
+    await fs.mkdir(remoteCwd, { recursive: true });
+    process.env.PAPERCLIP_HOME = path.join(root, "paperclip-home");
+    process.env.PAPERCLIP_INSTANCE_ID = "test";
+    process.env.CLAUDE_CONFIG_DIR = path.join(root, "shared-claude-config");
+
+    const hostSettingsPath = path.join(localCwd, ".claude", "settings.local.json");
+    const runtime = new FakeRuntime({});
+    const startTurn = runtime.startTurn.bind(runtime);
+    runtime.startTurn = (turnInput) => {
+      const turn = startTurn(turnInput);
+      return {
+        ...turn,
+        result: (async () => {
+          const target = editHost
+            ? hostSettingsPath
+            : path.join(turnInput.handle.cwd ?? remoteCwd, ".claude", "settings.local.json");
+          const current = JSON.parse(await fs.readFile(target, "utf8"));
+          await fs.writeFile(target, JSON.stringify({ ...current, theme: "edited" }), "utf8");
+          return await turn.result;
+        })(),
+      };
+    };
+    const execute = createClaudeAcpExecutor({
+      createRuntime: (options: FakeRuntimeOptions) => {
+        Object.assign(runtime.options, options);
+        return runtime as never;
+      },
+    });
+    const result = await execute(
+      buildContext(localCwd, {
+        config: {
+          engine: "acp",
+          cwd: localCwd,
+          agentCommand: "node ./fake-acp.js",
+          stateDir: path.join(root, "state"),
+          promptTemplate: "Do the assigned work.",
+        },
+        context: {
+          issueId: "issue-1",
+          paperclipWorkspace: { cwd: localCwd, source: "project_workspace", workspaceId: "workspace-1" },
+        },
+        executionTarget: {
+          kind: "remote",
+          transport: "sandbox",
+          providerKey: "fake-plugin",
+          remoteCwd,
+          runner: createLocalSandboxRunner(),
+        } as never,
+        authToken: "real-run-jwt",
+      }),
+    );
+
+    expect(result.exitCode).toBe(0);
+    const hostSettings = JSON.parse(await fs.readFile(hostSettingsPath, "utf8"));
+    expect(hostSettings.theme).toBe("edited");
+    expect(hostSettings.permissions.defaultMode).toBe("default");
+  });
+
   it("keeps an operator CLAUDE_CODE_SHELL_PREFIX and installs no tool shell prefix", async () => {
     const root = await makeTempRoot("paperclip-claude-acp-operator-prefix-");
     const localCwd = path.join(root, "worktree");
