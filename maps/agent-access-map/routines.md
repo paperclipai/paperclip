@@ -39,8 +39,8 @@ Assert the relevant denied actor, owner, company or mode from Policy. Review the
 remaining operations before qualifying the whole capability.
 
 Gaps: No dedicated production manage_routine binding; generic `call_api` provides
-the permitted REST path. Creation needs a responsible user resolved from the parent
-issue or company default.
+the permitted REST path. Creation resolves responsibility from the authenticated
+agent's on-behalf-of user, then the parent issue or company default.
 
 ## `triggers`
 
@@ -81,6 +81,9 @@ idle hold. It requires signed Cloud control authority; company agents and tenant
 admin tokens cannot use it. It does not grant routine management or execution
 authority. See the [hosting protocol](../../doc/idle-sleep-safety.md#scheduled-routine-wake-protocol)
 and [route authorization tests](../../server/src/__tests__/instance-settings-routes.test.ts).
+The signed `scheduledWake=domain-deadlines-v1` catalog can combine this routine
+obligation with other supported domain deadlines. Its generation receipt is
+mandatory even when no future alarm remains. See [domain scope](../../doc/idle-domain-deadlines.md).
 These are local contract checks, not a live provider sleep/wake qualification.
 
 ## `run-now`

@@ -219,7 +219,8 @@ describe("IssueThreadInteractionCard", () => {
     const labels = Array.from(host.querySelectorAll("button")).map((button) => button.textContent?.trim());
     expect(labels).toContain("Connect");
     expect(labels).toContain("Not now");
-    expect(host.textContent).toContain("Access is added only for this agent");
+    expect(host.textContent).toContain("New connections default to all agents");
+    expect(host.textContent).toContain("Reusing an account adds access for this agent");
     const loadButton = Array.from(host.querySelectorAll("button")).find((button) =>
       button.textContent?.trim() === "Connect",
     );
@@ -663,6 +664,34 @@ describe("IssueThreadInteractionCard", () => {
     });
 
     expect(host.textContent).toContain("No reason provided.");
+  });
+
+  it.each([
+    ["confirmation", "default"],
+    ["confirmation", "coordinator-decision"],
+    ["checkbox", "default"],
+    ["checkbox", "coordinator-decision"],
+  ] as const)("renders Markdown in %s prompts in the %s view", (kind, presentationVariant) => {
+    const interaction = structuredClone(kind === "confirmation"
+      ? pendingRequestConfirmationInteraction
+      : pendingRequestCheckboxConfirmationInteraction);
+    interaction.payload.prompt = "Review the [two screenshots](/PAP/issues/PAP-42#document-preview).\n\nSelect **Accept** to keep this design.\n\n- Check `preview.png`\n- Keep the layout\n\n![Review image](https://provider.invalid/review.png)\n\n```mermaid\nflowchart LR\n  A --> B\n```";
+    const host = renderCard({ interaction, presentationVariant });
+
+    const link = host.querySelector('a[href="/issues/PAP-42#document-preview"]');
+    expect(link?.textContent).toBe("two screenshots");
+    const prompt = link?.closest(".paperclip-markdown");
+    expect(prompt?.querySelector("strong")?.textContent).toBe("Accept");
+    expect(prompt?.querySelector("code")?.textContent).toBe("preview.png");
+    expect(prompt?.querySelector("img")).toBeNull();
+    expect(prompt?.querySelectorAll("p")).toHaveLength(3);
+    expect(prompt?.querySelector("[data-markdown-image-reference]")?.textContent)
+      .toContain("Image: Review image (https://provider.invalid/review.png)");
+    expect(prompt?.querySelector("pre code.language-mermaid")?.textContent)
+      .toContain("flowchart LR");
+    expect(prompt?.querySelector(".paperclip-mermaid")).toBeNull();
+    expect(prompt?.querySelectorAll("li")).toHaveLength(2);
+    expect(prompt?.textContent).not.toContain("[two screenshots]");
   });
 
   it("requires a revision note when the request confirmation payload asks for one", async () => {
@@ -1392,6 +1421,28 @@ describe("IssueThreadInteractionCard tool-action card", () => {
     expect(declined.textContent).toContain("Declined");
     expect(declined.textContent).toContain("use the CRM sync instead");
     expect(declined.textContent).not.toContain("Approve & run");
+  });
+
+  it("makes a GitHub access failure actionable without offering a futile retry", () => {
+    const interaction = { ...failedToolActionInteraction,
+      payload: { ...failedToolActionInteraction.payload, toolAction: {
+        ...failedToolActionInteraction.payload.toolAction!, appDisplayName: "GitHub",
+      } },
+      result: { ...failedToolActionInteraction.result!, toolAction: {
+        ...failedToolActionInteraction.result!.toolAction!, errorCode: "github_access_denied",
+        errorMessage: "failed to create repository: POST https://api.github.com/user/repos: 403 Resource not accessible by integration []",
+      } },
+    };
+    const host = renderCard({ interaction });
+    expect(host.querySelector('[role="alert"]')?.textContent).toContain("GitHub access needed");
+    expect(host.textContent).toContain(interaction.result.toolAction.errorMessage);
+    expect(host.textContent).toContain("Check the connected account");
+    expect(host.textContent).toContain("ask the agent to continue");
+    expect(host.querySelector("details")?.hasAttribute("open")).toBe(false);
+    const manage = Array.from(host.querySelectorAll("a")).find(link => link.textContent === "Manage GitHub access");
+    expect(manage?.getAttribute("href")).toBe(`/apps/${interaction.payload.toolAction.connectionId}/permissions`);
+    expect(host.textContent).not.toContain("Retry");
+    expect(host.textContent).not.toContain("Approve & run");
   });
 
   it("renders the expired state without decision controls", () => {

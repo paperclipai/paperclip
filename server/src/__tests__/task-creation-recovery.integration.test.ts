@@ -41,7 +41,7 @@ async function fixture(version = true, inspector = true) {
   await db.insert(plugins).values({ id: pluginId, pluginKey: pluginId, packageName: "task-recovery-fixture", version: "1", status: "ready",
     manifestJson: { capabilities: ["environment.drivers.register"], environmentDrivers: [{ driverKey: "tasks", supportsTasks: true,
       ...(version ? { creationOperationVersion: 1 } : {}) }] } as never });
-  await db.insert(environments).values({ id: environmentId, companyId, name: environmentId, driver: "plugin",
+  await db.insert(environments).values({ id: environmentId, name: environmentId, driver: "plugin",
     config: { pluginKey: pluginId, driverKey: "tasks", driverConfig: {} } });
   const binding = { agentId, runId: "predecessor", computerId: "saved-computer", opaque: "saved-binding" };
   await db.insert(environmentLeases).values({ id: leaseId, companyId, environmentId, heartbeatRunId: runId, issueId,

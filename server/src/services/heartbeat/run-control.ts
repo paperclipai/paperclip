@@ -34,6 +34,7 @@ import {
   canContinueCancelledRun,
   readRunCancellation,
   requestedRunCancellation,
+  userStopBoundaryAt,
 } from "../run-cancellation.js";
 import { settleSlackConversation } from "../slack-conversation-lifecycle.js";
 import { readQueuedInteractionResponse } from "../queued-interaction-response.js";
@@ -53,7 +54,8 @@ import {
   isUserCommentContinuationReason,
   undeliveredLegacyUserCommentIds,
 } from "../explicit-native-continuation.js";
-import { isCancelledNativeStartup } from "../cancelled-native-startup.js";
+import { isCancelledNativeStartup, isInterruptedNativePreparation } from "../cancelled-native-startup.js";
+import { settleInterruptedNativeBootstrap, recordInterruptedPreparationContinuation } from "../legacy-execution-recovery.js";
 import {
   executionBlockerPredicate,
   getExecutionBlocker,
@@ -126,7 +128,7 @@ import {
 } from "../native-runtime/index.js";
 import { runningProcesses } from "../../adapters/index.js";
 import { parseObject } from "../../adapters/utils.js";
-import { isNativeRunnerOwnershipHeld, nativeRunnerOwnershipNotHeldCondition } from "../native-runtime/native-runner-ownership.js";
+import { isNativeRunnerOwnershipHeld, nativeManualAdmissionOwnerColumns, nativeRunnerOwnershipNotHeldCondition } from "../native-runtime/native-runner-ownership.js";
 import { readNativeStartupCleanup, acknowledgeNativeStartupCleanup } from "../native-runtime/native-startup-cleanup.js";
 import {
   withCurrentBudgetEnforcement,
@@ -193,6 +195,7 @@ export interface HeartbeatRunControlDependencies extends Pick<ReturnType<typeof 
   startNextQueuedRunForAgent: ReturnType<typeof createHeartbeatQueue>["startNextQueuedRunForAgent"];
   sweepPendingCleanupLeases: ReturnType<typeof createHeartbeatRecovery>["sweepPendingCleanupLeases"];
   timerClaimWasFirstHeartbeat: ReturnType<typeof createHeartbeatRetries>["timerClaimWasFirstHeartbeat"];
+  scheduleBoundedRetry: ReturnType<typeof createHeartbeatRetries>["scheduleBoundedRetry"];
   wakeQueue: Pick<ReturnType<typeof createWakeQueue>, "releaseIssueExecution">;
   applyWakeQueuePostCommitEffects: (effects: WakeQueuePostCommitEffect[]) => Promise<void>;
   getSchedulingSuppression: () => Promise<{ suppressed: boolean }>;
@@ -569,13 +572,22 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
 
   async function resumeRemoteStopComments(run: NonNullable<Awaited<ReturnType<typeof getRunExecutionWait>>>, requestId?: string) {
     if (!isHeartbeatRunTerminalStatus(run.status) || adapterExecutionControls.has(run.id)) return;
+    let interruptedPreparation = false;
+    if (["interrupted", "failed"].includes(run.status) && run.runtimeMode === "legacy" &&
+        !run.runtimeModeResolvedAt && run.executionStage === "preparing") {
+      const current = await getRun(run.id, { includeExecutionEvidence: true });
+      if (current && await isInterruptedNativePreparation(db, current)) {
+        const settled = await settleInterruptedNativeBootstrap(db, { run: current, providerDispatchStarted: false });
+        if (settled) { run = settled; interruptedPreparation = true; }
+      }
+    }
     const [preparationCoordinator] = run.runtimeMode === "legacy" && run.status === "cancelled" && !run.runtimeModeResolvedAt
       ? await db.select().from(nativeRunFinalizations).where(and(
           eq(nativeRunFinalizations.companyId, run.companyId), eq(nativeRunFinalizations.runId, run.id),
         )) : [];
     const cancelledPreparation = run.runtimeMode === "legacy" &&
       await isCancelledNativeStartup(db, run, preparationCoordinator);
-    if (run.runtimeMode !== "native" && !cancelledPreparation &&
+    if (run.runtimeMode !== "native" && !cancelledPreparation && !interruptedPreparation &&
         parseObject(run.resultJson?.startupCancellation).beforeNativeSelection !== true &&
         !(await remoteExecutionHasStopped(db, run.companyId, run.id)) &&
         !(await recordedLocalExecutionStopped(db, run))) return;
@@ -605,6 +617,22 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
       requestId ? eq(agentWakeupRequests.id, requestId) : undefined,
       sql`${agentWakeupRequests.payload}->>'issueId' = ${issueId}`,
     )).orderBy(asc(agentWakeupRequests.requestedAt)).limit(50);
+    if (interruptedPreparation) {
+      if (pending.length || requestId) await recordInterruptedPreparationContinuation(db, run, "delegated");
+      else {
+        const [task] = await db.select({ status: issues.status, assigneeAgentId: issues.assigneeAgentId }).from(issues).where(and(
+          eq(issues.companyId, run.companyId), eq(issues.id, issueId),
+        ));
+        if (!(await getSchedulingSuppression()).suppressed && task?.assigneeAgentId === run.agentId &&
+            ["todo", "in_progress", "in_review"].includes(task.status)) {
+          const retry = await dependencies.scheduleBoundedRetry(run.id);
+          await recordInterruptedPreparationContinuation(db, run,
+            retry.outcome === "scheduled" ? retry.run.status === "cancelled" ? "blocked" : "delivered"
+              : retry.outcome === "retry_exhausted" ? "exhausted" : "deferred",
+            retry.outcome === "scheduled" ? retry.run.id : undefined);
+        } else await recordInterruptedPreparationContinuation(db, run, "deferred");
+      }
+    }
     for (const wake of pending) {
       if (wake.idempotencyKey?.startsWith("chat-inbound:")) {
         await resumeDeferredChatWake(db, { companyId: run.companyId, agentId: run.agentId,
@@ -646,7 +674,7 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
           sql`${issueComments.id}::text = ${commentId}`, eq(issueComments.authorType, "user"),
           eq(issueComments.authorUserId, requestedByActorId), isNull(issueComments.deletedAt),
           isNull(issueComments.createdByRunId),
-          gt(issueComments.createdAt, run.finishedAt),
+          gt(issueComments.createdAt, userStopBoundaryAt(run)!),
         ));
         if (!comment?.body.trim()) continue;
       } else {
@@ -1295,7 +1323,7 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
     const pendingNativeRetry =
       run.runtimeMode === "native" && run.status === "failed" && Boolean(run.nativeIssueId) && (
         caseHandoffRetryClaimed || Boolean(options.cancellationRequestId) || await db
-          .select({ phase: nativeRunFinalizations.phase, failureCode: nativeRunFinalizations.failureCode })
+          .select(nativeManualAdmissionOwnerColumns)
           .from(nativeRunFinalizations)
           .where(
             and(
@@ -1443,13 +1471,25 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
               if (!dependencies.verifyStartupCleanup) throw conflict("Native startup cleanup worker unavailable");
               await dependencies.verifyStartupCleanup(startupCleanupRun);
             } else {
-              await cancelHeartbeatNativeRun({
-                db,
-                runId: run.id,
-                reason,
-                runtimeMode: run.runtimeMode,
-                ...(options.cancellationRequestId ? { cancellationRequestId: options.cancellationRequestId } : {}),
-              });
+              try {
+                await cancelHeartbeatNativeRun({
+                  db,
+                  runId: run.id,
+                  reason,
+                  runtimeMode: run.runtimeMode,
+                  ...(options.cancellationRequestId ? { cancellationRequestId: options.cancellationRequestId } : {}),
+                });
+              } catch (error) {
+                // The durable Stop intent is recorded, but its owner (a native
+                // session still opening, or a remote controller) has not yet
+                // acknowledged it. The owner honors it later; answer honestly
+                // instead of reporting an internal failure.
+                if (error instanceof Error && error.message === "native_cancellation_pending_recovery") {
+                  throw conflict("Stop is recorded; the native session is still starting and will stop when it opens.",
+                    { code: "native_stop_pending", runId: run.id });
+                }
+                throw error;
+              }
             }
             if (running) {
               await terminateHeartbeatRunProcess({

@@ -109,11 +109,13 @@ describe("environment sync verb negotiation", () => {
 
   it("routes environmentSyncIn/environmentSyncOut to the hooks when defined", async () => {
     const seen: string[] = [];
+    const minimums: Array<number | undefined> = [];
     const worker = startTestWorker(
       definePlugin({
         async setup() {},
         async onEnvironmentSyncIn(params): Promise<PluginEnvironmentSyncResult> {
           seen.push("in");
+          minimums.push(params.minimumTimeoutMs);
           return {
             operations: params.operations.map((op) => ({
               operationId: op.operationId,
@@ -124,6 +126,7 @@ describe("environment sync verb negotiation", () => {
         },
         async onEnvironmentSyncOut(params): Promise<PluginEnvironmentSyncResult> {
           seen.push("out");
+          minimums.push(params.minimumTimeoutMs);
           return {
             operations: params.operations.map((op) => ({
               operationId: op.operationId,
@@ -141,6 +144,7 @@ describe("environment sync verb negotiation", () => {
         companyId: "company",
         environmentId: "env",
         config: {},
+        minimumTimeoutMs: 900_000,
         lease: { providerLeaseId: "lease-1" },
       };
       const inParams: PluginEnvironmentSyncInParams = {
@@ -161,6 +165,7 @@ describe("environment sync verb negotiation", () => {
       const outResult = await worker.callWorker<PluginEnvironmentSyncResult>("environmentSyncOut", outParams);
       expect(outResult.operations[0]).toMatchObject({ operationId: "op-b", filesTransferred: 1 });
       expect(seen).toEqual(["in", "out"]);
+      expect(minimums).toEqual([900_000, 900_000]);
     } finally {
       worker.stop();
     }

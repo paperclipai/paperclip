@@ -342,6 +342,7 @@ describe("P6-25 pre-result native session recovery", () => {
         {
           runId: eligibleRunId,
           leaseOwner: expect.stringContaining("bounded-reaper:resume:"),
+          attempt: expect.any(Number),
         },
       ]);
       const held = await db
@@ -388,14 +389,14 @@ describe("P6-25 pre-result native session recovery", () => {
       leaseExpiresAt: null,
       nextAttemptAt: new Date(0),
     }).where(eq(nativeRunFinalizations.runId, runId));
-    const dispatched: Array<{ runId: string; leaseOwner: string }> = [];
+    const dispatched: Array<{ runId: string; leaseOwner: string; attempt: number }> = [];
     await expect(dispatchNativeSessionResumptions({
       db,
       runnerInstanceId: "heartbeat-reaper",
       runIds: [runId],
       dispatch: (claim) => dispatched.push(claim),
     })).resolves.toHaveLength(1);
-    expect(dispatched).toEqual([{ runId, leaseOwner: expect.stringContaining("heartbeat-reaper:resume:") }]);
+    expect(dispatched).toEqual([{ runId, leaseOwner: expect.stringContaining("heartbeat-reaper:resume:"), attempt: 1 }]);
     await expect(db.select().from(heartbeatRuns)).resolves.toHaveLength(8);
     await expect(db.select().from(nativeRunFinalizations)).resolves.toHaveLength(8);
   });
@@ -406,7 +407,7 @@ describe("P6-25 pre-result native session recovery", () => {
       runnerInstanceId: "reaper",
       runIds: [bootstrapRetryRunId],
     })).resolves.toEqual([
-      { runId: bootstrapRetryRunId, leaseOwner: expect.stringContaining("reaper:resume:") },
+      { runId: bootstrapRetryRunId, leaseOwner: expect.stringContaining("reaper:resume:"), attempt: 1 },
     ]);
   });
 
@@ -724,6 +725,7 @@ describe.each(["unchanged", "newer_active", "stale_idle"] as const)(
         identifier: "NRR-1",
         title: "Recover one native heartbeat",
         description: null,
+        prompt: "Recover one native heartbeat",
         workMode: "standard",
       },
       workspace: {
@@ -736,6 +738,7 @@ describe.each(["unchanged", "newer_active", "stale_idle"] as const)(
         normalizedSessionId: sessionId,
         driverKind: "codex_app_server",
         protocolVersion: 1,
+        lifecyclePolicy: { mode: "per_turn", idleTimeoutMs: null },
       },
       provider: { kind: "codex", model: null },
       completionContract: {
@@ -1063,7 +1066,7 @@ describe.each(["unchanged", "newer_active", "stale_idle"] as const)(
         const freshIdentity = {
           ...checkpoint.identity,
           runId: freshRunId,
-          sessionId: executionInput.session.normalizedSessionId,
+          sessionId: executionInput.session.normalizedSessionId!,
         };
         let releaseStart!: () => void;
         const started = new Promise<void>((resolve) => {
@@ -1563,7 +1566,7 @@ describe("goal-less native task-session publication", () => {
       const currentProviderSessionId = `provider-${execution.session.normalizedSessionId}`;
       providerSessionId ??= currentProviderSessionId;
       const turnId = `turn-${currentRunId}`;
-      const identity = { companyId, agentId, issueId, runId: currentRunId, sessionId: execution.session.normalizedSessionId };
+      const identity = { companyId, agentId, issueId, runId: currentRunId, sessionId: execution.session.normalizedSessionId! };
       const result = structuredClone(CONTROL_PLANE_CONFORMANCE_RESULT);
       result.completionClaim.contractRevision = execution.completionContract.contract.revision;
       result.completionClaim.criteria = execution.completionContract.contract.criteria.map(criterion => ({

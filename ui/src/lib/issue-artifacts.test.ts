@@ -16,6 +16,9 @@ it.each(["plan", " Plan ", "artifact-review-output", "pipeline-case-body", "cont
 it("allows ordinary general document keys", () => {
   expect(isGeneralTaskDocumentKey("notes")).toBe(true);
 });
+it.each([undefined, null])("treats a missing document key (%s) as not general", key => {
+  expect(isGeneralTaskDocumentKey(key)).toBe(false);
+});
 
 function makeAttachment(overrides: Partial<IssueAttachment> & { id: string }): IssueAttachment {
   return {

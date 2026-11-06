@@ -1247,8 +1247,10 @@ This is trusted controller timing policy, outside the immutable Pi wrapper/profi
 closure; it does not change profile 13, runtime 1.0.0, or the explicit model.
 
 The credential-free closed-startup regression requires the real
-`session_ensure_failed` rejection within 60 seconds, with no prompt, no provider
-identity and confirmed cleanup. Its child watchdog is 80 seconds (20 seconds for
-cleanup after admission), inside a 90-second test timeout. Failed evidence stays
+`provider_authentication` rejection within 60 seconds, with no prompt, no provider
+identity and confirmed cleanup. Pi reports the missing credential with ACP's
+authentication-required error, so the rejection names that typed category instead
+of the generic `session_ensure_failed`. Its child watchdog is 80 seconds (20
+seconds for cleanup after admission), inside a 90-second test timeout. Failed evidence stays
 in its reported temporary directory. These margins do not extend production
 command deadlines or qualify a target platform without a fresh run.

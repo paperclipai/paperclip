@@ -30,6 +30,8 @@ import { startOpenCodePerformanceDiagnostics } from "./performance-diagnostics.j
 import { PROVIDER_PERFORMANCE_ENV } from "../../contracts/provider-performance.js";
 import { annotateOmittedProviderText, parseOpenCodeSseFrames } from "./sse-frames.js";
 import { githubCredentialEnvironment } from "../../github-credential-environment.js";
+import { configuredOpenCodeEnvironment } from "./environment.js";
+import { CONFIGURED_ENVIRONMENT_KEYS } from "../../configured-environment.js";
 
 import {
   CODEX_SKILLLESS_BASE_INSTRUCTIONS,
@@ -512,6 +514,8 @@ class OpenCodeHarnessSession implements HarnessSession {
     observedSourceSeq: number;
   }> = [];
   readonly #messageUsageFingerprints = new Map<string, string>();
+  /** Assistant messages OpenCode stopped at the model output limit. */
+  readonly #outputLimitedMessageIds = new Set<string>();
   readonly #workspaceChangesByTurn = new Map<string, Record<string, unknown>>();
   #reportedSseCompaction = false;
   readonly #emittedFileReferences = new Set<string>();
@@ -655,6 +659,7 @@ class OpenCodeHarnessSession implements HarnessSession {
     this.#completedTextPartIds.clear();
     this.#completedReasoningPartIds.clear();
     this.#completedTextParts.length = 0;
+    this.#outputLimitedMessageIds.clear();
     // `#terminalTurns` clears here for its own persisted-snapshot bookkeeping.
     // The late-frame gate in `#emit` does not depend on this map: it compares
     // against `#activeTurnId` directly, so a frame for the just-finished turn
@@ -771,9 +776,21 @@ class OpenCodeHarnessSession implements HarnessSession {
 
   #failEmptyResponse(turnId: string, message: string): void {
     if (this.#closed || this.#activeTurnId !== turnId || this.#interruptedTurnId === turnId || this.#result !== null || this.#pendingToolCalls > 0 || this.#runningNativeToolParts.size > 0) return;
-    this.#emit("turn.failed", { status: "failed", error: { code: "opencode_empty_response", message, retryable: false } }, { turnId });
+    const code = this.#turnHitOutputLimit(turnId) ? "opencode_output_limit_reached" : "opencode_empty_response";
+    this.#emit("turn.failed", { status: "failed", error: { code, message, retryable: false } }, { turnId });
     this.#terminalTurns.set(turnId, canonicalJson({ status: "failed" }));
     this.#activeTurnId = null;
+  }
+
+  /** A response cut off at the output limit is incomplete, so it is never a final answer. */
+  #isOutputLimited(part: { messageId: string | null }): boolean {
+    return part.messageId !== null && this.#outputLimitedMessageIds.has(part.messageId);
+  }
+
+  #turnHitOutputLimit(turnId: string): boolean {
+    for (const messageId of this.#outputLimitedMessageIds)
+      if (this.#messageTurnIds.get(messageId) === turnId) return true;
+    return false;
   }
 
   #recoverEmptyResponse(turnId: string): boolean {
@@ -784,7 +801,7 @@ class OpenCodeHarnessSession implements HarnessSession {
     if (this.#interruptedTurnId === turnId) return false;
     const recovery = this.#emptyResponseRecovery;
     const boundary = Math.max(this.#turnStartSourceSeq, this.#lastNonTerminalToolSourceSeq);
-    if (this.#completedTextParts.some(part => part.observedSourceSeq > boundary)) return false;
+    if (this.#completedTextParts.some(part => part.observedSourceSeq > boundary && !this.#isOutputLimited(part))) return false;
     // Both idle event forms can remain queued from the empty response. Wait
     // for correction evidence. A completed answer part is sufficient even
     // when its message header omits completion metadata. An idle response
@@ -802,7 +819,10 @@ class OpenCodeHarnessSession implements HarnessSession {
     this.#emptyResponseRecovery = { turnId, priorMessages: new Set(this.#messageRoles.keys()), responseStarted: false, responseFinished: false };
     this.#emit("harness.diagnostic", { code: "opencode_empty_response_correction", message: "Requesting one final response after an empty OpenCode completion." }, { turnId });
     this.#armEmptyResponseAckTimer(turnId, "OpenCode did not start its requested final response.");
-    void this.#submitPrompt("Your response ended without a user-visible final answer or an accepted completion report. Continue this same request from the work already done. Give the user a concise final answer and submit paperclip_finish (or paperclip_block when blocked) with the current completion contract. Do not repeat completed actions.")
+    const opening = this.#turnHitOutputLimit(turnId)
+      ? "Your previous response reached the output limit and was discarded as incomplete."
+      : "Your response ended without a user-visible final answer or an accepted completion report.";
+    void this.#submitPrompt(`${opening} Continue this same request from the work already done. Give the user a concise final answer and submit paperclip_finish (or paperclip_block when blocked) with the current completion contract. Do not repeat completed actions.`)
       .catch(() => this.#failEmptyResponse(turnId, "OpenCode could not request a final response after an empty completion."));
     return true;
   }
@@ -1823,6 +1843,12 @@ class OpenCodeHarnessSession implements HarnessSession {
       // legitimately reclaims ownership; a stale message never sees this
       // branch again, so its recorded owner never changes.
       if (messageId && role && turnId) this.#messageTurnIds.set(messageId, turnId);
+      if (role === "assistant" && messageId && text(info.finish) === "length" && !this.#outputLimitedMessageIds.has(messageId)) {
+        this.#outputLimitedMessageIds.add(messageId);
+        const limitedTurnId = this.#messageTurnIds.get(messageId) ?? turnId;
+        if (limitedTurnId) this.#emit("harness.diagnostic", { code: "opencode_output_limit_reached",
+          message: "OpenCode stopped a response at the model output limit; its truncated text is not used as a final answer." }, { turnId: limitedTurnId });
+      }
       const owningTurnId = messageId
         ? (this.#messageTurnIds.get(messageId) ?? turnId)
         : turnId;
@@ -2168,7 +2194,7 @@ class OpenCodeHarnessSession implements HarnessSession {
     // and let the accepted semantic summary resolve the durable reply.
     const afterLastWorkTool = (part: { observedSourceSeq: number }) =>
       part.observedSourceSeq > this.#lastNonTerminalToolSourceSeq;
-    const eligibleText = this.#completedTextParts.filter(afterLastWorkTool);
+    const eligibleText = this.#completedTextParts.filter(part => afterLastWorkTool(part) && !this.#isOutputLimited(part));
     // OpenCode exposes no prose channel, so final selection must use provider
     // structure rather than text length or content. When OpenCode reports the
     // terminal tool part, prefer prose completed afterward in that exact
@@ -2405,6 +2431,7 @@ async function startRuntime(input: {
     arguments: unknown;
   }) => Promise<unknown>;
 }): Promise<OpenCodeRuntime> {
+  const taskEnvironment = configuredOpenCodeEnvironment(input.options.environment);
   const port = await reservePort();
   const password = randomBytes(32).toString("base64url");
   const username = "paperclip";
@@ -2436,6 +2463,7 @@ async function startRuntime(input: {
   const bridge = await startOpenCodeMcpBridge({
     tools: input.options.dynamicTools,
     handler: input.dispatch,
+    onDiagnostic: input.options.onDiagnostic,
     ...(input.options.durableToolRequests ? { timeoutMs: null } : {}),
   }).catch(async (error) => {
     await removeIsolatedHome(isolatedHome).catch(() => undefined);
@@ -2450,6 +2478,8 @@ async function startRuntime(input: {
   const providerEnvironment = input.options.environment ?? process.env;
   const sensitiveValues = [
     ...identityValues,
+    ...Object.entries(taskEnvironment).flatMap(([key, value]) =>
+      key !== CONFIGURED_ENVIRONMENT_KEYS && value ? [value, JSON.stringify(value).slice(1, -1)] : []),
     password,
     authHeader,
     bridge.secret,
@@ -3101,7 +3131,7 @@ function sanitizedEnvironment(
   const candidate = source ?? process.env;
   for (const key of allowed)
     if (candidate[key] !== undefined) result[key] = candidate[key];
-  return { ...result, ...githubCredentialEnvironment(source ?? {}), ...overrides };
+  return { ...result, ...configuredOpenCodeEnvironment(source), ...githubCredentialEnvironment(source ?? {}), ...overrides };
 }
 
 function sanitizedEnvironmentKeys(): string[] {

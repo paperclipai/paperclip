@@ -2,6 +2,7 @@ import { createContext, useContext, useEffect, useMemo, useRef, useState, type R
 import type { Agent } from "@paperclipai/shared";
 import { AlertTriangle, ArrowUpRight, Bot, Check, CheckCircle2, ChevronDown, ChevronRight, CircleDashed, Clock, ExternalLink, FileText, GitBranch, ImagePlus, KeyRound, Loader2, MessageSquareQuote, MinusCircle, ShieldAlert, ThumbsUp, TriangleAlert, Wrench, X, XCircle } from "lucide-react";
 import { Link } from "@/lib/router";
+import { appTabHref } from "@/pages/apps/app-tabs";
 import { formatAssigneeUserLabel } from "../lib/assignees";
 import { describeInteractionAudience, type InteractionAudienceDescription } from "../lib/interaction-audience";
 import { interactionResolutionErrorMessage } from "../lib/interaction-resolution-error";
@@ -1751,6 +1752,15 @@ function ToolActionResolution({
   const detail = state === "failed" ? result?.errorMessage?.trim() || "The action could not complete."
     : state === "declined" ? interaction.result?.reason?.trim()
     : null;
+  if (state === "failed" && result?.errorCode === "github_access_denied") {
+    const connectionId = interaction.payload.toolAction?.connectionId;
+    return <div role="alert" className="space-y-2 rounded-lg bg-destructive/10 p-3 text-sm text-foreground">
+      <p className="flex items-center gap-2 font-medium"><AlertTriangle className="size-4 shrink-0 text-destructive" aria-hidden="true" />GitHub access needed</p>
+      <p>This GitHub connection cannot access the requested account or repository. Check the connected account and Paperclip’s repository access, then ask the agent to continue.</p>
+      {connectionId ? <Button asChild size="sm" variant="outline"><Link to={appTabHref(connectionId, "permissions")}>Manage GitHub access</Link></Button> : null}
+      {detail ? <details className="text-xs text-muted-foreground"><summary className="cursor-pointer">Error details</summary><p className="mt-2 break-words">{detail}</p></details> : null}
+    </div>;
+  }
   const status = <>
     <Icon className={cn("h-3.5 w-3.5 shrink-0", state === "running" && "animate-spin", state === "failed" && "text-destructive")} />
     {labels[state]}
@@ -2749,7 +2759,9 @@ function RequestConfirmationCard({
       {interaction.status === "pending" ? (
         <div className={compact ? "space-y-3" : "space-y-3 rounded-sm border border-border/70 bg-background/75 p-4"}>
           <div data-decision-prompt={compact ? true : undefined} className={compact ? "text-lg font-medium leading-relaxed text-foreground" : "text-sm leading-6 text-foreground"}>
-            {interaction.payload.prompt}
+            <MarkdownBody className={compact ? "text-lg" : undefined} externalReferences={externalReferences} mediaMode="reference">
+              {interaction.payload.prompt}
+            </MarkdownBody>
           </div>
           {interaction.payload.detailsMarkdown ? (
             compact ? <details className="group/confirmation-details">
@@ -3130,7 +3142,9 @@ function RequestCheckboxConfirmationCard({
         {/* Show each piece of state once: a connection-authorization prompt is
             the same sentence as the card title, so repeating it here is noise. */}
         {interaction.payload.prompt === interaction.title ? null : (
-          <div className="text-sm leading-6 text-foreground">{interaction.payload.prompt}</div>
+          <MarkdownBody className="text-sm leading-6 text-foreground" externalReferences={externalReferences} mediaMode="reference">
+            {interaction.payload.prompt}
+          </MarkdownBody>
         )}
         {interaction.payload.detailsMarkdown ? (
           <div className="border-t border-border/60 pt-3 text-sm">

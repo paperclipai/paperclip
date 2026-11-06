@@ -1,4 +1,5 @@
 import { bindAcpxCandidateAdmission } from "../drivers/acpx/candidate-admission.js";
+import { toolFileChangesFromAcpContent } from "../tool-file-changes.js";
 import { KIMI_DISTRIBUTION_CLOSURE_SHA256 } from "../drivers/acpx/kimi-closure-pins.js";
 import { ANTIGRAVITY_DISTRIBUTION_PINS } from "../drivers/acpx/generated-profiles.js";
 import { canonicalNativeRuntimeContextDigest } from "../contracts/runtime-context.js";
@@ -8,19 +9,40 @@ import { appendSemanticToolReceipt, readNativeSemanticReceipt, semanticInputSha2
 import { startRunnerToolBridge, type RunnerToolCall } from "../drivers/runner-tool-bridge.js";
 import { validatePrpStructuredRunResult } from "../protocol/replay-contract.js";
 import { resolveCompletionContinuation } from "../drivers/completion-continuation.js";
-import { acpxUsageEstimateNotice, persistedAcpxTurnUsage, persistedCursorUsageNotice } from "../drivers/acpx/usage-accounting.js";
+import { acpxUsageEstimateNotice, persistedAcpxTurnUsage, persistedCursorUsageNotice, qualifiedAcpxUsageBreakdown } from "../drivers/acpx/usage-accounting.js";
 import { stripTypeScriptTypes } from "node:module";
 import { cursorPlanToolIdentity, cursorToolIdentity } from "../drivers/acpx/cursor-plan-tool-identity.js";
 import { createHash, randomUUID } from "node:crypto";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { once } from "node:events";
 import { fileURLToPath } from "node:url";
 import { createAcpxSidecarHostEnvironment, createSanitizedAcpxSpawnInput } from "../drivers/acpx/environment.js";
 import { createKimiMessageProjection } from "../drivers/acpx/kimi-message-boundary.js";
+import { classifyClaudeStatusBanner } from "../drivers/acpx/claude-status-banners.js";
+import { acpxGoalProjection } from "../drivers/acpx/session-goals.js";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 describe("live sidecar pending request snapshots", () => {
+  it("preserves explicit turn cost through the sidecar's closed usage projection", () => {
+    const source = readFileSync(new URL("./acpx-runtime-sidecar.ts", import.meta.url), "utf8");
+    const start = source.indexOf("function safeUsage(");
+    const end = source.indexOf("function safeOutput(", start);
+    const project = new Function("record", "qualifiedAcpxUsageBreakdown", "initializedAgent", "safeText", "text",
+      `${stripTypeScriptTypes(source.slice(start, end))}; return safeUsage;`)(
+      (value: unknown) => value && typeof value === "object" ? value : {}, qualifiedAcpxUsageBreakdown, "grok",
+      (value: string) => value, (value: unknown) => typeof value === "string" ? value : "",
+    );
+    expect(project({ amount: 0.336842, currency: "USD", basis: "turn", rawSecret: "excluded" }, null)).toEqual({
+      cost: { amount: 0.336842, currency: "USD", basis: "turn" }, breakdown: null,
+    });
+    expect(project({ amount: 0.7, currency: "USD" }, null)).toEqual({ cost: { amount: 0.7, currency: "USD" }, breakdown: null });
+    expect(project(undefined, null)).toEqual({ cost: null, breakdown: null });
+  });
+
   it("attests current callback identities after the live status barrier without exposing forms", async () => {
     const source = readFileSync(new URL("./acpx-runtime-sidecar.ts", import.meta.url), "utf8");
     const start = source.indexOf('  if (request.command === "session.snapshot") {');
@@ -98,6 +120,74 @@ afterEach(async () => {
 });
 
 describe("qualified ACPX runtime sidecar", () => {
+  it.each(["snapshot", "unavailable", "oversized", "payload-under-limit", "payload-limit", "payload-over-limit"])("emits the real completed terminal with optional goal observation: %s", async mode => {
+    const root = mkdtempSync(join(tmpdir(), "acpx-terminal-goal-"));
+    const loader = join(root, "provider-loader.mjs"), host = join(root, "terminal-host.mjs");
+    const baseHost = new URL("../test-support/acpx-blocked-output-host.mjs", import.meta.url).href;
+    const capability = { version: 1, controlMethod: "_session/goal", actions: ["set", "clear"] as Array<"set" | "clear"> };
+    const goal = { objective: mode === "oversized" ? "x".repeat(ACPX_SIDECAR_MAX_FRAME_BYTES) : "Retain the completed goal",
+      status: "paused" as const, iterations: 1, lastReason: "Unicode é🙂, quote \" and slash \\ and newline\n" };
+    if (mode.startsWith("payload-")) {
+      const bytes = Buffer.byteLength(JSON.stringify({status:"completed", goalAtTerminal:{
+        ...acpxGoalProjection(capability, goal, false), providerRevision:1 }}));
+      const offset = mode === "payload-under-limit" ? -1 : mode === "payload-over-limit" ? 1 : 0;
+      goal.lastReason += "x".repeat(256 * 1024 + offset - bytes);
+    }
+    writeFileSync(host, `import { AcpxRuntimeHost as BaseHost } from ${JSON.stringify(baseHost)};
+      export class AcpxRuntimeHost extends BaseHost {
+        static async open(options) { const host = await BaseHost.open(options); Object.setPrototypeOf(host, this.prototype); return host; }
+        goalCapability() { return ${JSON.stringify(capability)}; }
+        goalSnapshot() {
+          if (${JSON.stringify(mode)} === "unavailable") throw new Error("goal observation unavailable");
+          return ${JSON.stringify(goal)};
+        }
+        startTurn({ requestId }) { return { requestId, promptStarted: Promise.resolve(),
+          result: Promise.resolve({ status: "completed" }), events: (async function* () {})() }; }
+      }`);
+    writeFileSync(loader, `import { registerHooks } from "node:module";
+      import { pathToFileURL } from "node:url";
+      registerHooks({ resolve(specifier, context, next) {
+        if (context.parentURL?.includes("/acpx-runtime-sidecar.") && specifier.endsWith("/runtime-host.js"))
+          return { url: pathToFileURL(${JSON.stringify(host)}).href, shortCircuit: true };
+        return next(specifier, context);
+      } });`);
+    const sidecar = new SidecarProcess({loader, environment:{PAPERCLIP_TEST_OUTPUT_ROOT:root}});
+    children.add(sidecar);
+    const send = (id:number, command:string, params:Record<string,unknown>) => sidecar.write({protocolVersion:ACPX_SIDECAR_PROTOCOL_VERSION,id,command,params});
+    try {
+      sidecar.write(initializeRequest(1,"codex"));
+      expect(await sidecar.next(frame=>frame.id === 1)).toMatchObject({ok:true});
+      send(2,"session.open",{agent:"codex",model:"gpt-5.6-sol",runtimeDirectory:root,workingDirectory:root,
+        normalizedSessionId:"terminal-goal-session",permissionMode:"deny-all",systemInstructions:"Complete the local fixture turn.",tools:[]});
+      expect(await sidecar.next(frame=>frame.id === 2)).toMatchObject({ok:true});
+      send(3,"run.attach",{runId:"terminal-goal-run",catalogRevision:1,tools:[]});
+      expect(await sidecar.next(frame=>frame.id === 3)).toMatchObject({ok:true});
+      send(4,"turn.start",{turnId:"terminal-goal-turn",message:"Complete the fixture turn."});
+      expect(await sidecar.next(frame=>frame.id === 4)).toMatchObject({ok:true});
+      const terminal = await sidecar.next(frame=>frame.eventType === "runtime.turn_terminal");
+      expect(terminal).toMatchObject({runId:"terminal-goal-run",turnId:"terminal-goal-turn",payload:{status:"completed"}});
+      const payload = terminal.payload as Record<string,unknown>;
+      expect(Buffer.byteLength(JSON.stringify(payload))).toBeLessThanOrEqual(256 * 1024);
+      if (mode === "snapshot" || mode === "payload-limit" || mode === "payload-under-limit") {
+        expect(payload.goalAtTerminal).toMatchObject({schema:"paperclip.session_goal.snapshot.v1",workingNow:false,
+          sessionGoals:{availability:"available"},goal:{objective:"Retain the completed goal",status:"paused",workingNow:false}});
+        if (mode === "payload-limit") expect(Buffer.byteLength(JSON.stringify(payload))).toBe(256 * 1024);
+        if (mode === "payload-under-limit") expect(Buffer.byteLength(JSON.stringify(payload))).toBe(256 * 1024 - 1);
+        send(5,"session.goal.get",{});
+        const observed = await sidecar.next(frame=>frame.id === 5);
+        expect(observed.ok).toBe(true);
+        const {providerRevision:_terminalRevision,...atTerminal} = payload.goalAtTerminal as Record<string,unknown>;
+        const {providerRevision:_readRevision,...ordinary} = observed.result as Record<string,unknown>;
+        expect(atTerminal).toEqual(ordinary);
+      } else {
+        expect(payload).toEqual({status:"completed"});
+      }
+      send(6,"session.snapshot",{});
+      expect(await sidecar.next(frame=>frame.id === 6)).toMatchObject({ok:true,result:{runId:"terminal-goal-run",turnId:null}});
+      expect(sidecar.pending(frame=>frame.eventType === "runtime.turn_terminal")).toBe(0);
+    } finally {await sidecar.close();children.delete(sidecar);rmSync(root,{recursive:true,force:true});}
+  }, 15_000);
+
   it("gives native Claude HTTP tools the Runner lease budget without changing sibling providers", () => {
     const source = readFileSync(new URL("./acpx-runtime-sidecar.ts", import.meta.url), "utf8");
     const start = source.indexOf("        environment:");
@@ -188,9 +278,11 @@ describe("qualified ACPX runtime sidecar", () => {
     const stableIdentity = new Function("createHash", "acpxProfileActivity", "openParams", "initializedAgent", `${stripTypeScriptTypes(source.slice(identityStart, source.indexOf("\nfunction canonicalJson", identityStart)))}; return stableProviderIdentity;`)(createHash, acpxProfileActivity, { agent: "cursor" }, "cursor");
     const boundStart = source.indexOf("function boundRuntimeEventForNormalization(");
     const bound = new Function("boundedOptionalText", "stableProviderIdentity", "safeAcpxLocations", "openParams", "safeOutput",
+      "toolFileChangesFromAcpContent", "sidecarWorkspaceRoots",
       `${stripTypeScriptTypes(source.slice(boundStart, source.indexOf("\nfunction sanitizeRuntimeEvent", boundStart)))}; return boundRuntimeEventForNormalization;`)(
       (value: unknown, fallback: string, max: number) => typeof value === "string" ? value.slice(0, max) : fallback,
       stableIdentity, () => [], null, () => ({ output: null, outputBytes: 0, outputTruncated: false, outputDigest: null }),
+      toolFileChangesFromAcpContent, () => [],
     );
     const start = source.indexOf("  const { signal } = context;", source.indexOf("async function waitForPermission"));
     const end = source.indexOf("\nasync function waitForInput", start);
@@ -357,7 +449,7 @@ describe("qualified ACPX runtime sidecar", () => {
         // The receipt hashes the actual emitted input, not a second normalization.
         await loadActualToolCommands(tools).resolve({ callId: "3", turnId: "test-turn", result: { accepted: true }, error: null });
       }
-      const body = await (await response).json();
+      const body = await (await response).json() as ToolCallResponseBody;
       const receipt = readNativeSemanticReceipt({ contents: body.result.content });
       expect(receipt).toMatchObject({ schema: "paperclip.semantic_tool_receipt.v2", inputSha256: semanticInputSha256(raw),
         normalizedInputSha256: mode === "forwarded" ? semanticInputSha256(emitted[0].input) : null,
@@ -398,7 +490,7 @@ describe("qualified ACPX runtime sidecar", () => {
         expect(validatePrpStructuredRunResult(emitted[1].input).ok).toBe(true);
         await commands.resolve({ callId: "3", turnId: "test-turn", result: { accepted: true }, error: null });
       }
-      const body = await (await response).json();
+      const body = await (await response).json() as ToolCallResponseBody;
       const receipt = readNativeSemanticReceipt({ contents: body.result.content });
       expect(receipt).toMatchObject({ inputSha256: semanticInputSha256(raw),
         normalizedInputSha256: eligible ? semanticInputSha256(emitted[1].input) : null, outcome: eligible ? "returned" : "error" });
@@ -425,7 +517,7 @@ describe("qualified ACPX runtime sidecar", () => {
       await vi.waitFor(() => expect(emitted).toHaveLength(1));
       await expect(handler(call)).rejects.toThrow("duplicated");
     } finally { controller.abort(); }
-    expect((await result).message).toContain("cancelled");
+    expect((await result as Error).message).toContain("cancelled");
     expect(capture).not.toHaveBeenCalled();
     expect(tools.size).toBe(0);
     expect(emitted[0].operationId).toBe("get_task_context");
@@ -455,7 +547,7 @@ describe("qualified ACPX runtime sidecar", () => {
     const bridge = await startRunnerToolBridge({ handler, captureSemanticReceipt: () => () => {} });
     try {
       const body = await (await fetch(bridge.url, { method: "POST", headers: { Authorization: `Bearer ${bridge.secret}`, "Content-Type": "application/json" },
-        body: JSON.stringify(request) })).json();
+        body: JSON.stringify(request) })).json() as ToolCallResponseBody;
       expect(body.result.isError).toBe(true);
       expect(body.result.content[0].text).toBe("ACPX semantic tool call exceeds the sidecar frame limit");
       expect(readNativeSemanticReceipt({ contents: body.result.content })).toMatchObject({ outcome: "error", normalizedInputSha256: null });
@@ -469,7 +561,7 @@ describe("qualified ACPX runtime sidecar", () => {
     } finally { await bridge.close(); }
   });
 
-  it.each(["backpressure", "throws"])("uses actual writer acceptance, preserving %s semantics", async mode => {
+  it.each(["backpressure", "throws"] as const)("uses actual writer acceptance, preserving %s semantics", async mode => {
     const wire = loadActualSidecarWriter(mode);
     const tools = new Map<string, any>(), emitted: any[] = [], commit = vi.fn(), capture = vi.fn((_input: unknown) => commit);
     const raw = { reportedWorkDisposition: "done", summary: "Complete", evidence: [], verification: [],
@@ -486,6 +578,107 @@ describe("qualified ACPX runtime sidecar", () => {
       await loadActualToolCommands(tools).resolve({ callId: "3", turnId: "test-turn", result: { accepted: true }, error: null });
       await expect(pending).resolves.toEqual({ accepted: true });
       expect(commit).toHaveBeenCalledOnce();
+    }
+  });
+
+  it("bounds aggregate blocked output and requests shutdown without consuming rejected event identities", () => {
+    const wire = loadActualSidecarWriter("backpressure");
+    expect(wire.emit("runtime.diagnostic", { message: "accepted" })).toBe(true);
+    wire.bufferedBytes(4 * ACPX_SIDECAR_MAX_FRAME_BYTES - 1);
+    expect(wire.emit("runtime.diagnostic", { message: "cannot fit" })).toBe(false);
+    expect(wire.sequence()).toBe(1);
+    expect(wire.shutdownReasons).toEqual(["ACPX sidecar output buffer limit exceeded"]);
+    expect(wire.errors).toEqual(["[paperclip-acpx-sidecar] output_buffer_limit_exceeded\n"]);
+    wire.bufferedBytes(0);
+    expect(wire.emit("runtime.turn_terminal", { status: "completed" })).toBe(false);
+    expect(wire.writes).toHaveLength(1);
+    expect(wire.shutdownReasons).toHaveLength(1);
+  });
+
+  it("stops its owned provider under real stdout backpressure and exits with failure after draining", async () => {
+    const root = mkdtempSync(join(tmpdir(), "acpx-sidecar-output-pressure-"));
+    const loader = join(root, "provider-loader.mjs");
+    const fakeHost = new URL("../test-support/acpx-blocked-output-host.mjs", import.meta.url).href;
+    writeFileSync(loader, `import { registerHooks } from "node:module";
+      registerHooks({ resolve(specifier, context, next) {
+        if (context.parentURL?.includes("/acpx-runtime-sidecar.") && specifier.endsWith("/runtime-host.js")) {
+          return { url: ${JSON.stringify(fakeHost)}, shortCircuit: true };
+        }
+        return next(specifier, context);
+      } });`);
+    const child = spawn(process.execPath, ["--import", "tsx", "--import", loader,
+      fileURLToPath(new URL("./acpx-runtime-sidecar.ts", import.meta.url))],
+    { stdio: ["pipe", "pipe", "pipe"], env: { PATH: process.env.PATH, PAPERCLIP_TEST_OUTPUT_ROOT: root } });
+    const exited = once(child, "exit");
+    let stderr = "", stdout = "";
+    child.stderr.setEncoding("utf8").on("data", text => { stderr += text; });
+    child.stdout.setEncoding("utf8").on("data", text => { stdout += text; });
+    const send = (id: number, command: string, params: Record<string, unknown>) => {
+      child.stdin.write(`${JSON.stringify({ protocolVersion: ACPX_SIDECAR_PROTOCOL_VERSION, id, command, params })}\n`);
+    };
+    const response = async (id: number) => {
+      await vi.waitFor(() => {
+        expect(child.exitCode, stderr).toBeNull();
+        expect(stdout.split("\n").some(line => line && JSON.parse(line).id === id), stderr).toBe(true);
+      }, { timeout: 5000 });
+      const frame = stdout.split("\n").filter(Boolean).map(line => JSON.parse(line)).find(frame => frame.id === id);
+      expect(frame.ok, JSON.stringify(frame)).toBe(true);
+    };
+    let providerPid: number | undefined;
+    try {
+      send(1, "initialize", { agent: "codex", model: "gpt-5.6-sol" }); await response(1);
+      send(2, "session.open", { agent: "codex", model: "gpt-5.6-sol", runtimeDirectory: root,
+        workingDirectory: root, normalizedSessionId: "blocked-output-session", permissionMode: "deny-all",
+        systemInstructions: "Generate synthetic local output.", tools: [] }); await response(2);
+      providerPid = Number(readFileSync(join(root, "provider-pid"), "utf8"));
+      send(3, "run.attach", { runId: "blocked-output-run", catalogRevision: 1, tools: [] }); await response(3);
+      child.stdout.pause();
+      send(4, "turn.start", { turnId: "blocked-output-turn", message: "Fill the blocked pipe." });
+      await vi.waitFor(() => expect(existsSync(join(root, "provider-cleanup.json")), stderr).toBe(true), { timeout: 8000 });
+      const cleanup = JSON.parse(readFileSync(join(root, "provider-cleanup.json"), "utf8"));
+      expect(cleanup).toMatchObject({ reason: "ACPX sidecar output buffer limit exceeded", pid: providerPid,
+        closeCount: 1, code: 0, signal: null });
+      expect(cleanup.bufferedBytes).toBeGreaterThan(3 * ACPX_SIDECAR_MAX_FRAME_BYTES);
+      expect(cleanup.bufferedBytes).toBeLessThanOrEqual(4 * ACPX_SIDECAR_MAX_FRAME_BYTES);
+      expect(() => process.kill(providerPid!, 0)).toThrow();
+      expect(child.exitCode).toBeNull();
+      expect(stderr).toContain("output_buffer_limit_exceeded");
+      child.stdout.resume();
+      expect(await exited).toEqual([1, null]);
+      const events = stdout.trim().split("\n").map(line => JSON.parse(line)).filter(frame => frame.sequence);
+      expect(events.length).toBeGreaterThan(256);
+      expect(events.map(frame => frame.sequence)).toEqual(events.map((_frame, index) => index + 1));
+      expect(events.some(frame => frame.eventType === "runtime.turn_terminal" && frame.payload.status === "completed")).toBe(false);
+    } finally {
+      child.stdout.resume();
+      child.stdin.end();
+      if (providerPid && !existsSync(join(root, "provider-cleanup.json"))) { try { process.kill(providerPid, "SIGKILL"); } catch {} }
+      if (child.exitCode === null) child.kill("SIGKILL");
+      await exited.catch(() => undefined);
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 15_000);
+
+  it("reaps the output-pressure fixture provider when its owner dies before cleanup", async () => {
+    const fixture = new URL("../test-support/acpx-blocked-output-host.mjs", import.meta.url).href;
+    const owner = spawn(process.execPath, ["--input-type=module", "-e", `
+      import { AcpxRuntimeHost } from ${JSON.stringify(fixture)};
+      const host = new AcpxRuntimeHost({});
+      host.provider.once("message", () => process.send(host.provider.pid));
+      setInterval(() => {}, 1000);
+    `], { stdio: ["ignore", "ignore", "ignore", "ipc"], env: { PATH: process.env.PATH } });
+    const exited = once(owner, "exit");
+    let providerPid: number | undefined;
+    try {
+      [providerPid] = await once(owner, "message");
+      expect(typeof providerPid).toBe("number");
+      owner.kill("SIGKILL");
+      await exited;
+      await vi.waitFor(() => expect(() => process.kill(providerPid!, 0)).toThrow());
+    } finally {
+      if (providerPid) { try { process.kill(providerPid, "SIGKILL"); } catch {} }
+      if (owner.exitCode === null && owner.signalCode === null) owner.kill("SIGKILL");
+      await exited.catch(() => undefined);
     }
   });
 
@@ -534,7 +727,7 @@ describe("qualified ACPX runtime sidecar", () => {
           expect(Buffer.byteLength(JSON.stringify(JSON.parse(wire.writes[0]!).payload))).toBeGreaterThan(256 * 1024);
           expect(Buffer.byteLength(wire.writes[0]!)).toBeLessThan(ACPX_SIDECAR_MAX_FRAME_BYTES);
         }
-        const body = await (await response).json();
+        const body = await (await response).json() as ToolCallResponseBody;
         if (mode === "error") {
           expect(JSON.stringify(body)).not.toContain(credentialCanary);
           expect(JSON.stringify(body)).toContain("[REDACTED]");
@@ -590,6 +783,35 @@ describe("qualified ACPX runtime sidecar", () => {
     projection.settle();
   });
 
+  it("turns Claude status banners into paired provider notices before text projection", () => {
+    const source = readFileSync(fileURLToPath(new URL("./acpx-runtime-sidecar.ts", import.meta.url)), "utf8");
+    const sanitizer = source.slice(source.indexOf("function sanitizeRuntimeEvent"), source.indexOf("function claudeStatusBannerNotice"));
+    // The banner check runs before the text_delta projection.
+    expect(sanitizer.indexOf("claudeStatusBannerNotice(event)")).toBeGreaterThan(0);
+    expect(sanitizer.indexOf("claudeStatusBannerNotice(event)")).toBeLessThan(sanitizer.indexOf('if (event.type === "text_delta")'));
+    const start = source.indexOf("function claudeStatusBannerNotice");
+    const end = source.indexOf("\nfunction sanitizeRuntimeStatus", start);
+    expect(start).toBeGreaterThan(0);
+    const fn = stripTypeScriptTypes(source.slice(start, end));
+    const make = (agent: string) => new Function("classifyClaudeStatusBanner",
+      `let initializedAgent = ${JSON.stringify(agent)}; let claudeCompactionCount = 0; ${fn} return claudeStatusBannerNotice;`,
+    )(classifyClaudeStatusBanner) as (event: Record<string, unknown>) => Record<string, unknown> | null;
+    const notice = make("claude");
+    const chunk = (text: string, messageId?: string) => ({ type: "text_delta", stream: "output", text, ...(messageId ? { messageId } : {}) });
+    const started = notice(chunk("Compacting..."));
+    const completed = notice(chunk("\n\nCompacting completed."));
+    const next = notice(chunk("Compacting..."));
+    expect(started).toMatchObject({ type: "provider_notice", category: "context_compaction", noticeKey: "compaction-1",
+      details: [{ name: "Phase", value: "running" }] });
+    expect(completed).toMatchObject({ noticeKey: "compaction-1", details: [{ name: "Phase", value: "completed" }] });
+    expect(next).toMatchObject({ noticeKey: "compaction-2" });
+    expect(notice(chunk("**Warning:** Stop hook blocked continuation"))).toMatchObject({
+      type: "provider_notice", category: "provider_informational", severity: "warning", summary: "Stop hook blocked continuation",
+    });
+    expect(notice(chunk("Compacting...", "msg_01"))).toBeNull();
+    expect(notice({ ...chunk("Compacting..."), stream: "thought" })).toBeNull();
+    expect(make("codex")(chunk("Compacting..."))).toBeNull();
+  });
   it("passes only validated Pi native boundaries and history through the real text sanitizer", () => {
     const source = readFileSync(fileURLToPath(new URL("./acpx-runtime-sidecar.ts", import.meta.url)), "utf8");
     const start = source.indexOf('  if (event.type === "text_delta") {', source.indexOf("function sanitizeRuntimeEvent"));
@@ -598,8 +820,9 @@ describe("qualified ACPX runtime sidecar", () => {
     const sanitize = new Function("boundedOptionalText", "stableProviderIdentity", `return event => {${source.slice(start, end)} return null;}`)(
       (value: string) => value, (value: string) => `stable-${value}`,
     );
-    const projection = createPiMessageProjection<{ type: string; text: string; stream: string; messageId: string; meta: Record<string, string> }>();
-    const event = (kind: string) => ({ type: "text_delta", text: "", stream: "output", messageId: `pi-message-${"a".repeat(64)}`,
+    type PiTextFrame = { type: string; text: string; stream: string; messageId: string; meta: Record<string, string> };
+    const projection = createPiMessageProjection<PiTextFrame>();
+    const event = (kind: string): PiTextFrame => ({ type: "text_delta", text: "", stream: "output", messageId: `pi-message-${"a".repeat(64)}`,
       meta: { origin: "pi-native-assistant", source: "pi-rpc-message-v1", kind, secret: "DROP_ME" } });
     const startFrame = sanitize(projection.normalize(event("start")));
     const endFrame = sanitize(projection.normalize(event("end:toolUse")));
@@ -608,7 +831,7 @@ describe("qualified ACPX runtime sidecar", () => {
     expect(startFrame.messageId).toBe(endFrame.messageId);
     expect(JSON.stringify([startFrame, endFrame])).not.toContain("DROP_ME");
     projection.settle();
-    const loaded = createPiMessageProjection<ReturnType<typeof event>>();
+    const loaded = createPiMessageProjection<PiTextFrame>();
     const history = sanitize(loaded.normalize({ ...event("history"), messageId: `pi-history-message-${"b".repeat(64)}`,
       text: "old reply", meta: { origin: "pi-history-assistant", source: "pi-session-history-v1", kind: "history" } }));
     expect(history).toMatchObject({ text: "old reply", piMessageHistory: true }); loaded.settle();
@@ -729,6 +952,7 @@ describe("qualified ACPX runtime sidecar", () => {
       .replace("  } as BoundedRuntimeToolEvent;", "  };");
     const bound = new Function(
       "boundedOptionalText", "stableProviderIdentity", "safeAcpxLocations", "openParams", "safeOutput",
+      "toolFileChangesFromAcpContent", "sidecarWorkspaceRoots",
       `return (${functionSource});`,
     )(
       (value: unknown, fallback: string, max: number) => typeof value === "string" ? value.slice(0, max) : fallback,
@@ -736,6 +960,8 @@ describe("qualified ACPX runtime sidecar", () => {
       () => [],
       null,
       () => ({ output: null, outputBytes: 0, outputTruncated: false, outputDigest: null }),
+      toolFileChangesFromAcpContent,
+      () => ["/work/repo"],
     ) as (event: Record<string, unknown>) => Record<string, unknown>;
     const bounded = bound({
       type: "tool_call", toolCallId: "provider-tool", title: "search", kind: "other",
@@ -747,6 +973,16 @@ describe("qualified ACPX runtime sidecar", () => {
     expect(canonical.payload).toMatchObject({ inputUpdated: true });
     expect(JSON.stringify(canonical.payload)).not.toContain("must not cross");
     expect(source).toContain("? boundedTool.inputUpdated");
+
+    // ACP diff content crosses as bounded, workspace-relative fileChanges.
+    const edit = bound({
+      type: "tool_call", toolCallId: "edit-tool", title: "Edit", kind: "edit", status: "completed",
+      content: [{ type: "diff", path: "/work/repo/a.js", oldText: "a", newText: "b" }],
+    });
+    expect(edit.paperclipFileChanges).toEqual([
+      expect.objectContaining({ path: "a.js", operation: "modify", additions: 1, deletions: 1 }),
+    ]);
+    expect(edit).not.toHaveProperty("content");
   });
 
   it.each(["paperclip_finish", "paperclip_block"])(
@@ -1426,11 +1662,11 @@ class SidecarProcess {
   #stderr = "";
   #closed = false;
 
-  constructor() {
+  constructor(options: {loader?:string;environment?:Record<string,string>} = {}) {
     this.#child = spawn(
-      fileURLToPath(new URL("../../node_modules/.bin/tsx", import.meta.url)),
-      [fileURLToPath(new URL("./acpx-runtime-sidecar.ts", import.meta.url))],
-      { stdio: ["pipe", "pipe", "pipe"], env: { PATH: process.env.PATH, LANG: "C.UTF-8" } },
+      options.loader ? process.execPath : fileURLToPath(new URL("../../node_modules/.bin/tsx", import.meta.url)),
+      [...(options.loader ? ["--import","tsx","--import",options.loader] : []), fileURLToPath(new URL("./acpx-runtime-sidecar.ts", import.meta.url))],
+      { stdio: ["pipe", "pipe", "pipe"], env: { PATH: process.env.PATH, LANG: "C.UTF-8", ...options.environment } },
     );
     let stdout = "";
     this.#child.stdout.setEncoding("utf8");
@@ -1458,6 +1694,10 @@ class SidecarProcess {
 
   stderr(): string {
     return this.#stderr;
+  }
+
+  pending(predicate: (frame: Record<string, unknown>) => boolean): number {
+    return this.#frames.filter(predicate).length;
   }
 
   async next(
@@ -1505,6 +1745,8 @@ class SidecarProcess {
   }
 }
 
+type ToolCallResponseBody = { result: { content: Array<{ text: string }>; isError?: boolean } };
+
 function loadWaitForTool(input: {
   tools: Map<string, unknown>;
   emitted: unknown[];
@@ -1550,21 +1792,22 @@ function loadWaitForTool(input: {
 /** Actual producer and encoder, with only the destination stream replaced. */
 function loadActualSidecarWriter(mode: "normal" | "backpressure" | "throws" = "normal"): {
   emit: (eventType: string, payload: unknown) => boolean; sequence: () => number; writes: string[]; errors: string[];
+  bufferedBytes: (bytes: number) => void; shutdownReasons: string[];
 } {
   const source = readFileSync(new URL("./acpx-runtime-sidecar.ts", import.meta.url), "utf8");
   const emitStart = source.indexOf("function emit("), emitEnd = source.indexOf("\nfunction diagnostic", emitStart);
   const writeStart = source.indexOf("function writeFrame("), writeEnd = source.indexOf("\nfunction requireHost", writeStart);
   if (emitStart < 0 || emitEnd < 0 || writeStart < 0 || writeEnd < 0) throw new Error("Actual sidecar writer source not found");
-  const writes: string[] = [], errors: string[] = [];
-  const process = { stdout: { write: (line: string) => { if (mode === "throws") throw new Error("fixture write failed"); writes.push(line); return mode !== "backpressure"; } },
+  const writes: string[] = [], errors: string[] = [], shutdownReasons: string[] = [];
+  const process = { stdout: { writableLength: 0, write: (line: string) => { if (mode === "throws") throw new Error("fixture write failed"); writes.push(line); return mode !== "backpressure"; } },
     stderr: { write: (line: string) => { errors.push(line); return true; } } };
-  const writer = new Function("process", "stringifyAcpxSidecarFrame", "ACPX_SIDECAR_PROTOCOL_VERSION", "ACPX_SIDECAR_MAX_FRAME_BYTES", `
-    let sequence=0; const runId="test-run", turnId="test-turn";
+  const writer = new Function("process", "stringifyAcpxSidecarFrame", "ACPX_SIDECAR_PROTOCOL_VERSION", "ACPX_SIDECAR_MAX_FRAME_BYTES", "requestShutdown", `
+    let sequence=0, outputFailed=false; const runId="test-run", turnId="test-turn", MAX_BUFFERED_OUTPUT_BYTES=4*ACPX_SIDECAR_MAX_FRAME_BYTES;
     ${stripTypeScriptTypes(source.slice(emitStart, emitEnd))}
     ${stripTypeScriptTypes(source.slice(writeStart, writeEnd))}
     return { emit, sequence: () => sequence };
-  `)(process, stringifyAcpxSidecarFrame, ACPX_SIDECAR_PROTOCOL_VERSION, ACPX_SIDECAR_MAX_FRAME_BYTES);
-  return { ...writer, writes, errors };
+  `)(process, stringifyAcpxSidecarFrame, ACPX_SIDECAR_PROTOCOL_VERSION, ACPX_SIDECAR_MAX_FRAME_BYTES, (reason: string) => shutdownReasons.push(reason));
+  return { ...writer, writes, errors, bufferedBytes: bytes => { process.stdout.writableLength = bytes; }, shutdownReasons };
 }
 
 /** Actual parsed command dispatcher; only the owned pending map/turn are supplied. */

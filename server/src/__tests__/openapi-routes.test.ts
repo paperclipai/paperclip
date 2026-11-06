@@ -1428,3 +1428,21 @@ describe("heartbeat run ID OpenAPI contract", () => {
     expect(checked).toBe(12);
   });
 });
+
+
+it("documents explicit owner removals in the timeline response event enum", () => {
+  const spec = buildOpenApiSpec() as any;
+  const schema = spec.paths["/api/companies/{companyId}/timeline"].get.responses["200"].content["application/json"].schema;
+  expect(schema.properties.events.items.properties.kind.enum).toEqual([
+    "created", "commented", "approved", "delegated", "assigned", "unassigned",
+  ]);
+});
+
+it("documents canonical saved-resource links in catalog team install responses", () => {
+  const operation = buildOpenApiSpec().paths["/api/companies/{companyId}/teams/catalog/{catalogId}/install"].post;
+  expect(operation.description).toContain("resourceLinks");
+  const schema = operation.responses[201].content["application/json"].schema;
+  expect(schema.required).toContain("resourceLinks");
+  expect(schema.properties.resourceLinks.items.properties.kind.enum).toEqual(["agent", "project", "routine"]);
+  expect(schema.properties.resourceLinks.items.required).toEqual(["kind", "id", "name", "href"]);
+});

@@ -131,14 +131,45 @@ jobs:
             echo 'CI_NODE_TEST=--test' >> "$GITHUB_ENV"
           fi
 
-      - name: Block manual lockfile edits
-        if: >-
-          github.head_ref != 'chore/refresh-lockfile' &&
-          github.event.pull_request.user.login != 'dependabot[bot]'
+      # Only trusted environments write lock content: the lockfile refresh
+      # workflow, and Dependabot when the lockfile bytes come from a verified
+      # Dependabot commit. Run the policy from the current base-branch tip so a
+      # pull request cannot rewrite the check that judges it.
+      - name: Block untrusted lockfile edits
+        id: lockfile_writer
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          HEAD_REF: ${{ github.head_ref }}
         run: |
-          # Diff the PR branch against its merge base so recent base-branch commits
-          # do not masquerade as changes made by the PR itself.
-          changed="$(git diff --name-only "${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }}")"
+          # GitHub does not move pull_request.base.sha forward on every push, so
+          # it can name an old base-branch commit. The checkout is GitHub's merge
+          # commit: its first parent is the current base-branch tip, and its
+          # second parent is the PR head. Load the policy from that tip.
+          trusted_base="$BASE_SHA"
+          if [ "$(git rev-parse --verify --quiet "$GITHUB_SHA^2")" = "$HEAD_SHA" ]; then
+            trusted_base="$(git rev-parse "$GITHUB_SHA^1")"
+          fi
+          policy="$RUNNER_TEMP/lockfile-trust.mjs"
+          if git show "$trusted_base:.github/scripts/lockfile-trust.mjs" > "$policy" 2>/dev/null; then
+            BASE_SHA="$trusted_base" node "$policy" pr
+            # Fail closed if the policy did not run.
+            if ! grep -q '^writer=' "$GITHUB_OUTPUT"; then
+              echo "::error title=Lockfile policy::lockfile-trust.mjs did not report a lockfile writer."
+              exit 1
+            fi
+            exit 0
+          fi
+          # The base predates lockfile-trust.mjs: keep the earlier rule.
+          echo "writer=none" >> "$GITHUB_OUTPUT"
+          if [ "$HEAD_REF" = 'chore/refresh-lockfile' ] || [ "$PR_AUTHOR" = 'dependabot[bot]' ]; then
+            exit 0
+          fi
+          changed="$(git diff --name-only "$trusted_base...$HEAD_SHA")"
           if printf '%s\n' "$changed" | grep -qx 'pnpm-lock.yaml'; then
             echo "Do not commit pnpm-lock.yaml in pull requests. CI owns lockfile updates."
             exit 1
@@ -192,9 +223,8 @@ jobs:
       - name: Test feature module boundary check
         run: node "$CI_NODE_TEST" ./scripts/check-module-boundaries.test.mjs
 
-      # Report-only for now (always exits 0); --enforce turns findings into failures.
-      - name: Report raw query-error rendering
-        run: node scripts/check-query-error-rendering.mjs --summary
+      - name: Reject raw query-error rendering
+        run: node scripts/check-query-error-rendering.mjs --enforce --summary
 
       - name: Test query-error rendering check
         run: node --test ./scripts/check-query-error-rendering.test.mjs
@@ -376,7 +406,7 @@ jobs:
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: ${{ steps.runner_rust_workspace.outputs.path }} -> target
-          shared-key: release-runner-v2
+          shared-key: release-runner-v2-${{ hashFiles('packages/paperclip-runner/runner/Cargo.toml', '.cargo/config', '.cargo/config.toml', 'packages/.cargo/config', 'packages/.cargo/config.toml', 'packages/paperclip-runner/.cargo/config', 'packages/paperclip-runner/.cargo/config.toml', 'packages/paperclip-runner/runner/.cargo/config', 'packages/paperclip-runner/runner/.cargo/config.toml') }}
           # Mirror the master writer: these also feed the cache key.
           cache-workspace-crates: false
           cache-bin: false
@@ -422,6 +452,9 @@ jobs:
       - name: Typecheck workspaces whose build scripts skip TypeScript
         run: pnpm run typecheck:build-gaps
 
+      - name: Typecheck test files that no build reads
+        run: node scripts/typecheck-test-programs.mjs --low-memory
+
       - name: Typecheck the server in low-memory layers
         env:
           PAPERCLIP_TYPECHECK_LOW_MEMORY: "1"
@@ -462,6 +495,9 @@ jobs:
       PAPERCLIP_CI_SELECTION_HASH: ${{ matrix.selection && fromJSON(needs.test_selection.outputs.plan).testSelection.hash || '' }}
       PAPERCLIP_CI_PROFILE: ${{ needs.gate.outputs.profile_ci }}
       PAPERCLIP_CI_PROFILE_JOB: General tests (${{ matrix.group_label }})
+      # The reporting-lock policy test skips a Dependabot lockfile, which the
+      # policy job verifies and the lockfile refresh admits after merge.
+      PAPERCLIP_CI_PR_AUTHOR: ${{ github.event.pull_request.user.login }}
 
     steps:
       - name: Checkout repository
@@ -790,7 +826,7 @@ jobs:
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: ${{ steps.runner_rust_workspace.outputs.path }} -> target
-          shared-key: release-runner-v2
+          shared-key: release-runner-v2-${{ hashFiles('packages/paperclip-runner/runner/Cargo.toml', '.cargo/config', '.cargo/config.toml', 'packages/.cargo/config', 'packages/.cargo/config.toml', 'packages/paperclip-runner/.cargo/config', 'packages/paperclip-runner/.cargo/config.toml', 'packages/paperclip-runner/runner/.cargo/config', 'packages/paperclip-runner/runner/.cargo/config.toml') }}
           # Mirror the master writer: these also feed the cache key.
           cache-workspace-crates: false
           cache-bin: false
@@ -1041,7 +1077,7 @@ jobs:
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: ${{ steps.runner_rust_workspace.outputs.path }} -> target
-          shared-key: release-runner-v2
+          shared-key: release-runner-v2-${{ hashFiles('packages/paperclip-runner/runner/Cargo.toml', '.cargo/config', '.cargo/config.toml', 'packages/.cargo/config', 'packages/.cargo/config.toml', 'packages/paperclip-runner/.cargo/config', 'packages/paperclip-runner/.cargo/config.toml', 'packages/paperclip-runner/runner/.cargo/config', 'packages/paperclip-runner/runner/.cargo/config.toml') }}
           # Mirror the master writer: these also feed the cache key.
           cache-workspace-crates: false
           cache-bin: false
@@ -1382,7 +1418,7 @@ jobs:
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: ${{ steps.runner_rust_workspace.outputs.path }} -> target
-          shared-key: release-runner-v2
+          shared-key: release-runner-v2-${{ hashFiles('packages/paperclip-runner/runner/Cargo.toml', '.cargo/config', '.cargo/config.toml', 'packages/.cargo/config', 'packages/.cargo/config.toml', 'packages/paperclip-runner/.cargo/config', 'packages/paperclip-runner/.cargo/config.toml', 'packages/paperclip-runner/runner/.cargo/config', 'packages/paperclip-runner/runner/.cargo/config.toml') }}
           # Mirror the master writer: these also feed the cache key.
           cache-workspace-crates: false
           cache-bin: false

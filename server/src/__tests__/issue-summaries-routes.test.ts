@@ -4,12 +4,12 @@ import request from "supertest";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, expect, it, vi } from "vitest";
 import {
-  agents, chatConversations, chatEndpoints, issues, toolApplications, toolConnections,
+  agents, chatConversations, chatEndpoints, heartbeatRuns, issueRelations, issues, toolApplications, toolConnections,
 } from "@paperclipai/db";
 import { issueRoutes } from "../routes/issues.js";
 import * as issueServices from "../services/issues.js";
 import { errorHandler } from "../middleware/index.js";
-import { describeEmbeddedPostgres, seedCompanyWithBoardAccess, useEmbeddedPostgres } from "./helpers/route-test-harness.js";
+import { describeEmbeddedPostgres, seedCompanyWithBoardAccess, useEmbeddedPostgres, type BoardActor } from "./helpers/route-test-harness.js";
 
 describeEmbeddedPostgres("bounded issue summaries", () => {
   const ctx = useEmbeddedPostgres("paperclip-issue-summaries-");
@@ -28,10 +28,10 @@ describeEmbeddedPostgres("bounded issue summaries", () => {
     ]).returning();
     return { ...company, rows };
   }
-  function app(actor: Express.Request["actor"]) {
+  function app(actor: BoardActor | Express.Request["actor"]) {
     const result = express();
     result.use(express.json());
-    result.use((req, _res, next) => { req.actor = actor; next(); });
+    result.use((req, _res, next) => { req.actor = actor as Express.Request["actor"]; next(); });
     result.use("/api", issueRoutes(ctx.db, {} as never));
     result.use(errorHandler);
     return result;
@@ -95,7 +95,7 @@ describeEmbeddedPostgres("bounded issue summaries", () => {
     const [agent] = await ctx.db.insert(agents).values({ companyId: f.companyId, name: "Chat", role: "general", adapterType: "process" }).returning();
     const issue = f.rows[0]!;
     await ctx.db.update(issues).set({ status: "in_review", assigneeAgentId: agent!.id }).where(eq(issues.id, issue.id));
-    const [application] = await ctx.db.insert(toolApplications).values({ companyId: f.companyId, name: "Slack", type: "native" }).returning();
+    const [application] = await ctx.db.insert(toolApplications).values({ companyId: f.companyId, name: "Slack", type: "chat" }).returning();
     const connectionId = randomUUID();
     await ctx.db.insert(toolConnections).values({ id: connectionId, companyId: f.companyId, applicationId: application!.id, uid: connectionId, name: "Slack", transport: "chat_sdk", connectionPurpose: "channel" });
     const endpointId = randomUUID();
@@ -109,5 +109,48 @@ describeEmbeddedPostgres("bounded issue summaries", () => {
     const active = (await read()).body[0];
     expect(active.externalConversationState).toBe("active");
     expect(active.updatedAt).toBe(waiting.updatedAt);
+  });
+
+  it("projects the covered-blocker state so every task view picks the same queued glyph (BUG-07)", async () => {
+    const f = await fixture();
+    const [agent] = await ctx.db.insert(agents).values({ companyId: f.companyId, name: "Builder", role: "engineer", adapterType: "process" }).returning();
+    const [parent] = await ctx.db.insert(issues).values({ companyId: f.companyId, title: "Parent", status: "blocked" }).returning();
+    const [child] = await ctx.db.insert(issues).values({
+      companyId: f.companyId, title: "Running child", identifier: "SUM-9", status: "todo", parentId: parent!.id, assigneeAgentId: agent!.id,
+    }).returning();
+    await ctx.db.insert(issueRelations).values({ companyId: f.companyId, issueId: child!.id, relatedIssueId: parent!.id, type: "blocks" });
+    const runId = randomUUID();
+    await ctx.db.insert(heartbeatRuns).values({ id: runId, companyId: f.companyId, agentId: agent!.id, status: "running", contextSnapshot: { issueId: child!.id } });
+    await ctx.db.update(issues).set({ executionRunId: runId }).where(eq(issues.id, child!.id));
+
+    const res = await request(app(f.actor)).get(url(f.companyId)).query({ ids: `${parent!.id},${f.rows[0]!.id}` }).expect(200);
+    expect(res.body[0].blockerAttention).toMatchObject({ state: "covered", reason: "active_child", sampleBlockerIdentifier: "SUM-9" });
+    // Only what the glyph needs: no blocker titles or IDs.
+    expect(Object.keys(res.body[0].blockerAttention).sort()).toEqual([
+      "attentionBlockerCount", "coveredBlockerCount", "reason", "sampleBlockerIdentifier",
+      "sampleStalledBlockerIdentifier", "stalledBlockerCount", "state", "unresolvedBlockerCount",
+    ]);
+    expect(JSON.stringify(res.body)).not.toContain("Running child");
+    expect(JSON.stringify(res.body)).not.toContain(child!.id);
+    // Unblocked tasks keep the bounded summary shape.
+    expect(res.body[1]).not.toHaveProperty("blockerAttention");
+  });
+
+  it("does not disclose a private blocker through a readable blocked task's summary", async () => {
+    const f = await fixture();
+    const [parent] = await ctx.db.insert(issues).values({ companyId: f.companyId, title: "Public parent", status: "blocked" }).returning();
+    const privateId = randomUUID();
+    await ctx.db.insert(issues).values({
+      id: privateId, companyId: f.companyId, title: "Secret blocker title", status: "todo", visibility: "private",
+      privacyRootIssueId: privateId, responsibleUserId: "someone-else", createdByUserId: "someone-else",
+    });
+    await ctx.db.insert(issueRelations).values({ companyId: f.companyId, issueId: privateId, relatedIssueId: parent!.id, type: "blocks" });
+
+    const res = await request(app(f.actor)).get(url(f.companyId)).query({ ids: parent!.id }).expect(200);
+    expect(res.body).toHaveLength(1);
+    expect(res.body[0].blockerAttention?.state).toBeDefined();
+    expect(JSON.stringify(res.body)).not.toContain("Secret blocker title");
+    expect(JSON.stringify(res.body)).not.toContain(privateId);
+    expect(res.body[0].blockerAttention).not.toHaveProperty("terminalBlocker");
   });
 });

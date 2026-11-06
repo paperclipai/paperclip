@@ -320,12 +320,12 @@ jobs:
 
   verify_canary:
     name: Reuse exact-source verification
-    if: github.repository == 'paperclipai/paperclip' && github.event_name == 'push' && github.ref == 'refs/heads/master'
+    if: github.repository == 'paperclipai/paperclip' && github.repository_id == '1170821064' && github.event_name == 'push' && github.ref == 'refs/heads/master'
     runs-on: ubuntu-latest
-    timeout-minutes: 50
+    timeout-minutes: 70
     permissions:
       contents: read
-      actions: read
+      actions: write # restart only an exact-source push deferred before admission
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:

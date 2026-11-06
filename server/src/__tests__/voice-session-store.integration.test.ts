@@ -42,6 +42,7 @@ import { buildPaperclipRuntimeMcpServers } from "../services/heartbeat.js";
 import { createToolGatewayService } from "../services/tool-gateway.js";
 import { initializeRunIdentity } from "../services/run-identity.js";
 import { syncSpekoVoiceTools, spekoToolsForSession, executeSpekoVoiceTool } from "../services/voice/speko-agent-tools.js";
+import type { InternalSetupState } from "../services/chat-channels/runtime-types.js";
 const historyExternal = resolveExternalTestDatabaseUrl("PAPERCLIP_HISTORY_TEST_DATABASE_URL");
 const external = historyExternal ?? resolveExternalTestDatabaseUrl("PAPERCLIP_VOICE_TEST_DATABASE_URL");
 const support = external ? { supported: true } : await getEmbeddedPostgresTestSupport();
@@ -55,15 +56,20 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
   }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
   afterAll(async () => { await db?.$client.end({ timeout: 1 }); await database?.cleanup(); });
 
+  // Issue prefixes are unique across companies. About a hundred fixtures share
+  // this database, so seven random hex digits alone could collide; the
+  // sequence keeps each prefix in this run distinct within the ten characters
+  // an issue mention allows.
+  let companySequence = 0;
   async function fixture() {
     const companyId = randomUUID(), endpointId = randomUUID(), agentId = randomUUID(), applicationId = randomUUID(), connectionId = randomUUID(), issueId = randomUUID(), conversationId = randomUUID(), callerId = randomUUID();
-    await db.insert(companies).values({ id: companyId, name: "Voice test", issuePrefix: `V${companyId.slice(0, 7).toUpperCase()}` });
+    await db.insert(companies).values({ id: companyId, name: "Voice test", issuePrefix: `V${(++companySequence).toString(36).padStart(3, "0")}${companyId.slice(0, 6)}`.toUpperCase() });
     await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: callerId, status: "active", membershipRole: "member" });
     await db.insert(agents).values({ id: agentId, companyId, name: "Existing agent", role: "operator", status: "idle", adapterType: "paperclip_runner" });
     await db.insert(issues).values({ id: issueId, companyId, title: "Existing task", assigneeAgentId: agentId, status: "in_progress" });
     await db.insert(toolApplications).values({ id: applicationId, companyId, applicationKey: `chat:speko:${endpointId}`, name: "Speko", type: "chat", status: "active" });
     await db.insert(toolConnections).values({ id: connectionId, companyId, applicationId, name: "Speko", uid: endpointId, connectionPurpose: "channel", transport: "voice", config: { provider: "speko" }, status: "active", enabled: true });
-    await db.insert(chatEndpoints).values({ id: endpointId, companyId, connectionId, provider: "speko", publicId: randomUUID(), assignedAgentId: agentId, status: "active", setup: { step: "complete", runtimeGeneration: 1 } });
+    await db.insert(chatEndpoints).values({ id: endpointId, companyId, connectionId, provider: "speko", publicId: randomUUID(), assignedAgentId: agentId, status: "active", setup: { step: "complete", runtimeGeneration: 1 } as InternalSetupState });
     await db.insert(chatConversations).values({ id: conversationId, companyId, endpointId, issueId, externalConversationId: `speko:${conversationId}`, externalThreadId: `speko:${conversationId}`, externalLabel: "Voice", isDirectMessage: true });
     const store = voiceSessionStore(db, { allowLocalBoard: false });
     const prepareBinding = vi.fn(async () => ({ issueId, conversationId }));
@@ -622,9 +628,9 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     expect(await liveVoiceExecutionGuidance(db, { ...scope, companyId: randomUUID() })).toBeNull();
     expect(await liveVoiceExecutionGuidance(db, { ...scope, agentId: randomUUID() })).toBeNull();
     expect(await liveVoiceExecutionGuidance(db, scope, new Date(Date.now() + 900_000))).toBeNull();
-    await db.update(chatEndpoints).set({setup: {step: "complete", runtimeGeneration: 2}}).where(eq(chatEndpoints.id, f.endpointId));
+    await db.update(chatEndpoints).set({setup: {step: "complete", runtimeGeneration: 2} as InternalSetupState}).where(eq(chatEndpoints.id, f.endpointId));
     expect(await liveVoiceExecutionGuidance(db, scope)).toBeNull();
-    await db.update(chatEndpoints).set({setup: {step: "complete", runtimeGeneration: 1}, status: "paused"}).where(eq(chatEndpoints.id, f.endpointId));
+    await db.update(chatEndpoints).set({setup: {step: "complete", runtimeGeneration: 1} as InternalSetupState, status: "paused"}).where(eq(chatEndpoints.id, f.endpointId));
     expect(await liveVoiceExecutionGuidance(db, scope)).toBeNull();
     await db.update(chatEndpoints).set({status: "active"}).where(eq(chatEndpoints.id, f.endpointId));
     await db.update(chatVoiceSessions).set({state: "ended", endedAt: new Date()}).where(eq(chatVoiceSessions.id, f.sessionId));
@@ -799,9 +805,9 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
 
   it("fences old generations and credential rotations", async () => {
     const f = await fixture();
-    await db.update(chatEndpoints).set({ setup: { step: "complete", runtimeGeneration: 2 } }).where(eq(chatEndpoints.id, f.endpointId));
+    await db.update(chatEndpoints).set({ setup: { step: "complete", runtimeGeneration: 2 } as InternalSetupState }).where(eq(chatEndpoints.id, f.endpointId));
     await expect(f.store.runTool(f.toolInput("get_updates", { cursor: 0 }))).rejects.toMatchObject({ status: 403 });
-    await db.update(chatEndpoints).set({ setup: { step: "complete", runtimeGeneration: 1 } }).where(eq(chatEndpoints.id, f.endpointId));
+    await db.update(chatEndpoints).set({ setup: { step: "complete", runtimeGeneration: 1 } as InternalSetupState }).where(eq(chatEndpoints.id, f.endpointId));
     await db.update(toolConnections).set({ credentialSecretRefs: [{ configPath: "apiKey", secretId: randomUUID(), versionSelector: "latest" }] }).where(eq(toolConnections.id, f.connectionId));
     await expect(f.store.runTool(f.toolInput("get_updates", { cursor: 0 }))).rejects.toMatchObject({ status: 403 });
   });
@@ -959,7 +965,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
   async function questionFixture() {
     const f = await fixture(), id = randomUUID();
     await db.insert(issueThreadInteractions).values({ id, companyId: f.companyId, issueId: f.issueId, kind: "ask_user_questions",
-      createdByAgentId: f.agentId, addresseeUserId: f.callerId, effectiveResolverPolicy: "addressee_only",
+      createdByAgentId: f.agentId, addresseeUserId: f.callerId, effectiveResolverPolicy: "human_only",
       payload: { version: 1, questions: [{ id: "color", prompt: "Which color?", selectionMode: "single", required: true,
         allowOther: false, options: [{ id: "cobalt", label: "Cobalt" }] }] } });
     const publication = await f.publication();
@@ -1014,7 +1020,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
       listPhoneNumbers: vi.fn(async () => []), assignPhoneNumber: vi.fn(async () => {}),
       listWebhooks: vi.fn(async () => [...hooks]), configureWebhook: vi.fn(async (agentId: string, url: string, _secret: string, id?: string) => { const hook = {id: id ?? "hook_test", url, events: ["call.pre_call", "call.status", "call.report"], allAgents: false, agentIds: [agentId], filterTags: {}}; hooks.splice(0, hooks.length, hook); return {id: hook.id}; }),
       listTools: vi.fn(async () => []),
-      configureTool: vi.fn(async () => ({ id: "tool_test" })),
+      configureTool: vi.fn(async (_agentId: string, _definition: unknown, _secret: string, _id?: string) => ({ id: "tool_test" })),
       configureVoiceDefaults: vi.fn(async () => {}),
       verifyAgent: vi.fn(async () => ({ id: "agent_test", organizationId: "org_test", name: "Test voice" })),
       createPhoneSession: vi.fn(async (_input: { to: string; bindingId: string }) => ({ sessionId: randomUUID(), status: "dialing" as const })),
@@ -1187,7 +1193,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
   it("schedules the next phone answer when real get_updates consumes its question barrier", async () => {
     const f = await pushFixture(), interactionId = randomUUID();
     await db.insert(issueThreadInteractions).values({ id: interactionId, companyId: f.companyId, issueId: f.issueId,
-      kind: "ask_user_questions", status: "pending", addresseeUserId: f.callerId, effectiveResolverPolicy: "addressee_only",
+      kind: "ask_user_questions", status: "pending", addresseeUserId: f.callerId, effectiveResolverPolicy: "human_only",
       payload: { version: 1, questions: [{ id: "color", prompt: "Which color?", selectionMode: "single", required: true, options: [{ id: "cobalt", label: "Cobalt" }] }] } });
     await db.update(chatPublications).set({ payload: { text: "Which color?", interactionId } }).where(eq(chatPublications.id, f.publication.id));
     const [later] = await db.insert(chatPublications).values({ companyId: f.companyId, endpointId: f.endpointId,
@@ -1370,7 +1376,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
   });
   it("notifies phone questions once and waits for authorized retrieval before later answers", async () => {
     const f = await pushFixture(), interactionId = randomUUID();
-    await db.insert(issueThreadInteractions).values({id: interactionId, companyId: f.companyId, issueId: f.issueId, kind: "ask_user_questions", status: "pending", addresseeUserId: f.callerId, effectiveResolverPolicy: "addressee_only", payload: {version: 1, questions: [{id: "color", prompt: "Which color?", selectionMode: "single", required: true, options: [{id: "cobalt", label: "Cobalt"}]}]}});
+    await db.insert(issueThreadInteractions).values({id: interactionId, companyId: f.companyId, issueId: f.issueId, kind: "ask_user_questions", status: "pending", addresseeUserId: f.callerId, effectiveResolverPolicy: "human_only", payload: {version: 1, questions: [{id: "color", prompt: "Which color?", selectionMode: "single", required: true, options: [{id: "cobalt", label: "Cobalt"}]}]}});
     await db.update(chatPublications).set({payload: {text: "Which color?", interactionId}}).where(eq(chatPublications.id, f.publication.id));
     const [later] = await db.insert(chatPublications).values({companyId: f.companyId, endpointId: f.endpointId, conversationId: f.conversationId, issueId: f.issueId, idempotencyKey: randomUUID(), state: "published", payload: {text: "Approved later answer"}}).returning();
     await f.store.enqueuePublication(f.companyId, later.id);
@@ -1694,7 +1700,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     const chat = chatChannelService(db, {heartbeat: {wakeup}, deferWebhookProcessing: true});
     try {
       for (const text of ["Help draft a public inquiry", "Keep it short"] ) {
-        const accepted = await f.tool("submit_request", {text});
+        const accepted = await f.tool("submit_request", {text}) as {requestId: string};
         await expect.poll(async () => {
           await chat.processPendingDeliveries(25, accepted.requestId as string);
           const [delivery] = await db.select().from(chatDeliveries).where(eq(chatDeliveries.id, accepted.requestId as string));
@@ -1885,14 +1891,34 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     for (const event of [{...f.event, phone_number_id: "other"}, {...f.event, organization_id: "other"}, {...f.event, call_id: "other"}]) {
       const signed = f.sign(event); await expect(f.service.inbound.lifecycle(f.endpoint.publicId, signed.body, signed.headers)).rejects.toMatchObject({status: 403});
     }
-    await db.update(chatEndpoints).set({setup: {step: "complete", runtimeGeneration: 2}}).where(eq(chatEndpoints.id, f.endpointId));
+    await db.update(chatEndpoints).set({setup: {step: "complete", runtimeGeneration: 2} as InternalSetupState}).where(eq(chatEndpoints.id, f.endpointId));
     await expect(f.tool("get_updates", {cursor: 0})).rejects.toMatchObject({status: 403});
     await expect(f.service.inbound.decide(f.companyId, f.endpointId, f.call.id, f.input.caller, {approve: true, approvalCode: f.call.approvalCode})).rejects.toMatchObject({status: 409});
   });
   it("retains one safe report per call and rejects history after access revocation", async () => {
     const f = await nativeServiceFixture(), first = await f.service.start(f.input);
+    const foreign = await nativeServiceFixture();
+    const [foreignSession] = await db.select().from(chatVoiceSessions).where(eq(chatVoiceSessions.id, foreign.sessionId));
+    await db.insert(chatVoiceReports).values({ companyId: foreign.companyId, sessionId: foreign.sessionId, nextCheckAt: new Date(0) });
+    const foreignReports = await db.select().from(chatVoiceReports).where(eq(chatVoiceReports.companyId, foreign.companyId));
+    const reportProviderIds: string[] = [];
+    const fetchReport = f.transport.callReport as (providerSessionId: string) => ReturnType<typeof f.transport.callReport>;
+    const reports = voiceCallReports(db, session => {
+      reportProviderIds.push(session.providerSessionId!);
+      return fetchReport(session.providerSessionId!);
+    });
+    expect(await reports.load({ kind: "company", id: foreign.companyId })).toEqual([
+      expect.objectContaining({ id: foreign.sessionId, companyId: foreign.companyId, dueAt: 0 }),
+    ]);
+    // This case owns report/history behavior for its company. Global recovery
+    // also visits every predecessor fixture's live calls, replies and reports.
+    const reconcileReports = async () => {
+      const due = (await reports.load({ kind: "company", id: f.companyId }))
+        .filter(row => row.dueAt <= Date.now()).sort((a, b) => a.dueAt - b.dueAt || a.id.localeCompare(b.id));
+      for (const row of due) await reports.check(row.id);
+    };
     await f.service.end(f.companyId, first.session.id, f.input.caller);
-    await f.service.reconcile(1000);
+    await reconcileReports();
     const detail = await f.service.callDetail(f.companyId, first.session.id, f.input.caller);
     expect(detail.report).toMatchObject({ status: "available", costMicroUsd: "120000", transcript: [{ id: "turn1", text: "A test request" }] });
     expect(await f.service.history(f.companyId, f.endpointId, f.input.caller)).toEqual(expect.arrayContaining([detail]));
@@ -1907,12 +1933,12 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     const baseline = await f.transport.callReport(), latest = new Date(Date.now() + 10000);
     let response = { ...baseline, costMicroUsd: "240000", providerUpdatedAt: latest };
     f.transport.callReport.mockImplementation(async (providerSessionId?: string) => providerSessionId === stored.providerSessionId ? response : baseline);
-    await f.service.reconcile(1000);
+    await reconcileReports();
     expect((await f.service.callDetail(f.companyId, first.session.id, f.input.caller)).report.costMicroUsd).toBe("240000");
     expect((await f.service.callDetail(f.companyId, other.session.id, f.input.caller)).report.costMicroUsd).toBe("120000");
     await db.update(chatVoiceReports).set({ nextCheckAt: new Date(0) }).where(eq(chatVoiceReports.sessionId, first.session.id));
     response = { ...baseline, costMicroUsd: "1", providerUpdatedAt: new Date(0) };
-    await f.service.reconcile(1000);
+    await reconcileReports();
     expect((await f.service.callDetail(f.companyId, first.session.id, f.input.caller)).report.costMicroUsd).toBe("240000");
     expect(await db.select().from(chatVoiceReports).where(eq(chatVoiceReports.sessionId, first.session.id))).toHaveLength(1);
     await expect(f.service.callDetail(f.companyId, first.session.id, { id: randomUUID(), authority: "member" })).rejects.toMatchObject({ status: 403 });
@@ -1921,6 +1947,9 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     await expect(f.service.history(f.companyId, f.endpointId, f.input.caller)).rejects.toMatchObject({ status: 403 });
     await expect(f.service.callDetail(f.companyId, first.session.id, f.input.caller)).rejects.toMatchObject({ status: 403 });
     expect(f.transport.createPhoneSession).not.toHaveBeenCalled();
+    expect(await db.select().from(chatVoiceReports).where(eq(chatVoiceReports.companyId, foreign.companyId))).toEqual(foreignReports);
+    expect(reportProviderIds).toContain(stored.providerSessionId);
+    expect(reportProviderIds).not.toContain(foreignSession.providerSessionId);
   });
   it("does not create provider media when membership is revoked during credential resolution", async () => {
     const f = await nativeServiceFixture();
@@ -2151,7 +2180,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     await f.service.saveCallbackPreference(f.companyId, f.endpointId, f.request.caller, { phoneNumber: "+12015551234", enabled: true });
     const runId = randomUUID();
     await db.insert(heartbeatRuns).values({ id: runId, companyId: f.companyId, agentId: f.agentId, status: "running", contextSnapshot: { issueId: f.issueId } });
-    await initializeRunIdentity(db, { companyId: f.companyId, agentId: f.agentId, runId, issueId: f.issueId, responsibleUserId: f.callerId, cause: "queued" });
+    await initializeRunIdentity(db, { companyId: f.companyId, runId, issueId: f.issueId, responsibleUserId: f.callerId, cause: "queued" });
     const gateway = createToolGatewayService(db, { toolActionSigningSecret: "speko-outbound-fixture-only" });
     const gatewaySession = await gateway.createSession({ companyId: f.companyId, agentId: f.agentId, runId, issueId: f.issueId });
     return { ...f, runId, gateway, gatewaySession };
@@ -2214,7 +2243,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     if (continued) {
       await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, f.runId));
       const [run] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, status: "running", nativeIssueId: f.issueId, contextSnapshot: {} }).returning();
-      await initializeRunIdentity(db, { companyId: f.companyId, agentId: f.agentId, runId: run.id, issueId: f.issueId, responsibleUserId: f.callerId, parentRunId: f.runId, cause: "monitor" });
+      await initializeRunIdentity(db, { companyId: f.companyId, runId: run.id, issueId: f.issueId, responsibleUserId: f.callerId, parentRunId: f.runId, cause: "monitor" });
       f.gatewaySession = await f.gateway.createSession({ companyId: f.companyId, agentId: f.agentId, runId: run.id });
     }
     const tools = await f.gateway.listToolsForSession(f.gatewaySession.token);

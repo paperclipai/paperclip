@@ -2068,7 +2068,7 @@ export function DesignGuide() {
             ["[", "Toggle Sidebar"],
             ["]", "Toggle Properties Panel"],
 
-            ["Cmd+Enter / Ctrl+Enter", "Submit markdown comment"],
+            ["Enter / Shift+Enter", "Submit task message / add a new line (Command/Ctrl+Enter is available in Experimental settings)"],
           ].map(([key, desc]) => (
             <div key={key} className="flex items-center justify-between px-4 py-2">
               <span className="text-muted-foreground">{desc}</span>
@@ -2314,6 +2314,12 @@ export function DesignGuide() {
           execution badges. Active transcript headers keep saying Working during automatic
           recovery. Recovery decisions and attempts belong in the run log;
           there is no execution status card or reconciliation form.
+        </p>
+        <p className="text-sm text-muted-foreground">
+          When retained-file recovery needs another authorized request, the source task and
+          run inspector offer Recover saved files. This queues the existing file-preservation
+          worker. Work remains held until the server verifies the saved files; a queued
+          acknowledgement does not mean that recovery finished.
         </p>
       </Section>
 

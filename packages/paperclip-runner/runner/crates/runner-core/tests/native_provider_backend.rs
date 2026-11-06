@@ -7,7 +7,7 @@ use std::os::unix::fs::PermissionsExt;
 
 use paperclip_runner_core::durable::{
     AcpxLaunchProfile, Command, CommandExecutor, CursorCloudLaunchProfile, DurableRunnerConfig,
-    OpenCodeLaunchProfile, QualifiedLaunchArtifact,
+    OpenCodeLaunchProfile, QualifiedLaunchArtifact, PROVIDER_STATE_INCOMPATIBLE,
 };
 use paperclip_runner_core::native_provider_backend::NativeProviderCommandExecutor;
 use paperclip_runner_core::provider_bridge::{authorized_tool_catalog_digest, AuthorizedTool};
@@ -62,6 +62,17 @@ fn credential_observation_allows_fresh_acpx_session_startup() {
 #[test]
 #[cfg(unix)]
 fn credential_updates_replay_through_the_native_executor_until_durable_ack() {
+    exercise_credential_updates(false);
+}
+
+#[test]
+#[cfg(unix)]
+fn hosted_park_refreshes_credentials_without_selecting_a_provider() {
+    exercise_credential_updates(true);
+}
+
+#[cfg(unix)]
+fn exercise_credential_updates(parking: bool) {
     let root = temporary_directory("credential-updates");
     let root = fs::canonicalize(root).unwrap();
     let auth = root.join("auth.json");
@@ -88,16 +99,21 @@ fn credential_updates_replay_through_the_native_executor_until_durable_ack() {
     let mut executor = NativeProviderCommandExecutor::with_runner_config(&root, &runner_config);
     assert!(executor.poll_events().unwrap().is_empty());
     write_auth("refreshed");
-    let _ = executor.execute(&Command {
-        schema: "paperclip.prp.command.v1".to_owned(),
-        command_id: "close-unselected".to_owned(),
-        controller_seq: 1,
-        command_type: "session.close".to_owned(),
-        issued_at: "2026-10-15T12:00:00.000Z".to_owned(),
-        deadline_at: None,
-        precondition: None,
-        payload: json!({}),
-    });
+    if parking {
+        assert!(!executor.host_park_ready().unwrap());
+    } else {
+        let _ = executor.execute(&Command {
+            schema: "paperclip.prp.command.v1".to_owned(),
+            command_id: "close-unselected".to_owned(),
+            controller_seq: 1,
+            command_type: "session.close".to_owned(),
+            issued_at: "2026-10-15T12:00:00.000Z".to_owned(),
+            deadline_at: None,
+            precondition: None,
+            payload: json!({}),
+        });
+    }
+    assert!(!root.join("codex-provider-state.json").exists());
     let updates = executor.retained_events().unwrap();
     assert_eq!(updates.len(), 1);
     assert_eq!(updates[0].event_type, "auth.credentials.updated");
@@ -1336,6 +1352,71 @@ fn acpx_transport_failure_retains_its_error_without_reopening_the_provider() {
 
 #[test]
 #[cfg_attr(windows, ignore = "verified launch is not supported on Windows yet")]
+fn acpx_control_failure_keeps_its_classification_in_the_durable_terminal() {
+    let directory = temporary_directory("acpx-control-failure");
+    let mode = "turns-tool-resolution-rejected";
+    let config = acpx_config(&directory, mode);
+    let mut executor = NativeProviderCommandExecutor::with_runner_config(&directory, &config);
+    let mut prepare = prepare_payload_with_mode(&directory, "codex", mode);
+    let operations = vec![AuthorizedTool {
+        operation_id: "issues.read".to_owned(),
+        version: 1,
+        description: "Read an issue.".to_owned(),
+        input_schema: json!({"type":"object"}),
+        response_schema: json!({"type":"object"}),
+    }];
+    prepare["authorizedTools"]["catalogDigest"] =
+        json!(authorized_tool_catalog_digest(&operations).unwrap());
+    prepare["authorizedTools"]["operations"] = json!(operations);
+    executor
+        .execute(&command(1, "run.prepare", prepare))
+        .unwrap();
+    executor
+        .execute(&command(2, "session.open", json!({})))
+        .unwrap();
+    executor
+        .execute(&command(
+            3,
+            "turn.start",
+            json!({"text":"Read the issue", "turnId":"turn-1"}),
+        ))
+        .unwrap();
+    let inputs = executor.poll_events().unwrap();
+    assert!(inputs
+        .iter()
+        .any(|event| event.event_type == "semantic_tool.input"));
+    executor.acknowledge_events(inputs.len()).unwrap();
+    let rejected = executor.execute(&command(4, "semantic_tool.result", json!({
+        "callId":"call-1", "operationId":"issues.read", "result":{"id":"issue-1"}, "isError":false
+    }))).unwrap_err();
+    assert!(rejected
+        .to_string()
+        .contains("classification=provider_tool_call_retired"));
+    let events = executor.poll_events().unwrap();
+    let failure = events
+        .iter()
+        .find(|event| event.event_type == "turn.failed")
+        .unwrap();
+    assert!(failure.payload["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("classification=provider_tool_call_retired"));
+    assert!(failure.payload["error"]["providerFailure"].is_null());
+    assert_eq!(failure.payload["error"]["recoverable"], false);
+    assert_eq!(failure.payload["providerTerminalObserved"], false);
+    let retained = executor.retained_events().unwrap();
+    assert_eq!(retained, events);
+    drop(executor);
+    let mut recovered = NativeProviderCommandExecutor::with_runner_config(&directory, &config);
+    assert_eq!(recovered.poll_events().unwrap(), retained);
+    recovered.acknowledge_events(retained.len()).unwrap();
+    assert!(recovered.poll_events().unwrap().is_empty());
+    shutdown_recovered_acpx_fixture(&mut recovered, &directory);
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+#[cfg_attr(windows, ignore = "verified launch is not supported on Windows yet")]
 fn provider_death_expires_input_and_commits_failure_without_querying_the_dead_provider() {
     let directory = temporary_directory("acpx-provider-death");
     let mode = "turns-provider-death";
@@ -1456,6 +1537,7 @@ fn resumes_an_idle_acpx_session_in_a_cold_replacement_runner() {
     let original = executor
         .execute(&command(2, "session.open", json!({})))
         .unwrap();
+    assert!(!executor.host_park_ready().unwrap());
     executor
         .execute(&command(
             3,
@@ -1465,6 +1547,8 @@ fn resumes_an_idle_acpx_session_in_a_cold_replacement_runner() {
         .unwrap();
     let events = executor.poll_events().unwrap();
     executor.acknowledge_events(events.len()).unwrap();
+    // Generic ACPX recovery does not opt this provider into host parking.
+    assert!(!executor.host_park_ready().unwrap());
     executor
         .execute(&command(4, "runner.suspend", json!({})))
         .unwrap();
@@ -1482,6 +1566,7 @@ fn resumes_an_idle_acpx_session_in_a_cold_replacement_runner() {
         .execute(&command(1, "run.attach", payload))
         .unwrap();
     assert_eq!(resumed.result["status"], "resumed");
+    assert!(!replacement.host_park_ready().unwrap());
     assert_eq!(
         resumed.result["providerSessionId"],
         original.result["providerSessionId"]
@@ -2135,6 +2220,7 @@ fn cursor_cloud_durable_recovery_rejects_a_changed_proxy_profile_without_rewriti
         assert!(error
             .to_string()
             .contains("Cursor Cloud runner launch profile changed across durable recovery"));
+        assert_eq!(error.classification(), Some(PROVIDER_STATE_INCOMPATIBLE));
     }
     assert_eq!(fs::read(&state_path).unwrap(), saved);
     fs::remove_dir_all(directory).unwrap();
@@ -2226,6 +2312,7 @@ fn rejects_opencode_launch_profile_drift_across_fresh_recovery() {
     assert!(error
         .to_string()
         .contains("launch profile changed across durable recovery"));
+    assert_eq!(error.classification(), Some(PROVIDER_STATE_INCOMPATIBLE));
     let second_error = recovered
         .execute(&command(
             3,
@@ -2236,6 +2323,10 @@ fn rejects_opencode_launch_profile_drift_across_fresh_recovery() {
     assert!(second_error
         .to_string()
         .contains("launch profile changed across durable recovery"));
+    assert_eq!(
+        second_error.classification(),
+        Some(PROVIDER_STATE_INCOMPATIBLE)
+    );
     assert_eq!(fs::read(&state_path).unwrap(), state_before_recovery);
 
     let shutdown_error = recovered

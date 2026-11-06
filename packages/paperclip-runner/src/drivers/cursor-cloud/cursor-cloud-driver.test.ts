@@ -71,7 +71,7 @@ function maintainedMutations(peer: Peer, maxResponseBytes?: number) {
 
 async function fixture(peer = new Peer(), extra: Partial<CursorCloudDriverOptions> = {}) {
   const root = await mkdtemp("/tmp/cc-"); roots.push(root);
-  const handler = vi.fn(async () => ({ success: true, contentItems: [{ type: "inputText", text: "accepted" }] }));
+  const handler = vi.fn(async (_call: Parameters<CursorCloudDriverOptions["dynamicToolHandler"]>[0]) => ({ success: true, contentItems: [{ type: "inputText", text: "accepted" }] }));
   const options: CursorCloudDriverOptions = { model: "explicit-model", config: { schema: "paperclip.cursor-cloud.config.v1", repos: [{ url: "https://github.com/example/repo", startingRef: "main" }] },
     binding: { companyId: "company", agentId: "agent", issueId: "issue", normalizedSessionId: "session" }, runtimeDirectory: root,
     relay: { url: "https://relay.example.test/mcp", token: "private-relay-token", socketPath: join(root, "mcp.sock"), expiresAt: Date.now() + 600_000 }, instructions: "Follow these exact instructions.",
@@ -111,7 +111,11 @@ async function nextAuthority(f: Awaited<ReturnType<typeof fixture>>) {
   return { next, checkpoint: await savedCheckpoint(f.root, f.session), eventCount: f.events.length };
 }
 
-function relayHeaders(peer: Peer): Record<string, string> { return structuredClone(peer.request!.mcpServers[0]!.headers!); }
+function relayHeaders(peer: Peer): Record<string, string> {
+  const server = peer.request!.mcpServers![0]!;
+  if (!("headers" in server)) throw new Error("Expected an HTTP relay MCP server");
+  return structuredClone(server.headers!);
+}
 
 async function rpc(path: string, body: unknown, token: string | Record<string, string> = "private-relay-token", session?: string): Promise<{ status: number; value: any; session?: string }> {
   return new Promise((accept, reject) => {
@@ -206,7 +210,7 @@ describe("Cursor Cloud native driver", () => {
     await f.session.startTurn({ message: { role: "user", text: "Stop an observation in flight" } });
     await reading.promise;
     try {
-      await f.session.interrupt!();
+      await f.session.interrupt!({});
       await vi.waitFor(() => expect(readAborted).toBe(true), { timeout: 100 });
       expect((await f.session.read()).phase).toBe("terminal");
     } finally { blocked.resolve(await original()); }
@@ -257,7 +261,7 @@ describe("Cursor Cloud native driver", () => {
     await f.session.startTurn({ message: { role: "user", text: "Stop during a provider retry delay" } });
     await waitFor(() => f.events.some(event => (event.payload as { code?: string }).code === "cursor_cloud_observation_retry"));
     const signal = ((peer.getRun.mock.calls[0] as unknown[])[2] as { signal: AbortSignal }).signal;
-    await f.session.interrupt!();
+    await f.session.interrupt!({});
     expect(signal.aborted).toBe(true);
     expect((await f.session.read()).phase).toBe("terminal");
     expect(peer.createAgent).toHaveBeenCalledTimes(1); expect(peer.createRun).not.toHaveBeenCalled();
@@ -354,7 +358,7 @@ describe("Cursor Cloud native driver", () => {
       }
     }
     await reading.promise;
-    await session.interrupt!();
+    await session.interrupt!({});
     await acknowledgeTerminal(session);
     await session.attachRun!({ runId: "paperclip-followup" });
     const next = await session.startTurn({ message: { role: "user", text: "Second task" } });
@@ -370,7 +374,7 @@ describe("Cursor Cloud native driver", () => {
     expect(JSON.parse(await readFile(checkpointPath, "utf8"))).toEqual(before);
     expect(await session.read()).toMatchObject({ agentId: previous.agentId, runId: followupRunId, turnId: next.turnId, phase: "running", pendingTerminalDelivery: null });
     expect(events.slice(eventCount)).toEqual([]);
-    await session.interrupt!();
+    await session.interrupt!({});
     expect(await session.read()).toMatchObject({ runId: followupRunId, phase: "terminal", pendingTerminalDelivery: { providerRunId: followupRunId, turnId: next.turnId, status: "CANCELLED" } });
     expect(events.filter(event => event.turnId === next.turnId && event.eventType === "turn.interrupted")).toHaveLength(1);
   });
@@ -393,14 +397,14 @@ describe("Cursor Cloud native driver", () => {
     };
     const f = await fixture(peer);
     await f.session.startTurn({ message: { role: "user", text: "First task" } }); await waiting.promise;
-    await f.session.interrupt!();
+    await f.session.interrupt!({});
     const next = await nextAuthority(f);
     release.resolve(); await new Promise<void>(accept => setImmediate(accept));
     expect(await savedCheckpoint(f.root, f.session)).toEqual(next.checkpoint);
     expect(f.events.slice(next.eventCount)).toEqual([]);
     expect(streams.map(stream => stream.runId)).toEqual([runId, peer.native!.id]);
     expect(streams[1]!.signal!.aborted).toBe(false);
-    await f.session.interrupt!();
+    await f.session.interrupt!({});
     expect((await f.session.read()).pendingTerminalDelivery).toMatchObject({ providerRunId: peer.native!.id, turnId: next.next.turnId });
   });
 
@@ -421,7 +425,7 @@ describe("Cursor Cloud native driver", () => {
     released.resolve(); await new Promise<void>(accept => setImmediate(accept));
     expect(await savedCheckpoint(f.root, f.session)).toEqual(next.checkpoint);
     expect(f.events.slice(next.eventCount)).toEqual([]);
-    await f.session.interrupt!();
+    await f.session.interrupt!({});
     expect(await f.session.read()).toMatchObject({ phase: "terminal", pendingTerminalDelivery: { providerRunId: peer.native!.id, turnId: next.next.turnId } });
   });
 
@@ -441,7 +445,7 @@ describe("Cursor Cloud native driver", () => {
     released.resolve(oldAgent); await oldReconcile;
     expect(await savedCheckpoint(f.root, f.session)).toEqual(next.checkpoint);
     expect(f.events.slice(next.eventCount)).toEqual([]);
-    await f.session.interrupt!();
+    await f.session.interrupt!({});
     expect(await f.session.read()).toMatchObject({ phase: "terminal", pendingTerminalDelivery: { providerRunId: peer.native!.id, turnId: next.next.turnId } });
   });
 
@@ -453,19 +457,19 @@ describe("Cursor Cloud native driver", () => {
     const previous = { ...peer.native! };
     const oldRead = deferred<CursorCloudRun>(), reading = deferred();
     peer.getRun.mockImplementationOnce(async () => { reading.resolve(); return oldRead.promise; });
-    const oldStop = f.session.interrupt!(); await reading.promise;
+    const oldStop = f.session.interrupt!({}); await reading.promise;
     peer.getRun.mockResolvedValueOnce({ ...previous, status: "FINISHED" });
     await f.session.reconcile!();
     const next = await nextAuthority(f);
     const currentRead = deferred<CursorCloudRun>(), currentReading = deferred();
     peer.getRun.mockImplementationOnce(async () => { currentReading.resolve(); return currentRead.promise; });
-    const currentStop = f.session.interrupt!(); await currentReading.promise;
+    const currentStop = f.session.interrupt!({}); await currentReading.promise;
     const before = await savedCheckpoint(f.root, f.session);
     oldRead.resolve(previous); await oldStop;
     expect(await savedCheckpoint(f.root, f.session)).toEqual(before);
     expect(peer.cancelRun).not.toHaveBeenCalled();
     const readCount = peer.getRun.mock.calls.length;
-    const duplicateStop = f.session.interrupt!();
+    const duplicateStop = f.session.interrupt!({});
     await new Promise<void>(accept => setImmediate(accept));
     expect(peer.getRun).toHaveBeenCalledTimes(readCount);
     currentRead.resolve({ ...peer.native! }); await Promise.all([currentStop, duplicateStop]);
@@ -480,7 +484,7 @@ describe("Cursor Cloud native driver", () => {
     if (phase === "follow-up") {
       await f.session.startTurn({ message: { role: "user", text: "First task" } });
       await waitFor(() => f.events.some(event => event.eventType === "item.delta"));
-      await f.session.interrupt!(); await acknowledgeTerminal(f.session);
+      await f.session.interrupt!({}); await acknowledgeTerminal(f.session);
       await f.session.attachRun!({ runId: "paperclip-followup" });
     }
     const before = await savedCheckpoint(f.root, f.session);
@@ -498,7 +502,7 @@ describe("Cursor Cloud native driver", () => {
     expect(await savedCheckpoint(f.root, f.session)).toEqual(before);
     expect(f.events.slice(eventCount)).toEqual([]);
     const reconciliations = peer.getAgent.mock.calls.length, cancellations = peer.cancelRun.mock.calls.length;
-    await f.session.interrupt!();
+    await f.session.interrupt!({});
     expect(peer.getAgent).toHaveBeenCalledTimes(reconciliations); expect(peer.cancelRun).toHaveBeenCalledTimes(cancellations);
     const snapshot = await f.session.snapshot(); await f.session.close({ reason: "storage_recovered" }); await f.pump;
     expect(peer.getAgent).toHaveBeenCalledTimes(reconciliations); expect(peer.cancelRun).toHaveBeenCalledTimes(cancellations);
@@ -507,7 +511,7 @@ describe("Cursor Cloud native driver", () => {
     expect(await savedCheckpoint(f.root, recovered)).toEqual({ ...before, relayTurnToken: before.relayTurnToken ?? null });
     await recovered.startTurn({ message: { role: "user", text: "Retry after storage recovery" } });
     await waitFor(() => peer.createAgent.mock.calls.length === 1 && peer.createRun.mock.calls.length === (phase === "fresh" ? 0 : 1));
-    await recovered.interrupt!();
+    await recovered.interrupt!({});
   });
 
   it("retains accepted provider work when its confirmed-identity checkpoint write fails", async () => {
@@ -531,7 +535,7 @@ describe("Cursor Cloud native driver", () => {
       await rm(checkpointPath, { recursive: true }); await rename(savedPath, checkpointPath);
     }
     expect(await savedCheckpoint(f.root, f.session)).toMatchObject({ agentId: peer.native!.agentId, runId, phase: "running", pendingOperation: null });
-    await f.session.interrupt!();
+    await f.session.interrupt!({});
     expect(peer.createAgent).toHaveBeenCalledTimes(1); expect(peer.cancelRun).toHaveBeenCalledTimes(1);
     expect(await f.session.read()).toMatchObject({ phase: "terminal", pendingTerminalDelivery: { status: "CANCELLED", providerRunId: runId } });
   });
@@ -543,7 +547,7 @@ describe("Cursor Cloud native driver", () => {
     const failure = new Error("controlled post-publication persistence failure");
     const originalWrite = CursorCloudCheckpointStore.prototype.write;
     let intercepted = false;
-    const write = vi.spyOn(CursorCloudCheckpointStore.prototype, "write").mockImplementation(function(value) {
+    const write = vi.spyOn(CursorCloudCheckpointStore.prototype, "write").mockImplementation(function(this: CursorCloudCheckpointStore, value) {
       const persisted = originalWrite.call(this, value);
       if (value.phase === "creating" && !intercepted) {
         intercepted = true;
@@ -556,13 +560,13 @@ describe("Cursor Cloud native driver", () => {
       const started = f.session.startTurn({ message: { role: "user", text: "Stop before unsent launch" } });
       const rejected = expect(started).rejects.toBe(failure);
       await held.promise;
-      const stopped = f.session.interrupt!(); await stoppingWritten.promise;
+      const stopped = f.session.interrupt!({}); await stoppingWritten.promise;
       expect(f.peer.createAgent).not.toHaveBeenCalled();
       release.resolve(); await rejected; await stopped;
       expect(await savedCheckpoint(f.root, f.session)).toEqual(before);
       expect(f.peer.createAgent).not.toHaveBeenCalled(); expect(f.peer.getAgent).not.toHaveBeenCalled(); expect(f.peer.cancelRun).not.toHaveBeenCalled();
       await f.session.startTurn({ message: { role: "user", text: "Next admitted task" } }); await f.peer.created.promise;
-      await f.session.interrupt!();
+      await f.session.interrupt!({});
     } finally { release.resolve(); write.mockRestore(); }
   });
 
@@ -571,10 +575,10 @@ describe("Cursor Cloud native driver", () => {
     const f = await fixture(peer);
     await f.session.startTurn({ message: { role: "user", text: "First task" } }); await peer.created.promise;
     await waitFor(() => f.events.some(event => event.eventType === "item.delta"));
-    await f.session.interrupt!(); await acknowledgeTerminal(f.session);
+    await f.session.interrupt!({}); await acknowledgeTerminal(f.session);
     const held = deferred(), release = deferred(), stoppingWritten = deferred();
     const originalWrite = CursorCloudCheckpointStore.prototype.write;
-    const write = vi.spyOn(CursorCloudCheckpointStore.prototype, "write").mockImplementation(function(value) {
+    const write = vi.spyOn(CursorCloudCheckpointStore.prototype, "write").mockImplementation(function(this: CursorCloudCheckpointStore, value) {
       const persisted = originalWrite.call(this, value);
       if (value.phase === "creating") return persisted.then(async () => { held.resolve(); await release.promise; });
       if (value.phase === "stopping") void persisted.then(() => stoppingWritten.resolve());
@@ -582,7 +586,7 @@ describe("Cursor Cloud native driver", () => {
     });
     try {
       const started = f.session.startTurn({ message: { role: "user", text: "Second task" } }); await held.promise;
-      const stopped = f.session.interrupt!(); await stoppingWritten.promise;
+      const stopped = f.session.interrupt!({}); await stoppingWritten.promise;
       expect(peer.createRun).not.toHaveBeenCalled();
       release.resolve();
       const next = await started; await stopped;
@@ -605,7 +609,7 @@ describe("Cursor Cloud native driver", () => {
     const after = await savedCheckpoint(f.root, f.session);
     expect(after).toEqual({ ...before, sourceSequence: before.sourceSequence + 1 });
     expect(f.events.some(event => event.eventType === "turn.failed")).toBe(false);
-    await f.session.interrupt!();
+    await f.session.interrupt!({});
     expect(await f.session.read()).toMatchObject({ phase: "terminal", pendingTerminalDelivery: { providerRunId: runId } });
   });
 
@@ -617,7 +621,7 @@ describe("Cursor Cloud native driver", () => {
     f.peer.getRun.mockResolvedValueOnce({ ...f.peer.native!, status: "FINISHED", ...(identity === "agent" ? { agentId: "bc-different" } : { id: "run-22222222-2222-4222-8222-222222222222" }) });
     await expect(f.session.reconcile!()).rejects.toThrow("confirmed Agent/Run identity");
     expect(await savedCheckpoint(f.root, f.session)).toEqual(before);
-    await f.session.interrupt!();
+    await f.session.interrupt!({});
     expect(await f.session.read()).toMatchObject({ phase: "terminal", pendingTerminalDelivery: { providerRunId: runId } });
   });
 
@@ -660,7 +664,7 @@ describe("Cursor Cloud native driver", () => {
     const activeSnapshot = await restored.snapshot(); await restored.detachControllerForRestart!();
     await expect(new CursorCloudDriver(f.options).recoverSession(activeSnapshot)).rejects.toThrow("instructions changed");
     const final = (await new CursorCloudDriver(revised).recoverSession(activeSnapshot)).session!; sessions.push(final);
-    await final.interrupt!();
+    await final.interrupt!({});
     await acknowledgeTerminal(final);
     await final.startTurn({ message: { role: "user", text: "One more task" } });
     await waitFor(() => f.peer.createRun.mock.calls.length === 2);
@@ -702,7 +706,7 @@ describe("Cursor Cloud native driver", () => {
     expect(f.handler).toHaveBeenCalledWith(expect.objectContaining({ tool: "write_note", arguments: { note: "first" }, turnId: expect.stringMatching(/^turn-/) }));
     await rpc(path, { id: "missing", method: "tools/call", params: { name: "not_admitted", arguments: {} } }, relayHeaders(f.peer), initialized.session);
     expect(f.handler).toHaveBeenCalledTimes(1);
-    await f.session.interrupt!();
+    await f.session.interrupt!({});
     expect(f.peer.cancelRun).toHaveBeenCalledTimes(1);
     expect(f.peer.getRun.mock.calls.length).toBeGreaterThanOrEqual(2);
     const late = await rpc(path, { id: "late", method: "tools/call", params: { name: "write_note", arguments: { note: "late" } } }, relayHeaders(f.peer), initialized.session);
@@ -849,7 +853,7 @@ describe("Cursor Cloud native driver", () => {
     await waitFor(() => peer.getAgent.mock.calls.length > 0);
     expect(peer.createAgent).toHaveBeenCalledTimes(1);
     expect((await restored.read?.())?.effectiveModelAcknowledged).toBe(false);
-    await restored.interrupt!();
+    await restored.interrupt!({});
     const restoredSnapshot = await restored.snapshot(); await restored.close({ reason: "done" });
     await expect(new CursorCloudDriver({ ...f.options, model: "different-model" }).recoverSession(restoredSnapshot)).rejects.toThrow("changed");
   });
@@ -873,7 +877,7 @@ describe("Cursor Cloud native driver", () => {
     expect(after.requestedAgentId).toMatch(/^bc-/);
     await expect(restored.startTurn({ message: { role: "user", text: "Must not replace uncertain work" } })).rejects.toThrow("unresolved remote work");
     expect(peer.createAgent).toHaveBeenCalledTimes(1); expect(peer.createRun).not.toHaveBeenCalled();
-    peer.getAgent.mockImplementation(getAgent); await restored.interrupt!();
+    peer.getAgent.mockImplementation(getAgent); await restored.interrupt!({});
   });
 
   it("allows a definitive direct mutation rejection to settle without pretending work was accepted", async () => {
@@ -893,7 +897,7 @@ describe("Cursor Cloud native driver", () => {
     if (phase === "follow-up") {
       await f.session.startTurn({ message: { role: "user", text: "Previous accepted task" } });
       await peer.created.promise;
-      await f.session.interrupt!(); await acknowledgeTerminal(f.session);
+      await f.session.interrupt!({}); await acknowledgeTerminal(f.session);
     }
     const before = { fetch: fetch.mock.calls.length, getAgent: peer.getAgent.mock.calls.length, getRun: peer.getRun.mock.calls.length, cancel: peer.cancelRun.mock.calls.length };
     const text = "\u0001".repeat(400_000);
@@ -905,11 +909,11 @@ describe("Cursor Cloud native driver", () => {
     expect(fetch).toHaveBeenCalledTimes(before.fetch);
     expect(await f.session.read()).toMatchObject({ phase: "idle", providerStatus: "REJECTED" });
     expect(f.events.some(event => event.turnId === turn.turnId && event.eventType === "turn.failed" && event.payload.remoteWorkAccepted === false)).toBe(true);
-    await f.session.interrupt!();
+    await f.session.interrupt!({});
     expect(peer.getAgent).toHaveBeenCalledTimes(before.getAgent);
     expect(peer.getRun).toHaveBeenCalledTimes(before.getRun);
     expect(peer.cancelRun).toHaveBeenCalledTimes(before.cancel);
-    const snapshot = await f.session.snapshot(); await f.session.detachControllerForRestart(); await f.pump;
+    const snapshot = await f.session.snapshot(); await f.session.detachControllerForRestart!(); await f.pump;
     const recovered = await new CursorCloudDriver(f.options).recoverSession(snapshot);
     expect(recovered.recovered).toBe(true);
     const restored = recovered.session!; sessions.push(restored);
@@ -919,7 +923,7 @@ describe("Cursor Cloud native driver", () => {
     const next = await restored.startTurn({ message: { role: "user", text: "A smaller admitted task" } });
     await vi.waitFor(async () => expect(await restored.read()).toMatchObject({ phase: "running", turnId: next.turnId }));
     expect(fetch).toHaveBeenCalledTimes(before.fetch + 1);
-    await restored.interrupt!();
+    await restored.interrupt!({});
   });
 
   it.each(["fresh", "follow-up"] as const)("keeps a %s oversized response fenced after the mutation was sent", async phase => {
@@ -928,7 +932,7 @@ describe("Cursor Cloud native driver", () => {
     const f = await fixture(peer, { client: mutations.client });
     if (phase === "follow-up") {
       await f.session.startTurn({ message: { role: "user", text: "Previous accepted task" } });
-      await peer.created.promise; await f.session.interrupt!(); await acknowledgeTerminal(f.session);
+      await peer.created.promise; await f.session.interrupt!({}); await acknowledgeTerminal(f.session);
     }
     const before = mutations.fetch.mock.calls.length;
     mutations.fetch.mockImplementationOnce(async (url, init) => {
@@ -954,7 +958,7 @@ describe("Cursor Cloud native driver", () => {
       if (phase === "follow-up") {
         await f.session.startTurn({ message: { role: "user", text: "Previous accepted task" } });
         await peer.created.promise;
-        await f.session.interrupt!();
+        await f.session.interrupt!({});
         await acknowledgeTerminal(f.session);
       }
       const entered = deferred(), rejectCreate = deferred(), stopHeld = deferred(), releaseStop = deferred();
@@ -975,7 +979,7 @@ describe("Cursor Cloud native driver", () => {
       const before = { getAgent: peer.getAgent.mock.calls.length, getRun: peer.getRun.mock.calls.length, cancel: peer.cancelRun.mock.calls.length };
       const originalWrite = CursorCloudCheckpointStore.prototype.write;
       let pausedStop = false, pausedRejection = false;
-      const write = vi.spyOn(CursorCloudCheckpointStore.prototype, "write").mockImplementation(function(value) {
+      const write = vi.spyOn(CursorCloudCheckpointStore.prototype, "write").mockImplementation(function(this: CursorCloudCheckpointStore, value) {
         if (value.phase === "idle" && value.terminalStatus === "REJECTED" && !pausedRejection) {
           pausedRejection = true; rejectionHeld.resolve();
           return releaseRejection.promise.then(() => originalWrite.call(this, value));
@@ -989,26 +993,37 @@ describe("Cursor Cloud native driver", () => {
       });
       let stopDone = false;
       let stopped: Promise<{ error: unknown | null }> | undefined;
-      const stop = () => stopped = f.session.interrupt!().then(() => ({ error: null }), error => ({ error }))
+      const stop = () => stopped = f.session.interrupt!({}).then(() => ({ error: null }), error => ({ error }))
         .finally(() => { stopDone = true; });
       try {
         const turn = await f.session.startTurn({ message: { role: "user", text: rejection === "unsent_payload" ? "\u0001".repeat(400_000) : "Rejected task" } });
         await entered.promise;
+        const observeHeldCheckpoint = async () => {
+          const checkpointPath = join(f.root, (await readdir(f.root)).find(name => /^checkpoint-.*\.json$/.test(name))!);
+          expect(JSON.parse(await readFile(checkpointPath, "utf8")).phase).not.toBe("idle");
+          return checkpointPath;
+        };
+        let checkpointPath: string;
         if (overlap === "stop_write") {
           stop(); await stopHeld.promise;
           rejectCreate.resolve(); await new Promise<void>(accept => setImmediate(accept));
+          // The Stop checkpoint gate still holds its cancellation clock here.
+          checkpointPath = await observeHeldCheckpoint();
           releaseStop.resolve();
-          await waitFor(() => pausedRejection || stopDone);
+          await Promise.race([rejectionHeld.promise, stopped!]);
           expect(pausedRejection, "the definite rejection must reach durable settlement even while stopping").toBe(true);
         } else {
           rejectCreate.resolve(); await rejectionHeld.promise;
+          // File observations must not consume Stop's 300ms settlement budget.
+          checkpointPath = await observeHeldCheckpoint();
           stop(); await new Promise<void>(accept => setImmediate(accept));
         }
         expect(stopDone, "Stop must wait for the rejected-create checkpoint").toBe(false);
         expect(await f.session.read()).toMatchObject({ phase: "stopping" });
         await expect(f.session.startTurn({ message: { role: "user", text: "Too early" } })).rejects.toThrow("unresolved remote work");
-        const checkpointPath = join(f.root, (await readdir(f.root)).find(name => /^checkpoint-.*\.json$/.test(name))!);
-        expect(JSON.parse(await readFile(checkpointPath, "utf8")).phase).not.toBe("idle");
+        expect(peer.getAgent).toHaveBeenCalledTimes(before.getAgent);
+        expect(peer.getRun).toHaveBeenCalledTimes(before.getRun);
+        expect(peer.cancelRun).toHaveBeenCalledTimes(before.cancel);
         releaseRejection.resolve();
         expect(await stopped).toEqual({ error: null });
         await waitFor(() => f.events.some(event => event.turnId === turn.turnId && event.eventType === "turn.failed" && event.payload.remoteWorkAccepted === false));
@@ -1018,7 +1033,7 @@ describe("Cursor Cloud native driver", () => {
         expect(peer.cancelRun).toHaveBeenCalledTimes(before.cancel);
         if (mutations) expect(mutations.fetch).toHaveBeenCalledTimes(fetchesBefore!);
         const snapshot = await f.session.snapshot();
-        await f.session.detachControllerForRestart(); await f.pump;
+        await f.session.detachControllerForRestart!(); await f.pump;
         const recovered = await new CursorCloudDriver(f.options).recoverSession(snapshot);
         expect(recovered.recovered).toBe(true);
         const restored = recovered.session!; sessions.push(restored);
@@ -1026,7 +1041,7 @@ describe("Cursor Cloud native driver", () => {
         distinctFollowup(peer); peer.release = deferred();
         const next = await restored.startTurn({ message: { role: "user", text: "Next admitted task" } });
         await vi.waitFor(async () => expect(await restored.read()).toMatchObject({ phase: "running", turnId: next.turnId }));
-        await restored.interrupt!();
+        await restored.interrupt!({});
         expect(await restored.read()).toMatchObject({ phase: "terminal", pendingTerminalDelivery: { turnId: next.turnId } });
       } finally {
         rejectCreate.resolve(); releaseStop.resolve(); releaseRejection.resolve();
@@ -1040,7 +1055,7 @@ describe("Cursor Cloud native driver", () => {
     const f = await fixture(peer), held = deferred(), release = deferred();
     const originalWrite = CursorCloudCheckpointStore.prototype.write;
     let paused = false;
-    const write = vi.spyOn(CursorCloudCheckpointStore.prototype, "write").mockImplementation(function(value) {
+    const write = vi.spyOn(CursorCloudCheckpointStore.prototype, "write").mockImplementation(function(this: CursorCloudCheckpointStore, value) {
       if (value.phase === "idle" && value.terminalStatus === "REJECTED" && !paused) {
         paused = true; held.resolve(); return release.promise.then(() => originalWrite.call(this, value));
       }
@@ -1071,7 +1086,7 @@ describe("Cursor Cloud native driver", () => {
     await f.session.reconcile!(); await acknowledgeTerminal(f.session); await f.session.attachRun!({ runId: "current-owner" });
     peer.createRun.mockRejectedValue(new CursorCloudClientError("http_error", { status: 422 }));
     const held = deferred(), release = deferred(), originalWrite = CursorCloudCheckpointStore.prototype.write;
-    const write = vi.spyOn(CursorCloudCheckpointStore.prototype, "write").mockImplementation(function(value) {
+    const write = vi.spyOn(CursorCloudCheckpointStore.prototype, "write").mockImplementation(function(this: CursorCloudCheckpointStore, value) {
       if (value.phase === "idle" && value.terminalStatus === "REJECTED") { held.resolve(); return release.promise.then(() => originalWrite.call(this, value)); }
       return originalWrite.call(this, value);
     });
@@ -1094,7 +1109,7 @@ describe("Cursor Cloud native driver", () => {
     const f = await fixture(peer, mutations ? { client: mutations.client } : {});
     if (phase === "follow-up") {
       await f.session.startTurn({ message: { role: "user", text: "Previous accepted task" } }); await peer.created.promise;
-      await f.session.interrupt!(); await acknowledgeTerminal(f.session);
+      await f.session.interrupt!({}); await acknowledgeTerminal(f.session);
     }
     const entered = deferred(), rejected = deferred();
     if (mutations) {
@@ -1108,14 +1123,14 @@ describe("Cursor Cloud native driver", () => {
     });
     peer.getAgent.mockRejectedValue(new CursorCloudClientError("http_error", { status: 404 }));
     const originalWrite = CursorCloudCheckpointStore.prototype.write;
-    const write = vi.spyOn(CursorCloudCheckpointStore.prototype, "write").mockImplementation(function(value) {
+    const write = vi.spyOn(CursorCloudCheckpointStore.prototype, "write").mockImplementation(function(this: CursorCloudCheckpointStore, value) {
       return value.phase === "idle" && value.terminalStatus === "REJECTED"
         ? Promise.reject(new Error("injected rejection checkpoint failure")) : originalWrite.call(this, value);
     });
     try {
       const before = mutations?.fetch.mock.calls.length;
       const turn = await f.session.startTurn({ message: { role: "user", text: mutations ? "\u0001".repeat(400_000) : "Rejected task" } }); await entered.promise;
-      const stopped = f.session.interrupt!().then(() => null, error => error);
+      const stopped = f.session.interrupt!({}).then(() => null, error => error);
       rejected.resolve();
       expect(await stopped).toMatchObject({ message: expect.stringContaining("remains fenced") });
       if (mutations) expect(mutations.fetch).toHaveBeenCalledTimes(before!);
@@ -1136,7 +1151,7 @@ describe("Cursor Cloud native driver", () => {
     peer.getAgent.mockRejectedValue(new CursorCloudClientError("http_error", { status: 404 }));
     const f = await fixture(peer), turn = await f.session.startTurn({ message: { role: "user", text: "Unknown create" } });
     await entered.promise;
-    const stopped = f.session.interrupt!().then(() => null, error => error); released.resolve();
+    const stopped = f.session.interrupt!({}).then(() => null, error => error); released.resolve();
     expect(await stopped).toMatchObject({ message: expect.stringContaining("remains fenced") });
     expect(await savedCheckpoint(f.root, f.session)).toMatchObject({ phase: "stopping", pendingOperation: "create_agent", terminalStatus: null });
     expect(f.events.some(event => event.turnId === turn.turnId && event.payload.remoteWorkAccepted === false)).toBe(false);
@@ -1148,7 +1163,7 @@ describe("Cursor Cloud native driver", () => {
     const f = await fixture(peer, { cancelTimeoutMs: 120 });
     await f.session.startTurn({ message: { role: "user", text: "Keep running" } }); await peer.created.promise;
     await waitFor(() => f.events.some(event => event.eventType === "item.delta"));
-    await expect(f.session.interrupt!()).rejects.toThrow("did not confirm");
+    await expect(f.session.interrupt!({})).rejects.toThrow("did not confirm");
     expect(f.events.some(event => event.eventType === "turn.interrupted" || event.eventType === "turn.completed")).toBe(false);
     expect((await f.session.read?.())?.phase).toBe("stopping");
     await expect(f.session.startTurn({ message: { role: "user", text: "New work" } })).rejects.toThrow("unresolved");
@@ -1193,7 +1208,7 @@ describe("Cursor Cloud native driver", () => {
     const originalWrite = CursorCloudCheckpointStore.prototype.write;
     const attempts: Array<NonNullable<typeof before.pendingTerminalDelivery>> = [];
     let injected = false;
-    const write = vi.spyOn(CursorCloudCheckpointStore.prototype, "write").mockImplementation(async function(value) {
+    const write = vi.spyOn(CursorCloudCheckpointStore.prototype, "write").mockImplementation(async function(this: CursorCloudCheckpointStore, value) {
       if (this.path !== checkpointPath || value.phase !== "terminal") return originalWrite.call(this, value);
       attempts.push(structuredClone(value.pendingTerminalDelivery));
       if (injected) { await releaseRetry.promise; return originalWrite.call(this, value); }
@@ -1237,7 +1252,7 @@ describe("Cursor Cloud native driver", () => {
     const held = deferred(), release = deferred();
     const originalWrite = CursorCloudCheckpointStore.prototype.write;
     let paused = false;
-    const write = vi.spyOn(CursorCloudCheckpointStore.prototype, "write").mockImplementation(function(value) {
+    const write = vi.spyOn(CursorCloudCheckpointStore.prototype, "write").mockImplementation(function(this: CursorCloudCheckpointStore, value) {
       if (this.path === checkpointPath && value.phase === "terminal" && !paused) {
         paused = true; held.resolve(); return release.promise.then(() => originalWrite.call(this, value));
       }
@@ -1250,7 +1265,7 @@ describe("Cursor Cloud native driver", () => {
       const late = await rpc(f.options.relay.socketPath, { id: "late", method: "tools/call", params: { name: "write_note", arguments: { note: "No authority after provider termination" } } }, relayHeaders(f.peer), initialized.session);
       expect(late.status).toBe(403); expect(f.handler).not.toHaveBeenCalled();
       let stopped = false, reconciled = false, snapshotted = false;
-      const stop = f.session.interrupt!().finally(() => { stopped = true; });
+      const stop = f.session.interrupt!({}).finally(() => { stopped = true; });
       const reconcile = f.session.reconcile!().finally(() => { reconciled = true; });
       const snapshot = f.session.snapshot().finally(() => { snapshotted = true; });
       await new Promise<void>(accept => setImmediate(accept));
@@ -1279,7 +1294,7 @@ describe("Cursor Cloud native driver", () => {
     const originalWrite = CursorCloudCheckpointStore.prototype.write;
     const deliveries: unknown[] = [];
     let unavailable = true;
-    const write = vi.spyOn(CursorCloudCheckpointStore.prototype, "write").mockImplementation(function(value) {
+    const write = vi.spyOn(CursorCloudCheckpointStore.prototype, "write").mockImplementation(function(this: CursorCloudCheckpointStore, value) {
       if (this.path === checkpointPath && value.phase === "terminal") {
         deliveries.push(structuredClone(value.pendingTerminalDelivery));
         if (unavailable) return Promise.reject(Object.assign(new Error("controlled unavailable checkpoint storage"), { code: "ENOSPC" }));
@@ -1352,7 +1367,7 @@ describe("Cursor Cloud native driver", () => {
     await waitFor(() => stream.mock.calls.length > 0);
     expect(peer.createAgent).toHaveBeenCalledTimes(1); expect(peer.createRun).not.toHaveBeenCalled();
     expect(JSON.parse(await readFile(checkpointPath, "utf8")).deadlineAt).toBe(deadlineAt);
-    await restored.interrupt!();
+    await restored.interrupt!({});
   });
 
   it("enforces the saved deadline while the first recovery read remains pending", async () => {

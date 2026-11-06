@@ -12,8 +12,8 @@ use sha2::{Digest, Sha256};
 use crate::stable_identity::{is_stable_id, DURABLE_STABLE_ID_CHARS, SHORT_STABLE_ID_CHARS};
 
 pub use runner::{
-    run_durable_runner, CommandExecution, CommandExecutor, PolledEvent,
-    TerminalDeliveryReconciliation,
+    run_durable_runner, run_durable_runner_with_host_control, CommandExecution, CommandExecutor,
+    PolledEvent, TerminalDeliveryReconciliation,
 };
 pub(crate) use state::{
     create_private_temporary_file, open_private_regular_file, redact_sensitive_text_values,
@@ -37,12 +37,17 @@ pub fn redact_diagnostic_text(input: &str) -> String {
     state::redact_text(input)
 }
 
+/// Saved provider state was written under a launch or provider profile that
+/// this runner cannot adopt. The outcome is deterministic for this runner
+/// build: retrying the same restore cannot succeed.
+pub const PROVIDER_STATE_INCOMPATIBLE: &str = "provider_state_incompatible";
+
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct DurableRunnerError(String, Option<serde_json::Value>);
+pub struct DurableRunnerError(String, Option<serde_json::Value>, Option<&'static str>);
 
 impl DurableRunnerError {
     pub fn invalid(message: impl Into<String>) -> Self {
-        Self(message.into(), None)
+        Self(message.into(), None, None)
     }
 
     pub fn with_provider_failure(mut self, value: Option<serde_json::Value>) -> Self {
@@ -52,6 +57,17 @@ impl DurableRunnerError {
 
     pub fn provider_failure(&self) -> Option<serde_json::Value> {
         self.1.clone()
+    }
+
+    /// Adds a closed failure class that the controller reads from the command
+    /// result instead of parsing the message.
+    pub fn with_classification(mut self, classification: &'static str) -> Self {
+        self.2 = Some(classification);
+        self
+    }
+
+    pub fn classification(&self) -> Option<&'static str> {
+        self.2
     }
 }
 

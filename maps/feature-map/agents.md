@@ -83,6 +83,12 @@ resource allocation waits for approval.
 
 ### `agent-configuration`
 
+On Harness / Runtime, select an installed healthy AI account or change its model
+and save. The save checks current access and compatibility without starting a
+computer or provider hello test. **Test** still verifies the runtime. Unverified
+legacy accounts, task connection adoption and Copilot model checks retain live
+validation. Verify saved configuration separately from runtime readiness.
+
 Open `/agents/:agentId` and the configuration/instruction surfaces it exposes.
 The agent nav has two sections: **Agent** (Overview, Identity at
 `/agents/:agentId/identity`, Harness / Runtime, Secrets & variables,

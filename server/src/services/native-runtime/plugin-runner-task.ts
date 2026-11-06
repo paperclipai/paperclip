@@ -29,12 +29,16 @@ export async function verifyPluginRunnerTaskReattachment(
  */
 export function createPluginRunnerTaskOwner(input: {
   executionContext?: NativeExecutionContext;
-  task: (operation: unknown) => Promise<unknown>;
+  taskId: string;
+  task: (operation: unknown, options?: { expectedTaskId?: string }) => Promise<unknown>;
   projectIds: readonly string[];
   harness: string;
   projectAuthCheckVersion?: 1;
   resumeFrom?: string;
   priorIdentity?: DurableRecoveryIdentity;
+  /** Current authenticated lease owner; the restored PRP identity may belong to its predecessor. */
+  authorityRunId?: string;
+  codexSourceRecoveryVersion?: 1;
   credentialIdentity?: string;
   accountIdentity?: string;
   credential?: PluginEnvironmentTaskCredential;
@@ -46,12 +50,15 @@ export function createPluginRunnerTaskOwner(input: {
   githubBroker?: { url: string; token: string };
   adoptIdentity?: DurableRecoveryIdentity;
 }) {
+  const taskId = input.taskId;
+  if (!taskId) throw new Error("Plugin Runner physical task unavailable");
   const pollMs = input.pollMs ?? 500;
   let registrationGeneration = 0;
   let activeOutbound: ReturnType<typeof connectRunnerPrpIngress> | null = null;
   let preparedLaunchId: string | undefined;
   let preparedIdentity: DurableRecoveryIdentity | undefined = input.adoptIdentity;
   let launched = !!input.adoptIdentity;
+  let launchIdentity = input.adoptIdentity;
   let stopRequested = false;
   let released = false;
   let submitted = !!input.adoptIdentity;
@@ -72,7 +79,7 @@ export function createPluginRunnerTaskOwner(input: {
     const phase = ({ prepare: "execution.plugin_prepare", check_project_auth: "execution.plugin_project_auth",
       submit: "execution.plugin_submit", connection: "execution.plugin_connection" } as const)[operation.kind as "prepare" | "check_project_auth" | "submit" | "connection"];
     const result = environmentTaskResultSchema.parse(await (phase
-      ? measureRunPhase(phase, () => input.task(operation)) : input.task(operation)));
+      ? measureRunPhase(phase, () => input.task(operation, { expectedTaskId: taskId })) : input.task(operation, { expectedTaskId: taskId })));
     if (result.kind !== (operation.kind === "read_file" ? "file" : operation.kind === "describe" ? "description" : operation.kind === "prepare" ? "prepared" : operation.kind === "check_project_auth" ? "project_auth" : ["read_state", "archive_state"].includes(operation.kind) ? "state" : ["status", "connection", "credentials"].includes(operation.kind) ? operation.kind : "accepted")) {
       throw new Error("Plugin Runner returned an invalid operation result");
     }
@@ -116,6 +123,13 @@ export function createPluginRunnerTaskOwner(input: {
       await authorizeRunnerAdoption(recovery.configurationId, requirements.identity);
       return recovery;
     }
+    const authorityRunId = input.authorityRunId ?? input.executionContext?.execution.binding.runId;
+    const sourceRecovery = !!authorityRunId && requirements.identity.runId !== authorityRunId;
+    if (sourceRecovery && (input.codexSourceRecoveryVersion !== 1 || !input.resumeFrom || !input.priorIdentity || !input.accountIdentity ||
+        input.harness !== "codex" || input.adoptIdentity || Object.entries(input.priorIdentity).some(([key, value]) =>
+          requirements.identity[key as keyof DurableRecoveryIdentity] !== value))) {
+      throw new Error("Plugin Runner source reconciliation unavailable");
+    }
     if (input.githubBroker) {
       const description = await call({ kind: "describe" });
       if (description.kind !== "description" || description.githubCredentialBrokerVersion !== 1) {
@@ -125,7 +139,8 @@ export function createPluginRunnerTaskOwner(input: {
     const result = await call(environmentTaskOperationSchema.parse({ kind: "prepare", requirements,
       ...(input.githubBroker ? { githubBroker: input.githubBroker } : {}),
       projectIds: [...input.projectIds], ...(recovery ? { recovery } : {}),
-      ...(input.resumeFrom ? { resumeFrom: input.resumeFrom } : {}),
+      ...(input.resumeFrom && (!authorityRunId || !launchIdentity || launchIdentity.runId === authorityRunId || sourceRecovery)
+        ? { resumeFrom: input.resumeFrom } : {}),
       ...(input.accountIdentity ? { accountIdentity: input.accountIdentity } : {}),
       ...(launched && preparedIdentity && requirements.identity.runId !== preparedIdentity.runId
         ? { priorIdentity: preparedIdentity } : {}),
@@ -199,6 +214,7 @@ export function createPluginRunnerTaskOwner(input: {
         reconnectGraceMs: native.reconnectGraceMs, lifecyclePolicy: native.lifecyclePolicy,
       },
     });
+    launchIdentity = native.identity;
     launched = true;
     const child: RunnerProcessHandle["child"] = { exitCode: null, signalCode: null,
       kill: () => {
@@ -317,6 +333,8 @@ export function createPluginRunnerTaskOwner(input: {
     };
   };
   const driver: RunnerExecutionDriver = {
+    get authorityRunId() { return input.authorityRunId ?? input.executionContext?.execution.binding.runId; },
+    get codexSourceRecoveryVersion() { return input.codexSourceRecoveryVersion; },
     prepareLaunch, authorizeRunnerAdoption, readRunnerState, runnerProcessLauncher: launcher,
     // The provider resolves the authorized retained task before each state operation.
     prepareExternalRunnerState: async () => {},
@@ -353,7 +371,7 @@ export function createPluginRunnerTaskOwner(input: {
     // stop request. Completion also proves credential/writeback obligations ran.
     isRetired: () => stoppedState?.executionStopped === true && completed && !detached,
     rebind(next: typeof input) {
-      if (!launched || stopRequested || stoppedState || detached || next.harness !== input.harness ||
+      if (!launched || stopRequested || stoppedState || detached || next.taskId !== taskId || next.harness !== input.harness ||
           input.accountIdentity !== next.accountIdentity || input.credentialIdentity !== next.credentialIdentity ||
           JSON.stringify(input.projectIds) !== JSON.stringify(next.projectIds)) throw new Error("Plugin warm task cannot be rebound");
       input = next;

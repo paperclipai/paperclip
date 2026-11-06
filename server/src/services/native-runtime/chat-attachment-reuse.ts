@@ -38,6 +38,7 @@ import { readInheritedGitHubReviewWait } from "../chat-channels/github/review-wa
 import { boundExternalChatProvider } from "./external-chat-provider.js";
 import { resolveExternalChatQuestionResponse } from "./external-chat-question-response.js";
 import { githubRunReplyState } from "../chat-run-publications.js";
+import { readPreservedNativeResultFinalization } from "./preserved-native-result-finalization.js";
 
 // This boundary reads identity and wake authority, never launch renderings,
 // saved provider profiles, or run output. Keep the nested wake proof narrow too.
@@ -456,30 +457,7 @@ async function principalAuthorized(
   return endpoint.sponsorUserId ? activeMember(endpoint.sponsorUserId) : true;
 }
 
-/** Caller must independently verify the current run/issue execution owner. */
-export async function authorizeChatConversationForBoundRun(
-  tx: Db,
-  binding: ChatReuseBinding,
-  contextSnapshot: unknown,
-  lockMode: AuthorizationLockMode = "blocking",
-): Promise<AuthorizedConversation> {
-  let context = record(contextSnapshot);
-  if (context.source === "issue.interaction.respond") {
-    const answer = await resolveExternalChatQuestionResponse(tx, binding, context, lockMode);
-    if (!answer) throw new Error("paperclip_runner_chat_attachment_binding_denied");
-    context = answer.authorizationContext;
-  }
-  const source = typeof context.source === "string" ? context.source : "";
-  const provider = boundExternalChatProvider(source);
-  const commentIds = wakeCommentIds(context);
-  if (
-    !provider ||
-    (context.paperclipHarnessCheckedOut !== true &&
-      context.paperclipExternalChatExecutionBound !== true) ||
-    commentIds.length === 0
-  ) {
-    throw new Error("paperclip_runner_chat_attachment_binding_denied");
-  }
+function prepareBoundRunLinks(tx: Db, lockMode: AuthorizationLockMode) {
   const linksQuery = tx
     .select({
       commentId: chatMessageLinks.commentId,
@@ -539,25 +517,69 @@ export async function authorizeChatConversationForBoundRun(
     )
     .where(
       and(
-        eq(chatMessageLinks.companyId, binding.companyId),
+        eq(chatMessageLinks.companyId, sql.placeholder("companyId")),
         eq(chatMessageLinks.direction, "inbound"),
-        inArray(chatMessageLinks.commentId, commentIds),
+        sql`${chatMessageLinks.commentId} = any(${sql.placeholder("commentIds")}::uuid[])`,
         eq(chatDeliveries.state, "processed"),
-        eq(chatConversations.issueId, binding.issueId),
+        eq(chatConversations.issueId, sql.placeholder("issueId")),
         inArray(chatConversations.state, ["active", "waiting"]),
-        eq(
-          chatEndpoints.provider,
-          provider as typeof chatEndpoints.$inferSelect.provider,
-        ),
-        eq(chatEndpoints.assignedAgentId, binding.agentId),
+        eq(chatEndpoints.provider, sql.placeholder("provider")),
+        eq(chatEndpoints.assignedAgentId, sql.placeholder("agentId")),
         inArray(chatEndpoints.status, ["active", "verifying"]),
       ),
     );
-  const links = await (lockMode === "read"
+  return (lockMode === "read"
     ? linksQuery
     : lockMode === "nonblocking"
       ? linksQuery.for("update", { noWait: true })
-      : linksQuery.for("update"));
+      : linksQuery.for("update")).prepare("chat_bound_run_links");
+}
+
+const boundRunLinksTemplates = new WeakMap<
+  Db,
+  Partial<Record<AuthorizationLockMode, ReturnType<typeof prepareBoundRunLinks>>>
+>();
+
+function boundRunLinksTemplate(tx: Db, lockMode: AuthorizationLockMode) {
+  let templates = boundRunLinksTemplates.get(tx);
+  if (!templates) {
+    templates = {};
+    boundRunLinksTemplates.set(tx, templates);
+  }
+  return templates[lockMode] ??= prepareBoundRunLinks(tx, lockMode);
+}
+
+/** Caller must independently verify the current run/issue execution owner. */
+export async function authorizeChatConversationForBoundRun(
+  tx: Db,
+  binding: ChatReuseBinding,
+  contextSnapshot: unknown,
+  lockMode: AuthorizationLockMode = "blocking",
+): Promise<AuthorizedConversation> {
+  let context = record(contextSnapshot);
+  if (context.source === "issue.interaction.respond") {
+    const answer = await resolveExternalChatQuestionResponse(tx, binding, context, lockMode);
+    if (!answer) throw new Error("paperclip_runner_chat_attachment_binding_denied");
+    context = answer.authorizationContext;
+  }
+  const source = typeof context.source === "string" ? context.source : "";
+  const provider = boundExternalChatProvider(source);
+  const commentIds = wakeCommentIds(context);
+  if (
+    !provider ||
+    (context.paperclipHarnessCheckedOut !== true &&
+      context.paperclipExternalChatExecutionBound !== true) ||
+    commentIds.length === 0
+  ) {
+    throw new Error("paperclip_runner_chat_attachment_binding_denied");
+  }
+  const links = await boundRunLinksTemplate(tx, lockMode).execute({
+    companyId: binding.companyId,
+    issueId: binding.issueId,
+    agentId: binding.agentId,
+    provider,
+    commentIds,
+  });
   const linkedCommentIds = new Set(links.map((row) => row.commentId));
   const conversationIds = new Set(links.map((row) => row.conversation.id));
   const endpointIds = new Set(links.map((row) => row.endpoint.id));
@@ -733,12 +755,14 @@ export async function resolveExternalChatResponseWaitAuthorizationInTransaction(
     : lockMode === "nonblocking"
       ? actorQuery.for("update", { noWait: true }).limit(1)
       : actorQuery.for("update").limit(1));
+  const preserved = run && run.status !== "running"
+    ? await readPreservedNativeResultFinalization(tx, binding) : null;
   if (
     !issue ||
     !actor ||
-    run.status !== "running" ||
+    (!preserved && run.status !== "running") ||
     issue.assigneeAgentId !== binding.agentId ||
-    issue.executionRunId !== binding.runId ||
+    (!preserved && issue.executionRunId !== binding.runId) ||
     ["paused", "terminated", "pending_approval", "error"].includes(
       actor.status,
     )
@@ -858,7 +882,7 @@ export async function readPublishedGitHubReviewCompletionContinuationInTransacti
     eq(heartbeatRuns.agentId, binding.agentId), eq(heartbeatRuns.nativeIssueId, binding.issueId),
     eq(heartbeatRuns.runtimeMode, "native"),
   )).limit(1);
-  if (!run || run.status !== "running") return null;
+  if (!run || run.status !== "running" && !await readPreservedNativeResultFinalization(tx, binding)) return null;
   const wait = await readInheritedGitHubReviewWait(tx, run);
   if (wait?.kind !== "published") return null;
   if (wait.reviewRunId !== run.id) {

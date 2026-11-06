@@ -11,6 +11,7 @@ import { connectionManagementGuard, connectionRequestContext, connectionRequestU
 import { cancellationRequestId } from "../services/native-runtime/native-cancellation-request.js";
 import { agentHarnessType, isEnvironmentDriverSupportedForAdapter, normalizeClaudeRunnerOptions, type AgentConfigurationWarning, type AgentRunnerChoice } from "@paperclipai/shared";
 import { resolveNewAgentRunnerForCompany } from "../services/agent-runner-selection.js";
+import { PLUGIN_RUNNER_AI_CONNECTION_REQUIRED, pluginEnvironmentRunnerTaskDriver, pluginRunnerAiConnectionRequiredMessage, pluginRunnerAiConnectionRequiredTestResult } from "../services/plugin-runner-ai-connection.js";
 import { agentEnvironmentTestService } from "../services/agent-environment-test.js";
 import { qualifyAgentRunner } from "../services/agent-runner-qualification.js";
 import { createAgentLifecycle } from "../services/agent-lifecycle.js";
@@ -3176,7 +3177,7 @@ export function agentRoutes(
     res.json(detected);
   });
 
-  async function validateManagedAgentBinding(req: Request, companyId: string, agentId: string, adapterType: string, config: Record<string, unknown>, binding: AiRuntimeConnectionBinding, environmentId: string | null | undefined, test: boolean, newAgent = false, validateModelCatalog = false) {
+  async function validateManagedAgentBinding(req: Request, companyId: string, agentId: string, adapterType: string, config: Record<string, unknown>, binding: AiRuntimeConnectionBinding, environmentId: string | null | undefined, probe: "none" | "legacy" | "always", newAgent = false, validateModelCatalog = false) {
     if (binding.mode === "router") {
       const settings = await import("../services/instance-settings.js");
       if (!(await settings.instanceSettingsService(db).getExperimental()).enableAiConnectionRouters) throw unprocessable("Ask your instance operator to enable AI connection routing.");
@@ -3205,11 +3206,11 @@ export function agentRoutes(
     }
     const userId = responsibleUserForAiRequest(req);
     const allowUninstalledShared = newAgent && await canInstallSharedAiConnectionForNewAgent(db, req, companyId, binding);
-    const selection = await aiConnectionService(db).select({ companyId, agentId, userId, adapterType, model: config.model, runnerProvider: config.provider, acpxAgent: config.acpxAgent, binding, allowUninstalledPersonal: newAgent, allowUninstalledShared, allowLegacyValidation: test }).catch((error: unknown) => {
+    const selection = await aiConnectionService(db).select({ companyId, agentId, userId, adapterType, model: config.model, runnerProvider: config.provider, acpxAgent: config.acpxAgent, binding, allowUninstalledPersonal: newAgent, allowUninstalledShared, allowLegacyValidation: probe !== "none" }).catch((error: unknown) => {
       // Hiring is allowed before the responsible user has connected this
       // provider. Execution still resolves credentials and creates the normal
       // task connection request; compatibility and access denials stay errors.
-      if (newAgent && !test && binding.provider !== "github" && binding.mode === "responsible_user" && error instanceof HttpError
+      if (newAgent && probe === "none" && binding.provider !== "github" && binding.mode === "responsible_user" && error instanceof HttpError
         && ["ai_connection_default_missing", "ai_connection_missing", "ai_connection_unavailable", "ai_connection_responsible_user_missing"].includes(String(asRecord(error.details)?.code))) {
         return null;
       }
@@ -3221,16 +3222,24 @@ export function agentRoutes(
       aiRoutingModel(routing, agentHarnessType(adapterType, config), model.id) === config.model)) {
       throw unprocessable("Choose a default model available on the selected connection");
     }
-    // Copilot model availability is account-specific. Verify the selected
-    // packaged runtime before creation/adoption even when a token is saved.
-    // This metadata-only path sends no model prompt.
-    if (test || binding.provider === "github") {
-      const testEnvironmentId = await resolveAdapterTestEnvironmentId(companyId, environmentId, binding.provider === "github");
-      if (testEnvironmentId) await assertAdapterTestEnvironmentForCompany(companyId, testEnvironmentId, adapterType);
+    const testEnvironmentId = probe !== "none" || binding.provider === "github"
+      ? await resolveAdapterTestEnvironmentId(companyId, environmentId, binding.provider === "github")
+      : null;
+    if (testEnvironmentId) await assertAdapterTestEnvironmentForCompany(companyId, testEnvironmentId, adapterType);
+    // Healthy saved accounts were verified when connected. Configuration saves
+    // must not acquire a computer or send another hello prompt. Legacy adoption
+    // and explicit task adoption still need proof. Copilot retains its metadata-only
+    // packaged-runtime check because model availability is account-specific.
+    if (probe === "always" || (probe === "legacy" && selection.connection.config.aiLegacyAdoption === true) || binding.provider === "github") {
       const hasSavedAgent = !newAgent || (isUuidLike(agentId) && Boolean(await svc.getById(agentId)));
-      if (newAgent && !test && testEnvironmentId && (await environmentsSvc.getById(testEnvironmentId))?.driver === "plugin") {
+      if (newAgent && probe === "none" && testEnvironmentId && (await environmentsSvc.getById(testEnvironmentId))?.driver === "plugin") {
         // The lifecycle verifies the saved agent after its plugin can create the agent-owned computer.
         return { connectionId: selection.connection.id };
+      }
+      const testEnvironment = testEnvironmentId ? await environmentsSvc.getById(testEnvironmentId) : null;
+      if (adapterType === "paperclip_runner" && config.homeMode === "preconfigured" && testEnvironment
+        && await pluginEnvironmentRunnerTaskDriver(db, testEnvironment)) {
+        throw unprocessable(pluginRunnerAiConnectionRequiredMessage(true), { code: PLUGIN_RUNNER_AI_CONNECTION_REQUIRED });
       }
       const target = await resolveAdapterTestExecutionContext({ companyId, adapterType,
         agentId: hasSavedAgent ? agentId : undefined, environmentId: testEnvironmentId });
@@ -3352,7 +3361,7 @@ export function agentRoutes(
       const adapter = requireServerAdapter(type);
       if (!retainsSavedExecution) await assertSelectableAdapterType(type, adapterConfigForTest, companyId);
       if (poolBinding?.mode === "router") {
-        await validateManagedAgentBinding(req, companyId, savedAgentId ?? "", type, adapterConfigForTest, poolBinding, requestedEnvironmentId, false, !savedAgentId || testingSetup);
+        await validateManagedAgentBinding(req, companyId, savedAgentId ?? "", type, adapterConfigForTest, poolBinding, requestedEnvironmentId, "none", !savedAgentId || testingSetup);
         res.json({ adapterType: type, status: "warn", testedAt: new Date().toISOString(), checks: [{ code: "ai_connection_pool_task_test_required", level: "warn", message: "Pool configuration is available. Run a task to verify the selected account and harness; this preview does not allocate a task or contact a provider." }] });
         return;
       }
@@ -3379,6 +3388,14 @@ export function agentRoutes(
             ? [{ code: "dot_workspace", level: "error" as const, message: "Managed Dot runners do not expose workspace access. Turn off workspace access before assigning work." }] : []),
         ];
         res.json({ adapterType: type, status: checks.some(c => c.level === "error") ? "fail" : checks.some(c => c.level === "warn") ? "warn" : "pass", testedAt: new Date().toISOString(), checks });
+        return;
+      }
+      // A plugin Runner-task environment runs only managed AI connections in an isolated
+      // home. Refuse before secret resolution or a computer allocation it cannot use.
+      const preconfiguredTestHome = type === "paperclip_runner" && adapterConfigForTest.homeMode === "preconfigured";
+      if (type === "paperclip_runner" && requestedEnvironment && (preconfiguredTestHome || !aiBinding)
+        && await pluginEnvironmentRunnerTaskDriver(db, requestedEnvironment)) {
+        res.json(pluginRunnerAiConnectionRequiredTestResult(type, preconfiguredTestHome));
         return;
       }
       const normalizedAdapterConfig = await secretsSvc.normalizeAdapterConfigForPersistence(
@@ -4617,7 +4634,7 @@ export function agentRoutes(
       const requiresApproval = company.requireBoardApprovalForNewAgents;
       const status = requiresApproval ? "pending_approval" : "idle";
       const managedHireBinding = normalizedHireInput.runtimeConfig?.aiConnection ? aiRuntimeConnectionBindingSchema.parse(normalizedHireInput.runtimeConfig.aiConnection) : undefined;
-      const managedHireConnection = managedHireBinding ? await validateManagedAgentBinding(req, companyId, hiredAgentId, normalizedHireInput.adapterType, normalizedHireInput.adapterConfig, managedHireBinding, normalizedHireInput.defaultEnvironmentId, false, true) : undefined;
+      const managedHireConnection = managedHireBinding ? await validateManagedAgentBinding(req, companyId, hiredAgentId, normalizedHireInput.adapterType, normalizedHireInput.adapterConfig, managedHireBinding, normalizedHireInput.defaultEnvironmentId, "none", true) : undefined;
       const createdAgent = await svcLifecycle.requestHire(
         companyId,
         {
@@ -4896,7 +4913,7 @@ export function agentRoutes(
     });
 
     const managedBinding = normalizedRuntimeConfig.aiConnection ? aiRuntimeConnectionBindingSchema.parse(normalizedRuntimeConfig.aiConnection) : undefined;
-    const managedConnection = managedBinding && !setupId ? await validateManagedAgentBinding(req, companyId, agentId, createInput.adapterType, normalizedAdapterConfig, managedBinding, createInput.defaultEnvironmentId, false, true) : undefined;
+    const managedConnection = managedBinding && !setupId ? await validateManagedAgentBinding(req, companyId, agentId, createInput.adapterType, normalizedAdapterConfig, managedBinding, createInput.defaultEnvironmentId, "none", true) : undefined;
     const createdAgent = await svcLifecycle.requestHire(
       companyId,
       {
@@ -5443,7 +5460,7 @@ export function agentRoutes(
     if (!setup.aiConnectionRequiresAdoption || !setup.aiConnection) throw conflict("The agent’s AI configuration changed. Reload the task and try again.");
     // Probe in the agent's execution environment without installing access.
     // The binding, install, audit, and card resolution commit together below.
-    const validatedConnection = await validateManagedAgentBinding(req, agent.companyId, agent.id, agent.adapterType, agent.adapterConfig, setup.aiConnection, agent.defaultEnvironmentId, true, true);
+    const validatedConnection = await validateManagedAgentBinding(req, agent.companyId, agent.id, agent.adapterType, agent.adapterConfig, setup.aiConnection, agent.defaultEnvironmentId, "always", true);
     if (validatedConnection?.connectionId !== connectionId) throw conflict("This is no longer the selected account. Reload the task and try again.");
     const completed = await intents.complete(interactionId, connectionId, userId, {
       validatedAdoption: { agentUpdatedAt: agent.updatedAt, binding: setup.aiConnection },
@@ -5709,7 +5726,7 @@ export function agentRoutes(
         const configuringSetup = isAgentSetupDraft(existing);
         await validateManagedAgentBinding(req, existing.companyId, existing.id, requestedAdapterType, aiConfig, nextAiBinding,
           (patchData.defaultEnvironmentId !== undefined ? patchData.defaultEnvironmentId : existing.defaultEnvironmentId) as string | null,
-          !configuringSetup && (!runtimeSettings || changed), configuringSetup, Boolean(runtimeSettings));
+          !configuringSetup && (!runtimeSettings || changed) ? "legacy" : "none", configuringSetup, Boolean(runtimeSettings));
       }
     }
     if (requestedRuntimeConfig) patchData.runtimeConfig = requestedRuntimeConfig;

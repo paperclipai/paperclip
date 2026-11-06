@@ -6,30 +6,40 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createIssue } from "../../storybook/fixtures/paperclipData";
 import { coordinatorAttentionTasksQueryKey } from "@/lib/coordinator-attention";
 import { MemoryRouter } from "@/lib/router";
-import { useLocation, useNavigate } from "react-router-dom";
+import { Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { CoordinatorTasks } from "./CoordinatorTasks";
+import { Issues } from "./Issues";
 import { queryKeys } from "@/lib/queryKeys";
+import { IssueFilterPanel } from "@/components/IssueFilterPanel";
+import type { ComponentProps } from "react";
 import type { TaskListSort } from "@/lib/task-list";
+import { taskListViews, taskListViewStorageKey, type TaskListView } from "@/lib/task-list-views";
 
-const mocks = vi.hoisted(() => ({ list: vi.fn(), get: vi.fn(), attention: vi.fn(), breadcrumbs: vi.fn(), liveRuns: vi.fn() }));
+const mocks = vi.hoisted(() => ({ list: vi.fn(), get: vi.fn(), attention: vi.fn(), breadcrumbs: vi.fn(), liveRuns: vi.fn(), localTrusted: false, realFilters: false, labels: [] as { id: string; name: string; color: string }[], identity: { userId: "person" as string | null, settled: true } }));
 vi.mock("@/api/heartbeats", () => ({ heartbeatsApi: { liveRunsForCompany: mocks.liveRuns } }));
-vi.mock("@/api/issues", () => ({ issuesApi: { list: mocks.list, listCompact: mocks.list, get: mocks.get, listLabels: async () => [], update: vi.fn() } }));
+vi.mock("@/api/issues", () => ({ issuesApi: { list: mocks.list, listCompact: mocks.list, get: mocks.get, listLabels: async () => mocks.labels, update: vi.fn() } }));
 vi.mock("@/api/attention", () => ({ attentionApi: { taskIndex: mocks.attention } }));
 vi.mock("@/api/agents", () => ({ agentsApi: { list: async () => [] } }));
 vi.mock("@/api/projects", () => ({ projectsApi: { list: async () => [] } }));
 vi.mock("@/api/access", () => ({ accessApi: { listUserDirectory: async () => ({ users: [] }) } }));
-vi.mock("@/api/companies-query", () => ({ useAccountIdentity: () => ({ userId: "person" }) }));
+vi.mock("@/api/companies-query", () => ({ useAccountIdentity: () => mocks.identity }));
+vi.mock("@/hooks/useCoordinatorWorkspaceEnabled", () => ({ useCoordinatorWorkspaceEnabled: () => ({ enabled: true, userId: mocks.identity.userId ?? (mocks.localTrusted ? "local-board" : null), loaded: mocks.identity.settled }) }));
+vi.mock("@/hooks/useStreamlinedUiEnabled", () => ({ useStreamlinedUiEnabled: () => ({ enabled: true }) }));
+vi.mock("@/hooks/useCombinedInboxTasksEnabled", () => ({ useCombinedInboxTasksEnabled: () => ({ enabled: false }) }));
 vi.mock("@/context/CompanyContext", () => ({ useCompany: () => ({ selectedCompanyId: "company" }) }));
 vi.mock("@/context/DialogContext", () => ({ useDialogActions: () => ({ openNewIssue: vi.fn() }) }));
 vi.mock("@/context/BreadcrumbContext", () => ({ useBreadcrumbs: () => ({ setBreadcrumbs: mocks.breadcrumbs }) }));
-vi.mock("@/components/TaskListToolbar", () => ({ TaskListToolbar: ({ filters, onViewChange, onLayoutChange }: { filters: { onChange: (value: { liveOnly?: boolean; priorities?: string[]; assignees?: string[]; statuses?: string[]; routineTasksOnly?: boolean }) => void }; onViewChange: (view: "blocked") => void; onLayoutChange: (layout: "list" | "board") => void }) => <>
+vi.mock("@/components/TaskListToolbar", () => ({ TaskListToolbar: ({ filters, view, onViewChange, onLayoutChange }: { filters: Omit<ComponentProps<typeof IssueFilterPanel>, "onClear">; view: TaskListView; onViewChange: (view: TaskListView) => void; onLayoutChange: (layout: "list" | "board") => void }) => <>
+  {mocks.realFilters ? <IssueFilterPanel {...filters} onClear={() => filters.onChange({ labels: [] })} /> : null}
+  <span data-selected-view>{view}</span>
+  {taskListViews.map(option => <button key={option.value} onClick={() => onViewChange(option.value)}>{option.label}</button>)}
   <button onClick={() => filters.onChange({ routineTasksOnly: true })}>Routine tasks</button>
   <button onClick={() => filters.onChange({ routineTasksOnly: false })}>Show other tasks</button>
   <button onClick={() => filters.onChange({ liveOnly: true })}>Live runs only</button>
   <button onClick={() => filters.onChange({ priorities: ["high"] })}>High priority</button>
+  <button onClick={() => filters.onChange({ statuses: ["in_progress"] })}>In progress only</button>
   <button onClick={() => filters.onChange({ assignees: [], statuses: [] })}>Clear assignee and status</button>
   <button onClick={() => filters.onChange({ assignees: ["first", "second"], statuses: ["todo"] })}>Change assignee and status</button>
-  <button onClick={() => onViewChange("blocked")}>Needs attention</button>
   <button onClick={() => onLayoutChange("board")}>Board view</button>
   <button onClick={() => onLayoutChange("list")}>List view</button>
 </> }));
@@ -44,6 +54,9 @@ describe("Coordinator tasks using the proposed table", () => {
   const pending = createIssue({ id: "pending", companyId: "company", status: "todo", parentId: null, title: "Needs a channel answer" });
   beforeEach(() => {
     vi.clearAllMocks(); localStorage.clear();
+    mocks.realFilters = false; mocks.labels = [];
+    mocks.identity = { userId: "person", settled: true };
+    mocks.localTrusted = false;
     mocks.liveRuns.mockResolvedValue([]);
     mocks.attention.mockResolvedValue({ taskIds: [pending.id] });
     mocks.get.mockResolvedValue(pending);
@@ -56,8 +69,85 @@ describe("Coordinator tasks using the proposed table", () => {
     flushSync(() => root.render(<QueryClientProvider client={client}><MemoryRouter initialEntries={[url]}><CoordinatorTasks /></MemoryRouter></QueryClientProvider>));
     await vi.waitFor(() => expect(host.textContent).not.toContain("Loading tasks"));
   }
-  it("loads the task index without descriptions or historical diagnostics", async () => {
+  it.each([
+    { url: "/issues", view: "all", ids: ["parent", "mine", "assigned", "unrelated"] },
+    { url: "/issues?view=inbox", view: "inbox", ids: ["parent", "mine", "assigned"] },
+  ])("opens $url in $view, retaining parent context for Inbox", async ({ url, view, ids }) => {
+    mocks.list.mockResolvedValue([
+      createIssue({ id: "parent", companyId: "company", parentId: null, createdByUserId: "other" }),
+      createIssue({ id: "mine", companyId: "company", parentId: "parent", createdByUserId: "person" }),
+      createIssue({ id: "assigned", companyId: "company", parentId: null, assigneeUserId: "person" }),
+      createIssue({ id: "unrelated", companyId: "company", parentId: null, createdByUserId: "other" }),
+    ]);
+    await mount(url);
+    expect(host.querySelector("[data-selected-view]")?.textContent).toBe(view);
+    expect([...host.querySelectorAll("[data-task-id]")].map(row => row.getAttribute("data-task-id"))).toEqual(ids);
+    expect(host.querySelector("output")?.textContent).toBe(`?view=${view}`);
+  });
+  it.each(taskListViews)("remembers $label when leaving Tasks and returning without a view URL", async ({ value, label }) => {
     await mount("/issues");
+    flushSync(() => [...host.querySelectorAll("button")].find(button => button.textContent === label)!.click());
+    await vi.waitFor(() => expect(localStorage.getItem(taskListViewStorageKey("coordinator", "person"))).toBe(value));
+    flushSync(() => root.unmount()); root = createRoot(host);
+    await mount("/issues");
+    expect(host.querySelector("[data-selected-view]")?.textContent).toBe(value);
+  });
+  it("uses the resolved local-board principal when no account session exists", async () => {
+    mocks.realFilters = false; mocks.labels = [];
+    mocks.identity = { userId: null, settled: true }; mocks.localTrusted = true;
+    mocks.list.mockResolvedValue([createIssue({ id: "local", companyId: "company", parentId: null, createdByUserId: "local-board" })]);
+    await mount("/issues");
+    expect(host.querySelector('[data-task-id="local"]')).not.toBeNull();
+    expect(localStorage.getItem(taskListViewStorageKey("coordinator", "local-board"))).toBe("all");
+  });
+  it.each(["inbox", "unread"])("keeps %s selected when applying a status filter", async view => {
+    const mine = createIssue({ id: "mine-running", companyId: "company", parentId: null, createdByUserId: "person", status: "in_progress" });
+    const other = createIssue({ id: "other-running", companyId: "company", parentId: null, createdByUserId: "other", status: "in_progress" });
+    const todo = createIssue({ id: "todo", companyId: "company", parentId: null, createdByUserId: "person", status: "todo" });
+    const read = createIssue({ id: "read-running", companyId: "company", parentId: null, createdByUserId: "other", status: "in_progress" });
+    mocks.list.mockImplementation(async (_company, filters) => filters.unreadForUserId === "me" ? [mine, other, todo] : [mine, other, todo, read]);
+    await mount(`/issues?view=${view}`);
+    flushSync(() => [...host.querySelectorAll("button")].find(button => button.textContent === "In progress only")!.click());
+    await vi.waitFor(() => expect(host.querySelector("output")?.textContent).toContain("status=in_progress"));
+    expect(host.querySelector("[data-selected-view]")?.textContent).toBe(view);
+    expect([...host.querySelectorAll("[data-task-id]")].map(row => row.getAttribute("data-task-id"))).toEqual(view === "inbox" ? [mine.id] : [mine.id, other.id]);
+  });
+  it("loads read ancestor chains as context for unread subtasks", async () => {
+    const grandparent = createIssue({ id: "read-grandparent", companyId: "company", parentId: null });
+    const parent = createIssue({ id: "read-parent", companyId: "company", parentId: grandparent.id });
+    const child = createIssue({ id: "unread-child", companyId: "company", parentId: parent.id });
+    mocks.list.mockImplementation(async (_company, filters) => filters.unreadForUserId === "me" ? [child] : [parent, grandparent].filter(issue => filters.ids?.includes(issue.id)));
+    await mount("/issues?view=unread");
+    await vi.waitFor(() => {
+      expect([...host.querySelectorAll("[data-task-id]")].map(row => row.getAttribute("data-task-id"))).toEqual([child.id, parent.id, grandparent.id]);
+    });
+    expect(mocks.get).not.toHaveBeenCalled();
+    expect(mocks.list).toHaveBeenCalledWith("company", expect.objectContaining({ projection: "index", ids: [parent.id] }), expect.anything());
+    expect(mocks.list).toHaveBeenCalledWith("company", expect.objectContaining({ projection: "index", ids: [grandparent.id] }), expect.anything());
+  });
+  it("queries the server's unread set and does not mark every task unread", async () => {
+    const unread = createIssue({ id: "unread", companyId: "company", parentId: null });
+    const read = createIssue({ id: "read", companyId: "company", parentId: null });
+    mocks.list.mockImplementation(async (_company, filters) => filters.unreadForUserId === "me" ? [unread] : [unread, read]);
+    await mount("/issues?view=unread");
+    expect(mocks.list).toHaveBeenCalledWith("company", expect.objectContaining({ unreadForUserId: "me", projection: "index" }), expect.anything());
+    expect([...host.querySelectorAll("[data-task-id]")].map(row => row.getAttribute("data-task-id"))).toEqual(["unread"]);
+  });
+  it("waits for the viewer identity before resolving their saved view", async () => {
+    const key = taskListViewStorageKey("coordinator", "person");
+    localStorage.setItem(key, "inbox");
+    mocks.realFilters = false; mocks.labels = [];
+    mocks.identity = { userId: null, settled: false };
+    await mount("/issues");
+    expect(localStorage.getItem(key)).toBe("inbox");
+    mocks.realFilters = false; mocks.labels = [];
+    mocks.identity = { userId: "person", settled: true };
+    await mount("/issues");
+    expect(host.querySelector("[data-selected-view]")?.textContent).toBe("inbox");
+    expect(localStorage.getItem(key)).toBe("inbox");
+  });
+  it("loads the task index without descriptions or historical diagnostics", async () => {
+    await mount("/issues?view=all");
     expect(mocks.list).toHaveBeenCalledWith("company", expect.objectContaining({ projection: "index", limit: 200 }), expect.anything());
     expect(mocks.get).not.toHaveBeenCalled();
   });
@@ -136,7 +226,7 @@ describe("Coordinator tasks using the proposed table", () => {
       assigneeAgentId: null, detectedProgressSummary: null, createdAt: null,
     } };
     mocks.list.mockImplementation(async (_company, filters) => filters.projection === "rows" ? [details] : [index]);
-    await mount("/issues");
+    await mount("/issues?view=all");
     flushSync(() => Array.from(host.querySelectorAll("button")).find(button => button.textContent === "Board view")!.click());
     await vi.waitFor(() => expect(host.querySelector('[aria-label="Needs next step"]')).not.toBeNull());
     expect(mocks.list).toHaveBeenCalledWith("company", expect.objectContaining({ projection: "rows", ids: [index.id] }), expect.anything());
@@ -148,7 +238,7 @@ describe("Coordinator tasks using the proposed table", () => {
       ? indexes.filter(issue => filters.ids.includes(issue.id)).map(issue => ({ ...issue, successfulRunHandoff: {
         required: issue.id === "board-task-10", hasLiveContinuation: false,
       } })) : indexes);
-    await mount("/issues");
+    await mount("/issues?view=all");
     flushSync(() => Array.from(host.querySelectorAll("button")).find(button => button.textContent === "Board view")!.click());
     await vi.waitFor(() => expect(mocks.list.mock.calls.some(call => call[1].projection === "rows")).toBe(true));
     expect(host.querySelector('[aria-label="Needs next step"]')).toBeNull();
@@ -186,7 +276,7 @@ describe("Coordinator tasks using the proposed table", () => {
       createIssue({ id: "done", companyId: "company", status: "done", parentId: null }),
     ]);
     mocks.liveRuns.mockResolvedValue([{ issueId: "live", status: "running" }, { issueId: "done", status: "running" }]);
-    await mount("/issues");
+    await mount("/issues?view=all");
     await vi.waitFor(() => expect(mocks.liveRuns).toHaveBeenCalledWith("company"));
     flushSync(() => Array.from(host.querySelectorAll("button")).find(button => button.textContent === "Live runs only")!.click());
     await vi.waitFor(() => expect([...host.querySelectorAll("[data-task-id]")].map(node => node.getAttribute("data-task-id"))).toEqual(["live"]));
@@ -205,6 +295,129 @@ describe("Coordinator tasks using the proposed table", () => {
     await mount(`/issues?q=${encodeURIComponent(query)}`);
     expect(mocks.list).toHaveBeenCalledWith("company", expect.objectContaining({ q: query }), expect.anything());
     expect(host.querySelector('[data-task-id="server-match"]')).not.toBeNull();
+  });
+  it("keeps a selected label and other URL filters after sorting and reloading", async () => {
+    mocks.realFilters = true;
+    mocks.labels = [{ id: "qa", name: "qa-task", color: "var(--accent)" }];
+    mocks.list.mockResolvedValue([
+      createIssue({ id: "qa-done", companyId: "company", parentId: null, assigneeAgentId: "chosen", status: "done", labelIds: ["qa"] }),
+      createIssue({ id: "other-done", companyId: "company", parentId: null, assigneeAgentId: "chosen", status: "done", labelIds: [] }),
+      createIssue({ id: "qa-todo", companyId: "company", parentId: null, assigneeAgentId: "chosen", status: "todo", labelIds: ["qa"] }),
+    ]);
+    await mount("/issues?view=all&status=done&assignee=chosen&workspace=team&q=release&keep=value");
+    const taskIds = () => [...host.querySelectorAll("[data-task-id]")].map(node => node.getAttribute("data-task-id"));
+    const labelCheckbox = () => host.querySelector<HTMLButtonElement>('[role="checkbox"][aria-label="qa-task"]')!;
+    flushSync(() => labelCheckbox().click());
+    await vi.waitFor(() => expect(taskIds()).toEqual(["qa-done"]));
+    expect(labelCheckbox().getAttribute("aria-checked")).toBe("true");
+    await vi.waitFor(() => expect(host.querySelector("output")!.textContent).toContain("label=qa"));
+    flushSync(() => [...host.querySelectorAll("button")].find(button => button.textContent === "Sort by task ID")!.click());
+    await vi.waitFor(() => expect(host.querySelector("output")!.textContent).toContain("sortField=taskId"));
+    const search = host.querySelector("output")!.textContent!;
+    flushSync(() => root.unmount());
+    root = createRoot(host);
+    client.clear();
+    await mount(`/issues${search}`);
+    await vi.waitFor(() => expect(taskIds()).toEqual(["qa-done"]));
+    expect(labelCheckbox().getAttribute("aria-checked")).toBe("true");
+    const params = new URLSearchParams(host.querySelector("output")!.textContent!);
+    expect(params.getAll("label")).toEqual(["qa"]);
+    expect(Object.fromEntries(params)).toMatchObject({ view: "all", status: "done", assignee: "chosen", workspace: "team", q: "release", keep: "value", sortField: "taskId", sortDir: "desc" });
+  });
+  it("restores repeated labels from label-only links and follows history without clearing other filters", async () => {
+    mocks.realFilters = true;
+    mocks.labels = [{ id: "qa", name: "qa-task", color: "var(--accent)" }, { id: "review", name: "review-task", color: "var(--accent)" }];
+    mocks.list.mockResolvedValue([
+      createIssue({ id: "qa-high", companyId: "company", parentId: null, labelIds: ["qa"], priority: "high" }),
+      createIssue({ id: "review-high", companyId: "company", parentId: null, labelIds: ["review"], priority: "high" }),
+      createIssue({ id: "review-low", companyId: "company", parentId: null, labelIds: ["review"], priority: "low" }),
+      createIssue({ id: "unlabeled", companyId: "company", parentId: null, labelIds: [], priority: "high" }),
+    ]);
+    function Navigation() {
+      const navigate = useNavigate();
+      return <><button onClick={() => navigate("/issues?view=all&label=review&keep=value")}>Review label</button>
+        <button onClick={() => navigate(-1)}>Back</button><button onClick={() => navigate(1)}>Forward</button><CoordinatorTasks /></>;
+    }
+    flushSync(() => root.render(<QueryClientProvider client={client}><MemoryRouter initialEntries={["/issues?label=qa&label=review&keep=value"]}><Navigation /></MemoryRouter></QueryClientProvider>));
+    const taskIds = () => [...host.querySelectorAll("[data-task-id]")].map(node => node.getAttribute("data-task-id"));
+    const click = (label: string) => flushSync(() => [...host.querySelectorAll("button")].find(button => button.textContent === label)!.click());
+    await vi.waitFor(() => expect(taskIds()).toEqual(["qa-high", "review-high", "review-low"]));
+    expect(host.querySelector("[data-selected-view]")?.textContent).toBe("all");
+    expect(host.querySelector('[role="checkbox"][aria-label="qa-task"]')?.getAttribute("aria-checked")).toBe("true");
+    expect(host.querySelector('[role="checkbox"][aria-label="review-task"]')?.getAttribute("aria-checked")).toBe("true");
+    click("High priority"); click("Review label");
+    await vi.waitFor(() => expect(taskIds()).toEqual(["review-high"]));
+    click("Back");
+    await vi.waitFor(() => expect(taskIds()).toEqual(["qa-high", "review-high"]));
+    click("Forward");
+    await vi.waitFor(() => expect(taskIds()).toEqual(["review-high"]));
+    flushSync(() => host.querySelector<HTMLButtonElement>('[role="checkbox"][aria-label="qa-task"]')!.click());
+    await vi.waitFor(() => expect(new URLSearchParams(host.querySelector("output")!.textContent!).getAll("label")).toEqual(["review", "qa"]));
+    expect(taskIds()).toEqual(["qa-high", "review-high"]);
+    flushSync(() => host.querySelector<HTMLButtonElement>('[role="checkbox"][aria-label="qa-task"]')!.click());
+    await vi.waitFor(() => expect(new URLSearchParams(host.querySelector("output")!.textContent!).getAll("label")).toEqual(["review"]));
+    flushSync(() => host.querySelector<HTMLButtonElement>('[role="checkbox"][aria-label="review-task"]')!.click());
+    await vi.waitFor(() => expect(taskIds()).toEqual(["qa-high", "review-high", "unlabeled"]));
+    await vi.waitFor(() => expect(new URLSearchParams(host.querySelector("output")!.textContent!).getAll("label")).toEqual([]));
+    const params = new URLSearchParams(host.querySelector("output")!.textContent!);
+    expect(params.getAll("label")).toEqual([]);
+    expect(params.get("keep")).toBe("value");
+  });
+  it("keeps unknown labels restrictive and removes them when clearing an empty collection", async () => {
+    mocks.list.mockResolvedValue([createIssue({ id: "unlabeled", companyId: "company", parentId: null, labelIds: [] })]);
+    await mount("/issues?view=all&label=missing&label=other-missing&keep=value&sortField=taskId&sortDir=asc");
+    expect(host.querySelectorAll("[data-task-id]")).toHaveLength(0);
+    flushSync(() => [...host.querySelectorAll("button")].find(button => button.textContent === "Clear filters")!.click());
+    await vi.waitFor(() => expect(host.querySelector('[data-task-id="unlabeled"]')).not.toBeNull());
+    await vi.waitFor(() => expect(new URLSearchParams(host.querySelector("output")!.textContent!).getAll("label")).toEqual([]));
+    const params = new URLSearchParams(host.querySelector("output")!.textContent!);
+    expect(params.getAll("label")).toEqual([]);
+    expect(Object.fromEntries(params)).toMatchObject({ view: "all", keep: "value", sortField: "taskId", sortDir: "asc" });
+  });
+  it.each(["mine", "blocked", "recent", "everything"])("keeps Coordinator and local filters/layout when the last label is removed from a legacy %s link", async view => {
+    mocks.realFilters = true;
+    mocks.labels = [{ id: "qa", name: "qa-task", color: "var(--accent)" }];
+    mocks.list.mockResolvedValue([
+      createIssue({ id: "qa-high", companyId: "company", parentId: null, labelIds: ["qa"], priority: "high" }),
+      createIssue({ id: "qa-low", companyId: "company", parentId: null, labelIds: ["qa"], priority: "low" }),
+      createIssue({ id: "unlabeled-high", companyId: "company", parentId: null, labelIds: [], priority: "high" }),
+    ]);
+    function CurrentRoute() {
+      const location = useLocation(); const navigate = useNavigate();
+      return <><output data-route>{location.pathname}{location.search}{location.hash}</output>
+        <button onClick={() => navigate("/issues?view=all&label=qa&keep=value#saved")}>Restore label link</button>
+        <button onClick={() => navigate(-1)}>Back</button><button onClick={() => navigate(1)}>Forward</button></>;
+    }
+    flushSync(() => root.render(<QueryClientProvider client={client}><MemoryRouter initialEntries={[`/issues?view=${view}&label=qa&keep=value#saved`]}><CurrentRoute /><Routes>
+      <Route path="/issues" element={<Issues />} /><Route path="/inbox/:tab" element={<p>Inbox owner</p>} />
+    </Routes></MemoryRouter></QueryClientProvider>));
+    const taskIds = () => [...host.querySelectorAll("[data-task-id]")].map(node => node.getAttribute("data-task-id"));
+    await vi.waitFor(() => expect(taskIds()).toEqual(["qa-high", "qa-low"]));
+    flushSync(() => [...host.querySelectorAll("button")].find(button => button.textContent === "High priority")!.click());
+    await vi.waitFor(() => expect(taskIds()).toEqual(["qa-high"]));
+    flushSync(() => [...host.querySelectorAll("button")].find(button => button.textContent === "Board view")!.click());
+    expect(host.querySelector<HTMLDivElement>(".design-task-list-panel")?.hidden).toBe(true);
+    flushSync(() => host.querySelector<HTMLButtonElement>('[role="checkbox"][aria-label="qa-task"]')!.click());
+    await vi.waitFor(() => expect(host.querySelector("[data-route]")?.textContent).toBe("/issues?view=all&keep=value#saved"));
+    expect(host.querySelector<HTMLDivElement>(".design-task-list-panel")?.hidden).toBe(true);
+    await vi.waitFor(() => expect(taskIds()).toEqual(["qa-high", "unlabeled-high"]));
+    expect(host.textContent).not.toContain("Inbox owner");
+    await vi.waitFor(() => expect(new URLSearchParams(host.querySelector(".design-task-list-panel output")!.textContent!).getAll("label")).toEqual([]));
+    expect(Object.fromEntries(new URLSearchParams(host.querySelector(".design-task-list-panel output")!.textContent!))).toMatchObject({ view: "all", keep: "value" });
+    flushSync(() => host.querySelector<HTMLButtonElement>('[role="checkbox"][aria-label="qa-task"]')!.click());
+    await vi.waitFor(() => expect(host.querySelector("[data-route]")?.textContent).toBe("/issues?view=all&keep=value&label=qa#saved"));
+    expect(taskIds()).toEqual(["qa-high"]);
+    flushSync(() => host.querySelector<HTMLButtonElement>('[role="checkbox"][aria-label="qa-task"]')!.click());
+    await vi.waitFor(() => expect(host.querySelector("[data-route]")?.textContent).toBe("/issues?view=all&keep=value#saved"));
+    const click = (label: string) => flushSync(() => [...host.querySelectorAll("button")].find(button => button.textContent === label)!.click());
+    click("Restore label link");
+    await vi.waitFor(() => expect(taskIds()).toEqual(["qa-high"]));
+    click("Back");
+    await vi.waitFor(() => expect(taskIds()).toEqual(["qa-high", "unlabeled-high"]));
+    click("Forward");
+    await vi.waitFor(() => expect(taskIds()).toEqual(["qa-high"]));
+    expect(host.querySelector<HTMLDivElement>(".design-task-list-panel")?.hidden).toBe(true);
+    expect(host.querySelector("[data-route]")?.textContent).toBe("/issues?view=all&label=qa&keep=value#saved");
   });
   it("still applies assignee filters to server search matches", async () => {
     mocks.list.mockResolvedValue([
