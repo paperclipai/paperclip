@@ -307,6 +307,52 @@ export async function materializeRemoteClaudeConfig(input: {
   };
 }
 
+export async function overrideRemoteClaudeLocalPermissionMode(input: {
+  runId: string;
+  target: AdapterExecutionTarget | null | undefined;
+  workspaceLocalDir: string;
+  workspaceRemoteDir: string;
+  defaultMode: RemoteClaudePermissionDefaultMode;
+  options: AdapterExecutionTargetShellOptions;
+}): Promise<(() => Promise<void>) | null> {
+  const localPath = path.join(input.workspaceLocalDir, ".claude", "settings.local.json");
+  const original = await fs.readFile(localPath, "utf8").catch(() => null);
+  if (original === null) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(original);
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+  const settings = parsed as Record<string, unknown>;
+  const permissions =
+    settings.permissions && typeof settings.permissions === "object" && !Array.isArray(settings.permissions)
+      ? (settings.permissions as Record<string, unknown>)
+      : {};
+  if (permissions.defaultMode === input.defaultMode) return null;
+  const overridden = `${JSON.stringify({ ...settings, permissions: { ...permissions, defaultMode: input.defaultMode } }, null, 2)}\n`;
+  const remotePath = path.posix.join(input.workspaceRemoteDir, ".claude", "settings.local.json");
+  const result = await runAdapterExecutionTargetShellCommand(
+    input.runId,
+    input.target,
+    `if [ -f ${shellQuote(remotePath)} ]; then ` +
+      `printf '%s' ${shellQuote(overridden)} > ${shellQuote(`${remotePath}.partial`)} && ` +
+      `mv -f ${shellQuote(`${remotePath}.partial`)} ${shellQuote(remotePath)}; fi`,
+    input.options,
+  );
+  if (result.exitCode !== 0 || result.timedOut) {
+    await input.options.onLog?.("stderr", "[paperclip] Could not apply the Claude permission mode to the sandbox workspace settings.\n");
+  }
+  return async () => {
+    const current = await fs.readFile(localPath, "utf8").catch(() => null);
+    if (current !== overridden) return;
+    await fs.writeFile(localPath, original).catch(async () => {
+      await input.options.onLog?.("stderr", "[paperclip] Could not restore the host Claude workspace settings after the sandbox run.\n");
+    });
+  };
+}
+
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
 }
