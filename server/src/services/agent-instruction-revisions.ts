@@ -298,11 +298,9 @@ export function agentInstructionRevisionService(db: Db) {
       const recordSave = (row: Revision, adopted: boolean) => tx.insert(activityLog).values({ companyId: input.companyId,
         actorType: bound.type === "plugin" ? "plugin" : bound.type === "board" ? "user" : "agent",
         actorId: (bound.type === "plugin" ? bound.pluginId : bound.type === "board" ? bound.userId : bound.agentId)!,
-        agentId: bound.type === "agent" ? bound.agentId : null, runId: writer.sourceRunId,
-        responsibleUserId: writer.responsibleUserId, action: "agent.files_updated", entityType: "agent", entityId: input.agentId,
-        details: { path: input.entryFile, contentHash: row.contentHash, byteLength: row.byteLength,
-          source: adopted ? "adopted" : restored ? "legacy_restore" : (input as InstructionCommitInput).source } })
-        .returning({ createdAt: activityLog.createdAt }).then(([saved]) => saved!.createdAt);
+        agentId: bound.type === "agent" ? bound.agentId : null, runId: row.sourceRunId,
+        responsibleUserId: row.responsibleUserId, action: "agent.files_updated", entityType: "agent", entityId: input.agentId,
+        details: { path: input.entryFile, contentHash: row.contentHash, created: current === null, source: restored ? "legacy_restore" : (input as InstructionCommitInput).source } });
       const bindEntry = async () => {
         if (
           !state.agent.adapterConfig.instructionsRootPath ||
