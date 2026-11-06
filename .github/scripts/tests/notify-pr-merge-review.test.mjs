@@ -4,20 +4,31 @@ import { readFileSync, mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { green, deliver, notify, snapshot } from "../notify-pr-merge-review.mjs";
+import { green, deliver, notify, snapshot, trustedVerification } from "../notify-pr-merge-review.mjs";
 
 const head = "a".repeat(40);
 const base = "b".repeat(40);
 const check = (name, conclusion = "SUCCESS", extra = {}) => ({
-  __typename: "CheckRun", name, status: "COMPLETED", conclusion, workflowName: "PR", ...extra,
+  __typename: "CheckRun", name, status: "COMPLETED", conclusion, workflowName: "PR",
+  checkSuite: { databaseId: 8, app: { databaseId: 15368 }, workflowRun: { databaseId: 7 } },
+  ...extra,
 });
 const candidate = (extra = {}) => ({
   number: 42, state: "OPEN", isDraft: false, headRefOid: head, baseRefOid: base,
-  baseRefName: "master", statusCheckRollup: [check("ci / verify"), check("ci / e2e")], ...extra,
+  baseRefName: "master", changedFiles: 1, statusCheckRollup: [check("ci / verify"), check("ci / e2e")], ...extra,
 });
 const event = (extra = {}) => ({ repository: { full_name: "paperclipai/paperclip" }, sha: head, ...extra });
+const trustedRun = (extra = {}) => ({
+  id: 7, repository: { full_name: "paperclipai/paperclip" }, path: ".github/workflows/pr.yml",
+  event: "pull_request", head_sha: head, status: "completed", conclusion: "success", check_suite_id: 8,
+  referenced_workflows: [{ path: "paperclipai/paperclip/.github/workflows/pr-trusted.yml@master",
+    ref: "refs/heads/master", sha: base }], ...extra,
+});
+const files = [{ filename: "README.md" }];
+const read = (endpoint) => endpoint.includes("/rules/") ? [] : trustedRun();
+const list = (endpoint) => endpoint.includes("/files?") ? files : [{ number: 42 }];
 const deps = (extra = {}) => ({
-  read: () => [], list: () => [{ number: 42 }], view: () => candidate(),
+  read, list, view: () => candidate(),
   send: async () => "delivered", ...extra,
 });
 
@@ -39,7 +50,7 @@ test("reads every check page and fails closed on incomplete or changing listings
     statusCheckRollup: { contexts: { totalCount: 3, nodes: [...candidate().statusCheckRollup, own],
       pageInfo: { hasNextPage: false } } },
   }) } } }));
-  assert.equal(green(withOwn), true);
+  assert.equal(green(withOwn), false);
   assert.throws(() => snapshot(42, () => page([check("ci / verify")], false)), /Incomplete/);
   calls = 0;
   assert.throws(() => snapshot(42, () => ++calls === 1 ? page([check("ci / verify")], true)
@@ -70,10 +81,10 @@ test("waits for pending checks and statuses, permits skipped optional routing la
     check("optional scanner coverage", "NEUTRAL")] })), true);
 });
 
-test("excludes its own notification and profiling exporter, but not other workflows", () => {
+test("workflow names cannot hide pending or failing checks", () => {
   const extras = ["PR merge review notification", "CI profile"].map((workflowName) =>
     check("notify", "", { status: "IN_PROGRESS", workflowName }));
-  assert.equal(green(candidate({ statusCheckRollup: [...candidate().statusCheckRollup, ...extras] })), true);
+  assert.equal(green(candidate({ statusCheckRollup: [...candidate().statusCheckRollup, ...extras] })), false);
   assert.equal(green(candidate({ statusCheckRollup: [...candidate().statusCheckRollup,
     check("another", "", { status: "QUEUED", workflowName: "Other verification" })] })), false);
 });
@@ -87,7 +98,7 @@ test("resolves fork PRs from the head commit when workflow payload has no PRs", 
   const seen = [];
   const outcomes = await notify(event({ workflow_run: {
     status: "completed", event: "pull_request", head_sha: head, pull_requests: [],
-  } }), deps({ list: (endpoint) => { seen.push(endpoint); return [{ number: 42 }]; } }));
+  } }), deps({ list: (endpoint) => { seen.push(endpoint); return list(endpoint); } }));
   assert.deepEqual(outcomes, ["delivered"]);
   assert.match(seen[0], new RegExp(`/commits/${head}/pulls\\?per_page=100$`));
 });
@@ -96,6 +107,44 @@ test("reads additional required rules and holds until their check succeeds", asy
   const outcomes = await notify(event(), deps({ read: () => [{ type: "required_status_checks",
     parameters: { required_status_checks: [{ context: "new gate" }] } }] }));
   assert.deepEqual(outcomes, []);
+});
+
+test("forged successful check names from a PR-controlled workflow cannot notify", async () => {
+  const input = deps({ read: (endpoint) => endpoint.includes("/rules/") ? [] : {
+    id: 7, path: ".github/workflows/attacker.yml", event: "pull_request",
+    head_sha: head, status: "completed", conclusion: "success",
+  } });
+  assert.deepEqual(await notify(event(), input), []);
+});
+
+test("requires genuine suite, caller, revision, and master reusable workflow provenance", () => {
+  assert.equal(trustedVerification(candidate(), deps()), true);
+  for (const changes of [
+    { path: ".github/workflows/attacker.yml" }, { event: "pull_request_target" },
+    { head_sha: "c".repeat(40) }, { status: "in_progress" }, { conclusion: "failure" },
+    { repository: { full_name: "attacker/repo" } }, { check_suite_id: 99 },
+    { referenced_workflows: [] },
+    { referenced_workflows: [{ path: "paperclipai/paperclip/.github/workflows/pr-trusted.yml@master",
+      ref: "refs/pull/42/merge", sha: base }] },
+  ]) {
+    assert.equal(trustedVerification(candidate(), deps({ read: () => trustedRun(changes) })), false);
+  }
+  const wrongSuite = check("ci / verify", "SUCCESS", {
+    checkSuite: { databaseId: 99, app: { databaseId: 1 }, workflowRun: { databaseId: 7 } },
+  });
+  assert.equal(trustedVerification(candidate({
+    statusCheckRollup: [wrongSuite, check("ci / e2e")],
+  }), deps()), false);
+});
+
+test("modified or renamed caller and truncated file listings cannot notify", async () => {
+  for (const fileList of [[], [{ filename: ".github/workflows/pr.yml" }],
+    [{ filename: "moved.yml", previous_filename: ".github/workflows/pr.yml" }]]) {
+    const dependencies = deps({ list: (endpoint) => endpoint.includes("/files?")
+      ? fileList : [{ number: 42 }] });
+    assert.deepEqual(await notify(event(), dependencies), []);
+  }
+  assert.equal(trustedVerification(candidate({ changedFiles: undefined }), deps()), false);
 });
 
 test("rejects stale head events and a head, base, or check change during refresh", async () => {
@@ -129,7 +178,8 @@ test("does not query foreign repositories, malformed events, or non-PR workflows
 
 test("does not coalesce different PRs, and deduplicates association entries", async () => {
   const sent = [];
-  await notify(event(), deps({ list: () => [{ number: 42 }, { number: 42 }, { number: 43 }],
+  await notify(event(), deps({ list: (endpoint) => endpoint.includes("/files?") ? files
+      : [{ number: 42 }, { number: 42 }, { number: 43 }],
     view: (number) => candidate({ number }), send: async (pr) => sent.push(pr.number) }));
   assert.deepEqual(sent, [42, 43]);
 });

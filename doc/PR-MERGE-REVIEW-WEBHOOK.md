@@ -40,8 +40,16 @@ Other checks must succeed or finish as skipped or neutral. Optional skipped or
 neutral checks permit an assessment; they do not prove successful verification.
 For example, a neutral scanner can mean coverage is unavailable. The advisory
 routine evaluates these evidence gaps and reviews before recommending merge.
-The notification workflow itself and the optional CI profile exporter are
-excluded from verification checks to avoid feedback loops.
+Workflow names do not exclude checks. The notifier and CI profile exporter run
+on the default branch, so their own checks do not belong to the PR revision.
+
+Check names alone are not trusted. Both core aggregates must belong to the same
+GitHub Actions suite and a successful run of the repository's actual
+`.github/workflows/pr.yml`. Its run metadata must reference
+`pr-trusted.yml@master`. The complete PR file list must prove that the caller
+`pr.yml` was not changed or renamed. A missing or truncated list stops delivery.
+PRs that change this caller need a manual advisory review until their caller
+change reaches the trusted branch. Other workflow changes can still be reviewed.
 
 A final refresh rejects head or base changes during evaluation. Paperclip's
 idempotency receipt deduplicates events for the same PR, head, and base. A new

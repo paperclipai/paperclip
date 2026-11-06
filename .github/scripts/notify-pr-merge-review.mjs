@@ -3,7 +3,6 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 const repository = "paperclipai/paperclip";
-const workflowName = "PR merge review notification";
 const shaPattern = /^[a-f0-9]{40}$/;
 const minimumChecks = ["ci / verify", "ci / e2e"];
 const gh = (args) => JSON.parse(execFileSync("gh", args, {
@@ -16,12 +15,13 @@ const pages = (endpoint) => gh(["api", "--paginate", "--slurp", endpoint]).flat(
 const query = `query($number:Int!, $endCursor:String) {
   repository(owner:"paperclipai", name:"paperclip") {
     pullRequest(number:$number) {
-      number url state isDraft headRefOid baseRefOid baseRefName
+      number url state isDraft headRefOid baseRefOid baseRefName changedFiles
       statusCheckRollup { contexts(first:100, after:$endCursor) {
         totalCount pageInfo { hasNextPage endCursor }
         nodes {
           __typename
-          ... on CheckRun { name status conclusion checkSuite { workflowRun { workflow { name } } } }
+          ... on CheckRun { name status conclusion checkSuite { databaseId app { databaseId }
+            workflowRun { databaseId } } }
           ... on StatusContext { context state }
         }
       } }
@@ -44,9 +44,7 @@ export function snapshot(number, request = gh) {
     }
     candidate = pr;
     const contexts = pr.statusCheckRollup.contexts;
-    checks.push(...contexts.nodes.map((check) => ({ ...check,
-      workflowName: check.checkSuite?.workflowRun?.workflow?.name,
-    })));
+    checks.push(...contexts.nodes);
     if (!contexts.pageInfo.hasNextPage) {
       if (checks.length !== contexts.totalCount) throw new Error("Incomplete check listing");
       break;
@@ -64,7 +62,7 @@ export function green(pr, requiredNames = minimumChecks) {
       !shaPattern.test(pr.headRefOid) || !shaPattern.test(pr.baseRefOid)) return false;
   const checks = pr.statusCheckRollup;
   if (!Array.isArray(checks) || checks.length === 0) return false;
-  const relevant = checks.filter((check) => ![workflowName, "CI profile"].includes(check.workflowName));
+  const relevant = checks;
   const passed = (check) => check.__typename === "StatusContext"
     ? check.state === "SUCCESS"
     : check.__typename === "CheckRun" && check.status === "COMPLETED" && check.conclusion === "SUCCESS";
@@ -74,6 +72,36 @@ export function green(pr, requiredNames = minimumChecks) {
       check.status === "COMPLETED" && ["SKIPPED", "NEUTRAL"].includes(check.conclusion))) &&
     [...new Set([...minimumChecks, ...requiredNames])].every((name) =>
       relevant.some((check) => (check.name ?? check.context) === name && passed(check)));
+}
+
+export function trustedVerification(pr, { read = api, list = pages } = {}) {
+  // Names alone are forgeable in pull_request YAML. Require the real Actions
+  // suite for the unmodified PR caller and its master-owned reusable workflow.
+  const actionsChecks = pr.statusCheckRollup.filter((check) =>
+    check.__typename === "CheckRun" && check.status === "COMPLETED" && check.conclusion === "SUCCESS" &&
+    check.checkSuite?.app?.databaseId === 15368 &&
+    Number.isSafeInteger(check.checkSuite?.workflowRun?.databaseId));
+  const runIds = new Set(actionsChecks.filter((check) => minimumChecks.includes(check.name))
+    .map((check) => check.checkSuite.workflowRun.databaseId));
+  let trusted = false;
+  for (const id of runIds) {
+    const run = read(`/repos/${repository}/actions/runs/${id}`);
+    if (run.repository?.full_name !== repository || run.path !== ".github/workflows/pr.yml" ||
+        run.event !== "pull_request" || run.head_sha !== pr.headRefOid ||
+        run.status !== "completed" || run.conclusion !== "success") continue;
+    if (!minimumChecks.every((name) => actionsChecks.some((check) => check.name === name &&
+        check.checkSuite.workflowRun.databaseId === id && check.checkSuite.databaseId === run.check_suite_id))) continue;
+    const reusable = run.referenced_workflows?.find((entry) =>
+      entry.path === `${repository}/.github/workflows/pr-trusted.yml@master` &&
+      entry.ref === "refs/heads/master" && shaPattern.test(entry.sha));
+    if (reusable) { trusted = true; break; }
+  }
+  if (!trusted || !Number.isSafeInteger(pr.changedFiles) || pr.changedFiles < 0) return false;
+  const files = list(`/repos/${repository}/pulls/${pr.number}/files?per_page=100`);
+  // GitHub caps this API at 3,000 files. A partial listing cannot prove that
+  // the caller is unmodified. Do not execute or download any of these files.
+  return files.length === pr.changedFiles && files.every((file) =>
+    typeof file.filename === "string" && ![file.filename, file.previous_filename].includes(".github/workflows/pr.yml"));
 }
 
 export async function deliver(pr, { url, token, fetcher = fetch } = {}) {
@@ -123,7 +151,8 @@ export async function notify(event, { read = api, list = pages, view = snapshot,
     // describe this PR's current head; an old successful run cannot trigger it.
     if ((run?.event !== "pull_request_target" && pr.headRefOid !== sha) || !green(pr, required)) continue;
     const fresh = view(number);
-    if (fresh.headRefOid !== pr.headRefOid || fresh.baseRefOid !== pr.baseRefOid || !green(fresh, required)) continue;
+    if (fresh.headRefOid !== pr.headRefOid || fresh.baseRefOid !== pr.baseRefOid ||
+        !green(fresh, required) || !trustedVerification(fresh, { read, list })) continue;
     outcomes.push(await send(fresh));
   }
   return outcomes;
