@@ -1970,12 +1970,14 @@ sandbox entry (no `driver`, or `driver: "sandbox"`) and any number of
   "driver": "plugin",
   "pluginKey": "example.remote-host-plugin",
   "driverKey": "tasks",
-  "driverConfig": {}
+  "driverConfig": {},
+  "instanceDefault": true
 }
 ```
 
-Names and `pluginKey`–`driverKey` pairs must be unique, and `driverConfig` must
-not contain secret-like keys. Any other key refuses startup. `plugins.autoInstall`
+Names and `pluginKey`–`driverKey` pairs must be unique, `driverConfig` must not
+contain secret-like keys, and `instanceDefault` is allowed on at most one plugin
+entry and never on the sandbox entry. Any other key refuses startup. `plugins.autoInstall`
 holds catalog keys, not manifest ids, so boot also refuses to start unless an
 auto-installed bundled or distribution catalog entry installs the entry's
 `pluginKey`.
@@ -1984,7 +1986,21 @@ Boot validates the driver config through the plugin, marks the row
 `managedPluginEnvironment: "<pluginKey>:<driverKey>"`, and adopts an existing
 unmarked row for the same plugin and driver. While the plugin is down, the row is
 archived; it comes back when the worker is ready. Removing an entry never archives
-its row. Plugin entries do not change the instance default.
+its row.
+
+`instanceDefault` is decided once per instance, at the first boot that sees it.
+It sets the instance default only when the instance has no agents and the current
+default is unset, local, or the managed sandbox's own stamped default. If the row
+is not active yet, the decision waits and then applies only if no agent follows
+the default by then. The decision is stored in the
+`managed-environment-default:v1` instance settings row, so an admin's later
+change survives reboots and removing the flag changes nothing.
+
+`server/src/services/managed-config-capabilities.json` lists the managed-config
+capabilities a release supports, for the control plane to read at a release
+commit. It must equal `MANAGED_CONFIG_CAPABILITIES` in `managed-config.ts`
+(`managed-config-capabilities.test.ts` checks this), and the parser accepts plugin
+entries only while that list includes `pluginEnvironments`.
 
 ### Experimental native remote workspace storage
 

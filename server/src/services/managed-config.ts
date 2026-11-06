@@ -17,7 +17,8 @@
  *         "driver": "plugin",
  *         "pluginKey": "example.remote-host-plugin",
  *         "driverKey": "tasks",
- *         "driverConfig": {}
+ *         "driverConfig": {},
+ *         "instanceDefault": true
  *       }
  *     ]
  *   }
@@ -81,6 +82,25 @@ export interface ManagedInstanceConfig {
  * before plugin entries existed parse unchanged.
  */
 export const MANAGED_ENVIRONMENT_DRIVERS = ["sandbox", "plugin"] as const;
+
+/**
+ * The managed-config capabilities this build supports. The control plane
+ * reads them from `managed-config-capabilities.json` (next to this file) at
+ * a release commit, and sends a section only to a release that lists its
+ * capability. `managed-config-capabilities.test.ts` keeps that file equal to
+ * this list, and the parser accepts each section only while its capability
+ * is listed here, so the two cannot drift.
+ *
+ * - `pluginEnvironments`: `driver: "plugin"` entries in `environments`,
+ *   including their one-time `instanceDefault`.
+ */
+export const MANAGED_CONFIG_CAPABILITIES_SCHEMA_VERSION = 1;
+export const MANAGED_CONFIG_CAPABILITIES = ["pluginEnvironments"] as const;
+export type ManagedConfigCapability = (typeof MANAGED_CONFIG_CAPABILITIES)[number];
+
+function supportsCapability(capability: ManagedConfigCapability): boolean {
+  return (MANAGED_CONFIG_CAPABILITIES as readonly string[]).includes(capability);
+}
 export type ManagedEnvironmentDriver = (typeof MANAGED_ENVIRONMENT_DRIVERS)[number];
 
 /**
@@ -106,6 +126,12 @@ export interface ManagedPluginEnvironmentSpec {
   driverKey: string;
   /** Driver config, validated by the plugin at ensure time; never carries secrets. */
   driverConfig: Readonly<Record<string, unknown>>;
+  /**
+   * Make this environment the instance default once per instance, at the
+   * first boot that sees the flag, and only while the instance has no agents
+   * (see `applyManagedPluginInstanceDefault`).
+   */
+  instanceDefault: boolean;
 }
 
 /**
@@ -203,6 +229,7 @@ const PLUGIN_ENTRY_KEYS = [
   "pluginKey",
   "driverKey",
   "driverConfig",
+  "instanceDefault",
 ] as const;
 /** Same rule as the plugin environment config schema in `environment-config.ts`. */
 const PLUGIN_DRIVER_KEY_PATTERN = /^[a-z0-9][a-z0-9._-]*$/;
@@ -254,6 +281,7 @@ function parseManagedEnvironmentsSection(
   }
   const names = new Set<string>();
   const pluginDrivers = new Set<string>();
+  let instanceDefaultIndex: number | null = null;
   for (const [index, entry] of raw.entries()) {
     const at = `environments[${index}]`;
     if (!isPlainObject(entry)) {
@@ -264,6 +292,14 @@ function parseManagedEnvironmentsSection(
     if (!(MANAGED_ENVIRONMENT_DRIVERS as readonly unknown[]).includes(driver)) {
       fail(
         `"${at}.driver" must be one of ${MANAGED_ENVIRONMENT_DRIVERS.map((value) => JSON.stringify(value)).join(", ")} when present (got ${describeJsonValue(entry.driver)})`,
+      );
+    }
+    if (driver === "plugin" && !supportsCapability("pluginEnvironments")) {
+      fail(`"${at}.driver" is "plugin", but this build does not list the "pluginEnvironments" managed-config capability`);
+    }
+    if (driver === "sandbox" && entry.instanceDefault !== undefined) {
+      fail(
+        `"${at}.instanceDefault" is not allowed on the sandbox entry; only a plugin entry may become the instance default (the sandbox entry's default is governed by enableManagedSandboxOnly)`,
       );
     }
     const allowedKeys: readonly string[] = driver === "plugin" ? PLUGIN_ENTRY_KEYS : SANDBOX_ENTRY_KEYS;
@@ -330,6 +366,18 @@ function parseManagedEnvironmentsSection(
     }
     pluginDrivers.add(pair);
     const driverConfig = readSecretFreeObject(entry.driverConfig, `${at}.driverConfig`);
+    if (entry.instanceDefault !== undefined && typeof entry.instanceDefault !== "boolean") {
+      fail(`"${at}.instanceDefault" must be a boolean when present (got ${describeJsonValue(entry.instanceDefault)})`);
+    }
+    const instanceDefault = entry.instanceDefault === true;
+    if (instanceDefault) {
+      if (instanceDefaultIndex !== null) {
+        fail(
+          `"${at}.instanceDefault" is also set on environments[${instanceDefaultIndex}]; at most one entry may become the instance default`,
+        );
+      }
+      instanceDefaultIndex = index;
+    }
     plugin.push(
       Object.freeze({
         driver: "plugin",
@@ -338,6 +386,7 @@ function parseManagedEnvironmentsSection(
         pluginKey,
         driverKey,
         driverConfig: Object.freeze(driverConfig),
+        instanceDefault,
       }) as ManagedPluginEnvironmentSpec,
     );
   }

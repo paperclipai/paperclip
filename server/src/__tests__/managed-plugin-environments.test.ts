@@ -15,6 +15,13 @@ import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } fro
 import { environmentService } from "../services/environments.js";
 import { MANAGED_CONFIG_ENV_KEY, parseManagedConfigEnv } from "../services/managed-config.js";
 import { applyManagedEnvironments } from "../services/managed-environments.js";
+import {
+  applyManagedPluginInstanceDefault,
+  readManagedEnvironmentDefaultDecision,
+} from "../services/managed-environment-default.js";
+import { createLifecycleDriver } from "../services/agent-lifecycle-driver.js";
+import { createAgentLifecycleEffects } from "../services/agent-lifecycle.js";
+import { createLifecycleStore } from "../modules/agent-lifecycle/adapters/postgres.js";
 
 const PLUGIN_KEY = "example.remote-host-plugin";
 const MARKER = `${PLUGIN_KEY}:tasks`;
@@ -86,7 +93,8 @@ const support = await getEmbeddedPostgresTestSupport();
       version: "1.0.0",
       status: "ready",
       manifestJson: {
-        capabilities: ["environment.drivers.register"],
+        agentLifecycle: true,
+        capabilities: ["agents.lifecycle.manage", "environment.drivers.register"],
         environmentDrivers: [{ driverKey: "tasks", requiresAgent: true, supportsTasks: true }],
       } as never,
     });
@@ -250,6 +258,138 @@ const support = await getEmbeddedPostgresTestSupport();
       await boot();
       expect(await boot([])).toBeNull();
       expect((await pluginRows())[0]!.status).toBe("active");
+    });
+  });
+
+  describe("instanceDefault (one-time decision)", () => {
+    const defaultEntry = { ...remoteHostEntry, instanceDefault: true };
+    const boot = (entries: unknown[] = [defaultEntry]) =>
+      applyManagedEnvironments(db, managedConfig(entries), { env: {}, workerManager, autoInstalledPluginKeys: [PLUGIN_KEY] });
+    const instanceDefault = async () =>
+      (await db.select().from(instanceSettings).where(eq(instanceSettings.singletonKey, "default")))[0]?.defaultEnvironmentId ?? null;
+    const setInstanceDefault = async (environmentId: string | null) => {
+      const [row] = await db.select().from(instanceSettings).where(eq(instanceSettings.singletonKey, "default"));
+      if (row) await db.update(instanceSettings).set({ defaultEnvironmentId: environmentId }).where(eq(instanceSettings.id, row.id));
+      else await db.insert(instanceSettings).values({ singletonKey: "default", defaultEnvironmentId: environmentId });
+    };
+    const agent = async (companyId: string, defaultEnvironmentId: string | null) => {
+      const id = randomUUID();
+      await db.insert(agents).values({ id, companyId, name: `Agent ${id}`, adapterType: "process", defaultEnvironmentId });
+      return id;
+    };
+    const recover = async () => {
+      running = true;
+      for (const listener of [...readyListeners]) listener({ pluginId });
+      await vi.waitFor(async () => expect((await pluginRows())[0]?.status).toBe("active"));
+      await vi.waitFor(async () => expect((await readManagedEnvironmentDefaultDecision(db))?.status).not.toBe("pending"));
+    };
+
+    it("sets the default on an instance with no agents", async () => {
+      await boot();
+      const [row] = await pluginRows();
+      expect(await instanceDefault()).toBe(row!.id);
+      expect(await readManagedEnvironmentDefaultDecision(db)).toMatchObject({
+        status: "applied",
+        reason: "no_agents",
+        environmentMarker: MARKER,
+        environmentId: row!.id,
+        previousDefaultEnvironmentId: null,
+      });
+    });
+
+    it("replaces a default the managed sandbox stamped, and clears the stamp", async () => {
+      const [sandbox] = await db.insert(environments).values({
+        name: "Managed Sandbox",
+        driver: "sandbox",
+        status: "active",
+        config: { provider: "daytona" },
+        metadata: { managedByPaperclip: true, managedSandboxProvider: "daytona", managedDefaultStamped: true },
+      }).returning();
+      // A stamped sandbox default only exists under managed-sandbox-only, where
+      // the boot pass stamps it just before plugin entries run. Without that
+      // feature the boot pass reverts the stamp first, so evaluate the decision
+      // directly on the row an earlier boot created.
+      await boot([remoteHostEntry]);
+      const [row] = await pluginRows();
+      await setInstanceDefault(sandbox!.id);
+      await applyManagedPluginInstanceDefault(db, { environment: row!, marker: MARKER });
+      expect(await instanceDefault()).toBe(row!.id);
+      const [cleared] = await db.select().from(environments).where(eq(environments.id, sandbox!.id));
+      expect(cleared!.metadata).not.toHaveProperty("managedDefaultStamped");
+      expect(await readManagedEnvironmentDefaultDecision(db)).toMatchObject({
+        status: "applied",
+        previousDefaultEnvironmentId: sandbox!.id,
+      });
+    });
+
+    it("never replaces a tenant-chosen default", async () => {
+      const [chosen] = await db.insert(environments).values({
+        name: "Tenant sandbox", driver: "sandbox", status: "active", config: { provider: "daytona" }, metadata: null,
+      }).returning();
+      await setInstanceDefault(chosen!.id);
+      await boot();
+      expect(await instanceDefault()).toBe(chosen!.id);
+      expect(await readManagedEnvironmentDefaultDecision(db)).toMatchObject({ status: "declined", reason: "tenant_default" });
+    });
+
+    it("leaves the default alone on an instance that already has agents", async () => {
+      await agent(await company(), null);
+      await boot();
+      expect(await instanceDefault()).toBeNull();
+      expect(await readManagedEnvironmentDefaultDecision(db)).toMatchObject({ status: "declined", reason: "instance_has_agents" });
+    });
+
+    it("applies once: an admin's later change survives reboots, and removing the flag changes nothing", async () => {
+      await boot();
+      const [row] = await pluginRows();
+      expect(await instanceDefault()).toBe(row!.id);
+
+      await setInstanceDefault(null);
+      await boot();
+      expect(await instanceDefault()).toBeNull();
+
+      await boot([remoteHostEntry]);
+      expect(await instanceDefault()).toBeNull();
+      expect(await readManagedEnvironmentDefaultDecision(db)).toMatchObject({ status: "applied" });
+    });
+
+    it("waits for the row, then keeps the default if an agent follows it by then", async () => {
+      running = false;
+      await boot();
+      expect(await readManagedEnvironmentDefaultDecision(db)).toMatchObject({ status: "pending", environmentId: null });
+
+      await agent(await company(), null);
+      await recover();
+      expect(await instanceDefault()).toBeNull();
+      expect(await readManagedEnvironmentDefaultDecision(db)).toMatchObject({ status: "declined", reason: "agents_follow_default" });
+    });
+
+    it("waits for the row, then sets the default when no agent follows it", async () => {
+      running = false;
+      await boot();
+      const [sandbox] = await db.insert(environments).values({
+        name: "Explicit sandbox", driver: "sandbox", status: "active", config: { provider: "daytona" },
+      }).returning();
+      await agent(await company(), sandbox!.id);
+
+      await recover();
+      const [row] = await pluginRows();
+      expect(await instanceDefault()).toBe(row!.id);
+      expect(await readManagedEnvironmentDefaultDecision(db)).toMatchObject({ status: "applied", reason: "no_agents_follow_default" });
+    });
+
+    it("prepares a new agent that follows the default with the plugin, and one set to the sandbox without it", async () => {
+      await boot();
+      const [sandbox] = await db.insert(environments).values({
+        name: "Managed Sandbox", driver: "sandbox", status: "active", config: { provider: "daytona" },
+      }).returning();
+      const companyId = await company();
+      const selection = async (id: string) =>
+        createLifecycleDriver(db, { call } as never)
+          .requiredPluginIds((await createLifecycleStore(db, createAgentLifecycleEffects()).get(id))!);
+
+      expect(await selection(await agent(companyId, null))).toEqual([pluginId]);
+      expect(await selection(await agent(companyId, sandbox!.id))).toEqual([]);
     });
   });
 });

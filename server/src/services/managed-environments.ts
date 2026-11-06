@@ -48,7 +48,11 @@
  * entry: await `pluginsReady`, require the plugin `ready`, declaring the
  * entry's driver, and running a worker; else archive the entry's row and
  * re-ensure it on the worker's `ready`. Each entry owns one row (see
- * `managed-plugin-environments.ts`). Plugin entries never touch the instance
+ * `managed-plugin-environments.ts`). One plugin entry may carry
+ * `instanceDefault`, which is decided once per instance
+ * (`applyManagedPluginInstanceDefault` in `managed-environment-default.ts`).
+ * The sandbox stamp below only fills an unset or local default and only
+ * reverts its own stamped default, so it never replaces or reverts a plugin
  * default.
  */
 
@@ -66,7 +70,14 @@ import { pluginRegistryService } from "./plugin-registry.js";
 import { trackIdleWork } from "./task-admission.js";
 import { resolveBundledCatalogRoot, resolveBundledPluginInstalls } from "./bundled-plugins.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
-import type { ManagedPluginEnvironmentReconcileAction } from "./managed-plugin-environments.js";
+import {
+  applyManagedPluginInstanceDefault,
+  type ManagedEnvironmentDefaultOutcome,
+} from "./managed-environment-default.js";
+import {
+  managedPluginEnvironmentMarker,
+  type ManagedPluginEnvironmentReconcileAction,
+} from "./managed-plugin-environments.js";
 
 /**
  * Lifecycle of the recovery work `applyManagedEnvironments` leaves behind
@@ -148,6 +159,7 @@ export interface ApplyManagedEnvironmentsOptions {
     | "findManagedSandboxEnvironment"
     | "ensureManagedPluginEnvironment"
     | "archiveManagedPluginEnvironment"
+    | "findManagedPluginEnvironment"
   >;
   /** Test seam: overrides the instance-settings service built from `db`. */
   instanceSettings?: Pick<ReturnType<typeof instanceSettingsService>, "get" | "update">;
@@ -181,6 +193,11 @@ export interface ApplyManagedEnvironmentsOptions {
    * attempts. Defaults to a controller nobody stops (tests).
    */
   recovery?: ManagedEnvironmentRecovery;
+  /** Test seam: overrides the one-time instance default decision. */
+  applyPluginInstanceDefault?: (input: {
+    environment: { id: string; status: string } | null;
+    marker: string;
+  }) => Promise<ManagedEnvironmentDefaultOutcome>;
 }
 
 export interface ManagedPluginEnvironmentReconciliationOutcome {
@@ -559,14 +576,65 @@ export async function applyManagedEnvironments(
       );
     }
   }
+  // Plugin entries run after the sandbox entry, so an `instanceDefault` entry
+  // sees (and may replace) a default the sandbox stamp just set.
   const resolvePlugin = opts.resolveEnvironmentPlugin ?? resolveEnvironmentPluginByKey;
+  const decideInstanceDefault = opts.applyPluginInstanceDefault
+    ?? ((input: { environment: { id: string; status: string } | null; marker: string }) =>
+      applyManagedPluginInstanceDefault(db, input));
   const pluginOutcomes: ManagedPluginEnvironmentReconciliationOutcome[] = [];
 
-  const ensurePluginEntry = (
+  /** Best-effort: a failure leaves the decision unrecorded, so the next pass retries it. */
+  const reconcileInstanceDefault = async (
+    spec: ManagedInstanceConfig["pluginEnvironments"][number],
+    environment: { id: string; status: string } | null,
+  ): Promise<void> => {
+    if (!spec.instanceDefault) return;
+    const marker = managedPluginEnvironmentMarker(spec);
+    try {
+      const outcome = await decideInstanceDefault({ environment, marker });
+      if (outcome.status === "already_decided") return;
+      const context = {
+        environmentId: environment?.id ?? null,
+        name: spec.name,
+        marker,
+        decision: outcome.status,
+        reason: outcome.reason,
+        previousDefaultEnvironmentId: outcome.previousDefaultEnvironmentId,
+      };
+      if (outcome.status === "applied") {
+        logger.info(context, "instance default environment set to the managed plugin environment");
+      } else if (outcome.status === "declined") {
+        logger.warn(context, "kept the existing instance default environment; the managed plugin environment's instanceDefault will not apply on this instance");
+      } else {
+        logger.warn(context, "managed plugin environment is not active yet; its instanceDefault waits until it is");
+      }
+    } catch (err) {
+      logger.error({ err, name: spec.name, marker }, "failed to evaluate the managed plugin environment's instance default");
+    }
+  };
+
+  /**
+   * When an entry could not be ensured, the first pass that sees its
+   * `instanceDefault` still records a decision, with the row never treated as
+   * active, so a later pass never re-reads "no agents yet" after agents were
+   * created in the meantime.
+   */
+  const reconcileInstanceDefaultWhileUnavailable = async (
+    spec: ManagedInstanceConfig["pluginEnvironments"][number],
+  ): Promise<void> => {
+    if (!spec.instanceDefault) return;
+    const existing = await environments
+      .findManagedPluginEnvironment({ pluginKey: spec.pluginKey, driverKey: spec.driverKey })
+      .catch(() => null);
+    await reconcileInstanceDefault(spec, existing ? { id: existing.id, status: "unavailable" } : null);
+  };
+
+  const ensurePluginEntry = async (
     spec: ManagedInstanceConfig["pluginEnvironments"][number],
     workerManager: Pick<PluginWorkerManager, "isRunning" | "call">,
-  ) =>
-    environments.ensureManagedPluginEnvironment({
+  ) => {
+    const result = await environments.ensureManagedPluginEnvironment({
       name: spec.name,
       description: spec.description,
       pluginKey: spec.pluginKey,
@@ -574,6 +642,9 @@ export async function applyManagedEnvironments(
       driverConfig: { ...spec.driverConfig },
       workerManager,
     });
+    await reconcileInstanceDefault(spec, result.environment);
+    return result;
+  };
 
   type PluginSpec = ManagedInstanceConfig["pluginEnvironments"][number];
   type PluginWorkerAccess = Pick<PluginWorkerManager, "isRunning" | "call">;
@@ -681,6 +752,7 @@ export async function applyManagedEnvironments(
           },
           "managed plugin environment's plugin is not installed, ready, declaring its driver, and running; skipping ensure and archiving any previously provisioned row (degraded: environment unavailable)",
         );
+        await reconcileInstanceDefaultWhileUnavailable(spec);
         if (recoverable) schedulePluginRecovery(spec, recoverable.pluginId, recoverable.workerAccess);
         continue;
       }
@@ -702,6 +774,7 @@ export async function applyManagedEnvironments(
       );
     } catch (err) {
       failed += 1;
+      await reconcileInstanceDefaultWhileUnavailable(spec);
       if (recoverable && !isPermanentConfigRejection(err)) {
         if (!recoverable.workerAccess.isRunning(recoverable.pluginId)) {
           // The worker died after the readiness check (for example inside

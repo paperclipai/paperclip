@@ -3,6 +3,7 @@ import { unprocessable } from "../errors.js";
 import { applyManagedEnvironments, createManagedEnvironmentRecovery } from "./managed-environments.js";
 import { idleWorkSnapshot } from "./task-admission.js";
 import {
+  environmentRow,
   PLUGIN_KEY,
   environmentsSeam,
   instanceSettingsSeam,
@@ -439,6 +440,137 @@ describe("applyManagedEnvironments plugin entries", () => {
       autoInstalledPluginKeys: [PLUGIN_KEY],
     });
     expect(settings.update).not.toHaveBeenCalled();
+  });
+
+  describe("instanceDefault", () => {
+    const decided = (status: "applied" | "declined" | "pending" | "already_decided" = "applied") =>
+      vi.fn(async () => ({ status, reason: null, previousDefaultEnvironmentId: null }));
+    const MARKER = `${PLUGIN_KEY}:tasks`;
+
+    it("evaluates the default with the ensured row", async () => {
+      const applyPluginInstanceDefault = decided();
+      await applyManagedEnvironments(noDb, configWith([pluginEntry({ instanceDefault: true })]), {
+        env: {},
+        workerManager: workerManager(),
+        environments: environmentsSeam(),
+        instanceSettings: instanceSettingsSeam(),
+        resolveEnvironmentPlugin: readyPlugin(),
+        autoInstalledPluginKeys: [PLUGIN_KEY],
+        applyPluginInstanceDefault,
+      });
+      expect(applyPluginInstanceDefault).toHaveBeenCalledWith({
+        environment: expect.objectContaining({ id: "plugin-env", status: "active" }),
+        marker: MARKER,
+      });
+    });
+
+    it("does not evaluate a default for an entry without the flag", async () => {
+      const applyPluginInstanceDefault = decided();
+      await applyManagedEnvironments(noDb, configWith([pluginEntry()]), {
+        env: {},
+        workerManager: workerManager(),
+        environments: environmentsSeam(),
+        instanceSettings: instanceSettingsSeam(),
+        resolveEnvironmentPlugin: readyPlugin(),
+        autoInstalledPluginKeys: [PLUGIN_KEY],
+        applyPluginInstanceDefault,
+      });
+      expect(applyPluginInstanceDefault).not.toHaveBeenCalled();
+    });
+
+    it("records the decision while the plugin is down, never with an active row, and re-evaluates on recovery", async () => {
+      const { handle, fireReady } = recoveryHandle();
+      const environments = environmentsSeam({
+        findManagedPluginEnvironment: vi.fn().mockResolvedValue(pluginEnvironmentRow()),
+      });
+      const applyPluginInstanceDefault = decided("pending");
+      const manager = workerManager(false, handle);
+      await applyManagedEnvironments(noDb, configWith([pluginEntry({ instanceDefault: true })]), {
+        env: {},
+        workerManager: manager,
+        environments,
+        instanceSettings: instanceSettingsSeam(),
+        resolveEnvironmentPlugin: readyPlugin(),
+        autoInstalledPluginKeys: [PLUGIN_KEY],
+        applyPluginInstanceDefault,
+      });
+      expect(applyPluginInstanceDefault).toHaveBeenCalledWith({
+        environment: { id: "plugin-env", status: "unavailable" },
+        marker: MARKER,
+      });
+
+      manager.isRunning.mockReturnValue(true);
+      fireReady();
+      await tick();
+      expect(applyPluginInstanceDefault).toHaveBeenLastCalledWith({
+        environment: expect.objectContaining({ id: "plugin-env", status: "active" }),
+        marker: MARKER,
+      });
+    });
+
+    it("records the decision when the boot ensure fails", async () => {
+      const applyPluginInstanceDefault = decided("pending");
+      await applyManagedEnvironments(noDb, configWith([pluginEntry({ instanceDefault: true })]), {
+        env: {},
+        workerManager: workerManager(),
+        environments: environmentsSeam({
+          ensureManagedPluginEnvironment: vi.fn().mockRejectedValue(unprocessable("driverConfig.region is not supported")),
+        }),
+        instanceSettings: instanceSettingsSeam(),
+        resolveEnvironmentPlugin: readyPlugin(),
+        autoInstalledPluginKeys: [PLUGIN_KEY],
+        applyPluginInstanceDefault,
+      });
+      expect(applyPluginInstanceDefault).toHaveBeenCalledWith({ environment: null, marker: MARKER });
+    });
+
+    it("never lets the sandbox stamp or its revert path replace a plugin default", async () => {
+      const settings = instanceSettingsSeam({
+        get: vi.fn().mockResolvedValue({ defaultEnvironmentId: "plugin-env" }) as InstanceSettingsSeam["get"],
+      });
+      const getById = vi.fn().mockResolvedValue(pluginEnvironmentRow());
+      await applyManagedEnvironments(noDb, configWith(
+        [{ name: "Daytona", provider: "daytona" }, pluginEntry({ instanceDefault: true })],
+        { enableManagedSandboxOnly: true },
+      ), {
+        env: {},
+        workerManager: workerManager(),
+        instanceSettings: settings,
+        environments: environmentsSeam({ getById }),
+        resolveSandboxProviderDriver: readyDriverResolver(),
+        resolveEnvironmentPlugin: readyPlugin(),
+        autoInstalledPluginKeys: [PLUGIN_KEY],
+        applyPluginInstanceDefault: decided("already_decided"),
+      });
+      await applyManagedEnvironments(noDb, configWith([pluginEntry({ instanceDefault: true })]), {
+        env: {},
+        workerManager: workerManager(),
+        instanceSettings: settings,
+        environments: environmentsSeam({
+          getById,
+          findManagedSandboxEnvironment: vi.fn().mockResolvedValue(
+            environmentRow({ metadata: { managedByPaperclip: true, managedDefaultStamped: true } }),
+          ),
+        }),
+        resolveEnvironmentPlugin: readyPlugin(),
+        autoInstalledPluginKeys: [PLUGIN_KEY],
+        applyPluginInstanceDefault: decided("already_decided"),
+      });
+      expect(settings.update).not.toHaveBeenCalled();
+    });
+
+    it("keeps an ensure counted when the default decision fails", async () => {
+      const result = await applyManagedEnvironments(noDb, configWith([pluginEntry({ instanceDefault: true })]), {
+        env: {},
+        workerManager: workerManager(),
+        environments: environmentsSeam(),
+        instanceSettings: instanceSettingsSeam(),
+        resolveEnvironmentPlugin: readyPlugin(),
+        autoInstalledPluginKeys: [PLUGIN_KEY],
+        applyPluginInstanceDefault: vi.fn().mockRejectedValue(new Error("db exploded")),
+      });
+      expect(result).toMatchObject({ ensured: 1, failed: 0 });
+    });
   });
 
   it("is fail-safe: an ensure failure is logged and counted, not thrown", async () => {

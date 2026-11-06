@@ -111,6 +111,8 @@ export function environmentsSeam(overrides: Partial<EnvironmentsSeam> = {}): Env
       ?? vi.fn().mockResolvedValue({ environment: pluginEnvironmentRow(), action: "added" }),
     archiveManagedPluginEnvironment:
       overrides.archiveManagedPluginEnvironment ?? vi.fn().mockResolvedValue(null),
+    findManagedPluginEnvironment:
+      overrides.findManagedPluginEnvironment ?? vi.fn().mockResolvedValue(null),
   };
 }
 
