@@ -84,13 +84,14 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
       "daytona-image": { type: "string" },
       "daytona-cpu": { type: "string" },
       keep: { type: "boolean" },
+      "rc06-masked": { type: "boolean" },
     },
   });
   const keep = values.keep === true;
   const pollMs = integer(values["poll-ms"], "poll-ms", 3_000, 2_000, 5_000);
   const budgetCents = integer(values["budget-cents"], "budget-cents", 3_000, 1, 100_000);
   if (values.replay !== undefined) {
-    for (const key of ["env", "adapters", "workloads", "faults", "triggers", "concurrency", "tasks", "seed", "daytona-image", "daytona-cpu"] as const) {
+    for (const key of ["env", "adapters", "workloads", "faults", "triggers", "concurrency", "tasks", "seed", "daytona-image", "daytona-cpu", "rc06-masked"] as const) {
       if (values[key] !== undefined) throw new Error(`--replay reproduces the saved plan; do not combine it with --${key}`);
     }
     return { mode: "replay", ref: parseReplayRef(values.replay), keep,
@@ -118,6 +119,7 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
     budgetCents,
     pollMs,
     ...(env === "daytona" ? { daytonaImage, daytonaCpu: integer(values["daytona-cpu"], "daytona-cpu", DAYTONA_DEFAULT_CPU, 1, 4) } : {}),
+    ...(values["rc06-masked"] ? { masks: ["rc06"] } : {}),
   };
   if (env !== "daytona" && values["daytona-cpu"] !== undefined) throw new Error("--daytona-cpu applies only to --env daytona");
   if (options.daytonaCpu !== undefined) {
