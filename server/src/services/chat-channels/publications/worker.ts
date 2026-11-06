@@ -957,6 +957,19 @@ export function createChatPublicationWorker(db: Db, options: PublicationWorkerOp
                   )
                     ? null
                     : publication.commentId;
+                  await tx
+                    .update(chatEndpoints)
+                    .set({
+                      lastPublicationAt: committedAt,
+                      updatedAt: committedAt,
+                    })
+                    .where(
+                      and(
+                        eq(chatEndpoints.id, authorizationClaim.endpoint.id),
+                        inArray(chatEndpoints.status, ["verifying", "active"]),
+                        sql`coalesce((${chatEndpoints.setup}->>'runtimeGeneration')::integer, 0) = ${currentPublicationRuntimeContext.generation}`,
+                      ),
+                    );
                   const messageLinkInsert = tx.insert(chatMessageLinks).values({
                     companyId: publication.companyId,
                     endpointId: publication.endpointId,
@@ -981,19 +994,6 @@ export function createChatPublicationWorker(db: Db, options: PublicationWorkerOp
                   } else {
                     await messageLinkInsert.onConflictDoNothing();
                   }
-                  await tx
-                    .update(chatEndpoints)
-                    .set({
-                      lastPublicationAt: committedAt,
-                      updatedAt: committedAt,
-                    })
-                    .where(
-                      and(
-                        eq(chatEndpoints.id, authorizationClaim.endpoint.id),
-                        inArray(chatEndpoints.status, ["verifying", "active"]),
-                        sql`coalesce((${chatEndpoints.setup}->>'runtimeGeneration')::integer, 0) = ${currentPublicationRuntimeContext.generation}`,
-                      ),
-                    );
                 }
                 if (authorizationActionId) {
                   const processedAuthorization = await tx
