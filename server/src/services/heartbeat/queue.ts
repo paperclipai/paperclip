@@ -2052,17 +2052,28 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
               .from(issues).where(and(eq(issues.companyId, wake.companyId),
                 eq(issues.id, String(wake.payload?.issueId)))).for("update");
             if (!issue?.assigneeAgentId || issue.assigneeUserId) return null;
-            if (issue.assigneeAgentId !== wake.agentId) {
-              await notifyDeferredExecutionWork(tx, { companyId: wake.companyId });
-            }
-            return tx.update(agentWakeupRequests).set({ agentId: issue.assigneeAgentId, updatedAt: new Date() })
+            const [pending] = await tx.select().from(agentWakeupRequests)
               .where(and(eq(agentWakeupRequests.id, wake.id), eq(agentWakeupRequests.companyId, wake.companyId),
                 eq(agentWakeupRequests.status, "deferred_issue_execution"), isNull(agentWakeupRequests.runId),
                 eq(agentWakeupRequests.idempotencyKey, `stale-addressee-requeue:${requeuedFromRunId}`),
-                sql`${agentWakeupRequests.payload}->>'issueId' = ${String(wake.payload?.issueId)}`))
+                sql`${agentWakeupRequests.payload}->>'issueId' = ${String(wake.payload?.issueId)}`)).for("update");
+            if (!pending) return null;
+            const ids = await undeliveredLegacyUserCommentIds(tx as unknown as Db,
+              wake.companyId, String(wake.payload?.issueId), issue.assigneeAgentId,
+              queuedCommentIdsFromWakePayload(pending.payload));
+            if (ids.length && issue.assigneeAgentId !== pending.agentId) {
+              await notifyDeferredExecutionWork(tx, { companyId: wake.companyId });
+            }
+            const now = new Date();
+            return tx.update(agentWakeupRequests).set({
+              agentId: issue.assigneeAgentId,
+              payload: withQueuedCommentIdsInWakePayload(pending.payload, ids),
+              ...(ids.length ? {} : { status: "skipped", finishedAt: now }),
+              updatedAt: now,
+            }).where(eq(agentWakeupRequests.id, pending.id))
               .returning().then(rows => rows[0] ?? null);
           });
-          if (!receipt) continue;
+          if (!receipt || receipt.status !== "deferred_issue_execution") continue;
           await enqueueWakeup(receipt.agentId, {
             source: "on_demand", triggerDetail: "manual", reason: "issue_commented",
             payload: parseObject(receipt.payload),

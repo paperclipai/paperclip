@@ -42,6 +42,7 @@ import { recoveryService } from "../services/recovery/service.ts";
 import {
   queuedCommentIdsFromRunContext,
   queuedCommentIdsFromWakePayload,
+  withQueuedCommentIdsInRunContext,
   withQueuedCommentIdsInWakePayload,
 } from "../services/issue-queued-comment-queue.ts";
 
@@ -1228,6 +1229,74 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
       const [receipt] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, saved!.id));
       expect(receipt).toMatchObject({ agentId: nextAgentId, status: "coalesced" });
       if (queued) expect(receipt?.runId).toBe(queued.runId);
+      expect(countExecuteCallsForRun(runId)).toBe(0);
+    });
+
+    it.each([
+      { deleteAll: false, withQueuedRun: false },
+      { deleteAll: false, withQueuedRun: true },
+      { deleteAll: true, withQueuedRun: false },
+      { deleteAll: true, withQueuedRun: true },
+    ])("filters deleted saved comments before reassignment redelivery (all=$deleteAll, queued=$withQueuedRun)", async ({ deleteAll, withQueuedRun }) => {
+      const { companyId, runId, issueId, assigneeAgentId, wakeupRequestId, queuedCommentId } =
+        await seedAddressedInteractionFixture({ withQueuedComments: true, interactionStatus: "accepted" });
+      const latestCommentId = randomUUID();
+      await db.insert(issueComments).values({
+        id: latestCommentId, companyId, issueId, authorUserId: "local-board", authorType: "user",
+        body: "This newer comment will be deleted before redelivery.",
+      });
+      const ids = [queuedCommentId!, latestCommentId];
+      const source = await heartbeat.getRun(runId);
+      await db.update(heartbeatRuns).set({
+        contextSnapshot: withQueuedCommentIdsInRunContext(source!.contextSnapshot, ids),
+      }).where(eq(heartbeatRuns.id, runId));
+      await db.update(agentWakeupRequests).set({
+        payload: withQueuedCommentIdsInWakePayload({ issueId }, ids),
+      }).where(eq(agentWakeupRequests.id, wakeupRequestId));
+      await heartbeat.resumeQueuedRuns();
+      const [saved] = await db.select().from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.idempotencyKey, `stale-addressee-requeue:${runId}`));
+      expect(saved).toMatchObject({ agentId: assigneeAgentId, status: "deferred_issue_execution" });
+      expect(queuedCommentIdsFromWakePayload(saved!.payload)).toEqual(ids);
+
+      const nextAgentId = randomUUID();
+      await db.insert(agents).values({
+        id: nextAgentId, companyId, name: "New assignee", role: "engineer", status: "active",
+        adapterType: "codex_local", adapterConfig: {},
+        runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } }, permissions: {},
+      });
+      await db.update(issues).set({ assigneeAgentId: nextAgentId }).where(eq(issues.id, issueId));
+      for (const id of deleteAll ? ids : [latestCommentId]) {
+        await db.update(issueComments).set({ deletedAt: new Date() }).where(eq(issueComments.id, id));
+      }
+      const queued = withQueuedRun
+        ? await seedQueuedRun({ companyId, agentId: nextAgentId, issueId, wakeReason: "issue_assigned" })
+        : null;
+      await heartbeat.resumeQueuedRuns();
+      await heartbeat.resumeQueuedRuns();
+      await drainHeartbeatRunsToQuiescence(db, heartbeat);
+      await heartbeat.resumeQueuedRuns();
+      await drainHeartbeatRunsToQuiescence(db, heartbeat);
+
+      const [receipt] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, saved!.id));
+      expect(receipt).toMatchObject({ agentId: nextAgentId, status: deleteAll ? "skipped" : "coalesced" });
+      expect(queuedCommentIdsFromWakePayload(receipt!.payload)).toEqual(deleteAll ? [] : [queuedCommentId]);
+      const delivered = mockAdapterExecute.mock.calls.filter(([context]) =>
+        queuedCommentIdsFromRunContext(context.context).includes(queuedCommentId!),
+      );
+      expect(delivered).toHaveLength(deleteAll ? 0 : 1);
+      if (!deleteAll) {
+        expect(delivered[0]![0].agent.id).toBe(nextAgentId);
+        expect(delivered[0]![0].context.wakeCommentId).toBe(queuedCommentId);
+        if (queued) expect(receipt!.runId).toBe(queued.runId);
+      } else {
+        expect(receipt!.runId).toBeNull();
+        expect(receipt!.finishedAt).not.toBeNull();
+        if (!queued) expect(mockAdapterExecute.mock.calls).toHaveLength(0);
+      }
+      expect(mockAdapterExecute.mock.calls.some(([context]) =>
+        queuedCommentIdsFromRunContext(context.context).includes(latestCommentId),
+      )).toBe(false);
       expect(countExecuteCallsForRun(runId)).toBe(0);
     });
 
