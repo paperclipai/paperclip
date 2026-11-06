@@ -18,7 +18,7 @@ import { activeNativeExecutionRunIds, NATIVE_PREPARATION_FENCING_VERSION } from 
 import {
   PROCESS_IDENTITY_RECORDED,
   PROCESS_START_REQUESTED,
-  recordNativeLocalProcessStop,
+  recordNativeLocalProcessStopInTransaction,
 } from "../native-local-process-stop.js";
 import { randomUUID } from "node:crypto";
 import { and, desc, eq, gt, inArray, isNotNull, isNull, lte, ne, or, sql } from "drizzle-orm";
@@ -1264,7 +1264,7 @@ export async function claimNativeRestartRecoveries(input: {
         claimKind !== "reattach_existing_runner" &&
         claimKind !== "reattach_remote_runner"
       ) {
-        await recordNativeLocalProcessStop(tx as unknown as Db, row.run);
+        await recordNativeLocalProcessStopInTransaction(tx as unknown as Db, row.run);
       }
 
       await tx
