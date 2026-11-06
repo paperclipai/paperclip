@@ -151,7 +151,8 @@ export async function admitExplicitNativeContinuation(input: {
   const [task] = await db.select().from(issues).where(and(
     eq(issues.companyId, companyId), eq(issues.id, issueId),
   ));
-  if (!task || task.assigneeAgentId !== agentId || ["done", "cancelled"].includes(task.status)) return null;
+  if (!task || task.assigneeAgentId !== agentId || task.status === "cancelled"
+    || task.status === "done" && !input.queuedCommentInterruptId) return null;
   const [retryWake] = input.taskRetryRequestId ? await db.select().from(agentWakeupRequests).where(and(
     eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.id, input.taskRetryRequestId),
     eq(agentWakeupRequests.agentId, agentId), eq(agentWakeupRequests.status, "deferred_issue_execution"),
@@ -257,6 +258,28 @@ export async function admitExplicitNativeContinuation(input: {
         or(eq(heartbeatRuns.nativeIssueId, issueId), eq(heartbeatRuns.issueId, issueId),
           sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issueId}`)))
       .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id)).limit(1);
+    if (latest?.status === "succeeded") {
+      const [coordinator] = await db.select().from(nativeRunFinalizations).where(and(
+        eq(nativeRunFinalizations.companyId, companyId), eq(nativeRunFinalizations.runId, latest.id),
+      )).for("update");
+      const [completed] = await db.select({ agentId: heartbeatRuns.agentId, status: heartbeatRuns.status,
+        runtimeMode: heartbeatRuns.runtimeMode, finishedAt: heartbeatRuns.finishedAt,
+        nativeIssueId: heartbeatRuns.nativeIssueId, issueId: heartbeatRuns.issueId, contextSnapshot: continuationContext,
+      }).from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.id, latest.id))).for("update");
+      if (!completed || completed.agentId !== agentId || completed.runtimeMode !== "native"
+        || completed.status !== "succeeded" || !completed.finishedAt
+        || (completed.nativeIssueId ?? completed.issueId ?? completed.contextSnapshot?.issueId) !== issueId
+        || coordinator?.phase !== "committed" || coordinator.leaseOwner || adapterExecutionControls.has(latest.id))
+        return blocked("controller_settling", "Waiting for the previous run to finish recovery. Your message will start automatically.");
+      const [result] = coordinator.resultId ? await db.select({ id: nativeRunResults.id }).from(nativeRunResults).where(and(
+        eq(nativeRunResults.companyId, companyId), eq(nativeRunResults.issueId, issueId),
+        eq(nativeRunResults.runId, latest.id), eq(nativeRunResults.id, coordinator.resultId),
+        eq(nativeRunResults.schemaStatus, "accepted"),
+        sql`${nativeRunResults.resultJson}#>>'{terminal,runTerminalState}' = 'succeeded'`,
+      )).limit(1) : [];
+      if (!result || await hasPendingRunCleanup(db, companyId, latest.id))
+        return blocked("cleanup_pending", "Waiting for the previous run to finish cleanup. Your message is saved.");
+    }
     if (latest?.runtimeMode === "native" && ["cancelled", "failed"].includes(latest.status) &&
         !sourceChecks.some(source => (source.evidence.runId ?? source.evidence.sourceRunId) === latest.id)) {
       sourceChecks.push({ cause: "native_continuation_requires_reconciliation", evidence: { runId: latest.id } });
@@ -274,7 +297,7 @@ export async function admitExplicitNativeContinuation(input: {
       !(await isFailedNativePreparation(db, source, coordinator) || await isPreDispatchExecutionWaitVerified(db, source))) return null;
     sourceChecks.push({ cause: "legacy_execution_requires_reconciliation", evidence: { runId: source.id } });
   }
-  if (!sourceChecks.length) return null;
+  if (!sourceChecks.length && !nativeQueuedSend) return null;
   if (blocker && blocker.recoveryActionId === null) return null;
   const [pendingInteraction] = await db.select({ id: issueThreadInteractions.id }).from(issueThreadInteractions).where(and(
     eq(issueThreadInteractions.companyId, companyId), eq(issueThreadInteractions.issueId, issueId),
@@ -286,6 +309,7 @@ export async function admitExplicitNativeContinuation(input: {
   )).where(and(eq(issueApprovals.companyId, companyId), eq(issueApprovals.issueId, issueId),
     inArray(approvals.status, ["pending", "revision_requested"]))).limit(1);
   if (pendingInteraction || pendingApproval) return blocked("decision_pending", "A pending approval or question must be resolved before this message can start.");
+  if (!sourceChecks.length) return null;
 
   const sources: Run[] = [];
   let readiness: ContinuationReadiness | undefined;

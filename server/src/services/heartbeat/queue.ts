@@ -3790,7 +3790,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
           if (
             isolatedWorkspacesEnabled &&
             !activeExecutionRun &&
-            issue.status !== "done" &&
+            (issue.status !== "done" || Boolean(opts.queuedCommentInterruptId)) &&
             issue.status !== "cancelled"
           ) {
             const issueSettings = parseIssueExecutionWorkspaceSettings(
@@ -3870,7 +3870,11 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
               await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
               if (issue.status !== "blocked") await notifyChatResponseAvailability(tx, { companyId: issue.companyId, issueId: issue.id });
               await notifyRoutineExecutionStatus(tx, issue.id, issue.companyId);
-              await tx
+              if (issue.status === "done") {
+                const blocked = await issuesSvc.updateForCompany(issue.id, issue.companyId,
+                  { status: "blocked", executionState: null }, tx, issueActivityPublications, issuePostCommitActions);
+                if (!blocked) throw conflict("The task changed before its workspace settings could be checked");
+              } else await tx
                 .update(issues)
                 .set({
                   status: "blocked",
