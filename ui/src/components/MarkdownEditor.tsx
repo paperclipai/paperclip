@@ -320,7 +320,6 @@ interface MentionMenuSize {
 }
 
 const MENTION_MENU_WIDTH = 188;
-const SLASH_MENU_WIDTH = 440;
 const MENTION_MENU_HEIGHT = 208;
 const MENTION_MENU_PADDING = 8;
 const MENTION_MENU_ROW_HEIGHT = 34;
@@ -507,17 +506,32 @@ export function computeMentionMenuPosition(
   return { top, left, maxWidth };
 }
 
-function getMentionMenuSize(options: AutocompleteOption[], isSlashMenu: boolean): MentionMenuSize {
-  const rowHeight = options.slice(0, 8).reduce((height, option) => (
-    height + (option.kind === "skill" && option.description ? 50 : MENTION_MENU_ROW_HEIGHT)
-  ), 0);
+function getMentionMenuSize(options: AutocompleteOption[]): MentionMenuSize {
+  const rowHeight = Math.min(options.length, 8) * MENTION_MENU_ROW_HEIGHT;
   return {
-    width: isSlashMenu ? SLASH_MENU_WIDTH : MENTION_MENU_WIDTH,
+    width: MENTION_MENU_WIDTH,
     height: Math.min(
       MENTION_MENU_HEIGHT,
       Math.max(MENTION_MENU_ROW_HEIGHT, rowHeight) + MENTION_MENU_CHROME_HEIGHT,
     ),
   };
+}
+
+function computeSlashMenuPosition(
+  composer: DOMRect,
+  viewport: MentionMenuViewport,
+  menuSize: MentionMenuSize,
+) {
+  const minLeft = viewport.offsetLeft + MENTION_MENU_PADDING;
+  const minTop = viewport.offsetTop + MENTION_MENU_PADDING;
+  const width = Math.min(composer.width, Math.max(0, viewport.width - MENTION_MENU_PADDING * 2));
+  const maxLeft = viewport.offsetLeft + viewport.width - MENTION_MENU_PADDING - width;
+  const left = Math.max(minLeft, Math.min(viewport.offsetLeft + composer.left, maxLeft));
+  const above = viewport.offsetTop + composer.top - menuSize.height - MENTION_MENU_PADDING;
+  const below = viewport.offsetTop + composer.bottom + MENTION_MENU_PADDING;
+  const maxTop = viewport.offsetTop + viewport.height - menuSize.height - MENTION_MENU_PADDING;
+  const top = Math.max(minTop, Math.min(above >= minTop ? above : below, maxTop));
+  return { top, left, width, maxWidth: width };
 }
 
 // CodeMirror's editable surface is `.cm-content`, not a `pre` or `code` node.
@@ -1140,12 +1154,16 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
     viewport?.addEventListener("scroll", updatePosition);
     window.addEventListener("resize", updatePosition);
     window.addEventListener("scroll", updatePosition, true);
+    const anchor = containerRef.current?.closest("[data-editor-autocomplete-anchor]") ?? containerRef.current;
+    const observer = typeof ResizeObserver !== "undefined" ? new ResizeObserver(updatePosition) : null;
+    if (anchor) observer?.observe(anchor);
 
     return () => {
       viewport?.removeEventListener("resize", updatePosition);
       viewport?.removeEventListener("scroll", updatePosition);
       window.removeEventListener("resize", updatePosition);
       window.removeEventListener("scroll", updatePosition, true);
+      observer?.disconnect();
     };
   }, [checkMention, mentionActive]);
 
@@ -1335,12 +1353,11 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
     setRichEditorError({ code: "MDE-PARSE", message: richEditorErrorMessage(error) });
   }, []);
 
-  const mentionMenuPosition = mentionState
-    ? computeMentionMenuPosition(
-        mentionState,
-        getMentionMenuViewport(),
-        getMentionMenuSize(filteredMentions, mentionState.trigger === "skill"),
-      )
+  const autocompleteAnchor = containerRef.current?.closest("[data-editor-autocomplete-anchor]") ?? containerRef.current;
+  const mentionMenuPosition: { top: number; left: number; maxWidth: number; width?: number } | null = mentionState && autocompleteAnchor
+    ? mentionState.trigger === "skill"
+      ? computeSlashMenuPosition(autocompleteAnchor.getBoundingClientRect(), getMentionMenuViewport(), getMentionMenuSize(filteredMentions))
+      : computeMentionMenuPosition(mentionState, getMentionMenuViewport(), getMentionMenuSize(filteredMentions))
     : null;
 
   if (richEditorError) {
@@ -1624,10 +1641,11 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
             data-paperclip-floating-ui=""
             data-testid="mention-autocomplete-menu"
             className={cn(
-              "pointer-events-auto fixed z-(--z-9999) min-w-(--sz-180px) max-w-(--sz-calc-15) max-h-(--sz-208px) overflow-y-auto overscroll-contain rounded-md border border-border bg-popover shadow-md",
-              mentionState?.trigger === "skill" && "w-(--editor-slash-menu-width)",
+              "pointer-events-auto fixed z-(--z-9999) max-w-(--sz-calc-15) max-h-(--sz-208px) overflow-y-auto overscroll-contain rounded-md border border-border bg-popover shadow-md",
+              mentionState?.trigger === "skill" ? "min-w-0" : "min-w-(--sz-180px)",
             )}
             style={{
+              width: mentionMenuPosition.width,
               top: mentionMenuPosition.top,
               left: mentionMenuPosition.left,
               maxWidth: mentionMenuPosition.maxWidth,
@@ -1704,10 +1722,10 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
                     <span className="truncate">{issueMentionTitle(option)}</span>
                   </span>
                 ) : option.kind === "skill" ? (
-                  <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-                    <span className="truncate">{slashCommandLabel(option)}</span>
+                  <span className="flex min-w-0 flex-1 items-center gap-2">
+                    <span className="max-w-1/2 shrink-0 truncate">{slashCommandLabel(option)}</span>
                     {option.description && (
-                      <span className="truncate text-xs text-popover-foreground/70" title={option.description}>
+                      <span className="min-w-0 flex-1 truncate text-xs text-popover-foreground/70" title={option.description}>
                         {option.description}
                       </span>
                     )}
