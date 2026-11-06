@@ -2,7 +2,7 @@ import { beginIdleTrackedWork } from "./task-admission.js";
 import { createHash, randomUUID } from "node:crypto";
 import type { StorageProvider } from "../storage/types.js";
 import type { RunLogStore, RunLogHandle, RunLogBeginInput } from "./run-log-store.js";
-import { createObjectByteJournal, ObjectJournalSourcePrefixProofUnavailableError, type ObjectJournalWriter } from "./object-byte-journal.js";
+import { createObjectByteJournal, ObjectJournalSourcePrefixProofUnavailableError, type ObjectJournalIOPriority, type ObjectJournalWriter } from "./object-byte-journal.js";
 import { MAX_RUN_LOG_RECORD_BYTES } from "./run-log-record-limits.js";
 
 const MAX_SEGMENT_BYTES = 1024 * 1024;
@@ -85,12 +85,13 @@ export function createObjectRunLogStore(options: ObjectRunLogStoreOptions): RunL
       else activeUploads--;
     };
   }
-  function journal(logRef: string) {
+  function journal(logRef: string, readPriority?: ObjectJournalIOPriority) {
     if (!/^[a-zA-Z0-9._-]+\/[a-zA-Z0-9._-]+\/[a-zA-Z0-9._-]+$/.test(logRef))
       throw new Error("Invalid object log reference");
     return createObjectByteJournal({
       provider: options.provider,
       prefix: `${options.keyPrefix}/segments-v1/${logRef}`,
+      readPriority,
     });
   }
   function schedule(state: WriterState) {
@@ -352,7 +353,7 @@ export function createObjectRunLogStore(options: ObjectRunLogStoreOptions): RunL
     },
     async read(handle, opts = {}) {
       if (handle.store !== "s3_segments" && handle.store !== "s3_archive") throw new Error("Invalid object run log backend");
-      const store = journal(handle.logRef),
+      const store = journal(handle.logRef, opts.priority ?? "interactive"),
         snapshot = await store.head(opts.signal);
       if (!snapshot || snapshot.head.deleted) throw new Error("Object run log not found");
       const offset = Math.max(0, opts.offset ?? 0),
