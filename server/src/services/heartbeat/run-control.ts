@@ -1212,7 +1212,7 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
     options: CancelRunOptions,
     committedBudgetCancellation = false,
     quotaLineage = new Set<string>(),
-  ) {
+  ): Promise<typeof heartbeatRuns.$inferSelect | null> {
     let run = await getRun(runId);
     if (!run) throw notFound("Heartbeat run not found");
     if (options.expectedStatus && run.status !== options.expectedStatus) return null;

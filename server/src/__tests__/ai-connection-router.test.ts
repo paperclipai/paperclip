@@ -251,7 +251,8 @@ describe("durable, authorized connection routing", () => {
   }, 30_000);
   it("moves a newly pinned Claude account when a concurrent quota observation arrives before startup", async () => {
     await db.delete(aiConnectionQuotaCooldowns).where(eq(aiConnectionQuotaCooldowns.companyId, companyId));
-    const first = members[1]!;
+    const primary = await aiConnectionService(db).save(companyId, "alice", { provider: "anthropic", method: "subscription", ownership: "personal", name: "Concurrent primary", loginSessionId: "fixture", agentIds: [], allAgents: true }, "concurrent-claude-primary");
+    const first: AiConnectionPoolMember = { ...members[1]!, id: randomUUID(), binding: { mode: "delegated", provider: "anthropic", method: "subscription", ...primary } };
     const account = await aiConnectionService(db).save(companyId, "alice", { provider: "anthropic", method: "subscription", ownership: "personal", name: "Concurrent backup", loginSessionId: "fixture", agentIds: [], allAgents: true }, "concurrent-claude-backup");
     const second: AiConnectionPoolMember = { ...first, id: randomUUID(), binding: { mode: "delegated", provider: "anthropic", method: "subscription", ...account } };
     const pool = await service().save(BUILTIN_AI_FAILOVER_ROUTER_KEY, { companyId, config: { name: randomUUID(), enabled: true, mode: "failover", thresholdPercent: 90, members: [first, second] } }, "alice");
@@ -261,7 +262,9 @@ describe("durable, authorized connection routing", () => {
     const execute = vi.fn(async () => { throw new Error("fixture stopped before actual provider"); });
     registerServerAdapter({ ...getServerAdapter("claude_local"), execute });
     const fetch = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("offline fixture"));
+    const selections: string[] = [];
     const heartbeat = heartbeatService(db, { runtimeEnv: {}, afterLegacyPoolSelection: async (_runId, selection) => {
+      selections.push(selection.memberId);
       if (selection.memberId === first.id) await service().recordQuotaCooldown(companyId, first.binding.connectionId,
         await identityFor(first.binding.grantId), new Date(Date.now() + 3_600_000));
     } });
@@ -271,8 +274,12 @@ describe("durable, authorized connection routing", () => {
       await expect.poll(async () => (await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, source!.id))).length, { timeout: 20_000 }).toBe(1);
       const [successor] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, source!.id));
       const [pin] = await db.select().from(aiConnectionTaskPins).where(and(eq(aiConnectionTaskPins.poolId, pool.id), eq(aiConnectionTaskPins.taskKey, issue!.id)));
+      expect(selections[0]).toBe(first.id);
       expect(pin?.selection.memberId).toBe(second.id);
-      expect(successor?.scheduledRetryAt!.getTime()).toBeLessThan(Date.now() + 10_000);
+      expect(successor?.scheduledRetryReason).toBe("ai_connection_pool_wait");
+      const wait = successor?.resultJson?.executionWait as { cause?: string; runId?: string } | undefined;
+      if (wait) expect(wait).toMatchObject({ cause: "execution_owner_active", runId: source!.id });
+      else expect(successor?.scheduledRetryAt!.getTime()).toBeLessThan(Date.now() + 10_000);
       expect((await heartbeat.getRun(source!.id))?.runnerProfileJson?.legacyQuotaPrestartFence).toMatchObject({ state: "preparing" });
     } finally {
       fetch.mockRestore(); unregisterServerAdapter("claude_local"); await heartbeat.drainActiveRunExecutions();
