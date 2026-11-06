@@ -130,9 +130,6 @@ and production settings stories cover their respective boundaries. Provider deli
 
 Manual: configure a disposable company, reload, test, run Codex, Claude Code and native OpenCode locally and remotely,
 inspect their unique markers at the destination, then disable and verify a new marker is absent.
-For OpenCode, enable tool details and tool content and inspect the versioned argument-type
-diagnostics on Paperclip tool spans. Check a rejected and accepted call. Disable tool content
-and check that diagnostic input is absent. See [capture policy](../../doc/agent-observability.md).
 
 Storybook verification: `agent-observability-01-settings`, `agent-observability-02-states`,
 and `agent-observability-03-journey` mount production subjects with simulated APIs/providers.
