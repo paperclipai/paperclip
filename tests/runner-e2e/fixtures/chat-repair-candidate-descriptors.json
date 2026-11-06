@@ -256,7 +256,8 @@
       "chat-catalog-domains/internal-routine-audit.ts",
       "../e2e/fetch-allowed-port.ts",
       "../../server/src/services/native-runtime/status-decision-committer.ts",
-      "../../server/src/services/work-timeline.ts"
+      "../../server/src/services/work-timeline.ts",
+      "../../server/src/services/native-runtime/runner-api-catalog.ts"
     ],
     "oracleVersion": "paperclip.chat-catalog.work-timeline.v11",
     "coverageGaps": [],
@@ -4906,11 +4907,13 @@
       "chat-catalog-domains/identity-support.ts",
       "live-fixtures.ts",
       "../../server/src/services/secrets.ts",
+      "../../server/src/services/native-runtime/runner-api-catalog.ts",
+      "../../server/src/routes/issues.ts",
       "run-observations.ts",
       "chat-flow.ts",
       "chat-scenarios/secrets.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.company-secret-controller-baseline.v12",
+    "oracleVersion": "paperclip.chat-catalog.company-secret-controller-baseline.v13",
     "expectedRunCount": 3,
     "minimumRunCount": 2,
     "expectedHumanMessageCount": 2,
