@@ -31,6 +31,30 @@ export async function assertNativeSessionPreparationAuthority(input: {
 }
 
 /**
+ * A recovery execution that loses its claim before provider dispatch has no
+ * authority to settle the run. True when a graceful shutdown suspended this
+ * claim for the next controller, or another controller has claimed the run.
+ * The still-running run then belongs to that successor, not to this execution.
+ */
+export async function nativeRecoveryClaimRelinquished(input: {
+  db: Db; companyId: string; runId: string; leaseOwner: string;
+}): Promise<boolean> {
+  const [row] = await input.db.select({
+    status: heartbeatRuns.status, resultId: nativeRunFinalizations.resultId,
+    leaseOwner: nativeRunFinalizations.leaseOwner, recoveryState: nativeRunFinalizations.recoveryState,
+    leaseLive: sql<boolean>`coalesce(${nativeRunFinalizations.leaseExpiresAt} > clock_timestamp(), false)`,
+    // The shutdown drain records this exact disposition when it suspends a claim.
+    lastDisposition: sql<string | null>`${nativeRunFinalizations.recoveryHistory} -> -1 ->> 'disposition'`,
+  }).from(nativeRunFinalizations).innerJoin(heartbeatRuns, eq(heartbeatRuns.id, nativeRunFinalizations.runId))
+    .where(and(eq(nativeRunFinalizations.companyId, input.companyId), eq(nativeRunFinalizations.runId, input.runId),
+      eq(heartbeatRuns.companyId, input.companyId))).limit(1);
+  if (!row || row.status !== "running" || row.resultId) return false;
+  if (row.leaseOwner !== null && row.leaseOwner !== input.leaseOwner) return true;
+  return row.leaseOwner === input.leaseOwner && !row.leaseLive && row.recoveryState === "awaiting_runner_reattach"
+    && row.lastDisposition === "restart_suspended";
+}
+
+/**
  * Preparation failed after a fresh claim and before any provider turn. Release
  * only this exact claim, so ordinary failure settlement can retain the source
  * as it does for failures before the claim. Any other owner or a result keeps it.
