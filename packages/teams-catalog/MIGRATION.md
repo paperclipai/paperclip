@@ -29,7 +29,7 @@ The approved plan for this package lives at [PAP-10206 plan document](/PAP/issue
 
 The plan in [PAP-10206](/PAP/issues/PAP-10206#document-plan) lists additional recommended entry classes that are **not** part of the Phase H catalog. They wait on:
 
-- `optional/ops/cloud-operations` — needs a `CloudOpsEngineer` role template under `skills/paperclip-create-agent/references/agents/` first, plus an explicit security review of the deployment/secrets routines it implies. Defer until a follow-up curation pass.
+- `optional/ops/cloud-operations` — the `CloudOpsEngineer` role template now exists at `skills/paperclip-create-agent/references/agents/cloudopsengineer.md`. The entry still needs an explicit security review of the deployment/secrets routines it implies. Defer until a follow-up curation pass.
 - `optional/research/benchmark-quality` — needs a benchmark/evals/forensics role template and concrete starter routines from a real benchmark engagement. Defer until that engagement exists.
 - `optional/quality/security-review` — could wrap the existing `securityengineer.md` template, but the plan's Phase D security review of external-source handling has to land before bundling a security-focused team with default skill imports. Defer until Phase D is complete.
 - Adapter overrides per agent — intentionally omitted from frontmatter so the import preview lets operators choose `claude_local`, `codex_local`, etc. at install time. Lock these only when onboarding adopts the catalog and needs a deterministic default.
