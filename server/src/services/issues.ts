@@ -11579,6 +11579,11 @@ export function issueService(db: Db) {
         patch.executionRunId = null;
         patch.executionAgentNameKey = null;
         patch.executionLockedAt = null;
+        // Adapter overrides are chosen for one assignee (for example a model id).
+        // Do not carry them to the next assignee unless the same request sets new ones.
+        if (issueData.assigneeAdapterOverrides === undefined) {
+          patch.assigneeAdapterOverrides = null;
+        }
       }
 
       const runUpdate = async (tx: any) => {
@@ -12861,6 +12866,7 @@ export function issueService(db: Db) {
         };
         if (options.clearAssignee) {
           patch.assigneeAgentId = null;
+          patch.assigneeAdapterOverrides = null;
         }
 
         await notifyStatusCardIssueChange(tx, existing.companyId);
