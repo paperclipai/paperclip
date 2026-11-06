@@ -78,6 +78,39 @@ describe("setup-token reaper", () => {
     expect(store.rows.size).toBe(0);
   });
 
+  it.each(["failed", "cancelled", "completed"] as const)("removes a %s record without a lease", async state => {
+    const store = createMemoryStore();
+    store.seed({ sessionId: "no-lease", leaseId: "", state });
+    const leases = createFakeLeases({ releaseImpl: async () => { throw new Error('invalid uuid'); } });
+    const reaper = createSetupTokenReaper({ store, leases, now: () => NOW });
+
+    expect(await reaper.sweep()).toEqual({ released: 1, failed: 0 });
+    expect(leases.releaseByIdCalls).toEqual([]);
+    expect(store.rows.size).toBe(0);
+    expect(await reaper.sweep()).toEqual({ released: 0, failed: 0 });
+  });
+
+  it("backs off repeated failures to a cap and resets after recovery", async () => {
+    const store = createMemoryStore();
+    store.seed({ sessionId: "retry", leaseId: "lease-retry" });
+    let failing = true;
+    const logs: string[] = [];
+    const leases = createFakeLeases({ releaseImpl: async () => { if (failing) throw new Error("provider down"); } });
+    const reaper = createSetupTokenReaper({ store, leases, log: line => logs.push(line) });
+
+    for (const delay of [30_000, 60_000, 120_000, 240_000, 480_000, 960_000, 1_800_000, 1_800_000]) {
+      expect((await reaper.sweep()).failed).toBe(1);
+      expect(reaper.retryDelayMs()).toBe(delay);
+      expect(store.rows.has("retry")).toBe(true);
+    }
+    expect(logs[0]).toContain("retry");
+    expect(logs[0]).toContain("provider down");
+    failing = false;
+    expect((await reaper.sweep()).released).toBe(1);
+    expect(reaper.retryDelayMs()).toBe(0);
+    expect(store.rows.size).toBe(0);
+  });
+
   it("holds a live, unexpired, unconsumed record and never releases its lease", async () => {
     const store = createMemoryStore();
     store.seed({

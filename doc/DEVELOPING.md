@@ -2,6 +2,18 @@
 
 This project can run fully in local dev without setting up PostgreSQL manually.
 
+## Setup-token cleanup retries
+
+The setup-token cleanup worker removes reapable login records that have no
+provider lease without calling the lease provider. Failed cleanup retains the
+record and logs the session and redacted error cause. Consecutive failed sweeps
+back off from 30 seconds to 30 minutes through the shared delivery scheduler;
+a successful sweep resets the delay. The configured cleanup interval remains
+the minimum delay. Backoff applies to the whole setup-token cleanup worker, so
+new cleanup can wait behind a failing provider. Counters reset on restart;
+the retained database rows reconstruct the cleanup obligation. No timer remains
+once the durable schedule has no pending cleanup or future expiry.
+
 ## Persistent case handoffs
 
 The Cases experiment supports prompt-driven agent workflows on one ordinary task.

@@ -35,6 +35,7 @@ import type { ConnectionManagementContext } from "./connection-management.js";
 //     testable.
 
 import { randomBytes } from "node:crypto";
+import { redactSensitiveText } from "../redaction.js";
 import { and, eq, gt, inArray, isNotNull, isNull, lte, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { adapterAuthSessions } from "@paperclipai/db";
@@ -339,7 +340,9 @@ export async function reapSetupTokenLeases(
   let failed = 0;
   for (const record of records) {
     try {
-      await deps.leases.releaseById(record.leaseId);
+      if (record.leaseId) {
+        await deps.leases.releaseById(record.leaseId);
+      }
       await deps.store.remove({
         sessionId: record.sessionId,
         companyId: record.companyId,
@@ -347,9 +350,12 @@ export async function reapSetupTokenLeases(
         adapterType: record.adapterType,
       });
       released += 1;
-    } catch {
+    } catch (error) {
       failed += 1;
-      log("[paperclip] Setup-token reaper: a lease release failed; it stays retryable.");
+      const cause = redactSensitiveText(error instanceof Error ? error.message : String(error))
+        .replace(/[\u0000-\u001f\u007f]+/g, " ")
+        .slice(0, 500);
+      log(`[paperclip] Setup-token reaper: cleanup failed for session ${record.sessionId}; it stays retryable: ${cause}`);
     }
   }
   return { released, failed };

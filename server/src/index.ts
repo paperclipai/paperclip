@@ -1803,7 +1803,7 @@ async function startServerWithDatabaseTeardown(
       const loginSchedule = loginCleanupSchedule(db, config.heartbeatSchedulerIntervalMs);
       await step("login_cleanup_workers", () => registerLoginCleanupWork(deliveryWork, [
         { queue: DELIVERY_QUEUES.adapterLoginCleanup, run: () => adapterLoginReaper.sweep().then(logAdapterLoginReaperResult), next: loginSchedule.adapter },
-        { queue: DELIVERY_QUEUES.setupTokenCleanup, run: () => setupTokenReaper.sweep().then(logSetupTokenReaperResult), next: loginSchedule.setupToken },
+        { queue: DELIVERY_QUEUES.setupTokenCleanup, run: () => setupTokenReaper.sweep().then(logSetupTokenReaperResult), next: loginSchedule.setupToken, retryDelayMs: setupTokenReaper.retryDelayMs },
       ], () => !isIdleTaskDrainActive() && !isWarmStandby() && !heartbeatSchedulerStopped, config.heartbeatSchedulerIntervalMs).ready);
       // Retry any orphan sandbox teardown left by a failed acquire before a
       // server restart, so a leaked sandbox does not stay allocated.

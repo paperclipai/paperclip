@@ -64,6 +64,33 @@ describe("login cleanup lifecycle", () => {
     release(); await vi.advanceTimersByTimeAsync(30_000);
     expect(run).toHaveBeenCalledTimes(3); expect(c.nextWakeAt()).toBeNull();
   });
+  it("honors setup-token backoff across notifications, then becomes quiet", async () => {
+    vi.useFakeTimers();
+    const owner = fakeOwner();
+    const c = coordinator(owner);
+    let failures = 0;
+    let pending = true;
+    const reaper = createSetupTokenReaper({
+      store: {
+        listReapable: async () => pending ? [{ sessionId: "retry", companyId: "company", ownerUserId: "user", adapterType: "claude_local", environmentId: "env", leaseId: "lease", state: "failed", deadline: 0, boundAt: null }] : [],
+        remove: async () => { pending = false; },
+      },
+      leases: { releaseById: async () => { failures += 1; if (failures < 3) throw new Error("provider down"); } },
+    });
+    const run = vi.fn(reaper.sweep);
+    await registerLoginCleanupWork(c, [{ queue: DELIVERY_QUEUES.setupTokenCleanup, run, next: async () => pending ? Date.now() : null, retryDelayMs: reaper.retryDelayMs }], () => true).ready;
+    expect(run).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(run).toHaveBeenCalledTimes(2);
+    await owner.transaction(tx => notifyDeliveryWork(tx, DELIVERY_QUEUES.setupTokenCleanup));
+    await vi.advanceTimersByTimeAsync(59_999);
+    expect(run).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(run).toHaveBeenCalledTimes(3);
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(c.nextWakeAt()).toBeNull();
+    expect(run).toHaveBeenCalledTimes(3);
+  });
   it("does not block another cleanup worker and awaits in-flight work on shutdown", async () => {
     vi.useFakeTimers(); const c = coordinator(fakeOwner()); let release!: () => void;
     const gate = new Promise<void>(resolve => { release = resolve; });
@@ -207,6 +234,18 @@ describe.skipIf(!support.supported)("durable login cleanup", () => {
     release(); await transaction; await settle();
     if (rollback) await quiet(c);
     else { expect((await store.get(id))?.status).toBe("starting"); await settle(120_000); await quiet(c); }
+  });
+  it("clears a persisted null-lease session without a provider lookup and returns to quiet", async () => {
+    const sessionId = randomUUID();
+    await db.insert(adapterAuthSessions).values({ publicSessionId: sessionId, companyId, environmentId, adapterType: "claude_local", startedByUserId: "setup", status: "failed", providerLeaseId: null });
+    const cleanup = createDbSetupTokenCleanupStore(observed);
+    const releaseById = vi.fn(async () => { throw new Error('invalid input syntax for type uuid: ""'); });
+    const reaper = createSetupTokenReaper({ store: cleanup, leases: { releaseById } });
+    const c = coordinator(db, undefined, error => errors.push(error));
+    await registerLoginCleanupWork(c, [{ queue: DELIVERY_QUEUES.setupTokenCleanup, run: reaper.sweep, next: loginCleanupSchedule(observed).setupToken, retryDelayMs: reaper.retryDelayMs }], () => true).ready;
+    expect(releaseById).not.toHaveBeenCalled();
+    expect(await db.select().from(adapterAuthSessions).where(eq(adapterAuthSessions.publicSessionId, sessionId))).toEqual([]);
+    await quiet(c);
   });
   it.each(["consume", "expire", "cancel"])("setup-token producers wake cleanup on %s", async mode => {
     const cleanup = createDbSetupTokenCleanupStore(observed), releaseById = vi.fn(async () => {});
