@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -60,6 +60,14 @@ test("every program exists, and the provider list matches the tracked provider p
   const tracked = execFileSync("git", ["ls-files", "packages/plugins/sandbox-providers"], { cwd: root, encoding: "utf8" });
   const manifests = tracked.split("\n").filter((file) => file.endsWith("/package.json"));
   assert.deepEqual(manifests.map((manifest) => path.dirname(manifest)).sort(), [...SANDBOX_PROVIDERS].sort());
+});
+
+test("the provider workspace lists every provider by its full path, so Dependabot sees them", () => {
+  const workspace = readFileSync(path.join(root, PROVIDER_WORKSPACE, "pnpm-workspace.yaml"), "utf8");
+  const listed = [...workspace.matchAll(/^\s+-\s+(\S+)\s*$/gm)].map((match) => match[1]);
+  assert.ok(listed.every((entry) => !entry.includes("*")), "Dependabot does not expand a glob that starts with ../");
+  const providers = listed.map((entry) => path.posix.normalize(path.posix.join(PROVIDER_WORKSPACE, entry)));
+  assert.deepEqual(providers.sort(), [...SANDBOX_PROVIDERS].sort());
 });
 
 test("no provider commits a lockfile, except the one Daytona already has", () => {

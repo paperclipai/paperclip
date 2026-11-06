@@ -1353,6 +1353,13 @@ Do not commit a lockfile inside a provider.
 `scripts/build-standalone-public-packages.mjs` uses a frozen install when one
 exists, which changes what a release resolves.
 
+Dependabot updates the providers through this workspace (see
+`.github/dependabot.yml`), and Daytona's own lockfile through a second entry.
+Dependabot does not expand a workspace glob that starts with `../`, so
+`scripts/typecheck-sandbox-providers/pnpm-workspace.yaml` lists each provider by
+its full path. When you add a provider, add it there and to `SANDBOX_PROVIDERS`
+in `scripts/typecheck-test-programs.mjs`. A test checks that the two lists match.
+
 #### Reused Runner build in the server build
 
 The server build vendors `packages/paperclip-runner/dist`, so its

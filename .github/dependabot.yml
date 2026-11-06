@@ -30,6 +30,73 @@ updates:
         update-types:
           - "version-update:semver-major"
 
+  # Sandbox providers (packages/plugins/sandbox-providers/*). pnpm-workspace.yaml
+  # keeps them out of the root workspace on purpose, so the "/" entry above never
+  # sees them. Each provider is a standalone published package with its own
+  # version ranges.
+  #
+  # scripts/typecheck-sandbox-providers is a small pnpm workspace that lists every
+  # provider and holds one lockfile. CI installs that lockfile frozen. Dependabot
+  # updates this workspace as one unit: one pull request per dependency changes
+  # every provider that uses the dependency, and the shared lockfile, together.
+  # So this entry needs no `groups`. One entry per provider would open a separate
+  # pull request for each provider for the same package, and each one would fail
+  # CI because the shared lockfile would stay old.
+  #
+  # Dependabot does not expand a workspace glob that starts with ../, so that
+  # workspace lists each provider by its full path. A test checks the list.
+  #
+  # Providers are published libraries, so Dependabot's default versioning
+  # strategy keeps a range when a new version fits it. It widens the range when a
+  # release falls outside it, for example zod 3 to zod 4.
+  - package-ecosystem: npm
+    directory: "/scripts/typecheck-sandbox-providers"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+    open-pull-requests-limit: 10
+    labels:
+      - "dependencies"
+    ignore:
+      # Same reason as the "/" entry.
+      - dependency-name: "@types/node"
+        update-types:
+          - "version-update:semver-major"
+
+  # Daytona is the only provider with its own lockfile. The release image and the
+  # Daytona end-to-end job install it frozen. The workspace entry above changes
+  # Daytona's package.json but not this lockfile, so this entry keeps it current.
+  # For a dependency that both entries update, merge the workspace pull request
+  # first. Dependabot then rebases this entry's pull request, which then changes
+  # only Daytona's lockfile, and CI passes. If this entry's pull request goes
+  # first, the typecheck job fails because the shared lockfile is old.
+  - package-ecosystem: npm
+    directory: "/packages/plugins/sandbox-providers/daytona"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+    ignore:
+      # Same reason as the "/" entry.
+      - dependency-name: "@types/node"
+        update-types:
+          - "version-update:semver-major"
+
+  # No entry for packages/paperclip-runner/scripts/pi-distribution or
+  # kimi-distribution. Every direct dependency there is a pinned provider
+  # release, and the pins feed each provider's ACPX commandDigest. The Runner
+  # checks compare the Pi lockfile with PI_DISTRIBUTION_PINS, and the Kimi build
+  # compares the SHA-256 of its package-lock.json with a pin. So a Dependabot
+  # change to either lockfile fails CI (for example #18998), and a real upgrade
+  # also starts saved sessions fresh. Change these by hand (see
+  # rules/acpx-profile-identity.mdc). pi-acp@0.0.33 needs zod ^3.25.0 as a
+  # direct dependency, so the Pi zod pin (3.25.76) cannot move to zod 4 until
+  # pi-acp allows it. GitHub security alerts still cover both lockfiles.
+
   - package-ecosystem: github-actions
     directory: "/"
     schedule:
