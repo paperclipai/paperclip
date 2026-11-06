@@ -3624,9 +3624,15 @@ impl CodexCommandExecutor {
         let compact = match payload.get("compact") {
             None | Some(Value::Bool(false)) => false,
             Some(Value::Bool(true)) => true,
-            Some(_) => return Err(DurableRunnerError::invalid("turn.start compact must be a boolean")),
+            Some(_) => {
+                return Err(DurableRunnerError::invalid(
+                    "turn.start compact must be a boolean",
+                ))
+            }
         };
-        if compact && (!skills.is_empty() || reasoning_mode.is_some() || payload.get("text").is_some()) {
+        if compact
+            && (!skills.is_empty() || reasoning_mode.is_some() || payload.get("text").is_some())
+        {
             return Err(DurableRunnerError::invalid(
                 "a compaction turn.start cannot carry text, skills, or a reasoning mode",
             ));

@@ -2266,10 +2266,7 @@ impl CodexProvider {
         let prior_buffered_message_count = self.pending_messages.len();
         self.ambiguous_turn_start_pending = true;
         let runtime_request_scope = new_runtime_request_scope()?;
-        match self.request_classified(
-            "thread/compact/start",
-            json!({"threadId": self.thread_id}),
-        ) {
+        match self.request_classified("thread/compact/start", json!({"threadId": self.thread_id})) {
             Ok(_) => {}
             Err(ProviderRequestError::Rejected(error)) => {
                 let definite_rejection = self

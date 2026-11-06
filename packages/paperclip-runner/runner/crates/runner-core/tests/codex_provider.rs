@@ -1353,8 +1353,14 @@ fn codex_compaction_turn_binds_the_turn_reported_after_its_empty_response() {
     let started = provider
         .start_compaction_turn()
         .expect("start compaction turn");
-    assert_eq!(started.pointer("/turn/id"), Some(&json!("provider-compact-turn-1")));
-    assert_eq!(provider.active_provider_turn_id(), Some("provider-compact-turn-1"));
+    assert_eq!(
+        started.pointer("/turn/id"),
+        Some(&json!("provider-compact-turn-1"))
+    );
+    assert_eq!(
+        provider.active_provider_turn_id(),
+        Some("provider-compact-turn-1")
+    );
     // A second start while the compaction turn runs is refused.
     assert!(provider.start_compaction_turn().is_err());
 
