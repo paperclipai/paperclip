@@ -297,3 +297,62 @@ describe("Pi price availability", () => {
     expect(parsePiJsonl(JSON.stringify(event)).usage.costUsd).toBe(0);
   });
 });
+
+describe("truncated final turn (model output limit)", () => {
+  it("surfaces a length-stopped final turn with no completion text as an error", () => {
+    const message = {
+      role: "assistant",
+      content: [{ type: "thinking", thinking: "User question: explain what a binary tree is" }],
+      stopReason: "length",
+    };
+    const parsed = parsePiJsonl([
+      { type: "agent_start" },
+      { type: "turn_start" },
+      { type: "turn_end", message },
+      { type: "agent_end", messages: [message] },
+    ].map((event) => JSON.stringify(event)).join("\n"));
+    expect(parsed.finalStopReason).toBe("length");
+    expect(parsed.finalMessage).toBe("");
+    expect(parsed.errors).toHaveLength(1);
+    expect(parsed.errors[0]).toMatch(/output limit/i);
+  });
+
+  it("does not flag a length-stopped turn that still delivered completion text", () => {
+    const message = {
+      role: "assistant",
+      content: [
+        { type: "thinking", thinking: "..." },
+        { type: "text", text: "Partial answer that was cut mid-sentence" },
+      ],
+      stopReason: "length",
+    };
+    const parsed = parsePiJsonl([
+      { type: "turn_end", message },
+      { type: "agent_end", messages: [message] },
+    ].map((event) => JSON.stringify(event)).join("\n"));
+    expect(parsed.finalStopReason).toBe("length");
+    expect(parsed.finalMessage).toBe("Partial answer that was cut mid-sentence");
+    expect(parsed.errors).toEqual([]);
+  });
+
+  it("falls back to the last turn_end stop reason when agent_end carries no messages", () => {
+    const parsed = parsePiJsonl([
+      JSON.stringify({ type: "turn_end", message: { role: "assistant", content: "earlier complete answer", stopReason: "stop" } }),
+      JSON.stringify({ type: "turn_end", message: { role: "assistant", content: [{ type: "thinking", thinking: "x" }], stopReason: "length" } }),
+      JSON.stringify({ type: "agent_end", messages: [] }),
+    ].join("\n"));
+    expect(parsed.finalStopReason).toBe("length");
+    expect(parsed.errors).toHaveLength(1);
+    expect(parsed.errors[0]).toMatch(/output limit/i);
+  });
+
+  it("leaves a complete run untouched (stop reason \"stop\")", () => {
+    const message = { role: "assistant", content: [{ type: "text", text: "Done" }], stopReason: "stop" };
+    const parsed = parsePiJsonl([
+      { type: "turn_end", message },
+      { type: "agent_end", messages: [message] },
+    ].map((event) => JSON.stringify(event)).join("\n"));
+    expect(parsed.finalStopReason).toBe("stop");
+    expect(parsed.errors).toEqual([]);
+  });
+});
