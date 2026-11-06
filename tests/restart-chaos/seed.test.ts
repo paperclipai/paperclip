@@ -66,3 +66,41 @@ describe("seedChaosLab workspace isolation", () => {
     expect(calls.some(call => call.method === "POST" && call.route.endsWith("/projects"))).toBe(false);
   });
 });
+
+describe("seedChaosLab RC-06 mask", () => {
+  let fixtureRoot: string;
+  beforeEach(async () => {
+    fixtureRoot = await mkdtemp(path.join(os.tmpdir(), "rc06-seed-"));
+    vi.stubEnv("OPENAI_API_KEY", "test-only-not-a-key");
+  });
+  afterEach(async () => {
+    vi.unstubAllEnvs();
+    await rm(fixtureRoot, { recursive: true, force: true });
+  });
+
+  const seed = (api: ChaosApi, timeline: Timeline, masks?: string[]) => seedChaosLab({ api, env: "local", adapters: ["codex"],
+    concurrency: 2, budgetCents: 3_000, fixtureRoot, waveId: "w-test", timeline, ...(masks ? { masks } : {}) });
+  const isPolicyCall = (call: Call) => call.method === "POST" && /^\/api\/companies\/[^/]+\/budgets\/policies$/.test(call.route);
+
+  it("keeps the budget amount and disables only the company hard stop", async () => {
+    const { api, calls } = fakeApi(body => ({ ...body }));
+    const timeline = new Timeline(null);
+    await seed(api, timeline, ["rc06"]);
+    const company = calls.find(call => call.method === "POST" && call.route === "/api/companies")!;
+    expect((company.body as { budgetMonthlyCents: number }).budgetMonthlyCents).toBe(3_000);
+    const policies = calls.filter(isPolicyCall);
+    expect(policies).toHaveLength(1);
+    expect(policies[0]!.route).toBe("/api/companies/id-1/budgets/policies");
+    expect(policies[0]!.body).toEqual({ scopeType: "company", scopeId: "id-1", amount: 3_000, hardStopEnabled: false });
+    expect(timeline.entries.filter(entry => entry.kind === "seed_mask_rc06"))
+      .toEqual([expect.objectContaining({ companyId: "id-1", budgetCents: 3_000, hardStopEnabled: false })]);
+  });
+
+  it("leaves the company hard stop on without the mask", async () => {
+    const { api, calls } = fakeApi(body => ({ ...body }));
+    const timeline = new Timeline(null);
+    await seed(api, timeline);
+    expect(calls.some(isPolicyCall)).toBe(false);
+    expect(timeline.entries.some(entry => entry.kind === "seed_mask_rc06")).toBe(false);
+  });
+});

@@ -6251,7 +6251,7 @@ function loadRunnerdDurableBinding(
   const identity = readRunnerdDurableIdentity(runnerdStateRoot(execution));
   // The run id is intentionally different during a continuation. Reuse only
   // the verified runner/lease binding from the same company-scoped durable
-  // session root; rotateLocalAuthorityEpoch then requires that exact binding
+  // session root; rotateAuthorityEpoch then requires that exact binding
   // before it can archive the prior per-run authority.
   if (!durableIdentityMatchesSession(identity, execution)) return null;
   return {
@@ -7065,6 +7065,35 @@ export function verifyNativeHarnessBackup(input: {
   return null;
 }
 
+export function nativeHarnessBackupCursorConflict(input: {
+  backupRoot: string;
+  stateRoot: string;
+  controllerState?: { schema: string; identity: { runnerInstanceId: string }; ackedSourceSeq: number };
+}): string | null {
+  const read = (path: string, maxBytes: number) => {
+    try {
+      return existsSync(path)
+        ? record(JSON.parse(readBoundedNativeFile(path, maxBytes, "runner_durable_identity_too_large").toString("utf8")))
+        : null;
+    } catch {
+      return null;
+    }
+  };
+  const control = input.controllerState ?? read(resolve(input.stateRoot, "control-plane", "control-plane-state.json"),
+    NATIVE_CONTROL_PLANE_STATE_MAX_BYTES);
+  if (!control || !RUNNERD_CONTROL_PLANE_STATE_SCHEMAS.has(String(control.schema))) return null;
+  const runner = read(resolve(input.backupRoot, "runner", "runner-state.json"), NATIVE_RUNNER_STATE_MAX_BYTES);
+  if (!runner) return null;
+  const acked = control.ackedSourceSeq;
+  const next = runner.nextSourceSeq;
+  if (!Number.isSafeInteger(acked) || !Number.isSafeInteger(next) || (next as number) < 1 ||
+      record(control.identity).runnerInstanceId !== runner.runnerInstanceId) return null;
+  const produced = (next as number) - 1;
+  return (acked as number) > produced
+    ? `native_event_replay_conflict: failover backup is behind the controller cursor (backup produced ${produced}, controller acknowledged ${acked as number})`
+    : null;
+}
+
 function nativeSessionCheckpointDirectory(): string {
   const directory = resolve(
     resolvePaperclipInstanceRoot(),
@@ -7471,6 +7500,9 @@ export function nativeSessionFailureSourceCode(
   ) {
     return "provider_transport_failed";
   }
+  if (/native_event_replay_conflict/i.test(message)) {
+    return "native_event_replay_conflict";
+  }
   if (
     /native_runner_process_exited|runnerd exited|runner process failed/i.test(
       message,
@@ -7480,9 +7512,6 @@ export function nativeSessionFailureSourceCode(
   }
   if (/planning_mode_unsupported/i.test(message)) {
     return "planning_mode_unsupported";
-  }
-  if (/native_event_replay_conflict/i.test(message)) {
-    return "native_event_replay_conflict";
   }
   if (message.toLowerCase().includes(NATIVE_CURRENT_WAKE_COMMENTS_CHANGED_AFTER_READ.toLowerCase())) {
     return NATIVE_CURRENT_WAKE_COMMENTS_CHANGED_AFTER_READ;
@@ -12629,6 +12658,20 @@ const REMOTE_RUNNER_PROCESS_FINGERPRINT_SCRIPT =
 const REMOTE_RUNNER_IDENTITY_CHECK_SCRIPT =
   'set -eu; identity_path=$1; expected_nonce=$2; expected_runner_id=$3; expected_pid=$4; test -f "$identity_path" && test ! -L "$identity_path" || exit 3; { IFS= read -r nonce; IFS= read -r pid; IFS= read -r started_at; IFS= read -r runner_id; } < "$identity_path"; test "$nonce" = "$expected_nonce" && test "$runner_id" = "$expected_runner_id" && test "$pid" = "$expected_pid" && test -n "$started_at" || exit 4; kill -0 "$pid" 2>/dev/null || exit 3; if test -r "/proc/$pid/cmdline"; then command_line=$(tr "\\000" "\\n" < "/proc/$pid/cmdline"); printf "%s\\n" "$command_line" | grep -Fqx -- "--runner-id" || exit 4; printf "%s\\n" "$command_line" | grep -Fqx -- "$expected_runner_id" || exit 4; fi';
 
+/**
+ * Move the remote Runner state ($1) into its epoch archive directory ($2) as
+ * $3, then print the archived snapshot. A retry succeeds when the state is
+ * already archived, and when a byte-identical live copy sits beside the
+ * archive (the same rules as the controller and the computer Launcher). Any
+ * other live copy, or a host without `cmp`, fails closed.
+ */
+export const REMOTE_RUNNER_AUTHORITY_ARCHIVE_SCRIPT =
+  'set -eu; if test -L "$2" || { test -e "$2" && test ! -d "$2"; }; then exit 1; fi; ' +
+  'if test -f "$1" && test ! -L "$1" && test ! -e "$3" && test ! -L "$3"; then umask 077; install -d -m 0700 "$2"; mv -- "$1" "$3"; ' +
+  'elif test ! -e "$1" && test ! -L "$1" && test -f "$3" && test ! -L "$3"; then :; ' +
+  'elif test -f "$1" && test ! -L "$1" && test -f "$3" && test ! -L "$3" && command -v cmp >/dev/null 2>&1 && cmp -s "$1" "$3"; then rm -f -- "$1"; ' +
+  'else exit 1; fi; base64 < "$3"';
+
 export const REMOTE_RUNNER_CHILD_LAUNCH_SCRIPT =
   'set -eu; identity_path=$1; identity_nonce=$2; runner_instance_id=$3; diagnostics_directory=$4; shift 4; umask 077; test ! -L "$diagnostics_directory"; if test -e "$diagnostics_directory"; then test -d "$diagnostics_directory"; else mkdir -p -- "$diagnostics_directory"; fi; chmod 0700 "$diagnostics_directory"; started_at=$(date -u +"%Y-%m-%dT%H:%M:%S.%3NZ"); pid=$$; process_fingerprint=""; if ' +
   REMOTE_RUNNER_PROCESS_FINGERPRINT_SCRIPT +
@@ -14056,6 +14099,10 @@ async function createRunnerdBackendWithinSessionClaim(
       : sourceRuntimeContext;
   let remotePrepared = false;
   let remoteHarnessStatePrepared = false;
+  // Set when this invocation's authority rotation moved the live Runner state
+  // into its epoch archive. Later host preparation validates that snapshot
+  // instead of requiring, or re-staging, the retired live state.
+  let archivedRotationRunnerStatePath: string | null = null;
   let selectedRemoteMode: "dial_wss" | "listen_ws" | null = null;
   let remoteCaBundleMapping: { sourcePath: string; targetPath: string } | null =
     null;
@@ -14169,7 +14216,14 @@ async function createRunnerdBackendWithinSessionClaim(
     remotePrepared = true;
   };
 
-  const inspectRemoteHarnessState = async (): Promise<{
+  /**
+   * Inspect the remote harness state. Only in-place host preparation may use
+   * this invocation's archived rotation snapshot; every other caller,
+   * including close checkpointing, must inspect the live Runner state.
+   */
+  const inspectRemoteHarnessState = async (
+    source: "live" | "host_preparation" = "live",
+  ): Promise<{
     complete: boolean;
     runnerState: Record<string, unknown> | null;
     providerSessionIdentity: Record<string, unknown> | null;
@@ -14183,17 +14237,20 @@ async function createRunnerdBackendWithinSessionClaim(
         incompleteReason: "unavailable",
       };
     }
+    const archivedRunnerStatePath = source === "host_preparation"
+      ? archivedRotationRunnerStatePath : null;
+    const runnerStatePath = archivedRunnerStatePath ??
+      posix.join(remoteStateDirectory, "runner-state.json");
+    const escapedRunnerState = runnerStatePath.replaceAll("'", "'\\''");
     const requirements = persistenceProfile.directories.flatMap((directory) => {
       const path = remotePersistencePath(directory);
       if (!path) return [];
       const escaped = path.replaceAll("'", "'\\''");
-      return directory.name === "runner"
-        ? [`test -f '${escaped}/runner-state.json'`]
-        : [`test -d '${escaped}'`];
+      if (directory.name !== "runner") return [`test -d '${escaped}'`];
+      return [archivedRunnerStatePath
+        ? `test -d '${escaped}' && test -f '${escapedRunnerState}'`
+        : `test -f '${escaped}/runner-state.json'`];
     });
-    const escapedRunnerState = posix
-      .join(remoteStateDirectory, "runner-state.json")
-      .replaceAll("'", "'\\''");
     const escapedProviderState = posix
       .join(remoteStateDirectory, runnerProviderStateFilename(input.execution))
       .replaceAll("'", "'\\''");
@@ -14412,6 +14469,9 @@ async function createRunnerdBackendWithinSessionClaim(
       runnerInstanceId: input.runnerInstanceId,
     });
     if (!backup) throw new Error("runner_harness_backup_unavailable");
+    const cursorConflict = nativeHarnessBackupCursorConflict({ backupRoot: backup.root, stateRoot: root,
+      controllerState: runnerControlPlane?.store.state });
+    if (cursorConflict) throw new Error(cursorConflict);
     await measureNativeRunnerSpan(
       input.trace,
       "harness_state.failover_restore",
@@ -14560,7 +14620,7 @@ async function createRunnerdBackendWithinSessionClaim(
                     const state = await measureNativeRunnerSpan(
                       input.trace,
                       "sandbox.lease.resume",
-                      inspectRemoteHarnessState,
+                      () => inspectRemoteHarnessState("host_preparation"),
                       {
                         attributes: {
                           provider: remoteTarget.providerKey ?? "sandbox",
@@ -14624,7 +14684,7 @@ async function createRunnerdBackendWithinSessionClaim(
                     );
                   } else {
                     const reuseStartedAtMs = Date.now();
-                    const state = await measureNativeRunnerSpan(input.trace, "harness_state.inspect", () => inspectRemoteHarnessState());
+                    const state = await measureNativeRunnerSpan(input.trace, "harness_state.inspect", () => inspectRemoteHarnessState("host_preparation"));
                     if (
                       state.complete &&
                       state.runnerState &&
@@ -14655,9 +14715,11 @@ async function createRunnerdBackendWithinSessionClaim(
                       existsSync(localDirectory) &&
                       !(await measureNativeRunnerSpan(input.trace, "harness_state.path_check", () => remoteRunnerPathExists({
                         runner: remoteCommandRunner,
+                        // An archived rotation snapshot counts as present, so
+                        // retired Runner state is not staged beside it again.
                         path:
                           directory.name === "runner"
-                            ? posix.join(remoteDirectory, "runner-state.json")
+                            ? archivedRotationRunnerStatePath ?? posix.join(remoteDirectory, "runner-state.json")
                             : remoteDirectory,
                         kind:
                           directory.name === "runner" ? "file" : "directory",
@@ -14916,7 +14978,7 @@ async function createRunnerdBackendWithinSessionClaim(
             command: "sh",
             args: [
               "-c",
-              'set -eu; if test -L "$2" || { test -e "$2" && test ! -d "$2"; }; then exit 1; fi; if test -f "$1" && test ! -L "$1" && test ! -e "$3" && test ! -L "$3"; then umask 077; install -d -m 0700 "$2"; mv -- "$1" "$3"; elif test ! -e "$1" && test ! -L "$1" && test -f "$3" && test ! -L "$3"; then :; else exit 1; fi; base64 < "$3"',
+              REMOTE_RUNNER_AUTHORITY_ARCHIVE_SCRIPT,
               "paperclip-runner-authority-archive",
               sourcePath,
               archiveDirectory,
@@ -14928,8 +14990,9 @@ async function createRunnerdBackendWithinSessionClaim(
           if (result.exitCode !== 0 || result.timedOut) {
             throw new Error("runner_remote_authority_archive_failed");
           }
+          let archivedState: Record<string, unknown>;
           try {
-            return record(
+            archivedState = record(
               JSON.parse(
                 Buffer.from(
                   result.stdout.replace(/\s+/g, ""),
@@ -14940,6 +15003,10 @@ async function createRunnerdBackendWithinSessionClaim(
           } catch {
             throw new Error("runner_remote_authority_archive_failed");
           }
+          // A resumed rotation never prepared the host before this move, so
+          // the launch's host preparation must find the state here.
+          archivedRotationRunnerStatePath = archivedStatePath;
+          return archivedState;
         }
       : undefined;
 
