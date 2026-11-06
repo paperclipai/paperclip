@@ -80,6 +80,7 @@ import { verifyStoppedNativeSessionForReplacement } from "./services/native-runt
 import { embeddedPostgresOwnerPort } from "./embedded-postgres-owner.js";
 import { deliverExecutionStatuses } from "./services/execution-status-delivery.js";
 import { deliverReconciledExecutions, settleUnrecoverableExecutions } from "./services/execution-recovery-resolution.js";
+import { deliverPendingPauseResumes } from "./services/issue-tree-resume.js";
 import { reconcileSafeNativeReplacements } from "./services/native-runtime/native-safe-replacement.js";
 import { reconcileAbandonedExecutionControl } from "./services/execution-control-reconciliation.js";
 import { acknowledgeNativeStartupCleanup } from "./services/native-runtime/native-startup-cleanup.js";
@@ -1324,7 +1325,10 @@ async function startServerWithDatabaseTeardown(
     { queue: DELIVERY_QUEUES.executionDisposition, run: () => settleUnrecoverableExecutions(db), next: executionSchedule.disposition },
     ...(heartbeat ? [
       { queue: DELIVERY_QUEUES.executionReplacement, run: () => reconcileSafeNativeReplacements(db, new Date(), { verifyStoppedSession: run => verifyStoppedNativeSessionForReplacement(db, run) }), next: executionSchedule.replacement },
-      { queue: DELIVERY_QUEUES.executionContinuation, run: () => deliverReconciledExecutions(db, heartbeat.wakeup), next: executionSchedule.continuation },
+      { queue: DELIVERY_QUEUES.executionContinuation, run: async () => {
+        await deliverReconciledExecutions(db, heartbeat.wakeup);
+        await deliverPendingPauseResumes(db, heartbeat.wakeup);
+      }, next: executionSchedule.continuation },
     ] : []),
   ], () => !heartbeatSchedulerStopped);
 

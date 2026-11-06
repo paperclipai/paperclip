@@ -6,6 +6,7 @@ import {
 } from "@paperclipai/db";
 import { and, eq, inArray, isNotNull } from "drizzle-orm";
 import { getExecutionBlocker } from "../services/execution-blocker.js";
+import { resumePauseInterruptedWork as resumeInterruptedWork } from "../services/issue-tree-resume.js";
 import { ISSUE_TREE_RESUME_EXECUTABLE_STATUSES } from "../services/issue-tree-control.js";
 import { conflict } from "../errors.js";
 import {
@@ -90,6 +91,24 @@ export function issueTreeControlRoutes(
     const rootIssueId = req.params.id as string;
     const root = await issuesSvc.getById(rootIssueId);
     return root;
+  }
+
+  async function resumePauseInterruptedWork(
+    root: { id: string; companyId: string },
+    holdId: string,
+    actor: ReturnType<typeof getActorInfo>,
+  ) {
+    // A pause Stop is an operator hold. Re-dispatch the work it interrupted
+    // once, under current admission gates; never replay uncertain actions.
+    const hold = await treeControlSvc.getHold(root.companyId, holdId);
+    if (!hold || hold.mode !== "pause") return [];
+    return resumeInterruptedWork(db, {
+      companyId: root.companyId,
+      issueIds: (hold.members ?? []).map((member) => member.issueId),
+      rootIssueId: root.id,
+      actor,
+      wakeup: (agentId, opts) => heartbeat.wakeup(agentId, opts),
+    });
   }
 
   router.post("/issues/:id/tree-control/preview", validate(previewIssueTreeControlSchema), async (req, res) => {
@@ -356,6 +375,14 @@ export function issueTreeControlRoutes(
       }
     }
 
+    if (result.hold.mode === "resume") {
+      const wakeFailures: Array<{ issueId: string; message: string }> = [];
+      for (const pauseHoldId of result.resumedPauseHoldIds ?? []) {
+        wakeFailures.push(...await resumePauseInterruptedWork(root, pauseHoldId, actor));
+      }
+      if (wakeFailures.length) result = { ...result, wakeFailures } as typeof result;
+    }
+
     res
       .status(result.hold.mode === "restore" || result.hold.mode === "resume" ? 200 : 201)
       .json(result);
@@ -542,6 +569,11 @@ export function issueTreeControlRoutes(
             ).catch(() => null);
           }
         }
+      }
+
+      // An explicit wake above already covers every executable member.
+      if (hold.mode === "pause" && req.body.metadata?.wakeAgents !== true) {
+        wakeFailures.push(...await resumePauseInterruptedWork(root, hold.id, actor));
       }
 
       res.json({ ...hold, ...(wakeFailures.length ? { wakeFailures } : {}) });

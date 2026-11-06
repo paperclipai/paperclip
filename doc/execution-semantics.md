@@ -1879,6 +1879,30 @@ interrupt. A verified native stop must not become an unexplained failure simply
 because it came from a subtree action. The explicit pause hold still prevents
 future execution until Resume, and missing stop proof still blocks continuation.
 
+A run interrupted by a pause is an operator hold, not a failure. The pause's member
+snapshot names each interrupted run, and that work is owed one re-dispatch once no
+pause covers the task. The obligation belongs to the run, so overlapping pauses keep
+it until the last covering release. Releasing or resuming a hold re-dispatches owed
+work (`issue_tree_resumed`, with `holdId` and `interruptedRunId` in the wake
+context), even without `wakeAgents`. The interrupted run must still be the task's
+latest run, assigned to the same agent, and executable; normal admission gates still
+apply. A compare-and-set claim on the interrupted run makes the resume happen at most
+once. The claim is saved as `pending` and arms the execution-continuation queue in
+the same commit; the wake uses the stable idempotency key `tree-hold-resume:<runId>`.
+If the process stops before that wake is saved, the queue's sweep finds the stale
+claim, rechecks current state, and dispatches it once. A task that still needs execution reconciliation is not replayed: the release
+records `issue.tree_resume_wake_skipped`, the blocker stays visible, and the
+obligation stays unclaimed.
+
+A legacy run stopped before its gated dispatch entered the adapter has no provider
+actions to reconcile. Once its executor confirms no process, session, run-owned lease
+or execution event, it records bootstrap evidence and resolves that run's
+reconciliation hold as a false positive, including an automatic no-replay
+disposition. It restores a `blocked` status only when that disposition made the
+change (`legacyCancellationBlock` receipt). The executor then re-dispatches owed work
+if the pause was already released. The automatic disposition waits while a legacy
+executor still holds its controller lease. A hold can be released only once.
+
 ### Late provider usage
 
 Each run measures its usage from the total the previous run accounted for, whether

@@ -303,7 +303,9 @@ import {
 
 import {
   settleInterruptedNativeBootstrap,
+  settleCancelledLegacyPreparation,
 } from "./legacy-execution-recovery.js";
+import { resumePauseInterruptedWork } from "./issue-tree-resume.js";
 import {
   adapterExecutionControls,
   createAdapterExecutionControl,
@@ -3961,6 +3963,19 @@ export function heartbeatService(
           latestRun = await settleInterruptedNativeBootstrap(db, { run: latestRun,
             providerDispatchStarted: legacyAdapterEntered || nativeDispatchStarted || nativeOwnershipHeld,
           }) ?? latestRun;
+        }
+        if (latestRun?.status === "cancelled" && latestRun.runtimeMode === "legacy") {
+          const settled = await settleCancelledLegacyPreparation(db, { run: latestRun,
+            providerDispatchStarted: legacyAdapterEntered || nativeDispatchStarted || nativeOwnershipHeld,
+          });
+          latestRun = settled ?? latestRun;
+          // A pause may already have been released while this Stop unwound.
+          const settledIssueId = settled?.issueId ?? settled?.contextSnapshot?.issueId;
+          if (typeof settledIssueId === "string") {
+            await resumePauseInterruptedWork(db, { companyId: settled!.companyId, issueIds: [settledIssueId],
+              actor: { actorType: "system", actorId: "system" }, wakeup: enqueueWakeup,
+            }).catch(error => logger.warn({ err: error, runId: run.id }, "Could not resume work after a released pause"));
+          }
         }
         if (latestRun?.status === "cancelled" && !nativeDispatchStarted && !nativeOwnershipHeld &&
             (latestRun.runtimeMode === "native" ||
