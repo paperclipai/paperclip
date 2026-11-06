@@ -2438,6 +2438,62 @@ fn rejects_opencode_launch_profile_drift_across_fresh_recovery() {
 }
 
 #[test]
+#[cfg_attr(windows, ignore = "verified launch is not supported on Windows yet")]
+fn retains_opencode_state_when_a_valid_new_proxy_replaces_the_admitted_bytes() {
+    let directory = temporary_directory("opencode-proxy-upgrade-recovery");
+    let config = opencode_config(&directory);
+    let mut first = NativeProviderCommandExecutor::with_runner_config(&directory, &config);
+    first
+        .execute(&command(
+            1,
+            "run.prepare",
+            opencode_prepare_payload(&directory),
+        ))
+        .unwrap();
+    first.shutdown().unwrap();
+    drop(first);
+    let state_path = directory.join("codex-provider-state.json");
+    let saved_state = fs::read(&state_path).unwrap();
+    let proxy = directory.join("qualified-opencode-proxy-script");
+    let original = fs::read(&proxy).unwrap();
+    #[cfg(unix)]
+    fs::set_permissions(&proxy, fs::Permissions::from_mode(0o700)).unwrap();
+    let mut upgraded = original.clone();
+    upgraded.extend_from_slice(b"\n# qualified next proxy release\n");
+    fs::write(&proxy, &upgraded).unwrap();
+    #[cfg(unix)]
+    fs::set_permissions(&proxy, fs::Permissions::from_mode(0o500)).unwrap();
+    let mut next = config.clone();
+    next.opencode_launch_profile.as_mut().unwrap().proxy_script = qualified_artifact(proxy.clone());
+    let mut recovered = NativeProviderCommandExecutor::with_runner_config(&directory, &next);
+    let error = recovered
+        .execute(&command(
+            2,
+            "run.prepare",
+            opencode_prepare_payload(&directory),
+        ))
+        .unwrap_err();
+    assert_eq!(error.classification(), Some(PROVIDER_STATE_INCOMPATIBLE));
+    assert_eq!(fs::read(&state_path).unwrap(), saved_state);
+    drop(recovered);
+    #[cfg(unix)]
+    fs::set_permissions(&proxy, fs::Permissions::from_mode(0o700)).unwrap();
+    fs::write(&proxy, original).unwrap();
+    #[cfg(unix)]
+    fs::set_permissions(&proxy, fs::Permissions::from_mode(0o500)).unwrap();
+    let mut pinned = NativeProviderCommandExecutor::with_runner_config(&directory, &config);
+    pinned
+        .execute(&command(
+            3,
+            "run.prepare",
+            opencode_prepare_payload(&directory),
+        ))
+        .unwrap();
+    pinned.shutdown().unwrap();
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
 fn rejects_pi_without_an_explicit_model_before_starting_a_sidecar() {
     let directory = temporary_directory("pi-model");
     let config = pi_acpx_config(&directory, "bootstrap");

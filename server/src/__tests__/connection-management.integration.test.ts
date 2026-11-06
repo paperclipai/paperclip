@@ -33,6 +33,12 @@ vi.mock("../services/agent-lifecycle-driver.js", () => ({
   createLifecycleDriver: () => ({ requiredPluginIds: async () => [], runPlugin: async () => "complete", runHost: async () => "complete" }),
 }));
 
+vi.mock("../services/chat-channels/github/webhook-recovery-work.js", async importOriginal => {
+  const original = await importOriginal<typeof import("../services/chat-channels/github/webhook-recovery-work.js")>();
+  return { ...original, registerGitHubWebhookRecoveryWork: (...args: Parameters<typeof original.registerGitHubWebhookRecoveryWork>) =>
+    original.registerGitHubWebhookRecoveryWork(args[0], args[1], () => false) };
+});
+
 // All requests traverse the assembled server and production bearer middleware.
 // No req.actor injection or special permission grants establish access.
 describe("connection management with production default agents", () => {
