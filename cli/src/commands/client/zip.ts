@@ -1,5 +1,3 @@
-// Native CRC-32: this writer only runs for packages past the chunked-import
-// threshold (tens of MB), where a bitwise JavaScript CRC takes seconds.
 import { crc32 } from "node:zlib";
 
 // The node-side portability zip reader lives in @paperclipai/shared so the

@@ -73,8 +73,6 @@ function buildDeflateZip(entryPath: string, text: string): Uint8Array {
   const raw = Buffer.from(text, "utf8");
   const body = deflateRawSync(raw);
   const name = Buffer.from(entryPath, "utf8");
-  // Native CRC: a bitwise JS loop over the ~64 MB dense fixture alone takes
-  // seconds and overran the 5 s test timeout on contended CI runners.
   const crc = crc32(raw);
   const local = Buffer.alloc(30 + name.length);
   local.writeUInt32LE(0x04034b50, 0);
