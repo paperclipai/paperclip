@@ -10,7 +10,7 @@ import request from "supertest";
 import { and, eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { activityLog, agents, authUsers, companies, companyMemberships, createDb, closeRegisteredClients, environments, heartbeatRuns, issues, plugins, principalPermissionGrants, toolConnections, toolConnectionInstalls } from "@paperclipai/db";
-import { type AiConnectionBinding, type AiConnectionPoolMember, type PaperclipPluginManifestV1 } from "@paperclipai/shared";
+import { BUILTIN_AI_FAILOVER_ROUTER_KEY, type AiConnectionBinding, type AiConnectionPoolMember, type PaperclipPluginManifestV1 } from "@paperclipai/shared";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { agentRoutes } from "../routes/agents.js";
 import { errorHandler } from "../middleware/index.js";
@@ -110,6 +110,34 @@ async function poolFixture(f: Awaited<ReturnType<typeof fixture>>, extraMembers:
 }
 
 describe("agent-created hires use managed AI connections", () => {
+  async function builtinOpenAiPool(f: Awaited<ReturnType<typeof fixture>>) {
+    const member: AiConnectionPoolMember = { id: randomUUID(), binding: { ...f.account, provider: "openai", method: "api_key", mode: "delegated" }, profile: { provider: "codex", model: "gpt-5.6-sol" } };
+    const pool = await aiConnectionRouterService(db).save(BUILTIN_AI_FAILOVER_ROUTER_KEY, { companyId: f.companyId, config: { name: "Built-in pool", enabled: true, mode: "failover", thresholdPercent: 90, members: [member] } }, f.userId);
+    return { mode: "router", connectionId: pool.id } as const;
+  }
+
+  it.each(["claude_local", "codex_local"])("hires a legacy %s agent with an OpenAI-only built-in pool", async (adapterType) => {
+    const f = await fixture("openai");
+    const binding = await builtinOpenAiPool(f);
+    const agent = hired(await request(f.app).post(`/api/companies/${f.companyId}/agent-hires`).send({
+      name: "Built-in pool teammate", role: "engineer", adapterType, runner: "legacy", runtimeConfig: { aiConnection: binding },
+    }));
+    expect(agent).toMatchObject({ adapterType, runtimeConfig: { aiConnection: binding } });
+    const installs = await db.select().from(toolConnectionInstalls).where(eq(toolConnectionInstalls.targetId, agent.id));
+    expect(installs.map(i => i.connectionId).sort()).toEqual([binding.connectionId, f.account.connectionId].sort());
+  });
+
+  it("saves a Claude agent with an installed OpenAI-only built-in pool", async () => {
+    const f = await fixture("openai");
+    const binding = await builtinOpenAiPool(f);
+    await db.insert(principalPermissionGrants).values({ companyId: f.companyId, principalType: "user", principalId: f.userId, permissionKey: "agents:configure" });
+    await db.update(agents).set({ adapterType: "claude_local" }).where(eq(agents.id, f.agentId));
+    const response = await request(f.app).patch(`/api/agents/${f.agentId}`).send({ runtimeConfig: { aiConnection: binding } });
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    const [saved] = await db.select().from(agents).where(eq(agents.id, f.agentId));
+    expect(saved).toMatchObject({ adapterType: "claude_local", runtimeConfig: { aiConnection: binding } });
+  });
+
   it.each(["agent-hires", "agents"])("%s inherits a manager's pool without copying legacy credentials", async (endpoint) => {
     const f = await fixture("openai");
     const p = await poolFixture(f);
@@ -144,7 +172,7 @@ describe("agent-created hires use managed AI connections", () => {
     const f = await fixture("openai");
     const p = await poolFixture(f);
     await db.update(agents).set({ runtimeConfig: { aiConnection: p.binding } }).where(eq(agents.id, f.agentId));
-    const response = await request(f.app).post(`/api/companies/${f.companyId}/agent-hires`).send({ name: "Incompatible teammate", role: "engineer", adapterType: "claude_local", runner: "legacy" });
+    const response = await request(f.app).post(`/api/companies/${f.companyId}/agent-hires`).send({ name: "Incompatible teammate", role: "engineer", adapterType: "process", runner: "legacy" });
     expect(response.status, JSON.stringify(response.body)).toBe(422);
     // Fixed bindings contain identity only; compatibility is decided from
     // authoritative connection metadata when selecting each pool member.
@@ -318,7 +346,7 @@ describe("agent-created hires use managed AI connections", () => {
     const p = await poolFixture(f, extra);
     await db.insert(principalPermissionGrants).values({ companyId: f.companyId, principalType: "user", principalId: f.userId, permissionKey: "agents:configure" });
     await db.update(agents).set({ runtimeConfig: { aiConnection: p.binding } }).where(eq(agents.id, f.agentId));
-    const response = await request(f.app).patch(`/api/agents/${f.agentId}`).send({ adapterType: "claude_local", adapterConfig: { model: "claude-sonnet-5" } });
+    const response = await request(f.app).patch(`/api/agents/${f.agentId}`).send({ adapterType: compatible ? "claude_local" : "http", adapterConfig: {} });
     expect(response.status, JSON.stringify(response.body)).toBe(compatible ? 200 : 422);
     const [saved] = await db.select().from(agents).where(eq(agents.id, f.agentId));
     expect(saved.adapterType).toBe(compatible ? "claude_local" : "codex_local");
