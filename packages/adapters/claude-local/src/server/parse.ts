@@ -304,6 +304,15 @@ export function isClaudeModelNotFoundError(input: {
   return messages.some((message) => CLAUDE_MODEL_NOT_FOUND_RE.test(message));
 }
 
+// `--max-budget-usd` stops end the run with subtype `error_max_budget_usd`.
+// The cap is deterministic: retrying or resuming the same session only spends
+// the cap again, so this is never transient and the session is not resumed.
+export function isClaudeMaxBudgetResult(parsed: Record<string, unknown> | null | undefined): boolean {
+  if (!parsed) return false;
+  const subtype = asString(parsed.subtype, "").trim().toLowerCase();
+  return subtype === "error_max_budget_usd";
+}
+
 export function isClaudeMaxTurnsResult(parsed: Record<string, unknown> | null | undefined): boolean {
   if (!parsed) return false;
 
@@ -557,7 +566,7 @@ export function isClaudeTransientUpstreamError(input: {
 }): boolean {
   const parsed = input.parsed ?? null;
   // Deterministic failures are handled by their own classifiers.
-  if (parsed && (isClaudeMaxTurnsResult(parsed) || isClaudeUnknownSessionError(parsed) || isClaudePoisonedPreviousMessageIdError(parsed) || isClaudeImageProcessingError(parsed))) {
+  if (parsed && (isClaudeMaxTurnsResult(parsed) || isClaudeMaxBudgetResult(parsed) || isClaudeUnknownSessionError(parsed) || isClaudePoisonedPreviousMessageIdError(parsed) || isClaudeImageProcessingError(parsed))) {
     return false;
   }
   const loginMeta = detectClaudeLoginRequired({
@@ -580,7 +589,7 @@ export function isClaudeProviderQuotaError(input: {
   errorMessage?: string | null;
 }): boolean {
   const parsed = input.parsed ?? null;
-  if (parsed && (isClaudeMaxTurnsResult(parsed) || isClaudeUnknownSessionError(parsed) || isClaudePoisonedPreviousMessageIdError(parsed) || isClaudeImageProcessingError(parsed))) {
+  if (parsed && (isClaudeMaxTurnsResult(parsed) || isClaudeMaxBudgetResult(parsed) || isClaudeUnknownSessionError(parsed) || isClaudePoisonedPreviousMessageIdError(parsed) || isClaudeImageProcessingError(parsed))) {
     return false;
   }
   const loginMeta = detectClaudeLoginRequired({
