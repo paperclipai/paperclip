@@ -431,7 +431,7 @@ describe("applyManagedEnvironments plugin entries", () => {
 
     it("fills an unset default with the plugin row first, then lets the sandbox fill", async () => {
       // The locked fill decides; here it reports a fill each time it is asked.
-      const fillInstanceDefault = vi.fn(async () => ({ filled: true, previousDefaultEnvironmentId: null }));
+      const fillInstanceDefault = vi.fn(async (_environmentId: string) => ({ filled: true, previousDefaultEnvironmentId: null }));
       await applyManagedEnvironments(noDb, sandboxAndComputer(), {
         env: {},
         workerManager: workerManager(),
