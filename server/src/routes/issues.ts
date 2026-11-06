@@ -42,7 +42,7 @@ import { resumeNativeWorkspaceAfterOwnerStop } from "../services/native-runtime/
 import { retryNativeWorkspaceExport } from "../services/native-runtime/native-workspace-export-retry.js";
 import { reconstructNativeWorkspace, unreconciledNativeExportPredicate } from "../services/native-runtime/native-workspace-reconstruction.js";
 import { reconstructWorkspaceSchema } from "@paperclipai/shared";
-import { queuedInteractionId, readQueuedInteractionResponse, hasQueuedInteractionResponse } from "../services/queued-interaction-response.js";
+import { queuedInteractionId, readQueuedInteractionResponse, hasQueuedInteractionResponse, type QueuedInteractionResponse } from "../services/queued-interaction-response.js";
 import { deliverConversationComments, isConversation } from "../services/agent-conversations.js";
 import { assertOnboardingFirstTaskDependenciesAllowed } from "../services/onboarding-first-task-admission.js";
 import { resolveChatTaskAssignment } from "../services/chat-task-assignment.js";
@@ -7403,6 +7403,8 @@ export function issueRoutes(
     wake: Pick<IssueQueueWake, "id" | "companyId" | "payload" | "status" | "runId">;
     state: "deferred" | "queued";
     queueRun: Pick<IssueQueueRun, "runtimeMode"> | null;
+    /** The receipt already read for an interaction wake, reused by the queue builder. */
+    response?: QueuedInteractionResponse | null;
   };
 
   async function findQueuedCommentWake(
@@ -7454,8 +7456,14 @@ export function issueRoutes(
         continue;
       const isReceipt = Boolean(queuedInteractionId(wake.payload));
       if (isReceipt && receipt) continue;
+      // A receipt a run already received is not pending; a later one may be.
+      const readReceipt = () => readQueuedInteractionResponse(executor as Db, wake.companyId, issue.id, wake.payload);
       if (wake.status === "deferred_issue_execution") {
-        if (isReceipt) { receipt = { wake, state: "deferred", queueRun: null }; continue; }
+        if (isReceipt) {
+          const response = await readReceipt();
+          if (response) receipt = { wake, state: "deferred", queueRun: null, response };
+          continue;
+        }
         return { wake, state: "deferred", queueRun: null };
       }
       if (!wake.runId) continue;
@@ -7473,7 +7481,10 @@ export function issueRoutes(
         )
         .limit(1)
         .then((runRows) => runRows[0] ?? null);
-      if (queueRun && isReceipt) receipt = { wake, state: "queued", queueRun };
+      if (queueRun && isReceipt) {
+        const response = await readReceipt();
+        if (response) receipt = { wake, state: "queued", queueRun, response };
+      }
       else if (queueRun) return { wake, state: "queued", queueRun };
     }
     return receipt;
@@ -7483,11 +7494,9 @@ export function issueRoutes(
     executor: IssueQueueDb,
     issueId: string,
     wake: Pick<IssueQueueWake, "companyId" | "payload"> | null,
+    response: QueuedInteractionResponse | null,
   ) {
-    if (wake && queuedInteractionId(wake.payload)) {
-      const response = await readQueuedInteractionResponse(executor as Db, wake.companyId, issueId, wake.payload);
-      return response ? [response.comment] : [];
-    }
+    if (wake && queuedInteractionId(wake.payload)) return response ? [response.comment] : [];
     const ids = queuedCommentIdsFromWakePayload(wake?.payload);
     if (ids.length === 0) return [];
     const rows = await executor
@@ -7516,10 +7525,17 @@ export function issueRoutes(
         ? await findQueuedCommentWake(input.executor, input.issue)
         : input.queueState;
     const wake = queueState?.wake ?? null;
+    // Read an interaction receipt once per snapshot.
+    const response = wake && queuedInteractionId(wake.payload)
+      ? queueState?.response !== undefined
+        ? queueState.response
+        : await readQueuedInteractionResponse(input.executor as Db, input.issue.companyId, input.issue.id, wake.payload)
+      : null;
     const comments = await queueCommentsForWake(
       input.executor,
       input.issue.id,
       wake,
+      response,
     );
     const assignedAgent = input.issue.assigneeAgentId
       ? await input.executor
@@ -7563,7 +7579,6 @@ export function issueRoutes(
       actorId: input.actor.actorId,
     });
     if (wake && queuedInteractionId(wake.payload)) {
-      const response = await readQueuedInteractionResponse(input.executor as Db, input.issue.companyId, input.issue.id, wake.payload);
       if (response?.source.requiresFreshSession) queue.steeringDisposition = "unsupported";
       queue.entries = response ? [{ comment: response.comment, source: response.source, position: 0, canEdit: false, canDiscard: false }] : [];
     }
