@@ -639,6 +639,7 @@ describe("shared ACPX engine runtime behavior", () => {
     expect(config.model).toBe("managed-model");
     expect(config.model_providers).toEqual({ paperclip: { name: "Managed provider" } });
     expect(config.mcp_servers).toEqual({ fixture: { url: "https://tools.example.test/mcp" } });
+    expect(config.mcp_optional_startup_grace_ms).toBe(0);
     expect(await fs.readFile(path.join(home, "config.toml"), "utf8")).toBe(original);
     expect(await fs.realpath(path.join(env.CODEX_HOME!, "auth.json"))).toBe(await fs.realpath(path.join(home, "auth.json")));
     expect(JSON.stringify(run.meta)).not.toContain("export-secret-canary");
