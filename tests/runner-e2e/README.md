@@ -675,8 +675,10 @@ before execution.
 
 The idle chat cell asks the agent to delegate one welcome note to a named worker and
 report its result without another user message. A bounded local file read in
-the managed project workspace delays completion until the source chat is positively
-observed idle, with a three-minute handoff setup budget and a four-minute worker
+the worker task's own isolated task directory delays completion until the source
+chat is positively observed idle. The wait command names only cwd-relative files,
+because native providers cannot read agent homes or unconfigured project roots. The
+setup uses a three-minute handoff setup budget and a four-minute worker
 wait limit. The brief is then released, the worker must save the output and
 reach Done. Its output must include the start time supplied only in that brief, allowing
 ordinary numeric and written forms. That check runs after completion observation
