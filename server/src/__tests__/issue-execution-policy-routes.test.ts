@@ -1443,6 +1443,56 @@ describe("issue execution policy routes", () => {
           actorUserId: null,
         }),
       );
+      expect(mockIssueService.update).toHaveBeenCalledWith(
+        issue.id,
+        expect.objectContaining({
+          actorAgentId: qaAgentId,
+          actorRunId: "55555555-5555-4555-8555-555555555555",
+        }),
+        expect.anything(),
+      );
+    });
+
+    it("rejects a configured participant who lacks read access to the issue", async () => {
+      const issue = pendingIssue();
+      mockIssueService.getById.mockResolvedValue(issue);
+      mockUpdateMergesPatch(issue);
+      mockAccessService.decide.mockImplementation(async (input: { actor?: { type?: string; source?: string }; action?: string }) => {
+        if (input.action === "issue:read") {
+          return {
+            allowed: false,
+            action: input.action,
+            reason: "deny_issue_private",
+            explanation: "This task is private.",
+          };
+        }
+        const allowed = input.actor?.type === "agent" && [
+          "company_scope:read",
+          "issue:mutate",
+          "runtime:manage",
+        ].includes(input.action ?? "");
+        return {
+          allowed,
+          action: input.action,
+          reason: allowed ? "allow_explicit_grant" : "deny_missing_grant",
+          explanation: allowed ? "Allowed by test grant." : `Missing permission: ${input.action ?? "action"}`,
+        };
+      });
+
+      const res = await request(await createApp({
+        type: "agent",
+        agentId: qaAgentId,
+        companyId: "company-1",
+        runId: "55555555-5555-4555-8555-555555555555",
+      }))
+        .post(`/api/issues/${issue.id}/execution-policy/reassign`)
+        .send({
+          toParticipant: { type: "user", userId: ctoUserId },
+          comment: "Reassigning a task I have no read access to",
+        });
+
+      expect(res.status).toBe(404);
+      expect(mockIssueService.update).not.toHaveBeenCalled();
     });
 
     it("rejects a reassignment without a comment", async () => {
