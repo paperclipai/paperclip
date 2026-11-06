@@ -2,7 +2,7 @@
 
 ## Intent and scope
 
-An operator can configure one backup execution configuration for an agent. When the primary provider reports that its quota is exhausted, the same agent can continue its task with the backup, including an independently authenticated account of the same provider or a different supported provider. Existing agents without a backup keep their current behavior. The feature does not predict quota exhaustion from a percentage or transfer a provider's private session state.
+An operator can configure an ordered pool of execution accounts for an agent, adding as many backups as needed. When a provider reports that its quota is exhausted, the same agent can continue its task with the next available pool member, including an independently authenticated account of the same provider or a different supported provider. Existing agents without a pool keep their current behavior. The feature does not predict quota exhaustion from a percentage or transfer a provider's private session state.
 
 ## Approaches
 
@@ -11,19 +11,19 @@ An operator can configure one backup execution configuration for an agent. When 
 
 ## Configuration and visibility
 
-Provide an optional backup in agent settings, with an independently selected provider, model, execution settings and credential reference using existing secure configuration mechanisms. Validate company ownership and actor permissions. Make the additional provider and potential cost visible when configuring it; never copy credentials into logs or handoffs. Display the actual provider and reason for failover in run history and activity records.
+Provide an optional ordered pool in agent settings, with an add control and independently selected provider, model, execution settings and credential reference for each member using existing secure configuration mechanisms. Members can be reordered and removed. Validate company ownership and actor permissions. Make providers and potential cost visible when configuring the pool; never copy credentials into logs or handoffs. Display the actual provider and reason for failover in run history and activity records.
 
 Support only provider, runtime, workspace and credential combinations that can be validated and tested end to end. Publish the actual initial support matrix in product documentation and the settings UI; reject unsupported combinations explicitly rather than silently using ambient credentials. At minimum the implementation must qualify the requested same-provider independent-account and Claude-to-Codex paths before claiming they work.
 
 ## Execution and recovery
 
-Only a positively classified provider-quota failure activates the backup. Confirm that the previous execution and owned resources are stopped or released before admitting a successor; uncertain termination must remain held. The successor is a separate, auditable attempt for the same agent and task, subject to current company, authorization, pause, stop, budget, workspace, approval and task-ownership gates. Preserve the effective configuration and credential identity for each attempt; do not reinterpret an in-flight run after configuration changes. Persist transition and ownership atomically so concurrent workers, cancellation and restart cannot create duplicate successors. Failover is bounded: one backup attempt per failed primary attempt; if backup cannot run or fails, use existing recovery and report the cause. Never switch for authentication errors, generic failures, or an unverified quota signal.
+Only a positively classified provider-quota failure activates the next available member. Confirm that the previous execution and owned resources are stopped or released before admitting a successor; uncertain termination must remain held. The successor is a separate, auditable attempt for the same agent and task, subject to current company, authorization, pause, stop, budget, workspace, approval and task-ownership gates. Preserve the effective configuration and credential identity for each attempt; do not reinterpret an in-flight run after configuration changes. Persist transition and ownership atomically so concurrent workers, cancellation and restart cannot create duplicate successors. If no eligible member can run, use existing recovery and report the cause. Never switch for authentication errors, generic failures, or an unverified quota signal.
 
-Bound the transition across the entire logical recovery chain, not merely an individual attempt. Coordinate it with existing quota wait-recovery so a failover and a quota recovery cannot both schedule competing work. Update the implementation specification to describe the new behavior.
+Bound the transition across the entire logical recovery chain: try each eligible member at most once per chain and never loop. Coordinate it with existing quota wait-recovery so a failover and a quota recovery cannot both schedule competing work. Update the implementation specification to describe the new behavior.
 
 Record the primary quota deadline when supplied and avoid retrying it before that deadline. Once eligible, use the primary for a subsequent new run; do not interrupt a running backup. If no reliable deadline exists, retain existing quota recovery behavior rather than continuously probing. Exact scheduling follows the existing retry and recovery contracts.
 
-Persist quota suppression by effective provider and account identity across tasks, concurrent runs and restarts. If a confirmed quota failure has no reliable reset deadline, use the existing bounded quota-recovery schedule and avoid uncontrolled probing; make the uncertain reset visible. Account identity must not expose credentials.
+Persist quota suppression by effective provider and account identity across agents, tasks, concurrent runs and restarts, within the appropriate company and credential authority. Pool selection skips an account without launching it until the recorded reset time. Concurrent reports must not shorten a known later cooldown. If a confirmed quota failure has no reliable reset deadline, use a bounded cooldown based on existing quota-recovery policy and avoid uncontrolled probing; make the uncertain reset visible. Account identity must not expose credentials. When all members are unavailable, schedule one wake at the earliest eligible deadline through existing recovery, without polling.
 
 ## Sessions and context
 
