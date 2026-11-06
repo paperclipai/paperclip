@@ -399,7 +399,7 @@ export async function settleCancelledLegacyPreparation(
   const issueId = input.run.issueId ?? input.run.contextSnapshot?.issueId;
   if (typeof issueId !== "string") return null;
   return db.transaction(async tx => {
-    const [task] = await tx.select({ id: issues.id }).from(issues)
+    const [task] = await tx.select().from(issues)
       .where(and(eq(issues.id, issueId), eq(issues.companyId, input.run.companyId))).for("update");
     const [run] = await tx.select().from(heartbeatRuns)
       .where(and(eq(heartbeatRuns.id, input.run.id), eq(heartbeatRuns.companyId, input.run.companyId))).for("update");
@@ -427,16 +427,34 @@ export async function settleCancelledLegacyPreparation(
     const [settled] = await tx.update(heartbeatRuns).set({ resultJson: { ...run.resultJson,
       executionRecovery: { kind: "bootstrap", providerWorkStarted: false, preparationSettledAt: now.toISOString() },
     }, updatedAt: now }).where(eq(heartbeatRuns.id, run.id)).returning();
-    const resolved = await tx.update(issueRecoveryActions).set({ status: "resolved", outcome: "false_positive",
-      resolutionNote: "The run was stopped before its adapter started; there are no provider actions to reconcile.",
-      resolvedAt: now, updatedAt: now,
-    }).where(and(
+    // The automatic disposition may already have closed the incident with
+    // replay blocked, and moved the task to blocked. Correct both verdicts.
+    const holds = await tx.select().from(issueRecoveryActions).where(and(
       eq(issueRecoveryActions.companyId, run.companyId), eq(issueRecoveryActions.sourceIssueId, task.id),
       eq(issueRecoveryActions.cause, LEGACY_RECOVERY_CAUSE), eq(issueRecoveryActions.fingerprint, `legacy-execution:${run.id}`),
       sql`${issueRecoveryActions.evidence}->>'runId' = ${run.id}`,
       sql`not (${issueRecoveryActions.evidence} ? 'executionReconciliation')`,
-      inArray(issueRecoveryActions.status, ["active", "escalated"]),
-    )).returning({ id: issueRecoveryActions.id });
+      or(inArray(issueRecoveryActions.status, ["active", "escalated"]), and(
+        eq(issueRecoveryActions.status, "resolved"), eq(issueRecoveryActions.outcome, "blocked"),
+        sql`${issueRecoveryActions.evidence}->'automaticRecovery'->>'policy' = 'preserve_without_replay_v1'`,
+        sql`${issueRecoveryActions.evidence}->'automaticRecovery'->>'replay' = 'blocked'`,
+      )),
+    )).for("update");
+    const ownedBlock = holds.map(hold => hold.evidence.legacyCancellationBlock as Record<string, unknown> | undefined)
+      .find(receipt => receipt?.runId === run.id && receipt.statusVersion === task.statusVersion &&
+        ["todo", "in_progress", "in_review"].includes(String(receipt.previousStatus)));
+    if (task.status === "blocked" && ownedBlock && task.assigneeAgentId === run.agentId &&
+        !isSupersededConversationRun(task, run) && !task.executionRunId && !task.checkoutRunId) {
+      // Restore only the unchanged projection made by this exact incident.
+      await issueService(tx as unknown as Db).update(task.id, { status: String(ownedBlock.previousStatus) }, tx);
+    }
+    const resolved = holds.length ? await tx.update(issueRecoveryActions).set({ status: "resolved", outcome: "false_positive",
+      resolutionNote: "The run was stopped before its adapter started; there are no provider actions to reconcile.",
+      resolvedAt: now, updatedAt: now,
+      evidence: sql`case when ${issueRecoveryActions.evidence} ? 'automaticRecovery'
+        then jsonb_set(${issueRecoveryActions.evidence}, '{automaticRecovery,replay}', '"allowed"'::jsonb, false)
+        else ${issueRecoveryActions.evidence} end`,
+    }).where(inArray(issueRecoveryActions.id, holds.map(hold => hold.id))).returning({ id: issueRecoveryActions.id }) : [];
     if (resolved.length) {
       await notifyUnsafeWorkspaceExportRecovery(tx, { companyId: run.companyId, issueId: task.id });
       await logActivity(tx as unknown as Db, { companyId: run.companyId, actorType: "system", actorId: "system",

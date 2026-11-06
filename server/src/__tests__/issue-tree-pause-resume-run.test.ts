@@ -228,6 +228,84 @@ describeEmbeddedPostgres("subtree pause and release of an in-flight child run", 
     expect(await childRuns(fixture.childId)).toHaveLength(2);
   });
 
+  async function pauseWhilePreparing(fixture: Awaited<ReturnType<typeof seedTree>>, rootId = fixture.parentId) {
+    const prepared = new Promise<void>((resolve) => { preparationGate.reached = resolve; });
+    preparationGate.blockNext = true;
+    await wakeChild(fixture);
+    await prepared;
+    const pause = await request(app).post(`/api/issues/${rootId}/tree-holds`).send({ mode: "pause" });
+    expect(pause.status).toBe(201);
+    return { interruptedRunId: preparationGate.blockedRunId!, holdId: pause.body.hold.id as string };
+  }
+
+  it("resumes once when the pause is released before the stopped preparation finishes unwinding", async () => {
+    const fixture = await seedTree();
+    const { interruptedRunId, holdId } = await pauseWhilePreparing(fixture);
+    // The periodic disposition must not block a Stop its executor still owns.
+    const { settleUnrecoverableExecutions } = await import("../services/execution-recovery-resolution.js");
+    await settleUnrecoverableExecutions(db);
+    const release = await request(app).post(`/api/issues/${fixture.parentId}/tree-holds/${holdId}/release`).send({});
+    expect(release.status).toBe(200);
+    expect((await childRuns(fixture.childId)).map((run) => run.status)).toEqual(["cancelled"]);
+    const [held] = await db.select().from(issues).where(eq(issues.id, fixture.childId));
+    expect(held!.status).not.toBe("blocked");
+
+    preparationGate.release?.();
+    await drainHeartbeatRunsToQuiescence(db, heartbeat);
+
+    const runs = await childRuns(fixture.childId);
+    expect(runs.map((run) => run.contextSnapshot?.wakeReason)).toEqual(["issue_assigned", "issue_tree_resumed"]);
+    expect(runs[1]).toMatchObject({ status: "succeeded" });
+    expect(runs[1]!.contextSnapshot).toMatchObject({ holdId, interruptedRunId });
+    expect(await getExecutionBlocker(db, fixture.companyId, fixture.childId)).toBeNull();
+  });
+
+  it("clears an automatic no-replay block recorded before the executor proved no adapter started", async () => {
+    const fixture = await seedTree();
+    const { interruptedRunId, holdId } = await pauseWhilePreparing(fixture);
+    // Model a disposition that ran after the controller lease lapsed.
+    await db.update(heartbeatRuns).set({ controllerLeaseExpiresAt: new Date(0) }).where(eq(heartbeatRuns.id, interruptedRunId));
+    const { settleUnrecoverableExecutions } = await import("../services/execution-recovery-resolution.js");
+    await settleUnrecoverableExecutions(db);
+    const [blocked] = await db.select().from(issues).where(eq(issues.id, fixture.childId));
+    expect(blocked!.status).toBe("blocked");
+
+    preparationGate.release?.();
+    await drainHeartbeatRunsToQuiescence(db, heartbeat);
+    expect(await getExecutionBlocker(db, fixture.companyId, fixture.childId)).toBeNull();
+    const [restored] = await db.select().from(issues).where(eq(issues.id, fixture.childId));
+    expect(restored!.status).toBe("in_progress");
+
+    const release = await request(app).post(`/api/issues/${fixture.parentId}/tree-holds/${holdId}/release`).send({});
+    expect(release.status).toBe(200);
+    await drainHeartbeatRunsToQuiescence(db, heartbeat);
+    const runs = await childRuns(fixture.childId);
+    expect(runs.map((run) => run.contextSnapshot?.wakeReason)).toEqual(["issue_assigned", "issue_tree_resumed"]);
+  });
+
+  it("keeps the interrupted work owed across overlapping pauses until the last one is released", async () => {
+    const fixture = await seedTree();
+    const { interruptedRunId, holdId: childHoldId } = await pauseWhilePreparing(fixture, fixture.childId);
+    preparationGate.release?.();
+    await drainHeartbeatRunsToQuiescence(db, heartbeat);
+    const parentPause = await request(app).post(`/api/issues/${fixture.parentId}/tree-holds`).send({ mode: "pause" });
+    expect(parentPause.status).toBe(201);
+
+    const childRelease = await request(app)
+      .post(`/api/issues/${fixture.childId}/tree-holds/${childHoldId}/release`).send({});
+    expect(childRelease.status).toBe(200);
+    await drainHeartbeatRunsToQuiescence(db, heartbeat);
+    expect(await childRuns(fixture.childId)).toHaveLength(1);
+
+    const parentRelease = await request(app)
+      .post(`/api/issues/${fixture.parentId}/tree-holds/${parentPause.body.hold.id}/release`).send({});
+    expect(parentRelease.status).toBe(200);
+    await drainHeartbeatRunsToQuiescence(db, heartbeat);
+    const runs = await childRuns(fixture.childId);
+    expect(runs.map((run) => run.contextSnapshot?.wakeReason)).toEqual(["issue_assigned", "issue_tree_resumed"]);
+    expect(runs[1]!.contextSnapshot).toMatchObject({ holdId: childHoldId, interruptedRunId });
+  });
+
   it("re-dispatches a queued child run that the pause cancelled before it started", async () => {
     const fixture = await seedTree();
     // Occupy the agent's only slot so the child's run stays queued.

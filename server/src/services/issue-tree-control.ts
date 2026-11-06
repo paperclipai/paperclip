@@ -1226,49 +1226,61 @@ export function issueTreeControlService(db: Db) {
   }
 
   /**
-   * A pause interrupts runs as an operator hold, not as a failure. The hold's
-   * member snapshot names each run it interrupted; once the hold is released,
-   * that pending work is owed one re-dispatch. Current state governs: the task
-   * must still be executable by the same agent, with no newer run and no other
-   * pause covering it. Execution blockers are checked by the caller.
+   * A pause interrupts runs as an operator hold, not as a failure. A pause
+   * hold's member snapshot names each run it interrupted, and that pending work
+   * is owed one re-dispatch once no pause covers the task. The obligation
+   * belongs to the run, so overlapping holds keep it until the last release.
+   * Current state governs: the interrupted run must still be the task's latest
+   * run, the task must be executable by the same agent, and the claim marker
+   * makes the resume happen at most once. Execution blockers are the caller's.
    */
-  async function listPauseInterruptedResumeTargets(companyId: string, holdId: string) {
-    const hold = await getHold(companyId, holdId);
-    if (!hold || hold.mode !== "pause" || hold.status !== "released") return [];
-    const interrupted = (hold.members ?? []).filter((member) => member.activeRunId && !member.skipped);
-    if (interrupted.length === 0) return [];
-    const runIds = interrupted.map((member) => member.activeRunId!);
-    const runs = await db.select({
+  async function findOwedPauseResume(companyId: string, issueId: string) {
+    const [issue] = await db.select({
+      status: issues.status, assigneeAgentId: issues.assigneeAgentId, assigneeUserId: issues.assigneeUserId,
+    }).from(issues).where(and(eq(issues.companyId, companyId), eq(issues.id, issueId)));
+    if (!issue?.assigneeAgentId || issue.assigneeUserId
+      || !ISSUE_TREE_RESUME_EXECUTABLE_STATUSES.includes(issue.status)) return null;
+    const [run] = await db.select({
       id: heartbeatRuns.id, agentId: heartbeatRuns.agentId, status: heartbeatRuns.status,
-      createdAt: heartbeatRuns.createdAt, finishedAt: heartbeatRuns.finishedAt, resultJson: heartbeatRuns.resultJson,
-      issueId: sql<string | null>`coalesce(${heartbeatRuns.issueId}::text, ${heartbeatRuns.contextSnapshot}->>'issueId')`,
-    }).from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, companyId), inArray(heartbeatRuns.id, runIds)));
-    const runById = new Map(runs.map((run) => [run.id, run]));
-    const targets: Array<{ issueId: string; agentId: string; interruptedRunId: string }> = [];
-    for (const member of interrupted) {
-      const run = runById.get(member.activeRunId!);
-      // Only a Stop recorded by this pause is owed a resume. A run that
-      // finished on its own, or was stopped for another reason, is not.
-      if (!run || run.status !== "cancelled" || run.issueId !== member.issueId || !run.finishedAt
-        || run.finishedAt < hold.createdAt || (hold.releasedAt && run.finishedAt > hold.releasedAt)
-        || readRunCancellation(run.resultJson)?.source !== "operator") continue;
-      const [issue] = await db.select({
-        status: issues.status, assigneeAgentId: issues.assigneeAgentId, assigneeUserId: issues.assigneeUserId,
-      }).from(issues).where(and(eq(issues.companyId, companyId), eq(issues.id, member.issueId)));
-      if (!issue || issue.assigneeAgentId !== run.agentId || issue.assigneeUserId
-        || !ISSUE_TREE_RESUME_EXECUTABLE_STATUSES.includes(issue.status)) continue;
-      const [newer] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
-        eq(heartbeatRuns.companyId, companyId),
-        sql`coalesce(${heartbeatRuns.issueId}::text, ${heartbeatRuns.contextSnapshot}->>'issueId') = ${member.issueId}`,
-        or(sql`${heartbeatRuns.createdAt} > ${run.createdAt.toISOString()}::timestamptz`,
-          inArray(heartbeatRuns.status, [...ACTIVE_RUN_STATUSES])),
-        sql`${heartbeatRuns.id} <> ${run.id}`,
-      )).limit(1);
-      if (newer) continue;
-      if (await getActivePauseHoldGate(companyId, member.issueId)) continue;
-      targets.push({ issueId: member.issueId, agentId: run.agentId, interruptedRunId: run.id });
-    }
-    return targets;
+      finishedAt: heartbeatRuns.finishedAt, resultJson: heartbeatRuns.resultJson,
+    }).from(heartbeatRuns).where(and(
+      eq(heartbeatRuns.companyId, companyId),
+      sql`coalesce(${heartbeatRuns.issueId}::text, ${heartbeatRuns.contextSnapshot}->>'issueId') = ${issueId}`,
+    )).orderBy(sql`${heartbeatRuns.createdAt} desc`).limit(1);
+    if (!run || run.status !== "cancelled" || !run.finishedAt || run.agentId !== issue.assigneeAgentId
+      || run.resultJson?.treeHoldResume !== undefined
+      || readRunCancellation(run.resultJson)?.source !== "operator") return null;
+    // Only a Stop recorded while a pause naming this run was active is owed.
+    const [hold] = await db.select({ id: issueTreeHolds.id }).from(issueTreeHoldMembers)
+      .innerJoin(issueTreeHolds, eq(issueTreeHolds.id, issueTreeHoldMembers.holdId))
+      .where(and(
+        eq(issueTreeHoldMembers.companyId, companyId), eq(issueTreeHoldMembers.issueId, issueId),
+        eq(issueTreeHoldMembers.activeRunId, run.id), eq(issueTreeHoldMembers.skipped, false),
+        eq(issueTreeHolds.companyId, companyId), eq(issueTreeHolds.mode, "pause"),
+        sql`${issueTreeHolds.createdAt} <= ${run.finishedAt.toISOString()}::timestamptz`,
+        or(isNull(issueTreeHolds.releasedAt),
+          sql`${issueTreeHolds.releasedAt} >= ${run.finishedAt.toISOString()}::timestamptz`),
+      )).orderBy(asc(issueTreeHolds.createdAt)).limit(1);
+    if (!hold) return null;
+    if (await getActivePauseHoldGate(companyId, issueId)) return null;
+    return { issueId, agentId: run.agentId, interruptedRunId: run.id, holdId: hold.id };
+  }
+
+  /** Compare-and-set claim on the interrupted run; only the winner wakes. */
+  async function claimPauseResume(companyId: string, runId: string, claim: Record<string, unknown>) {
+    const [claimed] = await db.update(heartbeatRuns).set({
+      resultJson: sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) || ${JSON.stringify({ treeHoldResume: claim })}::jsonb`,
+    }).where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.id, runId),
+      eq(heartbeatRuns.status, "cancelled"),
+      sql`not (coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) ? 'treeHoldResume')`))
+      .returning({ id: heartbeatRuns.id });
+    return Boolean(claimed);
+  }
+
+  /** Return an unused claim after a failed wake so a later release can retry. */
+  async function releasePauseResumeClaim(companyId: string, runId: string) {
+    await db.update(heartbeatRuns).set({ resultJson: sql`${heartbeatRuns.resultJson} - 'treeHoldResume'` })
+      .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.id, runId)));
   }
 
   async function cancelUnclaimedWakeupsForTree(companyId: string, rootIssueId: string, reason: string) {
@@ -1318,7 +1330,9 @@ export function issueTreeControlService(db: Db) {
     listHolds,
     getActivePauseHoldGate,
     releaseHold,
-    listPauseInterruptedResumeTargets,
+    findOwedPauseResume,
+    claimPauseResume,
+    releasePauseResumeClaim,
     cancelUnclaimedWakeupsForTree,
   };
 }
