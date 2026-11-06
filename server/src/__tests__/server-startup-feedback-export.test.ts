@@ -37,6 +37,10 @@ vi.mock("../services/adapter-settings.js", async () => ({
   initializeAdapterSettings: vi.fn(async () => null),
 }));
 vi.mock("../services/cloud-runtime-config.js", () => ({ initializeCloudRuntimeConfig: cloudRuntimeStartupMocks.initialize }));
+const managedEnvironmentMocks = vi.hoisted(() => {
+  const recovery = { run: vi.fn(), onStop: vi.fn(), stop: vi.fn(async () => {}) };
+  return { recovery, apply: vi.fn(async () => null), factory: vi.fn(() => recovery) };
+});
 const cloudMigrationMocks = vi.hoisted(() => ({ migrate: vi.fn(async () => null), qualify: vi.fn(async () => null) }));
 vi.mock("../services/cloud-configuration-migration.js", () => ({ migrateCloudConfiguration: cloudMigrationMocks.migrate }));
 vi.mock("../services/cloud-configuration-qualification.js", () => ({ qualifyCloudConfigurationForCurrentImage: cloudMigrationMocks.qualify }));
@@ -482,7 +486,8 @@ vi.mock("../services/index.js", () => ({
   })),
   feedbackService: feedbackServiceFactoryMock,
   bootstrapExecutionPolicyFromEnv: vi.fn(async () => null),
-  applyManagedEnvironments: vi.fn(async () => null),
+  applyManagedEnvironments: managedEnvironmentMocks.apply,
+  createManagedEnvironmentRecovery: managedEnvironmentMocks.factory,
   environmentCustomImageService: environmentCustomImagesServiceFactoryMock,
   executionWorkspaceService: executionWorkspaceServiceFactoryMock,
   externalObjectService: externalObjectsServiceFactoryMock,
@@ -1367,6 +1372,14 @@ describe("startServer feedback export wiring", () => {
     await expect(startServer()).rejects.toThrow("PAPERCLIP_DECISION_SIGNING_SECRET must be at least 32 characters");
     expect(createDbMock).not.toHaveBeenCalled();
     expect(createAppMock).not.toHaveBeenCalled();
+  });
+
+  it("stops managed environment recovery when a later startup step fails", async () => {
+    managedEnvironmentMocks.recovery.stop.mockClear();
+    managedEnvironmentMocks.apply.mockRejectedValueOnce(new Error("managed environments refused"));
+    await expect(startServer()).rejects.toThrow("managed environments refused");
+    expect(managedEnvironmentMocks.factory).toHaveBeenCalled();
+    expect(managedEnvironmentMocks.recovery.stop).toHaveBeenCalledTimes(1);
   });
 
   it("passes the feedback export service into createApp so pending traces flush in runtime", async () => {

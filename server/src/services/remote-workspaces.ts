@@ -1,3 +1,4 @@
+import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { workspaceAllocationFiles } from "./remote-workspace-allocation.js";
 import { readNativeWorkspaceMigration } from "./native-runtime/native-workspace-migration.js";
 import { createHash, randomUUID } from "node:crypto";
@@ -22,18 +23,18 @@ import { logger } from "../middleware/logger.js";
 import { createGitRemoteAuthProvider } from "./git-credentials.js";
 import { notifyCancelledWorkspacePreservation } from "./cancelled-workspace-preservation-notifications.js";
 import { assertExecutionWorkspaceRecordAccess, assertTaskWorkspaceExecutionAccess } from "./task-workspace-access.js";
-import { hasRecoveredCleanupStopReceipt, hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
-import { canonicalExecutionUuid } from "./execution-identity.js";
+import { readRemoteWorkspaceWriterHold, type RemoteWorkspaceWriter } from "./remote-workspace-writer-hold.js";
 import { persistActivity } from "./activity-log.js";
 import {
   captureRemoteWorkspaceArchive, cleanupRemoteWorkspaceArchive, prepareRemoteWorkspaceDirectory, prepareRemoteRepository, remoteWorkspaceRepositoryPath,
-  REMOTE_WORKSPACE_PREPARATION_TIMEOUT_CODE, RemoteWorkspaceOperationTimeoutError, RemoteWorkspacePreparationTimeoutError, remoteWorkspaceFailureCause,
+  RemoteWorkspaceOperationTimeoutError, RemoteWorkspacePreparationTimeoutError, remoteWorkspaceFailureCause,
   requireRemoteWorkspaceTarget, restoreRemoteWorkspaceDirectory, RemoteWorkspaceRestoreError, type RemoteWorkspaceRestoreStep,
+  type RemoteWorkspaceSavePhaseTiming,
 } from "./remote-workspace-transport.js";
 import {
   beginWorkspaceSnapshot, getWorkspaceSnapshot, loadWorkspaceSnapshotArchive, uploadWorkspaceSnapshot,
 } from "./remote-workspace-snapshot-storage.js";
-import { restoreRemoteWorkspaceArchive } from "./remote-workspace-snapshot-archive.js";
+import { restoreRemoteWorkspaceArchive, readRemoteWorkspaceArchiveDirectories } from "./remote-workspace-snapshot-archive.js";
 import { removeTaskDirectoryTree } from "./isolated-task-directory-snapshot.js";
 import { attachPreservedWorkspaceSnapshots } from "./workspace-recovery-snapshot.js";
 import { notifyRemoteWorkspaceSnapshots } from "./remote-workspace-snapshot-retention.js";
@@ -47,6 +48,16 @@ type Workspace = Pick<typeof executionWorkspaces.$inferSelect, "id" | "companyId
 type Transaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
 const object = (value: unknown): Record<string, unknown> => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 const SAVE_WORK_SCHEMA = "paperclip.remote-workspace-save-work.v1";
+const SAVE_TIMING_SCHEMA = "paperclip.remote-workspace-save-timing.v1";
+
+/** Per-phase durations of the latest settled save invocation, kept in the operation's local metadata. */
+type RemoteWorkspaceSaveTiming = RemoteWorkspaceSavePhaseTiming & {
+  /** Encrypt, hash, and store the archive (zero work when a prior upload is reused). */
+  uploadMs?: number;
+  /** Read the archive manifest and commit the saved authority. */
+  publishMs?: number;
+  reusedUpload?: boolean;
+};
 const RETIRED_SAVE_SCHEMA = "paperclip.remote-workspace-retired-save.v1";
 type SaveWork = { schema: typeof SAVE_WORK_SCHEMA; activeIds: string[]; unknown: boolean; quiescedAt: string | null };
 function readSaveWork(metadata: Record<string, unknown> | null | undefined): SaveWork | null {
@@ -153,11 +164,7 @@ async function lockWorkspaceRunParents(tx: Transaction, companyId: string, runId
 export class RemoteWorkspaceWriterActiveError extends HttpError {
   constructor(
     readonly workspaceId: string,
-    readonly writer: {
-      runId: string; agentId: string; issueId: string; issueIdentifier: string | null; lastActivityAt: Date;
-      /** The writer run ended; its workspace save or sandbox release has not settled. */
-      ended?: boolean;
-    },
+    readonly writer: RemoteWorkspaceWriter,
   ) {
     super(409, "The workspace still has an unfinished writer or save operation.", { code: "remote_workspace_writer_pending" });
   }
@@ -215,44 +222,9 @@ export async function reserveRemoteWorkspace(input: {
         sql`${workspaceOperations.heartbeatRunId} is distinct from ${input.runId}::uuid`,
       )).limit(1);
       if (uncertain) throw conflict("The prior provisioning operation needs verification before this workspace can run again.", { code: "remote_workspace_provision_unverified" });
-      if (authority.writerRunId && authority.writerRunId !== input.runId) {
-        const [prior] = await tx.select({ status: heartbeatRuns.status, agentId: heartbeatRuns.agentId,
-          issueId: heartbeatRuns.issueId, nativeIssueId: heartbeatRuns.nativeIssueId,
-          runtimeMode: heartbeatRuns.runtimeMode, nativeSessionId: heartbeatRuns.nativeSessionId, runnerInstanceId: heartbeatRuns.runnerInstanceId,
-          errorCode: heartbeatRuns.errorCode, executionRecovery: sql<unknown>`${heartbeatRuns.resultJson}->'executionRecovery'`,
-          contextIssueId: sql<string | null>`coalesce(${heartbeatRuns.contextSnapshot}->>'issueId', ${heartbeatRuns.contextSnapshot}->>'taskId')`,
-          lastOutputAt: heartbeatRuns.lastOutputAt, startedAt: heartbeatRuns.startedAt, createdAt: heartbeatRuns.createdAt,
-          finishedAt: heartbeatRuns.finishedAt,
-        }).from(heartbeatRuns).where(and(
-          eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.id, authority.writerRunId)));
-        const writerIssueId = prior ? prior.nativeIssueId ?? prior.issueId ?? prior.contextIssueId : null;
-        const [writerIssue] = writerIssueId ? await tx.select({ id: issues.id, identifier: issues.identifier }).from(issues)
-          .where(and(eq(issues.companyId, input.companyId), eq(issues.id, canonicalExecutionUuid(sql`${writerIssueId}::text`)))) : [];
-        if (prior?.status === "running" && writerIssue) throw new RemoteWorkspaceWriterActiveError(existing.id, {
-          runId: authority.writerRunId, agentId: prior.agentId, issueId: writerIssue.id, issueIdentifier: writerIssue.identifier,
-          lastActivityAt: prior.lastOutputAt ?? prior.startedAt ?? prior.createdAt,
-        });
-        const leases = await tx.select().from(environmentLeases).where(and(eq(environmentLeases.companyId, input.companyId),
-          eq(environmentLeases.heartbeatRunId, authority.writerRunId)));
-        const bootstrap = object(prior?.executionRecovery);
-        const pristinePreparation = !authority.location && !authority.snapshotId && prior?.status === "failed"
-          && prior.runtimeMode === "legacy" && prior.nativeSessionId === null && prior.runnerInstanceId === null
-          && prior.errorCode === REMOTE_WORKSPACE_PREPARATION_TIMEOUT_CODE
-          && bootstrap.kind === "bootstrap" && bootstrap.providerWorkStarted === false;
-        const unusedReservation = !authority.dirty && prior && ["failed", "cancelled", "interrupted", "timed_out", "succeeded"].includes(prior.status)
-          && leases.every(lease => hasRemoteTerminationReceipt(lease) || hasRecoveredCleanupStopReceipt(lease) || (pristinePreparation
-            && lease.releasedAt && lease.cleanupStatus === "success" && ["released", "expired", "failed"].includes(lease.status)));
-        if (!unusedReservation) {
-          // An ended writer still holds the workspace until its save and sandbox
-          // release settle. Report it as the holder so preparation waits within
-          // the same bounded cutoff as a live writer instead of failing setup.
-          if (prior && writerIssue) throw new RemoteWorkspaceWriterActiveError(existing.id, {
-            runId: authority.writerRunId, agentId: prior.agentId, issueId: writerIssue.id, issueIdentifier: writerIssue.identifier,
-            lastActivityAt: prior.finishedAt ?? prior.lastOutputAt ?? prior.startedAt ?? prior.createdAt, ended: true,
-          });
-          throw conflict("The workspace still has an unfinished writer or save operation.", { code: "remote_workspace_writer_pending" });
-        }
-      }
+      const hold = await readRemoteWorkspaceWriterHold(tx as unknown as Db, { companyId: input.companyId, authority, runId: input.runId });
+      if (hold.kind === "held") throw new RemoteWorkspaceWriterActiveError(existing.id, hold.writer);
+      if (hold.kind === "unattributed") throw conflict("The workspace still has an unfinished writer or save operation.", { code: "remote_workspace_writer_pending" });
       if (authority.writerRunId === input.runId) return existing;
       const next: RemoteWorkspaceAuthority = { ...authority, source, epoch: authority.epoch + 1, writerRunId: input.runId };
       const [saved] = await tx.update(executionWorkspaces).set({ metadata: { ...existing.metadata, remoteWorkspace: next,
@@ -650,9 +622,15 @@ export function remoteWorkspaceSaveFailure(error: unknown): { code: string; caus
   return cause ? { code, cause } : { code };
 }
 
+function saveTimingRecord(timing: RemoteWorkspaceSaveTiming & { startedAt: number }, outcome: "succeeded" | "failed", at: Date) {
+  const { startedAt, ...phases } = timing;
+  return { schema: SAVE_TIMING_SCHEMA, outcome, totalMs: Math.max(0, Math.round(performance.now() - startedAt)),
+    ...phases, at: at.toISOString() };
+}
+
 async function settleSaveInvocation(input: { db: Db; workspace: Workspace; runId: string; epoch: number;
   location: NonNullable<RemoteWorkspaceAuthority["location"]>; operationId: string; invocationId: string;
-  failure?: { code: string; cause?: string } }) {
+  failure?: { code: string; cause?: string }; timing?: RemoteWorkspaceSaveTiming & { startedAt: number } }) {
   return input.db.transaction(async tx => {
     const workspace = await currentWorkspace(tx, input.workspace.companyId, input.workspace.id);
     const [operation] = await tx.select().from(workspaceOperations).where(and(eq(workspaceOperations.id, input.operationId),
@@ -669,6 +647,7 @@ async function settleSaveInvocation(input: { db: Db; workspace: Workspace; runId
     const failed = Boolean(failure) && operation.status === "running" && !activeIds.length && !work.unknown;
     await tx.update(workspaceOperations).set({ metadata: { ...operation.metadata,
       saveWork: { ...work, activeIds, quiescedAt: activeIds.length ? null : now.toISOString() },
+      ...(input.timing ? { saveTiming: saveTimingRecord(input.timing, input.failure ? "failed" : "succeeded", now) } : {}),
       ...(failed && failure ? { lastFailure: { ...failure, at: now.toISOString() } } : {}) },
       ...(failed && failure ? { status: "failed", exitCode: 1, finishedAt: now,
         stderrExcerpt: `${[failure.code, failure.cause].filter(Boolean).join("\n")}\n` } : {}),
@@ -682,7 +661,9 @@ async function settleSaveInvocation(input: { db: Db; workspace: Workspace; runId
 export async function saveRemoteWorkspace(input: {
   db: Db; workspace: Workspace; runId: string; lease: EnvironmentLease; target: AdapterExecutionTarget | null;
   assertOwned: () => Promise<void>; storage?: StorageService; boundary?: string;
+  repositories?: NonNullable<RemoteWorkspaceSource["repositories"]>;
 }) {
+  const saveStarted = performance.now();
   const target = requireRemoteWorkspaceTarget(input.target), boundary = input.boundary ?? "final";
   const expected = readRemoteWorkspaceAuthority(input.workspace.metadata);
   if (!expected?.location || expected.location.providerLeaseId !== input.lease.providerLeaseId || expected.location.leaseId !== input.lease.id) throw new Error("remote_workspace_save_binding_mismatch");
@@ -733,22 +714,40 @@ export async function saveRemoteWorkspace(input: {
     return created!;
   });
   let captured: Awaited<ReturnType<typeof captureRemoteWorkspaceArchive>> | null = null;
+  let publicationScratch: string | undefined;
   let failure: { code: string; cause?: string } | undefined;
+  const timing: RemoteWorkspaceSaveTiming & { startedAt: number } = { startedAt: saveStarted };
+  // A replay of an already-committed save measures no phase; it keeps the
+  // original save's timing instead of overwriting it with an empty record.
+  let replayedCommittedSave = false;
   try {
     const snapshot = await beginWorkspaceSnapshot(input.db, { companyId: input.workspace.companyId, workspaceId: input.workspace.id,
       operationId: operation.id, runId: input.runId, parentSnapshotId: operation.metadata?.parentSnapshotId as string | null,
       generation: operation.metadata?.generation as number, epoch: expected.epoch });
     if (operation.status === "succeeded" && ["committed", "superseded"].includes(snapshot.status)) {
+      replayedCommittedSave = true;
       return { snapshotId: snapshot.id, generation: snapshot.generation, sha256: snapshot.sha256!, savedAt: snapshot.updatedAt.toISOString() };
     }
     const existingUpload = snapshot.status === "uploaded" ? await getWorkspaceSnapshot(input.db, { companyId: input.workspace.companyId,
       workspaceId: input.workspace.id, snapshotId: snapshot.id }) : null;
-    captured = existingUpload ? null : await captureRemoteWorkspaceArchive({ target, remoteCwd: expected.location.remoteCwd, operationId: operation.id });
+    if (existingUpload) timing.reusedUpload = true;
+    captured = existingUpload ? null : await captureRemoteWorkspaceArchive({ target, remoteCwd: expected.location.remoteCwd,
+      operationId: operation.id, timing });
     await input.assertOwned();
+    const uploadStarted = performance.now();
     const saved = await uploadWorkspaceSnapshot({ db: input.db, storage: input.storage ?? getStorageService(), snapshotId: snapshot.id,
       companyId: input.workspace.companyId, workspaceId: input.workspace.id, archivePath: captured?.archivePath ?? "",
       manifestDigest: existingUpload?.manifestDigest ?? captured!.manifestDigest });
+    timing.uploadMs = Math.max(0, Math.round(performance.now() - uploadStarted));
     await input.assertOwned();
+    const publishStarted = performance.now();
+    let publicationArchive = captured?.archivePath;
+    if (!publicationArchive) {
+      publicationScratch = await mkdtemp(path.join(os.tmpdir(), "pc-workspace-publication-"));
+      publicationArchive = path.join(publicationScratch, "workspace.pcws");
+      await loadWorkspaceSnapshotArchive({ storage: input.storage ?? getStorageService(), reference: saved, targetPath: publicationArchive });
+    }
+    const capturedDirectories = await readRemoteWorkspaceArchiveDirectories(publicationArchive, saved.manifestDigest);
     const at = new Date();
     await input.db.transaction(async tx => {
       await lockWorkspaceRunParents(tx, input.workspace.companyId, input.runId, operation.issueId);
@@ -765,9 +764,19 @@ export async function saveRemoteWorkspace(input: {
         eq(executionWorkspaceSnapshots.executionWorkspaceId, workspace.id), eq(executionWorkspaceSnapshots.status, "uploaded"))).returning({ id: executionWorkspaceSnapshots.id });
       if (!committed) throw new Error("remote_workspace_snapshot_publication_changed");
       await notifyRemoteWorkspaceSnapshots(tx, `workspace:${workspace.id}`);
-      if (boundary === "final") await notifyTerminalWorkspaceWork(tx, `workspace:${workspace.id}`);
+      if (boundary === "final") {
+        await notifyTerminalWorkspaceWork(tx, `workspace:${workspace.id}`);
+        await notifyDeliveryWork(tx, DELIVERY_QUEUES.executionReplacement);
+      }
+      const receipt = object(workspace.metadata?.remoteWorkspaceSnapshotRepositories);
+      const priorRepositories = receipt.snapshotId === current.snapshotId && Array.isArray(receipt.repositories)
+        ? remoteWorkspaceSourceSchema.parse({ kind: "empty", repositories: receipt.repositories }).repositories ?? [] : [];
+      const repositories = [...new Map([
+        ...priorRepositories, ...(expected.source.repositories ?? []), ...(input.repositories ?? []),
+      ].map(repository => [repository.id, repository])).values()]
+        .filter(repository => !repository.readOnly && capturedDirectories.has(repository.relativePath));
       await tx.update(executionWorkspaces).set({ metadata: { ...workspace.metadata, remoteWorkspace: authority,
-        remoteWorkspaceSnapshotRepositories: { snapshotId: saved.id, repositories: expected.source.repositories ?? [] },
+        remoteWorkspaceSnapshotRepositories: { snapshotId: saved.id, repositories },
       }, updatedAt: at }).where(eq(executionWorkspaces.id, workspace.id));
       await tx.update(workspaceOperations).set({ status: "succeeded", finishedAt: at, updatedAt: at,
         metadata: sql`coalesce(${workspaceOperations.metadata}, '{}'::jsonb) || ${JSON.stringify({ snapshotId: saved.id, sha256: saved.sha256 })}::jsonb` })
@@ -780,6 +789,7 @@ export async function saveRemoteWorkspace(input: {
         deleteAfter: new Date(at.getTime() + 7 * 86400_000), updatedAt: at }).where(and(eq(executionWorkspaceSnapshots.id, snapshot.parentSnapshotId),
         eq(executionWorkspaceSnapshots.companyId, workspace.companyId), eq(executionWorkspaceSnapshots.executionWorkspaceId, workspace.id)));
     });
+    timing.publishMs = Math.max(0, Math.round(performance.now() - publishStarted));
     return { snapshotId: saved.id, generation: saved.generation, sha256: saved.sha256, savedAt: at.toISOString() };
   } catch (error) {
     failure = remoteWorkspaceSaveFailure(error);
@@ -787,11 +797,13 @@ export async function saveRemoteWorkspace(input: {
   } finally {
     // Every upload/capture promise has settled before its durable token clears.
     // Missing completion evidence remains pinned; cleanup never masks the save error.
+    if (publicationScratch) await rm(publicationScratch, { recursive: true, force: true }).catch(() => undefined);
     try { await captured?.cleanup(); }
     catch { logger.warn({ runId: input.runId, operationId: operation.id }, "Remote workspace local archive cleanup failed"); }
     try {
       if (await settleSaveInvocation({ db: input.db, workspace: input.workspace, runId: input.runId, epoch: expected.epoch,
-        location: expected.location, operationId: operation.id, invocationId, failure })) {
+        location: expected.location, operationId: operation.id, invocationId, failure,
+        timing: replayedCommittedSave ? undefined : timing })) {
         await cleanupSavedExports({ db: input.db, companyId: input.workspace.companyId, workspaceId: input.workspace.id,
           location: expected.location, target, assertOwned: input.assertOwned });
       }
@@ -802,8 +814,9 @@ export async function saveRemoteWorkspace(input: {
 export async function prepareRemoteWorkspaceRepository(input: {
   db: Db; workspace: Workspace; runId: string; lease: EnvironmentLease; target: AdapterExecutionTarget | null;
   repository: { id: string; relativePath: string; repoUrl: string; ref: string | null; pinnedCommit?: string; readOnly?: boolean };
-  assertOwned?: () => Promise<void>; resolveGitAuth?: ReturnType<typeof createGitRemoteAuthProvider>; verifyOnly?: boolean; storage?: StorageService;
+  assertOwned?: () => Promise<void>; resolveGitAuth?: ReturnType<typeof createGitRemoteAuthProvider>; verifyOnly?: boolean; storage?: StorageService; deferSave?: boolean;
 }) {
+  input = { ...input, workspace: await input.db.transaction(tx => currentWorkspace(tx, input.workspace.companyId, input.workspace.id)) };
   const authority = readRemoteWorkspaceAuthority(input.workspace.metadata);
   if (!authority?.location || authority.writerRunId !== input.runId || authority.location.leaseId !== input.lease.id
     || authority.location.providerLeaseId !== input.lease.providerLeaseId) throw new Error("remote_workspace_repository_binding_mismatch");
@@ -813,9 +826,18 @@ export async function prepareRemoteWorkspaceRepository(input: {
     ...input.repository, verifyOnly: input.verifyOnly, savedArchive: isSavedWorkspaceRepository(input.workspace, authority, input.repository),
     resolveGitAuth: input.resolveGitAuth ?? await createRemoteWorkspaceGitAuth(input.db, input.workspace.companyId, input.runId) });
   await input.assertOwned?.();
-  await saveRemoteWorkspace({ ...input, target, boundary: `repository:${input.repository.id}:${result.pinnedCommit}`,
-    assertOwned: input.assertOwned ?? (async () => undefined) });
-  return result;
+  const descriptor = { ...input.repository, pinnedCommit: result.pinnedCommit };
+  const requiresSave = !isSavedWorkspaceRepository(input.workspace, authority, descriptor);
+  if (requiresSave && !input.deferSave) {
+    const receipt = object(input.workspace.metadata?.remoteWorkspaceSnapshotRepositories);
+    const prior = receipt.snapshotId === authority.snapshotId && Array.isArray(receipt.repositories)
+      ? remoteWorkspaceSourceSchema.parse({ kind: "empty", repositories: receipt.repositories }).repositories ?? []
+      : authority.source.repositories ?? [];
+    await saveRemoteWorkspace({ ...input, target, boundary: `repository:${input.repository.id}:${result.pinnedCommit}`,
+      repositories: [...prior.filter(repository => repository.id !== descriptor.id), descriptor],
+      assertOwned: input.assertOwned ?? (async () => undefined) });
+  }
+  return { ...result, requiresSave };
 }
 
 type SavedWorkspaceFileLimits = {

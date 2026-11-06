@@ -40,11 +40,13 @@ import {
   GOOGLE_WORKSPACE_CONNECTOR_PROFILES,
   CONNECTABLE_APP_DEFINITIONS,
   normalizeConnectionQuery,
+  nativeConnectorRequiresCustomerOAuthApp,
 } from "@paperclipai/shared";
 import { useNavigate } from "@/lib/router";
 import { useChatConnectorsEnabled, chatProviderVisible } from "@/hooks/useChatConnectorsEnabled";
 import { useMemoryConnectorsEnabled } from "@/hooks/useMemoryConnectorsEnabled";
 import { useConnectorAvailability } from "@/hooks/useConnectorAvailability";
+import { useCloudInstance } from "@/hooks/useCloudInstance";
 import { appCopyFor } from "@/lib/app-gallery-copy";
 import { useCompany } from "@/context/CompanyContext";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
@@ -157,6 +159,19 @@ const LEGACY_GOOGLE_CONNECTOR_SLUGS = new Set(
 // While the built-in connector is experimental, these native Google rows do not
 // claim the Google apps offered by MCP aggregators unless they hold an account.
 const BUILT_IN_GOOGLE_CONNECTOR_SLUGS = new Set([...LEGACY_GOOGLE_CONNECTOR_SLUGS, "google-workspace"]);
+
+/**
+ * Returns the previous array while every item is identical (`Object.is`), so a memo keyed
+ * on values derived from `useQueries` results survives renders that change nothing.
+ */
+function useShallowStableItems<T>(items: T[]): T[] {
+  const previous = useRef(items);
+  const current = previous.current;
+  if (current.length !== items.length || items.some((item, index) => !Object.is(item, current[index]))) {
+    previous.current = items;
+  }
+  return previous.current;
+}
 
 function chatProviderForSlug(slug: string): ChatProvider | null {
   const method = getAppStoreDefinition(slug)?.methods.find(
@@ -377,6 +392,7 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
   const { enabled: memoryConnectorsEnabled } = useMemoryConnectorsEnabled();
   const connectorAvailability = useConnectorAvailability();
   const googleWorkspaceConnectorEnabled = connectorAvailability.enabled(getConnectableAppDefinition("google-workspace"));
+  const cloudManaged = useCloudInstance()?.managed === true;
   const { setBreadcrumbs } = useBreadcrumbs();
   const { status: connectivityStatus } = useConnectivity();
   const [query, setQuery] = useState("");
@@ -471,24 +487,34 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
   // last known accounts and their status untouched.
   const aggregatorAccountsKinds = aggregatorAccountsQueries.map((result) => queryViewKind(result, connectivityStatus));
   const aggregatorSyncKinds = aggregatorSyncQueries.map((result) => queryViewKind(result, connectivityStatus));
-  const upstreamApps = aggregatorAccountsQueries.flatMap((result, index) => {
-    const loadFailed = aggregatorAccountsKinds[index] === "error" || aggregatorSyncKinds[index] === "error";
-    return (identitySettled ? result.data?.apps ?? [] : []).map(snapshot => loadFailed || result.data?.sync.status === "error" ? { ...snapshot, errorAt: snapshot.errorAt ?? new Date().toISOString() } : snapshot);
-  });
-  const upstreamAppsBySlug = new Map<string, AggregatorAppSnapshot[]>();
-  for (const snapshot of upstreamApps) {
-    if (snapshot.accounts.length === 0) continue;
-    upstreamAppsBySlug.set(snapshot.appSlug, [...(upstreamAppsBySlug.get(snapshot.appSlug) ?? []), snapshot]);
-  }
-  // Custom Executor integrations join discovery only after an observed account exists.
-  const managedCatalog = AGGREGATOR_APP_CATALOG.map(app => ({ ...app, routes: [...app.routes] }));
-  for (const snapshot of upstreamApps) {
-    if (!snapshot.accounts.length) continue;
-    let app = managedCatalog.find(app => app.slug === snapshot.appSlug);
-    const route = { provider: snapshot.provider, toolkit: snapshot.toolkit, logoUrl: "", docsUrl: "" };
-    if (!app) { app = { slug: snapshot.appSlug, name: snapshot.appName, aliases: [snapshot.toolkit], routes: [] }; managedCatalog.push(app); }
-    if (!app.routes.some(route => route.provider === snapshot.provider)) app.routes.push(route);
-  }
+  // The connector rows below are rebuilt from these values. Keep them referentially
+  // stable across unrelated renders (search typing, polling of other queries) so the
+  // row memo does not re-run against the full aggregator catalog on every render.
+  const aggregatorAccountData = useShallowStableItems(aggregatorAccountsQueries.map((result) => identitySettled ? result.data : undefined));
+  const aggregatorLoadFailures = useShallowStableItems(aggregatorAccountsKinds.map((kind, index) => kind === "error" || aggregatorSyncKinds[index] === "error"));
+  const { upstreamAppsBySlug, managedCatalog, managedCatalogIdentities } = useMemo(() => {
+    const upstreamApps = aggregatorAccountData.flatMap((data, index) =>
+      (data?.apps ?? []).map(snapshot => aggregatorLoadFailures[index] || data?.sync.status === "error" ? { ...snapshot, errorAt: snapshot.errorAt ?? new Date().toISOString() } : snapshot));
+    const upstreamAppsBySlug = new Map<string, AggregatorAppSnapshot[]>();
+    for (const snapshot of upstreamApps) {
+      if (snapshot.accounts.length === 0) continue;
+      upstreamAppsBySlug.set(snapshot.appSlug, [...(upstreamAppsBySlug.get(snapshot.appSlug) ?? []), snapshot]);
+    }
+    // Custom Executor integrations join discovery only after an observed account exists.
+    const managedCatalog: AggregatorAppCatalogEntry[] = AGGREGATOR_APP_CATALOG.map(app => ({ ...app, routes: [...app.routes] }));
+    for (const snapshot of upstreamApps) {
+      if (!snapshot.accounts.length) continue;
+      let app = managedCatalog.find(app => app.slug === snapshot.appSlug);
+      const route = { provider: snapshot.provider, toolkit: snapshot.toolkit, logoUrl: "", docsUrl: "" };
+      if (!app) { app = { slug: snapshot.appSlug, name: snapshot.appName, aliases: [snapshot.toolkit], routes: [] }; managedCatalog.push(app); }
+      if (!app.routes.some(route => route.provider === snapshot.provider)) app.routes.push(route);
+    }
+    // Every identity any aggregator serves, so "does an aggregator offer this app?" is one
+    // lookup instead of a scan of the ~1,600-entry catalog.
+    const managedCatalogIdentities = new Set(managedCatalog.flatMap((app) =>
+      [app.name, app.slug, ...app.aliases].map(aggregatorAppIdentity)));
+    return { upstreamAppsBySlug, managedCatalog, managedCatalogIdentities };
+  }, [aggregatorAccountData, aggregatorLoadFailures]);
   const removeConnection = useMutation({
     mutationFn: async (target: ConnectionRemovalTarget) => {
       if (target.kind === "chat") {
@@ -551,18 +577,19 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
     }
   }
 
-  const gallery = (
+  const connectorEnabled = connectorAvailability.enabled;
+  const gallery = useMemo(() => (
     (galleryQuery.data?.apps ?? []) as AppGalleryDisplayEntry[]
   ).filter((entry) => {
     if (!memoryConnectorsEnabled && isMemoryConnectorId(appDefinitionSlug(entry))) return false;
-    if (!connectorAvailability.enabled(entry)) return false;
+    if (!connectorEnabled(entry)) return false;
     const definition = getAppStoreDefinition(appDefinitionSlug(entry));
     return (
       chatProviderVisible(appDefinitionSlug(entry), chatConnectorsEnabled, githubEnabled) ||
       !definition?.methods.some((method) => method.purpose === "channel") ||
       appSupportsToolCatalogSetup(definition)
     );
-  });
+  }), [galleryQuery.data, memoryConnectorsEnabled, connectorEnabled, chatConnectorsEnabled, githubEnabled]);
   const userProfileById = useMemo(
     () => buildCompanyUserProfileMap(userDirectoryQuery.data?.users),
     [userDirectoryQuery.data],
@@ -777,16 +804,54 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
 
     // Native definitions take precedence even when temporarily hidden or unavailable.
     // Public metadata never creates an application, account, or installed status.
-    const yieldsToAggregators = (slug: string) => !googleWorkspaceConnectorEnabled
-      && BUILT_IN_GOOGLE_CONNECTOR_SLUGS.has(slug) && !(rowsBySlug.get(slug)?.connections.length);
+    // On Cloud, a native connector whose every setup path needs a customer-created
+    // OAuth app (such as Slack without Chat connectors) yields new setup to the
+    // aggregators' managed sign-in. Saved native accounts keep their native row.
+    // Rows hold their final connections and chat endpoints from here on, so each slug's
+    // answer is fixed for this pass. Cache it: the checks below ask once per catalog app.
+    const yieldDecisions = new Map<string, boolean>();
+    const yieldsToAggregators = (slug: string) => {
+      const cached = yieldDecisions.get(slug);
+      if (cached !== undefined) return cached;
+      const row = rowsBySlug.get(slug);
+      let yields: boolean;
+      if (row?.connections.length || row?.chatEndpoints.length) yields = false;
+      else if (!googleWorkspaceConnectorEnabled && BUILT_IN_GOOGLE_CONNECTOR_SLUGS.has(slug)) yields = true;
+      else {
+        // Decide from the declared methods: the gallery drops a Cloud managed method
+        // whose broker profile is unavailable, and that must not change setup routes.
+        const declaredMethods = getAppStoreDefinition(slug)?.methods ?? row?.entry?.methods;
+        yields = cloudManaged && Boolean(row?.entry)
+          && (managedCatalogIdentities.has(aggregatorAppIdentity(row!.slug)) || managedCatalogIdentities.has(aggregatorAppIdentity(row!.name)))
+          && nativeConnectorRequiresCustomerOAuthApp({ ...row!.entry!, methods: declaredMethods ?? [] }, {
+            enableChatConnectors: chatConnectorsEnabled,
+            enableGitHubReviewBots: githubEnabled,
+          });
+      }
+      yieldDecisions.set(slug, yields);
+      return yields;
+    };
     const nativeIdentities = new Set([...CONNECTABLE_APP_DEFINITIONS, ...(galleryQuery.data?.apps ?? [])]
       .filter((app) => !yieldsToAggregators(appDefinitionSlug(app)))
       .flatMap((app) => [appDefinitionName(app), appDefinitionSlug(app)].map(aggregatorAppIdentity)));
+    // Index each native identity to the first row (in row order) that claims it. A catalog
+    // app then matches the earliest row among its aliases' lookups, which is the row a
+    // scan of the rows in order would find.
+    const nativeRows = [...rowsBySlug.values()].filter((row) => !yieldsToAggregators(row.slug));
+    const nativeRowIndexByIdentity = new Map<string, number>();
+    nativeRows.forEach((row, index) => {
+      for (const identity of [aggregatorAppIdentity(row.slug), aggregatorAppIdentity(row.name)]) {
+        if (!nativeRowIndexByIdentity.has(identity)) nativeRowIndexByIdentity.set(identity, index);
+      }
+    });
     for (const app of managedCatalog) {
       const snapshots = upstreamAppsBySlug.get(app.slug) ?? [];
-      const aliases = new Set([app.name, app.slug, ...app.aliases].map(aggregatorAppIdentity));
-      const nativeRow = [...rowsBySlug.values()].find(row => !yieldsToAggregators(row.slug)
-        && (aliases.has(aggregatorAppIdentity(row.slug)) || aliases.has(aggregatorAppIdentity(row.name))));
+      let matchIndex: number | undefined;
+      for (const alias of [app.name, app.slug, ...app.aliases]) {
+        const index = nativeRowIndexByIdentity.get(aggregatorAppIdentity(alias));
+        if (index !== undefined && (matchIndex === undefined || index < matchIndex)) matchIndex = index;
+      }
+      const nativeRow = matchIndex === undefined ? undefined : nativeRows[matchIndex];
       if (nativeRow) { nativeRow.upstreamApps = [...(nativeRow.upstreamApps ?? []), ...snapshots]; nativeRow.upstreamCatalogApp = app; }
     }
     const aggregatorRows: ConnectorRowModel[] = managedCatalog.filter((app) =>
@@ -800,7 +865,7 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
       }));
 
     return [...rowsBySlug.values(), ...customRows, ...aggregatorRows]
-      .filter((row) => row.aggregatorApp || !LEGACY_GOOGLE_CONNECTOR_SLUGS.has(row.slug)
+      .filter((row) => row.aggregatorApp || (!LEGACY_GOOGLE_CONNECTOR_SLUGS.has(row.slug) && !yieldsToAggregators(row.slug))
         || row.connections.length > 0
         || row.upstreamApps?.some(snapshot => snapshot.accounts.length > 0))
       .map((row) => ({
@@ -831,6 +896,9 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
     gallery,
     galleryQuery.data,
     googleWorkspaceConnectorEnabled,
+    cloudManaged,
+    managedCatalog,
+    managedCatalogIdentities,
     upstreamAppsBySlug,
   ]);
 

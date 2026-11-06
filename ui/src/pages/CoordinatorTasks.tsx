@@ -1,5 +1,5 @@
 import { readTaskListSortParams, taskListOrderToIssueSort, type TaskListSort } from "@/lib/task-list";
-import { useDeferredValue, useEffect, useRef, useState } from "react";
+import { useDeferredValue, useEffect, useRef, useState, type ReactNode } from "react";
 import { useWarmTaskDetailCode } from "@/hooks/useWarmTaskDetailCode";
 import { useInfiniteQuery, useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ListChecks, SearchX } from "lucide-react";
@@ -24,7 +24,8 @@ import { useIssueRowDetails } from "@/hooks/useIssueRowDetails";
 import { useCoordinatorWorkspaceEnabled } from "@/hooks/useCoordinatorWorkspaceEnabled";
 import { usePublishSharedQueryData, useSharedPollingQuery } from "@/hooks/useSharedPolling";
 import { collectLiveIssueIds } from "@/lib/liveIssueIds";
-import { buildCompanyUserLabelMap } from "@/lib/company-members";
+import { formatUserLabel } from "@/lib/assignees";
+import { buildCompanyUserProfileMap } from "@/lib/company-members";
 import { coordinatorAttentionTasksQueryKey } from "@/lib/coordinator-attention";
 import { createIssueDetailLocationState } from "@/lib/issueDetailBreadcrumb";
 import { defaultIssueFilterState, type IssueFilterState } from "@/lib/issue-filters";
@@ -38,7 +39,7 @@ const pageSize = 200;
 
 /** Coordinator's existing IA and attention feed, rendered with the production
  * components reviewed in Design proposals / Pages / Tasks. */
-export function CoordinatorTasks() {
+export function CoordinatorTasks({ viewControl }: { viewControl?: ReactNode } = {}) {
   const { selectedCompanyId: companyId } = useCompany();
   const { userId, loaded: identitySettled } = useCoordinatorWorkspaceEnabled();
   const { openNewIssue } = useDialogActions();
@@ -54,8 +55,8 @@ export function CoordinatorTasks() {
   const urlLabels = JSON.stringify(params.getAll("label").filter(Boolean));
   const urlView = params.get("view");
   const viewStorageKey = taskListViewStorageKey("coordinator", userId ?? "local-board");
-  const [preference, setPreference] = useState(() => ({ key: viewStorageKey, view: loadTaskListView(viewStorageKey, undefined, "inbox") }));
-  const savedView = preference.key === viewStorageKey ? preference.view : loadTaskListView(viewStorageKey, undefined, "inbox");
+  const [preference, setPreference] = useState(() => ({ key: viewStorageKey, view: loadTaskListView(viewStorageKey) }));
+  const savedView = preference.key === viewStorageKey ? preference.view : loadTaskListView(viewStorageKey);
   const explicitView = urlView === "needs_attention" ? "blocked" : taskListViews.find(option => option.value === urlView)?.value;
   const organizationScoped = [...ORGANIZATION_SCOPED_PARAMS, "workspaceId", "status", "label", "sortField", "sortDir"].some(param => params.getAll(param).some(Boolean));
   const view: TaskListView = explicitView ?? (organizationScoped || normalizeTaskViewKey(urlView) ? "all" : savedView);
@@ -155,8 +156,8 @@ export function CoordinatorTasks() {
   const sharedLiveRuns = useSharedPollingQuery({ companyId, resourceKey: "live-runs", queryKey: queryKeys.liveRuns(companyId!), enabled: !!companyId, refetchInterval: false, leaderOnly: true });
   const liveRuns = useQuery({ queryKey: queryKeys.liveRuns(companyId!), queryFn: () => heartbeatsApi.liveRunsForCompany(companyId!), enabled: sharedLiveRuns.enabled, refetchInterval: sharedLiveRuns.refetchInterval });
   usePublishSharedQueryData(sharedLiveRuns, liveRuns.data, liveRuns.dataUpdatedAt);
-  const users = buildCompanyUserLabelMap(directory.data?.users);
-  const agentNames = new Map(agents.data?.map(agent => [agent.id, agent.name]));
+  const users = buildCompanyUserProfileMap(directory.data?.users);
+  const agentById = new Map(agents.data?.map(agent => [agent.id, agent]));
   const projectById = new Map(projects.data?.map(project => [project.id, project]));
   const records = (needsAttention ? attentionTasks.flatMap(task => task.data ?? []) : tasks.data?.pages.flatMap(page => page.items) ?? []) as Issue[];
   const unreadIds = new Set(view === "unread" ? records.map(issue => issue.id) : []);
@@ -189,9 +190,11 @@ export function CoordinatorTasks() {
     workspaceIds.includes(issue.executionWorkspaceId ?? "") || workspaceIds.includes(issue.projectWorkspaceId ?? "")) : recordsWithContext;
   const items: TaskListItem[] = [...new Map(scopedRecords.map(issue => [issue.id, issue])).values()].map(issue => ({
     issue: { ...issue, project: issue.project ?? projectById.get(issue.projectId ?? "") },
-    unread: unreadIds.has(issue.id),
-    createdBy: issue.createdByAgentId ? agentNames.get(issue.createdByAgentId) ?? "Unknown agent" : users.get(issue.createdByUserId ?? "") ?? "Board",
-    assignee: issue.assigneeAgentId ? agentNames.get(issue.assigneeAgentId) ?? "Unknown agent" : users.get(issue.assigneeUserId ?? "") ?? null,
+    unread: unreadIds.has(issue.id) || issue.isUnreadForMe === true,
+    createdBy: issue.createdByAgentId ? agentById.get(issue.createdByAgentId)?.name ?? "Unknown agent" : users.get(issue.createdByUserId ?? "")?.label ?? "Board",
+    assignee: issue.assigneeAgentId ? agentById.get(issue.assigneeAgentId)?.name ?? "Unknown agent" : users.get(issue.assigneeUserId ?? "")?.label ?? formatUserLabel(issue.assigneeUserId),
+    assigneeAgent: agentById.get(issue.assigneeAgentId ?? ""),
+    assigneeUserAvatarUrl: users.get(issue.assigneeUserId ?? "")?.image,
   }));
   const collection = useTaskListCollection({ items, companyId, userId, query, onQueryChange: setQuery, view: needsAttention ? "all" : view,
     layout, onLayoutChange: setLayout,
@@ -277,7 +280,7 @@ export function CoordinatorTasks() {
 
   if (!companyId) return <EmptyState icon={ListChecks} message="Select an organization to view tasks." />;
   return <FlyoutAppearanceProvider><TruncatedTextMarqueeProvider><section ref={listRef} className="coordinator-task-list task-row-design-preview flex min-w-0 flex-col gap-8" aria-label="Tasks">
-    <TaskListToolbar view={view} onViewChange={setView}
+    <TaskListToolbar view={view} onViewChange={setView} viewControl={viewControl}
       query={collection.query} onQueryChange={collection.setQuery} layout={collection.layout} onLayoutChange={collection.setLayout}
       allExpanded={collection.allExpanded} onToggleExpanded={collection.toggleExpanded} onNewTask={() => openNewIssue()}
       filters={{ enableRoutineTasksFilter: true, state: collection.filters, onChange: updateFilters, activeFilterCount: collection.activeFilterCount,
@@ -287,6 +290,7 @@ export function CoordinatorTasks() {
     {pending ? <p role="status" className="text-sm text-muted-foreground">Loading tasks…</p> : !error && <>
       <div hidden={collection.layout !== "list"} className="design-task-list-panel">{collection.matchingItems.length ? <TaskList key={companyId}
         items={(needsAttention ? collection.matchingItems : collection.visibleItems).map(enrichItem)} allItems={collection.companyItems.map(enrichItem)}
+        preferenceLocation={userId ? { companyId, collectionKey: `coordinator-tasks:${userId}` } : undefined}
         collectionKey={JSON.stringify([companyId, userId, needsAttention, deferredQuery, participantAgentId, workspaceIds, collection.view, collection.filters])}
         sort={sort} onSortChange={setSort}
         issueLinkState={issueLinkState} collapsedIds={collection.collapsedIds} onCollapsedIdsChange={collection.setCollapsedIds} /> : empty}</div>

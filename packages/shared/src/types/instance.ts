@@ -97,6 +97,8 @@ export interface InstanceExperimentalSettings {
   enableArtifactsV1: boolean;
   enableConferenceRoomChat: boolean;
   enableClassicTaskInterface: boolean;
+  /** Require Cmd/Ctrl+Enter to submit task replies and new tasks. */
+  enableLegacyComposerSubmit: boolean;
   enableIssuePlanDecompositions: boolean;
   enableExperimentalFileViewer: boolean;
   enableExternalObjects: boolean;

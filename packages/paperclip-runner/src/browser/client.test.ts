@@ -54,16 +54,20 @@ describe("public runner browser client", () => {
       fetchImpl: vi.fn() as unknown as typeof fetch,
       eventSourceFactory: (nextUrl) => { url = nextUrl; return source; },
     });
-    const event = {
+    const event: PrpEvent = {
       schema: "paperclip.prp.event.v1",
       sourceEventId: "event-9",
-      sourceKind: "harness",
+      sourceKind: "runner",
       sourceInstanceId: "driver",
       sourceSeq: 9,
+      runId: "run-1",
+      normalizedSessionId: "session/id",
+      schemaVersion: 1,
+      priority: 2,
       emittedAt: "2026-08-08T00:00:00.000Z",
       eventType: "item.delta",
       payload: { text: "exact" },
-    } as PrpEvent;
+    };
     const onEvent = vi.fn();
     const onError = vi.fn();
     const handle = client.openEventStream("session/id", 8, { onEvent, onError });

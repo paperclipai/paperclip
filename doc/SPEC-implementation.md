@@ -39,6 +39,7 @@ These decisions close open questions from `SPEC.md` for V1.
 | Org graph | Strict tree (`reports_to` nullable root); no multi-manager reporting |
 | Visibility | Issues remain company-open by default. Opt-in `private` issues use task ACLs; deployment exposure flags remain independent of work-object privacy. |
 | Communication | Tasks + comments only (no separate chat system) |
+| Composer shortcuts | Task replies and new tasks submit with Enter; Shift+Enter adds a new line. The off-by-default `enableLegacyComposerSubmit` preference in Experimental settings restores Command/Ctrl+Enter submission and Enter for a new line. |
 | Experimental voice transport | Speko browser voice can create or resume a task through the existing chat-connection delivery/publication pipeline. The selected Paperclip agent retains execution authority. Phone support remains gated on live continuation qualification. |
 | Task ownership | Single assignee; atomic checkout required for `in_progress` transition |
 | Task watchdogs | A task watchdog is an explicitly configured, issue-subtree-scoped verification and recovery capacity. It may restore live task paths inside the watched subtree; for issue-thread interaction resolution it is an ordinary agent subject to the same audience and containment checks, not board authority, active-run output monitoring, or general liveness recovery. |
@@ -428,6 +429,7 @@ retain their titles and default to no generation request.
 - `visibility` enum-like text: `open | private`, default `open`
 - `privacy_root_issue_id` uuid fk `issues.id` null; private-boundary metadata
 - `privacy_parent_issue_id` uuid fk `issues.id` null; downward access inheritance, including standalone run-created handoffs
+- `origin_issue_id` uuid fk `issues.id` null, on delete set null; audit-only creation provenance (see below), never hierarchy or authorization
 - `title` text not null
 - `description` text null
 - `status` enum: `backlog | todo | in_progress | in_review | done | blocked | cancelled`
@@ -441,9 +443,11 @@ retain their titles and default to no generation request.
 - `created_by_user_id` uuid fk `users.id` null
 - identifier fields: `issue_number`, `identifier`
 - origin fields: `origin_kind`, `origin_id`, `origin_run_id`, `origin_fingerprint`
-- Creation stores the actor run in `origin_run_id` unless an explicit origin run is supplied. `GET /api/companies/:companyId/issues?createdFromIssueId=<uuid>` selects tasks created by runs bound to that source task, using native run issue identity or persisted legacy task context. Historical rows without an origin run may use their recorded creation activity; comments and shared creators do not establish provenance. Source, run, activity and result are company-scoped.
+- Creation stores the actor run in `origin_run_id` unless an explicit origin run is supplied. `GET /api/companies/:companyId/issues?createdFromIssueId=<uuid>` selects tasks whose `origin_issue_id` is that source task. Only for rows without a recorded `origin_issue_id`, it falls back to tasks created by runs bound to the source task, using native run issue identity or persisted legacy task context; a recorded origin suppresses that fallback, so the list agrees with `createdFrom`. Historical rows without an origin run may use their recorded creation activity; comments and shared creators do not establish provenance. Source, run, activity and result are company-scoped.
 - Delegated follow-ups keep their structural parent. When an agent run bound to an ordinary execution task creates an issue and omits `parentId`, the server defaults `parentId` to that run's task and records `parentDefaultedFromRunIssue: true` on the `issue.created` activity. An explicit `parentId: null` keeps the task standalone. The default never applies to conversation runs (chat handoffs stay top-level), to watchdog follow-ups, to board/user creates, to a run task the agent may not mutate, when the default parent would create a delegation cycle with the requested assignee, or when the agent may not create a child under the default parent (for example a protected assignment policy without a grant); those requests stay standalone instead of failing. An explicitly requested parent is still subject to the ordinary assignment check. Structural parentage, creation provenance and blockers stay distinct: the default adds no blocker.
-- `GET /api/issues/:id` returns `createdFrom` (`{ issue: { id, identifier, title, status }, run: { id, agentId }, agent: { id, name } | null } | null`): the task the origin run was executing when it created this issue, resolved from `origin_run_id` or, for historical rows, the run on the recorded creation activity. It is present whether or not `parentId` is set, and only when the viewer may read the source task and its run; a private, hidden-from-viewer or cross-company source yields `null`, indistinguishable from missing provenance.
+- Agent-created task trees are at most two levels (`MAX_AGENT_TASK_HIERARCHY_DEPTH`). When an agent, or automation acting for one (runner and project tools, chat suggestions, native delegation, accepted-plan decomposition, decision effects, plugins, external agents), would create or move a task to a third level, the server does not reject it: the task is placed under the requested parent's ancestor at the allowed depth, a sibling of the requester, and the create/update response and activity carry `parentAdjusted`. An agent move of a task that has its own children skips only the parent change (`reason: "has_children"`). The requester keeps blocking (`blockParentUntilDone` blocks the requester), workspace inheritance and privacy inheritance; provenance follows the `origin_issue_id` rule below. Placement never moves a task above a low-trust boundary root that contains the requester. The ancestor is written only when the caller authorized it and confirms it with `expectedParentId` (the issue routes, the runner `create_task` tool, and nested chat suggestions do); other callers get a standalone task instead (an unconfirmed move skips only the parent change), so no edge lands under an unchecked ancestor. Board users, watchdog and recovery machinery, channel-boundary placement and human-configured routines may nest to any depth; existing deeper trees stay valid and fully readable.
+- `origin_issue_id` and `origin_run_id` are server-set only: the task the creating run was bound to (a chat included), otherwise the chat that handed the task off, otherwise the requested parent (before placement); and that run. Privacy still follows the requested parent. Because `origin_issue_id` is returned with the task, it is recorded only when it reveals nothing new: the task's own parent or privacy parent (already exposed on the task), or a fully public origin (open, outside private projects and subtrees, not hidden); otherwise it stays null and `createdFrom` resolves the source through the run with its access checks. They never change after create.
+- `GET /api/issues/:id` returns `createdFrom` (`{ issue: { id, identifier, title, status }, run: { id, agentId } | null, agent: { id, name } | null } | null`): the task that created this issue, resolved from `origin_issue_id`, otherwise from the task the origin run was executing (`origin_run_id`, or for historical rows the run on the recorded creation activity). It is present whether or not `parentId` is set and requires that the viewer may read the source task. A recorded `origin_issue_id` is returned with `run` and `agent` null when no run created the task or the viewer may not see that run, so a null `run` is not missing provenance; a source resolved only through a run additionally requires that run to be visible. An unreadable, hidden-from-viewer or cross-company source yields `null`, indistinguishable from missing provenance.
 - Relation lists can use `sortField=id&sortDir=asc&afterId=<uuid>` for stable pagination. The cursor excludes earlier IDs and cannot be combined with an offset or activity-based order.
 - The streamlined task page's Tasks tab keeps two independent memberships: the existing subtask tree, and created tasks grouped by their current project (or No project). A created subtask appears in both. Only Subtasks has completion progress; groups collapse independently and unfinished tasks sort above finished tasks.
 - `request_depth` int not null default 0
@@ -451,6 +455,7 @@ retain their titles and default to no generation request.
   - `standard`: normal autonomous execution. Agents may investigate, edit files, create artifacts, and complete the task.
   - `ask`: answer-only execution. Agents may use tools for investigation or temporary scratch work, but the deliverable is an issue-thread answer; they must not write implementation code or produce an implementation plan.
   - `planning`: plan-only execution. Agents create or revise the plan without implementation work. Accepting a fresh confirmation for the issue's current `plan` revision atomically changes this mode to `standard`, so the continuation may implement the approved plan on the source issue.
+- Harness-proposed plans: a native run's own proposed-plan surface (Codex plan collaboration mode `plan` item or `<proposed_plan>` block, Claude Code ExitPlanMode) emits the canonical `plan.proposed` event. A completed proposal is saved as the issue's `plan` document and gated by a `request_confirmation` bound to that revision, in `planning` and `standard` work mode alike. A `planning` run starts the harness in its native plan mode. Synchronization never changes the issue status mid-run; the run finalizer turns the pending confirmation into the review wait. An agent-initiated proposal on a `standard` issue leaves the work mode unchanged.
 - Work mode is explicit persisted state. Titles, descriptions, and requested deliverables never select or change it. A `standard` task may deliver a requested plan, including a canonical `plan` document, and complete without entering `planning` mode. Existing explicit approval requirements still apply.
 - `billing_code` text null
 - `assignee_adapter_overrides` jsonb null
@@ -467,6 +472,7 @@ Invariants:
 - single assignee only
 - task must trace to company goal chain via `goal_id`, `parent_id`, or project-goal linkage
 - `in_progress` requires assignee
+- agent task presentation reserves **In Progress** for a task-linked queued or running run; inactive tasks project recovery as **Blocked**, pending responses/review as **In Review**, scheduled checks as **Monitoring**, or remaining work as **Todo** without changing lifecycle/admission state
 - an `in_review -> done | cancelled` verdict is authorized against the current review policy while the issue row is locked; a policy change in the same request or a concurrent request cannot relax that verdict gate
 - accepting or rejecting the review-confirmation interaction locks the issue row before resolving the interaction and reauthorizes against the current review policy in that transaction
 - accepting a fresh `request_confirmation` for the current issue's `plan` revision changes `work_mode = planning` to `work_mode = standard` in the same transaction as the accepted interaction; the existing agent-return transition also moves an eligible `in_review` issue to `todo` without changing its agent owner
@@ -2154,7 +2160,7 @@ Agent appearances are stable, versioned ClipLab end-cap personas, separate from
 behavioral instructions. Compact surfaces use on-demand cached PNG URLs; larger
 placements may use a lazy live character. See [agent-personas.md](agent-personas.md)
 for persistence, migration, rendering, and integration contracts.
-### Experimental task-backed agent chat (2026-09-10)
+### Task-backed agent chat (2026-09-10)
 
 Ordinary task and routine runs in standard mode may publish with
 `send_chat_message({body,idempotencyKey})` or `POST /api/agents/me/chat/messages`.
@@ -2187,10 +2193,10 @@ Chat list/detail responses use per-user read state before human participation;
 the foreground chat marks rendered messages read through an optional comment
 cutoff, retaining unseen concurrent arrivals. Existing navigation ordering is
 preserved with accessible unread dots and an aggregate Chat indicator.
-`enableAgentChat` gates delivery; external channels, push/email and private-chat
+Agent Chat is available to every person; external channels, push/email and private-chat
 redesign are outside this contract.
 
-`enableAgentChat` is an instance experimental flag, default false. Conversation containers remain issues, unique by `(company_id, conversation_agent_id, conversation_user_id)`. The authenticated board actor supplies ownership; local trusted mode uses `local-board`. Ordinary company task access applies. A conversation's agent assignment and identity are immutable through ordinary updates; terminal status mutations are rejected.
+`enableAgentChat` is a retired compatibility key. Agent Chat is always available for Cloud and self-hosted instances, including existing people and instances with stored or managed off values. Conversation containers remain issues, unique by `(company_id, conversation_agent_id, conversation_user_id)`. The authenticated board actor supplies ownership; local trusted mode uses `local-board`. Ordinary company task access applies. A conversation's agent assignment and identity are immutable through ordinary updates; terminal status mutations are rejected.
 
 `GET /api/companies/:companyId/chats/:agentRef` reads an existing conversation or null. `POST` atomically resolves its issue when adding a chat or on first send/upload. `GET /api/companies/:companyId/chats` lists only the current board user’s conversations in that company, subject to ordinary issue read access. The Chat navigation opens a searchable secondary sidebar with agent avatars and a picker for starting or reopening the same per-agent conversation. Existing issue comment, attachment, document, interaction, and run APIs apply thereafter. User chat comments require an idempotent UUID `clientRequestId`. Conversation delivery preserves comment order through the existing issue execution queue; the durable comment outbox repairs the commit-to-enqueue crash window.
 
@@ -2206,7 +2212,7 @@ in decision history.
 
 Standalone `/new` is an ordered queue command with no model response. It advances a durable session generation and boundary comment, resets only this issue's provider context, and preserves the issue ID and history. Generation checks reject stale context writes and replies. Fresh replay excludes earlier messages and summaries. The shared transcript renders a session divider.
 
-Chat prompts retain agent instructions and tools while directing clarification and task creation. Substantial execution belongs to linked, assigned ordinary issues. Ask mode remains non-mutating. Feature disablement prevents new turns and resets while retaining data and lifecycle protection; already-running turns may settle normally.
+Chat prompts retain agent instructions and tools while directing clarification and task creation. Substantial execution belongs to linked, assigned ordinary issues. Ask mode remains non-mutating. The retired feature flag cannot prevent turns, resets, or discovery. Ordinary authentication, company and conversation ownership, privacy, run authority, and execution admission checks still apply.
 
 ### Agent chat project handoff (2026-09-11)
 
@@ -2842,22 +2848,35 @@ connection. Settings → Connections is permanent; valid model verdicts take
 precedence and dependency failures use the original built-in detector.
 
 
-### Personal experimental workspace preference
+### Personal workspace preference
 
-Settings → Experimental can opt the current human into the Coordinator workspace.
-The choice defaults off and is saved per user across companies on an instance in
-`user_workspace_preferences`; it is not an instance feature or a company capability.
-Turning it off restores the classic shell without modifying canonical tasks, agents,
-artifacts, permissions, or runs. Local-trusted development uses the existing shared
-`local-board` identity, explicitly identified in Settings. Anonymous and agent actors
-cannot read or update this personal choice.
+Tasks defaults to All tasks when the viewer has no saved task view. Explicit
+view URLs and existing saved task views retain precedence.
+Task tables default to Last updated descending without an active sort header;
+an explicit column sort selects the header and shows its direction.
 
-`GET /api/workspace-preferences/me` reads only the caller's choice.
-`PUT /api/companies/{companyId}/workspace-preferences/me` updates it with authorized
-company audit context; active viewers may update their own presentation. The preference
-and sparse audit event commit atomically. Client caches are keyed by human identity,
-and switching waits for successful persistence; unavailable preferences fall back to
-the classic shell. This preference does not replace `enableClassicTaskInterface`.
+Coordinator is the standard workspace for every person. It is not an experiment.
+Settings → Experimental offers **Classic workspace**, a personal opt-in that
+defaults off. Existing Coordinator experiment values, including historical off
+values, do not opt anyone into Classic. The choice is saved per user across
+companies on an instance in `user_workspace_preferences.classic_workspace_enabled`;
+it is not an instance feature or a company capability. Turning Classic off returns
+to Coordinator without modifying canonical tasks, agents, artifacts, permissions,
+or runs. Local-trusted development uses the existing shared `local-board` identity,
+explicitly identified in Settings. Anonymous and agent actors cannot read or update
+this personal choice.
+
+`GET /api/workspace-preferences/me` reads only the caller's choice. For client
+compatibility, `coordinatorWorkspaceEnabled` reports the inverse of the Classic
+opt-in. The old stored Coordinator column is retained but no longer selects the
+workspace. `PUT /api/companies/{companyId}/workspace-preferences/me` saves the
+Classic choice through that same inverse property with authorized company audit
+context; active viewers may update their own presentation. The preference and
+sparse audit event commit atomically. Client caches are keyed by human identity,
+and switching waits for successful persistence; unavailable preferences use the
+standard Coordinator workspace. This preference does not replace
+`enableClassicTaskInterface`.
+
 ## Agent connection administration (2026-10-13)
 
 Standard agents can configure connections through the same domain APIs used by the app, bounded by their grants and their responsible user's current authority. Fresh standard agents for default Operators can manage app/tool connections, chat/email channels, AI accounts and pools, profiles and gateways without additional grants. Existing grants are not backfilled; explicit restrictions persist. Gateway administration retains the responsible human's administrative permission and does not grant agents blanket `tools:admin`.

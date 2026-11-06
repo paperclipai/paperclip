@@ -30,6 +30,8 @@ import { startOpenCodePerformanceDiagnostics } from "./performance-diagnostics.j
 import { PROVIDER_PERFORMANCE_ENV } from "../../contracts/provider-performance.js";
 import { annotateOmittedProviderText, parseOpenCodeSseFrames } from "./sse-frames.js";
 import { githubCredentialEnvironment } from "../../github-credential-environment.js";
+import { configuredOpenCodeEnvironment } from "./environment.js";
+import { CONFIGURED_ENVIRONMENT_KEYS } from "../../configured-environment.js";
 
 import {
   CODEX_SKILLLESS_BASE_INSTRUCTIONS,
@@ -88,6 +90,7 @@ import {
   canonicalOpenCodeMcpToolName,
   startOpenCodeMcpBridge,
   type OpenCodeMcpBridge,
+  type OpenCodeMcpBridgeOptions,
 } from "./mcp-bridge.js";
 import { nativeMcpLaunchBinding } from "../native-mcp.js";
 import {
@@ -397,6 +400,7 @@ export class OpenCodeServerDriver implements HarnessDriver {
           root,
           cwd,
           trace,
+          onRejectedCall: (call, error) => session?.observeRejectedToolCall(call, error),
           dispatch: (call) => {
             if (session === null)
               throw new Error("OpenCode session is not ready for tool calls");
@@ -448,6 +452,7 @@ export class OpenCodeServerDriver implements HarnessDriver {
           snapshot,
           now: this.#options.now ?? (() => new Date()),
           observabilityEnvironment: this.#options.environment,
+          managedToolNames: this.#options.dynamicTools?.map(tool => text(tool.name)).filter(Boolean),
           onDiagnostic: this.#options.onDiagnostic,
         });
         session.startEventPump();
@@ -571,11 +576,13 @@ class OpenCodeHarnessSession implements HarnessSession {
     snapshot: PersistedHarnessSession | null;
     now: () => Date;
     observabilityEnvironment?: NodeJS.ProcessEnv;
+    managedToolNames?: readonly string[];
     onDiagnostic?: (message: string) => void;
   }) {
     this.#runtime = input.runtime;
     this.#companyObservability = createOpenCodeCompanyObservability({
       environment: input.observabilityEnvironment, model: input.model, sensitiveValues: input.runtime.sensitiveValues,
+      managedToolNames: input.managedToolNames,
       onDiagnostic: input.onDiagnostic ?? ((message) => console.warn(message)),
     });
     this.#fetch = input.fetcher;
@@ -1124,6 +1131,18 @@ class OpenCodeHarnessSession implements HarnessSession {
       { turnId: request.turnId, itemId: request.itemId },
       { bypassTerminalTurnGate: true },
     );
+  }
+
+  observeRejectedToolCall(call: { tool: string; callId: string; arguments: unknown }, error: string): void {
+    const turnId = this.#activeTurnId;
+    if (!turnId || this.#closed) return;
+    const itemId = `${call.callId}:rejected:${randomBytes(12).toString("hex")}`;
+    this.#emit("item.started", {
+      kind: "dynamicToolCall", item: { type: "tool_call", id: itemId, name: call.tool, arguments: call.arguments },
+    }, { turnId, itemId });
+    this.#emit("item.completed", {
+      kind: "dynamicToolCall", item: { type: "tool_result", id: itemId, tool_use_id: itemId, is_error: true, error: redact(error) },
+    }, { turnId, itemId });
   }
 
   async dispatchTool(call: {
@@ -2423,12 +2442,14 @@ async function startRuntime(input: {
   root: string;
   cwd: string;
   trace: ProviderTraceFileSink | null;
+  onRejectedCall?: OpenCodeMcpBridgeOptions["onRejectedCall"];
   dispatch: (call: {
     tool: string;
     callId: string;
     arguments: unknown;
   }) => Promise<unknown>;
 }): Promise<OpenCodeRuntime> {
+  const taskEnvironment = configuredOpenCodeEnvironment(input.options.environment);
   const port = await reservePort();
   const password = randomBytes(32).toString("base64url");
   const username = "paperclip";
@@ -2460,6 +2481,7 @@ async function startRuntime(input: {
   const bridge = await startOpenCodeMcpBridge({
     tools: input.options.dynamicTools,
     handler: input.dispatch,
+    onRejectedCall: input.onRejectedCall,
     onDiagnostic: input.options.onDiagnostic,
     ...(input.options.durableToolRequests ? { timeoutMs: null } : {}),
   }).catch(async (error) => {
@@ -2475,6 +2497,8 @@ async function startRuntime(input: {
   const providerEnvironment = input.options.environment ?? process.env;
   const sensitiveValues = [
     ...identityValues,
+    ...Object.entries(taskEnvironment).flatMap(([key, value]) =>
+      key !== CONFIGURED_ENVIRONMENT_KEYS && value ? [value, JSON.stringify(value).slice(1, -1)] : []),
     password,
     authHeader,
     bridge.secret,
@@ -3126,7 +3150,7 @@ function sanitizedEnvironment(
   const candidate = source ?? process.env;
   for (const key of allowed)
     if (candidate[key] !== undefined) result[key] = candidate[key];
-  return { ...result, ...githubCredentialEnvironment(source ?? {}), ...overrides };
+  return { ...result, ...configuredOpenCodeEnvironment(source), ...githubCredentialEnvironment(source ?? {}), ...overrides };
 }
 
 function sanitizedEnvironmentKeys(): string[] {

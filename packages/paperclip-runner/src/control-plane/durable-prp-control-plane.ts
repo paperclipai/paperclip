@@ -76,6 +76,10 @@ const maxStateBytes = 256 * 1024 * 1024;
 const authChallengeTtlMs = 5_000;
 const stableIdPattern = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,239}$/;
 const runnerDigestPattern = /^sha256:[0-9a-f]{64}$/;
+export function isRunnerRecoveryMaintenanceCommand(type: string): boolean {
+  return ["session.snapshot", "session.goal.get", "runner.drain", "runner.suspend", "runner.shutdown", "turn.stop"].includes(type);
+}
+
 const commandTypes = new Set([
   "run.prepare",
   "run.attach",
@@ -269,6 +273,7 @@ export class SemanticToolNotDispatchedError extends Error {
 export interface DurablePrpControlPlaneOptions {
   stateDirectory: string;
   identity: DurableRecoveryIdentity;
+  authorityRunId?: string;
   expectedRunnerVersion: string;
   expectedRunnerDigest: string;
   /** Complete caller-owned admission before consuming a credential or releasing commands. */
@@ -1769,6 +1774,18 @@ class DurableCoreStore {
   }
 }
 
+/** Why an authenticated runner connection lost its lease authority. */
+export interface DurablePrpConnectionLeaseFailure {
+  readonly code: "connection_lease_expired";
+  readonly leaseId: string;
+  readonly expiresAtUnixMs: number;
+  readonly observedAtUnixMs: number;
+}
+
+type SerializedFrame =
+  | { readonly raw: unknown }
+  | { readonly decrypted: Record<string, unknown> };
+
 /** Reason supplied when a transport-neutral PRP peer closes. */
 export interface TransportCloseReason {
   readonly code?: number;
@@ -1999,6 +2016,7 @@ export class DurablePrpControlPlane {
   // next authentication. Diagnostic only: it never gates authority.
   #runnerDisconnectedAt: number | null = null;
   #connectionProcessing = new Map<AuthorityConnection, Promise<void>>();
+  #connectionLeaseFailure: DurablePrpConnectionLeaseFailure | null = null;
   #pendingSemanticCalls = new Set<string>();
   #semanticCallbacksRetired = false;
   #semanticResultPersistenceFailed = false;
@@ -2010,6 +2028,8 @@ export class DurablePrpControlPlane {
   }> = [];
   #port: number | null = null;
   #semanticInputMode: "dispatch" | "retain_only";
+  #semanticInputSourceRunId: string | null;
+  readonly #authorityRunId: () => string | undefined;
   #onSemanticToolInput?: DurablePrpControlPlaneOptions["onSemanticToolInput"];
   #onCommittedEvent?: DurablePrpControlPlaneOptions["onCommittedEvent"];
   #recoverSemanticToolInput?: DurablePrpControlPlaneOptions["recoverSemanticToolInput"];
@@ -2064,7 +2084,10 @@ export class DurablePrpControlPlane {
         "Warm run transition requires its exact approved runner artifact.",
       );
     }
-    this.#semanticInputMode = options.semanticInputMode ?? "dispatch";
+    this.#authorityRunId = () => options.authorityRunId;
+    this.#semanticInputMode = options.authorityRunId !== undefined && options.authorityRunId !== options.identity.runId
+      ? "retain_only" : options.semanticInputMode ?? "dispatch";
+    this.#semanticInputSourceRunId = this.#semanticInputMode === "retain_only" ? options.identity.runId : null;
     this.#onSemanticToolInput = options.onSemanticToolInput;
     this.#onCommittedEvent = options.onCommittedEvent;
     this.#recoverSemanticToolInput = options.recoverSemanticToolInput;
@@ -2215,10 +2238,30 @@ export class DurablePrpControlPlane {
     );
   }
 
+  #retainsSourceInputs(): boolean {
+    const owner = this.#authorityRunId();
+    return this.#semanticInputMode === "retain_only" || (owner !== undefined && owner !== this.#identity.runId);
+  }
+
+  enableSemanticInputDispatch(identity: DurableRecoveryIdentity): void {
+    if ((this.#authorityRunId() !== undefined && this.#authorityRunId() !== identity.runId)
+      || canonicalJson(this.#identity) !== canonicalJson(identity) || this.#store.state.warmTransition) {
+      throw new Error("native_runner_source_attachment_pending");
+    }
+    if (this.#semanticInputMode === "dispatch") return;
+    if (this.#identity.runId === this.#semanticInputSourceRunId
+      || this.activeRunnerConnectionCount() !== 1 || !this.semanticToolResultsSettled()) {
+      throw new Error("native_runner_source_attachment_pending");
+    }
+    this.#semanticInputMode = "dispatch";
+    this.#semanticInputSourceRunId = null;
+  }
+
   async recoverPendingSemanticInputs(): Promise<void> {
-    if (this.#semanticInputMode === "retain_only" || !this.#recoverSemanticToolInput) return;
+    if (this.#retainsSourceInputs() || !this.#recoverSemanticToolInput) return;
     const identity = this.#identity;
     for (const saved of [...this.#store.state.committedEvents]) {
+      if (this.#retainsSourceInputs() || this.#identity !== identity || this.#semanticCallbacksRetired) return;
       if (!unsettledSemanticInput(saved, this.#store.state)) continue;
       const event = saved.envelope.payload as PrpEvent;
       const semantic = (event.payload as Record<string, unknown>).semantic_tool as Record<string, unknown>;
@@ -2233,7 +2276,7 @@ export class DurablePrpControlPlane {
           correlation: { runId: identity.runId, normalizedSessionId: identity.normalizedSessionId,
             turnId: identity.turnId, itemId: event.itemId ?? identity.itemId } };
         const outcome = await this.#recoverSemanticToolInput(call);
-        if (this.#identity !== identity || this.#semanticCallbacksRetired) return;
+        if (this.#identity !== identity || this.#semanticCallbacksRetired || this.#retainsSourceInputs()) return;
         if (!outcome || this.#getCommand(commandId)) continue;
         const { input, ...metadata } = call;
         this.queueCommand("semantic_tool.result", { ...metadata, inputDigest: canonicalDigest(input),
@@ -2467,6 +2510,10 @@ export class DurablePrpControlPlane {
     ) {
       throw new Error("Durable PRP run identity rotation is invalid.");
     }
+    if (this.#authorityRunId() !== undefined && this.#authorityRunId() !== this.#identity.runId) {
+      this.#semanticInputMode = "retain_only";
+      this.#semanticInputSourceRunId ??= this.#identity.runId;
+    }
     this.disconnectActiveRunner();
     const leases = Object.fromEntries(
       Object.entries(this.#store.state.leases).map(([key, lease]) => [
@@ -2687,6 +2734,17 @@ export class DurablePrpControlPlane {
     deliverImmediately = false,
   ): DurableRecoveryCoreCommand {
     this.#store.assertWritable();
+    const authorityRunId = this.#authorityRunId();
+    const retainedSource = this.#semanticInputSourceRunId ?? this.#identity.runId;
+    const prior = commandId ? this.#getCommand(commandId) : undefined;
+    if (authorityRunId !== undefined && retainedSource !== authorityRunId
+      && !isRunnerRecoveryMaintenanceCommand(type)
+      && !(type === "run.attach" && isRecord(payload.paperclipNextAuthority)
+        && isRecord(payload.paperclipNextAuthority.identity)
+        && payload.paperclipNextAuthority.identity.runId === authorityRunId)
+      && !(prior && prior.status !== "pending" && prior.type === type && canonicalJson(prior.payload) === canonicalJson(payload))) {
+      throw new Error("native_runner_source_attachment_pending");
+    }
     const staged = this.#store.state.stagedRunAttachment;
     const retireStaged = stagedTargetActivated(this.#store.state) && (type === "turn.start"
       || (this.#stagedTargetCheckpointPublished === canonicalJson(this.#store.state.identity)
@@ -2867,11 +2925,40 @@ export class DurablePrpControlPlane {
   attachWireConnection(wire: PrpWireConnection): PrpWireAttachment {
     let connection!: AuthorityConnection;
     let processing = Promise.resolve();
+    // Frames received before the secure channel existed (or behind such a
+    // frame) are decrypted in order by the serialized chain. Once none are
+    // pending, frames are decrypted on arrival so that lease renewal can be
+    // answered without waiting for an earlier event's business commit.
+    let undecryptedFrames = 0;
     connection = new AuthorityConnection({
       wire,
       onJson: (value) => {
+        let frame: SerializedFrame;
+        if (connection.secureChannel !== null && undecryptedFrames === 0) {
+          const decrypted = this.#decryptOnArrival(connection, value);
+          if (decrypted === null) return;
+          if (decrypted.kind === "lease_renew" || decrypted.kind === "pong") {
+            // Lease renewal is liveness, not a state-changing frame. It must
+            // never queue behind a slow event commit (a long silent tool call
+            // otherwise lets the runner's lease lapse). It still commits the
+            // renewed expiry durably before its reply, and its admission is
+            // checked against persisted authority exactly as before.
+            try {
+              this.#handleDecrypted(connection, decrypted);
+            } catch {
+              connection.close();
+            }
+            return;
+          }
+          frame = { decrypted };
+        } else {
+          undecryptedFrames += 1;
+          frame = { raw: value };
+        }
         processing = processing
-          .then(() => this.#handleJson(connection, value))
+          .then(() => "raw" in frame
+            ? this.#handleJson(connection, frame.raw).finally(() => { undecryptedFrames -= 1; })
+            : this.#handleDecryptedFrame(connection, frame.decrypted))
           .catch(() => connection.close());
         const tail = processing;
         this.#connectionProcessing.set(connection, tail);
@@ -2882,6 +2969,7 @@ export class DurablePrpControlPlane {
         void tail.then(release, release);
       },
       onClose: () => {
+        this.#recordLeaseFailureIfLapsed(connection);
         this.#connections.delete(connection);
         if (connection.secureChannel !== null && this.activeRunnerConnectionCount() === 0)
           this.#runnerDisconnectedAt ??= Date.now();
@@ -2913,6 +3001,43 @@ export class DurablePrpControlPlane {
       connection.close();
       return;
     }
+    await this.#handleDecryptedFrame(connection, envelope);
+  }
+
+  /** Decrypt one secure frame in arrival order; null when it closed the connection. */
+  #decryptOnArrival(
+    connection: AuthorityConnection,
+    wire: unknown,
+  ): Record<string, unknown> | null {
+    try {
+      this.#store.assertWritable();
+      return decryptSecureJson(connection.secureChannel!, wire);
+    } catch {
+      try {
+        this.#store.state.malformedFrames += 1;
+        this.#store.save();
+      } finally {
+        connection.close();
+      }
+      return null;
+    }
+  }
+
+  /** Handle one decrypted renewal or pong immediately, outside the frame chain. */
+  #handleDecrypted(
+    connection: AuthorityConnection,
+    envelope: Record<string, unknown>,
+  ): void {
+    this.#store.assertWritable();
+    if (!this.#admitEnvelopeVersion(connection, envelope)) return;
+    if (!this.#admitAuthenticatedFrame(connection)) return;
+    if (envelope.kind === "lease_renew") this.#renewLease(connection, envelope);
+  }
+
+  #admitEnvelopeVersion(
+    connection: AuthorityConnection,
+    envelope: Record<string, unknown>,
+  ): boolean {
     const envelopeVersion = envelope.version;
     const expectedVersion =
       connection.lease?.protocolVersion ??
@@ -2927,8 +3052,64 @@ export class DurablePrpControlPlane {
         : envelopeVersion !== expectedVersion)
     ) {
       connection.close();
-      return;
+      return false;
     }
+    return true;
+  }
+
+  /**
+   * Admit every post-handshake frame against persisted authority before
+   * dispatch, including lease_renew. Renewal cannot revive a revoked or
+   * expired credential or bypass changes to its persisted binding. An expired
+   * lease is recorded so the owner can report why the runner left.
+   */
+  #admitAuthenticatedFrame(connection: AuthorityConnection): boolean {
+    if (
+      connection.secureChannel === null ||
+      connection.lease === null ||
+      canonicalJson(this.#store.state.leases[connection.lease.credentialId]) !==
+        canonicalJson(connection.lease) ||
+      connection.lease.revokedAt !== null ||
+      connection.lease.expiresAtUnixMs <= Date.now()
+    ) {
+      this.#recordLeaseFailureIfLapsed(connection);
+      connection.close();
+      return false;
+    }
+    return true;
+  }
+
+  #recordLeaseFailureIfLapsed(connection: AuthorityConnection): void {
+    const lease = connection.lease;
+    if (lease === null || connection.secureChannel === null) return;
+    const now = Date.now();
+    // Only expiry is reported. A revoked credential is the expected outcome of
+    // a warm handoff to a replacement runner, not a lost lease.
+    if (lease.expiresAtUnixMs > now) return;
+    this.#connectionLeaseFailure = {
+      code: "connection_lease_expired",
+      leaseId: lease.leaseId,
+      expiresAtUnixMs: lease.expiresAtUnixMs,
+      observedAtUnixMs: now,
+    };
+  }
+
+  /**
+   * Why the most recent authenticated runner connection lost its authority,
+   * or null while the current connection's lease is valid. A runner whose
+   * lease lapses exits without another authenticated frame, so the socket
+   * close alone would otherwise look like an ordinary transport loss.
+   */
+  get connectionLeaseFailure(): DurablePrpConnectionLeaseFailure | null {
+    return this.#connectionLeaseFailure === null ? null : { ...this.#connectionLeaseFailure };
+  }
+
+  async #handleDecryptedFrame(
+    connection: AuthorityConnection,
+    envelope: Record<string, unknown>,
+  ): Promise<void> {
+    this.#store.assertWritable();
+    if (!this.#admitEnvelopeVersion(connection, envelope)) return;
     const kind = envelope.kind;
     if (connection.secureChannel === null && kind === "auth_hello") {
       this.#authHello(connection, envelope);
@@ -2938,20 +3119,9 @@ export class DurablePrpControlPlane {
       await this.#authResponse(connection, envelope);
       return;
     }
-    // Admit every post-handshake frame against persisted authority before
-    // dispatch, including lease_renew. Renewal cannot revive a revoked or
-    // expired credential or bypass changes to its persisted binding.
-    if (
-      connection.secureChannel === null ||
-      connection.lease === null ||
-      canonicalJson(this.#store.state.leases[connection.lease.credentialId]) !==
-        canonicalJson(connection.lease) ||
-      connection.lease.revokedAt !== null ||
-      connection.lease.expiresAtUnixMs <= Date.now()
-    ) {
-      connection.close();
-      return;
-    }
+    if (!this.#admitAuthenticatedFrame(connection)) return;
+    // After admission the lease is non-null; keep the narrowed reference.
+    if (connection.lease === null) return;
     if (kind === "lease_renew") {
       this.#renewLease(connection, envelope);
       return;
@@ -3063,15 +3233,21 @@ export class DurablePrpControlPlane {
     // Repeating a request after a lost reply replays the persisted expiry.
     // It never extends a credential twice for the same observed generation.
     if (expectedExpiry === lease.expiresAtUnixMs) {
-      const candidate = structuredClone(this.#store.state);
-      const renewed = candidate.leases[lease.credentialId]!;
-      renewed.expiresAtUnixMs = Math.max(
+      const expiresAtUnixMs = Math.max(
         lease.expiresAtUnixMs,
         Date.now() + this.#connectionLeaseTtlMs,
       );
-      renewed.expiresAt = new Date(renewed.expiresAtUnixMs).toISOString();
-      candidate.lastLeaseExpiresAt = renewed.expiresAt;
-      this.#store.commit(candidate);
+      const renewed = {
+        ...structuredClone(lease),
+        expiresAtUnixMs,
+        expiresAt: new Date(expiresAtUnixMs).toISOString(),
+      };
+      // Renewal runs outside the frame chain, so an event's staged write can
+      // be in flight. save() absorbs that admitted event into this write; an
+      // explicit commit() would invalidate it and close a healthy connection.
+      this.#store.state.leases[lease.credentialId] = renewed;
+      this.#store.state.lastLeaseExpiresAt = renewed.expiresAt;
+      this.#store.save();
       connection.lease = this.#store.state.leases[lease.credentialId]!;
     }
     this.#sendJson(connection,
@@ -3597,6 +3773,7 @@ export class DurablePrpControlPlane {
     }
 
     this.#store.state.connectionCount += 1;
+    this.#connectionLeaseFailure = null;
     this.#store.state.lastLeaseId = lease.leaseId;
     this.#store.state.lastLeaseExpiresAt = lease.expiresAt;
 
@@ -3974,7 +4151,7 @@ export class DurablePrpControlPlane {
       eventType === "semantic_tool.input" || eventType === "mcp_app.tool_input";
     if (
       isSemanticInput &&
-      ((this.#onSemanticToolInput === undefined && this.#semanticInputMode !== "retain_only") ||
+      ((this.#onSemanticToolInput === undefined && !this.#retainsSourceInputs()) ||
         semantic?.phase !== "input" ||
         typeof semantic.callId !== "string" ||
         typeof semantic.operationId !== "string" ||
@@ -4114,7 +4291,7 @@ export class DurablePrpControlPlane {
     }
     if (!isCurrentOwner()) return;
 
-    const liveCall = this.#semanticInputMode !== "retain_only" && isSemanticInput && this.#onSemanticToolInput && semantic !== undefined
+    const liveCall = !this.#retainsSourceInputs() && isSemanticInput && this.#onSemanticToolInput && semantic !== undefined
       && typeof semantic.callId === "string" && typeof semantic.operationId === "string"
       ? { callId: semantic.callId, operationId: semantic.operationId, input: semantic.input,
           sourceEventId, sourceEventType: eventType,
@@ -4132,7 +4309,7 @@ export class DurablePrpControlPlane {
     try {
       await this.flushCheckpoint();
       if (this.#eventOwner !== connection || this.#identity !== identity) return;
-      if (ownsLiveDispatch && liveCall && liveCommandId && this.#onSemanticToolInput && !this.#getCommand(liveCommandId)) {
+      if (!this.#retainsSourceInputs() && ownsLiveDispatch && liveCall && liveCommandId && this.#onSemanticToolInput && !this.#getCommand(liveCommandId)) {
         const call = liveCall;
         const commandId = liveCommandId;
         const recordFailure = (stage: "persist_result" | "dispatch", error: unknown) => {

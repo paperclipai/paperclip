@@ -267,11 +267,12 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
       enablePaperclipNotebook: parsed.data.enablePaperclipNotebook ?? false,
       enableGoogleWorkspaceConnector: parsed.data.enableGoogleWorkspaceConnector ?? false,
       enableCases: parsed.data.enableCases ?? false,
-      enableAgentChat: parsed.data.enableAgentChat ?? false,
+      enableAgentChat: true,
       enableCombinedInboxTasks: parsed.data.enableCombinedInboxTasks ?? false,
       enableArtifactsV1: parsed.data.enableArtifactsV1 ?? true,
       enableConferenceRoomChat: parsed.data.enableConferenceRoomChat ?? false,
       enableClassicTaskInterface: parsed.data.enableClassicTaskInterface ?? false,
+      enableLegacyComposerSubmit: parsed.data.enableLegacyComposerSubmit ?? false,
       enableIssuePlanDecompositions: parsed.data.enableIssuePlanDecompositions ?? false,
       enableExperimentalFileViewer: parsed.data.enableExperimentalFileViewer ?? false,
       enableExternalObjects: parsed.data.enableExternalObjects ?? false,
@@ -325,11 +326,12 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
     enablePaperclipNotebook: false,
     enableGoogleWorkspaceConnector: false,
     enableCases: false,
-    enableAgentChat: false,
+    enableAgentChat: true,
     enableCombinedInboxTasks: false,
     enableArtifactsV1: true,
     enableConferenceRoomChat: false,
     enableClassicTaskInterface: false,
+    enableLegacyComposerSubmit: false,
     enableIssuePlanDecompositions: false,
     enableExperimentalFileViewer: false,
     enableExternalObjects: false,
@@ -382,8 +384,8 @@ export function applyManagedExperimentalOverlay(
     [ManagedExperimentalFeatureKey, boolean]
   >) {
     // Existing Cloud stack configs may still carry retired flags. Accept the
-    // document during rollout, but never let retired flags disable Apps or MCP aggregators.
-    if (key === "enableApps" || key === "enableMcpAggregators") continue;
+    // document during rollout, but never let retired flags disable Apps, Agent Chat or MCP aggregators.
+    if (key === "enableApps" || key === "enableAgentChat" || key === "enableMcpAggregators") continue;
     next[key] = value;
     managedKeys[key] = { managed: true, managedBy: PAPERCLIP_CLOUD_MANAGED_BY };
   }

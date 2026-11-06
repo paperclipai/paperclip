@@ -23,7 +23,7 @@ vi.mock("@/api/instanceSettings", () => ({
   instanceSettingsApi: mockInstanceSettingsApi,
 }));
 
-vi.mock("@/components/CoordinatorWorkspaceSetting", () => ({ CoordinatorWorkspaceSetting: () => null }));
+vi.mock("@/components/ClassicWorkspaceSetting", () => ({ ClassicWorkspaceSetting: () => null }));
 
 vi.mock("@/context/CompanyContext", () => ({
   useCompany: () => ({ selectedCompany: { id: "butter", issuePrefix: "BUT" } }),
@@ -104,6 +104,7 @@ function defaultExperimentalSettings(): InstanceExperimentalSettingsPayload {
     enableArtifactsV1: false,
     enableConferenceRoomChat: false,
     enableClassicTaskInterface: false,
+    enableLegacyComposerSubmit: false,
     enableIssuePlanDecompositions: false,
     enableExperimentalFileViewer: false,
     enableExternalObjects: false,
@@ -475,6 +476,25 @@ describe("InstanceExperimentalSettings — Conference Room Chat card (PAP-11233)
     expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenLastCalledWith({
       enableClassicTaskInterface: false,
     });
+  });
+
+  it("saves and restores the legacy composer shortcut", async () => {
+    await renderPage();
+    const selector = 'button[aria-label="Toggle Command/Ctrl+Enter to submit"]';
+    const toggle = container.querySelector<HTMLButtonElement>(selector)!;
+    expect(toggle.getAttribute("aria-checked")).toBe("false");
+    await act(async () => { toggle.click(); });
+    await flushReact();
+    expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenLastCalledWith({ enableLegacyComposerSubmit: true });
+
+    flushSync(() => { root?.unmount(); });
+    root = null;
+    await renderPage();
+    const restored = container.querySelector<HTMLButtonElement>(selector)!;
+    expect(restored.getAttribute("aria-checked")).toBe("true");
+    await act(async () => { restored.click(); });
+    await flushReact();
+    expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenLastCalledWith({ enableLegacyComposerSubmit: false });
   });
 
   it("renders and patches the Decisions experimental toggle", async () => {
