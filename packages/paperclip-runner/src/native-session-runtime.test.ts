@@ -697,13 +697,12 @@ describe("executeNativeSession recovery", () => {
     },
   );
 
-  it.each([{ proposal: false, replayed: false }, { proposal: true, replayed: false }, { proposal: false, replayed: true }])("settles only a newly committed provider exit while its stream stays open ($proposal, $replayed)", async ({ proposal, replayed }) => {
+  it.each([{ proposal: false, replayed: false }, { proposal: true, replayed: false }, { proposal: false, replayed: true }])("settles committed or duplicate provider exits while their stream stays open ($proposal, $replayed)", async ({ proposal, replayed }) => {
     const capabilities = { resume: true, typedEvents: true, steering: false, interruption: true, structuredResult: true };
     let release!: () => void;
     const held = new Promise<void>(resolve => { release = resolve; });
     const close = vi.fn(async () => { release(); });
     const events: PrpEvent[] = [];
-    let streamBlocked = false;
     const session: NativeSession = {
       identity: () => identity,
       async capabilities() { return capabilities; },
@@ -712,7 +711,7 @@ describe("executeNativeSession recovery", () => {
         yield runnerEvent(proposal ? 2 : 1, "session.failed", { code: "provider_exited", provider: "codex",
           recoverable: false, expected: false, completedByExitedProcess: false,
           previousTurnCompleted: false, exitCode: 1, processGeneration: 1 });
-        streamBlocked = true; await held;
+        await held;
       },
       async startTurn() { return { turnId: "turn-recovery" }; },
       async result() { return null; },
@@ -735,11 +734,6 @@ describe("executeNativeSession recovery", () => {
     let settled = false, succeeded = false, failure: unknown;
     const observed = execution.then(() => { succeeded = true; settled = true; }, error => { failure = error; settled = true; });
     try {
-      if (replayed) {
-        await vi.waitFor(() => expect(streamBlocked).toBe(true), { timeout: 100, interval: 5 });
-        expect(settled).toBe(false); expect(close).not.toHaveBeenCalled();
-        release();
-      }
       await vi.waitFor(() => expect(settled).toBe(true), { timeout: 100, interval: 5 });
       expect(succeeded).toBe(false);
       expect(failure).toMatchObject({ code: "native_provider_terminal_failed", providerCode: "provider_exited", recoverable: false });
@@ -747,6 +741,49 @@ describe("executeNativeSession recovery", () => {
       expect(events.filter(event => event.eventType === "run.result.proposed").map(event => event.payload)).toEqual(proposal ? [result] : []);
       expect(events.some(event => event.eventType === "run.result.accepted")).toBe(false);
       expect(close).toHaveBeenCalledOnce();
+    } finally { release(); await observed; }
+  });
+
+  it.each(["expected", "completedByExitedProcess", "previousTurnCompleted", "provider", "run", "session"] as const)("retains EOF settlement when provider exit fails the %s safety predicate", async mismatch => {
+    const capabilities = { resume: true, typedEvents: true, steering: false, interruption: true, structuredResult: true };
+    let release!: () => void;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    let streamBlocked = false;
+    const close = vi.fn(async () => { release(); });
+    const event = { ...runnerEvent(1, "session.failed", { code: "provider_exited", provider: mismatch === "provider" ? "acpx" : "codex",
+      recoverable: false, expected: mismatch === "expected", completedByExitedProcess: mismatch === "completedByExitedProcess",
+      previousTurnCompleted: mismatch === "previousTurnCompleted", exitCode: 1, processGeneration: 1 }),
+      ...(mismatch === "run" ? { runId: "foreign-run" } : {}),
+      ...(mismatch === "session" ? { normalizedSessionId: "foreign-session" } : {}) };
+    const session: NativeSession = {
+      identity: () => identity, async capabilities() { return capabilities; },
+      async *events() { yield event; streamBlocked = true; await held; },
+      async startTurn() { return { turnId: "turn-recovery" }; },
+      async result() { return null; },
+      async snapshot() { return { backendKind: "mock", sessionId: "driver-recovery", identity,
+        providerSessionId: "provider-recovery", cursor: null, activeTurnId: null, pendingRuntimeRequests: [], lineage: [] }; },
+      close,
+    };
+    const completeRun = vi.fn();
+    const execution = executeNativeSession({ input, backend: {
+      async descriptor() { return { kind: "mock", name: "guarded-provider-exit", version: "1", capabilities }; },
+      async openSession() { return session; },
+    }, controlPlane: {
+      async openRun() {}, async checkpointSession() {},
+      async appendEvent(value) {
+        if (!("sourceSeq" in value)) throw new Error("Expected provider PRP event");
+        return { cursor: value.sourceSeq, highestContiguousSourceSeq: value.sourceSeq, disposition: "committed" }; },
+      async replayEvents() { return { events: [], highestContiguousSourceSeq: 0 }; }, completeRun,
+    }, runnerInstanceId: "runner-recovery", controlPlaneInstanceId: "control-recovery" });
+    let settled = false, failure: unknown;
+    const observed = execution.then(() => { settled = true; }, error => { failure = error; settled = true; });
+    try {
+      await vi.waitFor(() => expect(streamBlocked).toBe(true), { timeout: 100, interval: 5 });
+      expect(settled).toBe(false); expect(close).not.toHaveBeenCalled(); expect(completeRun).not.toHaveBeenCalled();
+      release();
+      await observed;
+      expect(failure).toMatchObject({ code: "native_provider_terminal_failed", providerCode: "provider_exited", recoverable: false });
+      expect(close).toHaveBeenCalledOnce(); expect(completeRun).not.toHaveBeenCalled();
     } finally { release(); await observed; }
   });
 

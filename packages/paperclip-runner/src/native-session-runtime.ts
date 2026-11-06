@@ -1159,7 +1159,7 @@ async function consumeTurn(
           typeof failure.message === "string" ? failure.message : undefined,
           readProviderFailure(failure.providerFailure),
         );
-        if (receipt.disposition === "committed" && !providerFailure.recoverable && failure.code === "provider_exited"
+        if ((receipt.disposition === "committed" || receipt.disposition === "duplicate") && !providerFailure.recoverable && failure.code === "provider_exited"
           && failure.expected === false && failure.completedByExitedProcess === false
           && failure.previousTurnCompleted === false && failure.provider === input.provider.kind
           && event.runId === input.binding.runId && event.normalizedSessionId === session.identity().sessionId) {
