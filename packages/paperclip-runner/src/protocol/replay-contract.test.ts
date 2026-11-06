@@ -73,7 +73,6 @@ describe("PRP v1 JSON Schema contract", () => {
     const event = (fixture.events as Record<string, unknown>[])[0]!;
     const accepted = validatePrpEvent(event);
     expect(accepted.ok).toBe(true);
-    // Narrowing after validation is a cast, not a copy.
     if (accepted.ok) expect(accepted.event).toBe(event);
     const rejected = validatePrpEvent({ ...event, eventType: 42 });
     expect(rejected.ok).toBe(false);
