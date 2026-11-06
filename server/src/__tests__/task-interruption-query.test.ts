@@ -90,6 +90,29 @@ describe.skipIf(!support.supported)("task interruption latest run query", () => 
       .toMatchObject({ state: "failed", canRetry: true });
   });
 
+  it("decides several pending native resumes in one list read", async () => {
+    const companyId = randomUUID(), agentId = randomUUID(), otherAgentId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Resuming list", issuePrefix: `L${companyId.slice(0, 7)}` });
+    await db.insert(agents).values([{ id: agentId, companyId, name: "Resuming agent", adapterType: "paperclip_runner" },
+      { id: otherAgentId, companyId, name: "Other agent", adapterType: "paperclip_runner" }]);
+    const resumeAt = new Date(Date.now() + 30_000);
+    const list = [];
+    for (let index = 0; index < 6; index++) {
+      const [issue] = await db.insert(issues).values({ companyId, title: `Resume ${index}`, status: "in_progress",
+        assigneeAgentId: index % 2 ? otherAgentId : agentId }).returning();
+      const runId = randomUUID();
+      await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, nativeIssueId: issue.id, scopeKind: "issue",
+        status: "failed", runtimeMode: "native", errorCode: "native_session_interrupted", finishedAt: new Date() });
+      await db.insert(nativeRunFinalizations).values({ companyId, issueId: issue.id, runId, phase: "retryable_failure",
+        attempt: 1, nextAttemptAt: resumeAt });
+      list.push(issue);
+    }
+    const result = await taskInterruptionPresentations(db, companyId, list);
+    list.forEach((issue, index) => expect(result.get(issue.id)).toMatchObject(index % 2
+      ? { state: "failed", canRetry: true }
+      : { state: "retry_scheduled", canRetry: false, nextRetryAt: resumeAt.toISOString() }));
+  });
+
   it("redacts workspace preparation errors on task detail and list reads", async () => {
     vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY", "a".repeat(64));
     try {
