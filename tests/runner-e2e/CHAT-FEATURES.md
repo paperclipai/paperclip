@@ -534,3 +534,33 @@ permissions, human/native bounds and clocks remain unchanged. Cap 2 and zero
 retries remain the controller policy. Existing candidate core overlays stay
 unmerged, and the held full-catalog gate remains 196 of 244. The next native
 measurement is still required; none of these local controls regrades an original.
+
+
+The next secret-pair measurement retains launch 3310's one original PASS and three
+original FAILURES. Multipart question v6 was independently verified on the same
+form without dismissal or replacement, with exact real answers and one continuation
+in 241214ms of its original 300000ms cell. This does not prove reliability or isolate
+the fixture change as the sole cause.
+
+Company secret v17 recognizes an ordered secure-save acknowledgment across bound
+explanatory clauses, while rejecting a declined save or acknowledgment. Its original
+initial native succeeded in 344242ms; only 86070ms remained at the false pre-human
+gate. Measured handlers do not explain that latency, and no avoidable latency bug
+was proved. Human entry and later native turns remain unqualified.
+
+Personal secret v16 preserves the canonical saved confirmation policy through real
+secure entry, acceptance and independent accounting. Both supported wake policies
+must match the original saved card exactly. The actual wake-on-accept/After Saving
+card was rejected before private entry; canceled or negated acknowledgments remain
+rejected. Team install v10 accepts a bounded qualifier on the exact required-skill
+subject for truthful partial-installation reporting. Its local calibration does
+not regrade original 5242 or provide runtime-migration credit; the fifteen other
+saved-state and phase checks remain required.
+
+Only Company, Personal and Team versions change in this batch. All 244 YAML
+queries, contexts, outcomes, permissions, human/native bounds, model and clocks
+remain fixed. The next measurement is only the Company and Personal secret pair,
+with cap 2, zero automatic retries and original 480000ms/660000ms cells. Team remains
+calibrated locally; the final uniform ten is still required on this same source.
+All original grades, historical conditions, unmerged core holds and the 196/244
+full-catalog gate remain intact.
