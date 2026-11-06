@@ -751,7 +751,7 @@ describe("public repository paid workflow security", () => {
       "Materialize verified pinned OpenCode executable",
     );
     expect(testJob).toContain(
-      "matrix.profileId == 'legacy-opencode' || matrix.profileId == 'runner-opencode' || matrix.suiteId == 'openrouter-model-breadth'",
+      "matrix.profileId == 'legacy-opencode' || startsWith(matrix.profileId, 'runner-opencode') || matrix.suiteId == 'openrouter-model-breadth'",
     );
     expect(testJob).toContain(
       "node packages/paperclip-runner/scripts/materialize-opencode-binary.mjs",

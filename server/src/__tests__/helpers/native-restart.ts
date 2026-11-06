@@ -247,7 +247,7 @@ export function nativeRestartFixture(options: { dedicatedDatabaseUrl?: string } 
     };
   }
 
-  return { seedRun, transportOptions, get current() { return { temporary, runtimeRoot, paperclipHome, apiUrl, companyId, agentId, successor }; } };
+  return { seedRun, transportOptions, get current() { return { temporary, runtimeRoot, paperclipHome, apiUrl, companyId, agentId, successor, server }; } };
 }
 
 export function remotePreparedWorkspace() {

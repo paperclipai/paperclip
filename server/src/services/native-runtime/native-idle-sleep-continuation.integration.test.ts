@@ -12,6 +12,7 @@ import { CONTROL_PLANE_CONFORMANCE_RESULT, CONTROL_PLANE_CONFORMANCE_TERMINAL } 
 import { nativeRestartFixture, describeEmbeddedPostgres } from "../../__tests__/helpers/native-restart.js";
 import { resolveExternalTestDatabaseUrl } from "../../__tests__/helpers/external-test-database.js";
 import { heartbeatService } from "../heartbeat.js";
+import { flushBudgetEvaluationWork } from "../budgets.js";
 import { instanceSettingsService } from "../instance-settings.js";
 import { secretService } from "../secrets.js";
 import { issueRoutes } from "../../routes/issues.js";
@@ -125,6 +126,7 @@ describeEmbeddedPostgres("native idle sleep cold continuation", () => {
       await heartbeat.invoke(agentId, "on_demand", { issueId }, "manual", { actorType: "user", actorId: userId });
       await heartbeat.drainActiveRunExecutions();
       await heartbeat.reconcileCostAccounting();
+      await flushBudgetEvaluationWork(db, { companyId });
       expect(turns).toHaveLength(1);
       expect(opened).toHaveLength(1);
       const [first] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, turns[0]));
@@ -181,6 +183,7 @@ describeEmbeddedPostgres("native idle sleep cold continuation", () => {
       await heartbeat.resumeQueuedRuns();
       await heartbeat.drainActiveRunExecutions();
       await heartbeat.reconcileCostAccounting();
+      await flushBudgetEvaluationWork(db, { companyId });
       expect(turns).toHaveLength(2);
       expect(new Set(turns).size).toBe(2);
       expect(opened).toHaveLength(2);
