@@ -81,14 +81,16 @@ describeEmbeddedPostgres("heartbeat native recovery interrupted by graceful shut
 
   it.each([
     // Attempt 0: no execution claimed the run yet, so its first start is counted.
-    { drainedAttempt: 0, charges: true },
-    { drainedAttempt: 1, charges: false },
+    { drainedAttempt: 0, charges: true, ownershipWait: false },
+    { drainedAttempt: 1, charges: false, ownershipWait: false },
     // The third attempt may continue after a drain; it does not start a fourth.
-    { drainedAttempt: 3, charges: false },
-  ])("charges a resume after a clean drain only for the first execution (attempt $drainedAttempt)", async ({ drainedAttempt, charges }) => {
+    { drainedAttempt: 3, charges: false, ownershipWait: false },
+    // Scans that wait for the old controller to exit keep the drain record.
+    { drainedAttempt: 3, charges: false, ownershipWait: true },
+  ])("charges a resume after a clean drain only for the first execution (attempt $drainedAttempt, ownership wait $ownershipWait)", async ({ drainedAttempt, charges, ownershipWait }) => {
     // RC-22: each graceful restart cost one of the three recovery attempts, so
     // infrastructure restarts the run did not cause exhausted its budget.
-    const f = await seedRecoverableRun(`DRAIN-BUDGET-${drainedAttempt}`);
+    const f = await seedRecoverableRun(`DRAIN-BUDGET-${drainedAttempt}${ownershipWait ? "-WAIT" : ""}`);
     let drained: unknown;
     const heartbeat = heartbeatService(f.db, {
       nativeSessionBackendFactory: vi.fn(() => { throw new Error("A suspended recovery must not open a provider session"); }),
@@ -103,7 +105,22 @@ describeEmbeddedPostgres("heartbeat native recovery interrupted by graceful shut
     } finally { await heartbeat.drainActiveRunExecutions(); }
     expect(drained).toMatchObject({ restartSuspendedRunIds: [f.runId] });
 
-    await f.db.update(nativeRunFinalizations).set({ controllerPid: 2_000_000_001, attempt: drainedAttempt })
+    await f.db.update(nativeRunFinalizations).set({ attempt: drainedAttempt })
+      .where(eq(nativeRunFinalizations.runId, f.runId));
+    if (ownershipWait) {
+      // The drained controller (this test process) is still alive, so the new
+      // server's scans wait for ownership evidence instead of claiming.
+      const waiting = heartbeatService(f.db, { nativeSessionBackendFactory: vi.fn(() => { throw new Error("no claim while the owner lives"); }) });
+      for (let scan = 0; scan < 2; scan += 1) {
+        try { expect((await waiting.recoverNativeRunsAfterRestart(new Date(), [f.runId])).claims).toEqual([]); }
+        finally { await waiting.drainActiveRunExecutions(); }
+      }
+      const [owner] = await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId));
+      expect(owner.recoveryState).toBe("awaiting_evidence");
+      expect((owner.recoveryHistory as Array<{ disposition?: string }>).slice(-2).map(entry => entry.disposition))
+        .toEqual(["restart_suspended", "awaiting_evidence"]);
+    }
+    await f.db.update(nativeRunFinalizations).set({ controllerPid: 2_000_000_001 })
       .where(eq(nativeRunFinalizations.runId, f.runId));
     // Let the executor take its execution lease, then record the attempt it
     // saved when it reaches the provider session.
@@ -132,9 +149,12 @@ describeEmbeddedPostgres("heartbeat native recovery interrupted by graceful shut
     expect(savedAttempts).toEqual([charges ? drainedAttempt + 1 : drainedAttempt]);
   }, 90_000);
 
-  it("still refuses a fourth attempt after a crash", () => {
-    const evidence = { runnerPidAlive: false, runnerGroupAlive: false, processStartMatches: false,
-      hasCheckpoint: true, checkpointIdentityMatches: true, hasProviderEvidence: true, providerAttempt: 3 };
+  it.each([false, true])("still refuses a fourth attempt after a crash (remote bootstrap %s)", (remote) => {
+    const evidence = remote
+      ? { remoteSandbox: true, remoteBootstrapProvenIncomplete: true, runnerPidAlive: false, runnerGroupAlive: false,
+        processStartMatches: false, hasCheckpoint: false, hasProviderEvidence: false, providerAttempt: 3 }
+      : { runnerPidAlive: false, runnerGroupAlive: false, processStartMatches: false,
+        hasCheckpoint: true, checkpointIdentityMatches: true, hasProviderEvidence: true, providerAttempt: 3 };
     expect(classifyNativeRunnerRecoveryEvidence(evidence).reason).toBe("execution_recovery_budget_exhausted");
     expect(classifyNativeRunnerRecoveryEvidence({ ...evidence, resumeChargesAttempt: false }).reason)
       .not.toBe("execution_recovery_budget_exhausted");

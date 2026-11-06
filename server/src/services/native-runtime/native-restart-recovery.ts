@@ -137,19 +137,26 @@ export function nextNativeProviderAttempt(
  * The execution recovery budget bounds runs that keep failing their provider
  * turn. A graceful drain that suspended the run for reattachment is an
  * infrastructure restart the run did not cause, so the next controller's
- * resume of that turn does not spend an attempt. A crash (no drain record) or
- * any later recovery disposition still charges one.
+ * resume of that turn does not spend an attempt. A crash (no drain record)
+ * still charges one. The drain record is consumed by the next claim; waits for
+ * ownership evidence or a deferred block in between do not erase it.
  */
+const RECOVERY_CLAIM_DISPOSITIONS: ReadonlySet<unknown> = new Set<NativeRestartRecoveryClaim["kind"]>([
+  "reattach_existing_runner", "reattach_remote_runner", "resume_dead_runner", "bootstrap_incomplete",
+]);
 export function suspendedByCleanDrain(coordinator: {
   attempt: number;
-  recoveryState: string | null;
   recoveryHistory: ReadonlyArray<{ disposition?: unknown }>;
 }): boolean {
   // Attempt 0 means no execution has claimed the run yet. Its first provider
   // start must still be counted, whatever interrupted preparation.
-  return coordinator.attempt > 0 &&
-    coordinator.recoveryState === "awaiting_runner_reattach" &&
-    coordinator.recoveryHistory.at(-1)?.disposition === "restart_suspended";
+  if (coordinator.attempt <= 0) return false;
+  for (let index = coordinator.recoveryHistory.length - 1; index >= 0; index -= 1) {
+    const disposition = coordinator.recoveryHistory[index]?.disposition;
+    if (disposition === "restart_suspended") return true;
+    if (RECOVERY_CLAIM_DISPOSITIONS.has(disposition)) return false;
+  }
+  return false;
 }
 
 const controllerBootId = randomUUID();
@@ -512,7 +519,7 @@ export function classifyNativeRunnerRecoveryEvidence(input: {
     }
     if (input.remoteBootstrapProvenIncomplete === true && !input.hasCheckpoint && !input.hasProviderEvidence) {
       // Each same-run bootstrap is another provider attempt; keep restarts bounded.
-      if ((input.providerAttempt ?? 0) >= 3)
+      if (input.resumeChargesAttempt !== false && (input.providerAttempt ?? 0) >= 3)
         return { claimKind: null, reason: "execution_recovery_budget_exhausted" };
       return { claimKind: "bootstrap_incomplete", reason: "remote_bootstrap_proven_incomplete" };
     }
@@ -936,6 +943,8 @@ export async function claimNativeRestartRecoveries(input: {
           input.coordinatedPreviousController ?? null,
       });
       if (!takeover.allowed) {
+        const previous = row.coordinator.recoveryHistory.at(-1);
+        const waitAlreadyRecorded = previous?.disposition === "awaiting_evidence" && previous.reason === takeover.reason;
         const event = historyEntry({
           now,
           restartKind: input.restartKind,
@@ -957,7 +966,9 @@ export async function claimNativeRestartRecoveries(input: {
           .set({
             recoveryState: "awaiting_evidence",
             recoveryRequestId: input.recoveryRequestId ?? null,
-            recoveryHistory: appendBoundedRecoveryHistory(event),
+            // Repeated scans of one ownership wait record it once, so the
+            // bounded history keeps the drain record the next claim reads.
+            ...(waitAlreadyRecorded ? {} : { recoveryHistory: appendBoundedRecoveryHistory(event) }),
             updatedAt: now,
           })
           .where(
