@@ -25,7 +25,8 @@ test('the manifest joins all244 source YAML scenarios without importing a domain
     const override = field => manifest.source.repairMetadata.changedFields.find(change => change.key === scenario.id && change.field === field);
     for (const [field, original] of [['originalQuery', scenario.query], ['originalContext', scenario.context], ['expectedOutcome', scenario.expected_outcome]]) {
       const change = override(field);
-      if (change) { assert.equal(change.previous, original); assert.equal(actual[field], change.current); }
+      // The scenario YAML in this tree is the current definition; the manifest keeps the previous value as history.
+      if (change) { assert.notEqual(change.previous, change.current); assert.equal(original, change.current); assert.equal(actual[field], change.current); }
       else assert.equal(actual[field], original);
     }
     assert.ok(!Object.hasOwn(actual, 'status') && !Object.hasOwn(actual, 'passed'));
