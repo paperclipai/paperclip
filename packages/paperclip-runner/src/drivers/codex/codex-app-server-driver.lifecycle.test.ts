@@ -460,6 +460,27 @@ describe("Codex app-server Codex driver", () => {
     ])).resolves.toEqual({ value: undefined, done: true });
   });
 
+  it("drops events the detached controller had not read yet", async () => {
+    const transport = new FakeCodexTransport();
+    Object.assign(transport, { detachControllerForRestart: vi.fn(async () => undefined) });
+    const driver = makeDriver([transport]);
+    const session = await driver.openSession({
+      runId: "run-detach-buffered",
+      normalizedSessionId: "normalized-detach-buffered",
+      workingDirectory: WORKSPACE,
+    });
+    await session.startTurn({ message: { role: "user", text: "Keep working" } });
+    transport.push("turn/started", { threadId: "thread-1", turn: { id: "turn-1", status: "inProgress", items: [] } });
+    // Let the notification pump buffer these events without a reader.
+    await new Promise(resolve => setTimeout(resolve, 20));
+
+    await session.detachControllerForRestart?.();
+
+    // The next controller replays them from the runner journal instead.
+    await expect(session.events()[Symbol.asyncIterator]().next())
+      .resolves.toEqual({ value: undefined, done: true });
+  });
+
   it("sends direct chat as plain text and permits a follow-up turn", async () => {
     const transport = new FakeCodexTransport();
     const driver = makeDriver([transport], { conversationMode: "direct" });
