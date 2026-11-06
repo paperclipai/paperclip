@@ -119,10 +119,76 @@ function isThinkingLine(line) {
   );
 }
 
-function parseStdoutLine(line, ts) {
-  const trimmed = stripAnsi(line).trim();
-  if (!trimmed) return [];
+// Hermes CLI quiet mode (pipe/TTY) renders reasoning as a dim TUI box:
+//   ┌─ Reasoning ─…─┐
+//    wrapped reasoning text, one terminal line per chunk
+//   └─…─┘
+// Only the box glyphs are matched — border width follows the terminal width.
+const REASONING_BOX_OPEN = /^┌─\s*Reasoning\s*─+┐$/u;
+const REASONING_BOX_CLOSE = /^└─+┘$/u;
+const REASONING_BOX_CLOSE_TRAILING = /└─+┘$/u;
 
+function stripTrailingReasoningBorder(text) {
+  return text.replace(REASONING_BOX_CLOSE_TRAILING, "").trim();
+}
+
+// delta: true coalesces consecutive wrapped lines into a single thinking
+// bubble (appendTranscriptEntry) — the issue chat keeps only ~30 visible
+// transcript entries, so one entry per wrapped line would flood the window.
+// Hermes wraps reasoning at the terminal width and drops the trailing space
+// at each break, so every line carries an explicit newline to keep words from
+// fusing; markdown renders that soft break back into a space.
+// Every interior line carries `delta: true`: appendTranscriptEntry only merges
+// into a chain whose head is also a delta, so a `delta: false` head would split
+// each box into two bubbles. The cost is that two Reasoning boxes emitted back
+// to back share one bubble — the delta contract has no way to start a new
+// segment within the same kind, and a fragmented box is worse than a merged
+// pair of adjacent boxes.
+function reasoningLineEntry(text, ts) {
+  return { kind: "thinking", ts, text: `${text}\n`, delta: true };
+}
+
+function createStdoutParser() {
+  let inReasoningBox = false;
+
+  return {
+    parseLine(line, ts) {
+      const trimmed = stripAnsi(line).trim();
+      if (!trimmed) return [];
+
+      // Reasoning box is checked before every other classification: a box
+      // that never closes must not leak its body into assistant output.
+      if (inReasoningBox) {
+        if (REASONING_BOX_CLOSE.test(trimmed)) {
+          inReasoningBox = false;
+          return [];
+        }
+
+        // Closing border glued to the tail of the last text line.
+        const withoutBorder = stripTrailingReasoningBorder(trimmed);
+        if (withoutBorder !== trimmed) {
+          inReasoningBox = false;
+          return withoutBorder ? [reasoningLineEntry(withoutBorder, ts)] : [];
+        }
+
+        return [reasoningLineEntry(trimmed, ts)];
+      }
+
+      if (REASONING_BOX_OPEN.test(trimmed)) {
+        inReasoningBox = true;
+        return [];
+      }
+
+      return parseOutsideReasoningBox(trimmed, ts);
+    },
+
+    reset() {
+      inReasoningBox = false;
+    },
+  };
+}
+
+function parseOutsideReasoningBox(trimmed, ts) {
   if (trimmed.startsWith("[hermes]") || trimmed.startsWith("[paperclip]")) {
     return [{ kind: "system", ts, text: trimmed }];
   }
@@ -196,4 +262,13 @@ function parseStdoutLine(line, ts) {
   return [{ kind: "assistant", ts, text: trimmed }];
 }
 
-module.exports = { parseStdoutLine };
+// Shared instance backing parseStdoutLine. The sandboxed worker evaluates this
+// file once per adapter and reuses it for every parse request, so a single
+// module-level parser keeps Reasoning-box state across calls.
+const defaultParser = createStdoutParser();
+
+function parseStdoutLine(line, ts) {
+  return defaultParser.parseLine(line, ts);
+}
+
+module.exports = { parseStdoutLine, createStdoutParser };

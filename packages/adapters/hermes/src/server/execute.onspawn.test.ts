@@ -226,3 +226,60 @@ describe("hermes-local adapter onSpawn forwarding", () => {
     }
   });
 });
+
+/**
+ * Quiet mode is the default because hermes' non-quiet path echoes the prompt
+ * through Rich markup unescaped; prompt content like `[guide](/issues/TIM-57)`
+ * raises rich.errors.MarkupError and the whole run exits 1 (adapter_failed).
+ */
+describe("hermes-local adapter quiet mode default", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  function lastArgs(): string[] {
+    const call = vi.mocked(serverUtils.runChildProcess).mock.calls.at(-1)!;
+    return call[2] as string[];
+  }
+
+  it("passes -Q when quiet is unset", async () => {
+    const { ctx } = makeCtx();
+    await execute(ctx as any);
+
+    expect(lastArgs()).toContain("-Q");
+  });
+
+  it("passes -Q when quiet is explicitly true", async () => {
+    const { ctx } = makeCtx({ quiet: true });
+    await execute(ctx as any);
+
+    expect(lastArgs()).toContain("-Q");
+  });
+
+  it("omits -Q when quiet is explicitly false", async () => {
+    const { ctx } = makeCtx({ quiet: false });
+    await execute(ctx as any);
+
+    expect(lastArgs()).not.toContain("-Q");
+  });
+
+  it("passes -Q for an empty adapterConfig with no run config", async () => {
+    // Production condition: the agent has no adapter overrides at all, so
+    // execute() falls through to ctx.agent.adapterConfig ({}).
+    const { ctx } = makeCtx();
+    await execute({ ...ctx, config: undefined } as any);
+
+    expect(lastArgs()).toContain("-Q");
+  });
+
+  it("omits -Q for quiet: false on an empty adapterConfig", async () => {
+    const { ctx } = makeCtx();
+    await execute({
+      ...ctx,
+      config: undefined,
+      agent: { ...ctx.agent, adapterConfig: { quiet: false } },
+    } as any);
+
+    expect(lastArgs()).not.toContain("-Q");
+  });
+});

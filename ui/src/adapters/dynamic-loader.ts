@@ -85,14 +85,38 @@ function notifyResultReady(): void {
 }
 
 /**
+ * Whether a fresh worker result still matches the result already handed to the
+ * transcript. Both sides are plain postMessage-cloned data produced by the same
+ * parser source, so a serialised compare is sufficient — and `TranscriptEntry`
+ * variants nest deeply (tool payloads, workspace file lists), so a shallow
+ * compare would report differences that are not there.
+ */
+function sameEntries(a: TranscriptEntry[] | undefined, b: TranscriptEntry[] | undefined): boolean {
+  if (a === b) return true;
+  if (!a || !b || a.length !== b.length) return false;
+  for (let index = 0; index < a.length; index += 1) {
+    if (JSON.stringify(a[index]) !== JSON.stringify(b[index])) return false;
+  }
+  return true;
+}
+
+/**
  * Parse a single line synchronously by delegating to the worker.
  * Returns a Promise that resolves with the TranscriptEntry[] from the worker.
+ *
+ * `buildId` tells the worker which transcript build the line belongs to, so a
+ * stateful parser (Reasoning-box tracking) starts fresh on every build.
  */
-function parseLineAsync(sandbox: SandboxedParser, line: string, ts: string): Promise<TranscriptEntry[]> {
+function parseLineAsync(
+  sandbox: SandboxedParser,
+  line: string,
+  ts: string,
+  buildId?: number,
+): Promise<TranscriptEntry[]> {
   return new Promise((resolve) => {
     const id = nextRequestId(sandbox);
     sandbox.pendingResolves.set(id, resolve);
-    sendToWorker(sandbox, { type: "parse", id, line, ts });
+    sendToWorker(sandbox, { type: "parse", id, line, ts, buildId });
   });
 }
 
@@ -187,24 +211,120 @@ function buildParserModule(sandbox: SandboxedParser): DynamicParserModule {
   const parseCache = new Map<string, TranscriptEntry[]>();
   const pendingParseKeys = new Set<string>();
 
+  /**
+   * One past the identity of the last transcript build that went through this
+   * module. Each {@link createStdoutParser} call is a new build, so it gets a
+   * new id: the worker drops the previous build's stateful parser instance
+   * when it sees the new id, so a stateful parser never carries Reasoning-box
+   * (or similar) state across builds. Cache entries are keyed per line
+   * occurrence without the build id — see {@link createStdoutParser}.
+   */
+  let lastBuildId = 0;
+
+  /**
+   * Cache keys fed by the build in progress. `reset` keeps these and evicts
+   * everything else, so the bound never discards the working set the next
+   * build needs.
+   */
+  let activeBuildKeys = new Set<string>();
+
+  /** Upper bound on cached results from older builds; {@link createStdoutParser} reset trims. */
+  const MAX_PARSE_CACHE_ENTRIES = 8192;
+
+  const requestParse = (
+    key: string,
+    buildId: number | undefined,
+    line: string,
+    ts: string,
+    previous: TranscriptEntry[] | undefined,
+  ) => {
+    // Pending requests are scoped to the build that issued them. The cache key
+    // repeats across builds (the ordinal restarts at 0), so a shared set would
+    // let one build's in-flight request swallow the next build's request for
+    // the same line — and a border line that never reaches the fresh worker
+    // parser leaves the whole Reasoning box classified as plain output.
+    const pendingKey = buildId === undefined ? `shared ${key}` : `${buildId} ${key}`;
+    if (pendingParseKeys.has(pendingKey)) return;
+    pendingParseKeys.add(pendingKey);
+    parseLineAsync(sandbox, line, ts, buildId).then((entries) => {
+      pendingParseKeys.delete(pendingKey);
+      parseCache.set(key, entries);
+      // Notify only when the result actually moved: a miss notifies (no
+      // previous result), and so does a hit whose re-parse corrected the
+      // cached classification — e.g. a truncated Reasoning border replaced by
+      // a complete one. A hit that agrees stays silent, so a settled
+      // transcript does not schedule rebuild after rebuild.
+      if (!sameEntries(previous, entries)) notifyResultReady();
+    });
+  };
+
+  /**
+   * Legacy stateless entry point. Results are cached per (ts, line), which is
+   * only sound while the parser has no cross-line state.
+   */
   const parseStdoutLine: StdoutLineParser = (line: string, ts: string) => {
     const key = lineCacheKey(line, ts);
     const cached = parseCache.get(key);
     if (cached) return cached.slice();
 
-    if (!pendingParseKeys.has(key)) {
-      pendingParseKeys.add(key);
-      parseLineAsync(sandbox, line, ts).then((entries) => {
-        pendingParseKeys.delete(key);
-        parseCache.set(key, entries);
-        notifyResultReady();
-      });
-    }
-
+    requestParse(key, undefined, line, ts, cached);
     return [];
   };
 
-  return { parseStdoutLine };
+  /**
+   * Stateful entry point: one worker parser instance per transcript build.
+   *
+   * The cache is keyed per line occurrence (position + ts + line) rather than
+   * per (ts, line): identical lines are common in stream output (Reasoning box
+   * borders, wrapped blanks), and a (ts, line) hit would silently skip feeding
+   * the parser, desyncing its state. The build id is deliberately NOT part of
+   * the key: a rebuild replays the same lines in the same order, so keys that
+   * changed per build would miss forever, and every miss notifies, so each
+   * notification would schedule another rebuild and the transcript would never
+   * settle into parsed output.
+   *
+   * Cached lines are still forwarded to the worker — a stateful parser must
+   * observe every line in order, so the cache only avoids recomputing the
+   * *result*, never the feed. Only a re-parse that disagrees with the cached
+   * result triggers a transcript recompute.
+   */
+  const createStdoutParser: StdoutParserFactory = () => {
+    const buildId = ++lastBuildId;
+    let ordinal = 0;
+
+    return {
+      parseLine: (line: string, ts: string) => {
+        const key = `${ordinal++}\u0000${lineCacheKey(line, ts)}`;
+        const cached = parseCache.get(key);
+        activeBuildKeys.add(key);
+        // Feed the worker even on a hit; return the known result immediately.
+        requestParse(key, buildId, line, ts, cached);
+        return cached ? cached.slice() : [];
+      },
+      reset: () => {
+        // buildTranscript resets when a build ends. This build's entries must
+        // survive so the next build — a fresh worker parser over the same
+        // lines — hits them, so the bound is enforced by evicting entries from
+        // *older* builds, oldest first. Trimming this build's own working set
+        // instead would make a transcript larger than the bound re-miss a
+        // rotating window of its earliest lines on every rebuild: those
+        // re-insert at the tail, so the next reset evicts a different window
+        // and the transcript never settles.
+        if (parseCache.size > MAX_PARSE_CACHE_ENTRIES) {
+          let excess = parseCache.size - MAX_PARSE_CACHE_ENTRIES;
+          for (const key of parseCache.keys()) {
+            if (excess <= 0) break;
+            if (activeBuildKeys.has(key)) continue;
+            parseCache.delete(key);
+            excess -= 1;
+          }
+        }
+        activeBuildKeys = new Set();
+      },
+    };
+  };
+
+  return { parseStdoutLine, createStdoutParser };
 }
 
 // ── Public API ──────────────────────────────────────────────────────────────
