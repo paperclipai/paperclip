@@ -1,0 +1,1094 @@
+{
+  "source": "GET /repos/paperclipai/paperclip/actions/runs/42271918832/attempts/1 (+ jobs and annotations), trimmed",
+  "run": {
+    "id": 42271918832,
+    "name": "PR",
+    "head_branch": "fix/chat-onboarding-duplicate-question",
+    "head_sha": "365cac18409b3ab154f3d1433f18127be06561b9",
+    "path": ".github/workflows/pr.yml",
+    "run_number": 60261,
+    "event": "pull_request",
+    "status": "completed",
+    "conclusion": "failure",
+    "workflow_id": 249194268,
+    "html_url": "https://github.com/paperclipai/paperclip/actions/runs/42271918832",
+    "created_at": "2026-11-06T18:34:23Z",
+    "run_attempt": 1,
+    "run_started_at": "2026-11-06T18:34:23Z",
+    "actor": {
+      "login": "cryppadotta",
+      "id": 34892728,
+      "type": "User"
+    },
+    "triggering_actor": {
+      "login": "cryppadotta",
+      "id": 34892728,
+      "type": "User"
+    },
+    "repository": {
+      "id": 1170821064,
+      "full_name": "paperclipai/paperclip"
+    },
+    "head_repository": {
+      "id": 1170821064,
+      "full_name": "paperclipai/paperclip"
+    }
+  },
+  "jobs": [
+    {
+      "id": 128078366543,
+      "run_id": 42271918832,
+      "workflow_name": "PR",
+      "run_attempt": 1,
+      "html_url": "https://github.com/paperclipai/paperclip/actions/runs/42271918832/job/128078366543",
+      "status": "completed",
+      "conclusion": "success",
+      "created_at": "2026-11-06T18:34:24Z",
+      "started_at": "2026-11-06T18:34:47Z",
+      "completed_at": "2026-11-06T18:34:59Z",
+      "name": "ci / gate / Select trusted runner",
+      "check_run_url": "https://api.github.com/repos/paperclipai/paperclip/check-runs/128078366543",
+      "labels": [
+        "runs-on/fleet=paperclip-ci-routing-x64/env=public-ci"
+      ],
+      "runner_name": "runs-on--i-0216cbcfcdfba5fac--12a5c383-4",
+      "runner_group_name": "paperclip-ci-routing"
+    },
+    {
+      "id": 128078673798,
+      "run_id": 42271918832,
+      "workflow_name": "PR",
+      "run_attempt": 1,
+      "html_url": "https://github.com/paperclipai/paperclip/actions/runs/42271918832/job/128078673798",
+      "status": "completed",
+      "conclusion": "success",
+      "created_at": "2026-11-06T18:35:00Z",
+      "started_at": "2026-11-06T18:35:35Z",
+      "completed_at": "2026-11-06T18:48:51Z",
+      "name": "ci / Typecheck + Release Registry",
+      "check_run_url": "https://api.github.com/repos/paperclipai/paperclip/check-runs/128078673798",
+      "labels": [
+        "runs-on/fleet=paperclip-public-pr-x64/env=public-ci"
+      ],
+      "runner_name": "runs-on--i-04d441d96053a0412--39dde6c8-2",
+      "runner_group_name": "paperclip-public-pr"
+    },
+    {
+      "id": 128078673891,
+      "run_id": 42271918832,
+      "workflow_name": "PR",
+      "run_attempt": 1,
+      "html_url": "https://github.com/paperclipai/paperclip/actions/runs/42271918832/job/128078673891",
+      "status": "completed",
+      "conclusion": "success",
+      "created_at": "2026-11-06T18:35:00Z",
+      "started_at": "2026-11-06T18:35:34Z",
+      "completed_at": "2026-11-06T18:46:54Z",
+      "name": "ci / Build",
+      "check_run_url": "https://api.github.com/repos/paperclipai/paperclip/check-runs/128078673891",
+      "labels": [
+        "runs-on/fleet=paperclip-public-pr-x64/env=public-ci"
+      ],
+      "runner_name": "runs-on--i-0c9a3b63b118eab27--b5711e0a-9",
+      "runner_group_name": "paperclip-public-pr"
+    },
+    {
+      "id": 128078673924,
+      "run_id": 42271918832,
+      "workflow_name": "PR",
+      "run_attempt": 1,
+      "html_url": "https://github.com/paperclipai/paperclip/actions/runs/42271918832/job/128078673924",
+      "status": "completed",
+      "conclusion": "success",
+      "created_at": "2026-11-06T18:35:00Z",
+      "started_at": "2026-11-06T18:35:35Z",
+      "completed_at": "2026-11-06T18:43:39Z",
+      "name": "ci / Verify Paperclip Runner (vitest native server)",
+      "check_run_url": "https://api.github.com/repos/paperclipai/paperclip/check-runs/128078673924",
+      "labels": [
+        "runs-on/fleet=paperclip-public-pr-x64/env=public-ci"
+      ],
+      "runner_name": "runs-on--i-086f97ef3dd06aec3--abed3f42-0",
+      "runner_group_name": "paperclip-public-pr"
+    },
+    {
+      "id": 128078673958,
+      "run_id": 42271918832,
+      "workflow_name": "PR",
+      "run_attempt": 1,
+      "html_url": "https://github.com/paperclipai/paperclip/actions/runs/42271918832/job/128078673958",
+      "status": "completed",
+      "conclusion": "success",
+      "created_at": "2026-11-06T18:35:00Z",
+      "started_at": "2026-11-06T18:35:35Z",
+      "completed_at": "2026-11-06T18:37:54Z",
+      "name": "ci / policy",
+      "check_run_url": "https://api.github.com/repos/paperclipai/paperclip/check-runs/128078673958",
+      "labels": [
+        "runs-on/fleet=paperclip-public-pr-x64/env=public-ci"
+      ],
+      "runner_name": "runs-on--i-02913c39945bb5411--a4f9673c-4",
+      "runner_group_name": "paperclip-public-pr"
+    },
+    {
+      "id": 128078674036,
+      "run_id": 42271918832,
+      "workflow_name": "PR",
+      "run_attempt": 1,
+      "html_url": "https://github.com/paperclipai/paperclip/actions/runs/42271918832/job/128078674036",
+      "status": "completed",
+      "conclusion": "success",
+      "created_at": "2026-11-06T18:35:00Z",
+      "started_at": "2026-11-06T18:35:35Z",
+      "completed_at": "2026-11-06T18:42:21Z",
+      "name": "ci / Verify Paperclip Runner (static checks)",
+      "check_run_url": "https://api.github.com/repos/paperclipai/paperclip/check-runs/128078674036",
+      "labels": [
+        "runs-on/fleet=paperclip-public-pr-x64/env=public-ci"
+      ],
+      "runner_name": "runs-on--i-0f9d0d99b024f1e51--6d006b4b-3",
+      "runner_group_name": "paperclip-public-pr"
+    },
+    {
+      "id": 128078674044,
+      "run_id": 42271918832,
+      "workflow_name": "PR",
+      "run_attempt": 1,
+      "html_url": "https://github.com/paperclipai/paperclip/actions/runs/42271918832/job/128078674044",
+      "status": "completed",
+      "conclusion": "success",
+      "created_at": "2026-11-06T18:35:00Z",
+      "started_at": "2026-11-06T18:35:35Z",
+      "completed_at": "2026-11-06T18:44:23Z",
+      "name": "ci / Canary Dry Run",
+      "check_run_url": "https://api.github.com/repos/paperclipai/paperclip/check-runs/128078674044",
+      "labels": [
+        "runs-on/fleet=paperclip-public-pr-x64/env=public-ci"
+      ],
+      "runner_name": "runs-on--i-062353f08da97520f--775f4c86-3",
+      "runner_group_name": "paperclip-public-pr"
+    },
+    {
+      "id": 128078674048,
+      "run_id": 42271918832,
+      "workflow_name": "PR",
+      "run_attempt": 1,
+      "html_url": "https://github.com/paperclipai/paperclip/actions/runs/42271918832/job/128078674048",
+      "status": "completed",
+      "conclusion": "success",
+      "created_at": "2026-11-06T18:35:00Z",
+      "started_at": "2026-11-06T18:35:38Z",
+      "completed_at": "2026-11-06T18:36:26Z",
+      "name": "ci / Docker context integrity",
+      "check_run_url": "https://api.github.com/repos/paperclipai/paperclip/check-runs/128078674048",
+      "labels": [
+        "runs-on/fleet=paperclip-public-pr-x64/env=public-ci"
+      ],
+      "runner_name": "runs-on--i-09a3e7aaeea73441d--3ea4022a-8",
+      "runner_group_name": "paperclip-public-pr"
+    },
+    {
+      "id": 128078674061,
+      "run_id": 42271918832,
+      "workflow_name": "PR",
+      "run_attempt": 1,
+      "html_url": "https://github.com/paperclipai/paperclip/actions/runs/42271918832/job/128078674061",
+      "status": "completed",
+      "conclusion": "success",
+      "created_at": "2026-11-06T18:35:00Z",
+      "started_at": "2026-11-06T18:35:40Z",
+      "completed_at": "2026-11-06T18:36:01Z",
+      "name": "ci / Select Vitest files",
+      "check_run_url": "https://api.github.com/repos/paperclipai/paperclip/check-runs/128078674061",
+      "labels": [
+        "runs-on/fleet=paperclip-public-pr-x64/env=public-ci"
+      ],
+      "runner_name": "runs-on--i-08f1e1cc09aa2fda2--6fa7058f-3",
+      "runner_group_name": "paperclip-public-pr"
+    },
+    {
+      "id": 128078674151,
+      "run_id": 42271918832,
+      "workflow_name": "PR",
+      "run_attempt": 1,
+      "html_url": "https://github.com/paperclipai/paperclip/actions/runs/42271918832/job/128078674151",
+      "status": "completed",
+      "conclusion": "failure",
+      "created_at": "2026-11-06T18:35:00Z",
+      "started_at": "2026-11-06T18:35:38Z",
+      "completed_at": "2026-11-06T18:42:44Z",
+      "name": "ci / Verify Paperclip Runner (vitest package)",
+      "check_run_url": "https://api.github.com/repos/paperclipai/paperclip/check-runs/128078674151",
+      "labels": [
+        "runs-on/fleet=paperclip-public-pr-x64/env=public-ci"
+      ],
+      "runner_name": "runs-on--i-0d1702723aae87975--400d356c-2",
+      "runner_group_name": "paperclip-public-pr"
+    },
+    {
+      "id": 128078674264,
+      "run_id": 42271918832,
+      "workflow_name": "PR",
+      "run_attempt": 1,
+      "html_url": "https://github.com/paperclipai/paperclip/actions/runs/42271918832/job/128078674264",
+      "status": "completed",
+      "conclusion": "success",
+      "created_at": "2026-11-06T18:35:00Z",
+      "started_at": "2026-11-06T18:35:36Z",
+      "completed_at": "2026-11-06T18:43:33Z",
+      "name": "ci / e2e shard (1/8)",
+      "check_run_url": "https://api.github.com/repos/paperclipai/paperclip/check-runs/128078674264",
+      "labels": [
+        "runs-on/fleet=paperclip-public-pr-x64/env=public-ci"
+      ],
+      "runner_name": "runs-on--i-07223443dabe27a66--b1a55598-7",
+      "runner_group_name": "paperclip-public-pr"
+    },
+    {
+      "id": 128078674288,
+      "run_id": 42271918832,
+      "workflow_name": "PR",
+      "run_attempt": 1,
+      "html_url": "https://github.com/paperclipai/paperclip/actions/runs/42271918832/job/128078674288",
+      "status": "completed",
+      "conclusion": "success",
+      "created_at": "2026-11-06T18:35:00Z",
+      "started_at": "2026-11-06T18:35:36Z",
+      "completed_at": "2026-11-06T18:44:49Z",
+      "name": "ci / e2e shard (5/8)",
+      "check_run_url": "https://api.github.com/repos/paperclipai/paperclip/check-runs/128078674288",
+      "labels": [
+        "runs-on/fleet=paperclip-public-pr-x64/env=public-ci"
+      ],
+      "runner_name": "runs-on--i-078ea9d39e71de0d7--694e3704-3",
+      "runner_group_name": "paperclip-public-pr"
+    },
+    {
+      "id": 128078674311,
+      "run_id": 42271918832,
+      "workflow_name": "PR",
+      "run_attempt": 1,
+      "html_url": "https://github.com/paperclipai/paperclip/actions/runs/42271918832/job/128078674311",
+      "status": "completed",
+      "conclusion": "success",
+      "created_at": "2026-11-06T18:35:00Z",
+      "started_at": "2026-11-06T18:35:38Z",
+      "completed_at": "2026-11-06T18:43:34Z",
+      "name": "ci / e2e shard (4/8)",
+      "check_run_url": "https://api.github.com/repos/paperclipai/paperclip/check-runs/128078674311",
+      "labels": [
+        "runs-on/fleet=paperclip-public-pr-x64/env=public-ci"
+      ],
+      "runner_name": "runs-on--i-0b41e8a65878c1804--9ad6e0ae-e",
+      "runner_group_name": "paperclip-public-pr"
+    },
+    {
+      "id": 128078674409,
+      "run_id": 42271918832,
+      "workflow_name": "PR",
+      "run_attempt": 1,
+      "html_url": "https://github.com/paperclipai/paperclip/actions/runs/42271918832/job/128078674409",
+      "status": "completed",
+      "conclusion": "success",
+      "created_at": "2026-11-06T18:35:00Z",
+      "started_at": "2026-11-06T18:35:39Z",
+      "completed_at": "2026-11-06T18:43:06Z",
+      "name": "ci / e2e shard (7/8)",
+      "check_run_url": "https://api.github.com/repos/paperclipai/paperclip/check-runs/128078674409",
+      "labels": [
+        "runs-on/fleet=paperclip-public-pr-x64/env=public-ci"
+      ],
+      "runner_name": "runs-on--i-0e45823392babfd76--89f333ff-8",
+      "runner_group_name": "paperclip-public-pr"
+    },
+    {
+      "id": 128078674420,
+      "run_id": 42271918832,
+      "workflow_name": "PR",
+      "run_attempt": 1,
+      "html_url": "https://github.com/paperclipai/paperclip/actions/runs/42271918832/job/128078674420",
+      "status": "completed",
+      "conclusion": "failure",
+      "created_at": "2026-11-06T18:35:00Z",
+      "started_at": "2026-11-06T18:35:38Z",
+      "completed_at": "2026-11-06T18:52:38Z",
+      "name": "ci / e2e shard (2/8)",
+      "check_run_url": "https://api.github.com/repos/paperclipai/paperclip/check-runs/128078674420",
+      "labels": [
+        "runs-on/fleet=paperclip-public-pr-x64/env=public-ci"
+      ],
+      "runner_name": "runs-on--i-04146687585301d3a--a164cf39-a",
+      "runner_group_name": "paperclip-public-pr"
+    },
+    {
+      "id": 128078674488,
+      "run_id": 42271918832,
+      "workflow_name": "PR",
+      "run_attempt": 1,
+      "html_url": "https://github.com/paperclipai/paperclip/actions/runs/42271918832/job/128078674488",
+      "status": "completed",
+      "conclusion": "failure",
+      "created_at": "2026-11-06T18:35:00Z",
+      "started_at": "2026-11-06T18:35:39Z",
+      "completed_at": "2026-11-06T18:52:38Z",
+      "name": "ci / e2e shard (3/8)",
+      "check_run_url": "https://api.github.com/repos/paperclipai/paperclip/check-runs/128078674488",
+      "labels": [
+        "runs-on/fleet=paperclip-public-pr-x64/env=public-ci"
+      ],
+      "runner_name": "runs-on--i-0e8655cb338267738--4d24cd7e-9",
+      "runner_group_name": "paperclip-public-pr"
+    },
+    {
+      "id": 128078674529,
+      "run_id": 42271918832,
+      "workflow_name": "PR",
+      "run_attempt": 1,
+      "html_url": "https://github.com/paperclipai/paperclip/actions/runs/42271918832/job/128078674529",
+      "status": "completed",
+      "conclusion": "success",
+      "created_at": "2026-11-06T18:35:00Z",
+      "started_at": "2026-11-06T18:35:44Z",
+      "completed_at": "2026-11-06T18:44:42Z",
+      "name": "ci / e2e shard (8/8)",
+      "check_run_url": "https://api.github.com/repos/paperclipai/paperclip/check-runs/128078674529",
+      "labels": [
+        "runs-on/fleet=paperclip-public-pr-x64/env=public-ci"
+      ],
+      "runner_name": "runs-on--i-0a8f8360c994cab55--71f7ad95-7",
+      "runner_group_name": "paperclip-public-pr"
+    },
+    {
+      "id": 128078674535,
+      "run_id": 42271918832,
+      "workflow_name": "PR",
+      "run_attempt": 1,
+      "html_url": "https://github.com/paperclipai/paperclip/actions/runs/42271918832/job/128078674535",
+      "status": "completed",
+      "conclusion": "failure",
+      "created_at": "2026-11-06T18:35:00Z",
+      "started_at": "2026-11-06T18:35:38Z",
+      "completed_at": "2026-11-06T18:52:38Z",
+      "name": "ci / e2e shard (6/8)",
+      "check_run_url": "https://api.github.com/repos/paperclipai/paperclip/check-runs/128078674535",
+      "labels": [
+        "runs-on/fleet=paperclip-public-pr-x64/env=public-ci"
+      ],
+      "runner_name": "runs-on--i-05739a1954ef27c6d--4864b3c1-c",
+      "runner_group_name": "paperclip-public-pr"
+    },
+    {
+      "id": 128078676152,
+      "run_id": 42271918832,
+      "workflow_name": "PR",
+      "run_attempt": 1,
+      "html_url": "https://github.com/paperclipai/paperclip/actions/runs/42271918832/job/128078676152",
+      "status": "completed",
+      "conclusion": "skipped",
+      "created_at": "2026-11-06T18:35:00Z",
+      "started_at": "2026-11-06T18:35:00Z",
+      "completed_at": "2026-11-06T18:35:00Z",
+      "name": "ci / Sandbox provider tests",
+      "check_run_url": "https://api.github.com/repos/paperclipai/paperclip/check-runs/128078676152",
+      "labels": [
+        "runs-on/fleet=paperclip-public-pr-x64/env=public-ci"
+      ],
+      "runner_name": null,
+      "runner_group_name": null
+    },
+    {
+      "id": 128079212940,
+      "run_id": 42271918832,
+      "workflow_name": "PR",
+      "run_attempt": 1,
+      "html_url": "https://github.com/paperclipai/paperclip/actions/runs/42271918832/job/128079212940",
+      "status": "completed",
+      "conclusion": "success",
+      "created_at": "2026-11-06T18:36:01Z",
+      "started_at": "2026-11-06T18:36:37Z",
+      "completed_at": "2026-11-06T18:43:01Z",
+      "name": "ci / Verify serialized server suites (1/9)",
+      "check_run_url": "https://api.github.com/repos/paperclipai/paperclip/check-runs/128079212940",
+      "labels": [
+        "runs-on/fleet=paperclip-public-pr-x64/env=public-ci"
+      ],
+      "runner_name": "runs-on--i-033af230cf26e68ae--33b7274e-6",
+      "runner_group_name": "paperclip-public-pr"
+    },
+    {
+      "id": 128079212951,
+      "run_id": 42271918832,
+      "workflow_name": "PR",
+      "run_attempt": 1,
+      "html_url": "https://github.com/paperclipai/paperclip/actions/runs/42271918832/job/128079212951",
+      "status": "completed",
+      "conclusion": "cancelled",
+      "created_at": "2026-11-06T18:36:01Z",
+      "started_at": "2026-11-06T18:36:39Z",
+      "completed_at": "2026-11-06T18:42:54Z",
+      "name": "ci / Verify serialized server suites (2/9)",
+      "check_run_url": "https://api.github.com/repos/paperclipai/paperclip/check-runs/128079212951",
+      "labels": [
+        "runs-on/fleet=paperclip-public-pr-x64/env=public-ci"
+      ],
+      "runner_name": "runs-on--i-0286992fc69a0d47f--a1c011ac-3",
+      "runner_group_name": "paperclip-public-pr"
+    },
+    {
+      "id": 128079212978,
+      "run_id": 42271918832,
+      "workflow_name": "PR",
+      "run_attempt": 1,
+      "html_url": "https://github.com/paperclipai/paperclip/actions/runs/42271918832/job/128079212978",
+      "status": "completed",
+      "conclusion": "success",
+      "created_at": "2026-11-06T18:36:01Z",
+      "started_at": "2026-11-06T18:36:38Z",
+      "completed_at": "2026-11-06T18:42:19Z",
+      "name": "ci / Verify serialized server suites (9/9)",
+      "check_run_url": "https://api.github.com/repos/paperclipai/paperclip/check-runs/128079212978",
+      "labels": [
+        "runs-on/fleet=paperclip-public-pr-x64/env=public-ci"
+      ],
+      "runner_name": "runs-on--i-02788f1d677262cb1--bbb7ef96-5",
+      "runner_group_name": "paperclip-public-pr"
+    },
+    {
+      "id": 128079212991,
+      "run_id": 42271918832,
+      "workflow_name": "PR",
+      "run_attempt": 1,
+      "html_url": "https://github.com/paperclipai/paperclip/actions/runs/42271918832/job/128079212991",
+      "status": "completed",
+      "conclusion": "failure",
+      "created_at": "2026-11-06T18:36:01Z",
+      "started_at": "2026-11-06T18:36:37Z",
+      "completed_at": "2026-11-06T18:52:37Z",
+      "name": "ci / Verify serialized server suites (5/9)",
+      "check_run_url": "https://api.github.com/repos/paperclipai/paperclip/check-runs/128079212991",
+      "labels": [
+        "runs-on/fleet=paperclip-public-pr-x64/env=public-ci"
+      ],
+      "runner_name": "runs-on--i-05e10642a9beb3ff2--3bf2cd4a-5",
+      "runner_group_name": "paperclip-public-pr"
+    },
+    {
+      "id": 128079213013,
+      "run_id": 42271918832,
+      "workflow_name": "PR",
+      "run_attempt": 1,
+      "html_url": "https://github.com/paperclipai/paperclip/actions/runs/42271918832/job/128079213013",
+      "status": "completed",
+      "conclusion": "success",
+      "created_at": "2026-11-06T18:36:01Z",
+      "started_at": "2026-11-06T18:36:39Z",
+      "completed_at": "2026-11-06T18:42:44Z",
+      "name": "ci / Verify serialized server suites (6/9)",
+      "check_run_url": "https://api.github.com/repos/paperclipai/paperclip/check-runs/128079213013",
+      "labels": [
+        "runs-on/fleet=paperclip-public-pr-x64/env=public-ci"
+      ],
+      "runner_name": "runs-on--i-000d71c71a3319146--03677a4b-b",
+      "runner_group_name": "paperclip-public-pr"
+    },
+    {
+      "id": 128079213060,
+      "run_id": 42271918832,
+      "workflow_name": "PR",
+      "run_attempt": 1,
+      "html_url": "https://github.com/paperclipai/paperclip/actions/runs/42271918832/job/128079213060",
+      "status": "completed",
+      "conclusion": "success",
+      "created_at": "2026-11-06T18:36:01Z",
+      "started_at": "2026-11-06T18:36:42Z",
+      "completed_at": "2026-11-06T18:42:42Z",
+      "name": "ci / Verify serialized server suites (4/9)",
+      "check_run_url": "https://api.github.com/repos/paperclipai/paperclip/check-runs/128079213060",
+      "labels": [
+        "runs-on/fleet=paperclip-public-pr-x64/env=public-ci"
+      ],
+      "runner_name": "runs-on--i-05b8f00f6c9d8fc0f--73c86c8b-0",
+      "runner_group_name": "paperclip-public-pr"
+    },
+    {
+      "id": 128079213109,
+      "run_id": 42271918832,
+      "workflow_name": "PR",
+      "run_attempt": 1,
+      "html_url": "https://github.com/paperclipai/paperclip/actions/runs/42271918832/job/128079213109",
+      "status": "completed",
+      "conclusion": "cancelled",
+      "created_at": "2026-11-06T18:36:01Z",
+      "started_at": "2026-11-06T18:36:42Z",
+      "completed_at": "2026-11-06T18:42:48Z",
+      "name": "ci / Verify serialized server suites (8/9)",
+      "check_run_url": "https://api.github.com/repos/paperclipai/paperclip/check-runs/128079213109",
+      "labels": [
+        "runs-on/fleet=paperclip-public-pr-x64/env=public-ci"
+      ],
+      "runner_name": "runs-on--i-0a2c05ade16fdf7e2--5eb9acae-1",
+      "runner_group_name": "paperclip-public-pr"
+    },
+    {
+      "id": 128079213186,
+      "run_id": 42271918832,
+      "workflow_name": "PR",
+      "run_attempt": 1,
+      "html_url": "https://github.com/paperclipai/paperclip/actions/runs/42271918832/job/128079213186",
+      "status": "completed",
+      "conclusion": "success",
+      "created_at": "2026-11-06T18:36:01Z",
+      "started_at": "2026-11-06T18:36:40Z",
+      "completed_at": "2026-11-06T18:42:47Z",
+      "name": "ci / Verify serialized server suites (7/9)",
+      "check_run_url": "https://api.github.com/repos/paperclipai/paperclip/check-runs/128079213186",
+      "labels": [
+        "runs-on/fleet=paperclip-public-pr-x64/env=public-ci"
+      ],
+      "runner_name": "runs-on--i-03f46c96cbb4ba625--47c0bc8c-4",
+      "runner_group_name": "paperclip-public-pr"
+    },
+    {
+      "id": 128079213204,
+      "run_id": 42271918832,
+      "workflow_name": "PR",
+      "run_attempt": 1,
+      "html_url": "https://github.com/paperclipai/paperclip/actions/runs/42271918832/job/128079213204",
+      "status": "completed",
+      "conclusion": "success",
+      "created_at": "2026-11-06T18:36:01Z",
+      "started_at": "2026-11-06T18:36:46Z",
+      "completed_at": "2026-11-06T18:42:37Z",
+      "name": "ci / Verify serialized server suites (3/9)",
+      "check_run_url": "https://api.github.com/repos/paperclipai/paperclip/check-runs/128079213204",
+      "labels": [
+        "runs-on/fleet=paperclip-public-pr-x64/env=public-ci"
+      ],
+      "runner_name": "runs-on--i-0f352b980bed98843--f1cbc002-e",
+      "runner_group_name": "paperclip-public-pr"
+    },
+    {
+      "id": 128079213211,
+      "run_id": 42271918832,
+      "workflow_name": "PR",
+      "run_attempt": 1,
+      "html_url": "https://github.com/paperclipai/paperclip/actions/runs/42271918832/job/128079213211",
+      "status": "completed",
+      "conclusion": "cancelled",
+      "created_at": "2026-11-06T18:36:01Z",
+      "started_at": "2026-11-06T18:36:39Z",
+      "completed_at": "2026-11-06T18:42:51Z",
+      "name": "ci / General tests (server (1/12))",
+      "check_run_url": "https://api.github.com/repos/paperclipai/paperclip/check-runs/128079213211",
+      "labels": [
+        "runs-on/fleet=paperclip-public-pr-x64/env=public-ci"
+      ],
+      "runner_name": "runs-on--i-00617e9e4384506a0--e1cd9d76-7",
+      "runner_group_name": "paperclip-public-pr"
+    },
+    {
+      "id": 128079213231,
+      "run_id": 42271918832,
+      "workflow_name": "PR",
+      "run_attempt": 1,
+      "html_url": "https://github.com/paperclipai/paperclip/actions/runs/42271918832/job/128079213231",
+      "status": "completed",
+      "conclusion": "success",
+      "created_at": "2026-11-06T18:36:01Z",
+      "started_at": "2026-11-06T18:36:40Z",
+      "completed_at": "2026-11-06T18:47:58Z",
+      "name": "ci / General tests (server (6/12))",
+      "check_run_url": "https://api.github.com/repos/paperclipai/paperclip/check-runs/128079213231",
+      "labels": [
+        "runs-on/fleet=paperclip-public-pr-x64/env=public-ci"
+      ],
+      "runner_name": "runs-on--i-0254668e52e872f74--62c64174-5",
+      "runner_group_name": "paperclip-public-pr"
+    },
+    {
+      "id": 128079213239,
+      "run_id": 42271918832,
+      "workflow_name": "PR",
+      "run_attempt": 1,
+      "html_url": "https://github.com/paperclipai/paperclip/actions/runs/42271918832/job/128079213239",
+      "status": "completed",
+      "conclusion": "success",
+      "created_at": "2026-11-06T18:36:01Z",
+      "started_at": "2026-11-06T18:36:43Z",
+      "completed_at": "2026-11-06T18:47:06Z",
+      "name": "ci / General tests (server (4/12))",
+      "check_run_url": "https://api.github.com/repos/paperclipai/paperclip/check-runs/128079213239",
+      "labels": [
+        "runs-on/fleet=paperclip-public-pr-x64/env=public-ci"
+      ],
+      "runner_name": "runs-on--i-0e20e9f83713bf77d--25816635-0",
+      "runner_group_name": "paperclip-public-pr"
+    },
+    {
+      "id": 128079213241,
+      "run_id": 42271918832,
+      "workflow_name": "PR",
+      "run_attempt": 1,
+      "html_url": "https://github.com/paperclipai/paperclip/actions/runs/42271918832/job/128079213241",
+      "status": "completed",
+      "conclusion": "success",
+      "created_at": "2026-11-06T18:36:01Z",
+      "started_at": "2026-11-06T18:36:40Z",
+      "completed_at": "2026-11-06T18:50:02Z",
+      "name": "ci / General tests (server (5/12))",
+      "check_run_url": "https://api.github.com/repos/paperclipai/paperclip/check-runs/128079213241",
+      "labels": [
+        "runs-on/fleet=paperclip-public-pr-x64/env=public-ci"
+      ],
+      "runner_name": "runs-on--i-08035dd685bbe8a5a--185541df-f",
+      "runner_group_name": "paperclip-public-pr"
+    },
+    {
+      "id": 128079213245,
+      "run_id": 42271918832,
+      "workflow_name": "PR",
+      "run_attempt": 1,
+      "html_url": "https://github.com/paperclipai/paperclip/actions/runs/42271918832/job/128079213245",
+      "status": "completed",
+      "conclusion": "success",
+      "created_at": "2026-11-06T18:36:01Z",
+      "started_at": "2026-11-06T18:36:40Z",
+      "completed_at": "2026-11-06T18:47:07Z",
+      "name": "ci / General tests (server (3/12))",
+      "check_run_url": "https://api.github.com/repos/paperclipai/paperclip/check-runs/128079213245",
+      "labels": [
+        "runs-on/fleet=paperclip-public-pr-x64/env=public-ci"
+      ],
+      "runner_name": "runs-on--i-057ac650050d69cda--76d1e735-1",
+      "runner_group_name": "paperclip-public-pr"
+    },
+    {
+      "id": 128079213246,
+      "run_id": 42271918832,
+      "workflow_name": "PR",
+      "run_attempt": 1,
+      "html_url": "https://github.com/paperclipai/paperclip/actions/runs/42271918832/job/128079213246",
+      "status": "completed",
+      "conclusion": "success",
+      "created_at": "2026-11-06T18:36:01Z",
+      "started_at": "2026-11-06T18:36:46Z",
+      "completed_at": "2026-11-06T18:48:27Z",
+      "name": "ci / General tests (server (10/12))",
+      "check_run_url": "https://api.github.com/repos/paperclipai/paperclip/check-runs/128079213246",
+      "labels": [
+        "runs-on/fleet=paperclip-public-pr-x64/env=public-ci"
+      ],
+      "runner_name": "runs-on--i-06754bff83958fbed--1ac43060-0",
+      "runner_group_name": "paperclip-public-pr"
+    },
+    {
+      "id": 128079213254,
+      "run_id": 42271918832,
+      "workflow_name": "PR",
+      "run_attempt": 1,
+      "html_url": "https://github.com/paperclipai/paperclip/actions/runs/42271918832/job/128079213254",
+      "status": "completed",
+      "conclusion": "success",
+      "created_at": "2026-11-06T18:36:01Z",
+      "started_at": "2026-11-06T18:36:40Z",
+      "completed_at": "2026-11-06T18:46:20Z",
+      "name": "ci / General tests (chat (1/3))",
+      "check_run_url": "https://api.github.com/repos/paperclipai/paperclip/check-runs/128079213254",
+      "labels": [
+        "runs-on/fleet=paperclip-public-pr-x64/env=public-ci"
+      ],
+      "runner_name": "runs-on--i-06936514f9ae54c81--efda4fbf-1",
+      "runner_group_name": "paperclip-public-pr"
+    },
+    {
+      "id": 128079213266,
+      "run_id": 42271918832,
+      "workflow_name": "PR",
+      "run_attempt": 1,
+      "html_url": "https://github.com/paperclipai/paperclip/actions/runs/42271918832/job/128079213266",
+      "status": "completed",
+      "conclusion": "success",
+      "created_at": "2026-11-06T18:36:01Z",
+      "started_at": "2026-11-06T18:36:40Z",
+      "completed_at": "2026-11-06T18:52:54Z",
+      "name": "ci / General tests (server (2/12))",
+      "check_run_url": "https://api.github.com/repos/paperclipai/paperclip/check-runs/128079213266",
+      "labels": [
+        "runs-on/fleet=paperclip-public-pr-x64/env=public-ci"
+      ],
+      "runner_name": "runs-on--i-0e2d00fd0aec3ee65--79769f5d-2",
+      "runner_group_name": "paperclip-public-pr"
+    },
+    {
+      "id": 128079213278,
+      "run_id": 42271918832,
+      "workflow_name": "PR",
+      "run_attempt": 1,
+      "html_url": "https://github.com/paperclipai/paperclip/actions/runs/42271918832/job/128079213278",
+      "status": "completed",
+      "conclusion": "failure",
+      "created_at": "2026-11-06T18:36:01Z",
+      "started_at": "2026-11-06T18:36:44Z",
+      "completed_at": "2026-11-06T18:51:45Z",
+      "name": "ci / General tests (server (9/12))",
+      "check_run_url": "https://api.github.com/repos/paperclipai/paperclip/check-runs/128079213278",
+      "labels": [
+        "runs-on/fleet=paperclip-public-pr-x64/env=public-ci"
+      ],
+      "runner_name": "runs-on--i-07b75e9ad6d3ef554--eca5f4f1-c",
+      "runner_group_name": "paperclip-public-pr"
+    },
+    {
+      "id": 128079213293,
+      "run_id": 42271918832,
+      "workflow_name": "PR",
+      "run_attempt": 1,
+      "html_url": "https://github.com/paperclipai/paperclip/actions/runs/42271918832/job/128079213293",
+      "status": "completed",
+      "conclusion": "success",
+      "created_at": "2026-11-06T18:36:01Z",
+      "started_at": "2026-11-06T18:36:41Z",
+      "completed_at": "2026-11-06T18:46:44Z",
+      "name": "ci / General tests (server (8/12))",
+      "check_run_url": "https://api.github.com/repos/paperclipai/paperclip/check-runs/128079213293",
+      "labels": [
+        "runs-on/fleet=paperclip-public-pr-x64/env=public-ci"
+      ],
+      "runner_name": "runs-on--i-04b1fcd4248817d14--e51335bf-7",
+      "runner_group_name": "paperclip-public-pr"
+    },
+    {
+      "id": 128079213345,
+      "run_id": 42271918832,
+      "workflow_name": "PR",
+      "run_attempt": 1,
+      "html_url": "https://github.com/paperclipai/paperclip/actions/runs/42271918832/job/128079213345",
+      "status": "completed",
+      "conclusion": "failure",
+      "created_at": "2026-11-06T18:36:01Z",
+      "started_at": "2026-11-06T18:36:45Z",
+      "completed_at": "2026-11-06T18:51:45Z",
+      "name": "ci / General tests (server (12/12))",
+      "check_run_url": "https://api.github.com/repos/paperclipai/paperclip/check-runs/128079213345",
+      "labels": [
+        "runs-on/fleet=paperclip-public-pr-x64/env=public-ci"
+      ],
+      "runner_name": "runs-on--i-0881afbaf9aa0aaf8--090d6a82-c",
+      "runner_group_name": "paperclip-public-pr"
+    },
+    {
+      "id": 128079213368,
+      "run_id": 42271918832,
+      "workflow_name": "PR",
+      "run_attempt": 1,
+      "html_url": "https://github.com/paperclipai/paperclip/actions/runs/42271918832/job/128079213368",
+      "status": "completed",
+      "conclusion": "success",
+      "created_at": "2026-11-06T18:36:01Z",
+      "started_at": "2026-11-06T18:36:44Z",
+      "completed_at": "2026-11-06T18:48:17Z",
+      "name": "ci / General tests (server (7/12))",
+      "check_run_url": "https://api.github.com/repos/paperclipai/paperclip/check-runs/128079213368",
+      "labels": [
+        "runs-on/fleet=paperclip-public-pr-x64/env=public-ci"
+      ],
+      "runner_name": "runs-on--i-079f7866b26322557--33b46556-d",
+      "runner_group_name": "paperclip-public-pr"
+    },
+    {
+      "id": 128079213417,
+      "run_id": 42271918832,
+      "workflow_name": "PR",
+      "run_attempt": 1,
+      "html_url": "https://github.com/paperclipai/paperclip/actions/runs/42271918832/job/128079213417",
+      "status": "completed",
+      "conclusion": "success",
+      "created_at": "2026-11-06T18:36:01Z",
+      "started_at": "2026-11-06T18:36:41Z",
+      "completed_at": "2026-11-06T18:44:03Z",
+      "name": "ci / General tests (workspaces-b)",
+      "check_run_url": "https://api.github.com/repos/paperclipai/paperclip/check-runs/128079213417",
+      "labels": [
+        "runs-on/fleet=paperclip-public-pr-x64/env=public-ci"
+      ],
+      "runner_name": "runs-on--i-03edc45d9f2c575e4--f5e9dfa1-8",
+      "runner_group_name": "paperclip-public-pr"
+    },
+    {
+      "id": 128079213419,
+      "run_id": 42271918832,
+      "workflow_name": "PR",
+      "run_attempt": 1,
+      "html_url": "https://github.com/paperclipai/paperclip/actions/runs/42271918832/job/128079213419",
+      "status": "completed",
+      "conclusion": "success",
+      "created_at": "2026-11-06T18:36:01Z",
+      "started_at": "2026-11-06T18:36:49Z",
+      "completed_at": "2026-11-06T18:44:02Z",
+      "name": "ci / General tests (chat (2/3))",
+      "check_run_url": "https://api.github.com/repos/paperclipai/paperclip/check-runs/128079213419",
+      "labels": [
+        "runs-on/fleet=paperclip-public-pr-x64/env=public-ci"
+      ],
+      "runner_name": "runs-on--i-0b2324499b03a08b9--42463b64-0",
+      "runner_group_name": "paperclip-public-pr"
+    },
+    {
+      "id": 128079213482,
+      "run_id": 42271918832,
+      "workflow_name": "PR",
+      "run_attempt": 1,
+      "html_url": "https://github.com/paperclipai/paperclip/actions/runs/42271918832/job/128079213482",
+      "status": "completed",
+      "conclusion": "success",
+      "created_at": "2026-11-06T18:36:01Z",
+      "started_at": "2026-11-06T18:36:42Z",
+      "completed_at": "2026-11-06T18:45:54Z",
+      "name": "ci / General tests (workspaces-a (2/2))",
+      "check_run_url": "https://api.github.com/repos/paperclipai/paperclip/check-runs/128079213482",
+      "labels": [
+        "runs-on/fleet=paperclip-public-pr-x64/env=public-ci"
+      ],
+      "runner_name": "runs-on--i-01c609e12f7311e8c--9bac745e-b",
+      "runner_group_name": "paperclip-public-pr"
+    },
+    {
+      "id": 128079213518,
+      "run_id": 42271918832,
+      "workflow_name": "PR",
+      "run_attempt": 1,
+      "html_url": "https://github.com/paperclipai/paperclip/actions/runs/42271918832/job/128079213518",
+      "status": "completed",
+      "conclusion": "success",
+      "created_at": "2026-11-06T18:36:01Z",
+      "started_at": "2026-11-06T18:36:50Z",
+      "completed_at": "2026-11-06T18:47:37Z",
+      "name": "ci / General tests (chat (3/3))",
+      "check_run_url": "https://api.github.com/repos/paperclipai/paperclip/check-runs/128079213518",
+      "labels": [
+        "runs-on/fleet=paperclip-public-pr-x64/env=public-ci"
+      ],
+      "runner_name": "runs-on--i-031a362e7d12b7a58--7db3b0f0-1",
+      "runner_group_name": "paperclip-public-pr"
+    },
+    {
+      "id": 128079213529,
+      "run_id": 42271918832,
+      "workflow_name": "PR",
+      "run_attempt": 1,
+      "html_url": "https://github.com/paperclipai/paperclip/actions/runs/42271918832/job/128079213529",
+      "status": "completed",
+      "conclusion": "success",
+      "created_at": "2026-11-06T18:36:01Z",
+      "started_at": "2026-11-06T18:36:50Z",
+      "completed_at": "2026-11-06T18:48:56Z",
+      "name": "ci / General tests (server (11/12))",
+      "check_run_url": "https://api.github.com/repos/paperclipai/paperclip/check-runs/128079213529",
+      "labels": [
+        "runs-on/fleet=paperclip-public-pr-x64/env=public-ci"
+      ],
+      "runner_name": "runs-on--i-01aa0332fdd4205b6--b451dd52-e",
+      "runner_group_name": "paperclip-public-pr"
+    },
+    {
+      "id": 128079213530,
+      "run_id": 42271918832,
+      "workflow_name": "PR",
+      "run_attempt": 1,
+      "html_url": "https://github.com/paperclipai/paperclip/actions/runs/42271918832/job/128079213530",
+      "status": "completed",
+      "conclusion": "failure",
+      "created_at": "2026-11-06T18:36:01Z",
+      "started_at": "2026-11-06T18:36:44Z",
+      "completed_at": "2026-11-06T18:46:39Z",
+      "name": "ci / General tests (workspaces-a (1/2))",
+      "check_run_url": "https://api.github.com/repos/paperclipai/paperclip/check-runs/128079213530",
+      "labels": [
+        "runs-on/fleet=paperclip-public-pr-x64/env=public-ci"
+      ],
+      "runner_name": "runs-on--i-0574053a01923d9cc--30096aff-4",
+      "runner_group_name": "paperclip-public-pr"
+    },
+    {
+      "id": 128087703467,
+      "run_id": 42271918832,
+      "workflow_name": "PR",
+      "run_attempt": 1,
+      "html_url": "https://github.com/paperclipai/paperclip/actions/runs/42271918832/job/128087703467",
+      "status": "completed",
+      "conclusion": "failure",
+      "created_at": "2026-11-06T18:52:39Z",
+      "started_at": "2026-11-06T18:52:58Z",
+      "completed_at": "2026-11-06T18:53:03Z",
+      "name": "ci / e2e",
+      "check_run_url": "https://api.github.com/repos/paperclipai/paperclip/check-runs/128087703467",
+      "labels": [
+        "runs-on/fleet=paperclip-public-pr-x64/env=public-ci"
+      ],
+      "runner_name": "runs-on--i-0d0fd6b0946cbee59--3ee80826-f",
+      "runner_group_name": "paperclip-public-pr"
+    },
+    {
+      "id": 128087836089,
+      "run_id": 42271918832,
+      "workflow_name": "PR",
+      "run_attempt": 1,
+      "html_url": "https://github.com/paperclipai/paperclip/actions/runs/42271918832/job/128087836089",
+      "status": "completed",
+      "conclusion": "failure",
+      "created_at": "2026-11-06T18:52:54Z",
+      "started_at": "2026-11-06T18:52:58Z",
+      "completed_at": "2026-11-06T18:53:04Z",
+      "name": "ci / verify",
+      "check_run_url": "https://api.github.com/repos/paperclipai/paperclip/check-runs/128087836089",
+      "labels": [
+        "runs-on/fleet=paperclip-public-pr-x64/env=public-ci"
+      ],
+      "runner_name": "runs-on--i-03d17b9c4207c40c0--7dbcd730-8",
+      "runner_group_name": "paperclip-public-pr"
+    }
+  ],
+  "annotations": {
+    "128078674151": [
+      {
+        "path": ".github",
+        "start_line": 198,
+        "end_line": 198,
+        "annotation_level": "failure",
+        "title": "",
+        "message": "The operation was canceled.",
+        "raw_details": ""
+      }
+    ],
+    "128078674420": [
+      {
+        "path": ".github",
+        "start_line": 1,
+        "end_line": 1,
+        "annotation_level": "failure",
+        "title": "",
+        "message": "The self-hosted runner lost communication with the server. Verify the machine is running and has a healthy network connection. Anything in your workflow that terminates the runner process, starves it for CPU/Memory, or blocks its network access can cause this error.",
+        "raw_details": ""
+      }
+    ],
+    "128078674488": [
+      {
+        "path": ".github",
+        "start_line": 1,
+        "end_line": 1,
+        "annotation_level": "failure",
+        "title": "",
+        "message": "The self-hosted runner lost communication with the server. Verify the machine is running and has a healthy network connection. Anything in your workflow that terminates the runner process, starves it for CPU/Memory, or blocks its network access can cause this error.",
+        "raw_details": ""
+      }
+    ],
+    "128078674535": [
+      {
+        "path": ".github",
+        "start_line": 1,
+        "end_line": 1,
+        "annotation_level": "failure",
+        "title": "",
+        "message": "The self-hosted runner lost communication with the server. Verify the machine is running and has a healthy network connection. Anything in your workflow that terminates the runner process, starves it for CPU/Memory, or blocks its network access can cause this error.",
+        "raw_details": ""
+      }
+    ],
+    "128079212991": [
+      {
+        "path": ".github",
+        "start_line": 1,
+        "end_line": 1,
+        "annotation_level": "failure",
+        "title": "",
+        "message": "The self-hosted runner lost communication with the server. Verify the machine is running and has a healthy network connection. Anything in your workflow that terminates the runner process, starves it for CPU/Memory, or blocks its network access can cause this error.",
+        "raw_details": ""
+      }
+    ],
+    "128079213278": [
+      {
+        "path": ".github",
+        "start_line": 1,
+        "end_line": 1,
+        "annotation_level": "failure",
+        "title": "",
+        "message": "The self-hosted runner lost communication with the server. Verify the machine is running and has a healthy network connection. Anything in your workflow that terminates the runner process, starves it for CPU/Memory, or blocks its network access can cause this error.",
+        "raw_details": ""
+      }
+    ],
+    "128079213345": [
+      {
+        "path": ".github",
+        "start_line": 1,
+        "end_line": 1,
+        "annotation_level": "failure",
+        "title": "",
+        "message": "The self-hosted runner lost communication with the server. Verify the machine is running and has a healthy network connection. Anything in your workflow that terminates the runner process, starves it for CPU/Memory, or blocks its network access can cause this error.",
+        "raw_details": ""
+      }
+    ],
+    "128079213530": [
+      {
+        "path": ".github",
+        "start_line": 474561,
+        "end_line": 474561,
+        "annotation_level": "failure",
+        "title": "",
+        "message": "Process completed with exit code 1.",
+        "raw_details": ""
+      },
+      {
+        "path": "cli/src/__tests__/company-import-transfer.test.ts",
+        "start_line": 123,
+        "end_line": 123,
+        "annotation_level": "failure",
+        "title": "[paperclipai] src/__tests__/company-import-transfer.test.ts > resolveChunkedImportZip > takes the chunked path for a small zip whose entries inflate past the threshold",
+        "message": "Error: Test timed out in 5000ms.\nIf this is a long-running test, pass a timeout value as the last argument or configure it globally with \"testTimeout\".\n ❯ src/__tests__/company-import-transfer.test.ts:123:3\n\n",
+        "raw_details": ""
+      },
+      {
+        "path": "cli/src/__tests__/company-import-export-e2e.test.ts",
+        "start_line": 280,
+        "end_line": 280,
+        "annotation_level": "failure",
+        "title": "[paperclipai] src/__tests__/company-import-export-e2e.test.ts > paperclipai company import/export e2e",
+        "message": "Error: Timed out waiting for the child server recorded in /tmp/pv-KMcoQP/t/paperclip-company-cli-e2e-8VX8vL/paperclip-home/instances/company-cli-e2e/runtime-info.json.\nstdout:\nUpdate available: 2026.1023.0 — run `paperclipai update`\n┌   paperclipai run \n│\n│  Home: /tmp/pv-KMcoQP/t/paperclip-company-cli-e2e-8VX8vL/paperclip-home\n│\n│  Instance: company-cli-e2e\n│\n│  Config: /tmp/pv-KMcoQP/t/paperclip-company-cli-e2e-8VX8vL/config/config.json\n│\n◇  Running doctor checks...\nUpdate available: 2026.1023.0 — run `paperclipai update`\n\n██████╗  █████╗ ██████╗ ███████╗██████╗  ██████╗██╗     ██╗██████╗ \n██╔══██╗██╔══██╗██╔══██╗██╔════╝██╔══██╗██╔════╝██║     ██║██╔══██╗\n██████╔╝███████║██████╔╝█████╗  ██████╔╝██║     ██║     ██║██████╔╝\n██╔═══╝ ██╔══██║██╔═══╝ ██╔══╝  ██╔══██╗██║     ██║     ██║██╔═══╝ \n██║     ██║  ██║██║     ███████╗██║  ██║╚██████╗███████╗██║██║     \n╚═╝     ╚═╝  ╚═╝╚═╝     ╚══════╝╚═╝  ╚═╝ ╚═════╝╚══════╝╚═╝╚═╝     \n  ───────────────────────────────────────────────────────\n  The app people use to manage AI agents for work\n\n┌   paperclip doctor \n│\n│  ✓ Config file: Valid config at /tmp/pv-KMcoQP/t/paperclip-company-cli-e2e-8VX8vL/config/config.json\n│\n│  ✓ Deployment/auth mode: local_trusted mode is configured for loopback-only access\n│\n│  ✗ Agent JWT secret: PAPERCLIP_AGENT_JWT_SECRET missing from environment and /tmp/pv-KMcoQP/t/paperclip-company-cli-e2e-8VX8vL/config/.env\n│\n│    Run with --repair to create /tmp/pv-KMcoQP/t/paperclip-company-cli-e2e-8VX8vL/config/.env containing PAPERCLIP_AGENT_JWT_SECRET\n│\n◆  Repaired: Agent JWT secret\n│\n│  ✓ Agent JWT secret: PAPERCLIP_AGENT_JWT_SECRET is set in environment\n│\n│  ! Secrets adapter: Secrets key file does not exist yet: /tmp/pv-KMcoQP/t/paperclip-company-cli-e2e-8VX8vL/secrets/master.key; strict secret mode is disabled for postgres deployment\n│\n│    Run with --repair to create a local encrypted secrets key file. Consider enabling secrets.strictMode\n│\n◆  Repaired: Secrets adapter\n│\n│  ! Secrets adapter: Local encrypted provider configured with key file /tmp/pv-KMcoQP/t/paperclip-company-cli-e2e-8VX8vL/secrets/master.key; strict secret mode is disabled for postgres deployment\n│\n│    Consider enabling secrets.strictMode\n│\n│  ✓ Storage: Local disk storage is writable: /tmp/pv-KMcoQP/t/paperclip-company-cli-e2e-8VX8vL/storage\n│\n│  ✓ Database: PostgreSQL connection successful\n│\n│  ✓ LLM provider: No LLM provider configured (optional)\n│\n│  ✓ Log directory: Log directory is writable: /tmp/pv-KMcoQP/t/paperclip-company-cli-e2e-8VX8vL/logs\n│\n│  ! Server port: Port 37925 is already in use\n│\n│    Check what's using port 37925 with: lsof -i :37925\n│\n│  ✓ Node.js runtime: Node.js 24.22.2\n│\n│  ✓ Managed install: Not present (optional for npx, global npm, and source-checkout usage)\n│\n│  ✓ Background service: No usable systemd user manager was detected (common in containers and WSL1). Use paperclipai run instead.\n│\n◇  Summary ───────────────╮\n│                         │\n│  10 passed, 2 warnings  │\n│                         │\n├─────────────────────────╯\n│\n└  All critical checks passed with some warnings.\n\n│\n◇  Start",
+        "raw_details": ""
+      },
+      {
+        "path": ".github",
+        "start_line": 126918,
+        "end_line": 126918,
+        "annotation_level": "failure",
+        "title": "",
+        "message": "command (/home/runner/_work/paperclip/paperclip/) /home/runner/setup-pnpm/node_modules/.bin/bin/pnpm run test:run:general -- --group general-workspaces-a --shard-index 0 --shard-count 2 exited (1)",
+        "raw_details": ""
+      }
+    ],
+    "128087703467": [
+      {
+        "path": ".github",
+        "start_line": 89,
+        "end_line": 89,
+        "annotation_level": "failure",
+        "title": "",
+        "message": "Process completed with exit code 1.",
+        "raw_details": ""
+      }
+    ],
+    "128087836089": [
+      {
+        "path": ".github",
+        "start_line": 122,
+        "end_line": 122,
+        "annotation_level": "failure",
+        "title": "",
+        "message": "Process completed with exit code 1.",
+        "raw_details": ""
+      }
+    ]
+  },
+  "logs": {
+    "128078674151": "2026-11-06T18:42:31.0413375Z ##[error]The runner has received a shutdown signal. This can happen when the runner service is stopped, or a manually started runner is canceled.\n2026-11-06T18:42:43.5529901Z ##[error]The operation was canceled.\n2026-11-06T18:42:43.5656287Z Cleaning up orphan processes\n"
+  },
+  "total_count": 48
+}
