@@ -96,6 +96,8 @@ export type NativeRestartRecoveryClaim =
       providerAttempt: number;
       restartKind: NativeRestartKind;
       recoveryRequestId: string | null;
+      /** False when the prior controller suspended this run in a clean drain. */
+      chargesProviderAttempt?: boolean;
     }
   | {
       kind: "bootstrap_incomplete";
@@ -105,6 +107,8 @@ export type NativeRestartRecoveryClaim =
       providerAttempt: number;
       restartKind: NativeRestartKind;
       recoveryRequestId: string | null;
+      /** False when the prior controller suspended this run in a clean drain. */
+      chargesProviderAttempt?: boolean;
     };
 
 export type NativeRestartRecoveryDisposition =
@@ -120,11 +124,28 @@ export type NativeRestartRecoveryDisposition =
 export function nextNativeProviderAttempt(
   currentAttempt: number,
   recoveryKind?: NativeRestartRecoveryClaim["kind"],
+  chargesProviderAttempt = true,
 ): number {
-  return recoveryKind === "reattach_existing_runner" ||
+  return !chargesProviderAttempt ||
+    recoveryKind === "reattach_existing_runner" ||
     recoveryKind === "reattach_remote_runner"
     ? currentAttempt
     : currentAttempt + 1;
+}
+
+/**
+ * The execution recovery budget bounds runs that keep failing their provider
+ * turn. A graceful drain that suspended the run for reattachment is an
+ * infrastructure restart the run did not cause, so the next controller's
+ * resume of that turn does not spend an attempt. A crash (no drain record) or
+ * any later recovery disposition still charges one.
+ */
+export function suspendedByCleanDrain(coordinator: {
+  recoveryState: string | null;
+  recoveryHistory: ReadonlyArray<{ disposition?: unknown }>;
+}): boolean {
+  return coordinator.recoveryState === "awaiting_runner_reattach" &&
+    coordinator.recoveryHistory.at(-1)?.disposition === "restart_suspended";
 }
 
 const controllerBootId = randomUUID();
@@ -1211,6 +1232,8 @@ export async function claimNativeRestartRecoveries(input: {
       const providerAttempt = failedRemoteRetry
         ? nextNativeProviderAttempt(row.coordinator.attempt)
         : row.coordinator.attempt;
+      // Read before this claim appends its own history entry.
+      const cleanDrainSuspension = suspendedByCleanDrain(row.coordinator);
       const generation = row.coordinator.controllerGeneration + 1;
       const leaseOwner = `${controller.bootId}:${generation}:${randomUUID()}`;
       const event = historyEntry({
@@ -1323,6 +1346,7 @@ export async function claimNativeRestartRecoveries(input: {
         providerAttempt,
         restartKind: input.restartKind,
         recoveryRequestId: input.recoveryRequestId ?? null,
+        chargesProviderAttempt: !cleanDrainSuspension,
       };
       if (claimKind === "reattach_remote_runner") {
         return {
