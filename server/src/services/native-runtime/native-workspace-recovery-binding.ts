@@ -1,4 +1,4 @@
-import { and, eq, gt, inArray, ne, or, sql } from "drizzle-orm";
+import { and, eq, gt, inArray, isNull, ne, not, or, sql } from "drizzle-orm";
 import { heartbeatRuns, issues, nativeRunFinalizations, nativeRunResults, type Db } from "@paperclipai/db";
 import { getNativeReviewAssignment } from "./native-review-participant.js";
 
@@ -27,10 +27,19 @@ export async function currentNativeWorkspaceRecoveryResult(db: Db, input: {
     eq(nativeRunResults.issueId, issue.id), eq(nativeRunResults.runId, run.id), eq(nativeRunResults.schemaStatus, "accepted"),
   ));
   if (!result || result.completionContractId !== run.completionContractId) return null;
+  // The assignee's later wakes, such as an answer to this run's question,
+  // cannot claim while this run holds the execution lock. They wait for this
+  // copyback, so they are not newer work. Other agents' runs are not blocked.
+  const waitingWake = issue.assigneeAgentId === run.agentId ? and(
+    eq(heartbeatRuns.status, "queued"), isNull(heartbeatRuns.startedAt),
+    eq(heartbeatRuns.agentId, run.agentId), gt(heartbeatRuns.createdAt, run.createdAt),
+    sql`coalesce(${heartbeatRuns.contextSnapshot}->>'wakeReason', '') <> 'source_scoped_recovery_action'`,
+  ) : undefined;
   const [newer] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
     eq(heartbeatRuns.companyId, companyId), ne(heartbeatRuns.id, run.id),
     or(eq(heartbeatRuns.nativeIssueId, issue.id), sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issue.id}`),
     or(gt(heartbeatRuns.createdAt, run.createdAt), inArray(heartbeatRuns.status, ["queued", "running"])),
+    waitingWake ? not(waitingWake) : undefined,
   )).limit(1);
   return newer ? null : result;
 }

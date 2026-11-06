@@ -3,7 +3,7 @@ import { lstat, open, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { and, eq, sql } from "drizzle-orm";
 import { heartbeatRuns, type Db } from "@paperclipai/db";
-import { parseNativeExecutionInput } from "../../vendor/paperclip-runner/index.js";
+import { captureLegacyDurablePrpCheckpoint, parseNativeExecutionInput } from "../../vendor/paperclip-runner/index.js";
 import { offlineMigrationExecutionWhere } from "../offline-migration-execution.js";
 import { findNativeSessionResumeRun } from "./native-session-resume.js";
 import { nativeControllerMigrationDescriptor } from "./native-session-executor.js";
@@ -16,8 +16,63 @@ import { readNativeWorkspaceSyncReference } from "./native-workspace-sync.js";
 import type { StorageService } from "../../storage/types.js";
 import { durableNativeHarnessStorage } from "./native-harness-backup-storage.js";
 import { archiveFailedLegacyNativeController, hasArchivedLegacyNativeController } from "./native-controller-archive.js";
+import { redactRunnerApiPayloads } from "./runner-api-log-redaction.js";
 
 type Selected = { id: string; companyId: string; agentId: string; issueId: string; sessionId: string; createdAt: Date };
+
+function record(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+async function confirmedOlderSuccessfulSnapshot(db: Db, selected: Selected,
+  source: NonNullable<Awaited<ReturnType<typeof findNativeSessionResumeRun>>>,
+  paths: Awaited<ReturnType<typeof localPaths>>, olderRunId: unknown) {
+  const snapshot = record(source.runnerProfileJson.sessionCheckpoint), identity = record(snapshot.identity);
+  const scope = { companyId: selected.companyId, agentId: selected.agentId, issueId: selected.issueId, sessionId: selected.sessionId };
+  if (source.status !== "failed" || identity.runId !== source.id
+    || Object.entries(scope).some(([key, value]) => identity[key] !== value)
+    || paths.execution.binding.runId !== source.id || paths.execution.binding.companyId !== selected.companyId
+    || paths.execution.binding.agentId !== selected.agentId || paths.execution.binding.issueId !== selected.issueId
+    || paths.execution.session.normalizedSessionId !== selected.sessionId
+    || typeof snapshot.sessionId !== "string" || !snapshot.sessionId.trim()
+    || typeof olderRunId !== "string" || olderRunId === source.id
+    || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(olderRunId)) return null;
+  const [prior] = await db.select({ createdAt: heartbeatRuns.createdAt, finishedAt: heartbeatRuns.finishedAt,
+    runnerInstanceId: heartbeatRuns.runnerInstanceId, snapshot: sql<unknown>`${heartbeatRuns.runnerProfileJson}->'sessionCheckpoint'` })
+    .from(heartbeatRuns).where(and(eq(heartbeatRuns.id, olderRunId), eq(heartbeatRuns.companyId, selected.companyId),
+      eq(heartbeatRuns.agentId, selected.agentId), eq(heartbeatRuns.nativeIssueId, selected.issueId),
+      eq(heartbeatRuns.nativeSessionId, selected.sessionId), eq(heartbeatRuns.runtimeMode, "native"), eq(heartbeatRuns.status, "succeeded")));
+  const priorSnapshot = record(prior?.snapshot), priorIdentity = record(priorSnapshot.identity);
+  if (!prior?.finishedAt || prior.createdAt >= source.createdAt
+    || !source.runnerInstanceId || prior.runnerInstanceId !== source.runnerInstanceId
+    || priorIdentity.runId !== olderRunId || Object.entries(scope).some(([key, value]) => priorIdentity[key] !== value)
+    || priorSnapshot.sessionId !== snapshot.sessionId || priorSnapshot.backendKind !== snapshot.backendKind) return null;
+  const [failed] = await db.select({ finishedAt: heartbeatRuns.finishedAt, startedAt: heartbeatRuns.startedAt }).from(heartbeatRuns).where(and(
+    eq(heartbeatRuns.id, source.id), eq(heartbeatRuns.companyId, selected.companyId), eq(heartbeatRuns.agentId, selected.agentId),
+    eq(heartbeatRuns.nativeIssueId, selected.issueId), eq(heartbeatRuns.nativeSessionId, selected.sessionId),
+    eq(heartbeatRuns.runtimeMode, "native"), eq(heartbeatRuns.status, "failed")));
+  return failed?.finishedAt && prior.finishedAt <= (failed.startedAt ?? source.createdAt) ? priorSnapshot : null;
+}
+
+async function hasConfirmedOlderSupervisor(db: Db, selected: Selected,
+  source: NonNullable<Awaited<ReturnType<typeof findNativeSessionResumeRun>>>,
+  paths: Awaited<ReturnType<typeof localPaths>>, supervisor: unknown) {
+  const olderSnapshot = record(record(supervisor).snapshot);
+  const prior = await confirmedOlderSuccessfulSnapshot(db, selected, source, paths, record(olderSnapshot.identity).runId);
+  return prior !== null && nativeSha256(prior) === nativeSha256(redactRunnerApiPayloads(olderSnapshot));
+}
+
+async function hasConfirmedOlderController(db: Db, selected: Selected,
+  source: NonNullable<Awaited<ReturnType<typeof findNativeSessionResumeRun>>>,
+  paths: Awaited<ReturnType<typeof localPaths>>, controller: string, artifact?: { version: string; digest: string }) {
+  const identity = record(record(JSON.parse(controller)).identity);
+  if (!await confirmedOlderSuccessfulSnapshot(db, selected, source, paths, identity.runId)) return false;
+  try {
+    captureLegacyDurablePrpCheckpoint(controller, { runId: String(identity.runId),
+      runnerInstanceId: source.runnerInstanceId!, normalizedSessionId: selected.sessionId }, artifact);
+    return true;
+  } catch { return false; }
+}
 
 async function* retainedSources(db: Db, signal?: AbortSignal) {
   let after: string | undefined;
@@ -146,7 +201,7 @@ export async function migrateNativeControllers(db: Db, input: { writersStopped: 
           providerDigest: nativeSha256(execution.provider) },
         current: unavailable, runnerArtifact: unavailable }).runnerArtifact;
     }
-    const supervisor = paths.execution.session.lifecyclePolicy.mode === "warm"
+    const supervisor = !checkpoint && paths.execution.session.lifecyclePolicy.mode === "warm"
       ? await readPrivateSource(paths.supervisorPath, 4 * 1024 * 1024) : undefined;
     input.signal.throwIfAborted();
     let result: Awaited<ReturnType<typeof importNativeControllerRecovery>>;
@@ -157,14 +212,28 @@ export async function migrateNativeControllers(db: Db, input: { writersStopped: 
         offline: { writersStopped: true, legacyControllerState, legacyRunnerArtifact } });
     } catch (error) {
       const storage = input.storage ?? durableNativeHarnessStorage();
-      if (!(error instanceof Error) || error.message !== "native_runner_checkpoint_artifact_unproven"
-        || source.status !== "failed" || legacyControllerState === undefined || !storage) throw error;
+      if (!(error instanceof Error) || source.status !== "failed" || legacyControllerState === undefined || !storage) throw error;
+      const archivable = error.message === "native_runner_checkpoint_artifact_unproven"
+        || error.message === "native_runner_checkpoint_binding_mismatch"
+          && await hasConfirmedOlderController(db, selected, source, paths, legacyControllerState, legacyRunnerArtifact);
+      if (!archivable) throw error;
       await archiveFailedLegacyNativeController(db, { ...binding, storage, controller: legacyControllerState, supervisor,
         writersStopped: true, signal: input.signal });
       counts.archivedFailed++;
       continue;
     }
     if (result.kind !== "imported" && result.kind !== "unchanged") {
+      if (result.kind === "missing_evidence" && result.reason === "stale_supervisor_snapshot"
+        && legacyControllerState !== undefined && supervisor !== undefined
+        && await hasConfirmedOlderSupervisor(db, selected, source, paths, JSON.parse(supervisor))) {
+        const storage = input.storage ?? durableNativeHarnessStorage();
+        if (storage) {
+          await archiveFailedLegacyNativeController(db, { ...binding, storage, controller: legacyControllerState, supervisor,
+            writersStopped: true, signal: input.signal });
+          counts.archivedFailed++;
+          continue;
+        }
+      }
       throw new Error(`native_controller_migration_blocked:${source.id}:${"reason" in result ? result.reason : result.kind}`);
     }
     counts[result.kind]++;

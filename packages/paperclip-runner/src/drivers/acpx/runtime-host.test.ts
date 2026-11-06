@@ -1778,6 +1778,7 @@ describe("ACPX runtime host", () => {
     const onElicitation = vi.fn();
     const onExtensionRequest = vi.fn();
     const onExtensionNotification = vi.fn();
+    const onTerminalSessionFailure = vi.fn();
     const runtime = runtimePort({ startTurn });
     const host = await AcpxRuntimeHost.open(
       {
@@ -1797,6 +1798,7 @@ describe("ACPX runtime host", () => {
         onElicitation,
         onExtensionRequest,
         onExtensionNotification,
+        onTerminalSessionFailure,
       }),
     ).toMatchObject({ requestId: turn.requestId, result: turn.result });
     expect(startTurn).toHaveBeenCalledWith({
@@ -1805,6 +1807,7 @@ describe("ACPX runtime host", () => {
       onElicitation,
       onExtensionRequest,
       onExtensionNotification,
+      onTerminalSessionFailure,
     });
     expect(() =>
       host.startTurn({ text: "Concurrent", requestId: "turn-2" }),

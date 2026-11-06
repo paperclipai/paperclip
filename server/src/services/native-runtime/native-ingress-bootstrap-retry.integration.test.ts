@@ -1,7 +1,7 @@
 import { execFileSync, type ChildProcess } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { copyFile, mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { chmod, copyFile, mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import https, { createServer as createHttpsServer } from "node:https";
 import { createServer as createTcpServer } from "node:net";
 import { join, resolve } from "node:path";
@@ -85,11 +85,18 @@ describeEmbeddedPostgres("native ingress bootstrap retry through the real Runner
         identity: { kind: provider } }, normalizedSessionId: native.normalizedSessionId }));
     const digest = (file: string) => `sha256:${createHash("sha256").update(readFileSync(file)).digest("hex")}`;
     const opencode = join(runtimeRoot, "fake-opencode-ingress");
+    const providerNode = provider === "opencode" && process.platform === "linux"
+      ? join(runtimeRoot, "node") : process.execPath;
     const providerCalls = join(sandbox, "provider-calls.log");
     if (provider === "opencode") {
+      if (process.platform === "linux") {
+        await copyFile(process.execPath, providerNode);
+        await chmod(providerNode, 0o500);
+      }
       const script = resolve(runnerWorkspace, "../test/fixtures/fake-opencode-server.mjs");
       execFileSync("cc", ["-x", "c", "-o", opencode, "-"], { input:
-        `#include <unistd.h>\n#include <stdlib.h>\n#include <stdio.h>\nint main(int argc, char **argv) { FILE *log = fopen(${JSON.stringify(providerCalls)}, "a"); if (!log) return 126; fputs("process-start\\n", log); fclose(log); char **args = calloc(argc + 2, sizeof(char *)); args[0] = ${JSON.stringify(process.execPath)}; args[1] = ${JSON.stringify(script)}; for (int i = 1; i < argc; i++) args[i + 1] = argv[i]; execv(args[0], args); return 127; }` });
+        `#include <unistd.h>\n#include <stdlib.h>\n#include <stdio.h>\nint main(int argc, char **argv) { FILE *log = fopen(${JSON.stringify(providerCalls)}, "a"); if (!log) return 126; fputs("process-start\\n", log); fclose(log); char **args = calloc(argc + 2, sizeof(char *)); args[0] = ${JSON.stringify(providerNode)}; args[1] = ${JSON.stringify(script)}; for (int i = 1; i < argc; i++) args[i + 1] = argv[i]; execv(args[0], args); return 127; }` });
+      await chmod(opencode, 0o755);
     }
     const proxy = resolve(runnerWorkspace, "../dist/cli/opencode-app-server-proxy.cjs");
     const identity = { runnerInstanceId: native.runnerInstanceId, environmentLeaseId: runId, runId,
@@ -187,8 +194,8 @@ describeEmbeddedPostgres("native ingress bootstrap retry through the real Runner
           onAccountingEvent: async event => { await usageDelivery?.capture(event); },
           environment: { CODEX_HOME: codexHome, PATH: process.env.PATH, OPENROUTER_API_KEY: "synthetic-fixture-key" }, sourceCodexHome: codexHome,
           ...(provider === "opencode" ? { opencodeCommand: opencode, opencodeCommandSha256: digest(opencode),
-            opencodeProxyPath: proxy, opencodeProxySha256: digest(proxy), providerNodeCommand: process.execPath,
-            providerNodeCommandSha256: digest(process.execPath), opencodePermissionMode: "allow" as const } : {}),
+            opencodeProxyPath: proxy, opencodeProxySha256: digest(proxy), providerNodeCommand: providerNode,
+            providerNodeCommandSha256: digest(providerNode), opencodePermissionMode: "allow" as const } : {}),
           prpIdentity: identity, lifecyclePolicy: { mode: "per_turn", idleTimeoutMs: null },
           controlPlaneRegistration: async authority => {
             const controller = await currentNativeControllerIdentity();

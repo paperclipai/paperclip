@@ -1,6 +1,6 @@
 import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
 import { notifyChatInboundWakeNotices } from "./chat-inbound-wake-notice-notifications.js";
-import { listProjectWorkspaceProviders, resolveProjectWorkspaceProvider } from "./project-workspace-provider.js";
+import { listProjectWorkspaceProviders, resolveProjectWorkspaceProvider, withDefaultProjectStorage } from "./project-workspace-provider.js";
 import { retireRemovedPluginWorkspaceDependents } from "./plugin-workspaces.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { enqueueProjectSkillSource, detachProjectSkillSource } from "./project-skill-source-bindings.js";
@@ -116,6 +116,7 @@ export async function ensurePersonalPrivateProject(dbOrTx: any, companyId: strin
         visibility: "private",
         personalOwnerUserId: userId,
         privacyOwnerUserId: userId,
+        executionWorkspacePolicy: await withDefaultProjectStorage(dbOrTx, companyId, null) as Record<string, unknown> | null,
       })
       .onConflictDoNothing()
       .returning()
@@ -691,12 +692,13 @@ export function projectService(db: Db, options: { captureWorkspaceUpdates?: bool
     // skipped validation whenever `goalIds: []` and `goalId` arrive
     // together (goalIds wins resolution, mirroring the update path).
     const legacyGoalId = ids?.[0] ?? null;
+    const executionWorkspacePolicy = await withDefaultProjectStorage(db, companyId, projectData.executionWorkspacePolicy ?? null) as typeof projectData.executionWorkspacePolicy;
 
     return db.transaction(async (tx) => {
       const txDb = tx as unknown as Db;
       const row = await tx
         .insert(projects)
-        .values({ ...projectData, goalId: legacyGoalId, companyId })
+        .values({ ...projectData, executionWorkspacePolicy, goalId: legacyGoalId, companyId })
         .returning()
         .then((rows) => rows[0]);
       if (ids && ids.length > 0) {
@@ -997,12 +999,19 @@ export function projectService(db: Db, options: { captureWorkspaceUpdates?: bool
         .where(eq(projects.id, id)).for("update")
         .then((rows) => rows[0] ?? null);
       if (!existingProject) return null;
-      if (projectData.executionWorkspacePolicy !== undefined &&
-          projectData.executionWorkspacePolicy?.storageProviderPluginId !== existingProject.executionWorkspacePolicy?.storageProviderPluginId) {
-        const providers = await listProjectWorkspaceProviders(db, existingProject.companyId);
-        const previousOwner = resolveProjectWorkspaceProvider(existingProject.executionWorkspacePolicy, providers, false).pluginId;
-        const nextOwner = resolveProjectWorkspaceProvider(projectData.executionWorkspacePolicy, providers, false).pluginId;
-        if (previousOwner !== nextOwner) await retireRemovedPluginWorkspaceDependents(db, id);
+      if (projectData.executionWorkspacePolicy !== undefined) {
+        const attachedPluginId = parseProjectExecutionWorkspacePolicy(existingProject.executionWorkspacePolicy)?.storageProviderPluginId;
+        const requestedPluginId = parseProjectExecutionWorkspacePolicy(projectData.executionWorkspacePolicy)?.storageProviderPluginId;
+        if (attachedPluginId) {
+          if (requestedPluginId !== undefined && requestedPluginId !== attachedPluginId) {
+            throw conflict("A plugin-backed project stays attached to its storage plugin");
+          }
+          if (requestedPluginId === undefined) {
+            projectData.executionWorkspacePolicy = { enabled: true, ...projectData.executionWorkspacePolicy, storageProviderPluginId: attachedPluginId };
+          }
+        } else if (requestedPluginId) {
+          await retireRemovedPluginWorkspaceDependents(db, id);
+        }
       }
       if (ids && ids.length > 0) {
         await assertGoalsBelongToCompany(db, existingProject.companyId, ids);

@@ -6,14 +6,21 @@ import { hasRequiredWorkspaceRecovery, preserveWorkspaceRestoreRecoveryMetadata,
 import { hasUnrestoredRemoteWorkspace, preserveLegacyWorkspaceRestoreSources, type LegacyWorkspaceRestoreSource } from "./legacy-workspace-restore-recovery.js";
 import { isPreDispatchReviewWaitVerified } from "./pre-dispatch-review-wait.js";
 import { isPreDispatchExecutionWaitVerified } from "./pre-dispatch-execution-wait.js";
-import { REMOTE_WORKSPACE_PREPARATION_TIMEOUT_CODE } from "./remote-workspace-transport.js";
+import { REMOTE_WORKSPACE_PREPARATION_TIMEOUT_CODE, REMOTE_WORKSPACE_RESTORE_FAILED_CODE } from "./remote-workspace-transport.js";
+import { REUSABLE_SANDBOX_RESUME_FAILED_CODE } from "./reusable-sandbox-resume-error.js";
+import { PLUGIN_WORKER_UNAVAILABLE_CODE } from "./plugin-worker-unavailable-error.js";
+import { ENVIRONMENT_PROVIDER_UNAVAILABLE_CODE } from "./environment-provider-unavailable-error.js";
+import { RUNNER_REVISION_MISMATCH_CODE } from "./runner-revision-mismatch.js";
 import { hasWorkspaceRestoreFailure } from "@paperclipai/shared";
 import { normalizeMaxTurnStopReason } from "./heartbeat-stop-metadata.js";
 import { claimedAdapterType, hasConversationContinuationPolicy } from "./conversation-continuation.js";
 import { canonicalExecutionUuid } from "./execution-identity.js";
 import { randomUUID } from "node:crypto";
 import { and, desc, eq, getTableColumns, inArray, isNull, or, sql, type SQL } from "drizzle-orm";
-import { environmentLeases, heartbeatRuns, issueRecoveryActions, issues, nativeRunFinalizations, type Db } from "@paperclipai/db";
+import { environmentLeases, heartbeatRunEvents, heartbeatRuns, issueRecoveryActions, issues, nativeRunFinalizations, type Db } from "@paperclipai/db";
+import { executionStartedEventPredicate } from "./pre-dispatch-execution-evidence.js";
+import { readRunCancellation } from "./run-cancellation.js";
+import { hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
 import { issueRecoveryActionService } from "./issue-recovery-actions.js";
 import { parseIssueExecutionState } from "./issue-execution-policy.js";
 import { executionFailureRetryCount } from "./execution-recovery-attempt.js";
@@ -68,7 +75,7 @@ export function legacyExecutionNeedsReconciliation(
       && (run.resultJson?.executionCancellation as Record<string, unknown> | undefined)?.state === "acknowledged") return false;
   // Waiting for a subscription or workspace precedes provider execution. It is
   // a resource wait, not a failed provider attempt or permission to replay work.
-  if (run.status === "cancelled" && (run.errorCode === "ai_connection_busy" || run.errorCode === "ai_connection_pool_exhausted") &&
+  if (run.status === "cancelled" && (run.errorCode === "ai_connection_busy" || run.errorCode === "ai_connection_pool_exhausted" || run.errorCode === "provider_limit_wait") &&
       evidence?.kind === "ai_connection_wait" && evidence.providerWorkStarted === false) return false;
   if (run.status === "cancelled" && run.errorCode === "workspace_busy" &&
       evidence?.kind === "workspace_wait" && evidence.providerWorkStarted === false) return false;
@@ -76,7 +83,9 @@ export function legacyExecutionNeedsReconciliation(
   // exhaustion needs workspace repair, not reconciliation of provider actions
   // that the bootstrap evidence proves never started. Keep unknown outcomes held.
   if ((run.errorCode === "workspace_git_scan_timeout" || run.errorCode === "workspace_git_scan_saturated"
-      || run.errorCode === REMOTE_WORKSPACE_PREPARATION_TIMEOUT_CODE) &&
+      || run.errorCode === REMOTE_WORKSPACE_PREPARATION_TIMEOUT_CODE || run.errorCode === REUSABLE_SANDBOX_RESUME_FAILED_CODE
+      || run.errorCode === REMOTE_WORKSPACE_RESTORE_FAILED_CODE || run.errorCode === PLUGIN_WORKER_UNAVAILABLE_CODE
+      || run.errorCode === RUNNER_REVISION_MISMATCH_CODE || run.errorCode === ENVIRONMENT_PROVIDER_UNAVAILABLE_CODE) &&
       evidence?.kind === "bootstrap" && evidence.providerWorkStarted === false) return false;
   if (executionFailureRetryCount(run) >= 2) return true;
   return !(
@@ -275,6 +284,12 @@ export async function terminalizeLegacyExecution(input: {
                 sql`${issueRecoveryActions.evidence}->'workspaceRestoreRecovery'->>'schema' = ${LEGACY_WORKSPACE_RECOVERY_SCHEMA}`),
               sql`${issueRecoveryActions.evidence}->'automaticRecovery'->>'replay' = 'blocked'`,
             ),
+            and(
+              eq(issueRecoveryActions.cause, LEGACY_RECOVERY_CAUSE),
+              eq(issueRecoveryActions.fingerprint, `legacy-execution:${run.id}`),
+              sql`${issueRecoveryActions.evidence}->>'runId' = ${run.id}`,
+              sql`${issueRecoveryActions.evidence}->'automaticRecovery'->>'replay' = 'blocked'`,
+            ),
           ),
         )).limit(1);
       if (reconciled) return updated;
@@ -367,6 +382,87 @@ export async function settleInterruptedNativeBootstrap(
       action: "issue.recovery_action_resolved", entityType: "issue", entityId: task.id, agentId: run.agentId, runId: run.id,
       details: { reason: "native_bootstrap_stopped_before_provider", recoveryActionIds: resolved.map(r => r.id) },
     });
+    return settled;
+  });
+}
+
+/**
+ * The executor that owned a cancelled legacy run proves that its gated
+ * dispatch never entered the adapter. Such a Stop (for example a subtree pause
+ * during workspace preparation) left no provider actions to reconcile, so the
+ * hold that terminalization conservatively recorded is a false positive. Every
+ * retained execution reference must agree; otherwise the hold stays in force.
+ */
+export async function settleCancelledLegacyPreparation(
+  db: Db, input: { run: Run; providerDispatchStarted: boolean },
+): Promise<Run | null> {
+  if (input.providerDispatchStarted || input.run.runtimeMode !== "legacy" || input.run.status !== "cancelled") return null;
+  const issueId = input.run.issueId ?? input.run.contextSnapshot?.issueId;
+  if (typeof issueId !== "string") return null;
+  return db.transaction(async tx => {
+    const [task] = await tx.select().from(issues)
+      .where(and(eq(issues.id, issueId), eq(issues.companyId, input.run.companyId))).for("update");
+    const [run] = await tx.select().from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.id, input.run.id), eq(heartbeatRuns.companyId, input.run.companyId))).for("update");
+    const recovery = run?.resultJson?.executionRecovery as Record<string, unknown> | undefined;
+    // Only a requested Stop qualifies, and only while it is still classified as
+    // an unknown outcome: existing wait or bootstrap receipts already decide it.
+    if (!task || !run || run.runtimeMode !== "legacy" || run.status !== "cancelled" || !run.finishedAt
+        || readRunCancellation(run.resultJson)?.expected !== true || recovery !== undefined
+        || !legacyExecutionNeedsReconciliation(run)
+        || run.processPid || run.processGroupId || run.processStartedAt || run.sessionIdAfter
+        || run.nativeIssueId || run.nativeSessionId
+        || hasWorkspaceRestoreFailure(run.resultJson) || hasRequiredWorkspaceRecovery(run.resultJson)
+        || run.runnerProfileJson?.nativeExecutionInput != null) return null;
+    const [native] = await tx.select({ id: nativeRunFinalizations.runId }).from(nativeRunFinalizations)
+      .where(and(eq(nativeRunFinalizations.companyId, run.companyId), eq(nativeRunFinalizations.runId, run.id))).limit(1);
+    const leases = await tx.select().from(environmentLeases)
+      .where(and(eq(environmentLeases.companyId, run.companyId), eq(environmentLeases.heartbeatRunId, run.id)));
+    const [execution] = await tx.select({ id: heartbeatRunEvents.id }).from(heartbeatRunEvents).where(and(
+      eq(heartbeatRunEvents.companyId, run.companyId), eq(heartbeatRunEvents.runId, run.id), executionStartedEventPredicate(),
+    )).limit(1);
+    if (native || execution || leases.some(lease => lease.provider === "local"
+      ? !lease.releasedAt || lease.status === "pending_cleanup" || lease.cleanupStatus === "failed"
+      : !hasRemoteTerminationReceipt(lease))) return null;
+    const now = new Date();
+    const [settled] = await tx.update(heartbeatRuns).set({ resultJson: { ...run.resultJson,
+      executionRecovery: { kind: "bootstrap", providerWorkStarted: false, preparationSettledAt: now.toISOString() },
+    }, updatedAt: now }).where(eq(heartbeatRuns.id, run.id)).returning();
+    // The automatic disposition may already have closed the incident with
+    // replay blocked, and moved the task to blocked. Correct both verdicts.
+    const holds = await tx.select().from(issueRecoveryActions).where(and(
+      eq(issueRecoveryActions.companyId, run.companyId), eq(issueRecoveryActions.sourceIssueId, task.id),
+      eq(issueRecoveryActions.cause, LEGACY_RECOVERY_CAUSE), eq(issueRecoveryActions.fingerprint, `legacy-execution:${run.id}`),
+      sql`${issueRecoveryActions.evidence}->>'runId' = ${run.id}`,
+      sql`not (${issueRecoveryActions.evidence} ? 'executionReconciliation')`,
+      or(inArray(issueRecoveryActions.status, ["active", "escalated"]), and(
+        eq(issueRecoveryActions.status, "resolved"), eq(issueRecoveryActions.outcome, "blocked"),
+        sql`${issueRecoveryActions.evidence}->'automaticRecovery'->>'policy' = 'preserve_without_replay_v1'`,
+        sql`${issueRecoveryActions.evidence}->'automaticRecovery'->>'replay' = 'blocked'`,
+      )),
+    )).for("update");
+    const ownedBlock = holds.map(hold => hold.evidence.legacyCancellationBlock as Record<string, unknown> | undefined)
+      .find(receipt => receipt?.runId === run.id && receipt.statusVersion === task.statusVersion &&
+        ["todo", "in_progress", "in_review"].includes(String(receipt.previousStatus)));
+    if (task.status === "blocked" && ownedBlock && task.assigneeAgentId === run.agentId &&
+        !isSupersededConversationRun(task, run) && !task.executionRunId && !task.checkoutRunId) {
+      // Restore only the unchanged projection made by this exact incident.
+      await issueService(tx as unknown as Db).update(task.id, { status: String(ownedBlock.previousStatus) }, tx);
+    }
+    const resolved = holds.length ? await tx.update(issueRecoveryActions).set({ status: "resolved", outcome: "false_positive",
+      resolutionNote: "The run was stopped before its adapter started; there are no provider actions to reconcile.",
+      resolvedAt: now, updatedAt: now,
+      evidence: sql`case when ${issueRecoveryActions.evidence} ? 'automaticRecovery'
+        then jsonb_set(${issueRecoveryActions.evidence}, '{automaticRecovery,replay}', '"allowed"'::jsonb, false)
+        else ${issueRecoveryActions.evidence} end`,
+    }).where(inArray(issueRecoveryActions.id, holds.map(hold => hold.id))).returning({ id: issueRecoveryActions.id }) : [];
+    if (resolved.length) {
+      await notifyUnsafeWorkspaceExportRecovery(tx, { companyId: run.companyId, issueId: task.id });
+      await logActivity(tx as unknown as Db, { companyId: run.companyId, actorType: "system", actorId: "system",
+        action: "issue.recovery_action_resolved", entityType: "issue", entityId: task.id, agentId: run.agentId, runId: run.id,
+        details: { reason: "legacy_cancelled_before_adapter", recoveryActionIds: resolved.map(r => r.id) },
+      });
+    }
     return settled;
   });
 }

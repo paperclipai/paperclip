@@ -132,7 +132,8 @@ export async function productTestOps(command, argument, env = process.env, exec 
   const api = await testopsClient(env.ALLURE_TOKEN, fetchImpl);
   await verifyProductJob(api, selection, env);
   const summary = await readJson(env.EXPORT_SUMMARY, 16_384);
-  // Check server-side identity and count. A successful upload is not a pass.
+  // Observe one upload with at most 55 seconds of poll waits, matching the
+  // mature chat lane. This budget never retries or extends a product scenario.
   let observed, lastVerification;
   for (let attempt = 0; attempt < 12; attempt++) {
     observed = await api(`/api/testresult?${new URLSearchParams({ launchId: String(selection.launchId), page: '0', size: '100' })}`);
@@ -150,7 +151,7 @@ export async function productTestOps(command, argument, env = process.env, exec 
     // their run binding and verdict. Observe this one upload, without rerunning
     // the product or accepting unknown/partial results.
     if (attempt === 11) { if (lastVerification) throw lastVerification; fail('upload_incomplete'); }
-    await wait(2_000);
+    await wait(5_000);
   }
 }
 

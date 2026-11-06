@@ -3034,6 +3034,79 @@ describe("agent issue mutation checkout ownership", () => {
     });
   });
 
+  describe("board reassignment whose run stop settles after the request", () => {
+    const nativeRun = {
+      id: ownerRunId,
+      companyId,
+      agentId: ownerAgentId,
+      runtimeMode: "native",
+      status: "running",
+      contextSnapshot: { issueId },
+      resultJson: {},
+    };
+    const reassign = { assigneeAgentId: peerAgentId };
+
+    beforeEach(() => {
+      mockIssueService.getById.mockResolvedValue(makeIssue({ executionRunId: ownerRunId, checkoutRunId: ownerRunId }));
+      mockAgentService.resolveByReference.mockImplementation(async (_companyId: string, id: string) => ({
+        ambiguous: false,
+        agent: await mockAgentService.getById(id),
+      }));
+    });
+
+    it("applies the reassignment when the native stop is durably recorded but its owner has not settled yet", async () => {
+      const fenced = { ...nativeRun, resultJson: { reassignmentStopRequested: true } };
+      mockHeartbeatService.getRun.mockResolvedValueOnce(nativeRun).mockResolvedValue(fenced);
+      mockHeartbeatService.cancelRun.mockResolvedValue(fenced);
+
+      const res = await request(createApp(boardActor())).patch(`/api/issues/${issueId}`).send(reassign);
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(mockHeartbeatService.cancelRun).toHaveBeenCalledWith(ownerRunId, "Cancelled before issue reassignment",
+        expect.objectContaining({ errorCode: "issue_reassigned" }));
+      expect(mockHeartbeatService.getRun).toHaveBeenLastCalledWith(ownerRunId, { includeExecutionEvidence: true });
+      expect(mockIssueService.update).toHaveBeenCalledTimes(1);
+      expect(mockIssueService.update.mock.calls[0]?.[1]).toMatchObject(reassign);
+      expect(mockHeartbeatService.cancelRun.mock.invocationCallOrder[0])
+        .toBeLessThan(mockIssueService.update.mock.invocationCallOrder[0]!);
+    });
+
+    it("applies the reassignment when the native owner's acknowledgement is still pending", async () => {
+      const { HttpError: CurrentHttpError } = await vi.importActual<typeof import("../errors.js")>("../errors.js");
+      mockHeartbeatService.getRun.mockResolvedValueOnce(nativeRun)
+        .mockResolvedValue({ ...nativeRun, resultJson: { reassignmentStopRequested: true } });
+      mockHeartbeatService.cancelRun.mockRejectedValue(new CurrentHttpError(409,
+        "Stop is recorded; the native session is still starting and will stop when it opens.",
+        { code: "native_stop_pending", runId: ownerRunId }));
+
+      const res = await request(createApp(boardActor())).patch(`/api/issues/${issueId}`).send(reassign);
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(mockIssueService.update.mock.calls[0]?.[1]).toMatchObject(reassign);
+    });
+
+    it("applies the reassignment when the run finished on its own before the stop landed", async () => {
+      mockHeartbeatService.getRun.mockResolvedValueOnce(nativeRun).mockResolvedValue({ ...nativeRun, status: "succeeded" });
+      mockHeartbeatService.cancelRun.mockResolvedValue({ ...nativeRun, status: "succeeded" });
+
+      const res = await request(createApp(boardActor())).patch(`/api/issues/${issueId}`).send(reassign);
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(mockIssueService.update.mock.calls[0]?.[1]).toMatchObject(reassign);
+    });
+
+    it("still refuses the reassignment when no stop was recorded for a run that is still active", async () => {
+      mockHeartbeatService.getRun.mockResolvedValue(nativeRun);
+      mockHeartbeatService.cancelRun.mockResolvedValue(nativeRun);
+
+      const res = await request(createApp(boardActor())).patch(`/api/issues/${issueId}`).send(reassign);
+
+      expect(res.status, JSON.stringify(res.body)).toBe(409);
+      expect(res.body.details).toMatchObject({ code: "runner_goal_reassignment_stop_unconfirmed", runId: ownerRunId });
+      expect(mockIssueService.update).not.toHaveBeenCalled();
+    });
+  });
+
   describe("native run changing its own task status", () => {
     const nativeRun = {
       id: ownerRunId,

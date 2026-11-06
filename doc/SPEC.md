@@ -691,6 +691,10 @@ The `create_project` runtime tool uses the normal project API with durable idemp
 
 Confirmed project creation appears as a durable card in the shared task transcript, including selected repository links. Tasks are linked inline. Failed creation never produces a success card. Tool evals cover planning/handoff, project/repository selection, retries, permission and mode denials, and ordinary delegation regressions using the production chat directive.
 
+Task replies and new tasks submit with Enter by default; Shift+Enter adds a new
+line. The **Command/Ctrl+Enter to Submit** experiment restores the previous
+keyboard behavior.
+
 ### Paused task messages
 
 A paused task takes over the composer with an amber notice and a Resume action.

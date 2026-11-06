@@ -93,7 +93,8 @@ describe("tenant-session recovery", () => {
     await expect(api.get("/ordinary-401")).rejects.toMatchObject({
       name: "ApiError",
       status: 401,
-      message: "unauthorized",
+      code: "unauthorized",
+      message: "Your session has ended. Sign in again to continue.",
     });
 
     fetchMock.mockResolvedValue(jsonResponse({ recovered: true }));
@@ -103,6 +104,22 @@ describe("tenant-session recovery", () => {
 });
 
 describe("in-tab GET coalescing", () => {
+  it("keeps fresh validation reads separate from older and concurrent requests", async () => {
+    const old = deferred<Response>();
+    fetchMock.mockReturnValueOnce(old.promise).mockResolvedValue(jsonResponse({ title: "Current C" }));
+    const stale = api.get("/fresh-validation");
+    const first = api.get("/fresh-validation", { cache: "no-store", fresh: true });
+    const second = api.get("/fresh-validation", { cache: "no-store", fresh: true });
+    const joined = api.get("/fresh-validation");
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock.mock.calls[1][1]).toMatchObject({ cache: "no-store" });
+    await expect(first).resolves.toEqual({ title: "Current C" });
+    await expect(second).resolves.toEqual({ title: "Current C" });
+    old.resolve(jsonResponse({ title: "Old A" }));
+    await expect(stale).resolves.toEqual({ title: "Old A" });
+    await expect(joined).resolves.toEqual({ title: "Old A" });
+  });
+
   it("times out a caller without cancelling another and starts a fresh fetch on retry", async () => {
     vi.useFakeTimers();
     const first = deferred<Response>();

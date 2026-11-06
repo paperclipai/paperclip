@@ -2,6 +2,7 @@ import { and, asc, eq, gt, ne, notExists } from "drizzle-orm";
 import { heartbeatRuns, issues, nativeRunFinalizations, nativeRunResults, workspaceOperations, type Db } from "@paperclipai/db";
 import type { createDeliveryWorkCoordinator } from "../delivery-work-coordinator.js";
 import { DELIVERY_QUEUES } from "../delivery-work-notifications.js";
+import { logger } from "../../middleware/logger.js";
 import { onNativeWorkspaceFinalizationRelease, type NativeWorkspaceFinalizationScope } from "../native-workspace-finalization-notifications.js";
 import { registerScopedDeadlineWork } from "../scoped-deadline-work.js";
 import { measureRunPhase, withRunWorkspaceFinalizationTiming } from "../execution-preparation-timing.js";
@@ -24,6 +25,7 @@ export function nativeWorkspaceFinalizationWork(db: Db, options: {
     return db.select({ id: heartbeatRuns.id, companyId: heartbeatRuns.companyId, agentId: heartbeatRuns.agentId,
       issueId: nativeRunFinalizations.issueId, nextAttemptAt: nativeRunFinalizations.nextAttemptAt,
       leaseOwner: nativeRunFinalizations.leaseOwner, leaseExpiresAt: nativeRunFinalizations.leaseExpiresAt,
+      updatedAt: nativeRunFinalizations.updatedAt,
     }).from(nativeRunFinalizations)
       .innerJoin(heartbeatRuns, and(eq(heartbeatRuns.id, nativeRunFinalizations.runId),
         eq(heartbeatRuns.companyId, nativeRunFinalizations.companyId)))
@@ -45,8 +47,13 @@ export function nativeWorkspaceFinalizationWork(db: Db, options: {
       )).orderBy(asc(nativeRunFinalizations.runId)).limit(100);
   }
   function entry(row: Awaited<ReturnType<typeof candidates>>[number]): Entry {
+    // Work without a saved retry is due now. Order it by when it became pending,
+    // so copy-backs interrupted by a later restart cannot starve older retries.
+    // The database clock may lead this process slightly; never defer such work.
+    const pendingSince = Math.min(row.updatedAt.getTime(), Date.now());
     return { id: row.id, companyId: row.companyId, issueId: row.issueId, agentId: row.agentId,
-      dueAt: Math.max(row.nextAttemptAt?.getTime() ?? 0, row.leaseOwner ? row.leaseExpiresAt?.getTime() ?? 0 : 0) };
+      dueAt: Math.max(row.nextAttemptAt?.getTime() ?? pendingSince,
+        row.leaseOwner ? row.leaseExpiresAt?.getTime() ?? 0 : 0) };
   }
   async function load(scope?: NativeWorkspaceFinalizationScope, signal?: AbortSignal, canRun = () => true): Promise<Entry[]> {
     const entries: Entry[] = [];
@@ -75,8 +82,14 @@ export function nativeWorkspaceFinalizationWork(db: Db, options: {
     }));
     if (outcome.kind === "retry") return { ...due, dueAt: outcome.retryAt.getTime() };
     if (outcome.kind === "waiting") {
-      return outcome.reason === "busy" || outcome.reason === "platform_stop_pending"
-        ? { ...due, dueAt: Date.now() + OWNERSHIP_RECHECK_MS } : null;
+      if (outcome.reason === "busy" || outcome.reason === "platform_stop_pending") {
+        return { ...due, dueAt: Date.now() + OWNERSHIP_RECHECK_MS };
+      }
+      // This run is revisited only after a restart or a release notification.
+      if (outcome.reason !== "owner_active") {
+        logger.info({ runId: current.id, reason: outcome.reason }, "native workspace finalization paused until the run is notified again");
+      }
+      return null;
     }
     if (outcome.kind !== "completed" || outcome.operation.status === "succeeded") return null;
     const failure = await recordNativeWorkspaceFinalizationFailure(db, current.id, outcome.operation);
@@ -90,7 +103,12 @@ export function nativeWorkspaceFinalizationWork(db: Db, options: {
   function register(coordinator: ReturnType<typeof createDeliveryWorkCoordinator>, canRun: () => boolean,
     canRecover: () => Promise<boolean> = async () => true) {
     const worker = registerScopedDeadlineWork(coordinator, {
-      queue: DELIVERY_QUEUES.nativeWorkspaceFinalization, batchSize: 1,
+      queue: DELIVERY_QUEUES.nativeWorkspaceFinalization,
+      // A slow sandbox export can take many minutes. Independent tasks proceed
+      // in parallel; runs that share a task keep their copy-backs serialized.
+      // Retries saved while another copy-back is still exporting are admitted
+      // on schedule instead of waiting for that export to finish.
+      concurrentChecks: { limit: 4, key: (item: Entry) => `issue:${item.companyId}:${item.issueId}`, admitDueWhileActive: true },
       decodeScope: (hint: string): NativeWorkspaceFinalizationScope | undefined => hint === "*" ? undefined : JSON.parse(hint),
       matches: (item: Entry, scope?: NativeWorkspaceFinalizationScope) => !scope || item.companyId === scope.companyId
         && (!scope.issueId || item.issueId === scope.issueId) && (!scope.runId || item.id === scope.runId),

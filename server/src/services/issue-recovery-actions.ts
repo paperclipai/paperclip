@@ -66,6 +66,9 @@ export type UpsertIssueRecoveryActionInput = {
   // one. The new failure then gets a distinct recovery identity and a fresh
   // operator notice, and the prior identity stays as a resolved record.
   supersedeOnIdentityChange?: boolean;
+  // When true, an existing active action is returned unchanged. A concurrent
+  // writer that wins the insert keeps its owner, cause, and evidence.
+  createOnly?: boolean;
   // Rollout compatibility for active pre-policy actions. Refresh their
   // evidence/attempt metadata without silently changing the recorded owner or
   // the wake/monitor contract that made that owner authoritative.
@@ -377,6 +380,7 @@ export function issueRecoveryActionService(db: DbOrTransaction) {
   ): Promise<IssueRecoveryAction> {
     const existing = await getActiveForIssue(input.companyId, input.sourceIssueId);
     const now = new Date();
+    if (existing && input.createOnly) return existing;
     const ownerType = input.ownerType ?? (input.ownerAgentId ? "agent" : "board");
     if (existing) {
       // A distinct failure identity must not overwrite the active action of a

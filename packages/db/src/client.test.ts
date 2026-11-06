@@ -230,6 +230,14 @@ describeEmbeddedPostgres("merged Muse migration histories", () => {
     }
   }
 
+  // Later migrations may add columns; retained rows must keep every earlier value.
+  function retainedColumns<T extends Record<string, Record<string, unknown> | null>>(after: T, before: T): T {
+    return Object.fromEntries(Object.entries(after).map(([table, row]) => {
+      const earlier = before[table];
+      return [table, row && earlier ? Object.fromEntries(Object.keys(earlier).map(key => [key, row[key]])) : row];
+    })) as T;
+  }
+
   async function seedRetainedRows(sql: ReturnType<typeof postgres>, withMuse: boolean) {
     const userId = randomUUID(), clientId = `migration-client-${randomUUID()}`;
     const [company] = await sql`INSERT INTO companies (name, issue_prefix) VALUES ('Retained migration company', 'MRG') RETURNING id`;
@@ -264,30 +272,6 @@ describeEmbeddedPostgres("merged Muse migration histories", () => {
       const [bindingRow] = binding ? await sql`SELECT to_jsonb(b) AS row FROM muse_agent_bindings b WHERE id = ${binding.id}` : [];
       return { company: companyRow.row, task: taskRow.row, run: runRow.row, grant: grantRow.row, binding: bindingRow?.row ?? null };
     };
-  }
-
-  type RetainedRowsSnapshot = Awaited<ReturnType<Awaited<ReturnType<typeof seedRetainedRows>>>>;
-
-  function omitNewlyAddedNullColumns(
-    row: Record<string, unknown> | null,
-    reference: Record<string, unknown> | null,
-  ): Record<string, unknown> | null {
-    if (row === null || reference === null) return row;
-    const result = { ...row };
-    for (const key of Object.keys(result)) {
-      if (!(key in reference) && result[key] === null) delete result[key];
-    }
-    return result;
-  }
-
-  function expectRetainedRowsUnchanged(actual: RetainedRowsSnapshot, expected: RetainedRowsSnapshot) {
-    expect({
-      company: omitNewlyAddedNullColumns(actual.company, expected.company),
-      task: omitNewlyAddedNullColumns(actual.task, expected.task),
-      run: omitNewlyAddedNullColumns(actual.run, expected.run),
-      grant: omitNewlyAddedNullColumns(actual.grant, expected.grant),
-      binding: omitNewlyAddedNullColumns(actual.binding, expected.binding),
-    }).toEqual(expected);
   }
 
   it.each(["fresh", "master0346", "muse0348"] as const)("migrates %s through the normal loader without rewriting historical receipts", async baseline => {
@@ -343,7 +327,7 @@ describeEmbeddedPostgres("merged Muse migration histories", () => {
         const currentHash = await migrationHash(entry.file);
         expect(afterHistory.filter(row => row.hash === currentHash)).toHaveLength(1);
       }
-      if (retainedRows) expectRetainedRowsUnchanged(await retainedRows(), beforeRows!);
+      if (retainedRows) expect(retainedColumns(await retainedRows(), beforeRows!)).toEqual(beforeRows);
       const indexes = await sql`
         SELECT c.relname, i.indisvalid, i.indisready, pg_get_indexdef(c.oid) AS definition
         FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid JOIN pg_namespace n ON n.oid = c.relnamespace
@@ -360,7 +344,7 @@ describeEmbeddedPostgres("merged Muse migration histories", () => {
       expect((await inspectMigrations(connectionString)).status).toBe("upToDate");
       expect(await historyRows(sql)).toEqual(afterHistory);
       expect(await schemaShape(sql)).toEqual(finalShape);
-      if (retainedRows) expectRetainedRowsUnchanged(await retainedRows(), beforeRows!);
+      if (retainedRows) expect(retainedColumns(await retainedRows(), beforeRows!)).toEqual(beforeRows);
     } finally {
       await Promise.all([sql.end(), reference.end()]);
     }

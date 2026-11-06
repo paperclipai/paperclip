@@ -3015,8 +3015,43 @@
     {
       "idx": 432,
       "version": "7",
-      "when": 1793808602889,
-      "tag": "0432_needy_speedball",
+      "when": 1793916406980,
+      "tag": "0432_strong_mole_man",
+      "breakpoints": true
+    },
+    {
+      "idx": 433,
+      "version": "7",
+      "when": 1793920110905,
+      "tag": "0433_workspace_defaults",
+      "breakpoints": true
+    },
+    {
+      "idx": 434,
+      "version": "7",
+      "when": 1793924947593,
+      "tag": "0434_brave_leo",
+      "breakpoints": true
+    },
+    {
+      "idx": 435,
+      "version": "7",
+      "when": 1793937048235,
+      "tag": "0435_premium_puff_adder",
+      "breakpoints": true
+    },
+    {
+      "idx": 436,
+      "version": "7",
+      "when": 1793952565204,
+      "tag": "0436_legal_reavers",
+      "breakpoints": true
+    },
+    {
+      "idx": 437,
+      "version": "7",
+      "when": 1793961282348,
+      "tag": "0437_sharp_scorpion",
       "breakpoints": true
     }
   ]
