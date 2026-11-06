@@ -13,7 +13,7 @@ import { pathToFileURL } from "node:url";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { and, eq, sql } from "drizzle-orm";
 import { activityLog, agents, agentTaskSessions, agentWakeupRequests, applyPendingMigrations, closeRegisteredClients, companies, createDb, environmentLeases, environments,
-  subscribeDatabaseWork, executionWorkspaceRepositories, executionWorkspaces, executionWorkspaceSnapshots, heartbeatRunEvents, heartbeatRuns, issueRecoveryActions, issues, livenessDb, nativeRunFinalizations, projects, projectWorkspaces, workspaceOperations } from "@paperclipai/db";
+  subscribeDatabaseWork, executionWorkspaceRepositories, executionWorkspaces, executionWorkspaceSnapshots, heartbeatRunEvents, heartbeatRuns, issueRecoveryActions, issueThreadInteractions, issues, livenessDb, nativeRunFinalizations, projects, projectWorkspaces, workspaceOperations } from "@paperclipai/db";
 import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
 import type { CommandManagedRuntimeRunner } from "@paperclipai/adapter-utils/command-managed-runtime";
 import { buildProjectMentionHref, type Environment, type EnvironmentLease } from "@paperclipai/shared";
@@ -31,6 +31,7 @@ import { RemoteWorkspaceRestoreError } from "./remote-workspace-transport.js";
 import { readRemoteRunnerState } from "./native-runtime/native-session-executor.js";
 import { notFound } from "../errors.js";
 import { appendHeartbeatRunEvent } from "./heartbeat-run-events.js";
+import { issueThreadInteractionService } from "./issue-thread-interactions.js";
 import { createRemoteWorkspaceFiles } from "./remote-workspace-files.js";
 import { workspaceFileResourceService } from "./workspace-file-resources.js";
 import { nativeWorkspaceExportPendingForLease, preserveRemoteWorkspacePreparationFailure } from "./native-runtime/native-workspace-finalization-state.js";
@@ -1675,7 +1676,7 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
     } finally { await recovered.cleanup(); }
   }, 60_000);
 
-  it.each(["saved", "dirty", "unsaved", "foreign_snapshot", "delete_requested", "deletion_race", "controller_claim_race", "stale_epoch", "unconfirmed_stop", "unknown_action", "historical_listener_guard", "historical_listener_provider_event", "historical_listener_checkpoint", "historical_listener_resumed", "historical_listener_other_message", "historical_listener_cancelled", "historical_listener_prior_session", "historical_listener_unconfirmed_stop", "historical_listener_dirty", "historical_listener_stale_block", "historical_listener_unknown_event", "historical_listener_budget", "historical_listener_bad_preservation", "historical_listener_absent", "historical_listener_later_candidate", "historical_listener_late_proof", "historical_listener_lock_timeout"] as const)(
+  it.each(["saved", "dirty", "unsaved", "foreign_snapshot", "delete_requested", "deletion_race", "controller_claim_race", "stale_epoch", "unconfirmed_stop", "unknown_action", "historical_listener_guard", "historical_listener_provider_event", "historical_listener_checkpoint", "historical_listener_resumed", "historical_listener_other_message", "historical_listener_cancelled", "historical_listener_prior_session", "historical_listener_unconfirmed_stop", "historical_listener_dirty", "historical_listener_stale_block", "historical_listener_unknown_event", "historical_listener_budget", "historical_listener_bad_preservation", "historical_listener_absent", "historical_listener_later_candidate", "historical_listener_late_proof", "historical_listener_lock_timeout", "historical_listener_late_interaction", "historical_listener_interaction_paused", "historical_listener_own_question"] as const)(
     "checks durable remote work at the native safe-replacement decision (%s)", async kind => {
       const historicalListener = kind.startsWith("historical_listener_");
       const processAcceptance = kind === "historical_listener_guard" && process.env.PAPERCLIP_TEST_HISTORICAL_LISTENER === "1";
@@ -1774,6 +1775,20 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
       if (kind === "historical_listener_cancelled") await db.update(issues).set({ status: "cancelled" }).where(eq(issues.id, ids.issue));
       if (kind === "historical_listener_provider_event") await appendHeartbeatRunEvent(db, { companyId: ids.company, runId: ids.run,
         agentId: ids.agent, eventType: "turn.started", stream: "system" });
+      const interactionWake = ["historical_listener_late_interaction", "historical_listener_interaction_paused", "historical_listener_own_question"].includes(kind);
+      const interactionId = randomUUID();
+      if (interactionWake) {
+        const priorRunId = randomUUID();
+        await db.insert(heartbeatRuns).values({ id: priorRunId, companyId: ids.company, agentId: ids.agent,
+          nativeIssueId: ids.issue, status: "succeeded", contextSnapshot: { issueId: ids.issue } });
+        await db.insert(issueThreadInteractions).values({ id: interactionId, companyId: ids.company, issueId: ids.issue,
+          kind: "request_confirmation", status: "pending", sourceRunId: kind === "historical_listener_own_question" ? ids.run : priorRunId,
+          payload: { version: 1, prompt: "An obsolete question from earlier work." } });
+        if (kind === "historical_listener_interaction_paused") await issueService(db).update(ids.issue, { status: "backlog" });
+        if (kind === "historical_listener_own_question") await appendHeartbeatRunEvent(db, { companyId: ids.company, runId: ids.run,
+          agentId: ids.agent, eventType: "tool.execution.started", stream: "system",
+          payload: { name: "request_confirmation", executionId: "source-question", transport: "process" } });
+      }
       if (scenario === "unknown_action") await appendHeartbeatRunEvent(db, { companyId: ids.company, runId: ids.run,
         agentId: ids.agent, eventType: "tool.execution.started", stream: "system",
         payload: { name: "send_email", executionId: "unconfirmed-external-action", transport: "process" } });
@@ -1861,6 +1876,23 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
       if (["historical_listener_provider_event", "historical_listener_checkpoint", "historical_listener_resumed", "historical_listener_other_message",
         "historical_listener_cancelled", "historical_listener_prior_session", "historical_listener_unknown_event", "historical_listener_budget", "historical_listener_stale_block", "historical_listener_bad_preservation", "historical_listener_dirty", "historical_listener_unconfirmed_stop", "historical_listener_absent", "historical_listener_late_proof"].includes(kind)) {
         expect(await executionControlSchedule(db).replacement()).toBeNull();
+      }
+      if (interactionWake) {
+        expect(await executionControlSchedule(db).replacement()).toBeNull();
+        let wakes = 0;
+        const unsubscribe = subscribeDatabaseWork(db, DELIVERY_QUEUES.executionReplacement, event => {
+          if (event === "settled") { wakes++; invalidateNativeReplacementDiscovery(db); }
+        });
+        try {
+          await issueThreadInteractionService(db).skipInteraction({ id: ids.issue, companyId: ids.company,
+            status: kind === "historical_listener_interaction_paused" ? "backlog" : "blocked" }, interactionId, {}, { userId: "local-board" });
+          expect(wakes).toBeGreaterThan(0);
+          expect(await reconcileSafeNativeReplacements(db)).toMatchObject({ scheduled: kind === "historical_listener_late_interaction" ? 1 : 0 });
+          expect(await reconcileSafeNativeReplacements(db)).toMatchObject({ scheduled: 0 });
+          expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, ids.run)))
+            .toHaveLength(kind === "historical_listener_late_interaction" ? 1 : 0);
+          expect(await executionControlSchedule(db).replacement()).toBeNull();
+        } finally { unsubscribe(); }
       }
       if (kind === "historical_listener_late_proof") {
         let wakes = 0;

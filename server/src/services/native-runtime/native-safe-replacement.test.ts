@@ -16,6 +16,11 @@ import {
   deliverReconciledExecutions,
 } from "../execution-recovery-resolution.js";
 import { randomUUID } from "node:crypto";
+import { spawn } from "node:child_process";
+import { persistHeartbeatRunProcessMetadata } from "../heartbeat/run-lifecycle.js";
+import { hasNativeLocalProcessStop, releaseSettledNativeRunProcess } from "../native-local-process-stop.js";
+import { DELIVERY_QUEUES } from "../delivery-work-notifications.js";
+import { executionControlSchedule } from "../execution-control-work.js";
 import { appendHeartbeatRunEvent } from "../heartbeat-run-events.js";
 import { tmpdir } from "node:os";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -26,6 +31,7 @@ import {
   agents,
   companies,
   createDb,
+  subscribeDatabaseWork,
   heartbeatRunEvents,
   heartbeatRuns,
   issueRecoveryActions,
@@ -41,7 +47,7 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "../../__tests__/helpers/embedded-postgres.js";
-import { reconcileSafeNativeReplacements } from "./native-safe-replacement.js";
+import { invalidateNativeReplacementDiscovery, reconcileSafeNativeReplacements } from "./native-safe-replacement.js";
 import { reconcileAbandonedExecutionControl } from "../execution-control-reconciliation.js";
 const externalDatabaseUrl = process.env.PAPERCLIP_TEST_DATABASE_URL;
 const support = externalDatabaseUrl
@@ -219,6 +225,68 @@ const support = externalDatabaseUrl
         }
       },
     );
+    it("wakes a completed replacement scan after actual local stop proof commits", async () => {
+      const source = await seed(2);
+      const workspace = await mkdtemp(join(tmpdir(), "paperclip-late-stop-"));
+      const child = spawn(process.execPath, ["-e", "process.exit(0)"], { detached: true, stdio: "ignore" });
+      const pid = child.pid!;
+      await new Promise<void>((resolve, reject) => { child.once("exit", () => resolve()); child.once("error", reject); });
+      await persistHeartbeatRunProcessMetadata(db, source.runId, { pid, processGroupId: pid,
+        startedAt: new Date().toISOString(), targetKind: "local" });
+      await db.update(heartbeatRuns).set({ finishedAt: new Date(), runnerProfileJson: {
+        nativeExecutionInput: { provider: { kind: "codex" }, workspace: { cwd: workspace } },
+      } }).where(eq(heartbeatRuns.id, source.runId));
+      await db.update(nativeRunFinalizations).set({ failureCode: "provider_transport_failed" })
+        .where(eq(nativeRunFinalizations.runId, source.runId));
+      await appendHeartbeatRunEvent(db, { companyId: source.companyId, runId: source.runId, agentId: source.agentId,
+        eventType: "harness.ready", stream: "system", message: "Provider started before its transport failed." });
+      const verifyStoppedSession = async () => await hasNativeLocalProcessStop(db, source.companyId, source.runId)
+        ? { evidence: {}, retire: () => true } : null;
+      invalidateNativeReplacementDiscovery(db);
+      expect(await reconcileSafeNativeReplacements(db, new Date(), { verifyStoppedSession })).toMatchObject({ scheduled: 0 });
+      expect(await executionControlSchedule(db).replacement()).toBeNull();
+      let wakes = 0;
+      const unsubscribe = subscribeDatabaseWork(db, DELIVERY_QUEUES.executionReplacement, event => {
+        if (event === "settled") { wakes++; invalidateNativeReplacementDiscovery(db); }
+      });
+      try {
+        await db.transaction(async tx => {
+          expect(await releaseSettledNativeRunProcess(tx as unknown as typeof db, source.runId)).toBe("released");
+          expect(wakes).toBe(0);
+        });
+        expect(wakes).toBeGreaterThan(0);
+        expect(await executionControlSchedule(db).replacement()).not.toBeNull();
+        expect(await reconcileSafeNativeReplacements(db, new Date(), { verifyStoppedSession })).toMatchObject({ scheduled: 1 });
+        expect(await reconcileSafeNativeReplacements(db, new Date(), { verifyStoppedSession })).toMatchObject({ scheduled: 0 });
+        expect(await executionControlSchedule(db).replacement()).toBeNull();
+        const successors = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, source.runId));
+        expect(successors).toHaveLength(1);
+      } finally { unsubscribe(); await rm(workspace, { recursive: true, force: true }); }
+    });
+    it("wakes completed recovery when the real task becomes eligible", async () => {
+      const source = await seed();
+      const workspace = await mkdtemp(join(tmpdir(), "paperclip-late-eligibility-"));
+      await db.update(heartbeatRuns).set({ runnerProfileJson: { recoveryEventInventoryVersion: 1,
+        nativeExecutionInput: { provider: { kind: "codex" }, workspace: { cwd: workspace } },
+      } }).where(eq(heartbeatRuns.id, source.runId));
+      await issueService(db).update(source.issueId, { status: "backlog" });
+      invalidateNativeReplacementDiscovery(db);
+      expect(await reconcileSafeNativeReplacements(db)).toMatchObject({ scheduled: 0 });
+      expect(await executionControlSchedule(db).replacement()).toBeNull();
+      let wakes = 0;
+      const unsubscribe = subscribeDatabaseWork(db, DELIVERY_QUEUES.executionReplacement, event => {
+        if (event === "settled") { wakes++; invalidateNativeReplacementDiscovery(db); }
+      });
+      try {
+        await issueService(db).update(source.issueId, { status: "in_progress" });
+        expect(wakes).toBeGreaterThan(0);
+        expect(await executionControlSchedule(db).replacement()).not.toBeNull();
+        expect(await reconcileSafeNativeReplacements(db)).toMatchObject({ scheduled: 1 });
+        expect(await reconcileSafeNativeReplacements(db)).toMatchObject({ scheduled: 0 });
+        expect(await executionControlSchedule(db).replacement()).toBeNull();
+        expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, source.runId))).toHaveLength(1);
+      } finally { unsubscribe(); await rm(workspace, { recursive: true, force: true }); }
+    });
     it.each(["unproven", "changed", "verified"] as const)("requires stopped-session proof through commit (%s)", async (mode) => {
       const source = await seed(2);
       await db.update(nativeRunFinalizations).set({ failureCode: "native_session_cleanup_quarantined" }).where(eq(nativeRunFinalizations.runId, source.runId));
