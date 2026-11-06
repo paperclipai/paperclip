@@ -55,6 +55,10 @@ different base, but that alone does not authorize changing a native session's
 cwd. This change adds no directory aliases and makes no change to the Rust
 profile guard.
 
+An explicitly governed continuity break archives the controller launch cache
+with the prior session state, receipt, and backups. The cache is not a new
+execution authority and must not remain active for the fresh provider session.
+
 Live Runner reattachment does not download or replace the launch files.
 Historical sessions that recorded image-rooted paths keep those paths. This
 change cannot reconstruct files that were never saved. A governed fresh-session
