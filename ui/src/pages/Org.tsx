@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useTranslation } from "@/i18n";
 import { Link } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
 import { agentsApi, type OrgNode } from "../api/agents";
@@ -86,11 +87,12 @@ function OrgTreeNode({
 }
 
 export function Org() {
+  const { t } = useTranslation();
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "Org Chart" }]);
+    setBreadcrumbs([{ label: t("orgChart.title") }]);
   }, [setBreadcrumbs]);
 
   const orgQuery = useQuery({
@@ -102,7 +104,7 @@ export function Org() {
   const orgView = useQueryView(orgQuery);
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={GitBranch} message="Select an organization to view org chart." />;
+    return <EmptyState icon={GitBranch} message={t("orgChart.empty.selectCompany")} />;
   }
 
   // Keep a loaded chart on screen through a failed refetch; only a real
@@ -115,7 +117,7 @@ export function Org() {
       <QueryErrorState
         size="page"
         error={orgView.error}
-        action="load the org chart"
+        action={t("orgChart.actions.loadChart")}
         onRetry={orgView.retry}
         retrying={orgView.isFetching}
       />
@@ -127,7 +129,7 @@ export function Org() {
       {data && data.length === 0 && (
         <EmptyState
           icon={GitBranch}
-          message="No agents in the organization. Create agents to build your org chart."
+          message={t("orgChart.empty.noAgents")}
         />
       )}
 

@@ -8,6 +8,7 @@ import { Input } from "@/components/ui/input";
 import { describeError } from "@/api/errors";
 import { QueryErrorState, useQueryView } from "./QueryView";
 import type { EmailPublicationSummary } from "@paperclipai/shared";
+import { t, useTranslation } from "@/i18n";
 
 // Email actions belong to the agent's task conversation. Only surface mail
 // without a task comment yet and delivery outcomes that need attention here.
@@ -18,6 +19,7 @@ export function EmailTaskActivity({
   companyId: string;
   issueId: string;
 }) {
+  const { t } = useTranslation();
   const cache = useQueryClient();
   const threadKey = ["email-thread", companyId, issueId];
   const queryEnabled = Boolean(companyId && issueId) && !issueId.startsWith("chat:");
@@ -64,13 +66,22 @@ export function EmailTaskActivity({
       <QueryErrorState
         size="inline"
         error={threadView.error}
-        action="load email activity"
+        action={t("apps.emailTaskActivity.loadAction")}
         onRetry={threadView.retry}
         retrying={threadView.isFetching}
       />
     );
   }
   return null;
+}
+
+function outcomeLabel(outcome: string) {
+  if (outcome === "delivered") return t("apps.emailTaskActivity.outcomes.delivered");
+  if (outcome === "failed") return t("apps.emailTaskActivity.outcomes.failed");
+  if (outcome === "uncertain") return t("apps.emailTaskActivity.outcomes.uncertain");
+  if (outcome === "queued") return t("apps.emailTaskActivity.outcomes.queued");
+  if (outcome === "sent") return t("apps.emailTaskActivity.outcomes.sent");
+  return outcome;
 }
 
 function EmailDelivery({
@@ -82,6 +93,7 @@ function EmailDelivery({
   publication: EmailPublicationSummary;
   onResolved: () => void;
 }) {
+  const { t } = useTranslation();
   const [messageId, setMessageId] = useState("");
   const resolve = useMutation({
     mutationFn: (outcome: "sent" | "failed") =>
@@ -92,35 +104,34 @@ function EmailDelivery({
     <div className="space-y-2 text-xs text-muted-foreground">
       {p.request && !p.providerMessageId && (
         <article
-          aria-label="Email send intent"
+          aria-label={t("apps.emailTaskActivity.sendIntent")}
           className="task-context-notice space-y-3"
         >
-          <p className="font-semibold">{p.request.subject ?? "Email reply"}</p>
-          {p.request.to && <p>To: {p.request.to.join(", ")}</p>}
+          <p className="font-semibold">{p.request.subject ?? t("apps.emailTaskActivity.emailReply")}</p>
+          {p.request.to && <p>{t("apps.emailTaskActivity.to", { list: p.request.to.join(", ") })}</p>}
           <div className="whitespace-pre-wrap break-words text-sm text-foreground">
             {p.request.text}
           </div>
         </article>
       )}
       <p>
-        Email {p.outcome}
+        {t("apps.emailTaskActivity.emailOutcome", { outcome: outcomeLabel(p.outcome) })}
         {p.error ? ` — ${p.error}` : ""}
       </p>
       {p.outcome === "uncertain" && (
         <details>
           <summary className="cursor-pointer">
-            Resolve delivery after checking AgentMail
+            {t("apps.emailTaskActivity.resolveAfter")}
           </summary>
           <div className="space-y-2 py-2">
             <p>
-              Confirm the outcome in AgentMail before resolving. This action
-              does not resend.
+              {t("apps.emailTaskActivity.confirmOutcome")}
             </p>
             <Input
-              aria-label="Provider message ID"
+              aria-label={t("apps.emailTaskActivity.providerMessageId")}
               value={messageId}
               onChange={(e) => setMessageId(e.target.value)}
-              placeholder="Provider message ID"
+              placeholder={t("apps.emailTaskActivity.providerMessageId")}
             />
             <div className="flex gap-2">
               <Button
@@ -129,7 +140,7 @@ function EmailDelivery({
                 disabled={!messageId || resolve.isPending}
                 onClick={() => resolve.mutate("sent")}
               >
-                Confirm sent
+                {t("apps.emailTaskActivity.confirmSent")}
               </Button>
               <Button
                 size="sm"
@@ -137,7 +148,7 @@ function EmailDelivery({
                 disabled={resolve.isPending}
                 onClick={() => resolve.mutate("failed")}
               >
-                Confirm not sent
+                {t("apps.emailTaskActivity.confirmNotSent")}
               </Button>
             </div>
             {resolve.isError && ( // query-error-ok: mutation result

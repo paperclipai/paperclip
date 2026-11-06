@@ -1,4 +1,5 @@
 import { useMemo } from "react";
+import { t } from "@/i18n";
 import { ArrowUpRight } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { toolsApi } from "@/api/tools";
@@ -42,11 +43,11 @@ export function AgentAllowedConnectors({ agentId, companyId }: { agentId: string
 
   return (
     <AgentPanel
-      title="Allowed connectors"
-      aria-label="Allowed connectors"
+      title={t("agents.detail.connectors.title", { defaultValue: "Allowed connectors" })}
+      aria-label={t("agents.detail.connectors.title", { defaultValue: "Allowed connectors" })}
       action={
         <Button variant="ghost" size="icon-xs" asChild>
-          <Link to="/apps?source=installed" aria-label="Manage connectors" title="Manage connectors">
+          <Link to="/apps?source=installed" aria-label={t("agents.detail.connectors.manage", { defaultValue: "Manage connectors" })} title={t("agents.detail.connectors.manage", { defaultValue: "Manage connectors" })}>
             <ArrowUpRight className="size-4" />
           </Link>
         </Button>
@@ -54,13 +55,13 @@ export function AgentAllowedConnectors({ agentId, companyId }: { agentId: string
     >
       <div className="flex min-w-0 flex-1 flex-col justify-center px-(--agent-detail-module-inset) pb-(--agent-detail-module-inset)">
         {loading ? (
-          <p role="status" className="text-xs text-muted-foreground">Resolving access…</p>
+          <p role="status" className="text-xs text-muted-foreground">{t("agents.detail.connectors.resolving", { defaultValue: "Resolving access…" })}</p>
         ) : failed ? (
-          <p role="alert" className="text-xs text-destructive">Couldn’t load this agent’s connectors.</p>
+          <p role="alert" className="text-xs text-destructive">{t("agents.detail.connectors.loadError", { defaultValue: "Couldn’t load this agent’s connectors." })}</p>
         ) : apps.length === 0 ? (
-          <p className="text-xs text-muted-foreground">No connectors are allowed yet.</p>
+          <p className="text-xs text-muted-foreground">{t("agents.detail.connectors.noConnectors", { defaultValue: "No connectors are allowed yet." })}</p>
         ) : (
-          <ul aria-label="Connectors" className="flex max-h-(--agent-detail-logo-rows-h) flex-wrap gap-3 overflow-hidden">
+          <ul aria-label={t("agents.detail.connectors.listAria", { defaultValue: "Connectors" })} className="flex max-h-(--agent-detail-logo-rows-h) flex-wrap gap-3 overflow-hidden">
             {apps.slice(0, SHOWN_LOGOS).map((app) => (
               <li key={app.id} className="flex shrink-0" title={app.name}>
                 <AppLogo name={app.name} brandKey={app.key} size={24} compact />

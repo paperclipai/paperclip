@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import { usePrimaryAgentPresentation } from "./primary-agent/PrimaryAgentPresentation";
 import { useWorkspaceIsolationControls } from "@/hooks/useWorkspaceIsolationControls";
 import { useState, useEffect, useRef, useCallback, useMemo, type CSSProperties } from "react";
@@ -79,9 +80,8 @@ function isPendingCreate(value: unknown): value is PendingCreate {
 /** Thrown before sending a restored create whose staged files are gone from memory. */
 class StagedFilesMissingError extends Error {
   constructor(names: string[]) {
-    super(
-      `This page no longer has ${names.length === 1 ? "the file" : `the ${names.length} files`} staged for this task (${names.join(", ")}). Attach ${names.length === 1 ? "it" : "them"} again, then create the task.`,
-    );
+    const key = names.length === 1 ? "single" : "multiple";
+    super(t(`issues.newIssueDialog.stagedFilesMissing.${key}`, { names: names.join(", "), count: names.length }));
     this.name = "StagedFilesMissingError";
   }
 }
@@ -94,7 +94,7 @@ class StagedFilesMissingError extends Error {
 const CREATE_AWAITING_FILES_KEY = "paperclip:issue-draft:create-awaiting-files";
 
 function stagedFilesMissingDescription(names: string[]): ErrorDescription {
-  return describeError(new StagedFilesMissingError(names), { action: "create the task" });
+  return describeError(new StagedFilesMissingError(names), { action: t("issues.newIssueDialog.actions.createTask") });
 }
 
 /** Identifies a staged file across reselection from disk, unlike its per-staging `id`. */
@@ -446,6 +446,7 @@ export function NewIssueDialog() {
 }
 
 function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) {
+  const { t } = useTranslation();
   const { visible: workspaceIsolationControlsVisible } = useWorkspaceIsolationControls();
   const { newIssueOpen, newIssueDefaults: sharedDefaults, closeNewIssue } = useDialog();
   const newIssueDefaults = useMemo(() => ignoreDefaults ? {} as typeof sharedDefaults : sharedDefaults, [ignoreDefaults, sharedDefaults]);
@@ -586,8 +587,8 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
   const privateParentProject = privacyParent?.project?.visibility === "private" ? privacyParent.project : null;
   const inheritedPrivateProject = privateParentProject ?? (!isPrivate && currentProject?.visibility === "private" ? currentProject : null);
   const inheritedPrivacyReason = privacyParent?.visibility === "private"
-    ? `Subtask of private task ${privacyParent.title || newIssueDefaults.parentTitle || parentIssueLabel}`
-    : inheritedPrivateProject ? `In private project ${inheritedPrivateProject.name}` : undefined;
+    ? t("issues.newIssueDialog.privacy.subtaskOfPrivateTask", { title: privacyParent.title || newIssueDefaults.parentTitle || parentIssueLabel })
+    : inheritedPrivateProject ? t("issues.newIssueDialog.privacy.inPrivateProject", { name: inheritedPrivateProject.name }) : undefined;
   const effectivePrivate = isPrivate || inheritsPrivateAccess
     || orderedProjects.some(project => project.id === projectId && project.visibility === "private");
 
@@ -649,18 +650,18 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
       const prefix = (companies.find((company) => company.id === companyId)?.issuePrefix ?? "").trim();
       const issueRef = issue.identifier ?? issue.id;
       const openIssueAction = prefix
-        ? { label: `Open ${issueRef}`, href: `/${prefix}/issues/${issueRef}` }
+        ? { label: t("issues.newIssueDialog.toasts.openIssue", { ref: issueRef }), href: `/${prefix}/issues/${issueRef}` }
         : undefined;
       if (failures.length > 0) {
         pushToast({
-          title: `Created ${issueRef} with upload warnings`,
-          body: `${failures.length} staged ${failures.length === 1 ? "file" : "files"} could not be added.`,
+          title: t("issues.newIssueDialog.toasts.createdWithUploadWarnings", { ref: issueRef }),
+          body: t("issues.newIssueDialog.toasts.stagedFilesNotAdded", { total: failures.length }),
           tone: "warn",
           action: openIssueAction,
         });
       } else {
         pushToast({
-          title: `Created ${issueRef}`,
+          title: t("issues.newIssueDialog.toasts.created", { ref: issueRef }),
           tone: "success",
           action: openIssueAction,
         });
@@ -699,7 +700,7 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
     sourceId: "new-issue-dialog",
     storageKey: PENDING_CREATE_KEY,
     isPayload: isPendingCreate,
-    action: "create the task",
+    action: t("issues.newIssueDialog.actions.createTask"),
     send: async (payload, idempotencyKey) => {
       const stagedFiles = stagedFilesByKey.current.get(idempotencyKey);
       // Never create a restored task without the files it was submitted with.
@@ -1147,16 +1148,16 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
     if (request.recovering) {
       const original = request.payload;
       const rejectRecovery = (message: string): never => {
-        setResendError({ title: "Saved request needs attention", body: message, retryable: false });
+        setResendError({ title: t("issues.newIssueDialog.savedRequest.needsAttention"), body: message, retryable: false });
         throw new Error(message);
       };
-      if (!original) rejectRecovery("The saved request is unavailable. Cancel it before creating another task.");
+      if (!original) rejectRecovery(t("issues.newIssueDialog.savedRequest.unavailable"));
       let originalFingerprint: Record<string, unknown> = {};
       try { originalFingerprint = JSON.parse(original!.fingerprint); } catch {}
       const requiredFiles = originalFingerprint.stagedFiles;
       if (original!.stagedFileNames?.length && (!Array.isArray(requiredFiles) ||
           JSON.stringify([...requiredFiles].sort()) !== JSON.stringify(createFiles.map(stagedFileIdentity).sort()))) {
-        rejectRecovery(`Attach the original files again: ${original!.stagedFileNames.join(", ")}.`);
+        rejectRecovery(t("issues.newIssueDialog.savedRequest.attachAgain", { names: original!.stagedFileNames.join(", ") }));
       }
       const normalize = (_key: string, value: unknown) => value && typeof value === "object" && !Array.isArray(value)
         ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b))) : value;
@@ -1164,7 +1165,7 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
         !["allowDuplicate", "navigateOnCreate"].includes(key) && JSON.stringify(value, normalize) !== JSON.stringify((createData as Record<string, unknown>)[key], normalize));
       if (fieldsChanged || (typeof originalFingerprint.companyId === "string" &&
           JSON.stringify(originalFingerprint, normalize) !== JSON.stringify(JSON.parse(fingerprint), normalize))) {
-        rejectRecovery("Restore the saved task's original fields before retrying, or cancel the saved request to start another task.");
+        rejectRecovery(t("issues.newIssueDialog.savedRequest.restoreFields"));
       }
       createPayload = original!;
     }
@@ -1419,7 +1420,7 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
           }
         }}
       >
-        <DialogTitle className="sr-only">{isSubIssueMode ? "New sub-task" : "New task"}</DialogTitle>
+        <DialogTitle className="sr-only">{isSubIssueMode ? t("issues.newIssueDialog.dialogTitle.subTask") : t("issues.newIssueDialog.dialogTitle.task")}</DialogTitle>
         <div
           ref={dialogBodyRef}
           className="min-h-0 overflow-y-auto overscroll-contain"
@@ -1430,7 +1431,7 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
               workMode={workMode}
               onWorkModeChange={setWorkMode}
               disabled={createIssue.isPending || !effectiveCompanyId}
-              placeholder="Describe a task…"
+              placeholder={t("issues.newIssueDialog.placeholders.describeTask")}
               mobile={isMobile}
               mentions={mentionOptions}
               companyId={effectiveCompanyId}
@@ -1470,7 +1471,7 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
                     }
                   },
                 },
-                submitLabel: isSubIssueMode ? "Create sub-task" : "Create task",
+                submitLabel: isSubIssueMode ? t("issues.newIssueDialog.submitLabel.subTask") : t("issues.newIssueDialog.submitLabel.task"),
                 canSubmitWithoutBody: Boolean(title.trim()),
                 onSelectFiles: stageFiles,
                 images: stagedFiles.filter(isStagedImage).map(item => ({ id: item.id, name: item.file.name, file: item.file })),
@@ -1482,7 +1483,7 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
                     <div className="mb-3 flex flex-col gap-2 text-xs">
                       {durableCreate.pending && durableCreate.status !== "sending" ? (
                         <PendingSendNotice
-                          noun="task"
+                          noun={t("issues.newIssueDialog.pendingSendNoun")}
                           persisted={durableCreate.persisted}
                           resending={durableCreate.resending}
                           stalled={durableCreate.status === "stalled"}
@@ -1507,12 +1508,12 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
                             if (awaitingFilesKey && key) clearPendingSend(awaitingFilesKey, key);
                             if (key) { stagedFilesByKey.current.delete(key); clearCreateUploadReceipts(key); }
                             createRequestRef.current = null; setRestoredLaunch(null); setResendError(null);
-                          }}>Cancel saved request</Button> : null}
+                          }}>{t("issues.newIssueDialog.savedRequest.cancel")}</Button> : null}
                         </div>
                       ) : null}
                       {hasTitle ? (
                         <input
-                          aria-label="Task title"
+                          aria-label={t("issues.newIssueDialog.taskTitle")}
                           value={title}
                           // The waiting request is what gets created; later edits would be lost.
                           disabled={createIssue.isPending || Boolean(durableCreate.pending)}
@@ -1529,7 +1530,7 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
                           <div className="max-w-full rounded-md border border-border bg-muted/30 px-2.5 py-1.5 text-xs text-muted-foreground">
                             <div className="flex items-center gap-1.5">
                               <ListTree className="h-3.5 w-3.5 shrink-0" />
-                              <span className="shrink-0">Sub-task of</span>
+                              <span className="shrink-0">{t("issues.newIssueDialog.subtaskOf")}</span>
                               <span className="font-medium text-foreground">{parentIssueLabel}</span>
                             </div>
                             {newIssueDefaults.parentTitle ? (
@@ -1544,21 +1545,20 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
                   <>
                     {parentPrivacyUnresolved ? (
                       <div role={parentPrivacyError ? "alert" : "status"} className="mb-2 flex items-center gap-2 text-xs text-muted-foreground">
-                        <span>{parentPrivacyError ? "Couldn't check parent access." : "Checking parent access…"}</span>
-                        {parentPrivacyError ? <Button variant="ghost" size="sm" onClick={() => void refetchParentPrivacy()}>Retry</Button> : null}
+                        <span>{parentPrivacyError ? t("issues.newIssueDialog.parentAccess.couldNotCheck") : t("issues.newIssueDialog.parentAccess.checking")}</span>
+                        {parentPrivacyError ? <Button variant="ghost" size="sm" onClick={() => void refetchParentPrivacy()}>{t("common.retry")}</Button> : null}
                       </div>
                     ) : null}
                     {worktreeSelectionIncomplete && !worktreesLoading ? (
                       <p role="alert" className="mb-2 text-xs text-destructive">
-                        {worktreesError ? "Couldn't check the selected worktree. Retry in Worktrees or choose New worktree."
-                          : "The selected worktree is no longer available. Choose another worktree or start a new one."}
+                        {worktreesError ? t("issues.newIssueDialog.worktree.couldNotCheck") : t("issues.newIssueDialog.worktree.noLongerAvailable")}
                       </p>
                     ) : null}
                     {stagedDocuments.length > 0 || stagedAttachments.length > 0 ? (
                       <div className="mt-4 space-y-3 rounded-lg border border-border/70 p-3">
                         {stagedDocuments.length > 0 ? (
                           <div className="space-y-2">
-                            <div className="text-xs font-medium text-muted-foreground">Documents</div>
+                            <div className="text-xs font-medium text-muted-foreground">{t("issues.newIssueDialog.staged.documents")}</div>
                             <div className="space-y-2">
                               {stagedDocuments.map((file) => (
                                 <div
@@ -1588,7 +1588,7 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
                                     className="shrink-0 text-muted-foreground"
                                     onClick={() => removeStagedFile(file.id)}
                                     disabled={createIssue.isPending}
-                                    title="Remove document"
+                                    title={t("issues.newIssueDialog.staged.removeDocument")}
                                   >
                                     <X className="h-3.5 w-3.5" />
                                   </Button>
@@ -1600,7 +1600,7 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
 
                         {stagedAttachments.length > 0 ? (
                           <div className="space-y-2">
-                            <div className="text-xs font-medium text-muted-foreground">Attachments</div>
+                            <div className="text-xs font-medium text-muted-foreground">{t("issues.newIssueDialog.staged.attachments")}</div>
                             <div className="space-y-2">
                               {stagedAttachments.map((file) => (
                                 <div
@@ -1622,7 +1622,7 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
                                     className="shrink-0 text-muted-foreground"
                                     onClick={() => removeStagedFile(file.id)}
                                     disabled={createIssue.isPending}
-                                    title="Remove attachment"
+                                    title={t("issues.newIssueDialog.staged.removeAttachment")}
                                   >
                                     <X className="h-3.5 w-3.5" />
                                   </Button>
@@ -1640,10 +1640,10 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
                       >
                         <Flag className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-600 dark:text-amber-300" />
                         <span className="leading-snug">
-                          Assigning implies executable intent - leave status as{" "}
-                          <span className="font-medium">Backlog</span> only to deliberately park this. The assignee will
-                          not be woken until status moves to <span className="font-medium">Todo</span> or{" "}
-                          <span className="font-medium">In Progress</span>.
+                          {t("issues.newIssueDialog.backlogNote.leaveStatus")}{" "}
+                            <span className="font-medium">{t("issues.newIssueDialog.statusLabels.backlog")}</span> {t("issues.newIssueDialog.backlogNote.onlyToPark")}{" "}
+                            <span className="font-medium">{t("issues.newIssueDialog.statusLabels.todo")}</span> {t("common.or")}{" "}
+                            <span className="font-medium">{t("issues.newIssueDialog.statusLabels.inProgress")}</span>.
                         </span>
                       </div>
                     ) : null}
@@ -1651,12 +1651,11 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
                     {selectedAssigneeAgent?.status === "paused" ? (
                       <div data-testid="new-issue-paused-assignee-note" className="mx-4 mb-2">
                         <InlineBanner tone="warning" icon={PauseCircle} compact>
-                          <span className="font-medium">{selectedAssigneeAgent.name}</span> is paused and will not start
-                          work on this task until it is resumed
+                          <span className="font-medium">{selectedAssigneeAgent.name}</span> {t("issues.newIssueDialog.pausedAssignee.isPaused")}
                           {selectedAssigneeAgent.pauseReason === "import"
-                            ? " — it arrived paused from an organization import"
+                            ? t("issues.newIssueDialog.pausedAssignee.importSuffix")
                             : ""}
-                          . You can resume it from the task page after creating the task.
+                          {t("issues.newIssueDialog.pausedAssignee.resumeHint")}
                         </InlineBanner>
                       </div>
                     ) : null}
@@ -1668,8 +1667,7 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
                       >
                         <ShieldAlert className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-600 dark:text-amber-300" />
                         <span className="leading-snug">
-                          Low-trust review agent. It can only act inside its assigned review boundary; task, project, or
-                          run policy defines the concrete scope.
+                          {t("issues.newIssueDialog.lowTrustNote")}
                         </span>
                       </div>
                     ) : null}
@@ -1677,8 +1675,8 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
                     {showParentWorkspaceWarning ? (
                       <div className="mb-2">
                         <InlineBanner tone="warning" compact>
-                          This sub-task will no longer use the parent task workspace
-                          {parentExecutionWorkspaceLabel ? ` (${parentExecutionWorkspaceLabel})` : ""}.
+                          {t("issues.newIssueDialog.subtaskWorkspaceWarning")}
+                          {parentExecutionWorkspaceLabel ? t("issues.newIssueDialog.workspaceLabelSuffix", { label: parentExecutionWorkspaceLabel }) : ""}.
                         </InlineBanner>
                       </div>
                     ) : null}
@@ -1695,30 +1693,30 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
                       value={projectId}
                       options={projectOptions}
                       recentOptionIds={recentProjectIds}
-                      placeholder="Project"
-                      mobileTitle="Select project"
+                      placeholder={t("issues.newIssueDialog.contextBar.project")}
+                      mobileTitle={t("issues.newIssueDialog.contextBar.selectProject")}
                       modal
                       className="h-8 min-w-0 flex-1 gap-1.5 border-0 bg-transparent px-2 text-xs shadow-none hover:bg-accent focus-visible:bg-accent focus-visible:ring-0 sm:max-w-64 sm:flex-none"
                       disabled={createIssue.isPending}
                       triggerDataSlot="new-issue-compact-control"
                       contentStyle={entityPickerViewportStyle}
-                      noneLabel="No project"
+                      noneLabel={t("issues.newIssueDialog.contextBar.noProject")}
                       noneAtTop
-                      searchPlaceholder="Search projects..."
-                      emptyMessage="No projects found."
+                      searchPlaceholder={t("issues.newIssueDialog.contextBar.searchProjects")}
+                      emptyMessage={t("issues.newIssueDialog.contextBar.noProjectsFound")}
                       onChange={handleProjectChange}
                       renderTriggerValue={(option) =>
                         option && currentProject ? (
                           <>
                             <Folder className="size-3.5 shrink-0" style={{ color: currentProject.color ?? "var(--project-seed)" }} aria-hidden />
                             <span className="truncate">{option.label}</span>
-                            {currentProject.visibility === "private" ? <Lock className="size-3 shrink-0 text-muted-foreground" aria-label="Private project" /> : null}
+                            {currentProject.visibility === "private" ? <Lock className="size-3 shrink-0 text-muted-foreground" aria-label={t("issues.newIssueDialog.contextBar.privateProject")} /> : null}
                             <ChevronDown className="size-3 shrink-0 text-muted-foreground" aria-hidden />
                           </>
                         ) : (
                           <>
                             <Folder className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
-                            <span className="truncate text-muted-foreground">Project</span>
+                            <span className="truncate text-muted-foreground">{t("issues.newIssueDialog.contextBar.project")}</span>
                             <ChevronDown className="size-3 shrink-0 text-muted-foreground" aria-hidden />
                           </>
                         )
@@ -1730,7 +1728,7 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
                           <>
                             <Folder className="size-4 shrink-0" style={{ color: project?.color ?? "var(--project-seed)" }} aria-hidden />
                             <span className="min-w-0 flex-1 truncate">{option.label}</span>
-                            {project?.visibility === "private" ? <Lock className="size-3.5 shrink-0 text-muted-foreground" aria-label="Private project" /> : null}
+                            {project?.visibility === "private" ? <Lock className="size-3.5 shrink-0 text-muted-foreground" aria-label={t("issues.newIssueDialog.contextBar.privateProject")} /> : null}
                           </>
                         );
                       }}

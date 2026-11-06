@@ -10,6 +10,7 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
+import { useTranslation } from "@/i18n";
 import { MCP_CONFIG_HELP_INSTRUCTIONS, MCP_CONFIG_HELP_PROMPT } from "@paperclipai/shared";
 
 /**
@@ -21,6 +22,8 @@ import { MCP_CONFIG_HELP_INSTRUCTIONS, MCP_CONFIG_HELP_PROMPT } from "@paperclip
  * anything the operator has typed.
  */
 export function McpConfigHelpDialog() {
+  const { t } = useTranslation();
+
   return (
     <Dialog>
       <DialogTrigger asChild>
@@ -29,17 +32,19 @@ export function McpConfigHelpDialog() {
           variant="ghost"
           size="icon"
           className="h-6 w-6 shrink-0 text-muted-foreground hover:text-foreground"
-          aria-label="Get help creating an MCP config"
+          aria-label={t("tools.mcpHelp.ariaLabel", { defaultValue: "Get help creating an MCP config" })}
         >
           <HelpCircle className="h-4 w-4" />
         </Button>
       </DialogTrigger>
       <DialogContent className="max-h-(--sz-85vh) overflow-y-auto sm:max-w-2xl">
         <DialogHeader>
-          <DialogTitle>Ask an agent for an MCP config</DialogTitle>
+          <DialogTitle>{t("tools.mcpHelp.title", { defaultValue: "Ask an agent for an MCP config" })}</DialogTitle>
           <DialogDescription>
-            Don't know the URL or headers a tool needs? Hand this request to an agent and paste back what it
-            gives you.
+            {t("tools.mcpHelp.description", {
+              defaultValue:
+                "Don't know the URL or headers a tool needs? Hand this request to an agent and paste back what it gives you.",
+            })}
           </DialogDescription>
         </DialogHeader>
 
@@ -51,7 +56,7 @@ export function McpConfigHelpDialog() {
 
         <div className="space-y-2">
           <label htmlFor="mcp-config-help-prompt" className="text-sm font-medium text-foreground">
-            Prompt to send
+            {t("tools.mcpHelp.promptLabel", { defaultValue: "Prompt to send" })}
           </label>
           <Textarea
             id="mcp-config-help-prompt"
@@ -67,9 +72,12 @@ export function McpConfigHelpDialog() {
         <div>
           <AgentSetupPrompt
             prompt={MCP_CONFIG_HELP_PROMPT}
-            label="Get a config with an agent"
-            title="MCP configuration"
-            description="Paste this into your agent to create an MCP config, then paste its JSON reply back into Paperclip."
+            label={t("tools.mcpHelp.agentSetupLabel", { defaultValue: "Get a config with an agent" })}
+            title={t("tools.mcpHelp.agentSetupTitle", { defaultValue: "MCP configuration" })}
+            description={t("tools.mcpHelp.agentSetupDesc", {
+              defaultValue:
+                "Paste this into your agent to create an MCP config, then paste its JSON reply back into Paperclip.",
+            })}
           />
         </div>
       </DialogContent>

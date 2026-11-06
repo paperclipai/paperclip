@@ -1,5 +1,6 @@
 import { AgentAvatar } from "@/components/AgentAvatar";
 import { useEffect, useRef, useState, useMemo, useCallback } from "react";
+import { useTranslation } from "@/i18n";
 import { Link, useNavigate } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
 import { agentsApi, type OrgNode } from "../api/agents";
@@ -175,6 +176,7 @@ const defaultDotColor = "var(--hex-a3a3a3)";
 // ── Main component ──────────────────────────────────────────────────────
 
 export function OrgChart() {
+  const { t } = useTranslation();
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const navigate = useNavigate();
@@ -207,7 +209,7 @@ export function OrgChart() {
   }, [agents]);
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "Org Chart" }]);
+    setBreadcrumbs([{ label: t("orgChart.title") }]);
   }, [setBreadcrumbs]);
 
   // Layout computation
@@ -442,7 +444,7 @@ export function OrgChart() {
   }, [pan, zoom]);
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={Network} message="Select a company to view the org chart." />;
+    return <EmptyState icon={Network} message={t("orgChart.empty.selectCompanyProd")} />;
   }
 
   // Keep a loaded chart on screen through a failed refetch; only a real
@@ -456,7 +458,7 @@ export function OrgChart() {
       <QueryErrorState
         size="page"
         error={orgTreeView.error}
-        action="load the org chart"
+        action={t("orgChart.actions.loadChart")}
         onRetry={orgTreeView.retry}
         retrying={orgTreeView.isFetching}
       />
@@ -464,7 +466,7 @@ export function OrgChart() {
   }
 
   if (orgTree && orgTree.length === 0) {
-    return <EmptyState icon={Network} message="No organizational hierarchy defined." />;
+    return <EmptyState icon={Network} message={t("orgChart.empty.noHierarchy")} />;
   }
 
   return (
@@ -519,8 +521,8 @@ export function OrgChart() {
                 });
               }
             }}
-            title="Zoom in"
-            aria-label="Zoom in"
+            title={t("orgChart.controls.zoomIn")}
+            aria-label={t("orgChart.controls.zoomIn")}
           >
             <Plus className="h-4 w-4 sm:h-3.5 sm:w-3.5" />
           </button>
@@ -535,16 +537,16 @@ export function OrgChart() {
                 });
               }
             }}
-            title="Zoom out"
-            aria-label="Zoom out"
+            title={t("orgChart.controls.zoomOut")}
+            aria-label={t("orgChart.controls.zoomOut")}
           >
             <Minus className="h-4 w-4 sm:h-3.5 sm:w-3.5" />
           </button>
           <button
             className="flex size-9 items-center justify-center rounded border border-border bg-background text-(length:--text-nano) transition-colors hover:bg-accent sm:size-7"
             onClick={fitToScreen}
-            title="Fit to screen"
-            aria-label="Fit chart to screen"
+            title={t("orgChart.controls.fitToScreen")}
+            aria-label={t("orgChart.controls.fitAria")}
           >
             <Maximize2 className="h-4 w-4 sm:h-3.5 sm:w-3.5" />
           </button>

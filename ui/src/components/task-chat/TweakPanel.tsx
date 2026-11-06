@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
 import { useCopyAction } from "@/lib/use-copy-action";
+import { useTranslation } from "@/i18n";
 import { Copy, GripHorizontal, Minus, Plus, RotateCcw } from "lucide-react";
 import {
   EASING_PRESETS,
@@ -44,6 +45,7 @@ function saveSession(key: string, value: unknown) {
  * one file, one dev guard, trivial to strip out later.
  */
 export function TweakPanel() {
+  const { t } = useTranslation();
   const [pos, setPos] = useState<{ x: number; y: number }>(() =>
     loadSession(POS_KEY, { x: 24, y: 24 }),
   );
@@ -139,14 +141,14 @@ export function TweakPanel() {
         onPointerUp={onHeaderPointerUp}
       >
         <GripHorizontal className="h-3.5 w-3.5 text-muted-foreground" />
-        <span>Motion tweak panel</span>
+        <span>{t("issues.TweakPanel.motionTweakPanel")}</span>
         <div className="ml-auto flex items-center gap-1">
-          <button type="button" title="Reset all" onClick={resetAll} className="rounded p-0.5 hover:bg-accent">
+          <button type="button" title={t("issues.TweakPanel.resetAll")} onClick={resetAll} className="rounded p-0.5 hover:bg-accent">
             <RotateCcw className="h-3.5 w-3.5" />
           </button>
           <button
             type="button"
-            title={minimized ? "Expand" : "Minimize"}
+            title={minimized ? t("issues.TweakPanel.expand") : t("issues.TweakPanel.minimize")}
             onClick={() => setMinimized((m) => !m)}
             className="rounded p-0.5 hover:bg-accent"
           >
@@ -210,7 +212,7 @@ export function TweakPanel() {
               className="flex flex-1 items-center justify-center gap-1 rounded border border-border px-2 py-1 text-xs hover:bg-accent"
             >
               <Copy className="h-3.5 w-3.5" />
-              Copy as @theme
+              {t("issues.TweakPanel.copyAsTheme")}
             </button>
           </div>
 
@@ -229,10 +231,10 @@ export function TweakPanel() {
               {/* Focusing the box copies it silently; say so, or the click looks inert. */}
               <p className="mt-1 text-(length:--text-nano) text-muted-foreground" aria-live="polite">
                 {exportCopy.copied
-                  ? "Copied to clipboard"
+                  ? t("issues.TweakPanel.copied")
                   : exportCopy.failed
-                    ? "Copy failed — select the text and copy it manually"
-                    : "Click the box to copy"}
+                    ? t("issues.TweakPanel.copyFailed")
+                    : t("issues.TweakPanel.clickToCopy")}
               </p>
             </>
           ) : null}

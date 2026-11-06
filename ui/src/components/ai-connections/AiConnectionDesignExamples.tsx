@@ -6,26 +6,27 @@ import type {
   AiConnectionRequirement,
   AiConnectionSummary,
 } from "./model";
+import { useTranslation } from "@/i18n";
 
 const requirement: AiConnectionRequirement = {
   companyId: "design-example",
   provider: "anthropic",
   method: "subscription",
 };
-const account: AiConnectionSummary = {
-  ...requirement,
-  method: "subscription",
-  id: "example",
-  grantId: "example-grant",
-  name: "My Claude subscription",
-  ownership: "personal",
-  ownerUserId: "example-user",
-  ownerName: "You",
-  status: "connected",
-  isDefault: true,
-};
-
 export function AiConnectionDesignExamples() {
+  const { t } = useTranslation();
+  const account: AiConnectionSummary = {
+    ...requirement,
+    method: "subscription",
+    id: "example",
+    grantId: "example-grant",
+    name: t("agents.AiConnectionDesignExamples.exampleAccountName"),
+    ownership: "personal",
+    ownerUserId: "example-user",
+    ownerName: "You",
+    status: "connected",
+    isDefault: true,
+  };
   const [binding, setBinding] = useState<AiConnectionBinding>({
     provider: "anthropic",
     method: "subscription",
@@ -34,12 +35,9 @@ export function AiConnectionDesignExamples() {
   return (
     <div className="flex max-w-2xl flex-col gap-5">
       <p className="text-sm text-muted-foreground">
-        Shared AI connection identity, account selection, and existing
-        authentication chrome. The full interactive state matrix lives in
-        Storybook under AI Connections / Review. Example controls below do not
-        connect accounts.
+        {t("agents.AiConnectionDesignExamples.intro")}
       </p>
-      <p className="text-sm text-muted-foreground">Provider lists and account management use Browse and AppDetail from the Connectors interface. The picker below uses ConnectionChoiceList, also used by ConnectionSetupFlow.</p>
+      <p className="text-sm text-muted-foreground">{t("agents.AiConnectionDesignExamples.providers")}</p>
       <AiConnectionPicker
         requirement={requirement}
         connections={[account]}
@@ -57,7 +55,7 @@ export function AiConnectionDesignExamples() {
         disabled
         onChange={() => {}}
         onSubmit={() => {}}
-        placeholder="Enter API key here"
+        placeholder={t("agents.AiConnectionDesignExamples.apiKeyPlaceholder")}
       />
       <LocalProviderLoginInstructions
         adapterType="claude_local"

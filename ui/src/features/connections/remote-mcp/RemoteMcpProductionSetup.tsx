@@ -22,6 +22,7 @@ import { RemoteMcpConnectionSetup } from "./RemoteMcpConnectionSetup";
 import { remoteMcpProviders, type RemoteMcpProviderId } from "./providers";
 import type { RemoteMcpSetupActions, RemoteMcpSetupState } from "./types";
 import { describeError } from "@/api/errors";
+import { t } from "@/i18n";
 
 function readAccessDraft(key: string): Partial<RemoteMcpSetupState> {
   try {
@@ -332,7 +333,7 @@ export function RemoteMcpProductionSetup({ providerId, connection, host = "page"
     }} />;
   // Saved access already loaded stays in place through a transient refetch failure.
   if (connection && !installs.data) return <div className="space-y-3 p-8">{installsView.kind === "error"
-    ? <QueryErrorState error={installs.error} action="load saved access" onRetry={installsView.retry} retrying={installsView.isFetching} />
+    ? <QueryErrorState error={installs.error} action={t("errorActions.loadSavedAccess")} onRetry={installsView.retry} retrying={installsView.isFetching} />
     : <p>Loading saved access…</p>}</div>;
   // Header Cancel abandons unsaved input, including invalid URLs. The separate
   // Save & exit action persists a resumable draft through actions.saveExit.

@@ -1,3 +1,4 @@
+import { useTranslation } from "@/i18n";
 import { AgentIdentity } from "@/components/AgentIdentity";
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
@@ -70,6 +71,7 @@ export function BlockedInboxView({
   showUpdatedColumn,
   presentation = "legacy",
 }: BlockedInboxViewProps) {
+  const { t } = useTranslation();
   const [collapsedVariants, setCollapsedVariants] = useState<Set<string>>(() => new Set());
 
   const blockedQuery = useQuery({
@@ -164,9 +166,9 @@ export function BlockedInboxView({
         <div className="flex items-start gap-2">
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
           <div className="flex-1 space-y-1">
-            <p className="text-sm font-medium">Couldn't load the Blocked tab.</p>
+            <p className="text-sm font-medium">{t("inbox.BlockedInboxView.loadFailed")}</p>
             <p className="text-xs opacity-80">
-              Other Inbox tabs still work. {describeError(blockedView.error, { action: "load the Blocked tab" }).body}
+              {t("inbox.BlockedInboxView.otherTabs")} {describeError(blockedView.error, { action: t("errorActions.loadTheBlockedTab") }).body}
             </p>
           </div>
           <Button
@@ -177,7 +179,7 @@ export function BlockedInboxView({
             onClick={blockedView.retry}
             disabled={blockedView.isFetching}
           >
-            {blockedView.isFetching ? "Trying…" : "Try again"}
+            {blockedView.isFetching ? t("inbox.BlockedInboxView.trying") : t("inbox.BlockedInboxView.tryAgain")}
           </Button>
         </div>
       </div>
@@ -194,9 +196,9 @@ export function BlockedInboxView({
           <CheckCircle2 className="h-5 w-5" aria-hidden="true" />
         </span>
         <div className="space-y-1">
-          <p className="text-sm font-medium text-foreground">No work is stopped.</p>
+          <p className="text-sm font-medium text-foreground">{t("inbox.BlockedInboxView.noWork")}</p>
           <p className="text-xs text-muted-foreground">
-            Tasks that need a decision, recovery, or external action will appear here.
+            {t("inbox.BlockedInboxView.emptyHint")}
           </p>
         </div>
       </Card>
@@ -210,7 +212,7 @@ export function BlockedInboxView({
           data-testid="blocked-inbox-no-search-results"
           className="block border-border/70 bg-card/40 px-4 py-6 text-center text-sm text-muted-foreground"
         >
-          No stopped items match your search.
+          {t("inbox.BlockedInboxView.noSearch")}
         </Card>
       </div>
     );

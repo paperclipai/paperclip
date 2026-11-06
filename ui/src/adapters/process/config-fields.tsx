@@ -5,6 +5,7 @@ import {
   DraftInput,
   help,
 } from "../../components/agent-config-primitives";
+import { useTranslation } from "@/i18n";
 
 const inputClass =
   "w-full rounded-md border border-border px-2.5 py-1.5 bg-transparent outline-none text-sm font-mono placeholder:text-muted-foreground/40";
@@ -34,9 +35,10 @@ export function ProcessConfigFields({
   eff,
   mark,
 }: AdapterConfigFieldsProps) {
+  const { t } = useTranslation();
   return configFieldsForSection(section, (
     <>
-      <Field configSection="advanced" label="Command" hint={help.command}>
+      <Field configSection="advanced" label={t("agents.ProcessConfigFields.command")} hint={help.command}>
         <DraftInput
           value={
             isCreate
@@ -50,10 +52,10 @@ export function ProcessConfigFields({
           }
           immediate
           className={inputClass}
-          placeholder="e.g. node, python"
+          placeholder={t("agents.ProcessConfigFields.commandPlaceholder")}
         />
       </Field>
-      <Field configSection="advanced" label="Args (comma-separated)" hint={help.args}>
+      <Field configSection="advanced" label={t("agents.ProcessConfigFields.args")} hint={help.args}>
         <DraftInput
           value={
             isCreate
@@ -71,7 +73,7 @@ export function ProcessConfigFields({
           }
           immediate
           className={inputClass}
-          placeholder="e.g. script.js, --flag"
+          placeholder={t("agents.ProcessConfigFields.argsPlaceholder")}
         />
       </Field>
     </>

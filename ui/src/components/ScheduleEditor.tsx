@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -5,16 +6,6 @@ import { Input } from "@/components/ui/input";
 import { nextCronFires, parseCronExpression } from "../lib/cron-fires";
 
 export type SchedulePreset = "every_minute" | "every_hour" | "every_day" | "weekdays" | "weekly" | "monthly" | "custom";
-
-const PRESETS: { value: SchedulePreset; label: string }[] = [
-  { value: "every_minute", label: "Every minute" },
-  { value: "every_hour", label: "Every hour" },
-  { value: "every_day", label: "Every day" },
-  { value: "weekdays", label: "Weekdays" },
-  { value: "weekly", label: "Weekly" },
-  { value: "monthly", label: "Monthly" },
-  { value: "custom", label: "Custom (cron)" },
-];
 
 const HOURS = Array.from({ length: 24 }, (_, i) => ({
   value: String(i),
@@ -27,14 +18,35 @@ const MINUTES = Array.from({ length: 12 }, (_, i) => ({
 }));
 
 const DAYS_OF_WEEK = [
-  { value: "1", label: "Mon" },
-  { value: "2", label: "Tue" },
-  { value: "3", label: "Wed" },
-  { value: "4", label: "Thu" },
-  { value: "5", label: "Fri" },
-  { value: "6", label: "Sat" },
-  { value: "0", label: "Sun" },
+  { value: "1" },
+  { value: "2" },
+  { value: "3" },
+  { value: "4" },
+  { value: "5" },
+  { value: "6" },
+  { value: "0" },
 ];
+
+function dayOfWeekLabel(value: string): string {
+  switch (value) {
+    case "1":
+      return t("agents.dayOfWeekLabel.mon");
+    case "2":
+      return t("agents.dayOfWeekLabel.tue");
+    case "3":
+      return t("agents.dayOfWeekLabel.wed");
+    case "4":
+      return t("agents.dayOfWeekLabel.thu");
+    case "5":
+      return t("agents.dayOfWeekLabel.fri");
+    case "6":
+      return t("agents.dayOfWeekLabel.sat");
+    case "0":
+      return t("agents.dayOfWeekLabel.sun");
+    default:
+      return value;
+  }
+}
 
 const DAYS_OF_MONTH = Array.from({ length: 31 }, (_, i) => ({
   value: String(i + 1),
@@ -126,28 +138,28 @@ function describeSchedule(cron: string): string {
 
   switch (preset) {
     case "every_minute":
-      return "Every minute";
+      return t("agents.describeSchedule.everyMinute");
     case "every_hour":
-      return `Every hour at :${minute.padStart(2, "0")}`;
+      return t("agents.describeSchedule.everyHourAt", { minute: minute.padStart(2, "0") });
     case "every_day":
-      return `Every day at ${timeStr}`;
+      return t("agents.describeSchedule.everyDayAt", { time: timeStr });
     case "weekdays":
-      return `Weekdays at ${timeStr}`;
+      return t("agents.describeSchedule.weekdaysAt", { time: timeStr });
     case "weekly": {
-      const day = DAYS_OF_WEEK.find((d) => d.value === dayOfWeek)?.label ?? dayOfWeek;
-      return `Every ${day} at ${timeStr}`;
+      return t("agents.describeSchedule.weeklyAt", { day: dayOfWeekLabel(dayOfWeek), time: timeStr });
     }
     case "monthly":
-      return `Monthly on the ${dayOfMonth}${ordinalSuffix(Number(dayOfMonth))} at ${timeStr}`;
+      return t("agents.describeSchedule.monthlyOn", { day: dayOfMonth, ordinalDay: ordinalSuffix(Number(dayOfMonth)), time: timeStr });
     case "custom":
-      return cron || "No schedule set";
+      return cron || t("agents.describeSchedule.noSchedule");
   }
 }
 
 function ordinalSuffix(n: number): string {
   const s = ["th", "st", "nd", "rd"];
   const v = n % 100;
-  return s[(v - 20) % 10] || s[v] || s[0];
+  const suffix = s[(v - 20) % 10] || s[v] || s[0];
+  return t(`agents.ordinalSuffix.${suffix}`);
 }
 
 export { describeSchedule };
@@ -161,7 +173,7 @@ export function getScheduleCronValidation(cron: string): {
   if (!trimmed) {
     return {
       valid: false,
-      message: "Enter a 5-field cron expression.",
+      message: t("agents.getScheduleCronValidation.emptyExpression"),
       nextFires: [],
     };
   }
@@ -170,7 +182,7 @@ export function getScheduleCronValidation(cron: string): {
   if (fields.length !== 5) {
     return {
       valid: false,
-      message: `Use exactly 5 fields; this has ${fields.length}.`,
+      message: t("agents.getScheduleCronValidation.fieldCount", { fields: fields.length }),
       nextFires: [],
     };
   }
@@ -178,7 +190,7 @@ export function getScheduleCronValidation(cron: string): {
   if (!parseCronExpression(trimmed)) {
     return {
       valid: false,
-      message: "Cron fields must use valid numbers, ranges, lists, wildcards, or steps.",
+      message: t("agents.getScheduleCronValidation.invalidFields"),
       nextFires: [],
     };
   }
@@ -186,7 +198,7 @@ export function getScheduleCronValidation(cron: string): {
   const nextFires = nextCronFires(trimmed, 3, { timeZone: "UTC" });
   return {
     valid: true,
-    message: nextFires.length > 0 ? "Valid cron." : "Valid cron, but no upcoming fires were found.",
+    message: nextFires.length > 0 ? t("agents.getScheduleCronValidation.validCron") : t("agents.getScheduleCronValidation.validNoFires"),
     nextFires,
   };
 }
@@ -200,6 +212,16 @@ export function ScheduleEditor({
   onChange: (cron: string) => void;
   onValidityChange?: (valid: boolean) => void;
 }) {
+  const { t } = useTranslation();
+  const presets: { value: SchedulePreset; label: string }[] = [
+    { value: "every_minute", label: t("agents.ScheduleEditor.presetEveryMinute") },
+    { value: "every_hour", label: t("agents.ScheduleEditor.presetEveryHour") },
+    { value: "every_day", label: t("agents.ScheduleEditor.presetEveryDay") },
+    { value: "weekdays", label: t("agents.ScheduleEditor.presetWeekdays") },
+    { value: "weekly", label: t("agents.ScheduleEditor.presetWeekly") },
+    { value: "monthly", label: t("agents.ScheduleEditor.presetMonthly") },
+    { value: "custom", label: t("agents.ScheduleEditor.presetCustom") },
+  ];
   const parsed = useMemo(() => parseCronToPreset(value), [value]);
   const [preset, setPreset] = useState<SchedulePreset>(parsed.preset);
   const [hour, setHour] = useState(parsed.hour);
@@ -207,7 +229,7 @@ export function ScheduleEditor({
   const [dayOfWeek, setDayOfWeek] = useState(parsed.dayOfWeek);
   const [dayOfMonth, setDayOfMonth] = useState(parsed.dayOfMonth);
   const [customCron, setCustomCron] = useState(preset === "custom" ? value : "");
-  const customValidation = useMemo(() => getScheduleCronValidation(customCron), [customCron]);
+  const customValidation = getScheduleCronValidation(customCron);
 
   useEffect(() => {
     onValidityChange?.(preset !== "custom" || customValidation.valid);
@@ -247,11 +269,11 @@ export function ScheduleEditor({
   return (
     <div className="space-y-3">
       <Select value={preset} onValueChange={(v) => handlePresetChange(v as SchedulePreset)}>
-        <SelectTrigger className="w-full" aria-label="Schedule frequency">
-          <SelectValue placeholder="Choose frequency..." />
+        <SelectTrigger className="w-full" aria-label={t("agents.ScheduleEditor.scheduleFrequencyLabel")}>
+          <SelectValue placeholder={t("agents.ScheduleEditor.chooseFrequency")} />
         </SelectTrigger>
         <SelectContent>
-          {PRESETS.map((p) => (
+          {presets.map((p) => (
             <SelectItem key={p.value} value={p.value}>
               {p.label}
             </SelectItem>
@@ -277,12 +299,12 @@ export function ScheduleEditor({
               }
             }}
             placeholder="0 10 * * *"
-            aria-label="Cron expression"
+            aria-label={t("agents.ScheduleEditor.cronExpressionLabel")}
             aria-invalid={!customValidation.valid}
             className="font-mono text-sm"
           />
           <p className="text-xs text-muted-foreground">
-            Five fields: minute hour day-of-month month day-of-week
+            {t("agents.ScheduleEditor.fieldsHint")}
           </p>
           <p
             className={customValidation.valid ? "text-xs text-muted-foreground" : "text-xs text-destructive"}
@@ -290,7 +312,7 @@ export function ScheduleEditor({
           >
             {customValidation.message}
             {customValidation.valid && customValidation.nextFires.length > 0
-              ? ` Next: ${customValidation.nextFires.map((fire) => fire.toLocaleString()).join(", ")}.`
+              ? t("agents.ScheduleEditor.nextFires", { fires: customValidation.nextFires.map((fire) => fire.toLocaleString()).join(", ") })
               : null}
           </p>
         </div>
@@ -298,7 +320,7 @@ export function ScheduleEditor({
         <div className="flex flex-wrap items-center gap-2">
           {preset !== "every_minute" && preset !== "every_hour" && (
             <>
-              <span className="text-sm text-muted-foreground">at</span>
+              <span className="text-sm text-muted-foreground">{t("agents.ScheduleEditor.at")}</span>
               <Select
                 value={hour}
                 onValueChange={(h) => {
@@ -341,7 +363,7 @@ export function ScheduleEditor({
 
           {preset === "every_hour" && (
             <>
-              <span className="text-sm text-muted-foreground">at minute</span>
+              <span className="text-sm text-muted-foreground">{t("agents.ScheduleEditor.atMinute")}</span>
               <Select
                 value={minute}
                 onValueChange={(m) => {
@@ -365,7 +387,7 @@ export function ScheduleEditor({
 
           {preset === "weekly" && (
             <>
-              <span className="text-sm text-muted-foreground">on</span>
+              <span className="text-sm text-muted-foreground">{t("agents.ScheduleEditor.on")}</span>
               <div className="flex gap-1">
                 {DAYS_OF_WEEK.map((d) => (
                   <Button
@@ -380,7 +402,7 @@ export function ScheduleEditor({
                       emitChange(preset, hour, minute, d.value, dayOfMonth, customCron);
                     }}
                   >
-                    {d.label}
+                    {dayOfWeekLabel(d.value)}
                   </Button>
                 ))}
               </div>
@@ -389,7 +411,7 @@ export function ScheduleEditor({
 
           {preset === "monthly" && (
             <>
-              <span className="text-sm text-muted-foreground">on day</span>
+              <span className="text-sm text-muted-foreground">{t("agents.ScheduleEditor.onDay")}</span>
               <Select
                 value={dayOfMonth}
                 onValueChange={(dom) => {

@@ -53,6 +53,7 @@ import { RichWorkProductCard } from "./RichWorkProductCard";
 import { planPreviewContent, TaskChatPlanPreviewCard } from "./TaskChatPlanPreviewCard";
 import { TaskChatDiffCounts, TaskChatDiffView } from "./TaskChatDiffView";
 import { parseUnifiedDiffLines } from "./diff-lines";
+import { useTranslation } from "@/i18n";
 import { useArtifactsV1Enabled } from "@/hooks/useArtifactsV1Enabled";
 import { ArtifactFileRow, ArtifactRow, fileRowSourceFromAttachment, fileRowSourceFromWorkProduct, subjectFromAttachment, subjectFromDocumentSummary, subjectFromWorkProduct, workProductStateBadge } from "@/components/artifacts/v1";
 
@@ -241,9 +242,10 @@ function CardShell({
 }
 
 function PlanSteps({ steps }: { steps: TaskChatProtocolStep[] }) {
+  const { t } = useTranslation();
   if (steps.length === 0) return null;
   return (
-    <ol className="flex flex-col gap-1.5" aria-label="Plan steps">
+    <ol className="flex flex-col gap-1.5" aria-label={t("issues.PlanSteps.planSteps")}>
       {steps.map((step) => (
         <li key={step.id} className="flex items-start gap-2 text-sm">
           <StatusIcon status={step.status} className="mt-0.5 shrink-0" />
@@ -294,6 +296,7 @@ function ProviderActivityCard({
 }: {
   item: TaskChatProviderActivityItem;
 }) {
+  const { t } = useTranslation();
   if (item.family === "plan_proposal") return <PlanProposalCard item={item} />;
   const Icon = FAMILY_ICON[item.family];
   const hasDetails =
@@ -311,7 +314,7 @@ function ProviderActivityCard({
     >
       {item.steps.length > 0 ? <PlanSteps steps={item.steps} /> : null}
       {item.children.length > 0 ? (
-        <ul className="flex flex-col gap-2" aria-label="Delegated agents">
+        <ul className="flex flex-col gap-2" aria-label={t("issues.ProviderActivityCard.delegatedAgents")}>
           {item.children.map((child) => (
             <li
               key={child.id}
@@ -344,7 +347,7 @@ function ProviderActivityCard({
         </ul>
       ) : null}
       {item.links.length > 0 ? (
-        <ul className="flex flex-col gap-2" aria-label="Research sources">
+        <ul className="flex flex-col gap-2" aria-label={t("issues.ProviderActivityCard.researchSources")}>
           {item.links.map((link) => (
             <li key={link.href}>
               <a
@@ -375,7 +378,7 @@ function ProviderActivityCard({
           )}
         >
           <summary className="flex cursor-pointer list-none items-center gap-1 text-xs font-medium text-muted-foreground">
-            <ChevronDown aria-hidden className="h-3.5 w-3.5" /> Details
+            <ChevronDown aria-hidden className="h-3.5 w-3.5" /> {t("issues.ProviderActivityCard.details")}
           </summary>
           {item.details.length > 0 ? (
             <dl className="mt-2 flex min-w-0 flex-col gap-1.5 text-xs">
@@ -404,7 +407,7 @@ function ProviderActivityCard({
           ) : null}
           {item.outputTruncated ? (
             <p className="mt-1 text-xs text-muted-foreground">
-              Output truncated to 8 KiB.
+              {t("issues.ProviderActivityCard.outputTruncated")}
             </p>
           ) : null}
         </details>
@@ -485,12 +488,15 @@ const OPERATION_LABEL: Record<string, string> = {
 };
 
 function WorkspaceChangeCard({ item }: { item: TaskChatWorkspaceChangeItem }) {
+  const { t } = useTranslation();
   const [openPaths, setOpenPaths] = useState<ReadonlySet<string>>(() => new Set());
   const [expanded, setExpanded] = useState(false);
   const visibleFiles = expanded ? item.files : item.files.slice(0, 5);
   const fileCount = item.totals.files || item.files.length;
   const fileLabel = `${fileCount} ${fileCount === 1 ? "file" : "files"}`;
-  const summary = item.complete ? `${fileLabel} changed` : `${fileLabel} so far`;
+  const summary = item.complete
+    ? t("issues.WorkspaceChangeCard.changedSummary", { count: fileCount })
+    : `${fileLabel} so far`;
   const toggle = (path: string) =>
     setOpenPaths((current) => {
       const next = new Set(current);
@@ -540,7 +546,9 @@ function WorkspaceChangeCard({ item }: { item: TaskChatWorkspaceChangeItem }) {
           className="mt-1"
           onClick={() => setExpanded((value) => !value)}
         >
-          {expanded ? "Show fewer files" : `Show ${item.files.length - 5} more files`}
+          {expanded
+            ? t("issues.WorkspaceChangeCard.showFewerFiles")
+            : t("issues.WorkspaceChangeCard.showMoreFiles", { count: item.files.length - 5 })}
         </Button>
       ) : null}
       {fileCount > item.files.length ? (
@@ -554,12 +562,13 @@ function WorkspaceChangeCard({ item }: { item: TaskChatWorkspaceChangeItem }) {
 }
 
 function WorkspaceFileCard({ item }: { item: TaskChatWorkspaceFileItem }) {
+  const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const extension = item.displayName.includes(".")
     ? item.displayName.split(".").at(-1)?.toUpperCase()
-    : "FILE";
+    : t("issues.WorkspaceFileCard.fileFallback");
   const label =
-    item.presentation === "generic" ? "File" : titleCaseKey(item.presentation);
+    item.presentation === "generic" ? t("issues.WorkspaceFileCard.file") : titleCaseKey(item.presentation);
   const workspaceFileRef = useMemo(
     () => ({
       path: item.path,
@@ -578,7 +587,7 @@ function WorkspaceFileCard({ item }: { item: TaskChatWorkspaceFileItem }) {
         status={
           item.source === "runner_verified" ? "completed" : "informational"
         }
-        summary={`${label} · ${extension}${item.line ? ` · line ${item.line}` : ""}`}
+        summary={`${label} · ${extension}${item.line ? t("issues.WorkspaceFileCard.lineSuffix", { line: item.line }) : ""}`}
         testId="task-chat-workspace-file"
       >
         <div className="flex flex-wrap items-center gap-2">
@@ -593,7 +602,7 @@ function WorkspaceFileCard({ item }: { item: TaskChatWorkspaceFileItem }) {
             variant="outline"
             onClick={() => setOpen(true)}
           >
-            Preview
+            {t("issues.WorkspaceFileCard.preview")}
           </Button>
         </div>
       </CardShell>
@@ -605,8 +614,7 @@ function WorkspaceFileCard({ item }: { item: TaskChatWorkspaceFileItem }) {
           <p className="font-mono text-xs text-muted-foreground">{item.path}</p>
           {item.preview == null ? (
             <p className="rounded-sm bg-muted/50 p-3 text-sm text-muted-foreground">
-              Preview unavailable. The verified workspace reference is still
-              available above.
+              {t("issues.WorkspaceFileCard.previewUnavailable")}
             </p>
           ) : item.presentation === "document" ? (
             <div className="max-h-(--sz-70vh) overflow-auto rounded-sm bg-muted/30 p-3">
@@ -627,7 +635,7 @@ function WorkspaceFileCard({ item }: { item: TaskChatWorkspaceFileItem }) {
           )}
           {item.previewTruncated ? (
             <p className="text-xs text-muted-foreground">
-              Preview truncated by the runner.
+              {t("issues.WorkspaceFileCard.previewTruncated")}
             </p>
           ) : null}
         </DialogContent>
@@ -647,6 +655,7 @@ function RuntimeQuestionHistory({
 }: {
   item: TaskChatRuntimeRequestItem;
 }) {
+  const { t } = useTranslation();
   const questionSet = item.questionSet;
   if (!questionSet) return null;
   return (
@@ -673,8 +682,8 @@ function RuntimeQuestionHistory({
           ))}
           <p className="text-xs text-muted-foreground">
             {item.status === "resolved"
-              ? "Answer details were not recorded by this older runtime."
-              : `No answers were submitted; this request was ${item.status}.`}
+              ? t("issues.RuntimeQuestionHistory.answerNotRecorded")
+              : t("issues.RuntimeQuestionHistory.noAnswers", { status: item.status })}
           </p>
         </div>
       )}
@@ -687,14 +696,15 @@ function RuntimeQuestionReceipt({
 }: {
   item: TaskChatRuntimeRequestItem;
 }) {
+  const { t } = useTranslation();
   const label =
     item.status === "resolved"
-      ? "Questions answered"
+      ? t("issues.RuntimeQuestionReceipt.questionsAnswered")
       : item.status === "cancelled"
-        ? "Questions cancelled"
+        ? t("issues.RuntimeQuestionReceipt.questionsCancelled")
         : item.status === "expired"
-          ? "Questions expired"
-          : "Questions resolved";
+          ? t("issues.RuntimeQuestionReceipt.questionsExpired")
+          : t("issues.RuntimeQuestionReceipt.questionsResolved");
   return (
     <details className="group" data-testid="task-chat-runtime-request">
       <summary className="flex min-h-8 cursor-pointer list-none items-center gap-2 rounded-sm px-1 py-1.5 text-sm leading-5 text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
@@ -718,7 +728,7 @@ function RuntimeQuestionReceipt({
       <div className="pb-3 pl-7 pr-1">
         <div className="mb-3">
           <p className="text-sm font-medium text-foreground">
-            {item.questionSet?.title ?? "Runtime input"}
+            {item.questionSet?.title ?? t("issues.RuntimeQuestionReceipt.runtimeInput")}
           </p>
           <p className="mt-1 text-sm text-muted-foreground">{item.prompt}</p>
         </div>
@@ -743,6 +753,7 @@ function RuntimeRequestCard({
   imageUploadHandler?: (file: File) => Promise<string>;
   mentions?: MentionOption[];
 }) {
+  const { t } = useTranslation();
   const historyIssueId = useContext(TaskChatRequestHistoryContext);
   const draftKey = requestedDraftKey ?? (historyIssueId
     ? `paperclip:task-input:${historyIssueId}:runtime:${item.runId}:${item.requestId}`
@@ -750,12 +761,12 @@ function RuntimeRequestCard({
   const title =
     item.questionSet?.title ??
     (item.requestType === "permission"
-      ? "Runtime permission"
-      : "Runtime input");
+      ? t("issues.RuntimeRequestCard.runtimePermission")
+      : t("issues.RuntimeRequestCard.runtimeInput"));
   const fields =
     item.fields.length > 0
       ? item.fields
-      : [{ name: "answer", label: "Response", placeholder: null }];
+      : [{ name: "answer", label: t("issues.RuntimeRequestCard.response"), placeholder: null }];
   const [values, setValues] = useState<Record<string, string>>(() =>
     draftKey ? loadStructuredDraft(draftKey, {}) : {},
   );
@@ -792,7 +803,7 @@ function RuntimeRequestCard({
       setError(
         cause instanceof Error
           ? cause.message
-          : "The runtime request could not be resolved.",
+          : t("issues.RuntimeRequestCard.couldNotResolve"),
       );
     }
   };
@@ -891,7 +902,7 @@ function RuntimeRequestCard({
               size="sm"
               disabled={!onDecision || submitting || !canSubmitInput}
             >
-              {submitting ? "Submitting…" : "Submit response"}
+              {submitting ? t("issues.RuntimeRequestCard.submitting") : t("issues.RuntimeRequestCard.submitResponse")}
             </Button>
             {item.choices.some((choice) => choice.key === "decline") ? (
               <Button
@@ -901,7 +912,7 @@ function RuntimeRequestCard({
                 disabled={!onDecision || submitting}
                 onClick={() => void submit({ action: "decline" })}
               >
-                Deny
+                {t("issues.RuntimeRequestCard.deny")}
               </Button>
             ) : null}
             {presentation === "timeline" ? (
@@ -912,7 +923,7 @@ function RuntimeRequestCard({
                 disabled={!onDecision || submitting}
                 onClick={() => void submit({ action: "cancel" })}
               >
-                Cancel
+                {t("issues.RuntimeRequestCard.cancel")}
               </Button>
             ) : null}
           </div>
@@ -944,14 +955,14 @@ function RuntimeRequestCard({
                   }
                 }}
               >
-                {submitting ? "Submitting…" : choice.label}
+                {submitting ? t("issues.RuntimeRequestCard.submitting") : choice.label}
               </Button>
             ))}
         </div>
       ) : null}
       {item.status === "pending" && !onDecision ? (
         <p className="mt-2 text-xs text-muted-foreground">
-          Resolve this request in the active runtime session.
+          {t("issues.RuntimeRequestCard.resolveInSession")}
         </p>
       ) : null}
       {error ? (
@@ -985,6 +996,7 @@ function ResultCard({
 }: {
   item: Extract<TaskChatProtocolItem, { surface: "run_result" }>;
 }) {
+  const { t } = useTranslation();
   const hasDetails =
     item.verification.length > 0 ||
     item.remainingWork.length > 0 ||
@@ -993,7 +1005,7 @@ function ResultCard({
   return (
     <CardShell
       icon={PackageCheck}
-      title="Run result"
+      title={t("issues.ResultCard.runResult")}
       status={item.disposition}
       summary={item.summary}
       testId="task-chat-run-result"
@@ -1002,7 +1014,7 @@ function ResultCard({
         <div className="flex flex-col gap-3 text-sm">
           {item.blocker ? (
             <div className="rounded-sm bg-muted/50 p-2">
-              <strong>Blocked: {item.blocker.reasonCode}</strong>
+              <strong>{t("issues.ResultCard.blocked", { reason: item.blocker.reasonCode })}</strong>
               <p className="mt-1 text-muted-foreground">
                 {item.blocker.unblockAction}
               </p>
@@ -1011,7 +1023,7 @@ function ResultCard({
           {item.verification.length > 0 ? (
             <ul
               className="flex flex-col gap-1"
-              aria-label="Verification results"
+              aria-label={t("issues.ResultCard.verificationResults")}
             >
               {item.verification.map((check, index) => (
                 <li
@@ -1041,7 +1053,7 @@ function ResultCard({
               {item.remainingWork.map((work, index) => (
                 <li key={`${work.description}:${index}`}>
                   {work.description}
-                  {work.blocksCompletion ? " · blocks completion" : ""}
+                  {work.blocksCompletion ? t("issues.ResultCard.blocksCompletion") : ""}
                 </li>
               ))}
             </ul>
@@ -1069,10 +1081,11 @@ function TerminalCard({
 }: {
   item: Extract<TaskChatProtocolItem, { surface: "run_terminal" }>;
 }) {
+  const { t } = useTranslation();
   return (
     <CardShell
       icon={TerminalSquare}
-      title="Run ended"
+      title={t("issues.TerminalCard.runEnded")}
       status={item.runState}
       summary={[item.disposition.replaceAll("_", " "), item.stopReason]
         .filter(Boolean)

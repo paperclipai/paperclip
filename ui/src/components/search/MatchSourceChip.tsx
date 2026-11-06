@@ -1,4 +1,5 @@
 import { cn } from "@/lib/utils";
+import { useTranslation } from "@/i18n";
 
 export type MatchSourceChipKind = "title" | "identifier" | "comment" | "document";
 
@@ -13,11 +14,11 @@ const chipStyles: Record<MatchSourceChipKind, string> = {
     "bg-(--chip-match-document-bg) text-(--chip-match-document-fg) border-(--chip-match-document-border)",
 };
 
-const chipLabels: Record<MatchSourceChipKind, string> = {
-  title: "Title",
-  identifier: "Identifier",
-  comment: "Comment",
-  document: "Doc",
+const chipLabelKeys: Record<MatchSourceChipKind, string> = {
+  title: "search.matchSourceChip.title",
+  identifier: "search.matchSourceChip.identifier",
+  comment: "search.matchSourceChip.comment",
+  document: "search.matchSourceChip.document",
 };
 
 export interface MatchSourceChipProps {
@@ -30,7 +31,8 @@ export interface MatchSourceChipProps {
 // design-allow(pill-pattern): --chip-match-* domain token family (DESIGN.md domain tier); a
 // deliberately separate chip system, not a Badge.
 export function MatchSourceChip({ kind, count, label, className }: MatchSourceChipProps) {
-  const text = label ?? chipLabels[kind];
+  const { t } = useTranslation();
+  const text = label ?? t(chipLabelKeys[kind]);
   const showCount = typeof count === "number" && count > 1;
   return (
     <span

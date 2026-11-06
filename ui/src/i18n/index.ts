@@ -18,8 +18,15 @@ void i18n.use(initReactI18next).init(i18nextOptions).catch((error: unknown) => {
   console.error("Failed to initialize i18next", error);
 });
 
-export function t(key: string, options: TOptions = {}) {
-  return i18n.t(key, options);
+export function t(
+  key: string,
+  defaultValueOrOptions?: string | TOptions,
+  options?: TOptions,
+) {
+  if (typeof defaultValueOrOptions === "string") {
+    return i18n.t(key, { defaultValue: defaultValueOrOptions, ...(options || {}) });
+  }
+  return i18n.t(key, defaultValueOrOptions ?? {});
 }
 
 export const useTranslation = useReactI18nextTranslation;

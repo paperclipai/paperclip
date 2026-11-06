@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { t } from "@/i18n";
 import { RotateCcw } from "lucide-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { AgentConfigRevision, AgentDetail as AgentDetailRecord } from "@paperclipai/shared";
@@ -37,11 +38,11 @@ const KEY_LABELS: Record<string, string> = {
 };
 
 export function revisionSummary(revision: Pick<AgentConfigRevision, "changedKeys" | "rolledBackFromRevisionId">): string {
-  if (revision.rolledBackFromRevisionId) return "Restored an earlier version";
-  if (revision.changedKeys.length === 0) return "Saved with no tracked changes";
-  const labels = revision.changedKeys.map((key) => KEY_LABELS[key] ?? key);
+  if (revision.rolledBackFromRevisionId) return t("agents.detail.history.restoredEarlier", { defaultValue: "Restored an earlier version" });
+  if (revision.changedKeys.length === 0) return t("agents.detail.history.noTrackedChanges", { defaultValue: "Saved with no tracked changes" });
+  const labels = revision.changedKeys.map((key) => t(`agents.detail.history.keyLabels.${key}`, { defaultValue: KEY_LABELS[key] ?? key }));
   const sentence = labels.length === 1 ? labels[0] : `${labels.slice(0, -1).join(", ")} and ${labels[labels.length - 1]}`;
-  return `Changed ${sentence}`;
+  return t("agents.detail.history.changedSentence", { sentence, defaultValue: `Changed ${sentence}` });
 }
 
 function useRevisionAuthor(agent: AgentDetailRecord, companyId: string | undefined) {
@@ -99,28 +100,28 @@ export function AgentHistoryDialog({
   const restoreError = rollback.error
     ? rollback.error instanceof Error && rollback.error.message
       ? rollback.error.message
-      : "Could not restore that version."
+      : t("agents.detail.history.restoreError", { defaultValue: "Could not restore that version." })
     : null;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="flex max-h-(--agent-detail-dialog-max-h) flex-col gap-5 sm:max-w-3xl">
         <DialogHeader>
-          <DialogTitle className="text-base">Agent history</DialogTitle>
-          <DialogDescription>Every saved change to {agent.name}&rsquo;s identity and configuration. Restore any version.</DialogDescription>
+          <DialogTitle className="text-base">{t("agents.detail.history.dialogTitle", { defaultValue: "Agent history" })}</DialogTitle>
+          <DialogDescription>{t("agents.detail.history.dialogDescription", { name: agent.name, defaultValue: `Every saved change to ${agent.name}’s identity and configuration. Restore any version.` })}</DialogDescription>
         </DialogHeader>
         {error ? (
-          <p role="alert" className="text-sm text-destructive">{error instanceof Error ? error.message : "Could not load agent history."}</p>
+          <p role="alert" className="text-sm text-destructive">{error instanceof Error ? error.message : t("agents.detail.history.loadError", { defaultValue: "Could not load agent history." })}</p>
         ) : isLoading ? (
-          <p role="status" className="text-sm text-muted-foreground">Loading agent history…</p>
+          <p role="status" className="text-sm text-muted-foreground">{t("agents.detail.history.loading", { defaultValue: "Loading agent history…" })}</p>
         ) : (revisions ?? []).length === 0 ? (
-          <p className="text-sm text-muted-foreground">No saved changes yet.</p>
+          <p className="text-sm text-muted-foreground">{t("agents.detail.history.noSavedChanges", { defaultValue: "No saved changes yet." })}</p>
         ) : (
           <div className="min-h-0 overflow-y-auto rounded-lg border border-border">
             <div className={`${agentTableHeadClass} grid-cols-(--agent-detail-history-cols)`}>
-              <span>Configuration</span>
-              <span>Team member</span>
-              <span>Date configured</span>
+              <span>{t("agents.detail.history.thConfiguration", { defaultValue: "Configuration" })}</span>
+              <span>{t("agents.detail.history.thTeamMember", { defaultValue: "Team member" })}</span>
+              <span>{t("agents.detail.history.thDateConfigured", { defaultValue: "Date configured" })}</span>
               <span aria-hidden />
             </div>
             {(revisions ?? []).map((revision) => (
@@ -150,7 +151,7 @@ export function AgentHistoryDialog({
                   disabled={rollback.isPending}
                 >
                   <RotateCcw />
-                  Restore
+                  {t("agents.detail.history.btnRestore", { defaultValue: "Restore" })}
                 </Button>
               </div>
             ))}
@@ -163,17 +164,17 @@ export function AgentHistoryDialog({
       <AlertDialog open={pending !== null} onOpenChange={(next) => (next ? undefined : setPending(null))}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Restore this version?</AlertDialogTitle>
+            <AlertDialogTitle>{t("agents.detail.history.confirmTitle", { defaultValue: "Restore this version?" })}</AlertDialogTitle>
             <AlertDialogDescription>
               {pending
-                ? `Continuing will restore ${agent.name}’s identity and configuration to the version saved on ${formatDate(pending.createdAt)}. Anything changed since then will be replaced. The current version stays in Agent history.`
+                ? t("agents.detail.history.confirmDescription", { name: agent.name, date: formatDate(pending.createdAt), defaultValue: `Continuing will restore ${agent.name}’s identity and configuration to the version saved on ${formatDate(pending.createdAt)}. Anything changed since then will be replaced. The current version stays in Agent history.` })
                 : null}
             </AlertDialogDescription>
           </AlertDialogHeader>
           {pending ? (
             <div className="flex flex-col gap-2 rounded-lg bg-(--agent-detail-tile) p-4">
               <span className="text-xs text-muted-foreground">
-                {formatDate(pending.createdAt)} · By: {authorOf(pending)}
+                {t("agents.detail.history.metaLine", { date: formatDate(pending.createdAt), author: authorOf(pending), defaultValue: `${formatDate(pending.createdAt)} · By: ${authorOf(pending)}` })}
               </span>
               <span className="text-sm text-foreground">{revisionSummary(pending)}</span>
               {pending.changedKeys.length > 0 ? (
@@ -191,7 +192,7 @@ export function AgentHistoryDialog({
             <p role="alert" className="text-sm text-destructive">{restoreError}</p>
           ) : null}
           <AlertDialogFooter className="sm:justify-between">
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogCancel>{t("agents.detail.history.cancel", { defaultValue: "Cancel" })}</AlertDialogCancel>
             <AlertDialogAction
               disabled={rollback.isPending}
               onClick={(event) => {
@@ -200,7 +201,7 @@ export function AgentHistoryDialog({
               }}
             >
               <RotateCcw />
-              {rollback.isPending ? "Restoring…" : "Restore version"}
+              {rollback.isPending ? t("agents.detail.history.restoring", { defaultValue: "Restoring…" }) : t("agents.detail.history.btnRestoreVersion", { defaultValue: "Restore version" })}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

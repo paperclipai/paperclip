@@ -1,4 +1,5 @@
 import { useEffect, useState, type ReactNode } from "react";
+import { t, useTranslation } from "@/i18n";
 import type { IssueExternalObjectGroup } from "../../hooks/useIssueExternalObjects";
 import {
   externalObjectDisplayStatusLabel,
@@ -32,8 +33,8 @@ function externalObjectRowDisplayKey(group: IssueExternalObjectGroup): string {
   const displayKey = pill.displayKey?.trim();
   if (displayKey) return displayKey;
   if (pill.providerKey === "github") {
-    if (pill.objectType === "pull_request") return "Github PR";
-    if (pill.objectType === "issue") return "Github Issue";
+    if (pill.objectType === "pull_request") return t("issues.externalObjectRows.githubPr");
+    if (pill.objectType === "issue") return t("issues.externalObjectRows.githubIssue");
   }
   return externalObjectDisplayLabel(pill.providerKey, pill.objectType);
 }
@@ -57,8 +58,8 @@ function githubObjectPropertyValue(url: string | null | undefined): string | nul
     if (parsed.hostname !== "github.com") return null;
     const [, owner, repo, kind, number] = parsed.pathname.split("/");
     if (!owner || !repo || !number) return null;
-    if (kind === "pull") return `PR ${number}`;
-    if (kind === "issues") return `Issue ${number}`;
+    if (kind === "pull") return t("issues.externalObjectRows.prNumber", { number });
+    if (kind === "issues") return t("issues.externalObjectRows.issueNumber", { number });
     return null;
   } catch {
     return null;
@@ -103,6 +104,7 @@ function externalObjectPropertyTitle(group: IssueExternalObjectGroup): string {
 function ExternalObjectPropertyValue({ group }: { group: IssueExternalObjectGroup }) {
   const { pill } = group;
   const statusLabel = externalObjectPropertyStatusLabel(group);
+  const { t } = useTranslation();
   const providerLabel = externalObjectProviderLabel(pill.providerKey);
   const typeLabel = externalObjectTypeLabel(pill.objectType);
   const value = externalObjectPropertyValue(group);
@@ -113,7 +115,7 @@ function ExternalObjectPropertyValue({ group }: { group: IssueExternalObjectGrou
         liveness={pill.liveness}
         statusIconKey={externalObjectPropertyStatusIconKey(group)}
         sizeClassName="h-3.5 w-3.5"
-        label={`${providerLabel}: ${statusLabel}`}
+        label={t("issues.externalObjectRows.statusLabel", { provider: providerLabel, status: statusLabel })}
       />
       <span className="min-w-0 truncate">{value}</span>
     </>
@@ -135,7 +137,7 @@ function ExternalObjectPropertyValue({ group }: { group: IssueExternalObjectGrou
         data-external-liveness={pill.liveness}
         className={className}
         title={externalObjectPropertyTitle(group)}
-        aria-label={`${providerLabel} ${typeLabel} - ${statusLabel}: ${pill.displayTitle ?? value}`}
+        aria-label={t("issues.externalObjectRows.objectLabel", { provider: providerLabel, type: typeLabel, status: statusLabel, title: pill.displayTitle ?? value })}
       >
         {content}
       </a>
@@ -149,7 +151,7 @@ function ExternalObjectPropertyValue({ group }: { group: IssueExternalObjectGrou
       data-external-liveness={pill.liveness}
       className={className}
       title={externalObjectPropertyTitle(group)}
-      aria-label={`${providerLabel} ${typeLabel} - ${statusLabel}: ${pill.displayTitle ?? value}`}
+      aria-label={t("issues.externalObjectRows.objectLabel", { provider: providerLabel, type: typeLabel, status: statusLabel, title: pill.displayTitle ?? value })}
     >
       {content}
     </span>
@@ -167,6 +169,7 @@ export function ExternalObjectRows({
   externalObjectsError?: boolean;
   onRetryExternalObjects?: () => void;
 }) {
+  const { t } = useTranslation();
   const [expanded, setExpanded] = useState(false);
 
   useEffect(() => {
@@ -175,9 +178,9 @@ export function ExternalObjectRows({
 
   if (externalObjectsError) {
     return (
-      <PropertyRow label="External objects">
+      <PropertyRow label={t("issues.externalObjectRows.externalObjects")}>
         <span className="text-xs text-muted-foreground">
-          Couldn't load external objects.
+          {t("issues.externalObjectRows.loadError")}
           {onRetryExternalObjects ? (
             <>
               {" "}
@@ -186,7 +189,7 @@ export function ExternalObjectRows({
                 className="text-primary underline-offset-2 hover:underline"
                 onClick={onRetryExternalObjects}
               >
-                Retry
+                {t("issues.externalObjectRows.retry")}
               </button>
             </>
           ) : null}
@@ -197,7 +200,7 @@ export function ExternalObjectRows({
 
   if (externalObjectsLoading) {
     return (
-      <PropertyRow label="External objects">
+      <PropertyRow label={t("issues.externalObjectRows.externalObjects")}>
         <span className="h-4 w-24 animate-pulse rounded bg-muted/40" />
       </PropertyRow>
     );
@@ -226,7 +229,7 @@ export function ExternalObjectRows({
           );
         })}
       {expanded || hiddenExternalObjectCount > 0 ? (
-        <PropertyRow label="References">
+        <PropertyRow label={t("issues.externalObjectRows.references")}>
           <ExpandRelationListButton
             hiddenCount={hiddenExternalObjectCount}
             expanded={expanded}

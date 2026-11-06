@@ -59,6 +59,7 @@ import { companySkillsApi } from "@/api/companySkills";
 import { ApiError } from "@/api/client";
 import { issuesApi } from "@/api/issues";
 import { queryKeys } from "@/lib/queryKeys";
+import { t, useTranslation } from "@/i18n";
 import { copyTextToClipboard } from "@/lib/clipboard";
 import { useCopyToast } from "@/lib/use-copy-action";
 import { skillStudioNewRoute, skillStudioRoute } from "@/lib/company-skill-routes";
@@ -275,6 +276,7 @@ function useIsMobile() {
 // ---------------------------------------------------------------------------
 
 export function SkillStudio() {
+  const { t } = useTranslation();
   const { skillId = "" } = useParams<{ skillId: string }>();
   const location = useLocation();
   const [searchParams] = useSearchParams();
@@ -373,7 +375,7 @@ export function SkillStudio() {
       <QueryErrorState
         size="page"
         error={detailQuery.error}
-        action="load this skill"
+        action={t("errorActions.loadThisSkill")}
         onRetry={detailView.retry}
         retrying={detailView.isFetching}
       />
@@ -831,13 +833,13 @@ function StudioLanding({
           <div className="mx-auto w-full max-w-3xl space-y-8 px-4 py-8">
             {visited.length > 0 ? (
               <StudioLandingSection
-                title="Recently visited"
+                title={t('skills.studio.recentlyVisited', { defaultValue: 'Recently visited' })}
                 skills={visited}
                 onSelectSkill={onSelectSkill}
               />
             ) : null}
             <StudioLandingSection
-              title="Recently updated"
+              title={t('skills.studio.recentlyUpdated', { defaultValue: 'Recently updated' })}
               skills={updated}
               onSelectSkill={onSelectSkill}
             />
@@ -3555,7 +3557,7 @@ function VersionHistorySheet({
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent side="left" className="w-full sm:max-w-(--sz-560px)">
         <SheetHeader>
-          <SheetTitle>Version history</SheetTitle>
+          <SheetTitle>{t('skills.studio.versionHistory', { defaultValue: 'Version history' })}</SheetTitle>
         </SheetHeader>
         <div className="mt-3 space-y-2 overflow-auto">
           {versionsQuery.isLoading ? (

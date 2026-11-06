@@ -9,8 +9,10 @@ import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { SidePanelFrame, SidePanelWindowControls } from "@/components/side-panel";
 import { useDesignSandbox } from "@/context/DesignSandboxContext";
+import { useTranslation } from "@/i18n";
 
 export function PropertiesPanel({ taskDetailLayout = false }: { taskDetailLayout?: boolean }) {
+  const { t } = useTranslation();
   const {
     panelContent,
     panelContentMode,
@@ -38,7 +40,7 @@ export function PropertiesPanel({ taskDetailLayout = false }: { taskDetailLayout
       >
         <div className="w-80 flex-1 flex flex-col min-w-(--sz-320px) min-h-0">
           <div className="flex items-center justify-between px-4 py-2 border-b border-border">
-            <span className="text-sm font-medium">Properties</span>
+            <span className="text-sm font-medium">{t("issues.PropertiesPanel.properties")}</span>
             <Button variant="ghost" size="icon-xs" onClick={() => setPanelVisible(false)}>
               <X className="h-4 w-4" />
             </Button>
@@ -184,6 +186,7 @@ function ResizablePropertiesPanel({
   maximizeRequested,
   clearMaximizeRequest,
 }: ResizablePropertiesPanelProps) {
+  const { t } = useTranslation();
   const productionPaneWidth = taskDetailLayout
     ? TASK_DETAIL_DEFAULT_PANE_WIDTH
     : DEFAULT_PANE_WIDTH;
@@ -407,7 +410,7 @@ function ResizablePropertiesPanel({
           <div
             role="separator"
             aria-orientation="vertical"
-            aria-label="Resize panel"
+            aria-label={t("issues.ResizablePropertiesPanel.resizePanel")}
             data-dragging={dragging ? "" : undefined}
             className="pane-resize-handle group absolute inset-y-0 z-10 max-w-full cursor-col-resize touch-none"
             style={{ left: -4, width: 8 }}

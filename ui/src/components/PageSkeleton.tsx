@@ -1,4 +1,5 @@
 import { Skeleton } from "@/components/ui/skeleton";
+import { useTranslation } from "@/i18n";
 
 interface PageSkeletonProps {
   collectionHeading?: "date" | "group" | null;
@@ -14,6 +15,7 @@ interface PageSkeletonProps {
 }
 
 export function PageSkeleton({ variant = "list", collectionHeading }: PageSkeletonProps) {
+  const { t } = useTranslation();
   if (variant === "dashboard") {
     return (
       <div className="space-y-6">
@@ -114,7 +116,7 @@ export function PageSkeleton({ variant = "list", collectionHeading }: PageSkelet
 
   if (variant === "issues-list" || variant === "inbox") {
     return (
-      <div role="status" aria-label="Loading tasks" className="-mx-2 sm:mx-0">
+      <div role="status" aria-label={t("common.pageSkeleton.loadingTasks")} className="-mx-2 sm:mx-0">
         {collectionHeading ? (
           <div aria-hidden="true" className={collectionHeading === "date"
             ? "flex items-center justify-center py-1.5 text-(length:--text-nano)"

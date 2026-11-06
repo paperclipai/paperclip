@@ -1,4 +1,5 @@
 import type { CompanySkillVersionSummary } from "@paperclipai/shared";
+import { t } from "@/i18n";
 import { Badge } from "@/components/ui/badge";
 import {
   Select,
@@ -12,6 +13,7 @@ import {
 export const RELEASE_DEFAULT_VALUE = "default";
 
 const DEFAULT_LABEL = "Default — current (recommended)";
+const defaultLabelText = () => t("agents.skillsTab.defaultRelease", { defaultValue: DEFAULT_LABEL });
 
 /**
  * Render a bundled release's calendar date. Plain `YYYY-MM-DD` strings (like the
@@ -39,7 +41,7 @@ export function releaseName(release: CompanySkillVersionSummary): string {
 export function releaseOptionLabel(release: CompanySkillVersionSummary): string {
   const name = releaseName(release);
   const date = formatReleaseDate(release.releasedAt);
-  return date ? `${name} · released ${date}` : name;
+  return date ? `${name} · ${t("agents.skillsTab.releasedAt", { date, defaultValue: `released ${date}` })}` : name;
 }
 
 /** Compact badge label for a pinned release, e.g. `V7`. */
@@ -71,7 +73,7 @@ export function AgentSkillReleasePicker({
   const selected = value ? releases.find((release) => release.id === value) ?? null : null;
   // Closed trigger shows the release name only; the `· released <date>` suffix
   // lives in the open menu, where dates are meaningful for comparing options.
-  const triggerLabel = selected ? releaseName(selected) : DEFAULT_LABEL;
+  const triggerLabel = selected ? releaseName(selected) : defaultLabelText();
 
   return (
     <Select
@@ -82,18 +84,18 @@ export function AgentSkillReleasePicker({
       <SelectTrigger
         size="sm"
         className="w-full max-w-(--sz-16rem) sm:w-(--sz-16rem)"
-        aria-label="Skill release"
+        aria-label={t("agents.skillsTab.releaseAria", { defaultValue: "Skill release" })}
       >
-        <SelectValue placeholder={DEFAULT_LABEL}>{triggerLabel}</SelectValue>
+        <SelectValue placeholder={defaultLabelText()}>{triggerLabel}</SelectValue>
       </SelectTrigger>
       <SelectContent align="end" className="max-w-(--sz-20rem)">
-        <SelectItem value={RELEASE_DEFAULT_VALUE}>{DEFAULT_LABEL}</SelectItem>
+        <SelectItem value={RELEASE_DEFAULT_VALUE}>{defaultLabelText()}</SelectItem>
         {releases.map((release) => (
           <SelectItem key={release.id} value={release.id}>
             <span className="flex items-center gap-2">
               <span className="truncate">{releaseOptionLabel(release)}</span>
               <Badge variant="secondary" className="shrink-0 text-(length:--text-nano)">
-                Beta
+                {t("agents.skillsTab.beta", { defaultValue: "Beta" })}
               </Badge>
             </span>
           </SelectItem>

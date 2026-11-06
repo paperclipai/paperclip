@@ -10,6 +10,7 @@ import { StatusIcon } from "@/components/StatusIcon";
 import { CoordinatorRelativeTime } from "./CoordinatorRelativeTime";
 import { useCoordinatorWorkspaceEnabled } from "@/hooks/useCoordinatorWorkspaceEnabled";
 import { taskStatusIconProps } from "@/lib/task-status-presentation";
+import { useTranslation } from "@/i18n";
 
 // Presentation-only memory. It contains no task text or authority, and prevents
 // revisiting a conversation from replaying its task-creation celebration.
@@ -126,11 +127,12 @@ export function CoordinatorCreatedTaskLink({ task, createdAt }: {
   task: Pick<ConversationTaskHandoff, "issueId" | "identifier" | "title"> & { status?: ConversationTaskHandoff["status"] }
     & Partial<Pick<IssueSummary, "displayStatus" | "externalConversationState" | "blockerAttention">>;
 }) {
+  const { t } = useTranslation();
   return <Link to={`/issues/${task.identifier ?? task.issueId}`} className="coordinator-created-task">
-    {task.status ? <StatusIcon {...taskStatusIconProps({ ...task, status: task.status })} size="lg" /> : <FileCheck2 className="size-5 shrink-0 text-muted-foreground" aria-label="Task created" />}
+    {task.status ? <StatusIcon {...taskStatusIconProps({ ...task, status: task.status })} size="lg" /> : <FileCheck2 className="size-5 shrink-0 text-muted-foreground" aria-label={t("issues.coordinatorCreatedTaskLink.taskCreated")} />}
     <span className="min-w-0 flex-1">
       <span className="block truncate text-sm font-medium">{task.title}</span>
-      <span className="block truncate text-xs text-muted-foreground"><span className="font-mono">{task.identifier ?? task.issueId}</span> · Created</span>
+      <span className="block truncate text-xs text-muted-foreground"><span className="font-mono">{task.identifier ?? task.issueId}</span> · {t("issues.coordinatorCreatedTaskLink.created")}</span>
     </span>
     {createdAt ? <CoordinatorRelativeTime value={createdAt} className="shrink-0 text-xs text-muted-foreground" /> : null}
     <ArrowUpRight className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
@@ -138,6 +140,7 @@ export function CoordinatorCreatedTaskLink({ task, createdAt }: {
 }
 
 function CreatedTaskLinks({ interaction }: { interaction: SuggestTasksInteraction }) {
+  const { t } = useTranslation();
   const { userId } = useCoordinatorWorkspaceEnabled();
   const tasks = interaction.result?.createdTasks ?? [];
   const ids = tasks.map(task => task.issueId).sort();
@@ -146,14 +149,14 @@ function CreatedTaskLinks({ interaction }: { interaction: SuggestTasksInteractio
     queryFn: ({ signal }) => issuesApi.summaries(interaction.companyId, ids, { signal }),
     enabled: ids.length > 0,
     });
-  if (tasks.length === 0) return <p className="p-4 text-sm text-muted-foreground">No tasks were created.</p>;
+  if (tasks.length === 0) return <p className="p-4 text-sm text-muted-foreground">{t("issues.createdTaskLinks.noTasks")}</p>;
   return <div className="divide-y divide-border">
     {tasks.map(task => {
       const summary = query.data?.find(candidate => candidate.id === task.issueId);
       return <CoordinatorCreatedTaskLink key={task.issueId} createdAt={interaction.resolvedAt} task={{
         issueId: task.issueId,
         identifier: summary?.identifier ?? task.identifier ?? null,
-        title: summary?.title ?? task.title ?? "Task created",
+        title: summary?.title ?? task.title ?? t("issues.createdTaskLinks.taskCreated"),
         status: summary?.status,
         displayStatus: summary?.displayStatus,
         externalConversationState: summary?.externalConversationState,

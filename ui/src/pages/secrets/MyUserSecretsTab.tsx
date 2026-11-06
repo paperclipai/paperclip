@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useTranslation } from "@/i18n";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { CompanySecret } from "@paperclipai/shared";
 import { KeyRound, Trash2, UserRound } from "lucide-react";
@@ -26,6 +27,7 @@ import { describeError } from "@/api/errors";
  * "User secret definitions" tab.
  */
 export function MyUserSecretsTab({ companyId }: { companyId: string }) {
+  const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { pushToast } = useToastActions();
   const [dialogFor, setDialogFor] = useState<MyUserSecretEntry | null>(null);
@@ -60,13 +62,11 @@ export function MyUserSecretsTab({ companyId }: { companyId: string }) {
       <div className="flex items-start gap-2 rounded-md border border-violet-500/30 bg-violet-500/5 px-4 py-3 text-xs text-violet-800 dark:text-violet-200">
         <UserRound className="h-4 w-4 mt-0.5 shrink-0" />
         <p>
-          These are credentials only you provide. Each value is yours alone — used when you are the
-          user responsible for a run — and is never shown back to anyone, including admins.
+          {t("secrets.userSecrets.infoBanner")}
           {missingCount > 0 ? (
             <span className="font-medium">
               {" "}
-              {missingCount} required secret{missingCount === 1 ? " still needs" : "s still need"} your
-              value.
+              {t("secrets.userSecrets.missingRequired", { count: missingCount })}
             </span>
           ) : null}
         </p>
@@ -77,7 +77,7 @@ export function MyUserSecretsTab({ companyId }: { companyId: string }) {
           <div className="py-4">
             <QueryErrorState
               error={mySecretsQuery.error}
-              action="load your secrets"
+              action={t("secrets.actions.loadSecrets")}
               onRetry={mySecretsView.retry}
               retrying={mySecretsView.isFetching}
             />
@@ -85,7 +85,7 @@ export function MyUserSecretsTab({ companyId }: { companyId: string }) {
         ) : entries.length === 0 && !mySecretsQuery.isPending && mySecretsView.kind !== "reconnecting" ? (
           <EmptyState
             icon={KeyRound}
-            message="No user secrets are defined for this organization yet. An admin defines which credentials each member supplies."
+            message={t("secrets.userSecrets.emptyState")}
           />
         ) : (
           <ul className="space-y-2">

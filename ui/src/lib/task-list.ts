@@ -1,17 +1,32 @@
 import { readIssueSortParams, type IssueSort, type IssueSortField } from "./issue-sort";
+import { t } from "@/i18n";
 
 /** Ordered columns and token references shared by the proposed header and rows. */
 export const taskListColumns = [
-  { id: "task", label: "Task", width: "var(--task-list-column-task)" },
-  { id: "taskId", label: "Task ID", width: "var(--task-list-column-task-id)" },
-  { id: "createdBy", label: "Created by", width: "var(--task-list-column-created-by)" },
-  { id: "assignee", label: "Assignee", width: "var(--task-list-column-assignee)" },
-  { id: "project", label: "Project", width: "var(--task-list-column-project)" },
-  { id: "parentTask", label: "Parent Task", width: "var(--task-list-column-parent)" },
-  { id: "tags", label: "Tags", width: "var(--task-list-column-tags)" },
-  { id: "worktree", label: "Worktree", width: "var(--task-list-column-worktree)" },
-  { id: "lastUpdated", label: "Last updated", width: "var(--task-list-column-updated)" },
+  { id: "task", width: "var(--task-list-column-task)" },
+  { id: "taskId", width: "var(--task-list-column-task-id)" },
+  { id: "createdBy", width: "var(--task-list-column-created-by)" },
+  { id: "assignee", width: "var(--task-list-column-assignee)" },
+  { id: "project", width: "var(--task-list-column-project)" },
+  { id: "parentTask", width: "var(--task-list-column-parent)" },
+  { id: "tags", width: "var(--task-list-column-tags)" },
+  { id: "worktree", width: "var(--task-list-column-worktree)" },
+  { id: "lastUpdated", width: "var(--task-list-column-updated)" },
 ] as const;
+
+export function taskListColumnLabels(): Record<TaskListColumnId, string> {
+  return {
+    task: t("issues.taskListColumns.task"),
+    taskId: t("issues.taskListColumns.taskId"),
+    createdBy: t("issues.taskListColumns.createdBy"),
+    assignee: t("issues.taskListColumns.assignee"),
+    project: t("issues.taskListColumns.project"),
+    parentTask: t("issues.taskListColumns.parentTask"),
+    tags: t("issues.taskListColumns.tags"),
+    worktree: t("issues.taskListColumns.worktree"),
+    lastUpdated: t("issues.taskListColumns.lastUpdated"),
+  };
+}
 
 export type TaskListColumnId = (typeof taskListColumns)[number]["id"];
 export type TaskListSort<Column extends string = TaskListColumnId> = { column: Column; direction: "ascending" | "descending" };

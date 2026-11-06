@@ -2,6 +2,7 @@ import type { SecretStatus, UserSecretCoverageSummary } from "@paperclipai/share
 import { UserRound } from "lucide-react";
 import { cn } from "../../lib/utils";
 import { Badge } from "@/components/ui/badge";
+import { t } from "@/i18n";
 
 /**
  * User secrets are visually distinct from company secrets via a violet accent
@@ -13,7 +14,7 @@ export const USER_SECRET_ACCENT_BORDER = "border-violet-500/30";
 export const USER_SECRET_ACCENT_BG = "bg-violet-500/10";
 
 /** Small pill used to mark user-scoped rows and headers. */
-export function UserSecretChip({ className, label = "User secret" }: { className?: string; label?: string }) {
+export function UserSecretChip({ className, label }: { className?: string; label?: string }) {
   return (
     <Badge variant="outline"
       className={cn(

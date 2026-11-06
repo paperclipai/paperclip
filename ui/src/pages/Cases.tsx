@@ -1,4 +1,5 @@
 import { useQueryView } from "@/components/QueryView";
+import { useTranslation } from "@/i18n";
 import { useEffect, useLayoutEffect, useRef } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { FolderOpen, Search } from "lucide-react";
@@ -32,14 +33,16 @@ function CaseFilter({ label, value, options, onChange, disabled }: {
   onChange: (value: string) => void;
   disabled?: boolean;
 }) {
+  const { t } = useTranslation();
   return <div className="space-y-1">
     <span className="text-xs text-muted-foreground">{label}</span>
-    <SelectPopover aria-label={`Filter by ${label.toLowerCase()}`} value={value}
+    <SelectPopover aria-label={t("cases.filters.filterBy", { name: label.toLowerCase() })} value={value}
       options={options} onValueChange={onChange} disabled={disabled} className="text-sm data-[size=default]:h-9" />
   </div>;
 }
 
 export function Cases() {
+  const { t } = useTranslation();
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const [params, setParams] = useSearchParams();
@@ -69,7 +72,7 @@ export function Cases() {
     ...(view.groupBy !== "none" ? { groupBy: view.groupBy } : {}),
   };
 
-  useEffect(() => setBreadcrumbs([{ label: "Cases" }]), [setBreadcrumbs]);
+  useEffect(() => setBreadcrumbs([{ label: t("cases.title") }]), [setBreadcrumbs, t]);
 
   const casesQuery = useQuery({
     queryKey: [...queryKeys.cases.list(selectedCompanyId ?? ""), filters],
@@ -100,7 +103,7 @@ export function Cases() {
     const key = view.groupBy === "status" ? record.status : view.groupBy === "type" ? record.caseType
       : view.groupBy === "project" ? record.projectId ?? "none" : ALL;
     const label = view.groupBy === "status" ? CASE_STATUS_LABELS[record.status]
-      : view.groupBy === "project" ? record.projectId ? projectNames.get(record.projectId) ?? "Project unavailable" : "No project" : key;
+      : view.groupBy === "project" ? record.projectId ? projectNames.get(record.projectId) ?? t("cases.list.projectUnavailable") : t("cases.list.noProject") : key;
     if (!groups.has(key)) groups.set(key, { label, records: [] });
     groups.get(key)!.records.push(record);
   }
@@ -137,21 +140,25 @@ export function Cases() {
   };
   const clearFilters = () => setView({ q: "", status: "", type: "", project: "" });
 
-  if (!selectedCompanyId) return <EmptyState icon={FolderOpen} message="Select a company to view cases." />;
+  if (!selectedCompanyId) return <EmptyState icon={FolderOpen} message={t("cases.empty.selectCompany")} />;
 
   return (
     <div className="mx-auto max-w-6xl space-y-4" data-testid="case-pages">
-      <CollectionToolbar ariaLabel="Case controls" search={<div className="flex min-w-0 items-center gap-3">
+      <CollectionToolbar ariaLabel={t("cases.controls.ariaLabel")} search={<div className="flex min-w-0 items-center gap-3">
         <div className="relative min-w-0 flex-1 sm:max-w-xs">
           <Search aria-hidden className="pointer-events-none absolute left-2 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
-          <Input aria-label="Search cases" placeholder="Search cases…" value={query}
+          <Input aria-label={t("cases.controls.searchAriaLabel")} placeholder={t("cases.controls.searchPlaceholder")} value={query}
             data-page-search-target="true" onChange={event => setFilter("q", event.target.value)} className="h-8 pl-8" />
         </div>
         <p role="status" className="whitespace-nowrap text-xs text-muted-foreground">
-          {casesWaiting ? "Loading cases…" : casesQuery.isFetching ? "Updating cases…"
+          {casesWaiting ? t("cases.status.loading") : casesQuery.isFetching ? t("cases.status.updating")
             : (casesQueryView.kind === "error") ? ""
-              : page > 1 && records.length > 0 ? `${offset + 1}–${offset + records.length} cases`
-                : `${records.length}${hasNext ? "+" : ""} ${records.length === 1 && !hasNext ? "case" : "cases"}`}
+              : page > 1 && records.length > 0 ? t("cases.status.range", { start: offset + 1, end: offset + records.length })
+                : hasNext
+                  ? t("cases.status.count_multiple_plus", { count: records.length })
+                  : records.length === 1
+                    ? t("cases.status.count_single", { count: records.length })
+                    : t("cases.status.count_multiple", { count: records.length })}
         </p>
       </div>} controls={<CaseListControls activeFilterCount={activeFilterCount} columns={view.columns}
         onColumnsChange={columns => setView({ columns: columns.join(",") === DEFAULT_CASE_COLUMNS.join(",") ? "" : columns.join(",") || "none" }, false)}
@@ -159,45 +166,45 @@ export function Cases() {
         onSortChange={(field, dir) => setView({ sort: field === "updated" ? "" : field, dir: dir === "desc" ? "" : dir })}
         groupBy={view.groupBy} onGroupChange={group => setView({ group: group === "none" ? "" : group })}
         filters={<>
-        <CaseFilter label="Status" value={status} onChange={value => setFilter("status", value)} options={[
-          { value: ALL, label: "All statuses" },
+        <CaseFilter label={t("common.status")} value={status} onChange={value => setFilter("status", value)} options={[
+          { value: ALL, label: t("cases.filters.allStatuses") },
           ...CASE_STATUSES.map(value => ({ value, label: CASE_STATUS_LABELS[value] })),
         ]} />
-        <CaseFilter label="Type" value={type} disabled={typesQuery.isPending || (typesQueryView.kind === "error")}
+        <CaseFilter label={t("common.type")} value={type} disabled={typesQuery.isPending || (typesQueryView.kind === "error")}
           onChange={value => setFilter("type", value)} options={[
-            { value: ALL, label: "All types" },
+            { value: ALL, label: t("cases.filters.allTypes") },
             ...typeOptions.map(value => ({ value, label: value })),
           ]} />
-        <CaseFilter label="Project" value={project} disabled={projectsQuery.isPending || (projectsQueryView.kind === "error")}
+        <CaseFilter label={t("cases.filters.project")} value={project} disabled={projectsQuery.isPending || (projectsQueryView.kind === "error")}
           onChange={value => setFilter("project", value)} options={[
-            { value: ALL, label: "All projects" },
-            { value: "none", label: "No project" },
+            { value: ALL, label: t("cases.filters.allProjects") },
+            { value: "none", label: t("cases.filters.noProject") },
             ...(projectsQuery.data ?? []).map(item => ({ value: item.id, label: item.name })),
             ...(project !== ALL && project !== "none" && !projectNames.has(project)
-              ? [{ value: project, label: "Selected project" }] : []),
+              ? [{ value: project, label: t("cases.filters.selectedProject") }] : []),
           ]} />
         </>} />}
-        feedback={hasFilters ? <Button variant="ghost" size="sm" onClick={clearFilters}>Clear filters</Button> : undefined} />
+        feedback={hasFilters ? <Button variant="ghost" size="sm" onClick={clearFilters}>{t("cases.controls.clearFilters")}</Button> : undefined} />
 
       {(typesQueryView.kind === "error") || (projectsQueryView.kind === "error") ? <div role="alert" className="flex flex-wrap items-center gap-3 text-sm">
-        <p>Some case filters couldn’t be loaded.</p>
+        <p>{t("cases.filters.loadError")}</p>
         <Button variant="ghost" size="sm" onClick={() => {
           if ((typesQueryView.kind === "error")) void typesQuery.refetch();
           if ((projectsQueryView.kind === "error")) void projectsQuery.refetch();
-        }}>Retry filters</Button>
+        }}>{t("cases.filters.retry")}</Button>
       </div> : null}
 
       {casesWaiting ? <div aria-hidden="true" className="space-y-2">
         {Array.from({ length: 6 }, (_, index) => <Skeleton key={index} className="h-16 w-full rounded-none" />)}
       </div> : (casesQueryView.kind === "error") ? <div role="alert" className="flex flex-wrap items-center gap-3 py-6 text-sm">
-        <p>Cases couldn’t be loaded.</p>
-        <Button variant="outline" size="sm" onClick={() => void casesQuery.refetch()}>Try again</Button>
+        <p>{t("cases.list.loadError")}</p>
+        <Button variant="outline" size="sm" onClick={() => void casesQuery.refetch()}>{t("cases.list.tryAgain")}</Button>
       </div> : records.length === 0 ? (
         <EmptyState icon={hasFilters ? Search : FolderOpen}
-          message={page > 1 ? "No cases on this page" : hasFilters ? "No cases match these filters" : "No cases yet"}
-          action={page > 1 ? "First page" : hasFilters ? "Clear filters" : undefined} hideActionIcon
+          message={page > 1 ? t("cases.empty.noCasesPage") : hasFilters ? t("cases.empty.noCasesFilter") : t("cases.empty.noCasesYet")}
+          action={page > 1 ? t("cases.empty.firstPage") : hasFilters ? t("cases.empty.clearFilters") : undefined} hideActionIcon
           onAction={() => page > 1 ? setPage(1) : clearFilters()} />
-      ) : <section aria-label="Case list" aria-busy={casesQuery.isFetching} inert={casesQuery.isPlaceholderData} className="border-t border-border">
+      ) : <section aria-label={t("cases.list.ariaLabel")} aria-busy={casesQuery.isFetching} inert={casesQuery.isPlaceholderData} className="border-t border-border">
         {[...groups].map(([key, group]) => <div key={key}>
           {view.groupBy !== "none" && <IssueGroupHeader label={group.label} className="border-b border-border px-3 pt-4" />}
           {group.records.map(record => <CaseListRow key={record.id} caseData={record} columns={view.columns}
@@ -207,8 +214,8 @@ export function Cases() {
       </section>}
 
       {page > 1 || hasNext ? <nav aria-label="Case list pages" className="flex items-center justify-end gap-2">
-        <Button variant="outline" size="sm" disabled={page === 1 || casesQuery.isFetching} onClick={() => setPage(page - 1)}>Previous</Button>
-        <Button variant="outline" size="sm" disabled={!hasNext || casesQuery.isFetching} onClick={() => setPage(page + 1)}>Next</Button>
+        <Button variant="outline" size="sm" disabled={page === 1 || casesQuery.isFetching} onClick={() => setPage(page - 1)}>{t("common.previous")}</Button>
+        <Button variant="outline" size="sm" disabled={!hasNext || casesQuery.isFetching} onClick={() => setPage(page + 1)}>{t("common.next")}</Button>
       </nav> : null}
     </div>
   );

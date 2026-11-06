@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import { quotaUnavailableMessage } from "@/lib/quota-refresh";
 import type { QuotaWindow } from "@paperclipai/shared";
 import { cn, quotaSourceDisplayName } from "@/lib/utils";
@@ -38,7 +39,7 @@ function detailText(window: QuotaWindow): string | null {
     minute: "2-digit",
     timeZoneName: "short",
   });
-  return `Resets ${formatted}`;
+  return t("settings.CodexSubscriptionPanel.resets", { when: formatted });
 }
 
 function fillClass(usedPercent: number | null): string {
@@ -58,6 +59,7 @@ export function CodexSubscriptionPanel({
   source = null,
   error = null,
 }: CodexSubscriptionPanelProps) {
+  const { t } = useTranslation();
   const ordered = orderedWindows(windows);
   const accountWindows = ordered.filter((window) => !isModelSpecific(window.label));
   const modelWindows = ordered.filter((window) => isModelSpecific(window.label));
@@ -67,10 +69,10 @@ export function CodexSubscriptionPanel({
       <div className="flex items-start justify-between gap-3 border-b border-border pb-3">
         <div className="min-w-0">
           <div className="text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-caps) text-muted-foreground">
-            Codex subscription
+            {t("settings.CodexSubscriptionPanel.title")}
           </div>
           <div className="mt-1 text-sm text-muted-foreground">
-            Quota from the Codex subscription connected to this server.
+            {t("settings.CodexSubscriptionPanel.description")}
           </div>
         </div>
         {source ? (
@@ -89,7 +91,7 @@ export function CodexSubscriptionPanel({
       <div className="mt-4 space-y-5">
         <div className="space-y-3">
           <div className="text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-caps) text-muted-foreground">
-            Account windows
+            {t("settings.CodexSubscriptionPanel.accountWindows")}
           </div>
           <div className="space-y-3">
             {accountWindows.map((window) => (
@@ -101,7 +103,7 @@ export function CodexSubscriptionPanel({
         {modelWindows.length > 0 ? (
           <div className="space-y-3">
             <div className="text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-caps) text-muted-foreground">
-              Model windows
+              {t("settings.CodexSubscriptionPanel.modelWindows")}
             </div>
             <div className="space-y-3">
               {modelWindows.map((window) => (
@@ -116,6 +118,7 @@ export function CodexSubscriptionPanel({
 }
 
 function QuotaWindowRow({ window }: { window: QuotaWindow }) {
+  const { t } = useTranslation();
   const detail = detailText(window);
   if (window.usedPercent == null) {
     return (
@@ -143,7 +146,7 @@ function QuotaWindowRow({ window }: { window: QuotaWindow }) {
           ) : null}
         </div>
         <div className="shrink-0 text-sm font-semibold tabular-nums text-foreground">
-          {window.usedPercent}% used
+          {t("settings.CodexSubscriptionPanel.usedPercent", { percent: window.usedPercent })}
         </div>
       </div>
 

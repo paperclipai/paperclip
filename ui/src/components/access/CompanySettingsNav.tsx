@@ -4,6 +4,7 @@ import { useCloudInstance } from "@/hooks/useCloudInstance";
 import { useHiddenSettings } from "@/hooks/useHiddenSettings";
 import { INSTANCE_SETTINGS_PATH_PREFIX } from "@/lib/instance-settings";
 import { useLocation, useNavigate } from "@/lib/router";
+import { useTranslation } from "@/i18n";
 
 const items = [
   { value: "general", label: "General", href: "/company/settings" },
@@ -21,6 +22,21 @@ const items = [
 ] as const;
 
 type CompanySettingsTab = (typeof items)[number]["value"];
+
+const navLabelKeys: Record<CompanySettingsTab, string> = {
+  general: "settings.nav.general",
+  export: "settings.nav.export",
+  import: "settings.nav.import",
+  members: "settings.nav.members",
+  secrets: "settings.nav.secrets",
+  "instance-profile": "settings.nav.profile",
+  "instance-environments": "settings.nav.environments",
+  connections: "settings.nav.connections",
+  "instance-access": "settings.nav.access",
+  "instance-experimental": "settings.nav.experimental",
+  "instance-plugins": "settings.nav.plugins",
+  "instance-adapters": "settings.nav.adapters",
+};
 
 /** Tab values suppressed when their page is operator-hidden. */
 const hiddenSettingKeyByTab: Partial<Record<CompanySettingsTab, string>> = {
@@ -98,6 +114,7 @@ export function getCompanySettingsTab(pathname: string): CompanySettingsTab {
 }
 
 export function CompanySettingsNav() {
+  const { t } = useTranslation();
   const location = useLocation();
   const navigate = useNavigate();
   const { hidden: hiddenSettings } = useHiddenSettings();
@@ -120,7 +137,10 @@ export function CompanySettingsNav() {
   return (
     <Tabs value={activeTab} onValueChange={handleTabChange}>
       <PageTabBar
-        items={visibleItems.map(({ value, label }) => ({ value, label }))}
+        items={visibleItems.map(({ value, label }) => ({
+          value,
+          label: t(navLabelKeys[value], { defaultValue: label }),
+        }))}
         value={activeTab}
         onValueChange={handleTabChange}
         align="start"

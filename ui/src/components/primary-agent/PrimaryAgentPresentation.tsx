@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
+import { useTranslation } from "@/i18n";
 
 /** Shared presentation for the application and the approved review stories. */
 export interface PrimaryAgentPresentation {
@@ -28,15 +29,16 @@ export function usePrimaryAgentPresentation(companyId?: string | null) {
 }
 
 export function PrimaryAgentIndicator({ agentId, companyId }: { agentId: string; companyId?: string }) {
+  const { t } = useTranslation();
   const primary = usePrimaryAgentPresentation(companyId);
   if (!primary || primary.loading || primary.primaryAgentId !== agentId) return null;
   return <Tooltip>
     <TooltipTrigger asChild>
-      <span role="img" aria-label="My primary agent" className="inline-flex shrink-0 text-primary">
+      <span role="img" aria-label={t("agents.PrimaryAgentIndicator.myPrimaryAgent")} className="inline-flex shrink-0 text-primary">
         <Crown aria-hidden="true" className="size-3.5" />
       </span>
     </TooltipTrigger>
-    <TooltipContent>My primary agent</TooltipContent>
+    <TooltipContent>{t("agents.PrimaryAgentIndicator.myPrimaryAgent")}</TooltipContent>
   </Tooltip>;
 }
 
@@ -64,6 +66,7 @@ export function PrimaryAgentCrownButton({ agent }: {
   const buttonRef = useRef<HTMLButtonElement>(null);
   const [tooltipOpen, setTooltipOpen] = useState(false);
   const quietTooltip = useRef(false);
+  const { t } = useTranslation();
   if (!primary || agent.status === "terminated" || agent.status === "pending_approval") return null;
   const selected = primary.primaryAgentId === agent.id;
   const previous = primary.primaryAgent?.id === primary.primaryAgentId ? primary.primaryAgent : null;
@@ -87,18 +90,18 @@ export function PrimaryAgentCrownButton({ agent }: {
   const control = primary.error ? (
     <Tooltip {...tooltip}>
       <TooltipTrigger asChild>
-        <Button type="button" variant="ghost" size="icon-sm" aria-label="Retry loading primary agent" onClick={primary.onRetry}
+        <Button type="button" variant="ghost" size="icon-sm" aria-label={t("agents.PrimaryAgentCrownButton.retryLoading")} onClick={primary.onRetry}
           onPointerMove={wakeTooltip} onBlur={wakeTooltip}
           className={cn(crownClass, "text-destructive")}>
           <Crown aria-hidden="true" className="size-5" />
         </Button>
       </TooltipTrigger>
-      <TooltipContent>Couldn't load your primary agent. Select to retry.</TooltipContent>
+      <TooltipContent>{t("agents.PrimaryAgentCrownButton.loadFailed")}</TooltipContent>
     </Tooltip>
   ) : selected && !loading ? (
     <Tooltip {...tooltip}>
       <TooltipTrigger asChild>
-        <span ref={filledRef} role="img" aria-label="My primary agent" tabIndex={-1} data-pop={pop?.timing}
+        <span ref={filledRef} role="img" aria-label={t("agents.PrimaryAgentCrownButton.myPrimaryAgent")} tabIndex={-1} data-pop={pop?.timing}
           onPointerMove={wakeTooltip} onBlur={wakeTooltip}
           onAnimationEnd={(event) => { if (event.animationName === "primary-crown-pop") setPop(null); }}
           className={cn(crownClass, "inline-flex size-9 shrink-0 items-center justify-center rounded-md text-primary outline-none focus-visible:ring-ring/50 focus-visible:ring-(length:--rad-3)")}>
@@ -109,18 +112,18 @@ export function PrimaryAgentCrownButton({ agent }: {
           ))}
         </span>
       </TooltipTrigger>
-      <TooltipContent>My primary agent</TooltipContent>
+      <TooltipContent>{t("agents.PrimaryAgentCrownButton.myPrimaryAgent")}</TooltipContent>
     </Tooltip>
   ) : (
     <Tooltip {...tooltip}>
       <TooltipTrigger asChild>
-        <Button ref={buttonRef} type="button" variant="ghost" size="icon-sm" aria-label="Set as my primary" disabled={busy} onClick={request}
+        <Button ref={buttonRef} type="button" variant="ghost" size="icon-sm" aria-label={t("agents.PrimaryAgentCrownButton.setAsPrimary")} disabled={busy} onClick={request}
           onPointerMove={wakeTooltip} onBlur={wakeTooltip}
           className={cn(crownClass, "text-muted-foreground/50 hover:text-foreground")}>
           <Crown aria-hidden="true" className="size-5" />
         </Button>
       </TooltipTrigger>
-      <TooltipContent>{loading ? "Loading your primary agent…" : "Set as my primary"}</TooltipContent>
+      <TooltipContent>{loading ? t("agents.PrimaryAgentCrownButton.loadingPrimary") : t("agents.PrimaryAgentCrownButton.setAsPrimary")}</TooltipContent>
     </Tooltip>
   );
 
@@ -135,30 +138,30 @@ export function PrimaryAgentCrownButton({ agent }: {
       }}>
         <div className="flex items-start justify-center gap-5 pt-2">
           <div className="flex min-w-0 flex-1 flex-col items-center gap-2 text-center">
-            <AgentAvatar agent={replacing} size={64} label={`${replacing.name} avatar`} />
+            <AgentAvatar agent={replacing} size={64} label={t("agents.PrimaryAgentCrownButton.avatarLabel", { name: replacing.name })} />
             <span className="max-w-full break-words text-sm font-medium">{replacing.name}</span>
           </div>
           <ArrowRight aria-hidden="true" className="mt-5 size-6 shrink-0 text-muted-foreground" />
           <div className="flex min-w-0 flex-1 flex-col items-center gap-2 text-center">
-            <AgentAvatar agent={agent} size={64} label={`${agent.name} avatar`}
+            <AgentAvatar agent={agent} size={64} label={t("agents.PrimaryAgentCrownButton.avatarLabel", { name: agent.name })}
               className="rounded-xl ring-1 ring-primary ring-offset-2 ring-offset-background" />
             <span className="flex max-w-full items-center justify-center gap-1.5 text-sm font-medium">
               <span className="min-w-0 break-words">{agent.name}</span>
-              <span role="img" aria-label="New primary agent" className="inline-flex shrink-0 text-primary">
+              <span role="img" aria-label={t("agents.PrimaryAgentCrownButton.newPrimary")} className="inline-flex shrink-0 text-primary">
                 <Crown aria-hidden="true" className="size-3.5" />
               </span>
             </span>
           </div>
         </div>
         <AlertDialogHeader>
-          <AlertDialogTitle>Change your primary agent?</AlertDialogTitle>
+          <AlertDialogTitle>{t("agents.PrimaryAgentCrownButton.changeTitle")}</AlertDialogTitle>
           <AlertDialogDescription className="break-words">
-            This will make {agent.name} your primary agent, do you want to do this?
+            {t("agents.PrimaryAgentCrownButton.confirmDescription", { name: agent.name })}
           </AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter className="flex-row justify-between sm:justify-between">
-          <AlertDialogCancel>Cancel</AlertDialogCancel>
-          <AlertDialogAction disabled={busy} onClick={() => choose("after-dialog")}>Set as my primary</AlertDialogAction>
+          <AlertDialogCancel>{t("agents.PrimaryAgentCrownButton.cancel")}</AlertDialogCancel>
+          <AlertDialogAction disabled={busy} onClick={() => choose("after-dialog")}>{t("agents.PrimaryAgentCrownButton.setAsPrimary")}</AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>
     </AlertDialog> : null}

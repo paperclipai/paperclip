@@ -10,11 +10,13 @@ import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { SetupWizardFooter } from "@/components/SetupWizard";
+import { useTranslation } from "@/i18n";
 import type { OwnSlackAppSetup } from "./OwnSlackAppSetup";
 import { sanitizedSetupErrorMessage } from "../chat-setup-error";
 
 export function ManagedSlackSetup({ endpoint, disabled, saveDetails, onSaved, onBusy, onSaveExit, autoStart = false, reconnect = false }: ComponentProps<typeof OwnSlackAppSetup> & { autoStart?: boolean; reconnect?: boolean }) {
   const client = useQueryClient();
+  const { t } = useTranslation();
   const choices = useQuery({ queryKey: ["slack-managed-workspaces", endpoint.companyId], queryFn: () => chatEndpointsApi.slackSetupOptions(endpoint.companyId) });
   const choicesView = useQueryView(choices);
   const [selectedGrant, setSelectedGrant] = useState<string | null>(null);
@@ -116,30 +118,30 @@ export function ManagedSlackSetup({ endpoint, disabled, saveDetails, onSaved, on
     void run(connect);
   });
   const setupError = (code: string) => code === "slack_manifest_update_pending"
-    ? "Your app was created. Retry to finish its configuration."
-    : code === "slack_creation_uncertain" ? "Slack may have created your app. Check Slack app settings before trying again."
+    ? t("apps.ManagedSlackSetup.manifestPending")
+    : code === "slack_creation_uncertain" ? t("apps.ManagedSlackSetup.creationUncertain")
     : slackRegistrationErrorMessage(code);
-  const message = error ?? (endpoint.setup?.slackManagerError ? setupError(endpoint.setup.slackManagerError) : null) ?? ((choicesView.kind === "error") ? "Couldn't load your Slack workspaces. Try again." : registration?.errorCode ? setupError(registration.errorCode) : null);
+  const message = error ?? (endpoint.setup?.slackManagerError ? setupError(endpoint.setup.slackManagerError) : null) ?? ((choicesView.kind === "error") ? t("apps.ManagedSlackSetup.loadWorkspacesError") : registration?.errorCode ? setupError(registration.errorCode) : null);
   return <div className="space-y-5">
     {authorizationWindow.fallback}
     {message && <p role="alert" className="text-sm text-destructive">{message}</p>}
-    {busy || choices.isPending || creating ? <p role="status" className="flex items-center gap-2 text-sm text-muted-foreground"><Loader2 className="size-4 animate-spin" />{busy ? needsAuthorization ? "Opening Slack…" : "Connecting your agent…" : creating ? "Setting up your Slack app…" : "Loading Slack…"}</p>
-      : !choices.data?.managedAvailable ? <p className="text-sm">Managed Slack setup is unavailable. Try again later.</p>
+    {busy || choices.isPending || creating ? <p role="status" className="flex items-center gap-2 text-sm text-muted-foreground"><Loader2 className="size-4 animate-spin" />{busy ? needsAuthorization ? t("apps.ManagedSlackSetup.openingSlack") : t("apps.ManagedSlackSetup.connectingAgent") : creating ? t("apps.ManagedSlackSetup.settingUpApp") : t("apps.ManagedSlackSetup.loadingSlack")}</p>
+      : !choices.data?.managedAvailable ? <p className="text-sm">{t("apps.ManagedSlackSetup.unavailable")}</p>
       : reconnectWorkspace ? null : <>
-        {workspaces.length === 1 && <p className="text-sm">Add <strong>{endpoint.assignedAgentName}</strong> to <strong>{workspaces[0]!.workspaceName}</strong>.</p>}
+        {workspaces.length === 1 && <p className="text-sm">{t("apps.ManagedSlackSetup.addAgent")} <strong>{endpoint.assignedAgentName}</strong> {t("apps.ManagedSlackSetup.addTo")} <strong>{workspaces[0]!.workspaceName}</strong>.</p>}
         {workspaces.length > 1 && <Select value={grantId ?? ""} onValueChange={setSelectedGrant} disabled={busy || started}>
-          <SelectTrigger aria-label="Slack workspace"><SelectValue placeholder="Choose a Slack workspace" /></SelectTrigger>
+          <SelectTrigger aria-label={t("apps.ManagedSlackSetup.workspaceAria")}><SelectValue placeholder={t("apps.ManagedSlackSetup.choosePlaceholder")} /></SelectTrigger>
           <SelectContent>{workspaces.map(workspace => <SelectItem key={workspace.grantId} value={workspace.grantId}>{workspace.workspaceName}</SelectItem>)}</SelectContent>
         </Select>}
-        {!started && workspaces.length > 0 && <div><Button variant="link" className="h-auto p-0" disabled={busy} onClick={() => void run(authorize)}>Connect another Slack workspace</Button></div>}
+        {!started && workspaces.length > 0 && <div><Button variant="link" className="h-auto p-0" disabled={busy} onClick={() => void run(authorize)}>{t("apps.ManagedSlackSetup.connectAnother")}</Button></div>}
       </>}
     {uncertain && <div className="space-y-3 text-sm">
-      <a className="underline underline-offset-4" href={registration?.managementUrl ?? "https://api.slack.com/apps"} target="_blank" rel="noopener noreferrer">Open Slack app settings</a>
-      <label className="flex items-center gap-2"><Checkbox checked={confirmed} onCheckedChange={value => setConfirmed(value === true)} disabled={busy} />I checked Slack and no app was created. Create a new app.</label>
+      <a className="underline underline-offset-4" href={registration?.managementUrl ?? "https://api.slack.com/apps"} target="_blank" rel="noopener noreferrer">{t("apps.ManagedSlackSetup.openSettings")}</a>
+      <label className="flex items-center gap-2"><Checkbox checked={confirmed} onCheckedChange={value => setConfirmed(value === true)} disabled={busy} />{t("apps.ManagedSlackSetup.checkedNoApp")}</label>
     </div>}
     <SetupWizardFooter onSaveExit={onSaveExit} disabled={busy}>
-      {(choicesView.kind === "error") || !choices.isPending && !choices.data?.managedAvailable ? <Button disabled={busy || choices.isFetching} onClick={() => void choices.refetch()}>Retry</Button> : <Button disabled={busy || disabled || creating || choices.isPending || !choices.data?.managedAvailable || (workspaces.length > 1 && !grantId && !reconnectWorkspace) || (uncertain && !confirmed)} onClick={() => void run(connect)}>
-        {busy && <Loader2 className="size-4 animate-spin" />}{reconnectWorkspace ? "Reconnect Slack workspace" : registration?.appId ? "Continue in Slack" : "Continue"}
+      {(choicesView.kind === "error") || !choices.isPending && !choices.data?.managedAvailable ? <Button disabled={busy || choices.isFetching} onClick={() => void choices.refetch()}>{t("apps.ManagedSlackSetup.retry")}</Button> : <Button disabled={busy || disabled || creating || choices.isPending || !choices.data?.managedAvailable || (workspaces.length > 1 && !grantId && !reconnectWorkspace) || (uncertain && !confirmed)} onClick={() => void run(connect)}>
+        {busy && <Loader2 className="size-4 animate-spin" />}{reconnectWorkspace ? t("apps.ManagedSlackSetup.reconnectWorkspace") : registration?.appId ? t("apps.ManagedSlackSetup.continueInSlack") : t("apps.ManagedSlackSetup.continue")}
       </Button>}
     </SetupWizardFooter>
   </div>;

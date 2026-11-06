@@ -5,6 +5,7 @@ import { Bot, FileText, Hexagon, MessageSquare, Paperclip, Quote } from "lucide-
 import type { Agent, CompanySearchResult } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
 import { cn } from "@/lib/utils";
+import { t as translate, useTranslation } from "@/i18n";
 import { StatusIcon } from "../StatusIcon";
 import { Identity } from "../Identity";
 import { HighlightedText, type HighlightedTextProps } from "./HighlightedText";
@@ -12,18 +13,19 @@ import { taskStatusIconProps } from "@/lib/task-status-presentation";
 
 type SnippetStyle = {
   Icon: ComponentType<SVGProps<SVGSVGElement>>;
-  label: string;
+  labelKey: string;
 };
 
 const SNIPPET_STYLES: Record<string, SnippetStyle> = {
-  comment: { Icon: MessageSquare, label: "Comment" },
-  document: { Icon: FileText, label: "Doc" },
-  artifact: { Icon: Paperclip, label: "Artifact" },
-  description: { Icon: Quote, label: "Description" },
+  comment: { Icon: MessageSquare, labelKey: "search.searchResultRow.snippetComment" },
+  document: { Icon: FileText, labelKey: "search.searchResultRow.snippetDocument" },
+  artifact: { Icon: Paperclip, labelKey: "search.searchResultRow.snippetArtifact" },
+  description: { Icon: Quote, labelKey: "common.description" },
 };
 
-function snippetStyle(field: string, fallbackLabel: string): SnippetStyle {
-  return SNIPPET_STYLES[field] ?? { Icon: Quote, label: fallbackLabel };
+function snippetStyle(field: string, fallbackLabel: string): { Icon: SnippetStyle["Icon"]; label: string } {
+  const style = SNIPPET_STYLES[field];
+  return style ? { Icon: style.Icon, label: translate(style.labelKey) } : { Icon: Quote, label: fallbackLabel };
 }
 
 function formatRelativeTime(input: string | null): string {
@@ -32,19 +34,19 @@ function formatRelativeTime(input: string | null): string {
   if (Number.isNaN(value.getTime())) return "";
   const diffMs = Date.now() - value.getTime();
   const seconds = Math.round(diffMs / 1000);
-  if (seconds < 60) return "just now";
+  if (seconds < 60) return translate("search.searchResultRow.justNow");
   const minutes = Math.round(seconds / 60);
-  if (minutes < 60) return `${minutes}m`;
+  if (minutes < 60) return translate("search.searchResultRow.relMinutes", { n: minutes });
   const hours = Math.round(minutes / 60);
-  if (hours < 24) return `${hours}h`;
+  if (hours < 24) return translate("search.searchResultRow.relHours", { n: hours });
   const days = Math.round(hours / 24);
-  if (days < 7) return `${days}d`;
+  if (days < 7) return translate("search.searchResultRow.relDays", { n: days });
   const weeks = Math.round(days / 7);
-  if (weeks < 5) return `${weeks}w`;
+  if (weeks < 5) return translate("search.searchResultRow.relWeeks", { n: weeks });
   const months = Math.round(days / 30);
-  if (months < 12) return `${months}mo`;
+  if (months < 12) return translate("search.searchResultRow.relMonths", { n: months });
   const years = Math.round(days / 365);
-  return `${years}y`;
+  return translate("search.searchResultRow.relYears", { n: years });
 }
 
 export interface SearchResultRowProps {
@@ -63,6 +65,7 @@ function SearchResultRowImpl({
   isActive,
   className,
 }: SearchResultRowProps) {
+  const { t } = useTranslation();
   if (result.type === "agent") {
     return (
       <Link
@@ -80,7 +83,7 @@ function SearchResultRowImpl({
               text={result.snippets[0]?.text ?? result.snippet}
               highlights={result.snippets[0]?.highlights}
               field="agent"
-              fallbackLabel={result.sourceLabel ?? "Agent"}
+              fallbackLabel={result.sourceLabel ?? t("search.searchResultRow.agentFallback")}
             />
           ) : null}
         </div>
@@ -103,7 +106,7 @@ function SearchResultRowImpl({
               text={result.snippets[0]?.text ?? result.snippet}
               highlights={result.snippets[0]?.highlights}
               field="project"
-              fallbackLabel={result.sourceLabel ?? "Project"}
+              fallbackLabel={result.sourceLabel ?? t("search.searchResultRow.projectFallback")}
             />
           ) : null}
         </div>
@@ -135,7 +138,7 @@ function SearchResultRowImpl({
               text={result.snippets[0]?.text ?? result.snippet}
               highlights={result.snippets[0]?.highlights}
               field="artifact"
-              fallbackLabel={result.sourceLabel ?? "Artifact"}
+              fallbackLabel={result.sourceLabel ?? t("search.searchResultRow.artifactFallback")}
               multiline
             />
           ) : null}

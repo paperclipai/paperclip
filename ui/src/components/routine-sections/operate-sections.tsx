@@ -13,6 +13,7 @@ import { QueryErrorState, useQueryView } from "../QueryView";
 import { RoutineHistoryTab } from "../RoutineHistoryTab";
 import { RoutineActivityRow } from "../RoutineActivityRow";
 import { useRoutineDetail } from "./context";
+import { t } from "@/i18n";
 
 export function RunsSection() {
   const { routine, companyId, agents, projects, hasLiveRun, activeIssueId } = useRoutineDetail();
@@ -96,7 +97,7 @@ export function ActivitySection({
     return (
       <QueryErrorState
         error={error}
-        action="load routine activity"
+        action={t("errorActions.loadRoutineActivity")}
         onRetry={onRetry}
         retrying={retrying}
       />

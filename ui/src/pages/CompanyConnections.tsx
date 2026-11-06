@@ -6,24 +6,26 @@ import { DecisionModelSettingsSection } from "../components/decision-models/Deci
 import { FastResponseSettingsSection } from "../components/fast-responses/FastResponseSettings";
 import { useFastResponsesEnabled } from "../hooks/useFastResponsesEnabled";
 import { PromptInjectionPreventionSettingsSection } from "../components/prompt-injection-prevention/PromptInjectionPreventionSettings";
+import { useTranslation } from "@/i18n";
 
 export function CompanyConnections() {
+  const { t } = useTranslation();
   const { selectedCompany, selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const { enabled } = useFastResponsesEnabled();
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: selectedCompany?.name ?? "Company", href: "/dashboard" },
-      { label: "Settings", href: "/company/settings" },
-      { label: "Connections" },
+      { label: selectedCompany?.name ?? t("settings.company.companyFallback"), href: "/dashboard" },
+      { label: t("settings.breadcrumb"), href: "/company/settings" },
+      { label: t("settings.connections.title") },
     ]);
-  }, [setBreadcrumbs, selectedCompany?.name]);
+  }, [setBreadcrumbs, selectedCompany?.name, t]);
 
   if (!selectedCompanyId) {
     return (
       <div className="text-sm text-muted-foreground">
-        No organization selected. Select an organization from the switcher above.
+        {t("settings.company.noCompany")}
       </div>
     );
   }
@@ -32,7 +34,7 @@ export function CompanyConnections() {
     <div className="max-w-6xl space-y-8">
       <div className="flex items-center gap-2">
         <Link2 className="h-5 w-5 text-muted-foreground" />
-        <h1 className="text-lg font-semibold">Connections</h1>
+        <h1 className="text-lg font-semibold">{t("settings.connections.title")}</h1>
       </div>
       <DecisionModelSettingsSection key={selectedCompanyId} companyId={selectedCompanyId} />
       <div className="max-w-2xl border-t border-border pt-8">

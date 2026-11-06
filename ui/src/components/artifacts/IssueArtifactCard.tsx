@@ -1,3 +1,4 @@
+import { useTranslation } from "@/i18n";
 import { useContext, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
@@ -52,6 +53,7 @@ export interface IssueArtifactFileProps extends ArtifactIdentity {
 
 /** Shared by uploads and promoted uploads; both use the issue's existing gallery. */
 export function IssueArtifactFile(props: IssueArtifactFileProps) {
+  const { t } = useTranslation();
   const { metadata = null, attachmentId } = props;
   const openGallery = useContext(IssueGalleryContext);
   const openTextAttachment = useContext(TextAttachmentContext);
@@ -62,10 +64,10 @@ export function IssueArtifactFile(props: IssueArtifactFileProps) {
     <Button
       variant="outline"
       size="sm"
-      aria-label={`Open in tab: ${props.title}`}
+      aria-label={t("artifacts.IssueArtifactCard.openInTabAria", { title: props.title })}
       onClick={() => openTextAttachment(attachmentId, props.filename)}
     >
-      Open in tab
+      {t("artifacts.IssueArtifactCard.openInTab")}
     </Button>
   ) : null;
   const [galleryOpen, setGalleryOpen] = useState(false);
@@ -148,7 +150,7 @@ export function IssueArtifactFile(props: IssueArtifactFileProps) {
             {downloadPath ? (
               <Button asChild size="sm" variant="outline">
                 <a href={downloadPath} download={props.filename}>
-                  Download file
+                  {t("artifacts.IssueArtifactCard.downloadFile")}
                 </a>
               </Button>
             ) : null}
@@ -175,7 +177,7 @@ export function IssueArtifactFile(props: IssueArtifactFileProps) {
                 disabled={data.isFetching}
                 onClick={() => setCsvRequested(true)}
               >
-                {data.isFetching ? "Loading preview…" : "Preview data"}
+                {data.isFetching ? t("artifacts.IssueArtifactCard.loadingPreview") : t("artifacts.IssueArtifactCard.previewData")}
               </Button>
             ) : null}
           </>
@@ -184,10 +186,10 @@ export function IssueArtifactFile(props: IssueArtifactFileProps) {
       {csv && (tooLarge || dataView.kind === "error" || !localCsv) && (
         <div className="px-2 text-xs text-muted-foreground" role="status">
           {tooLarge
-            ? "CSV is too large to preview. Download the file to view it."
+            ? t("artifacts.IssueArtifactCard.csvTooLarge")
             : dataView.kind === "error"
-              ? <QueryErrorState size="inline" error={dataView.error} action="load the CSV preview" onRetry={dataView.retry} retrying={dataView.isFetching} />
-              : "CSV preview is unavailable. Download the file to view it."}
+              ? <QueryErrorState size="inline" error={dataView.error} action={t("errorActions.loadTheCSVPreview")} onRetry={dataView.retry} retrying={dataView.isFetching} />
+              : t("artifacts.IssueArtifactCard.csvUnavailable")}
         </div>
       )}
     </div>
@@ -201,6 +203,7 @@ export function IssueWorkProductArtifactCard({
   workProduct: IssueWorkProduct;
   author: string;
 }) {
+  const { t } = useTranslation();
   const m = wp.metadata;
   const href = artifactUrl(workProductHref(wp));
   const chip = stateChipFor(wp.type, wp.status, wp.reviewState);
@@ -211,7 +214,7 @@ export function IssueWorkProductArtifactCard({
     updatedAt: formatDateTime(wp.updatedAt),
     statusBadge:
       wp.healthStatus === "unhealthy" ? (
-        <Badge variant="destructive">Unhealthy</Badge>
+        <Badge variant="destructive">{t("artifacts.IssueArtifactCard.unhealthy")}</Badge>
       ) : chip ? (
         <Badge variant="outline">{chip.label}</Badge>
       ) : undefined,
