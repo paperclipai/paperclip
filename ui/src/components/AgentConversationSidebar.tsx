@@ -1,4 +1,4 @@
-import { useId, useRef, useState } from "react";
+import { useId, useMemo, useRef, useState } from "react";
 import { Plus, Search, Users, X } from "lucide-react";
 import type { Agent } from "@paperclipai/shared";
 import { AgentChatPicker } from "@/components/AgentChatPicker";
@@ -35,6 +35,7 @@ export function AgentConversationSidebar({ agents, existingChatAgentIds, availab
   const [search, setSearch] = useState(initialSearch);
   const searchRef = useRef<HTMLInputElement>(null);
   const headingId = useId();
+  const unreadIds = useMemo(() => new Set(unreadAgentIds), [unreadAgentIds]);
   const query = search.trim().toLocaleLowerCase();
   const visible = agents.filter(agent => `${agent.name} ${agent.title ?? ""} ${agent.role}`.toLocaleLowerCase().includes(query));
   function focusSearch() {
@@ -83,7 +84,7 @@ export function AgentConversationSidebar({ agents, existingChatAgentIds, availab
             <span className="truncate text-sm font-medium">{agent.name}</span>
             <span className="truncate text-xs text-muted-foreground">{agent.status === "terminated" ? "Terminated" : agent.status === "paused" ? "Paused" : previews[agent.id] ?? agent.title ?? "Start a conversation"}</span>
           </span>
-          {unreadAgentIds.includes(agent.id) && <span role="img" aria-label={`Unread messages from ${agent.name}`} className="size-2 shrink-0 rounded-full bg-primary" />}
+          {unreadIds.has(agent.id) && <span role="img" aria-label={`Unread messages from ${agent.name}`} className="size-2 shrink-0 rounded-full bg-primary" />}
         </Link>)}
       </nav> : !agents.length && (historyLoading || historyError) ? null : <div className="flex flex-col items-start gap-2 px-2 py-6">
         <p className="text-sm font-medium">{agents.length ? "No agents found" : "No chats yet"}</p>
@@ -98,6 +99,7 @@ export function AgentConversationSidebar({ agents, existingChatAgentIds, availab
       </Button>
     </div>
     <AgentChatPicker agents={availableAgents} open={pickerOpen} onOpenChange={setPickerOpen}
+      unreadAgentIds={unreadAgentIds}
       existingChatAgentIds={existingChatAgentIds ?? agents.map(agent => agent.id)} loading={loading} error={error} onRetry={onRetry}
       renderAgentIcon={agent => <AgentAvatar agent={agent} size={32} />}
       onSelect={async (agent, signal) => {

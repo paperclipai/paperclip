@@ -42,6 +42,38 @@ afterEach(async () => {
 });
 
 describe("AgentChatPicker", () => {
+  it("shows unread per agent through search and clears it when read state updates", async () => {
+    await render({ existingChatAgentIds: ["first", "second"], unreadAgentIds: ["second"] });
+    expect(options()[0].querySelector('[aria-label^="Unread messages"]')).toBeNull();
+    expect(options()[1].querySelector('[aria-label="Unread messages from Alex"]')?.textContent).toBe("Unread");
+    await search("designer");
+    expect(options()).toHaveLength(1);
+    expect(options()[0].textContent).toContain("Unread");
+    await render({ unreadAgentIds: [] });
+    expect(options()[0].textContent).not.toContain("Unread");
+    expect(options()[0].textContent).toContain("Open chat");
+  });
+
+  it("indexes unread and existing chat membership once for a large team", async () => {
+    const roster = Array.from({ length: 500 }, (_, index) => ({ ...agents[index % 2], id: `agent-${index}`, name: `Agent ${index}` }));
+    // Count element visits during index construction. A per-row scan fails
+    // immediately, without relying on machine-dependent timing thresholds.
+    let visits = 0;
+    const ids = roster.map(agent => agent.id);
+    const boundedIds = new Proxy(ids, { get(target, key, receiver) {
+      if (typeof key === "string" && /^\d+$/.test(key) && ++visits > ids.length * 2) throw new Error("Repeated chat membership scan");
+      return Reflect.get(target, key, receiver);
+    } });
+    await render({ agents: roster, existingChatAgentIds: boundedIds, unreadAgentIds: boundedIds });
+    expect(options()).toHaveLength(500);
+    expect(document.querySelectorAll('[aria-label^="Unread messages from"]')).toHaveLength(500);
+    expect(visits).toBe(1000);
+    await search("Agent 499");
+    expect(options().length).toBeLessThan(500);
+    expect(options().some(option => option.textContent?.includes("Agent 499"))).toBe(true);
+    expect(visits).toBe(1000);
+  });
+
   it("shows saved custom avatars and default avatars in agent choices", async () => {
     await render({ agents: [
       { ...agents[0], appearance: { ...appearanceForPalette("deep-tide"), customAvatarAssetId: "22222222-2222-4222-8222-222222222222" } },

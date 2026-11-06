@@ -1,4 +1,4 @@
-import { userEvent, within } from "storybook/test";
+import { expect, userEvent, within } from "storybook/test";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { AgentChatPrototype } from "../../prototypes/agent-chat/AgentChatPrototype";
 
@@ -40,3 +40,19 @@ export const AddChat: Story = {
     await userEvent.click(await within(canvasElement).findByRole("button", { name: "Add chat" }));
   },
 };
+
+export const UnreadSwitcher: Story = {
+  name: "10 · Switch agents · Unread chats",
+  args: { coordinator: true, unreadAgentIds: ["chat-analyst", "chat-writer"] },
+  parameters: { paperclip: { capabilities: ["agent-chat/discovery", "agent-chat/history"], status: "current", implementation: "production", boundary: "fixtures", notes: "Production header switcher and chat page with per-agent unread state from the shared chat-list fixture. Does not prove backend read-state persistence or live delivery." } },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const page = within(canvasElement.ownerDocument.body);
+    await userEvent.click(await canvas.findByRole("button", { name: /Switch agent\. Currently/ }));
+    await expect(await page.findByLabelText("Unread messages from Analyst")).toBeVisible();
+    await expect(await page.findByLabelText("Unread messages from Writer")).toBeVisible();
+    await expect(page.queryByLabelText("Unread messages from Researcher")).toBeNull();
+  },
+};
+export const UnreadSwitcherLight: Story = { ...UnreadSwitcher, name: "11 · Switch agents · Unread · Light", globals: { theme: "light" } };
+export const UnreadSwitcherMobile: Story = { ...UnreadSwitcher, name: "12 · Switch agents · Unread · Mobile", globals: { viewport: { value: "mobile", isRotated: false } } };

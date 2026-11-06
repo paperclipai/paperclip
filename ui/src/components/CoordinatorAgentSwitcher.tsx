@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { ChevronDown } from "lucide-react";
 import type { Agent } from "@paperclipai/shared";
 import { AgentChatPicker } from "./AgentChatPicker";
@@ -14,6 +14,18 @@ export function CoordinatorAgentSwitcher({ agent }: { agent: Agent }) {
   const [open, setOpen] = useState(false);
   const { agents, chats } = useAgentChatNavigation();
   const navigate = useNavigate();
+  // The shared, account-scoped chat list already includes read state. Opening
+  // the picker needs no requests per agent and never waits for chat history.
+  const chatAgentIds = useMemo(() => {
+    const existing: string[] = [];
+    const unread: string[] = [];
+    for (const chat of chats.data ?? []) {
+      if (!chat.conversationAgentId) continue;
+      existing.push(chat.conversationAgentId);
+      if (chat.isUnreadForMe) unread.push(chat.conversationAgentId);
+    }
+    return { existing, unread };
+  }, [chats.data]);
   return (
     <AgentChatPicker
       open={open}
@@ -29,7 +41,8 @@ export function CoordinatorAgentSwitcher({ agent }: { agent: Agent }) {
       loading={agents.isPending}
       error={agents.error}
       onRetry={() => { void agents.refetch(); }}
-      existingChatAgentIds={(chats.data ?? []).flatMap(chat => chat.conversationAgentId ? [chat.conversationAgentId] : [])}
+      existingChatAgentIds={chatAgentIds.existing}
+      unreadAgentIds={chatAgentIds.unread}
       onSelect={next => { navigate(`/chats/${encodeURIComponent(agentRouteRef(next))}`); }}
     />
   );
