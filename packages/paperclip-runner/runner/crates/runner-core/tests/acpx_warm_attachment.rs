@@ -306,13 +306,24 @@ fn restores_the_conversation_after_losing_an_active_turn_to_a_runner_restart() {
         .execute(&command(5, "semantic_tool.result", lost_result.clone()))
         .unwrap();
     assert_eq!(settled.result["retired"], true);
-    // Only the lost turn's calls settle this way.
-    assert!(restored
+    // The receipt is durable and idempotent, so a delivery left indeterminate
+    // by a crash may replay to the same acknowledgement.
+    assert!(restored.can_reconcile_result_delivery().unwrap());
+    let replayed = restored
         .execute(&command(6, "semantic_tool.result", lost_result))
+        .unwrap();
+    assert_eq!(replayed.result["retired"], true);
+    // Calls the lost turn never opened still fail closed.
+    let unknown = json!({
+        "callId": "call-unknown", "operationId": "register_deliverable",
+        "result": {"ok": true}, "isError": false,
+    });
+    assert!(restored
+        .execute(&command(7, "semantic_tool.result", unknown))
         .is_err());
     let continued = restored
         .execute(&command(
-            7,
+            8,
             "turn.start",
             json!({"turnId": "provider-turn-2", "text": "Continue."}),
         ))

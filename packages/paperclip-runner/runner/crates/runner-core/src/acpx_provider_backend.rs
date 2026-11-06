@@ -2245,12 +2245,13 @@ impl AcpxCommandExecutor {
         let result: ToolResult = serde_json::from_value(payload.clone()).map_err(|error| {
             DurableRunnerError::invalid(format!("semantic tool result is invalid: {error}"))
         })?;
-        if let Some(state) = self.state.as_mut() {
-            if state.retired_semantic_calls.remove(&result.call_id) {
+        if let Some(state) = self.state.as_ref() {
+            if state.retired_semantic_calls.contains(&result.call_id) {
                 // The call belonged to a turn lost to a runner restart. Its
                 // provider process is gone; acknowledge the controller result
                 // so the call settles, without sending it to the new provider.
-                self.save_state()?;
+                // The retained receipt makes this idempotent: a delivery left
+                // indeterminate by a crash replays to the same acknowledgement.
                 return Ok(CommandExecution::result(json!({
                     "status": "delivered",
                     "callId": result.call_id,
@@ -2656,6 +2657,18 @@ fn goal_terminal_disposition<'a>(
 }
 
 impl CommandExecutor for AcpxCommandExecutor {
+    /// A restored session keeps durable receipts for the lost turn's calls.
+    /// Acknowledging one is idempotent and never reaches the provider or the
+    /// business operation, so an indeterminate delivery may replay. Live
+    /// calls have no durable receipt; without retired receipts this stays off.
+    fn can_reconcile_result_delivery(&mut self) -> Result<bool, DurableRunnerError> {
+        self.restore()?;
+        Ok(self
+            .state
+            .as_ref()
+            .is_some_and(|state| !state.retired_semantic_calls.is_empty()))
+    }
+
     fn host_park_ready(&mut self) -> Result<bool, DurableRunnerError> {
         self.ensure_persistence_healthy()?;
         let Some(state) = self.state.as_ref() else {
