@@ -19,7 +19,9 @@ delete env.NODE_PATH;
 delete env.NODE_OPTIONS;
 
 for (const [name, command] of [
-  ["Vitest", [vitest, "run", "--config", "tests/runner-e2e/vitest.config.ts", ...args]],
+  // Server modules under test import the built plugin SDK (and shared) package.
+  ["Plugin build dependencies", ["scripts/ensure-plugin-build-deps.mjs"]],
+  ["Vitest",[vitest, "run", "--config", "tests/runner-e2e/vitest.config.ts", ...args]],
   ["Node tests", ["--test", "tests/runner-e2e/product-regression-testops.test.mjs", "tests/runner-e2e/artifact-budget.test.mjs", "tests/runner-e2e/native-completion-checks.test.mjs",
     "tests/runner-e2e/native-completion-git-source.test.mjs", "tests/runner-e2e/native-completion-source-contract.test.mjs",
     "tests/runner-e2e/chat-feature-testops-api.test.mjs", "tests/runner-e2e/chat-feature-testops-cli.test.mjs", "tests/runner-e2e/chat-feature-testops-results.test.mjs", "tests/runner-e2e/testops-chat-reporter.test.mjs", "tests/runner-e2e/chat-feature-testops-retained-verification.node-test.mjs",
