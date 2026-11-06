@@ -886,14 +886,22 @@ export class CodexHarnessSession
     };
   }
 
-  async close(input?: { reason: string }): Promise<void> {
+  // `force` is part of the contract. Codex closes the same way with or without it.
+  async close(input: { reason: string; force?: boolean }): Promise<void> {
     this.cancelPendingRequests("session_closed");
     this.eventQueue.close();
+    // Untyped callers (for example generated scripts) may still omit the input.
     await this.transport.close(input?.reason);
   }
 
   async detachControllerForRestart(): Promise<void> {
     if (this.transport.detachControllerForRestart === undefined) return;
     await this.transport.detachControllerForRestart();
+    // The next controller replays the runner journal. End this controller's
+    // stream without its buffered suffix so the detached consumer unwinds
+    // instead of waiting for provider events that will never arrive here.
+    // Pending runtime requests stay open for the adopting controller.
+    this.eventQueue.clear();
+    this.eventQueue.close();
   }
 }

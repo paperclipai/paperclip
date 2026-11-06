@@ -8048,6 +8048,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
 
       <IssueMonitorBanner
         key={issue.id}
+        hasActiveRun={hasLiveRuns}
         onCancelMonitor={() => cancelIssueMonitor.mutateAsync()}
         issue={issue}
         workProducts={workProducts}
@@ -8629,6 +8630,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
                     hasVisibleMonitorSurface(issue) ? (
                       <IssueMonitorComposerStrip
                         issue={issue}
+                        hasActiveRun={hasLiveRuns}
                         workProducts={workProducts}
                         checkError={checkIssueMonitorNow.error ? describeError(checkIssueMonitorNow.error, { action: "check the monitor" }).body : null}
                         onCheckNow={() => checkIssueMonitorNow.mutate()}

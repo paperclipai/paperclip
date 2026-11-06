@@ -205,7 +205,7 @@ it.each([["connect", "owned"], ["listen", "owned"], ["external", "owned"], ["con
       try {
         const opened = await within(first.transport.request("thread/start", { cwd: root, dynamicTools: [] }), "source open");
         runnerPid = first.evidence().runnerPid; providerPid = first.evidence().providerPid;
-        const startedAt = first.transport.processInfo().startedAt;
+        const startedAt = first.transport.processInfo!().startedAt;
         const providerStart = execFileSync("ps", ["-p", String(providerPid), "-o", "lstart="], { encoding: "utf8" }).trim();
         expect(runnerPid).toBeGreaterThan(0); expect(providerPid).toBeGreaterThan(0);
         const attach = first.transport.attachRun!({ runId: target.runId, turnId: target.turnId, itemId: target.itemId });

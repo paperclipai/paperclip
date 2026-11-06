@@ -5,7 +5,7 @@ import type { createDeliveryWorkCoordinator } from "./delivery-work-coordinator.
 import { type DeliveryQueue } from "./delivery-work-notifications.js";
 import { EXECUTION_RECONCILIATION_INTERVAL_MS } from "./execution-control-deadline.js";
 import { obsoleteExecutionConversationHold, unresolvedExecutionDispositions } from "./execution-recovery-resolution.js";
-import { nativeReplacementPending } from "./native-runtime/native-safe-replacement.js";
+import { hasPendingNativeReplacements } from "./native-runtime/native-safe-replacement.js";
 import { nextAbandonedNativeOwnerReleaseAt } from "./native-runtime/native-failed-run-owner-release.js";
 import { hasPendingPauseResume } from "./issue-tree-resume.js";
 
@@ -16,6 +16,7 @@ export function registerExecutionControlWork(
     run: () => Promise<unknown>;
     next: () => Promise<number | null>;
     onSettled?: () => void;
+    settleEmptyWhilePaused?: boolean;
   }>,
   canRun: () => boolean = () => true,
 ) {
@@ -24,6 +25,7 @@ export function registerExecutionControlWork(
     let reconciled = 0;
     let next: number | null = null;
     let earliestRunAt = 0;
+    let pausedGeneration = 0, pausedPending = true;
     const worker = coordinator.register(duty.queue, {
       retryMs: EXECUTION_RECONCILIATION_INTERVAL_MS,
       pausePassiveMaintenance: true,
@@ -42,7 +44,18 @@ export function registerExecutionControlWork(
         next = deadline === null ? null : Math.max(deadline, earliestRunAt);
         reconciled = generation;
       },
-      hasPending: async () => reconciled !== requested,
+      hasPending: async (runAllowed = true) => {
+        if (reconciled === requested) return false;
+        if (runAllowed || !duty.settleEmptyWhilePaused || !canRun() || reconciled === 0) return true;
+        if (pausedGeneration !== requested) {
+          const generation = requested;
+          const deadline = await duty.next();
+          if (generation !== requested) return true;
+          pausedGeneration = generation; pausedPending = deadline !== null; next = deadline;
+          if (!pausedPending) reconciled = generation;
+        }
+        return pausedPending;
+      },
       nextRunAt: () => next,
     });
     return { ...worker, wake: () => { requested += 1; worker.wake(); } };
@@ -74,10 +87,7 @@ export function executionControlSchedule(db: Db) {
       return at === null ? null : deadline([new Date(at)]);
     },
     async replacement() {
-      const rows = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns)
-        .innerJoin(nativeRunFinalizations, eq(nativeRunFinalizations.runId, heartbeatRuns.id))
-        .where(nativeReplacementPending()).limit(1);
-      return rows.length ? retry() : null;
+      return await hasPendingNativeReplacements(db) ? retry() : null;
     },
     async continuation() {
       const rows = await db.select({ id: issueRecoveryActions.id }).from(issueRecoveryActions).where(and(

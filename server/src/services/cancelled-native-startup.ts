@@ -1,3 +1,4 @@
+import { isRetainedWorkspaceWorkerStopProof } from "./native-runtime/native-workspace-platform-proof.js";
 import { isPreDispatchReviewWait } from "./pre-dispatch-review-wait.js";
 import { createHash } from "node:crypto";
 import { and, eq, inArray, isNotNull, isNull, lte, or, sql } from "drizzle-orm";
@@ -11,6 +12,7 @@ import { legacyControllerBootId } from "./legacy-controller-lease.js";
 import { hasRequiredWorkspaceRecovery } from "./workspace-restore-recovery-state.js";
 import { hasVerifiedWorkspaceRepair } from "./workspace-recovery-receipt.js";
 import { readFailedPreparationSettlement } from "./failed-preparation-settlement.js";
+import { hasVerifiedPreparationLog } from "./verified-preparation-log.js";
 import { executionStartedEventPredicate, noRetainedExecutionPredicate } from "./pre-dispatch-execution-evidence.js";
 
 type Run = Pick<typeof heartbeatRuns.$inferSelect,
@@ -31,7 +33,7 @@ export async function isFailedNativePreparationRetryAncestor(db: Db, run: Run, c
 }
 
 async function failedNativePreparation(db: Db, run: Run, coordinator: Coordinator | undefined, historicalRetryAncestor: boolean) {
-  if (run.status === "interrupted") return !historicalRetryAncestor && !coordinator && isInterruptedNativePreparation(db, run);
+  if (!historicalRetryAncestor && !coordinator && await isInterruptedNativePreparation(db, run)) return true;
   const recovery = run.resultJson?.executionRecovery as Record<string, unknown> | undefined;
   const preparationFailure = run.errorCode === "setup_failed" || historicalRetryAncestor && run.errorCode === "adapter_failed";
   if (run.status !== "failed" || !run.finishedAt || run.runtimeMode !== "legacy" || run.runtimeModeResolvedAt
@@ -59,6 +61,9 @@ async function failedNativePreparation(db: Db, run: Run, coordinator: Coordinato
 
 async function hasSettledFailedPreparationEvidence(db: Db, run: Run, historicalRetryAncestor = false): Promise<boolean> {
   const [source] = await db.select({ agentId: heartbeatRuns.agentId,
+    contextSnapshot: sql<Record<string, unknown>>`jsonb_build_object(
+      'skillSelectionSnapshot', ${heartbeatRuns.contextSnapshot}->'skillSelectionSnapshot',
+      'skillVersions', ${heartbeatRuns.contextSnapshot}->'skillVersions')`,
     runtimeModeResolverVersion: heartbeatRuns.runtimeModeResolverVersion, runtimeModeReason: heartbeatRuns.runtimeModeReason,
     runnerInstanceId: heartbeatRuns.runnerInstanceId, nativePhase: heartbeatRuns.nativePhase,
     driverKind: heartbeatRuns.driverKind, driverVersion: heartbeatRuns.driverVersion,
@@ -75,13 +80,18 @@ async function hasSettledFailedPreparationEvidence(db: Db, run: Run, historicalR
     && source.logRef === `${run.companyId}/${source.agentId}/${run.id}`
     && source.logBytes === 0 && source.logSha256 === EMPTY_LOG_SHA256
     && [source.stdoutExcerpt, source.stderrExcerpt].every(value => value === null || value === "");
-  if (!source || source.logCompressed || source.lastOutputSeq !== 0 || Object.entries(source).some(([key, value]) =>
-    !["agentId", "logCompressed", "lastOutputSeq", "usageJson"].includes(key) &&
+  const preparationLog = historicalRetryAncestor && source &&
+    await hasVerifiedPreparationLog({ ...source, id: run.id, companyId: run.companyId });
+  if (!source || source.logCompressed || !preparationLog && source.lastOutputSeq !== 0 || Object.entries(source).some(([key, value]) =>
+    !["agentId", "contextSnapshot", "logCompressed", "lastOutputSeq", "usageJson"].includes(key) &&
     !(historicalRetryAncestor && key === "sessionIdBefore") &&
+    !(preparationLog && ["logStore", "logRef", "logBytes", "logSha256", "stdoutExcerpt", "stderrExcerpt",
+      "lastOutputAt", "lastOutputStream", "lastOutputBytes"].includes(key)) &&
     !(emptyLog && ["logStore", "logRef", "logBytes", "logSha256", "stdoutExcerpt", "stderrExcerpt"].includes(key)) && value !== null)
     || !hasOnlyPreparationAccountingContext(source.usageJson, run.issueId ?? run.contextSnapshot?.issueId)
-    || Object.keys(run.runnerProfileJson ?? {}).some(key => !["adapterDispatch", "remoteWorkspace",
-      "chatControlRecoveryAdmission"].includes(key))
+    || Object.entries(run.runnerProfileJson ?? {}).some(([key, value]) => !["adapterDispatch", "remoteWorkspace",
+      "chatControlRecoveryAdmission"].includes(key) && !(key === "nativeWorkspaceOwnerStopProof"
+        && isRetainedWorkspaceWorkerStopProof(value, run.id)))
     || run.resultJson?.stopReason !== "adapter_failed"
     || Object.keys(run.resultJson).some(key => !["stopReason", "timeoutFired", "timeoutSource", "executionRecovery",
       "timeoutConfigured", "effectiveTimeoutSec", "systemRecoveryAdoption", "workspaceRestoreFailure",
@@ -103,14 +113,18 @@ function hasOnlyPreparationAccountingContext(usage: unknown, issueId: unknown): 
  * stopped leases, and any saved-file obligation below. */
 export function isInterruptedNativePreparationCandidate(run: Run): boolean {
   const cancellation = readRunCancellation(run.resultJson);
+  const recovery = run.resultJson?.executionRecovery as Record<string, unknown> | undefined;
+  // Restart recovery records this certificate only after revoking a preparing
+  // controller. A generic process-lost error cannot establish safe replay.
+  const lostPreparation = run.status === "failed" && run.errorCode === "process_lost"
+    && recovery?.kind === "bootstrap" && recovery.providerWorkStarted === false;
   // Older shutdown records predate structured cancellation. Current records
   // identify unexpected system interruption without relying on an error label.
   const systemInterruption = cancellation
     ? cancellation.initiator.type === "system" && cancellation.source !== "operator" &&
       (cancellation.source === "shutdown" || cancellation.expected === false)
-    : run.errorCode === "server_shutdown_interrupted";
-  const recovery = run.resultJson?.executionRecovery as Record<string, unknown> | undefined;
-  return Boolean(systemInterruption && run.status === "interrupted" && run.finishedAt
+    : run.errorCode === "server_shutdown_interrupted" || lostPreparation;
+  return Boolean(systemInterruption && (run.status === "interrupted" || lostPreparation) && run.finishedAt
     && run.runtimeMode === "legacy" && !run.runtimeModeResolvedAt && run.executionStage === "preparing"
     && claimedAdapterType(run) === "paperclip_runner" && !run.processPid && !run.processGroupId
     && !run.processStartedAt && !run.sessionIdAfter && !run.nativeIssueId && !run.nativeSessionId
