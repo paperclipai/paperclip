@@ -250,7 +250,7 @@ export function agentFileStore(db: Db) {
         }
         if (input.bytes === null) await fs.unlink(await assertInstructionPathSafe(root, relative));
         else await materializeInstructionBytes(root, relative, input.bytes);
-        await audit(tx, agent, bound, { path: relative, contentHash: incomingHash, created: previous === null && input.bytes !== null });
+        await audit(tx, agent, bound, { path: relative, contentHash: incomingHash, created: previous === null && input.bytes !== null, ...(input.bytes ? { byteLength: input.bytes.length } : {}) });
         return { contentHash: incomingHash, changed: true };
       }),
     apply: (input: { companyId: string; agentId: string; sourceDir: string; baseline: DirectorySnapshot; checkpoint?: AgentFileManifest }, actor: AuthorizationActor) =>
