@@ -44,6 +44,7 @@ export async function materializeManagedProjectWorkspace(
     repoUrl: string | null;
     repoRef?: string | null;
     localSource?: string | null;
+    gitObjectSource?: string;
     resolveGitAuth?: GitRemoteAuthProvider | null;
     beforeCopy?: (cloneCwd: string) => Promise<void>;
     beforePublish?: (cloneCwd: string) => Promise<void>;
@@ -51,6 +52,7 @@ export async function materializeManagedProjectWorkspace(
     objectCacheCompanyDirectory?: string;
   },
 ): Promise<{ cwd: string; warning: string | null }> {
+  if (input.localSource && input.gitObjectSource) throw new Error("Conflicting managed checkout sources");
   await fs.mkdir(path.dirname(cwd), { recursive: true });
   const stats = await fs.stat(cwd).catch(() => null);
 
@@ -81,14 +83,14 @@ export async function materializeManagedProjectWorkspace(
     await fs.rm(cwd, { recursive: true, force: true });
   }
 
-  let auth = input.resolveGitAuth && !input.localSource
+  let auth = input.resolveGitAuth && !input.localSource && !input.gitObjectSource
     ? await measureRunPhase("workspace.checkout.git_auth", () => input.resolveGitAuth!(input.repoUrl!))
     : null;
   const cloneTmpDir = await fs.mkdtemp(input.stagingParent
     ? path.join(input.stagingParent, `${path.basename(cwd)}.clone-`)
     : `${cwd}.clone-`);
-  const cloneSource = input.localSource ?? input.repoUrl;
-  let objectCache = input.objectCacheCompanyDirectory && !input.localSource
+  const cloneSource = input.gitObjectSource ?? input.localSource ?? input.repoUrl;
+  let objectCache = input.objectCacheCompanyDirectory && !input.localSource && !input.gitObjectSource
     ? await measureRunPhase("workspace.checkout.cache_lookup", async () => {
       const cache = await resolveRepositoryObjectCache(input.objectCacheCompanyDirectory!, input.repoUrl!, auth);
       if (!cache) recordRepositoryObjectCacheDetail({ outcome: "disabled" });
@@ -106,7 +108,7 @@ export async function materializeManagedProjectWorkspace(
         recordRepositoryObjectCacheDetail({ referenceSupplied: referencePath !== null });
         return execFile(
           "git",
-          [...(auth?.configArgs ?? []), ...(referencePath ? ["-c", "repack.updateServerInfo=false"] : []), "clone", "--no-hardlinks", ...(referencePath ? ["--reference-if-able", referencePath, "--dissociate"] : []), "--", cloneSource, cloneTmpDir],
+          [...(auth?.configArgs ?? []), ...(referencePath ? ["-c", "repack.updateServerInfo=false"] : []), "clone", "--no-hardlinks", ...(input.gitObjectSource ? ["--dissociate"] : []), ...(referencePath ? ["--reference-if-able", referencePath, "--dissociate"] : []), "--", cloneSource, cloneTmpDir],
           {
             env: {
               ...sanitizeRuntimeServiceBaseEnv(process.env),
@@ -126,7 +128,7 @@ export async function materializeManagedProjectWorkspace(
         await clone(null);
       }
     } catch (error) {
-      const connectionFailure = !input.localSource ? classifyGitCloneFailure(input.repoUrl, error) : null;
+      const connectionFailure = !input.localSource && !input.gitObjectSource ? classifyGitCloneFailure(input.repoUrl, error) : null;
       if (connectionFailure) throw new GitConnectionFailureError(
         error instanceof Error ? error.message : "Git clone failed", connectionFailure,
       );
@@ -162,6 +164,7 @@ export async function materializeManagedProjectWorkspace(
         );
       }
     }
+    if (input.gitObjectSource) await execFile("git", ["-C", cloneTmpDir, "remote", "set-url", "origin", input.repoUrl], { timeout: 10_000 });
     await input.beforePublish?.(cloneTmpDir);
   } catch (error) {
     await fs

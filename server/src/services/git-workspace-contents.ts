@@ -12,6 +12,7 @@ import { managedProjectCheckoutName } from "./managed-project-checkout-name.js";
 import { materializeManagedProjectWorkspace } from "./managed-repository-checkout.js";
 import { ensureSavedGitCommit, gitCacheCommand, GitCacheRestorationFailure } from "./git-workspace-restoration.js";
 import { applyGitRestorePointToWorktree, ensureGitRestorePointCommit, loadGitRestorePoint, type GitRestorePointRef } from "./git-restore-point-storage.js";
+import { copyVerifiedGitExcludes } from "./git-repository-excludes.js";
 import { importRestorePoint } from "./git-restore-point.js";
 import { isNestedWorktreeBranchName, isVerifiedNestedRepositoryBase, nestedRepositoryBaseCandidates, readLinkedNestedCheckout, recordedNestedRepositoryBase, restoreNestedRepositoryWorktree, withNestedRepositoryBaseLock } from "./nested-repository-worktrees.js";
 import { getStorageService } from "../storage/index.js";
@@ -203,6 +204,7 @@ async function restoreSettings(cwd: string, settings: Settings, identity: Identi
 export async function restoreGitWorkspaceContents(input: Identity & { cwd: string; contents?: GitWorkspaceContents; projectId?: string | null;
   prepareLocalSource?: (sourceCwd: string) => Promise<() => Promise<void>>;
   storage?: StorageService;
+  isolateRepositories?: boolean;
   resolveGitAuth: GitRemoteAuthProvider; authorizeSource: (source: ManagedCheckoutSource) => Promise<void> }) {
   if (!input.contents) return;
   validateGitWorkspaceContents(input.contents);
@@ -220,7 +222,7 @@ export async function restoreGitWorkspaceContents(input: Identity & { cwd: strin
       const candidates = checkout.worktree && input.projectId
         ? nestedRepositoryBaseCandidates({ companyId: input.companyId, projectId: input.projectId, repoUrl: checkout.source.repoUrl }) : null;
       if (checkout.worktree && !candidates) throw new GitCacheRestorationFailure();
-      if (existing && checkout.worktree) {
+      if (existing && checkout.worktree && !input.isolateRepositories) {
         const linked = existing.isDirectory() && !existing.isSymbolicLink() ? await readLinkedNestedCheckout(destination, candidates!) : null;
         if (!linked || linked.checkout !== destination || !await isVerifiedNestedRepositoryBase(linked.base, candidates!, checkout.source.repoUrl)) {
           throw new GitCacheRestorationFailure();
@@ -239,7 +241,7 @@ export async function restoreGitWorkspaceContents(input: Identity & { cwd: strin
         await restoreSettings(destination, checkout.settings, input, relative);
         continue;
       }
-      if (checkout.worktree) {
+      if (checkout.worktree && !input.isolateRepositories) {
         const recordedBase = await recordedNestedRepositoryBase(checkout.worktree.base, candidates!);
         if (!recordedBase) throw new GitCacheRestorationFailure();
         if (!await isVerifiedNestedRepositoryBase(recordedBase, candidates!, checkout.source.repoUrl)) {
@@ -269,9 +271,23 @@ export async function restoreGitWorkspaceContents(input: Identity & { cwd: strin
         });
         continue;
       }
-      const result = await materializeManagedProjectWorkspace(destination, { repoUrl: checkout.source.repoUrl,
+      let gitObjectSource: string | undefined;
+      if (checkout.worktree) {
+        const recorded = await recordedNestedRepositoryBase(checkout.worktree.base, candidates!);
+        if (!recorded) throw new GitCacheRestorationFailure();
+        if (await entry(recorded)) {
+          if (!await isVerifiedNestedRepositoryBase(recorded, candidates!, checkout.source.repoUrl)) throw new GitCacheRestorationFailure();
+          gitObjectSource = await fs.realpath(recorded);
+        }
+      }
+      const result = await materializeManagedProjectWorkspace(destination, { repoUrl: checkout.source.repoUrl, gitObjectSource,
         resolveGitAuth: input.resolveGitAuth, beforePublish: async temporary => {
-          if (checkout.restorePoint) await ensureGitRestorePointCommit({ storage: input.storage ?? getStorageService(), workspace,
+          if (gitObjectSource && checkout.restorePoint) await copyVerifiedGitExcludes(gitObjectSource, temporary);
+          if (checkout.restorePoint && input.isolateRepositories) {
+            const { payload, manifest } = await loadGitRestorePoint({ storage: input.storage ?? getStorageService(), workspace, ref: checkout.restorePoint });
+            await importRestorePoint({ repositoryCwd: temporary, payload });
+            for (const commit of manifest.preserved) await gitCacheCommand(temporary, ["update-ref", `refs/paperclip-preserved/${commit}`, commit]);
+          } else if (checkout.restorePoint) await ensureGitRestorePointCommit({ storage: input.storage ?? getStorageService(), workspace,
             ref: checkout.restorePoint, repositoryCwd: temporary });
           await ensureSavedGitCommit(temporary, checkout.source.repoUrl, checkout.commit, input.resolveGitAuth);
           if (checkout.branchName) await gitCacheCommand(temporary, ["check-ref-format", "--branch", checkout.branchName]);
@@ -283,6 +299,7 @@ export async function restoreGitWorkspaceContents(input: Identity & { cwd: strin
           await restoreSettings(temporary, checkout.settings, input, relative);
           await input.authorizeSource(checkout.source);
           await recheck?.();
+          if (gitObjectSource && !await isVerifiedNestedRepositoryBase(gitObjectSource, candidates!, checkout.source.repoUrl)) throw new GitCacheRestorationFailure();
         } });
       if (result.warning) throw new GitCacheRestorationFailure();
     }

@@ -1,5 +1,4 @@
 import { execFile } from "node:child_process";
-import { constants } from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -10,6 +9,7 @@ import { PROJECT_REPOSITORIES_DIR } from "@paperclipai/adapter-utils/git-workspa
 import type { StorageService } from "../storage/types.js";
 import { createIssueGitRemoteAuthProvider } from "./git-credentials.js";
 import { applyGitRestorePointToWorktree, ensureGitRestorePointCommit, loadGitRestorePoint } from "./git-restore-point-storage.js";
+import { copyVerifiedGitExcludes } from "./git-repository-excludes.js";
 import { restoreGitWorkspaceContents, type ManagedCheckoutSource } from "./git-workspace-contents.js";
 import { ensureSavedGitCommit, gitRestorePointExpired, managedSourcePaths, readGitCacheRestoration,
   verifiedGitCacheSource, verifiedManagedGitObjectSource, type GitCacheRestoration } from "./git-workspace-restoration.js";
@@ -181,37 +181,6 @@ export async function lockArchivedGitMigrationSources(db: Pick<Db, "select">, wo
   }
 }
 
-async function copyArchivedGitExcludes(source: string, cwd: string) {
-  const common = await fs.realpath(path.resolve(source, await git(source, ["rev-parse", "--path-format=absolute", "--git-common-dir"])));
-  const info = path.join(common, "info"), file = path.join(info, "exclude");
-  const directory = await fs.lstat(info).catch((error: NodeJS.ErrnoException) => {
-    if (error.code === "ENOENT") return null;
-    throw error;
-  });
-  if (!directory) return;
-  if (!directory.isDirectory() || directory.isSymbolicLink()) throw unavailable();
-  const handle = await fs.open(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
-    .catch((error: NodeJS.ErrnoException) => { if (error.code === "ENOENT") return null; throw unavailable(); });
-  if (!handle) return;
-  try {
-    const before = await handle.stat({ bigint: true });
-    if (!before.isFile() || before.nlink !== 1n || before.size > 1024n * 1024n) throw unavailable();
-    const bytes = Buffer.alloc(Number(before.size) + 1); let length = 0;
-    while (length < bytes.length) {
-      const read = await handle.read(bytes, length, bytes.length - length, length);
-      if (!read.bytesRead) break;
-      length += read.bytesRead;
-    }
-    const after = await fs.lstat(file, { bigint: true });
-    if (!after.isFile() || after.isSymbolicLink() || BigInt(length) !== before.size
-      || before.dev !== after.dev || before.ino !== after.ino || before.size !== after.size || before.mtimeNs !== after.mtimeNs
-      || before.mode !== after.mode || before.ctimeNs !== after.ctimeNs || before.nlink !== after.nlink
-      || await fs.realpath(info) !== info) throw unavailable();
-    const target = path.join(cwd, ".git", "info", "exclude");
-    await fs.writeFile(target, bytes.subarray(0, length));
-    await fs.chmod(target, Number(before.mode & 0o777n));
-  } finally { await handle.close(); }
-}
 
 export async function materializeArchivedGitMigrationSource(input: {
   db: Db; storage: StorageService; workspace: Workspace; source: ArchivedGitMigrationSource; scratch: string;
@@ -232,7 +201,7 @@ export async function materializeArchivedGitMigrationSource(input: {
       : await verifiedReceiptObjectSource(workspace, source.sourcePath);
     if (source.retainedBranch && (await git(verified, ["rev-parse", "--verify", `refs/heads/${source.retainedBranch}^{commit}`])) !== source.commit) throw unavailable();
     await fs.mkdir(cwd, { mode: 0o700 }); await git(cwd, ["init", "--quiet"]);
-    if (source.recipe?.restorePoint) await copyArchivedGitExcludes(verified, cwd);
+    if (source.recipe?.restorePoint) await copyVerifiedGitExcludes(verified, cwd).catch(() => { throw unavailable(); });
     // Fetch objects, never the current working tree of a shared project root.
     const presentCommit = await git(verified, ["cat-file", "-e", `${source.commit}^{commit}`]).then(() => true, () => false);
     if (presentCommit) {
@@ -265,7 +234,7 @@ export async function materializeArchivedGitMigrationSource(input: {
     ref: source.recipe.restorePoint, repositoryCwd: cwd, worktreePath: cwd });
   const approvedLocalSources = new Set<string>();
   await restoreGitWorkspaceContents({ cwd, companyId: workspace.companyId, workspaceId: workspace.id,
-    projectId: workspace.projectId, contents: source.recipe?.contents, storage: input.storage, resolveGitAuth,
+    projectId: workspace.projectId, contents: source.recipe?.contents, storage: input.storage, resolveGitAuth, isolateRepositories: true,
     authorizeSource: async saved => {
       await authorizeNestedSource(input.db, workspace, saved);
       const local = localRepositoryPath(saved.repoUrl); if (local) approvedLocalSources.add(local);
