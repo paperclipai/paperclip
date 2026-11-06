@@ -18,7 +18,7 @@ import { canonicalExecutionUuid } from "./execution-identity.js";
 import { chatActionDeadline } from "./chat-action-work.js";
 import { isQueuedDependencyWait } from "./run-cancellation.js";
 import { AI_CONNECTION_BUSY_RETRY_REASON, AI_CONNECTION_POOL_WAIT_RETRY_REASON, RUNNER_REVISION_WAIT_RETRY_REASON,
-  WORKSPACE_BUSY_RETRY_REASON } from "../modules/run-dispatch/domain/wake-context.js";
+  WORKSPACE_BUSY_RETRY_REASON } from "../modules/run-dispatch/index.js";
 
 // These scheduled runs wait for a shared resource; none records a failed
 // attempt. Their dispatcher re-checks the resource, so the run can stay
