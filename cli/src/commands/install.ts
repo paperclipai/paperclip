@@ -84,6 +84,36 @@ export function resolveGitInstallWorkspacePackages(checkoutPath: string): Releas
   return ordered;
 }
 
+export async function prepareGitInstallPackagingInputs(
+  checkoutPath: string,
+  runCommand: CommandRunner,
+  buildEnv: (extra?: NodeJS.ProcessEnv) => NodeJS.ProcessEnv,
+): Promise<void> {
+  // Mirror scripts/release.sh packaging prep for git checkouts: build
+  // server/ui-dist via the ref's own script and stage root skills into
+  // packages that declare them. Every step is existence-gated so pre-ui-dist
+  // refs install exactly as before.
+  const uiPrepScript = path.join(checkoutPath, "scripts", "prepare-server-ui-dist.sh");
+  if (fs.existsSync(uiPrepScript)) {
+    await runCommand("bash", ["scripts/prepare-server-ui-dist.sh"], {
+      cwd: checkoutPath,
+      env: buildEnv({ PAPERCLIP_RELEASE_REUSE_UI_DIST: "1" }),
+      maxBuffer: 32 * 1024 * 1024,
+    });
+  }
+  const repoSkills = path.join(checkoutPath, "skills");
+  if (!fs.existsSync(repoSkills)) return;
+  for (const workspacePackage of resolveGitInstallWorkspacePackages(checkoutPath)) {
+    const packageDir = path.join(checkoutPath, workspacePackage.dir);
+    const packageJson = JSON.parse(fs.readFileSync(path.join(packageDir, "package.json"), "utf8")) as { files?: unknown };
+    if (!Array.isArray(packageJson.files) || !packageJson.files.includes("skills")) continue;
+    const packageSkills = path.join(packageDir, "skills");
+    if (fs.existsSync(packageSkills)) continue;
+    fs.rmSync(packageSkills, { recursive: true, force: true });
+    fs.cpSync(repoSkills, packageSkills, { recursive: true });
+  }
+}
+
 export function assertSupportedNodeVersion(): void {
   if (!isSupportedNodeVersion(process.versions.node)) {
     throw new Error(`Installing or updating Paperclip requires Node.js ${MINIMUM_NODE_VERSION} or newer (found ${process.version} at ${process.execPath}). Put a supported Node bin directory first on PATH and run 'npx paperclipai@latest install --yes' to re-pin an existing managed install.`);
@@ -280,6 +310,7 @@ export async function installGitPayload(repo: string, sha: string, runCommand: C
     await runCommand("corepack", ["pnpm", "install", "--frozen-lockfile"], { cwd: checkoutPath, env: buildEnv(), maxBuffer: 32 * 1024 * 1024 });
     await runCommand("bash", ["scripts/build-npm.sh", "--skip-checks", "--skip-typecheck"], { cwd: checkoutPath, env: buildEnv(), maxBuffer: 32 * 1024 * 1024 });
     await runCommand("corepack", ["pnpm", "-r", "--filter", "@paperclipai/server...", "--if-present", "run", "build"], { cwd: checkoutPath, env: buildEnv(), maxBuffer: 32 * 1024 * 1024 });
+    await prepareGitInstallPackagingInputs(checkoutPath, runCommand, buildEnv);
     const metadata = JSON.parse(fs.readFileSync(path.join(checkoutPath, "cli", "package.json"), "utf8")) as { version: string };
     const workspacePackages = resolveGitInstallWorkspacePackages(checkoutPath);
     for (const [index, workspacePackage] of workspacePackages.entries()) {
