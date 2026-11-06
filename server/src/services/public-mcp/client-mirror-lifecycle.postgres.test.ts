@@ -6,6 +6,9 @@ import path from "node:path";
 import type {Request} from "express";
 import {afterAll,afterEach,beforeAll,beforeEach,describe,expect,it,vi} from "vitest";
 import {eq,sql} from "drizzle-orm";
+import {PgDatabase} from "drizzle-orm/pg-core";
+import {subscribeDatabaseWork} from "@paperclipai/db/work-signals";
+import {DELIVERY_QUEUES} from "../delivery-work-notifications.js";
 import {applyPendingMigrations,createDb,companies,authUsers,companyMemberships,mcpOauthClients as clients,mcpOauthClientMirrorState as state,mcpOauthClientChanges as changes,mcpOauthDeviceRequests as devices,mcpOauthGrants as grants} from "@paperclipai/db";
 import {resolveExternalTestDatabaseUrl} from "../../__tests__/helpers/external-test-database.js";
 import {createDeliveryWorkCoordinator} from "../delivery-work-coordinator.js";
@@ -77,8 +80,15 @@ describe.skipIf(!configured)("MCP mirror actual transaction lifecycle",()=>{
     }}});await index.ready;expect(published).toEqual([]);
     const verifier="v".repeat(43),location=await oauth.authorize({response_type:"code",client_id:client.client_id,redirect_uri:"https://client.example.test/callback",resource:oauth.config.resource,scope:"paperclip:read",code_challenge:createHash("sha256").update(verifier).digest("base64url"),code_challenge_method:"S256"});
     const actor:Request["actor"]={type:"board",source:"session",userId,companyIds:[companyId]};
-    const approved=await oauth.consent(new URL(location).pathname.split("/").at(-1)!,actor,{decision:"approve",companyId,allowWrites:false});
-    expect(new URL(approved.redirectUrl).searchParams.get("code")).toBeTruthy();
+    const grantInsert=vi.spyOn(PgDatabase.prototype,"insert"),intents:Array<{hints:string[];grantInserts:number}>=[];
+    const unsubscribe=subscribeDatabaseWork(db,DELIVERY_QUEUES.mcpRevocationIndex,(event,hints)=>{if(event==="intent"&&hints?.size)intents.push({hints:[...hints],grantInserts:grantInsert.mock.calls.filter(([table])=>table===grants).length});});
+    try{
+      const approved=await oauth.consent(new URL(location).pathname.split("/").at(-1)!,actor,{decision:"approve",companyId,allowWrites:false});
+      expect(new URL(approved.redirectUrl).searchParams.get("code")).toBeTruthy();
+      const [approvedGrant]=await db.select().from(grants);
+      expect(intents,JSON.stringify({expectedGrantInserts:0,observed:intents})).toEqual([{hints:[approvedGrant.id],grantInserts:0}]);
+      expect(grantInsert.mock.calls.filter(([table])=>table===grants)).toHaveLength(1);
+    }finally{unsubscribe();grantInsert.mockRestore();}
     await vi.waitFor(async()=>{const [grant]=await db.select().from(grants);expect(grant.revocationIndexReceipt?.revision).toBe(0);},{timeout:10_000});
     expect(published).toHaveLength(1);expect(await db.select().from(grants)).toHaveLength(1);
   });

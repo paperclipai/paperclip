@@ -21,6 +21,20 @@ describe("one-time managed device cutover",()=>{
     expect(await requiresMcpDeviceBroker(f.tx,resource)).toBe(true);expect(await requiresMcpDeviceBroker(f.tx,resource)).toBe(true);expect(at.getTime()).toBe(1);
     expect(currentMcpDeviceCutoverStack(resource)).toBe("stack");
   });
+  it("same-stack cutover keeps unsigned mint fenced while re-enable has cleared its receipt",async()=>{
+    current.identity={stackId:"stack",canonicalOrigin:identity.origin};const at=new Date(1),f=fixture({stackId:"stack",at,receipt:null});
+    expect(await requiresMcpDeviceBroker(f.tx,resource)).toBe(true);expect(at.getTime()).toBe(1);
+    expect(await requiresMcpDeviceBroker(f.tx,identity.origin+"/mcp/runner")).toBe(false);
+  });
+  it("a missing receipt cannot transfer the cutover fence across current stack or inspection identity",async()=>{
+    current.identity={stackId:"replacement",canonicalOrigin:identity.origin};
+    expect(await requiresMcpDeviceBroker(fixture({stackId:"stack",at:new Date(1),receipt:null}).tx,resource)).toBe(false);
+    current.identity={stackId:"stack",canonicalOrigin:identity.origin};
+    const tx={select:()=>({from:()=>({where:async()=>{current.identity=null;return[{stackId:"stack",at:new Date(1),receipt:null}];}})})} as unknown as Pick<Db,"select">;
+    expect(await requiresMcpDeviceBroker(tx,resource)).toBe(false);
+    current.identity={stackId:"stack",canonicalOrigin:identity.origin};
+    expect(await requiresMcpDeviceBroker(fixture({stackId:"stack",at:new Date(1),receipt:{}}).tx,resource)).toBe(false);
+  });
   it("a replacement current managed stack cannot inherit old persisted cutover authority",async()=>{
     current.identity={stackId:"replacement-stack",canonicalOrigin:"https://tenant.example.test"};
     expect(await requiresMcpDeviceBroker(fixture({stackId:"old-stack",at:new Date(1),receipt}).tx,resource)).toBe(false);

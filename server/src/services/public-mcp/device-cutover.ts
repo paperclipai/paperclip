@@ -19,9 +19,10 @@ export async function installMcpDeviceCutover(tx:Db,receipt:McpClientMirrorRecei
 export async function requiresMcpDeviceBroker(tx:Pick<Db,"select">,resource:string){
   const stackId=currentMcpDeviceCutoverStack(resource);if(!stackId)return false;
   const[row]=await tx.select({stackId:state.deviceCutoverStackId,at:state.deviceCutoverAt,receipt:state.receipt}).from(state).where(eq(state.id,"public"));
-  const receipt=mcpClientMirrorReceiptSchema.safeParse(row?.receipt);
-  return row?.stackId===stackId&&row.at instanceof Date&&Number.isFinite(row.at.getTime())
-    &&currentMcpDeviceCutoverStack(resource)===stackId&&receipt.success&&receipt.data.origin+"/mcp/paperclip"===resource
+  if(row?.stackId!==stackId||!(row.at instanceof Date)||!Number.isFinite(row.at.getTime())||currentMcpDeviceCutoverStack(resource)!==stackId)return false;
+  if(row.receipt===null)return true;
+  const receipt=mcpClientMirrorReceiptSchema.safeParse(row.receipt);
+  return receipt.success&&receipt.data.origin+"/mcp/paperclip"===resource
     &&receipt.data.generation===mcpClientMirrorGeneration(receipt.data);
 }
 

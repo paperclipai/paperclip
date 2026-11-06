@@ -5,7 +5,7 @@ import { DELIVERY_QUEUES, notifyDeliveryWork } from "../delivery-work-notificati
 import { authorizeExternalBotOperator, externalBotEnabled } from "../external-bot-authority.js";
 import { updateAgentConfigurationInTransaction } from "../agent-configuration-transaction.js";
 import { instanceSettingsService } from "../instance-settings.js";
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { canConfigureAgentConnection } from "../../modules/agent-lifecycle/index.js";
 import { and, eq, gt, inArray, isNull, lt, lte, notExists, sql } from "drizzle-orm";
 import { z } from "zod";
@@ -273,9 +273,10 @@ export function createPublicMcpOAuth(db: Db, config: PublicMcpConfig, options: {
     if ((input.allowWrites || input.allowConfiguration) && membership.membershipRole === "viewer") throw new McpOAuthError("access_denied", "Viewer access is read-only.", 403);
     const scopes = request.scopes.filter(s => (s !== "paperclip:write" || input.allowWrites)
       && (s !== "paperclip:configure" || input.allowConfiguration === true));
+    const grantId=randomUUID();
     await notifyDeliveryWork(tx, DELIVERY_QUEUES.mcpIngressHandoffs);
-    const [grant] = await tx.insert(mcpOauthGrants).values({ companyId: input.companyId!, userId: actor.userId, clientId: request.clientId, resource: request.resource, scopes, purpose: agentConnection ? "agent" : "personal" }).returning();
-    await notifyDeliveryWork(tx, DELIVERY_QUEUES.mcpRevocationIndex, grant!.id);
+    await notifyDeliveryWork(tx, DELIVERY_QUEUES.mcpRevocationIndex, grantId);
+    const [grant] = await tx.insert(mcpOauthGrants).values({ id:grantId, companyId: input.companyId!, userId: actor.userId, clientId: request.clientId, resource: request.resource, scopes, purpose: agentConnection ? "agent" : "personal" }).returning();
     await tx.insert(activityLog).values({ companyId: grant!.companyId, actorType: "user", actorId: actor.userId,
       action: "mcp.connection_authorized", entityType: "mcp_connection", entityId: grant!.id, details: { clientId: grant!.clientId, scopes } });
     return grant!;
