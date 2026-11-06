@@ -42,6 +42,7 @@ import {
 } from "@paperclipai/adapter-utils/server-utils";
 import {
   materializeRemoteClaudeConfig,
+  overrideRemoteClaudeLocalPermissionMode,
   prepareClaudeConfigSeed,
   prepareSandboxClaudeProbeRuntime,
   resolveRemoteClaudeToolShellPrefixPath,
@@ -120,6 +121,11 @@ function firstNonEmptyString(...values: unknown[]): string | undefined {
     if (trimmed.length > 0) return trimmed;
   }
   return undefined;
+}
+
+function resolveAcpPermissionMode(config: Record<string, unknown>): string {
+  const requested = firstNonEmptyString(config.permissionMode);
+  return requested === undefined || requested === "default" ? DEFAULT_ACP_ENGINE_PERMISSION_MODE : requested;
 }
 
 export function buildClaudeAcpConfig(
@@ -271,9 +277,12 @@ async function prepareClaudeRemoteManagedHome(
 
   // Content-addressed sanitized seed (managed cache under the instance root, not
   // a temp dir — reused across runs, so no teardown cleanup).
+  const bypassPermissions = resolveAcpPermissionMode(input.config) === "approve-all";
   const claudeConfigSeedDir = input.config.managedAiConnection
     ? explicitClaudeConfigDir
-    : await prepareClaudeConfigSeed(process.env, onLog, input.companyId);
+    : await prepareClaudeConfigSeed(process.env, onLog, input.companyId, {
+      permissionDefaultMode: bypassPermissions ? "bypassPermissions" : "default",
+    });
   // Ship the per-run skill bundle, staged only when the run selected at
   // least one skill. The bundle directory holds a plain copy of each
   // selected skill's files (`materializePaperclipSkillCopy` never copies a
@@ -316,10 +325,38 @@ async function prepareClaudeRemoteManagedHome(
   });
   // Repoint CLAUDE_CONFIG_DIR onto the in-sandbox config dir.
   env.CLAUDE_CONFIG_DIR = remoteClaudeConfigDir;
+  const localPermissionOverride = bypassPermissions && !input.config.managedAiConnection
+    ? await overrideRemoteClaudeLocalPermissionMode({
+      runId,
+      target: executionTarget,
+      workspaceLocalDir: input.workspaceLocalDir,
+      workspaceRemoteDir: stagedRuntime.workspaceRemoteDir ?? input.workspaceLocalDir,
+      defaultMode: "bypassPermissions",
+      options: {
+        cwd: stagedRuntime.workspaceRemoteDir ?? input.workspaceLocalDir,
+        env,
+        timeoutSec: Math.max(input.timeoutSec, 15),
+        graceSec: 20,
+        onLog,
+      },
+    })
+    : null;
+  if (bypassPermissions && !input.config.managedAiConnection) {
+    Object.assign(env, claudeSandboxPermissionEnv({ dangerouslySkipPermissions: true, targetIsSandbox: true }));
+  }
   if (toolShellPrefixInstalled && remoteToolShellPrefixPath) {
     env.CLAUDE_CODE_SHELL_PREFIX = remoteToolShellPrefixPath;
   }
-  return { stagedRuntime, teardown: registerWorkspaceSyncBack(stagedRuntime) };
+  const syncBack = registerWorkspaceSyncBack(stagedRuntime);
+  const teardown: AcpxRemoteManagedHomeResult["teardown"] = localPermissionOverride && syncBack
+    ? async () => {
+      await localPermissionOverride.beforeRestore();
+      const outcome = await syncBack();
+      await localPermissionOverride.afterRestore();
+      return outcome;
+    }
+    : syncBack;
+  return { stagedRuntime, teardown };
 }
 
 export function classifyClaudeTerminalSessionFailure(
