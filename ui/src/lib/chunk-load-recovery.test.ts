@@ -92,6 +92,56 @@ describe("reloadForChunkLoadError", () => {
     expect(reload).toHaveBeenCalledTimes(1);
   });
 
+  it("keeps the stored reload time readable by builds without retries", () => {
+    const storage = memoryStorage();
+    const reload = vi.fn();
+    let now = 1_000_000;
+    createChunkLoadRecovery({ storage: () => storage, reload, now: () => now }).reloadForChunkLoadError(cssPreloadError);
+    now += 10_000;
+    createChunkLoadRecovery({ storage: () => storage, reload, now: () => now }).reloadForChunkLoadError(cssPreloadError);
+
+    // An older build reads this key with Number() and keeps its one-reload guard.
+    expect(Number(storage.getItem("paperclip:chunk-load-reload-at"))).toBe(1_000_000);
+  });
+
+  it("ignores a retry count left from another guard window", () => {
+    vi.useFakeTimers();
+    const reload = vi.fn();
+    const storage = memoryStorage({
+      "paperclip:chunk-load-reload-at": "2000000",
+      "paperclip:chunk-load-reload-attempts": `1000000:${RELOAD_DELAYS_MS.length}`,
+    });
+    const { reloadForChunkLoadError } = createChunkLoadRecovery({ storage: () => storage, reload, now: () => 2_010_000 });
+
+    expect(reloadForChunkLoadError(cssPreloadError)).toBe(true);
+    vi.advanceTimersByTime(RELOAD_DELAYS_MS[1]!);
+    expect(reload).toHaveBeenCalledTimes(1);
+  });
+
+  it("cancels a delayed retry that has not started", () => {
+    vi.useFakeTimers();
+    const reload = vi.fn();
+    const storage = memoryStorage({ "paperclip:chunk-load-reload-at": "1000000" });
+    const recovery = createChunkLoadRecovery({ storage: () => storage, reload, now: () => 1_010_000 });
+    expect(recovery.reloadForChunkLoadError(cssPreloadError)).toBe(true);
+    const abandoned = vi.fn();
+    recovery.onChunkLoadReloadAbandoned(abandoned);
+
+    expect(recovery.cancelPendingChunkLoadReload()).toBe(true);
+    vi.advanceTimersByTime(RELOAD_DELAYS_MS[1]! + RELOAD_ABANDONED_MS);
+    expect(reload).not.toHaveBeenCalled();
+    expect(abandoned).not.toHaveBeenCalled();
+    expect(recovery.cancelPendingChunkLoadReload()).toBe(false);
+  });
+
+  it("cannot cancel a reload that already started", () => {
+    const reload = vi.fn();
+    const recovery = createChunkLoadRecovery({ storage: () => memoryStorage(), reload });
+    expect(recovery.reloadForChunkLoadError(cssPreloadError)).toBe(true);
+    expect(recovery.cancelPendingChunkLoadReload()).toBe(false);
+    expect(reload).toHaveBeenCalledTimes(1);
+  });
+
   it("notifies waiting callers and stops claiming the failure when the reload is cancelled", () => {
     vi.useFakeTimers();
     const storage = memoryStorage();

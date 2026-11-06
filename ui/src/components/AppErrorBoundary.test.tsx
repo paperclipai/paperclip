@@ -23,6 +23,7 @@ vi.mock("@/lib/chunk-load-recovery", async (importOriginal) => {
     ...actual,
     reloadForChunkLoadError: (error: unknown) => chunkRecovery.current!.reloadForChunkLoadError(error),
     onChunkLoadReloadAbandoned: (listener: () => void) => chunkRecovery.current!.onChunkLoadReloadAbandoned(listener),
+    cancelPendingChunkLoadReload: () => chunkRecovery.current!.cancelPendingChunkLoadReload(),
   };
 });
 
