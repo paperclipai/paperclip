@@ -39,6 +39,7 @@ import { WorkspaceFileMarkdownBody } from "./WorkspaceFileMarkdownBody";
 const ISSUE_ID = "3fb1a3f4-3f0e-4c58-8d3e-1c2f0f5a9b11";
 const PROJECT_ID = "17acae7d-9d0c-46bf-9c82-be9694ac3461";
 const WORKSPACE_ID = "0de5f74f-a7d4-4f73-a9a0-455a2b968cf2";
+const originalUrl = window.location.href;
 
 function act(callback: () => void) {
   flushSync(callback);
@@ -128,6 +129,7 @@ function chipPaths() {
 }
 
 beforeEach(() => {
+  window.history.replaceState({}, "", "/PAP/issues/PAP-1");
   mockAvailability.mockReset();
   mockNavigate.mockReset();
   container = document.createElement("div");
@@ -138,6 +140,7 @@ beforeEach(() => {
 afterEach(() => {
   act(() => root.unmount());
   container.remove();
+  window.history.replaceState({}, "", originalUrl);
 });
 
 describe("WorkspaceFileMarkdownBody availability gating", () => {
