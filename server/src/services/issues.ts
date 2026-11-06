@@ -10740,22 +10740,22 @@ export function issueService(db: Db) {
           issueData.projectId = personalProject.id;
         }
 
-        // origin_issue_id is exposed on the task, so record it only when every
-        // reader of the task may also see the origin: an open origin, or one in
-        // the same private subtree. Otherwise leave it null; createdFrom then
-        // falls back to the run-based source, which checks access on read.
+        // origin_issue_id is returned with the task, so record it only when it
+        // reveals nothing new: the task's own parent or privacy parent (already
+        // exposed on the task), or a fully public origin (open, outside private
+        // projects and subtrees, not hidden). Otherwise leave it null; createdFrom
+        // then resolves the source through the run, which checks access on read.
         let originIssueId: string | null = runSourceIssueId ?? handoffSource?.id ?? privacyParentIssueId;
-        if (originIssueId) {
+        if (originIssueId && originIssueId !== issueData.parentId && originIssueId !== privacyParentIssueId) {
           const [origin] = await tx.select({
-            visibility: issues.visibility, privacyRootIssueId: issues.privacyRootIssueId, projectId: issues.projectId,
+            visibility: issues.visibility, privacyRootIssueId: issues.privacyRootIssueId,
+            projectId: issues.projectId, hiddenAt: issues.hiddenAt,
           }).from(issues).where(and(eq(issues.id, originIssueId), eq(issues.companyId, companyId)));
-          const originPrivate = !origin || origin.visibility === "private" || Boolean(origin.privacyRootIssueId) ||
-            (origin.projectId ? await tx.select({ id: projects.id }).from(projects)
-              .where(and(eq(projects.id, origin.projectId), eq(projects.visibility, "private"))).limit(1)
-              .then((rows) => rows.length > 0) : false);
-          const sameSubtree = visibility === "private" && Boolean(privacyRootIssueId) &&
-            privacyRootIssueId === (origin?.privacyRootIssueId ?? originIssueId);
-          if (originPrivate && !sameSubtree) originIssueId = null;
+          const originPublic = Boolean(origin) && origin!.visibility !== "private" && !origin!.privacyRootIssueId &&
+            !origin!.hiddenAt && !(origin!.projectId && await tx.select({ id: projects.id }).from(projects)
+              .where(and(eq(projects.id, origin!.projectId), eq(projects.visibility, "private"))).limit(1)
+              .then((rows) => rows.length > 0));
+          if (!originPublic) originIssueId = null;
         }
         const values = {
           ...issueData,

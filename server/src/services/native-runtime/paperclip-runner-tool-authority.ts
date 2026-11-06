@@ -1,5 +1,5 @@
 import { budgetServiceInTransaction } from "../budgets.js";
-import { resolveTaskWatchdogMutationScope } from "../task-watchdog-scope.js";
+import { resolveTaskWatchdogMutationScope, taskWatchdogScopeAllowsIssueMutation } from "../task-watchdog-scope.js";
 import { resolveNewTaskParent } from "../issue-hierarchy.js";
 import { DOWNLOAD_ARTIFACT, DOWNLOAD_ARTIFACT_DEFINITION, downloadArtifactSchema, createArtifactInstaller, type ArtifactInstaller } from "./artifact-transfer.js";
 import { notifyStatusCardIssueChange } from "../status-card-notifications.js";
@@ -1722,6 +1722,9 @@ export class PaperclipRunnerToolAuthority {
       let parentIssueId = context.issue.conversationAgentId ? null : context.issue.id;
       let parentProjectId = parentIssueId ? context.issue.projectId : null;
       const requestedParentId = nullableProviderId(input.parentTaskId);
+      const watchdogScope = await resolveTaskWatchdogMutationScope(tx, {
+        type: "agent", agentId: this.binding.agentId, runId: this.binding.runId, companyId: this.binding.companyId,
+      });
       if (requestedParentId && requestedParentId !== parentIssueId) {
         const [parent] = await tx.select().from(issues).where(and(
           eq(issues.id, requestedParentId), eq(issues.companyId, this.binding.companyId),
@@ -1732,14 +1735,18 @@ export class PaperclipRunnerToolAuthority {
         }
         const denied = await parentWriteDenial(tx, context.run, parent);
         if (denied) throw forbidden(denied);
+        // A watchdog run may only add work inside its watched subtree, as on the
+        // issues route.
+        if (watchdogScope.kind !== "none") {
+          const allowed = await taskWatchdogScopeAllowsIssueMutation(tx, watchdogScope, { id: parent.id, companyId: parent.companyId });
+          if (allowed.kind === "invalid") throw forbidden(allowed.detail);
+        }
         parentIssueId = parent.id;
         parentProjectId = parent.projectId;
       }
       // Place the edge the way createChild will, and authorize the parent that
       // is actually written. Active watchdog runs keep their requested parent.
-      const parentDepthPolicy = (await resolveTaskWatchdogMutationScope(tx, {
-        type: "agent", agentId: this.binding.agentId, runId: this.binding.runId, companyId: this.binding.companyId,
-      })).kind === "watchdog" ? "allow_nested" as const : "flatten" as const;
+      const parentDepthPolicy = watchdogScope.kind === "watchdog" ? "allow_nested" as const : "flatten" as const;
       let placedParentId = parentIssueId;
       // Set when the structural parent is dropped; the follow-up still works in
       // the requester's workspace.

@@ -369,6 +369,34 @@ describeEmbeddedPostgres("agent task hierarchy depth", () => {
     expect((await resolveIssueCreationSource(db, created))?.sourceIssue.id).toBe(privateTaskId);
   });
 
+  it("does not expose a hidden origin or a private sibling's id", async () => {
+    const { companyId, agentId } = await seedCompany();
+    const runOn = async (taskId: string) => {
+      const runId = randomUUID();
+      await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, status: "running", issueId: taskId });
+      return runId;
+    };
+
+    const openParentId = await seedIssue(companyId);
+    const hiddenTaskId = await seedIssue(companyId, { hiddenAt: new Date() });
+    const fromHidden = await issueService(db).create(companyId, {
+      title: "From a hidden task", parentId: openParentId, createdByAgentId: agentId, actorRunId: await runOn(hiddenTaskId),
+    });
+    expect(fromHidden.originIssueId).toBeNull();
+
+    const rootId = randomUUID();
+    await seedIssue(companyId, { id: rootId, visibility: "private", privacyRootIssueId: rootId });
+    const siblingA = await seedIssue(companyId, { parentId: rootId, visibility: "private", privacyRootIssueId: rootId });
+    const siblingB = await seedIssue(companyId, { parentId: rootId, visibility: "private", privacyRootIssueId: rootId });
+    const fromSibling = await issueService(db).create(companyId, {
+      title: "Filed under a private sibling", parentId: siblingB, createdByAgentId: agentId,
+      actorRunId: await runOn(siblingA), expectedParentId: rootId,
+    });
+    expect(fromSibling.privacyParentIssueId).toBe(siblingB);
+    expect(fromSibling.originIssueId).toBeNull();
+    expect((await resolveIssueCreationSource(db, fromSibling))?.sourceIssue.id).toBe(siblingA);
+  });
+
   describe("moves", () => {
     it("keeps the requested private parent as the privacy source of a placed move", async () => {
       const { companyId } = await seedCompany();

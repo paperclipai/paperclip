@@ -1416,6 +1416,16 @@ describe("PaperclipRunnerToolAuthority", () => {
     // A disabled watchdog no longer earns the exception.
     const disabled = await childRun(true, "disabled");
     expect(disabled).toMatchObject({ parentId: rootId, originIssueId: disabled.childId });
+    // An active watchdog may not name a parent outside its watched subtree.
+    const outsideId = randomUUID();
+    await db.insert(issues).values({ id: outsideId, companyId, title: "Outside the watched subtree", status: "todo", workMode: "standard" });
+    const [watchdogRun] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns)
+      .where(eq(heartbeatRuns.nativeIssueId, watchdog.childId));
+    const scoped = new PaperclipRunnerToolAuthority(db, { companyId, agentId, issueId: watchdog.childId, runId: watchdogRun!.id, workMode: "standard" });
+    await expect(scoped.execute({
+      tool: "create_task", callId: "watchdog-outside",
+      arguments: { idempotencyKey: "watchdog-outside", title: "Elsewhere", status: "backlog", parentTaskId: outsideId },
+    })).rejects.toThrow(/watched issue subtree/);
   });
 
   it("authorizes the placed parent: a hidden root rejects a named child parent and makes the default standalone", async () => {
