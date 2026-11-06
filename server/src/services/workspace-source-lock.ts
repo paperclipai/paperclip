@@ -95,4 +95,3 @@ export async function retainCurrentWorkspaceSource(cwd: string): Promise<void> {
   if (!scope) throw new Error("workspace_source_admission_scope_required");
   await retainManagedProjectSource(scope.db, companyId, cwd);
 }
-

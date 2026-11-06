@@ -5,7 +5,7 @@ import path from "node:path";
 import { sql, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { activityLog, agents, companies, createDb, environmentLeases, environments, executionWorkspaceSnapshots, executionWorkspaces, heartbeatRuns, issues, nativeRunFinalizations, projects, workspaceOperations, type Db } from "@paperclipai/db";
-import { readRemoteWorkspaceAuthority } from "@paperclipai/shared";
+import { readRemoteWorkspaceAuthority, readRemoteWorkspaceRunReference } from "@paperclipai/shared";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
 import { resolveManagedProjectWorkspaceDir, resolvePaperclipInstanceRoot } from "../home-paths.js";
 import { createLocalDiskStorageProvider } from "../storage/local-disk-provider.js";
@@ -82,13 +82,32 @@ describe.skipIf(!support.supported)("online ordinary physical source fence", () 
     });
     return { started, release };
   }
+  async function remoteWriter(companyId: string, agentId: string) {
+    const workspaceId = randomUUID(), runId = randomUUID(), leaseId = randomUUID(), providerLeaseId = randomUUID();
+    const [issue] = await db.insert(issues).values({ companyId, title: "Unrelated object-backed task" }).returning();
+    const [environment] = await db.insert(environments).values({ name: runId, driver: "daytona" }).returning();
+    const remoteCwd = `/workspaces/${workspaceId}`;
+    const authority = { schema: "paperclip.remote-workspace.v1", epoch: 1, snapshotId: null, source: { kind: "empty" },
+      location: { environmentId: environment.id, leaseId, providerLeaseId, remoteCwd }, writerRunId: runId, dirty: true };
+    const [workspace] = await db.insert(executionWorkspaces).values({ id: workspaceId, companyId, sourceIssueId: issue.id,
+      name: "Unrelated remote writer", mode: "isolated_workspace", strategyType: "project_primary", providerType: "cloud_sandbox",
+      cwd: remoteCwd, metadata: { remoteWorkspace: authority } }).returning();
+    const reference = { schema: "paperclip.remote-workspace-run.v1", workspaceId, leaseId, providerLeaseId,
+      remoteCwd, epoch: 1, state: "prepared", snapshotId: null };
+    const [run] = await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, issueId: issue.id,
+      nativeIssueId: issue.id, status: "running", runtimeMode: "native", contextSnapshot: { executionWorkspaceId: workspaceId },
+      runnerProfileJson: { remoteWorkspace: reference } }).returning();
+    await db.insert(environmentLeases).values({ id: leaseId, companyId, heartbeatRunId: runId, issueId: issue.id,
+      executionWorkspaceId: workspaceId, environmentId: environment.id, provider: "daytona", providerLeaseId,
+      status: "active", metadata: { remoteCwd } });
+    expect(readRemoteWorkspaceAuthority(workspace.metadata)).toEqual(authority);
+    expect(readRemoteWorkspaceRunReference(run.runnerProfileJson?.remoteWorkspace)).toEqual(reference);
+    return run;
+  }
   it("imports an alias with unrelated object-backed execution still running and leaves all original files", async () => {
     const f = await fixture();
     const [agent] = await db.insert(agents).values({ companyId: f.companyId, name: "Unrelated active agent" }).returning();
-    const [remote] = await db.insert(executionWorkspaces).values({ companyId: f.companyId, name: "Remote",
-      mode: "isolated_workspace", strategyType: "project_primary", providerType: "cloud_sandbox", cwd: "/workspaces/remote" }).returning();
-    const [run] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: agent.id,
-      status: "running", runtimeMode: "native", contextSnapshot: { executionWorkspaceId: remote.id } }).returning();
+    const run = await remoteWriter(f.companyId, agent.id);
     expect(await inventoryRemoteWorkspaceMigration(db, f)).toMatchObject({ eligible: true });
     await expect(migrateRemoteWorkspace({ db, storage, ...f, apply: true })).resolves.toMatchObject({ applied: true });
     expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id)))[0]).toEqual(run);
@@ -226,8 +245,7 @@ describe.skipIf(!support.supported)("online ordinary physical source fence", () 
   }
   it("imports a terminal prepared source while retaining its original provider and finalization obligations", async () => {
     const f = await recoveryFixture(), put = storage.putFile.bind(storage);
-    const [unrelated] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.run.agentId,
-      status: "running", runtimeMode: "native", runnerProfileJson: { remoteWorkspace: { schema: "paperclip.remote-workspace-run.v1" } } }).returning();
+    const unrelated = await remoteWriter(f.companyId, f.run.agentId);
     expect(await inventoryRemoteWorkspaceMigration(db, f)).toMatchObject({ eligible: true });
     vi.spyOn(storage, "putFile").mockImplementationOnce(async input => {
       await db.transaction(async tx => {

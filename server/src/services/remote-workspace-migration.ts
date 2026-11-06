@@ -436,7 +436,7 @@ export async function migrateRemoteWorkspace(input: {
       const restoredArchive = path.join(scratch, "verified.pcws"), restored = path.join(scratch, "restored");
       await loadWorkspaceSnapshotArchive({ storage: input.storage, reference: ref, targetPath: restoredArchive, signal: input.signal });
       await restoreRemoteWorkspaceArchive({ archivePath: restoredArchive, targetDir: restored, expectedManifestDigest: ref.manifestDigest, signal: input.signal });
-      if (!recovered || onlineSource) {
+      if (!recovered) {
         const currentArchive = path.join(scratch, "current.pcws");
         const current = await captureRemoteWorkspaceDirectory({ cwd: sourceRoot!, archivePath: currentArchive, exclude, requireNoGit: Boolean(onlineSource), signal: input.signal });
         if (current.manifestDigest !== captured.manifestDigest) throw new Error("remote_workspace_migration_source_changed");
