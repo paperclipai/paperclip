@@ -268,7 +268,11 @@ export async function reconcileSafeNativeReplacements(
             eq(heartbeatRunEvents.runId, run.id),
             inArray(heartbeatRunEvents.eventType, [
               "harness.diagnostic",
+              "semantic_tool.input",
+              "semantic_tool.result",
               "tool.execution.started",
+              "tool.execution.completed",
+              "item.completed",
               "workspace.changed",
               "workspace.change.updated",
               "delegation.started",
@@ -278,6 +282,18 @@ export async function reconcileSafeNativeReplacements(
             ]),
           ),
         );
+      const freshConversation = coordinator.failureCode === "native_provider_usage_limit";
+      const eventPayload = (event: { payload: unknown }) => {
+        const envelope = record(event.payload);
+        return envelope.prpEvent ? record(record(envelope.prpEvent).payload) : envelope;
+      };
+      const completedProviderActions = freshConversation ? events
+        .filter(event => event.eventType === "tool.execution.completed")
+        .filter(event => {
+          const p = eventPayload(event);
+          return typeof p.executionId === "string" && typeof p.name === "string" &&
+            ["succeeded", "completed"].includes(String(p.status));
+        }) : [];
       const safeControlReads = new Set([
         "connections_search",
         "connection_request",
@@ -287,10 +303,19 @@ export async function reconcileSafeNativeReplacements(
         "paperclip_read_document",
       ]);
       const uncertainProviderActions = events.flatMap((event) => {
-        const envelope = record(event.payload);
-        const p = envelope.prpEvent
-          ? record(record(envelope.prpEvent).payload)
-          : envelope;
+        const p = eventPayload(event);
+        if (["tool.execution.completed", "item.completed", "semantic_tool.result"].includes(event.eventType)) return [];
+        if (event.eventType === "semantic_tool.input") {
+          if (!freshConversation) return [];
+          const call = record(p.semantic_tool);
+          const settled = typeof call.callId === "string" && events.some(done => {
+            const result = record(eventPayload(done).semantic_tool);
+            return done.eventType === "semantic_tool.result" && result.callId === call.callId &&
+              result.operationId === call.operationId && result.outcome === "succeeded";
+          });
+          return settled ? [] : [String(call.callId ?? "unconfirmed semantic tool")];
+        }
+        if (freshConversation && ["workspace.changed", "workspace.change.updated", "artifact.generated"].includes(event.eventType)) return [];
         if (event.eventType === "harness.diagnostic")
           return p.classification === "descendant"
             ? [`descendant ${String(p.receivedThreadId ?? "unknown")}`]
@@ -307,6 +332,16 @@ export async function reconcileSafeNativeReplacements(
           return [event.eventType];
         if (event.eventType === "tool.execution.started") {
           const name = typeof p.name === "string" ? p.name : "unknown tool";
+          if (freshConversation && completedProviderActions.some(done => {
+            const completed = eventPayload(done);
+            const startSource = record(record(event.payload).prpEvent);
+            const completedSource = record(record(done.payload).prpEvent);
+            return completed.executionId === p.executionId && completed.name === name &&
+              (startSource.sourceInstanceId === undefined ||
+                completedSource.sourceInstanceId === startSource.sourceInstanceId &&
+                Number(completedSource.sourceSeq) > Number(startSource.sourceSeq));
+          })) return [];
+
           const completedTaskControlCallIds = stoppedSession?.evidence.completedTaskControlCallIds;
           if (name === "paperclip_finish" && Array.isArray(completedTaskControlCallIds) &&
               completedTaskControlCallIds.includes(p.executionId)) return [];
@@ -323,6 +358,14 @@ export async function reconcileSafeNativeReplacements(
             (!receiptedRead && !safeControlReads.has(name))
             ? [String(p.executionId ?? name)]
             : [];
+        }
+        if (freshConversation && event.eventType === "item.started") {
+          const source = record(record(event.payload).prpEvent);
+          if (typeof source.itemId === "string" && events.some(done => {
+            const terminal = record(record(done.payload).prpEvent);
+            return done.eventType === "item.completed" && terminal.itemId === source.itemId &&
+              terminal.sourceInstanceId === source.sourceInstanceId && eventPayload(done).status === "completed";
+          })) return [];
         }
         return [
           "command_execution",
@@ -357,6 +400,7 @@ export async function reconcileSafeNativeReplacements(
       const remoteWorkspace = await remoteWorkspaceReplacementEvidence(db, run, coordinator.issueId, leases);
       const decision = decideNativeReplacement({
         failedSession: true,
+        freshConversation,
         // A facade transport failure can conceal an authoritative protocol
         // rejection. A stopped process and read receipts do not resolve that.
         failureMeaningKnown:
@@ -657,8 +701,10 @@ export async function reconcileSafeNativeReplacements(
           if (!stoppedSession.retire()) throw new Error("native_replacement_stopped_session_changed");
           await appendHeartbeatRunEvent(tx as unknown as Db, {
             companyId: run.companyId, runId: run.id, agentId: run.agentId,
-            eventType: "native.stopped_text_turn_verified", stream: "system", level: "info",
-            message: "The previous runner and provider stopped. The interrupted turn had no external actions; any completion bookkeeping has a verified receipt.",
+            eventType: freshConversation ? "native.stopped_conversation_verified" : "native.stopped_text_turn_verified", stream: "system", level: "info",
+            message: freshConversation
+              ? "The previous runner and provider stopped. A fresh conversation will preserve completed actions without replaying them."
+              : "The previous runner and provider stopped. The interrupted turn had no external actions; any completion bookkeeping has a verified receipt.",
             payload: stoppedSession.evidence,
           });
         }
@@ -731,7 +777,9 @@ export async function reconcileSafeNativeReplacements(
             failureDetail: {
               ...current.failureDetail,
               ...(quotaCycleReset ? { quotaCycleResetSuccessorRunId: successorRunId } : {}),
-              ...(stoppedSession ? { stoppedTextTurn: stoppedSession.evidence } : {}),
+              ...(stoppedSession ? freshConversation
+                ? { stoppedConversation: stoppedSession.evidence }
+                : { stoppedTextTurn: stoppedSession.evidence } : {}),
               successorRunId,
               nextAction:
                 "Continue in the linked fresh provider session after the retry delay.",

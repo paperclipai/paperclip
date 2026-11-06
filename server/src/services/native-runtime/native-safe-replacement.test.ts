@@ -276,7 +276,21 @@ const support = externalDatabaseUrl
       await db.update(nativeRunFinalizations).set({ failureCode: "native_provider_usage_limit" }).where(eq(nativeRunFinalizations.runId, source.runId));
       const firstRetryAt = new Date(Date.now() + 60_000);
       expect(await recordVerifiedRouterQuotaCooldown(db, { runId: source.runId, companyId: source.companyId, agentId: source.agentId, credentialIdentity: firstIdentity.replace(`${selection.binding.grantId}:`, `${selection.binding.grantId}:${userId}:`), retryNotBefore: firstRetryAt.toISOString() })).toBe(true);
+      // Completed ordinary work is context for a new turn, never a command to replay.
+      await appendHeartbeatRunEvent(db, { ...source, eventType: "tool.execution.started", stream: "system", level: "info",
+        payload: { executionId: "saved-file", name: "write_file", transport: "process" } });
+      await appendHeartbeatRunEvent(db, { ...source, eventType: "tool.execution.completed", stream: "system", level: "info",
+        payload: { executionId: "saved-file", name: "write_file", transport: "process", status: "completed", output: "Saved fixture.txt" } });
       const verifyStoppedSession = async () => ({ evidence: {}, retire: () => true });
+      await expect(db.transaction(async tx => {
+        await appendHeartbeatRunEvent(tx as unknown as typeof db, { ...source,
+          eventType: "tool.execution.started", stream: "system", level: "info",
+          payload: { executionId: "pending-email", name: "send_email", transport: "process" } });
+        expect((await reconcileSafeNativeReplacements(tx as unknown as typeof db, new Date(), { verifyStoppedSession })).scheduled).toBe(0);
+        const [held] = await tx.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, source.runId));
+        expect(held?.failureDetail?.replacementDenied).toBe("uncertain_provider_action");
+        throw new Error("discard unresolved-action fixture");
+      })).rejects.toThrow("discard unresolved-action fixture");
       const retryAt = new Date(Date.now() + 120_000);
       await router.recordQuotaCooldown(source.companyId, second.connectionId, `secret:${secondIdentity.slice(second.grantId.length + 1)}`, retryAt);
       expect((await reconcileSafeNativeReplacements(db, new Date(), { verifyStoppedSession })).scheduled).toBe(0);

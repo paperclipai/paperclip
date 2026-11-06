@@ -1,8 +1,13 @@
 import { randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agents,
+  authUsers,
+  companyMemberships,
+  connectionGrants,
+  companySecrets,
+  aiConnectionTaskPins,
   companies,
   completionContracts,
   createDb,
@@ -31,10 +36,19 @@ import { executePaperclipNativeSession } from "./native-session-executor.js";
 import { buildNativeCompletionContract } from "./completion-contracts.js";
 import { PaperclipControlPlanePort } from "./paperclip-control-plane-port.js";
 import { prepareNativeHeartbeatRun } from "./prepare-native-run.js";
+import { tmpdir } from "node:os";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { aiConnectionService } from "../ai-connections.js";
+import { aiConnectionRouterService } from "../ai-connection-router.js";
+import { BUILTIN_AI_FAILOVER_ROUTER_KEY } from "@paperclipai/shared";
+import { recordVerifiedRouterQuotaCooldown } from "../heartbeat/run-completion.js";
+import { reconcileSafeNativeReplacements } from "./native-safe-replacement.js";
 
 describe("native provider capacity failure persistence", () => {
   let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
   let db: ReturnType<typeof createDb>;
+  const workspaces: string[] = [];
   const companyId = randomUUID();
   const agentId = randomUUID();
 
@@ -60,11 +74,16 @@ describe("native provider capacity failure persistence", () => {
 
   afterAll(async () => {
     await temporary?.cleanup();
+    await Promise.all(workspaces.map(path => rm(path, { recursive: true, force: true })));
   });
 
-  it.each([false, true])(
-    "stops automatic retries for a durable usage terminal (replayed=%s)",
-    async (replayed) => {
+  it.each([false, true].flatMap(replayed => [false, true].map(structured => ({ replayed, structured }))))(
+    "persists quota failure and continues receipted work (replayed=$replayed, structured=$structured)",
+    async ({ replayed, structured }) => {
+      const workspaceCwd = await mkdtemp(join(tmpdir(), "native-quota-workspace-"));
+      workspaces.push(workspaceCwd);
+      const savedFile = join(workspaceCwd, "saved-work.txt");
+      const savedWork = "Completed work before the usage limit.\n";
       const issueId = randomUUID();
       const runId = randomUUID();
       const [issue] = await db
@@ -148,7 +167,7 @@ describe("native provider capacity failure persistence", () => {
           workMode: "standard",
         },
         workspace: {
-          cwd: "/tmp",
+          cwd: workspaceCwd,
           repoUrl: null,
           repoRef: null,
           branchName: null,
@@ -168,6 +187,27 @@ describe("native provider capacity failure persistence", () => {
         interactionResponses: [],
         credentialBindings: [],
       };
+      const userId = `capacity-${randomUUID()}`;
+      await db.insert(authUsers).values({ id: userId, name: "Capacity", email: `${userId}@example.test`, createdAt: new Date(), updatedAt: new Date() });
+      await db.insert(companyMemberships).values({ companyId, principalId: userId, principalType: "user", status: "active", membershipRole: "member" });
+      const accounts = aiConnectionService(db);
+      const saved = await Promise.all(["First", "Backup"].map(name => accounts.save(companyId, userId, {
+        provider: "openai", method: "api_key", ownership: "personal", name, apiKey: `fixture-${name}`, agentIds: [], allAgents: true,
+      }, randomUUID())));
+      const members = saved.map(account => ({ id: randomUUID(), binding: {
+        mode: "delegated" as const, provider: "openai" as const, method: "api_key" as const, ...account,
+      }, profile: { provider: "codex" as const, model: "gpt-5" } }));
+      const router = aiConnectionRouterService(db);
+      const pool = await router.save(BUILTIN_AI_FAILOVER_ROUTER_KEY, { companyId,
+        config: { name: "Capacity pool", enabled: true, mode: "failover", thresholdPercent: 90, members } }, userId);
+      await db.update(agents).set({ runtimeConfig: { aiConnection: { mode: "router", connectionId: pool.id } } }).where(eq(agents.id, agentId));
+      const selection = await router.resolve({ companyId, poolId: pool.id, agentId, userId, adapterType: "paperclip_runner", taskKey: issueId });
+      if (selection.binding.mode === "responsible_user") throw new Error("Expected delegated fixture");
+      await db.update(heartbeatRuns).set({ scopeKind: "issue", issueId, responsibleUserId: userId,
+        contextSnapshot: { issueId, aiRouterTaskKey: issueId, aiRouterSelection: selection },
+        runnerProfileJson: { recoveryEventInventoryVersion: 1, nativeExecutionInput: { ...execution, workspace: { ...execution.workspace, cwd: workspaceCwd } },
+          sessionCheckpoint: { providerSessionId: "capacity-test-provider-session", providerIdentity: { threadId: "capacity-test-thread" } } },
+      }).where(eq(heartbeatRuns.id, runId));
       const event: PrpEvent = {
         schema: "paperclip.prp.event.v1",
         runId,
@@ -175,7 +215,7 @@ describe("native provider capacity failure persistence", () => {
         turnId: native.turnId,
         sourceInstanceId: native.runnerInstanceId,
         sourceEventId: "capacity-terminal",
-        sourceSeq: 1,
+        sourceSeq: 3,
         sourceKind: "runner",
         eventType: "turn.failed",
         schemaVersion: 1,
@@ -189,6 +229,10 @@ describe("native provider capacity failure persistence", () => {
           },
         },
       };
+      const toolStarted: PrpEvent = { ...event, sourceSeq: 1, sourceEventId: "capacity-tool-started", eventType: "tool.execution.started",
+        payload: { schema: "paperclip.tool.execution.v1", executionId: "saved-work", name: "write_file", transport: "process", operation: "edit", status: "running", output: null, outputBytes: 0, outputTruncated: false, outputDigest: null } };
+      const toolCompleted: PrpEvent = { ...toolStarted, sourceSeq: 2, sourceEventId: "capacity-tool-completed", eventType: "tool.execution.completed",
+        payload: { ...toolStarted.payload, status: "completed", output: "Saved work before quota exhaustion" } };
       const openInput = {
         identity: {
           companyId,
@@ -215,6 +259,9 @@ describe("native provider capacity failure persistence", () => {
           completionContractSha256: contract.canonicalSha256,
         });
         await priorPort.openRun(openInput);
+        await priorPort.appendEvent(toolStarted);
+        await writeFile(savedFile, savedWork);
+        await priorPort.appendEvent(toolCompleted);
         expect((await priorPort.appendEvent(event)).disposition).toBe(
           "committed",
         );
@@ -224,13 +271,20 @@ describe("native provider capacity failure persistence", () => {
         .mockImplementation(
           async (options: { controlPlane: ControlPlanePort }) => {
             await options.controlPlane.openRun(openInput);
+            await options.controlPlane.appendEvent(toolStarted);
+            if (!replayed) await writeFile(savedFile, savedWork);
+            await options.controlPlane.appendEvent(toolCompleted);
             const appended = await options.controlPlane.appendEvent(event);
             expect(appended.disposition).toBe(
               replayed ? "duplicate" : "committed",
             );
             // Production reports the provider terminal through the event, not by
             // pattern-matching this exception's arbitrary message.
-            throw new Error("provider turn stopped");
+            if (!structured) throw new Error("provider turn stopped");
+            throw Object.assign(new Error("provider turn stopped"), { providerFailure: {
+              schema: "paperclip.provider-failure.v1", provider: "openai", phase: "turn", category: "quota_exhausted",
+              message: "Provider quota exhausted", retryability: "requires_action",
+            } });
           },
         );
       await expect(
@@ -296,6 +350,26 @@ describe("native provider capacity failure persistence", () => {
       expect(
         events.filter((row) => row.sourceEventId === event.sourceEventId),
       ).toHaveLength(1);
+      const [grant] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, selection.binding.grantId));
+      const ref = grant.credentialSecretRefs.find(item => item.configPath === "ai.credential")!;
+      const [secret] = await db.select().from(companySecrets).where(eq(companySecrets.id, ref.secretId));
+      const attributed = await recordVerifiedRouterQuotaCooldown(db, { companyId, agentId, runId,
+        credentialIdentity: `${grant.id}:${userId}:${secret.id}:${secret.aiSessionEpoch}`,
+        retryNotBefore: new Date(Date.now() + 60_000).toISOString(),
+      });
+      expect(attributed).toBe(true);
+      // This DB lifecycle test injects containment; the real local owner verifier
+      // has separate Codex/ACPX stop-receipt and changed-process coverage.
+      expect((await reconcileSafeNativeReplacements(db, new Date(), {
+        verifyStoppedSession: async candidate => candidate.id === runId ? { evidence: {}, retire: () => true } : null,
+      })).scheduled).toBe(1);
+      const [successor] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, runId));
+      expect(successor.contextSnapshot).toMatchObject({ forceFreshSession: true, issueId,
+        aiRouterSelection: { memberId: members[1].id } });
+      const [pin] = await db.select().from(aiConnectionTaskPins).where(and(eq(aiConnectionTaskPins.companyId, companyId), eq(aiConnectionTaskPins.taskKey, issueId)));
+      expect(pin.selection.memberId).toBe(members[1].id);
+      expect(provider.execute).toHaveBeenCalledTimes(1);
+      expect(await readFile(savedFile, "utf8")).toBe(savedWork);
     },
   );
 });
