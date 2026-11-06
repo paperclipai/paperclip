@@ -25,7 +25,7 @@ import {
 import { nativeRuntimeContextFixture } from "./runtime-context.test-fixture.js";
 
 const toolDefinitions = vi.hoisted(() => vi.fn());
-vi.mock("../../runtime-api.js", () => ({ resolveLocalRuntimeApiUrl: () => "http://127.0.0.1:43219" }));
+vi.mock("../../runtime-api.js", async importOriginal => ({ ...await importOriginal<typeof import("../../runtime-api.js")>(), resolveLocalRuntimeApiUrl: () => "http://127.0.0.1:43219" }));
 vi.mock("./paperclip-runner-tool-authority.js", () => ({
   PaperclipRunnerToolAuthority: class {
     readonly binding = {};

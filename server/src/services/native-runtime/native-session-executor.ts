@@ -5,7 +5,7 @@ import { logger } from "../../middleware/logger.js";
 import { canRestoreMigratedNativeSession } from "./native-workspace-migration.js";
 import { NATIVE_PROVIDER_DURABLE_EVENT_TYPES, nativeHarnessBackupManifestSha256, retiredSourceAuthorizesNativeBackupRestore } from "./native-retired-backup-source.js";
 import { prepareCursorCloudRuntime } from "./cursor-cloud-runtime.js";
-import { resolveLocalRuntimeApiUrl } from "../../runtime-api.js";
+import { LocalRuntimeApiListenerClosedError, resolveLocalRuntimeApiUrl } from "../../runtime-api.js";
 import { providerFailureFromError } from "../../vendor/paperclip-runner/index.js";
 import { readProviderFailure } from "@paperclipai/shared";
 import { nativeCancellationHasUnsettledOwner, notifyNativeCancellation, waitForNativeCancellation } from "./native-cancellation-delivery.js";
@@ -10706,7 +10706,12 @@ async function executePaperclipNativeSessionWithinScope(
     } else {
       error = identityRedactor.redact(error);
     }
-    if (nativeRunsDetachingForRestart.has(input.execution.binding.runId)) {
+    // A closed runtime API listener means this process is shutting down; it
+    // closes HTTP admission before it drains runs. Keep the claim for the
+    // drain to suspend, so the next controller adopts the run without spending
+    // a failure or a same-run retry.
+    if (nativeRunsDetachingForRestart.has(input.execution.binding.runId)
+      || error instanceof LocalRuntimeApiListenerClosedError) {
       await leaseRenewal.stop().catch(() => undefined);
       liveQuestions.close();
       activeNativeSessions.delete(input.execution.binding.runId);

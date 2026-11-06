@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { authUsers, budgetReservations, companyMemberships, heartbeatRuns, issues, nativeRunFinalizations, workspaceOperations } from "@paperclipai/db";
 import { expect, it, vi } from "vitest";
+import { resolveLocalRuntimeApiUrl } from "../runtime-api.js";
 import { heartbeatService } from "../services/heartbeat.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { describeEmbeddedPostgres, nativeRestartFixture } from "./helpers/native-restart.js";
@@ -73,6 +74,56 @@ describeEmbeddedPostgres("heartbeat native recovery interrupted by graceful shut
     },
     90_000,
   );
+
+  it("hands a recovery to the next controller when shutdown closed the listener before backend setup", async () => {
+    const f = await seedRecoverableRun("LISTENER-CLOSED");
+    const listener = fixture.current.server!;
+    const address = listener.address();
+    if (!address || typeof address === "string") throw new Error("Expected a TCP runtime API listener");
+    let listenerClosed: Promise<void> | undefined;
+    // Graceful shutdown closes HTTP admission before it drains heartbeat runs.
+    // Backend setup then asks for the callback origin, as runnerd setup does.
+    const dying = vi.fn(() => ({
+      descriptor: async () => { resolveLocalRuntimeApiUrl(); throw new Error("unreachable"); },
+      openSession: async () => { resolveLocalRuntimeApiUrl(); throw new Error("unreachable"); },
+    }));
+    const heartbeat = heartbeatService(f.db, {
+      nativeSessionBackendFactory: dying as never,
+      beforeNativeRuntimeSelection: async () => {
+        listener.closeIdleConnections();
+        listenerClosed = new Promise<void>(resolve => listener.close(() => resolve()));
+      },
+    });
+    let drained: unknown;
+    try {
+      try {
+        const { claims } = await heartbeat.recoverNativeRunsAfterRestart(new Date(), [f.runId]);
+        expect(claims).toEqual([expect.objectContaining({ runId: f.runId })]);
+      } finally { await heartbeat.drainActiveRunExecutions(); }
+      expect(dying).toHaveBeenCalled();
+      drained = await heartbeat.drainRunningRunsForShutdown("SIGTERM", new Date(), [f.runId]);
+      await heartbeat.drainActiveRunExecutions();
+    } finally {
+      await listenerClosed;
+      await new Promise<void>(resolve => listener.listen(address.port, "127.0.0.1", resolve));
+    }
+    expect(drained).toMatchObject({ restartSuspendedRunIds: [f.runId] });
+    const [run] = await f.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+    const [owner] = await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId));
+    expect({ status: run.status, errorCode: run.errorCode, finishedAt: run.finishedAt }).toEqual({
+      status: "running", errorCode: null, finishedAt: null });
+    expect(owner).toMatchObject({ phase: "observed", resultId: null, recoveryState: "awaiting_runner_reattach" });
+
+    await f.db.update(nativeRunFinalizations).set({ controllerPid: 2_000_000_001 })
+      .where(eq(nativeRunFinalizations.runId, f.runId));
+    const resumed = vi.fn(() => { throw new Error("next boot reached provider dispatch"); });
+    const next = heartbeatService(f.db, { nativeSessionBackendFactory: resumed });
+    try {
+      const { claims } = await next.recoverNativeRunsAfterRestart(new Date(), [f.runId]);
+      expect(claims).toEqual([expect.objectContaining({ runId: f.runId })]);
+    } finally { await next.drainActiveRunExecutions(); }
+    expect(resumed).toHaveBeenCalledOnce();
+  }, 90_000);
 
   it("still settles a recovery whose claim merely expired without a shutdown suspension", async () => {
     const f = await seedRecoverableRun("EXPIRED-NOT-SUSPENDED");
