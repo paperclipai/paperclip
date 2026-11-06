@@ -489,3 +489,20 @@ it("does not inherit history for a coordinated past assertion with a current mar
     expect(gradeTeamConditions(o, phase === 0 ? "initial" : "complete").passed).toBe(false);
   }
 });
+
+it("accepts a current exact-skill unresolved installation disclosure without inventing recovery", () => {
+  const target = { slug: "doc-maintenance", name: "doc-maintenance" };
+  const actual = "The existing CTO was preserved; `doc-maintenance` remains unresolved due to an existing company skill slug.";
+  expect(truthfulTeamPartial(actual, target, true)).toBe(true);
+  const o = valid();
+  o.state.blockedSkill = target;
+  o.phaseReplies[0]!.body = "The existing CTO was preserved and the new role renamed CTO 2. The doc-maintenance skill was not installed because the local slug conflicts.";
+  o.phaseReplies[1]!.body = actual;
+  expect(gradeTeamConditions(o).passed).toBe(true);
+  for (const contradiction of [
+    "A security review remains unresolved. The team is installed.",
+    "No unresolved doc-maintenance conflicts remain.",
+    "All required skills are installed.",
+    actual + " The doc-maintenance skill is now installed.",
+  ]) expect(truthfulTeamPartial(contradiction, target, true)).toBe(false);
+});

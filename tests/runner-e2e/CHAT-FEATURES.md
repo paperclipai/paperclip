@@ -489,3 +489,12 @@ Menu evidence labels the parameter as `expectedDefinitionId`; the observed UI pr
 is the current-company route and visible definition key. Private entry retains the
 independent exact-ID/current-owner check. Delayed flyout and own-entry visibility
 are awaited within the same passed navigation deadline.
+
+Team install v8 accepts a current, exact-skill unresolved installation or slug-conflict
+report when the saved required skill is still missing. Independent current recovery
+claims and all-skills-installed claims still fail. Result 5171 remains originally
+FAILED; a local diagnostic changed only its truthful repeat phrase from "remains
+unresolved" to the already supported "remains blocked" and passed the owning grade.
+This is an assertion correction, with no new native pass or runtime-migration credit.
+The derived runtime fixture, protected local skill, actor/phase/resource/link checks,
+original query, two native/human turns and 480000ms attempt are unchanged.

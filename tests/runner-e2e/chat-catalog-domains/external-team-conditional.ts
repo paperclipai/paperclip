@@ -294,7 +294,12 @@ export function truthfulTeamPartial(
     && !clauses.some(clause => /\bno\b[^.!?;]{0,80}\bcaveats?\s+(?:remain|exist)/i.test(clause)
       || [...clause.matchAll(/\bcaveat\s+(?:(?:is|has been|was)\s+)?(?:(?:now|already)\s+)?(?:resolved|fixed|cleared)\b/gi)]
         .some(match => !/\bunless\s+you\s+want\b[^.!?;]*$/i.test(clause.slice(0, match.index))));
-  const reported = named && (occupied || contextual || clauses.some(clause => !historicalTeamSkillClause(clause, skill)
+  const unresolved = clauses.some(clause => {
+    const claim = new RegExp(`\\b${teamSkillSubject(skill)}\\s+(?:skill\\s+)?(?:is|remains?)\\s+(?:still\\s+)?unresolved\\b`, "i").exec(clause);
+    return !!claim && !historicalTeamSkillClause(clause, skill)
+      && !negatedTeamRecovery(clause.slice(0, claim.index)) && /\b(?:installation|install|conflict|collision|slug)\b/i.test(clause);
+  });
+  const reported = named && (occupied || contextual || unresolved || clauses.some(clause => !historicalTeamSkillClause(clause, skill)
     && /could not|couldn't|cannot|failed|conflict|blocked|not installed|missing|unavailable|unable|partial/i.test(clause)));
   const falseFull = reply.split(/[.!?;\n]+|\bbut\b/i).some((clause) => {
     const claim =
@@ -308,7 +313,10 @@ export function truthfulTeamPartial(
       )
     );
   });
-  return reported && !falseFull && !namedTeamSkillClauses(reply, skill, true).some(clause => assertedTeamRecovery(clause, skill));
+  const deniesUnresolvedConflict = clauses.some(clause => !historicalTeamSkillClause(clause, skill)
+    && new RegExp(`\\bno\\s+unresolved\\s+${teamSkillSubject(skill)}\\s+(?:skill\\s+)?conflicts?\\b`, "i").test(clause));
+  return reported && !falseFull && !deniesUnresolvedConflict
+    && !namedTeamSkillClauses(reply, skill, true).some(clause => assertedTeamRecovery(clause, skill));
 }
 function catalogSkillReply(reply: string, skill: Pick<CatalogSkill, "slug" | "name">, localName: unknown): string {
   if (typeof localName !== "string" || !localName.trim()
