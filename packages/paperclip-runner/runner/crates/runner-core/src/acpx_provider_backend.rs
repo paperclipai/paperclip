@@ -2303,7 +2303,7 @@ impl AcpxCommandExecutor {
         {
             return Ok(());
         }
-        self.poll_provider_events(MAX_EVENTS_PER_POLL)
+        self.poll_provider_events(MAX_EVENTS_PER_POLL, disconnected)
     }
 
     fn retain_buffered_provider_events(&mut self) -> Result<(), DurableRunnerError> {
@@ -2315,11 +2315,15 @@ impl AcpxCommandExecutor {
             if count == 0 {
                 return Ok(());
             }
-            self.poll_provider_events(count.min(MAX_EVENTS_PER_POLL))?;
+            self.poll_provider_events(count.min(MAX_EVENTS_PER_POLL), false)?;
         }
     }
 
-    fn poll_provider_events(&mut self, count: usize) -> Result<(), DurableRunnerError> {
+    fn poll_provider_events(
+        &mut self,
+        count: usize,
+        disconnected: bool,
+    ) -> Result<(), DurableRunnerError> {
         for _ in 0..count {
             let events = self
                 .session
