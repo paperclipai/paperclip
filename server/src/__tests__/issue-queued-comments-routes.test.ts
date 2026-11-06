@@ -79,6 +79,7 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
   });
 
   afterAll(async () => {
+    await db?.$client.end();
     await tempDb?.cleanup();
   });
 
@@ -861,10 +862,19 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
         queueId: seeded.wakeId, targetRunId: seeded.runId, revision: queue.body.revision,
       });
       expect(response.status, JSON.stringify(response.body)).toBe(200);
-      const [wake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, seeded.wakeId));
-      expect(wake.payload?.queuedCommentInterrupt).toMatchObject({ actorId: "queue-owner", targetRunId: seeded.runId });
+      const [waiting] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, seeded.wakeId));
+      expect(waiting.payload?.queuedCommentInterrupt).toMatchObject({ actorId: "queue-owner", targetRunId: seeded.runId });
       expect(await db.select().from(issueComments).where(eq(issueComments.issueId, seeded.issueId))).toHaveLength(2);
-      expect(wake.status).toBe("coalesced");
+      expect(waiting.status).toBe("deferred_issue_execution");
+      // The synthetic preparation owner now confirms that its unwind finished.
+      // No provider ran; until this receipt exists, cancellation must hold input.
+      const [stopped] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, seeded.runId));
+      expect(stopped.status).toBe("cancelled");
+      await db.update(heartbeatRuns).set({ resultJson: { ...stopped.resultJson,
+        startupPreparationSettledAt: new Date().toISOString() } }).where(eq(heartbeatRuns.id, seeded.runId));
+      await heartbeatService(db).resumeQueuedCommentInterrupt(seeded.companyId, seeded.wakeId);
+      const [wake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, seeded.wakeId));
+      expect(wake.status, JSON.stringify(wake)).toBe("coalesced");
       const [successor] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, wake.runId!));
       expect(successor.status).toBe("queued");
       expect(successor.contextSnapshot?.wakeCommentIds).toEqual(seeded.commentIds);

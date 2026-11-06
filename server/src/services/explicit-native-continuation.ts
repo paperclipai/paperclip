@@ -351,7 +351,7 @@ export async function admitExplicitNativeContinuation(input: {
       }
       if (!historicalAdapter && agent.adapterType === "paperclip_runner") return null;
     }
-    const interruptedByThisClick = response?.source.requiresFreshSession === true &&
+    const interruptedByThisClick = queuedInterrupt &&
       interruptIntent?.targetRunId === run.id && run.resultJson?.operatorInterrupted === true &&
       run.resultJson?.interruptionSource === "issue_comment_interrupt" && run.resultJson?.interruptedIssueId === issueId &&
       run.resultJson?.interruptedByActorType === "user" && run.resultJson?.interruptedByActorId === actorId &&
@@ -390,7 +390,8 @@ export async function admitExplicitNativeContinuation(input: {
         !(queuedRequest && run.runtimeMode === "native" &&
           (run.status !== "cancelled" || authorizedAt > stoppedAt)) &&
         !(queuedRequest && cancelledStartup && authorizedAt > run.finishedAt!) &&
-        !(nativeQueuedSend && (run.runtimeMode === "native" || cancelledStartup) && authorizedAt > run.finishedAt!) &&
+        !(nativeQueuedSend && (run.runtimeMode === "native" || cancelledStartup) &&
+          (authorizedAt > run.finishedAt! || interruptedByThisClick)) &&
         !(queuedInterrupt && response?.source.requiresFreshSession && run.runtimeMode === "native")) return null;
     // A saved native message sent after Stop is a new user direction. Older
     // input cannot restart a cancelled run merely because it is still queued.

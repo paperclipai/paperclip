@@ -545,9 +545,9 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
     expect((await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, interaction.id)))[0])
       .toMatchObject({ result: interaction.result, resolvedByUserId: "board" });
   });
-  it.each(["matching", "wrong_queue", "wrong_actor", "wrong_target", "missing_receipt", "ordinary_response"])("accepts only the exact live native plan Interrupt receipt: %s", async kind => {
+  it.each(["matching", "wrong_queue", "wrong_actor", "wrong_target", "missing_receipt", "ordinary_response", "comment"])("accepts only the exact live native queue Interrupt receipt: %s", async kind => {
     const f = await seed(), queueId = randomUUID();
-    const [interaction] = await db.insert(issueThreadInteractions).values({ companyId: f.companyId, issueId: f.issueId,
+    const [interaction] = kind === "comment" ? [] : await db.insert(issueThreadInteractions).values({ companyId: f.companyId, issueId: f.issueId,
       sourceRunId: f.sourceRunId, createdByAgentId: f.agentId, kind: "request_confirmation", status: "accepted",
       resolvedByUserId: "board", resolvedAt: new Date("2026-09-11T09:00:00Z"),
       payload: { version: 1, prompt: "Approve this plan?" }, result: { version: 1, outcome: "accepted" },
@@ -559,15 +559,17 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
     } }).where(eq(heartbeatRuns.id, f.sourceRunId));
     await db.insert(agentWakeupRequests).values({ id: queueId, companyId: f.companyId, agentId: f.agentId,
       source: "on_demand", reason: "issue_commented", status: "deferred_issue_execution",
-      payload: { issueId: f.issueId, mutation: "interaction", interactionId: interaction.id, interactionStatus: "accepted",
+      payload: { issueId: f.issueId,
+        ...(kind === "comment" ? { commentId: f.commentId } : {
+          mutation: "interaction", interactionId: interaction!.id, interactionStatus: "accepted" }),
         _paperclipWakeContext: { forceFreshSession: kind !== "ordinary_response" },
         queuedCommentInterrupt: { actorId: "board", requestedAt: "2026-09-11T09:30:00Z",
           targetRunId: kind === "wrong_target" ? randomUUID() : f.sourceRunId },
       },
     });
     const result = await db.transaction(tx => admitExplicitNativeContinuation({ ...f, db: tx as unknown as typeof db,
-      commentId: null, queuedCommentInterruptId: queueId, dryRun: true }));
-    if (kind === "matching") expect(result).toMatchObject({ previousRunId: f.sourceRunId });
+      commentId: kind === "comment" ? f.commentId : null, queuedCommentInterruptId: queueId, dryRun: true }));
+    if (["matching", "ordinary_response", "comment"].includes(kind)) expect(result).toMatchObject({ previousRunId: f.sourceRunId });
     else expect(result).toBeNull();
   });
 
