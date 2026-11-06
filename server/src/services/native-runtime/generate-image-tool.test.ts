@@ -7,6 +7,7 @@ import { and, eq } from "drizzle-orm";
 import { activityLog, agents, authUsers, companies, companyMemberships, costEvents, createDb, heartbeatRuns, issues, projects } from "@paperclipai/db";
 import { startRecoveryPostgres } from "../../__tests__/helpers/recovery-postgres.js";
 import { aiConnectionService } from "../ai-connections.js";
+import { accountRunCost } from "../run-cost-accounting.js";
 import { PaperclipRunnerToolAuthority } from "./paperclip-runner-tool-authority.js";
 import { imageGenerationBindingForRun, priceGeneratedImage, requestOpenAiImage } from "./generate-image-tool.js";
 
@@ -187,6 +188,23 @@ describe("generate_image for OpenAI API-key Codex agents (N-12)", () => {
     expect(costs).toHaveLength(1);
     expect(costs[0]).toMatchObject({ providerRequestId: "req_lost", outputTokens: 100 });
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("run accounting settles a paid image that no tool call settled", async () => {
+    const f = await fixture();
+    const key = createHash("sha256").update(randomUUID()).digest("hex");
+    await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date(), costAccountingPending: true,
+      resultJson: { imageToolReceipts: { [key]: { digest: "d", state: "charged", charge: {
+        model: "gpt-image-2", providerRequestId: "req_unsettled", usage: { textInputTokens: 10, imageInputTokens: 0, outputTokens: 100 },
+        costCents: "0.3050000", pricingProvenance: { source: "rate_card", version: "openai-image-standard-2026-11-06" },
+        projectId: null, destination: "generated-image-0a1b2c3d.png", byteSize: PNG.length, sha256: "0".repeat(64),
+        chargedAt: "2026-11-06T12:00:00.000Z" } } } } })
+      .where(eq(heartbeatRuns.id, f.runId));
+    await accountRunCost(db, f.runId);
+    await accountRunCost(db, f.runId);
+    const costs = await db.select().from(costEvents).where(and(eq(costEvents.heartbeatRunId, f.runId), eq(costEvents.providerRequestId, "req_unsettled")));
+    expect(costs).toHaveLength(1);
+    expect(costs[0]).toMatchObject({ agentId: f.agentId, issueId: f.issueId, model: "gpt-image-2", outputTokens: 100, costStatus: "estimated" });
   });
 
   it("refuses when the run's AI connection is no longer an active OpenAI API key", async () => {

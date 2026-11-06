@@ -6,6 +6,7 @@ import { withOperationAccountingTransaction } from "./accounting-transaction.js"
 import { withBudgetSpan } from "./budget-tracing.js";
 import { conflict } from "../errors.js";
 import { createCostEventInTransaction } from "./costs.js";
+import { settleChargedImageReceiptsInTransaction } from "./native-runtime/generate-image-tool.js";
 import type { BudgetServiceHooks } from "./budgets.js";
 import { queueBudgetEvaluation } from "./budget-evaluation-work.js";
 import { ensureRuntimeAccountingBaseline } from "./runtime-accounting-totals.js";
@@ -96,6 +97,11 @@ export async function accountRunCost(db: Db, runId: string, hooks: BudgetService
     )).for("key share");
     let [run] = await tx.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)).for("update");
     if (!run?.costAccountingPending || !terminalStatuses.includes(run.status)) return false;
+    // Tool-side image spend is separate from the provider receipt; settle any
+    // paid image whose own accounting write did not complete.
+    for (const projectId of new Set(await settleChargedImageReceiptsInTransaction(tx, run, publications))) {
+      await queueBudgetEvaluation(tx, { companyId: run.companyId, agentId: run.agentId, projectId });
+    }
     if (run.costAccountedAt) {
       if (object(run.usageJson).accountingLateReceiptPending === true)
         return reconcileLateRunUsageReceiptInTransaction(tx, run, publications);

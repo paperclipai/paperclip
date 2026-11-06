@@ -4,6 +4,10 @@ import { realpath } from "node:fs/promises";
 import { join } from "node:path";
 import { z } from "zod";
 import { centsToUsd, unitsToCents, usdToUnits } from "@paperclipai/shared";
+import { and, eq } from "drizzle-orm";
+import { issues, projects, type Db } from "@paperclipai/db";
+import type { ActivityPublication } from "../activity-log.js";
+import { createCostEventInTransaction } from "../costs.js";
 import { openRunnerWorkspaceFile } from "./runner-api-files.js";
 
 /**
@@ -151,6 +155,43 @@ export function priceGeneratedImage(image: GeneratedImage) {
       serviceTier: "standard",
     },
   };
+}
+
+/**
+ * The cost row for one paid image. The idempotency key and the stored charge
+ * time make every settlement of the same receipt record the charge once.
+ */
+export function imageChargeCostEvent(input: { agentId: string; issueId: string | null; runId: string; key: string; charge: Record<string, unknown> }) {
+  const usage = record(input.charge.usage);
+  const chargedAt = typeof input.charge.chargedAt === "string" && !Number.isNaN(Date.parse(input.charge.chargedAt)) ? new Date(input.charge.chargedAt) : new Date(0);
+  return {
+    agentId: input.agentId, issueId: input.issueId, projectId: typeof input.charge.projectId === "string" ? input.charge.projectId : null,
+    heartbeatRunId: input.runId, provider: "openai", biller: "openai", billingType: "metered_api" as const, model: String(input.charge.model),
+    costStatus: "estimated" as const, inputTokens: count(usage.textInputTokens) + count(usage.imageInputTokens), outputTokens: count(usage.outputTokens),
+    costCents: String(input.charge.costCents), pricingProvenance: input.charge.pricingProvenance as never,
+    providerRequestId: typeof input.charge.providerRequestId === "string" ? input.charge.providerRequestId : null,
+    occurredAt: chargedAt, idempotencyKey: `image_gen:${input.runId}:${input.key}`,
+  };
+}
+
+/**
+ * Run accounting also settles paid images whose tool call never finished
+ * recording them, so a lost acknowledgement cannot drop the spend.
+ */
+export async function settleChargedImageReceiptsInTransaction(tx: Db, run: { id: string; companyId: string; agentId: string; nativeIssueId: string | null; resultJson: unknown },
+  publications: ActivityPublication[]): Promise<Array<string | null>> {
+  const settled: Array<string | null> = [];
+  for (const [key, value] of Object.entries(record(record(run.resultJson).imageToolReceipts))) {
+    const receipt = record(value);
+    if (receipt.state !== "charged" || !/^[a-f0-9]{64}$/.test(key)) continue;
+    const event = imageChargeCostEvent({ agentId: run.agentId, issueId: run.nativeIssueId, runId: run.id, key, charge: record(receipt.charge) });
+    // Deleted attribution targets become unallocated; spend is still recorded.
+    if (event.issueId && !(await tx.select({ id: issues.id }).from(issues).where(and(eq(issues.id, event.issueId), eq(issues.companyId, run.companyId))))[0]) event.issueId = null;
+    if (event.projectId && !(await tx.select({ id: projects.id }).from(projects).where(and(eq(projects.id, event.projectId), eq(projects.companyId, run.companyId))))[0]) event.projectId = null;
+    await createCostEventInTransaction(tx, run.companyId, event, publications, undefined, { deferBudgetEvaluation: true });
+    settled.push(event.projectId);
+  }
+  return settled;
 }
 
 /** Server-chosen, create-only destination in the workspace root. */

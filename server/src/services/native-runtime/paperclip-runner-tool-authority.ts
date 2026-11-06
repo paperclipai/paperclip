@@ -2,7 +2,7 @@ import { budgetServiceInTransaction } from "../budgets.js";
 import { resolveTaskWatchdogMutationScope, taskWatchdogScopeAllowsIssueMutation } from "../task-watchdog-scope.js";
 import { resolveNewTaskParent } from "../issue-hierarchy.js";
 import { DOWNLOAD_ARTIFACT, DOWNLOAD_ARTIFACT_DEFINITION, downloadArtifactSchema, createArtifactInstaller, type ArtifactInstaller } from "./artifact-transfer.js";
-import { GENERATE_IMAGE, GENERATE_IMAGE_DEFINITION, GENERATE_IMAGE_MODEL, generateImageSchema, generatedImageDestination, imageIdentity, priceGeneratedImage, requestOpenAiImage, writeGeneratedImageLocally } from "./generate-image-tool.js";
+import { GENERATE_IMAGE, GENERATE_IMAGE_DEFINITION, GENERATE_IMAGE_MODEL, generateImageSchema, generatedImageDestination, imageChargeCostEvent, imageIdentity, priceGeneratedImage, requestOpenAiImage, writeGeneratedImageLocally } from "./generate-image-tool.js";
 import { aiConnectionService } from "../ai-connections.js";
 import { createCostEventInTransaction } from "../costs.js";
 import { withOperationAccountingTransaction } from "../accounting-transaction.js";
@@ -1316,19 +1316,8 @@ export class PaperclipRunnerToolAuthority {
   }
 
   async #recordImageCharge(key: string, charge: Record<string, unknown>) {
-    const usage = record(charge.usage);
-    const tokens = (value: unknown) => typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : 0;
-    // The idempotency key makes a replayed settlement record the charge once.
-    await withOperationAccountingTransaction(this.db, this.binding.companyId, (tx, publications) => createCostEventInTransaction(tx, this.binding.companyId, {
-      agentId: this.binding.agentId, issueId: this.binding.issueId, projectId: typeof charge.projectId === "string" ? charge.projectId : null,
-      heartbeatRunId: this.binding.runId, provider: "openai", biller: "openai", billingType: "metered_api", model: String(charge.model),
-      costStatus: "estimated", inputTokens: tokens(usage.textInputTokens) + tokens(usage.imageInputTokens), outputTokens: tokens(usage.outputTokens),
-      costCents: String(charge.costCents), pricingProvenance: charge.pricingProvenance as never,
-      providerRequestId: typeof charge.providerRequestId === "string" ? charge.providerRequestId : null,
-      // The stored charge time keeps the receipt identical across settlement replays.
-      occurredAt: typeof charge.chargedAt === "string" && !Number.isNaN(Date.parse(charge.chargedAt)) ? new Date(charge.chargedAt) : new Date(0),
-      idempotencyKey: `image_gen:${this.binding.runId}:${key}`,
-    }, publications));
+    await withOperationAccountingTransaction(this.db, this.binding.companyId, (tx, publications) => createCostEventInTransaction(tx, this.binding.companyId,
+      imageChargeCostEvent({ agentId: this.binding.agentId, issueId: this.binding.issueId, runId: this.binding.runId, key, charge }), publications));
   }
 
   /** An interrupted call was paid for but not confirmed saved: record the spend, then settle it as failed. */
