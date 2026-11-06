@@ -886,7 +886,7 @@ function fakeSlackFetch(botId = `U-BOT-${randomUUID()}`) {
         ),
       );
     }
-    if (url.startsWith("https://slack.com/api/conversations.list")) {
+    if (url.startsWith("https://slack.com/api/users.conversations")) {
       return Promise.resolve(
         new Response(
           JSON.stringify({
@@ -9730,7 +9730,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           if (state.timeoutWelcome) throw new Error(`DM timeout ${token} ${clientSecret}`);
           return Response.json(state.failWelcome ? { ok: false, error: "not_allowed", detail: token } : { ok: true, channel: "DWELCOME", ts: "1.000001" });
         }
-        if (url.includes("conversations.list") && state.failInventory) throw new Error(`Inventory failed ${token}`);
+        if (url.includes("users.conversations") && state.failInventory) throw new Error(`Inventory failed ${token}`);
         return fallback(input, init);
       });
       const sdk = new FakeChatSdkRuntime();
@@ -13654,7 +13654,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       const successfulFetch = fakeSlackFetch();
       const context = await configuredSlackEndpoint(fixture, {
         fetch: (async (input, init) => {
-          if (failInventory && String(input).includes("/conversations.list"))
+          if (failInventory && String(input).includes("/users.conversations"))
             throw new Error("inventory fixture outage");
           return successfulFetch(input, init);
         }) as typeof fetch,
@@ -20949,7 +20949,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           },
         );
       }
-      if (url.startsWith("https://slack.com/api/conversations.list")) {
+      if (url.startsWith("https://slack.com/api/users.conversations")) {
         return new Response(
           JSON.stringify({
             ok: true,
@@ -21069,7 +21069,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           },
         );
       }
-      if (url.startsWith("https://slack.com/api/conversations.list")) {
+      if (url.startsWith("https://slack.com/api/users.conversations")) {
         return new Response(
           JSON.stringify({
             ok: true,
@@ -32195,7 +32195,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           },
         );
       }
-      if (url.startsWith("https://slack.com/api/conversations.list")) {
+      if (url.startsWith("https://slack.com/api/users.conversations")) {
         return new Response(
           JSON.stringify({
             ok: true,
@@ -38241,7 +38241,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       const authorization = new Headers(init?.headers).get("authorization");
       if (
         includeResumeChannel &&
-        String(input).startsWith("https://slack.com/api/conversations.list") &&
+        String(input).startsWith("https://slack.com/api/users.conversations") &&
         authorization === "Bearer xoxb-blocked-outbox"
       ) {
         return Promise.resolve(
