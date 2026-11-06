@@ -11,6 +11,12 @@ function stripAnsi(text: string): string {
 /**
  * Parse Hermes Agent stdout into TranscriptEntry objects for the Paperclip UI.
  *
+ * Since the adapter runs with `--output-format stream-json`, stdout carries
+ * one JSON event per line. Those events are decoded into the same transcript
+ * entries the quiet-mode patterns below produce; a line that is not valid
+ * JSON falls through to the quiet-mode patterns, so older Hermes builds keep
+ * working.
+ *
  * Hermes CLI quiet-mode output patterns:
  *   Assistant:  "  ┊ 💬 {text}"
  *   Tool (TTY): "  ┊ {emoji} {verb:9} {detail}  {duration}"
@@ -190,12 +196,73 @@ function isThinkingLine(line: string): boolean {
  * @param ts    ISO timestamp for the entry
  * @returns     Array of TranscriptEntry objects (may be empty)
  */
+function safeJsonParse(text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+/**
+ * Decode one stream-json event line into transcript entries.
+ * Returns null when the line is not a JSON event, so the caller falls through
+ * to the quiet-mode patterns.
+ */
+function parseStreamJsonEvent(trimmed: string, ts: string): TranscriptEntry[] | null {
+  if (!trimmed.startsWith("{")) return null;
+  const event = asRecord(safeJsonParse(trimmed));
+  if (!event) return null;
+  const type = typeof event.type === "string" ? event.type : "";
+
+  if (type === "assistant" && event.subtype === "text") {
+    const text = typeof event.text === "string" ? event.text : "";
+    return text ? [{ kind: "assistant", ts, text }] : [];
+  }
+  if (type === "tool_use") {
+    return [
+      {
+        kind: "tool_call" as const,
+        ts,
+        name: typeof event.name === "string" ? event.name : "unknown",
+        toolUseId: typeof event.tool_use_id === "string" ? event.tool_use_id : undefined,
+        input: asRecord(event.input) ?? {},
+      },
+    ];
+  }
+  if (type === "tool_result") {
+    return [
+      {
+        kind: "tool_result" as const,
+        ts,
+        toolUseId: typeof event.tool_use_id === "string" ? event.tool_use_id : "",
+        content: typeof event.content === "string" ? event.content : "",
+        isError: event.is_error === true,
+      },
+    ];
+  }
+  // init, thinking deltas and the terminal result event carry no transcript
+  // content of their own; the adapter logs the session id and the ledger
+  // totals itself. Unknown JSON lines are dropped rather than shown raw.
+  return [];
+}
+
 export function parseHermesStdoutLine(
   line: string,
   ts: string,
 ): TranscriptEntry[] {
   const trimmed = stripAnsi(line).trim();
   if (!trimmed) return [];
+
+  // ── stream-json events (default since the adapter emits them) ──────────
+  const streamJson = parseStreamJsonEvent(trimmed, ts);
+  if (streamJson !== null) return streamJson;
 
   // ── System/adapter messages ────────────────────────────────────────────
   if (trimmed.startsWith("[hermes]") || trimmed.startsWith("[paperclip]")) {
