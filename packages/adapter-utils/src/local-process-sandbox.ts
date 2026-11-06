@@ -110,6 +110,11 @@ async function nearestPackageRoot(candidate: string): Promise<string> {
   return path.dirname(candidate);
 }
 
+async function resolveExecutable(command: string): Promise<string> {
+  if (!path.isAbsolute(command)) return command;
+  return fs.realpath(command).catch(() => command);
+}
+
 async function executableReadPaths(command: string): Promise<string[]> {
   const paths = new Set<string>();
   paths.add(path.dirname(command));
@@ -381,7 +386,8 @@ export async function buildLocalProcessSandboxSpawnTarget(input: {
   const args = ["--die-with-parent", "--new-session", "--unshare-pid", "--unshare-ipc", "--unshare-uts"];
   const env: Record<string, string | undefined> = {};
   let cleanup: (() => Promise<void>) | undefined;
-  let executable = input.executable;
+  const targetExecutable = filesystemScope === "workspace" ? await resolveExecutable(input.executable) : input.executable;
+  let executable = targetExecutable;
   let executableArgs = input.args;
 
   if (filesystemScope === "workspace") {
@@ -442,7 +448,7 @@ export async function buildLocalProcessSandboxSpawnTarget(input: {
       });
       await mount(tempDir, "rw");
       executable = process.execPath;
-      executableArgs = [bridgePath, socketPath, input.executable, ...input.args];
+      executableArgs = [bridgePath, socketPath, targetExecutable, ...input.args];
       cleanup = async () => {
         await proxy.close();
         await fs.rm(tempDir, { recursive: true, force: true });
@@ -464,7 +470,7 @@ export async function buildLocalProcessSandboxSpawnTarget(input: {
         throw error;
       });
       executable = process.execPath;
-      executableArgs = [bridgePath, socketPath, input.executable, ...input.args];
+      executableArgs = [bridgePath, socketPath, targetExecutable, ...input.args];
       cleanup = async () => {
         await proxy.close();
         await fs.rm(tempDir, { recursive: true, force: true });
