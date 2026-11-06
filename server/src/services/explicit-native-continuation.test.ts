@@ -1302,14 +1302,21 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
       eq(heartbeatRuns.status, "queued")))).toHaveLength(1);
   });
 
-  async function seedHistoricalPausedWorkspaceRetry() {
+  async function seedHistoricalPausedWorkspaceRetry(parentHold = false) {
     const f = await seedCancelledWorkspaceWaitRetry();
     const dueAt = new Date("2026-09-11T10:00:00Z");
+    const pauseRootIssueId = parentHold ? randomUUID() : f.issueId;
+    if (parentHold) {
+      await db.insert(issues).values({ id: pauseRootIssueId, companyId: f.companyId,
+        title: "Shared workspace parent", status: "in_progress", assigneeAgentId: f.agentId });
+      await db.update(issues).set({ parentId: pauseRootIssueId }).where(eq(issues.id, f.issueId));
+    }
     const [pause] = await db.insert(issueTreeHolds).values({ companyId: f.companyId,
-      rootIssueId: f.issueId, mode: "pause", status: "active", createdAt: new Date(dueAt.getTime() - 1_000),
+      rootIssueId: pauseRootIssueId, mode: "pause", status: "active", createdAt: new Date(dueAt.getTime() - 1_000),
       releasePolicy: { strategy: "manual" } }).returning();
     await db.insert(issueTreeHoldMembers).values({ companyId: f.companyId, holdId: pause.id,
-      issueId: f.issueId, issueTitle: "Paused workspace retry", issueStatus: "blocked", assigneeAgentId: f.agentId });
+      issueId: f.issueId, parentIssueId: parentHold ? pauseRootIssueId : null, depth: parentHold ? 1 : 0,
+      issueTitle: "Paused workspace retry", issueStatus: "blocked", assigneeAgentId: f.agentId });
     await db.update(heartbeatRuns).set({ status: "scheduled_retry", errorCode: null,
       finishedAt: null, resultJson: null, scheduledRetryAt: dueAt, scheduledRetryAttempt: 1,
     }).where(eq(heartbeatRuns.id, f.sourceRunId));
@@ -1318,13 +1325,13 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
     })).toMatchObject({ outcome: "gate_suppressed", errorCode: "issue_paused" });
     // Old scheduler builds wrote the same suppression event but no JSON marker.
     await db.update(heartbeatRuns).set({ resultJson: null }).where(eq(heartbeatRuns.id, f.sourceRunId));
-    await issueTreeControlService(db).releaseHold(f.companyId, f.issueId, pause.id,
+    await issueTreeControlService(db).releaseHold(f.companyId, pauseRootIssueId, pause.id,
       { actor: { actorType: "user", actorId: "board" } });
     return { ...f, pauseId: pause.id, dueAt };
   }
 
-  it("resumes saved input after a historical pause suppressed an unclaimed workspace retry", async () => {
-    const f = await seedHistoricalPausedWorkspaceRetry();
+  it.each([false, true])("resumes saved input after a historical pause suppressed an unclaimed workspace retry (parent hold: %s)", async parentHold => {
+    const f = await seedHistoricalPausedWorkspaceRetry(parentHold);
     await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, status: "running" });
     const [wake] = await db.insert(agentWakeupRequests).values({ companyId: f.companyId, agentId: f.agentId,
       source: "on_demand", reason: "issue_commented", requestedByActorType: "user", requestedByActorId: "board",
