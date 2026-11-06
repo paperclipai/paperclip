@@ -14028,6 +14028,10 @@ async function createRunnerdBackendWithinSessionClaim(
       : sourceRuntimeContext;
   let remotePrepared = false;
   let remoteHarnessStatePrepared = false;
+  // Set when this invocation's authority rotation moved the live Runner state
+  // into its epoch archive. Later host preparation validates that snapshot
+  // instead of requiring, or re-staging, the retired live state.
+  let archivedRotationRunnerStatePath: string | null = null;
   let selectedRemoteMode: "dial_wss" | "listen_ws" | null = null;
   let remoteCaBundleMapping: { sourcePath: string; targetPath: string } | null =
     null;
@@ -14155,17 +14159,18 @@ async function createRunnerdBackendWithinSessionClaim(
         incompleteReason: "unavailable",
       };
     }
+    const runnerStatePath = archivedRotationRunnerStatePath ??
+      posix.join(remoteStateDirectory, "runner-state.json");
+    const escapedRunnerState = runnerStatePath.replaceAll("'", "'\\''");
     const requirements = persistenceProfile.directories.flatMap((directory) => {
       const path = remotePersistencePath(directory);
       if (!path) return [];
       const escaped = path.replaceAll("'", "'\\''");
-      return directory.name === "runner"
-        ? [`test -f '${escaped}/runner-state.json'`]
-        : [`test -d '${escaped}'`];
+      if (directory.name !== "runner") return [`test -d '${escaped}'`];
+      return [archivedRotationRunnerStatePath
+        ? `test -d '${escaped}' && test -f '${escapedRunnerState}'`
+        : `test -f '${escaped}/runner-state.json'`];
     });
-    const escapedRunnerState = posix
-      .join(remoteStateDirectory, "runner-state.json")
-      .replaceAll("'", "'\\''");
     const escapedProviderState = posix
       .join(remoteStateDirectory, runnerProviderStateFilename(input.execution))
       .replaceAll("'", "'\\''");
@@ -14627,9 +14632,11 @@ async function createRunnerdBackendWithinSessionClaim(
                       existsSync(localDirectory) &&
                       !(await measureNativeRunnerSpan(input.trace, "harness_state.path_check", () => remoteRunnerPathExists({
                         runner: remoteCommandRunner,
+                        // An archived rotation snapshot counts as present, so
+                        // retired Runner state is not staged beside it again.
                         path:
                           directory.name === "runner"
-                            ? posix.join(remoteDirectory, "runner-state.json")
+                            ? archivedRotationRunnerStatePath ?? posix.join(remoteDirectory, "runner-state.json")
                             : remoteDirectory,
                         kind:
                           directory.name === "runner" ? "file" : "directory",
@@ -14900,8 +14907,9 @@ async function createRunnerdBackendWithinSessionClaim(
           if (result.exitCode !== 0 || result.timedOut) {
             throw new Error("runner_remote_authority_archive_failed");
           }
+          let archivedState: Record<string, unknown>;
           try {
-            return record(
+            archivedState = record(
               JSON.parse(
                 Buffer.from(
                   result.stdout.replace(/\s+/g, ""),
@@ -14912,6 +14920,10 @@ async function createRunnerdBackendWithinSessionClaim(
           } catch {
             throw new Error("runner_remote_authority_archive_failed");
           }
+          // A resumed rotation never prepared the host before this move, so
+          // the launch's host preparation must find the state here.
+          archivedRotationRunnerStatePath = archivedStatePath;
+          return archivedState;
         }
       : undefined;
 

@@ -15275,6 +15275,81 @@ describe("runnerd provider runtime wiring", () => {
     }
   });
 
+  it.each([true, false])("prepares a resumed sandbox after a resumed rotation archived its Runner state (archived: %s)", async archived => {
+    const remoteCwd = join(isolatedStateDirectory, "remote-resumed-rotation");
+    const current: NativeExecutionInputV1 = { ...execution,
+      binding: { ...execution.binding, companyId: randomUUID(), agentId: randomUUID(), issueId: randomUUID(), runId: randomUUID() },
+      session: { ...execution.session, normalizedSessionId: randomUUID(), lifecyclePolicy: { mode: "per_turn", idleTimeoutMs: null } },
+    };
+    const runnerInstanceId = "resumed-rotation-runner";
+    const priorIdentity = { runnerInstanceId, environmentLeaseId: "lease-resumed", runId: randomUUID(),
+      normalizedSessionId: current.session.normalizedSessionId!, turnId: "turn-prior", itemId: "item-prior" };
+    const remoteExecute = vi.fn(async (command: { command: string; args?: string[] }) => {
+      if (command.args?.[0] === "--build-metadata") return { exitCode: 0, timedOut: false, stderr: "", stdout: JSON.stringify({
+        schema: "paperclip-runner/runnerd-build-metadata/v1", binaryName: "paperclip-runnerd",
+        packageName: "@paperclipai/paperclip-runner", binaryContractVersion: 2,
+        durableSessionCapabilities: ["unlimited_runtime", "connection_lease_renewal"], prpTransportModes: ["listen_ws"],
+      }) };
+      if (command.args?.[0] === "--version") return { exitCode: 0, timedOut: false, stdout: "codex-cli 0.160.0", stderr: "" };
+      // The archive script and the harness inspection run for real against
+      // the local directory that stands in for the sandbox filesystem.
+      if (command.args?.[1]?.includes("base64")) {
+        try { return { exitCode: 0, timedOut: false, stdout: execFileSync("sh", command.args, { encoding: "utf8" }), stderr: "" }; }
+        catch { return { exitCode: 1, timedOut: false, stdout: "", stderr: "" }; }
+      }
+      return { exitCode: 0, timedOut: false, stdout: "", stderr: "" };
+    });
+    const syncIn = vi.fn(async () => undefined);
+    await createRunnerdBackend({ db: leaseDb(current), execution: current, runnerInstanceId, runnerIngressAuthorized: true,
+      runnerExecutionTarget: { kind: "remote", transport: "sandbox", remoteCwd, environmentId: "environment",
+        leaseId: priorIdentity.environmentLeaseId, providerKey: "daytona", reusableLeaseConfigured: true,
+        effectiveCapabilities: { runnerWebSocketIngress: true },
+        sandboxLeaseAcquisition: { outcome: "resumed", providerLeaseId: "retained-sandbox" },
+        runner: { execute: remoteExecute, syncIn },
+      } as never,
+    });
+    state.createBackend.mock.calls.at(-1)![1].codexTransportFactory!();
+    const options = state.createTransport.mock.calls.at(-1)![0] as RunnerTransportOptions & {
+      prepareExternalRunnerState: () => Promise<void>;
+      archiveExternalRunnerState: (input: { archiveKey: string; priorIdentity: typeof priorIdentity }) => Promise<Record<string, unknown>>;
+    };
+    // The resumed sandbox keeps the prior run's suspended Runner and provider state.
+    const remoteSession = join(remoteCwd, ".paperclip-runtime/paperclip-runner/sessions",
+      createHash("sha256").update(current.session.normalizedSessionId!).digest("hex"));
+    const runnerState = durableRunnerState(priorIdentity, "suspended");
+    await mkdir(join(remoteSession, "runner"), { recursive: true });
+    await mkdir(join(remoteSession, "filesystem/codex-home"), { recursive: true });
+    await writeFile(join(remoteSession, "runner/runner-state.json"), JSON.stringify(runnerState));
+    await writeFile(join(remoteSession, "runner/codex-provider-state.json"), JSON.stringify({
+      schema: "paperclip.runner.codex-provider-state.v1", lifecycle: "prepared", threadId: "retained-provider-thread",
+      providerSessionId: null, activeProviderTurnId: null, config: { provider: "codex", driver: "codex_app_server" },
+    }));
+    // A retained failover backup makes a missing live state a hard failure.
+    const backupRoot = join(options.stateDirectory!, "failover-backups/current");
+    for (const directory of resolveNativeHarnessPersistenceProfile(current).directories)
+      await mkdir(join(backupRoot, directory.name), { recursive: true });
+    await writeFile(join(backupRoot, "runner/runner-state.json"), JSON.stringify(runnerState));
+    await writeFile(join(backupRoot, "manifest.json"), JSON.stringify(buildNativeHarnessBackupManifest({
+      backupRoot, execution: current, runnerInstanceId, sourceProviderLeaseId: "retained-sandbox",
+      providerSessionIdentity: { providerSessionId: "retained-provider-thread", providerBackendSessionId: null, providerSessionIdentity: null },
+    })));
+    const archiveKey = "b".repeat(24);
+    const archivedPath = join(remoteSession, "authority-epochs", `epoch-${archiveKey}`, "runner-state.json");
+    if (archived) {
+      // A resumed rotation archives the state without preparing the host first.
+      await expect(options.archiveExternalRunnerState({ archiveKey, priorIdentity })).resolves.toEqual(runnerState);
+      await expect(options.prepareExternalRunnerState()).resolves.toBeUndefined();
+      // Host preparation used the archived snapshot and staged nothing back.
+      await expect(lstat(join(remoteSession, "runner/runner-state.json"))).rejects.toMatchObject({ code: "ENOENT" });
+      expect(JSON.parse(await readFile(archivedPath, "utf8"))).toEqual(runnerState);
+      expect(syncIn).not.toHaveBeenCalled();
+    } else {
+      // Without a completed rotation, missing live state still fails closed.
+      await rm(join(remoteSession, "runner/runner-state.json"));
+      await expect(options.prepareExternalRunnerState()).rejects.toThrow("runner_harness_state_mismatch: resumed_unavailable");
+    }
+  });
+
   it("makes remote authority archival idempotent and returns the archived state", async () => {
     const remoteExecute = vi.fn();
     const remoteTarget = {
