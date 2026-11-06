@@ -16,6 +16,8 @@ import { environmentService } from "../services/environments.js";
 import { MANAGED_CONFIG_ENV_KEY, parseManagedConfigEnv } from "../services/managed-config.js";
 import {
   applyManagedEnvironments,
+  createManagedEnvironmentRecovery,
+  registerManagedPluginInstanceDefaultRetry,
   retryManagedPluginInstanceDefault,
 } from "../services/managed-environments.js";
 import {
@@ -491,6 +493,30 @@ const support = await getEmbeddedPostgresTestSupport();
       expect(await instanceDefault()).toBe(row!.id);
       expect(await retryManagedPluginInstanceDefault(db, config, workerManager)).toBe("nothing_to_do");
       expect(await retryManagedPluginInstanceDefault(db, managedConfig([remoteHostEntry]), workerManager)).toBe("nothing_to_do");
+    });
+
+    it("retries at startup a decision boot left pending while the worker kept running", async () => {
+      // Boot ensure and its immediate retry both time out; the worker stays up.
+      await boot([remoteHostEntry]);
+      call.mockRejectedValueOnce(new Error("environmentValidateConfig timed out"));
+      call.mockRejectedValueOnce(new Error("environmentValidateConfig timed out"));
+      await boot();
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(await readManagedEnvironmentDefaultDecision(db)).toMatchObject({ status: "pending" });
+      expect(await instanceDefault()).toBeNull();
+
+      // The retry worker's startup attempt rebuilds the obligation from the row.
+      let task!: { run: () => Promise<unknown>; hasPending: () => Promise<boolean> };
+      const deliveryWork = { register: (_queue: string, registered: typeof task) => { task = registered; return { wake: () => {} }; } };
+      registerManagedPluginInstanceDefaultRetry({
+        db, managedConfig: managedConfig([defaultEntry]), deliveryWork: deliveryWork as never,
+        workerManager, recovery: createManagedEnvironmentRecovery(),
+      });
+      expect(await task.hasPending()).toBe(true);
+      await task.run();
+      const [row] = await pluginRows();
+      expect(await instanceDefault()).toBe(row!.id);
+      expect(await task.hasPending()).toBe(false);
     });
 
     it("never applies the default from a stale active row whose plugin is down", async () => {

@@ -591,9 +591,8 @@ describe("applyManagedEnvironments plugin entries", () => {
         recovery,
       });
       expect(deliveryWork.register).toHaveBeenCalledWith("managed-environment-default", expect.objectContaining({ retryMs: 60_000 }));
-      // Nothing requested: idle, and `run` touches nothing (the db is null here).
-      expect(await task.hasPending()).toBe(false);
-      await task.run();
+      // One startup attempt from saved state is requested, answered without SQL.
+      expect(await task.hasPending()).toBe(true);
 
       // A worker start asks for an attempt; so does a failed inline decision.
       for (const listener of [...readyListeners]) listener("remote-host-plugin");
@@ -608,19 +607,6 @@ describe("applyManagedEnvironments plugin entries", () => {
 
       await recovery.stop();
       expect(readyListeners.size).toBe(0);
-    });
-
-    it("hands a retry requested before registration to the new worker", async () => {
-      let task!: { hasPending: () => Promise<boolean> };
-      const deliveryWork = { register: vi.fn((_queue: string, registered: typeof task) => { task = registered; return { wake: vi.fn() }; }) };
-      registerManagedPluginInstanceDefaultRetry({
-        db: noDb,
-        managedConfig: configWith([pluginEntry({ instanceDefault: true })]),
-        deliveryWork: deliveryWork as never,
-        recovery: createManagedEnvironmentRecovery(),
-        requested: true,
-      });
-      expect(await task.hasPending()).toBe(true);
     });
 
     it("keeps an ensure counted and asks the retry worker for a failed default decision", async () => {

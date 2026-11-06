@@ -928,12 +928,16 @@ export async function retryManagedPluginInstanceDefault(
  * `applyManagedEnvironments` has finished (returns null when the document
  * declares no `instanceDefault` entry).
  *
- * The obligation is in memory: `requestRetry()` (a failed inline decision)
- * and every worker `ready` ask for one more attempt, and the queue's
- * `hasPending` answers from that request alone, without SQL, so a paused or
- * idle queue never queries. An attempt that throws keeps the request, so the
- * coordinator retries it; boot re-evaluates after a restart. `recovery.stop()`
- * removes the `ready` subscription on shutdown.
+ * The worker starts with one requested attempt, which rebuilds the obligation
+ * from saved state: it reads the decision row once and stops if the decision
+ * is final, and otherwise retries a decision that boot left `pending` (for
+ * example after the boot ensure timed out while the worker kept running).
+ * After that the obligation is in memory: `requestRetry()` (a failed inline
+ * decision) and every worker `ready` ask for one more attempt, and the
+ * queue's `hasPending` answers from that request alone, without SQL, so a
+ * paused or idle queue never queries. An attempt that throws keeps the
+ * request, so the coordinator retries it. `recovery.stop()` removes the
+ * `ready` subscription on shutdown.
  */
 export function registerManagedPluginInstanceDefaultRetry(input: {
   db: Db;
@@ -946,12 +950,11 @@ export function registerManagedPluginInstanceDefaultRetry(input: {
   };
   workerManager?: Pick<PluginWorkerManager, "isRunning" | "call" | "onWorkerReady">;
   recovery: ManagedEnvironmentRecovery;
-  /** A retry was already requested before the worker existed. */
-  requested?: boolean;
   retryMs?: number;
 }): { requestRetry(): void } | null {
   if (!instanceDefaultSpec(input.managedConfig)) return null;
-  let requestedGeneration = input.requested ? 1 : 0;
+  // One attempt from saved state at startup (see above).
+  let requestedGeneration = 1;
   let handledGeneration = 0;
   const worker = input.deliveryWork.register(DELIVERY_QUEUES.managedEnvironmentDefault, {
     retryMs: input.retryMs ?? 60_000,
