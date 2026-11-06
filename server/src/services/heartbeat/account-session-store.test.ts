@@ -90,4 +90,3 @@ describePostgres("account session store", () => {
     expect(await accountSessionStore(db).get({ companyId, sessionId: parent!.id, sessionIdentity: "a" })).toMatchObject({ sessionDisplayId: "a" });
   });
 });
-
