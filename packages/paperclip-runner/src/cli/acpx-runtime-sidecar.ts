@@ -118,6 +118,7 @@ const turnControls = new AcpxTurnControlLedger();
 const MAX_PENDING_TOOLS = 512;
 const MAX_PENDING_INPUTS = 16;
 const MAX_BUFFERED_OUTPUT_BYTES = 4 * ACPX_SIDECAR_MAX_FRAME_BYTES;
+const MAX_EVENT_PAYLOAD_BYTES = 256 * 1024;
 let outputFailed = false;
 let goalSourceRevision = 0;
 function observedGoalProjection(...args: Parameters<typeof acpxGoalProjection>) {
@@ -805,7 +806,12 @@ async function pumpTurn(
   } catch {
     // The terminal stays authoritative even if the optional observation fails.
   }
-  if (goalAtTerminal && emit("runtime.turn_terminal", { ...terminal, goalAtTerminal }, currentTurnId)) return;
+  if (goalAtTerminal) {
+    const payload = { ...terminal, goalAtTerminal };
+    // Rust admits the payload separately from the larger sidecar frame.
+    if (Buffer.byteLength(JSON.stringify(payload)) <= MAX_EVENT_PAYLOAD_BYTES
+      && emit("runtime.turn_terminal", payload, currentTurnId)) return;
+  }
   emit("runtime.turn_terminal", terminal, currentTurnId);
 }
 

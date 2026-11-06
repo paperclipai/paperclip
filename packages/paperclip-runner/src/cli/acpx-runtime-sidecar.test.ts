@@ -22,6 +22,7 @@ import { fileURLToPath } from "node:url";
 import { createAcpxSidecarHostEnvironment, createSanitizedAcpxSpawnInput } from "../drivers/acpx/environment.js";
 import { createKimiMessageProjection } from "../drivers/acpx/kimi-message-boundary.js";
 import { classifyClaudeStatusBanner } from "../drivers/acpx/claude-status-banners.js";
+import { acpxGoalProjection } from "../drivers/acpx/session-goals.js";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -119,18 +120,26 @@ afterEach(async () => {
 });
 
 describe("qualified ACPX runtime sidecar", () => {
-  it.each(["snapshot", "unavailable", "oversized"])("emits the real completed terminal with optional goal observation: %s", async mode => {
+  it.each(["snapshot", "unavailable", "oversized", "payload-under-limit", "payload-limit", "payload-over-limit"])("emits the real completed terminal with optional goal observation: %s", async mode => {
     const root = mkdtempSync(join(tmpdir(), "acpx-terminal-goal-"));
     const loader = join(root, "provider-loader.mjs"), host = join(root, "terminal-host.mjs");
     const baseHost = new URL("../test-support/acpx-blocked-output-host.mjs", import.meta.url).href;
+    const capability = { version: 1, controlMethod: "_session/goal", actions: ["set", "clear"] as Array<"set" | "clear"> };
+    const goal = { objective: mode === "oversized" ? "x".repeat(ACPX_SIDECAR_MAX_FRAME_BYTES) : "Retain the completed goal",
+      status: "paused" as const, iterations: 1, lastReason: "Unicode é🙂, quote \" and slash \\ and newline\n" };
+    if (mode.startsWith("payload-")) {
+      const bytes = Buffer.byteLength(JSON.stringify({status:"completed", goalAtTerminal:{
+        ...acpxGoalProjection(capability, goal, false), providerRevision:1 }}));
+      const offset = mode === "payload-under-limit" ? -1 : mode === "payload-over-limit" ? 1 : 0;
+      goal.lastReason += "x".repeat(256 * 1024 + offset - bytes);
+    }
     writeFileSync(host, `import { AcpxRuntimeHost as BaseHost } from ${JSON.stringify(baseHost)};
       export class AcpxRuntimeHost extends BaseHost {
         static async open(options) { const host = await BaseHost.open(options); Object.setPrototypeOf(host, this.prototype); return host; }
-        goalCapability() { return { version: 1, controlMethod: "_session/goal", actions: ["set", "clear"] }; }
+        goalCapability() { return ${JSON.stringify(capability)}; }
         goalSnapshot() {
           if (${JSON.stringify(mode)} === "unavailable") throw new Error("goal observation unavailable");
-          return { objective: ${JSON.stringify(mode)} === "oversized" ? "x".repeat(${ACPX_SIDECAR_MAX_FRAME_BYTES}) : "Retain the completed goal",
-            status: "paused", iterations: 1 };
+          return ${JSON.stringify(goal)};
         }
         startTurn({ requestId }) { return { requestId, promptStarted: Promise.resolve(),
           result: Promise.resolve({ status: "completed" }), events: (async function* () {})() }; }
@@ -158,9 +167,12 @@ describe("qualified ACPX runtime sidecar", () => {
       const terminal = await sidecar.next(frame=>frame.eventType === "runtime.turn_terminal");
       expect(terminal).toMatchObject({runId:"terminal-goal-run",turnId:"terminal-goal-turn",payload:{status:"completed"}});
       const payload = terminal.payload as Record<string,unknown>;
-      if (mode === "snapshot") {
+      expect(Buffer.byteLength(JSON.stringify(payload))).toBeLessThanOrEqual(256 * 1024);
+      if (mode === "snapshot" || mode === "payload-limit" || mode === "payload-under-limit") {
         expect(payload.goalAtTerminal).toMatchObject({schema:"paperclip.session_goal.snapshot.v1",workingNow:false,
           sessionGoals:{availability:"available"},goal:{objective:"Retain the completed goal",status:"paused",workingNow:false}});
+        if (mode === "payload-limit") expect(Buffer.byteLength(JSON.stringify(payload))).toBe(256 * 1024);
+        if (mode === "payload-under-limit") expect(Buffer.byteLength(JSON.stringify(payload))).toBe(256 * 1024 - 1);
         send(5,"session.goal.get",{});
         const observed = await sidecar.next(frame=>frame.id === 5);
         expect(observed.ok).toBe(true);
@@ -168,8 +180,7 @@ describe("qualified ACPX runtime sidecar", () => {
         const {providerRevision:_readRevision,...ordinary} = observed.result as Record<string,unknown>;
         expect(atTerminal).toEqual(ordinary);
       } else {
-        expect(payload).not.toHaveProperty("goalAtTerminal");
-        if (mode === "oversized") expect(sidecar.stderr()).toContain("output_frame_too_large");
+        expect(payload).toEqual({status:"completed"});
       }
       send(6,"session.snapshot",{});
       expect(await sidecar.next(frame=>frame.id === 6)).toMatchObject({ok:true,result:{runId:"terminal-goal-run",turnId:null}});
@@ -647,6 +658,29 @@ describe("qualified ACPX runtime sidecar", () => {
       rmSync(root, { recursive: true, force: true });
     }
   }, 15_000);
+
+  it("reaps the output-pressure fixture provider when its owner dies before cleanup", async () => {
+    const fixture = new URL("../test-support/acpx-blocked-output-host.mjs", import.meta.url).href;
+    const owner = spawn(process.execPath, ["--input-type=module", "-e", `
+      import { AcpxRuntimeHost } from ${JSON.stringify(fixture)};
+      const host = new AcpxRuntimeHost({});
+      host.provider.once("message", () => process.send(host.provider.pid));
+      setInterval(() => {}, 1000);
+    `], { stdio: ["ignore", "ignore", "ignore", "ipc"], env: { PATH: process.env.PATH } });
+    const exited = once(owner, "exit");
+    let providerPid: number | undefined;
+    try {
+      [providerPid] = await once(owner, "message");
+      expect(typeof providerPid).toBe("number");
+      owner.kill("SIGKILL");
+      await exited;
+      await vi.waitFor(() => expect(() => process.kill(providerPid!, 0)).toThrow());
+    } finally {
+      if (providerPid) { try { process.kill(providerPid, "SIGKILL"); } catch {} }
+      if (owner.exitCode === null && owner.signalCode === null) owner.kill("SIGKILL");
+      await exited.catch(() => undefined);
+    }
+  });
 
 
   it.each(["success", "accepted-false", "error", "cancel", "timeout", "receiver-rejected"])(

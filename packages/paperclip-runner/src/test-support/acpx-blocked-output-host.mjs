@@ -18,6 +18,7 @@ export class AcpxRuntimeHost {
     this.closeCount = 0;
     this.provider = spawn(process.execPath, ["-e", `
       process.on("SIGTERM", () => process.exit(0));
+      process.on("disconnect", () => process.exit(0));
       process.send("ready");
       setInterval(() => {}, 1000);
     `], { stdio: ["ignore", "ignore", "ignore", "ipc"], env: { PATH: process.env.PATH } });
