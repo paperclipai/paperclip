@@ -125,6 +125,7 @@ export function truthfulTimelineAccount(input: {
   const repairModifier = "(?:then|later|now|personally|explicitly|actually|had|has|have|also|who|successfully|finally|subsequently|after\\s+the\\s+handoff)";
   const repairVerb = [
     "repair(?:ed)?|fix(?:ed)?",
+    "edited\\s+(?:[a-z0-9_.-]+|(?:the\\s+)?(?:saved\\s+)?(?:file|page|artifact))\\s+to\\s+add\\s+(?:(?:a|the|missing|real|email|input|proper|accessible)\\s+){0,5}label",
     "(?:completed|finished|performed|applied|implemented)\\s+(?:(?:a|the|needed|required|label|accessibility)\\s+){0,4}(?:repairs?|fix(?:es)?)",
     "(?:added|inserted|supplied|provided|restored)\\s+(?:(?:a|the|missing|real|email|input|proper|accessible)\\s+){0,5}label",
   ].join("|");
@@ -155,7 +156,7 @@ export function truthfulTimelineAccount(input: {
   // repair account. No intervening sentence or earlier/unrelated result joins.
   const adjacentVerification = new RegExp(`^\\s*(?:(?:the|a|an)\\s+|${escape(repairWorker)}['’]s\\s+)?${commandSubject}\\s+${successModifiers}(?:${repairSuccess.source})(?:\\s+with\\s+exit(?:\\s+(?:code|status))?\\s*[:=]?\\s*0)?\\s*[.!]?\\s*$`, "i");
   const contextualCommandLead = new RegExp(`^\\s*(?:(?:the|a|an)\\s+)?${commandSubject}(?:[ \\t]+${commandModifier}){0,5}\\s+${successModifiers}$`, "i");
-  const coordinatedCommand = new RegExp(`(?:,\\s*(?:and\\s+)?|\\band\\s+)(?:${repairModifier}\\s+){0,3}(?:re-?ran|ran|executed|performed)\\s+(?:(?:the|a|an)\\s+)?${commandSubject}(?:[ \\t]+${commandModifier}){0,5}\\s*[.!]?\\s*$`, "i");
+  const coordinatedCommand = new RegExp(`(?:,\\s*(?:and\\s+)?|\\band\\s+)(?:${repairModifier}\\s+){0,3}(?:re-?ran|ran|executed|performed)\\s+(?:(?:the|a|an)\\s+)?${commandSubject}(?:[ \\t]+${commandModifier}){0,5}\\s*[.!:]?\\s*$`, "i");
   const repairObjectTail = new RegExp(`^(?:[ \\t]+${commandModifier}){0,6}\\s*[.!]?\\s*$`, "i");
   const passiveRepairSubject = new RegExp(`^\\s*(?:${commandModifier}[ \\t]+){1,6}$`, "i");
   const deniedRepairObject = /^\s*(?:[a-z]+ly\s+){0,2}(?:(?:no|none|neither|nothing)\b|zero(?=\s|[.!?]|$))/i;
@@ -179,7 +180,7 @@ export function truthfulTimelineAccount(input: {
     const sameWorkerParagraph = paragraphStart === nextClause?.paragraphStart
       && (owner === repairWorker && nextClause.owner === repairWorker || explicitRepairSubject);
     const nextCommand = next && sameWorkerParagraph && coordinatedCommand.test(text.slice(end))
-      ? next.replace(/^\s*it\b/i, "check") : next;
+      ? next.replace(/^(?:\s*it\b\s*|\s*result:\s*(?=[^\n]))/i, match => /result:/i.test(match) && !/:\s*$/.test(text) ? match : "check ") : next;
     const contextualOutcome = nextCommand && repairSuccess.exec(nextCommand);
     const contextualResult = sameWorkerParagraph && !!contextualOutcome
       && contextualCommandLead.test(nextCommand.slice(0, contextualOutcome.index))

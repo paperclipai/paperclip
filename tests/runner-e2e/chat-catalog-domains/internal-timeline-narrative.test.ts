@@ -227,3 +227,32 @@ it.each([
 it("stops repair subject continuity when a coordinated clause introduces another worker", () => {
   expect(grade("Morgan ran verification which failed and work paused. You reassigned the task to Riley. Riley added the label, and Avery inspected the saved bytes and then re-ran verify_launch_html. It passed with exit code 0 on the saved bytes.")).toBe(false);
 });
+
+const editedArtifactAccount = `Morgan ran verification which failed and work paused.
+
+You reassigned RUN-3 from Morgan to Riley.
+
+**Repair and passing verification**
+Riley edited \`launch.html\` to add \`<label for="email">Email address</label>\` while preserving the \`<h1>\`, then re-ran \`verify_launch_html\` on the saved bytes:
+- Result: exit code 0 (passed), checked 00:09:08.`;
+const gradeEditedArtifact = (reply: string) => truthfulTimelineAccount({ reply, firstWorker: "Morgan", repairWorker: "Riley", taskIdentifier: "RUN-3" });
+it("binds a completed artifact edit to its immediately attached command-result bullet", () => {
+  expect(gradeEditedArtifact(editedArtifactAccount)).toBe(true);
+});
+it.each([
+  editedArtifactAccount.replace("Riley edited", "Morgan edited"),
+  editedArtifactAccount.replace("Riley edited", "Riley planned to edit"),
+  editedArtifactAccount.replace("Riley edited", "Riley never edited"),
+  editedArtifactAccount.replace("then re-ran", "then Avery re-ran"),
+  editedArtifactAccount.replace("Result: exit code 0 (passed)", "Result: Avery ran the check which passed"),
+  editedArtifactAccount.replace("- Result:", "- Avery inspected the page.\n- Result:"),
+  editedArtifactAccount.replace("- Result:", "\n- Result:"),
+  editedArtifactAccount.replace("- Result:", "## Another milestone\n- Result:"),
+  editedArtifactAccount.replace("exit code 0 (passed)", "an unrelated check passed"),
+  editedArtifactAccount.replace("exit code 0 (passed)", "did not pass"),
+  editedArtifactAccount.replace("exit code 0 (passed)", "exit code 1 (failed)"),
+  editedArtifactAccount.replace("You reassigned RUN-3 from Morgan to Riley.", "") + " You reassigned RUN-3 from Morgan to Riley.",
+  editedArtifactAccount + " A native run failed.",
+])("keeps completed-edit command results bounded by actor, assertion, paragraph and order: %s", reply => {
+  expect(gradeEditedArtifact(reply)).toBe(false);
+});
