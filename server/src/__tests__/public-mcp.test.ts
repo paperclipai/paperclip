@@ -597,14 +597,33 @@ describe.skipIf(!support.supported)("public MCP OAuth and tool boundary", () => 
       expect(wake.mock.calls[0]?.[0]).toMatchObject({ requestedByActorType: "user", requestedByActorId: f.actor.userId });
       // Avoid starting execution when adding feedback; the existing route accepts a completed task without reopening it.
       await db.update(issues).set({ status: "done", assigneeAgentId: null }).where(eq(issues.id, task.id));
-      const commentArgs = { companyId: f.company.id, taskId: task.id, requestId: randomUUID(), body: "Please include the source citations." };
+      const commentBody = [
+        "Keep this source exact.",
+        "```python",
+        String.raw`message = "\n"`,
+        String.raw`path = r"C:\new\repo"`,
+        "```",
+        "",
+        "```json",
+        JSON.stringify({ message: "one\ntwo", literal: "\\n" }),
+        "```",
+        "Actual CRLF text:\r\ncafé",
+      ].join("\n");
+      const commentArgs = { companyId: f.company.id, taskId: task.id, requestId: randomUUID(), body: commentBody };
       const feedback = await execute(f.tokens.access_token, "paperclip_add_comment", commentArgs);
       expect(feedback).toHaveProperty("comment.authorUserId", f.actor.userId);
+      expect(feedback).toHaveProperty("comment.body", commentBody);
       expect(await execute(f.tokens.access_token, "paperclip_add_comment", commentArgs)).toEqual(feedback);
-      expect(await db.select().from(issueComments).where(eq(issueComments.issueId, task.id))).toHaveLength(1);
+      const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, task.id));
+      expect(comments).toHaveLength(1);
+      expect(comments[0]?.body).toBe(commentBody);
       await documentService(db).upsertIssueDocument({ issueId: task.id, key: "report", title: "Research report", format: "markdown", body: "A concrete durable result.", createdByUserId: f.actor.userId });
       // A fresh executor represents another assistant conversation; no mutable company/session state is shared.
       const later = createPublicMcpExecutor(db, oauth, createMcpApiDispatch(api));
+      const readback = await later(f.tokens.access_token, "paperclip_read_task", { companyId: f.company.id, taskId: task.id });
+      expect(readback.comments).toEqual(expect.arrayContaining([
+        expect.objectContaining({ id: comments[0]!.id, body: commentBody }),
+      ]));
       expect(await later(f.tokens.access_token, "paperclip_read_document", { companyId: f.company.id, taskId: task.id, key: "report" })).toHaveProperty("document.body", "A concrete durable result.");
       const g = await fixture();
       await expect(later(g.tokens.access_token, "paperclip_read_document", { companyId: g.company.id, taskId: task.id, key: "report" })).rejects.toThrow();
