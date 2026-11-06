@@ -2372,6 +2372,30 @@ describe("IssueDetail", () => {
     await waitForAssertion(() => expect(mockIssuesApi.markUnread).toHaveBeenCalledWith(issue.id));
   });
 
+  it("waits for the automatic read receipt before it allows mark as unread", async () => {
+    const issue = createIssue();
+    const read = createDeferred<{ id: string; lastReadAt: string }>();
+    mockAuthApi.getSession.mockResolvedValue({ user: { id: "reader" } });
+    queryClient.setQueryData(queryKeys.auth.session, { user: { id: "reader" } });
+    mockIssuesApi.get.mockResolvedValue(issue);
+    mockIssuesApi.markRead.mockReset().mockReturnValue(read.promise);
+    mockIssuesApi.markUnread.mockResolvedValue({ id: issue.id, removed: true });
+    await act(async () => renderIssueView());
+    await waitForAssertion(() => expect(mockIssuesApi.markRead).toHaveBeenCalledWith(issue.id));
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('button[aria-label="More task actions"]')!.click();
+    });
+    const findMarkUnread = () => Array.from(document.body.querySelectorAll<HTMLButtonElement>("button"))
+      .find((button) => button.textContent?.trim() === "Mark as unread")!;
+    expect(findMarkUnread().disabled).toBe(true);
+    await act(async () => read.resolve({ id: issue.id, lastReadAt: new Date().toISOString() }));
+    await waitForAssertion(() => expect(findMarkUnread().disabled).toBe(false));
+    await act(async () => findMarkUnread().click());
+    await waitForAssertion(() => expect(mockIssuesApi.markUnread).toHaveBeenCalledWith(issue.id));
+    await flushReact();
+    expect(mockIssuesApi.markRead).toHaveBeenCalledTimes(1);
+  });
+
   it("loads full first-run activity from the task menu without an older-message disclosure", async () => {
     queryClient.setQueryData(["issues", "history-expanded", "PAP-1"], false);
     mockIssuesApi.get.mockResolvedValue(createIssue());

@@ -4539,6 +4539,9 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
 
   const markIssueUnread = useAccountBoundMutation({
     mutationFn: (id: string) => issuesApi.markUnread(id),
+    onMutate: (id) => {
+      if (readReceiptRef.current?.issueId === id) readReceiptRef.current.confirmed = true;
+    },
     onSuccess: () => {
       invalidateIssueCollections();
       pushToast({ title: "Marked as unread", tone: "success" });
@@ -7982,7 +7985,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
                 {issue?.id && !issue.conversationAgentId ? (
                   <button
                     className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-xs hover:bg-accent/50 disabled:opacity-50"
-                    disabled={markIssueUnread.isPending}
+                    disabled={markIssueUnread.isPending || pendingReadReceiptsRef.current.has(issue.id)}
                     onClick={() => {
                       markIssueUnread.mutate(issue.id);
                       setMoreOpen(false);
