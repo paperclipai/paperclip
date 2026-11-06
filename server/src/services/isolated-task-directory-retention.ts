@@ -153,7 +153,8 @@ export async function loadTaskDirectoryRestorePoint(input: {
   const ciphertext = await readRestorePointObject(input.storage, input.workspace.companyId, ref.objectKey, input.signal).catch(async () => {
     input.signal?.throwIfAborted();
     if (!input.recoverMissingEmpty || ref.files !== 0 || ref.excluded !== 0) throw new TaskDirectoryRestoreFailure("restore_point_unavailable");
-    const head = await input.storage.headObject(input.workspace.companyId, ref.objectKey).catch(() => null);
+    const head = await input.storage.headObject(input.workspace.companyId, ref.objectKey, { signal: input.signal }).catch(() => null);
+    input.signal?.throwIfAborted();
     if (head?.exists !== false) throw new TaskDirectoryRestoreFailure("restore_point_unavailable");
     const candidate = createEmptyTaskDirectorySnapshot();
     if (candidate.digest !== ref.digest) throw new TaskDirectoryRestoreFailure("restored_contents_mismatch");

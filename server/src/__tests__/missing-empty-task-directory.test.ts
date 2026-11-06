@@ -34,7 +34,8 @@ async function fixture(kind = "empty", scope?: keyof RestorePointIdentity) {
   if (scope === "generation") foreign.generation = 2;
   else if (scope) foreign[scope] = randomUUID();
   const sealed = await sealRestorePoint(snapshot.payload, foreign);
-  const storage = createStorageService(createLocalDiskStorageProvider(path.join(root, "objects")));
+  const provider = createLocalDiskStorageProvider(path.join(root, "objects"));
+  const storage = createStorageService(provider);
   const objectKey = `${identity.companyId}/git-restore-points/${identity.workspaceId}/1/task-directory/${identity.restorePointId}.pcrp`;
   const put = (body: Buffer) => storage.putFile({ companyId: identity.companyId, namespace: "git-restore-points", objectKey,
     originalFilename: null, contentType: "application/octet-stream", body });
@@ -42,7 +43,7 @@ async function fixture(kind = "empty", scope?: keyof RestorePointIdentity) {
   const ref: TaskDirectoryRestorePointRef = { schema: TASK_DIRECTORY_RESTORE_POINT_SCHEMA, id: identity.restorePointId, objectKey, generation: 1,
     sha256: sealed.sha256, byteSize: sealed.ciphertext.length, key: sealed.key, digest: snapshot.digest, files: snapshot.files, excluded: snapshot.excluded };
   const load = (recoverMissingEmpty = true) => loadTaskDirectoryRestorePoint({ storage, workspace: { companyId: identity.companyId, id: identity.workspaceId }, ref, recoverMissingEmpty });
-  return { ref, storage, put, load, empty, snapshot, directory, remove: () => storage.deleteObject(identity.companyId, objectKey) };
+  return { ref, storage, provider, put, load, empty, snapshot, directory, remove: () => storage.deleteObject(identity.companyId, objectKey) };
 }
 
 it("recovers only the exact empty payload authenticated by the original scoped key envelope", async () => {
@@ -92,4 +93,25 @@ it("refuses an expired checkpoint even when its exact contents are reconstructib
   const f = await fixture(); await f.remove();
   await expect(loadTaskDirectoryRestorePoint({ storage: f.storage, workspace: { companyId: f.ref.objectKey.split("/")[0]!, id: f.ref.objectKey.split("/")[2]! },
     ref: { ...f.ref, expiredAt: new Date().toISOString() }, recoverMissingEmpty: true })).rejects.toMatchObject({ reason: "restore_point_expired" });
+});
+
+it("cancels a stalled absence check through the real storage service boundary", async () => {
+  const f = await fixture(); await f.remove();
+  const controller = new AbortController(), reason = new Error("migration deadline");
+  let entered!: () => void, release!: () => void;
+  const started = new Promise<void>(resolve => { entered = resolve; });
+  vi.spyOn(f.provider, "headObject").mockImplementation(() => new Promise(resolve => {
+    release = () => resolve({ exists: false }); entered();
+  }));
+  const result = loadTaskDirectoryRestorePoint({ storage: f.storage,
+    workspace: { companyId: f.ref.objectKey.split("/")[0]!, id: f.ref.objectKey.split("/")[2]! },
+    ref: f.ref, recoverMissingEmpty: true, signal: controller.signal }).then(payload => ({ payload }), error => ({ error }));
+  await started; controller.abort(reason);
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const observed = await Promise.race([result, new Promise(resolve => { timeout = setTimeout(() => resolve("still waiting"), 1000); })]);
+    expect(observed).toEqual({ error: reason });
+  } finally {
+    clearTimeout(timeout); release(); await result;
+  }
 });
