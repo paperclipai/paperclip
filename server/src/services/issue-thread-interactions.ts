@@ -1,3 +1,4 @@
+import { resolveNewTaskParent } from "./issue-hierarchy.js";
 import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
 import { notifyMergeConfirmationWork, type MergeConfirmationScope } from "./merged-pr-confirmation-notifications.js";
 import { notifyNativeStatusReassessment } from "./native-status-reassessment-notifications.js";
@@ -5,6 +6,7 @@ import { notifyIssueReviewState } from "./issue-review-state-notifications.js";
 import { notifyChatConfirmationResolution } from "./chat-confirmation-notifications.js";
 import { notifyChatRunMilestones } from "./chat-run-milestone-notifications.js";
 import { notifyToolReviewChange } from "./tool-review-work-notifications.js";
+import { projectGitHubInteractionErrors } from "./tool-access/github-action-error-projection.js";
 import { normalizeEscapedLineBreaks } from "@paperclipai/shared/validators/text";
 import { notifyDeliveryWork, DELIVERY_QUEUES } from "./delivery-work-notifications.js";
 import { historicalQuestionCondition } from "./issue-question-context.js";
@@ -169,6 +171,8 @@ type InteractionActor = {
     | null;
   suggestedTaskEffectsAuthorized?: boolean;
   resolutionDetails?: Record<string, unknown>;
+  /** Set only by resolveConfirmationFromComment for its verified reply author. */
+  relayedHumanUserId?: string | null;
 };
 
 async function assertInteractionRunWriteAllowed(tx: Db, issue: { id: string; companyId: string }, actor: InteractionActor) {
@@ -472,6 +476,7 @@ function resolverActor(actor: InteractionActor) {
       type: "agent" as const,
       agentId: actor.agentId,
       runId: actor.runId,
+      relayedHumanUserId: actor.relayedHumanUserId ?? null,
     };
   }
   if (actor.userId) return { type: "user" as const, userId: actor.userId };
@@ -756,17 +761,19 @@ function hydrateInteraction(
           row,
         ),
       } satisfies AskUserQuestionsInteraction;
-    case "request_confirmation":
+    case "request_confirmation": {
+      const payload = requestConfirmationPayloadSchema.parse(row.payload);
       return {
         ...base,
         kind: "request_confirmation",
-        payload: requestConfirmationPayloadSchema.parse(row.payload),
+        payload,
         result: parseStoredInteractionResult(
           requestConfirmationResultSchema,
           row.result,
           row,
         ),
       } satisfies RequestConfirmationInteraction;
+    }
     case "request_checkbox_confirmation":
       return {
         ...base,
@@ -2138,6 +2145,7 @@ export function issueThreadInteractionService(
     interactions: IssueThreadInteraction[],
     issueWorkspace?: { companyId: string; executionWorkspaceId: string | null },
   ): Promise<IssueThreadInteraction[]> {
+    interactions = await projectGitHubInteractionErrors(db, interactions);
     const guarded = interactions.filter((interaction) =>
       interaction.status === "pending"
       && interaction.sourceRunId
@@ -2162,7 +2170,7 @@ export function issueThreadInteractionService(
     if (!workspace?.executionWorkspaceId) return interactions;
 
     // Only pending confirmations need checks, once per source run even if that
-    // run produced several cards. Historical interactions add no queries.
+    // run produced several cards. Historical interactions need no workspace queries.
     const { companyId, executionWorkspaceId } = workspace;
     const sourceRunIds = [...new Set(guarded.map((interaction) => interaction.sourceRunId!))];
     const pendingRunIds = new Set<string>();
@@ -2943,6 +2951,7 @@ export function issueThreadInteractionService(
       interactionId: string,
       phase: ConnectionIntentInteraction["payload"]["phase"],
       actor: InteractionActor,
+      setupAccess?: ConnectionIntentInteraction["payload"]["setupAccess"],
     ) => {
       const current = await getPendingInteractionForResolution({
         issue,
@@ -2954,10 +2963,10 @@ export function issueThreadInteractionService(
         );
       }
       assertInteractionResolutionAllowed(current, actor);
-      const payload = connectionIntentPayloadSchema.parse(current.payload);
+      connectionIntentPayloadSchema.parse(current.payload);
       const [updated] = await db
         .update(issueThreadInteractions)
-        .set({ payload: { ...payload, phase }, updatedAt: now() })
+        .set({ payload: sql`${issueThreadInteractions.payload} || ${JSON.stringify({ phase, ...(setupAccess ? { setupAccess } : {}) })}::jsonb`, updatedAt: now() })
         .where(
           and(
             eq(issueThreadInteractions.id, interactionId),
@@ -4363,8 +4372,18 @@ export function issueThreadInteractionService(
             } } : {}),
           } satisfies Parameters<ReturnType<typeof issueService>["createChild"]>[1];
           const service = issueService(tx as unknown as Db);
+          // A nested suggestion may be placed beside its suggested parent, under
+          // that parent's own requested parent. The accept scope authorized that
+          // parent, so confirm the placement only when it lands exactly there.
+          const nestedUnder = task.parentClientKey ? createdByClientKey.get(task.parentClientKey) : undefined;
+          const placement = parentIssueId && nestedUnder
+            ? await resolveNewTaskParent(tx as unknown as Db, issue.companyId, parentIssueId, "flatten")
+            : null;
+          const confirmedParent = placement && placement.effectiveParentId === nestedUnder?.parentIssueId
+            ? { expectedParentId: placement.effectiveParentId }
+            : {};
           const createdIssue = parentIssueId
-            ? (await service.createChild(parentIssueId, createInput)).issue
+            ? (await service.createChild(parentIssueId, { ...createInput, ...confirmedParent })).issue
             : await service.create(issue.companyId, createInput);
 
           const parentIdentifier =

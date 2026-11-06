@@ -1,4 +1,5 @@
 import { notifyNativeEnvironmentSettlement } from "../native-environment-settlement-notifications.js";
+import { isContextCompactionRun } from "../context-compaction.js";
 import { notifyExternalAgentSettlement } from "../../modules/external-agents/index.js";
 import { notifyNativeRecoveryNotices } from "../native-recovery-notice-notifications.js";
 import { resolveCommittedNativeRecoveryNotices } from "./native-recovery-notices.js";
@@ -91,6 +92,7 @@ import {
   findHeartbeatRunCompletionComment,
   isExternalChatPresentationContext,
   readAcceptedTaskContinuationSummary,
+  completedPlanProposalIds,
   readCompletedAssistantMessageCandidate,
   resolveHeartbeatRunResponse,
   selectHeartbeatRunFinalAgentMessage,
@@ -1019,9 +1021,15 @@ async function recoverCommittedNativeChatResponseInScope(
             sql`${heartbeatRunEvents.payload} #>> '{prpEvent,payload,kind}' = 'agentMessage'`,
             sql`${heartbeatRunEvents.payload} #>> '{prpEvent,payload,channel}' = 'final'`,
           )).orderBy(desc(heartbeatRunEvents.seq)).limit(200);
+        const proposedItemIds = completedPlanProposalIds(await tx.select({ payload: heartbeatRunEvents.payload })
+          .from(heartbeatRunEvents).where(and(
+            eq(heartbeatRunEvents.companyId, input.companyId),
+            eq(heartbeatRunEvents.runId, run.id),
+            eq(heartbeatRunEvents.eventType, "plan.proposed"),
+          )).limit(200));
         const finalAgentMessage = selectHeartbeatRunFinalAgentMessage({
           candidates: rows.flatMap((row) => {
-            const candidate = readCompletedAssistantMessageCandidate({ seq: row.seq, prpEvent: record(row.payload).prpEvent });
+            const candidate = readCompletedAssistantMessageCandidate({ seq: row.seq, prpEvent: record(row.payload).prpEvent, proposedItemIds });
             return candidate ? [candidate] : [];
           }),
         });
@@ -1536,6 +1544,7 @@ export async function finalizeNativeRun(input: {
       boardResponseWaitOrigin: boardResponseWaitOrigin !== null,
       isConversation: isConversation(authoritativeIssue),
       hasActivePauseHold: pauseHold !== null,
+      contextCompactionRun: isContextCompactionRun(run.contextSnapshot),
       reviewOwnerUserId:
         authoritativeIssue.responsibleUserId ??
         authoritativeIssue.createdByUserId ??

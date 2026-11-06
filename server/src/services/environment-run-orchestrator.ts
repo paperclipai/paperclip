@@ -20,6 +20,9 @@ import { prepareRemoteWorkspace, readRemoteWorkspaceAuthority, remoteWorkspaceRe
 import { environmentLeases, type Db } from "@paperclipai/db";
 import { and, eq } from "drizzle-orm";
 import { remoteExecutionHasStopped } from "./remote-execution-termination.js";
+import { EnvironmentProviderUnavailableError, readTransientEnvironmentProviderFailure } from "./environment-provider-unavailable-error.js";
+import { findReusableSandboxResumeError } from "./reusable-sandbox-resume-error.js";
+import { findPluginWorkerUnavailableError } from "./plugin-worker-unavailable-error.js";
 import type {
   Environment,
   EnvironmentLease,
@@ -222,13 +225,21 @@ export function environmentRunOrchestrator(
     try {
       return await environmentRuntime.acquireRunLease(input);
     } catch (err) {
+      // A transient provider refusal (HTTP 5xx/429/timeout) is retried by the
+      // setup path with its bounded bootstrap budget. Saved-sandbox resume and
+      // stopped-worker refusals keep their own, more specific classifications.
+      const transient = findReusableSandboxResumeError(err) || findPluginWorkerUnavailableError(err)
+        ? null : readTransientEnvironmentProviderFailure(err);
       throw new EnvironmentRunError(
         "lease_acquire_failed",
         `Failed to acquire lease for environment "${input.environment.name}" (${input.environment.driver}): ${err instanceof Error ? err.message : String(err)}`,
         {
           environmentId: input.environment.id,
           driver: input.environment.driver,
-          cause: err,
+          cause: transient
+            ? new EnvironmentProviderUnavailableError({ environmentName: input.environment.name,
+              driver: input.environment.driver, evidence: transient, cause: err })
+            : err,
         },
       );
     }

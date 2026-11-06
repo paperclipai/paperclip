@@ -3,7 +3,7 @@
 import { act, lazy } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createChunkLoadRecovery, RELOAD_ABANDONED_MS } from "@/lib/chunk-load-recovery";
+import { createChunkLoadRecovery, RELOAD_ABANDONED_MS, RELOAD_DELAYS_MS } from "@/lib/chunk-load-recovery";
 import { RouteErrorBoundary } from "./RouteErrorBoundary";
 
 const navigateMock = vi.hoisted(() => vi.fn());
@@ -30,8 +30,15 @@ vi.mock("@/lib/chunk-load-recovery", async (importOriginal) => {
     ...actual,
     reloadForChunkLoadError: (error: unknown) => chunkRecovery.current!.reloadForChunkLoadError(error),
     onChunkLoadReloadAbandoned: (listener: () => void) => chunkRecovery.current!.onChunkLoadReloadAbandoned(listener),
+    cancelPendingChunkLoadReload: () => chunkRecovery.current!.cancelPendingChunkLoadReload(),
   };
 });
+
+function seedReloadAttempts(attempts: number) {
+  const startedAt = Date.now();
+  window.sessionStorage.setItem("paperclip:chunk-load-reload-at", String(startedAt));
+  window.sessionStorage.setItem("paperclip:chunk-load-reload-attempts", `${startedAt}:${attempts}`);
+}
 
 function Boom(): never {
   throw new Error("Maximum update depth exceeded");
@@ -125,8 +132,53 @@ describe("RouteErrorBoundary", () => {
     }
   });
 
+  it("keeps loading through a delayed retry, then reports once if it never leaves the page", async () => {
+    vi.useFakeTimers();
+    try {
+      seedReloadAttempts(1);
+      const FailedPage = lazy(async () => { throw new Error("Failed to fetch dynamically imported module"); });
+      const root = createRoot(container);
+      await act(async () => { root.render(<RouteErrorBoundary><FailedPage /></RouteErrorBoundary>); });
+      const delayMs = RELOAD_DELAYS_MS[1]!;
+      act(() => { vi.advanceTimersByTime(delayMs - 1); });
+      expect(reloadMock).not.toHaveBeenCalled();
+      act(() => { vi.advanceTimersByTime(1); });
+      expect(reloadMock).toHaveBeenCalledTimes(1);
+
+      act(() => { vi.advanceTimersByTime(RELOAD_ABANDONED_MS - 1); });
+      expect(container.querySelector('[role="status"]')?.textContent).toContain("Loading");
+      expect(captureBrowserExceptionMock).not.toHaveBeenCalled();
+      act(() => { vi.advanceTimersByTime(1); });
+      expect(container.textContent).toContain("This page hit an error");
+      expect(captureBrowserExceptionMock).toHaveBeenCalledTimes(1);
+      act(() => root.unmount());
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("cancels a delayed retry when the user navigates away from the failed route", async () => {
+    vi.useFakeTimers();
+    try {
+      seedReloadAttempts(1);
+      const FailedPage = lazy(async () => { throw new Error("Failed to fetch dynamically imported module"); });
+      const root = createRoot(container);
+      await act(async () => { root.render(<RouteErrorBoundary><FailedPage /></RouteErrorBoundary>); });
+      routerLocation.current = { pathname: "/co/issues/CO-1", search: "" };
+      await act(async () => { root.render(<RouteErrorBoundary><div>Saved conversation</div></RouteErrorBoundary>); });
+
+      act(() => { vi.advanceTimersByTime(RELOAD_DELAYS_MS[1]! + RELOAD_ABANDONED_MS); });
+      expect(reloadMock).not.toHaveBeenCalled();
+      expect(captureBrowserExceptionMock).not.toHaveBeenCalled();
+      expect(container.textContent).toContain("Saved conversation");
+      act(() => root.unmount());
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("contains a repeated chunk load failure and recovers when navigating back to a task", async () => {
-    window.sessionStorage.setItem("paperclip:chunk-load-reload-at", String(Date.now()));
+    seedReloadAttempts(RELOAD_DELAYS_MS.length);
     const FailedPage = lazy(async () => { throw new Error("Failed to fetch dynamically imported module"); });
     const root = createRoot(container);
     await act(async () => { root.render(<RouteErrorBoundary><FailedPage /></RouteErrorBoundary>); });

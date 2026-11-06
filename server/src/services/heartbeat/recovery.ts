@@ -105,6 +105,7 @@ import type { agentInstructionWorkingCopyService } from "../agent-instruction-wo
 import type { createHeartbeatRunState } from "./run-state.js";
 import type { HeartbeatRetryDependencies, createHeartbeatRetries } from "./retries.js";
 import type { CancelRunOptions } from "./run-control.js";
+import { requestRestartInterruptedTurnRetry } from "./restart-interrupted-turn.js";
 
 type HeartbeatRun = typeof heartbeatRuns.$inferSelect;
 type HeartbeatRetries = ReturnType<typeof createHeartbeatRetries>;
@@ -929,7 +930,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
     };
   }
 
-  async function recoverNativeRunsAfterRestart(now = new Date(), runIds?: string[], options?: { skipDelegatedWork?: boolean }) {
+  async function recoverNativeRunsAfterRestart(now = new Date(), runIds?: string[], options?: { skipDelegatedWork?: boolean; trigger?: "same_run_retry" }) {
     if (!runIds && !options?.skipDelegatedWork) {
       await reconcileRetainedWorkspaces(db, environmentRuntime, resumeRemoteStopComments);
       await reconcileNativeFinalizations(db, undefined, {
@@ -1045,7 +1046,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
             message:
               disposition.kind === "reattach_existing_runner" ||
               disposition.kind === "reattach_remote_runner"
-                ? "Recovering the existing native runner process after server restart"
+                ? options?.trigger === "same_run_retry" ? "Reattaching to the existing remote runner to resume this run" : "Recovering the existing native runner process after server restart"
                 : disposition.kind === "resume_dead_runner"
                   ? "Resuming the durable native provider session after runner process loss"
                   : disposition.kind === "bootstrap_incomplete"
@@ -1060,7 +1061,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
                           ? "Native startup timed out; cancellation and verified cleanup are queued"
                           : "Native restart recovery blocked ambiguous or conflicting ownership",
             payload: {
-              restartKind: isClaim ? disposition.restartKind : restartKind,
+              restartKind: isClaim ? disposition.restartKind : restartKind, ...(options?.trigger ? { trigger: options.trigger } : {}),
               recoveryRequestId: isClaim
                 ? disposition.recoveryRequestId
                 : (intent?.recoveryRequestId ?? null),
@@ -1093,6 +1094,9 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
             { err: error, runId: claim.runId, disposition: claim.kind },
             "native restart recovery execution failed",
           );
+        }).then(async () => { await requestRestartInterruptedTurnRetry(db, claim); }).catch((error) => {
+          // The failed run keeps its visible Retry; only the automatic request is lost.
+          logger.warn({ err: error, runId: claim.runId }, "restart-interrupted turn Retry request failed");
         }).finally(() => preparationRenewal?.stop().catch(() => undefined));
         // The executor releases preparation only after acquiring its own renewal.
         // The finalizer above also covers exits before execution can acquire it.
@@ -2153,7 +2157,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
     await beforeDispatch?.();
 
     const remoteRetryClaims = remoteRetryRunIds.length
-      ? (await recoverNativeRunsAfterRestart(now, remoteRetryRunIds, { skipDelegatedWork: true })).claims
+      ? (await recoverNativeRunsAfterRestart(now, remoteRetryRunIds, { skipDelegatedWork: true, trigger: "same_run_retry" })).claims
       : [];
 
     // An explicit result-less retryable failure resumes on the original run.

@@ -1911,6 +1911,9 @@ export function routineService(
             projectWorkspaceId,
             goalId: input.routine.goalId,
             parentId: input.routine.parentIssueId,
+            // A routine's parent is configured, not chosen per run. Human-configured
+            // routines keep any depth; agent-authored ones follow the agent limit.
+            parentDepthPolicy: input.routine.createdByAgentId ? "flatten" : "allow_nested",
             title,
             description,
             status: "todo",

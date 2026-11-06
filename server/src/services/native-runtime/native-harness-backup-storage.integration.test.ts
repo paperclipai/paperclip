@@ -180,6 +180,15 @@ describeEmbeddedPostgres("durable native provider backups", () => {
       leaseExpiresAt: null }).where(eq(nativeRunFinalizations.runId, f.runId));
     return result;
   }
+  async function releaseWhileSavingWorkspace(f: Awaited<ReturnType<typeof fixture>>) {
+    const result = await commitWarmRun(f);
+    await f.db.update(nativeRunFinalizations).set({ phase: "workspace_finalizing" })
+      .where(eq(nativeRunFinalizations.runId, f.runId));
+    await f.db.update(heartbeatRuns).set({ status: "running", finishedAt: null })
+      .where(eq(heartbeatRuns.id, f.runId));
+    await f.db.update(issues).set({ executionRunId: f.runId }).where(eq(issues.id, f.issueId));
+    return result;
+  }
   async function inactiveFixture() {
     const [f] = await offlineFixtures(1);
     await commitWarmRun(f);
@@ -337,6 +346,47 @@ describeEmbeddedPostgres("durable native provider backups", () => {
     expect(rows.filter(row => row.status === "current").map(row => row.id)).toEqual([before.id]);
     expect(rows.filter(row => row.status === "pending")).toHaveLength(1);
     expect(await readFile(join(f.root, "manifest.json"), "utf8")).toContain("paperclip.native-harness-backup.v1");
+  });
+  it("publishes with the captured provider owner while an accepted result is still saving its workspace", async () => {
+    const f = await fixture();
+    const result = await releaseWhileSavingWorkspace(f);
+    await expect(nativeHarnessBackupOwner(f.db, { companyId: f.companyId, issueId: f.issueId,
+      runId: f.runId, bootId: f.owner.bootId })).rejects.toThrow("native_harness_storage_owner_missing");
+    await persistNativeHarnessBackup(f);
+    await removeNativeHarnessBackup(f.home);
+    const replacement = join(environment.current.runtimeRoot, randomUUID(), "restored-pending-workspace");
+    ownedHomes.push(replacement);
+    expect(await restoreDurableNativeHarnessBackup({ ...f, backupRoot: replacement })).toBe(true);
+    expect(JSON.parse(await readFile(join(replacement, "current", "codex", "sessions", "history.json"), "utf8"))).toEqual(f.identity);
+    const [coordinator] = await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId));
+    expect(coordinator).toMatchObject({ phase: "workspace_finalizing", resultId: result.id, leaseOwner: null,
+      leaseExpiresAt: null, controllerBootId: f.owner.bootId, controllerGeneration: f.owner.generation });
+  });
+  it.each(["boot", "generation", "result", "successor"])("rejects a captured provider fence when its %s changes during upload", async change => {
+    const f = await fixture();
+    await persistNativeHarnessBackup(f);
+    const [before] = await f.db.select().from(nativeHarnessBackups).where(eq(nativeHarnessBackups.scopeDigest, f.scopeDigest));
+    await releaseWhileSavingWorkspace(f);
+    const put = f.storage.putFile.bind(f.storage);
+    vi.spyOn(f.storage, "putFile").mockImplementation(async input => {
+      const object = await put(input);
+      if (change === "successor") {
+        const nextRunId = randomUUID();
+        await f.db.insert(heartbeatRuns).values({ id: nextRunId, companyId: f.companyId,
+          agentId: environment.current.agentId, issueId: f.issueId, status: "running" });
+        await f.db.update(issues).set({ executionRunId: nextRunId }).where(eq(issues.id, f.issueId));
+      } else {
+        await f.db.update(nativeRunFinalizations).set(change === "boot" ? { controllerBootId: randomUUID() }
+          : change === "generation" ? { controllerGeneration: 2 } : { resultId: null })
+          .where(eq(nativeRunFinalizations.runId, f.runId));
+      }
+      return object;
+    });
+    await expect(persistNativeHarnessBackup(f)).rejects.toThrow(change === "successor"
+      ? "native_harness_storage_owner_superseded" : "native_runner_checkpoint_owner_lost");
+    const selected = await f.db.select().from(nativeHarnessBackups).where(and(eq(nativeHarnessBackups.scopeDigest, f.scopeDigest),
+      eq(nativeHarnessBackups.status, "current")));
+    expect(selected.map(row => row.id)).toEqual([before.id]);
   });
   it.each(["idle", "preparing", "native"])("preserves a released committed warm session with a %s successor", async state => {
     const f = await fixture();

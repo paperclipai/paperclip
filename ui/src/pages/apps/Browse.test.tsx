@@ -233,10 +233,11 @@ describe("Connectors landing page", () => {
     vi.clearAllMocks();
   });
 
-  async function renderBrowse(allCatalog = true) {
+  async function renderBrowse(allCatalog = true, options: { cloud?: boolean } = {}) {
     const client = new QueryClient({
       defaultOptions: { queries: { retry: false } },
     });
+    if (options.cloud) client.setQueryData(queryKeys.health, { status: "ok", cloud: { managed: true } });
     root = createRoot(container);
     await act(async () => {
       root.render(
@@ -667,6 +668,7 @@ describe("Connectors landing page", () => {
   });
 
   it("suppresses aggregator routes for native apps, including hidden native connectors", async () => {
+    experimentalMock.mockResolvedValue({ enableChatConnectors: true, enableGitHubReviewBots: true, enableGoogleWorkspaceConnector: true });
     aggregatorCatalogMock.push(indexedApp("Notion", ["composio", "arcade"]), indexedApp("Google Sheets"), indexedApp("GitHub API"), indexedApp("Context7"), indexedApp("HubSpot", ["composio", "arcade"]));
     await renderBrowse();
     expect(container.querySelectorAll('[data-app-slug="notion"]')).toHaveLength(1);
@@ -676,6 +678,64 @@ describe("Connectors landing page", () => {
     expect(container.querySelector('[data-app-slug="context7"]')).toBeNull();
     expect(container.querySelectorAll('[data-app-slug="hubspot"]')).toHaveLength(1);
     expect(container.querySelectorAll('[data-app-slug="hubspot"] button[aria-label*="third-party"]')).toHaveLength(2);
+  });
+
+  // BUG-06: on Paperclip Cloud, Slack's built-in tool method needs a customer-created OAuth
+  // app and, without the Chat connectors opt-in, there is no managed Slack path. Connect
+  // must offer the aggregators' one-click sign-in instead of the "needs its own OAuth app" form.
+  it("offers aggregator Slack sign-in on Cloud while the built-in Slack connector needs a customer OAuth app", async () => {
+    experimentalMock.mockResolvedValue({});
+    aggregatorCatalogMock.push(indexedApp("Slack", ["composio", "arcade"]));
+    listGalleryMock.mockResolvedValue({ apps: [getAppStoreDefinition("slack"), getAppStoreDefinition("notion")] });
+    await renderBrowse(true, { cloud: true });
+
+    const rows = container.querySelectorAll('[data-app-slug="slack"]');
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.textContent).toContain("Connect through Composio or Arcade.");
+    await clickButton("Connect", rows[0]!);
+    expect(navigateMock).not.toHaveBeenCalledWith("/apps/connect?source=slack");
+    expect(document.querySelector('[role="dialog"]')?.textContent).toContain("Which service would you like to use?");
+  });
+
+  it.each([
+    ["Chat connectors offer its setup path", { enableChatConnectors: true }, true],
+    ["the instance is self-hosted", {}, false],
+  ])("keeps the built-in Slack connector when %s", async (_label, experimental, cloud) => {
+    experimentalMock.mockResolvedValue(experimental);
+    aggregatorCatalogMock.push(indexedApp("Slack", ["composio", "arcade"]));
+    listGalleryMock.mockResolvedValue({ apps: [getAppStoreDefinition("slack")] });
+    await renderBrowse(true, { cloud });
+
+    const rows = container.querySelectorAll('[data-app-slug="slack"]');
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.textContent).not.toContain("Connect through Composio");
+  });
+
+  it("keeps native Asana on Cloud when the gallery omits its unavailable managed method", async () => {
+    experimentalMock.mockResolvedValue({});
+    aggregatorCatalogMock.push(indexedApp("Asana", ["composio", "arcade"]));
+    const asana = getAppStoreDefinition("asana")!;
+    // The gallery removes a Paperclip Cloud method whose broker profile is not advertised.
+    const galleryAsana = { ...asana, methods: asana.methods.filter((method) => !method.oauthStrategy) };
+    listGalleryMock.mockResolvedValue({ apps: [galleryAsana] });
+    await renderBrowse(true, { cloud: true });
+
+    const rows = container.querySelectorAll('[data-app-slug="asana"]');
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.textContent).not.toContain("Connect through Composio");
+  });
+
+  it("keeps a saved built-in Slack connection on its native row on Cloud", async () => {
+    experimentalMock.mockResolvedValue({});
+    aggregatorCatalogMock.push(indexedApp("Slack", ["composio", "arcade"]));
+    listGalleryMock.mockResolvedValue({ apps: [getAppStoreDefinition("slack")] });
+    listApplicationsMock.mockResolvedValue({ applications: [application({ id: "slack-app", name: "Slack", metadata: { sourceTemplateKey: "slack" } })] });
+    listConnectionsMock.mockResolvedValue({ connections: [connection({ applicationId: "slack-app", name: "Team Slack", transport: "mcp_remote", config: { sourceTemplateKey: "slack" } })] });
+    await renderBrowse(true, { cloud: true });
+
+    const rows = container.querySelectorAll('[data-app-slug="slack"]');
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.textContent).toContain("Team Slack");
   });
 
   it("paginates the catalog while keeping installed connectors above every page and resets on search", async () => {
@@ -850,6 +910,7 @@ describe("Connectors landing page", () => {
   ];
 
   it("offers one Google Workspace connector while retaining the individual service definitions", async () => {
+    experimentalMock.mockResolvedValue({ enableGoogleWorkspaceConnector: true });
     const definitions = googleSlugs.map((slug) => getAppStoreDefinition(slug)!);
     listGalleryMock.mockResolvedValue({ apps: [...definitions, getAppStoreDefinition("notion")] });
     const client = await renderBrowse();
@@ -870,6 +931,56 @@ describe("Connectors landing page", () => {
     expect(archiveConnectionMock).not.toHaveBeenCalled();
     await clickButton("Connect", container.querySelector('[data-app-slug="google-workspace"]')!);
     expect(navigateMock).toHaveBeenCalledWith("/apps/connect?source=google-workspace");
+  });
+
+  function googleAggregatorApp(name: string, toolkit: string): AggregatorAppCatalogEntry {
+    return { name, slug: toolkit, aliases: [toolkit], routes: [{ provider: "composio", toolkit,
+      logoUrl: `https://logos.composio.dev/api/${toolkit}`, docsUrl: `https://docs.composio.dev/toolkits/${toolkit}` }] };
+  }
+
+  it("hides the built-in Google Workspace connector by default and offers aggregator Google apps", async () => {
+    experimentalMock.mockResolvedValue({});
+    aggregatorCatalogMock.push(googleAggregatorApp("Gmail", "gmail"), googleAggregatorApp("Google Calendar", "googlecalendar"),
+      googleAggregatorApp("Google Drive", "googledrive"));
+    listGalleryMock.mockResolvedValue({ apps: [...googleSlugs.map(getAppStoreDefinition), getAppStoreDefinition("notion")] });
+    await renderBrowse();
+
+    expect(container.querySelector('[data-app-slug="google-workspace"]')).toBeNull();
+    for (const slug of ["gmail", "googlecalendar", "googledrive"]) {
+      const row = container.querySelector(`[data-app-slug="${slug}"]`);
+      expect(row, slug).not.toBeNull();
+      expect(row?.textContent).toContain("Composio");
+    }
+    expect(container.querySelector('[data-app-slug="google-calendar"]')).toBeNull();
+    expect(container.querySelector('[data-app-slug="notion"]')).not.toBeNull();
+  });
+
+  it("shows an existing aggregator Google account once, on the aggregator row, while the built-in connector is off", async () => {
+    experimentalMock.mockResolvedValue({});
+    aggregatorCatalogMock.push(googleAggregatorApp("Google Calendar", "googlecalendar"));
+    listGalleryMock.mockResolvedValue({ apps: [...googleSlugs.map(getAppStoreDefinition), getAppStoreDefinition("composio")] });
+    listApplicationsMock.mockResolvedValue({ applications: [application({ id: "gateway-app", name: "Composio", metadata: { sourceTemplateKey: "composio" } })] });
+    listConnectionsMock.mockResolvedValue({ connections: [connection({ applicationId: "gateway-app", name: "Composio account", transport: "mcp_remote", config: { sourceTemplateKey: "composio" } })] });
+    const snapshot = { connectionId: "conn-notion", toolkit: "googlecalendar", status: "connected", checkedAt: new Date().toISOString(),
+      accounts: [{ id: "ca-calendar", alias: "Work calendar", status: "ACTIVE", isDefault: true }] };
+    listComposioAppsMock.mockResolvedValue({ apps: [snapshot] });
+    refreshComposioAppsMock.mockResolvedValue({ apps: [snapshot] });
+    await renderBrowse();
+
+    expect(container.querySelector('[data-app-slug="google-calendar"]')).toBeNull();
+    expect(container.querySelector('[data-app-slug="googlecalendar"]')?.textContent).toContain("Work calendar");
+    expect(container.textContent?.split("Work calendar").length).toBe(2);
+  });
+
+  it("keeps aggregator Google apps folded into the built-in connector when it is enabled", async () => {
+    experimentalMock.mockResolvedValue({ enableGoogleWorkspaceConnector: true });
+    aggregatorCatalogMock.push(googleAggregatorApp("Gmail", "gmail"), googleAggregatorApp("Google Calendar", "googlecalendar"));
+    listGalleryMock.mockResolvedValue({ apps: googleSlugs.map(getAppStoreDefinition) });
+    await renderBrowse();
+
+    expect(container.querySelector('[data-app-slug="google-workspace"]')).not.toBeNull();
+    expect(container.querySelector('[data-app-slug="gmail"]')).toBeNull();
+    expect(container.querySelector('[data-app-slug="googlecalendar"]')).toBeNull();
   });
 
   it.each(["active", "draft", "disabled"])(

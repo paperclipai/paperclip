@@ -39,6 +39,7 @@ import { loadNativeRunnerCheckpoint } from "./native-runner-checkpoint.js";
 import { environmentRunnerIngressErrorData, JsonRpcCallError, PluginEnvironmentRunnerIngressError } from "@paperclipai/plugin-sdk";
 import { accountRunCost } from "../run-cost-accounting.js";
 import { settleUnrecoverableExecutions } from "../execution-recovery-resolution.js";
+import { agentProviderLimitCooldown } from "./native-startup-retry.js";
 
 type SessionOpenStatus = "failed" | "rejected" | "indeterminate";
 
@@ -657,6 +658,34 @@ describe("native provider startup retry", () => {
       backoffWindow(startupResetAt, 1)[0],
     );
     expect(state.issue.status).toBe("in_progress");
+  });
+
+  it("reads the reset clock from an ACP terminal limit failure's provider wording", async () => {
+    const agentId = await createAgent();
+    const limitedAt = new Date(Date.now() - 5 * 60_000);
+    const resetHour = new Date(Date.now() + 3 * 60 * 60_000).getUTCHours();
+    await recordPriorRun(agentId, {
+      status: "failed",
+      startedAt: new Date(limitedAt.getTime() - 60_000),
+      finishedAt: limitedAt,
+      errorCode: "native_provider_usage_limit",
+      resultJson: {
+        providerFailure: limitFailure({
+          category: "quota_exhausted",
+          message: `ACP agent reported a terminal limit failure.\nYou've hit your session limit · resets ${resetHour}:00 (UTC)`,
+        }),
+      },
+    });
+    const expected = new Date(limitedAt);
+    expected.setUTCHours(resetHour, 0, 0, 0);
+    if (expected <= limitedAt) expected.setUTCDate(expected.getUTCDate() + 1);
+
+    const seeded = await seedRun(agentId);
+    await failStartup(seeded, sessionOpenFailure());
+    const state = await read(seeded);
+    expect(state.coordinator.failureDetail).toMatchObject({ providerCooldownAt: expected.toISOString() });
+    expect(await agentProviderLimitCooldown(db, { companyId, agentId, now: new Date() }))
+      .toMatchObject({ resetAt: expected, resetReported: true });
   });
 
   it("holds a startup retry for at most one day before trying again", async () => {

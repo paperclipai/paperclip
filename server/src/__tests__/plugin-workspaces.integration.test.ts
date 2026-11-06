@@ -20,6 +20,8 @@ import {
   type WorkspaceWorkers,
 } from "../services/plugin-workspaces.js";
 import { executionWorkspaceService } from "../services/execution-workspaces.js";
+import { WorkspaceProviderFailureError } from "../services/workspace-provider-failure.js";
+import { findPluginWorkerUnavailableError, PluginWorkerUnavailableError } from "../services/plugin-worker-unavailable-error.js";
 import { pluginRegistryService } from "../services/plugin-registry.js";
 import { projectService } from "../services/projects.js";
 import { DELIVERY_QUEUES } from "../services/delivery-work-notifications.js";
@@ -45,6 +47,27 @@ const support = await getEmbeddedPostgresTestSupport();
     });
     const fixture = (companyId?: string) =>
       createPluginWorkspaceFixture(db, companyId);
+    it.each([
+      ["missing", undefined],
+      ["stopped", { status: "stopped", supportedMethods: [] }],
+      ["starting", { status: "starting", supportedMethods: [] }],
+    ] as const)("retries preparation when the ready provider's worker is %s, before sending a request", async (_state, worker) => {
+      const f = await fixture();
+      const workers = { getWorker: () => worker, call: f.workers.call.bind(f.workers) } as unknown as WorkspaceWorkers;
+      const failure = await preparePluginWorkspace(db, workers, f.input).then(() => null, (error: unknown) => error);
+      expect(failure).toBeInstanceOf(WorkspaceProviderFailureError);
+      expect((failure as WorkspaceProviderFailureError).summary()).toEqual({ kind: "worker_unavailable", reason: null, retryable: true });
+      expect(findPluginWorkerUnavailableError(failure)).toBeInstanceOf(PluginWorkerUnavailableError);
+      expect(f.calls).toHaveLength(0);
+    });
+    it("keeps a running worker without workspace operations an unavailable provider", async () => {
+      const f = await fixture();
+      const workers = { getWorker: () => ({ status: "running", supportedMethods: [] }), call: f.workers.call.bind(f.workers) } as unknown as WorkspaceWorkers;
+      const failure = await preparePluginWorkspace(db, workers, f.input).then(() => null, (error: unknown) => error);
+      expect(failure).not.toBeInstanceOf(WorkspaceProviderFailureError);
+      expect((failure as Error).message).toBe("The workspace storage plugin is unavailable");
+      expect(f.calls).toHaveLength(0);
+    });
     it.each([1, undefined])("gates recovery hints by provider capability (%s)", async (version) => {
       const f = await fixture();
       const [plugin] = await db.select().from(plugins).where(eq(plugins.id, f.pluginId));
