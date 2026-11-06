@@ -1,3 +1,5 @@
+import path from "node:path";
+import { normalizeTeamRuntimeCatalog } from "./external-team-runtime-fixture.js";
 import type { ChatCatalogContext } from "../chat-catalog-contract.js";
 import { CHAT_OPENCODE_MODEL, CHAT_OPENCODE_PROFILE } from "../chat-runtime-profile.js";
 import type { SecretReference } from "../types.js";
@@ -269,7 +271,7 @@ export const teamInstallExternalCases = [
     async (ctx) => {
       const teams =
         await ctx.input.api.get<CatalogTeam[]>("/api/teams/catalog");
-      const team = teams.find(
+      let team = teams.find(
         (row) =>
           row.slug === "product-engineering" &&
           row.compatibility === "compatible",
@@ -300,6 +302,12 @@ export const teamInstallExternalCases = [
         );
       const selectedRuntime = selectedTeamInstallRuntime(ctx, actor);
       const adapterOverrides = teamInstallOverrides(team, selectedRuntime);
+      const temporaryRoot = process.env.PAPERCLIP_RUNNER_E2E_TEMP_ROOT;
+      if (!temporaryRoot) throw new Error("Team runtime fixture requires its disposable attempt root");
+      const catalogRuntime = await normalizeTeamRuntimeCatalog({ temporaryRoot, repositoryRoot: path.resolve(import.meta.dirname, "../../.."), team, adapters: adapterOverrides });
+      team = catalogRuntime.team;
+      const served = await ctx.input.api.get<CatalogTeam[]>("/api/teams/catalog");
+      if (served.find(row => row.id === team.id)?.contentHash !== catalogRuntime.effectiveContentHash) throw new Error("Server did not serve the derived runtime catalog");
       const conditional = await prepareTeamConditions(ctx, team);
       const preview = conditional.conditionalPreview;
       if (preview.errors.length || preview.portabilityPreview.errors.length)
@@ -314,7 +322,7 @@ export const teamInstallExternalCases = [
       await ctx.input.api.post(`${root(ctx)}/chats/${actor.id}`);
       await ctx.refreshIssue();
       await ctx.input.api.patch(`/api/issues/${ctx.issue()!.id}`, {
-        description: `The accepted website team preview is ${team.name}, catalog key ${team.key}, content hash ${team.contentHash}. Install the complete selected package under the current CEO using this company's existing eligible runtime account. No team resource is installed yet. The selected runtime uses ${actor.adapterType} in environment ${ctx.input.fixtures.environment.id}. The existing eligible runtime is OpenCode/OpenRouter ${selectedRuntime.model}; its credential stays in the existing same-company secret reference. The supported installer takes these per-slug adapterOverrides for this accepted runtime selection: ${JSON.stringify(adapterOverrides)}.`,
+        description: `The accepted website team preview is ${team.name}, catalog key ${team.key}, content hash ${team.contentHash}. Install the complete selected package under the current CEO using this company's existing eligible runtime account. No team resource is installed yet. This disposable catalog package already selects OpenCode/OpenRouter ${selectedRuntime.model}; its credential stays in the existing same-company secret reference.`,
       });
       const session = await ctx.input.api.get<{ user: { id: string } }>("/api/auth/get-session");
       if (!session.user?.id) throw new Error("Team installer requires its actual responsible human session");
@@ -323,6 +331,7 @@ export const teamInstallExternalCases = [
         humanId: session.user.id,
         ...conditional,
         selectedRuntime,
+        catalogRuntime,
         team,
         before,
         companyPrefix: ctx.input.fixtures.company.issuePrefix,
@@ -337,13 +346,16 @@ export const teamInstallExternalCases = [
     gradeTeamInstall,
     {
       authentication: "human-session",
-      oracleVersion: "paperclip.chat-catalog.team-install.v6",
+      oracleVersion: "paperclip.chat-catalog.team-install.v7",
       expectedRunCount: 2,
       expectedHumanMessageCount: 2,
       attemptTimeoutMs: 480_000,
       sourceFiles: [
         "chat-catalog-domains/external-team-install.ts",
         "chat-catalog-domains/external-team-conditional.ts",
+        "chat-catalog-domains/external-team-runtime-fixture.ts",
+        "server.ts",
+        "../../packages/teams-catalog/src/catalog-builder.ts",
         "../../server/src/services/teams-catalog.ts",
         "../../server/src/services/company-skills.ts",
         "../../server/src/services/company-portability.ts",
