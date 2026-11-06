@@ -1177,8 +1177,15 @@ async function startServerWithDatabaseTeardown(
   }
 
   // Post-boot recovery of managed environments (re-ensuring a row when its
-  // plugin worker becomes ready). Shutdown stops it before the database closes.
+  // plugin worker becomes ready). Shutdown stops it before the database closes,
+  // and so does the startup-failure teardown: a later startup step that throws
+  // must not leave an attempt writing through a closed database.
   const managedEnvironmentRecovery = createManagedEnvironmentRecovery();
+  const closeDatabaseAfterStartupFailure = startupDatabase.close;
+  startupDatabase.close = async () => {
+    await managedEnvironmentRecovery.stop();
+    await closeDatabaseAfterStartupFailure?.();
+  };
 
   // Ensure the sandbox and plugin environments declared in the managed-config
   // document (`environments` section) before the heartbeat resumes queued runs. The
