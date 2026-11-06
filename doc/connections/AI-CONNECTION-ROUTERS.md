@@ -9,7 +9,7 @@ account allowance exhaustion, Paperclip records a company-scoped cooldown for
 the credential and skips it until its reset time. A known provider reset is
 preserved; without one the default quota cooldown is two hours. Authentication
 failures also cool down the failed credential; reconnecting changes its identity.
-A confirmed local runner crash uses a five-minute cooldown. Accounts sharing the
+A confirmed definitive runner failure uses a five-minute cooldown. Accounts sharing the
 same stored credential and epoch share a cooldown. Independently stored
 credentials are not assumed to represent the same external account.
 
