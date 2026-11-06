@@ -13905,7 +13905,11 @@ async function createRunnerdBackendWithinSessionClaim(
     })();
     return currentProviderPackManifest;
   };
-  const reattachProviderPack = input.restartRecovery?.kind === "reattach_remote_runner" || input.remoteWarmRecovery !== undefined;
+  // Ordinary per-turn OpenCode continuation restores the same durable provider
+  // state even when no daemon survived. Its launch profile binds the admitted
+  // artifact bytes and paths just as a live reattachment does.
+  const reattachProviderPack = input.restartRecovery?.kind === "reattach_remote_runner" || input.remoteWarmRecovery !== undefined
+    || input.execution.provider.kind === "opencode" && durableBinding !== null;
   if (requiresRemoteProviderPack && !reattachProviderPack) resolveCurrentProviderPackManifest();
   // The transport hashes runnerBinary on the controller before an external
   // launcher starts runnerd. Keep that artifact identity in the controller's

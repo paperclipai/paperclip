@@ -3304,6 +3304,11 @@ receipt. The existing sandbox marker, process identity and authenticated PRP
 checkpoint still establish the original execution. Adoption uses that admitted
 artifact identity and does not stage or launch provider assets. Fresh launches
 and recovery without persisted admission retain their release and pack checks.
+Ordinary per-turn OpenCode continuation also retains its recorded qualified
+provider pack when its verified durable session binding and pack receipt remain
+available. A new controller release or diagnostics setting does not replace the
+proxy behind the saved provider state. If the exact artifacts are unavailable,
+continuation stays blocked; this rule grants no fresh-session or replay authority.
 Native ACPX semantic tool calls wait on their durable PRP invocation across a
 controller outage. Their provider-side MCP bridge does not impose a separate
 request deadline that could make the provider retry an already queued write.
