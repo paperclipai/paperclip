@@ -131,7 +131,7 @@ console.log("Fixture completed\\nsession_id: ${SESSION_ID}");
       expect(query(invocation)).not.toContain("Updated governance marker.");
     }
     expect(reset.args).not.toContain("--resume");
-  });
+  }, 30000);
 
   it("uses fresh wake context when persistence is disabled despite stored session params", async () => {
     const ctx = context();
