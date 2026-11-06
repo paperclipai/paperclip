@@ -235,6 +235,32 @@ const support = externalDatabase ? { supported: true } : await getEmbeddedPostgr
     } });
   });
 
+  it("moves the onboarding interview for native provider questions, but keeps cards meant for someone else", async () => {
+    const f = await seed();
+    const onboarding = await f.direct();
+    await db.update(issues).set({ originKind: "onboarding_first_task", status: "in_review" }).where(eq(issues.id, onboarding.id));
+    const payload = { version: 1 as const, questions: [
+      { id: "business", prompt: "What does your organization do?", selectionMode: "single" as const, options: [{ id: "shop", label: "A shop" }] },
+    ] };
+    const taskInterview = await f.service.create(onboarding, { kind: "ask_user_questions", payload }, { agentId: f.agentId });
+    const [teammateCard] = await db.insert(issueThreadInteractions).values({ companyId: f.companyId, issueId: onboarding.id,
+      kind: "ask_user_questions", createdByAgentId: f.agentId, addresseeUserId: "teammate-user", payload }).returning();
+    const [otherAgent] = await db.insert(agents).values({ companyId: f.companyId, name: "Reviewer", status: "idle", adapterType: "process" }).returning();
+    const [agentCard] = await db.insert(issueThreadInteractions).values({ companyId: f.companyId, issueId: onboarding.id,
+      kind: "ask_user_questions", createdByAgentId: f.agentId, addresseeAgentId: otherAgent.id, payload }).returning();
+
+    // Same options the native question bridge passes for provider requests.
+    const chatInterview = await f.service.create(f.scope, { kind: "ask_user_questions", resolverPolicy: "human_only",
+      continuationPolicy: "none", payload }, { agentId: f.agentId }, { supersedePendingSiblingInteractions: false });
+
+    const statusById = new Map((await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.issueId, onboarding.id)))
+      .map(row => [row.id, row.status]));
+    expect(statusById.get(taskInterview.id)).toBe("expired");
+    expect(statusById.get(teammateCard.id)).toBe("pending");
+    expect(statusById.get(agentCard.id)).toBe("pending");
+    expect(chatInterview.status).toBe("pending");
+  });
+
   it("keeps an ordinary direct task question pending when the agent asks something else in chat", async () => {
     const f = await seed();
     const task = await f.direct();

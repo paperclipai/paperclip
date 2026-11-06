@@ -1064,6 +1064,11 @@ async function supersedeOnboardingTaskQuestionsMovedToChat(
       eq(issueThreadInteractions.kind, "ask_user_questions"),
       eq(issueThreadInteractions.createdByAgentId, input.agentId),
       eq(issueThreadInteractions.status, "pending"),
+      // Only cards the chat owner sees mirrored in this chat; a question for
+      // another person or agent is not replaced by this chat's card.
+      isNull(issueThreadInteractions.addresseeAgentId),
+      or(isNull(issueThreadInteractions.addresseeUserId),
+        eq(issueThreadInteractions.addresseeUserId, input.conversationUserId)),
     ))
     .returning();
   for (const issueId of new Set(rows.map(row => row.issueId))) {
@@ -4064,8 +4069,10 @@ export function issueThreadInteractionService(
             // that chat means onboarding moved there, so the onboarding task's
             // pending questions are replaced instead of showing two answerable
             // interview cards. Other direct-task questions are untouched.
+            // Not gated on supersedePendingSiblingInteractions: that flag keeps
+            // same-issue provider requests side by side, while this is a
+            // cross-issue move that native provider questions must also make.
             const movedOnboardingRows =
-              options.supersedePendingSiblingInteractions !== false &&
               data.kind === "ask_user_questions" &&
               actor.agentId &&
               issueRow.conversationAgentId === actor.agentId &&
