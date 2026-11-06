@@ -126,7 +126,10 @@ function updateDescription(input: {
  * that agent, so the task must carry everything the run needs instead of
  * pointing it at a skill it may not have.
  */
-function compileQueryGuidance(card: StatusCardRow) {
+function compileQueryGuidance(card: StatusCardRow, generationIssueId: string | null) {
+  // The persisted task always carries its own issue id (the description is
+  // rewritten once the issue exists), so the example body is copy-pasteable.
+  const exampleGenerationIssueId = generationIssueId ?? "<generationIssueId from the JSON payload below>";
   return `Everything needed for this task is in this description; no extra skill is required, so do not search for one.
 
 ## Query format
@@ -148,7 +151,7 @@ Preserve the prompt's intent; do not broaden it. If the prompt cannot be compile
 Example \`PUT /api/status-cards/${card.id}/query\` body:
 
 \`\`\`text
-{"queries":[{"scope":"issues","q":"launch","status":["in_progress","blocked","in_review"],"updatedWithin":"7d","sort":"updated","limit":20,"offset":0}],"title":"Launch work updated this week","changeSummary":"Compiled the prompt into one recent active-work query.","generationIssueId":"<generationIssueId from the JSON payload below>"}
+{"queries":[{"scope":"issues","q":"launch","status":["in_progress","blocked","in_review"],"updatedWithin":"7d","sort":"updated","limit":20,"offset":0}],"title":"Launch work updated this week","changeSummary":"Compiled the prompt into one recent active-work query.","generationIssueId":${JSON.stringify(exampleGenerationIssueId)}}
 \`\`\``;
 }
 
@@ -156,7 +159,7 @@ export function compileDescription(card: StatusCardRow, generationIssueId: strin
   const payload = compilePayload(card, generationIssueId, hash);
   return `Compile this status-card interest prompt into structured Paperclip company-search queries, then continue in the same run and write the first full summary.
 
-${compileQueryGuidance(card)}
+${compileQueryGuidance(card, generationIssueId)}
 
 ${UNTRUSTED_PROMPT_RULE}
 

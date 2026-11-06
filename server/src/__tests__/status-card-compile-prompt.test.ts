@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { companySearchQuerySchema } from "@paperclipai/shared";
+import { writeStatusCardQuerySchema } from "@paperclipai/shared";
 import { compileDescription } from "../services/status-cards.js";
 
 type CompileCard = Parameters<typeof compileDescription>[0];
@@ -11,7 +11,8 @@ const card = {
 } as CompileCard;
 
 describe("status-card compile prompt", () => {
-  const description = compileDescription(card, "33333333-3333-4333-8333-333333333333", "hash");
+  const generationIssueId = "33333333-3333-4333-8333-333333333333";
+  const description = compileDescription(card, generationIssueId, "hash");
 
   // The compile task can be assigned to any summarizer agent (built-in or a
   // per-card override), and no skill is provisioned for it. Pointing the run at
@@ -33,13 +34,11 @@ describe("status-card compile prompt", () => {
     expect(description).toContain(`PUT /api/status-cards/${card.id}/summary`);
   });
 
-  it("keeps the example query valid and the generation payload parseable", () => {
+  it("gives a copy-pasteable example query body and a parseable generation payload", () => {
     const example = description.match(/```text\n([\s\S]*?)\n```/)?.[1];
     expect(example).toBeDefined();
-    const body = JSON.parse(example!) as { queries: unknown[] };
-    for (const query of body.queries) {
-      expect(companySearchQuerySchema.safeParse(query).success).toBe(true);
-    }
+    const body = writeStatusCardQuerySchema.parse(JSON.parse(example!));
+    expect(body.generationIssueId).toBe(generationIssueId);
     const payload = description.match(/```json\n([\s\S]*?)\n```/)?.[1];
     expect(JSON.parse(payload!)).toMatchObject({ operation: "compile", statusCardId: card.id });
   });
