@@ -7,11 +7,32 @@ FROM rust:1.97-bookworm@sha256:408fe88047cef61a2087653b0c5255fa51c0f2d6d94ddedd7
 
 WORKDIR /workspace/packages/paperclip-runner/runner
 COPY packages/paperclip-runner/runner/Cargo.toml packages/paperclip-runner/runner/Cargo.lock ./
+COPY packages/paperclip-runner/runner/crates/runner-core/Cargo.toml ./crates/runner-core/Cargo.toml
+# Compile the locked third-party dependency graph against placeholder targets
+# so this layer depends only on the manifests and lockfile. Runner source
+# changes then reuse it from the registry cache and recompile one crate instead
+# of the whole AWS/TLS graph (about five of the build's six and a half minutes).
+# The placeholder targets' outputs and fingerprints are deleted, so the next
+# step always compiles the real runner sources against the same lockfile.
+RUN set -eu; \
+    mkdir -p crates/runner-core/src; \
+    : > crates/runner-core/src/lib.rs; \
+    for target in $(grep -Eo 'src/bin/[A-Za-z0-9_-]+\.rs' crates/runner-core/Cargo.toml); do \
+      mkdir -p "crates/runner-core/$(dirname "$target")"; \
+      printf 'fn main() {}\n' > "crates/runner-core/$target"; \
+    done; \
+    cargo build --locked --release -j 2 -p paperclip-runner-core --bin paperclip-runnerd; \
+    rm -rf crates/runner-core/src \
+      target/release/.fingerprint/paperclip-runner-core-* \
+      target/release/deps/*paperclip_runner* \
+      target/release/paperclip-runnerd target/release/paperclip-runnerd.d; \
+    du -sk target /usr/local/cargo/registry
 COPY packages/paperclip-runner/runner/crates ./crates
 COPY packages/paperclip-runner/protocol ../protocol
 COPY packages/paperclip-runner/acpx-profiles.json packages/paperclip-runner/antigravity-distributions.json ../
-# Retain only the finished executable in this layer. Keeping Cargo's target and
-# download trees makes BuildKit run out of disk while exporting the final image.
+# Only the finished executable leaves this stage. The final image never carries
+# Cargo's target or download trees; the dependency layer above keeps them only
+# in this builder stage and the trusted build cache.
 RUN cargo build --locked --release -j 2 -p paperclip-runner-core --bin paperclip-runnerd \
     && strip /workspace/packages/paperclip-runner/runner/target/release/paperclip-runnerd \
     && install -m 0755 target/release/paperclip-runnerd /usr/local/bin/paperclip-runnerd \
@@ -122,20 +143,25 @@ COPY packages/paperclip-runner/scripts/provision-grok.mjs /tmp/grok-provision/sc
 COPY packages/paperclip-runner/src/providers/grok/platforms.json /tmp/grok-provision/src/providers/grok/platforms.json
 RUN node /tmp/grok-provision/scripts/provision-grok.mjs /opt/paperclip/providers/grok/1.0.13/grok && rm -rf /tmp/grok-provision
 
-COPY --from=runnerd-build /usr/local/bin/paperclip-runnerd /usr/local/bin/paperclip-runnerd
-COPY --chown=0:0 --from=provider-pack-build /provider-pack /opt/paperclip-runner/provider-pack
-RUN set -eu; for cli in codex claude opencode; do \
-      printf '#!/bin/sh\nexec /opt/paperclip-runner/provider-pack/node_modules/.bin/%s "$@"\n' "$cli" > "/usr/local/bin/$cli"; \
-      chmod 755 "/usr/local/bin/$cli"; \
-    done
-
 # Keep revision-dependent metadata below the stable agent CLI installation
 # layers. A source-only image miss can then reuse those expensive layers from
 # the trusted registry cache.
+# This step must stay ABOVE the COPY --from steps. It does not wait for either
+# builder stage, so BuildKit downloads the cached base and CLI layers (about
+# four minutes) while runnerd and the provider pack compile, instead of after.
 ARG PAPERCLIP_RUNNER_CONTENT_ID
 ARG PAPERCLIP_RUNNER_SOURCE_REVISION
 RUN test -n "${PAPERCLIP_RUNNER_CONTENT_ID}" \
     && test -n "${PAPERCLIP_RUNNER_SOURCE_REVISION}"
+
+# --link builds each copied tree as an independent layer, so producing it does
+# not wait for the cached layers below to finish downloading.
+COPY --link --from=runnerd-build /usr/local/bin/paperclip-runnerd /usr/local/bin/paperclip-runnerd
+COPY --link --chown=0:0 --from=provider-pack-build /provider-pack /opt/paperclip-runner/provider-pack
+RUN set -eu; for cli in codex claude opencode; do \
+      printf '#!/bin/sh\nexec /opt/paperclip-runner/provider-pack/node_modules/.bin/%s "$@"\n' "$cli" > "/usr/local/bin/$cli"; \
+      chmod 755 "/usr/local/bin/$cli"; \
+    done
 
 RUN set -eu; \
     printf '%s\n' 'export PATH=/opt/paperclip-runner/provider-pack/node_modules/.bin:$PATH' \

@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/
 import * as fs from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { openEvalCostLedger, readEvalCostLedger } from "./cost-ledger.js";
 import { EVAL_OVERHEAD_COMPONENTS, type EvalOperatingOverhead } from "./operating-overhead.js";
 import { importOperatingReceipt, operatingReceiptObservation, type EvalOperatingReceipt } from "./operating-receipts.js";
@@ -22,6 +22,10 @@ const receipt = (fields: Partial<EvalOperatingReceipt> = {}): EvalOperatingRecei
   windowStartedAt: "2026-10-01T00:00:00Z", windowEndedAt: "2026-10-02T00:00:00Z", coverage: "partial",
   source: "infrastructure", provider: "fixture", classification: "estimated", costUsd: "0.2", pricingVersion: "fixture-pricing", ...fields });
 const now = Date.parse("2026-10-03T00:00:00Z");
+// Paid admission reads the clock against the 31-day fixture allowance. Pin
+// only Date, so filesystem and timer behavior stay real.
+beforeEach(() => { vi.useFakeTimers({ toFake: ["Date"], now }); });
+afterEach(() => { vi.useRealTimers(); });
 
 it("binds operating observations to the campaign, allowance, evidence and closed observation window", () => {
   expect(operatingReceiptObservation(receipt(), "fixture", overhead, evidence, now)).toMatchObject({ requestId: "overhead:artifact_storage", final: false });

@@ -581,10 +581,12 @@ export function agentEnvironmentTestService(db: Db, pluginWorkerManager?: Plugin
       && target?.kind === "remote" && target.transport === "sandbox" && target.runnerTask) {
       return pluginRunnerAiConnectionRequiredTestResult(adapterType, true);
     }
-    try { await assertManagedAiProjectAuth(context.config, binding.provider, context.executionTarget); }
+    try { await assertManagedAiProjectAuth(context.config, binding.provider, target); }
     catch (error) {
-      if (!isRunnerRevisionMismatch(error)) throw error;
-      return runnerRevisionMismatchTestResult(adapterType);
+      if (isRunnerRevisionMismatch(error)) return runnerRevisionMismatchTestResult(adapterType);
+      if (error instanceof HttpError || target?.kind !== "remote" || target.transport !== "sandbox" || !target.runnerTask) throw error;
+      return { adapterType, status: "fail", testedAt: new Date().toISOString(), checks: [{ code: "runner_environment_unavailable", level: "error", retryable: true,
+        message: "The selected plugin environment could not describe its Runner. Check the environment's computer and plugin status, then retry." }] };
     }
     const result = adapterType === "paperclip_runner" && target?.kind === "remote" && target.transport === "sandbox" && target.runnerTask
       ? await probePluginRunnerEnvironment(context, { identity: managed.identity, accountIdentity: managed.sessionIdentity,
