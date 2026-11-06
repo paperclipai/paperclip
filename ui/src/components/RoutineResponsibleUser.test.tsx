@@ -15,7 +15,7 @@ const routine = {
   latestRevisionId: "revision-1", canChangeResponsibleUser: true,
 } as RoutineDetail;
 const users = ["Alex", "Sam"].map((name) => ({
-  principalId: `user-${name.toLowerCase()}`, status: "active" as const,
+  principalId: `user-${name.toLowerCase()}`, status: "active" as const, membershipRole: "member" as const,
   user: { id: `user-${name.toLowerCase()}`, name, email: `${name.toLowerCase()}@example.test`, image: null },
 }));
 
