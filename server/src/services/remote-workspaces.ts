@@ -3,7 +3,7 @@ import { workspaceAllocationFiles } from "./remote-workspace-allocation.js";
 import { readNativeWorkspaceMigration } from "./native-runtime/native-workspace-migration.js";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdtemp, rm, statfs } from "node:fs/promises";
+import { mkdtemp, readFile, rm, statfs } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { and, eq, inArray, sql } from "drizzle-orm";
@@ -27,7 +27,7 @@ import { readRemoteWorkspaceWriterHold, type RemoteWorkspaceWriter } from "./rem
 import { persistActivity } from "./activity-log.js";
 import {
   captureRemoteWorkspaceArchive, cleanupRemoteWorkspaceArchive, prepareRemoteWorkspaceDirectory, prepareRemoteRepository, remoteWorkspaceRepositoryPath,
-  RemoteWorkspaceOperationTimeoutError, RemoteWorkspacePreparationTimeoutError, remoteWorkspaceFailureCause,
+  RemoteWorkspaceOperationTimeoutError, RemoteWorkspacePreparationTimeoutError, remoteWorkspaceFailureCause, hasRemoteRecoveryAttachment,
   requireRemoteWorkspaceTarget, restoreRemoteWorkspaceDirectory, RemoteWorkspaceRestoreError, type RemoteWorkspaceRestoreStep,
   type RemoteWorkspaceSavePhaseTiming,
 } from "./remote-workspace-transport.js";
@@ -504,9 +504,12 @@ export async function prepareRemoteWorkspace(input: {
         ];
         for (const item of recovered) {
           const relative = `.paperclip-recovered/${item.operationId}`;
-          await target.runner!.syncIn!([{ operationId: randomUUID(), files: [{
-            kind: "directory", sourcePath: item.path, targetPath: path.posix.join(remoteRoot, relative),
-          }] }]);
+          await input.assertOwned?.();
+          const exists = await hasRemoteRecoveryAttachment({ target, remoteCwd: remoteRoot, operationId: item.operationId,
+            provenance: await readFile(path.join(item.path, "provenance.json"), "utf8") });
+          if (!exists) await target.runner!.syncIn!([{ operationId: randomUUID(), files: [{
+              kind: "directory", sourcePath: item.path, targetPath: path.posix.join(remoteRoot, relative),
+            }] }]);
           recoveredFiles.push({ operationId: item.operationId, sourceRunId: item.sourceRunId, path: relative });
         }
       } finally { await rm(scratch, { recursive: true, force: true }); }

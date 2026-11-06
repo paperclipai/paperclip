@@ -46,6 +46,8 @@ export async function attachPreservedRemoteWorkspaceSnapshots(input: {
       continue;
     }
     const remote = parsed.data;
+    if (canonicalSources.has(source.id) && (remote.state !== "saved" || !remote.snapshotId))
+      throw new Error("remote_workspace_recovery_receipt_invalid");
     if (remote.workspaceId === input.workspaceId || remote.state !== "saved" || !remote.snapshotId) continue;
     const operationId = await verifiedWorkspaceRepairReceipt(input.db, source);
     if (!operationId) {

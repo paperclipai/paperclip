@@ -1851,12 +1851,29 @@ describe("automatic retained workspace recovery", () => {
           (error, stdout) => error ? reject(error) : resolve(stdout)));
           expect(JSON.parse(readback)).toEqual({ count: 12, first: "2026-11-06T07:21:00Z", last: "2026-11-06T07:32:00Z" });
           expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0].executionWorkspaceId).toBe(placeholder.id);
+          const editedLog = `${tickLog}User preserved annotation\n`;
+          await writeFile(path.join(boundary.executionWorkspace.cwd, newest!.path, "files", "ticks.log"), editedLog);
+          const [selectedWorkspace] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, placeholder.id));
+          await saveRemoteWorkspace({ db, storage, workspace: selectedWorkspace, runId: successor.id,
+            lease: boundary.activeEnvironmentLease!.lease, target: boundary.executionTarget, assertOwned: async () => {} });
+          await db.update(environmentLeases).set({ status: "released", releasedAt: new Date(), cleanupStatus: "success" })
+            .where(eq(environmentLeases.id, lease.id));
+          const coldAllocationPath = path.join(root, randomUUID()); await mkdir(coldAllocationPath);
+          const [coldLease] = await db.insert(environmentLeases).values({ companyId: f.companyId, issueId: f.issueId,
+            heartbeatRunId: successor.id, environmentId: f.lease.environmentId, provider: "daytona",
+            providerLeaseId: randomUUID(), status: "active" }).returning();
+          const coldWorkspace = await reserveRemoteWorkspace({ db, storage, companyId: f.companyId, issueId: f.issueId,
+            runId: successor.id, agentId: source.agentId, environmentId: f.lease.environmentId!, projectId: null,
+            projectWorkspaceId: null, existingWorkspaceId: placeholder.id, source: { kind: "empty" } });
+          const cold = await prepareRemoteWorkspace({ db, storage, workspace: coldWorkspace, runId: successor.id,
+            lease: coldLease as EnvironmentLease, target: { ...target, leaseId: coldLease.id, remoteCwd: await realpath(coldAllocationPath) } });
+          expect(await readFile(path.join(cold.remoteRoot, newest!.path, "files", "ticks.log"), "utf8")).toBe(editedLog);
         } finally { acquire.mockRestore(); storageRead.mockRestore(); }
       expect((await run(f.runId)).error).toBe("native_remote_recovery_lease_mismatch");
     } finally { vi.unstubAllEnvs(); }
   }, 30_000);
 
-  it.each(["missing_receipt", "missing_reference", "uncommitted", "foreign_snapshot", "wrong_lease", "missing_object", "corrupt_object", "wrong_company", "wrong_issue"])(
+  it.each(["missing_receipt", "missing_reference", "prepared_reference", "missing_snapshot_id", "uncommitted", "foreign_snapshot", "wrong_lease", "missing_object", "corrupt_object", "wrong_company", "wrong_issue"])(
     "refuses canonical recovery attachments with %s evidence", async fault => {
     const f = await failedRemotePreparation();
     await recoverRetainedWorkspace(f.input);
@@ -1869,6 +1886,10 @@ describe("automatic retained workspace recovery", () => {
     if (fault === "missing_receipt") await db.update(workspaceOperations).set({ status: "failed" }).where(eq(workspaceOperations.id, receipt.id));
     if (fault === "missing_reference") await db.update(heartbeatRuns).set({ runnerProfileJson:
       Object.fromEntries(Object.entries(source.runnerProfileJson!).filter(([key]) => key !== "remoteWorkspace")) }).where(eq(heartbeatRuns.id, source.id));
+    if (fault === "prepared_reference" || fault === "missing_snapshot_id") await db.update(heartbeatRuns).set({ runnerProfileJson: {
+      ...source.runnerProfileJson, remoteWorkspace: { ...source.runnerProfileJson!.remoteWorkspace as object,
+        ...(fault === "prepared_reference" ? { state: "prepared" } : { snapshotId: null }) },
+    } }).where(eq(heartbeatRuns.id, source.id));
     if (fault === "uncommitted") await db.update(executionWorkspaceSnapshots).set({ status: "uploaded" }).where(eq(executionWorkspaceSnapshots.id, remote.snapshotId));
     if (fault === "foreign_snapshot") await db.update(heartbeatRuns).set({ runnerProfileJson: { ...source.runnerProfileJson,
       remoteWorkspace: { ...source.runnerProfileJson!.remoteWorkspace as object, snapshotId: randomUUID() } } }).where(eq(heartbeatRuns.id, source.id));
