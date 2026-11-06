@@ -33,8 +33,8 @@ export async function listWorkspaceFiles(root: string): Promise<string[]> {
   return out.sort();
 }
 
-/** queued trigger: give up when this many reachable polls show no run at all. */
 export const QUEUED_TRIGGER_MAX_EMPTY_SAMPLES = 3;
+export const TRIGGER_LATE_MS = 10_000;
 
 /** Rest must hold for this long before the observer acts on it. */
 export const REST_CONFIRM_MS = 12_000;
@@ -83,7 +83,7 @@ export class TaskObserver {
   private restCandidateSince: number | null = null;
   private stallSince: number | null = null;
   private readonly faultSchedule: ScheduledFault[];
-  private nextFault = 0;
+  private readonly pendingFaults: ScheduledFault[];
   done = false;
 
   constructor(readonly plan: TaskPlan, private readonly api: ChaosApi, private readonly lab: ChaosLab,
@@ -94,6 +94,7 @@ export class TaskObserver {
       restAt: null, finalStatus: null, deadlineAt: null, timedOut: false, followUp: null, faultIds: [], sweep: null,
       preFaultFiles: null, lostFiles: null };
     this.faultSchedule = taskFaultSchedule(plan);
+    this.pendingFaults = [...this.faultSchedule];
   }
 
   get definition() { return workloadDefinitions[this.plan.workload]; }
@@ -125,17 +126,28 @@ export class TaskObserver {
   /** The next scheduled fault once it is due and the task has not rested yet. */
   faultDue(now: number): ScheduledFault | null {
     if (this.done || this.record.createdAt === null) return null;
-    const fault = this.faultSchedule[this.nextFault];
-    if (!fault) return null;
-    const armedAt = this.triggerArmedAt(fault);
-    if (armedAt === "missed") {
-      this.nextFault += 1;
-      this.noteTriggerMissed(fault);
-      return null;
+    for (const fault of [...this.pendingFaults]) {
+      const armedAt = this.triggerArmedAt(fault);
+      if (armedAt === null) continue;
+      const dueAt = armedAt === "missed" ? 0 : armedAt + (fault.delayMs ?? 0);
+      if (armedAt !== "missed" && now < dueAt) continue;
+      this.pendingFaults.splice(this.pendingFaults.indexOf(fault), 1);
+      const triggered = fault.trigger !== undefined && fault.trigger !== "time";
+      if (armedAt === "missed" || (triggered && !this.triggerWindowOpen(fault, now, dueAt))) {
+        this.noteTriggerMissed(fault);
+        continue;
+      }
+      return fault;
     }
-    if (armedAt === null || now < armedAt + (fault.delayMs ?? 0)) return null;
-    this.nextFault += 1;
-    return fault;
+    return null;
+  }
+
+  private triggerWindowOpen(fault: ScheduledFault, now: number, dueAt: number): boolean {
+    if (now - dueAt > TRIGGER_LATE_MS) return false;
+    if (fault.trigger !== "queued") return true;
+    const latest = [...this.record.samples].reverse().find(sample => sample.reachable);
+    return (latest?.runs ?? []).some(run => run.status === "queued" && !run.startedAt)
+      && !(latest?.runs ?? []).some(run => run.startedAt || run.status === "running");
   }
 
   private noteTriggerMissed(fault: ScheduledFault) {
@@ -144,27 +156,21 @@ export class TaskObserver {
     this.timeline.add("trigger_missed", { taskId: this.plan.taskId, trigger, fault: fault.kind });
   }
 
-  /**
-   * When the fault's trigger condition first held. null while still waiting;
-   * "missed" once it can no longer hold for this task.
-   */
   private triggerArmedAt(fault: ScheduledFault): number | null | "missed" {
     const createdAt = this.record.createdAt!;
     switch (fault.trigger ?? "time") {
       case "time": return createdAt + fault.atMs;
       case "comment": {
-        // C1 + K1: the follow-up must have reached a live run.
         const followUp = this.record.followUp;
         if (!followUp) return null;
-        return followUp.commentId && followUp.duringRun ? followUp.at : "missed";
+        return followUp.commentId && followUp.duringRun ? followUp.postedAt ?? followUp.at : "missed";
       }
       case "retry": {
         const retry = this.record.retry;
         if (!retry) return null;
-        return retry.accepted ? retry.at : "missed";
+        return retry.accepted ? retry.acceptedAt ?? retry.at : "missed";
       }
       case "queued": {
-        // B1: the first run seen must still be queued with no start time.
         const first = this.record.samples.find(sample => sample.reachable && (sample.runs ?? []).length > 0);
         if (!first) return this.record.samples.filter(sample => sample.reachable).length >= QUEUED_TRIGGER_MAX_EMPTY_SAMPLES ? "missed" : null;
         const queued = (first.runs ?? []).some(run => run.status === "queued" && !run.startedAt);
@@ -175,10 +181,8 @@ export class TaskObserver {
     }
   }
 
-  /** At sweep, triggered faults that never fired count as missed (the task did not cross them). */
   private closeUnfiredTriggers() {
-    for (const fault of this.faultSchedule.slice(this.nextFault)) if (fault.trigger && fault.trigger !== "time") this.noteTriggerMissed(fault);
-    this.nextFault = this.faultSchedule.length;
+    for (const fault of this.pendingFaults.splice(0)) if (fault.trigger && fault.trigger !== "time") this.noteTriggerMissed(fault);
   }
 
   /**
@@ -276,7 +280,7 @@ export class TaskObserver {
     if (!running && !isResting(sample)) return false;
     try {
       const comment = await this.api.post<Json>(`/api/issues/${this.record.issueId}/comments`, { body: definition.followUp(this.plan.nonce) });
-      this.record.followUp = { at: now, commentId: comment?.id ?? null, error: null, duringRun: running };
+      this.record.followUp = { at: now, postedAt: Math.max(now, Date.now()), commentId: comment?.id ?? null, error: null, duringRun: running };
     } catch (error) {
       this.record.followUp = { at: now, commentId: null, error: error instanceof Error ? error.message : String(error), duringRun: running };
     }
@@ -310,6 +314,7 @@ export class TaskObserver {
         { idempotencyKey: randomUUID(), observedRunId });
       attempt.httpStatus = 200;
       attempt.accepted = result?.accepted === true;
+      attempt.acceptedAt = Math.max(now, Date.now());
     } catch (error) {
       attempt.httpStatus = error instanceof ChaosApiError ? error.status : null;
       attempt.error = error instanceof Error ? error.message : String(error);

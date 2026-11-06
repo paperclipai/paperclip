@@ -13,9 +13,7 @@ export interface LedgerLine {
   adapter: string;
   workload: string;
   fault: string;
-  /** Fault timing trigger (absent means time). */
   trigger?: string;
-  /** Triggered faults whose condition never held. */
   triggerMissed?: string[];
   holdMs: number;
   fireAfterMs: number;
@@ -28,7 +26,6 @@ export interface LedgerLine {
   pass: boolean;
   signature: string | null;
   retried: boolean;
-  /** Highest host 1-minute load average among the crossing faults. */
   maxLoadAvg1m?: number;
   evidence: string | null;
   replay: string;

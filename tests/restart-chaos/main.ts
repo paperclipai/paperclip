@@ -82,6 +82,7 @@ async function main(): Promise<number> {
   let anyFailure = false;
   let harnessError: unknown;
   let faultFailures = 0;
+  let faultsQueued = 0;
   try {
     await supervisor.start();
     const api = new ChaosApi(supervisor.baseUrl);
@@ -110,7 +111,7 @@ async function main(): Promise<number> {
         lastPoll.set(observer, now);
         await observer.poll(now);
       }));
-      for (const observer of active) {
+      for (const observer of faultsQueued || supervisor.faultInProgress || !supervisor.serverReady ? [] : active) {
         const due = observer.faultDue(Date.now());
         if (!due) continue;
         if (observer.record.restAt !== null) { timeline.add("fault_skipped_task_resting", { taskId: observer.plan.taskId, fault: due.kind }); continue; }
@@ -118,7 +119,8 @@ async function main(): Promise<number> {
         await Promise.all(exposed.map(candidate => candidate.snapshotBeforeFault()));
         const trigger = due.trigger && due.trigger !== "time" ? { trigger: due.trigger, delayMs: due.delayMs ?? 0 } : undefined;
         if (trigger) timeline.add("trigger_fired", { taskId: observer.plan.taskId, fault: due.kind, ...trigger });
-        faultWork.push(supervisor.fault(due.kind, due.holdMs, observer.plan.taskId, trigger).then(receipt => {
+        faultsQueued += 1;
+        faultWork.push(supervisor.fault(due.kind, due.holdMs, observer.plan.taskId, trigger).finally(() => { faultsQueued -= 1; }).then(receipt => {
           faults.push(receipt);
           for (const candidate of exposed) { candidate.noteFault(receipt.faultId); candidate.extendDeadline((receipt.readyAt ?? Date.now()) - receipt.startedAt); }
         }, (error: Error & { receipt?: FaultReceipt }) => {

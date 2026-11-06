@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { ChaosApi } from "./api.js";
 import { parseCommand } from "./config.js";
-import { QUEUED_TRIGGER_MAX_EMPTY_SAMPLES, TaskObserver } from "./observer.js";
+import { QUEUED_TRIGGER_MAX_EMPTY_SAMPLES, TaskObserver, TRIGGER_LATE_MS } from "./observer.js";
 import { observedFaultSchedule, planTasks, taskFaultSchedule, TRIGGER_DELAY_RANGE_MS } from "./scheduler.js";
 import type { ChaosLab } from "./seed.js";
 import { crashLoopShouldFire } from "./supervisor.js";
@@ -20,7 +20,6 @@ const options: WaveOptions = { env: "local", adapters: ["codex", "claude", "open
   triggers: ["time", "comment", "retry", "queued", "tool"] };
 
 type Json = Record<string, unknown>;
-/** Fake board API whose runs and issue answers can change between polls. */
 function scriptedApi(state: { runs: Json[]; issue: Json; retry?: Json }) {
   const api = {
     async get(route: string) { return route.endsWith("/runs") ? state.runs : state.issue; },
@@ -163,6 +162,39 @@ describe("trigger firing", () => {
     observer.record.benchFirstSeenAt = start + 30_000;
     expect(observer.faultDue(start + 49_999)).toBeNull();
     expect(observer.faultDue(start + 50_000)).toMatchObject({ trigger: "tool" });
+  });
+
+  it("records a miss instead of firing a triggered fault after its window has passed", async () => {
+    const observer = new TaskObserver({ ...base, workload: "B5", trigger: "tool", triggerDelayMs: 1_000 },
+      scriptedApi({ runs: [], issue: { id: "i1", status: "in_progress" } }), lab, new Timeline(null), ready);
+    await observer.launch();
+    const start = observer.record.createdAt!;
+    observer.record.benchFirstSeenAt = start;
+    expect(observer.faultDue(start + 1_000 + TRIGGER_LATE_MS + 1)).toBeNull();
+    expect(observer.record.triggerMissed).toEqual(["tool"]);
+  });
+
+  it("queued: misses when the run started before the fault could fire", async () => {
+    const state = { runs: [{ runId: "r1", status: "queued" }] as Json[], issue: { id: "i1", status: "todo" } };
+    const observer = new TaskObserver({ ...base, trigger: "queued", triggerDelayMs: 0 }, scriptedApi(state), lab, new Timeline(null), ready);
+    await observer.launch();
+    const start = observer.record.createdAt!;
+    await observer.poll(start + 10);
+    state.runs = [{ runId: "r1", status: "running", startedAt: new Date().toISOString() }];
+    await observer.poll(start + 20);
+    expect(observer.faultDue(start + 20)).toBeNull();
+    expect(observer.record.triggerMissed).toEqual(["queued"]);
+  });
+
+  it("keeps replayed fixed-offset faults on time while a re-armed trigger waits", async () => {
+    const observer = new TaskObserver({ ...base, workload: "B5", replayFaults: [
+      { kind: "K1", holdMs: 0, atMs: 0, trigger: "tool", delayMs: 0 }, { kind: "K2", holdMs: 0, atMs: 5_000 }] },
+    scriptedApi({ runs: [], issue: { id: "i1", status: "in_progress" } }), lab, new Timeline(null), ready);
+    await observer.launch();
+    const start = observer.record.createdAt!;
+    expect(observer.faultDue(start + 5_000)).toEqual({ kind: "K2", holdMs: 0, atMs: 5_000 });
+    observer.record.benchFirstSeenAt = start + 6_000;
+    expect(observer.faultDue(start + 6_000)).toMatchObject({ kind: "K1", trigger: "tool" });
   });
 });
 

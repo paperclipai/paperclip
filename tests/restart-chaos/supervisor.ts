@@ -42,15 +42,9 @@ const STOP_TIMEOUT_MS = 30_000;
 
 export const FAULT_SIGNAL: Record<FaultKind, "SIGKILL" | "SIGTERM"> = { K1: "SIGKILL", K2: "SIGTERM", K4: "SIGKILL", K6: "SIGKILL" };
 
-/** K6 crash loop: after the first kill, kill each replacement once at these startup phases. */
 export const CRASH_LOOP_TARGETS = ["recovering", "ready"] as const;
 const PHASE_POLL_MS = 50;
 
-/**
- * Decide whether a crash-loop kill should fire now. The `recovering` target
- * fires as soon as that phase shows; if startup skips straight to `ready` the
- * kill still fires there and the receipt records the phase it actually hit.
- */
 export function crashLoopShouldFire(target: (typeof CRASH_LOOP_TARGETS)[number], phase: string): boolean {
   if (target === "recovering") return phase === "recovering" || phase === "ready";
   return phase === "ready";
@@ -281,7 +275,7 @@ export class ChaosSupervisor {
       });
       receipt.readyAt = await this.waitForReadyPhase(receipt.phases);
       receipt.serverLogOffsetAtReady = this.serverLogOffset();
-      this.timeline.add("fault_ready", { faultId: receipt.faultId, replacementPid: outage?.replacementPid,
+      this.timeline.add("fault_ready", { faultId: receipt.faultId, replacementPid: this.child?.pid ?? outage?.replacementPid,
         downMs: (receipt.restartedAt ?? 0) - (receipt.stoppedAt ?? 0), readyAfterMs: receipt.readyAt - receipt.startedAt, phases: receipt.phases });
     } catch (error) {
       receipt.error = error instanceof Error ? error.message : String(error);
@@ -293,7 +287,6 @@ export class ChaosSupervisor {
     return receipt;
   }
 
-  /** Poll /api/ready quickly until the crash-loop target phase shows. */
   private async waitForCrashLoopPhase(child: ChildProcess, target: (typeof CRASH_LOOP_TARGETS)[number],
     phases: FaultReceipt["phases"]): Promise<string> {
     const deadline = Date.now() + READY_TIMEOUT_MS;
@@ -308,7 +301,6 @@ export class ChaosSupervisor {
     throw new Error(`Crash loop: phase ${target} not reached within ${READY_TIMEOUT_MS}ms`);
   }
 
-  /** K6: kill the replacement during `recovering`, then again just after `ready`; returns the last replacement. */
   private async crashLoop(first: ChildProcess, receipt: FaultReceipt): Promise<ChildProcess> {
     let current = first;
     receipt.crashLoop = [];

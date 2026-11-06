@@ -29,7 +29,6 @@ export function createRng(seed: number) {
 
 export const K4_HOLD_RANGE_MS: readonly [number, number] = [120_000, 300_000];
 
-/** Delay after each trigger's condition holds before the fault fires. */
 export const TRIGGER_DELAY_RANGE_MS: Record<Exclude<TriggerId, "time">, readonly [number, number]> = {
   comment: [0, 5_000],
   retry: [0, 2_000],
@@ -37,7 +36,6 @@ export const TRIGGER_DELAY_RANGE_MS: Record<Exclude<TriggerId, "time">, readonly
   tool: [15_000, 60_000],
 };
 
-/** comment needs the C1 follow-up; tool needs bench.sh (B5). */
 export function triggerFitsWorkload(trigger: TriggerId, workload: WorkloadId): boolean {
   if (trigger === "comment") return workload === "C1";
   if (trigger === "tool") return workload === "B5";
@@ -92,7 +90,6 @@ export function observedFaultSchedule(createdAt: number | null, faultIds: readon
   faults: ReadonlyArray<{ faultId: string; kind: FaultKind; holdMs: number; startedAt: number; requestedBy?: string;
     trigger?: TriggerId; triggerDelayMs?: number }>, taskId?: string): ScheduledFault[] {
   if (createdAt === null) return [];
-  // The task's own triggered faults re-arm their trigger; every other fault replays at its offset.
   return faults.filter(fault => faultIds.includes(fault.faultId))
     .map((fault): ScheduledFault => ({ kind: fault.kind, holdMs: fault.holdMs, atMs: Math.max(0, fault.startedAt - createdAt),
       ...(fault.trigger && fault.trigger !== "time" && fault.requestedBy === taskId
@@ -107,7 +104,6 @@ export function taskFaultSchedule(task: TaskPlan): ScheduledFault[] {
   const trigger = task.trigger ?? "time";
   if (trigger === "time") return [planned];
   const delayMs = task.triggerDelayMs ?? 0;
-  // K8: the planned fault makes the task need Retry; an extra K1 hits right after the click.
   if (trigger === "retry") return [planned, { kind: "K1", holdMs: 0, atMs: 0, trigger, delayMs }];
   return [{ ...planned, trigger, delayMs }];
 }

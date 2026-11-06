@@ -9,7 +9,6 @@ export class Timeline {
 
   add(kind: string, data: Record<string, unknown> = {}): TimelineEntry {
     const now = Date.now();
-    // The event kind comes last so event data can never overwrite it.
     const entry: TimelineEntry = { ...data, at: new Date(now).toISOString(), t: now - this.origin, kind };
     this.entries.push(entry);
     if (this.path) appendFileSync(this.path, `${JSON.stringify(entry)}\n`, { mode: 0o600 });
