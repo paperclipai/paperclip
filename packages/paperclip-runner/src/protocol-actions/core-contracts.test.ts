@@ -2,6 +2,7 @@ import { Ajv2020 } from "ajv/dist/2020.js";
 import { describe, expect, it } from "vitest";
 
 import { PAPERCLIP_CORE_PROTOCOL_ACTIONS } from "./core.js";
+import { requestHumanInputExamples } from "./request-human-input.js";
 
 describe("core Paperclip protocol action contracts", () => {
   const ajv = new Ajv2020({ allErrors: true, allowUnionTypes: true, strict: false });
@@ -21,6 +22,18 @@ describe("core Paperclip protocol action contracts", () => {
       expect(ajv.validate(schema, { ...input, payload: { version: 1, questionSet: { ...payload.questionSet, questions: [{ ...payload.questionSet.questions[0], options: [{ id: "a", label: "A" }] }] } } })).toBe(false);
     }
     expect(action.documentation.description).not.toContain("questions for choices");
+  });
+
+  it("delivers schema-valid question and confirmation invocation examples", () => {
+    const action = PAPERCLIP_CORE_PROTOCOL_ACTIONS.find(action => action.id === "request_human_input")!;
+    const schema = action.live!.descriptor.inputSchema;
+    for (const input of Object.values(requestHumanInputExamples)) {
+      expect(action.live!.descriptor.description).toContain(JSON.stringify(input));
+      expect(ajv.validate(schema, input), JSON.stringify(ajv.errors)).toBe(true);
+    }
+    const questions = requestHumanInputExamples.questions;
+    expect(ajv.validate(schema, { ...questions, payload: { questionSet: questions.payload.questionSet } })).toBe(false);
+    expect(ajv.validate(schema, { ...questions, payload: { version: 1 } })).toBe(false);
   });
 
   it("keeps the live input tool's guidance consistent with conversational confirmation recording", () => {
