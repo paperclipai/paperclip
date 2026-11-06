@@ -135,11 +135,16 @@ async function readObservedSpends(db: Db, policies: SpendPolicy[], now: Date): P
         and (${nativeRunFinalizations.phase} <> 'terminal_failure' or (${closingReceipt})))`;
     ledgerPredicates.push(ledger); heldPredicates.push(held); runPredicates.push(run);
     ledgerColumns[`total${index}`] = sql`coalesce(sum(${costEvents.costCents}) filter (where ${ledger}), 0)::text`;
-    // "Usage with no reliable price" needs usage. A charge recorded without
-    // any usage (a receipt lost with its stopped provider) is unknown, not
-    // unpriced; it stays visible in Costs but does not trip the policy.
+    // A receipt lost with its verified-stopped provider settles as an unpriced
+    // charge. With no observed usage it is unknown, not usage without a price:
+    // it stays visible in Costs but does not trip the policy. Complete
+    // receipts that report no tokens (for example Cursor Cloud) still count.
+    const lostReceiptWithoutUsage = sql`(${costEvents.inputTokens} = 0 and ${costEvents.cachedInputTokens} = 0 and ${costEvents.outputTokens} = 0
+      and exists (select 1 from ${heartbeatRuns} lost_receipt_run where lost_receipt_run.id = ${costEvents.heartbeatRunId}
+        and lost_receipt_run.company_id = ${costEvents.companyId}
+        and lost_receipt_run.usage_json->>'accountingReceiptUnavailable' = 'true'))`;
     ledgerColumns[`unpriced${index}`] = sql`count(*) filter (where ${ledger} and ${costEvents.costStatus} = 'unpriced' and ${costEvents.billingType} <> 'subscription_included'
-      and (${costEvents.inputTokens} > 0 or ${costEvents.cachedInputTokens} > 0 or ${costEvents.outputTokens} > 0))::int`;
+      and not ${lostReceiptWithoutUsage})::int`;
     runColumns[`live${index}`] = sql`coalesce(sum(${liveCost}) filter (where ${run} and ${inWindow}), 0)::text`;
     runColumns[`unreserved${index}`] = sql`coalesce(sum(${liveCost}) filter (where ${run} and not ${hasReservation}), 0)::text`;
     // Reservations carry over UTC windows. A reservation and its running
