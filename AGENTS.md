@@ -198,6 +198,13 @@ ignored; never commit aggregate catalogs, refresh review fingerprints, or append
 a shared review journal. Use Git diffs and keep review evidence in the PR or issue.
 Structural checks are not production acceptance.
 
+Prepare a new or updated worktree with `pnpm agent:preflight` instead of running
+`pnpm install`, the Runner build and `build:rust` by hand. It skips unchanged
+steps and reuses other worktrees' Runner builds, debug binaries and third-party
+crates from a content-keyed cache in `~/.cache/paperclip/agent-build`. Do not
+share `CARGO_TARGET_DIR` between worktrees. See "Agent worktree preflight" in
+`doc/DEVELOPING.md`.
+
 Default local/agent verification path:
 
 ```sh

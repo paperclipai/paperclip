@@ -1069,6 +1069,44 @@ defines synchronization, permissions and evidence. After map edits, run
 `node scripts/check-maps.mjs` for structural/reference checks; it does not start an
 instance or qualify access as an agent.
 
+### Agent worktree preflight
+
+Prepare a new or updated agent worktree with one command:
+
+```sh
+pnpm agent:preflight
+```
+
+It does what `pnpm install --frozen-lockfile`, the Runner's `ensure:eval-build-deps`,
+`build:rust`, `build` and `build:runner-binaries` did, and skips work whose inputs
+are unchanged:
+
+- **install** is skipped when the lockfile, every `package.json`, `patches/`, Node
+  and pnpm match this worktree's last install.
+- **Runner build** is skipped when the Runner's build stamp is current. When another
+  worktree built the same inputs (the build-input digest described under
+  "Reused Runner build in the server build", plus the compiler), the Runner and eval
+  kernel `dist` are cloned from the shared cache. A restore skips the build's lint
+  checks; CI runs them.
+- **Runner debug binaries** (`runner/target/debug`) are reused the same way, keyed
+  by every file the Rust build reads.
+- A worktree without `runner/target` starts from a clone of a shared cargo seed
+  that holds only third-party crates, so cargo compiles only the Runner crate.
+
+The cache lives in `~/.cache/paperclip/agent-build` (`PAPERCLIP_AGENT_CACHE_DIR`
+moves it, `PAPERCLIP_AGENT_CACHE=0` or `--no-cache` turns it off). Entries are
+keyed by content and toolchain, never by path or mtime, are written once with an
+atomic rename, and are restored as APFS clones, so concurrent worktrees can share
+them. The seed never holds the Runner crate: cargo records its out-of-package
+includes by absolute path, so units from another checkout cannot be trusted. Keep
+the cache on the worktrees' volume so clones stay cheap. `--explain` prints each
+step's decision; `--skip-rust-debug` skips the debug binaries.
+
+Do not share `CARGO_TARGET_DIR` between worktrees: cargo serializes builds on its
+lock, and the Runner crate's absolute-path dependency records would make one
+worktree's freshness check read another's files. The preflight disables the cache
+when `CARGO_TARGET_DIR` is set.
+
 ### Incremental local verification
 
 Use the local verification entry point for ordinary issue work:
@@ -1397,7 +1435,7 @@ build. It used to run the Runner's full `build` every time. Now the Runner's
 `build` brackets itself with `scripts/record-build-inputs.mjs`: `--begin`, its
 first step, forgets the previous stamp and records a digest of the build's
 inputs (every file under `packages/paperclip-runner` except `dist`,
-`dist-browser`, `runner/target`, `node_modules` and dot-directories; every
+`dist-browser`, `runner/target`, `provider-assets` (written by the build), `node_modules` and dot-directories; every
 file under `packages/paperclip-eval-kernel` except `dist` and `node_modules`;
 every file under the root `patches` directory, which the acpx profile check
 hashes and the provider entrypoint bundler copies into `dist`; and the root
