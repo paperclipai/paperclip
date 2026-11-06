@@ -2068,11 +2068,6 @@ export function agentRoutes(
     return resolved.agent.id;
   }
 
-  /**
-   * Normalize the optional `agentId` filter for heartbeat run lists. The column
-   * is a uuid, so anything that is not a UUID must be resolved to an agent
-   * (by shortname/url key) or rejected with a 4xx before it reaches Postgres.
-   */
   async function resolveHeartbeatRunListAgentId(
     companyId: string,
     rawAgentId: unknown,

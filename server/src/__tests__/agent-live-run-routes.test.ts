@@ -294,6 +294,18 @@ describe("agent live run routes", () => {
     expect(mockAgentService.resolveByReference).not.toHaveBeenCalled();
     expect(mockHeartbeatService.list).toHaveBeenCalledWith("company-1", routeAgentId, 200, { summary: false });
   });
+  it("resolves agent shortnames to their UUID before listing runs", async () => {
+    mockAgentService.resolveByReference.mockResolvedValue({
+      agent: { id: routeAgentId, companyId: "company-1" },
+      ambiguous: false,
+    });
+    const app = await createApp({});
+    const response = await requestApp(app, baseUrl =>
+      request(baseUrl).get("/api/companies/company-1/heartbeat-runs?agentId=builder&summary=true"));
+    expect(response.status).toBe(200);
+    expect(mockAgentService.resolveByReference).toHaveBeenCalledWith("company-1", "builder");
+    expect(mockHeartbeatService.list).toHaveBeenCalledWith("company-1", routeAgentId, 200, { summary: true });
+  });
   it("rejects truncated agentId values instead of querying Postgres", async () => {
     mockAgentService.resolveByReference.mockResolvedValue({ agent: null, ambiguous: false });
     const app = await createApp({});
