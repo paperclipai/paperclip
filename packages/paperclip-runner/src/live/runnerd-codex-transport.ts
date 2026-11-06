@@ -8289,10 +8289,6 @@ export function resolveRunnerdCodexSkillInputs(
 /** Controller admission budget; ordinary command and turn deadlines are independent. */
 export function coldAdmissionTimeoutMs(provider: string | undefined, agent: string | undefined, coldProcess: boolean): number {
   if (!coldProcess) return 30_000;
-  // A replacement OpenCode runner does run.prepare, `opencode serve` startup
-  // and session resume inside one run.attach. A fresh start gets separate
-  // run.prepare and session.open bounds for the same work. Measured cold
-  // restores took 10-38 s on a loaded host, so 30 s failed intermittently.
   return (provider === "acpx" && agent === "pi") || provider === "opencode" ? 60_000 : 30_000;
 }
 

@@ -5890,10 +5890,6 @@ describe("cold process admission budget", () => {
     expect(coldAdmissionTimeoutMs("acpx", "pi", true)).toBe(60_000);
   });
   it("bounds a cold OpenCode restore at 60 seconds", () => {
-    // A replacement runner must start runnerd, the OpenCode proxy and
-    // `opencode serve`, then resume the saved session inside one run.attach.
-    // A fresh start spreads that work across separate run.prepare and
-    // session.open bounds.
     expect(coldAdmissionTimeoutMs("opencode", undefined, true)).toBe(60_000);
   });
   it("preserves live adoption and every other provider at 30 seconds", () => {
