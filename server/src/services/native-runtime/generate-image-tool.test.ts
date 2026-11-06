@@ -201,10 +201,14 @@ describe("generate_image for OpenAI API-key Codex agents (N-12)", () => {
         chargedAt: "2026-11-06T12:00:00.000Z" } } } } })
       .where(eq(heartbeatRuns.id, f.runId));
     await accountRunCost(db, f.runId);
-    await accountRunCost(db, f.runId);
     const costs = await db.select().from(costEvents).where(and(eq(costEvents.heartbeatRunId, f.runId), eq(costEvents.providerRequestId, "req_unsettled")));
     expect(costs).toHaveLength(1);
     expect(costs[0]).toMatchObject({ agentId: f.agentId, issueId: f.issueId, model: "gpt-image-2", outputTokens: 100, costStatus: "estimated" });
+    // The task is deleted while the receipt is still `charged`; later accounting must not conflict.
+    await db.update(heartbeatRuns).set({ costAccountingPending: true, costAccountedAt: null, nativeIssueId: null }).where(eq(heartbeatRuns.id, f.runId));
+    await db.update(costEvents).set({ issueId: null }).where(eq(costEvents.id, costs[0]!.id));
+    await expect(accountRunCost(db, f.runId)).resolves.not.toThrow();
+    expect(await db.select().from(costEvents).where(and(eq(costEvents.heartbeatRunId, f.runId), eq(costEvents.providerRequestId, "req_unsettled")))).toHaveLength(1);
   });
 
   it("refuses when the run's AI connection is no longer an active OpenAI API key", async () => {
