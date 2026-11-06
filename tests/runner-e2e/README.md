@@ -675,8 +675,10 @@ before execution.
 
 The idle chat cell asks the agent to delegate one welcome note to a named worker and
 report its result without another user message. A bounded local file read in
-the managed project workspace delays completion until the source chat is positively
-observed idle, with a three-minute handoff setup budget and a four-minute worker
+the worker task's own isolated task directory delays completion until the source
+chat is positively observed idle. The wait command names only cwd-relative files,
+because native providers cannot read agent homes or unconfigured project roots. The
+setup uses a three-minute handoff setup budget and a four-minute worker
 wait limit. The brief is then released, the worker must save the output and
 reach Done. Its output must include the start time supplied only in that brief, allowing
 ordinary numeric and written forms. That check runs after completion observation
@@ -1213,12 +1215,14 @@ or publish the current source locally:
 ```bash
 content_id="$(pnpm --silent test:e2e:runner:image-id)"
 source_revision="$(git rev-parse HEAD)"
+lock_sha="$(shasum -a 256 pnpm-lock.yaml | cut -d ' ' -f 1)"
 image="ghcr.io/paperclipai/paperclip-daytona-runner:e2e-content-${content_id}"
 if ! docker buildx imagetools inspect "$image" >/dev/null 2>&1; then
   docker buildx build \
     --platform linux/amd64 \
     --build-arg "PAPERCLIP_RUNNER_CONTENT_ID=${content_id}" \
     --build-arg "PAPERCLIP_RUNNER_SOURCE_REVISION=${source_revision}" \
+    --build-arg "PAPERCLIP_RUNNER_LOCK_SHA256=${lock_sha}" \
     --file docker/daytona-runner/Dockerfile \
     --tag "$image" \
     --push \
@@ -1226,6 +1230,11 @@ if ! docker buildx imagetools inspect "$image" >/dev/null 2>&1; then
 fi
 docker buildx imagetools inspect "$image"
 ```
+
+The Dockerfile has no lockfile digest default: every build passes the SHA-256
+of the `pnpm-lock.yaml` in its build context, and a missing or malformed value
+fails before installation. Build from a clean checkout of the source revision
+so the content ID, provenance, and lockfile digest describe the same tree.
 
 The content ID hashes the audited image inputs, including the Dockerfile,
 platform, root package/lock/build configuration, dependency patches,
@@ -2130,7 +2139,10 @@ retirement.
 Launcher cancellation first signals its outer group, so Playwright and the wrapper
 own graceful server shutdown. It allows 45 seconds for that chain before bounded
 5-second forced cleanup of revalidated descendants. Normal launcher exit uses the
-same retained descendant inventory. Zombies count as stopped; an unavailable or
+same retained descendant inventory. Zombies count as stopped, including when
+macOS answers a group signal with EPERM because every remaining member is an
+unreaped zombie; EPERM stays fatal while a fresh inspection shows a running
+member. An unavailable or
 uncertain identity inspection triggers bounded direct-child-only retirement and
 still fails the tree audit. Failed cleanup preserves the temporary state. Graceful
 owners are selected from the same validated table used for delivery; ESRCH allows

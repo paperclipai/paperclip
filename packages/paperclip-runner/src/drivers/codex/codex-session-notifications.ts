@@ -1,4 +1,5 @@
 import { observeCodexUsage, codexRunUsage } from "./codex-usage-baseline.js";
+import { codexRateLimitSnapshot, rateLimitNoticeEvent, rateLimitSnapshotChanged } from "../provider-rate-limits.js";
 import { classifyCodexNotification } from "./codex-notification-identity.js";
 import { paperclipWorkspaceFileReferencesFromText } from "../../live/workspace-file-reference.js";
 import { canonicalProviderEventsFromCodex, isCanonicalProviderEventType } from "../../provider-events.js";
@@ -41,6 +42,7 @@ const DELTA_KINDS: Record<string, string> = {
   "item/agentMessage/delta": "agentMessage",
   "item/plan/delta": "plan",
   "item/reasoning/summaryTextDelta": "reasoning",
+  "item/reasoning/summaryPartAdded": "reasoning",
   "item/reasoning/textDelta": "reasoning",
   "item/commandExecution/outputDelta": "commandExecution",
   "item/fileChange/outputDelta": "fileChange",
@@ -74,12 +76,28 @@ export async function pumpNotifications(state: CodexSessionState): Promise<void>
         message: redactCodexDiagnostic(String(error)),
       });
       state.expirePendingInputRequestsAfterProviderLoss();
+      // The terminal error is what the run shows. Keep the redacted cause on it:
+      // the stream can close because of host-side runner supervision, not only
+      // the provider, and a bare "failed closed" hides which one it was.
       state.failProtocol(
         "notification_transport_failed",
-        "Provider notification transport failed closed.",
+        notificationTransportFailureMessage(error),
       );
     }
   }
+
+const NOTIFICATION_TRANSPORT_CAUSE_LIMIT = 1_000;
+
+function notificationTransportFailureMessage(error: unknown): string {
+  const raw = error instanceof Error ? error.message : String(error);
+  // Redact before bounding so truncation cannot split a credential pattern.
+  const cause = redactCodexDiagnostic(raw).replace(/\s+/g, " ").trim();
+  if (!cause) return "Notification transport failed closed.";
+  const bounded = cause.length > NOTIFICATION_TRANSPORT_CAUSE_LIMIT
+    ? `${cause.slice(0, NOTIFICATION_TRANSPORT_CAUSE_LIMIT)}…`
+    : cause;
+  return `Notification transport failed closed: ${bounded}`;
+}
 
 async function mapNotification(state: CodexSessionState, notification: CodexRpcNotification): Promise<void> {
     const sourceSequenceBefore = state.sourceSequence;
@@ -134,6 +152,20 @@ async function mapNotificationBody(state: CodexSessionState, notification: Codex
       const pending = state.pendingRunAttachment;
       if (pending && params.runId === pending.runId && params.runId !== state.runId) await pending.settled;
       if (params.runId === state.runId) state.emit("runtime.activity.recorded", record(params.payload));
+      return;
+    }
+    if (notification.method === "account/rateLimits/updated") {
+      // Account-scoped: it names no thread or turn, so it bypasses thread binding.
+      const next = codexRateLimitSnapshot(record(notification.params), state.rateLimits, state.now().toISOString());
+      if (next && rateLimitSnapshotChanged(state.rateLimits, next)) {
+        const itemId = `codex-rate-limits:${++state.rateLimitNoticeSequence}`;
+        const notice = rateLimitNoticeEvent(next, itemId);
+        state.emit(notice.eventType, notice.payload, {
+          ...(state.activeTurnId ? { turnId: state.activeTurnId } : {}),
+          itemId,
+        });
+      }
+      if (next) state.rateLimits = next;
       return;
     }
     if (!isSupportedCodexNotificationMethod(notification.method)) return;
@@ -245,11 +277,18 @@ async function mapNotificationBody(state: CodexSessionState, notification: Codex
         state.activeTurnId === null ||
         turnId === state.activeTurnId)
     ) {
+      if (notification.method === "item/started" && record(params.item).type === "contextCompaction") {
+        state.compactionContext = { preTokens: state.lastContextUsedTokens, postTokens: null };
+      }
       for (const canonical of canonicalProviderEventsFromCodex(
         notification.method,
         params,
+        { workingDirectory: state.workspaceRoots },
       )) {
-        state.emit(canonical.eventType, canonical.payload, {
+        const payload = canonical.eventType === "context.compacted"
+          ? withCompactionSizes(state, canonical.payload)
+          : canonical.payload;
+        state.emit(canonical.eventType, payload, {
           turnId: turnId || undefined,
           itemId: canonical.itemId,
         });
@@ -263,7 +302,10 @@ async function mapNotificationBody(state: CodexSessionState, notification: Codex
       state.emit("harness.diagnostic", {
         code: notification.method.replaceAll("/", "_"),
         message: redactCodexDiagnostic(
-          text(params.message, JSON.stringify(boundedCodexValue(params))),
+          text(
+            record(params.error).message,
+            text(params.message, JSON.stringify(boundedCodexValue(params))),
+          ),
         ),
       });
       return;
@@ -562,6 +604,10 @@ async function mapNotificationBody(state: CodexSessionState, notification: Codex
     const deltaKind = DELTA_KINDS[notification.method];
     if (deltaKind !== undefined) {
       if (!state.notificationNamesActiveTurn(turnId, "item update")) return;
+      // A new summary part starts a new section: the first part needs no
+      // separator, later parts begin after a blank line like `summary[]`.
+      if (notification.method === "item/reasoning/summaryPartAdded"
+        && !(typeof params.summaryIndex === "number" && params.summaryIndex > 0)) return;
       const methodChannel = channelForDelta(state, notification.method);
       const channel =
         methodChannel !== "unknown"
@@ -575,7 +621,9 @@ async function mapNotificationBody(state: CodexSessionState, notification: Codex
           kind: deltaKind,
           channel,
           providerMethod: notification.method,
-          text: text(params.delta, text(params.patch, text(params.output))),
+          text: notification.method === "item/reasoning/summaryPartAdded"
+            ? "\n\n"
+            : text(params.delta, text(params.patch, text(params.output))),
           update: params,
         }),
         { turnId, itemId: itemId || `${turnId}:${deltaKind}` },
@@ -589,6 +637,11 @@ async function mapNotificationBody(state: CodexSessionState, notification: Codex
     }
     if (notification.method === "thread/tokenUsage/updated") {
       state.usageSnapshot = boundedPayload(record(params.tokenUsage));
+      const contextUsedTokens = record(record(params.tokenUsage).context).usedTokens;
+      if (typeof contextUsedTokens === "number" && Number.isSafeInteger(contextUsedTokens) && contextUsedTokens >= 0) {
+        if (state.compactionContext) state.compactionContext.postTokens = contextUsedTokens;
+        else state.lastContextUsedTokens = contextUsedTokens;
+      }
       if (state.driverKind === "codex_app_server") {
         const reported = record(record(params.tokenUsage).total);
         const validCount = (value: unknown) => typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
@@ -623,6 +676,21 @@ async function mapNotificationBody(state: CodexSessionState, notification: Codex
 // Resume can re-deliver committed history for a turn the checkpoint already
 // settled. Between turns the identity classifier sees no active turn, so the
 // replay would otherwise reach the live-turn guards and fail the session.
+/** Fills a compaction's missing sizes from the readings around it. */
+function withCompactionSizes(
+  state: CodexSessionState,
+  payload: Record<string, unknown>,
+): Record<string, unknown> {
+  const count = (value: unknown) =>
+    typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : null;
+  const observed = state.compactionContext;
+  state.compactionContext = null;
+  const preTokens = count(payload.preTokens) ?? observed?.preTokens ?? null;
+  const postTokens = count(payload.postTokens) ?? observed?.postTokens ?? null;
+  if (postTokens !== null) state.lastContextUsedTokens = postTokens;
+  return { ...payload, preTokens, postTokens };
+}
+
 function ignoreRestoredTerminalReplay(
   state: CodexSessionState,
   method: string,
@@ -659,7 +727,7 @@ function channelForDelta(
   state: CodexSessionState,
     method: string,
   ): "progress" | "final" | "summary" | "detail" | "unknown" {
-    if (method === "item/reasoning/summaryTextDelta") return "summary";
+    if (method === "item/reasoning/summaryTextDelta" || method === "item/reasoning/summaryPartAdded") return "summary";
     if (method === "item/reasoning/textDelta") return "detail";
     return "unknown";
   }
