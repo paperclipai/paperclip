@@ -484,3 +484,8 @@ other paths, hidden navigation and mismatched definitions remain inadmissible.
 The private worker still independently verifies the responsible person and exact
 definition before entering the value. Result 5169 remains FAILED; this local
 observer correction does not qualify the unexercised save, consumer or final reply.
+
+Menu evidence labels the parameter as `expectedDefinitionId`; the observed UI proof
+is the current-company route and visible definition key. Private entry retains the
+independent exact-ID/current-owner check. Delayed flyout and own-entry visibility
+are awaited within the same passed navigation deadline.

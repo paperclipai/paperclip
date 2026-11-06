@@ -1,5 +1,5 @@
-import type {Locator,Page} from "@playwright/test";
-export interface PersonalSecretMenuNavigation {advertisedHint:string;observedNavigationRoute:string;definitionId:string;viaMySecrets:true;limitation:string}
+import {expect,type Locator,type Page} from "@playwright/test";
+export interface PersonalSecretMenuNavigation {advertisedHint:string;observedNavigationRoute:string;expectedDefinitionId:string;visibleDefinitionKey:string;viaMySecrets:true;limitation:string}
 export async function personalSecretMenuNavigation(page:Page,reply:{body:string;commentId?:string},origin:string,prefix:string,definitionId:string,timeout:number):Promise<PersonalSecretMenuNavigation|undefined>{
  const hint="/company/settings/secrets",text=reply.body.replace(/[*`]/g,"");
  if(!reply.commentId||!text.includes(definitionId)||!/Settings\s*(?:→|>|then)\s*Secrets/i.test(text)||!/My secrets/i.test(text)||!/PERSONAL_PUBLISHING_KEY/.test(text)||!/Set my value/i.test(text))return;
@@ -11,6 +11,7 @@ export async function personalSecretMenuNavigation(page:Page,reply:{body:string;
   await node.scrollIntoViewIfNeeded({timeout:remaining()});
   return node.evaluate(node=>{const r=node.getBoundingClientRect();if(!node.checkVisibility({checkOpacity:true,checkVisibilityCSS:true})||r.width<=0||r.height<=0||r.bottom<=0||r.top>=innerHeight||r.right<=0||r.left>=innerWidth)return false;for(let p=node.parentElement;p;p=p.parentElement){const s=getComputedStyle(p),b=p.getBoundingClientRect();if(/hidden|clip/.test(s.overflowX)&&(r.right<=b.left||r.left>=b.right)||/hidden|clip/.test(s.overflowY)&&(r.bottom<=b.top||r.top>=b.bottom))return false;}return true;});
  };
+ const waitVisible=async(node:Locator)=>{try{await expect.poll(()=>visible(node),{timeout:Math.max(1,remaining()-200),intervals:[50,100,250]}).toBe(true);return true;}catch{return false;}};
  const comment=page.locator(`[id=${JSON.stringify(`comment-${reply.commentId}`)}]`);
  await comment.waitFor({state:"visible",timeout:remaining()});
  const code=comment.locator("code").filter({hasText:hint});
@@ -27,14 +28,14 @@ export async function personalSecretMenuNavigation(page:Page,reply:{body:string;
    const account=page.getByRole("button",{name:"Open account menu",exact:true});if(!await visible(account))return;
    await account.click({timeout:remaining()});opened=true;settings=page.locator("[data-flyout-options]").getByRole("link",{name:"Settings",exact:true});
   }
-  if(!await visible(settings))return;const target=supported(await settings.getAttribute("href"),"");if(!target)return;
+  if(!await waitVisible(settings))return;const target=supported(await settings.getAttribute("href"),"");if(!target)return;
   navigated=true;await settings.click({timeout:remaining()});await page.waitForURL(target,{timeout:remaining()});
   const secrets=page.locator("aside").getByRole("link",{name:"Secrets",exact:true});await secrets.waitFor({state:"attached",timeout:remaining()});if(!await visible(secrets))return;
   const href=supported(await secrets.getAttribute("href"),"/secrets");if(!href)return;
   await secrets.click({timeout:remaining()});await page.waitForURL(href,{timeout:remaining()});
   const tab=page.getByRole("tab",{name:"My secrets",exact:true});await tab.waitFor({state:"attached",timeout:remaining()});if(!await visible(tab))return;await tab.click({timeout:remaining()});
   const own=page.getByRole("listitem").filter({has:page.getByText("PERSONAL_PUBLISHING_KEY",{exact:true})});
-  if(!await visible(own)||!await visible(own.getByRole("button",{name:"Set value",exact:true})))return;
-  return {advertisedHint:hint,observedNavigationRoute:href,definitionId,viaMySecrets:true,limitation:"The advertised inline hint is noncanonical; only actual current-company UI hrefs authorized navigation. Private worker must independently verify definition and owner before entry."};
+  if(!await waitVisible(own)||!await waitVisible(own.getByRole("button",{name:"Set value",exact:true})))return;
+  return {advertisedHint:hint,observedNavigationRoute:href,expectedDefinitionId:definitionId,visibleDefinitionKey:"PERSONAL_PUBLISHING_KEY",viaMySecrets:true,limitation:"The advertised inline hint is noncanonical; only actual current-company UI hrefs authorized navigation. Private worker must independently verify definition and owner before entry."};
  }finally{if(navigated)await page.goto(original,{waitUntil:"domcontentloaded",timeout:Math.max(1,deadline-Date.now())});else if(opened)await page.keyboard.press("Escape");}
 }

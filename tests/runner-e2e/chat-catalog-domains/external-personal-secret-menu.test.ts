@@ -9,6 +9,7 @@ it.skipIf(process.env.PAPERCLIP_CHAT_EVAL_SECRET_ROUTE_CANARY!=="1")("discovers 
  const browser=await chromium.launch({headless:true,...process.env.PAPERCLIP_RUNNER_E2E_CHROMIUM_EXECUTABLE?{executablePath:process.env.PAPERCLIP_RUNNER_E2E_CHROMIUM_EXECUTABLE}:{}}),page=await browser.newPage();
  const scenarios=[
   {name:"actual-style Account navigation",accepted:true},
+  {name:"delayed Account and My secrets data",accepted:true,delayed:true},
   {name:"missing menu",missing:true},
   {name:"hidden menu",hidden:true},
   {name:"wrong company Settings",settings:"/OTHER/company/settings"},
@@ -23,12 +24,18 @@ it.skipIf(process.env.PAPERCLIP_CHAT_EVAL_SECRET_ROUTE_CANARY!=="1")("discovers 
  try{for(const scenario of scenarios){
   const paths:string[]=[];await page.unroute("**/*");await page.route("**/*",async route=>{
    const path=new URL(route.request().url()).pathname;paths.push(path);
-   const content=path===settings?`<aside><a href="${scenario.secrets??secrets}">Secrets</a></aside>`:path===secrets?`<button role="tab">My secrets</button>${scenario.noEntry?"":'<ul><li><code>PERSONAL_PUBLISHING_KEY</code><button>Set value</button></li></ul>'}`:`<article id="comment-native">${scenario.markup??markup}${scenario.extra??""}</article>${scenario.missing?"":`<aside><button ${scenario.hidden?"hidden":""} aria-label="Open account menu" onclick="document.querySelector('[data-flyout-options]').hidden=false">Person</button></aside><div data-flyout-options hidden><a href="${scenario.settings??settings}">Settings</a></div>`}`;
+   const ownMarkup='<ul><li><code>PERSONAL_PUBLISHING_KEY</code><button>Set value</button></li></ul>';
+   const own=scenario.noEntry?"":scenario.delayed?`<template id="own-template">${ownMarkup}</template><div id="own"></div>`:ownMarkup;
+   const tabClick=scenario.delayed?"setTimeout(()=>document.querySelector('#own').append(document.querySelector('#own-template').content.cloneNode(true)),150)":"";
+   const accountClick=scenario.delayed?"setTimeout(()=>document.body.append(document.querySelector('#account-template').content.cloneNode(true)),150)":"document.querySelector('[data-flyout-options]').hidden=false";
+   const accountLinks=`<div data-flyout-options ${scenario.delayed?"":"hidden"}><a href="${scenario.settings??settings}">Settings</a></div>`;
+   const account=scenario.missing?"":`<aside><button ${scenario.hidden?"hidden":""} aria-label="Open account menu" onclick="${accountClick}">Person</button></aside>${scenario.delayed?`<template id="account-template">${accountLinks}</template>`:accountLinks}`;
+   const content=path===settings?`<aside><a href="${scenario.secrets??secrets}">Secrets</a></aside>`:path===secrets?`<button role="tab" onclick="${tabClick}">My secrets</button>${own}`:`<article id="comment-native">${scenario.markup??markup}${scenario.extra??""}</article>${account}`;
    await route.fulfill({contentType:"text/html; charset=utf-8",body:content});
   });await page.goto(chat);
   let proof:unknown;
   expect(await personalSecretSetupURL(page,{body:scenario.body??body,commentId:"native"},origin,"RUN",definition,1500,p=>{proof=p;}),scenario.name).toBe(scenario.accepted?origin+secrets:undefined);
-  if(scenario.accepted){expect(proof).toMatchObject({advertisedHint:"/company/settings/secrets",observedNavigationRoute:origin+secrets,definitionId:definition,viaMySecrets:true});expect(paths).toEqual(["/RUN/chat",settings,secrets,"/RUN/chat"]);}
+  if(scenario.accepted){expect(proof).toMatchObject({advertisedHint:"/company/settings/secrets",observedNavigationRoute:origin+secrets,viaMySecrets:true});expect(paths).toEqual(["/RUN/chat",settings,secrets,"/RUN/chat"]);if(scenario.delayed)expect(proof).toMatchObject({expectedDefinitionId:definition,visibleDefinitionKey:"PERSONAL_PUBLISHING_KEY"});}
   expect(paths.some(p=>p.startsWith("/OTHER/")),scenario.name).toBe(false);expect(page.url(),scenario.name).toBe(chat);
  }}finally{await browser.close();}
 },30000);
