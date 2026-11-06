@@ -19,7 +19,7 @@ export function registerIssueRecoveryWork(
     recoveryActions(scope: { companyId: string }): Promise<unknown>;
     dependencies(scope: Scope): Promise<{ enqueueFailed: number }>;
     locks(scope: Scope): Promise<unknown>;
-    watchdogs(scope: { companyId: string; watchdogId: string; onDeferredDeadline: (at: number) => void }): Promise<{ incomplete: number }>;
+    watchdogs(scope: { companyId: string; watchdogId: string; onDeferredDeadline: (at: number) => void }): Promise<{ incomplete: number; failed?: number }>;
     schedulingSuppressed(): Promise<boolean>;
   },
   canRun: () => boolean,

@@ -12,7 +12,7 @@ export function registerTaskWatchdogWork(
   coordinator: ReturnType<typeof createDeliveryWorkCoordinator>,
   owner: {
     enabled(): Promise<boolean>;
-    reconcile(scope: { companyId: string; watchdogId: string; onDeferredDeadline: (at: number) => void }): Promise<{ incomplete: number }>;
+    reconcile(scope: { companyId: string; watchdogId: string; onDeferredDeadline: (at: number) => void }): Promise<{ incomplete: number; failed?: number }>;
   },
   canRun: () => boolean,
 ) {
@@ -43,6 +43,7 @@ export function registerTaskWatchdogWork(
       const result = await owner.reconcile({ companyId: entry.companyId, watchdogId: entry.id,
         onDeferredDeadline: at => { next = next === null ? at : Math.min(next, at); } });
       if (result.incomplete > 0) throw new Error(`Task watchdog ${entry.id} in company ${entry.companyId} has an incomplete subtree`);
+      if ((result.failed ?? 0) > 0) throw new Error(`Task watchdog ${entry.id} in company ${entry.companyId} failed reconciliation`);
       return next === null ? null : { ...entry, dueAt: next };
     },
   }, canRun);
