@@ -595,6 +595,33 @@ const support = await getEmbeddedPostgresTestSupport();
       }
     });
 
+    it("keeps a worker ready that arrives while the boot attempt records pending", async () => {
+      const config = managedConfig([defaultEntry]);
+      running = false;
+      await applyManagedEnvironments(db, config, { env: {}, workerManager, autoInstalledPluginKeys: [PLUGIN_KEY] });
+      // The boot attempt finds the plugin down, and the worker reports `ready`
+      // while that attempt is still running (before the retry worker exists).
+      workerManager.isRunning.mockImplementationOnce(() => {
+        running = true;
+        for (const listener of [...managerReadyListeners]) listener(pluginId);
+        return false;
+      });
+      let task!: { run: () => Promise<unknown>; hasPending: () => Promise<boolean> };
+      await startManagedPluginInstanceDefault({
+        db,
+        managedConfig: config,
+        deliveryWork: { register: (_queue: string, registered: typeof task) => { task = registered; return { wake: () => {} }; } } as never,
+        workerManager,
+        recovery: createManagedEnvironmentRecovery(),
+      });
+      expect(await readManagedEnvironmentDefaultDecision(db)).toMatchObject({ status: "pending" });
+      // The ready event became a request for the worker.
+      expect(await task.hasPending()).toBe(true);
+      await task.run();
+      const [row] = await pluginRows();
+      expect(await instanceDefault()).toBe(row!.id);
+    });
+
     it("keeps retrying when every attempt times out while the worker keeps running", async () => {
       await boot([remoteHostEntry]);
       // The boot ensure, its immediate recovery attempt, the inline boot
