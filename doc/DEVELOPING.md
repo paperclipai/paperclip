@@ -407,12 +407,18 @@ This gives interrupted jobs an independent recovery path. It keeps the same
 source, commands, assertions and required gates. A failed test still needs a fix;
 a successful rerun does not explain an earlier failure.
 
-The two PR Runner Vitest jobs separate package tests from native server tests.
-The first runs the complete package inventory; the second runs the complete
-native server group. The existing `--shard=1/2` and `--shard=2/2` commands route
-through `run-pr-vitest-lane.mjs` for compatibility with the master-pinned
-workflow. Other workflow names and shard counts keep their existing coverage.
-Both jobs still prepare debug binaries. A separate exact-key debug cache holds
+The PR Runner Vitest jobs separate package tests from native server tests.
+Three `--package-lane=K/3` jobs each run one duration-balanced partition of the
+package inventory, and one `--native-server` job runs the complete native server
+group. `run-pr-vitest-lane.mjs` asks `vitest list` for the inventory, so it
+follows the `vitest.config.ts` includes. It partitions the files with the general
+server partitioner, using the weights in
+`packages/paperclip-runner/scripts/vitest-lane-durations.json`. Files missing
+from that manifest get the median weight. The legacy `--shard=1/2` and
+`--shard=2/2` commands keep their earlier PR behavior: the first runs the whole
+package inventory and the second runs the native group. Other workflow names and
+shard counts keep their existing coverage. Every lane still prepares debug
+binaries. A separate exact-key debug cache holds
 the workspace library and every Cargo binary target. Its key includes source,
 protocol and fixture content, Cargo configuration, compiler flags, toolchain
 and checkout path. Only the Rust lane of a verified master push saves it.
