@@ -5166,6 +5166,7 @@ function renderRuntimeServiceEnv(input: {
 function resolveRuntimeServiceReuseIdentity(input: {
   service: Record<string, unknown>;
   workspace: RealizedExecutionWorkspace;
+  executionWorkspaceId?: string | null;
   agent: ExecutionWorkspaceAgentRef;
   issue: ExecutionWorkspaceIssueRef | null;
   adapterEnv: Record<string, string>;
@@ -5210,6 +5211,8 @@ function resolveRuntimeServiceReuseIdentity(input: {
             stableStringify({
               scopeType: input.scopeType,
               scopeId: input.scopeId,
+              ...(input.scopeType === "run" && input.executionWorkspaceId
+                ? { executionWorkspaceId: input.executionWorkspaceId } : {}),
               serviceName,
               command,
               cwd: serviceCwd,
@@ -6205,6 +6208,7 @@ async function spawnLocalRuntimeService(input: StartLocalRuntimeServiceInput): P
   const identity = resolveRuntimeServiceReuseIdentity({
     service: input.service,
     workspace: input.workspace,
+    executionWorkspaceId: input.executionWorkspaceId,
     agent: input.agent,
     issue: input.issue,
     adapterEnv: input.adapterEnv,
@@ -7006,6 +7010,7 @@ async function prepareRuntimeProvisioning(
   const identity = resolveRuntimeServiceReuseIdentity({
     service: input.service,
     workspace: input.workspace,
+    executionWorkspaceId: input.executionWorkspaceId,
     agent: input.agent,
     issue: input.issue,
     adapterEnv: input.adapterEnv,
@@ -7650,6 +7655,7 @@ async function ensureRuntimeServicesForRunInvocation(
       const reuseKey = resolveRuntimeServiceReuseIdentity({
         service,
         workspace: input.workspace,
+        executionWorkspaceId: input.executionWorkspaceId,
         agent: input.agent,
         issue: input.issue,
         adapterEnv: input.adapterEnv,
@@ -7750,6 +7756,7 @@ function resolveRuntimeStartMutexPlan(input: {
     const reuseKey = resolveRuntimeServiceReuseIdentity({
       service,
       workspace: input.workspace,
+      executionWorkspaceId: input.executionWorkspaceId,
       agent: input.agent,
       issue: input.issue,
       adapterEnv: input.adapterEnv,
@@ -7901,6 +7908,7 @@ async function startRuntimeServicesForWorkspaceControlUnlocked(
     const reuseKey = resolveRuntimeServiceReuseIdentity({
       service,
       workspace: input.workspace,
+      executionWorkspaceId: input.executionWorkspaceId,
       agent: input.actor,
       issue: input.issue,
       adapterEnv: input.adapterEnv,
@@ -8100,6 +8108,7 @@ async function startRuntimeServicesForWorkspaceControlInvocation(
         const reuseKey = resolveRuntimeServiceReuseIdentity({
           service,
           workspace: input.workspace,
+          executionWorkspaceId: input.executionWorkspaceId,
           agent: input.actor,
           issue: input.issue,
           adapterEnv: input.adapterEnv,

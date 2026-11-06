@@ -145,3 +145,10 @@ filesystem-free path.
 A read-only source observation at `2026-11-06T23:20:49.282Z` found 254 pending
 legacy records and zero unsettled local-process services. No service handoff was
 required by that observation. This is not a coherent or locked migration proof.
+
+Serial source admission exposed a run-scoped preview reuse collision: two
+execution workspaces with one caller invocation ID could reuse one healthy
+service after the first start completed. Run-scoped reuse identity now includes
+the execution-workspace owner. The public scope ID and explicit project/agent
+sharing stay unchanged. The existing exposure-pair owner regression exercises
+real listeners, a disposable database and a fake broker.
