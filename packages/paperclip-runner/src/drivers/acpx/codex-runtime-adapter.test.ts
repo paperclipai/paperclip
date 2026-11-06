@@ -18,7 +18,7 @@ import { decodeAcpxRuntimeHandleState } from "acpx/runtime";
 import { describe, expect, it, vi } from "vitest";
 
 import type { VerifiedAcpxCommandLease } from "./installation-integrity.js";
-import { claudeExitPlanModeProposal, openCodexAcpxRuntime } from "./codex-runtime-adapter.js";
+import { acpxSessionHandshakeTimeoutMs, claudeExitPlanModeProposal, openCodexAcpxRuntime } from "./codex-runtime-adapter.js";
 import { cursorInstructionBinding } from "./cursor-instructions.js";
 import { persistedAcpxTurnUsage } from "./usage-accounting.js";
 import { createAcpxCommandLeaseOwner } from "./command-lease-owner.js";
@@ -2505,6 +2505,44 @@ describe("Codex ACPX runtime adapter", () => {
       await vi.advanceTimersByTimeAsync(2_000);
       await rejected;
       expect(child.kill).toHaveBeenCalledWith("SIGTERM");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each([
+    { agent: "claude", admitted: true },
+    { agent: "codex", admitted: false },
+  ])("bounds a 45 s cold $agent session handshake by the agent's admission budget", async ({ agent, admitted }) => {
+    expect(acpxSessionHandshakeTimeoutMs(agent)).toBe(admitted ? 60_000 : 30_000);
+    // Pi shares Claude's budget; its admission needs Pi-only options, so only the bound is checked here.
+    expect(acpxSessionHandshakeTimeoutMs("pi")).toBe(60_000);
+    vi.useFakeTimers();
+    try {
+      const child = fakeChild();
+      const command = fakeCommand();
+      vi.mocked(command.spawn).mockReturnValue(child);
+      const runtime = fakeRuntime();
+      const options = openOptions(command);
+      const opening = openCodexAcpxRuntime({ ...options, profile: { ...options.profile, agent } }, {
+        createRegistry: () => registry(),
+        createStore: () => store(),
+        awaitProviderOwnership: providerOwnershipEstablished,
+        awaitProviderExit: providerOwnershipEstablished,
+        createRuntime: (runtimeOptions) => {
+          vi.mocked(runtime.ensureSession).mockImplementation(async () => {
+            runtimeOptions.spawnAgent?.({ command: "ignored", args: ["--stdio"], options: {} });
+            await new Promise((resolve) => setTimeout(resolve, 45_000));
+            return HANDLE;
+          });
+          return runtime;
+        },
+      });
+      const settled = opening.then(() => "admitted", (error: unknown) => error instanceof Error ? error.message : String(error));
+      await vi.advanceTimersByTimeAsync(46_000);
+      const outcome = await settled;
+      if (admitted) expect(outcome).toBe("admitted");
+      else expect(outcome).toContain("handshake exceeded its admission deadline");
     } finally {
       vi.useRealTimers();
     }

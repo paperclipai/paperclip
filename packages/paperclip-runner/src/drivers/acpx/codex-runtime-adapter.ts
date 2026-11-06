@@ -77,6 +77,15 @@ const activeCodexRuntimeCleanupOwners = new Set<Promise<unknown>>();
 // qualified runtime enough time to complete that local handshake.
 const SESSION_HANDSHAKE_TIMEOUT_MS = 30_000;
 
+/**
+ * Pi and Claude get the same 60 s cold session.open bound as the runner's
+ * sidecar and the controller's cold admission budget. A cold Claude handshake
+ * exceeded 30 s on a loaded host; a shorter inner bound would fail first.
+ */
+export function acpxSessionHandshakeTimeoutMs(agent: string): number {
+  return agent === "pi" || agent === "claude" ? 60_000 : SESSION_HANDSHAKE_TIMEOUT_MS;
+}
+
 interface GoalAwareAcpRuntime extends AcpRuntime {
   requestExtension?(input: {
     handle: AcpRuntimeHandle;
@@ -647,7 +656,7 @@ export async function openQualifiedAcpxRuntime(
   try {
     const boundedHandshake = boundedSessionHandshake(
       handshake,
-      dependencies.sessionHandshakeTimeoutMs ?? SESSION_HANDSHAKE_TIMEOUT_MS,
+      dependencies.sessionHandshakeTimeoutMs ?? acpxSessionHandshakeTimeoutMs(options.profile.agent),
     );
     handle = options.signal
       ? await raceRuntimeHandshakeWithAbort(boundedHandshake, options.signal)
