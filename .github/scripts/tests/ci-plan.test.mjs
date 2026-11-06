@@ -33,7 +33,9 @@ test("a UI component retains browser and build coverage without unrelated server
   assert.equal(selected(result, "build"), true);
   assert.equal(selected(result, "e2e_shards"), true);
   assert.equal(selected(result, "verify_serialized_server"), false);
-  assert.deepEqual([...selectedTasks(result)].filter((task) => /server|chat|runner/.test(task)), []);
+  // The Runner support suite imports UI modules and checks that catalog-listed
+  // UI files stay tracked, so UI source changes are its inputs too.
+  assert.deepEqual([...selectedTasks(result)].filter((task) => /server|chat|runner/.test(task)), ["ci:runner-e2e-support"]);
   assert.equal(result.jobs.general_tests.selected, 2);
 });
 
