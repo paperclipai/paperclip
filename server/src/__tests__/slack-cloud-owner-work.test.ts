@@ -218,9 +218,16 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     await service.configure(b, { action: "pause" }, actorId);
     await holdCredentials(a);
     const start = cloud.calls.length;
-    const owner = githubConnectionEventService(db, { connector: cloud.connector });
+    const clockReads: { phase: string; at: number }[] = [];
+    let phase = "A-busy";
+    const owner = githubConnectionEventService(db, { connector: cloud.connector, now: () => {
+      const actual = new Date(Date.now()); clockReads.push({ phase, at: actual.getTime() }); return actual;
+    } });
     await owner.pollOnce({ forDelivery: true });
+    const afterBusy = { at: Date.now(), nextPollAt: owner.nextPollAt() };
+    phase = "B-ready";
     await owner.pollOnce({ forDelivery: true });
+    const afterReady = { at: Date.now(), nextPollAt: owner.nextPollAt() };
     expect((await setup(b)).slackCloudIntent).toBeUndefined();
     expect((await setup(b)).slackCloudRetiredGeneration).toBeDefined();
     const retained = (await setup(a)).slackCloudIntent!;
@@ -229,11 +236,23 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     expect(cloud.calls.slice(start).filter(call => call.enrollment?.endpointId === a)).toEqual([]);
     expect(owner.nextPollAt()).not.toBeNull();
     releases.splice(0).forEach(release => release()); await Promise.all(heldLeases);
-    const delay = Math.max(0, Date.parse(retained.nextAttemptAt!) - Date.now());
+    const timerStartedAt = Date.now();
+    const delay = Math.max(0, Date.parse(retained.nextAttemptAt!) - timerStartedAt);
     await new Promise(resolve => setTimeout(resolve, delay));
-    await owner.pollOnce();
-    expect((await setup(a)).slackCloudIntent).toBeUndefined();
-    expect((await setup(a)).slackCloudRetiredGeneration).toBeDefined();
+    const timerResolvedAt = Date.now(), gateDeadline = owner.nextPollAt();
+    phase = "default-after-original-wait";
+    let finalResult: Awaited<ReturnType<typeof owner.pollOnce>> | undefined;
+    let finalIntent: unknown;
+    try {
+      finalResult = await owner.pollOnce();
+      finalIntent = (await setup(a)).slackCloudIntent;
+      expect(finalIntent).toBeUndefined();
+      expect((await setup(a)).slackCloudRetiredGeneration).toBeDefined();
+    } finally {
+      console.info("SLACK_OWNER_DEADLINE_OBSERVATION", { clockReads, afterBusy, afterReady,
+        persistedDue: Date.parse(retained.nextAttemptAt!), timerStartedAt, delay, timerResolvedAt,
+        gateDeadline, finalResult, finalIntent, nextPollAt: owner.nextPollAt() });
+    }
   }, 60_000);
 
   it("normal configuration rollback leaves no registration debt or retirement request", async () => {
