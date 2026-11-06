@@ -2306,6 +2306,7 @@ fn rejects_a_mutable_opencode_command_outside_the_runner_launch_profile() {
 }
 
 #[test]
+#[cfg_attr(windows, ignore = "verified launch is not supported on Windows yet")]
 fn restart_lost_opencode_turn_records_a_recoverable_cause() {
     // A local OpenCode server restarts with runnerd, like Codex app-server:
     // the lost turn keeps its recoverable cause and the run stays open for
