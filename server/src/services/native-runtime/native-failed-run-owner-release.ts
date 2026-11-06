@@ -98,11 +98,10 @@ async function recordedProcessMayBeLive(pid: number | null, startedAt: Date | nu
 }
 
 /**
- * The same process evidence `agentExecutionsHaveStopped` requires, applied to
- * an owner whose lease has already expired. This process answers for itself
- * from its in-memory execution registries instead of probing its own PID.
+ * The run-level process evidence `agentExecutionsHaveStopped` requires. This
+ * process answers for itself from its in-memory execution registries.
  */
-async function executionMayBeLive(run: Run, coordinator: Coordinator, now: Date): Promise<boolean> {
+async function runProcessMayBeLive(run: Run, now: Date): Promise<boolean> {
   if (adapterExecutionControls.has(run.id) || activeNativeExecutionRunIds.has(run.id)) return true;
   if (run.controllerLeaseExpiresAt && run.controllerLeaseExpiresAt > now) return true;
   // Same process identity rule as `agentExecutionsHaveStopped`: a recorded PID
@@ -116,7 +115,11 @@ async function executionMayBeLive(run: Run, coordinator: Coordinator, now: Date)
       if (run.processGroupId === run.processPid) groupAlive = false;
     }
   }
-  if (processAlive || groupAlive) return true;
+  return processAlive || groupAlive;
+}
+
+/** An expired owner's recorded controller, unless this process is that controller. */
+async function controllerMayBeLive(coordinator: Coordinator): Promise<boolean> {
   if (isCurrentNativeControllerProcess(coordinator)) return false;
   // A previous boot of this process can share its PID, but cannot be its controller.
   if (coordinator.controllerPid === process.pid) return false;
@@ -148,8 +151,9 @@ async function settleFailedRunOwner(db: Db, release: Release, now: Date): Promis
         || run.resultJson?.[LEGACY_WORKSPACE_RECOVERY_KEY] != null) return false;
       const [heldElsewhere] = await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns)
         .where(and(eq(heartbeatRuns.id, run.id), or(unsettledRunEnvironmentLease, pendingNativeStop))).limit(1);
-      if (heldElsewhere || await executionMayBeLive(run, coordinator, now)) return false;
-    } else if (adapterExecutionControls.has(run.id) || activeNativeExecutionRunIds.has(run.id)) {
+      if (heldElsewhere || await runProcessMayBeLive(run, now) || await controllerMayBeLive(coordinator)) return false;
+    } else if (await runProcessMayBeLive(run, now)) {
+      // The claim never reached the executor, but the run may still own a local process.
       return false;
     }
     const [accepted] = await tx.select({ id: nativeRunResults.id }).from(nativeRunResults).where(and(
@@ -220,6 +224,12 @@ export async function settleUnstartedNativeSessionResume(db: Db, claim: {
   });
 }
 
+let abandonedOwnerReleaseCursor: string | null = null;
+
+export function resetAbandonedNativeOwnerReleaseForTests() {
+  abandonedOwnerReleaseCursor = null;
+}
+
 /**
  * Releases expired, result-less owners left on native runs that already ended
  * failed, timed out, or interrupted. Each release re-proves under row locks that
@@ -228,33 +238,34 @@ export async function settleUnstartedNativeSessionResume(db: Db, claim: {
  * in `agentExecutionsHaveStopped`.
  */
 export async function releaseAbandonedNativeOwners(db: Db, now = new Date(), pageSize = 50): Promise<number> {
+  // One bounded page per pass. The cursor rotates across passes, so rows that a
+  // live process still holds cannot starve stopped owners behind them; any
+  // remaining expired row keeps the finalization deadline due for the next pass.
+  const page = (after: string | null) => db.select({
+    runId: nativeRunFinalizations.runId,
+    leaseOwner: nativeRunFinalizations.leaseOwner,
+    attempt: nativeRunFinalizations.attempt,
+    controllerGeneration: nativeRunFinalizations.controllerGeneration,
+  }).from(nativeRunFinalizations)
+    .innerJoin(heartbeatRuns, and(eq(heartbeatRuns.id, nativeRunFinalizations.runId),
+      eq(heartbeatRuns.companyId, nativeRunFinalizations.companyId)))
+    .where(and(abandonedOwnerCondition(), lte(nativeRunFinalizations.leaseExpiresAt, now),
+      after ? gt(nativeRunFinalizations.runId, after) : undefined))
+    .orderBy(asc(nativeRunFinalizations.runId))
+    .limit(pageSize);
+  let candidates = await page(abandonedOwnerReleaseCursor);
+  if (candidates.length === 0 && abandonedOwnerReleaseCursor !== null) candidates = await page(null);
+  abandonedOwnerReleaseCursor = candidates.length === pageSize ? candidates[candidates.length - 1]!.runId : null;
   let released = 0;
-  // Page by run id so rows that stay held by a live process cannot starve later ones.
-  let after: string | null = null;
-  for (;;) {
-    const candidates = await db.select({
-      runId: nativeRunFinalizations.runId,
-      leaseOwner: nativeRunFinalizations.leaseOwner,
-      attempt: nativeRunFinalizations.attempt,
-      controllerGeneration: nativeRunFinalizations.controllerGeneration,
-    }).from(nativeRunFinalizations)
-      .innerJoin(heartbeatRuns, and(eq(heartbeatRuns.id, nativeRunFinalizations.runId),
-        eq(heartbeatRuns.companyId, nativeRunFinalizations.companyId)))
-      .where(and(abandonedOwnerCondition(), lte(nativeRunFinalizations.leaseExpiresAt, now),
-        after ? gt(nativeRunFinalizations.runId, after) : undefined))
-      .orderBy(asc(nativeRunFinalizations.runId))
-      .limit(pageSize);
-    for (const candidate of candidates) {
-      try {
-        if (await settleFailedRunOwner(db, { kind: "expired_owner", runId: candidate.runId,
-          leaseOwner: candidate.leaseOwner!, attempt: candidate.attempt,
-          controllerGeneration: candidate.controllerGeneration }, now)) released += 1;
-      } catch (error) {
-        logger.warn({ err: error, runId: candidate.runId },
-          "Abandoned native owner release remains pending; continuing with other runs");
-      }
+  for (const candidate of candidates) {
+    try {
+      if (await settleFailedRunOwner(db, { kind: "expired_owner", runId: candidate.runId,
+        leaseOwner: candidate.leaseOwner!, attempt: candidate.attempt,
+        controllerGeneration: candidate.controllerGeneration }, now)) released += 1;
+    } catch (error) {
+      logger.warn({ err: error, runId: candidate.runId },
+        "Abandoned native owner release remains pending; continuing with other runs");
     }
-    if (candidates.length < pageSize) return released;
-    after = candidates[candidates.length - 1]!.runId;
   }
+  return released;
 }

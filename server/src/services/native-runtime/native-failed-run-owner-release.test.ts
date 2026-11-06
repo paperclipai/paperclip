@@ -25,6 +25,7 @@ import { claimNativeSessionResumptions } from "./native-finalization-reconciler.
 import {
   nextAbandonedNativeOwnerReleaseAt,
   releaseAbandonedNativeOwners,
+  resetAbandonedNativeOwnerReleaseForTests,
   settleUnstartedNativeSessionResume,
 } from "./native-failed-run-owner-release.js";
 
@@ -43,6 +44,7 @@ describe("failed native run owner release", () => {
   afterAll(async () => temporary?.cleanup());
   // The release deadline is instance-wide; keep each case's rows to itself.
   afterEach(async () => {
+    resetAbandonedNativeOwnerReleaseForTests();
     await db.delete(environmentLeases);
     await db.delete(nativeRunFinalizations);
   });
@@ -123,6 +125,19 @@ describe("failed native run owner release", () => {
     const [claim] = await claimNativeSessionResumptions({ db, runnerInstanceId: "default", runIds: [runId] });
     // Still preparing: the run has not ended.
     await expect(settleUnstartedNativeSessionResume(db, claim!)).resolves.toBe(false);
+    // A failed run whose recorded process is still alive keeps its owner.
+    await failRunDuringSetup(runId);
+    const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1_000)"], { stdio: "ignore" });
+    await once(child, "spawn");
+    try {
+      await db.update(heartbeatRuns).set({ processPid: child.pid! }).where(eq(heartbeatRuns.id, runId));
+      await expect(settleUnstartedNativeSessionResume(db, claim!)).resolves.toBe(false);
+    } finally {
+      const exited = once(child, "exit");
+      child.kill("SIGKILL");
+      await exited;
+    }
+    await db.update(heartbeatRuns).set({ status: "running", processPid: null }).where(eq(heartbeatRuns.id, runId));
     // The executor's claim bumps the attempt; its own failure path owns settlement.
     await db.update(nativeRunFinalizations).set({ attempt: 2 }).where(eq(nativeRunFinalizations.runId, runId));
     await failRunDuringSetup(runId, "adapter_failed", "provider turn failed");
@@ -238,7 +253,7 @@ describe("failed native run owner release", () => {
     }
   });
 
-  it("keeps paging past owners that a live controller still holds", async () => {
+  it("rotates bounded passes past owners that a live controller still holds", async () => {
     const runs = await Promise.all([0, 1, 2].map(() => nativeRun({ status: "failed", errorCode: "adapter_failed",
       coordinator: { leaseOwner: `default:resume:${randomUUID()}`, leaseExpiresAt: new Date(0) } })));
     const [held, ...free] = [...runs].sort((left, right) => left.runId.localeCompare(right.runId));
@@ -248,7 +263,12 @@ describe("failed native run owner release", () => {
       // The first page holds only the row a live controller still owns.
       await db.update(nativeRunFinalizations).set({ controllerPid: controller.pid!, controllerBootId: randomUUID() })
         .where(eq(nativeRunFinalizations.runId, held!.runId));
-      await expect(releaseAbandonedNativeOwners(db, new Date(), 1)).resolves.toBe(2);
+      // Each pass handles one bounded page; the cursor moves past the held row.
+      const passes = [];
+      for (let pass = 0; pass < 3; pass += 1) passes.push(await releaseAbandonedNativeOwners(db, new Date(), 1));
+      expect(passes).toEqual([0, 1, 1]);
+      // After a full rotation the held row is inspected again, not skipped forever.
+      await expect(releaseAbandonedNativeOwners(db, new Date(), 1)).resolves.toBe(0);
       expect(await coordinator(held!.runId)).toMatchObject({ phase: "observed", leaseOwner: expect.any(String) });
       for (const { runId } of free) expect(await coordinator(runId)).toMatchObject({ phase: "terminal_failure", leaseOwner: null });
     } finally {
