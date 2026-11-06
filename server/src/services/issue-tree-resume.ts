@@ -32,7 +32,6 @@ export const PAUSE_RESUME_CLAIM_STALE_MS = 60_000;
 export const PAUSE_RESUME_WAKE_INDEX = "agent_wakeup_requests_tree_hold_resume_uq";
 
 const SWEEP_PAGE_SIZE = 25;
-const SWEEP_MAX_CANDIDATES = 500;
 
 export function pauseResumeWakeKey(runId: string) {
   return `tree-hold-resume:${runId}`;
@@ -164,9 +163,10 @@ export async function hasPendingPauseResume(db: Db) {
 export async function deliverPendingPauseResumes(db: Db, wakeup: Wakeup, now = new Date()) {
   const staleBefore = new Date(now.getTime() - PAUSE_RESUME_CLAIM_STALE_MS);
   // Page through the stale claims: a claim still waiting on a pause or blocker
-  // is skipped without a write, so a fixed first batch could starve the rest.
+  // is skipped without a write, so any fixed batch could starve the rest. Each
+  // pass visits every stale claim in bounded pages.
   let after: string | null = null;
-  for (let seen = 0; seen < SWEEP_MAX_CANDIDATES;) {
+  for (;;) {
     const rows: PendingResumeRow[] = await db.select({
       id: heartbeatRuns.id, companyId: heartbeatRuns.companyId, agentId: heartbeatRuns.agentId,
       createdAt: heartbeatRuns.createdAt, resultJson: heartbeatRuns.resultJson,
@@ -175,7 +175,6 @@ export async function deliverPendingPauseResumes(db: Db, wakeup: Wakeup, now = n
       .where(and(pendingResumePredicate(staleBefore), after ? gt(heartbeatRuns.id, after) : undefined))
       .orderBy(asc(heartbeatRuns.id)).limit(SWEEP_PAGE_SIZE);
     if (!rows.length) return;
-    seen += rows.length;
     after = rows[rows.length - 1]!.id;
     await deliverPendingPage(db, wakeup, now, rows);
     if (rows.length < SWEEP_PAGE_SIZE) return;
