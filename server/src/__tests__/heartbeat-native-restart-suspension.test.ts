@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
-import { authUsers, budgetReservations, companyMemberships, completionContracts, heartbeatRuns, issues, nativeRunFinalizations, nativeRunResults, workspaceOperations } from "@paperclipai/db";
+import { authUsers, budgetReservations, companyMemberships, completionContracts, heartbeatRunEvents, heartbeatRuns, issues, nativeRunFinalizations, nativeRunResults, workspaceOperations } from "@paperclipai/db";
 import { expect, it, vi } from "vitest";
 import { heartbeatService } from "../services/heartbeat.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
@@ -97,6 +97,12 @@ describeEmbeddedPostgres("heartbeat native recovery interrupted by graceful shut
   }, 60_000);
 
 
+  async function shutdownDispositions(db: Awaited<ReturnType<typeof seedRecoverableRun>>["db"], runId: string) {
+    const events = await db.select().from(heartbeatRunEvents).where(and(eq(heartbeatRunEvents.runId, runId),
+      eq(heartbeatRunEvents.eventType, "native.recovery.transition")));
+    return events.map((event) => (event.payload as Record<string, unknown> | null)?.runnerDisposition);
+  }
+
   /** A run whose provider turn ended and whose result this boot's controller accepted. */
   async function seedAcceptedResult(label: string, leaseOwner: (runnerInstanceId: string) => string) {
     const f = await seedRecoverableRun(label);
@@ -152,6 +158,7 @@ describeEmbeddedPostgres("heartbeat native recovery interrupted by graceful shut
     const [released] = await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId));
     // Finalization, not a runner reattach, is what remains.
     expect(released.recoveryState).toBeNull();
+    expect(await shutdownDispositions(f.db, f.runId)).toEqual(["awaiting_result_finalization"]);
 
     const providerDispatch = vi.fn(() => { throw new Error("an accepted result must not open another provider turn"); });
     const next = heartbeatService(f.db, { nativeSessionBackendFactory: providerDispatch });
@@ -179,6 +186,7 @@ describeEmbeddedPostgres("heartbeat native recovery interrupted by graceful shut
     await dying.drainRunningRunsForShutdown("SIGTERM", new Date(), [f.runId]);
     const [owner] = await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId));
     expect(owner).toMatchObject({ phase: "workspace_finalizing", leaseExpiresAt: f.leaseExpiresAt, recoveryState: null });
+    expect(await shutdownDispositions(f.db, f.runId)).toEqual(["finalizer_in_progress"]);
     const [run] = await f.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
     expect(run.status).toBe("running");
   }, 60_000);

@@ -1223,20 +1223,24 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
                 : isNull(nativeRunFinalizations.controllerBootId),
             ),
           )
-          .returning({ resultId: nativeRunFinalizations.resultId });
+          .returning({ resultId: nativeRunFinalizations.resultId, leaseOwner: nativeRunFinalizations.leaseOwner });
         });
         const resultAccepted = Boolean(released[0]?.resultId);
+        const finalizerHeld = resultAccepted && Boolean(released[0]?.leaseOwner?.startsWith("native-finalizer:"));
         await appendRunEvent(run, {
           eventType: "native.recovery.transition",
           stream: "system",
           level: "info",
-          message: resultAccepted
-            ? "Server shutdown released the accepted native result for finalization by the next controller"
-            : "Server shutdown suspended native controller ownership without cancelling provider work",
+          message: finalizerHeld
+            ? "Server shutdown kept the in-progress finalizer lease of the accepted native result"
+            : resultAccepted
+              ? "Server shutdown released the accepted native result for finalization by the next controller"
+              : "Server shutdown suspended native controller ownership without cancelling provider work",
           payload: {
             restartKind: "graceful",
             signal,
-            runnerDisposition: resultAccepted ? "awaiting_result_finalization" : "awaiting_runner_reattach",
+            runnerDisposition: finalizerHeld ? "finalizer_in_progress"
+              : resultAccepted ? "awaiting_result_finalization" : "awaiting_runner_reattach",
             processPid: run.processPid,
             processGroupId: run.processGroupId,
             processStartedAt: run.processStartedAt?.toISOString() ?? null,
