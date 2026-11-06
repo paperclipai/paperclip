@@ -148,6 +148,9 @@ submits.
 
 ### Task collection creation filters
 
+Tasks opens All tasks for new users. A saved view or an explicit view in the URL
+takes precedence over this default.
+
 The task Filters menu also offers **Routine tasks**. It selects tasks with
 `originKind=routine_execution`, including manually triggered routine runs, even
 when other automatic tasks are hidden. The routines list's **View all tasks**
@@ -443,7 +446,7 @@ In the Classic workspace, an opt-in setting (`enableCombinedInboxTasks`, off by 
 folds Inbox into Tasks. The Inbox nav row goes away and its unread badge moves
 to Tasks. A Views menu on the task list covers the inbox views (Mine, Unread,
 Blocked, Recent, Everything) and the task-status views (All, Active, Backlog,
-Done). Bare `/issues` opens the last-used view, defaulting to Mine; links that
+Done). Bare `/issues` opens the last-used view, defaulting to All tasks; links that
 carry a task filter open All. Old `/inbox` links redirect to the matching view.
 
 ### CSV file previews
