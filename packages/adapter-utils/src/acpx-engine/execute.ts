@@ -616,6 +616,8 @@ const ACPX_INHERITED_PROVIDER_ENV_KEYS: Readonly<Record<string, ReadonlySet<stri
   codex: new Set([
     "OPENAI_API_KEY",
     "CODEX_API_KEY",
+    "CODEX_PATH",
+    "CODEX_HOME",
   ]),
   claude: new Set([
     "ANTHROPIC_API_KEY",
