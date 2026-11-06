@@ -178,13 +178,37 @@ describe("orphaned run scratch sweep", () => {
     expect(await exists(b)).toBe(true);
   });
 
-  it("removes missing-run dirs only after the minimum age", async () => {
+  it("keeps dirs whose run this instance cannot see, however old", async () => {
     const root = await makeRoot();
-    const fresh = await leave(root, "run-gone-new");
-    const old = await leave(root, "run-gone-old", new Date(Date.now() - 2 * 3600_000).toISOString());
+    const foreignRun = await leave(root, "run-other-instance", new Date(Date.now() - 48 * 3600_000).toISOString());
     await sweepOrphanedRunScratch({ tmpRoot: root, resolveRunStates: states({}) });
-    expect(await exists(fresh)).toBe(true);
-    expect(await exists(old)).toBe(false);
+    expect(await exists(foreignRun)).toBe(true);
+  });
+
+  it("reaches orphans past the scan limit on repeated sweeps", async () => {
+    const root = await makeRoot();
+    const kept = [await leave(root, "run-keep1"), await leave(root, "run-keep2")];
+    const orphan = await leave(root, "run-zzorphan");
+    const resolveRunStates = states({ "run-keep1": "active", "run-keep2": "active", "run-zzorphan": "terminal" });
+    for (let i = 0; i < 3 && (await exists(orphan)); i += 1) {
+      await sweepOrphanedRunScratch({ tmpRoot: root, maxScan: 2, resolveRunStates });
+    }
+    expect(await exists(orphan)).toBe(false);
+    expect(await exists(kept[0]!)).toBe(true);
+    expect(await exists(kept[1]!)).toBe(true);
+  });
+
+  it("finds a run's dirs for a per-run sweep regardless of unrelated entries", async () => {
+    const root = await makeRoot();
+    for (let i = 0; i < 4; i += 1) await leave(root, `run-other${i}`);
+    const target = await leave(root, "run-target");
+    await sweepOrphanedRunScratch({
+      tmpRoot: root,
+      runId: "run-target",
+      maxScan: 1,
+      resolveRunStates: states({ "run-target": "terminal" }),
+    });
+    expect(await exists(target)).toBe(false);
   });
 
   it("does not follow symlinks and bounds removals per sweep", async () => {

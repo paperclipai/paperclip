@@ -2725,9 +2725,14 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
 
     await sweepOrphanedRunScratch({
       resolveRunStates: async (runIds) => {
+        // Markers are untrusted: only well-formed UUIDs reach the query.
+        const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+        const validIds = runIds.filter((id) => uuid.test(id));
+        // A run absent from this database may belong to another instance sharing the temp root.
+        const states = new Map<string, RunScratchSweepRunState>(runIds.map((id) => [id, "unknown"]));
+        if (validIds.length === 0) return states;
         const rows = await db.select({ id: heartbeatRuns.id, status: heartbeatRuns.status })
-          .from(heartbeatRuns).where(inArray(heartbeatRuns.id, runIds));
-        const states = new Map<string, RunScratchSweepRunState>(runIds.map((id) => [id, "missing"]));
+          .from(heartbeatRuns).where(inArray(heartbeatRuns.id, validIds));
         for (const row of rows) states.set(row.id, isHeartbeatRunTerminalStatus(row.status) ? "terminal" : "active");
         return states;
       },

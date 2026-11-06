@@ -160,7 +160,8 @@ export async function cleanupHeartbeatRunScratch(input: {
   return { removed: true, dir };
 }
 
-export type RunScratchSweepRunState = "terminal" | "active" | "missing";
+/** "unknown" means this instance cannot establish ownership; it is never removed. */
+export type RunScratchSweepRunState = "terminal" | "active" | "unknown";
 
 export interface SweepRunScratchResult {
   scanned: number;
@@ -171,8 +172,10 @@ export interface SweepRunScratchResult {
 
 export const RUN_SCRATCH_SWEEP_MAX_SCAN = 500;
 export const RUN_SCRATCH_SWEEP_MAX_REMOVE = 100;
-/** A marker whose run row is absent is removed only after this age. */
-export const RUN_SCRATCH_MISSING_RUN_MIN_AGE_MS = 60 * 60 * 1000;
+
+// Instances with separate databases share the temp root, so a run absent from
+// this instance's database may belong to another live instance. Keep those.
+let sweepCursor = 0;
 
 /**
  * Remove leftover run scratch directories whose owning run is terminal (or
@@ -188,16 +191,12 @@ export async function sweepOrphanedRunScratch(input: {
   /** Restrict the sweep to one run's directories (used when that run ends). */
   runId?: string;
   tmpRoot?: string;
-  now?: Date;
   maxScan?: number;
   maxRemove?: number;
-  missingRunMinAgeMs?: number;
 }): Promise<SweepRunScratchResult> {
   const tmpRoot = path.resolve(input.tmpRoot ?? os.tmpdir());
   const maxScan = input.maxScan ?? RUN_SCRATCH_SWEEP_MAX_SCAN;
   const maxRemove = input.maxRemove ?? RUN_SCRATCH_SWEEP_MAX_REMOVE;
-  const nowMs = (input.now ?? new Date()).getTime();
-  const minAgeMs = input.missingRunMinAgeMs ?? RUN_SCRATCH_MISSING_RUN_MIN_AGE_MS;
   const result: SweepRunScratchResult = { scanned: 0, removed: [], kept: 0, truncated: false };
 
   let entries: Dirent[];
@@ -207,11 +206,24 @@ export async function sweepOrphanedRunScratch(input: {
     return result;
   }
 
+  // A per-run sweep pre-filters by the run segment of the directory name, so it
+  // is not limited by unrelated entries. A global sweep rotates its start so
+  // entries that are always kept cannot starve later ones.
+  const runNeedle = input.runId !== undefined
+    ? `-${sanitizePathSegment(input.runId.slice(0, 12), "run")}-`
+    : null;
+  const named = entries
+    .filter((entry) =>
+      entry.name.startsWith("paperclip-run-") && entry.isDirectory() && !entry.isSymbolicLink() &&
+      (runNeedle === null || entry.name.includes(runNeedle)))
+    .sort((a, b) => (a.name < b.name ? -1 : 1));
+  const start = runNeedle === null && named.length > 0 ? sweepCursor % named.length : 0;
   const candidates: Array<{ dir: string; marker: HeartbeatRunScratchMetadata }> = [];
-  for (const entry of entries) {
-    if (!entry.name.startsWith("paperclip-run-") || !entry.isDirectory() || entry.isSymbolicLink()) continue;
-    if (result.scanned >= maxScan) {
+  for (let i = 0; i < named.length; i += 1) {
+    const entry = named[(start + i) % named.length]!;
+    if (runNeedle === null && result.scanned >= maxScan) {
       result.truncated = true;
+      sweepCursor = start + i;
       break;
     }
     result.scanned += 1;
@@ -233,15 +245,13 @@ export async function sweepOrphanedRunScratch(input: {
       result.kept += 1;
     }
   }
+  if (runNeedle === null && !result.truncated) sweepCursor = 0;
   if (candidates.length === 0) return result;
 
   const states = await input.resolveRunStates([...new Set(candidates.map((c) => c.marker.runId))]);
   for (const { dir, marker } of candidates) {
     const state = states.get(marker.runId) ?? "active";
-    const createdMs = Date.parse(marker.createdAt);
-    const removable =
-      state === "terminal" ||
-      (state === "missing" && Number.isFinite(createdMs) && nowMs - createdMs >= minAgeMs);
+    const removable = state === "terminal";
     if (!removable || result.removed.length >= maxRemove) {
       if (removable) result.truncated = true;
       result.kept += 1;
