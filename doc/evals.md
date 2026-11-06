@@ -378,7 +378,10 @@ Use the selectors documented in the [runner E2E README](../tests/runner-e2e/READ
 for a suite, profile, case, group, or environment. Daytona needs the immutable
 image digest and `DAYTONA_API_KEY`; follow the README and fixture security guide.
 `--all` excludes manual suites such as `everyday-workflows`. Select that suite
-explicitly; use a narrow selector while developing a fixture.
+explicitly; use a narrow selector while developing a fixture. Its staging-soak
+reliability cases need `--group reliability` as well; see
+[Everyday workflows](../tests/runner-e2e/EVERYDAY-WORKFLOWS.md#staging-soak-reliability-group)
+for the command and the before-release cadence.
 
 For Runner Evals, the narrowest useful local validation is the report program's
 help/validation path and the deterministic Runner checks documented in

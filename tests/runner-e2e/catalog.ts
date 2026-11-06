@@ -41,6 +41,7 @@ import { lifecycleLiveTasks, lifecycleLiveDefinitionDigest } from "./lifecycle-l
 import { publicMcpTasks, publicMcpExpandedDigest, publicMcpSetupDigest, publicMcpWorkflowDigest, publicMcpWorkerInstructions, publicMcpWorkerSkillDigest } from "./public-mcp-cases.js";
 import { graderVersion as publicMcpGraderVersion } from "./public-mcp-grading.js";
 import { everydayTasks, productionStoryProfile } from "./everyday-cases.js";
+import { EVERYDAY_RELIABILITY_GROUP, EVERYDAY_RELIABILITY_SLOW_GROUP, RELIABILITY_FACADE_PROFILE_IDS, everydayReliabilityExecutionIds, everydayReliabilitySignatures, everydayReliabilityTasks } from "./everyday-reliability-cases.js";
 import { REMOTE_WORKSPACE_STORAGE_SUITE, remoteWorkspaceStoragePrompt } from "./remote-workspace-storage.js";
 import { CONNECTION_GUIDANCE_SUITE, CONNECTION_GUIDANCE_BUDGET_CENTS, connectionGuidanceTasks, connectionGuidanceDefinitionDigest } from "./connection-guidance-cases.js";
 
@@ -90,6 +91,8 @@ const SELECTABLE_GROUPS = [
   "onboarding",
   "context-integrity",
   "stock-harness",
+  EVERYDAY_RELIABILITY_GROUP,
+  EVERYDAY_RELIABILITY_SLOW_GROUP,
 ] as const;
 const SAMPLE_UUID = "11111111-1111-4111-8111-111111111111";
 
@@ -1253,6 +1256,31 @@ export const kimiRunnerProfile = nativeProfile({
   modelQualification: { source: "qualified_runner_profile", qualificationId: "kimi:2.3.3:native-qualified-profile17" },
 });
 
+/**
+ * ACPX facades admitted only for the reliability long-silent-command case. Like the
+ * rolling-deployment matrix, they run as ordinary released profiles: a pending
+ * candidate needs its own qualification suite and is rejected here.
+ */
+const everydayFacadeProfiles = RELIABILITY_FACADE_PROFILE_IDS
+  .map(id => [...runnerProfiles, ...extendedHarnessProfiles, kimiRunnerProfile].find(profile => profile.id === id)!)
+  .filter(original => !original.qualificationCandidate || QUALIFIED_ACPX_PROFILES[original.qualificationCandidate].qualificationStatus !== "pending")
+  .map(original => {
+    const { qualificationCandidate: _candidate, ...profile } = productionStoryProfile(original);
+    return profile;
+  });
+const everydayWorkflowProfiles = [...everydayProfiles,
+  productionStoryProfile(runnerProfiles.find(profile => profile.id === "runner-opencode")!),
+  ...everydayFacadeProfiles];
+
+/** Every reliability cell outside the deliberately small explicit matrix. */
+function everydayReliabilityExcludedIds(suiteId: string): string[] {
+  const allowed = new Set(everydayReliabilityExecutionIds(suiteId));
+  return everydayWorkflowProfiles.flatMap(profile => ["local", "daytona"].flatMap(environmentId =>
+    everydayReliabilityTasks.map(task => `${suiteId}.${profile.id}.${environmentId}.${task.id}`)))
+    .filter(id => !allowed.has(id));
+}
+
+
 const rollingDeploymentProfiles = [...runnerProfiles, ...extendedHarnessProfiles, kimiRunnerProfile]
   .filter(profile => profile.generation === "native" && profile.supportedEnvironments.includes("daytona")
     && (!profile.qualificationCandidate || QUALIFIED_ACPX_PROFILES[profile.qualificationCandidate].qualificationStatus !== "pending"))
@@ -1704,11 +1732,13 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
   {
     id: "everyday-workflows", label: "Everyday Paperclip Work", manualOnly: true,
     description: "Real user requests, useful downloaded work, and durable continuation using production instructions.",
-    groups: ["native"], profiles: [...everydayProfiles,
-      productionStoryProfile(runnerProfiles.find(profile => profile.id === "runner-opencode")!),
-    ], environments: [localEnvironment, daytonaWarmEnvironment],
-    tasks: everydayTasks.map(task => ["hire-reuse", "delegate-feedback", "recover-controller"].includes(task.id)
-      ? { ...task, automaticRetryPolicy: "single_attempt" as const } : task), expectedMatrixSize: 52,
+    groups: ["native"], profiles: everydayWorkflowProfiles, environments: [localEnvironment, daytonaWarmEnvironment],
+    // The S49 turn-3 failure needed an ephemeral per-turn lease, not the warm one.
+    environmentOverrides: { "three-turn-revise": { daytona: runnerEnvironments.find(environment => environment.id === "daytona")! } },
+    tasks: [...everydayTasks.map(task => ["hire-reuse", "delegate-feedback", "recover-controller"].includes(task.id)
+      ? { ...task, automaticRetryPolicy: "single_attempt" as const } : task), ...everydayReliabilityTasks],
+    // 52 everyday cells, one native Daytona cell per reliability case, and released facades for the silent command.
+    expectedMatrixSize: 52 + everydayReliabilityTasks.length + everydayFacadeProfiles.length,
     excludedExecutionIds: [...everydayProfiles.flatMap(profile => everydayTasks
       .filter(task => !["build-revise", "delegate-feedback", "recover-controller", "create-skill-studio"].includes(task.id))
       .map(task => `everyday-workflows.${profile.id}.daytona.${task.id}`)),
@@ -1716,8 +1746,14 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
         `everyday-workflows.runner-opencode.daytona.${task.id}`,
         ...(["hire-reuse", "delegate-feedback"].includes(task.id) ? [] : [`everyday-workflows.runner-opencode.local.${task.id}`]),
       ]),
+      // ACPX facades join only the reliability long-silent-command cells.
+      ...everydayFacadeProfiles.flatMap(profile => everydayTasks.flatMap(task =>
+        ["local", "daytona"].map(environmentId => `everyday-workflows.${profile.id}.${environmentId}.${task.id}`))),
+      ...everydayReliabilityExcludedIds("everyday-workflows"),
     ],
-    definitionMetadata: { version: 10, instructions: "production", grading: "outcome-and-invariants", scheduling: "explicit-only",
+    definitionMetadata: { version: 11, instructions: "production", grading: "outcome-and-invariants", scheduling: "explicit-only",
+      reliability: { group: EVERYDAY_RELIABILITY_GROUP, selection: "explicit-group-only", signatures: everydayReliabilitySignatures,
+        productRule: "interrupted-work-resumes-automatically-or-offers-a-working-first-retry", companyAndLeadBudgetCents: 1_000 },
       controllerDowntimeMs: 125_000,
       remoteCodexRestart: "bounded-main-server-outage-receipt-empty-cache-same-active-process-and-finalization",
       procedureCases: { ids: ["hire-reuse", "delegate-feedback"], maximumAttemptsPerCell: 1, companyAndLeadBudgetCents: 1_000 } },
@@ -2186,6 +2222,7 @@ export function validateRunnerCatalog(): MatrixExecution[] {
     ...continuationTasks,
     questionResumeTask,
     ...everydayTasks,
+    ...everydayReliabilityTasks,
     ...taskTitleTasks,
     ...runnerTasks,
     ...localIntegrityTasks,

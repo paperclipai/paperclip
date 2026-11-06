@@ -73,6 +73,68 @@ The first two did not establish a safe restart boundary, and the uncertainty
 case measures a deterministic safety rule. None supports ranking models.
 See [controlled recovery tests](../runner-recovery/README.md).
 
+## Staging-soak reliability group
+
+Seven explicit-only cases turn the staging soak's ad-hoc browser scripts into
+repeatable runs. Each case comes from a real staging failure. They live in the
+`everyday-workflows` suite, but neither `--all`, `--suite everyday-workflows`, a
+profile/environment selector, nor a scheduled campaign selects them. Only the
+`reliability` group, an explicit `--case`, or an exact `--id` does
+(`explicitGroup` on the task fixture enforces this in `selectors.ts`).
+
+```sh
+pnpm test:e2e:runner -- --list --suite everyday-workflows --group reliability
+pnpm test:e2e:runner -- --suite everyday-workflows --group reliability --max-parallel 2
+pnpm test:e2e:runner -- --suite everyday-workflows --case queue-steer
+pnpm test:e2e:runner -- --id everyday-workflows.runner-codex.daytona.interrupt-redirect
+```
+
+**Cadence:** run the whole group before a release and after a risky runner,
+recovery, queue, tree-control or restart change. Do not run it per PR. It is
+paid: ten Daytona cells, single attempt each, with a 1,000-cent company and
+lead-agent hard stop. Missing provider or Daytona credentials, or a mutable
+Daytona image, stop the launch before any provider spend.
+
+**Product rule (every case):** work interrupted by a restart, Stop,
+reassignment or lost runner must resume automatically, or offer a Retry that
+works on first use. The harness watches each task's `executionBlocker`,
+`interruption` and execution projection while it waits. It uses an offered
+Retry at most once (never while an automatic retry is scheduled) and requires
+a new run from it. These fail: a "send a message to continue" blocker
+(`resume.no-send-message-blocker`), a dead or repeated Retry
+(`resume.retry-works-first-use`), a silent stall past the case bound
+(`resume.no-silent-stall`), and duplicate execution. Evidence is saved to
+`reliability-observations.json`.
+
+| Case | Soak signature | Journey | Key checks |
+|---|---|---|---|
+| `interrupt-redirect` | S47 (fixes #19370, #19355) | While a slow step loop runs, send a follow-up and click its queued **Interrupt**. Then reopen with a second slow loop, click **Stop**, and immediately send another message while the stopped run is still saving (the `workspace_busy` retry path). | Interrupted run ends `operator_interrupted`; exactly one continuation carries the message and starts within 180 s (the soak saw 13–90 s once fixed, 4 minutes or never before); no second user message; the Stop-settlement message is consumed once within 180 s; Done. |
+| `reassign-midrun` | S48 (fix #19354) | While the lead runs a resumable step loop, reassign the task to Riley through the public issue API. | Request is 2xx within 10 s (no 409 or 20 s hang); old run ends `issue_reassigned`; Riley's run starts after the request and succeeds; no overlapping executions on the task; `steps.txt` holds step-1..step-8 exactly once, so work continued from saved files. |
+| `three-turn-revise` | S49 | Create `items.md`, then two reopen-comment revisions on the same workspace: add two items, then convert to a table. Runs on the **per-turn** Daytona lease (the bug hit gpt-5.6-sol with an ephemeral lease on turn 3). | Each turn succeeds; no reconciliation or send-a-message blocker; the file is a five-row Number/Item table. |
+| `long-silent-command` | S52/S52b (fixes #19407, #19419) | The agent runs one 13-minute foreground loop (`sleep 60` × 13, appending to `silent.txt`) that prints nothing, then reports. Tagged `slow`; 50-minute Daytona deadline. | Run succeeds after the command (not shortened) and is terminal within 8 minutes after it; `silent.txt` holds tick-1..tick-13; Stop stays available in API and browser samples throughout; any failure carries a named cause. |
+| `tree-pause-release` | S50/S50b (fixes #19394, #19421) | The lead delegates two slow children to Riley. While a child is queued or has a parked `workspace_busy` retry, pause the parent's tree with `POST /api/issues/:id/tree-holds`. Hold past the retry's due time (at least 75 s), then release **without** `wakeAgents`. | The hold interrupted work; no child run starts during the hold; each interrupted task gets exactly one `issue_tree_resumed` run; all tasks reach Done. |
+| `queue-steer` | H2 | During an active run, queue three follow-ups through the public comment API; edit one, discard one, and steer one (retrying only `steering_temporarily_unavailable`, for up to two minutes). | Edited text reaches the agent and the original never does; the discarded text never reaches the agent; the steered message is acknowledged by the active turn and never replayed; the remaining message is handled by exactly one run. |
+| `queued-across-restart` | S55/U9 (fix #19431) | Queue a follow-up through the composer while a run is active, then restart the controller with the existing restart machinery. | The follow-up dispatches only after the restart, automatically within six minutes, exactly once; every observed `queued` wait names a cause (`server_restarting`, `task_drain`, …) rather than a bare "Queued"; any offered Retry works on first use. |
+
+**Matrix (10 cells).** Each case runs once on native Codex (`runner-codex`,
+`gpt-5.6-sol`) on Daytona: the warm environment, except `three-turn-revise` on
+the per-turn lease. `long-silent-command` also runs on the released ACPX
+facades Grok (`runner-acpx-grok`), Kimi (`runner-acpx-kimi`) and OpenRouter/Pi
+(`runner-acpx-pi`), which hung 3/3 before the fix. They run as ordinary released
+profiles, as in the rolling-deployment matrix; a profile whose ACPX
+qualification returns to pending drops out of the group automatically. Their
+credentials (`XAI_API_KEY`, `KIMI_API_KEY`, `OPENROUTER_API_KEY`) are only
+required when those cells are selected.
+
+**Coverage boundary.** The graders and selection are calibrated by
+`everyday-reliability.test.ts` against passing and plausible failing
+observations. No paid cell has run yet; a first run of the group is the
+acceptance step. The original soak browser scripts are not in this repository,
+so these cases encode the reported signatures, not a replay of those scripts.
+`long-silent-command` checks the completion and Stop paths; it does not inject a
+runner connection loss, so the "fails within a bounded time with a named
+cause" contract is checked only if a loss happens naturally.
+
 ## Matrix and running
 
 The local matrix has fourteen cases on native Codex `gpt-5.6-sol`, native ACPX Claude
