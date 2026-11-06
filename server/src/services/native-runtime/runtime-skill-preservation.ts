@@ -40,7 +40,7 @@ function manifestFiles(asset: NativeRuntimeAssetReference, text: string): Manife
   if (hash(JSON.stringify(files)) !== asset.digest || files.reduce((n, f) => n + f.size, 0) !== asset.totalBytes) throw new Error("runtime_skill_manifest_invalid");
   return files;
 }
-async function readSource(asset: NativeRuntimeAssetReference) {
+async function readLocalManifest(asset: NativeRuntimeAssetReference) {
   const root = path.join(resolvePaperclipInstanceRoot(), "runtime-context-assets");
   const expected = path.join(root, "bundles", asset.digest);
   if (asset.rootPath !== expected) throw new Error("runtime_skill_source_path_mismatch");
@@ -54,6 +54,10 @@ async function readSource(asset: NativeRuntimeAssetReference) {
     text = await handle.readFile("utf8");
   } finally { await handle.close(); }
   const entries = manifestFiles(asset, text);
+  return { expected, manifestText: text, entries };
+}
+async function readSource(asset: NativeRuntimeAssetReference) {
+  const { expected, manifestText, entries } = await readLocalManifest(asset);
   if (!await verifyFileManifest(expected, entries.map(f => ({ ...f, executable: Boolean(f.mode & 0o111) })))) throw new Error("runtime_skill_source_changed");
   const files = [];
   for (const entry of entries) {
@@ -66,7 +70,7 @@ async function readSource(asset: NativeRuntimeAssetReference) {
       files.push(snapshotFile(entry.path, entry.path === "SKILL.md" ? "skill" : "other", bytes, Boolean(entry.mode & 0o111)));
     } finally { await handle.close(); }
   }
-  return { manifestText: text, files };
+  return { manifestText, files };
 }
 
 /** Copy immutable admitted assets, never resolve a run's business/recovery state
@@ -182,6 +186,20 @@ export async function rehydratePreservedRuntimeSkill(db: Db, row: Parameters<typ
   const descriptor = await store.descriptor(row.companyId, asset.packageSnapshotId);
   if (descriptor.storage?.provider !== "s3" || descriptor.storage.durable !== true
     || descriptor.contentHash !== asset.packageContentHash) throw new Error("runtime_skill_package_not_durable");
+  // An intact disposable cache remains useful during a storage outage. Only
+  // use the current host's canonical cache, never the old host's recorded path.
+  const local = { ...skill.bundle, rootPath: path.join(resolvePaperclipInstanceRoot(), "runtime-context-assets", "bundles", skill.bundle.digest) };
+  const healthy = await withRuntimeAssetUse(local.digest, async () => {
+    try {
+      const { expected, entries } = await readLocalManifest(local);
+      return await verifyFileManifest(expected, entries.map(file => ({ ...file, executable: Boolean(file.mode & 0o111) })));
+    } catch (error) {
+      if (["ENOENT", "ENOTDIR"].includes((error as NodeJS.ErrnoException).code ?? "")
+        || error instanceof SyntaxError || (error instanceof Error && error.message.startsWith("runtime_skill_manifest_"))) return false;
+      throw error;
+    }
+  });
+  if (healthy) return local;
   return store.withIsolatedPackage(row.companyId, asset.packageSnapshotId, async (root, manifest) => {
     if (manifest.files.length !== files.length || files.some(file => !manifest.files.some(entry => entry.path === file.path
       && entry.sha256 === file.sha256 && entry.size === file.size && entry.executable === Boolean(file.mode & 0o111)))) throw new Error("runtime_skill_package_mismatch");

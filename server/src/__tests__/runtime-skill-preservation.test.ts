@@ -113,6 +113,23 @@ describe("admitted unversioned runtime skill preservation", () => {
     expect(await fs.readFile(path.join(f.bundle.rootPath, "SKILL.md"), "utf8")).toBe("# original admitted skill\n");
     expect(await db.select().from(heartbeatRuns)).toHaveLength(1);
   });
+  it("reuses an authenticated local bundle during a storage outage and restores a damaged cache from its package", async () => {
+    const f = await fixture();
+    await preserveRuntimeSkillAssets(db, f, storage);
+    const get = vi.spyOn(storage, "getObject").mockRejectedValue(new Error("storage offline"));
+    try {
+      expect((await rehydratePinnedSkillAssets(db, f, f.context)).skills[0]!.bundle).toEqual(f.bundle);
+      expect(get).not.toHaveBeenCalled();
+    } finally { get.mockRestore(); }
+    const file = path.join(f.bundle.rootPath, "SKILL.md");
+    await fs.chmod(file, 0o600); await fs.writeFile(file, "damaged"); await fs.chmod(file, 0o400);
+    const read = vi.spyOn(storage, "getObject");
+    try {
+      expect((await rehydratePinnedSkillAssets(db, f, f.context)).skills[0]!.bundle).toEqual(f.bundle);
+      expect(read).toHaveBeenCalled();
+      expect(await fs.readFile(file, "utf8")).toBe("# original admitted skill\n");
+    } finally { read.mockRestore(); }
+  });
   it("rejects changed source bytes and changed admitted input before receipt publication", async () => {
     const f = await fixture();
     const file = path.join(f.bundle.rootPath, "SKILL.md");
