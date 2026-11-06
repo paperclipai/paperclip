@@ -3,9 +3,16 @@ import { companySecrets, connectionGrants, toolConnections, type Db } from "@pap
 import { withAccountHomeSecretMutationLock } from "@paperclipai/adapter-codex-local/server";
 import { WORKSPACE_RESTORE_LOCK_TIMEOUT_CODE } from "@paperclipai/adapter-utils/workspace-restore-merge";
 import { unprocessable } from "../errors.js";
+import { aiConnectionConfigurationFailure } from "./ai-connection-configuration-failure.js";
 import { logActivity } from "./activity-log.js";
 import { secretService } from "./secrets.js";
-import { claudeAccessTokenOf, claudeRefreshDue, ClaudeOauthRefreshError, parseStoredClaudeOauth, refreshClaudeOauth } from "./claude-oauth-credential.js";
+import { claudeAccessTokenOf, claudeRefreshDue, claudeScopesAllowRun, ClaudeOauthRefreshError, parseStoredClaudeOauth, refreshClaudeOauth } from "./claude-oauth-credential.js";
+
+type Replacement = { value: string; base: string; secretId: string; epoch: number; version: number };
+// One pending obligation per grant. No timer or secondary credential store.
+// A temporary vault outage must not discard a single-use provider exchange.
+const pendingExchanges = new Map<string, Replacement>();
+const pendingKey = (companyId: string, grantId: string) => `${companyId}:${grantId}`;
 
 type Selection = { connection: typeof toolConnections.$inferSelect; grant: typeof connectionGrants.$inferSelect };
 
@@ -19,15 +26,20 @@ export async function refreshClaudeSubscription(
   return withAccountHomeSecretMutationLock(undefined, companyId, async () => {
     // Retain a successful exchange across a failed commit. Never exchange the
     // same single-use refresh token a second time during a save retry.
-    let replacement: { value: string; base: string; secretId: string; epoch: number; version: number } | undefined;
+    const key = pendingKey(companyId, row.grant.id);
+    let replacement = pendingExchanges.get(key);
     for (let attempt = 0; ; attempt++) {
+      let committed = false;
       try {
         const result = await db.transaction(async tx => {
           const [grant] = await tx.select().from(connectionGrants).where(and(
             eq(connectionGrants.companyId, companyId), eq(connectionGrants.id, row.grant.id),
             eq(connectionGrants.connectionId, row.connection.id),
           )).for("update", { noWait: true });
-          if (!grant || grant.status !== "active") throw unprocessable("Reconnect this AI account", { code: "ai_connection_reauth_required" });
+          if (!grant || grant.status !== "active") {
+            pendingExchanges.delete(key);
+            throw aiConnectionConfigurationFailure("ai_connection_unavailable", "Reconnect this AI account", { connectionId: row.connection.id });
+          }
           const ref = grant.credentialSecretRefs.find(ref => ref.configPath === "ai.credential");
           if (!ref) throw unprocessable("Reconnect this AI account");
           const [secret] = await tx.select().from(companySecrets).where(and(
@@ -35,19 +47,23 @@ export async function refreshClaudeSubscription(
           )).for("update", { noWait: true });
           if (!secret) throw unprocessable("Reconnect this AI account");
           const current = await readRaw(tx as unknown as Db, { connection: row.connection, grant });
-          if (replacement && current === replacement.value) return { token: claudeAccessTokenOf(current) };
+          if (replacement && current === replacement.value) return { value: current };
           // A reconnect or an explicit rotation wins over an uncommitted exchange.
           if (replacement && (secret.id !== replacement.secretId || secret.aiSessionEpoch !== replacement.epoch
             || secret.latestVersion !== replacement.version || current !== replacement.base)) {
-            throw unprocessable("The AI credential changed. Retry this execution.", { code: "ai_connection_busy" });
+            pendingExchanges.delete(key);
+            replacement = undefined;
           }
           const stored = parseStoredClaudeOauth(current);
-          if (!stored || !claudeRefreshDue(stored)) return { token: claudeAccessTokenOf(current) };
+          if (!stored || !claudeRefreshDue(stored)) return { value: current };
           let refreshed = replacement?.value;
           if (!refreshed) {
             try { refreshed = await refreshClaudeOauth(stored); }
             catch (error) {
-              if (stored.expiresAt > Date.now()) return { token: stored.accessToken };
+              if (stored.expiresAt > Date.now() && claudeScopesAllowRun(stored)) return { value: current };
+              if (!claudeScopesAllowRun(stored)) {
+                throw unprocessable("Claude sign-in could not supply an inference-only token. Retry or reconnect.", { code: "ai_connection_busy" });
+              }
               if (!(error instanceof ClaudeOauthRefreshError) || !error.rejected) {
                 throw unprocessable("Claude sign-in could not be renewed. Retry shortly.", { code: "ai_connection_busy" });
               }
@@ -60,16 +76,25 @@ export async function refreshClaudeSubscription(
             }
           }
           replacement ??= { value: refreshed, base: current, secretId: secret.id, epoch: secret.aiSessionEpoch, version: secret.latestVersion };
+          pendingExchanges.set(key, replacement);
           await secretService(tx).rotate(secret.id, { value: refreshed, preserveAiSessionEpoch: true }, { userId: grant.subjectUserId });
           await logActivity(tx as unknown as Db, { companyId, actorType: "system", actorId: "claude_refresh",
             action: "ai_connection.credential_refreshed", entityType: "tool_connection", entityId: row.connection.id,
             details: { provider: "anthropic", grantId: grant.id } });
-          return { token: claudeAccessTokenOf(refreshed) };
+          return { value: refreshed };
         });
-        if (result.reauth) throw unprocessable("Sign in again to restore this AI connection.", { code: "ai_connection_reauth_required" });
-        return result.token!;
+        committed = true;
+        // Only a confirmed commit or an explicit generation discard settles this obligation.
+        pendingExchanges.delete(key);
+        if (result.reauth) throw aiConnectionConfigurationFailure("ai_connection_unavailable", "Sign in again to restore this AI connection.", { connectionId: row.connection.id });
+        const credential = parseStoredClaudeOauth(result.value!);
+        if (credential && !claudeScopesAllowRun(credential)) {
+          // Keep the rotated pair in the vault, but never expose broad permissions.
+          throw unprocessable("Claude sign-in could not supply an inference-only token. Retry or reconnect.", { code: "ai_connection_busy" });
+        }
+        return claudeAccessTokenOf(result.value!);
       } catch (error) {
-        if (!replacement || attempt >= 2) throw error;
+        if (committed || !replacement || attempt >= 2) throw error;
       }
     }
   }).catch(error => {

@@ -56,9 +56,14 @@ export function claudeAccessTokenOf(raw: string): string {
   return parseStoredClaudeOauth(raw)?.accessToken ?? raw;
 }
 
-/** Renew on use, before expiry. An idle connection does no work. */
+/** Auth-login credentials remain server-side until narrowed to the run's permission. */
+export function claudeScopesAllowRun(stored: StoredClaudeOauth): boolean {
+  return stored.scopes?.length === 1 && stored.scopes[0] === "user:inference";
+}
+
+/** Renew on use, before expiry or delivery of a broad login token. */
 export function claudeRefreshDue(stored: StoredClaudeOauth, now = Date.now(), marginMs = CLAUDE_REFRESH_MARGIN_MS): boolean {
-  return stored.expiresAt - marginMs <= now;
+  return stored.expiresAt - marginMs <= now || !claudeScopesAllowRun(stored);
 }
 
 export class ClaudeOauthRefreshError extends Error {
@@ -82,7 +87,7 @@ export async function refreshClaudeOauth(
 ): Promise<string> {
   const fetchImpl = options.fetchImpl ?? fetch;
   const now = options.now ?? Date.now;
-  const post = async (scopes: string[] | undefined): Promise<Response> => {
+  const post = async (): Promise<Response> => {
     try {
       return await fetchImpl(CLAUDE_OAUTH_TOKEN_URL, {
         method: "POST",
@@ -93,14 +98,14 @@ export async function refreshClaudeOauth(
           grant_type: "refresh_token",
           refresh_token: stored.refreshToken,
           client_id: CLAUDE_OAUTH_CLIENT_ID,
-          ...(scopes?.length ? { scope: scopes.join(" ") } : {}),
+          scope: "user:inference",
         }),
       });
     } catch {
       throw new ClaudeOauthRefreshError("Claude token refresh could not reach the provider", false);
     }
   };
-  const response = await post(stored.scopes);
+  const response = await post();
   if (!response.ok) {
     await response.body?.cancel().catch(() => undefined);
     throw new ClaudeOauthRefreshError(
@@ -117,7 +122,7 @@ export async function refreshClaudeOauth(
   if (!payload || !nonEmpty(payload.access_token) || typeof payload.expires_in !== "number" || !Number.isFinite(payload.expires_in) || !(payload.expires_in > 0) || payload.expires_in > 400 * 86400) {
     throw new ClaudeOauthRefreshError("Claude token refresh returned an unexpected response", false);
   }
-  const granted = nonEmpty(payload.scope) ? payload.scope.split(/\s+/).filter(Boolean) : stored.scopes;
+  const granted = nonEmpty(payload.scope) ? payload.scope.split(/\s+/).filter(Boolean) : ["user:inference"];
   const next: StoredClaudeOauth = {
     ...stored,
     accessToken: payload.access_token,

@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { claudeAccessTokenOf, claudeRefreshDue, parseStoredClaudeOauth, refreshClaudeOauth, serializeClaudeOauth } from "../services/claude-oauth-credential.js";
 
 const now = 1_800_000_000_000;
-const stored = { accessToken: "old-access", refreshToken: "old-refresh", expiresAt: now + 28800_000, scopes: ["user:inference", "user:profile"], subscriptionType: "max" };
+const stored = { accessToken: "old-access", refreshToken: "old-refresh", expiresAt: now + 28800_000, scopes: ["user:inference"], subscriptionType: "max" };
 describe("Claude OAuth credential", () => {
   it("keeps refresh fields and uses only the access token for execution", () => {
     const raw = serializeClaudeOauth({ ...stored, unrelated: "discard" })!;
@@ -21,7 +21,7 @@ describe("Claude OAuth credential", () => {
     const [url, request] = fetchImpl.mock.calls[0];
     expect(url).toBe("https://platform.claude.com/v1/oauth/token");
     expect(request.redirect).toBe("error");
-    expect(JSON.parse(request.body)).toMatchObject({ grant_type: "refresh_token", refresh_token: stored.refreshToken, scope: "user:inference user:profile" });
+    expect(JSON.parse(request.body)).toMatchObject({ grant_type: "refresh_token", refresh_token: stored.refreshToken, scope: "user:inference" });
   });
   it.each([0, -1, 400 * 86400 + 1, "28800"])("rejects an invalid expires_in (%s)", async expires_in => {
     const fetchImpl = vi.fn().mockResolvedValue(new Response(JSON.stringify({ access_token: "private-token", expires_in })));
