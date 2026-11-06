@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX "environments_managed_plugin_environment_idx" ON "environments" USING btree (("metadata" ->> 'managedPluginEnvironment')) WHERE ("environments"."metadata" ->> 'managedPluginEnvironment') IS NOT NULL;
