@@ -317,3 +317,22 @@ Run the credential-free harness checks with:
 ```sh
 node --test scripts/smoke/notion-generic-live.test.mjs
 ```
+
+### Trusted custom Microsoft Entra resources
+
+Microsoft Entra v2 can reject an RFC 8707 resource indicator. For a custom MCP
+server, an instance operator can explicitly allow omission by setting
+`PAPERCLIP_TRUSTED_ENTRA_MCP_RESOURCES` to a JSON array of bindings, for example:
+
+```json
+[{"serverUrl":"https://mcp.example.com/mcp","resource":"https://mcp.example.com/mcp","scopes":["api://your-api-id/access"]}]
+```
+
+Use the exact HTTPS server URL, including any query string, and the exact resource
+identifier. List only scopes whose tokens are safe to send to that server. Each
+requested non-identity scope must be listed, and at least one listed scope must be
+requested. OpenID identity scopes (`openid`, `profile`, `email`, and
+`offline_access`) do not need listing. The binding applies at sign-in, code
+exchange, and refresh; missing or invalid configuration retains the resource
+indicator. Changes to this instance-wide setting should be made only by trusted
+operators, and removing a binding can require reconnecting an affected account.

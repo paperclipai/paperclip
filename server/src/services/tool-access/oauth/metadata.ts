@@ -309,3 +309,118 @@ export function authServerMetadataUrls(
     return true;
   });
 }
+
+/**
+ * Microsoft Entra ID (Azure AD v2.0) requires resources to match the scope prefix
+ * and rejects requests containing an RFC 8707 `resource` parameter with AADSTS9010010
+ * (error=invalid_target) when scopes are provided.
+ *
+ * Microsoft v1 endpoints (`/oauth2/authorize`, `/oauth2/token`) use `resource` to select
+ * the target API rather than v2-style scopes, so only v2.0 endpoints omit `resource`.
+ */
+export function isMicrosoftV2OAuthUrl(url: string | null | undefined): boolean {
+  if (!url) return false;
+  try {
+    const parsed = new URL(url);
+    const host = parsed.hostname.toLowerCase();
+    const isMicrosoftHost =
+      host === "login.microsoftonline.com" ||
+      host === "login.microsoft.com" ||
+      host === "login.windows.net" ||
+      host.endsWith(".login.microsoftonline.com");
+    if (!isMicrosoftHost) return false;
+
+    return /\/v2\.0(\/|$)/i.test(parsed.pathname);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Backward compatibility alias for `isMicrosoftV2OAuthUrl`.
+ */
+export const isMicrosoftOAuthUrl = isMicrosoftV2OAuthUrl;
+
+/**
+ * Checks if a target resource belongs to a Microsoft-owned domain.
+ */
+export function isMicrosoftResourceUrl(url: string | null | undefined): boolean {
+  if (!url) return false;
+  try {
+    const host = new URL(url).hostname.toLowerCase();
+    return new Set([
+      "mcp.dev.azure.com", "dev.azure.com", "graph.microsoft.com",
+      "management.azure.com", "app.vssps.visualstudio.com", "api.office.com",
+    ]).has(host);
+  } catch {
+    return false;
+  }
+}
+
+function trustedCustomEntraResource(params: {
+  resource: string;
+  serverUrl?: string | null;
+  scopes?: string[] | null;
+}): boolean {
+  if (!params.serverUrl || !params.scopes?.length) return false;
+  let server: URL;
+  try {
+    server = new URL(params.serverUrl);
+    if (server.protocol !== "https:" || server.username || server.password || server.hash) return false;
+  } catch { return false; }
+  try {
+    const bindings: unknown = JSON.parse(process.env.PAPERCLIP_TRUSTED_ENTRA_MCP_RESOURCES ?? "[]");
+    if (!Array.isArray(bindings)) return false;
+    const identityScopes = new Set(["openid", "profile", "email", "offline_access"]);
+    return bindings.some((value: unknown) => {
+      const binding = asRecord(value);
+      if (typeof binding.serverUrl !== "string" || binding.resource !== params.resource || !Array.isArray(binding.scopes)) return false;
+      let trustedServer: URL;
+      try { trustedServer = new URL(binding.serverUrl); } catch { return false; }
+      if (trustedServer.protocol !== "https:" || trustedServer.username || trustedServer.password || trustedServer.hash || trustedServer.href !== server.href) return false;
+      const allowed = binding.scopes.filter((scope): scope is string => typeof scope === "string" && scope.length > 0 && !identityScopes.has(scope));
+      return allowed.length > 0 && params.scopes!.some((scope) => allowed.includes(scope)) &&
+        params.scopes!.every((scope) => identityScopes.has(scope) || allowed.includes(scope));
+    });
+  } catch { return false; }
+}
+
+export function connectionServerUrl(config: Record<string, unknown>): string | null {
+  const value = config.url ?? config.endpoint ?? config.remoteUrl;
+  return typeof value === "string" ? value : null;
+}
+
+export function oauthRefreshRequestedScopes(grant: Record<string, unknown>, oauth: Record<string, unknown>): string[] {
+  for (const value of [grant.requestedScopes, grant.scopes, oauth.scopes, oauth.scope]) {
+    const scopes = normalizeOauthScopes(value);
+    if (scopes.length > 0) return scopes;
+  }
+  return [];
+}
+
+/** Omit the indicator only for a Microsoft destination or an operator-approved binding. */
+export function shouldOmitMicrosoftResourceIndicator(params: {
+  oauthUrl: string | null | undefined;
+  resource: string | null | undefined;
+  scopes?: string[] | null;
+  serverUrl?: string | null;
+}): boolean {
+  if (!params.oauthUrl || !params.resource) return false;
+  if (!isMicrosoftV2OAuthUrl(params.oauthUrl)) return false;
+  if (trustedCustomEntraResource({ ...params, resource: params.resource })) return true;
+  if (!isMicrosoftResourceUrl(params.resource)) return false;
+  if (!params.serverUrl || canonicalResourceIndicator(params.serverUrl) !== canonicalResourceIndicator(params.resource)) return false;
+  if (!params.scopes?.length) return false;
+  try {
+    const resource = new URL(params.resource);
+    if (resource.protocol !== "https:") return false;
+    const identityScopes = new Set(["openid", "profile", "email", "offline_access"]);
+    const targetScopes = params.scopes.filter((scope) => !identityScopes.has(scope));
+    return targetScopes.length > 0 && targetScopes.every((scope) => {
+      try {
+        const parsed = new URL(scope);
+        return parsed.protocol === "https:" && parsed.origin === resource.origin;
+      } catch { return false; }
+    });
+  } catch { return false; }
+}
