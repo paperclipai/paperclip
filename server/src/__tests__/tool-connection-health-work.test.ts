@@ -93,17 +93,23 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     await drained();
     expect(probe).toHaveBeenCalledTimes(count);
   }
-  // A probe is "called" before its follow-up reads/writes finish; wait for the database
-  // to go quiet so those late queries cannot land inside a later SQL-quiet window.
+  // A probe is "called" before its follow-up reads/writes finish; wait until no new DB call
+  // starts AND no other backend is still running a statement or open transaction, so slow
+  // queries cannot land inside a later SQL-quiet window. (idleWorkSnapshot().active is not
+  // usable here: the coordinator holds it while a failed scope waits for its retry.)
   async function drained() {
-    // Quiescence = no DB call for three consecutive 50ms real-time polls (timers are faked,
-    // so only vi.waitFor's own real polling paces this).
+    // The spies only count calls started by the worker. The pg_stat_activity probe goes
+    // through the raw client, so it is neither counted nor faked by the timers.
     const spies = [vi.spyOn(db, "select"), vi.spyOn(db, "transaction"), vi.spyOn(db, "execute")];
     let last = -1, stable = 0;
     try {
-      await vi.waitFor(() => {
+      await vi.waitFor(async () => {
         const calls = spies.reduce((sum, spy) => sum + spy.mock.calls.length, 0);
-        stable = calls === last ? stable + 1 : 0; last = calls;
+        const [{ busy }] = await db.$client<{ busy: number }[]>`
+          select count(*)::int as busy from pg_stat_activity
+          where datname = current_database() and pid <> pg_backend_pid()
+            and backend_type = 'client backend' and state <> 'idle'`;
+        stable = calls === last && busy === 0 ? stable + 1 : 0; last = calls;
         expect(stable).toBeGreaterThanOrEqual(3);
       }, { timeout: 5000 });
     } finally { for (const spy of spies) spy.mockRestore(); }
