@@ -3735,9 +3735,18 @@ export async function ensureAbsoluteDirectory(
   }
 
   const assertDirectory = async () => {
-    const stats = await fs.stat(cwd);
-    if (!stats.isDirectory()) {
-      throw new Error(`Working directory is not a directory: "${cwd}"`);
+    try {
+      const stats = await fs.stat(cwd);
+      if (!stats.isDirectory()) {
+        throw new Error(`Working directory is not a directory: "${cwd}"`);
+      }
+      await fs.access(cwd, fsConstants.X_OK);
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === "EACCES" || code === "EPERM") {
+        throw Object.assign(new Error(`Working directory cannot be entered by the current runtime user: "${cwd}" (${code})`, { cause: err }), { code });
+      }
+      throw err;
     }
   };
 
@@ -3759,7 +3768,7 @@ export async function ensureAbsoluteDirectory(
     await assertDirectory();
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err);
-    throw new Error(`Could not create working directory "${cwd}": ${reason}`);
+    throw Object.assign(new Error(`Could not create working directory "${cwd}": ${reason}`, { cause: err }), { code: (err as NodeJS.ErrnoException).code });
   }
 }
 
