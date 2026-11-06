@@ -77,6 +77,22 @@ describe("native status authority", () => {
     });
   });
 
+  it("hands a responsible-user denial to recovery without a continuation or retry", () => {
+    const decision = arbitrate({
+      responsibleUserDenied: true,
+      assessment: assessment({
+        reportedDisposition: "yielded",
+        continuation: { summary: "Continue", nextAction: "Keep going" } as never,
+      }),
+    });
+    expect(decision).toMatchObject({
+      statusAction: "preserve",
+      toStatus: "in_progress",
+      reasonCode: "responsible_user_denied",
+      effects: [{ kind: "release_checkout" }],
+    });
+  });
+
   it("keeps workspace repair ahead of an accepted case handoff", () => {
     expect(arbitrate({ caseHandoffAuthorized: true, workspaceFinalizeStatus: "failed" })).toMatchObject({
       statusAction: "preserve", reasonCode: "finalization_failed_claim_preserved",

@@ -263,6 +263,18 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, runId))).toHaveLength(0);
   });
 
+  it.each(["RESPONSIBLE_USER_UNAUTHORIZED", "RESPONSIBLE_USER_UNAVAILABLE"])(
+    "never schedules a retry after a responsible-user denial (%s)",
+    async (errorCode) => {
+      const runId = randomUUID(), companyId = randomUUID(), agentId = randomUUID();
+      const now = new Date("2026-04-20T12:00:00.000Z");
+      await seedRetryFixture({ runId, companyId, agentId, now, errorCode, errorFamily: "transient_upstream" });
+      expect(await heartbeat.scheduleBoundedRetry(runId, { now, retryReason: "transient_failure", maxAttempts: 9 }))
+        .toMatchObject({ outcome: "not_scheduled", reason: expect.stringContaining("responsible user") });
+      expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, runId))).toHaveLength(0);
+    },
+  );
+
   it.each(["restore_unsafe_archive", "restore_lock_timeout"])("keeps the existing retry budget for %s", async (classification) => {
     const runId = randomUUID(), companyId = randomUUID(), agentId = randomUUID();
     const now = new Date("2026-04-20T12:00:00.000Z");
