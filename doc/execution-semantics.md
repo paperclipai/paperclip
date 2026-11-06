@@ -2328,6 +2328,17 @@ predecessor/successor receipts for every earlier owner. Unrelated, live, or
 incompletely linked owners remain ambiguous. The run then fails closed
 with `runner_harness_state_mismatch: backup_without_reusable_lease`.
 
+A Runner close can also fail to prove suspension after the control plane
+accepted the run's result (`native.post_result_failure` with category
+`runner_settlement_incomplete`). The provider work is complete, so this is not
+a run failure. The executor first proves that it still holds the exact,
+unexpired finalization lease and that the result is accepted. It then releases
+that lease to finalization. A run on a local workspace has nothing to copy
+back. Paperclip finalizes its accepted result and completes the run from that
+result through the ordinary completion path. Load or a slow suspend command
+cannot turn an accepted result into `adapter_failed`. A run with a synced or
+remote workspace keeps its copy-back retry path.
+
 A per-turn sandbox turn can finish through recovery without a Runner
 suspension receipt or failover backup on the controller. For example, its
 post-turn checkpoint copy can fail on a full sandbox disk. The controller
