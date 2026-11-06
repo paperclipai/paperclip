@@ -1399,6 +1399,153 @@ it("renews one authenticated connection for three weeks without replacing its au
   }
 }, 30_000);
 
+async function receiveSecureWithin(client: AuthenticatedClient, ms: number): Promise<Record<string, unknown> | "timeout" | null> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      receiveSecure(client),
+      new Promise<"timeout">(resolveTimeout => { timer = setTimeout(() => resolveTimeout("timeout"), ms); }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+function credentialEvent(sourceSeq: number): Record<string, unknown> {
+  const frame = semanticInputEvent(sourceSeq);
+  const event = frame.payload as Record<string, unknown>;
+  event.sourceEventId = `slow-commit-${sourceSeq}`;
+  event.eventType = "auth.credentials.updated";
+  event.payload = { schema: "paperclip.auth.credentials.updated.v1", provider: "codex",
+    bindingId: "harness-auth", revision: sourceSeq, detection: "credential_store" };
+  return frame;
+}
+
+it("answers lease renewal while an earlier event commit is still in flight", async () => {
+  const root = mkdtempSync(resolve(tmpdir(), "runner-lease-renewal-slow-commit-"));
+  let release!: () => void;
+  const barrier = new Promise<void>(resolveCommit => { release = resolveCommit; });
+  const commits = vi.fn(async () => barrier);
+  const core = new DurablePrpControlPlane({ stateDirectory: root, identity,
+    expectedRunnerVersion, expectedRunnerDigest, onCommittedEvent: commits });
+  try {
+    await core.start();
+    const client = (await authenticate(core, core.issueBootstrapTicket()))!;
+    const expiry = Number((client.welcome.payload as Record<string, unknown>).connectionLeaseExpiresAtUnixMs);
+    // A tool event whose business commit stalls must not starve the lease.
+    sendSecure(client, credentialEvent(1));
+    await vi.waitFor(() => expect(commits).toHaveBeenCalledTimes(1));
+    sendSecure(client, renewalRequest(client, expiry));
+    const reply = await receiveSecureWithin(client, 2_000);
+    expect(reply).not.toBe("timeout");
+    expect(reply).toMatchObject({ kind: "lease_renewed", payload: { previousExpiresAtUnixMs: expiry } });
+    const renewed = Number(((reply as Record<string, unknown>).payload as Record<string, unknown>).connectionLeaseExpiresAtUnixMs);
+    expect(renewed).toBeGreaterThanOrEqual(expiry);
+    expect(core.store.state.ackedSourceSeq).toBe(0);
+    // Ordering for state-changing frames is unchanged: the event still
+    // commits, ACKs, and the renewed lease survives that later commit.
+    release();
+    expect(await receiveSecure(client)).toMatchObject({ kind: "ack", payload: { ackedSourceSeq: 1 } });
+    sendSecure(client, credentialEvent(2));
+    expect(await receiveSecure(client)).toMatchObject({ kind: "ack", payload: { ackedSourceSeq: 2 } });
+    const saved = JSON.parse(readFileSync(core.store.path, "utf8"));
+    expect(saved.ackedSourceSeq).toBe(2);
+    expect(saved.leases[Object.keys(saved.leases)[0]!].expiresAtUnixMs).toBe(renewed);
+    client.socket.destroy();
+  } finally {
+    release();
+    await core.stop();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+it("keeps a staged tool-progress write when a lease renewal lands mid-write", async () => {
+  const root = mkdtempSync(resolve(tmpdir(), "runner-lease-renewal-staged-write-"));
+  let release!: () => void;
+  const barrier = new Promise<void>(resolveWrite => { release = resolveWrite; });
+  let staged = false;
+  let hold = true;
+  const originalOpen = fsPromises.open;
+  const open = vi.spyOn(fsPromises, "open").mockImplementation(async (...args) => {
+    const file = await originalOpen(...args);
+    if (hold && String(args[0]).includes(".control-plane-state.json.")) {
+      hold = false;
+      const sync = file.sync.bind(file);
+      file.sync = async () => {
+        staged = true;
+        await barrier;
+        await sync();
+      };
+    }
+    return file;
+  });
+  const core = new DurablePrpControlPlane({ stateDirectory: root, identity,
+    expectedRunnerVersion, expectedRunnerDigest });
+  try {
+    await core.start();
+    const client = (await authenticate(core, core.issueBootstrapTicket()))!;
+    const expiry = Number((client.welcome.payload as Record<string, unknown>).connectionLeaseExpiresAtUnixMs);
+    const event = semanticInputEvent();
+    const payload = event.payload as Record<string, unknown>;
+    payload.eventType = "tool.execution.progressed";
+    payload.priority = 2;
+    payload.payload = { schema: "paperclip.tool.execution.v1", executionId: "long-shell",
+      transport: "process", operation: "execute", status: "running", output: "",
+      outputBytes: 0, outputTruncated: false, outputDigest: null };
+    expect(validatePrpEvent(payload)).toMatchObject({ ok: true });
+    sendSecure(client, event);
+    await vi.waitFor(() => expect(staged).toBe(true));
+    sendSecure(client, renewalRequest(client, expiry));
+    const reply = await receiveSecureWithin(client, 2_000);
+    expect(reply).toMatchObject({ kind: "lease_renewed" });
+    release();
+    // The renewal absorbed the admitted event instead of invalidating it.
+    expect(await receiveSecure(client)).toMatchObject({ kind: "ack", payload: { ackedSourceSeq: 1 } });
+    const saved = JSON.parse(readFileSync(core.store.path, "utf8"));
+    expect(saved.ackedSourceSeq).toBe(1);
+    expect(saved.leases[Object.keys(saved.leases)[0]!].expiresAtUnixMs).toBe(
+      ((reply as Record<string, unknown>).payload as Record<string, unknown>).connectionLeaseExpiresAtUnixMs);
+    client.socket.destroy();
+  } finally {
+    release();
+    open.mockRestore();
+    await core.stop();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+it("reports an expired connection lease instead of closing silently", async () => {
+  const root = mkdtempSync(resolve(tmpdir(), "runner-lease-expired-"));
+  let now = Date.now();
+  const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+  const core = new DurablePrpControlPlane({ stateDirectory: root, identity,
+    expectedRunnerVersion, expectedRunnerDigest, connectionLeaseTtlMs: 60_000 });
+  try {
+    await core.start();
+    const client = (await authenticate(core, core.issueBootstrapTicket()))!;
+    const expiry = Number((client.welcome.payload as Record<string, unknown>).connectionLeaseExpiresAtUnixMs);
+    expect(core.connectionLeaseFailure).toBeNull();
+    now = expiry + 1;
+    sendSecure(client, renewalRequest(client, expiry));
+    expect(await receiveSecureWithin(client, 2_000)).toBeNull();
+    expect(core.connectionLeaseFailure).toMatchObject({
+      code: "connection_lease_expired",
+      leaseId: client.welcome.connectionLeaseId,
+      expiresAtUnixMs: expiry,
+    });
+    // A fresh authenticated connection clears the stale reason.
+    now = Date.now();
+    const replacement = (await authenticate(core, core.issueBootstrapTicket()))!;
+    expect(core.connectionLeaseFailure).toBeNull();
+    replacement.socket.destroy();
+    client.socket.destroy();
+  } finally {
+    clock.mockRestore();
+    await core.stop();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 it("reports how long the authenticated Runner has been disconnected", async () => {
   const root = mkdtempSync(resolve(tmpdir(), "runner-disconnect-age-"));
   const core = new DurablePrpControlPlane({ stateDirectory: root, identity, expectedRunnerVersion, expectedRunnerDigest });
