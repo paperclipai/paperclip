@@ -122,6 +122,31 @@ describe("runner E2E Daytona image contract", () => {
     expect(DAYTONA_IMAGE_INPUT_PATHS).not.toContain("packages/grok-acp/package.json");
   });
 
+  it("requires every build, including documented local recipes, to pass the lockfile digest", async () => {
+    const [dockerfile, e2eReadme, imageReadme] = await Promise.all([
+      readFile(path.join(repositoryRoot, "docker/daytona-runner/Dockerfile"), "utf8"),
+      readFile(path.join(repositoryRoot, "tests/runner-e2e/README.md"), "utf8"),
+      readFile(path.join(repositoryRoot, "docker/daytona-runner/README.md"), "utf8"),
+    ]);
+    // A fixed default goes stale with every lockfile change and then fails as a
+    // misleading checksum mismatch; a missing argument must fail by name.
+    expect(dockerfile).toMatch(/^ARG PAPERCLIP_RUNNER_LOCK_SHA256$/m);
+    const normalizedDockerfile = dockerfile.replace(/\\\r?\n\s*/g, " ");
+    const shapeCheck = normalizedDockerfile.indexOf(`grep -Eqx '[0-9a-f]{64}'`);
+    expect(shapeCheck).toBeGreaterThan(-1);
+    expect(shapeCheck).toBeLessThan(normalizedDockerfile.indexOf("sha256sum -c /tmp/provider-lock.sha256"));
+    for (const readme of [e2eReadme, imageReadme]) {
+      const recipes = [...readme.matchAll(/```(?:bash|sh)\n([\s\S]*?)```/g)]
+        .map(match => match[1]!)
+        .filter(block => block.includes("--file docker/daytona-runner/Dockerfile"));
+      expect(recipes.length).toBeGreaterThan(0);
+      for (const recipe of recipes) {
+        expect(recipe).toMatch(/--build-arg "?PAPERCLIP_RUNNER_LOCK_SHA256=/);
+        expect(recipe).toContain("shasum -a 256 pnpm-lock.yaml");
+      }
+    }
+  });
+
   it("builds runnerd and the provider pack and verifies every required transport", async () => {
     const [dockerfile, dockerignore, workflow] = await Promise.all([
       readFile(
