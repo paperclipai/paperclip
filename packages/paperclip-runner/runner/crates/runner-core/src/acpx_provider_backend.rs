@@ -1116,6 +1116,9 @@ impl AcpxCommandExecutor {
         let previous_turn = state.active_turn_id.clone();
         if unsafe_active {
             self.context.provider_turn_id = None;
+            if self.restore_conversation_after_lost_turn(previous_turn.clone())? {
+                return Ok(());
+            }
             let state = self
                 .state
                 .as_mut()
@@ -1134,6 +1137,13 @@ impl AcpxCommandExecutor {
                     "providerTerminalObserved": false,
                     "code": "acpx_active_turn_recovery_closed",
                     "providerShutdownFailed": true,
+                    // Keep the cause through the controller facade, which
+                    // forwards only the structured error of a failed turn.
+                    "error": {
+                        "code": "acpx_active_turn_recovery_closed",
+                        "recoverable": false,
+                        "message": "The runner restarted during this turn and could not restore the conversation.",
+                    },
                 }),
             })?;
             state.push(NormalizedProviderEvent {
@@ -1169,6 +1179,78 @@ impl AcpxCommandExecutor {
         self.recovery_pending_effects = None;
         self.session = Some(session);
         self.save_state()
+    }
+
+    /// Restores the conversation of a turn that was active when the runner
+    /// died, without inventing its outcome. The original provider lifetime
+    /// must have lost its fence quorum first, so no second provider can act on
+    /// the same session. The lost turn is recorded with a recoverable
+    /// `provider_turn_lost_on_restore` cause and the run stays open, so the
+    /// controller can send its single same-conversation continuation. Returns
+    /// false, leaving state untouched, when restoration is not safe.
+    fn restore_conversation_after_lost_turn(
+        &mut self,
+        previous_turn: Option<String>,
+    ) -> Result<bool, DurableRunnerError> {
+        let Some(state) = self.state.as_ref() else {
+            return Ok(false);
+        };
+        // An accepted result, an unanswered runtime request, or an active goal
+        // needs its own reconciliation; a plain continuation cannot settle it.
+        let Some(identity) = state.identity.as_ref() else {
+            return Ok(false);
+        };
+        if previous_turn.is_none()
+            || state.provider_exit_unconfirmed
+            || state.semantic_result.is_some()
+            || !state.pending_runtime_requests.is_empty()
+            || !(state.goal_projection.is_null() || goal_is_dormant(&state.goal_projection))
+        {
+            return Ok(false);
+        }
+        match await_provider_lifetime_fence(identity.provider_lifetime_fence_candidates) {
+            // Release the quorum so the restored provider can inherit it.
+            Ok(listeners) => drop(listeners),
+            Err(_) => return Ok(false),
+        }
+        let Ok(session) = self.start_session(true) else {
+            return Ok(false);
+        };
+        let identity = session.identity().clone();
+        let process_id = session.process_id();
+        let turn_controls = session.turn_control_capabilities();
+        let state = self
+            .state
+            .as_mut()
+            .expect("ACPX state remains available during recovery");
+        state.lifecycle = "session_open".to_owned();
+        state.active_turn_id = None;
+        state.turn_controls = turn_controls;
+        state.push(NormalizedProviderEvent {
+            event_type: "session.resumed".to_owned(),
+            priority: EventPriority::P0,
+            payload: session_event_payload(&state.descriptor, &identity, process_id, turn_controls),
+        })?;
+        state.push(NormalizedProviderEvent {
+            event_type: "turn.failed".to_owned(),
+            priority: EventPriority::P0,
+            payload: json!({
+                "provider": "acpx",
+                "providerTurnId": previous_turn,
+                "status": "failed",
+                "providerTerminalObserved": false,
+                "code": "provider_turn_lost_on_restore",
+                "error": {
+                    "code": "provider_turn_lost_on_restore",
+                    "recoverable": true,
+                    "message": "The runner restored the conversation after process loss, but the previous turn is no longer active.",
+                },
+            }),
+        })?;
+        self.recovery_pending_effects = None;
+        self.session = Some(session);
+        self.save_state()?;
+        Ok(true)
     }
 
     fn start_session(&self, recovering: bool) -> Result<AcpxProviderSession, DurableRunnerError> {

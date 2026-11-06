@@ -348,13 +348,17 @@ that ledger records `remote_execution_never_claimed` with a
 `bootstrap_incomplete` disposition. The provider attempt remains zero during
 classification; the executor increments it before starting provider work.
 
-For a local Codex turn lost while runnerd was stopped, the canonical `turn.failed`
+For a local Codex, OpenCode, or ACPX turn lost while runnerd was stopped, the canonical `turn.failed`
 event retains `error.code: "provider_turn_lost_on_restore"` and
 `error.recoverable: true`. It records the interrupted turn, not a final task
 outcome. There is no synthesized result for that interruption. An admitted
 same-session continuation emits its own `turn.submitted`, accepted turn ID, and
 terminal events; only the final outcome closes the run. Reconstructed thread
 history retains the original error so reconciliation and live delivery agree.
+An ACPX session records this only after the original provider lifetime loses
+its fence quorum and the same conversation is restored. Otherwise its
+`turn.failed` carries `error.code: "acpx_active_turn_recovery_closed"` with
+`error.recoverable: false`, and the run closes with an honest restart message.
 
 ## Native Local Process Stop Evidence
 

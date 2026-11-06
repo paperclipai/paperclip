@@ -2448,7 +2448,9 @@ export async function executeNativeSession(
     const resumeInterruptedTurn = async (event: PrpEvent, signal: AbortSignal) => {
       if (restartContinuationStarted || !recovered || !options.resumeInterruptedTurn ||
           // A compaction-only run never continues task work after a restart.
-          input.provider.kind !== "codex" || options.sessionCompaction || options.sessionGoalControl || options.resumeSessionGoalHeartbeat ||
+          // Runnerd records a restart-lost turn only for these providers, after
+          // proving the old process ended and restoring the same conversation.
+          !["codex", "acpx", "opencode"].includes(input.provider.kind) || options.sessionCompaction || options.sessionGoalControl || options.resumeSessionGoalHeartbeat ||
           recoveredSnapshot.goal || persistedSession?.semanticResult || persistedSession?.pendingRuntimeRequests?.length ||
           event.eventType !== "turn.failed" || !isNativeRestartInterruption(event.payload.error) ||
           event.turnId !== persistedSession?.activeTurnId) return false;

@@ -166,3 +166,124 @@ fn checkpoints_the_sidecar_and_rebinds_consecutive_warm_runs_before_accepting_wo
     assert_eq!(started.result["status"], "accepted");
     executor.shutdown().unwrap();
 }
+
+fn unused_fence_ports() -> [u16; 3] {
+    let listeners = (0..3)
+        .map(|_| std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap())
+        .collect::<Vec<_>>();
+    let ports = listeners
+        .iter()
+        .map(|listener| listener.local_addr().unwrap().port())
+        .collect::<Vec<_>>();
+    [ports[0], ports[1], ports[2]]
+}
+
+/// A runner that dies during an active ACPX turn (for example, when the
+/// control plane restarts) must restore the same conversation once the old
+/// provider lifetime is proven gone. It records a recoverable restart-loss
+/// cause instead of a terminal provider failure.
+#[test]
+fn restores_the_conversation_after_losing_an_active_turn_to_a_runner_restart() {
+    let fixture = Fixture(std::env::temp_dir().join(format!("acpx-restart-{}", uuid::Uuid::new_v4())));
+    fs::create_dir_all(&fixture.0).unwrap();
+    fs::set_permissions(&fixture.0, fs::Permissions::from_mode(0o700)).unwrap();
+    let sidecar = fixture.0.join("sidecar");
+    fs::copy(env!("CARGO_BIN_EXE_fake-acpx-sidecar"), &sidecar).unwrap();
+    fs::set_permissions(&sidecar, fs::Permissions::from_mode(0o700)).unwrap();
+    let ports = unused_fence_ports();
+    let args = vec![
+        "--mode".to_owned(),
+        "suspend".to_owned(),
+        "--profile-digest".to_owned(),
+        PROFILE_DIGEST.to_owned(),
+        "--lifetime-fence-ports".to_owned(),
+        format!("{},{},{}", ports[0], ports[1], ports[2]),
+    ];
+    let config = DurableRunnerConfig {
+        connect_url: "ws://127.0.0.1/runner".to_owned(),
+        ca_bundle_path: None,
+        state_dir: fixture.0.clone(),
+        runner_instance_id: "runner-1".to_owned(),
+        environment_lease_id: "lease-1".to_owned(),
+        run_id: "run-1".to_owned(),
+        normalized_session_id: "session-1".to_owned(),
+        turn_id: "turn-1".to_owned(),
+        item_id: "item-1".to_owned(),
+        runner_version: "0.0.0".to_owned(),
+        runner_digest: format!("sha256:{}", "a".repeat(64)),
+        acpx_launch_profile: Some(AcpxLaunchProfile {
+            candidate_admission: None,
+            authority_digest: format!("sha256:{}", "d".repeat(64)),
+            command: sidecar.clone(),
+            args: args.clone(),
+            artifacts: vec![QualifiedLaunchArtifact {
+                path: sidecar.clone(),
+                sha256: format!("sha256:{:x}", Sha256::digest(fs::read(&sidecar).unwrap())),
+            }],
+        }),
+        opencode_launch_profile: None,
+        cursor_cloud_launch_profile: None,
+        max_outbox_bytes: 1024 * 1024,
+        p0_reserve_bytes: 64 * 1024,
+        max_frame_bytes: 1024 * 1024,
+        reconnect_delay: Duration::from_millis(1),
+        reconnect_grace: None,
+        max_runtime: Duration::from_secs(30),
+    };
+    let descriptor = json!({
+        "kind": "acpx", "provider": "acpx", "driver": "acpx_runtime",
+        "providerVersion": "0.13.1", "agent": "codex", "model": "gpt-5.6-sol",
+        "acpxVersion": "0.13.1", "agentServerPackage": "@agentclientprotocol/codex-acp",
+        "agentServerVersion": "1.6.2", "agentRuntimePackage": "@openai/codex",
+        "agentRuntimeVersion": "0.160.0", "commandDigest": PROFILE_DIGEST,
+        "sidecarCommand": sidecar, "sidecarArgs": args, "runtimeDirectory": fixture.0,
+        "normalizedSessionId": "session-1", "runId": "run-1", "cwd": fixture.0,
+        "instructions": "Complete the supplied work.",
+        "permissionMode": "approve-all", "permissionModePinned": true,
+    });
+    let mut original = AcpxCommandExecutor::with_runner_config(&fixture.0, &config);
+    original
+        .execute(&command(1, "run.prepare", json!({"provider": descriptor})))
+        .unwrap();
+    let opened = original
+        .execute(&command(2, "session.open", json!({})))
+        .unwrap();
+    let provider_session = opened.result["providerSessionId"].clone();
+    let started = original
+        .execute(&command(
+            3,
+            "turn.start",
+            json!({"turnId": "provider-turn-1", "text": "Do the work."}),
+        ))
+        .unwrap();
+    assert_eq!(started.result["status"], "accepted");
+    // The runner process dies with the turn still active.
+    drop(original);
+
+    let mut restored = AcpxCommandExecutor::with_runner_config(&fixture.0, &config);
+    let snapshot = restored
+        .execute(&command(4, "session.snapshot", json!({})))
+        .unwrap();
+    assert_ne!(snapshot.result["status"], "closed");
+    assert_eq!(snapshot.result["providerSessionId"], provider_session);
+    let events = restored.poll_events().unwrap();
+    let failed = events
+        .iter()
+        .find(|event| event.event_type == "turn.failed")
+        .expect("the lost turn is terminated");
+    assert_eq!(failed.payload["providerTurnId"], "provider-turn-1");
+    assert_eq!(failed.payload["providerTerminalObserved"], false);
+    assert_eq!(failed.payload["error"]["code"], "provider_turn_lost_on_restore");
+    assert_eq!(failed.payload["error"]["recoverable"], true);
+    // The run stays open for the controller's single same-conversation continuation.
+    assert!(!events.iter().any(|event| event.event_type == "run.terminal"));
+    let continued = restored
+        .execute(&command(
+            5,
+            "turn.start",
+            json!({"turnId": "provider-turn-2", "text": "Continue."}),
+        ))
+        .unwrap();
+    assert_eq!(continued.result["status"], "accepted");
+    restored.shutdown().unwrap();
+}

@@ -421,6 +421,14 @@ fn semantic_result_event(
     }
 }
 
+/// Local Codex app-server and OpenCode server restart their own process and
+/// restore the same conversation after runner loss, so a turn that vanished
+/// meanwhile is a restart interruption the controller may continue once. A
+/// Cursor Cloud agent runs remotely; its lost turn is not a process restart.
+fn restart_lost_turn_is_continuable(provider: &str) -> bool {
+    matches!(provider, "codex" | "opencode")
+}
+
 fn facade_provider_name(provider: &str) -> &'static str {
     match provider {
         "opencode" => "OpenCode",
@@ -2693,6 +2701,8 @@ impl CodexCommandExecutor {
                         // trustworthy success notification to replay. Terminate it
                         // conservatively so the controller cannot wait forever or
                         // mistake an unknown outcome for success.
+                        let restart_continuable =
+                            restart_lost_turn_is_continuable(&provider_label);
                         let provider_terminal = NormalizedProviderEvent {
                             event_type: "turn.failed".to_owned(),
                             priority: EventPriority::P0,
@@ -2701,14 +2711,14 @@ impl CodexCommandExecutor {
                                 "providerTurnId": previous_active_turn_id,
                                 "status": "failed",
                                 "providerTerminalObserved": false,
-                                "error": if provider_label == "codex" { json!({
+                                "error": if restart_continuable { json!({
                                     "code": "provider_turn_lost_on_restore",
                                     "recoverable": true,
                                     "message": "The runner restored the conversation after process loss, but the previous turn is no longer active.",
                                 }) } else { Value::Null },
                             }),
                         };
-                        if provider_label == "codex" && !state.active_terminal_tool_rejected {
+                        if restart_continuable && !state.active_terminal_tool_rejected {
                             // No provider result was observed. Preserve the lost
                             // turn as a fact, but leave the run open for the
                             // controller's bounded same-conversation recovery.
@@ -5699,6 +5709,13 @@ impl CommandExecutor for CodexCommandExecutor {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn restart_lost_turns_continue_only_for_locally_restored_providers() {
+        assert!(super::restart_lost_turn_is_continuable("codex"));
+        assert!(super::restart_lost_turn_is_continuable("opencode"));
+        assert!(!super::restart_lost_turn_is_continuable("cursor_cloud"));
+    }
 
     #[test]
     fn mcp_permission_requests_use_durable_turn_and_item_identity() {
