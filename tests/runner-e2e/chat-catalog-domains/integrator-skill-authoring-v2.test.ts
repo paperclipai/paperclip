@@ -1,10 +1,11 @@
+import { createRequire } from "node:module";
 import { afterEach, expect, it, vi } from "vitest";
 import type { ChatCatalogContext } from "../chat-catalog-contract.js";
 import type { InternalObservation } from "./internal-support.js";
 vi.mock("@playwright/test",()=>({expect:Object.assign((node:any)=>({toBeVisible:async()=>{if(!node.visible)throw Error("Missing real UI item");},toBeEditable:async()=>{if(!node.editable)throw Error("Noneditable real UI");},toHaveURL:async(predicate:(url:URL)=>boolean)=>{if(!predicate(new URL(node.url())))throw Error("Wrong actual Studio identity");}}),{poll:(read:()=>Promise<boolean>)=>({toBe:async(expected:boolean)=>{for(let i=0;i<3;i++)if(await read()===expected)return;throw Error("UI content did not hydrate to the saved checklist");}})})}));
 const observed=vi.hoisted(()=>({base:undefined as unknown}));
 vi.mock("./integrator-support.js",async original=>({...await original<typeof import("./integrator-support.js")>(),observeInternal:vi.fn(async(_ctx:unknown,state:unknown)=>({...observed.base as object,state}))}));
-import { gradeIntegratorSkills, preservesVisibleWebsiteChecklist, inspectAuthoredSkill, integratorSkillsCases, websiteChecklist } from "./integrator-skills.js";
+import { gradeIntegratorSkills, authoredChecklistTextBlocks, preservesVisibleWebsiteChecklist, inspectAuthoredSkill, integratorSkillsCases, websiteChecklist } from "./integrator-skills.js";
 afterEach(()=>vi.restoreAllMocks());
 function fixture(){
  const markdown=websiteChecklist.join("\n"),source="https://fixture.test/ACORN/chats/ceo";let current=source,reloads=0,editorReads=0;
@@ -88,4 +89,26 @@ it.each([undefined, null, ""])("rejects missing company prefix %s before any UI 
  const f=fixture();Object.assign(f.ctx.input.fixtures.company,{issuePrefix:prefix});
  await expect(inspectAuthoredSkill(f.ctx,f.state,f.o)).rejects.toThrow("company prefix");
  expect(f.events).toEqual([]);expect(f.state.authoredSkillInspection).toBeUndefined();
+});
+
+const { JSDOM } = createRequire(import.meta.url)("../../../server/node_modules/jsdom");
+const sectionMarkup = `<h3>Keyboard-only navigation</h3><ul><li>Do not use a mouse or touch input.</li><li>Press Tab through every interactive control.</li></ul>
+<h3>Visible form labels</h3><ul><li>Locate every form field.</li><li>Confirm each field has a visible label.</li></ul>
+<h3>WCAG AA text contrast</h3><ul><li>Check text contrast meets WCAG AA.</li></ul>
+<h3>375px viewport without horizontal scrolling</h3><ul><li>Load the landing page at a 375 pixel wide viewport.</li><li>Confirm no horizontal scrollbar appears.</li></ul>`;
+function renderedSections(markup: string) {
+ const document = new JSDOM(`<aside>375px viewport without horizontal scrolling</aside><div role="textbox" aria-label="editable markdown">${markup}</div>`).window.document;
+ return authoredChecklistTextBlocks(Array.from(document.querySelector('[role="textbox"]')!.querySelectorAll("h1,h2,h3,h4,h5,h6,p,li")) as Element[]);
+}
+it("reads actual editor heading context with its following steps rather than isolated list items",()=>{
+ expect(preservesVisibleWebsiteChecklist(renderedSections(sectionMarkup))).toBe(true);
+});
+it.each(["wrong section","missing check","heading only","negated directive","negated keyboard"])("rejects incomplete editor sections: %s",fault=>{
+ let markup=sectionMarkup;
+ if(fault==="wrong section")markup=markup.replace("<h3>375px viewport without horizontal scrolling", "<h3>Archived dimensions</h3><p>The earlier width was 375 pixels.</p><h3>Responsive review").replace("375 pixel wide viewport","wide viewport");
+ if(fault==="missing check")markup=markup.replace(/<h3>WCAG AA text contrast<\/h3><ul>.*?<\/ul>/,"");
+ if(fault==="heading only")markup=markup.replace("<ul><li>Load the landing page at a 375 pixel wide viewport.</li><li>Confirm no horizontal scrollbar appears.</li></ul>","");
+ if(fault==="negated directive")markup=markup.replace("Load the landing page", "Do not test the landing page");
+ if(fault==="negated keyboard")markup=markup.replace("Do not use a mouse or touch input.", "Do not use the keyboard.");
+ expect(preservesVisibleWebsiteChecklist(renderedSections(markup))).toBe(false);
 });

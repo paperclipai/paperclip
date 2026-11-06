@@ -11,12 +11,14 @@ import { checks, observation, project, type InternalObservation } from "./intern
 import { integratorDefinition, groundedStatement, inspectResult, resultHref, observeInternal } from "./integrator-support.js";
 
 export const websiteChecklist = ["Navigate every interactive control using only the keyboard.", "Verify every form field has a visible label.", "Check text contrast meets WCAG AA.", "Test the landing page at a 375 pixel viewport without horizontal scrolling."];
-function websiteChecklistChecks(markdown: string): boolean[] {
-  const instructions = markdown.split(/\n+|(?<=[.!?])\s+/).filter(Boolean);
+function websiteChecklistChecks(markdown: string, section = false): boolean[] {
+  const instructions = section ? [markdown.replace(/\s+/g, " ")] : markdown.split(/\n+|(?<=[.!?])\s+/).filter(Boolean);
   // A numbered check and its indented detail form one instruction. Keep
   // separate checks isolated so an unrelated earlier width cannot ground it.
   const blocks = markdown.split(/\n(?=\s*(?:\d+[.)]|#{1,6})\s)/).map(block => block.replace(/\s+/g, " "));
-  const forbidden = /\b(?:skip|omit|ignore|don't|do not|need not|not required|optional)\b/i;
+  const forbidden = section
+    ? /\b(?:skip|omit|ignore|need not|not required|optional)\b|\b(?:don't|do not|never)\s+(?:navigate|check|verify|test|review|inspect|assess|measure|ensure|use\s+(?:(?:the|a)\s+)?keyboard)\b/i
+    : /\b(?:skip|omit|ignore|don't|do not|need not|not required|optional)\b/i;
   const mobileRequirements = [/\b375\s*(?:px|pixels?)?\b/i, /\b(?:viewport|wide|width)\b/i, /(?:without horizontal (?:scrolling|overflow)|no horizontal (?:scrolling|overflow)|(?:must not|does not|doesn't) (?:scroll|overflow) horizontally|(?:confirm|check|verify)[^.!?]{0,70}whether[^.!?]{0,70}horizontal scrolling)/i];
   const mobileWaiver = (text: string) => {
     const clauses = text.split(/[.!?;\n]+|,\s*(?:but\s+)?(?=(?:don't|do not|never|avoid|no need to)\b)/i);
@@ -48,7 +50,7 @@ export function preservesWebsiteChecklist(markdown: string): boolean {
 /** Rich editor paragraphs/list items are semantic blocks, not Markdown source. */
 export function preservesVisibleWebsiteChecklist(blocks: readonly string[]): boolean {
   if (!Array.isArray(blocks) || !blocks.length || blocks.some(block => typeof block !== "string")) return false;
-  const checks = blocks.map(websiteChecklistChecks);
+  const checks = blocks.map(block => websiteChecklistChecks(block, true));
   let previous = 0;
   for (let requirement = 0; requirement < 4; requirement++) {
     const index = checks.findIndex((row, index) => index >= previous && row[requirement]);
@@ -59,8 +61,15 @@ export function preservesVisibleWebsiteChecklist(blocks: readonly string[]): boo
 }
 /** Serializable Playwright DOM projection; no editor text or Markdown is invented. */
 export function authoredChecklistTextBlocks(nodes: Element[]): string[] {
-  return nodes.filter(node => node.tagName === "LI" ? !node.parentElement?.closest("li") : !node.closest("li"))
-    .map(node => node.textContent ?? "");
+  const blocks: string[] = []; let heading: string | undefined, steps: string[] = [];
+  const flush = () => { if (steps.length) blocks.push([heading, ...steps].filter(Boolean).join("\n")); steps = []; };
+  for (const node of nodes.filter(node => node.tagName === "LI" ? !node.parentElement?.closest("li") : !node.closest("li"))) {
+    const text = node.textContent ?? "";
+    if (/^H[1-6]$/.test(node.tagName)) { flush(); heading = text; }
+    else if (heading !== undefined) { if (text.trim()) steps.push(text); }
+    else if (text.trim()) blocks.push(text);
+  }
+  flush(); return blocks;
 }
 interface SkillsObservation extends InternalObservation {
   skills: CompanySkillDetail[]; versions: Record<string, CompanySkillVersion[]>;
@@ -173,7 +182,7 @@ export async function inspectAuthoredSkill(ctx: ChatCatalogContext, state: Recor
   await expect(ctx.input.page.getByText(skill.name, { exact: true }).first()).toBeVisible({ timeout: remaining() });
   const editor = ctx.input.page.getByRole("textbox", { name: "editable markdown", exact: true });
   await expect(editor).toBeVisible({ timeout: remaining() }); await expect(editor).toBeEditable({ timeout: remaining() });
-  const readBlocks = () => editor.locator("p, li").evaluateAll(authoredChecklistTextBlocks);
+  const readBlocks = () => editor.locator("h1, h2, h3, h4, h5, h6, p, li").evaluateAll(authoredChecklistTextBlocks);
   await expect.poll(async () => preservesVisibleWebsiteChecklist(await readBlocks()), { timeout: remaining() }).toBe(true);
   const body = await readBlocks();
   await ctx.input.page.reload({ waitUntil: "domcontentloaded", timeout: remaining() });
