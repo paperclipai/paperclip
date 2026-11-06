@@ -87,7 +87,7 @@ describe.skipIf(!support.supported)("heartbeat runtime selection boundary", () =
   const coordinators = (id: string) => db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, id));
   const sandbox = { kind: "remote" as const, transport: "sandbox" as const, remoteCwd: "/workspace", reusableLeaseConfigured: false };
 
-  it.each(["verified", "plugin", "wrong_pin", "wrong_account"])("issues a quota capability only for a verified builtin pin: %s", async variant => {
+  it.each(["verified", "plugin", "wrong_pin", "wrong_account"])("does not issue a gated quota capability for %s", async variant => {
     const { input, issue, run, agent } = await fixture();
     input.agent = { ...agent, adapterConfig: { provider: "acpx", acpxAgent: "claude", model: "claude-sonnet-5" } };
     input.nativeRuntimeResolution = resolveHeartbeatNativeRuntimeMode({ persisted: run, enabled: true, runtimeConfig: {},
@@ -109,11 +109,9 @@ describe.skipIf(!support.supported)("heartbeat runtime selection boundary", () =
     input.config.managedAiRuntime = { attribution: { ...binding, connectionId: variant === "wrong_account" ? randomUUID() : connectionId } } as never;
     const selected = await selectHeartbeatRuntime(db, input);
     if (!selected.selected || !selected.nativeExecution) throw new Error("Expected native selection");
-    if (variant === "verified") {
-      expect(selected.nativeExecution).toMatchObject({ schema: "paperclip.native-execution-input.v11",
-        builtinQuotaPoolCapability: { companyId: agent.companyId, agentId: agent.id, runId: run.id, issueId: issue.id, poolId, taskKey: issue.id, memberId } });
-      expect((await read(run.id)).runnerProfileJson?.nativeExecutionInput).toMatchObject({ builtinQuotaPoolCapability: { memberId } });
-    } else expect(selected.nativeExecution).not.toHaveProperty("builtinQuotaPoolCapability");
+    expect(selected.nativeExecution.schema).not.toBe("paperclip.native-execution-input.v11");
+    expect(selected.nativeExecution).not.toHaveProperty("builtinQuotaPoolCapability");
+    expect((await read(run.id)).runnerProfileJson?.nativeExecutionInput).not.toHaveProperty("builtinQuotaPoolCapability");
   });
 
   it("preserves preparation failure and skips runtime selection", async () => {

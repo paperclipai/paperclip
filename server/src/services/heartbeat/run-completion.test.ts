@@ -214,7 +214,7 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
       resultJson: { providerFailure: { schema: "paperclip.provider-failure.v1", provider: "openai", phase: "turn",
         category: "quota_exhausted", message: "quota", retryability: "unknown", retryAt: deadline.toISOString() } }, errorMessage: "quota" };
     await f.completion.completeRun(f.input);
-    expect(await db.select().from(aiConnectionQuotaCooldowns)).toMatchObject([{ companyId: f.run.companyId, connectionId: account.id, retryAt: deadline }]);
+    expect(await db.select().from(aiConnectionQuotaCooldowns)).toMatchObject([{ companyId: f.run.companyId, credentialIdentity: `grant:${grantId}:no-auth`, retryAt: deadline }]);
     const receiptId = `ai-connection-quota-attributed:${f.run.id}`;
     const receipts = () => db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.sourceEventId, receiptId));
     expect(await receipts()).toMatchObject([{ companyId: f.run.companyId, runId: f.run.id, agentId: f.agent.id,

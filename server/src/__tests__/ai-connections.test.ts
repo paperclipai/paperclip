@@ -79,15 +79,19 @@ afterAll(async () => { await database?.cleanup(); vi.unstubAllEnvs(); if (home) 
 
 describe("managed AI connections", () => {
   it("signals replacement work when an AI account reconnects", async () => {
-    const saved = await create("alice", "Wake on reconnect");
+    const isolatedCompanyId = randomUUID(), isolatedAgentId = randomUUID(), owner = `reconnect-${randomUUID()}`;
+    await db.insert(companies).values({ id: isolatedCompanyId, name: "Reconnect", issuePrefix: `R${isolatedCompanyId.slice(0, 7)}` });
+    await db.insert(agents).values({ id: isolatedAgentId, companyId: isolatedCompanyId, name: "Reconnect agent", adapterType: "claude_local" });
+    await db.insert(companyMemberships).values({ companyId: isolatedCompanyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
+    const saved = await service.save(isolatedCompanyId, owner, { provider: "anthropic", method: "api_key", ownership: "personal", name: "Wake on reconnect", apiKey: "fixture", agentIds: [], allAgents: true }, "fixture-reconnect");
     const issueId = randomUUID(), runId = randomUUID(), deadline = new Date(Date.now() + 60_000);
-    await db.insert(issues).values({ id: issueId, companyId, title: "Quota wait", assigneeAgentId: agentId });
-    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, nativeIssueId: issueId, status: "failed" });
-    await db.insert(nativeRunFinalizations).values({ runId, companyId, issueId, phase: "terminal_failure", failureCode: "native_provider_usage_limit", nextAttemptAt: deadline });
+    await db.insert(issues).values({ id: issueId, companyId: isolatedCompanyId, title: "Quota wait", assigneeAgentId: isolatedAgentId });
+    await db.insert(heartbeatRuns).values({ id: runId, companyId: isolatedCompanyId, agentId: isolatedAgentId, nativeIssueId: issueId, status: "failed" });
+    await db.insert(nativeRunFinalizations).values({ runId, companyId: isolatedCompanyId, issueId, phase: "terminal_failure", failureCode: "native_provider_usage_limit", nextAttemptAt: deadline });
     const wake = vi.fn();
     const unsubscribe = subscribeDeliveryWork(db, DELIVERY_QUEUES.executionReplacement, wake);
     try {
-      await service.save(companyId, "alice", { provider: "anthropic", method: "api_key", ownership: "personal", name: "Wake on reconnect", apiKey: "fixture", agentIds: [], allAgents: true, connectionId: saved.connectionId }, "new-fixture");
+      await service.save(isolatedCompanyId, owner, { provider: "anthropic", method: "api_key", ownership: "personal", name: "Wake on reconnect", apiKey: "fixture", agentIds: [], allAgents: true, connectionId: saved.connectionId }, "new-fixture");
       expect(wake).toHaveBeenCalled();
       expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, runId)))[0]?.nextAttemptAt).toBeNull();
       await db.update(nativeRunFinalizations).set({ nextAttemptAt: deadline }).where(eq(nativeRunFinalizations.runId, runId));
@@ -95,7 +99,7 @@ describe("managed AI connections", () => {
       expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, runId)))[0]?.nextAttemptAt).toBeNull();
       await db.update(nativeRunFinalizations).set({ nextAttemptAt: deadline }).where(eq(nativeRunFinalizations.runId, runId));
       const [grant] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, saved.grantId));
-      await secretService(db).rotate(grant!.credentialSecretRefs[0]!.secretId, { value: "generic-rotation" }, { userId: "alice" });
+      await secretService(db).rotate(grant!.credentialSecretRefs[0]!.secretId, { value: "generic-rotation" }, { userId: owner });
       expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, runId)))[0]?.nextAttemptAt).toBeNull();
     } finally { unsubscribe(); }
   });
