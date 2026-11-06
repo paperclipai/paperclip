@@ -194,6 +194,24 @@ describe.skipIf(process.platform === "win32")("local browser subscription login"
     expect(login.code).toBe("ABCD-EFGHJ");
   });
 
+  it("surfaces Claude's rejected-code error without leaking provider output", async () => {
+    const url = "https://claude.com/cai/oauth/authorize?client_id=cid&code=abcdefgh&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&code_challenge_method=S256&redirect_uri=https%3A%2F%2Fplatform.claude.com%2Foauth%2Fcode%2Fcallback&response_type=code&scope=user&state=0123456789abcdef";
+    const home = await fakeCli("claude", [
+      'printf "Use the url below to sign in\n"',
+      `printf '%s\n' '${url}'`,
+      'printf "Paste code here if prompted >\n"',
+      'read -r entered',
+      'printf "OAuth error: That code wasn’t accepted. Sign in again to get a new code.\n"',
+      'sleep 1',
+    ].join("\n"));
+    const login = startLocalBrowserLogin("anthropic", home);
+    await vi.waitFor(() => expect(login.authorizationUrl).toBe(url), { timeout: 5000 });
+    login.submitCode?.("DUMMY-CODE");
+    await vi.waitFor(() => expect(login.outcome).toBe("failure"), { timeout: 5000 });
+    expect(login.error).toContain("Claude rejected this authorization code");
+    expect(JSON.stringify(login)).not.toContain("DUMMY-CODE");
+  });
+
   it("accepts a Claude browser code and stores its token only in the attempt home", async () => {
     const url = "https://claude.com/cai/oauth/authorize?client_id=cid&code=abcdefgh&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&code_challenge_method=S256&redirect_uri=https%3A%2F%2Fplatform.claude.com%2Foauth%2Fcode%2Fcallback&response_type=code&scope=user&state=0123456789abcdef";
     const home = await fakeCli("claude", [
