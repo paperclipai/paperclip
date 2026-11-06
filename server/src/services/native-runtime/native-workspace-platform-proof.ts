@@ -62,6 +62,16 @@ export type WorkspaceWorkerStopCheck =
   | { status: "pending" }
   | { status: "unsupported" };
 
+/** Configuration support is an observation, never proof that a worker stopped. */
+export function workspaceWorkerStopProofSupported(worker: WorkspaceWorker | undefined, env: NodeJS.ProcessEnv = process.env): boolean {
+  const context = getCloudStackContext(env);
+  if (!context?.stackId || !context.cloudOrigin || !env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN?.trim() || !validWorker(worker)) return false;
+  try {
+    const origin = new URL(context.cloudOrigin);
+    return origin.protocol === "https:" && !origin.username && !origin.password;
+  } catch { return false; }
+}
+
 
 export async function requestWorkspaceWorkerStopProof(binding: WorkspaceStopBinding, options: {
   env?: NodeJS.ProcessEnv; fetchImpl?: typeof fetch; now?: Date;
@@ -69,7 +79,7 @@ export async function requestWorkspaceWorkerStopProof(binding: WorkspaceStopBind
   const env = options.env ?? process.env;
   const context = getCloudStackContext(env);
   const token = env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN?.trim();
-  if (!context?.stackId || !context.cloudOrigin || !token || !validWorker(binding.worker)) return { status: "unsupported" };
+  if (!workspaceWorkerStopProofSupported(binding.worker, env) || !context?.cloudOrigin || !token) return { status: "unsupported" };
   let origin: URL;
   try { origin = new URL(context.cloudOrigin); } catch { return { status: "unsupported" }; }
   if (origin.protocol !== "https:" || origin.username || origin.password) return { status: "unsupported" };
