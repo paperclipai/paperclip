@@ -10,6 +10,12 @@ The built-in TypeScript implementation constructs the provider descriptor in
 By default, the SDK prepares local files. It stages remote files through the
 existing execution driver.
 
+Managed Codex homes disable Codex apps and plugins before provider startup.
+An OpenAI subscription can otherwise restore account plugins and start their
+MCP servers even in a fresh home. Assigned tools use the explicit Paperclip MCP
+gateway. Recovery writes the same settings. Preconfigured homes keep their
+operator-owned configuration.
+
 ## Environment-owned preparation
 
 An execution driver can supply `prepareLaunch`.

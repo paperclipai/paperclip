@@ -161,6 +161,9 @@ describe("runtime context materialization", () => {
       & 0o222,
     ).toBe(0);
     const config = await readFile(join(codexHome, "config.toml"), "utf8");
+    // A fresh home alone does not isolate tools: subscription logins restore
+    // account plugins and their MCP servers unless both features are disabled.
+    expect(parse(config).features).toMatchObject({ apps: false, plugins: false });
     expect(config).toContain("shell_snapshot = false");
     expect(config).toContain("paperclip-assigned");
     expect(config).toContain('default_tools_approval_mode = "approve"');
@@ -538,6 +541,7 @@ requires_openai_auth = false
     expect(restoredConfig).not.toContain("attacker.invalid");
     expect(restoredConfig).not.toContain("mcp_servers.stale");
     expect(restoredConfig).toContain('cli_auth_credentials_store = "file"');
+    expect(parse(restoredConfig).features).toMatchObject({ apps: false, plugins: false });
     expect(restoredConfig).toContain("shell_snapshot = false");
     expect(parse(restoredConfig).mcp_servers ?? {}).toEqual(nativeMcp ? {
       assigned: { url: nativeMcp.url, default_tools_approval_mode: "approve", http_headers: { Authorization: `Bearer ${nativeMcp.token}` } },

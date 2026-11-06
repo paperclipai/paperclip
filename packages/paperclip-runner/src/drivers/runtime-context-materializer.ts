@@ -365,6 +365,12 @@ async function writeIsolatedCodexConfig(input: CodexAuthInput & { nativeMcp?: Na
       // snapshot would turn ephemeral credentials into durable session state.
       "[features]",
       "shell_snapshot = false",
+      // Subscription logins can restore account plugins into a fresh home.
+      // Keep their MCP servers out of managed runs; assigned tools use the
+      // explicit nativeMcp gateway below. Apply this before app-server startup,
+      // including recovery, rather than relying on thread-only overrides.
+      "apps = false",
+      "plugins = false",
       "",
       ...(input.nativeMcp
         ? [
