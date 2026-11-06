@@ -1614,6 +1614,7 @@ export async function finalizeNativeRun(input: {
       monitorDelivery,
       monitorWaitAt: assessment.continuation?.kind === "monitor" ? monitorWaitAt : null,
       preservedMonitorWait,
+      supersededMonitorWait,
     });
     await input.db
       .update(nativeRunFinalizations)

@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { agents, agentWakeupRequests, companies, completionContracts, createDb, applyPendingMigrations, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRuns,
-  issueComments, issueRecoveryActions, issues, nativeRunFinalizations, nativeRunResults, statusDecisions, subscribeDatabaseWork } from "@paperclipai/db";
+  issueComments, issueRecoveryActions, issues, nativeRunFinalizations, nativeRunResults, statusDecisions, subscribeDatabaseWork, workspaceOperations, workAssessments } from "@paperclipai/db";
 import { PROVIDER_QUOTA_MONITOR_SERVICE_NAME } from "@paperclipai/shared";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import { resolveExternalTestDatabaseUrl } from "../../__tests__/helpers/external-test-database.js";
@@ -13,6 +13,8 @@ import * as monitorDelivery from "./native-monitor-delivery.js";
 import { DELIVERY_QUEUES } from "../delivery-work-notifications.js";
 import { heartbeatService } from "../heartbeat.js";
 import { hasPendingRunCleanup } from "../execution-blocker.js";
+import { reconcileNativeFinalizations } from "./native-finalization-reconciler.js";
+import { issueRecoveryActionService } from "../issue-recovery-actions.js";
 
 const external = resolveExternalTestDatabaseUrl("PAPERCLIP_PRESERVED_MONITOR_TEST_DATABASE_URL");
 const support = external ? { supported: true } : await getEmbeddedPostgresTestSupport();
@@ -221,9 +223,9 @@ describe.skipIf(!support.supported)("released native monitor results", () => {
     expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId))).toEqual([]);
   });
 
-  async function newerUserRequest(state: "queued" | "consumed") {
-    const f = await fixture();
-    await db.update(issues).set({ status: "blocked", statusVersion: 5 }).where(eq(issues.id, f.issueId));
+  async function newerUserRequest(state: "queued" | "consumed", existing?: Awaited<ReturnType<typeof fixture>>) {
+    const f = existing ?? await fixture();
+    if (!existing) await db.update(issues).set({ status: "blocked", statusVersion: 5 }).where(eq(issues.id, f.issueId));
     const [comment] = await db.insert(issueComments).values({ companyId: f.companyId, issueId: f.issueId,
       authorType: "user", authorUserId: "operator", body: "Continue with the new objective." }).returning();
     const successorId = state === "consumed" ? randomUUID() : null;
@@ -242,7 +244,7 @@ describe.skipIf(!support.supported)("released native monitor results", () => {
         _paperclipWakeContext: { issueId: f.issueId, wakeCommentId: comment!.id, wakeCommentIds: [comment!.id] } },
     }).returning();
     if (successorId) await db.update(heartbeatRuns).set({ wakeupRequestId: wake!.id }).where(eq(heartbeatRuns.id, successorId));
-    await db.update(nativeRunFinalizations).set({ attempt: 1 }).where(eq(nativeRunFinalizations.runId, f.runId));
+    if (!existing) await db.update(nativeRunFinalizations).set({ attempt: 1 }).where(eq(nativeRunFinalizations.runId, f.runId));
     return { f, comment: comment!, wake: wake!, successorId };
   }
 
@@ -282,6 +284,52 @@ describe.skipIf(!support.supported)("released native monitor results", () => {
     await f.finalize();
     expect(await db.select().from(statusDecisions).where(eq(statusDecisions.runId, f.runId))).toEqual(decisions);
     expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId)))[0].attempt).toBe(2);
+  });
+
+  it.each(["queued", "consumed"] as const)("reconstructs and settles a historical monitor error through the real finalization reconciler (%s)", async state => {
+    const f = await fixture();
+    await db.update(issues).set({ status: "blocked", statusVersion: 5 }).where(eq(issues.id, f.issueId));
+    await f.finalize();
+    const [prior] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId));
+    expect(prior).toMatchObject({ phase: "retryable_failure", failureCode: "monitor_wait_authority_lost" });
+    const oldAssessment = await db.select().from(workAssessments).where(eq(workAssessments.id, prior.assessmentId!));
+    const oldDecision = await db.select().from(statusDecisions).where(eq(statusDecisions.id, prior.decisionId!));
+    expect(oldAssessment).toHaveLength(1);
+    expect(oldDecision).toHaveLength(1);
+    const { comment, wake, successorId } = await newerUserRequest(state, f);
+    let hold: typeof issueRecoveryActions.$inferSelect | undefined;
+    if (successorId) {
+      const action = await issueRecoveryActionService(db).upsertSourceScoped({ companyId: f.companyId, sourceIssueId: f.issueId,
+        kind: "active_run_watchdog", cause: "native_continuation_requires_reconciliation", fingerprint: randomUUID(),
+        ownerType: "board", nextAction: "Recover the current user request.", evidence: { runId: successorId }, supersedeOnIdentityChange: true });
+      [hold] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, action.id));
+    }
+    await db.insert(workspaceOperations).values({ companyId: f.companyId, issueId: f.issueId, heartbeatRunId: f.runId,
+      phase: "workspace_finalize", status: "succeeded", finishedAt: new Date() });
+    await db.update(nativeRunFinalizations).set({ nextAttemptAt: null, leaseOwner: null, leaseExpiresAt: null,
+      controllerBootId: randomUUID() }).where(eq(nativeRunFinalizations.runId, f.runId));
+    const before = await f.readIssue();
+    const results = await reconcileNativeFinalizations(db, [f.runId]);
+    expect(results).toContainEqual(expect.objectContaining({ runId: f.runId, phase: "committed" }));
+    const [settled] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId));
+    expect(settled).toMatchObject({ phase: "committed", failureCode: null, nextAttemptAt: null });
+    expect(settled.assessmentId).not.toBe(prior.assessmentId);
+    const [assessment] = await db.select().from(workAssessments).where(eq(workAssessments.id, settled.assessmentId!));
+    expect(assessment).toMatchObject({ supersedesAssessmentId: prior.assessmentId, resultId: f.resultId,
+      assessmentJson: { supersededMonitorWait: { agentId: f.agentId, resultId: f.resultId,
+        commentId: comment.id, wakeId: wake.id, successorRunId: successorId } } });
+    expect(await db.select().from(workAssessments).where(eq(workAssessments.id, prior.assessmentId!))).toEqual(oldAssessment);
+    expect(await db.select().from(statusDecisions).where(eq(statusDecisions.id, prior.decisionId!))).toEqual(oldDecision);
+    expect(await hasPendingRunCleanup(db, f.companyId, f.runId)).toBe(false);
+    expect(await f.readIssue()).toMatchObject({ status: before.status, statusVersion: before.statusVersion,
+      executionPolicy: before.executionPolicy, monitorNextCheckAt: before.monitorNextCheckAt,
+      executionRunId: before.executionRunId, checkoutRunId: before.checkoutRunId });
+    expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId))).toEqual([wake]);
+    expect(await db.select().from(issueComments).where(eq(issueComments.id, comment.id))).toEqual([comment]);
+    if (hold) expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, hold.id))).toEqual([hold]);
+    const decisions = await db.select().from(statusDecisions).where(eq(statusDecisions.runId, f.runId));
+    expect(decisions.at(-1)?.toStatus).toBe(before.status);
+    expect((await db.select().from(nativeRunResults).where(eq(nativeRunResults.id, f.resultId)))[0].resultJson).toEqual(f.result);
   });
 
   it.each(["missing_wake", "actor", "foreign_task", "foreign_company", "untrusted_comment", "deleted_comment", "edited_comment",

@@ -780,7 +780,9 @@ wake can supersede that old saved wait.
 The finalizer requires the canonical unedited user comment, the matching user wake,
 and the accepted old result with its server-issued monitor receipt. An admitted
 successor must retain the exact task, comment revision, and source-run lineage.
-The finalizer rechecks this proof under the task lock. It records a passive
+The finalizer rechecks this proof under the task lock. Assessment fingerprints
+include the exact superseding request proof, so a prior failed assessment remains
+immutable when the finalization decision changes. It records a passive
 settlement and preserves the current task status, assignment, checkout, schedule,
 and newer request. It does not re-arm the old monitor, publish its old waiting
 summary, or start another provider turn. Missing, cancelled, foreign, or conflicting
