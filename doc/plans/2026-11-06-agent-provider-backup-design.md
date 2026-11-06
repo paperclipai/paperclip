@@ -9,6 +9,8 @@ An operator can configure an ordered pool of execution accounts for an agent, ad
 - Automatic failover on a confirmed provider-quota failure: selected because work can continue without operator intervention.
 - Operator-triggered switching: simpler to inspect but leaves work idle until a person acts.
 
+The repository already contains an experimental AI connection router and reusable account pools. Extend and integrate that mechanism where it meets these requirements rather than introducing a competing pool. Its present task pinning, plugin routing, cursor policy and in-memory usage cache do not themselves provide ordered quota failover or durable account cooldowns; preserving existing allocations and authorization is mandatory when adding that behavior.
+
 ## Configuration and visibility
 
 Provide an optional ordered pool in agent settings, with an add control and independently selected provider, model, execution settings and credential reference for each member using existing secure configuration mechanisms. Members can be reordered and removed. Validate company ownership and actor permissions. Make providers and potential cost visible when configuring the pool; never copy credentials into logs or handoffs. Display the actual provider and reason for failover in run history and activity records.
