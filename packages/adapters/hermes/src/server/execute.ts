@@ -17,6 +17,8 @@
  *   --yolo             bypass dangerous-command approval prompts (agents have no TTY)
  *   --source           session source tag for filtering
  */
+import { findLedgerForSession, readRunUsageDelta, readSessionUsage } from "./ledger-usage.js";
+import type { UsageTotals } from "./ledger-usage.js";
 
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -279,9 +281,67 @@ function cleanResponse(raw: string): string {
 // Output parsing
 // ---------------------------------------------------------------------------
 
-function parseHermesOutput(stdout: string, stderr: string): ParsedOutput {
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function readString(value: unknown): string | undefined {
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+interface StreamJsonResult {
+  sessionId?: string;
+  response?: string;
+  errorMessage?: string;
+}
+
+/**
+ * Read the final `result` event from Hermes `--format stream-json` output.
+ *
+ * Each line is one JSON event. The last `result` event describes the finished
+ * turn: response text, session id and the tokens of the final API call.
+ *
+ * Its `tokens.input` is the total context of that call, cache included — on a
+ * measured run it equalled the ledger's fresh input plus its cached input
+ * exactly. It is therefore not a fresh-input count and is not used for usage;
+ * the ledger read in `ledger-usage.ts` supplies the numbers instead.
+ */
+function parseStreamJsonResult(stdout: string): StreamJsonResult | null {
+  if (typeof stdout !== "string" || !stdout.includes('"type"')) return null;
+  const lines = stdout.split("\n");
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    const line = lines[index]?.trim();
+    if (!line || !line.startsWith("{") || !line.includes('"result"')) continue;
+    let event: unknown;
+    try {
+      event = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    const record = asRecord(event);
+    if (!record || record.type !== "result") continue;
+    return {
+      sessionId: readString(record.session_id),
+      response: readString(record.text),
+      errorMessage: readString(record.error),
+    };
+  }
+  return null;
+}
+
+export function parseHermesOutput(stdout: string, stderr: string): ParsedOutput {
   const combined = stdout + "\n" + stderr;
   const result: ParsedOutput = {};
+
+  const streamed = parseStreamJsonResult(stdout);
+  if (streamed) {
+    if (streamed.sessionId) result.sessionId = streamed.sessionId;
+    if (streamed.response) result.response = cleanResponse(streamed.response);
+    if (streamed.errorMessage) result.errorMessage = streamed.errorMessage;
+    return result;
+  }
 
   // In quiet mode, Hermes outputs:
   //   <response text>
@@ -449,6 +509,10 @@ export async function execute(
     }
   }
 
+  // A resumed session accumulates ledger rows, so the pre-run total is the
+  // baseline for the delta. A fresh run has no prior rows and needs none.
+  const usageBefore = prevSessionId ? readSessionUsage(prevSessionId, findLedgerForSession(prevSessionId)) : null;
+
   const sessionId = persistSession ? prevSessionId : undefined;
   const prompt = buildPrompt(ctx, promptConfig, { resumedSession: Boolean(sessionId) });
 
@@ -493,6 +557,13 @@ export async function execute(
 
   // Failed resumes remain failures. Do not infer a safe restart from CLI text.
   if (sessionId) args.push("--resume", sessionId);
+
+  // Hermes can report machine-readable events; the final `result` event carries
+  // the response text and the session id. Its token fields fold the cache into
+  // the input count, so usage comes from the ledger read below, not from here.
+  // Verbose mode keeps the human log, and the two output modes are exclusive.
+  if (cfgBoolean(config.verbose) !== true) args.push("--format", "stream-json");
+
   if (extraArgs?.length) args.push(...extraArgs);
 
   // ── Build environment ──────────────────────────────────────────────────
@@ -615,6 +686,36 @@ export async function execute(
     executionResult.errorMessage = parsed.errorMessage;
   } else if (!result.timedOut && typeof result.exitCode === "number" && result.exitCode !== 0) {
     executionResult.errorMessage = `Hermes exited with code ${result.exitCode}`;
+  }
+
+  // Tokens come from Hermes' own ledger: stream-json's `tokens.input` folds the
+  // cache into the input count. When the session id or the ledger is missing we
+  // report no usage rather than a wrong or zeroed number.
+  if (parsed.sessionId) {
+    // Hermes writes its ledger rows shortly after the child exits, so the first
+    // read can miss them. Poll until the final turn row appears: it carries the
+    // run's token volume, while small rows are auxiliary calls such as title
+    // generation. The run has already finished, so waiting costs time, not
+    // tokens.
+    const ledgerPath = findLedgerForSession(parsed.sessionId);
+    let runUsage: UsageTotals | null = null;
+    for (const delayMs of [0, 1000, 2000, 3000, 5000, 8000, 10000, 10000]) {
+      if (delayMs > 0) await new Promise((resolve) => setTimeout(resolve, delayMs));
+      if (!ledgerPath) break;
+      runUsage = readRunUsageDelta(parsed.sessionId, ledgerPath, usageBefore);
+      if (runUsage?.cachedInputTokens) break;
+    }
+    await ctx.onLog(
+      "stdout",
+      `[hermes] Ledger ${ledgerPath ?? "not found"}: ${runUsage ? `input ${runUsage.inputTokens}, cached ${runUsage.cachedInputTokens}, output ${runUsage.outputTokens}` : "unavailable"}\n`,
+    );
+    if (runUsage && (runUsage.inputTokens || runUsage.cachedInputTokens || runUsage.outputTokens)) {
+      parsed.usage = {
+        inputTokens: runUsage.inputTokens,
+        outputTokens: runUsage.outputTokens,
+        cachedInputTokens: runUsage.cachedInputTokens,
+      };
+    }
   }
 
   if (parsed.usage) {
