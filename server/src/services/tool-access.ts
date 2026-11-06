@@ -3153,6 +3153,10 @@ export function toolAccessService(
     connectionId: string,
     input: FinishToolApp,
     actor?: ActorInfo,
+    options?: {
+      /** Rejects an agent install the caller may not make. Called for each agent this save installs. */
+      authorizeAgentInstall?: (agentId: string) => Promise<void>;
+    },
   ): Promise<FinishToolAppResult> {
     await actor?.managementContext?.reauthorize();
     const connection = await getConnectionRow(connectionId, companyId);
@@ -3462,9 +3466,18 @@ export function toolAccessService(
         const installedFor = (targetType: string, targetId: string) => existingInstalls.some((install) =>
           (install.targetType === "company" && install.targetId === companyId)
           || (install.targetType === targetType && install.targetId === targetId));
+        // A company binding already permitted every agent, so narrowing from
+        // it keeps each agent's install choice.
+        const previouslyPermitted = (targetType: string, targetId: string) => existingBindings.some((prior) =>
+          (prior.targetType === "company" && prior.targetId === companyId)
+          || (prior.targetType === targetType && prior.targetId === targetId));
         const added = bindingInputs.flatMap(({ targetType, targetId }) => (targetType === "company" || targetType === "agent")
-          && !existingBindings.some((prior) => prior.targetType === targetType && prior.targetId === targetId)
+          && !previouslyPermitted(targetType, targetId)
           && !installedFor(targetType, targetId) ? [{ targetType, targetId }] : []);
+        // Installing on an agent changes that agent's configuration, as on
+        // the installs endpoint.
+        for (const { targetType, targetId } of added)
+          if (targetType === "agent") await options?.authorizeAgentInstall?.(targetId);
         if (added.length) {
           await tx.insert(toolConnectionInstalls).values(added.map((binding) => ({
             companyId, connectionId: connection.id, targetType: binding.targetType, targetId: binding.targetId,

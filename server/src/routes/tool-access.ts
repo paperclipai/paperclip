@@ -1519,7 +1519,16 @@ function connectorEnrollmentPrincipal(req: Request): string {
     const companyId = req.params.companyId as string;
     const existing = await svc.getConnection(req.params.connectionId as string, companyId);
     await assertToolConnectionConfigureAccess(req, existing);
-    const result = await svc.finishGalleryAppConnection(companyId, existing.id, req.body, connectionRequestActor(req));
+    const result = await svc.finishGalleryAppConnection(companyId, existing.id, req.body, connectionRequestActor(req), {
+      authorizeAgentInstall: async (agentId) => {
+        const decision = await access.decide({
+          actor: req.actor,
+          action: "agent_config:update",
+          resource: { type: "agent", companyId, agentId },
+        });
+        if (!decision.allowed) throw forbidden(`You cannot edit agent ${agentId}, so you cannot install this connection on it`);
+      },
+    });
     await logActivity(db, {
       companyId,
       ...connectionRequestActor(req),

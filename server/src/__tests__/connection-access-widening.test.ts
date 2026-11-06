@@ -1,11 +1,15 @@
 import { randomUUID } from "node:crypto";
+import express from "express";
+import request from "supertest";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { and, eq } from "drizzle-orm";
-import { agents, createDb, toolCatalogEntries, toolConnectionInstalls, toolConnections } from "@paperclipai/db";
+import { agents, companyMemberships, createDb, toolCatalogEntries, toolConnectionInstalls, toolConnections, toolProfileBindings, toolProfiles } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { githubCredentialsFixture } from "./helpers/github-credentials-fixture.js";
 import { toolAccessService } from "../services/tool-access.js";
 import { resolveManagedGitHubIdentitySelection } from "../services/git-credentials.js";
+import { toolAccessRoutes } from "../routes/tool-access.js";
+import { errorHandler } from "../middleware/index.js";
 
 const vault = vi.hoisted(() => ({
   resolveUserSecretValue: vi.fn(async () => ({ value: "test-token" })),
@@ -51,11 +55,17 @@ const support = await getEmbeddedPostgresTestSupport();
       name: "get_me", toolName: "get_me", versionHash: "fixture", riskLevel: "read", isReadOnly: true,
     }).returning();
     const service = toolAccessService(db);
-    const finish = (access: "all_agents" | { agentIds: string[] }) => service.finishGalleryAppConnection(input.companyId, selected.connectionId, {
-      enabledCatalogEntryIds: [tool.id], askFirstCatalogEntryIds: [], access,
-    }, board);
+    const finish = (access: "all_agents" | { agentIds: string[] }, authorizeAgentInstall?: (agentId: string) => Promise<void>) =>
+      service.finishGalleryAppConnection(input.companyId, selected.connectionId, {
+        enabledCatalogEntryIds: [tool.id], askFirstCatalogEntryIds: [], access,
+      }, board, { authorizeAgentInstall });
     await finish({ agentIds: [input.agentId] });
-    return { input, selected, service, finish };
+    return { input, selected, service, finish, tool };
+  }
+
+  async function installKeys(connectionId: string) {
+    return (await db.select().from(toolConnectionInstalls).where(eq(toolConnectionInstalls.connectionId, connectionId)))
+      .map(install => `${install.targetType}:${install.targetId}`).sort();
   }
 
   async function githubFor(companyId: string, agentId: string) {
@@ -101,5 +111,49 @@ const support = await getEmbeddedPostgresTestSupport();
     await finish({ agentIds: [input.agentId] });
     const after = await db.select().from(toolConnectionInstalls).where(eq(toolConnectionInstalls.connectionId, selected.connectionId));
     expect(after.map(install => install.id)).toEqual(before.map(install => install.id));
+  });
+
+  it("keeps agents uninstalled when access narrows from any agent to picked agents", async () => {
+    const { input, selected, service, finish } = await connectFromTaskChat();
+    const frontend = await hire(input.companyId, "Frontend Engineer");
+    await finish("all_agents");
+    // The operator removes the company install but keeps company-wide access.
+    await service.putConnectionInstalls(selected.connectionId, { installs: [{ targetType: "agent", targetId: input.agentId }] }, board);
+    await finish({ agentIds: [input.agentId, frontend] });
+    expect(await installKeys(selected.connectionId)).toEqual([`agent:${input.agentId}`]);
+  });
+
+  it("rejects and rolls back an agent install the caller may not make", async () => {
+    const { input, selected, finish } = await connectFromTaskChat();
+    const frontend = await hire(input.companyId, "Frontend Engineer");
+    const authorizeAgentInstall = vi.fn(async (agentId: string) => { throw new Error(`denied ${agentId}`); });
+    await expect(finish({ agentIds: [input.agentId, frontend] }, authorizeAgentInstall)).rejects.toThrow(`denied ${frontend}`);
+    expect(authorizeAgentInstall).toHaveBeenCalledTimes(1);
+    expect(await installKeys(selected.connectionId)).toEqual([`agent:${input.agentId}`]);
+    const [profile] = await db.select().from(toolProfiles).where(eq(toolProfiles.profileKey, `app:${selected.connectionId}`));
+    const bindings = await db.select().from(toolProfileBindings).where(eq(toolProfileBindings.profileId, profile.id));
+    expect(bindings.map(binding => binding.targetId)).toEqual([input.agentId]);
+  });
+
+  it("refuses a connection creator who cannot configure the newly picked agent", async () => {
+    const { input, selected, tool } = await connectFromTaskChat();
+    const frontend = await hire(input.companyId, "Frontend Engineer");
+    await db.update(toolConnections).set({ createdByUserId: "creator" }).where(eq(toolConnections.id, selected.connectionId));
+    await db.insert(companyMemberships).values({ companyId: input.companyId, principalType: "user", principalId: "creator", status: "active", membershipRole: "operator" });
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      req.actor = { type: "board", userId: "creator", userName: "Creator", userEmail: null, isInstanceAdmin: false, source: "session",
+        companyIds: [input.companyId], memberships: [{ companyId: input.companyId, membershipRole: "operator", status: "active" }] };
+      next();
+    });
+    app.use("/api", toolAccessRoutes(db));
+    app.use(errorHandler);
+    const response = await request(app).post(`/api/companies/${input.companyId}/tools/apps/${selected.connectionId}/finish`)
+      .send({ enabledCatalogEntryIds: [tool.id], askFirstCatalogEntryIds: [], access: { agentIds: [input.agentId, frontend] } });
+    expect(response.status, JSON.stringify(response.body)).toBe(403);
+    expect(response.body.error).toContain("so you cannot install this connection on it");
+    expect(await installKeys(selected.connectionId)).toEqual([`agent:${input.agentId}`]);
+    expect(await githubFor(input.companyId, frontend)).toEqual({ configured: false });
   });
 });
