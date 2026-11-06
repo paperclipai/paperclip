@@ -778,7 +778,43 @@ type PaperclipWakeRecovery = {
 export type PaperclipExternalChatProvider =
   "slack" | "github" | "discord" | "microsoft-teams" | "telegram" | "imessage-photon" | "speko";
 
+type PaperclipWakeAddressedInteraction = {
+  id: string;
+  kind: string;
+  prompt: string | null;
+  promptTruncated: boolean;
+  readPath: string;
+  answerPaths: string[];
+};
+
+function normalizePaperclipWakeAddressedInteraction(
+  value: unknown,
+): PaperclipWakeAddressedInteraction | null {
+  const interaction = parseObject(value);
+  const id = asString(interaction.id, "").trim();
+  const kind = asString(interaction.kind, "").trim();
+  const readPath = asString(interaction.readPath, "").trim();
+  if (!id || !kind || !/^\/api\/issues\/[^/\s]+\/interactions$/.test(readPath)) return null;
+  const answerPaths = Array.isArray(interaction.answerPaths)
+    ? interaction.answerPaths.filter(
+        (path): path is string =>
+          typeof path === "string" && path.startsWith(`${readPath}/${id}/`) && !/\s/.test(path),
+      )
+    : [];
+  if (answerPaths.length === 0) return null;
+  const prompt = asString(interaction.prompt, "").trim();
+  return {
+    id,
+    kind,
+    prompt: prompt || null,
+    promptTruncated: asBoolean(interaction.promptTruncated, false),
+    readPath,
+    answerPaths,
+  };
+}
+
 type PaperclipWakePayload = {
+  addressedInteraction: PaperclipWakeAddressedInteraction | null;
   githubReviewConfigurations: Array<{ key: string; instructions: string }>;
   executionContinuation: ExecutionContinuationEnvelope | null;
   reason: string | null;
@@ -1846,6 +1882,7 @@ export function normalizePaperclipWakePayload(
             ? [{ key: config.key, instructions: config.instructions }] : [];
         }) : [],
     executionContinuation: parseObject(payload.executionContinuation).version === 1 ? payload.executionContinuation as ExecutionContinuationEnvelope : null,
+    addressedInteraction: normalizePaperclipWakeAddressedInteraction(payload.addressedInteraction),
     recovery,
     issue,
     checkedOutByHarness: asBoolean(payload.checkedOutByHarness, false),
@@ -2461,6 +2498,24 @@ function renderPaperclipWakePromptBody(
         ]
       : []),
   ];
+  // A pending question on another agent's issue: answer it, never take the task.
+  const addressedInteraction = externalChatContract ? null : normalized.addressedInteraction;
+  const addressedInteractionLines = addressedInteraction
+    ? [
+        "## Question addressed to you",
+        "",
+        "You were woken to answer a pending question card on this issue. Another agent owns the issue and waits for your answer.",
+        "Answering the card is the whole job for this wake. Do not check out the issue, change its status, post progress comments, or continue its task.",
+        `- card: ${addressedInteraction.id} (${addressedInteraction.kind})`,
+        ...(addressedInteraction.prompt
+          ? [`- question: ${addressedInteraction.prompt}${addressedInteraction.promptTruncated ? " [truncated]" : ""}`]
+          : []),
+        `- read the full card: GET ${addressedInteraction.readPath}`,
+        `- answer with: ${addressedInteraction.answerPaths.map((path) => `POST ${path}`).join(" or ")}`,
+        "Paperclip wakes the issue owner when the card is resolved. End the run after you answer.",
+        "",
+      ]
+    : [];
   const externalInteractionContinuationLines =
     !externalChatQuestionResponseTurn &&
     normalized.externalInteractionContinuation &&
@@ -2482,7 +2537,9 @@ function renderPaperclipWakePromptBody(
         "",
         "You are resuming an existing Paperclip session.",
         "This heartbeat is scoped to the issue below. Do not switch to another issue until you have handled this wake.",
-        "Focus on the new wake delta below and continue the current task without restating the full heartbeat boilerplate.",
+        addressedInteraction
+          ? "Focus on the question card addressed to you below. This issue is not your assignment."
+          : "Focus on the new wake delta below and continue the current task without restating the full heartbeat boilerplate.",
         ...(externalChatContract
           ? ["Use the supplied task and wake context before considering tools."]
           : [
@@ -2490,13 +2547,16 @@ function renderPaperclipWakePromptBody(
             ]),
         "",
         ...externalInteractionContinuationLines,
+        ...addressedInteractionLines,
         ...wakeContractLines,
         ...wakeSummaryLines,
       ]
     : [
         "## Paperclip Wake Payload",
         "",
-        "Use this wake to continue the task, applying new user direction and preserving its approval gates.",
+        addressedInteraction
+          ? "Use this wake only to answer the question card addressed to you below. This issue is not your assignment."
+          : "Use this wake to continue the task, applying new user direction and preserving its approval gates.",
         "This heartbeat is scoped to the issue below. Do not switch to another issue until you have handled this wake.",
         ...(hasWakeCommentBatch
           ? externalChatContract
@@ -2520,6 +2580,7 @@ function renderPaperclipWakePromptBody(
           : []),
         "",
         ...externalInteractionContinuationLines,
+        ...addressedInteractionLines,
         ...wakeContractLines,
         ...wakeSummaryLines,
       ];

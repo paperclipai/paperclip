@@ -63,6 +63,51 @@ describe("heartbeat task markdown rendering", () => {
     expect(buildPaperclipTaskMarkdown({ issue, nativeRunner: false, coordinatorWorkspace: true }))
       .not.toContain("Coordinator task proposals:");
   });
+  it("does not present another agent's issue as the addressee's assignment", () => {
+    const issue = { id: "issue-1", identifier: "PAP-18", title: "Build the core", description: "Ship it." };
+    const owner = buildPaperclipTaskMarkdown({ issue });
+    expect(owner?.endsWith("Use this task context as the current assignment.")).toBe(true);
+
+    const addressee = buildPaperclipTaskMarkdown({ issue, addressedInteraction: { id: "card-1" } });
+    expect(addressee).not.toContain("Use this task context as the current assignment.");
+    expect(addressee?.endsWith(
+      'This task belongs to another agent. Use this context only to answer the question card "card-1" addressed to you; it is not your assignment.',
+    )).toBe(true);
+  });
+
+  it.each([
+    { name: "planning mode with a provisional title", issue: { workMode: "planning", titleNeedsGeneration: true } },
+    { name: "an accepted plan", issue: { workMode: "planning" }, extra: {
+      interaction: { kind: "request_confirmation", status: "accepted" },
+      acceptedPlan: { documentId: "doc-1", revisionId: "rev-1", revisionNumber: 2 } } },
+    { name: "a rejected plan", issue: { workMode: "planning" }, extra: { planReview: { status: "rejected", reason: "Too broad." } } },
+    { name: "ask mode", issue: { workMode: "ask" } },
+    { name: "skill test mode", issue: { workMode: "skill_test" } },
+    { name: "a chat conversation", issue: { conversationAgentId: "agent-owner" } },
+    { name: "a native runner with a required review", issue: { executionPolicy: { qualityReview: { required: true } } },
+      extra: { nativeRunner: true, coordinatorWorkspace: true } },
+  ])("gives an addressee no owner-work directives for $name", ({ issue: overrides, extra }) => {
+    const issue = { id: "issue-1", identifier: "PAP-18", title: "Build the core", description: "Ship it.", ...overrides };
+    const taskPlan = { documentId: "doc-1", revisionId: "rev-1", revisionNumber: 2, body: "1. Build. 2. Test." };
+    const owner = buildPaperclipTaskMarkdown({ issue, taskPlan, ...extra });
+    const addressee = buildPaperclipTaskMarkdown({ issue, taskPlan, ...extra, addressedInteraction: { id: "card-1" } })!;
+
+    const ownerWork = [
+      "Task question guidance:", "Task clarification directive:", "Requested quality review:", "Task title directive:",
+      "Chat mode directive:", "Ask mode directive:", "Planning mode directive:", "Skill test mode directive:",
+      "Accepted plan directive:", "Rejected plan review directive:", "- Approved plan:", "Use this plan as assignment context",
+    ];
+    for (const directive of ownerWork) expect(addressee, directive).not.toContain(directive);
+    expect(ownerWork.some((directive) => owner?.includes(directive))).toBe(true);
+    expect(addressee).toContain("Addressed question directive:");
+    expect(addressee).toContain('answer the question card "card-1"');
+    expect(addressee).toContain('- Issue: "PAP-18"');
+    if (!overrides.conversationAgentId) {
+      expect(addressee).toContain("Ship it.");
+      expect(addressee).toContain("Reference only: this plan belongs to the task owner.");
+    }
+  });
+
   it("returns null without a task or a nonempty wake comment", () => {
     expect(buildPaperclipTaskMarkdown({ issue: null })).toBeNull();
     expect(buildPaperclipTaskMarkdown({
