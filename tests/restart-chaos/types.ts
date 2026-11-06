@@ -1,6 +1,6 @@
 /** Shared types for the control-plane restart chaos harness (plan §5). */
 
-export const FAULT_KINDS = ["K1", "K2", "K4"] as const;
+export const FAULT_KINDS = ["K1", "K2", "K4", "K6"] as const;
 export type FaultKind = (typeof FAULT_KINDS)[number];
 
 export const WORKLOAD_IDS = ["A1", "B1", "B5", "C1"] as const;
@@ -8,6 +8,9 @@ export type WorkloadId = (typeof WORKLOAD_IDS)[number];
 
 export const ADAPTER_IDS = ["codex", "claude", "opencode"] as const;
 export type AdapterId = (typeof ADAPTER_IDS)[number];
+
+export const TRIGGER_IDS = ["time", "comment", "retry", "queued", "tool"] as const;
+export type TriggerId = (typeof TRIGGER_IDS)[number];
 
 export const ENVIRONMENT_KINDS = ["local", "daytona"] as const;
 export type EnvironmentKind = (typeof ENVIRONMENT_KINDS)[number];
@@ -17,6 +20,7 @@ export interface WaveOptions {
   adapters: AdapterId[];
   workloads: WorkloadId[];
   faults: FaultKind[];
+  triggers?: TriggerId[];
   concurrency: number;
   tasks: number;
   seed: number;
@@ -36,6 +40,8 @@ export interface TaskPlan {
   fireAfterMs: number;
   /** Outage hold between stop and restart. 0 for K1/K2. */
   holdMs: number;
+  trigger?: TriggerId;
+  triggerDelayMs?: number;
   /** C1 only: post the follow-up comment this long after creation. */
   followUpAfterMs: number | null;
   /** Unique marker used by the deterministic T-oracle. */
@@ -47,7 +53,12 @@ export interface TaskPlan {
   replayFaults?: ScheduledFault[];
 }
 
-export interface ScheduledFault { kind: FaultKind; holdMs: number; atMs: number }
+export interface ScheduledFault {
+  kind: FaultKind; holdMs: number;
+  atMs: number;
+  trigger?: TriggerId;
+  delayMs?: number;
+}
 
 export interface WavePlan {
   schema: "paperclip.restart-chaos.wave-plan/v1";
@@ -74,6 +85,7 @@ export interface RunSample {
   retryOfRunId: string | null;
   wakeCommentIds: string[];
   livenessState: string | null;
+  lastEvidenceAt?: string | null;
 }
 
 export interface InterruptionSample {
@@ -102,6 +114,7 @@ export interface TaskSample {
 
 export interface RetryAttempt {
   at: number;
+  acceptedAt?: number;
   observedRunId: string | null;
   httpStatus: number | null;
   accepted: boolean | null;
@@ -122,6 +135,10 @@ export interface FaultReceipt {
   healthyAt: number | null;
   readyAt: number | null;
   phases: Array<{ phase: string; at: number }>;
+  trigger?: TriggerId;
+  triggerDelayMs?: number;
+  loadAvg1m?: number;
+  crashLoop?: Array<{ pid: number | null; target: string; phase: string; at: number }>;
   serverLogOffsetAtStart: number;
   serverLogOffsetAtReady: number | null;
   error: string | null;
@@ -159,17 +176,24 @@ export interface TaskRecord {
   finalStatus: string | null;
   deadlineAt: number | null;
   timedOut: boolean;
-  followUp: { at: number; commentId: string | null; error: string | null } | null;
+  followUp: { at: number; postedAt?: number; commentId: string | null; error: string | null; duringRun?: boolean } | null;
   faultIds: string[];
   sweep: RestSweep | null;
   /** Workspace files present just before the first fault that hit this task (R2). */
   preFaultFiles: string[] | null;
+  preFaultWorkspacePath?: string;
+  lastFaultAt?: number;
+  restSnapshotError?: string;
+  priorRetries?: RetryAttempt[];
+  workspaceMovedTo?: string;
   /** Set when the pre-fault snapshot could not read the workspace; R2 then fails visibly. */
   preFaultSnapshotError?: string | null;
   /** Pre-fault files missing at rest; null when not checked. */
   lostFiles: string[] | null;
   /** B5: distinct bench progress values the observer read during polling. */
   benchProgressSeen?: string[];
+  benchFirstSeenAt?: number | null;
+  triggerMissed?: TriggerId[];
 }
 
 export interface TaskGrade {

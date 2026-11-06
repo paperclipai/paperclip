@@ -65,6 +65,8 @@ it("uses the real official Playwright JSON producer with failed errors, user ste
   expect(result.status).toBe("failed"); expect(result.errors.length).toBeGreaterThan(0); expect(result.steps[0].title).toBe("owned failed step");
   expect(retained.attachments.some(a => a.path.endsWith("/trace.zip"))).toBe(true);
 });
+// This writes and hashes a 256MiB attachment. Alone it takes about 10s; with the
+// whole suite running in parallel it can pass 30s, so it has its own budget.
 it("keeps the unchanged 256MiB packaging/archive caps with one canonical large attachment", async () => {
   const { packageEvidence } = await import("./evidence.js");
   const { inspectCellReportProducer, privateCellEvidenceOwner } = await import("./manual-private-report-assets.js");
@@ -138,7 +140,7 @@ it("keeps the unchanged 256MiB packaging/archive caps with one canonical large a
   const allure = await exportPilotAllure(projection, path.join(f.root, "allure"), binding, { schema: "paperclip.chat-completion-testops-selection/v1", ...binding, projectId: 1, planId: 10, jobId: 11, launchId: 12, allureJobRunId: "77", cases: [{ ...descriptor, caseId: 100 }] });
   expect(allure[0]!.status).toBe("failed");
   expect(JSON.parse(await readFile(path.join(projection, "normalized-results.json"), "utf8")).results[0].status).toBe("failed");
-}, 30000);
+}, 120_000);
 
 it.each(["literal", "escaped", "base64-body", "escaped-json-body"])("deep-scans registered immutable raw JSON text: %s", async kind => {
   const f = await fixture(), canary = "synthetic-private-credential";

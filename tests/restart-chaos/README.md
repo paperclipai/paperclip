@@ -21,19 +21,41 @@ pnpm exec vitest run --config tests/restart-chaos/vitest.config.ts  # credential
 node scripts/typecheck-test-projects.mjs tests/restart-chaos        # typecheck
 ```
 
-Options: `--workloads A1,B1,B5,C1`, `--budget-cents` (company hard cap,
+Options: `--triggers time,comment,retry,queued,tool` (fault timing, below),
+`--workloads A1,B1,B5,C1`, `--budget-cents` (company hard cap,
 default 3000), `--poll-ms` (2000–5000), `--keep` (keep the temporary instance).
 `--env daytona` is reserved; it fails until the Daytona image and environment
 are wired (see the TODO in `seed.ts`).
+
+## Fault timing (`--triggers`)
+
+Each task samples one trigger with its cell. `time` (default) fires at the
+seeded offset. The others fire relative to a user action or run state seen by
+the observer, after a seeded delay:
+
+| Trigger | Fires | Plan |
+| --- | --- | --- |
+| `comment` | 0–5 s after the C1 follow-up was posted to a live run (C1 only) | C1 + K1, B8 |
+| `retry` | 0–2 s after an accepted Retry click, as an extra K1 after the planned fault | K8 |
+| `queued` | on the first poll whose run is still `queued` with no start | B1 |
+| `tool` | 15–60 s after `bench.sh` progress first appears (B5 only) | B6 |
+
+A trigger whose condition can no longer hold (comment posted at rest, run
+already started, no Retry offered) is recorded as `triggerMissed` in the
+ledger; the task is still graded. `--faults K6` is the crash loop: after the
+first kill, the replacement is killed again as soon as `/api/ready` reports
+`recovering` (or `ready`, if recovery was too quick to see), and once more just
+after `ready`. The receipt's `crashLoop` lists the phase each kill hit. A replay
+re-arms the task's own triggered faults instead of using their offsets.
 
 ## Pieces
 
 | File | Role |
 | --- | --- |
-| `supervisor.ts` | Owns the server. Reuses `tests/runner-e2e` process code (config, ports, env isolation, wrapper-owned Postgres, process-tree stopper, `replaceController`). Faults: K1 SIGKILL + immediate restart, K2 SIGTERM + restart, K4 SIGKILL + 2–5 min hold. The controller runtime cache is kept (discarding it is K11). |
+| `supervisor.ts` | Owns the server. Reuses `tests/runner-e2e` process code (config, ports, env isolation, wrapper-owned Postgres, process-tree stopper, `replaceController`). Faults: K1 SIGKILL + immediate restart, K2 SIGTERM + restart, K4 SIGKILL + 2–5 min hold, K6 crash loop. The controller runtime cache is kept (discarding it is K11). |
 | `seed.ts` | Chaos Lab company, encrypted provider secrets, native Codex / ACPX Claude / OpenCode agents from the runner-e2e catalog, and the `chaos-sandbox` project (git repo: python CLI, one failing test, `bench.sh` ≈ 4 min) with isolated git-worktree workspaces. It first turns on the instance `enableIsolatedWorkspaces` setting; without it the server ignores the project policy and every repo task shares the primary checkout. |
 | `scheduler.ts` | Seeded plan: workload × adapter × fault cells and a random fire time per task. Saved to `results/<wave>/plan.json`. `--replay` reruns one task alone with the same choices and fires the recorded sequence of faults that crossed it (other tasks' faults included) at the same offsets from launch. |
-| `observer.ts` | Polls each issue and its runs. When a task rests needing Retry it calls `POST /api/issues/:id/retry` once, with the body `useTaskRetry.ts` sends. Collects T-oracle artifacts and the R6 sweep. |
+| `observer.ts` | Polls each issue and its runs. When a task rests needing Retry it calls `POST /api/issues/:id/retry` once (once more only if a later fault started after that click), with the body `useTaskRetry.ts` sends. Collects T-oracle artifacts and the R6 sweep. |
 | `grader.ts` | Pure R1–R6 grading over the samples. |
 | `workloads.ts` | A1 brief document, B1 python CLI with tests, B5 long bench, C1 comment while running, with their T-oracles. |
 | `evidence.ts`, `ledger.ts` | Evidence bundle for each failure and the JSONL ledger plus `SUMMARY.md`. |
@@ -68,4 +90,5 @@ are wired (see the TODO in `seed.ts`).
   `n/a` and R3 decides; a task that rests unfinished with no Retry fails both.
 - Faults are serialized; each one hits every task running at that moment.
 - A `todo` or `in_progress` task with no live run and no named wait is not a rest. The observer keeps watching it until it resumes or passes the R5 stall limit.
+- R5 also fails a run that stays `running` with no live evidence (no new run event, `lastUsefulActionAt` or `execution.lastConfirmedActivityAt`, and no start) for more than 3 minutes after the server is ready. A `running` status alone is not proof of life.
 - A fault that fails to complete fails the wave as a harness error (exit 2), even when recovery brings the server back.

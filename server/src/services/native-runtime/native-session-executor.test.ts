@@ -15144,10 +15144,11 @@ describe("runnerd provider runtime wiring", () => {
     const driver = { prepareLaunch: vi.fn(), runnerProcessLauncher: launcher, controlPlaneRegistration: registration };
     state.toolAuthorityDefinitions.mockImplementation(async binding => binding.readRemoteTaskFile ? [{ name: "register_deliverable" }] as never : []);
     const readWorkspaceFile = vi.fn(async () => Buffer.from("proof"));
-    const owner = vi.spyOn(pluginTaskRuntime, "createPluginRunnerTaskOwner").mockReturnValue({ launcher, registration, driver, readWorkspaceFile, isRetired: () => false, rebind:vi.fn() });
+    const release = vi.fn(async () => {}), resume = vi.fn(async () => "resumed" as const);
+    const owner = vi.spyOn(pluginTaskRuntime, "createPluginRunnerTaskOwner").mockReturnValue({ launcher, registration, driver, readWorkspaceFile, release, resume, isRetired: () => false, rebind:vi.fn() });
     const task = vi.fn(async (operation: unknown) => {
       environmentTaskOperationSchema.parse(operation);
-      return { kind: "description", launchPreparationVersion: 1, projectAuthCheckVersion: 1, ...(kind === "codex" ? { workspaceFileReadVersion: 1 } : {}), taskId: "task", runner: { version: "fixture", digest: `sha256:${"a".repeat(64)}` } };
+      return { kind: "description", launchPreparationVersion: 1, projectAuthCheckVersion: 1, releaseResumeVersion: 1, ...(kind === "codex" ? { workspaceFileReadVersion: 1 } : {}), taskId: "task", runner: { version: "fixture", digest: `sha256:${"a".repeat(64)}` } };
     });
     const target = { kind: "remote", transport: "sandbox", providerKey: "plugin", leaseId: "plugin-task-lease",
       remoteCwd: "/unused", runnerTask: task, runnerTaskProjectIds: ["10000000-0000-4000-8000-000000000001"] } as const;
@@ -15164,7 +15165,7 @@ describe("runnerd provider runtime wiring", () => {
       expect(state.toolAuthorityDefinitions).toHaveBeenCalledWith(expect.objectContaining({ assignedMcpTools }));
       expect(state.createAssignedMcpTools).toHaveBeenCalledWith(expect.objectContaining({ gatewayPublicId: "assigned-test", bearerToken: "fixture-mcp-secret" }));
       expect(owner).toHaveBeenCalledWith(expect.objectContaining({ task, projectIds: target.runnerTaskProjectIds,
-        credentialIdentity: undefined }));
+        credentialIdentity: undefined, releaseResumeVersion: 1 }));
       expect(state.createBackend.mock.calls.at(-1)![1]).toMatchObject({ workingDirectoryAuthority: "runner_prepared_launch", environment: {} });
       state.createBackend.mock.calls.at(-1)![1].codexTransportFactory!();
       const options = state.createTransport.mock.calls.at(-1)![0];
@@ -15178,6 +15179,8 @@ describe("runnerd provider runtime wiring", () => {
         expect(options).not.toHaveProperty(key);
       }
       expect(task.mock.calls).toEqual([[{ kind: "describe" }]]);
+      expect(release).not.toHaveBeenCalled();
+      expect(resume).not.toHaveBeenCalled();
       const binding = state.toolAuthorityDefinitions.mock.calls.at(-1)![0] as unknown as {
         readRemoteApiFile?: (path: string, maxBytes: number) => Promise<Buffer>;
         readRemoteTaskFile?: (file: {contentRef: string;byteSize: number;sha256: string}) => Promise<Buffer>;
