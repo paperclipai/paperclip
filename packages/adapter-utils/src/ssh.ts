@@ -6,6 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { Transform } from "node:stream";
 import type { CommandManagedRuntimeRunner } from "./command-managed-runtime.js";
+import { resolveNestedWorktreeDirs, resolveNestedWorktreeExcludes } from "./exclude-patterns.js";
 import {
   createUnrelatedHistoryGraftCommit,
   GIT_SYNC_COMMIT_IDENTITY_ARGS,
@@ -14,7 +15,7 @@ import {
 } from "./git-workspace-sync.js";
 import type { RunProcessResult } from "./server-utils.js";
 import type { DirectorySnapshot } from "./workspace-restore-merge.js";
-import { mergeDirectoryWithBaseline } from "./workspace-restore-merge.js";
+import { mergeDirectoryWithBaseline, PROTECTED_CHILDREN_ERROR_CODE } from "./workspace-restore-merge.js";
 import {
   createRuntimeProgressReporter,
   type RuntimeProgressDirection,
@@ -440,15 +441,20 @@ async function estimateLocalDirSize(input: {
   followSymlinks?: boolean;
 }): Promise<number> {
   const regexes = ["._*", ...(input.exclude ?? [])].map(tarPatternToRegExp);
-  const isExcluded = (relPath: string, base: string) =>
-    regexes.some((regex) => regex.test(relPath) || regex.test(base));
+  const isExcluded = (relPath: string) => {
+    const segments = relPath.split("/");
+    return segments.some((_, index) => {
+      const suffix = segments.slice(index).join("/");
+      return regexes.some((regex) => regex.test(suffix));
+    });
+  };
 
   let total = 0;
   const walk = async (dir: string, relative: string): Promise<void> => {
     const entries = await fs.readdir(dir, { withFileTypes: true }).catch(() => []);
     for (const entry of entries) {
       const entryRelative = relative ? `${relative}/${entry.name}` : entry.name;
-      if (isExcluded(entryRelative, entry.name)) continue;
+      if (isExcluded(entryRelative)) continue;
       const full = path.join(dir, entry.name);
       const stats = await (input.followSymlinks ? fs.stat(full) : fs.lstat(full)).catch(() => null);
       if (!stats) continue;
@@ -463,26 +469,130 @@ async function estimateLocalDirSize(input: {
   return total;
 }
 
-// Best-effort remote size probe for the from-ssh restore. `du -sk` is POSIX and
-// available on the BSD/Linux remotes we target; it over-counts (block-rounded,
-// includes excluded dirs) which keeps the reported percent safely below 100
-// until the stream actually closes. Returns null when unavailable so the caller
-// falls back to MB-received mode.
+interface RemoteDirSizeEstimate {
+  bytes: number;
+  excludeAware: boolean;
+}
+
 async function probeRemoteDirSize(input: {
   spec: SshConnectionConfig;
   remoteDir: string;
-}): Promise<number | null> {
+  exclude?: string[];
+}): Promise<RemoteDirSizeEstimate | null> {
+  const rawPatterns = ["._*", ...(input.exclude ?? [])];
+  const patterns = rawPatterns.map(shellQuote);
+  const gnuFlags = patterns.map((pattern) => `--exclude=${pattern}`).join(" ");
+  const bsdFlags = patterns.map((pattern) => `-I ${pattern}`).join(" ");
+  const bsdExcludeAware = rawPatterns.every((pattern) => !pattern.includes("/"));
+  const script = [
+    `cd ${shellQuote(input.remoteDir)} 2>/dev/null || exit 0`,
+    `size=$(du -sk --count-links ${gnuFlags} . 2>/dev/null | cut -f1)`,
+    `if [ -n "$size" ]; then`,
+    `  apparent=$(du -sk --count-links --apparent-size ${gnuFlags} . 2>/dev/null | cut -f1)`,
+    `  if [ -n "$apparent" ] && [ "$apparent" -gt "$size" ]; then size=$apparent; fi`,
+    `  echo "x $size"; exit 0`,
+    `fi`,
+    `size=$(du -sk ${bsdFlags} . 2>/dev/null | cut -f1)`,
+    `if [ -n "$size" ]; then echo "${bsdExcludeAware ? "x" : "p"} $size"; exit 0; fi`,
+    `size=$(du -sk . 2>/dev/null | cut -f1)`,
+    `if [ -n "$size" ]; then echo "p $size"; fi`,
+  ].join("\n");
   try {
-    const result = await runSshScript(
-      input.spec,
-      `du -sk ${shellQuote(input.remoteDir)} 2>/dev/null | cut -f1`,
-      { timeoutMs: 15_000, maxBuffer: 16 * 1024 },
-    );
-    const kilobytes = Number.parseInt(result.stdout.trim(), 10);
-    return Number.isFinite(kilobytes) && kilobytes > 0 ? kilobytes * 1024 : null;
+    const result = await runSshScript(input.spec, script, { timeoutMs: 60_000, maxBuffer: 16 * 1024 });
+    const match = /^([xp]) (\d+)\s*$/m.exec(result.stdout);
+    if (!match) return null;
+    const kilobytes = Number.parseInt(match[2], 10);
+    return kilobytes > 0 ? { bytes: kilobytes * 1024, excludeAware: match[1] === "x" } : null;
   } catch {
     return null;
   }
+}
+
+const STAGING_SPACE_ERROR_CODE = "ssh_sync_insufficient_staging_space";
+
+function formatGiB(bytes: number): string {
+  return `${(bytes / 1024 ** 3).toFixed(1)} GiB`;
+}
+
+async function gitCommonDir(localDir: string): Promise<string | null> {
+  try {
+    const result = await runLocalGit(localDir, ["rev-parse", "--git-common-dir"], {
+      timeout: 10_000,
+      maxBuffer: 16 * 1024,
+    });
+    const raw = result.stdout.trim().split("\n")[0]?.trim() ?? "";
+    if (!raw) return null;
+    return path.isAbsolute(raw) ? raw : path.join(localDir, raw);
+  } catch (error) {
+    const text = `${(error as { stderr?: unknown })?.stderr ?? ""} ${(error as Error)?.message ?? ""}`;
+    if (text.includes("not a git repository")) return null;
+    throw error;
+  }
+}
+
+async function stagingSharesVolume(stagingRoot: string, localDirs: readonly string[]): Promise<boolean> {
+  let stagingDev: unknown;
+  try {
+    stagingDev = (await fs.stat(stagingRoot)).dev;
+  } catch {
+    return true;
+  }
+  for (const dir of localDirs) {
+    try {
+      if ((await fs.stat(dir)).dev === stagingDev) return true;
+    } catch {
+      return true;
+    }
+    try {
+      const commonDir = await gitCommonDir(dir);
+      if (commonDir) {
+        try {
+          if ((await fs.stat(commonDir)).dev === stagingDev) return true;
+        } catch {
+          return true;
+        }
+      }
+    } catch {
+      return true;
+    }
+  }
+  return false;
+}
+
+async function assertStagingSpace(
+  estimates: ReadonlyArray<RemoteDirSizeEstimate | null>,
+  localDirs: readonly string[] = [],
+): Promise<void> {
+  const known = estimates.filter((estimate): estimate is RemoteDirSizeEstimate => estimate?.excludeAware === true);
+  if (known.length < estimates.length) {
+    console.warn(
+      `[paperclip] The SSH restore free-space check skips ${estimates.length - known.length} of ${estimates.length} ` +
+        "sizes: the remote cannot report a size that leaves out the excluded paths.",
+    );
+  }
+  if (known.length === 0) return;
+  const stagingRoot = os.tmpdir();
+  let freeBytes: number;
+  try {
+    const stats = await fs.statfs(stagingRoot);
+    freeBytes = Number(stats.bavail) * Number(stats.bsize);
+  } catch {
+    console.warn(`[paperclip] Skipping the SSH restore free-space check: cannot read the free space of ${stagingRoot}.`);
+    return;
+  }
+  const totalBytes = known.reduce((sum, estimate) => sum + estimate.bytes, 0);
+  const largestBytes = Math.max(...known.map((estimate) => estimate.bytes));
+  const sharesVolume = localDirs.length === 0 || (await stagingSharesVolume(stagingRoot, localDirs));
+  const requiredBytes = sharesVolume ? totalBytes + largestBytes : totalBytes;
+  if (freeBytes >= requiredBytes) return;
+  throw Object.assign(
+    new Error(
+      `Not enough free space in ${stagingRoot} to restore the workspace from SSH: ` +
+        `${formatGiB(totalBytes)} to restore (${formatGiB(requiredBytes)} required), ` +
+        `${formatGiB(freeBytes)} free. Free up space or point TMPDIR at a larger volume.`,
+    ),
+    { code: STAGING_SPACE_ERROR_CODE },
+  );
 }
 
 interface TransferProgress {
@@ -583,16 +693,47 @@ async function runSshScript(
 
 async function clearLocalDirectory(
   localDir: string,
-  preserveEntries: string[] = [],
+  preserveEntries: readonly string[] = [],
+  relative = "",
 ): Promise<void> {
-  await fs.mkdir(localDir, { recursive: true });
+  const current = relative ? path.join(localDir, relative) : localDir;
+  await fs.mkdir(current, { recursive: true });
   const preserve = new Set(preserveEntries);
-  const entries = await fs.readdir(localDir);
-  await Promise.all(
-    entries
-      .filter((entry) => !preserve.has(entry))
-      .map((entry) => fs.rm(path.join(localDir, entry), { recursive: true, force: true })),
-  );
+  const entries = await fs.readdir(current);
+  await Promise.all(entries.map(async (entry) => {
+    const entryRelative = relative ? path.posix.join(relative, entry) : entry;
+    if (preserve.has(entryRelative)) return;
+    if (preserveEntries.some((candidate) => candidate.startsWith(`${entryRelative}/`))) {
+      const stats = await fs.lstat(path.join(current, entry));
+      if (stats.isDirectory()) {
+        await clearLocalDirectory(localDir, preserveEntries, entryRelative);
+        return;
+      }
+    }
+    await fs.rm(path.join(current, entry), { recursive: true, force: true });
+  }));
+}
+
+async function findLocalNestedWorktreeDirs(localDir: string, dirs: readonly string[]): Promise<string[]> {
+  if (dirs.length === 0) return [];
+  const found: string[] = [];
+  const walk = async (relative: string): Promise<void> => {
+    const entries = await fs
+      .readdir(relative ? path.join(localDir, relative) : localDir, { withFileTypes: true })
+      .catch(() => []);
+    await Promise.all(entries.map(async (entry) => {
+      const entryRelative = relative ? `${relative}/${entry.name}` : entry.name;
+      if (dirs.some((dir) => entryRelative === dir || entryRelative.endsWith(`/${dir}`))) {
+        found.push(entryRelative);
+        return;
+      }
+      if (!entry.isDirectory()) return;
+      if (entry.name === ".git" || entry.name === "node_modules") return;
+      await walk(entryRelative);
+    }));
+  };
+  await walk("");
+  return found;
 }
 
 async function copyDirectoryContents(sourceDir: string, targetDir: string): Promise<void> {
@@ -895,6 +1036,7 @@ async function exportGitWorkspaceFromSsh(input: {
       timeout: 60_000,
       maxBuffer: 1024 * 1024,
     });
+    await fs.rm(bundleDir, { recursive: true, force: true });
     if (input.resetLocalWorkspace !== false) {
       await runLocalGit(input.localDir, ["reset", "--hard", importedRef], {
         timeout: 60_000,
@@ -1520,17 +1662,16 @@ export async function syncDirectoryToSsh(input: {
   }
 }
 
-export async function syncDirectoryFromSsh(input: {
+async function extractDirectoryFromSsh(input: {
   spec: SshRemoteExecutionSpec;
   remoteDir: string;
-  localDir: string;
+  targetDir: string;
   exclude?: string[];
-  preserveLocalEntries?: string[];
+  remoteSize: RemoteDirSizeEstimate | null;
   onProgress?: RuntimeProgressSink;
   progressLabel?: string;
 }): Promise<void> {
   const auth = await createSshAuthArgs(input.spec);
-  const stagingDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-ssh-sync-back-"));
   const remoteTarScript = [
     `cd ${shellQuote(input.remoteDir)}`,
     `tar ${[...tarExcludeArgs(input.exclude).map(shellQuote), "-cf", "-", "."].join(" ")}`,
@@ -1543,17 +1684,13 @@ export async function syncDirectoryFromSsh(input: {
     `sh -c ${shellQuote(remoteTarScript)}`,
   ];
 
-  // The remote tar size isn't known locally, so probe the remote directory for
-  // an estimate (clamped to 99%). The probe runs concurrently with the transfer
-  // so its round-trip never delays the restore; when it is unavailable we report
-  // bytes received in MB mode with a terminal completion line.
   const progress = input.onProgress
     ? createTransferProgress({
       onProgress: input.onProgress,
       phase: "Restoring",
       direction: "from",
       label: input.progressLabel,
-      totalBytes: probeRemoteDirSize({ spec: input.spec, remoteDir: input.remoteDir }),
+      totalBytes: input.remoteSize?.bytes ?? null,
       estimated: true,
     })
     : null;
@@ -1563,7 +1700,7 @@ export async function syncDirectoryFromSsh(input: {
       const ssh = spawn("ssh", sshArgs, {
         stdio: ["ignore", "pipe", "pipe"],
       });
-      const tar = spawn("tar", ["-xf", "-", "-C", stagingDir], {
+      const tar = spawn("tar", ["-xf", "-", "-C", input.targetDir], {
         stdio: ["pipe", "ignore", "pipe"],
         env: tarSpawnEnv(),
       });
@@ -1625,15 +1762,68 @@ export async function syncDirectoryFromSsh(input: {
       });
     });
     await progress?.finish();
-
-    await clearLocalDirectory(input.localDir, input.preserveLocalEntries);
-    await copyDirectoryContents(stagingDir, input.localDir);
   } catch (error) {
     await progress?.fail();
     throw error;
   } finally {
-    await fs.rm(stagingDir, { recursive: true, force: true }).catch(() => undefined);
     await auth.cleanup();
+  }
+}
+
+async function assertNoPreservedParentReplacements(
+  stagingDir: string,
+  localDir: string,
+  preserveEntries: readonly string[] = [],
+): Promise<void> {
+  for (const preserved of preserveEntries) {
+    const parts = preserved.split("/");
+    for (let depth = 1; depth <= parts.length; depth += 1) {
+      const ancestor = parts.slice(0, depth).join("/");
+      const [staged, local] = await Promise.all([
+        fs.lstat(path.join(stagingDir, ...ancestor.split("/"))).catch(() => null),
+        fs.lstat(path.join(localDir, ...ancestor.split("/"))).catch(() => null),
+      ]);
+      if (staged && !staged.isDirectory() && local?.isDirectory()) {
+        throw Object.assign(
+          new Error(`Cannot replace ${ancestor}: it holds ${preserved}, which a restore never removes.`),
+          { code: PROTECTED_CHILDREN_ERROR_CODE },
+        );
+      }
+    }
+  }
+}
+
+export async function syncDirectoryFromSsh(input: {
+  spec: SshRemoteExecutionSpec;
+  remoteDir: string;
+  localDir: string;
+  exclude?: string[];
+  preserveLocalEntries?: string[];
+  onProgress?: RuntimeProgressSink;
+  progressLabel?: string;
+}): Promise<void> {
+  const remoteSize = await probeRemoteDirSize({
+    spec: input.spec,
+    remoteDir: input.remoteDir,
+    exclude: input.exclude,
+  });
+  await assertStagingSpace([remoteSize], [input.localDir]);
+  const stagingDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-ssh-sync-back-"));
+  try {
+    await extractDirectoryFromSsh({
+      spec: input.spec,
+      remoteDir: input.remoteDir,
+      targetDir: stagingDir,
+      exclude: input.exclude,
+      remoteSize,
+      onProgress: input.onProgress,
+      progressLabel: input.progressLabel,
+    });
+    await assertNoPreservedParentReplacements(stagingDir, input.localDir, input.preserveLocalEntries);
+    await clearLocalDirectory(input.localDir, input.preserveLocalEntries);
+    await copyDirectoryContents(stagingDir, input.localDir);
+  } finally {
+    await fs.rm(stagingDir, { recursive: true, force: true }).catch(() => undefined);
   }
 }
 
@@ -1644,8 +1834,10 @@ export async function prepareWorkspaceForSshExecution(input: {
   onProgress?: RuntimeProgressSink;
   workspaceFileMode?: "all";
   workspaceExclude?: string[];
+  nestedWorktreeDirs?: readonly string[];
 }): Promise<{ gitBacked: boolean; repositories?: string[] }> {
   const remoteDir = input.remoteDir ?? input.spec.remoteCwd;
+  const nestedWorktreeExcludes = resolveNestedWorktreeExcludes(input);
   const gitSnapshot = input.workspaceFileMode === "all" ? null : await readLocalGitWorkspaceSnapshot(input.localDir);
 
   if (gitSnapshot) {
@@ -1655,7 +1847,7 @@ export async function prepareWorkspaceForSshExecution(input: {
       localDir: input.localDir,
       remoteDir,
       snapshot: gitSnapshot,
-      exclude: repositories.length > 0 ? [PROJECT_REPOSITORIES_DIR] : [],
+      exclude: [...(repositories.length > 0 ? [PROJECT_REPOSITORIES_DIR] : []), ...nestedWorktreeExcludes],
       onProgress: input.onProgress,
       progressLabel: "workspace",
     });
@@ -1671,6 +1863,7 @@ export async function prepareWorkspaceForSshExecution(input: {
         localDir,
         remoteDir: path.posix.join(remoteDir, relative),
         snapshot,
+        exclude: nestedWorktreeExcludes,
         onProgress: input.onProgress,
         progressLabel: relative,
       });
@@ -1687,7 +1880,11 @@ export async function prepareWorkspaceForSshExecution(input: {
     spec: input.spec,
     localDir: input.localDir,
     remoteDir,
-    exclude: [".paperclip-runtime", ...(input.workspaceFileMode === "all" ? input.workspaceExclude ?? [] : [])],
+    exclude: [
+      ".paperclip-runtime",
+      ...(input.workspaceFileMode === "all" ? input.workspaceExclude ?? [] : []),
+      ...nestedWorktreeExcludes,
+    ],
     onProgress: input.onProgress,
     progressLabel: "workspace",
   });
@@ -1702,6 +1899,7 @@ export async function restoreWorkspaceFromSshExecution(input: {
   restoreGitHistory?: boolean;
   onProgress?: RuntimeProgressSink;
   repositories?: Array<{ path: string; baselineSnapshot?: DirectorySnapshot }>;
+  nestedWorktreeDirs?: readonly string[];
 }): Promise<void> {
   const remoteDir = input.remoteDir ?? input.spec.remoteCwd;
   const repositories = input.repositories ?? [];
@@ -1723,13 +1921,37 @@ export async function restoreWorkspaceFromSshExecution(input: {
   ) {
     throw new Error(`Workspace baseline must exclude ${PROJECT_REPOSITORIES_DIR} when project repositories are restored separately`);
   }
+  const remoteSizes = new Map<string, RemoteDirSizeEstimate | null>();
+  if (input.baselineSnapshot) {
+    const trees = [
+      ...repositories.map((repository) => ({
+        remoteDir: path.posix.join(remoteDir, repository.path),
+        exclude: repository.baselineSnapshot?.exclude,
+      })),
+      { remoteDir, exclude: input.baselineSnapshot.exclude },
+    ];
+    const [fileEstimates, historyEstimates] = await Promise.all([
+      Promise.all(trees.map((tree) => probeRemoteDirSize({ spec: input.spec, remoteDir: tree.remoteDir, exclude: tree.exclude }))),
+      Promise.all(trees.map((tree) => input.restoreGitHistory
+        ? probeRemoteDirSize({ spec: input.spec, remoteDir: path.posix.join(tree.remoteDir, ".git") })
+        : undefined)),
+    ]);
+    trees.forEach((tree, index) => remoteSizes.set(tree.remoteDir, fileEstimates[index]));
+    await assertStagingSpace([...fileEstimates, ...historyEstimates.filter((estimate) => estimate !== undefined)], [
+      input.localDir,
+      ...repositories.map((repository) => path.join(input.localDir, repository.path)),
+    ]);
+  }
   for (const repository of repositories) {
+    const repositoryRemoteDir = path.posix.join(remoteDir, repository.path);
     await restoreWorkspaceRootFromSsh({
       spec: input.spec,
       localDir: path.join(input.localDir, repository.path),
-      remoteDir: path.posix.join(remoteDir, repository.path),
+      remoteDir: repositoryRemoteDir,
+      remoteSize: remoteSizes.get(repositoryRemoteDir) ?? null,
       baselineSnapshot: repository.baselineSnapshot,
       restoreGitHistory: input.restoreGitHistory,
+      nestedWorktreeDirs: input.nestedWorktreeDirs,
       onProgress: input.onProgress,
       progressLabel: repository.path,
     });
@@ -1738,8 +1960,10 @@ export async function restoreWorkspaceFromSshExecution(input: {
     spec: input.spec,
     localDir: input.localDir,
     remoteDir,
+    remoteSize: remoteSizes.get(remoteDir) ?? null,
     baselineSnapshot: input.baselineSnapshot,
     restoreGitHistory: input.restoreGitHistory,
+    nestedWorktreeDirs: input.nestedWorktreeDirs,
     onProgress: input.onProgress,
     progressLabel: "workspace",
     hasProjectRepositories: repositories.length > 0,
@@ -1750,8 +1974,10 @@ async function restoreWorkspaceRootFromSsh(input: {
   spec: SshRemoteExecutionSpec;
   localDir: string;
   remoteDir: string;
+  remoteSize: RemoteDirSizeEstimate | null;
   baselineSnapshot?: DirectorySnapshot;
   restoreGitHistory?: boolean;
+  nestedWorktreeDirs?: readonly string[];
   onProgress?: RuntimeProgressSink;
   progressLabel: string;
   hasProjectRepositories?: boolean;
@@ -1773,11 +1999,12 @@ async function restoreWorkspaceRootFromSsh(input: {
           onProgress: input.onProgress,
         })
         : null;
-      await syncDirectoryFromSsh({
+      await extractDirectoryFromSsh({
         spec: input.spec,
         remoteDir,
-        localDir: stagingDir,
+        targetDir: stagingDir,
         exclude: input.baselineSnapshot.exclude,
+        remoteSize: input.remoteSize,
         onProgress: input.onProgress,
         progressLabel: input.progressLabel,
       });
@@ -1785,6 +2012,8 @@ async function restoreWorkspaceRootFromSsh(input: {
         baseline: input.baselineSnapshot,
         sourceDir: stagingDir,
         targetDir: input.localDir,
+        protectedPatterns: resolveNestedWorktreeExcludes(input).filter((pattern) =>
+          input.baselineSnapshot?.exclude.includes(pattern)),
         // Git history advances via integrateImportedGitHead; the working tree
         // still comes from the remote file snapshot so dirty remote edits win.
         beforeApply: importedHead
@@ -1808,24 +2037,44 @@ async function restoreWorkspaceRootFromSsh(input: {
     return;
   }
   const gitSnapshot = await readLocalGitWorkspaceSnapshot(input.localDir);
+  const nestedWorktreeExcludes = resolveNestedWorktreeExcludes(input);
+  const localNestedWorktreeDirs = await findLocalNestedWorktreeDirs(
+    input.localDir,
+    resolveNestedWorktreeDirs(input),
+  );
 
   if (gitSnapshot) {
     const projectRepositoryEntries = input.hasProjectRepositories ? [PROJECT_REPOSITORIES_DIR] : [];
-    await exportGitWorkspaceFromSsh({
-      spec: input.spec,
-      remoteDir,
-      localDir: input.localDir,
-      onProgress: input.onProgress,
-    });
-    await syncDirectoryFromSsh({
-      spec: input.spec,
-      remoteDir,
-      localDir: input.localDir,
-      exclude: [".git", ".paperclip-runtime", ...projectRepositoryEntries],
-      preserveLocalEntries: [".git", ...projectRepositoryEntries],
-      onProgress: input.onProgress,
-      progressLabel: input.progressLabel,
-    });
+    const exclude = [".git", ".paperclip-runtime", ...projectRepositoryEntries, ...nestedWorktreeExcludes];
+    const preserveLocalEntries = [".git", ...projectRepositoryEntries, ...localNestedWorktreeDirs];
+    const [treeSize, historySize] = await Promise.all([
+      probeRemoteDirSize({ spec: input.spec, remoteDir, exclude }),
+      probeRemoteDirSize({ spec: input.spec, remoteDir: path.posix.join(remoteDir, ".git") }),
+    ]);
+    await assertStagingSpace([treeSize, historySize], [input.localDir]);
+    const stagingDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-ssh-sync-back-"));
+    try {
+      await extractDirectoryFromSsh({
+        spec: input.spec,
+        remoteDir,
+        targetDir: stagingDir,
+        exclude,
+        remoteSize: treeSize,
+        onProgress: input.onProgress,
+        progressLabel: input.progressLabel,
+      });
+      await assertNoPreservedParentReplacements(stagingDir, input.localDir, preserveLocalEntries);
+      await exportGitWorkspaceFromSsh({
+        spec: input.spec,
+        remoteDir,
+        localDir: input.localDir,
+        onProgress: input.onProgress,
+      });
+      await clearLocalDirectory(input.localDir, preserveLocalEntries);
+      await copyDirectoryContents(stagingDir, input.localDir);
+    } finally {
+      await fs.rm(stagingDir, { recursive: true, force: true }).catch(() => undefined);
+    }
     return;
   }
 
@@ -1833,7 +2082,8 @@ async function restoreWorkspaceRootFromSsh(input: {
     spec: input.spec,
     remoteDir,
     localDir: input.localDir,
-    exclude: [".paperclip-runtime"],
+    exclude: [".paperclip-runtime", ...nestedWorktreeExcludes],
+    preserveLocalEntries: localNestedWorktreeDirs,
     onProgress: input.onProgress,
     progressLabel: input.progressLabel,
   });
