@@ -716,11 +716,15 @@ export async function saveRemoteWorkspace(input: {
   let publicationScratch: string | undefined;
   let failure: { code: string; cause?: string } | undefined;
   const timing: RemoteWorkspaceSaveTiming & { startedAt: number } = { startedAt: saveStarted };
+  // A replay of an already-committed save measures no phase; it keeps the
+  // original save's timing instead of overwriting it with an empty record.
+  let replayedCommittedSave = false;
   try {
     const snapshot = await beginWorkspaceSnapshot(input.db, { companyId: input.workspace.companyId, workspaceId: input.workspace.id,
       operationId: operation.id, runId: input.runId, parentSnapshotId: operation.metadata?.parentSnapshotId as string | null,
       generation: operation.metadata?.generation as number, epoch: expected.epoch });
     if (operation.status === "succeeded" && ["committed", "superseded"].includes(snapshot.status)) {
+      replayedCommittedSave = true;
       return { snapshotId: snapshot.id, generation: snapshot.generation, sha256: snapshot.sha256!, savedAt: snapshot.updatedAt.toISOString() };
     }
     const existingUpload = snapshot.status === "uploaded" ? await getWorkspaceSnapshot(input.db, { companyId: input.workspace.companyId,
@@ -794,7 +798,8 @@ export async function saveRemoteWorkspace(input: {
     catch { logger.warn({ runId: input.runId, operationId: operation.id }, "Remote workspace local archive cleanup failed"); }
     try {
       if (await settleSaveInvocation({ db: input.db, workspace: input.workspace, runId: input.runId, epoch: expected.epoch,
-        location: expected.location, operationId: operation.id, invocationId, failure, timing })) {
+        location: expected.location, operationId: operation.id, invocationId, failure,
+        timing: replayedCommittedSave ? undefined : timing })) {
         await cleanupSavedExports({ db: input.db, companyId: input.workspace.companyId, workspaceId: input.workspace.id,
           location: expected.location, target, assertOwned: input.assertOwned });
       }
