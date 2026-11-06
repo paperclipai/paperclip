@@ -41,20 +41,25 @@ function isAlreadyExistsError(error: unknown): boolean {
   return code === "EEXIST" || code === "ENOTEMPTY";
 }
 
-function sanitizeRemoteClaudeSettings(raw: string): string {
+export type RemoteClaudePermissionDefaultMode = "default" | "bypassPermissions";
+
+function sanitizeRemoteClaudeSettings(
+  raw: string | null,
+  defaultMode: RemoteClaudePermissionDefaultMode,
+): string {
   let parsed: unknown;
   try {
-    parsed = JSON.parse(raw);
+    parsed = raw === null ? null : JSON.parse(raw);
   } catch {
-    return JSON.stringify({ permissions: { defaultMode: "default" } });
+    return JSON.stringify({ permissions: { defaultMode } });
   }
 
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    return JSON.stringify({ permissions: { defaultMode: "default" } });
+    return JSON.stringify({ permissions: { defaultMode } });
   }
 
   const settings = { ...(parsed as Record<string, unknown>) };
-  settings.permissions = { defaultMode: "default" };
+  settings.permissions = { defaultMode };
   delete settings.hooks;
   delete settings.mcpServers;
   delete settings.permissionMode;
@@ -62,16 +67,22 @@ function sanitizeRemoteClaudeSettings(raw: string): string {
   return JSON.stringify(settings);
 }
 
-async function collectSeedFiles(sourceDir: string): Promise<SeedFile[]> {
+async function collectSeedFiles(
+  sourceDir: string,
+  defaultMode: RemoteClaudePermissionDefaultMode,
+): Promise<SeedFile[]> {
   const files: SeedFile[] = [];
   for (const name of SEEDED_SHARED_FILES) {
     const sourcePath = path.join(sourceDir, name);
-    if (!(await pathExists(sourcePath))) continue;
-    const rawContents = await fs.readFile(sourcePath);
-    const contents = name === "settings.json"
-      ? Buffer.from(sanitizeRemoteClaudeSettings(rawContents.toString("utf8")), "utf8")
-      : rawContents;
-    files.push({ name, sourcePath, contents });
+    const exists = await pathExists(sourcePath);
+    if (name === "settings.json") {
+      if (!exists && defaultMode === "default") continue;
+      const raw = exists ? (await fs.readFile(sourcePath)).toString("utf8") : null;
+      files.push({ name, sourcePath, contents: Buffer.from(sanitizeRemoteClaudeSettings(raw, defaultMode), "utf8") });
+      continue;
+    }
+    if (!exists) continue;
+    files.push({ name, sourcePath, contents: await fs.readFile(sourcePath) });
   }
   return files;
 }
@@ -187,6 +198,7 @@ export async function prepareClaudeConfigSeed(
   env: NodeJS.ProcessEnv,
   onLog: AdapterExecutionContext["onLog"],
   companyId?: string,
+  options: { permissionDefaultMode?: RemoteClaudePermissionDefaultMode } = {},
 ): Promise<string> {
   const sourceDir = resolveSharedClaudeConfigDir(env);
   const targetRootDir = resolveManagedClaudeConfigSeedDir(env, companyId);
@@ -195,7 +207,7 @@ export async function prepareClaudeConfigSeed(
     return targetRootDir;
   }
 
-  const copiedFiles = await collectSeedFiles(sourceDir);
+  const copiedFiles = await collectSeedFiles(sourceDir, options.permissionDefaultMode ?? "default");
   const snapshotKey = await buildSeedSnapshotKey(copiedFiles);
   const targetDir = await materializeSeedSnapshot({
     rootDir: targetRootDir,
