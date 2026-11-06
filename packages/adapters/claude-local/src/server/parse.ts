@@ -22,12 +22,16 @@ const URL_RE = /(https?:\/\/[^\s'"`<>()[\]{};,!?]+[^\s'"`<>()[\]{};,!.?:]+)/gi;
 
 const CLAUDE_TRANSIENT_UPSTREAM_RE =
   /(?:rate[-\s]?limit(?:ed)?|rate_limit_error|too\s+many\s+requests|\b429\b|overloaded(?:_error)?|server\s+overloaded|service\s+unavailable|\b503\b|\b529\b|high\s+demand|try\s+again\s+later|temporarily\s+unavailable|throttl(?:ed|ing)|throttlingexception|servicequotaexceededexception|out\s+of\s+extra\s+usage|extra\s+usage\b|claude\s+usage\s+limit\s+reached|5[-\s]?hour\s+limit\s+reached|weekly\s+limit\s+reached|usage\s+limit\s+reached|usage\s+cap\s+reached)/i;
+// Claude Code limit names can be several words ("usage credit limit",
+// "weekly limit", "Opus limit"), and the verb is "hit" or "reached"
+// ("You've reached your Fable limit."). Both shapes are in the SDK's
+// USAGE_LIMIT_ERROR_PREFIXES list. See #15797.
 const CLAUDE_PROVIDER_QUOTA_RE =
-  /(?:you(?:'|’)ve\s+hit\s+your\s+(?:\w+\s+)?limit|session\s+limit\s+(?:reached|exceeded)|out\s+of\s+extra\s+usage|extra\s+usage\b|claude\s+usage\s+limit\s+reached|5[-\s]?hour\s+limit\s+reached|weekly\s+limit\s+reached|usage\s+limit\s+reached|usage\s+cap\s+reached|servicequotaexceededexception)/i;
+  /(?:you(?:'|’)(?:ve\s+hit|ve\s+reached)\s+your\s+(?:[\w-]+\s+){0,2}limit|you(?:'|’)re\s+out\s+of\s+usage\s+credits|session\s+limit\s+(?:reached|exceeded)|out\s+of\s+extra\s+usage|extra\s+usage\b|claude\s+usage\s+limit\s+reached|5[-\s]?hour\s+limit\s+reached|weekly\s+limit\s+reached|usage\s+limit\s+reached|usage\s+cap\s+reached|servicequotaexceededexception)/i;
 const CLAUDE_MODEL_NOT_FOUND_RE =
   /(?:\b404\b[\s\S]{0,120})?(?:model[\s_-]*(?:not[\s_-]*found|does not exist|unknown|invalid)|unknown[\s_-]*model)/i;
 const CLAUDE_EXTRA_USAGE_RESET_RE =
-  /(?:you(?:'|’)ve\s+hit\s+your\s+(?:\w+\s+)?limit|session\s+limit\s+(?:reached|exceeded)|out\s+of\s+extra\s+usage|extra\s+usage|usage\s+limit\s+reached|usage\s+cap\s+reached|5[-\s]?hour\s+limit\s+reached|weekly\s+limit\s+reached|claude\s+usage\s+limit\s+reached)[\s\S]{0,120}?\bresets?\s+(?:at\s+)?([^\n()]+?)(?:\s*\(([^)]+)\))?(?:[.!]|\n|$)/i;
+  /(?:you(?:'|’)(?:ve\s+hit|ve\s+reached)\s+your\s+(?:[\w-]+\s+){0,2}limit|you(?:'|’)re\s+out\s+of\s+usage\s+credits|session\s+limit\s+(?:reached|exceeded)|out\s+of\s+extra\s+usage|extra\s+usage|usage\s+limit\s+reached|usage\s+cap\s+reached|5[-\s]?hour\s+limit\s+reached|weekly\s+limit\s+reached|claude\s+usage\s+limit\s+reached)[\s\S]{0,120}?\bresets?\s+(?:at\s+)?([^\n()]+?)(?:\s*\(([^)]+)\))?(?:[.!]|\n|$)/i;
 
 /**
  * Sum the per-model usage ledger from a Claude CLI result event. The result
@@ -503,8 +507,103 @@ function nextClockTimeInTimeZone(input: {
   return retryAt;
 }
 
+const RESET_MONTH_NUMBERS: Record<string, number> = {
+  jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6,
+  jul: 7, aug: 8, sep: 9, sept: 9, oct: 10, nov: 11, dec: 12,
+};
+
+// When a Claude Code limit resets more than 24 hours out, the message
+// carries a calendar date instead of a bare clock time:
+// "resets Oct 14, 5pm (Europe/Amsterdam)", "resets Oct 14, 5:30pm", or a
+// bare "resets Oct 14" (midnight local). See #15797.
+const RESET_DATE_PREFIX_RE = /^([A-Za-z]{3,4})\.?\s+(\d{1,2})(?:st|nd|rd|th)?(?:,\s*(\d{4}))?\s*,\s*(.*)$/;
+const RESET_DATE_ONLY_RE = /^([A-Za-z]{3,4})\.?\s+(\d{1,2})(?:st|nd|rd|th)?(?:,\s*(\d{4}))?$/;
+
+function parseResetDatePrefix(normalized: string): {
+  month: number;
+  day: number;
+  year: number | null;
+  rest: string;
+} | null {
+  const withTime = normalized.match(RESET_DATE_PREFIX_RE);
+  const only = withTime ? null : normalized.match(RESET_DATE_ONLY_RE);
+  const match = withTime ?? only;
+  if (!match) return null;
+  const month = RESET_MONTH_NUMBERS[(match[1] ?? "").toLowerCase()];
+  const day = Number.parseInt(match[2] ?? "", 10);
+  if (!month || !Number.isInteger(day) || day < 1 || day > 31) return null;
+  const year = match[3] ? Number.parseInt(match[3], 10) : null;
+  return { month, day, year, rest: withTime ? (match[4] ?? "") : "" };
+}
+
+function datedResetInTimeZone(input: {
+  now: Date;
+  month: number;
+  day: number;
+  year: number | null;
+  hour: number;
+  minute: number;
+  timeZone: string;
+}): Date | null {
+  const nowParts = readTimeZoneParts(input.now, input.timeZone);
+  let year = input.year ?? nowParts.year;
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    const candidate = dateFromTimeZoneWallClock({
+      year,
+      month: input.month,
+      day: input.day,
+      hour: input.hour,
+      minute: input.minute,
+      timeZone: input.timeZone,
+    });
+    if (!candidate) return null;
+    if (candidate.getTime() > input.now.getTime()) return candidate;
+    year += 1;
+  }
+  return null;
+}
+
 function parseClaudeResetClockTime(clockText: string, now: Date, timeZoneHint?: string | null): Date | null {
   const normalized = clockText.trim().replace(/\s+/g, " ");
+
+  const datePrefix = parseResetDatePrefix(normalized);
+  if (datePrefix) {
+    let hour24 = 0;
+    let minute = 0;
+    if (datePrefix.rest) {
+      const timeMatch = datePrefix.rest.match(/^(\d{1,2})(?::(\d{2}))?\s*([ap])\.?\s*m\.?/i);
+      if (!timeMatch) return null;
+      const hour12 = Number.parseInt(timeMatch[1] ?? "", 10);
+      minute = Number.parseInt(timeMatch[2] ?? "0", 10);
+      if (!Number.isInteger(hour12) || hour12 < 1 || hour12 > 12) return null;
+      if (!Number.isInteger(minute) || minute < 0 || minute > 59) return null;
+      hour24 = hour12 % 12;
+      if ((timeMatch[3] ?? "").toLowerCase() === "p") hour24 += 12;
+    }
+
+    const timeZone = normalizeResetTimeZone(timeZoneHint);
+    if (timeZone) {
+      return datedResetInTimeZone({
+        now,
+        month: datePrefix.month,
+        day: datePrefix.day,
+        year: datePrefix.year,
+        hour: hour24,
+        minute,
+        timeZone,
+      });
+    }
+
+    let year = datePrefix.year ?? now.getFullYear();
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      const candidate = new Date(year, datePrefix.month - 1, datePrefix.day, hour24, minute, 0, 0);
+      if (candidate.getMonth() !== datePrefix.month - 1 || candidate.getDate() !== datePrefix.day) return null;
+      if (candidate.getTime() > now.getTime()) return candidate;
+      year += 1;
+    }
+    return null;
+  }
+
   const match = normalized.match(/^(\d{1,2})(?::(\d{2}))?\s*([ap])\.?\s*m\.?/i);
   if (!match) return null;
 

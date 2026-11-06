@@ -4,7 +4,7 @@ import path from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { afterEach, expect, it, vi } from "vitest";
-import { classifyClaudeTerminalSessionFailure, createClaudeAcpExecutor } from "./acp.js";
+import { classifyClaudeTerminalSessionFailure, classifyClaudeTurnErrorText, createClaudeAcpExecutor } from "./acp.js";
 import type { AcpxEngineExecutorOptions } from "@paperclipai/adapter-utils/acpx-engine/execute";
 import { parseAcpxStdoutLine } from "@paperclipai/adapter-utils/acpx-engine/ui";
 
@@ -179,6 +179,44 @@ it("does not infer quota from the historical generic terminal-limit error", () =
     category: "limit",
     title: "ACP agent reported a terminal limit failure.",
   }, now)).toBeNull();
+});
+
+it("extracts a dated retry time for a typed weekly-limit failure (#15797)", () => {
+  const classification = classifyClaudeTerminalSessionFailure({
+    category: "limit",
+    title: "You've hit your weekly limit · resets Oct 14, 5pm (Europe/Amsterdam)",
+  }, new Date("2026-10-10T12:00:00.000Z"));
+  expect(classification).toEqual({
+    errorCode: "provider_quota",
+    errorFamily: "provider_quota",
+    retryNotBefore: "2026-10-14T15:00:00.000Z",
+  });
+});
+
+it("classifies a thrown quota error text as provider quota with its reset time (#15797)", () => {
+  const classification = classifyClaudeTurnErrorText(
+    { message: "Internal error: You've hit your session limit · resets 5:10pm (Europe/Amsterdam)" },
+    new Date("2026-10-10T12:00:00.000Z"),
+  );
+  expect(classification).toEqual({
+    errorCode: "provider_quota",
+    errorFamily: "provider_quota",
+    retryNotBefore: "2026-10-10T15:10:00.000Z",
+  });
+});
+
+it("classifies a thrown quota error carried in the cause message (#15797)", () => {
+  const classification = classifyClaudeTurnErrorText(
+    { message: "ACP turn failed", causeMessage: "You've reached your Fable limit." },
+    new Date("2026-10-10T12:00:00.000Z"),
+  );
+  expect(classification).toEqual({ errorCode: "provider_quota", errorFamily: "provider_quota" });
+});
+
+it("leaves non-quota thrown error text unclassified (#15797)", () => {
+  expect(
+    classifyClaudeTurnErrorText({ message: "Internal error: socket hang up" }, new Date("2026-10-10T12:00:00.000Z")),
+  ).toBeNull();
 });
 
 it.each([
