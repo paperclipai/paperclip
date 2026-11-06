@@ -507,6 +507,16 @@ pnpm build-storybook
 
 These run the `@paperclipai/ui` Storybook on port `6006` and build the static output to `ui/storybook-static/`.
 
+**Inline links** mounts the shared Markdown renderer with GitHub repository,
+pull request, and issue references, custom labels, connected status metadata,
+and generic URL fallbacks. Pasted GitHub resource URLs use compact labels;
+the exact destination, query, and fragment stay intact. The presentation makes
+no remote metadata requests. Run its light/dark desktop/mobile checks with:
+
+```sh
+STORYBOOK_TEST_BASE_URL=http://localhost:6006 pnpm exec playwright test inline-links.spec.ts --config=tests/storybook-visual/playwright.config.ts --project=stories
+```
+
 **Task chat → Failure notices** covers compact run errors and adjacent recovery
 notices in both presentation modes, with expanded details, fixture retry
 callbacks (including the legacy run retry when recovery retry is unavailable),

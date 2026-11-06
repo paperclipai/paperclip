@@ -607,23 +607,51 @@ describe("MarkdownBody", () => {
     expect(html).toContain('rel="noreferrer"');
   });
 
-  it("prefixes GitHub markdown links with the GitHub icon glued to the first character", () => {
-    const html = renderMarkdown("[https://github.com/paperclipai/paperclip/pull/4099](https://github.com/paperclipai/paperclip/pull/4099)");
+  it("gives pull request URLs a compact label and a distinct icon", () => {
+    const href = "https://github.com/paperclipai/paperclip/pull/4099";
+    const html = renderMarkdown(`[${href}](${href})`);
 
-    expect(html).toContain('<a href="https://github.com/paperclipai/paperclip/pull/4099"');
-    expect(html).toContain('class="lucide lucide-github mr-1 inline h-3.5 w-3.5 align-(--va-0_125em)"');
-    // The icon and first character "h" must sit in a no-wrap span so the
-    // icon can never be orphaned on the previous line from the URL text.
-    expect(html).toMatch(/<span style="white-space:nowrap">.*lucide-github.*?<\/svg>h<\/span>/);
-    expect(html).toContain("ttps://github.com/paperclipai/paperclip/pull/4099");
+    expect(html).toContain(`<a href="${href}"`);
+    expect(html).toContain('data-github-link="pull_request"');
+    expect(html).toContain("lucide-git-pull-request");
+    expect(html).toContain("GitHub pull request:");
+    expect(html).toMatch(/<span style="white-space:nowrap">.*lucide-git-pull-request.*?<\/svg>p<\/span>/);
+    expect(html.replace(/<[^>]*>/g, "")).toContain("paperclipai/paperclip#4099");
     expect(html).not.toContain("lucide-external-link");
   });
 
-  it("prefixes GitHub autolinks with the GitHub icon", () => {
-    const html = renderMarkdown("See https://github.com/paperclipai/paperclip/issues/1778");
+  it("gives issue autolinks their own icon and keeps the exact destination", () => {
+    const html = renderMarkdown("See https://github.com/paperclipai/paperclip/issues/1778?source=chat#issuecomment-123");
 
-    expect(html).toContain('<a href="https://github.com/paperclipai/paperclip/issues/1778"');
-    expect(html).toContain('class="lucide lucide-github mr-1 inline h-3.5 w-3.5 align-(--va-0_125em)"');
+    expect(html).toContain('href="https://github.com/paperclipai/paperclip/issues/1778?source=chat#issuecomment-123"');
+    expect(html).toContain('data-github-link="issue"');
+    expect(html).toContain("lucide-circle-dot");
+    expect(html).toContain("GitHub issue:");
+    expect(html.replace(/<[^>]*>/g, "")).toContain("paperclipai/paperclip#1778");
+  });
+
+  it("keeps custom labels, formatted text, and authored titles", () => {
+    const html = renderMarkdown('[**Review** the PR](https://github.com/acme/web/pull/241 "Ready for review")');
+    expect(html).toContain("<strong>Review</strong> the PR");
+    expect(html).toContain('title="Ready for review"');
+    expect(html).toContain('data-github-link="pull_request"');
+    expect(html).toContain("lucide-git-pull-request");
+    expect(html).not.toContain("acme/web#241");
+  });
+
+  it("keeps GitHub branding for repositories and other GitHub pages", () => {
+    const html = renderMarkdown("https://github.com/acme/web and [GitHub Actions](https://github.com/features/actions)");
+    expect(html).toContain('data-github-link="repository"');
+    expect(html.replace(/<[^>]*>/g, "")).toContain("acme/web");
+    expect(html).toContain('data-github-link="github"');
+    expect(html).toContain("lucide-github");
+  });
+
+  it("keeps full URL labels on lookalike hosts", () => {
+    const html = renderMarkdown("https://github.com.example.com/acme/web/pull/241");
+    expect(html).not.toContain("data-github-link");
+    expect(html).toContain("lucide-external-link");
+    expect(html.replace(/<[^>]*>/g, "")).toContain("https://github.com.example.com/acme/web/pull/241");
   });
 
   ;
