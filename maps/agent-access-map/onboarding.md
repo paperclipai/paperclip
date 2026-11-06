@@ -88,7 +88,8 @@ Policy: Instance setup is operator work; company creation is board; agent creati
 creation retain their individual permissions.
 
 The wizard selects the Codex harness and lets the server resolve an automatic
-new-agent runner; explicit Legacy remains available. Supported-platform and
+new-agent runner without a runner dropdown. Explicit runner requests remain
+available through the agent creation API. Supported-platform and
 immutable sandbox evidence follow [environment probe policy](./execution-environments.md#probe).
 Creation/discovery do not provision a target to determine this default. Adapter
 setup validation requires `agents:create`, plus saved-agent update access when

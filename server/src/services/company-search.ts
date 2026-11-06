@@ -42,6 +42,7 @@ import { companyArtifactsService } from "./company-artifacts.js";
 import { companySearchExtractService } from "./company-search-extract.js";
 import { visibleIssueCondition } from "./issue-visibility.js";
 import { parseTaskSearch, taskSearchCtes, taskSearchScore, taskSearchFieldMatch, taskSearchTermMatch } from "./task-search.js";
+import { listIssueStatusBlockerAttention } from "./issue-status-presentation.js";
 
 const SNIPPET_MAX_CHARS = 240;
 export const COMPANY_SEARCH_BRANCH_FETCH_LIMIT = COMPANY_SEARCH_MAX_OFFSET + COMPANY_SEARCH_MAX_LIMIT + 1;
@@ -1155,8 +1156,15 @@ export function companySearchService(db: Db) {
         const states = await db.select({ id: issues.id, state: externalConversationStateSql() }).from(issues)
           .where(and(eq(issues.companyId, companyId), inArray(issues.id, issueIds)));
         const byId = new Map(states.map((row) => [row.id, row.state]));
+        // Glyph-only blocker state (no blocker titles, IDs or identifiers), so a
+        // covered-blocked result shows the same "in queue" glyph as its task.
+        const blockerAttention = await listIssueStatusBlockerAttention(db, companyId,
+          paged.flatMap((result) => result.issue ? [result.issue] : []));
         for (const result of paged) {
-          if (result.issue) result.issue.externalConversationState = byId.get(result.issue.id) ?? null;
+          if (!result.issue) continue;
+          result.issue.externalConversationState = byId.get(result.issue.id) ?? null;
+          const attention = blockerAttention.get(result.issue.id);
+          if (attention) result.issue.blockerAttention = attention;
         }
       }
       return {

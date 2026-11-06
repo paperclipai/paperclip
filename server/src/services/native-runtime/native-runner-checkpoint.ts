@@ -4,6 +4,8 @@ import { checkpointDb, heartbeatRuns, issues, nativeRunFinalizations, nativeRunn
 import { inspectDurablePrpCheckpointHeader, inspectUnclaimedBootstrapCheckpoint, decodeDurablePrpCheckpoint, type DurablePrpCheckpoint, type DurablePrpControlPlane, type DurableRecoveryIdentity } from "../../vendor/paperclip-runner/index.js";
 import { createLocalEncryptedCipher } from "../../secrets/local-encrypted-provider.js";
 import { legacyControllerBootId } from "../legacy-controller-lease.js";
+import { assertNativeSourceCheckpointConsumer, lockSourceRecoveryCoordinators } from "./native-source-recovery-ownership.js";
+import { runnerdStateIsIncompleteBootstrap } from "./native-bootstrap-proof.js";
 
 type Binding = { companyId: string; issueId: string; runId: string };
 export const NATIVE_CHECKPOINT_HEADER_INSPECTION_MAX_BYTES = 1024 * 1024;
@@ -85,6 +87,7 @@ export async function validateNativeRunnerCheckpointOwner(
   const activeOwner = owner.leaseOwner !== null && current.leaseOwner === owner.leaseOwner
     && current.leaseExpiresAt !== null && current.leaseExpiresAt > new Date(owned.now);
   if (!activeOwner) {
+    await assertNativeSourceCheckpointConsumer(tx, owner);
     const [task] = await tx.select({ executionRunId: issues.executionRunId }).from(issues)
       .where(and(eq(issues.companyId, owner.companyId), eq(issues.id, owner.issueId)));
     const [successor] = task?.executionRunId && task.executionRunId !== owner.runId
@@ -119,6 +122,10 @@ export function nativeRunnerCheckpointWriter(db: Db, owner: NativeRunnerCheckpoi
     if (checkpoint.runId !== owner.runId) throw new Error("native_runner_checkpoint_binding_mismatch");
     const changed = encryptParts(owner, checkpoint.changedRecords);
     await persistenceDb.transaction(async tx => {
+      if (owner.runId !== owner.authorityRunId) {
+        await lockSourceRecoveryCoordinators(tx, owner.companyId, [owner.runId, owner.authorityRunId]);
+        await assertNativeSourceCheckpointConsumer(tx, owner, checkpoint);
+      }
       await assertNativeRunnerCheckpointOwner(tx, owner, checkpoint.workCommandIds.some(id => !previousWork.has(id)));
       if (checkpoint.predecessor) {
         const [prior] = await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
@@ -240,6 +247,53 @@ export async function loadNativeUnclaimedBootstrapCheckpoint(
     const records = new Map(rows.map(row => [row.part, decryptPart(cipher, binding, row.part, row.material)] as const));
     return inspectUnclaimedBootstrapCheckpoint(records, identity);
   } catch { return null; }
+}
+
+const BOOTSTRAP_CHECKPOINT_PARTS = new Set(["header", "cursor", "command:1", "command:2"]);
+
+/**
+ * A remote runner's controller state lives only in this checkpoint, and every
+ * command is written here before the controller sends it. Once the previous
+ * controller's lease has expired, the checkpoint is therefore a complete record
+ * of what reached the sandbox runner. Returns true only when that record holds
+ * the bootstrap commands alone (run.prepare, an unfinished session.open) with
+ * no committed or acknowledged event, so no provider turn can exist. The
+ * sandbox runner journal is not on this host; the proof uses the controller
+ * record alone, as for a local root whose runner never journaled.
+ */
+export async function nativeRunnerCheckpointProvesIncompleteBootstrap(
+  db: Pick<Db, "select">, binding: Binding, expected: { runnerInstanceId: string; normalizedSessionId: string },
+): Promise<boolean> {
+  try {
+    const parts = await db.select({ part: nativeRunnerCheckpoints.part }).from(nativeRunnerCheckpoints).where(and(
+      eq(nativeRunnerCheckpoints.companyId, binding.companyId), eq(nativeRunnerCheckpoints.issueId, binding.issueId),
+      eq(nativeRunnerCheckpoints.runId, binding.runId))).limit(BOOTSTRAP_CHECKPOINT_PARTS.size + 1);
+    if (!parts.length || parts.length > BOOTSTRAP_CHECKPOINT_PARTS.size
+      || parts.some(row => !BOOTSTRAP_CHECKPOINT_PARTS.has(row.part))) return false;
+    const checkpoint = await loadNativeRunnerCheckpoint(db, binding);
+    if (!checkpoint || checkpoint.predecessor !== null
+      || checkpoint.recoveryEvidence.runnerInstanceId !== expected.runnerInstanceId
+      || checkpoint.recoveryEvidence.normalizedSessionId !== expected.normalizedSessionId) return false;
+    // The decoder above validated these canonical v2 records. Rebuild the
+    // controller state in memory; the part check admits no event records.
+    const read = (part: string) => {
+      const value = checkpoint.records.get(part);
+      return value === undefined ? undefined : JSON.parse(value) as Record<string, unknown>;
+    };
+    const header = read("header");
+    const cursor = read("cursor");
+    if (header?.schema !== "paperclip.runner.controller-checkpoint.v2" || !cursor) return false;
+    const state: Record<string, unknown> = {
+      ...(header.state as Record<string, unknown>),
+      ackedSourceSeq: cursor.ackedSourceSeq,
+      commands: ["command:1", "command:2"].map(read).filter(command => command !== undefined),
+      committedEvents: [],
+    };
+    return (state.identity as { runId?: unknown } | undefined)?.runId === binding.runId
+      && runnerdStateIsIncompleteBootstrap(state);
+  } catch {
+    return false;
+  }
 }
 
 export async function restoreNativeRunnerCheckpoint(db: Db, binding: Binding, root: string, normalizedSessionId?: string) {

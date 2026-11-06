@@ -41,6 +41,7 @@ import { lifecycleLiveTasks, lifecycleLiveDefinitionDigest } from "./lifecycle-l
 import { publicMcpTasks, publicMcpExpandedDigest, publicMcpSetupDigest, publicMcpWorkflowDigest, publicMcpWorkerInstructions, publicMcpWorkerSkillDigest } from "./public-mcp-cases.js";
 import { graderVersion as publicMcpGraderVersion } from "./public-mcp-grading.js";
 import { everydayTasks, productionStoryProfile } from "./everyday-cases.js";
+import { EVERYDAY_RELIABILITY_GROUP, EVERYDAY_RELIABILITY_SLOW_GROUP, RELIABILITY_FACADE_PROFILE_IDS, RELIABILITY_PLAN_PROFILE_ID, everydayReliabilityExecutionIds, reliabilityPlanCells, everydayReliabilitySignatures, everydayReliabilityTasks } from "./everyday-reliability-cases.js";
 import { REMOTE_WORKSPACE_STORAGE_SUITE, remoteWorkspaceStoragePrompt } from "./remote-workspace-storage.js";
 import { CONNECTION_GUIDANCE_SUITE, CONNECTION_GUIDANCE_BUDGET_CENTS, connectionGuidanceTasks, connectionGuidanceDefinitionDigest } from "./connection-guidance-cases.js";
 
@@ -90,6 +91,8 @@ const SELECTABLE_GROUPS = [
   "onboarding",
   "context-integrity",
   "stock-harness",
+  EVERYDAY_RELIABILITY_GROUP,
+  EVERYDAY_RELIABILITY_SLOW_GROUP,
 ] as const;
 const SAMPLE_UUID = "11111111-1111-4111-8111-111111111111";
 
@@ -1253,6 +1256,43 @@ export const kimiRunnerProfile = nativeProfile({
   modelQualification: { source: "qualified_runner_profile", qualificationId: "kimi:2.3.3:native-qualified-profile17" },
 });
 
+/**
+ * ACPX facades admitted only for the reliability long-silent-command case. Like the
+ * rolling-deployment matrix, they run as ordinary released profiles: a pending
+ * candidate needs its own qualification suite and is rejected here.
+ */
+const everydayFacadeProfiles = RELIABILITY_FACADE_PROFILE_IDS
+  .map(id => [...runnerProfiles, ...extendedHarnessProfiles, kimiRunnerProfile].find(profile => profile.id === id)!)
+  .filter(original => !original.qualificationCandidate || QUALIFIED_ACPX_PROFILES[original.qualificationCandidate].qualificationStatus !== "pending")
+  .map(original => {
+    const { qualificationCandidate: _candidate, ...profile } = productionStoryProfile(original);
+    return profile;
+  });
+/** Released facades currently in the reliability group; a pending one drops out. */
+export const everydayReliabilityFacadeProfileIds = everydayFacadeProfiles.map(profile => profile.id);
+/**
+ * Native OpenCode with DeepSeek 1017 through OpenRouter. It is the chat-feature
+ * candidate and the TestOps Reliability plan profile. The OpenCode server driver
+ * runs this model on Daytona exactly as it runs the qualified runner-opencode
+ * model there; only the configured model differs.
+ */
+const runnerOpenCodeDeepSeek1017Profile = nativeProfile({ id: RELIABILITY_PLAN_PROFILE_ID, label: "Native OpenCode DeepSeek 1017",
+  provider: "opencode", model: CHAT_FEATURE_OPENCODE_MODEL, credential: "OPENROUTER_API_KEY", supportedEnvironments: ["local", "daytona"],
+  modelQualification: { source: "candidate_runner_profile", qualificationId: "chat-feature-testops:deepseek-v4.1-flash-1017" } });
+const everydayWorkflowProfiles = [...everydayProfiles,
+  productionStoryProfile(runnerProfiles.find(profile => profile.id === "runner-opencode")!),
+  productionStoryProfile(runnerOpenCodeDeepSeek1017Profile),
+  ...everydayFacadeProfiles];
+
+/** Every reliability cell outside the deliberately small explicit matrix. */
+function everydayReliabilityExcludedIds(suiteId: string): string[] {
+  const allowed = new Set(everydayReliabilityExecutionIds(suiteId, everydayReliabilityFacadeProfileIds));
+  return everydayWorkflowProfiles.flatMap(profile => ["local", "daytona"].flatMap(environmentId =>
+    everydayReliabilityTasks.map(task => `${suiteId}.${profile.id}.${environmentId}.${task.id}`)))
+    .filter(id => !allowed.has(id));
+}
+
+
 const rollingDeploymentProfiles = [...runnerProfiles, ...extendedHarnessProfiles, kimiRunnerProfile]
   .filter(profile => profile.generation === "native" && profile.supportedEnvironments.includes("daytona")
     && (!profile.qualificationCandidate || QUALIFIED_ACPX_PROFILES[profile.qualificationCandidate].qualificationStatus !== "pending"))
@@ -1704,11 +1744,14 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
   {
     id: "everyday-workflows", label: "Everyday Paperclip Work", manualOnly: true,
     description: "Real user requests, useful downloaded work, and durable continuation using production instructions.",
-    groups: ["native"], profiles: [...everydayProfiles,
-      productionStoryProfile(runnerProfiles.find(profile => profile.id === "runner-opencode")!),
-    ], environments: [localEnvironment, daytonaWarmEnvironment],
-    tasks: everydayTasks.map(task => ["hire-reuse", "delegate-feedback", "recover-controller"].includes(task.id)
-      ? { ...task, automaticRetryPolicy: "single_attempt" as const } : task), expectedMatrixSize: 52,
+    groups: ["native"], profiles: everydayWorkflowProfiles, environments: [localEnvironment, daytonaWarmEnvironment],
+    // The S49 turn-3 failure needed an ephemeral per-turn lease, not the warm one.
+    environmentOverrides: { "three-turn-revise": { daytona: runnerEnvironments.find(environment => environment.id === "daytona")! } },
+    tasks: [...everydayTasks.map(task => ["hire-reuse", "delegate-feedback", "recover-controller"].includes(task.id)
+      ? { ...task, automaticRetryPolicy: "single_attempt" as const } : task), ...everydayReliabilityTasks],
+    // 52 everyday cells; one native Codex Daytona cell per reliability case, six DeepSeek plan cells (queue-steer needs
+    // Codex steering) and released facades for the silent command.
+    expectedMatrixSize: 52 + 2 * everydayReliabilityTasks.length - 1 + everydayFacadeProfiles.length,
     excludedExecutionIds: [...everydayProfiles.flatMap(profile => everydayTasks
       .filter(task => !["build-revise", "delegate-feedback", "recover-controller", "create-skill-studio"].includes(task.id))
       .map(task => `everyday-workflows.${profile.id}.daytona.${task.id}`)),
@@ -1716,8 +1759,16 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
         `everyday-workflows.runner-opencode.daytona.${task.id}`,
         ...(["hire-reuse", "delegate-feedback"].includes(task.id) ? [] : [`everyday-workflows.runner-opencode.local.${task.id}`]),
       ]),
+      // ACPX facades and the DeepSeek plan profile join only reliability cells.
+      ...[...everydayFacadeProfiles, runnerOpenCodeDeepSeek1017Profile].flatMap(profile => everydayTasks.flatMap(task =>
+        ["local", "daytona"].map(environmentId => `everyday-workflows.${profile.id}.${environmentId}.${task.id}`))),
+      ...everydayReliabilityExcludedIds("everyday-workflows"),
     ],
-    definitionMetadata: { version: 10, instructions: "production", grading: "outcome-and-invariants", scheduling: "explicit-only",
+    definitionMetadata: { version: 12, instructions: "production", grading: "outcome-and-invariants", scheduling: "explicit-only",
+      reliability: { group: EVERYDAY_RELIABILITY_GROUP, selection: "explicit-group-only", signatures: everydayReliabilitySignatures,
+        productRule: "interrupted-work-resumes-automatically-or-offers-a-working-first-retry", companyAndLeadBudgetCents: 1_000,
+        testOpsPlan: { profile: RELIABILITY_PLAN_PROFILE_ID, cells: reliabilityPlanCells,
+          cadence: "testops-launch-or-manual-dispatch", extras: "explicit-only-codex-and-acpx-cells" } },
       controllerDowntimeMs: 125_000,
       remoteCodexRestart: "bounded-main-server-outage-receipt-empty-cache-same-active-process-and-finalization",
       procedureCases: { ids: ["hire-reuse", "delegate-feedback"], maximumAttemptsPerCell: 1, companyAndLeadBudgetCents: 1_000 } },
@@ -1813,9 +1864,7 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
     profiles: [chatFeatureProfile(nativeProfile({ id: "runner-codex-subscription", label: "Native Codex subscription",
       provider: "codex", model: DEFAULT_CODEX_LOCAL_MODEL, credential: "CODEX_AUTH_JSON", supportedEnvironments: ["local"] })),
       chatFeatureProfile(runnerProfiles.find(profile => profile.id === "runner-opencode")!),
-      chatFeatureProfile(nativeProfile({ id: "runner-opencode-deepseek-1017", label: "Native OpenCode DeepSeek 1017",
-        provider: "opencode", model: CHAT_FEATURE_OPENCODE_MODEL, credential: "OPENROUTER_API_KEY", supportedEnvironments: ["local"],
-        modelQualification: { source: "candidate_runner_profile", qualificationId: "chat-feature-testops:deepseek-v4.1-flash-1017" } }))],
+      chatFeatureProfile(runnerOpenCodeDeepSeek1017Profile)],
     environments: [localEnvironment], tasks: chatFeatureTasks, expectedMatrixSize: 5,
     excludedExecutionIds: ["chat-features.runner-opencode-deepseek-1017.local.delegate-announcement"],
     definitionMetadata: { version: 2, definitionDigest: chatFeatureDefinitionDigest, scheduling: "explicit-only",
@@ -1896,7 +1945,7 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
     environments: [localEnvironment],
     tasks: [...firstTaskTasks.filter(task => task.id === "interview-plan-accept"), ...chatCompletionTasks],
     expectedMatrixSize: 10,
-    definitionMetadata: { version: 27, runGrading: "evidenced-nonexecution-and-refusal", resultNavigation: "loaded-task-header", instructionSetup: "read-before-write-base-hash", requirementEvidence: "recorded-user-comments-and-resolved-answers", busyReferenceWait: "committed-conversation-document-response-held", busyBoundary: "source-tool-in-flight-and-public-deferred-wake", workerReference: "rsvp-code-in-saved-note", judge: "completion-quality-v14-observed-rendered-result-access", judgeMaxDollarsPerRequest: 0.5, instructions: "production", correlation: "authoritative-task-facts-required-in-reply-run", restartBoundary: "done-and-source-provider-at-reference-gate", idleBoundaryTimeoutMs: 180_000, workerBriefTimeoutMs: 240_000, workerBriefWorkspace: "managed-project", workerBriefEvidence: "released-start-time", grading: "post-completion-reply-and-result-access", semanticReview: "required-separately", chatBoundary: "worker-gated-until-source-idle", observationWindowMs: 120_000, scheduling: "explicit-only" },
+    definitionMetadata: { version: 28, runGrading: "evidenced-nonexecution-and-refusal", resultNavigation: "loaded-task-header", instructionSetup: "read-before-write-base-hash", requirementEvidence: "recorded-user-comments-and-resolved-answers", busyReferenceWait: "committed-conversation-document-response-held", busyBoundary: "source-tool-in-flight-and-public-deferred-wake", workerReference: "rsvp-code-in-saved-note", judge: "completion-quality-v14-observed-rendered-result-access", judgeMaxDollarsPerRequest: 0.5, instructions: "production", correlation: "authoritative-task-facts-required-in-reply-run", restartBoundary: "done-and-source-provider-at-reference-gate", idleBoundaryTimeoutMs: 180_000, workerBriefTimeoutMs: 240_000, workerBriefWorkspace: "run-isolated-task-directory", workerBriefEvidence: "released-start-time", grading: "post-completion-reply-and-result-access", semanticReview: "required-separately", chatBoundary: "worker-gated-until-source-idle", observationWindowMs: 120_000, scheduling: "explicit-only" },
 
   },
   ...(process.env.PAPERCLIP_RUNNER_E2E_CONNECTION_REVIEWS === "1" ? [connectionReviewSuite] : []),
@@ -2186,6 +2235,7 @@ export function validateRunnerCatalog(): MatrixExecution[] {
     ...continuationTasks,
     questionResumeTask,
     ...everydayTasks,
+    ...everydayReliabilityTasks,
     ...taskTitleTasks,
     ...runnerTasks,
     ...localIntegrityTasks,

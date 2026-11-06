@@ -1350,6 +1350,9 @@ export async function createApp(
       logger.error({ err }, "Failed to load ready plugins on startup");
     });
   app.locals.bundledPluginsStartup = trackIdleWork(bundledPluginsStartup);
+  // Manifest ids the managed auto-install list resolves to; the managed
+  // environments bootstrap checks plugin entries against them.
+  app.locals.managedBundledPluginKeys = managedBundledPluginKeys;
   void bundledPluginsStartup.then(() => { lifecyclePluginsReady = true; resourceLifecycleDelivery.wake(); agentLifecycleDelivery.wake(); }).catch(() => logger.warn("Agent lifecycle recovery failed; retrying."));
   // The shutdown hook runs at most once. It caches the in-flight promise, so a
   // second caller (for example the `exit` handler) awaits the same completion
