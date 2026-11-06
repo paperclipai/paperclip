@@ -288,7 +288,6 @@ import { retainBacklogHumanAssignment } from "../services/human-directed-work.js
 import { queueIssueAssignmentWakeup } from "../services/issue-assignment-wakeup.js";
 import { shouldWakeAssigneeForIssueComment } from "../services/issue-comment-wakeup.js";
 import { createSecretProposalsService } from "../services/secret-proposals.js";
-import { notifySecretProposalResolution } from "../services/secret-proposal-notifications.js";
 import {
   renderOnboardingGreeting,
   ONBOARDING_GREETING_AUTHORIZATION_REASON,
@@ -17516,13 +17515,6 @@ export function issueRoutes(
                   companyId: issue.companyId,
                   proposal: lockedProposal,
                 }),
-            });
-            await notifySecretProposalResolution({
-              proposal,
-              status: "approved",
-              userId: resolvedByUserId,
-              issues: svc,
-              heartbeat,
             });
           }
           continuationInteraction =
