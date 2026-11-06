@@ -10947,7 +10947,7 @@ export function createToolGatewayService(
             .limit(1);
           if (typeof gateway?.metadata?.nativeRuntimeAssignmentDigest === "string") {
             const decisionInput = policyInputForTool({ session, tool, parameters: storedParameters });
-            const accessDecision = await policyService.decide(decisionInput);
+            const accessDecision = await policyService.decide(decisionInput, { admittedInvocationId: storedInvocation.id });
             if (!accessDecision.allowed && accessDecision.decision !== "require_approval") {
               await policyService.writeAudit(decisionInput, accessDecision);
               throw new ToolGatewayHttpError(
