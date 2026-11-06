@@ -723,6 +723,37 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
     expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId))).toHaveLength(0);
   });
 
+  it.each(["queued", "running", "scheduled_retry"])("does not queue a second run when the new assignee already has a %s run after a reassignment Stop", async status => {
+    const companyId = await seedCompany();
+    const agentId = await seedAgent({ companyId });
+    const nextAgentId = await seedAgent({ companyId, name: "NextOwner" });
+    const issueId = await seedIssue({ companyId, assigneeAgentId: nextAgentId, status: "in_progress" });
+    const runId = await seedRun({ companyId, agentId, status: "cancelled", contextSnapshot: { issueId } });
+    await db.update(heartbeatRuns).set({ runtimeMode: "native", nativeIssueId: issueId, resultJson: {
+      reassignmentStopRequested: true,
+      nativeCancellation: { schema: "paperclip.native-cancellation.v1", runId, companyId, issueId,
+        scope: "run", reasonCode: "cancellation_run_only", dispatchState: "acknowledged", dispatched: true,
+        intentAuditId: randomUUID(), acknowledgementAuditId: randomUUID() },
+    } }).where(eq(heartbeatRuns.id, runId));
+    await db.update(issues).set({ executionRunId: runId, checkoutRunId: runId }).where(eq(issues.id, issueId));
+    const nextRunId = await seedRun({ companyId, agentId: nextAgentId, status, contextSnapshot: { issueId } });
+    const mentionWakeId = await seedDeferredWake({ companyId, agentId: nextAgentId, issueId });
+    await db.update(agentWakeupRequests).set({ reason: "issue_comment_mentioned" })
+      .where(eq(agentWakeupRequests.id, mentionWakeId));
+    const release = createReleaseIssueExecution({ issueLock: createPostgresWakeQueueAdapter(db, stubDeps),
+      recovery: { escalateStrandedAssignedIssue: async () => { throw new Error("must not escalate a stopped run"); },
+        escalateStrandedRecoveryIssueInPlace: async () => { throw new Error("must not escalate a stopped run"); } },
+    });
+
+    const result = await release({ companyId, runId, now: new Date() });
+
+    expect(result).toMatchObject({ outcome: { kind: "released" }, postCommitEffects: [] });
+    expect((await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, companyId),
+      eq(heartbeatRuns.agentId, nextAgentId)))).map(row => row.id)).toEqual([nextRunId]);
+    expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, mentionWakeId)))[0].status)
+      .toBe("deferred_issue_execution");
+  });
+
   it("releases an acknowledged interrupt Stop without blocking or retiring the settling executor", async () => {
     const companyId = await seedCompany();
     const agentId = await seedAgent({ companyId });
