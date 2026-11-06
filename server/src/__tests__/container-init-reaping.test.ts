@@ -34,6 +34,10 @@ const quickstartCompose = read("docker", "docker-compose.quickstart.yml");
 const ecsTaskDefinition = JSON.parse(read("docker", "ecs-task-definition.json")) as {
   containerDefinitions: { name: string; image: string; linuxParameters?: { initProcessEnabled?: boolean } }[];
 };
+const eksDeployment = read("docker", "eks", "deployment.yaml");
+const appRunnerService = JSON.parse(read("docker", "apprunner-service.json")) as {
+  SourceConfiguration: { ImageRepository: { ImageConfiguration: { StartCommand?: string } } };
+};
 const reapingProbe = read("scripts", "assert-orphan-reaping.sh");
 const buildTest = read("scripts", "docker-build-test.sh");
 const dockerWorkflow = read(".github", "workflows", "docker.yml");
@@ -122,6 +126,21 @@ describe("deployment manifest parity", () => {
     const server = ecsTaskDefinition.containerDefinitions.find((c) => c.name === "paperclip-server");
     expect(server, "the task definition must define a paperclip-server container").toBeDefined();
     expect(server?.linuxParameters?.initProcessEnabled).toBeUndefined();
+  });
+
+  it("leaves the EKS Deployment on the image's ENTRYPOINT", () => {
+    // A container `command:` replaces the image ENTRYPOINT, dropping tini as
+    // PID 1. A shared process namespace makes the pause container PID 1 instead.
+    // Either one brings back the unreaped-orphan failure this file guards.
+    expect(eksDeployment).toMatch(/^\s+- name: paperclip-server$/m);
+    expect(/^\s*command:/m.test(eksDeployment)).toBe(false);
+    expect(/^\s*shareProcessNamespace:\s*true\s*$/m.test(eksDeployment)).toBe(false);
+  });
+
+  it("leaves the App Runner service on the image's ENTRYPOINT", () => {
+    // StartCommand overrides the image's start command, which can bypass tini.
+    const image = appRunnerService.SourceConfiguration.ImageRepository.ImageConfiguration;
+    expect(image.StartCommand).toBeUndefined();
   });
 });
 
