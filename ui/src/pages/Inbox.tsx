@@ -81,6 +81,7 @@ import {
 import { EmptyState } from "../components/EmptyState";
 import { CollectionToolbar, type CollectionToolbarProps } from "../components/CollectionToolbar";
 import { IssueGroupHeader } from "../components/IssueGroupHeader";
+import { InboxGroupMarkAllRead } from "../components/InboxGroupMarkAllRead";
 import { PageSkeleton } from "../components/PageSkeleton";
 import {
   InboxIssueMetaLeading,
@@ -179,6 +180,7 @@ import {
   INBOX_FILTER_PREFERENCES_KEY_PREFIX,
   INBOX_ISSUE_COLUMNS_KEY,
 } from "../lib/inbox";
+import { collectInboxGroupUnreadIssueIds } from "../lib/inboxGroupUnread";
 import { useDismissedInboxAlerts, useInboxDismissals, useReadInboxItems } from "../hooks/useInboxBadge";
 import { useInboxSortAttention } from "../hooks/useInboxSortAttention";
 import {
@@ -2578,6 +2580,9 @@ function StreamlinedInbox({
   const unreadIssueIds = markAllReadIssues
     .map((issue) => issue.id);
   const canMarkAllRead = unreadIssueIds.length > 0;
+  const isIssueLeavingInbox = (issueId: string) => fadingOutIssues.has(issueId) || archivingIssueIds.has(issueId);
+  const unreadIssueIdsInGroup = (group: InboxGroupedSection) =>
+    collectInboxGroupUnreadIssueIds(group, isIssueLeavingInbox);
   const activeIssueFilterCount = countActiveIssueFilters(issueFilters, true);
   const activeInboxScopeFilterCount = tab === "all"
     ? Number(allCategoryFilter !== "everything")
@@ -2804,6 +2809,7 @@ function StreamlinedInbox({
                     {([
                       ["none", "None"],
                       ["type", "Type"],
+                      ["source", "Source"],
                       ["assignee", "Responsible"],
                       ["project", "Project"],
                       ...(isolatedWorkspacesEnabled ? ([["workspace", "Workspace"]] as const) : []),
@@ -3166,6 +3172,7 @@ function StreamlinedInbox({
                     const groupNavIdx = groupFlatIndex.get(group.key) ?? -1;
                     const isGroupSelected = groupNavIdx >= 0 && selectedIndex === groupNavIdx;
                     const canCreateIssueInGroup = group.displayItems.some((item) => item.kind === "issue");
+                    const groupUnreadIssueIds = unreadIssueIdsInGroup(group);
                     elements.push(
                       <div
                         key={`group-${group.key}`}
@@ -3188,20 +3195,30 @@ function StreamlinedInbox({
                           collapsible
                           collapsed={isGroupCollapsed}
                           onToggle={() => toggleGroupCollapse(group.key)}
-                          trailing={canCreateIssueInGroup ? (
-                            <Button
-                              variant="ghost"
-                              size="icon-xs"
-                              className="-mr-2 text-muted-foreground"
-                              title={`New task in ${group.label}`}
-                              aria-label={`New task in ${group.label}`}
-                              onClick={(event) => {
-                                event.stopPropagation();
-                                openCreateIssueForGroup(group);
-                              }}
-                            >
-                              <Plus className="h-3 w-3" />
-                            </Button>
+                          trailing={canCreateIssueInGroup || groupUnreadIssueIds.length > 0 ? (
+                            <div className="flex items-center gap-1">
+                              <InboxGroupMarkAllRead
+                                groupLabel={group.label}
+                                unreadCount={groupUnreadIssueIds.length}
+                                pending={markAllReadMutation.isPending}
+                                onConfirm={() => markAllReadMutation.mutate(groupUnreadIssueIds)}
+                              />
+                              {canCreateIssueInGroup ? (
+                                <Button
+                                  variant="ghost"
+                                  size="icon-xs"
+                                  className="-mr-2 text-muted-foreground"
+                                  title={`New task in ${group.label}`}
+                                  aria-label={`New task in ${group.label}`}
+                                  onClick={(event) => {
+                                    event.stopPropagation();
+                                    openCreateIssueForGroup(group);
+                                  }}
+                                >
+                                  <Plus className="h-3 w-3" />
+                                </Button>
+                              ) : null}
+                            </div>
                           ) : null}
                         />
                         </div>
