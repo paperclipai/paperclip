@@ -143,7 +143,7 @@ export function aiConnectionRouterService(db: Db, workerManager?: PluginWorkerMa
     for (const member of pool.members) {
       const account = visible.find(account => account.id === member.binding.connectionId && account.grantId === member.binding.grantId);
       const key = account ? await usageCacheKey(member, companyId) : null;
-      const cached = key ? usageCache.get(key) : undefined;
+      const cached = key ? usageCache.get(`${key}:${userId}`) : undefined;
       const observation = cached && cached.expires > Date.now() ? cached.value : undefined;
       result[member.id] = { reason: account?.status === "connected" ? "Eligible if agent access permits" : account?.status ?? "Not permitted", checkedAt: account && observation ? observation.checkedAt : null, ...(account && observation ? { usage: observation } : {}) };
     }
@@ -222,9 +222,15 @@ export function aiConnectionRouterService(db: Db, workerManager?: PluginWorkerMa
     return `${companyId}:${grant.id}:${ref?.secretId}:${secret?.version}:${grant.updatedAt.toISOString()}`;
   }
   async function probe(member: AiConnectionPoolMember, companyId: string, userId: string, deadline: number) {
-    const key = await usageCacheKey(member, companyId);
-    if (!key) return undefined;
+    const accountKey = await usageCacheKey(member, companyId);
+    if (!accountKey) return undefined;
+    // A cached observation must not bypass the requesting user's grant check.
+    const key = `${accountKey}:${userId}`;
     const cached = usageCache.get(key);
+    if (cached || usageInFlight.has(key)) {
+      const visible = await aiConnectionService(db).list(companyId, userId);
+      if (!visible.some(account => account.id === member.binding.connectionId && account.grantId === member.binding.grantId)) return undefined;
+    }
     if (cached && cached.expires > Date.now()) return cached.value;
     let pending = usageInFlight.get(key);
     if (!pending) {
@@ -311,8 +317,26 @@ export function aiConnectionRouterService(db: Db, workerManager?: PluginWorkerMa
         const available: typeof candidates = [];
         for (const candidate of candidates) {
           const retryAt = await accountCooldown(input.companyId, candidate.member.binding.connectionId, identities.get(candidate.member.id)!);
-          if (retryAt) cooling.push(retryAt);
-          else available.push(candidate);
+          if (retryAt) { cooling.push(retryAt); continue; }
+          // Existing task affinity is never moved on a usage observation: it
+          // may have an active or recoverable provider session. This read-only
+          // preflight applies only before the initial task selection.
+          if (builtin && !pin && input.userId && Date.now() < deadline) {
+            const usage = await probe(candidate.member, input.companyId, input.userId, deadline);
+            const exhausted = usage?.status === "ok" && usage.source === "anthropic_oauth" && usage.overage?.enabled === false
+              ? usage.limits.filter(limit => limit.scope === null && limit.limitReached === true)
+              : [];
+            const resets = exhausted.map(limit => Date.parse(limit.resetsAt ?? ""));
+            if (exhausted.length > 0 && resets.every(reset => Number.isFinite(reset) && reset > Date.now())) {
+              const deadline = new Date(Math.max(...resets));
+              await recordQuotaCooldown(input.companyId, candidate.member.binding.connectionId, identities.get(candidate.member.id)!, deadline);
+              cooling.push(deadline);
+              continue;
+            }
+          }
+          available.push(candidate);
+          // Only the first available account is needed for ordered failover.
+          break;
         }
         if (available.length === 0 && cooling.length > 0) {
           throw new AiConnectionPoolExhausted(new Date(Math.min(...cooling.map((date) => date.getTime()))).toISOString(), pool.id);

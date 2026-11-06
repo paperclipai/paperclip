@@ -9,6 +9,15 @@ preserved; without one the default cooldown is one hour. Accounts sharing the
 same stored credential and epoch share a cooldown. Independently stored
 credentials are not assumed to represent the same external account.
 
+Before selecting an account for a task without an existing pin, the host may
+read the responsible user's authorized Claude subscription usage. When an
+account-wide limit is exhausted, extra usage is disabled, and the provider gives
+a future reset, it records the cooldown and tries the next account. Unknown or
+scoped limits, missing authorization and unsuccessful usage checks do not block
+selection. This observation is a momentary preflight; it cannot guarantee that
+capacity remains available when the provider starts. Existing task pins are not
+changed by this check.
+
 An automatic continuation must prove that the prior execution is stopped and
 that workspace, history and action outcomes are safe to continue. When that
 evidence is unavailable, the task remains held for recovery. A provider switch

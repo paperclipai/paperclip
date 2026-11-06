@@ -177,6 +177,59 @@ describe("durable, authorized connection routing", () => {
       await instanceSettingsService(db).updateExperimental({ enableAiConnectionRouters: false });
     }
   });
+  it("uses an account-wide Claude usage observation only for an unpinned task", async () => {
+    await db.delete(aiConnectionQuotaCooldowns).where(eq(aiConnectionQuotaCooldowns.companyId, companyId));
+    const claude = members[1]!;
+    const [grant] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, claude.binding.grantId));
+    const ref = grant!.credentialSecretRefs.find(item => item.configPath === "ai.credential")!;
+    await secretService(db).rotate(ref.secretId, { value: "fixture-preflight", preserveAiSessionEpoch: true }, { userId: "alice" });
+    let utilization = 12;
+    const reset = new Date(Date.now() + 2 * 60 * 60_000).toISOString();
+    const fetch = vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(JSON.stringify({
+      five_hour: { utilization, resets_at: reset }, extra_usage: { is_enabled: false },
+    })));
+    try {
+      const pool = await service().save(BUILTIN_AI_FAILOVER_ROUTER_KEY, { companyId, config: { name: randomUUID(), enabled: true, mode: "failover", thresholdPercent: 90, members: [claude, members[0]!] } }, "alice");
+      const taskKey = randomUUID();
+      expect((await resolve(pool.id, taskKey)).memberId).toBe(claude.id);
+      utilization = 100;
+      await secretService(db).rotate(ref.secretId, { value: "fixture-preflight-new", preserveAiSessionEpoch: true }, { userId: "alice" });
+      expect((await resolve(pool.id, taskKey)).memberId).toBe(claude.id);
+      expect(fetch).toHaveBeenCalledTimes(1);
+      expect((await resolve(pool.id, randomUUID())).memberId).toBe(members[0]!.id);
+      expect(await service().accountCooldown(companyId, claude.binding.connectionId, await identityFor(claude.binding.grantId))).toEqual(new Date(reset));
+      expect(fetch).toHaveBeenCalledTimes(2);
+      expect((await resolve(pool.id, randomUUID())).memberId).toBe(members[0]!.id);
+      expect(fetch).toHaveBeenCalledTimes(2);
+    } finally {
+      fetch.mockRestore();
+      await db.delete(aiConnectionQuotaCooldowns).where(eq(aiConnectionQuotaCooldowns.companyId, companyId));
+    }
+  });
+  it("does not treat uncertain Claude usage as account-wide exhaustion", async () => {
+    await db.delete(aiConnectionQuotaCooldowns).where(eq(aiConnectionQuotaCooldowns.companyId, companyId));
+    const claude = members[1]!;
+    const [grant] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, claude.binding.grantId));
+    const ref = grant!.credentialSecretRefs.find(item => item.configPath === "ai.credential")!;
+    let body: Record<string, unknown> = {};
+    const fetch = vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(JSON.stringify(body)));
+    try {
+      const pool = await service().save(BUILTIN_AI_FAILOVER_ROUTER_KEY, { companyId, config: { name: randomUUID(), enabled: true, mode: "failover", thresholdPercent: 90, members: [claude, members[0]!] } }, "alice");
+      const future = new Date(Date.now() + 60_000).toISOString();
+      const cases = [
+        { seven_day_sonnet: { utilization: 100, resets_at: future }, extra_usage: { is_enabled: false } },
+        { five_hour: { utilization: 100, resets_at: future } },
+        { five_hour: { utilization: 100, resets_at: new Date(Date.now() - 1000).toISOString() }, extra_usage: { is_enabled: false } },
+        { five_hour: { utilization: 99, resets_at: future }, extra_usage: { is_enabled: false } },
+      ];
+      for (const [index, value] of cases.entries()) {
+        body = value;
+        await secretService(db).rotate(ref.secretId, { value: `fixture-preflight-unknown-${index}`, preserveAiSessionEpoch: true }, { userId: "alice" });
+        expect((await resolve(pool.id, randomUUID())).memberId).toBe(claude.id);
+        expect(await service().accountCooldown(companyId, claude.binding.connectionId, await identityFor(claude.binding.grantId))).toBeNull();
+      }
+    } finally { fetch.mockRestore(); }
+  });
   it("does not assign the built-in failover policy to a plugin-owned pool", async () => {
     await instanceSettingsService(db).updateExperimental({ enableAiConnectionRouters: true });
     try { await expect(makePool({ mode: "failover" })).rejects.toThrow("requires the built-in pool"); }
