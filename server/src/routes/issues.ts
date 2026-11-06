@@ -17152,13 +17152,10 @@ export function issueRoutes(
           allowStoppedTarget: true,
         });
         assertQueueMutationTarget({ queue: locked.queue, queueId: req.body.queueId, revision: req.body.revision });
-        const freshResponse = locked.queue.entries.some(entry => entry.source?.requiresFreshSession);
-        // The UI offers Send whenever no turn is running. The issue's run may
-        // still be waiting to start or to retry: it has no turn to interrupt,
-        // so save the click and deliver the queue as soon as that run stops.
-        const previousRunNotRunning = !locked.activeRun || locked.activeRun.status !== "running";
-        const stoppedNativeQueue = locked.queue.protocol === "paperclip_runner_v1" && previousRunNotRunning;
-        if ((locked.queue.protocol !== "legacy" && !freshResponse && !stoppedNativeQueue) || locked.state !== "deferred" ||
+        // Explicit Interrupt is also the fallback when a native turn cannot
+        // accept steering. Cancellation and ordinary admission still own Stop
+        // confirmation, cleanup, and delivery; this click only records intent.
+        if (locked.state !== "deferred" ||
             !locked.queue.entries.length ||
             (locked.activeRun && locked.activeRun.agentId !== locked.wake.agentId)) {
           throw conflict("This queue does not support interruption");
@@ -17172,7 +17169,7 @@ export function issueRoutes(
         await tx.update(agentWakeupRequests).set({
           payload: { ...readObject(locked.wake.payload), queuedCommentInterrupt: {
             actorId: actor.actorId, requestedAt: new Date().toISOString(),
-            ...(freshResponse && locked.queue.protocol === "paperclip_runner_v1" && locked.activeRun?.status === "running"
+            ...(locked.queue.protocol === "paperclip_runner_v1" && locked.activeRun?.status === "running"
               ? { targetRunId: locked.activeRun.id } : {}),
           } },
           updatedAt: new Date(),

@@ -2609,6 +2609,13 @@ They read only the queued run's runtime mode. Mutation locks retain complete
 wake and run rows, so edits, ordering, interruption, and saved execution inputs
 keep their existing write contract.
 
+The task composer offers Steer when the native session has an active provider
+turn that accepts steering. If steering is unavailable or unsupported, it offers
+an explicit Interrupt action instead. Interrupt records the board user's intent,
+requests cancellation, and delivers the saved queue through normal admission after
+the previous execution stops. Preparation and cleanup can keep messages queued;
+the action does not bypass Stop confirmation or execution gates.
+
 Run retrieval and session state are in `server/src/services/heartbeat/run-state.ts`.
 It owns bounded run projections, database encoding checks, task session reads and
 writes, explicit resumes, session compaction, and usage/billing helpers.

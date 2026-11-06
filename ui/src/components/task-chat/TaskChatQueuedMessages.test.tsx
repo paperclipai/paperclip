@@ -267,6 +267,36 @@ describe("TaskChatQueuedMessages", () => {
     ).toBe(true);
   });
 
+  it.each(["temporarily_unavailable", "unsupported"] as const)(
+    "offers an explicit interrupt fallback when native steering is %s",
+    async (steeringDisposition) => {
+      const props = render({
+        queue: { ...queue, steeringDisposition },
+        onInterrupt: vi.fn().mockResolvedValue(undefined),
+      });
+      const interrupt = container.querySelector<HTMLButtonElement>(
+        '[data-testid="task-chat-queued-interrupt-comment-1"]',
+      );
+      expect(interrupt).not.toBeNull();
+      expect(interrupt!.disabled).toBe(false);
+      expect(interrupt!.textContent).toContain("Interrupt");
+      await act(async () => { interrupt!.click(); });
+      expect(props.onInterrupt).toHaveBeenCalledOnce();
+      expect(props.onSteer).not.toHaveBeenCalled();
+      expect(container.querySelector('[data-testid="task-chat-queued-messages"]')).toBeNull();
+    },
+  );
+
+  it("keeps same-turn steering when the provider is available, even with an interrupt callback", async () => {
+    const props = render({ onInterrupt: vi.fn().mockResolvedValue(undefined) });
+    expect(container.querySelector('[data-testid="task-chat-queued-interrupt-comment-1"]')).toBeNull();
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-testid="task-chat-queued-steer-comment-1"]')!.click();
+    });
+    expect(props.onSteer).toHaveBeenCalledWith("comment-1", "rev-1");
+    expect(props.onInterrupt).not.toHaveBeenCalled();
+  });
+
   it("waits for authoritative discard acknowledgement before removing the row", async () => {
     const acknowledgement = deferred<void>();
     render({ onDiscard: vi.fn().mockReturnValue(acknowledgement.promise) });
