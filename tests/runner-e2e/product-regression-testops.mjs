@@ -26,8 +26,7 @@ export const productRegressionCases = [
   [168, 'agent-chat', 'new-session'],
 ].map(([id, suite, name, profile = 'runner-codex']) => Object.freeze({
   id, suite, name, profile,
-  model: suite === 'task-workspaces' ? 'openrouter/deepseek/deepseek-v4-flash-0731'
-    : suite === 'configured-repository' ? 'gpt-6.1-sol' : 'gpt-5.6-sol',
+  model: suite === 'task-workspaces' ? 'openrouter/deepseek/deepseek-v4-flash-0731' : 'gpt-6.1-sol',
   fullName: `paperclip.Product E2E.${suite}.${name}`,
   executionId: `${suite}.${profile}.local.${name}`,
   plan: 'product-regression', environment: 'local',
