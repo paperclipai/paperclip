@@ -190,7 +190,10 @@ const SKILLLESS_BASE_CONFIG = {
   "features.plugins": false,
   "features.multi_agent": false,
   "features.memories": false,
-  "features.image_generation": false,
+  // Image generation stays on: Codex's built-in tool runs in the trusted
+  // app-server with the agent's existing provider auth. Disabling it makes the
+  // agent fall back to an OPENAI_API_KEY script the sandboxed shell cannot see,
+  // so it asks the user for a second key (N-12).
 } as const;
 
 export function codexCommandEnvironment(
@@ -288,6 +291,11 @@ export function createIsolatedCodexAppServerArgs(
         .map((value) => resolve(value)),
     ),
   ];
+  // Codex saves built-in image results under CODEX_HOME/generated_images and
+  // tells the agent to copy them into the workspace. Expose only that folder.
+  const generatedImageRoots = usesPreconfiguredHome(source) || typeof source.CODEX_HOME !== "string" || !source.CODEX_HOME.trim()
+    ? []
+    : [join(resolve(source.CODEX_HOME), "generated_images")];
   const filesystemRules = [
     `":root"="none"`,
     `":minimal"="read"`,
@@ -296,6 +304,7 @@ export function createIsolatedCodexAppServerArgs(
     ...protectedPaths.map((path) => `${tomlString(resolve(path))}="none"`),
     ...(usesPreconfiguredHome(source) && source.HOME ? [`${tomlString(source.HOME)}="write"`] : []),
     ...readOnlyRoots.map((path) => `${tomlString(resolve(path))}="read"`),
+    ...generatedImageRoots.map((path) => `${tomlString(path)}="read"`),
     ...gitRoots.read.map((path) => `${tomlString(path)}="read"`),
     ...gitRoots.write.map((path) => `${tomlString(path)}="write"`),
     ...(instructionWorkingCopyRoot ? [`${tomlString(resolve(instructionWorkingCopyRoot))}="write"`] : []),
@@ -311,6 +320,7 @@ export function createIsolatedCodexAppServerArgs(
     ...protectedPaths.map((path) => `${tomlString(resolve(path))}="none"`),
     ...(usesPreconfiguredHome(source) && source.HOME ? [`${tomlString(source.HOME)}="read"`] : []),
     ...readOnlyRoots.map((path) => `${tomlString(resolve(path))}="read"`),
+    ...generatedImageRoots.map((path) => `${tomlString(path)}="read"`),
     ...[...gitRoots.read, ...gitRoots.write].map((path) => `${tomlString(path)}="read"`),
     ...(instructionWorkingCopyRoot ? [`${tomlString(resolve(instructionWorkingCopyRoot))}="read"`] : []),
     ...(source.PAPERCLIP_GITHUB_BROKER_TOKEN && source.GH_CONFIG_DIR
@@ -358,8 +368,6 @@ export function createIsolatedCodexAppServerArgs(
     // as the turn plan (`turn/plan/updated` -> `plan.updated`).
     "-c",
     CODEX_UPDATE_PLAN_TOOL_CONFIG,
-    "--disable",
-    "image_generation",
     ...(externalRunnerSandbox
       ? ["--dangerously-bypass-approvals-and-sandbox"]
       : []),
