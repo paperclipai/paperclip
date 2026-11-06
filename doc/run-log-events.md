@@ -347,6 +347,14 @@ For a prepared remote workspace interrupted before its first executor claim,
 that ledger records `remote_execution_never_claimed` with a
 `bootstrap_incomplete` disposition. The provider attempt remains zero during
 classification; the executor increments it before starting provider work.
+A claimed remote bootstrap (the sandbox runner was launched and may have
+connected) records `remote_bootstrap_proven_incomplete` with the same
+disposition. Recovery admits it only after the previous controller lease has
+expired and the Postgres controller checkpoint holds just `run.prepare` and an
+unfinished `session.open`, with no committed or acknowledged event. The
+executor restores that checkpoint and checks the same proof before it
+bootstraps again. After three provider attempts it records
+`execution_recovery_budget_exhausted` instead.
 
 For a local Codex, OpenCode, or ACPX turn lost while runnerd was stopped, the canonical `turn.failed`
 event retains `error.code: "provider_turn_lost_on_restore"` and
