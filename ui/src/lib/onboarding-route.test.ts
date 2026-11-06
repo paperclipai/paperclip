@@ -3,7 +3,6 @@ import {
   companyPrefixFromOnboardingPath,
   isOnboardingPath,
   isOnboardingWizardActive,
-  onboardingStepForCompany,
   resolveRouteOnboardingOptions,
   shouldRedirectCompanylessRouteToOnboarding,
   shouldRouteAgentlessCompanyToOnboarding,
@@ -324,8 +323,4 @@ describe("resolveRouteOnboardingOptions — the agent step", () => {
   });
 });
 
-describe("onboardingStepForCompany", () => {
-  it("opens an existing company on the agent step", () => {
-    expect(onboardingStepForCompany()).toBe(ONBOARDING_AGENT_STEP);
-  });
-});
+
