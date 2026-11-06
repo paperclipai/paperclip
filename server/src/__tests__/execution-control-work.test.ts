@@ -11,6 +11,7 @@ import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database
 import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "../services/delivery-work-notifications.js";
 import { executionControlSchedule, registerExecutionControlWork } from "../services/execution-control-work.js";
+import { EXECUTION_RECONCILIATION_INTERVAL_MS } from "../services/execution-control-deadline.js";
 import { deliverExecutionStatuses } from "../services/execution-status-delivery.js";
 import { terminalizeLegacyExecution } from "../services/legacy-execution-recovery.js";
 import { reconcileAbandonedExecutionControl } from "../services/execution-control-reconciliation.js";
@@ -272,8 +273,11 @@ describe.skipIf(!support.supported)("execution-control durable work", () => {
       const earlier = await pausedRecoveredSource(`00000000-0000-4000-8000-${randomUUID().slice(-12)}`);
       sources.push(earlier);
       release();
-      for (let pass = 0; pass < 10 && sources.some(({ run }) =>
-        !resume.mock.calls.some(([visited]) => visited.id === run.id)); pass++) await settle();
+      await vi.waitFor(async () => {
+        await vi.advanceTimersByTimeAsync(EXECUTION_RECONCILIATION_INTERVAL_MS);
+        expect(sources.every(({ run }) => resume.mock.calls.some(([visited]) => visited.id === run.id))).toBe(true);
+        expect(idleWorkSnapshot().active).toBe(0);
+      }, { timeout: 10_000, interval: 50 });
       expect(resume.mock.calls.map(([run]) => run.id)).toContain(earlier.run.id);
       await quiet(c);
       for (const { run, retry } of sources) {
