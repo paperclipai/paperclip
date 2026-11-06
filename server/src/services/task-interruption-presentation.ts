@@ -1,6 +1,6 @@
 import { and, desc, eq, inArray, isNull, sql, type SQL } from "drizzle-orm";
 import { agents, agentWakeupRequests, approvals, chatActions, companies, heartbeatRuns, issueApprovals, issueRecoveryActions,
-  issues, issueTreeHoldMembers, issueTreeHolds, projects, type Db } from "@paperclipai/db";
+  issues, issueTreeHoldMembers, issueTreeHolds, nativeRunFinalizations, projects, type Db } from "@paperclipai/db";
 import { unionAll } from "drizzle-orm/pg-core";
 import { HEARTBEAT_RUN_STATUSES, readProviderFailure, type TaskInterruptionPresentation } from "@paperclipai/shared";
 import { captureTaskInterruptionFailure } from "../sentry.js";
@@ -26,11 +26,17 @@ import { AI_CONNECTION_BUSY_RETRY_REASON, AI_CONNECTION_POOL_WAIT_RETRY_REASON, 
 const resourceWaitRetryReasons = new Set<string>([WORKSPACE_BUSY_RETRY_REASON, AI_CONNECTION_BUSY_RETRY_REASON,
   AI_CONNECTION_POOL_WAIT_RETRY_REASON, RUNNER_REVISION_WAIT_RETRY_REASON]);
 
+// A due same-run resume dispatches within seconds; past this, offer Retry.
+const NATIVE_RESUME_DISPATCH_GRACE_MS = 2 * 60_000;
+
 type ProjectionIssue = Pick<typeof issues.$inferSelect, "id" | "companyId" | "status" | "assigneeAgentId" | "projectId">;
 type ProjectionRun = Pick<typeof heartbeatRuns.$inferSelect,
   "id" | "status" | "scheduledRetryAt" | "errorCode" | "livenessState" | "resultJson"> &
   Partial<Pick<typeof heartbeatRuns.$inferSelect, "agentId" | "error" | "companyId" | "nativeIssueId" | "runtimeMode" | "startedAt"
-    | "scheduledRetryReason">>;
+    | "scheduledRetryReason">> & {
+  /** Due time of the native coordinator's own same-run resume, if one is pending. */
+  nativeResumeAt?: Date | null;
+};
 type ProjectionWait = { id: string; requestedAt: Date; sourceRunId?: string | null; executionWaitReason?: string | null;
   preparationStatus?: string | null; preparationRetryAt?: number | string | null };
 type ProjectionState = {
@@ -148,10 +154,16 @@ export function projectTaskInterruption(issue: ProjectionIssue, input: Projectio
   }
   if (run.status === "scheduled_retry" && resourceWaitRetryReasons.has(run.scheduledRetryReason ?? "") && !system)
     return { ...base, state: "working" };
-  const retryAt = system?.nextAttemptAt ?? run.scheduledRetryAt?.getTime();
+  // The native coordinator resumes this same run by itself. A manual Retry
+  // would race it, so show the resume until it is due and briefly while its
+  // dispatch runs. A resume that never ran falls through to one Retry.
+  const nativeResumeAt = run.nativeResumeAt?.getTime();
+  const retryAt = system?.nextAttemptAt ?? nativeResumeAt ?? run.scheduledRetryAt?.getTime();
   if (retryAt && retryAt > now) return { ...base, state: "retry_scheduled",
-    nextRetryAt: new Date(retryAt).toISOString(), canRetry: !preparationPending,
+    nextRetryAt: new Date(retryAt).toISOString(), canRetry: !preparationPending && !nativeResumeAt,
     ...(system?.nextAttemptAt && recoveryStep ? { recoveryStep } : {}) };
+  if (nativeResumeAt && !system && now - nativeResumeAt < NATIVE_RESUME_DISPATCH_GRACE_MS)
+    return { ...base, state: "working" };
   if (recoveryRunning) return { ...base, state: "working", ...(recoveryStep ? { recoveryStep } : {}) };
   if (retryWait?.sourceRunId === run.id && retryWait.executionWaitReason) {
     const reason = Object.hasOwn(retryWaitMessages, retryWait.executionWaitReason) ? retryWait.executionWaitReason : "execution_recovery";
@@ -203,6 +215,10 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
         or ${heartbeatRuns.errorCode} = 'workspace_validation_failed' then ${heartbeatRuns.error} else null end`,
       errorCode: heartbeatRuns.errorCode, livenessState: heartbeatRuns.livenessState, scheduledRetryAt: heartbeatRuns.scheduledRetryAt,
       scheduledRetryReason: heartbeatRuns.scheduledRetryReason,
+      nativeResumeAt: sql<Date | null>`(select ${nativeRunFinalizations.nextAttemptAt} from ${nativeRunFinalizations}
+        where ${nativeRunFinalizations.companyId} = ${heartbeatRuns.companyId} and ${nativeRunFinalizations.runId} = ${heartbeatRuns.id}
+          and ${heartbeatRuns.runtimeMode} = 'native' and ${heartbeatRuns.status} = 'failed'
+          and ${nativeRunFinalizations.resultId} is null and ${nativeRunFinalizations.phase} = 'retryable_failure')`.mapWith(value => value == null ? null : new Date(value)),
       // The run whose resultJson supplied providerFailure. A scheduled retry
       // shows its predecessor's reason, so redaction must use that run's registry.
       providerFailureRunId: sql<string>`case when ${heartbeatRuns.resultJson}->'providerFailure' is null

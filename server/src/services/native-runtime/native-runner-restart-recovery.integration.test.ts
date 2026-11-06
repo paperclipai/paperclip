@@ -2220,10 +2220,15 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
     },
   );
 
-  it.each([2, 3])("recovers a checkpointed restart interruption within provider budget %s", async (attempt) => {
-    const fixture = await seedRun(`INTERRUPTED-${attempt}`);
+  it.each([
+    { attempt: 2, driverKind: "codex_app_server" },
+    { attempt: 3, driverKind: "codex_app_server" },
+    { attempt: 2, driverKind: "acpx_runtime" },
+    { attempt: 2, driverKind: "opencode_server" },
+  ])("recovers a checkpointed $driverKind restart interruption within provider budget $attempt", async ({ attempt, driverKind }) => {
+    const fixture = await seedRun(`INTERRUPTED-${driverKind}-${attempt}`);
     await fixture.db.update(heartbeatRuns).set({ runnerProfileJson: { sessionCheckpoint: {
-      driverKind: "codex_app_server",
+      driverKind,
       sessionId: fixture.native.normalizedSessionId,
       identity: { companyId, issueId: fixture.issueId, runId: fixture.runId, agentId, sessionId: fixture.native.normalizedSessionId },
       providerSessionId: "interrupted-provider",

@@ -1,3 +1,4 @@
+import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { workspaceAllocationFiles } from "./remote-workspace-allocation.js";
 import { readNativeWorkspaceMigration } from "./native-runtime/native-workspace-migration.js";
 import { createHash, randomUUID } from "node:crypto";
@@ -763,7 +764,10 @@ export async function saveRemoteWorkspace(input: {
         eq(executionWorkspaceSnapshots.executionWorkspaceId, workspace.id), eq(executionWorkspaceSnapshots.status, "uploaded"))).returning({ id: executionWorkspaceSnapshots.id });
       if (!committed) throw new Error("remote_workspace_snapshot_publication_changed");
       await notifyRemoteWorkspaceSnapshots(tx, `workspace:${workspace.id}`);
-      if (boundary === "final") await notifyTerminalWorkspaceWork(tx, `workspace:${workspace.id}`);
+      if (boundary === "final") {
+        await notifyTerminalWorkspaceWork(tx, `workspace:${workspace.id}`);
+        await notifyDeliveryWork(tx, DELIVERY_QUEUES.executionReplacement);
+      }
       const receipt = object(workspace.metadata?.remoteWorkspaceSnapshotRepositories);
       const priorRepositories = receipt.snapshotId === current.snapshotId && Array.isArray(receipt.repositories)
         ? remoteWorkspaceSourceSchema.parse({ kind: "empty", repositories: receipt.repositories }).repositories ?? [] : [];

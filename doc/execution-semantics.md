@@ -1015,8 +1015,45 @@ does not repack an already dissociated mirror. Each streamed file must match its
 recorded hash, size and mode and retain its filesystem identity while read.
 Capture rechecks the complete source inventory and Git state before returning a
 receipt. A changed source or cancelled capture removes its incomplete archive;
-an existing archive remains untouched. Temporary space must still hold the
-normalized Git metadata and the complete archive together.
+an existing archive remains untouched. Temporary sandbox space normally holds
+the normalized Git metadata and the complete archive together. An exact disk-full
+failure invokes one read-only export fallback. It fingerprints a standalone
+source, transfers its files through the provider's existing bulk channel, and
+checks the received inventory and the source again before sealing a portable
+archive on the controller. It rechecks the source after sealing. No source files
+or provider caches are removed. Linked Git worktrees, initialized submodules, alternate object stores,
+Git administrative symlinks, setuid/setgid/sticky entries, and configuration outside the portable key contract
+cannot use this fallback. Pure file-based config reads do not follow includes;
+controller Git normalization starts only after every config passes that contract.
+They remain retained if their normal archive cannot be saved. Transfer failures
+or changed files retain the original disk-full error and do not produce a
+preservation receipt.
+
+The fallback's `portableKey` allowlist in
+`server/src/services/remote-workspace-readonly-inventory.ts` is authoritative and
+intentionally stricter than normal capture's `portableGitSettings` sanitizer.
+Normal capture drops unrelated settings; the fallback rejects every unlisted key
+before controller Git can read the copied source configuration. This includes
+otherwise ordinary settings such as `pull.rebase`, `commit.gpgsign`, `fetch.prune`,
+`extensions.worktreeConfig`, and `remote.origin.mirror`.
+
+The directory transfer requests `preserveSourceEntries` to preserve ordinary
+filenames and permissions. Its exclusions are literal root-relative paths,
+including directory descendants; ordinary transfers keep glob exclusions. Daytona and
+Kubernetes implement and qualify this mapping contract. Other providers have not
+been qualified for this fallback; inventory verification still prevents a
+provider that omits or alters entries from publishing an incomplete save.
+
+The fallback applies the normal untracked dependency exclusions before inspecting
+links inside reinstallable environments. Tracked environment files remain part of
+the save. Its outbound mapping requests `preserveSourceEntries`; providers retain
+ordinary `._*` and scratch-like user filenames while excluding only the current
+transfer's own scratch paths and the explicit source exclusions. Older providers
+that omit files fail inventory verification rather than publish an incomplete save.
+Fallback inventory is limited to 100,000 entries, 64 standalone repositories,
+1 MiB of configuration, 1,024 settings and 256 refspec/merge entries. Controller
+verification and archive normalization share a two-minute cancellation deadline.
+These limits reject excessive work before publication and keep the source retained.
 
 Shallow and partial Git checkouts retain their available object files instead
 of asking a mirror clone to transfer promised or index-only objects. Capture
@@ -2291,6 +2328,17 @@ predecessor/successor receipts for every earlier owner. Unrelated, live, or
 incompletely linked owners remain ambiguous. The run then fails closed
 with `runner_harness_state_mismatch: backup_without_reusable_lease`.
 
+A Runner close can also fail to prove suspension after the control plane
+accepted the run's result (`native.post_result_failure` with category
+`runner_settlement_incomplete`). The provider work is complete, so this is not
+a run failure. The executor first proves that it still holds the exact,
+unexpired finalization lease and that the result is accepted. It then releases
+that lease to finalization. A run on a local workspace has nothing to copy
+back. Paperclip finalizes its accepted result and completes the run from that
+result through the ordinary completion path. Load or a slow suspend command
+cannot turn an accepted result into `adapter_failed`. A run with a synced or
+remote workspace keeps its copy-back retry path.
+
 A per-turn sandbox turn can finish through recovery without a Runner
 suspension receipt or failover backup on the controller. For example, its
 post-turn checkpoint copy can fail on a full sandbox disk. The controller
@@ -2378,8 +2426,11 @@ run, release its environment, or start another provider. Lease expiry alone does
 not authorize that stale preparation to take ownership; normal recovery must
 establish a new claim first.
 
-An exact local Codex restart can restore the conversation after losing its active
-turn. Runnerd records this as `provider_turn_lost_on_restore`, with no invented
+An exact local Codex, OpenCode, or ACPX restart can restore the conversation after
+losing its active turn. ACPX first requires the original provider lifetime to lose
+its fence quorum; without that proof, or with an accepted result, unanswered
+runtime request, or active goal, it closes the session as before. Cursor Cloud
+agents run remotely and are excluded. Runnerd records this as `provider_turn_lost_on_restore`, with no invented
 task result. The admitted restart attempt may send one continuation in that same
 conversation. It preserves the workspace and asks the agent to reconcile unfinished
 commands and external actions before proceeding. It does not resend the task or
@@ -3592,6 +3643,34 @@ and final dispatch gates. Queued and final native replacement dispatch also
 re-read dependency readiness, since new dependencies need not change the
 displayed task status. Old blocked rows without a receipt remain held; no
 historical status backfill is performed.
+
+Older native executors recorded the local callback-listener startup guard as
+`native_session_interrupted`. A saved exact guard outcome can enter the same
+bounded safe-replacement path after restart. This requires the first attempt,
+an unused provider-session identity, matching saved execution bindings, no
+provider events, checkpoint, admission receipt, tool call, or cancellation, and
+the existing current snapshot and confirmed stop receipts. A generic error or
+a pending provider-pack receipt alone grants no recovery authority. The same
+transaction can retire that run's completed file-preservation hold only when
+its bound recovery and finalization receipts prove completion. Unrelated holds,
+later task blocks, normal dispatch admission, and the three-attempt budget remain
+effective.
+
+Historical replacement discovery reads at most 100 candidates per pass and
+keeps a cursor only for the remaining scan. A work notification preserves forward
+progress and requests a final rescan, so held earlier rows cannot hide a later
+eligible run. Completed scans of held history become quiet. Final snapshot
+publication, verified lease cleanup, local process-stop proof, completed workspace
+recovery, and dispatch eligibility changes notify the existing replacement worker
+in their transactions. A cleared historical interaction only requests another
+proof check; it grants no new continuation authority. Source provider effects,
+task pause or cancellation, and the original authority checks still prevent replay.
+Temporary decision failures retain the existing worker's retry and advance the
+bounded cursor, with a forced rescan of earlier failures. A failed page cannot
+hide later ready runs. During drain, the initialized replacement worker can read
+readiness once per notification generation to discharge an empty notification
+without starting replacement. Concrete pending work and changes arriving during
+that read remain outstanding. Restart reconstructs the scan from durable records.
 
 For legacy GitHub input without a saved App ID or its own response receipt,
 Task Retry may prove the endpoint's earlier non-null App claim from a processed
