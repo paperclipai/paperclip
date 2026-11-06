@@ -4,7 +4,7 @@ import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import { ChaosApiError, type ChaosApi } from "./api.js";
-import { ACTIVE_RUN_STATUSES } from "./grader.js";
+import { ACTIVE_RUN_STATUSES, isStalledSample, STALL_LIMIT_MS } from "./grader.js";
 import type { ChaosLab } from "./seed.js";
 import type { Timeline } from "./timeline.js";
 import type {
@@ -66,13 +66,20 @@ export function isResting(sample: TaskSample): boolean {
   if (sample.activeRecoveryAction && sample.recoveryOwner !== "board") return false;
   const interruption = sample.interruption;
   if (interruption && (interruption.state === "working" || interruption.state === "retry_scheduled" || interruption.retryWait)) return false;
+  // Unexplained idle work is a possible stall, not a rest: keep watching it so
+  // the task can still resume and R5 can measure the stall.
+  if (isStalledSample(sample)) return false;
   return true;
 }
+
+/** Stop watching an unexplained idle task once it exceeds the R5 stall limit. */
+export const STALL_GIVE_UP_MS = STALL_LIMIT_MS + 15_000;
 
 export class TaskObserver {
   readonly record: TaskRecord;
   issue: Json | null = null;
   private restCandidateSince: number | null = null;
+  private stallSince: number | null = null;
   private readonly faultSchedule: ScheduledFault[];
   private nextFault = 0;
   done = false;
@@ -139,6 +146,14 @@ export class TaskObserver {
     if (await this.maybeFollowUp(sample, now)) {
       // The comment response is not the agent's answer: require fresh samples.
       this.restCandidateSince = null;
+      return;
+    }
+    this.stallSince = isStalledSample(sample) ? (this.stallSince ?? now) : null;
+    if (this.stallSince !== null && now - this.stallSince > STALL_GIVE_UP_MS) {
+      this.record.restAt = this.stallSince;
+      this.record.finalStatus = sample.issueStatus ?? null;
+      this.done = true;
+      this.timeline.add("task_stalled", { taskId: this.plan.taskId, status: sample.issueStatus, idleMs: now - this.stallSince });
       return;
     }
     if (!isResting(sample) || this.supervisor.faultInProgress) {

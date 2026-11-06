@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { ChaosApi } from "./api.js";
-import { REST_CONFIRM_MS, TaskObserver, listWorkspaceFiles } from "./observer.js";
+import { REST_CONFIRM_MS, STALL_GIVE_UP_MS, TaskObserver, listWorkspaceFiles } from "./observer.js";
 import { createFixtureRepository, type ChaosLab } from "./seed.js";
 import { Timeline } from "./timeline.js";
 import type { TaskPlan } from "./types.js";
@@ -20,13 +20,13 @@ const directories: string[] = [];
 afterEach(async () => { await Promise.all(directories.splice(0).map(directory => rm(directory, { recursive: true, force: true }))); });
 
 /** Fake board API: a C1 issue whose first run already finished. */
-function fakeApi(overrides: Partial<Record<string, (route: string) => unknown>> = {}) {
+function fakeApi(overrides: Partial<Record<string, (route: string) => unknown>> = {}, status = "done") {
   const posted: string[] = [];
   const api = {
     async get(route: string) {
       for (const [prefix, handler] of Object.entries(overrides)) if (route.includes(prefix)) return handler!(route);
       if (route.endsWith("/runs")) return [{ runId: "r1", status: "succeeded", createdAt: new Date(0).toISOString(), finishedAt: new Date(1).toISOString() }];
-      return { id: "i1", status: "in_progress", interruption: null };
+      return { id: "i1", status, interruption: null };
     },
     async post(route: string) { posted.push(route); return route.endsWith("/issues") ? { id: "i1", identifier: "CHA-1" } : { id: "comment-1" }; },
   };
@@ -50,6 +50,20 @@ describe("TaskObserver", () => {
     expect(observer.done).toBe(false);
     await observer.poll(start + 300 + 2 * REST_CONFIRM_MS + 3);
     expect(observer.done).toBe(true);
+  });
+
+  it("keeps watching unexplained idle work until the stall limit, then records the stall", async () => {
+    const { api } = fakeApi({}, "in_progress");
+    const observer = new TaskObserver({ ...plan, workload: "A1", followUpAfterMs: null }, api, lab, new Timeline(null), ready);
+    await observer.launch();
+    const start = observer.record.createdAt!;
+    await observer.poll(start + 1_000);
+    await observer.poll(start + 1_000 + REST_CONFIRM_MS + 1);
+    expect(observer.done).toBe(false);
+    await observer.poll(start + 1_000 + STALL_GIVE_UP_MS + 1);
+    expect(observer.done).toBe(true);
+    expect(observer.record.finalStatus).toBe("in_progress");
+    expect(observer.record.restAt).toBe(start + 1_000);
   });
 
   it("reports a failed workspace-operation read as a sweep error, not a clean rest", async () => {

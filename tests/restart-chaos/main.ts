@@ -80,6 +80,7 @@ async function main(): Promise<number> {
   const lines: LedgerLine[] = [];
   let anyFailure = false;
   let harnessError: unknown;
+  let faultFailures = 0;
   try {
     await supervisor.start();
     const api = new ChaosApi(supervisor.baseUrl);
@@ -117,6 +118,7 @@ async function main(): Promise<number> {
           for (const candidate of exposed) { candidate.noteFault(receipt.faultId); candidate.extendDeadline((receipt.readyAt ?? Date.now()) - receipt.startedAt); }
         }, (error: Error & { receipt?: FaultReceipt }) => {
           if (error.receipt) faults.push(error.receipt);
+          faultFailures += 1;
           timeline.add("fault_error", { taskId: observer.plan.taskId, error: error.message });
         }));
       }
@@ -126,6 +128,9 @@ async function main(): Promise<number> {
       await delay(1_000);
     }
     await Promise.all(faultWork);
+    // An injected fault that did not complete invalidates the wave, even when
+    // bounded recovery brought the server back and the tasks passed.
+    if (faultFailures) harnessError ??= new Error(`${faultFailures} injected fault(s) failed; see fault_error in the timeline`);
     if (interrupted) throw new Error("Harness interrupted before the wave finished");
 
     // R6: let finalizers settle, then sweep for anything still pending.

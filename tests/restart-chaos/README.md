@@ -58,3 +58,5 @@ are wired (see the TODO in `seed.ts`).
 - R1 allows the workload budget plus outage time. When a Retry was needed R1 is
   `n/a` and R3 decides; a task that rests unfinished with no Retry fails both.
 - Faults are serialized; each one hits every task running at that moment.
+- A `todo` or `in_progress` task with no live run and no named wait is not a rest. The observer keeps watching it until it resumes or passes the R5 stall limit.
+- A fault that fails to complete fails the wave as a harness error (exit 2), even when recovery brings the server back.

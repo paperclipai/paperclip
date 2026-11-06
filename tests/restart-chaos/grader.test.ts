@@ -165,6 +165,9 @@ describe("rest detection", () => {
     expect(isResting(sample(0, "in_progress", [run("r1", "queued", 0)]))).toBe(false);
     expect(isResting(sample(0, "in_progress", [], { scheduledRetry: true }))).toBe(false);
     expect(isResting(sample(0, "done", [run("r1", "succeeded", 0, 10)]))).toBe(true);
+    // Unexplained idle work is a possible stall, not a rest; a visible Retry is a rest.
+    expect(isResting(sample(0, "in_progress", [run("r1", "failed", 0, 10)]))).toBe(false);
+    expect(isResting(sample(0, "in_progress", [run("r1", "failed", 0, 10)], { interruption: { state: "failed", canRetry: true, retryWait: false, workspaceFailure: null, observedRunId: "r1", userAction: null } }))).toBe(true);
     expect(isResting({ at: T0, reachable: false, serverReady: false })).toBe(false);
     expect(isResting(sample(0, "blocked", [], { activeRecoveryAction: true, recoveryOwner: "agent" }))).toBe(false);
     // A board-owned recovery waits on a person, so the task rests (and R6 reports it).
