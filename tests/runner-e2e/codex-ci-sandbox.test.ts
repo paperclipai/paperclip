@@ -99,9 +99,6 @@ describe("Codex CI sandbox trust boundary", () => {
 it("prepares the artifact oracle for exactly the stories that execute downloads", async () => {
   const workflow = await readFile(path.join(root, ".github/workflows/runner-full-stack-e2e.yml"), "utf8");
   const condition = workflow.match(/- name: Prepare pinned Python artifact oracle image\n\s+if: ([^\n]+)/)?.[1];
-  // The everyday flow requires the oracle by case alone, so the gate must not
-  // also filter by suite: suites such as daytona-restart-continuity and
-  // rolling-web-deployment reuse recover-controller.
   expect(condition).not.toContain("matrix.suiteId");
   const cases = new Set([...condition!.matchAll(/matrix\.caseId == '([^']+)'/g)].map((match) => match[1]));
   for (const cell of runnerMatrix) {
