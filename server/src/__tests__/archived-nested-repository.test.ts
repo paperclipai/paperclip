@@ -8,6 +8,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { createLocalDiskStorageProvider } from "../storage/local-disk-provider.js";
 import { createStorageService } from "../storage/service.js";
 import { captureRestorePoint, currentRestorePointSnapshot, sealRestorePoint } from "../services/git-restore-point.js";
+import { assertReproducibleManagedCheckout } from "../services/git-workspace-restoration.js";
 import { GIT_RESTORE_POINT_SCHEMA } from "../services/git-restore-point-storage.js";
 import { captureGitWorkspaceContents, readManagedCheckoutContents, restoreGitWorkspaceContents } from "../services/git-workspace-contents.js";
 import { managedProjectCheckoutName } from "../services/managed-project-checkout-name.js";
@@ -162,3 +163,50 @@ it.each(["warm", "pruned", "missing-prerequisite", "ordinary-pruned"])("privatel
   expect(git(coldNested, "show", `${extra}:extra.txt`)).toBe("keep abandoned history");
   await expect(fs.access(path.join(coldNested, ".git", "objects", "info", "alternates"))).rejects.toMatchObject({ code: "ENOENT" });
 }, 60_000);
+
+it.each(["new", "existing"])("keeps archive-only refs out of ordinary standalone recovery (%s)", async state => {
+  const identity = { companyId: randomUUID(), workspaceId: randomUUID() };
+  const remote = path.join(root, "remote"), old = path.join(root, "old"), moved = path.join(root, "moved");
+  await fs.mkdir(remote); await fs.mkdir(old); await fs.mkdir(moved);
+  git(remote, "init", "-q", "-b", "main");
+  await fs.writeFile(path.join(remote, "note.txt"), "remote\n");
+  git(remote, "add", "."); git(remote, "commit", "-qm", "initial");
+  const upstream = git(remote, "rev-parse", "HEAD");
+  const source = { id: randomUUID(), repoUrl: pathToFileURL(remote).href, repoRef: "main", cwd: null };
+  const name = managedProjectCheckoutName(source), original = path.join(old, ".paperclip-repositories", name);
+  await fs.mkdir(path.dirname(original), { recursive: true }); git(root, "clone", "-q", source.repoUrl, original);
+  await fs.writeFile(path.join(original, "note.txt"), "saved local commit\n");
+  git(original, "commit", "-qam", "saved local commit");
+  const head = git(original, "rev-parse", "HEAD");
+  await fs.writeFile(path.join(original, "abandoned.txt"), "saved extra history\n");
+  git(original, "add", "abandoned.txt"); git(original, "commit", "-qm", "extra history");
+  const extra = git(original, "rev-parse", "HEAD"); git(original, "reset", "--hard", head);
+  const captured = (await captureRestorePoint({ cwd: original, upstreamCommits: [upstream] }))!;
+  expect(captured.manifest.preserved).toContain(extra);
+  const id = randomUUID(), generation = 1, sealed = await sealRestorePoint(captured.payload, { ...identity, restorePointId: id, generation });
+  const storage = createStorageService(createLocalDiskStorageProvider(path.join(root, "objects")));
+  const objectKey = `${identity.companyId}/git-restore-points/${identity.workspaceId}/${generation}/checkouts/${name}/${id}.pcrp`;
+  await storage.putFile({ companyId: identity.companyId, namespace: "git-restore-points", originalFilename: null,
+    contentType: "application/octet-stream", objectKey, body: sealed.ciphertext });
+  const { manifest } = captured;
+  const descriptor = await readManagedCheckoutContents(original, name, source);
+  const contents = await captureGitWorkspaceContents(old, identity, [{ ...descriptor, restorePoint: {
+    schema: GIT_RESTORE_POINT_SCHEMA, id, objectKey, sha256: sealed.sha256, byteSize: sealed.ciphertext.length,
+    key: sealed.key, generation, head: manifest.head, index: manifest.index, worktree: manifest.worktree,
+    ignored: manifest.ignored, modes: manifest.modes, headOnRemote: false,
+  } }]);
+  const target = path.join(moved, ".paperclip-repositories", name);
+  if (state === "existing") {
+    await fs.mkdir(path.dirname(target), { recursive: true }); git(root, "clone", "-q", "--no-hardlinks", original, target);
+    git(target, "remote", "set-url", "origin", source.repoUrl);
+  }
+  await restoreGitWorkspaceContents({ cwd: moved, ...identity, contents, storage,
+    prepareLocalSource: async () => async () => {}, resolveGitAuth: async () => null, authorizeSource: async () => {} });
+  expect(git(target, "for-each-ref", "--format=%(refname)", "refs/paperclip-preserved")).toBe("");
+  expect(await fs.readFile(path.join(target, "note.txt"), "utf8")).toBe("saved local commit\n");
+  git(target, "reflog", "expire", "--expire=now", "--all");
+  git(target, "-c", "repack.updateServerInfo=false", "repack", "-Ad");
+  git(target, "prune", "--expire", "now");
+  await expect(assertReproducibleManagedCheckout(target, { repoUrl: source.repoUrl, resolveGitAuth: async () => null, restorePoint: true }))
+    .resolves.toMatchObject({ headOnRemote: false });
+});

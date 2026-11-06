@@ -245,7 +245,7 @@ export async function restoreGitWorkspaceContents(input: Identity & { cwd: strin
         if (actual.commit !== checkout.commit || actual.branchName !== checkout.branchName) throw new GitCacheRestorationFailure();
         if (checkout.restorePoint) await applyGitRestorePointToWorktree({ storage: input.storage ?? getStorageService(), workspace,
           ref: checkout.restorePoint, repositoryCwd: destination, worktreePath: destination,
-          preserveImportedHistory: !checkout.worktree || input.isolateRepositories });
+          preserveImportedHistory: input.isolateRepositories });
         await restoreSettings(destination, checkout.settings, input, relative);
         continue;
       }
@@ -306,7 +306,7 @@ export async function restoreGitWorkspaceContents(input: Identity & { cwd: strin
           await gitCacheCommand(temporary, checkout.branchName
             ? ["checkout", "-B", checkout.branchName, checkout.commit] : ["checkout", "--detach", checkout.commit]);
           if (checkout.restorePoint) await applyGitRestorePointToWorktree({ storage: input.storage ?? getStorageService(), workspace,
-            ref: checkout.restorePoint, repositoryCwd: temporary, worktreePath: temporary, preserveImportedHistory: true });
+            ref: checkout.restorePoint, repositoryCwd: temporary, worktreePath: temporary, preserveImportedHistory: input.isolateRepositories });
           await gitCacheCommand(temporary, ["reflog", "expire", "--expire=now", "--all"]);
           await restoreSettings(temporary, checkout.settings, input, relative);
           await input.authorizeSource(checkout.source);
