@@ -25,34 +25,43 @@ export const completionReviewRubric = [
 
 export const COMPLETION_RESTART_GATE_SKIPPED = "restart boundary not reached (agent skipped gate)";
 
+type GateState = { sourceId: string; workerId: string; ready: string; runs: Row[]; comments: Row[] };
+const completionTurns = (state: GateState) => state.runs.filter(r => r.contextSnapshot?.issueId === state.sourceId &&
+  r.contextSnapshot?.wakeReason === "chat_task_completed");
+/** Correlated as completionDelivery does: the turn received this task's Done facts. */
+const carriesWorker = (run: Row, workerId: string) => Array.isArray(run.contextSnapshot?.chatCompletionUpdates) &&
+  run.contextSnapshot.chatCompletionUpdates.some((u: Row) => u.id === workerId);
+
 /**
  * The restart cell's boundary is the source provider waiting at its reference
  * gate. The completion reply is published inside the run finalizer's own
  * transaction, which an isolated-server fixture cannot hold without a product
- * hook, so reaching the boundary depends on the agent running the wait. Once a
- * completion turn ends, or an agent reply lands after Done, without the gate
- * ever reporting "waiting", the boundary can no longer be reached: report it
- * by name instead of waiting for a generic timeout.
+ * hook, so reaching the boundary depends on the agent running the wait. Once
+ * no completion turn is active and this task's correlated turn has succeeded
+ * or published its reply without the gate ever reporting "waiting", the
+ * boundary can no longer be reached: report it by name instead of waiting for
+ * a generic timeout. A failed or cancelled turn is not evidence that the agent
+ * skipped the gate, and delivery may retry it; completionRestartGateTimeoutDetail
+ * names it if the wait then times out.
  */
-export function completionRestartGateSkipped(state: {
-  sourceId: string; ready: string; workerCompletedAt?: string | null; runs: Row[]; comments: Row[];
-}): string | undefined {
+export function completionRestartGateSkipped(state: GateState): string | undefined {
   if (state.ready === "waiting") return undefined;
-  const turns = state.runs.filter(r => r.contextSnapshot?.issueId === state.sourceId &&
-    r.contextSnapshot?.wakeReason === "chat_task_completed");
-  const ended = turns.find(r => !["queued", "running"].includes(String(r.status)));
-  const completedAt = state.workerCompletedAt ? Date.parse(state.workerCompletedAt) : Number.NaN;
-  const reply = Number.isFinite(completedAt)
-    ? state.comments.find(c => c.authorAgentId && Date.parse(c.createdAt) >= completedAt)
-    : undefined;
-  if (!ended && !reply) return undefined;
-  // A turn that failed or was cancelled before the gate is not evidence that
-  // the agent skipped it; keep that distinct from a skipped gate.
-  if (ended && ended.status !== "succeeded" && !reply) {
-    return `restart boundary not reached: completion turn ${ended.id} ended ${ended.status} before the reference gate reported waiting`;
-  }
-  const detail = reply ? `agent reply ${reply.id} was published` : `completion turn ${ended!.id} ended ${ended!.status}`;
-  return `${COMPLETION_RESTART_GATE_SKIPPED}: ${detail} without the reference gate reporting waiting`;
+  const turns = completionTurns(state);
+  if (turns.some(r => ["queued", "running"].includes(String(r.status)))) return undefined;
+  const correlated = turns.filter(r => carriesWorker(r, state.workerId));
+  const reply = state.comments.find(c => c.authorAgentId && correlated.some(r => r.id === c.createdByRunId));
+  if (reply) return `${COMPLETION_RESTART_GATE_SKIPPED}: agent reply ${reply.id} was published without the reference gate reporting waiting`;
+  const succeeded = correlated.find(r => r.status === "succeeded");
+  if (succeeded) return `${COMPLETION_RESTART_GATE_SKIPPED}: completion turn ${succeeded.id} ended succeeded without the reference gate reporting waiting`;
+  return undefined;
+}
+
+/** Names completion turns that ended unsuccessfully before the gate when the wait times out. */
+export function completionRestartGateTimeoutDetail(state: GateState | undefined): string | undefined {
+  if (!state || state.ready === "waiting") return undefined;
+  const ended = completionTurns(state).filter(r => !["queued", "running", "succeeded"].includes(String(r.status)));
+  if (!ended.length) return undefined;
+  return `restart boundary not reached: completion turn(s) ${ended.map(r => `${r.id} ended ${r.status}`).join(", ")} before the reference gate reported waiting`;
 }
 
 /** The start time exists only in the brief released after the source is idle. */

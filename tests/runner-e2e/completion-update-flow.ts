@@ -6,7 +6,8 @@ import { pollUntil, type RunnerApi } from "./api.js";
 import { sendChatMessage, readChatOutputDocument, collectChatRunEvidence, type ChatFlowInput, type ChatRun } from "./chat-flow.js";
 import { arm as armDocumentGate, clear as clearDocumentGate, release as releaseDocumentGate, waitUntilHeld } from "./context-comment-gate.js";
 import { publishChatBrief, workspaceChatBrief } from "./chat-stories.js";
-import { completionDelivery, completionOutputUsesReleasedBrief, completionRestartGateSkipped, type CompletionObservation } from "./completion-updates.js";
+import { gotoAfterServerRestart } from "./chat-restart.js";
+import { completionDelivery, completionOutputUsesReleasedBrief, completionRestartGateSkipped, completionRestartGateTimeoutDetail, type CompletionObservation } from "./completion-updates.js";
 
 type Row = Record<string, any>;
 export async function observeCompletionUpdate(input: {
@@ -228,7 +229,6 @@ export async function runChatCompletionUpdate(context: {
       await releaseDocumentGate(context.issue().id);
     }
     if (restart) {
-      const workerCompletedAt = (await api.get<Row>(`/api/issues/${task!.id}`)).completedAt as string | null;
       const reportingRun = await pollUntil({ label: "completion reply is waiting at its reference gate before publication", deadlineAt: Date.now() + 120_000, intervalMs: 1000,
         load: async () => {
           const runs = await context.allRuns();
@@ -240,8 +240,8 @@ export async function runChatCompletionUpdate(context: {
           r.contextSnapshot?.wakeReason === "chat_task_completed" && r.status === "running"),
         // The gate depends on the agent running the instructed wait; name a
         // skipped gate rather than timing out (see completionRestartGateSkipped).
-        reject: state => completionRestartGateSkipped({ sourceId: context.issue().id, ready: state.ready, workerCompletedAt,
-          runs: state.runs, comments: state.comments }) });
+        reject: state => completionRestartGateSkipped({ sourceId: context.issue().id, workerId: task!.id, ...state }),
+        timeoutDetail: state => completionRestartGateTimeoutDetail(state && { sourceId: context.issue().id, workerId: task!.id, ...state }) });
       const beforeRestart = await api.get<Row[]>(`/api/issues/${context.issue().id}/comments?order=asc`);
       const workerState = await api.get<Row>(`/api/issues/${task!.id}`);
       expect(beforeRestart.filter(c => c.authorAgentId && c.createdAt >= workerState.completedAt), "restart must precede completion publication").toEqual([]);
@@ -251,7 +251,8 @@ export async function runChatCompletionUpdate(context: {
       await input.evidence("completion-restart-boundary.json", { worker: await api.get(`/api/issues/${task!.id}`), runs: reportingRun.runs, sourceReferenceGateReady: true });
       await input.restart();
       await publishBrief(completionWait!, context.issue().id, "The organizer is ready to receive the saved result. Report the completed work now.");
-      await page.goto(`/${f.company.issuePrefix}/chats/${f.agent.id}`, { waitUntil: "commit" });
+      // The old document's Vite client can reload and abort this navigation.
+      await gotoAfterServerRestart(page, `/${f.company.issuePrefix}/chats/${f.agent.id}`, { deadlineAt: input.deadlineAt });
     }
     for (const [index, item] of delegated.entries()) {
       await pollUntil({ label: "delegated note completed", deadlineAt: Date.now() + 180_000, intervalMs: 1000,
