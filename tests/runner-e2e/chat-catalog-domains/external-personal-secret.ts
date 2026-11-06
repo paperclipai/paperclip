@@ -465,6 +465,7 @@ export const personalSecretExternalCases = [
       expectedHumanMessageCount: 2,
       attemptTimeoutMs: 660000,
       sourceFiles: [
+        "../../packages/paperclip-runner/src/protocol-actions/request-human-input.ts",
         "chat-catalog-domains/external-personal-secret.ts",
         "chat-catalog-domains/external-personal-secret-confirmation.ts",
         "chat-catalog-contract.ts",

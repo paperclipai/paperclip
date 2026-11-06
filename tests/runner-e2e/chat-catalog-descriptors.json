@@ -4224,7 +4224,8 @@
       "chat-catalog-domains/identity-support.ts",
       "chat-catalog-domains/internal-support.ts",
       "chat-catalog-domains/identity-questions-and-approvals.ts",
-      "chat-scenarios/questions-and-approvals.yaml"
+      "chat-scenarios/questions-and-approvals.yaml",
+      "../../packages/paperclip-runner/src/protocol-actions/request-human-input.ts"
     ],
     "oracleVersion": "paperclip.chat-catalog.required-question.v4",
     "expectedRunCount": 2,
@@ -4891,6 +4892,7 @@
   {
     "scenarioId": "secrets.configure-company-secret",
     "sourceFiles": [
+      "../../packages/paperclip-runner/src/protocol-actions/request-human-input.ts",
       "chat-catalog-domains/external-company-secret.ts",
       "chat-catalog-domains/external-company-secret-confirmation.ts",
       "chat-catalog-domains/external-secret-proposal.ts",
@@ -4968,6 +4970,7 @@
   {
     "scenarioId": "secrets.personal-secret",
     "sourceFiles": [
+      "../../packages/paperclip-runner/src/protocol-actions/request-human-input.ts",
       "chat-catalog-domains/external-personal-secret.ts",
       "chat-catalog-domains/external-personal-secret-confirmation.ts",
       "chat-catalog-contract.ts",
