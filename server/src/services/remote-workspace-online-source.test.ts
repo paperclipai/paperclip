@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { sql, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { activityLog, agents, companies, createDb, environmentLeases, environments, executionWorkspaceSnapshots, executionWorkspaces, heartbeatRuns, issueRecoveryActions, issues, nativeRunFinalizations, projects, workspaceOperations, type Db } from "@paperclipai/db";
+import { activityLog, agents, companies, createDb, environmentLeases, environments, executionWorkspaceSnapshots, executionWorkspaces, heartbeatRuns, issueRecoveryActions, issues, nativeRunFinalizations, projects, projectWorkspaces, workspaceOperations, workspaceRuntimeServices, type Db } from "@paperclipai/db";
 import { readRemoteWorkspaceAuthority, readRemoteWorkspaceRunReference } from "@paperclipai/shared";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
 import { resolveManagedProjectWorkspaceDir, resolvePaperclipInstanceRoot } from "../home-paths.js";
@@ -19,6 +19,8 @@ import { withExecutionWorkspaceLifecycleLock } from "./execution-workspace-lifec
 import { IsolatedRepositorySourceBusy, withIsolatedRepositorySourceLock, withWorkspaceSourceLocks } from "./workspace-source-lock.js";
 import { tryLockNativeWorkspaceFinalization } from "./native-runtime/native-workspace-finalization-ownership.js";
 import { recordNativeFinalizationFailure } from "./native-runtime/native-run-finalizer.js";
+import { withWorkspaceMoveLocks } from "./isolated-repository-rehome.js";
+import { startRuntimeServicesForWorkspaceControl, stopRuntimeServicesForExecutionWorkspace } from "./workspace-runtime.js";
 
 const support = await getEmbeddedPostgresTestSupport();
 describe.skipIf(!support.supported)("online ordinary physical source fence", () => {
@@ -41,6 +43,7 @@ describe.skipIf(!support.supported)("online ordinary physical source fence", () 
     await db.delete(activityLog);
     await db.delete(workspaceOperations);
     await db.delete(executionWorkspaceSnapshots);
+    await db.delete(workspaceRuntimeServices);
     await db.delete(nativeRunFinalizations);
     await db.delete(environmentLeases);
     await db.delete(environments);
@@ -48,6 +51,7 @@ describe.skipIf(!support.supported)("online ordinary physical source fence", () 
     await db.delete(issues);
     await db.delete(agents);
     await db.delete(executionWorkspaces);
+    await db.delete(projectWorkspaces);
     await db.delete(projects);
     await db.delete(companies);
     vi.unstubAllEnvs();
@@ -158,6 +162,56 @@ describe.skipIf(!support.supported)("online ordinary physical source fence", () 
       await expect(migrateRemoteWorkspace({ db, storage, ...f, apply: true })).rejects.toBeInstanceOf(IsolatedRepositorySourceBusy);
       expect(await db.select().from(workspaceOperations)).toEqual([]);
     } finally { release(); await owner; }
+  });
+  it("fences the actual rehome and nested-conversion owner through its project source", async () => {
+    const f = await fixture();
+    let entered!: () => void, release!: () => void, moved = false;
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    const pending = new Promise<void>(resolve => { release = resolve; });
+    const owner = withWorkspaceSourceLocks(db, { companyId: f.companyId, projectIds: [f.projectId] }, async () => { entered(); await pending; });
+    await started;
+    const movement = withWorkspaceMoveLocks(db, f.aliases[0].workspace, async () => { moved = true; });
+    try {
+      await vi.waitFor(async () => {
+        const rows = await db.execute(sql`select count(*)::int n from pg_stat_activity where datname=current_database() and wait_event='advisory'`);
+        expect(rows[0].n).toBeGreaterThan(0);
+      });
+      expect(moved).toBe(false);
+    } finally { release(); await owner; await movement; }
+    expect(moved).toBe(true);
+  });
+  it("fences project command provisioning without an execution workspace ID", async () => {
+    const f = await fixture();
+    const [agent] = await db.insert(agents).values({ companyId: f.companyId, name: "Project command owner" }).returning();
+    const [projectWorkspace] = await db.insert(projectWorkspaces).values({ companyId: f.companyId, projectId: f.projectId,
+      name: "Project source", cwd: f.cwd }).returning();
+    let entered!: () => void, release!: () => void;
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    const pending = new Promise<void>(resolve => { release = resolve; });
+    const owner = withWorkspaceSourceLocks(db, { companyId: f.companyId, projectIds: [f.projectId] }, async () => { entered(); await pending; });
+    await started;
+    const node = JSON.stringify(process.execPath), marker = path.join(f.cwd, "runtime-source-marker");
+    const services = startRuntimeServicesForWorkspaceControl({ db, actor: agent, issue: null, adapterEnv: {},
+      workspace: { cwd: f.cwd, baseCwd: f.cwd, source: "project_primary", projectId: f.projectId, workspaceId: projectWorkspace.id,
+        repoUrl: null, repoRef: null, strategy: "project_primary", branchName: null, branchCreatedByRuntime: false,
+        worktreePath: null, warnings: [], created: false },
+      config: { runtimeProvisionCommand: `${node} -e ${JSON.stringify("require('node:fs').writeFileSync('runtime-source-marker', 'provisioned')")}`,
+        workspaceRuntime: { services: [{ name: "source-fence-proof", command: `${node} -e ${JSON.stringify("setInterval(() => {}, 1000)")}`,
+          lifecycle: "shared", reuseScope: "project_workspace", stopPolicy: { type: "manual" } }] } },
+    });
+    try {
+      await vi.waitFor(async () => {
+        const rows = await db.execute(sql`select count(*)::int n from pg_stat_activity where datname=current_database() and wait_event='advisory'`);
+        expect(rows[0].n).toBeGreaterThan(0);
+      });
+      expect(await fs.lstat(marker).catch(() => null)).toBeNull();
+    } finally {
+      release(); await owner;
+      const refs = await services;
+      for (const ref of refs) await stopRuntimeServicesForExecutionWorkspace({ db, executionWorkspaceId: f.workspaceId,
+        runtimeServiceId: ref.id });
+    }
+    expect(await fs.readFile(marker, "utf8")).toBe("provisioned");
   });
   it("fences a configured alias of an existing isolated task directory using its original issue key", async () => {
     const f = await fixture(), sourceIssueId = f.aliases[0].issue.id;

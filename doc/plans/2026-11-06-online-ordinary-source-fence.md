@@ -13,6 +13,22 @@ selection/materialization and workspace lifecycle owners retain the same key.
 Configured aliases of canonical isolated task directories retain that directory's
 original task key. Cross-company aliases are rejected.
 
+The filesystem materializer keeps its database-free API. It retains physical
+keys when called inside an admission owned by the database service. The runtime
+call sites that can write these controller namespaces have these owners:
+
+| Mutation entry | Source admission |
+| --- | --- |
+| Heartbeat preparation and its source/repository resolvers | Task keys and dynamically retained physical roots for the full preparation |
+| Workspace reopen, expiration and cleanup | Existing task/source and lifecycle gateways |
+| Rehome and nested-clone conversion | Shared move gateway retains task and project keys through the move |
+| Runtime commands with a workspace record | Workspace lifecycle gateway |
+| Project runtime commands without a workspace record | Physical project/task keys before provisioning and command startup |
+
+Standalone materialization and source-resolution callers retain their existing
+filesystem API. The source fence is established at the database-owning mutation
+entry rather than inferred as a new requirement of that helper API.
+
 The importer derives a bounded physical alias closure rather than accepting a
 caller-supplied proof. It holds every existing alias's task and lifecycle keys,
 plus the project key where applicable. It checks the closure and its ordinary

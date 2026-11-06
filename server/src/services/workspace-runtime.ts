@@ -8,6 +8,7 @@ import { getStorageService } from "../storage/index.js";
 import type { StorageService } from "../storage/types.js";
 import { sanitizeRuntimeServiceBaseEnv } from "./runtime-service-env.js";
 import { verifiedRecordedIsolatedRemoteSource } from "./isolated-remote-workspace-source.js";
+import { isolatedTaskSourceIdentity, managedProjectSourceIdentity, withWorkspaceSourceLocks } from "./workspace-source-lock.js";
 export { sanitizeRuntimeServiceBaseEnv } from "./runtime-service-env.js";
 import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync } from "node:fs";
@@ -8267,8 +8268,15 @@ export async function startRuntimeServicesForWorkspaceControl(
     return await withRuntimeStartMutexes(
       mutexPlan.ownerKeys,
       async () => {
-        if (!input.db || !input.executionWorkspaceId) {
+        if (!input.db) {
           return startRuntimeServicesForWorkspaceControlInvocation(input);
+        }
+        if (!input.executionWorkspaceId) {
+          const projectId = await managedProjectSourceIdentity(input.actor.companyId, input.workspace.cwd);
+          const issueId = await isolatedTaskSourceIdentity(input.actor.companyId, input.workspace.cwd);
+          return projectId || issueId ? withWorkspaceSourceLocks(input.db, { companyId: input.actor.companyId,
+            projectIds: projectId ? [projectId] : [], issueIds: issueId ? [issueId] : [],
+          }, () => startRuntimeServicesForWorkspaceControlInvocation(input)) : startRuntimeServicesForWorkspaceControlInvocation(input);
         }
         // Startup and direct callers can bypass the HTTP operation recorder.
         // Keep migration fenced through provision/bind/persistence, including the

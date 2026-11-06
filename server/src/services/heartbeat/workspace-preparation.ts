@@ -179,6 +179,9 @@ export async function prepareHeartbeatWorkspace(db: Db, input: HeartbeatWorkspac
     for (const key of ["existingExecutionWorkspace", "reusableExistingExecutionWorkspace"] as const) {
       const selected = reuse[key];
       if (!selected || readRemoteWorkspaceAuthority(selected.metadata)) continue;
+      const [fresh] = await db.select({ metadata: executionWorkspacesTable.metadata }).from(executionWorkspacesTable)
+        .where(and(eq(executionWorkspacesTable.companyId, input.agent.companyId), eq(executionWorkspacesTable.id, selected.id)));
+      if (!readRemoteWorkspaceAuthority(fresh?.metadata)) continue;
       const current = await input.services.executionWorkspacesSvc.getStoredById(input.agent.companyId, selected.id);
       if (current && readRemoteWorkspaceAuthority(current.metadata)) reuse[key] = current;
     }

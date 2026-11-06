@@ -79,10 +79,10 @@ export async function retainManagedProjectSource(db: Db, companyId: string, cwd:
 
 export async function retainCurrentWorkspaceSource(cwd: string): Promise<void> {
   const scope = sourceLocks.getStore();
+  if (!scope) return;
   const instance = await canonicalRepositoryRoot(resolvePaperclipInstanceRoot());
   const task = path.relative(instance, await canonicalRepositoryRoot(cwd)).split(path.sep);
   if (["isolated-workspaces", "isolated-workspace-attempts"].includes(task[0]) && task.length >= 3) {
-    if (!scope) throw new Error("workspace_source_admission_scope_required");
     const issueId = await isolatedTaskSourceIdentity(scope.companyId, cwd);
     if (issueId) await withWorkspaceSourceLocks(scope.db, { companyId: scope.companyId, issueIds: [issueId] }, async () => undefined, true);
     return;
@@ -92,6 +92,5 @@ export async function retainCurrentWorkspaceSource(cwd: string): Promise<void> {
   if (relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) return;
   const [companyId, projectId] = relative.split(path.sep);
   if (!companyId || !projectId || !/^[a-f0-9-]{36}$/.test(companyId) || !/^[a-f0-9-]{36}$/.test(projectId)) return;
-  if (!scope) throw new Error("workspace_source_admission_scope_required");
   await retainManagedProjectSource(scope.db, companyId, cwd);
 }
