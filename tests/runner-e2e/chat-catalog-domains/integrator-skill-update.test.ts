@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { SkillSourceUpdateReadError } from "../api.js";
 import { readFileSync } from "node:fs";
-import { accessibilityUpdatePins as pins, gradeIntegratorSkillUpdate, requireSkillUpdatePrerequisite, integratorSkillUpdateCases } from "./integrator-skill-update.js";
+import { accessibilityUpdatePins as pins, gradeIntegratorSkillUpdate, requireSkillUpdatePrerequisite, integratorSkillUpdateCases, acceptedSkillReviewRun } from "./integrator-skill-update.js";
 // Unmodified MIT-licensed source bytes, with LICENSE.md in the same fixture
 // directory. Product setup still fetches the actual GitHub commit snapshots.
 import { createHash } from "node:crypto";
@@ -44,6 +44,35 @@ describe("genuine immutable public skill update qualification", () => {
     const changed = structuredClone(truthful);
     changed.state.reviewCheckpoint.upstream.currentVersionId = "premature";
     expect(gradeIntegratorSkillUpdate(changed).checks.find(check => check.id === "review-diff-before-update")?.passed).toBe(false);
+  });
+
+  it("admits only a visible committed current-run review alongside the shorter final comment", () => {
+    const value = valid(bytes.old, bytes.next);
+    const first = value.state.reviewCheckpoint as typeof value.state.reviewCheckpoint & { visibleReview?: unknown };
+    Object.assign(first.state, { sourceIssueId: "source" });
+    const summary = first.reply;
+    const run = { id: "review-run", runtimeMode: "native", companyId: "company", agentId: "ceo", status: "succeeded", nativeIssueId: "source",
+      contextSnapshot: { issueId: "source", commentId: "human" }, resultJson: { summary, finalizationPhase: "committed",
+        finalizationReasonCode: "conversation_turn_finished", prpRunTerminalState: "succeeded", prpTurnTerminalState: "completed",
+        nativeResult: { schema: "paperclip.run_result.v1", reportedWorkDisposition: "done", summary } } };
+    Object.assign(first, { runs: [run], reply: "The complete diff is shown above. No update applied yet." });
+    value.reply = `${first.reply}\nI updated the accessibility skill to the reviewed source version. The local copy is unchanged.`;
+    const check = () => gradeIntegratorSkillUpdate(value).checks.find(row => row.id === "review-diff-before-update")?.passed;
+    expect(check()).toBe(false); // An API-only summary never substitutes for visible review.
+    first.visibleReview = { runId: run.id, issueId: "source", humanCommentId: "human", summary, visibleText: summary };
+    expect(check()).toBe(true);
+    expect(gradeIntegratorSkillUpdate(value).passed).toBe(true); // Raw final-comment prefix still proves later apply.
+    for (const patch of [{ runId: "old" }, { issueId: "foreign" }, { humanCommentId: "old-human" }, { summary: "foreign" }, { visibleText: "" }, { visibleText: "Installed 0.4; latest 0.5 exists." }]) {
+      const original = first.visibleReview; first.visibleReview = { ...original as object, ...patch };
+      expect(check()).toBe(false); first.visibleReview = original;
+    }
+    for (const patch of [{ companyId: "foreign" }, { agentId: "foreign" }, { status: "failed" }, { nativeIssueId: "foreign" }, { contextSnapshot: { issueId: "source", commentId: "other" } }, { resultJson: { ...run.resultJson, finalizationPhase: "pending" } }]) {
+      const original = first.runs; Object.assign(first, { runs: [{ ...run, ...patch }] });
+      expect(check()).toBe(false); first.runs = original;
+    }
+    const originalVersion = first.upstream.currentVersionId; first.upstream.currentVersionId = "premature";
+    expect(check()).toBe(false); first.upstream.currentVersionId = originalVersion;
+    expect(acceptedSkillReviewRun(first, "foreign")).toBeUndefined();
   });
 
   it("rejects premature apply, listing-only review, stale installation and overwritten local work", () => {

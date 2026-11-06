@@ -16,7 +16,46 @@ import { accessibilityUpdatePins } from "./integrator-skill-pins.js";
 export { accessibilityUpdatePins } from "./integrator-skill-pins.js";
 const hash = (text: string) => createHash("sha256").update(text).digest("hex");
 const root = (ctx: ChatCatalogContext) => `/api/companies/${ctx.input.fixtures.company.id}`;
-interface UpdateObservation extends InternalObservation { upstream: CompanySkillDetail; localFork: CompanySkillDetail; upstreamVersions: CompanySkillVersion[]; forkVersions: CompanySkillVersion[]; source: SkillSource; updateStatus: Pick<CompanySkillUpdateStatus, "supported" | "currentRef" | "latestRef" | "hasUpdate"> }
+interface VisibleSkillReview { runId: string; issueId: string; humanCommentId: string; summary: string; visibleText: string }
+interface UpdateObservation extends InternalObservation { visibleReview?: VisibleSkillReview; upstream: CompanySkillDetail; localFork: CompanySkillDetail; upstreamVersions: CompanySkillVersion[]; forkVersions: CompanySkillVersion[]; source: SkillSource; updateStatus: Pick<CompanySkillUpdateStatus, "supported" | "currentRef" | "latestRef" | "hasUpdate"> }
+// Only a committed current native completion can contribute rendered review text.
+export function acceptedSkillReviewRun(o: InternalObservation, issueId: string) {
+  if (o.runs.length !== 1) return undefined;
+  const run = o.runs[0]!, result = run.resultJson, native = result?.nativeResult as Record<string, unknown> | undefined;
+  return run.companyId === o.companyId && run.agentId === o.leadId && run.status === "succeeded" && run.runtimeMode === "native"
+    && run.contextSnapshot?.issueId === issueId && (run.nativeIssueId == null || run.nativeIssueId === issueId)
+    && typeof run.contextSnapshot?.commentId === "string"
+    && result?.finalizationPhase === "committed" && result.finalizationReasonCode === "conversation_turn_finished"
+    && result.prpRunTerminalState === "succeeded" && result.prpTurnTerminalState === "completed"
+    && native?.schema === "paperclip.run_result.v1" && native.reportedWorkDisposition === "done"
+    && typeof result.summary === "string" && result.summary.trim() && native.summary === result.summary ? run : undefined;
+}
+export function readVisibleSkillReview(input: { runId: string; humanCommentId: string }) {
+  const visible = (node: Element) => {
+    for (let element: Element | null = node; element; element = element.parentElement) {
+      const style = window.getComputedStyle(element);
+      if (element.hasAttribute("hidden") || element.hasAttribute("inert") || element.getAttribute("aria-hidden") === "true"
+        || style.display === "none" || style.visibility === "hidden" || style.opacity === "0") return false;
+    }
+    return node.getClientRects().length > 0;
+  };
+  const selector = '[data-testid="task-chat-thread"], [data-testid="thread-root"]';
+  const roots = [...document.querySelectorAll(selector)].filter(root => visible(root)
+    && [...root.querySelectorAll("[id]")].some(node => node.id === `comment-${input.humanCommentId}` && node.closest(selector) === root));
+  if (roots.length !== 1) return "";
+  return [...roots[0]!.querySelectorAll("[data-thread-anchor]")].filter(node => {
+    const anchor = node.getAttribute("data-thread-anchor");
+    return node.closest(selector) === roots[0] && (anchor === `${input.runId}:turn` || anchor?.startsWith(`${input.runId}:turn:`));
+  }).flatMap(turn => [...turn.querySelectorAll('[data-testid="task-chat-final-response"]')]
+    .filter(node => visible(node)).map(node => (node as HTMLElement).innerText)).join("\n");
+}
+export function skillReviewPreviewText(o: UpdateObservation) {
+  const evidence = o.visibleReview, issueId = o.state.sourceIssueId;
+  if (!evidence || typeof issueId !== "string") return o.reply;
+  const run = acceptedSkillReviewRun(o, issueId);
+  return run && evidence.runId === run.id && evidence.issueId === issueId && evidence.humanCommentId === run.contextSnapshot?.commentId
+    && evidence.summary === run.resultJson?.summary && evidence.visibleText.trim() ? `${o.reply}\n${evidence.visibleText}` : o.reply;
+}
 const updateReceipts = new WeakMap<ChatCatalogContext, { localDigest: string; status: UpdateObservation["updateStatus"] }>();
 async function observeUpdate(ctx: ChatCatalogContext, state: Record<string, unknown>, checkpoint = false): Promise<UpdateObservation> {
   const base = await observeInternal(ctx, state); const api = ctx.input.api; const upstream = state.upstream as CompanySkillDetail; const local = state.localFork as CompanySkillDetail;
@@ -34,7 +73,18 @@ async function observeUpdate(ctx: ChatCatalogContext, state: Record<string, unkn
   const status = !checkpoint && immutable && prior?.localDigest === localDigest && prior.status.latestRef === accessibilityUpdatePins.newCommit ? prior.status
     : await api.getSkillSourceUpdateStatus<UpdateObservation["updateStatus"]>(ctx.input.fixtures.company.id, upstream.id);
   updateReceipts.set(ctx, { localDigest, status: { ...status } });
-  return { ...base, ...saved, updateStatus: status };
+  let visibleReview: VisibleSkillReview | undefined;
+  const issueId = ctx.issue()?.id;
+  if (checkpoint && issueId) {
+    state.sourceIssueId = issueId;
+    const run = acceptedSkillReviewRun(base, issueId);
+    if (run) {
+      const humanCommentId = run.contextSnapshot!.commentId as string;
+      const visibleText = await ctx.input.page.evaluate(readVisibleSkillReview, { runId: run.id, humanCommentId });
+      if (visibleText.trim()) visibleReview = { runId: run.id, issueId, humanCommentId, summary: run.resultJson!.summary as string, visibleText };
+    }
+  }
+  return { ...base, ...saved, updateStatus: status, ...(visibleReview ? { visibleReview } : {}) };
 }
 function updateObservation(value: unknown): UpdateObservation | undefined { const o = value as UpdateObservation; return observation(value) && !!o.upstream && !!o.localFork && Array.isArray(o.upstreamVersions) && Array.isArray(o.forkVersions) && !!o.source && !!o.updateStatus ? o : undefined; }
 function substantiveDiff(reply: string) {
@@ -50,11 +100,12 @@ function claimsAppliedUpdate(reply: string) {
 }
 function previewCorrect(o: UpdateObservation) {
   const before = o.state.upstream as CompanySkillDetail;
+  const reply = skillReviewPreviewText(o);
   return o.upstream.currentVersionId === before.currentVersionId && o.upstream.sourceRef === accessibilityUpdatePins.oldCommit && hash(o.upstream.markdown) === accessibilityUpdatePins.oldSha256
     && o.source.lastScanCommit === accessibilityUpdatePins.oldCommit && o.source.trackingRef === accessibilityUpdatePins.newCommit && o.source.automaticUpdates === false
     && o.updateStatus.supported && o.updateStatus.hasUpdate && o.updateStatus.currentRef === accessibilityUpdatePins.oldCommit && o.updateStatus.latestRef === accessibilityUpdatePins.newCommit
-    && (o.reply.includes(accessibilityUpdatePins.oldCommit.slice(0, 7)) || /(?:installed|current|currently)[^\n]{0,80}\b0\.4\b|\b0\.4\b[^\n]{0,80}(?:installed|current)/i.test(o.reply))
-    && substantiveDiff(o.reply) && !claimsAppliedUpdate(o.reply);
+    && (reply.includes(accessibilityUpdatePins.oldCommit.slice(0, 7)) || /(?:installed|current|currently)[^\n]{0,80}\b0\.4\b|\b0\.4\b[^\n]{0,80}(?:installed|current)/i.test(reply))
+    && substantiveDiff(reply) && !claimsAppliedUpdate(reply);
 }
 export function gradeIntegratorSkillUpdate(value: unknown) {
   const c = checks(); const o = updateObservation(value); c.add("real-tracked-source-and-saved-versions", !!o, "Requires actual public GitHub source tracking, installed snapshot versions and preserved editable fork."); if (!o) return c.result();
