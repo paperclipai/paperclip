@@ -33,7 +33,7 @@ export function CoordinatorTaskViews() {
   const [preference, setPreference] = useState(() => ({ key, view: loadView(key, userId) }));
   const savedView = preference.key === key ? preference.view : loadView(key, userId);
   const requested = params.get("view") === "inbox" ? "mine" : params.get("view");
-  const organizationScoped = [...ORGANIZATION_SCOPED_PARAMS, "workspaceId", "status", "label"].some(param => params.getAll(param).some(Boolean));
+  const organizationScoped = [...ORGANIZATION_SCOPED_PARAMS, "workspaceId", "status", "label", "sortField", "sortDir"].some(param => params.getAll(param).some(Boolean));
   const view = resolveInitialTaskView(requested, organizationScoped, savedView);
   const definition = taskView(view);
   useEffect(() => {

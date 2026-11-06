@@ -50,6 +50,15 @@ it.each(["workspace=workspace", "originKind=routine_execution"])("keeps organiza
   finally { cleanup(); }
 });
 
+it.each(["sortField=workflow", "sortDir=asc", "sortField=workflow&sortDir=asc"])("keeps sort-only organization links on the task collection: %s", async sort => {
+  const { host, cleanup } = render(`/ORG/issues?${sort}#saved`);
+  try {
+    await vi.waitFor(() => expect(host.querySelector("output")?.textContent).toBe(`/ORG/issues?${sort}&view=all#saved`));
+    expect(host.textContent).toContain("Coordinator tasks");
+    expect(host.textContent).not.toContain("Inbox owner");
+  } finally { cleanup(); }
+});
+
 it.each(["mine", "blocked", "recent", "everything"])("keeps shared %s label links on the Coordinator collection", async view => {
   const url = `/ORG/issues?view=${view}&label=qa&label=review&sortField=taskId&sortDir=asc&keep=value#saved`;
   const { host, cleanup } = render(url);
