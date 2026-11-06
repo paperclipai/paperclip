@@ -87,6 +87,12 @@ async function pathExists(candidate: string): Promise<boolean> {
   return fs.access(candidate).then(() => true).catch(() => false);
 }
 
+async function readDeliveredPrompt(args: string[]): Promise<string> {
+  const fileIndex = args.indexOf("--prompt-file");
+  if (fileIndex >= 0) return fs.readFile(args[fileIndex + 1]!, "utf8");
+  return String(args[args.indexOf("--single") + 1] ?? "");
+}
+
 const GROK_IDENTITY = "https://auth.x.ai::11111111-1111-1111-1111-111111111111";
 const NOW = Date.now();
 const NEWER_EXPIRY = new Date(NOW + 2 * 60_000).toISOString();
@@ -615,6 +621,68 @@ describe("grok_local execute", () => {
     });
   });
 
+  it("passes a long local prompt through --prompt-file and removes the file after the run", async () => {
+    const longNotes = "x".repeat(40_000);
+    let seenArgs: string[] = [];
+    let promptPath = "";
+    let deliveredPrompt = "";
+    runProcessMock.mockImplementation(async (_runId, _target, _command, args) => {
+      seenArgs = args;
+      promptPath = args[args.indexOf("--prompt-file") + 1] ?? "";
+      deliveredPrompt = await fs.readFile(promptPath, "utf8");
+      return makeSuccessfulRunResult();
+    });
+    const ctx = await makeCtx("run-long-local-prompt", await makeTempRoot());
+    ctx.config.promptTemplate = `Task notes: ${longNotes}`;
+
+    const result = await execute(ctx);
+
+    expect(result.exitCode).toBe(0);
+    expect(seenArgs).not.toContain("--single");
+    expect(seenArgs.join(" ").length).toBeLessThan(8_191);
+    expect(deliveredPrompt).toContain(longNotes);
+    expect(await pathExists(promptPath)).toBe(false);
+  });
+
+  it("removes the prompt file when the Grok process fails to start", async () => {
+    let promptPath = "";
+    runProcessMock.mockImplementation(async (_runId, _target, _command, args) => {
+      promptPath = args[args.indexOf("--prompt-file") + 1] ?? "";
+      throw new Error("spawn failed");
+    });
+
+    await expect(execute(await makeCtx("run-spawn-failure", await makeTempRoot()))).rejects.toThrow("spawn failed");
+
+    expect(promptPath).not.toBe("");
+    expect(await pathExists(promptPath)).toBe(false);
+  });
+
+  it("removes the prompt directory when the prompt write fails", async () => {
+    const createdDirs: string[] = [];
+    const originalMkdtemp = fs.mkdtemp.bind(fs);
+    const originalWriteFile = fs.writeFile.bind(fs);
+    const mkdtempSpy = vi.spyOn(fs, "mkdtemp").mockImplementation(async (prefix, options) => {
+      const dir = await originalMkdtemp(prefix, options);
+      if (String(prefix).includes("paperclip-grok-prompt-")) createdDirs.push(String(dir));
+      return dir;
+    });
+    const writeFileSpy = vi.spyOn(fs, "writeFile").mockImplementation(async (file, data, options) => {
+      if (String(file).endsWith("prompt.md")) throw new Error("ENOSPC: no space left on device");
+      return originalWriteFile(file, data, options);
+    });
+
+    try {
+      await expect(execute(await makeCtx("run-prompt-write-failure", await makeTempRoot()))).rejects.toThrow("ENOSPC");
+    } finally {
+      mkdtempSpy.mockRestore();
+      writeFileSpy.mockRestore();
+    }
+
+    expect(runProcessMock).not.toHaveBeenCalled();
+    expect(createdDirs).toHaveLength(1);
+    expect(await pathExists(createdDirs[0]!)).toBe(false);
+  });
+
   it("passes an explicitly configured permissionMode through to the CLI", async () => {
     let seenArgs: string[] = [];
     runProcessMock.mockImplementation(async (_runId, _target, _command, args) => {
@@ -834,6 +902,23 @@ describe("grok_local execute", () => {
       const { assets } = prepareRuntimeMock.mock.calls[0][0] as { assets?: unknown[] };
       expect(assets).toBeUndefined();
       expect(seenEnv.GROK_HOME).toBeUndefined();
+    });
+
+    it("passes the prompt through --single in a remote run", async () => {
+      process.env.XAI_API_KEY = "test-key";
+      mocks.state.isRemote = true;
+      let seenArgs: string[] = [];
+      runProcessMock.mockImplementation(async (_runId, _target, _command, args) => {
+        seenArgs = args;
+        return makeSuccessfulRunResult();
+      });
+      const ctx = await makeCtx("run-remote-single", await makeTempRoot());
+      ctx.config.promptTemplate = "Remote prompt body.";
+
+      await execute(ctx);
+
+      expect(seenArgs).not.toContain("--prompt-file");
+      expect(seenArgs[seenArgs.indexOf("--single") + 1]).toContain("Remote prompt body.");
     });
 
     it("passes no home asset in a local run", async () => {
@@ -1077,12 +1162,12 @@ describe("grok_local execute", () => {
       );
     });
 
-    it("delivers the owned assignment and ordered wake comments through --single", async () => {
+    it("delivers the owned assignment and ordered wake comments through the prompt file", async () => {
       const root = await makeTempRoot();
       const fixture = createPromptContextFixture();
       let deliveredPrompt = "";
       runProcessMock.mockImplementation(async (_runId, _target, _command, args) => {
-        deliveredPrompt = String(args.at(-1) ?? "");
+        deliveredPrompt = await readDeliveredPrompt(args);
         return makeSuccessfulRunResult();
       });
 
@@ -1109,7 +1194,7 @@ describe("grok_local execute", () => {
       const fixture = createPromptContextFixture();
       const prompts: string[] = [];
       runProcessMock.mockImplementation(async (_runId, _target, _command, args) => {
-        prompts.push(String(args.at(-1) ?? ""));
+        prompts.push(await readDeliveredPrompt(args));
         if (prompts.length === 1) {
           return { exitCode: 1, signal: null, timedOut: false, stdout: "", stderr: "unknown session sess-stale" };
         }
