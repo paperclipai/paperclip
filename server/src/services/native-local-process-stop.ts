@@ -7,7 +7,6 @@ import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notificatio
 import { nativeSessionProviderEvidence } from "./native-runtime/native-session-resume.js";
 import { hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
 import os from "node:os";
-import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 
 export const PROCESS_START_REQUESTED = "native.process_start_requested";
 export const PROCESS_IDENTITY_RECORDED = "native.process_identity_recorded";
