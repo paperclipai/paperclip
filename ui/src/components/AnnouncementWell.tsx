@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { ONBOARDING_FIRST_TASK_ORIGIN_KIND } from "@paperclipai/shared";
+import { cn } from "@/lib/utils";
 import { useAccountIdentity } from "@/api/companies-query";
 import type { HealthStatus } from "@/api/health";
 import { issuesApi } from "@/api/issues";
@@ -45,7 +46,14 @@ function useOnboardingInProgress(companyId: string | null) {
   return query.data.some((issue) => issue.originKind === ONBOARDING_FIRST_TASK_ORIGIN_KIND && !FINISHED_ONBOARDING_STATUSES.has(issue.status));
 }
 
-export function AnnouncementWell({ health }: { health?: HealthStatus }) {
+/**
+ * Where the card lives. `sidebar` docks it in the desktop sidebar column, in
+ * normal layout flow, so it never covers the task thread or composer.
+ * `floating` keeps the mobile placement above the bottom navigation.
+ */
+export type AnnouncementPlacement = "sidebar" | "floating";
+
+export function AnnouncementWell({ health, placement = "floating" }: { health?: HealthStatus; placement?: AnnouncementPlacement }) {
   const { userId: accountId, settled } = useAccountIdentity();
   const { selectedCompanyId, loading } = useCompany();
   const { onboardingOpen } = useDialogState();
@@ -65,7 +73,16 @@ export function AnnouncementWell({ health }: { health?: HealthStatus }) {
   const modalOpen = useModalOpen(Boolean(announcement));
   if (!announcement || modalOpen || (toasts?.length ?? 0) > 0) return null;
   return (
-    <aside aria-label="Paperclip announcements" className="announcement-well fixed left-3 bottom-(--announcement-mobile-bottom) z-40 w-(--announcement-available-width) max-w-(--announcement-width) max-h-(--announcement-mobile-max-height) overflow-y-auto md:bottom-3 md:max-h-(--announcement-max-height)">
+    <aside
+      aria-label="Paperclip announcements"
+      data-placement={placement}
+      className={cn(
+        "announcement-well",
+        placement === "sidebar"
+          ? "shrink-0 overflow-y-auto px-3 pb-2 max-h-(--announcement-sidebar-max-height)"
+          : "fixed left-3 bottom-(--announcement-mobile-bottom) z-40 w-(--announcement-available-width) max-w-(--announcement-width) max-h-(--announcement-mobile-max-height) overflow-y-auto md:bottom-3 md:max-h-(--announcement-max-height)",
+      )}
+    >
       <AnnouncementCard key={announcement.id} announcement={announcement} onDismiss={() => dismiss(announcement.id)} />
     </aside>
   );
