@@ -32,6 +32,13 @@ export interface WaveOptions {
   daytonaImage?: string;
   /** `--env daytona`: vCPU per sandbox (see seed.ts chaosDaytonaShape). */
   daytonaCpu?: number;
+  /**
+   * Known product signatures this wave deliberately masks. "rc06" keeps the
+   * company budget amount but disables its hard stop, so a stuck
+   * accounting row (RC-06) cannot wedge every later task. Spend is still
+   * recorded per wave. Absent on plans written before masks existed.
+   */
+  masks?: string[];
 }
 
 export interface TaskPlan {
