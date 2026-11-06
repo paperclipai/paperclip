@@ -68,6 +68,10 @@ const retryWaitMessages: Record<string, string> = {
   finalizing_saved_result: "Paperclip is finishing the saved result before Retry can continue.",
   cleanup_quarantined: "Retry cannot continue this attempt. Send a new message after the previous execution has stopped.",
   cancelled_by_operator: "This attempt was stopped. Send a new message to continue from saved work.",
+  // A new click replaces a declined Retry with a fresh attempt under the
+  // clicker's current access, so these keep Retry available.
+  retry_authority_denied: "Retry could not start with the requesting user's access. Press Retry to start it with yours.",
+  retry_source_changed: "Retry could not start because its saved message changed. Press Retry to try again.",
 };
 
 /** Recognize old persisted failures without displaying arbitrary run error text. */
