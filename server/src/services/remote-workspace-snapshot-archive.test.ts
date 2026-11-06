@@ -328,7 +328,7 @@ describe("portable remote workspace archives", () => {
     await fs.writeFile(path.join(bin, "git"), "#!/bin/sh\nprintf '%s' 'No space left on device' >&2\nexit 2\n", { mode: 0o700 });
     const helper = path.join(root, "archive.cjs"); await fs.writeFile(helper, remoteWorkspaceArchiveScript());
     await expect(execute(process.execPath, [helper, "capture", cwd, path.join(root, "remote.pcws")],
-      { env: { ...env, PATH: `${bin}${path.delimiter}${env.PATH ?? process.env.PATH}` } }))
+      { env: { ...env, PATH: `${bin}${path.delimiter}${process.env.PATH ?? ""}` } }))
       .rejects.toMatchObject({ code: 1, stdout: "", stderr: "remote_workspace_sandbox_disk_full: the sandbox disk is full; free space in the sandbox before saving the workspace" });
   });
   it.each([["an empty directory", "directory"], ["a gitfile for a removed worktree", "gitfile"]])(
