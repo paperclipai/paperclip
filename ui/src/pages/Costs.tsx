@@ -277,7 +277,7 @@ export function Costs({
   const policyMutation = useMutation({
     mutationFn: ({ summary, changes }: {
       summary: BudgetPolicySummary;
-      changes: Partial<Pick<BudgetPolicySummary, "amount" | "reservationCents" | "unpricedUsagePolicy">>;
+      changes: Partial<Pick<BudgetPolicySummary, "amount" | "reservationCents" | "unpricedUsagePolicy" | "warnPercent" | "hardStopEnabled" | "notifyEnabled">>;
     }) => budgetsApi.upsertPolicy(companyId, {
       scopeType: summary.scopeType,
       scopeId: summary.scopeId,
@@ -1013,6 +1013,9 @@ export function Costs({
                             summary={summary}
                             onReservationChange={(reservationCents) => policyMutation.mutate({ summary, changes: { reservationCents } })}
                             onUnpricedUsagePolicyChange={(unpricedUsagePolicy) => policyMutation.mutate({ summary, changes: { unpricedUsagePolicy } })}
+                            onHardStopEnabledChange={(hardStopEnabled) => policyMutation.mutate({ summary, changes: { hardStopEnabled } })}
+                            onWarnPercentChange={(warnPercent) => policyMutation.mutate({ summary, changes: { warnPercent } })}
+                            onNotifyEnabledChange={(notifyEnabled) => policyMutation.mutate({ summary, changes: { notifyEnabled } })}
                             isSaving={policyMutation.isPending}
                             onSave={(amount) =>
                               policyMutation.mutate({ summary, changes: { amount } })}

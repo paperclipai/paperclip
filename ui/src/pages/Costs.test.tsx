@@ -223,6 +223,7 @@ describe("Shared Costs surfaces", () => {
   it.each([
     ["reservation", 500, "agent"], ["unknown price", 500, "agent"], ["amount", 500, "agent"],
     ["amount", 0, "company"], ["amount", 0, "agent"], ["amount", 0, "project"],
+    ["hard stop", 500, "agent"], ["warning threshold", 500, "agent"],
   ] as const)("preserves other settings when editing %s from %s on a %s budget", async (field, previousAmount, scopeType) => {
     const summary = {
       policyId: "policy", companyId: "company-1", scopeType, scopeId: "agent", scopeName: "Worker", metric: "billed_cents", windowKind: "lifetime",
@@ -239,7 +240,15 @@ describe("Shared Costs surfaces", () => {
     expect(advanced.open).toBe(false);
     if (field !== "amount") await act(async () => advanced.querySelector("summary")!.click());
     if (field === "unknown price") await act(async () => container.querySelector<HTMLInputElement>('input[type="checkbox"]')!.click());
-    else {
+    else if (field === "hard stop") await act(async () => container.querySelector<HTMLInputElement>('input[aria-label="Hard stop when limit is reached"]')!.click());
+    else if (field === "warning threshold") {
+      const element = container.querySelector<HTMLInputElement>('input[aria-label="Warning alert threshold (%)"]')!;
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(element, "75");
+        element.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+      await act(async () => [...container.querySelectorAll("button")].find(b => b.textContent === "Update alert threshold")!.click());
+    } else {
       const element = field === "reservation" ? container.querySelector<HTMLInputElement>('[aria-label="Reserve per run (USD)"]')! : container.querySelector<HTMLInputElement>('input:not([type="checkbox"]):not([aria-label])')!;
       await act(async () => {
         Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(element, "1");
@@ -251,7 +260,7 @@ describe("Shared Costs surfaces", () => {
     await act(async () => { await vi.waitFor(() => expect(upsertPolicyMock).toHaveBeenCalled()); });
     expect(upsertPolicyMock).toHaveBeenCalledWith("company-1", {
       scopeType: summary.scopeType, scopeId: summary.scopeId, metric: summary.metric, windowKind: summary.windowKind,
-      ...(field === "amount" ? { amount: 100 } : field === "unknown price" ? { unpricedUsagePolicy: "block" } : { reservationCents: "100.0000000" }),
+      ...(field === "amount" ? { amount: 100 } : field === "unknown price" ? { unpricedUsagePolicy: "block" } : field === "hard stop" ? { hardStopEnabled: true } : field === "warning threshold" ? { warnPercent: 75 } : { reservationCents: "100.0000000" }),
     });
     queryClient.clear();
   });
