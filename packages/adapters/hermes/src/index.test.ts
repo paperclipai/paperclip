@@ -10,6 +10,18 @@ import {
   hermesGatewayType,
 } from "./index.js";
 import { createServerAdapter as createGatewayServerAdapterFromSubpath } from "./gateway/index.js";
+import { agentConfigurationDoc } from "./index.js";
+import { DEFAULT_TIMEOUT_SEC } from "./shared/constants.js";
+
+test("agent configuration doc states the enforced timeoutSec default", () => {
+  // The doc table once stated 300 while the code enforced an 1800 floor, and
+  // runs configured from the doc died at the wall. Keep them in lockstep.
+  const row = agentConfigurationDoc
+    .split("\n")
+    .find((line) => line.includes("timeoutSec") && line.includes("Execution timeout"));
+  expect(row).toBeDefined();
+  expect(row).toContain(`| ${DEFAULT_TIMEOUT_SEC} |`);
+});
 
 test("root package export exposes Paperclip external adapter entrypoint", () => {
   const adapter = createServerAdapter();
