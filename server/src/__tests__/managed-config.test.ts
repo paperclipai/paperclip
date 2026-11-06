@@ -495,6 +495,7 @@ describe("parseManagedConfigEnv plugin environment entries", () => {
 
   it("refuses an unknown driver and malformed plugin fields", () => {
     expect(() => parseManagedConfigEnv(docWith([remoteHost({ driver: "ssh" })]))).toThrow(/"environments\[0\].driver" must be one of "sandbox", "plugin"/);
+    expect(() => parseManagedConfigEnv(docWith([{ ...sandbox, driver: null }]))).toThrow(/"environments\[0\].driver" must be one of "sandbox", "plugin" when present \(got null\)/);
     expect(() => parseManagedConfigEnv(docWith([remoteHost({ driverKey: "Tasks" })]))).toThrow(/"environments\[0\].driverKey" must start/);
     expect(() => parseManagedConfigEnv(docWith([remoteHost({ driverKey: undefined })]))).toThrow(/"environments\[0\].driverKey" must be a non-empty string/);
     expect(() => parseManagedConfigEnv(docWith([remoteHost({ driverConfig: [] })]))).toThrow(/"environments\[0\].driverConfig" must be an object/);

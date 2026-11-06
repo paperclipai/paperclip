@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Db } from "@paperclipai/db";
+import { unprocessable } from "../errors.js";
 import { MANAGED_CONFIG_ENV_KEY, parseManagedConfigEnv } from "./managed-config.js";
 import {
   applyManagedEnvironments,
@@ -811,6 +812,135 @@ describe("applyManagedEnvironments plugin entries", () => {
 
     expect(environments.ensureManagedPluginEnvironment).toHaveBeenCalledTimes(1);
     expect(handle.off).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps recovery armed after a worker failure and stops after one success", async () => {
+    const { handle, fireReady } = recoveryHandle();
+    const ensureManagedPluginEnvironment = vi.fn()
+      .mockRejectedValueOnce(new Error("worker crashed during environmentValidateConfig"))
+      .mockResolvedValue({ environment: pluginEnvironmentRow(), action: "updated" });
+    const environments = environmentsSeam({ ensureManagedPluginEnvironment });
+    const manager = workerManager(false, handle);
+    await applyManagedEnvironments(noDb, configWith([pluginEntry()]), {
+      env: {},
+      workerManager: manager,
+      environments,
+      instanceSettings: instanceSettingsSeam(),
+      resolveEnvironmentPlugin: readyPlugin(),
+      autoInstalledPluginKeys: [PLUGIN_KEY],
+    });
+    manager.isRunning.mockReturnValue(true);
+
+    fireReady();
+    await tick();
+    expect(ensureManagedPluginEnvironment).toHaveBeenCalledTimes(1);
+    expect(handle.off).not.toHaveBeenCalled();
+
+    fireReady();
+    await tick();
+    expect(ensureManagedPluginEnvironment).toHaveBeenCalledTimes(2);
+    expect(handle.off).toHaveBeenCalledTimes(1);
+
+    fireReady();
+    await tick();
+    expect(ensureManagedPluginEnvironment).toHaveBeenCalledTimes(2);
+  });
+
+  it("queues one more attempt when the worker becomes ready during an attempt", async () => {
+    const { handle, fireReady } = recoveryHandle();
+    let failFirst!: (err: Error) => void;
+    const ensureManagedPluginEnvironment = vi.fn()
+      .mockImplementationOnce(() => new Promise((_resolve, reject) => { failFirst = reject; }))
+      .mockResolvedValue({ environment: pluginEnvironmentRow(), action: "updated" });
+    const manager = workerManager(false, handle);
+    await applyManagedEnvironments(noDb, configWith([pluginEntry()]), {
+      env: {},
+      workerManager: manager,
+      environments: environmentsSeam({ ensureManagedPluginEnvironment }),
+      instanceSettings: instanceSettingsSeam(),
+      resolveEnvironmentPlugin: readyPlugin(),
+      autoInstalledPluginKeys: [PLUGIN_KEY],
+    });
+    manager.isRunning.mockReturnValue(true);
+
+    fireReady();
+    fireReady();
+    expect(ensureManagedPluginEnvironment).toHaveBeenCalledTimes(1);
+    failFirst(new Error("worker crashed"));
+    await tick();
+    await tick();
+    expect(ensureManagedPluginEnvironment).toHaveBeenCalledTimes(2);
+    expect(handle.off).toHaveBeenCalledTimes(1);
+  });
+
+  it("stops recovery when the plugin permanently rejects the config", async () => {
+    const { handle, fireReady } = recoveryHandle();
+    const ensureManagedPluginEnvironment = vi.fn().mockRejectedValue(unprocessable("driverConfig.region is not supported"));
+    const manager = workerManager(false, handle);
+    await applyManagedEnvironments(noDb, configWith([pluginEntry()]), {
+      env: {},
+      workerManager: manager,
+      environments: environmentsSeam({ ensureManagedPluginEnvironment }),
+      instanceSettings: instanceSettingsSeam(),
+      resolveEnvironmentPlugin: readyPlugin(),
+      autoInstalledPluginKeys: [PLUGIN_KEY],
+    });
+    manager.isRunning.mockReturnValue(true);
+
+    fireReady();
+    await tick();
+    fireReady();
+    await tick();
+    expect(ensureManagedPluginEnvironment).toHaveBeenCalledTimes(1);
+    expect(handle.off).toHaveBeenCalledTimes(1);
+  });
+
+  it("archives and arms recovery when the worker fails during the boot ensure", async () => {
+    const { handle, fireReady } = recoveryHandle();
+    const ensureManagedPluginEnvironment = vi.fn()
+      .mockRejectedValueOnce(new Error("worker crashed during environmentValidateConfig"))
+      .mockRejectedValueOnce(new Error("worker still restarting"))
+      .mockResolvedValue({ environment: pluginEnvironmentRow(), action: "updated" });
+    const environments = environmentsSeam({ ensureManagedPluginEnvironment });
+    const manager = workerManager(true, handle);
+    const result = await applyManagedEnvironments(noDb, configWith([pluginEntry()]), {
+      env: {},
+      workerManager: manager,
+      environments,
+      instanceSettings: instanceSettingsSeam(),
+      resolveEnvironmentPlugin: readyPlugin(),
+      autoInstalledPluginKeys: [PLUGIN_KEY],
+    });
+    await tick();
+
+    expect(result).toMatchObject({ ensured: 0, failed: 1 });
+    expect(environments.archiveManagedPluginEnvironment).toHaveBeenCalledWith({ pluginKey: PLUGIN_KEY, driverKey: "tasks" });
+    // The immediate re-check after subscribing ran once and failed too.
+    expect(ensureManagedPluginEnvironment).toHaveBeenCalledTimes(2);
+
+    fireReady();
+    await tick();
+    expect(ensureManagedPluginEnvironment).toHaveBeenCalledTimes(3);
+    expect(handle.off).toHaveBeenCalledTimes(1);
+  });
+
+  it("neither archives nor retries when the boot ensure gets a permanent config rejection", async () => {
+    const { handle } = recoveryHandle();
+    const environments = environmentsSeam({
+      ensureManagedPluginEnvironment: vi.fn().mockRejectedValue(unprocessable("driverConfig.region is not supported")),
+    });
+    const manager = workerManager(true, handle);
+    const result = await applyManagedEnvironments(noDb, configWith([pluginEntry()]), {
+      env: {},
+      workerManager: manager,
+      environments,
+      instanceSettings: instanceSettingsSeam(),
+      resolveEnvironmentPlugin: readyPlugin(),
+      autoInstalledPluginKeys: [PLUGIN_KEY],
+    });
+    expect(result).toMatchObject({ ensured: 0, failed: 1 });
+    expect(environments.archiveManagedPluginEnvironment).not.toHaveBeenCalled();
+    expect(manager.getWorker).not.toHaveBeenCalled();
   });
 
   it("treats a missing plugin, a plugin without the driver, or a worker manager without call as unavailable", async () => {

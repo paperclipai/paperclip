@@ -256,7 +256,8 @@ function parseManagedEnvironmentsSection(
     if (!isPlainObject(entry)) {
       fail(`"${at}" must be an object (got ${describeJsonValue(entry)})`);
     }
-    const driver = entry.driver ?? "sandbox";
+    // Only an absent `driver` means the sandbox entry; an explicit `null` is malformed.
+    const driver = entry.driver === undefined ? "sandbox" : entry.driver;
     if (!(MANAGED_ENVIRONMENT_DRIVERS as readonly unknown[]).includes(driver)) {
       fail(
         `"${at}.driver" must be one of ${MANAGED_ENVIRONMENT_DRIVERS.map((value) => JSON.stringify(value)).join(", ")} when present (got ${describeJsonValue(entry.driver)})`,
