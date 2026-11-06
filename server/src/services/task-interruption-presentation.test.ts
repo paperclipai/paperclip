@@ -95,11 +95,18 @@ it("explains a persisted Retry wait without exposing the saved payload", () => {
     .toMatchObject({ state: "waiting_for_user", userAction: "resume" });
 });
 
-it.each(["cleanup_quarantined", "cancelled_by_operator"])("does not offer Retry for terminal Retry waits: %s", reason => {
+it.each(["cleanup_quarantined", "cancelled_by_operator", "retry_source_changed"])("does not offer Retry for terminal Retry waits: %s", reason => {
   const failed = { ...run, errorCode: "native_provider_terminal_failed", resultJson: null };
   expect(projectTaskInterruption(issue, { run: failed, agent, paused: false, approval: false,
     wait: { id: "retry", requestedAt: new Date(), sourceRunId: failed.id, executionWaitReason: reason } }))
     .toMatchObject({ state: "failed", canRetry: false, retryWait: { reason } });
+});
+
+it("keeps Retry for a Retry declined for its requester's access, since a new click replaces it", () => {
+  const failed = { ...run, errorCode: "native_provider_terminal_failed", resultJson: null };
+  expect(projectTaskInterruption(issue, { run: failed, agent, paused: false, approval: false,
+    wait: { id: "retry", requestedAt: new Date(), sourceRunId: failed.id, executionWaitReason: "retry_authority_denied" } }))
+    .toMatchObject({ state: "failed", canRetry: true, retryWait: { reason: "retry_authority_denied" } });
 });
 
 it("preserves the actual workspace preparation error without changing retry authority", () => {

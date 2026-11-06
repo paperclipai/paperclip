@@ -57,9 +57,11 @@ const taskRetryIntentSchema = z.object({
 });
 export type TaskRetryIntent = z.infer<typeof taskRetryIntentSchema>;
 
-/** Dispatch declines a Retry intent for these reasons when the intent itself,
- * not the task's shared state, can no longer start. */
-export const DECLINED_TASK_RETRY_REASONS = ["retry_authority_denied", "retry_source_changed"] as const;
+/** Dispatch declines a Retry intent for this reason when its own requester,
+ * not the task's shared state, prevents it from starting; a click by a user
+ * with access replaces it. An edited saved board message
+ * (`retry_source_changed`) is terminal: only new input continues. */
+export const DECLINED_TASK_RETRY_REASONS = ["retry_authority_denied"] as const;
 export function isDeclinedTaskRetry(payload: Record<string, unknown> | null | undefined) {
   const wait = payload?.executionWait;
   const reason = wait && typeof wait === "object" && !Array.isArray(wait) ? (wait as Record<string, unknown>).reason : null;
