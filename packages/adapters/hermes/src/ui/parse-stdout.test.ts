@@ -125,8 +125,16 @@ describe("stream-json output", () => {
     ).toEqual([]);
   });
 
-  it("drops unknown JSON events instead of showing them raw", () => {
-    expect(parseHermesStdoutLine(JSON.stringify({ type: "mystery", payload: 1 }), TS)).toEqual([]);
+  it("keeps assistant answers that are themselves JSON visible", () => {
+    // A text-mode answer like {"status":"done"} is content, not an event:
+    // it must reach the assistant fallback instead of being dropped.
+    const line = '{"status":"done"}';
+    expect(parseHermesStdoutLine(line, TS)).toEqual([{ kind: "assistant", ts: TS, text: line }]);
+  });
+
+  it("keeps unknown event types visible instead of dropping them", () => {
+    const line = JSON.stringify({ type: "mystery", payload: 1 });
+    expect(parseHermesStdoutLine(line, TS)).toEqual([{ kind: "assistant", ts: TS, text: line }]);
   });
 
   it("falls back to quiet-mode parsing for lines that are not JSON", () => {
