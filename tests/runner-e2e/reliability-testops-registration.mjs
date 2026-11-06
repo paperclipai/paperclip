@@ -35,7 +35,7 @@ export function desiredCase(row) {
     automated: true,
     description: [
       `Staging-soak reliability case ${row.name} (soak signature ${row.signature}).`,
-      `Runs the existing full-stack cell ${row.executionId}: native OpenCode with ${row.model} on ${row.environment}.`,
+      `Runs the existing full-stack cell ${row.executionId}: profile ${row.profile} with ${row.model} on ${row.environment}.`,
       'Launched by the Reliability TestOps plan through runner-full-stack-e2e.yml. Registration is not a result or a qualification claim.',
     ].join('\n\n'),
   };

@@ -27,18 +27,20 @@ const selection = selected => ({ schema: 'paperclip.product-regression-testops-s
   workflowSha, targetSha, jobRunId: '456', launchId: 789, cases: selected });
 const result = (row, overrides = {}) => ({
   executionId: row.executionId, suiteId: row.suite, caseId: row.name, profileId: row.profile, environmentId: row.environment,
-  source: { sha: targetSha }, attempt: 1, status: 'passed', cleanup: 'passed', model: reliabilityModel,
+  source: { sha: targetSha }, attempt: 1, status: 'passed', cleanup: 'passed', model: row.model,
   matcherResults: [{ matcher: { kind: 'json_path', path: 'resume.retry-works-first-use', expected: true }, passed: true }], ...overrides,
 });
 const campaign = (selected, results) => ({ schema: 'paperclip.runner-e2e.campaign/v2', campaignId: 'gha-123-1',
   source: { sha: targetSha }, expected: selected.map(row => row.executionId), results });
 
-test('the plan is seven DeepSeek 1017 cells, Daytona only for the sandbox-specific soak signatures', () => {
+test('the plan is six DeepSeek 1017 cells plus native Codex for steering, Daytona only for sandbox signatures', () => {
   assert.equal(reliabilityDefinitions.length, 7);
   assert.equal(new Set(reliabilityDefinitions.map(row => row.executionId)).size, 7);
-  assert.ok(reliabilityDefinitions.every(row => row.profile === reliabilityProfile && row.model === reliabilityModel
-    && row.fullName === `paperclip.Product E2E.everyday-workflows.${row.name}`));
-  assert.deepEqual(reliabilityDefinitions.filter(row => row.environment === 'daytona').map(row => row.name),
+  assert.ok(reliabilityDefinitions.every(row => row.fullName === `paperclip.Product E2E.everyday-workflows.${row.name}`));
+  // OpenCode declares steering: false, so only queue-steer uses the steering-capable native Codex cell.
+  assert.deepEqual(reliabilityDefinitions.filter(row => row.profile !== reliabilityProfile || row.model !== reliabilityModel)
+    .map(row => [row.name, row.profile, row.model, row.environment]), [['queue-steer', 'runner-codex', 'gpt-5.6-sol', 'daytona']]);
+  assert.deepEqual(reliabilityDefinitions.filter(row => row.profile === reliabilityProfile && row.environment === 'daytona').map(row => row.name),
     ['three-turn-revise', 'long-silent-command', 'queued-across-restart']);
   assert.equal(testOpsPlanDetails.reliability.size, 7);
   assert.equal(testOpsPlanDetails['product-regression'].size, 20);

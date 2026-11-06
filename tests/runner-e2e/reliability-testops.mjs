@@ -2,15 +2,18 @@
 // Product regression plan (plan 2) on the same trusted workflow, TestOps job,
 // selection, projection, upload and verification path. Each case selects one
 // existing everyday-workflows reliability cell; it does not change the prompt,
-// grader, budget or runtime. The plan cells run native OpenCode with DeepSeek
-// 1017 through OpenRouter. The native Codex and ACPX reliability cells stay
-// explicit-only extras outside the plan.
+// grader, budget or runtime. Six plan cells run native OpenCode with DeepSeek
+// 1017 through OpenRouter. queue-steer must steer an active turn, which the
+// OpenCode driver does not support (`steering: false`), so the plan uses the
+// existing native Codex Daytona cell for it. The other native Codex and ACPX
+// reliability cells stay explicit-only extras outside the plan.
 
 export const reliabilityPlanKey = 'reliability';
 export const reliabilityPlanName = 'Reliability — staging soak';
 export const reliabilitySuite = 'everyday-workflows';
 export const reliabilityProfile = 'runner-opencode-deepseek-1017';
 export const reliabilityModel = 'openrouter/deepseek/deepseek-v4.1-flash-1017';
+const steeringProfile = ['runner-codex', 'gpt-5.6-sol'];
 
 // Daytona only where the soak failure was a sandbox lease failure (S49, S52/S52b,
 // S55). The catalog test binds this table to everyday-reliability-cases.ts.
@@ -20,13 +23,12 @@ export const reliabilityDefinitions = Object.freeze([
   ['three-turn-revise', 'daytona', 'S49'],
   ['long-silent-command', 'daytona', 'S52/S52b'],
   ['tree-pause-release', 'local', 'S50/S50b'],
-  ['queue-steer', 'local', 'H2'],
+  ['queue-steer', 'daytona', 'H2', ...steeringProfile],
   ['queued-across-restart', 'daytona', 'S55/U9'],
-].map(([name, environment, signature]) => Object.freeze({
-  plan: reliabilityPlanKey, suite: reliabilitySuite, name, environment, signature,
-  profile: reliabilityProfile, model: reliabilityModel,
+].map(([name, environment, signature, profile = reliabilityProfile, model = reliabilityModel]) => Object.freeze({
+  plan: reliabilityPlanKey, suite: reliabilitySuite, name, environment, signature, profile, model,
   fullName: `paperclip.Product E2E.${reliabilitySuite}.${name}`,
-  executionId: `${reliabilitySuite}.${reliabilityProfile}.${environment}.${name}`,
+  executionId: `${reliabilitySuite}.${profile}.${environment}.${name}`,
 })));
 
 // TestOps assigns these identities; they are never invented here. Fill them,

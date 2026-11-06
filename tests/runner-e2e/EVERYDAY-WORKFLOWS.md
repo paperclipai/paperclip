@@ -124,17 +124,21 @@ message delivered by more than one successful run is duplicate execution.
 | `queue-steer` | H2 | During an active run, queue three follow-ups through the public comment API; edit one, discard one, and steer one (retrying only `steering_temporarily_unavailable`, for up to two minutes). | Edited text reaches the agent and the original never does; the discarded text never reaches the agent; the steered message is acknowledged by the active turn and never replayed; the remaining message is handled by exactly one run. |
 | `queued-across-restart` | S55/U9 (fix #19431) | Queue a follow-up through the composer while a run is active, then restart the controller with the existing restart machinery. | The follow-up dispatches only after the restart, automatically within six minutes, exactly once; every observed `queued` wait names a cause (`server_restarting`, `task_drain`, …) rather than a bare "Queued"; any offered Retry works on first use. |
 
-**Matrix (17 cells).** The `reliability` group selects the seven TestOps plan
-cells and ten explicit-only extras.
+**Matrix (16 cells).** The `reliability` group selects the seven TestOps plan
+cells and nine explicit-only extras. Six plan cells use native OpenCode with
+DeepSeek 1017 via OpenRouter. `queue-steer` must steer an active turn, and the
+OpenCode server driver declares `steering: false`, so the queued-comment route
+answers `steering_unsupported`. Its plan cell is the existing steering-capable
+native Codex Daytona cell.
 
-| Case | Plan cell (native OpenCode, DeepSeek 1017 via OpenRouter) | Why this environment |
+| Case | Plan cell | Why this profile and environment |
 |---|---|---|
 | `interrupt-redirect` | `runner-opencode-deepseek-1017.local` | S47 is control-plane interrupt and Stop-settlement dispatch. |
 | `reassign-midrun` | `runner-opencode-deepseek-1017.local` | S48 is the reassignment request and native stop settlement. |
 | `three-turn-revise` | `runner-opencode-deepseek-1017.daytona` (per-turn lease) | S49 hit turn 3 on an ephemeral Daytona lease. |
 | `long-silent-command` | `runner-opencode-deepseek-1017.daytona` (warm lease) | S52/S52b hung on remote runners during a silent command. |
 | `tree-pause-release` | `runner-opencode-deepseek-1017.local` | S50/S50b is tree-hold and parked-retry scheduling. |
-| `queue-steer` | `runner-opencode-deepseek-1017.local` | H2 is queued-comment editing, discarding and steering. |
+| `queue-steer` | `runner-codex.daytona` (warm lease) | H2 needs a steering-capable driver; OpenCode has no steering. |
 | `queued-across-restart` | `runner-opencode-deepseek-1017.daytona` (warm lease) | S55/U9 happened across a restart with a remote lease. |
 
 The local plan cells cannot reproduce Daytona-only signatures: the remote
@@ -144,9 +148,10 @@ tree hold. The S51 lost-runner signature has no case yet. The explicit-only
 native Codex Daytona extra for each case still covers the sandbox variants of
 S47, S48 and S50.
 
-The extras are outside the TestOps plan. Each case runs once on native Codex
-(`runner-codex`, `gpt-5.6-sol`) on Daytona: the warm environment, except
-`three-turn-revise` on the per-turn lease. `long-silent-command` also runs on
+The extras are outside the TestOps plan. Every case except `queue-steer` (whose
+Codex cell is the plan cell) also runs once on native Codex (`runner-codex`,
+`gpt-5.6-sol`) on Daytona: the warm environment, except `three-turn-revise` on
+the per-turn lease. `long-silent-command` also runs on
 the released ACPX facades Grok (`runner-acpx-grok`), Kimi (`runner-acpx-kimi`)
 and OpenRouter/Pi (`runner-acpx-pi`), which hung 3/3 before the fix. They run
 as ordinary released profiles, as in the rolling-deployment matrix; a profile
@@ -166,7 +171,9 @@ upload verification and failure classes. Its mapping lives in
 plan. A launch selects cases from exactly one plan; mixing them fails. Each
 plan keeps its own denominator: only a complete seven-case selection is a full
 Reliability verdict, and plan 2 still needs its 20 cases. Reports tag each
-reliability result with its soak signature (`soak-S55/U9`, for example).
+reliability result with its soak signature (`soak-S55/U9`, for example). A
+launch needs `OPENROUTER_API_KEY`, `DAYTONA_API_KEY` and, for `queue-steer`,
+`OPENAI_API_KEY`; the workflow passes each only to the cells that declare it.
 
 A launch from TestOps dispatches the workflow with `ALLURE_JOB_RUN_ID`; the
 selected case IDs choose the plan and its cells. To bootstrap one manually:

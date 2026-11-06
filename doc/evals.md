@@ -13,9 +13,11 @@ Catalog and projection tests are not live qualification; retain the fresh
 TestOps launch and GitHub run when reporting acceptance.
 
 The sibling **Reliability — staging soak** TestOps plan uses the same lane for
-the seven staging-soak reliability cases. Each runs once on native OpenCode with
+the seven staging-soak reliability cases. Six run once on native OpenCode with
 DeepSeek 1017 through OpenRouter: on Daytona for `three-turn-revise`,
 `long-silent-command` and `queued-across-restart`, and locally for the others.
+`queue-steer` needs steering, which OpenCode does not support, so it runs on
+native Codex on Daytona.
 A launch selects cases from exactly one plan, so plan 2 keeps its 20-case
 denominator. The plan is launched from TestOps before a release, or bootstrapped
 with `testops_plan=reliability`. It has no schedule and does not run per PR.

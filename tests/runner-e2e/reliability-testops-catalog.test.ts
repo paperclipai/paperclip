@@ -2,14 +2,14 @@ import { expect, it } from "vitest";
 import { buildMatrixJobs, parseRunnerSelectors, selectRunnerExecutions } from "./selectors.js";
 import { runnerMatrix } from "./catalog.js";
 import { scheduledSelection } from "./scheduled-operations.js";
-import { RELIABILITY_PLAN_PROFILE_ID, everydayReliabilityCaseIds, reliabilityPlanEnvironments, reliabilityPlanExecutionIds,
+import { RELIABILITY_PLAN_PROFILE_ID, everydayReliabilityCaseIds, reliabilityPlanCells, reliabilityPlanExecutionIds,
   everydayReliabilitySignatures } from "./everyday-reliability-cases.js";
 import { productReportingMatcherKinds, productReportingModels, projectProductResults, testOpsPlans } from "./product-regression-testops.mjs";
 import { reliabilityDefinitions, reliabilityModel, reliabilityProfile } from "./reliability-testops.mjs";
 import { gradeLongSilentCommand, gradeQueuedAcrossRestart, gradeResumptionRule } from "./everyday-reliability.js";
 import type { RunnerE2EResult } from "./types.js";
 
-it("binds every TestOps Reliability case to its existing explicit-only DeepSeek 1017 cell", () => {
+it("binds every TestOps Reliability case to its existing explicit-only cell", () => {
   expect(reliabilityProfile).toBe(RELIABILITY_PLAN_PROFILE_ID);
   expect(reliabilityDefinitions.map(row => row.name)).toEqual(everydayReliabilityCaseIds);
   expect(reliabilityDefinitions.map(row => row.executionId)).toEqual(reliabilityPlanExecutionIds("everyday-workflows"));
@@ -19,15 +19,20 @@ it("binds every TestOps Reliability case to its existing explicit-only DeepSeek 
     const execution = executions.find(value => value.id === row.executionId)!;
     expect(execution.suite.id).toBe(row.suite);
     expect(execution.task.id).toBe(row.name);
-    expect(execution.profile.id).toBe(reliabilityProfile);
-    expect(execution.profile.provider).toBe("opencode");
-    expect(execution.profile.model).toBe(reliabilityModel);
+    const cell = reliabilityPlanCells[row.name as keyof typeof reliabilityPlanCells];
+    expect(execution.profile.id).toBe(row.profile);
+    expect(row.profile).toBe(cell.profile);
+    expect(execution.profile.model).toBe(row.model);
     expect(productReportingModels).toContain(execution.profile.model);
     expect(execution.environment.id).toBe(row.environment);
-    expect(row.environment).toBe(reliabilityPlanEnvironments[row.name as keyof typeof reliabilityPlanEnvironments]);
+    expect(row.environment).toBe(cell.environment);
+    // Six cells use DeepSeek 1017 on OpenCode; queue-steer needs a steering-capable driver (Codex app server).
+    if (row.name === "queue-steer") expect([execution.profile.provider, execution.profile.id]).toEqual(["codex", "runner-codex"]);
+    else expect([execution.profile.provider, execution.profile.model]).toEqual(["opencode", reliabilityModel]);
     expect(row.signature).toBe(everydayReliabilitySignatures[row.name as keyof typeof everydayReliabilitySignatures].signature);
-    // OpenRouter for the model, Daytona only for sandbox cells; no subscription or Codex credential.
-    expect(execution.requiredCredentials).toEqual(row.environment === "daytona" ? ["OPENROUTER_API_KEY", "DAYTONA_API_KEY"] : ["OPENROUTER_API_KEY"]);
+    // OpenRouter (or the OpenAI key for the Codex steering cell), plus Daytona only for sandbox cells.
+    const model = row.profile === reliabilityProfile ? "OPENROUTER_API_KEY" : "OPENAI_API_KEY";
+    expect(execution.requiredCredentials).toEqual(row.environment === "daytona" ? [model, "DAYTONA_API_KEY"] : [model]);
     expect(execution.task.automaticRetryPolicy).toBe("single_attempt");
   }
   // S49 ran on a per-turn lease; the other Daytona cells keep the suite's warm lease.
@@ -49,8 +54,10 @@ it("keeps the plan out of generic, scheduled and per-PR selections and adds no D
     expect(select(args).filter(execution => plan.has(execution.id)), args.join(" ")).toEqual([]);
   }
   for (const cadence of ["daily", "weekly"] as const) expect(scheduledSelection(cadence).filter(id => plan.has(id))).toEqual([]);
+  expect(select(["--suite", "everyday-workflows", "--profile", "runner-codex"]).filter(execution => plan.has(execution.id))).toEqual([]);
   expect(runnerMatrix.filter(execution => execution.profile.id === RELIABILITY_PLAN_PROFILE_ID && execution.suite.id === "everyday-workflows")
-    .map(execution => execution.id).sort()).toEqual([...plan].sort());
+    .map(execution => execution.id).sort()).toEqual([...plan].filter(id => id.includes(RELIABILITY_PLAN_PROFILE_ID)).sort());
+  expect([...plan].filter(id => !id.includes(RELIABILITY_PLAN_PROFILE_ID))).toEqual(["everyday-workflows.runner-codex.daytona.queue-steer"]);
   // The chat-feature candidate cell is unchanged and stays local.
   expect(runnerMatrix.filter(execution => execution.profile.id === RELIABILITY_PLAN_PROFILE_ID && execution.suite.id !== "everyday-workflows")
     .map(execution => execution.id)).toEqual(["chat-features.runner-opencode-deepseek-1017.local.create-backlog"]);
@@ -70,7 +77,7 @@ it("reports the real reliability grader output through the standing projection w
     const sourceSha = "b".repeat(40);
     const raw: RunnerE2EResult = { schema: "paperclip.runner-e2e.result/v2", executionId: row.executionId, suiteId: row.suite, caseId: row.name,
       profileId: row.profile, environmentId: row.environment, source: { sha: sourceSha, ref: null, workflowRunUrl: null },
-      attempt: 1, status: "failed", failureClass: "candidate_failure", cleanup: "passed", model: reliabilityModel, provider: "opencode",
+      attempt: 1, status: "failed", failureClass: "candidate_failure", cleanup: "passed", model: row.model, provider: "opencode",
       runtimeMode: "native", startedAt: "2026-11-06T00:00:00Z", finishedAt: "2026-11-06T00:00:01Z", durationMs: 1000, matcherResults };
     const projected = projectProductResults({ schema: "paperclip.runner-e2e.campaign/v2", campaignId: "gha-123-1", source: { sha: sourceSha },
       expected: [row.executionId], results: [raw] }, { runId: "123", attempt: "1", workflowSha: "a".repeat(40), cases: [row] }, sourceSha);
