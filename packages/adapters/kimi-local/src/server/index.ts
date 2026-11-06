@@ -67,6 +67,7 @@ export * from "./acp.js";
 export { execute } from "./execute.js";
 export { listKimiSkills, syncKimiSkills } from "./skills.js";
 export { testEnvironment } from "./test.js";
+export { fetchKimiQuota, getQuotaWindows, kimiCodeHome, parseKimiUsage, readKimiAccessToken } from "./quota.js";
 export {
   parseKimiJsonl,
   isKimiSessionUnrecoverableError,

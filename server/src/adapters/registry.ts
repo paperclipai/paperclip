@@ -91,6 +91,7 @@ import {
 } from "@paperclipai/adapter-grok-local";
 import {
   execute as kimiExecute,
+  getQuotaWindows as kimiGetQuotaWindows,
   listKimiSkills,
   syncKimiSkills,
   testEnvironment as kimiTestEnvironment,
@@ -944,6 +945,7 @@ const kimiLocalAdapter: ServerAdapterModule = {
   getRuntimeCommandSpec: (config) =>
     buildNpmRuntimeCommandSpec(config, "kimi", "@moonshot-ai/kimi-code"),
   agentConfigurationDoc: kimiAgentConfigurationDoc,
+  getQuotaWindows: kimiGetQuotaWindows,
 };
 
 const hermesGatewayAdapter: ServerAdapterModule = {

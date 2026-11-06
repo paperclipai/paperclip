@@ -32,7 +32,7 @@ import {
   accessService,
 } from "../services/index.js";
 import { assertBoard, assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
-import { fetchCompanyQuotaWindows } from "../services/quota-windows.js";
+import { fetchAllQuotaWindows, fetchCompanyQuotaWindows } from "../services/quota-windows.js";
 import { badRequest, forbidden } from "../errors.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 
@@ -339,8 +339,15 @@ export function costRoutes(
       res.status(404).json({ error: "Company not found" });
       return;
     }
-    const results = await fetchCompanyQuotaWindows(db, companyId, getActorInfo(req).actorId);
-    res.json(results);
+    const [managed, adapterReported] = await Promise.all([
+      fetchCompanyQuotaWindows(db, companyId, getActorInfo(req).actorId),
+      fetchAllQuotaWindows(),
+    ]);
+    // Subscription accounts cover what the user connected centrally. Local
+    // adapters (kimi_local) report their own provider windows, which no
+    // managed connection can supply.
+    const reported = new Set(managed.map((result) => result.provider));
+    res.json([...managed, ...adapterReported.filter((result) => !reported.has(result.provider))]);
   });
 
   router.get("/companies/:companyId/budgets/overview", async (req, res) => {
