@@ -23,7 +23,7 @@ describe("canonical instruction revisions", () => {
   let companyId: string, agentId: string, userId: string, actorId: string, runId: string, root: string;
   let actor: AuthorizationActor;
   const entryFile = "policy/INSTRUCTIONS.txt";
-  const initial = "\uFEFF# Original\r\n☃\0\n";
+  const initial = "﻿# Original\r\n☃\0\n";
   beforeAll(async () => {
     home = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "instruction-revisions-")));
     process.env.PAPERCLIP_HOME = home;
@@ -108,10 +108,8 @@ describe("canonical instruction revisions", () => {
     await db.insert(principalPermissionGrants).values({ companyId, principalType: "agent", principalId: actorId, permissionKey: "agents:configure", scope: { agentIds: [actorId] } });
     await expect(access()).rejects.toMatchObject({ status: 403 });
     await db.update(principalPermissionGrants).set({ scope: { agentIds: [agentId] } }).where(eq(principalPermissionGrants.principalId, actorId));
-    // New saves have no historical revision row; authorized history lookups
-    // reach the normal not-found response rather than an authorization denial.
-    if (operation === "revision" || operation === "diff") await expect(access()).rejects.toMatchObject({ status: 404 });
-    else await expect(access()).resolves.toBeDefined();
+    // The current content ETag is readable as a revision once access is granted.
+    await expect(access()).resolves.toBeDefined();
   });
   it("allows self and board reads without requiring instruction edit permission", async () => {
     await db.delete(principalPermissionGrants).where(eq(principalPermissionGrants.principalId, userId));
@@ -128,8 +126,61 @@ describe("canonical instruction revisions", () => {
     expect(saved).toMatchObject({ changed: true, materialization: "current" });
     expect(await fs.readFile(path.join(root, entryFile), "utf8")).toBe(saved.content);
     expect((await save(saved.content, first.revision.id)).changed).toBe(false);
-    expect((await service.history({ ...target(), entryFile }, actor)).revisions).toHaveLength(0);
+    expect((await service.history({ ...target(), entryFile }, actor)).revisions).toHaveLength(1);
     expect(await db.select().from(agentInstructionRevisions).where(eq(agentInstructionRevisions.agentId, agentId))).toHaveLength(0);
+  });
+  it("names the writer, run and save time of the current bytes, never the reader", async () => {
+    const board = { type: "board", userId, source: "session" } as const;
+    const unrecorded = await base();
+    expect(unrecorded.revision).toMatchObject({ actorAgentId: null, actorUserId: null, responsibleUserId: null, sourceRunId: null });
+    const saved = await save("# Saved by the writer\n", unrecorded.revision.id);
+    expect(saved.revision).toMatchObject({ actorAgentId: actorId, sourceRunId: runId, responsibleUserId: userId });
+    expect(new Date(saved.revision.createdAt).getTime()).toBeGreaterThan(0);
+    const read = (await service.readCurrent(target(), board))!;
+    expect(read.revision).toMatchObject({ id: saved.revision.id, actorAgentId: actorId, actorUserId: null, sourceRunId: runId,
+      responsibleUserId: userId, createdAt: saved.revision.createdAt });
+    // An identical re-send by another writer does not take over the save.
+    const resent = await service.commit({ ...target(), entryFile, content: saved.content, baseRevisionId: saved.revision.id, source: "board" }, board);
+    expect(resent).toMatchObject({ changed: false, revision: { actorAgentId: actorId, sourceRunId: runId, createdAt: saved.revision.createdAt } });
+  });
+  it("records an identical save over unrecorded bytes as an adoption, not a save", async () => {
+    const first = await base();
+    const adopted = await save(first.content, first.revision.id);
+    expect(adopted).toMatchObject({ changed: false, revision: { actorAgentId: null, sourceRunId: null } });
+    expect((await service.history({ ...target(), entryFile }, actor)).revisions).toEqual([]);
+    expect((await base()).revision).toMatchObject({ actorAgentId: null, sourceRunId: null });
+  });
+  it("lists every save newest first with its writer and pages through them", async () => {
+    const board = { type: "board", userId, source: "session" } as const;
+    const first = await base();
+    const one = await save("one", first.revision.id);
+    const two = await service.commit({ ...target(), entryFile, content: "two", baseRevisionId: one.revision.id, source: "board" }, board);
+    const three = await service.commit({ ...target(), entryFile, content: "three", baseRevisionId: two.revision.id, source: "tool" }, actor);
+    const all = await service.history({ ...target(), entryFile }, board);
+    expect(all.nextCursor).toBeNull();
+    expect(all.revisions.map(revision => [revision.contentHash, revision.source, revision.actorAgentId, revision.actorUserId, revision.sourceRunId])).toEqual([
+      [three.revision.contentHash, "tool", actorId, null, runId],
+      [two.revision.contentHash, "board", null, userId, null],
+      [one.revision.contentHash, "cleanup", actorId, null, runId],
+    ]);
+    expect(all.revisions.map(revision => revision.createdAt)).toEqual([three, two, one].map(receipt => receipt.revision.createdAt));
+    expect(all.revisions.map(revision => revision.byteLength)).toEqual([5, 3, 3]);
+    const pages = [];
+    let cursor: string | undefined;
+    do {
+      const page = await service.history({ ...target(), entryFile, cursor, limit: 1 }, board);
+      pages.push(...page.revisions.map(revision => revision.id));
+      cursor = page.nextCursor ?? undefined;
+    } while (cursor);
+    expect(pages).toEqual(all.revisions.map(revision => revision.id));
+    // The latest save is still the current content; older saves keep metadata only.
+    expect(await service.readRevision({ ...target(), entryFile, revisionId: all.revisions[0]!.id }, board)).toMatchObject({ content: "three" });
+    await expect(service.readRevision({ ...target(), entryFile, revisionId: all.revisions[2]!.id }, board))
+      .rejects.toMatchObject({ status: 404, details: { code: "INSTRUCTION_REVISION_CONTENT_NOT_RETAINED" } });
+    await expect(service.restore({ ...target(), entryFile, baseRevisionId: three.revision.id, revisionId: all.revisions[2]!.id }, board))
+      .rejects.toMatchObject({ status: 404 });
+    expect(await service.diff({ ...target(), entryFile, fromRevisionId: all.revisions[0]!.id, toRevisionId: three.revision.id }, board))
+      .toMatchObject({ added: "", removed: "" });
   });
   it("requires a matching initial content token and serializes competing saves", async () => {
     await expect(save("without reading", null)).rejects.toMatchObject({ status: 409 });
