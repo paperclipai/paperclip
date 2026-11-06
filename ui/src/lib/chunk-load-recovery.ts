@@ -1,4 +1,8 @@
+// Holds the bare start time of the guard window. Builds without retries read
+// this key too, so it keeps their single-reload guard working during a deploy.
 const RELOAD_AT_KEY = "paperclip:chunk-load-reload-at";
+// Holds "<window start>:<attempts>"; it only counts for the matching window.
+const RELOAD_ATTEMPTS_KEY = "paperclip:chunk-load-reload-attempts";
 const RELOAD_GUARD_MS = 5 * 60 * 1000;
 export const RELOAD_ABANDONED_MS = 10_000;
 // During a deploy, old and new servers can both answer for a few seconds, so a
@@ -20,25 +24,15 @@ export function isChunkLoadError(error: unknown): boolean {
 
 type ReloadStorage = Pick<Storage, "getItem" | "setItem">;
 
-type ReloadMarker = { windowStartedAt: number; attempts: number };
-
-function isPositiveTime(value: unknown): value is number {
-  return typeof value === "number" && Number.isFinite(value) && value > 0;
+function isPositiveTime(value: number): boolean {
+  return Number.isFinite(value) && value > 0;
 }
 
-function readReloadMarker(raw: string | null): ReloadMarker | null {
-  if (!raw) return null;
-  // Tabs loaded before retries existed stored the bare reload time.
-  const legacyAt = Number(raw);
-  if (isPositiveTime(legacyAt)) return { windowStartedAt: legacyAt, attempts: 1 };
-  try {
-    const parsed = JSON.parse(raw) as Partial<ReloadMarker> | null;
-    if (!parsed || !isPositiveTime(parsed.windowStartedAt)) return null;
-    const attempts = Number.isInteger(parsed.attempts) && parsed.attempts! > 0 ? parsed.attempts! : 1;
-    return { windowStartedAt: parsed.windowStartedAt, attempts };
-  } catch {
-    return null;
-  }
+function readAttempts(raw: string | null, windowStartedAt: number): number {
+  const [startedAt, attempts] = (raw ?? "").split(":").map(Number);
+  // A window started by an older build has no count yet; its reload was the first.
+  if (startedAt !== windowStartedAt || !Number.isInteger(attempts) || attempts! < 1) return 1;
+  return attempts!;
 }
 
 type ChunkLoadRecoveryOptions = {
@@ -63,9 +57,12 @@ export function createChunkLoadRecovery(options: ChunkLoadRecoveryOptions = {}) 
   // A reload that never left this document (cancelled, blocked or stalled)
   // is not retried from the same document.
   let reloadAbandoned = false;
+  let pendingReloadTimer: ReturnType<typeof setTimeout> | null = null;
+  let abandonTimer: ReturnType<typeof setTimeout> | null = null;
   const abandonedListeners = new Set<() => void>();
 
   function abandonReload() {
+    abandonTimer = null;
     reloading = false;
     reloadAbandoned = true;
     const listeners = [...abandonedListeners];
@@ -82,20 +79,40 @@ export function createChunkLoadRecovery(options: ChunkLoadRecoveryOptions = {}) 
     const at = now();
     let delayMs: number;
     try {
-      const previous = readReloadMarker(storage.getItem(RELOAD_AT_KEY));
-      const inWindow = previous !== null && at - previous.windowStartedAt < RELOAD_GUARD_MS;
-      const attempt = inWindow ? previous.attempts : 0;
+      const startedAt = Number(storage.getItem(RELOAD_AT_KEY));
+      const inWindow = isPositiveTime(startedAt) && at - startedAt < RELOAD_GUARD_MS;
+      const attempt = inWindow ? readAttempts(storage.getItem(RELOAD_ATTEMPTS_KEY), startedAt) : 0;
       if (attempt >= RELOAD_DELAYS_MS.length) return false;
       delayMs = RELOAD_DELAYS_MS[attempt]!;
-      const marker: ReloadMarker = { windowStartedAt: inWindow ? previous.windowStartedAt : at, attempts: attempt + 1 };
-      storage.setItem(RELOAD_AT_KEY, JSON.stringify(marker));
+      const windowStartedAt = inWindow ? startedAt : at;
+      if (!inWindow) storage.setItem(RELOAD_AT_KEY, String(windowStartedAt));
+      storage.setItem(RELOAD_ATTEMPTS_KEY, `${windowStartedAt}:${attempt + 1}`);
     } catch {
       return false;
     }
     reloading = true;
-    if (delayMs > 0) globalThis.setTimeout(reload, delayMs);
-    else reload();
-    globalThis.setTimeout(abandonReload, delayMs + RELOAD_ABANDONED_MS);
+    if (delayMs > 0) {
+      pendingReloadTimer = globalThis.setTimeout(() => {
+        pendingReloadTimer = null;
+        reload();
+      }, delayMs);
+    } else {
+      reload();
+    }
+    abandonTimer = globalThis.setTimeout(abandonReload, delayMs + RELOAD_ABANDONED_MS);
+    return true;
+  }
+
+  // Stops a delayed retry that has not started yet, for example when the user
+  // navigates away from the failed route. A started reload cannot be stopped.
+  function cancelPendingChunkLoadReload(): boolean {
+    if (pendingReloadTimer === null) return false;
+    globalThis.clearTimeout(pendingReloadTimer);
+    pendingReloadTimer = null;
+    if (abandonTimer !== null) globalThis.clearTimeout(abandonTimer);
+    abandonTimer = null;
+    reloading = false;
+    abandonedListeners.clear();
     return true;
   }
 
@@ -118,11 +135,12 @@ export function createChunkLoadRecovery(options: ChunkLoadRecoveryOptions = {}) 
     return () => target.removeEventListener("vite:preloadError", onPreloadError);
   }
 
-  return { reloadForChunkLoadError, onChunkLoadReloadAbandoned, startChunkLoadRecovery };
+  return { reloadForChunkLoadError, cancelPendingChunkLoadReload, onChunkLoadReloadAbandoned, startChunkLoadRecovery };
 }
 
 const browserRecovery = createChunkLoadRecovery();
 
 export const reloadForChunkLoadError = browserRecovery.reloadForChunkLoadError;
+export const cancelPendingChunkLoadReload = browserRecovery.cancelPendingChunkLoadReload;
 export const onChunkLoadReloadAbandoned = browserRecovery.onChunkLoadReloadAbandoned;
 export const startChunkLoadRecovery = browserRecovery.startChunkLoadRecovery;
