@@ -311,6 +311,12 @@ Coming-soon and disabled vaults cannot be marked default; attempting to do so
 returns a validation error. Setting a new default automatically clears the
 previous default for that provider.
 
+When a new-secret dialog chooses its initial provider, it prefers the first
+usable non-local provider-family default in provider order (AWS, GCP, then
+Vault). The local encrypted default is the fallback. This keeps a company-wide
+remote-vault choice from being hidden by the local fallback when both families
+have defaults.
+
 If a secret is created without any `providerConfigId` (no vaults exist yet, or
 the operator clears the selector), runtime resolution falls back to the
 deployment-level provider configuration — the same path existing installs use.
