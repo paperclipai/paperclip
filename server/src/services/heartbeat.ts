@@ -160,6 +160,8 @@ import {
   PAPERCLIP_WAKE_PAYLOAD_KEY,
   MANAGED_GITHUB_TOKEN_KEYS,
   configuredPaperclipApiBaseUrl,
+  configuredPaperclipMcpBaseUrl,
+  paperclipApiBaseUrl,
   createHeartbeatRunPreparation,
 } from "./heartbeat/run-preparation.js";
 export {
@@ -174,6 +176,9 @@ export {
   resolveExternalChatWakeProvider,
   attestReviewedExternalChatRun,
   buildPaperclipWakePayload,
+  configuredPaperclipApiBaseUrl,
+  configuredPaperclipMcpBaseUrl,
+  paperclipApiBaseUrl,
 } from "./heartbeat/run-preparation.js";
 import {
   resolveRuntimeSessionParamsForWorkspace,
