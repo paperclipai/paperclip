@@ -266,19 +266,19 @@ jobs:
         run: |
           node tests/runner-e2e/prepare-report-lock.mjs
           pnpm install --frozen-lockfile --ignore-scripts
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           artifact-ids: ${{ needs.select.outputs.artifact_id }}
           path: chat-completion-testops-selection
       # A single pattern match is flattened by this pinned action. Bind its
       # exact name and explicit child destination instead of inferring a name.
       - if: fromJSON(needs.select.outputs.execution_ids)[1] == null
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: chat-catalog-case-bundle-${{ github.run_id }}-1-0
           path: catalog-bundles/chat-catalog-case-bundle-${{ github.run_id }}-1-0
       - if: fromJSON(needs.select.outputs.execution_ids)[1] != null
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           pattern: chat-catalog-case-bundle-${{ github.run_id }}-1-*
           merge-multiple: false
@@ -320,23 +320,23 @@ jobs:
       - *checkout
       - *node
       - *guard
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           artifact-ids: ${{ needs.aggregate.outputs.artifact_id }}
           path: runner-e2e-testops
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           artifact-ids: ${{ needs.select.outputs.artifact_id }}
           path: chat-completion-testops-selection
       # A single pattern match is flattened by this pinned action. Bind its
       # exact name and explicit child destination instead of inferring a name.
       - if: fromJSON(needs.select.outputs.execution_ids)[1] == null
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: chat-catalog-case-bundle-${{ github.run_id }}-1-0
           path: catalog-bundles/chat-catalog-case-bundle-${{ github.run_id }}-1-0
       - if: fromJSON(needs.select.outputs.execution_ids)[1] != null
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           pattern: chat-catalog-case-bundle-${{ github.run_id }}-1-*
           merge-multiple: false
@@ -344,12 +344,12 @@ jobs:
       # A single pattern match is flattened by this pinned action. Bind its
       # exact name and explicit child destination instead of inferring a name.
       - if: fromJSON(needs.select.outputs.execution_ids)[1] == null
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: chat-catalog-case-publication-${{ github.run_id }}-1-0
           path: catalog-publications/chat-catalog-case-publication-${{ github.run_id }}-1-0
       - if: fromJSON(needs.select.outputs.execution_ids)[1] != null
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           pattern: chat-catalog-case-publication-${{ github.run_id }}-1-*
           merge-multiple: false

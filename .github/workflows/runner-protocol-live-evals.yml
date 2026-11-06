@@ -396,7 +396,7 @@ jobs:
 
       - name: Download the current TestOps selection
         if: needs.authorize.outputs.testops_enabled == 'true'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v7
         with:
           name: runner-protocol-testops-selection-${{ github.run_id }}-${{ github.run_attempt }}
           path: runner-protocol-testops-selection
@@ -460,7 +460,7 @@ jobs:
           version: 9.15.4
 
       - name: Download resolved target lockfile
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           artifact-ids: ${{ needs.target_lock.outputs.artifact_id }}
           path: ${{ runner.temp }}/runner-protocol-target-lock
@@ -601,7 +601,7 @@ jobs:
 
       - name: Download controller artifact for a credential-free transport test
         if: needs.authorize.outputs.accounting_mode == 'controlled'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           artifact-ids: ${{ steps.upload.outputs.artifact-id }}
           path: ${{ runner.temp }}/runner-controller-roundtrip
@@ -663,21 +663,21 @@ jobs:
 
       - name: Download the complete campaign catalog
         if: needs.authorize.outputs.accounting_mode == 'controlled'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: runner-protocol-eval-catalog-${{ github.run_id }}-${{ github.run_attempt }}
           path: runner-protocol-catalog
 
       - name: Download the immutable provider runtime
         if: needs.authorize.outputs.accounting_mode == 'controlled'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: runner-protocol-build-${{ needs.authorize.outputs.target_sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: runner-protocol-build
 
       - name: Download trusted controller built without archive permissions
         if: needs.authorize.outputs.accounting_mode == 'controlled'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           artifact-ids: ${{ needs.build_controller.outputs.artifact_id }}
           path: ${{ runner.temp }}/runner-protocol-runtime
@@ -814,7 +814,7 @@ jobs:
           node-version: 24
 
       - name: Download portable runner
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: runner-protocol-build-${{ needs.authorize.outputs.target_sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: runner-protocol-build
@@ -830,7 +830,7 @@ jobs:
 
       - name: Download the trusted portable controller
         if: needs.authorize.outputs.accounting_mode == 'controlled'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           artifact-ids: ${{ needs.prepare_controller.outputs.artifact_id }}
           path: /tmp/paperclip-runner-controlled-${{ github.run_id }}/runtime
@@ -1142,27 +1142,27 @@ jobs:
           version: 9.15.4
 
       - name: Download immutable campaign catalog
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: runner-protocol-eval-catalog-${{ github.run_id }}-${{ github.run_attempt }}
           path: runner-protocol-catalog
 
       - name: Download the validated TestOps selection
         if: needs.authorize.outputs.testops_enabled == 'true'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v7
         with:
           name: runner-protocol-testops-selection-${{ github.run_id }}-${{ github.run_attempt }}
           path: runner-protocol-testops-selection
 
       - name: Download portable runner and viewer
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: runner-protocol-build-${{ needs.authorize.outputs.target_sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: runner-protocol-build
 
       - name: Download the retained controller code
         if: needs.authorize.outputs.accounting_mode == 'controlled'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           artifact-ids: ${{ needs.prepare_controller.outputs.artifact_id }}
           path: ${{ runner.temp }}/runner-protocol-runtime
@@ -1215,7 +1215,7 @@ jobs:
         if: needs.authorize.outputs.accounting_mode == 'legacy'
         id: download_cells
         continue-on-error: true
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           pattern: runner-protocol-eval-${{ github.run_id }}-${{ github.run_attempt }}-*
           path: downloaded-runner-protocol-evals
@@ -1224,7 +1224,7 @@ jobs:
       - name: Retry cell download after artifact transport failure
         if: needs.authorize.outputs.accounting_mode == 'legacy' && steps.download_cells.outcome == 'failure'
         continue-on-error: true
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           pattern: runner-protocol-eval-${{ github.run_id }}-${{ github.run_attempt }}-*
           path: downloaded-runner-protocol-evals
@@ -1411,7 +1411,7 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: 24
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v7
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v7
         with:
           name: runner-protocol-testops-selection-${{ github.run_id }}-${{ github.run_attempt }}
           path: runner-protocol-testops-selection
@@ -1419,7 +1419,7 @@ jobs:
         id: projection
         continue-on-error: true
         if: needs.report.outputs.testops_projection_ready == 'true'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v7
         with:
           name: runner-protocol-testops-projection-${{ github.run_id }}-${{ github.run_attempt }}
           path: runner-protocol-testops-projection
@@ -1484,13 +1484,13 @@ jobs:
           node-version: 24
 
       - name: Download only the sanitized canonical Evalbook
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: runner-protocol-eval-public-${{ github.run_id }}-${{ github.run_attempt }}
           path: runner-protocol-public-report
 
       - name: Download the same-run canonical viewer for byte verification
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: runner-protocol-viewer-${{ github.run_id }}-${{ github.run_attempt }}
           path: runner-protocol-trusted-viewer
