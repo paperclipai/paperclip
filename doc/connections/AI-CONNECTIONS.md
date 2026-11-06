@@ -41,6 +41,11 @@ the provider's API key, and Advanced. All three stay visible while the selected
 mode's form is shown below. Advanced opens the existing compatible-connection
 picker and provider setup. Execution environment selection lives in Configure.
 
+Back from subscription sign-in cancels that attempt and pending prompt or status
+reads. A session returned after Back is released instead of reopening sign-in.
+Selecting a subscription again starts a fresh attempt. Reloading the page can
+still resume a sign-in that was not cancelled.
+
 Storybook's simulated controllers and page annotations do not run in the app.
 
 ## Compatibility and selection
