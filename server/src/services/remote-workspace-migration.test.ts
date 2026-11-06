@@ -660,8 +660,8 @@ describe.skipIf(!support.supported)("remote workspace migration", () => {
     const address = server.address(); if (!address || typeof address === "string") throw new Error("test server not bound");
     return { bare, repoUrl: `http://127.0.0.1:${address.port}/repository.git` };
   }
-  it.each(["present", "pruned", "retry", "missing-base", "nested", "unapproved-nested", "missing", "expired", "corrupt"])("preserves archived Git edits or refuses an unavailable restore point (%s)", async state => {
-    const remote = state === "missing-base" ? await serveRepository() : null;
+  it.each(["present", "pruned", "retry", "missing-base", "missing-base-retry", "missing-base-uploaded-retry", "missing-base-changed-retry", "nested", "unapproved-nested", "missing", "expired", "corrupt"])("preserves archived Git edits or refuses an unavailable restore point (%s)", async state => {
+    const remote = state.startsWith("missing-base") ? await serveRepository() : null;
     const f = await gitArchiveFixture(remote?.repoUrl);
     if (remote) { await git(remote.bare, "fetch", f.base, "main:refs/heads/main"); await git(remote.bare, "update-server-info"); }
     await fs.writeFile(path.join(f.cwd, "saved.txt"), "staged edit\n"); await git(f.cwd, "add", "saved.txt");
@@ -697,7 +697,7 @@ describe.skipIf(!support.supported)("remote workspace migration", () => {
         gitBranchOwnershipVersion: 1, verifiedAt: new Date().toISOString(), restorePoint, contents },
     } }).where(eq(executionWorkspaces.id, f.workspaceId));
     await git(f.base, "worktree", "remove", "--force", f.cwd); await git(f.base, "branch", "-D", f.branchName);
-    if (state === "missing-base") await fs.rm(f.base, { recursive: true });
+    if (state.startsWith("missing-base")) await fs.rm(f.base, { recursive: true });
     if (state === "unapproved-nested") {
       await expect(migrateRemoteWorkspace({ db, storage, ...f, apply: true })).rejects.toThrow();
       expect(readRemoteWorkspaceAuthority((await workspace(f.workspaceId)).metadata)).toBeNull();
@@ -725,12 +725,55 @@ describe.skipIf(!support.supported)("remote workspace migration", () => {
       expect(await fs.stat(f.cwd).catch(() => null)).toBeNull();
       return;
     }
-    if (state === "retry") {
+    if (state === "retry" || state === "missing-base-retry" || state === "missing-base-changed-retry") {
       const put = storage.putFile.bind(storage); let fail = true;
       storage.putFile = async input => { const result = await put(input); if (fail) { fail = false; throw new Error("upload reply lost"); } return result; };
       await expect(migrateRemoteWorkspace({ db, storage, ...f, apply: true })).rejects.toThrow("upload reply lost");
     }
+    if (state === "missing-base-uploaded-retry") {
+      const get = storage.getObject.bind(storage); let reads = 0;
+      storage.getObject = async (...args) => {
+        if (args[1].includes("/workspace-snapshots/") && ++reads === 2) throw new Error("restore reply lost");
+        return get(...args);
+      };
+      await expect(migrateRemoteWorkspace({ db, storage, ...f, apply: true })).rejects.toThrow("restore reply lost");
+      expect((await db.select().from(executionWorkspaceSnapshots))[0]?.status).toBe("uploaded");
+    }
+    const interrupted = state.startsWith("missing-base-")
+      ? (await db.select().from(workspaceOperations).where(eq(workspaceOperations.phase, "remote_workspace_migration")))[0] : null;
+    if (interrupted) {
+      const tree = await git(remote!.bare, "rev-parse", "main^{tree}");
+      const next = await git(remote!.bare, "commit-tree", tree, "-p", f.upstream, "-m", "unrelated remote release");
+      await git(remote!.bare, "update-ref", "refs/heads/main", next);
+      await git(remote!.bare, "update-ref", "refs/heads/new-unrelated-branch", next);
+      await git(remote!.bare, "update-server-info");
+    }
+    if (state === "missing-base-changed-retry") {
+      const get = storage.getObject.bind(storage); let expire = true;
+      storage.getObject = async (...args) => {
+        const result = await get(...args);
+        if (expire && args[1].includes("/workspace-snapshots/")) {
+          expire = false;
+          const row = await workspace(f.workspaceId);
+          const recipe = row.metadata!.gitCacheRestoration as Record<string, unknown>;
+          await db.update(executionWorkspaces).set({ metadata: { ...row.metadata, gitCacheRestoration: {
+            ...recipe, restorePoint: { ...restorePoint, expiredAt: new Date().toISOString() },
+          } } }).where(eq(executionWorkspaces.id, f.workspaceId));
+        }
+        return result;
+      };
+      await expect(migrateRemoteWorkspace({ db, storage, ...f, apply: true })).rejects.toThrow("remote_workspace_migration_publication_changed");
+      expect(readRemoteWorkspaceAuthority((await workspace(f.workspaceId)).metadata)).toBeNull();
+      expect((await workspace(f.workspaceId)).status).toBe("archived");
+      expect((await db.select().from(executionWorkspaceSnapshots))[0]?.status).toBe("uploaded");
+      return;
+    }
     await migrateRemoteWorkspace({ db, storage, ...f, apply: true });
+    if (interrupted) {
+      const operations = await db.select().from(workspaceOperations).where(eq(workspaceOperations.phase, "remote_workspace_migration"));
+      expect(operations).toHaveLength(1);
+      expect(operations[0]).toMatchObject({ id: interrupted.id, status: "succeeded" });
+    }
     const authority = readRemoteWorkspaceAuthority((await workspace(f.workspaceId)).metadata)!;
     await fs.rm(f.base, { recursive: true, force: true }); await fs.rm(path.join(root, "nested-source"), { recursive: true, force: true }); await storage.deleteObject(f.companyId, objectKey);
     const ref = await getWorkspaceSnapshot(db, { ...f, snapshotId: authority.snapshotId! });
@@ -900,6 +943,15 @@ describe.skipIf(!support.supported)("remote workspace migration", () => {
     expect(readRemoteWorkspaceAuthority((await workspace(f.workspaceId)).metadata)).toBeNull();
     expect(await migrateRemoteWorkspace({ db, storage, ...f, apply: true })).toMatchObject({ applied: true });
     const operations = await db.select().from(workspaceOperations); expect(operations).toHaveLength(1); expect(operations[0]?.id).toBe(before.operationId);
+  });
+  it("still rejects local source edits after an interrupted upload", async () => {
+    const f = await seed(), put = storage.putFile.bind(storage); let fail = true;
+    storage.putFile = async input => { const saved = await put(input); if (fail) { fail = false; throw new Error("upload reply lost"); } return saved; };
+    await expect(migrateRemoteWorkspace({ db, storage, ...f, apply: true })).rejects.toThrow("upload reply lost");
+    await fs.writeFile(path.join(f.cwd, "saved.txt"), "new local edits\n");
+    await expect(migrateRemoteWorkspace({ db, storage, ...f, apply: true })).rejects.toThrow("remote_workspace_snapshot_operation_content_changed");
+    expect(readRemoteWorkspaceAuthority((await workspace(f.workspaceId)).metadata)).toBeNull();
+    expect(await fs.readFile(path.join(f.cwd, "saved.txt"), "utf8")).toBe("new local edits\n");
   });
   it("imports dirty unpushed Git work and restores it after the original folder disappears", async () => {
     const f = await seed(); await git(f.cwd, "init", "-q", "-b", "feature");
