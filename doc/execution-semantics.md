@@ -3211,6 +3211,14 @@ ownership checks. The backup transaction checks this authority again after
 upload, and a late predecessor cannot replace a newer conversation backup.
 This grants no new lease or permission to start provider work.
 
+The remote backend captures its backup fence while its run still owns the
+controller lease. A suspended provider can then publish its backup while an
+accepted result is still saving the workspace, before finalization commits.
+Warm attachments replace that captured fence with the current run's authority;
+an older backend's close callback uses the current attachment's fence. Publication
+still revalidates the boot, generation, accepted result, and successor authority
+before and after upload. A released, uncommitted run cannot acquire a new fence.
+
 Local durable control-plane state is bounded at 256 MiB in the server,
 runnerd recovery, and durable control-plane readers. These paths synchronously
 read and parse the full JSON file, so memory use and parse time grow with file

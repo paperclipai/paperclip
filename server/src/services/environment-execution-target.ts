@@ -631,17 +631,19 @@ export async function resolveEnvironmentExecutionTarget(input: {
               lease: input.lease,
             })
               ? {
-                  syncIn: (operations) =>
+                  syncIn: (operations, options) =>
                     input.environmentRuntime!.syncIn({
                       environment: input.environment as Environment,
                       lease: input.lease!,
                       operations,
+                      ...(options?.minimumTimeoutMs === undefined ? {} : { minimumTimeoutMs: options.minimumTimeoutMs }),
                     }),
-                  syncOut: (operations) =>
+                  syncOut: (operations, options) =>
                     input.environmentRuntime!.syncOut({
                       environment: input.environment as Environment,
                       lease: input.lease!,
                       operations,
+                      ...(options?.minimumTimeoutMs === undefined ? {} : { minimumTimeoutMs: options.minimumTimeoutMs }),
                     }),
                 }
               : {}),

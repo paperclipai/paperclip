@@ -135,6 +135,21 @@ export function canContinueCancelledRun(run: Run): boolean {
     run.resultJson?.acpToolInventoryComplete === true && run.resultJson?.acpPendingToolCount === 0;
 }
 
+/** When a user's Stop or interrupt took effect for message ordering. A native
+ * run finishes only after its provider stop and workspace save settle, which
+ * can take many seconds. A message written after the Stop request is a new
+ * direction even when that settlement finished later, so compare against the
+ * recorded request rather than `finishedAt`. Other cancellations keep
+ * `finishedAt`. */
+export function userStopBoundaryAt(run: Pick<Run, "status" | "finishedAt" | "resultJson">): Date | null {
+  if (!run.finishedAt) return null;
+  const cancellation = run.status === "cancelled" ? readRunCancellation(run.resultJson) : null;
+  if (!cancellation || cancellation.initiator.type !== "user" ||
+      !["operator", "queued_message"].includes(cancellation.source)) return run.finishedAt;
+  const requestedAt = new Date(cancellation.recordedAt);
+  return Number.isFinite(requestedAt.getTime()) && requestedAt < run.finishedAt ? requestedAt : run.finishedAt;
+}
+
 export function isUnexpectedRunCancellation(run: Run): boolean {
   const bootstrap = run.resultJson?.executionRecovery as Record<string, unknown> | undefined;
   return run.status === "cancelled" && Boolean(run.startedAt) &&

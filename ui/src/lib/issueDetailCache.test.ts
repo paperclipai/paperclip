@@ -6,6 +6,7 @@ import {
   fetchIssueDetail,
   getCachedIssueDetail,
   prefetchIssueDetail,
+  prefetchIssueDetailForNavigation,
   seedIssueDetailCache,
 } from "./issueDetailCache";
 import { queryKeys } from "./queryKeys";
@@ -13,6 +14,9 @@ import { queryKeys } from "./queryKeys";
 vi.mock("@/api/issues", () => ({
   issuesApi: {
     get: vi.fn(),
+    getCore: vi.fn(),
+    recentComments: vi.fn(),
+    listComments: vi.fn(),
   },
 }));
 
@@ -140,4 +144,39 @@ describe("issueDetailCache", () => {
     expect(queryClient.getQueryData(queryKeys.issues.detail(issue.identifier!))).toEqual(issue);
     expect(queryClient.getQueryData(queryKeys.issues.detail(issue.id))).toEqual(issue);
   });
+});
+
+
+describe("task navigation prefetch", () => {
+  it("warms the compact task and recent exchange used by the default surface", async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const issue = createIssue();
+    const recent = { comments: [], latestCommentId: null, oldestCommentId: null, hasMore: false };
+    vi.mocked(issuesApi.getCore).mockResolvedValue(issue);
+    vi.mocked(issuesApi.recentComments).mockResolvedValue(recent);
+    vi.mocked(issuesApi.get).mockResolvedValue(issue);
+    vi.mocked(issuesApi.listComments).mockResolvedValue([]);
+    vi.clearAllMocks();
+    try {
+      await prefetchIssueDetailForNavigation(client, issue.identifier!);
+      expect(client.getQueryData([...queryKeys.issues.detail(issue.identifier!), "core"])).toEqual(issue);
+      expect(client.getQueryData([...queryKeys.issues.comments(issue.identifier!), "recent"])).toEqual(recent);
+      expect(issuesApi.get).not.toHaveBeenCalled();
+      expect(issuesApi.listComments).not.toHaveBeenCalled();
+    } finally { client.clear(); }
+  });
+
+  it("retains full-history prefetch for an already expanded task", async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const issue = createIssue();
+    client.setQueryData(["issues", "history-expanded", issue.identifier!], true);
+    vi.mocked(issuesApi.get).mockResolvedValue(issue);
+    vi.mocked(issuesApi.listComments).mockResolvedValue([]);
+    try {
+      await prefetchIssueDetailForNavigation(client, issue.identifier!);
+      expect(client.getQueryData(queryKeys.issues.detail(issue.identifier!))).toEqual(issue);
+      expect(client.getQueryData(queryKeys.issues.comments(issue.identifier!))).toMatchObject({ pages: [[]] });
+    } finally { client.clear(); }
+  });
+
 });

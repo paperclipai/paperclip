@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
@@ -8,8 +8,18 @@ import type { RemoteWorkspaceSource } from "@paperclipai/shared";
 import { remoteWorkspaceArchiveScript, remoteWorkspaceCaptureFailureMessage, remoteWorkspaceFailureDetail } from "./remote-workspace-snapshot-archive.js";
 import type { GitRemoteAuthProvider } from "./git-credentials.js";
 import { classifyWorkspaceRestoreFailure } from "@paperclipai/adapter-utils/workspace-restore-merge";
+import { MAX_SANDBOX_SYNC_TIMEOUT_MS, type SandboxSyncOperation } from "@paperclipai/adapter-utils/sandbox-managed-runtime";
 
 export type RemoteWorkspaceTarget = Extract<AdapterExecutionTarget, { transport: "sandbox" }>;
+
+async function transferArchive(target: RemoteWorkspaceTarget, direction: "syncIn" | "syncOut",
+  operations: SandboxSyncOperation[], byteSize: number) {
+  if (!Number.isSafeInteger(byteSize) || byteSize <= 0) throw new Error("remote_workspace_archive_size_invalid");
+  const timeoutMs = Math.min(MAX_SANDBOX_SYNC_TIMEOUT_MS, 60_000 + Math.ceil(byteSize / 1024 ** 2) * 1_000);
+  return timeoutMs > 300_000
+    ? target.runner![direction]!(operations, { minimumTimeoutMs: timeoutMs })
+    : target.runner![direction]!(operations);
+}
 
 const checkoutConfiguredRefScript = String.raw`if(input.ref){const remoteRef=input.ref.replace(/^refs\/heads\//,'');
  const selected=await git(['rev-parse','--verify','--end-of-options',input.ref+'^{commit}'])
@@ -437,9 +447,9 @@ export async function captureRemoteWorkspaceArchive(input: {
   const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-workspace-upload-"));
   const archivePath = path.join(root, "workspace.pcws");
   try {
-    await input.target.runner!.syncOut!([{ operationId: input.operationId,
+    await transferArchive(input.target, "syncOut", [{ operationId: input.operationId,
       files: [{ kind: "file", sourcePath: layout === "captured" ? path.posix.join(staged.directory, "captured", "workspace.pcws") : staged.archive, targetPath: archivePath }],
-    }]);
+    }], receipt.byteSize);
     const hash = createHash("sha256"); let bytes = 0;
     for await (const chunk of createReadStream(archivePath)) { hash.update(chunk); bytes += chunk.length; }
     if (hash.digest("hex") !== receipt.sha256 || bytes !== receipt.byteSize) throw new Error("remote_workspace_capture_transfer_mismatch");
@@ -464,9 +474,9 @@ export async function restoreRemoteWorkspaceDirectory(input: {
   // Stage outside the destination; the restore validator requires an empty target.
   const parent = path.posix.dirname(input.remoteCwd);
   const staged = await installArchiveHelper(input.target, parent, operationId);
-  await input.target.runner!.syncIn!([{ operationId,
+  await stat(input.archivePath).then(archive => transferArchive(input.target, "syncIn", [{ operationId,
     files: [{ kind: "file", sourcePath: input.archivePath, targetPath: staged.archive }],
-  }]).catch((error: unknown) => { noteProviderRefusal("upload", error); throw error; });
+  }], archive.size)).catch((error: unknown) => { noteProviderRefusal("upload", error); throw error; });
   // Publish the restored folder and its identity together. A lost successful
   // reply can then adopt the same files without repeating a destructive restore.
   const restore = String.raw`const fs=require('node:fs/promises'),path=require('node:path'),cp=require('node:child_process'),crypto=require('node:crypto');

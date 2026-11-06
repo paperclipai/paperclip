@@ -34,6 +34,7 @@ import {
   canContinueCancelledRun,
   readRunCancellation,
   requestedRunCancellation,
+  userStopBoundaryAt,
 } from "../run-cancellation.js";
 import { settleSlackConversation } from "../slack-conversation-lifecycle.js";
 import { readQueuedInteractionResponse } from "../queued-interaction-response.js";
@@ -665,7 +666,7 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
           sql`${issueComments.id}::text = ${commentId}`, eq(issueComments.authorType, "user"),
           eq(issueComments.authorUserId, requestedByActorId), isNull(issueComments.deletedAt),
           isNull(issueComments.createdByRunId),
-          gt(issueComments.createdAt, run.finishedAt),
+          gt(issueComments.createdAt, userStopBoundaryAt(run)!),
         ));
         if (!comment?.body.trim()) continue;
       } else {
