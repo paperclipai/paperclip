@@ -7,32 +7,14 @@ FROM rust:1.97-bookworm@sha256:408fe88047cef61a2087653b0c5255fa51c0f2d6d94ddedd7
 
 WORKDIR /workspace/packages/paperclip-runner/runner
 COPY packages/paperclip-runner/runner/Cargo.toml packages/paperclip-runner/runner/Cargo.lock ./
-COPY packages/paperclip-runner/runner/crates/runner-core/Cargo.toml ./crates/runner-core/Cargo.toml
-# Compile the locked third-party dependency graph against placeholder targets
-# so this layer depends only on the manifests and lockfile. Runner source
-# changes then reuse it from the registry cache and recompile one crate instead
-# of the whole AWS/TLS graph (about five of the build's six and a half minutes).
-# The placeholder targets' outputs and fingerprints are deleted, so the next
-# step always compiles the real runner sources against the same lockfile.
-RUN set -eu; \
-    mkdir -p crates/runner-core/src; \
-    : > crates/runner-core/src/lib.rs; \
-    for target in $(grep -Eo 'src/bin/[A-Za-z0-9_-]+\.rs' crates/runner-core/Cargo.toml); do \
-      mkdir -p "crates/runner-core/$(dirname "$target")"; \
-      printf 'fn main() {}\n' > "crates/runner-core/$target"; \
-    done; \
-    cargo build --locked --release -j 2 -p paperclip-runner-core --bin paperclip-runnerd; \
-    rm -rf crates/runner-core/src \
-      target/release/.fingerprint/paperclip-runner-core-* \
-      target/release/deps/*paperclip_runner* \
-      target/release/paperclip-runnerd target/release/paperclip-runnerd.d; \
-    du -sk target /usr/local/cargo/registry
 COPY packages/paperclip-runner/runner/crates ./crates
 COPY packages/paperclip-runner/protocol ../protocol
 COPY packages/paperclip-runner/acpx-profiles.json packages/paperclip-runner/antigravity-distributions.json ../
-# Only the finished executable leaves this stage. The final image never carries
-# Cargo's target or download trees; the dependency layer above keeps them only
-# in this builder stage and the trusted build cache.
+# Retain only the finished executable in this layer. Keeping Cargo's target and
+# download trees makes BuildKit run out of disk while exporting the final image
+# and the default-branch build cache. A separate dependency-precompile layer
+# (#19545) did exactly that: about 1.2 GB of retained Cargo trees exhausted the
+# builder disk during the registry cache export.
 RUN cargo build --locked --release -j 2 -p paperclip-runner-core --bin paperclip-runnerd \
     && strip /workspace/packages/paperclip-runner/runner/target/release/paperclip-runnerd \
     && install -m 0755 target/release/paperclip-runnerd /usr/local/bin/paperclip-runnerd \
