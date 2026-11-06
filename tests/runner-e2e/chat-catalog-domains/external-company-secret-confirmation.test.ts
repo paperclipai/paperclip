@@ -80,6 +80,8 @@ it("keeps unrelated safety warnings outside save and acknowledgment negation",()
  ])expect(companySecretConfirmationHandoff({...card(),payload:{...card().payload,prompt:context+text}},binding,guidance),text).toBeDefined();
  for(const text of [
   "Save the deployment key there. Do not confirm yet. Then accept this card.",
+  "Save the deployment key there. Do not accept this card.",
+  "Save the deployment key there. Never confirm here.",
   "After saving your profile, confirm here that secure entry is complete.",
   "Never save the deployment key there. Then accept this card.",
  ])expect(companySecretConfirmationHandoff({...card(),payload:{...card().payload,prompt:context+text}},binding,guidance),text).toBeUndefined();

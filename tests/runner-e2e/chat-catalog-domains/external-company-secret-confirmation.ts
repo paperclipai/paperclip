@@ -24,7 +24,7 @@ function orderedSecureSaveAcknowledgment(prompt:string){
   const after=prompt.slice(clause.index!+save.index+save[0].length);
   for(const acknowledgment of after.matchAll(/\b(?:accept|confirm)\b[^.!?;\n]*/gi)){
    const between=after.slice(0,acknowledgment.index),intent=acknowledgment[0];
-   if(/\b(?:(?:do not|don.t|never)\s+(?:save|enter|set|accept|confirm)|(?:cancel|decline|skip|avoid)(?:\s+(?:the|to))?\s+(?:save|saving|entry|acknowledgment|confirmation|accept|confirm))\b/i.test(between)||/\b(?:before|permission|authorize|another|other card)\b/i.test(intent))continue;
+   if(/(?:\b(?:do|should|must)\s+not|\bdon.t|\bnever|\b(?:cancel|decline|skip|avoid)(?:\s+to)?)\s*$/i.test(between.trim())||/\b(?:(?:do not|don.t|never)\s+(?:save|enter|set|accept|confirm)|(?:cancel|decline|skip|avoid)(?:\s+(?:the|to))?\s+(?:save|saving|entry|acknowledgment|confirmation|accept|confirm))\b/i.test(between)||/\b(?:before|permission|authorize|another|other card)\b/i.test(intent))continue;
    if(/^(?:accept|confirm)\s+(?:this\s+card|here\b|(?:that\s+)?(?:the\s+)?(?:deployment\s+(?:api\s+)?key|secure entry)\b[^.!?;\n]{0,80}\b(?:saved|complete))/i.test(intent))return true;
   }
  }
