@@ -3,8 +3,8 @@ export interface PersonalSecretMenuNavigation {advertisedHint:string;observedNav
 export async function personalSecretMenuNavigation(page:Page,reply:{body:string;commentId?:string},origin:string,prefix:string,definitionId:string,timeout:number):Promise<PersonalSecretMenuNavigation|undefined>{
  const hint="/company/settings/secrets",text=reply.body.replace(/[*`]/g,"");
  if(!reply.commentId||!text.includes(definitionId)||!/Settings\s*(?:→|>|then)\s*Secrets/i.test(text)||!/My secrets/i.test(text)||!/PERSONAL_PUBLISHING_KEY/.test(text)||!/Set my value/i.test(text))return;
- const tokens=reply.body.match(/https?:\/\/[^\s`<>"']+|(?<![\w/:])\/[^\s`<>"']+/g)??[];
- if(tokens.length!==1||tokens[0]!==hint)return;
+ const tokens=(reply.body.match(/https?:\/\/[^\s`<>"']+|(?<![\w/:])\/[^\s`<>"']+/g)??[]).map(value=>value.replace(/[.,;!?\])}]+$/,""));
+ if(tokens.filter(token=>token===hint).length!==1)return;
  const deadline=Date.now()+timeout,remaining=()=>{const ms=deadline-Date.now();if(ms<=0)throw new Error("Personal menu navigation deadline exceeded");return ms;};
  const visible=async(node:Locator)=>{
   if(await node.count()!==1||!await node.isVisible())return false;
@@ -17,9 +17,11 @@ export async function personalSecretMenuNavigation(page:Page,reply:{body:string;
  const code=comment.locator("code").filter({hasText:hint});
  if(!await visible(code)||await code.innerText()!==hint||await code.evaluate(node=>!!node.closest("a[href]")))return;
  for(const part of [definitionId,"PERSONAL_PUBLISHING_KEY","My secrets","Set my value"]){if(!await visible(comment.getByText(part,{exact:false}).last()))return;}
+ const issueLinks=new Set<string>();
  for(const anchor of await comment.locator("a[href]").all()){
-  const href=await anchor.getAttribute("href");try{const u=new URL(href??"",origin);if(u.origin!==origin||u.username||u.password||!u.pathname.startsWith(`/${prefix}/issues/`))return;}catch{return;}
+  const href=await anchor.getAttribute("href");try{const u=new URL(href??"",origin);if(u.origin!==origin||u.username||u.password||!u.pathname.startsWith(`/${prefix}/issues/`)||!await visible(anchor))return;issueLinks.add(u.href);}catch{return;}
  }
+ for(const token of tokens){if(token===hint)continue;try{if(!issueLinks.has(new URL(token,origin).href))return;}catch{return;}}
  const supported=(href:string|null,suffix:string)=>{try{const u=new URL(href??"",origin);return u.origin===origin&&u.pathname===`/${prefix}/company/settings${suffix}`&&!u.search&&!u.hash&&!u.username&&!u.password?u.href:undefined;}catch{return;}};
  const original=page.url();let navigated=false,opened=false;
  try{
