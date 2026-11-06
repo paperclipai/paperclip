@@ -102,6 +102,16 @@ export async function seedChaosLab(input: {
     timeline.add("seed_agent", { adapter, agentId: created.id, profile: profile.id, model: profile.model });
   }
 
+  // The project's git_worktree policy only takes effect when the instance has
+  // isolated workspaces enabled (the Experimental setting users turn on, as in
+  // runner-e2e). Without it every repo task shares the primary checkout (RC-21).
+  const experimental = await api.patch<{ enableIsolatedWorkspaces?: boolean }>(
+    "/api/instance/settings/experimental", { enableIsolatedWorkspaces: true });
+  if (experimental?.enableIsolatedWorkspaces !== true) {
+    throw new Error("Isolated instance did not enable isolated workspaces; repo tasks would share one checkout");
+  }
+  timeline.add("seed_isolated_workspaces", { enableIsolatedWorkspaces: true });
+
   const project = await api.post<{ id: string }>(`/api/companies/${company.id}/projects`, {
     name: "chaos-sandbox",
     description: "Fixture repository for restart chaos workloads",
