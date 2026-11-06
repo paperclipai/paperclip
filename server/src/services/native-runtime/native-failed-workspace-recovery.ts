@@ -4,7 +4,7 @@ import type { createDeliveryWorkCoordinator } from "../delivery-work-coordinator
 import { registerScopedDeadlineWork } from "../scoped-deadline-work.js";
 import { notifyExecutionRunWork } from "../execution-control-notifications.js";
 import { and, asc, eq, gt, inArray, isNull, or, sql } from "drizzle-orm";
-import { environmentLeases, executionWorkspaces, heartbeatRuns, workspaceRestoreFailureCodesSql, issues, nativeRunFinalizations, type Db } from "@paperclipai/db";
+import { environmentLeases, executionWorkspaces, heartbeatRuns, workspaceRestoreFailureCodesSql, issues, nativeRunFinalizations, nativeRunResults, type Db } from "@paperclipai/db";
 import { recordRequiredWorkspaceRestoreFailure } from "../legacy-execution-recovery.js";
 import { hasRequiredWorkspaceRecovery, nativeRunHasNoWorkspaceAccess } from "../workspace-restore-recovery-state.js";
 import { logActivity } from "../activity-log.js";
@@ -68,6 +68,14 @@ export async function preserveTaskRemoteWorkspaceWriter(db: Db, companyId: strin
   catch (error) { if (!(error instanceof NativeWorkspaceFinalizationBusyError)) throw error; }
 }
 
+/** A Stop during an accepted result's copy-back retries ends that copy-back.
+ * No finalization exports those files afterwards, so they are kept like the
+ * files of any other stopped run. Other accepted results keep their own export
+ * repair path. */
+function stoppedAcceptedCopyback(coordinator: Pick<typeof nativeRunFinalizations.$inferSelect, "phase" | "failureCode">) {
+  return coordinator.phase === "terminal_failure" && coordinator.failureCode === "native_retry_cancelled";
+}
+
 export async function preserveNativeFailedWorkspace(db: Db, selected: Pick<typeof heartbeatRuns.$inferSelect,
   "id" | "companyId" | "nativeIssueId" | "issueId" | "contextSnapshot" | "runnerProfileJson">,
   options: { allowPreterminal?: boolean; requireCancelledStop?: boolean; restartRecovery?: NativeRestartRecoveryClaim } = {}) {
@@ -94,7 +102,10 @@ export async function preserveNativeFailedWorkspace(db: Db, selected: Pick<typeo
       && (claim.kind !== "reattach_remote_runner" || (claim.remote.kind !== "plugin_task" && claim.remote.providerLeaseId === reference.providerLeaseId
         && claim.remote.remoteCwd === reference.remoteCwd)));
     if ((coordinator?.leaseOwner || (claim && coordinator?.phase === "observed")) && !ownsClaim) throw new NativeWorkspaceFinalizationBusyError();
-    if (!coordinator || coordinator.resultId
+    const exhaustedAcceptedCopyback = Boolean(coordinator?.resultId && coordinator.phase === "terminal_failure"
+      && coordinator.failureCode === "native_workspace_sync_out_retry_exhausted");
+    if (!coordinator || (coordinator.resultId && !exhaustedAcceptedCopyback
+      && !(options.requireCancelledStop && stoppedAcceptedCopyback(coordinator)))
       || !(options.allowPreterminal ? ["observed", "terminal_failure"] : ["terminal_failure"]).includes(coordinator.phase)) return;
     const [run] = await tx.select().from(heartbeatRuns).where(and(
       eq(heartbeatRuns.id, selected.id), eq(heartbeatRuns.companyId, selected.companyId),
@@ -112,9 +123,23 @@ export async function preserveNativeFailedWorkspace(db: Db, selected: Pick<typeo
     )).limit(1);
     if (!source || source.issueId !== issueId || source.metadata?.remoteCwd !== currentReference.remoteCwd
       || (source.executionWorkspaceId && source.executionWorkspaceId !== currentReference.workspaceId)) return;
+    if (exhaustedAcceptedCopyback) {
+      const remote = remoteWorkspaceRunReferenceSchema.safeParse(run.runnerProfileJson?.remoteWorkspace);
+      if (run.status !== "failed" || !run.finishedAt || !run.completionContractId
+        || run.controllerLeaseExpiresAt && run.controllerLeaseExpiresAt.getTime() > Date.now()
+        || run.runnerProfileJson?.nativeWorkspaceSync != null || !remote.success || remote.data.state !== "prepared"
+        || !hasConfirmedSandboxStopAndRetain(source)
+        || !await preparedRemoteWorkspaceSource(tx as unknown as Db, source)) return;
+      const [accepted] = await tx.select({ id: nativeRunResults.id }).from(nativeRunResults).where(and(
+        eq(nativeRunResults.companyId, run.companyId), eq(nativeRunResults.issueId, issueId),
+        eq(nativeRunResults.runId, run.id), eq(nativeRunResults.id, coordinator.resultId!),
+        eq(nativeRunResults.completionContractId, run.completionContractId), eq(nativeRunResults.schemaStatus, "accepted"),
+      )).limit(1);
+      if (!accepted) return;
+    }
     // A stopped reusable sandbox is retained only with its exact stop receipt
     // while the workspace is still bound to this writer. Otherwise record nothing.
-    if (source.status !== "active" && reusableLeasePolicies.includes(source.leasePolicy) && (!hasConfirmedSandboxStopAndRetain(source)
+    if (!exhaustedAcceptedCopyback && source.status !== "active" && reusableLeasePolicies.includes(source.leasePolicy) && (!hasConfirmedSandboxStopAndRetain(source)
       || !await preparedRemoteWorkspaceSource(tx as unknown as Db, source))) return;
     // Ownership settlement still applies to workspace-less external sessions.
     // Their Runner descriptor is not evidence that user files need exporting.
@@ -217,7 +242,8 @@ export async function preserveCancelledNativeWorkspaces(db: Db) {
       eq(nativeRunFinalizations.companyId, heartbeatRuns.companyId), eq(nativeRunFinalizations.issueId, heartbeatRuns.nativeIssueId)))
     .where(and(cancelledWorkspaceSourceLease(), eq(heartbeatRuns.runtimeMode, "native"),
       eq(heartbeatRuns.status, "cancelled"), eq(nativeRunFinalizations.phase, "terminal_failure"),
-      isNull(nativeRunFinalizations.resultId), isNull(nativeRunFinalizations.leaseOwner),
+      or(isNull(nativeRunFinalizations.resultId), eq(nativeRunFinalizations.failureCode, "native_retry_cancelled")),
+      isNull(nativeRunFinalizations.leaseOwner),
       sql`(${heartbeatRuns.runnerProfileJson}->'nativeWorkspaceSync'->>'state' = 'prepared' OR ${heartbeatRuns.runnerProfileJson}->'remoteWorkspace'->>'state' = 'prepared')`,
       sql`${heartbeatRuns.resultJson}->'nativeCancellation'->>'dispatchState' = 'acknowledged'`,
       cursor ? gt(heartbeatRuns.id, cursor) : undefined,
@@ -289,7 +315,7 @@ export function registerCancelledWorkspacePreservationWork(db: Db,
       eq(nativeRunFinalizations.runId, run.id), eq(nativeRunFinalizations.companyId, run.companyId),
       eq(nativeRunFinalizations.issueId, run.nativeIssueId!),
     ));
-    if (finalization?.resultId) return null;
+    if (finalization?.resultId && !stoppedAcceptedCopyback(finalization)) return null;
     if (finalization?.phase !== "terminal_failure" || finalization.leaseOwner)
       return { ...entry, dueAt: Date.now() + 30_000 };
     if (await cancelledWorkspaceSource(db, run)) await preserveNativeFailedWorkspace(db, run, { allowPreterminal: true, requireCancelledStop: true });

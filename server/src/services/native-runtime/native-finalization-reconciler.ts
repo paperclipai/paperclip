@@ -1,4 +1,5 @@
 import { notifyLiveRunRecovery } from "../live-run-recovery-notifications.js";
+import { NATIVE_SESSION_RESUMPTION_ISSUE_STATUSES } from "./native-session-resumption-statuses.js";
 import { notifyExternalAgentSettlement } from "../../modules/external-agents/index.js";
 import { pendingNativeRunProjectionCondition } from "./native-run-projection.js";
 import { nativeStatusReassessmentSourceIsSuperseded, reassessNativeStatusFromSource } from "./native-status-reassessment.js";
@@ -65,7 +66,8 @@ function record(value: unknown): Record<string, unknown> {
     : {};
 }
 
-export type NativeSessionResumeClaim = { runId: string; leaseOwner: string };
+/** `attempt` is the coordinator attempt the claim saw; the executor bumps it when it takes provider ownership. */
+export type NativeSessionResumeClaim = { runId: string; leaseOwner: string; attempt: number };
 
 export { reconcileRetainedNativeSessionCleanups } from "./retained-native-session-cleanup.js";
 
@@ -138,6 +140,7 @@ export async function claimNativeSessionResumptions(input: {
     const leaseOwner = `${input.runnerInstanceId}:resume:${randomUUID()}`;
     let terminalRunToEmit: typeof heartbeatRuns.$inferSelect | null = null;
     let claimFailed = false;
+    let claimedAttempt = 0;
     const claimed = await input.db.transaction(async (tx) => {
       await tx.execute(sql`select set_config('statement_timeout', '10000', true), set_config('lock_timeout', '2000', true)`);
       const [issue] = await tx.select().from(issues).where(and(
@@ -156,7 +159,7 @@ export async function claimNativeSessionResumptions(input: {
       if (await retireSupersededNativeRetry(tx as unknown as Db, {
         run, coordinator, issueExecutionRunId: issue.executionRunId, now,
       })) return false;
-      if (!["todo", "in_progress", "in_review"].includes(issue.status)) return false;
+      if (!(NATIVE_SESSION_RESUMPTION_ISSUE_STATUSES as readonly string[]).includes(issue.status)) return false;
       const row = { run, coordinator };
       if (
         row.run.runtimeMode !== "native" ||
@@ -306,6 +309,7 @@ export async function claimNativeSessionResumptions(input: {
         eq(nativeRunFinalizations.phase, row.coordinator.phase),
       )).returning({ runId: nativeRunFinalizations.runId }).then((rows) => rows[0] ?? null);
       if (!updated) return false;
+      claimedAttempt = row.coordinator.attempt;
       await tx.update(heartbeatRuns).set({
         status: "running",
         finishedAt: null,
@@ -331,7 +335,7 @@ export async function claimNativeSessionResumptions(input: {
       void emitAgentTaskRun(input.db, terminalRunToEmit);
       void reportRunFailure(input.db, terminalRunToEmit);
     }
-    if (claimed) claims.push({ runId: candidate.runId, leaseOwner });
+    if (claimed) claims.push({ runId: candidate.runId, leaseOwner, attempt: claimedAttempt });
     else if (claimFailed || input.deferIneligible !== false) await input.db.transaction(async tx => {
       await tx.execute(sql`select set_config('statement_timeout', '10000', true), set_config('lock_timeout', '2000', true)`);
       await notifyLiveRunRecovery(tx, { companyId: candidate.companyId, runId: candidate.runId });

@@ -1596,6 +1596,29 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
             }
+            "thread/compact/start" => {
+                // Codex answers before the compaction turn starts and binds
+                // its identity only through turn/started.
+                send(json!({"id": id, "result": {}}))?;
+                let turn_id = "provider-compact-turn-1";
+                send(json!({"method": "turn/started", "params": {
+                    "threadId": state.thread_id, "turn": {"id": turn_id, "status": "inProgress"}
+                }}))?;
+                let item = json!({"id": "compact-item-1", "type": "contextCompaction"});
+                send(json!({"method": "item/started", "params": {
+                    "threadId": state.thread_id, "turnId": turn_id, "item": item
+                }}))?;
+                send(json!({"method": "thread/compacted", "params": {
+                    "threadId": state.thread_id, "turnId": turn_id
+                }}))?;
+                send(json!({"method": "item/completed", "params": {
+                    "threadId": state.thread_id, "turnId": turn_id, "item": item
+                }}))?;
+                send(json!({"method": "turn/completed", "params": {
+                    "threadId": state.thread_id,
+                    "turn": {"id": turn_id, "status": "completed", "items": []}
+                }}))?;
+            }
             "thread/goal/clear" => {
                 state.goal = None;
                 save_state(&state_path, &state)?;

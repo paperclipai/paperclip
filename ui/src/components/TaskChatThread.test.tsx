@@ -3919,6 +3919,56 @@ describe.each([true, false])("Unanswered question history (conversationMode=%s)"
   const props = { conversationMode, issueId: "issue-1", currentUserId: "user-board", onAdd: async () => {}, onSubmitInteractionAnswers: vi.fn() };
   const takeover = () => container.querySelector('[data-testid="task-chat-composer-takeover"]');
   const pendingIndicator = () => container.querySelector<HTMLButtonElement>('[data-testid="task-chat-pending-input-indicator"]');
+  it.each([false, true])("removes an old plan approval as soon as the newer document arrives (coordinator=%s)", coordinator => {
+    const review = planReviewInteraction();
+    planState.data = planDocument();
+    const show = (interactions = [review]) => render(<CoordinatorPresentation.Provider value={coordinator}>
+      <TaskChatThread {...props} comments={[]} interactions={interactions} onAcceptInteraction={vi.fn()} />
+    </CoordinatorPresentation.Provider>);
+    show();
+    expect(takeover()?.textContent).toContain("Do you accept this plan?");
+
+    planState.data = planDocument({ latestRevisionId: "revision-4", latestRevisionNumber: 4, updatedAt: new Date("2026-08-23T10:03:00Z") });
+    show();
+    expect(takeover()).toBeNull();
+    expect(pendingIndicator()).toBeNull();
+    expect(container.querySelector('[data-testid="task-chat-pending-request"]')).toBeNull();
+
+    const replacement = { ...planReviewInteraction("pending", "revision-4"), id: "new-review", createdAt: new Date("2026-08-23T10:04:00Z") };
+    show([review, replacement]);
+    expect(takeover()?.textContent).toContain("Do you accept this plan?");
+    expect(takeover()?.textContent).not.toContain("2 pending");
+    expect(review.status).toBe("pending");
+  });
+
+  it("keeps a new approval when its document query is still on an older revision", () => {
+    planState.data = planDocument({ latestRevisionId: "revision-2", latestRevisionNumber: 2 });
+    render(<TaskChatThread {...props} comments={[]} interactions={[planReviewInteraction()]} />);
+    expect(takeover()?.textContent).toContain("Do you accept this plan?");
+  });
+
+  it.each(["id", "number"] as const)("removes an older plan review that has only a revision %s", reference => {
+    const review = {
+      ...planReviewInteraction(),
+      payload: {
+        version: 1,
+        prompt: "Approve this Plan?",
+        target: { type: "issue_document", key: "plan", ...(reference === "id" ? { revisionId: "revision-3" } : { revisionNumber: 3 }) },
+      },
+    } as IssueThreadInteraction;
+    planState.data = planDocument({ latestRevisionId: "revision-4", latestRevisionNumber: 4, updatedAt: new Date("2026-08-23T10:03:00Z") });
+    render(<TaskChatThread {...props} comments={[]} interactions={[review]} />);
+    expect(takeover()).toBeNull();
+    expect(pendingIndicator()).toBeNull();
+  });
+
+  it("keeps unrelated approvals and accepted plan history when a plan changes", () => {
+    planState.data = planDocument({ latestRevisionId: "revision-4", latestRevisionNumber: 4, updatedAt: new Date("2026-08-23T10:03:00Z") });
+    const review = { ...planReviewInteraction(), payload: { version: 1, prompt: "Review another task", target: { type: "issue_document", issueId: "other-task", key: "plan", revisionId: "revision-3" } } } as IssueThreadInteraction;
+    render(<TaskChatThread {...props} comments={[]} interactions={[review, { ...planReviewInteraction("accepted"), id: "accepted-plan" }]} />);
+    expect(takeover()).not.toBeNull();
+    expect(container.querySelector('#interaction-accepted-plan')).not.toBeNull();
+  });
   const dismiss = async () => {
     await act(async () => takeover()!.querySelector<HTMLButtonElement>('[aria-label^="Dismiss "]')!.click());
   };
@@ -4849,7 +4899,12 @@ describe("TaskChatThread Paperclip Runner queue", () => {
     expect(occurrenceCount(queuedComment.body)).toBe(1);
   });
 
-  it.each(["run-1", null])("offers Interrupt for a live legacy queue and Send for a stopped queue (%s)", (targetRunId) => {
+  it.each([
+    { targetRunId: "run-1", protocol: "legacy", steeringDisposition: "unsupported" },
+    { targetRunId: null, protocol: "legacy", steeringDisposition: "unsupported" },
+    { targetRunId: "run-1", protocol: "paperclip_runner_v1", steeringDisposition: "temporarily_unavailable" },
+    { targetRunId: "run-1", protocol: "paperclip_runner_v1", steeringDisposition: "unsupported" },
+  ] as const)("offers Interrupt for a live $protocol queue with $steeringDisposition steering and Send for a stopped queue ($targetRunId)", ({ targetRunId, protocol, steeringDisposition }) => {
     const onInterruptQueued = vi.fn(async () => {});
     renderThread({
       comments: [
@@ -4864,8 +4919,8 @@ describe("TaskChatThread Paperclip Runner queue", () => {
       queuedCommentQueue: {
         ...queue,
         targetRunId,
-        protocol: "legacy",
-        steeringDisposition: "unsupported",
+        protocol,
+        steeringDisposition,
       },
       onEditQueuedComment: async () => {},
       onReorderQueuedComments: async () => {},

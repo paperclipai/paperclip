@@ -429,6 +429,7 @@ retain their titles and default to no generation request.
 - `visibility` enum-like text: `open | private`, default `open`
 - `privacy_root_issue_id` uuid fk `issues.id` null; private-boundary metadata
 - `privacy_parent_issue_id` uuid fk `issues.id` null; downward access inheritance, including standalone run-created handoffs
+- `origin_issue_id` uuid fk `issues.id` null, on delete set null; audit-only creation provenance (see below), never hierarchy or authorization
 - `title` text not null
 - `description` text null
 - `status` enum: `backlog | todo | in_progress | in_review | done | blocked | cancelled`
@@ -442,9 +443,11 @@ retain their titles and default to no generation request.
 - `created_by_user_id` uuid fk `users.id` null
 - identifier fields: `issue_number`, `identifier`
 - origin fields: `origin_kind`, `origin_id`, `origin_run_id`, `origin_fingerprint`
-- Creation stores the actor run in `origin_run_id` unless an explicit origin run is supplied. `GET /api/companies/:companyId/issues?createdFromIssueId=<uuid>` selects tasks created by runs bound to that source task, using native run issue identity or persisted legacy task context. Historical rows without an origin run may use their recorded creation activity; comments and shared creators do not establish provenance. Source, run, activity and result are company-scoped.
+- Creation stores the actor run in `origin_run_id` unless an explicit origin run is supplied. `GET /api/companies/:companyId/issues?createdFromIssueId=<uuid>` selects tasks whose `origin_issue_id` is that source task. Only for rows without a recorded `origin_issue_id`, it falls back to tasks created by runs bound to the source task, using native run issue identity or persisted legacy task context; a recorded origin suppresses that fallback, so the list agrees with `createdFrom`. Historical rows without an origin run may use their recorded creation activity; comments and shared creators do not establish provenance. Source, run, activity and result are company-scoped.
 - Delegated follow-ups keep their structural parent. When an agent run bound to an ordinary execution task creates an issue and omits `parentId`, the server defaults `parentId` to that run's task and records `parentDefaultedFromRunIssue: true` on the `issue.created` activity. An explicit `parentId: null` keeps the task standalone. The default never applies to conversation runs (chat handoffs stay top-level), to watchdog follow-ups, to board/user creates, to a run task the agent may not mutate, when the default parent would create a delegation cycle with the requested assignee, or when the agent may not create a child under the default parent (for example a protected assignment policy without a grant); those requests stay standalone instead of failing. An explicitly requested parent is still subject to the ordinary assignment check. Structural parentage, creation provenance and blockers stay distinct: the default adds no blocker.
-- `GET /api/issues/:id` returns `createdFrom` (`{ issue: { id, identifier, title, status }, run: { id, agentId }, agent: { id, name } | null } | null`): the task the origin run was executing when it created this issue, resolved from `origin_run_id` or, for historical rows, the run on the recorded creation activity. It is present whether or not `parentId` is set, and only when the viewer may read the source task and its run; a private, hidden-from-viewer or cross-company source yields `null`, indistinguishable from missing provenance.
+- Agent-created task trees are at most two levels (`MAX_AGENT_TASK_HIERARCHY_DEPTH`). When an agent, or automation acting for one (runner and project tools, chat suggestions, native delegation, accepted-plan decomposition, decision effects, plugins, external agents), would create or move a task to a third level, the server does not reject it: the task is placed under the requested parent's ancestor at the allowed depth, a sibling of the requester, and the create/update response and activity carry `parentAdjusted`. An agent move of a task that has its own children skips only the parent change (`reason: "has_children"`). The requester keeps blocking (`blockParentUntilDone` blocks the requester), workspace inheritance and privacy inheritance; provenance follows the `origin_issue_id` rule below. Placement never moves a task above a low-trust boundary root that contains the requester. The ancestor is written only when the caller authorized it and confirms it with `expectedParentId` (the issue routes, the runner `create_task` tool, and nested chat suggestions do); other callers get a standalone task instead (an unconfirmed move skips only the parent change), so no edge lands under an unchecked ancestor. Board users, watchdog and recovery machinery, channel-boundary placement and human-configured routines may nest to any depth; existing deeper trees stay valid and fully readable.
+- `origin_issue_id` and `origin_run_id` are server-set only: the task the creating run was bound to (a chat included), otherwise the chat that handed the task off, otherwise the requested parent (before placement); and that run. Privacy still follows the requested parent. Because `origin_issue_id` is returned with the task, it is recorded only when it reveals nothing new: the task's own parent or privacy parent (already exposed on the task), or a fully public origin (open, outside private projects and subtrees, not hidden); otherwise it stays null and `createdFrom` resolves the source through the run with its access checks. They never change after create.
+- `GET /api/issues/:id` returns `createdFrom` (`{ issue: { id, identifier, title, status }, run: { id, agentId } | null, agent: { id, name } | null } | null`): the task that created this issue, resolved from `origin_issue_id`, otherwise from the task the origin run was executing (`origin_run_id`, or for historical rows the run on the recorded creation activity). It is present whether or not `parentId` is set and requires that the viewer may read the source task. A recorded `origin_issue_id` is returned with `run` and `agent` null when no run created the task or the viewer may not see that run, so a null `run` is not missing provenance; a source resolved only through a run additionally requires that run to be visible. An unreadable, hidden-from-viewer or cross-company source yields `null`, indistinguishable from missing provenance.
 - Relation lists can use `sortField=id&sortDir=asc&afterId=<uuid>` for stable pagination. The cursor excludes earlier IDs and cannot be combined with an offset or activity-based order.
 - The streamlined task page's Tasks tab keeps two independent memberships: the existing subtask tree, and created tasks grouped by their current project (or No project). A created subtask appears in both. Only Subtasks has completion progress; groups collapse independently and unfinished tasks sort above finished tasks.
 - `request_depth` int not null default 0
@@ -469,6 +472,7 @@ Invariants:
 - single assignee only
 - task must trace to company goal chain via `goal_id`, `parent_id`, or project-goal linkage
 - `in_progress` requires assignee
+- agent task presentation reserves **In Progress** for a task-linked queued or running run; inactive tasks project recovery as **Blocked**, pending responses/review as **In Review**, scheduled checks as **Monitoring**, or remaining work as **Todo** without changing lifecycle/admission state
 - an `in_review -> done | cancelled` verdict is authorized against the current review policy while the issue row is locked; a policy change in the same request or a concurrent request cannot relax that verdict gate
 - accepting or rejecting the review-confirmation interaction locks the issue row before resolving the interaction and reauthorizes against the current review policy in that transaction
 - accepting a fresh `request_confirmation` for the current issue's `plan` revision changes `work_mode = planning` to `work_mode = standard` in the same transaction as the accepted interaction; the existing agent-return transition also moves an eligible `in_review` issue to `todo` without changing its agent owner
@@ -1759,7 +1763,10 @@ publication is fenced separately from settlement. Inputs arriving or committing
 later stay pending; no global sequence watermark consumes them. Limited-budget
 admission refuses relevant unevaluated inputs older than fifteen seconds.
 Unchanged idle decisions do not expire; unknown accounting retains its separate
-conservative admission restriction. Provider reporting and cancellation delays
+conservative admission restriction. Completed runs that await accounting hold
+new work only: they never open a hard-stop incident, pause a scope, or stop
+running work. Only spend at the limit, or unpriced usage under a blocking
+policy, does that. Provider reporting and cancellation delays
 remain additional to evaluation lag. Cancellation delivery is asynchronous and
 scoped; committed per-run Stop survives policy changes and restart until existing
 stop proof succeeds. Budget resume cannot clear a manual hold.
@@ -1874,6 +1881,12 @@ Native runs retain final usage receipts during a bounded accounting-only drain
 after a governed wait cancels provider work. This does not accept late messages,
 tool calls, or new completion proposals. Missing or incomplete receipts continue
 to block budget admission.
+After native recovery reaches terminal failure, an incomplete receipt holds new
+work as recovering accounting; it does not open a hard-stop incident. When the
+run no longer records a provider process (recovery clears it only after a
+verified stop), no producer can deliver the receipt. Accounting then records
+its known part as an unpriced charge, so the unpriced-usage policy governs
+admission. A later receipt still posts through late-receipt reconciliation.
 A controller that detaches for server restart loses checkpoint and completion
 write authority. A closing event stream is not proof that the governed run
 finished; the replacement controller must adopt and settle the original run.
@@ -2845,6 +2858,11 @@ precedence and dependency failures use the original built-in detector.
 
 
 ### Personal workspace preference
+
+Tasks defaults to All tasks when the viewer has no saved task view. Explicit
+view URLs and existing saved task views retain precedence.
+Task tables default to Last updated descending without an active sort header;
+an explicit column sort selects the header and shows its direction.
 
 Coordinator is the standard workspace for every person. It is not an experiment.
 Settings → Experimental offers **Classic workspace**, a personal opt-in that

@@ -9,6 +9,7 @@ import { environmentSyncErrorData, withEnvironmentSyncErrorCapture } from "./env
 import { environmentRunnerIngressErrorData } from "./environment-runner-ingress-error.js";
 import { environmentStopErrorData } from "./environment-stop-error.js";
 import { environmentResumeErrorData } from "./environment-resume-error.js";
+import { environmentAcquireErrorData } from "./environment-acquire-error.js";
 import { environmentTaskErrorCodeData, environmentTaskErrorData } from "./environment-task-error.js";
 import { workspaceOperationErrorData } from "./workspace-operation-error.js";
 import { createInvocationTracer } from "./invocation-tracer.js";
@@ -1650,8 +1651,8 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
           : PLUGIN_RPC_ERROR_CODES.WORKER_ERROR;
 
       sendMessage(createErrorResponse(id, errorCode, errorMessage,
-        method === "environmentAcquireLease" || method === "environmentDestroyLease"
-          ? environmentCreationCleanupErrorData(err, method === "environmentAcquireLease")
+        method === "environmentAcquireLease" ? environmentAcquireErrorData(err)
+          : method === "environmentDestroyLease" ? environmentCreationCleanupErrorData(err)
           : method === "environmentSyncOut" ? environmentSyncErrorData(err)
           : method === "environmentRunnerIngressEndpoint" ? environmentRunnerIngressErrorData(err)
           : method === "environmentStopLease" ? environmentStopErrorData(err)

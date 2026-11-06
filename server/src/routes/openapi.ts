@@ -6179,6 +6179,16 @@ registry.registerPath({
 });
 
 registry.registerPath({
+  method: "post",
+  path: "/api/issues/{id}/context/compact",
+  tags: ["issues"],
+  summary: "Ask the assignee agent to compact its context window",
+  description: "Board only. Queues a short run that resumes the assignee's runner session and compacts it (Codex and Claude on the Paperclip runner). Unavailable while the agent is running on the task.",
+  request: { params: z.object({ id: z.string() }) },
+  responses: { 202: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict, 422: r.unprocessable },
+});
+
+registry.registerPath({
   method: "get",
   path: "/api/heartbeat-runs/{runId}/issues",
   tags: ["activity"],
@@ -9576,7 +9586,7 @@ registry.registerPath({
           agentId: z.string(),
           runId: z.string(),
           companyId: z.string(),
-          projectId: z.string(),
+          projectId: z.string().nullable().optional(),
         }),
       }),
     ),

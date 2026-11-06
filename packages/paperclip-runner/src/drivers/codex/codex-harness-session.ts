@@ -183,11 +183,23 @@ export class CodexHarnessSession
     requestedCollaborationMode?: "default" | "plan";
     /** OpenCode/OpenRouter only. Applies to this turn, never subsequent turns. */
     reasoningMode?: "default" | "disabled";
+    /** Run the provider's context compaction as this turn. */
+    compact?: true;
+    /** Last context occupancy recorded before a compaction turn. */
+    contextTokensBefore?: number;
   }): Promise<{
     turnId: string;
     effectiveCollaborationMode: "default" | "plan";
   }> {
     this.assertProtocolIntegrity();
+    if (input.compact === true && (input.reasoningMode !== undefined || this.dispositionOnlyRecoveryAvailable)) {
+      throw this.unsupported("context compaction", "compaction cannot combine with reasoning or disposition recovery");
+    }
+    // A compaction-only run resumes the session without a fresh usage report;
+    // seed the "before" size the divider shows from Paperclip's last reading.
+    if (input.compact === true && input.contextTokensBefore !== undefined) {
+      this.lastContextUsedTokens ??= input.contextTokensBefore;
+    }
     if (input.reasoningMode !== undefined && !this.supportsTurnReasoning()) {
       throw new Error("Per-turn reasoning is not supported by this provider");
     }
@@ -241,8 +253,8 @@ export class CodexHarnessSession
     }
     // The submitted text is part of the canonical record so a tracer can show
     // the operator's own message without keeping shadow state next to the
-    // reducer.
-    this.emit("turn.submitted", {
+    // reducer. A compaction turn submits no message.
+    if (input.compact !== true) this.emit("turn.submitted", {
       envelopeSchema: this.taskEnvelope.schema,
       text: input.message.text,
       ...(turnSkills.length ? { skillInputs: turnSkills } : {}),
@@ -258,7 +270,11 @@ export class CodexHarnessSession
     let response: Record<string, unknown>;
     const requestedMode = this.opened.context.collaborationMode;
     try {
-      response = await this.transport.request("turn/start", {
+      // Compaction runs as the provider's own turn. Codex's response carries
+      // no turn; the runnerd transport binds it and answers like turn/start.
+      response = input.compact === true
+        ? await this.transport.request("thread/compact/start", { threadId: this.opened.threadId })
+        : await this.transport.request("turn/start", {
         threadId: this.opened.threadId,
         ...(input.reasoningMode === undefined ? {} : { reasoningMode: input.reasoningMode }),
         ...(this.reasoningEffort ? { effort: this.reasoningEffort } : {}),
@@ -320,7 +336,9 @@ export class CodexHarnessSession
     }
     this.assertProtocolIntegrity();
     const turn = record(response.turn);
-    const turnId = text(turn.id);
+    // A direct Codex app-server answers thread/compact/start with `{}`; its
+    // compaction turn is known only from a turn/started that already arrived.
+    const turnId = text(turn.id) || (input.compact === true ? (this.activeTurnId ?? "") : "");
     if (turnId.length === 0) {
       // A start notification is only optimistic until the response validates.
       // Clear it before released semantic/terminal waiters can observe an
@@ -868,14 +886,22 @@ export class CodexHarnessSession
     };
   }
 
-  async close(input?: { reason: string }): Promise<void> {
+  // `force` is part of the contract. Codex closes the same way with or without it.
+  async close(input: { reason: string; force?: boolean }): Promise<void> {
     this.cancelPendingRequests("session_closed");
     this.eventQueue.close();
+    // Untyped callers (for example generated scripts) may still omit the input.
     await this.transport.close(input?.reason);
   }
 
   async detachControllerForRestart(): Promise<void> {
     if (this.transport.detachControllerForRestart === undefined) return;
     await this.transport.detachControllerForRestart();
+    // The next controller replays the runner journal. End this controller's
+    // stream without its buffered suffix so the detached consumer unwinds
+    // instead of waiting for provider events that will never arrive here.
+    // Pending runtime requests stay open for the adopting controller.
+    this.eventQueue.clear();
+    this.eventQueue.close();
   }
 }

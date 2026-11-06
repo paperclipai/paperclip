@@ -1,0 +1,9 @@
+{
+  "name": "@paperclipai/typecheck-sandbox-providers",
+  "private": true,
+  "description": "Installs sandbox provider dependencies for scripts/typecheck-test-programs.mjs. See doc/DEVELOPING.md.",
+  "packageManager": "pnpm@9.15.4",
+  "engines": {
+    "node": ">=24.11.0"
+  }
+}

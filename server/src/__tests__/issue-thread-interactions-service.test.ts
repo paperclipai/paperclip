@@ -1334,14 +1334,18 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       ]),
     );
 
+    // Agent-authored suggestions nest one level: the nested suggestion would be
+    // a grandchild, so it lands beside its suggested parent and records it as origin.
     const children = await issuesSvc.list(companyId, { parentId: issueId });
-    expect(children).toHaveLength(1);
-    expect(children[0]?.title).toBe("Create the root follow-up");
-
-    const nestedChildren = await issuesSvc.list(companyId, { parentId: children[0]!.id });
-    expect(nestedChildren).toHaveLength(1);
-    expect(nestedChildren[0]?.title).toBe("Create the nested follow-up");
-    expect(nestedChildren[0]?.requestDepth).toBe(4);
+    expect(children.map((child) => child.title).sort()).toEqual([
+      "Create the nested follow-up",
+      "Create the root follow-up",
+    ]);
+    const rootFollowUp = children.find((child) => child.title === "Create the root follow-up")!;
+    const nestedFollowUp = children.find((child) => child.title === "Create the nested follow-up")!;
+    expect(nestedFollowUp.originIssueId).toBe(rootFollowUp.id);
+    expect(nestedFollowUp.requestDepth).toBe(4);
+    expect(await issuesSvc.list(companyId, { parentId: rootFollowUp.id })).toHaveLength(0);
 
     const listed = await interactionsSvc.listForIssue(issueId);
     expect(listed).toHaveLength(1);
@@ -1352,7 +1356,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     })).rejects.toThrow("Interaction has already been resolved");
 
     const childrenAfterDuplicateAccept = await issuesSvc.list(companyId, { parentId: issueId });
-    expect(childrenAfterDuplicateAccept).toHaveLength(1);
+    expect(childrenAfterDuplicateAccept).toHaveLength(2);
   });
 
   it("accepts a selected subset of suggested tasks and records the skipped drafts", async () => {

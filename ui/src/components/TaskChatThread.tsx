@@ -66,6 +66,7 @@ import {
   paperclipRunnerAcceptedResponseWake,
   paperclipRunnerTimelineItems,
   prependIssueBrief,
+  settledCompactionMarkers,
   settledRunChildren,
   splitTranscriptAtAnchors,
   transcriptToTaskChatItems,
@@ -96,6 +97,7 @@ import { TaskChatProtocolCard } from "@/components/task-chat/TaskChatProtocolCar
 import { TaskChatRequestHistoryContext } from "@/components/task-chat/TaskChatComposerTakeoverContext";
 import {
   interactionThreadAnchorMs,
+  isOutdatedPlanConfirmation,
   isSuppressedThreadInteraction,
 } from "@/components/task-chat/interaction-thread-order";
 import { orderTaskCreationItems, taskCreationSourceRunId } from "@/components/task-chat/task-creation-order";
@@ -518,7 +520,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     initialHistoryError = false,
     onRetryInitialHistory,
     comments,
-    interactions,
+    interactions: storedInteractions,
     documents = [],
     workProducts = [],
     attachments = [],
@@ -591,6 +593,15 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     resumeAssigneePending = false,
     onOpenSkill,
   } = props;
+  const {
+    data: planDocument,
+    isLoading: planLoading,
+    isError: planError,
+    refetch: retryPlan,
+  } = useIssuePlanDocument(issueId);
+  const interactions = useMemo(() => storedInteractions?.filter(
+    interaction => !isOutdatedPlanConfirmation(interaction, planDocument),
+  ), [storedInteractions, planDocument]);
   const confirmedStoppedRunIds = useMemo(() => new Set((linkedRuns ?? []).filter((run) =>
     companyId && (run.runtimeMode === "legacy" || run.runtimeMode === "native") && isRunStopConfirmed({
       id: run.runId, companyId, status: run.status, runtimeMode: run.runtimeMode, resultJson: run.resultJson ?? null,
@@ -1199,13 +1210,6 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     return map;
   }, [comments]);
 
-  const {
-    data: planDocument,
-    isLoading: planLoading,
-    isError: planError,
-    refetch: retryPlan,
-  } = useIssuePlanDocument(issueId);
-
   // A native-runner Plan is part of the turn that wrote its current revision.
   // Legacy adapters do not expose the semantic write_document boundary needed
   // for stable embedding, so their Plans remain chronological thread entries.
@@ -1710,6 +1714,10 @@ export function TaskChatThread(props: TaskChatThreadProps) {
         continue;
       }
       previousExecutionWaitKey = null;
+      const compactionMarkers = settledCompactionMarkers(entries, source.id);
+      for (const marker of compactionMarkers) {
+        entriesWithFailures.push({ id: marker.id, ms: toMs(marker.createdAtIso), order: 3, item: marker });
+      }
       const acceptedSummary = acceptedSemanticResultSummary(meta?.resultJson);
       const parsedSource = transcriptToTaskChatItems(entries, {
         runId: source.id,
@@ -2160,8 +2168,11 @@ export function TaskChatThread(props: TaskChatThreadProps) {
           rest: partitionRunHealthItems(timelineItemsBySegment[segmentIndex] ?? []).rest,
         };
         const children = settledRunChildren(runHealth.rest);
-        if (children.length === 0 && !finalResponse && !sourceIsPaperclipRunner)
+        // A compaction-only run is fully shown by its divider.
+        if (children.length === 0 && !finalResponse && (!sourceIsPaperclipRunner || compactionMarkers.length > 0)) {
+          if (compactionMarkers.length > 0) settledRunIds.add(source.id);
           continue;
+        }
         settledRunIds.add(source.id);
         if (finalResponse) settledReplyRunIds.add(source.id);
         const segmented = timelineAnchors.length > 0;

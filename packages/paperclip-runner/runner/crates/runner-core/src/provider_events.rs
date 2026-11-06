@@ -1008,7 +1008,11 @@ pub fn normalize_codex_notification_in(
             EventPriority::P1,
             json!({
                 "schema": "paperclip.context.compacted.v1",
-                "compactionId": stable_id(string(params.get("threadId")), "codex-compaction"),
+                // One thread compacts many times; its turn names each compaction.
+                "compactionId": stable_id(
+                    &format!("{}:{}", string(params.get("threadId")), string(params.get("turnId"))),
+                    "codex-compaction",
+                ),
                 "reason": "provider",
                 "preTokens": Value::Null,
                 "postTokens": Value::Null,

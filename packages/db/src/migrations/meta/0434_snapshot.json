@@ -1,5 +1,5 @@
 {
-  "id": "4cda1108-4708-41bb-ae0e-8510f714065a",
+  "id": "5b40e9ac-12aa-4757-aac7-36218c7500a8",
   "prevId": "10b23b32-3586-4a30-a993-618e7d3ca893",
   "version": "7",
   "dialect": "postgresql",
@@ -3901,28 +3901,6 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "agent_wakeup_requests_company_pending_issue_key_idx": {
-          "name": "agent_wakeup_requests_company_pending_issue_key_idx",
-          "columns": [
-            {
-              "expression": "(coalesce(\"payload\"->>'issueId', \"payload\"->>'taskId', \"payload\"->'_paperclipWakeContext'->>'issueId'))",
-              "asc": true,
-              "isExpression": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "company_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "where": "\"agent_wakeup_requests\".\"status\" in ('queued', 'claimed', 'deferred_issue_execution')",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -35233,28 +35211,6 @@
           "method": "btree",
           "with": {}
         },
-        "heartbeat_runs_company_unfinished_issue_key_idx": {
-          "name": "heartbeat_runs_company_unfinished_issue_key_idx",
-          "columns": [
-            {
-              "expression": "(coalesce(\"context_snapshot\"->>'issueId', \"context_snapshot\"->>'taskId', \"native_issue_id\"::text))",
-              "asc": true,
-              "isExpression": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "company_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "where": "\"heartbeat_runs\".\"status\" in ('queued', 'running', 'scheduled_retry')",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
         "heartbeat_runs_company_responsible_user_idx": {
           "name": "heartbeat_runs_company_responsible_user_idx",
           "columns": [
@@ -42536,6 +42492,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "origin_issue_id": {
+          "name": "origin_issue_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
         "origin_identity_context_id": {
           "name": "origin_identity_context_id",
           "type": "uuid",
@@ -42969,6 +42931,27 @@
             },
             {
               "expression": "origin_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "issues_company_origin_issue_idx": {
+          "name": "issues_company_origin_issue_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "origin_issue_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -43576,6 +43559,19 @@
             "id"
           ],
           "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "issues_origin_issue_id_issues_id_fk": {
+          "name": "issues_origin_issue_id_issues_id_fk",
+          "tableFrom": "issues",
+          "tableTo": "issues",
+          "columnsFrom": [
+            "origin_issue_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
           "onUpdate": "no action"
         },
         "issues_execution_workspace_id_execution_workspaces_id_fk": {

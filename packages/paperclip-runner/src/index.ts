@@ -45,6 +45,7 @@ export {
   type StagedRunAttachment,
   type DurablePrpControlPlaneOptions,
   type DurablePrpCheckpoint,
+  type DurablePrpConnectionLeaseFailure,
   decodeDurablePrpCheckpoint,
   captureLegacyDurablePrpCheckpoint,
   inspectDurablePrpCheckpointHeader,

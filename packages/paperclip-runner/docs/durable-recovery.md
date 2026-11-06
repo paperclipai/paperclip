@@ -41,6 +41,19 @@ lease without replacing its process, provider, thread, turn, token, or epoch.
 Retries of the same observed expiry replay the persisted extension. Renewal
 never admits an expired, revoked, or differently bound credential.
 
+The controller answers `lease_renew` (and `pong`) as soon as the frame is
+decrypted, outside the per-connection chain that serializes events, command
+results, and handoff frames. A slow business commit for an earlier event, such
+as a tool event during a long silent tool call, therefore cannot starve
+renewal. Frames still decrypt in arrival order, and the renewed expiry is
+persisted (absorbing any event write already staged) before the reply is sent.
+When an authenticated connection closes or is refused because its lease has
+expired, the controller records that reason (`connectionLeaseFailure`).
+Provider ingress reports it in the run log and, if reconnect grace runs out,
+as the `runner_connection_lease_expired` failure code instead of a generic
+transport loss. A credential revoked by a warm handoff is not reported, because
+a replacement runner owns the run.
+
 If a reply is lost, reconnect authentication may reconcile a later expiry only
 when this runner has an outstanding renewal on that same credential. Warm
 handoff receipts continue to bind exact expiry and renewal pauses during their

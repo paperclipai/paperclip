@@ -421,6 +421,14 @@ fn semantic_result_event(
     }
 }
 
+/// Local Codex app-server and OpenCode server restart their own process and
+/// restore the same conversation after runner loss, so a turn that vanished
+/// meanwhile is a restart interruption the controller may continue once. A
+/// Cursor Cloud agent runs remotely; its lost turn is not a process restart.
+fn restart_lost_turn_is_continuable(provider: &str) -> bool {
+    matches!(provider, "codex" | "opencode")
+}
+
 fn facade_provider_name(provider: &str) -> &'static str {
     match provider {
         "opencode" => "OpenCode",
@@ -2693,6 +2701,7 @@ impl CodexCommandExecutor {
                         // trustworthy success notification to replay. Terminate it
                         // conservatively so the controller cannot wait forever or
                         // mistake an unknown outcome for success.
+                        let restart_continuable = restart_lost_turn_is_continuable(&provider_label);
                         let provider_terminal = NormalizedProviderEvent {
                             event_type: "turn.failed".to_owned(),
                             priority: EventPriority::P0,
@@ -2701,14 +2710,14 @@ impl CodexCommandExecutor {
                                 "providerTurnId": previous_active_turn_id,
                                 "status": "failed",
                                 "providerTerminalObserved": false,
-                                "error": if provider_label == "codex" { json!({
+                                "error": if restart_continuable { json!({
                                     "code": "provider_turn_lost_on_restore",
                                     "recoverable": true,
                                     "message": "The runner restored the conversation after process loss, but the previous turn is no longer active.",
                                 }) } else { Value::Null },
                             }),
                         };
-                        if provider_label == "codex" && !state.active_terminal_tool_rejected {
+                        if restart_continuable && !state.active_terminal_tool_rejected {
                             // No provider result was observed. Preserve the lost
                             // turn as a fact, but leave the run open for the
                             // controller's bounded same-conversation recovery.
@@ -3619,6 +3628,24 @@ impl CodexCommandExecutor {
             }
             Some(_) => return Err(DurableRunnerError::invalid("invalid turn.reasoningMode")),
         };
+        // `compact` starts the provider's on-demand context compaction as
+        // this turn. It carries no user text, skills, or reasoning overrides.
+        let compact = match payload.get("compact") {
+            None | Some(Value::Bool(false)) => false,
+            Some(Value::Bool(true)) => true,
+            Some(_) => {
+                return Err(DurableRunnerError::invalid(
+                    "turn.start compact must be a boolean",
+                ))
+            }
+        };
+        if compact
+            && (!skills.is_empty() || reasoning_mode.is_some() || payload.get("text").is_some())
+        {
+            return Err(DurableRunnerError::invalid(
+                "a compaction turn.start cannot carry text, skills, or a reasoning mode",
+            ));
+        }
         self.restore_provider_if_needed()?;
         if reasoning_mode.is_some()
             && self
@@ -3677,10 +3704,24 @@ impl CodexCommandExecutor {
                 ))
             })?;
         self.rollover_provider_identity_epochs_if_needed()?;
-        let text = payload
-            .get("text")
-            .and_then(Value::as_str)
-            .ok_or_else(|| DurableRunnerError::invalid("turn.start payload.text is required"))?;
+        let text = if compact {
+            ""
+        } else {
+            payload
+                .get("text")
+                .and_then(Value::as_str)
+                .ok_or_else(|| DurableRunnerError::invalid("turn.start payload.text is required"))?
+        };
+        if compact
+            && self
+                .state
+                .as_ref()
+                .is_some_and(|state| state.config.provider != "codex")
+        {
+            return Err(DurableRunnerError::invalid(
+                "on-demand context compaction requires Codex",
+            ));
+        }
         let cwd = self
             .state
             .as_ref()
@@ -3716,16 +3757,20 @@ impl CodexCommandExecutor {
             rejected_accepted_turn,
         ) = {
             let provider = self.ensure_provider()?;
-            let result = provider.start_turn_with_options_and_effort(
-                text,
-                &cwd,
-                CodexTurnOptions {
-                    skills: &skills,
-                    reasoning_mode,
-                },
-                payload.get("effort"),
-                run_id.as_deref(),
-            );
+            let result = if compact {
+                provider.start_compaction_turn()
+            } else {
+                provider.start_turn_with_options_and_effort(
+                    text,
+                    &cwd,
+                    CodexTurnOptions {
+                        skills: &skills,
+                        reasoning_mode,
+                    },
+                    payload.get("effort"),
+                    run_id.as_deref(),
+                )
+            };
             (
                 result,
                 provider.completed_turn_authority().is_some(),
@@ -5663,6 +5708,13 @@ impl CommandExecutor for CodexCommandExecutor {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn restart_lost_turns_continue_only_for_locally_restored_providers() {
+        assert!(super::restart_lost_turn_is_continuable("codex"));
+        assert!(super::restart_lost_turn_is_continuable("opencode"));
+        assert!(!super::restart_lost_turn_is_continuable("cursor_cloud"));
+    }
 
     #[test]
     fn mcp_permission_requests_use_durable_turn_and_item_identity() {

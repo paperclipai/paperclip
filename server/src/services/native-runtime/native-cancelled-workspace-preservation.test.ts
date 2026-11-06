@@ -75,6 +75,19 @@ import { readRemoteWorkspaceAuthority } from "@paperclipai/shared";
     expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId))).toHaveLength(0);
   }
 
+  async function acceptResult(f: Awaited<ReturnType<typeof seed>>) {
+    const [contract] = await db.insert(completionContracts).values({ companyId: f.companyId, issueId: f.issueId,
+      revision: 1, schemaVersion: "v1", policyVersion: "v1", risk: "low", completionAuthority: "agent",
+      incompleteCriteriaPolicy: "block", contractJson: {}, canonicalSha256: "a".repeat(64),
+      createdByActorType: "system", createdByActorId: "test" }).returning();
+    await db.update(heartbeatRuns).set({ completionContractId: contract.id }).where(eq(heartbeatRuns.id, f.runId));
+    const [result] = await db.insert(nativeRunResults).values({ companyId: f.companyId, issueId: f.issueId, runId: f.runId,
+      completionContractId: contract.id, serverFingerprint: "b".repeat(64), schemaStatus: "accepted",
+      resultJson: {}, canonicalSha256: "c".repeat(64) }).returning();
+    await db.update(nativeRunFinalizations).set({ resultId: result.id }).where(eq(nativeRunFinalizations.runId, f.runId));
+    return result;
+  }
+
   it("reconstructs prepared remote files after an audited lifecycle Stop without a board actor", async () => {
     const f = await seed();
     const [historical] = await db.insert(issueRecoveryActions).values({ companyId: f.companyId, sourceIssueId: f.issueId,
@@ -263,17 +276,7 @@ import { readRemoteWorkspaceAuthority } from "@paperclipai/shared";
     }).where(eq(heartbeatRuns.id, f.runId));
     if (invalid === "live-owner") await db.update(nativeRunFinalizations).set({ leaseOwner: randomUUID(),
       leaseExpiresAt: new Date(Date.now() + 60_000) }).where(eq(nativeRunFinalizations.runId, f.runId));
-    if (invalid === "accepted-result") {
-      const [contract] = await db.insert(completionContracts).values({ companyId: f.companyId, issueId: f.issueId,
-        revision: 1, schemaVersion: "v1", policyVersion: "v1", risk: "low", completionAuthority: "agent",
-        incompleteCriteriaPolicy: "block", contractJson: {}, canonicalSha256: "a".repeat(64),
-        createdByActorType: "system", createdByActorId: "test" }).returning();
-      await db.update(heartbeatRuns).set({ completionContractId: contract.id }).where(eq(heartbeatRuns.id, f.runId));
-      const [result] = await db.insert(nativeRunResults).values({ companyId: f.companyId, issueId: f.issueId, runId: f.runId,
-        completionContractId: contract.id, serverFingerprint: "b".repeat(64), schemaStatus: "accepted",
-        resultJson: {}, canonicalSha256: "c".repeat(64) }).returning();
-      await db.update(nativeRunFinalizations).set({ resultId: result.id }).where(eq(nativeRunFinalizations.runId, f.runId));
-    }
+    if (invalid === "accepted-result") await acceptResult(f);
     const errors: unknown[] = [];
     const worker = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => { errors.push(error); } });
     try {
@@ -342,6 +345,52 @@ import { readRemoteWorkspaceAuthority } from "@paperclipai/shared";
       expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId))).toHaveLength(0);
       expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId)))[0])
         .toMatchObject({ phase: "terminal_failure", leaseOwner: null, resultId: null });
+    } finally { await worker.stop(); }
+  }, 120_000);
+
+  // Stop during an accepted result's copy-back retries ends the copy-back. No
+  // finalization exports those files afterwards, so preservation keeps them.
+  it.each(["worker", "startup-scan", "stopped-sandbox"] as const)("preserves files of an accepted result whose copy-back was stopped (%s)", async kind => {
+    const f = await seed();
+    const result = await acceptResult(f);
+    const nativeCancellation = { ...f.nativeCancellation, dispatched: false };
+    await db.update(heartbeatRuns).set({ nativePhase: "retryable_failure", error: "Cancelled by a board operator",
+      resultJson: { nativeCancellation, cancelledByActorType: "user", cancelledByUserId: "operator" } })
+      .where(eq(heartbeatRuns.id, f.runId));
+    await db.update(nativeRunFinalizations).set({ failureCode: "native_retry_cancelled",
+      failureDetail: { originalFailureCode: "native_workspace_sync_out_failed", workspaceFinalizeAttempt: 1 } })
+      .where(eq(nativeRunFinalizations.runId, f.runId));
+    if (kind === "stopped-sandbox") {
+      // The Stop's resource release already stopped and kept the sandbox.
+      const [lease] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.leaseId));
+      const stopping = (await prepareSandboxStopAndRetain(db, lease))!;
+      expect(await settleStopOnlyCleanup(db, stopping, { attemptId: String(stopping.metadata!.pendingCleanupAttemptId),
+        receipt: { providerLeaseId: f.reference.providerLeaseId, state: "stopped" } }))
+        .toMatchObject({ status: "released", leasePolicy: "ephemeral", cleanupStatus: "success" });
+    }
+    const worker = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => { throw error; } });
+    try {
+      if (kind === "startup-scan") await preserveCancelledNativeWorkspaces(db);
+      else await registerCancelledWorkspacePreservationWork(db, worker, () => true, async () => true).ready;
+      const [retained] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+      expect(retained.resultJson).toMatchObject({ nativeCancellation, workspaceRestoreFailure: "restore_failed",
+        workspaceRestoreRecovery: { schema: "paperclip.workspace-restore-recovery.v1", leaseIds: [f.leaseId] } });
+      expect(retained).toMatchObject({ status: "cancelled", finishedAt: f.run.finishedAt });
+      const actions = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.companyId, f.companyId));
+      expect(actions).toHaveLength(1);
+      expect(actions[0].evidence).toMatchObject({ runId: f.runId, workspaceRestoreRecovery: { leaseIds: [f.leaseId] } });
+      expect((await inspectWorkspaceRecoverySource(db, { companyId: f.companyId, issueId: f.issueId,
+        runId: f.runId, actionId: actions[0].id })).sources).toHaveLength(1);
+      // The accepted result stays recorded and is never committed or replayed.
+      expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId)))[0])
+        .toMatchObject({ phase: "terminal_failure", resultId: result.id, failureCode: "native_retry_cancelled", leaseOwner: null });
+      const [workspace] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, f.workspaceId));
+      expect(await readRemoteWorkspaceWriterHold(db, { companyId: f.companyId,
+        authority: readRemoteWorkspaceAuthority(workspace.metadata)! })).toMatchObject({ kind: "held", writer: { runId: f.runId, ended: true } });
+      expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, f.companyId))).toHaveLength(1);
+      expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId))).toHaveLength(0);
+      expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0].status).toBe("in_progress");
+      if (kind !== "startup-scan") expect(worker.nextWakeAt()).toBeNull();
     } finally { await worker.stop(); }
   }, 120_000);
 
