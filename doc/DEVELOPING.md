@@ -4628,6 +4628,25 @@ pnpm --filter @paperclipai/server exec tsx ../scripts/benchmark-workspace-prepar
 It compares actual preparation guards with synthetic history. Local timings are
 separate from Git materialization, environment acquisition, and provider startup.
 
+### GitHub background credential lookup benchmark
+
+To compare the company-secret name lookup used by external-object refresh, run:
+
+```sh
+pnpm --filter @paperclipai/server exec tsx scripts/benchmark-github-api-credentials.ts --baseline-ref=<pre-fix-commit>
+```
+
+The harness uses disposable PostgreSQL and the exported API credential resolver.
+It compares absent, first-name, and last-name credentials through the real secret
+service and local encrypted provider. It alternates baseline and treatment,
+excludes two warmup rounds, and reports five samples of 100 resolutions with
+lookup count, Node process CPU, and wall time. Use `--counts-only` for a fast
+query-count check; that mode does not establish timing improvements. Run timing
+comparisons on a quiet machine. This local check does not contact GitHub or prove
+hosted external-refresh latency. The pinned baseline module uses the current
+secret service, so this benchmark isolates name lookup changes; do not use it to
+compare changes to secret value resolution.
+
 ### Sidebar badge run-query benchmark
 
 The badge query keeps the newest 200 runs of nonterminated same-company agents.
