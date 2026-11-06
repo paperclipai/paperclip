@@ -10,7 +10,7 @@ import { queryKeys } from "@/lib/queryKeys";
 import { resourceMembershipState, useResourceMemberships } from "@/hooks/useResourceMemberships";
 
 /** Account- and company-scoped data for the secondary chat navigation. */
-export function AgentConversationsSidebar() {
+export function AgentConversationsSidebar({ onConversationOpened }: { onConversationOpened?: () => void } = {}) {
   const { companyId, userId, agents, chats, session } = useAgentChatNavigation();
   const openChat = useOpenAgentChat(companyId, userId, true);
   const navigate = useNavigate();
@@ -59,7 +59,7 @@ export function AgentConversationsSidebar() {
     historyLoading={historyAgents.some(result => result.isPending)}
     historyError={historyAgents.find(result => queryViewKind(result) === "error")?.error}
     onRetryHistory={() => { historyAgents.filter(result => result.isError).forEach(result => { void result.refetch(); }); }}
-    onAddChat={openChat}
+    onAddChat={async (agent, signal) => { await openChat(agent, signal); if (!signal?.aborted) onConversationOpened?.(); }}
     onSelect={agent => {
       navigate(`/chats/${encodeURIComponent(agent.status === "terminated" ? agent.id : agentRouteRef(agent))}`);
       if (isMobile) setSidebarOpen(false);

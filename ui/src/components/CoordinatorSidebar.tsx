@@ -180,7 +180,7 @@ export function CoordinatorSidebar({ children }: { children?: ReactNode }) {
     <Dialog open={chatHistoryOpen} onOpenChange={setChatHistoryOpen}>
       <DialogContent aria-describedby={undefined} className="h-full max-h-screen overflow-hidden p-0 sm:max-w-md">
         <DialogTitle className="sr-only">All conversations</DialogTitle>
-        <div className="min-h-0" onClickCapture={event => { if ((event.target as Element).closest("a")) setChatHistoryOpen(false); }}><AgentConversationsSidebar /></div>
+        <div className="min-h-0" onClickCapture={event => { if ((event.target as Element).closest("a")) setChatHistoryOpen(false); }}><AgentConversationsSidebar onConversationOpened={() => setChatHistoryOpen(false)} /></div>
       </DialogContent>
     </Dialog>
   </aside></TruncatedTextMarqueeProvider></FlyoutAppearanceProvider>;

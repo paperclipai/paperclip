@@ -27,8 +27,8 @@ let container: HTMLDivElement;
 let client: QueryClient;
 const roster = ["alice", "bob"].map(id => ({ id, companyId: "company-a", name: id, urlKey: id, role: "general", title: "Teammate", status: "idle" } as Agent));
 const chat = (id: string) => ({ id: `chat-${id}`, companyId: "company-a", conversationAgentId: id, conversationUserId: "user-a", updatedAt: id === "bob" ? "2026-09-02T00:00:00Z" : "2026-09-01T00:00:00Z" });
-async function render() {
-  await act(async () => { root.render(<QueryClientProvider client={client}><AgentConversationsSidebar /></QueryClientProvider>); });
+async function render(onConversationOpened?: () => void) {
+  await act(async () => { root.render(<QueryClientProvider client={client}><AgentConversationsSidebar onConversationOpened={onConversationOpened} /></QueryClientProvider>); });
 }
 async function addChat() { await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Add chat"]')!.click()); }
 async function choose(name: string) {
@@ -48,6 +48,14 @@ beforeEach(() => {
   container = document.createElement("div"); document.body.append(container); root = createRoot(container);
 });
 afterEach(async () => { await act(async () => root.unmount()); client.clear(); container.remove(); vi.unstubAllGlobals(); });
+it("notifies its parent only after a chat opens successfully", async () => {
+  const opened = vi.fn();
+  state.ensure.mockRejectedValueOnce(new Error("Couldn’t open chat"));
+  await render(opened); await addChat(); await choose("bob");
+  expect(opened).not.toHaveBeenCalled();
+  await choose("bob");
+  expect(opened).toHaveBeenCalledOnce();
+});
 it("creates a chat and lists it separately from the agent", async () => {
   await render();
   expect(container.querySelectorAll('nav[aria-label="Agent conversations"] a')).toHaveLength(2);
