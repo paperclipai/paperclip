@@ -17,7 +17,7 @@ Runtime authentication: [AI Connections](./AI-CONNECTIONS.md).
 Long-term memory: [Experimental memory connectors](./MEMORY.md).
 
 Provider notes: [Google Workspace](./GOOGLE-WORKSPACE.md),
-[Gmail](./GMAIL.md), [Asana](./ASANA.md), [Sentry](./SENTRY.md), [PostHog](./POSTHOG.md), [Braintrust](./BRAINTRUST.md), [Neon](./NEON.md), [Superagent](./SUPERAGENT.md), [Gauge](./GAUGE.md), [Ditto](./DITTO.md),
+[Gmail](./GMAIL.md), [Asana](./ASANA.md), [Sentry](./SENTRY.md), [PostHog](./POSTHOG.md), [Braintrust](./BRAINTRUST.md), [Neon](./NEON.md), [Superagent](./SUPERAGENT.md), [Gauge](./GAUGE.md), [Ditto](./DITTO.md), [Grafana Cloud](./GRAFANA-CLOUD.md),
 [1Password](./1PASSWORD.md), [Unikraft](./UNIKRAFT.md), [AgentMail](./AGENTMAIL.md), [Telem.AI](./TELEM.md), [iMessage Photon](./IMESSAGE-PHOTON.md),
 [Enterpret](./ENTERPRET.md), [Supabase](./SUPABASE.md), and
 [Vercel](./vercel.md). Optional credential custody:

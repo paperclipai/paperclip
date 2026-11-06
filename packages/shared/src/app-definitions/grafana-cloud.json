@@ -1,0 +1,81 @@
+{
+  "schemaVersion": 1,
+  "slug": "grafana-cloud",
+  "name": "Grafana Cloud",
+  "description": "Query metrics, logs, traces and profiles, review dashboards and alerts, and work incidents in Grafana Cloud.",
+  "categories": [
+    "developer"
+  ],
+  "featured": false,
+  "branding": {
+    "logoUrl": "/brands/apps/grafana-cloud.svg"
+  },
+  "urlPatterns": [
+    "https://mcp.grafana.com/*"
+  ],
+  "docsUrl": "https://grafana.com/docs/grafana-cloud/ai-tools/mcp-servers/cloud-mcp/",
+  "redirectConstraints": "https-or-loopback-http",
+  "methods": [
+    {
+      "key": "mcp-oauth-read",
+      "transport": "mcp_remote",
+      "auth": "oauth",
+      "ownershipModes": [
+        "dcr"
+      ],
+      "whenToUse": "Use read access to inspect dashboards, alerts, incidents and telemetry.",
+      "defaults": {
+        "serverUrl": "https://mcp.grafana.com/mcp",
+        "scopesHint": [
+          "grafana:read"
+        ]
+      },
+      "guidanceMd": "Connect Grafana Cloud in the browser and choose the stack on Grafana's consent screen. This option requests only the read scope. The connection acts as the Grafana user who signs in.",
+      "riskTier": "S4",
+      "label": "Sign in with Grafana Cloud (read)",
+      "consoleLinks": {
+        "docs": "https://grafana.com/docs/grafana-cloud/ai-tools/mcp-servers/cloud-mcp/"
+      },
+      "warnings": [
+        "A Grafana Cloud stack with Grafana Assistant available. The signed-in user needs the Assistant Cloud MCP User role or the grafana-assistant-app.cloud-mcp:access permission, which Editors have by default. Self-hosted Grafana is not supported by this server. Grafana lists the server as public preview."
+      ],
+      "capabilityProfile": {
+        "key": "read",
+        "label": "Read only",
+        "description": "Read dashboards, alerts, incidents, metrics, logs, traces and profiles from the Grafana Cloud stack you choose."
+      }
+    },
+    {
+      "key": "mcp-oauth-write",
+      "transport": "mcp_remote",
+      "auth": "oauth",
+      "ownershipModes": [
+        "dcr"
+      ],
+      "whenToUse": "Use full access when agents must change dashboards, alerts or incidents.",
+      "defaults": {
+        "serverUrl": "https://mcp.grafana.com/mcp",
+        "scopesHint": [
+          "grafana:read",
+          "grafana:query",
+          "grafana:write"
+        ]
+      },
+      "guidanceMd": "Connect Grafana Cloud in the browser and choose the stack on Grafana's consent screen. Only a Grafana administrator can grant the write scope. The connection acts as the Grafana user who signs in.",
+      "riskTier": "S4",
+      "label": "Sign in with Grafana Cloud (read, query and write)",
+      "consoleLinks": {
+        "docs": "https://grafana.com/docs/grafana-cloud/ai-tools/mcp-servers/cloud-mcp/"
+      },
+      "warnings": [
+        "A Grafana Cloud stack with Grafana Assistant available. The signed-in user needs the Assistant Cloud MCP User role or the grafana-assistant-app.cloud-mcp:access permission, which Editors have by default. Self-hosted Grafana is not supported by this server. Grafana lists the server as public preview.",
+        "Grafana's query scope runs raw SQL against ClickHouse, Snowflake, Athena and InfluxDB as written, and it can change data if the data source credentials allow it. Set query_* SQL and alerting_manage_* actions to Ask first before agents run unattended."
+      ],
+      "capabilityProfile": {
+        "key": "full",
+        "label": "Read, query and write",
+        "description": "Read telemetry, run raw SQL queries, and create or change dashboards, alerts, incidents, data sources and Assistant investigations. Grafana's query scope runs raw SQL against ClickHouse, Snowflake, Athena and InfluxDB as written, and it can change data if the data source credentials allow it. Set query_* SQL and alerting_manage_* actions to Ask first before agents run unattended."
+      }
+    }
+  ]
+}

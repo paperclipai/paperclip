@@ -12,7 +12,9 @@ ledger; the counts above are not restated. Later additions: [Neon](./NEON.md)
 (`mcp-api-key`; 2026-10-06), [Gauge](./GAUGE.md)
 (`mcp-oauth`, `mcp-api-key`; 2026-10-08), [Ditto](./DITTO.md)
 (`mcp-oauth`, `mcp-api-key`; 2026-10-10), [Unikraft](./UNIKRAFT.md)
-(`api-token`; 2026-10-15).
+(`api-token`; 2026-10-15),
+[Grafana Cloud](./GRAFANA-CLOUD.md) (`mcp-oauth-read`, `mcp-oauth-write`;
+2026-10-31).
 
 ## Shared credential failure
 

@@ -78,6 +78,10 @@ const APP_COPY: Record<string, AppCopy> = {
     tagline: "Reuse approved product copy and follow your style guide.",
     short: "Sign in with Ditto. API keys are optional.",
   },
+  "grafana-cloud": {
+    tagline: "Query telemetry, review dashboards and alerts, and work incidents.",
+    short: "Sign in with Grafana Cloud. Read access is the default.",
+  },
   gauge: {
     tagline: "Track your brand in AI answers and run content workflows.",
     short: "Sign in with Gauge and pick an organization. API keys are optional.",
