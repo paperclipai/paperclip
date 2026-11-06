@@ -1,7 +1,8 @@
 diff --git a/dist/live-checkpoint-ClPCSdrW.js b/dist/live-checkpoint-ClPCSdrW.js
+index 243c9d13bc..78d08148e4 100644
 --- a/dist/live-checkpoint-ClPCSdrW.js
 +++ b/dist/live-checkpoint-ClPCSdrW.js
-@@ -1532,7 +1532,7 @@
+@@ -1532,7 +1532,7 @@ const ZED_TAG_KEYS = /* @__PURE__ */ new Set([
  	"RedactedThinking",
  	"ToolUse"
  ]);
@@ -10,7 +11,7 @@ diff --git a/dist/live-checkpoint-ClPCSdrW.js b/dist/live-checkpoint-ClPCSdrW.js
  const OPAQUE_VALUE_PATHS = /* @__PURE__ */ new Set([
  	"agent_capabilities",
  	"messages.Agent.content.ToolUse.input",
-@@ -2557,7 +2557,7 @@
+@@ -2557,7 +2557,7 @@ function readCommandLineChar(state) {
  		escaping: false,
  		hasPart: true
  	};
@@ -19,7 +20,7 @@ diff --git a/dist/live-checkpoint-ClPCSdrW.js b/dist/live-checkpoint-ClPCSdrW.js
  		current: state.current,
  		quote: state.quote,
  		escaping: true,
-@@ -2912,8 +2912,8 @@
+@@ -2912,8 +2912,8 @@ function promotePrefixedAuthEnvironment(env) {
  	}
  	return protectedKeys;
  }
@@ -30,7 +31,7 @@ diff --git a/dist/live-checkpoint-ClPCSdrW.js b/dist/live-checkpoint-ClPCSdrW.js
  	const protectedAuthEnvKeys = promotePrefixedAuthEnvironment(env);
  	if (authCredentials) for (const [methodId, credential] of Object.entries(authCredentials)) {
  		addAuthCredentialEnvKeys(protectedAuthEnvKeys, methodId, credential);
-@@ -2955,10 +2955,10 @@
+@@ -2955,10 +2955,10 @@ function resolveConfiguredAuthCredential(methodId, authCredentials) {
  	const configCredentials = authCredentials ?? {};
  	return configCredentials[methodId] ?? configCredentials[toEnvToken(methodId)];
  }
@@ -43,7 +44,7 @@ diff --git a/dist/live-checkpoint-ClPCSdrW.js b/dist/live-checkpoint-ClPCSdrW.js
  		stdio: [
  			"pipe",
  			"pipe",
-@@ -3724,10 +3724,13 @@
+@@ -3724,10 +3724,13 @@ function resolveClientCapabilities(params) {
  		},
  		terminal: params.terminal
  	};
@@ -59,7 +60,7 @@ diff --git a/dist/live-checkpoint-ClPCSdrW.js b/dist/live-checkpoint-ClPCSdrW.js
  	};
  }
  function isDevinRequestDiagnosticsMethod(method) {
-@@ -3957,9 +3960,26 @@
+@@ -3957,9 +3960,26 @@ var AcpClient = class {
  		this.lastAgentExit = void 0;
  		this.lastKnownPid = child.pid ?? void 0;
  		this.attachAgentLifecycleObservers(child);
@@ -86,7 +87,7 @@ diff --git a/dist/live-checkpoint-ClPCSdrW.js b/dist/live-checkpoint-ClPCSdrW.js
  			if (!this.options.verbose) return;
  			process.stderr.write(chunk);
  		});
-@@ -3994,7 +4014,7 @@
+@@ -3994,7 +4014,7 @@ var AcpClient = class {
  			geminiAcp: isGeminiAcpCommand(spawnCommand, args),
  			copilotAcp: isCopilotAcpCommand(spawnCommand, args),
  			claudeAcp: isClaudeAcpCommand(spawnCommand, args),
@@ -95,7 +96,19 @@ diff --git a/dist/live-checkpoint-ClPCSdrW.js b/dist/live-checkpoint-ClPCSdrW.js
  		};
  	}
  	logAgentLaunch(plan) {
-@@ -4729,6 +4749,9 @@
+@@ -4019,7 +4039,10 @@ var AcpClient = class {
+ 		}
+ 	}
+ 	async spawnAgentProcess(plan) {
+-		const spawnedChild = spawn(plan.spawnCommand, plan.args, buildSpawnCommandOptions(plan.spawnCommand, plan.spawnOptions));
++		const spawnOptions = buildSpawnCommandOptions(plan.spawnCommand, plan.spawnOptions);
++		const spawnedChild = this.options.spawnAgentProcess
++			? await this.options.spawnAgentProcess(plan.spawnCommand, plan.args, spawnOptions)
++			: spawn(plan.spawnCommand, plan.args, spawnOptions);
+ 		try {
+ 			await waitForSpawn$1(spawnedChild);
+ 		} catch (error) {
+@@ -4729,6 +4752,9 @@ var AcpClient = class {
  			return await this.filesystem.readTextFile(params);
  		} catch (error) {
  			this.recordPermissionError(params.sessionId, error);
@@ -105,7 +118,7 @@ diff --git a/dist/live-checkpoint-ClPCSdrW.js b/dist/live-checkpoint-ClPCSdrW.js
  			throw error;
  		}
  	}
-@@ -6070,6 +6093,27 @@
+@@ -6070,6 +6096,27 @@ async function withConnectedSession(options) {
  //#region src/runtime/engine/prompt-turn.ts
  const SESSION_REPLY_IDLE_MS = 1e3;
  const SESSION_REPLY_DRAIN_TIMEOUT_MS = 5e3;
@@ -133,7 +146,7 @@ diff --git a/dist/live-checkpoint-ClPCSdrW.js b/dist/live-checkpoint-ClPCSdrW.js
  async function runPromptTurn(params) {
  	try {
  		const promptPromise = params.client.prompt(params.sessionId, params.prompt);
-@@ -6079,6 +6123,20 @@
+@@ -6079,6 +6126,20 @@ async function runPromptTurn(params) {
  			idleMs: SESSION_REPLY_IDLE_MS,
  			timeoutMs: SESSION_REPLY_DRAIN_TIMEOUT_MS
  		}).catch(() => {});
@@ -154,8 +167,15 @@ diff --git a/dist/live-checkpoint-ClPCSdrW.js b/dist/live-checkpoint-ClPCSdrW.js
  		recordPromptResponseUsage(params.conversation, response.usage, params.promptMessageId);
  		return {
  			stopReason: response.stopReason,
+@@ -6153,4 +6214,4 @@ var LiveSessionCheckpoint = class {
+ //#endregion
+ export { getPerfMetricsSnapshot as $, REQUESTED_MODEL_UNSUPPORTED_ERROR_CODE as A, listBuiltInAgents as At, absolutePath as B, AUTH_POLICIES as Bt, mergeSessionOptions as C, promptToDisplayText as Ct, applyLifecycleSnapshotToRecord as D, withInterrupt as Dt, applyConversation as E, TimeoutError as Et, modelStateFromConfigOptions as F, isRetryablePromptError as Ft, listSessions as G, OUTPUT_FORMATS as Gt, findSession as H, NON_INTERACTIVE_PERMISSION_POLICIES as Ht, splitCommandLine as I, normalizeOutputError as It, pruneSessions as J, SESSION_RECORD_SCHEMA as Jt, listSessionsForAgent as K, PERMISSION_MODES as Kt, getAcpxVersion as L, extractAcpError as Lt, RequestedModelUnsupportedError as M, resolveAgentCommand as Mt, assertRequestedModelSupported as N, exitCodeForOutputErrorCode as Nt, reconcileAgentSessionId as O, withTimeout as Ot, isRequestedModelUnsupportedError as P, formatErrorMessage as Pt, formatPerfMetric as Q, QueueProtocolError as Qt, permissionModeSatisfies as R, isAcpResourceNotFoundError as Rt, advertisedModelState as S, parsePromptSource as St, sessionOptionsFromRecord as T, InterruptedError as Tt, findSessionByDirectoryWalk as U, OUTPUT_ERROR_CODES as Ut, findGitRepositoryRoot as V, EXIT_CODES as Vt, isoNow$2 as W, OUTPUT_ERROR_ORIGINS as Wt, writeSessionRecord as X, AgentSpawnError as Xt, resolveSessionRecord as Y, AcpxOperationalError as Yt, assertPersistedKeyPolicy as Z, QueueConnectionError as Zt, createSessionConversation as _, parseJsonRpcErrorMessage as _t, applyRequestedModelIfAdvertised as a, startPerfTimer as at, recordSessionUpdate as b, isPromptInput as bt, setCurrentModelId as c, normalizeRuntimeSessionId as ct, setDesiredModelId as d, sessionBaseDir$1 as dt, incrementPerfCounter as et, syncAdvertisedModelState as f, sessionEventActivePath as ft, cloneSessionConversation as g, isAcpJsonRpcMessage as gt, cloneSessionAcpxState as h, extractSessionUpdateNotification as ht, connectAndLoadSession as i, setPerfGauge as it, REQUESTED_MODEL_UNSUPPORTED_REASONS as j, normalizeAgentName$1 as jt, AcpClient as k, DEFAULT_AGENT_NAME as kt, setDesiredConfigOption as l, DEFAULT_EVENT_SEGMENT_MAX_BYTES as lt, applyConfigOptionsToState as m, sessionEventSegmentPath as mt, runPromptTurn as n, recordPerfDuration as nt, currentModelIdFromSetModelResponse as o, parseSessionRecord as ot, applyConfigOptionsToRecord as p, sessionEventLockPath as pt, normalizeName as q, PERMISSION_POLICY_ACTIONS as qt, withConnectedSession as r, resetPerfMetrics as rt, clearDesiredConfigOption as s, serializeSessionRecordForDisk as st, LiveSessionCheckpoint as t, measurePerf as tt, setDesiredModeId as u, defaultSessionEventLog as ut, recordClientOperation as v, parsePromptStopReason as vt, persistSessionOptions as w, textPrompt as wt, trimConversationForRuntime as x, mergePromptSourceWithText as xt, recordPromptSubmission as y, PromptInputValidationError as yt, DEFAULT_HISTORY_LIMIT as z, toAcpErrorPayload as zt };
+ 
+-//# sourceMappingURL=live-checkpoint-ClPCSdrW.js.map
+\ No newline at end of file
++//# sourceMappingURL=live-checkpoint-ClPCSdrW.js.map
 diff --git a/dist/runtime.d.ts b/dist/runtime.d.ts
-index ccdbe5b032521518022223733049b8b38793473b..416bdaae1450c6e85b34afd154349770f9f7b0a9 100644
+index ccdbe5b032..416bdaae14 100644
 --- a/dist/runtime.d.ts
 +++ b/dist/runtime.d.ts
 @@ -45,6 +45,7 @@ type AcpRuntimeTurnAttachment = {
@@ -194,7 +214,7 @@ index ccdbe5b032521518022223733049b8b38793473b..416bdaae1450c6e85b34afd154349770
      text: string;
      attachments?: AcpRuntimeTurnAttachment[];
 diff --git a/dist/runtime.js b/dist/runtime.js
-index 6c9cc999e50a11c399c68b3a0f1b7af4bc2317c0..e06bf4fdee534f3ef56be0387a2f5f8626e697ad 100644
+index 6c9cc999e5..e88bf1a66f 100644
 --- a/dist/runtime.js
 +++ b/dist/runtime.js
 @@ -744,7 +744,8 @@ var AcpRuntimeManager = class {
@@ -202,7 +222,7 @@ index 6c9cc999e50a11c399c68b3a0f1b7af4bc2317c0..e06bf4fdee534f3ef56be0387a2f5f86
  	}
  	createClient(options) {
 -		return this.deps.clientFactory?.(options) ?? new AcpClient(options);
-+		const clientOptions = { ...options, onAgentStderr: this.options.onAgentStderr, onAgentSpawn: this.options.onAgentSpawn, spawnCwd: this.options.spawnCwd, inheritProcessEnv: this.options.inheritProcessEnv };
++		const clientOptions = { ...options, onAgentStderr: this.options.onAgentStderr, onAgentSpawn: this.options.onAgentSpawn, spawnAgentProcess: this.options.spawnAgentProcess, spawnCwd: this.options.spawnCwd, inheritProcessEnv: this.options.inheritProcessEnv };
 +		return this.deps.clientFactory?.(clientOptions) ?? new AcpClient(clientOptions);
  	}
  	async readPendingPersistentClient(record, options) {
@@ -231,8 +251,15 @@ index 6c9cc999e50a11c399c68b3a0f1b7af4bc2317c0..e06bf4fdee534f3ef56be0387a2f5f86
  			attachments: input.attachments,
  			mode: input.mode,
  			sessionMode: state.mode,
+@@ -1704,4 +1708,4 @@ function createRuntimeStore(options) {
+ //#endregion
+ export { ACPX_BACKEND_ID, AcpRuntimeError, AcpxRuntime, DEFAULT_AGENT_NAME, REQUESTED_MODEL_UNSUPPORTED_ERROR_CODE, REQUESTED_MODEL_UNSUPPORTED_REASONS, RequestedModelUnsupportedError, createAcpRuntime, createAgentRegistry, createFileSessionStore, createRuntimeStore, decodeAcpxRuntimeHandleState, encodeAcpxRuntimeHandleState, isAcpRuntimeError, isRequestedModelUnsupportedError };
+ 
+-//# sourceMappingURL=runtime.js.map
+\ No newline at end of file
++//# sourceMappingURL=runtime.js.map
 diff --git a/dist/session-options-jkYbBxGE.d.ts b/dist/session-options-jkYbBxGE.d.ts
-index 9d37f377fb6a0828e0d2bc5a48754f3aa71509a4..22dda59e0b7616a20ad45218913e5d8f884bae49 100644
+index 9d37f377fb..22dda59e0b 100644
 --- a/dist/session-options-jkYbBxGE.d.ts
 +++ b/dist/session-options-jkYbBxGE.d.ts
 @@ -84,6 +84,10 @@ type AcpClientOptions = {

@@ -627,9 +627,9 @@ async function copySnapshotEntry(sourceDir: string, targetDir: string, relative:
     await fs.copyFile(sourcePath, temporary, fsConstants.COPYFILE_FICLONE).catch(async () => {
       await fs.copyFile(sourcePath, temporary);
     });
-    await fs.chmod(temporary, entry.mode);
-    const file = await fs.open(temporary, "r");
-    try { await file.sync(); } finally { await file.close(); }
+    await fs.chmod(temporary, 0o600);
+    const file = await fs.open(temporary, "r+");
+    try { await file.chmod(entry.mode); await file.sync(); } finally { await file.close(); }
     const existing = await fs.lstat(targetPath).catch(() => null);
     if (existing?.isDirectory()) await fs.rm(targetPath, { recursive: true, force: true });
     await fs.rename(temporary, targetPath);

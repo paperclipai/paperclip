@@ -15,6 +15,7 @@ import { assertCaseHandoffSourceAuthority, lockCaseHandoffAuthorityRun } from ".
 import type { AuthorizationActor } from "../authorization.js";
 import { appendHeartbeatRunEvent } from "../heartbeat-run-events.js";
 import { cleanupHeartbeatRunScratch, type HeartbeatRunScratch } from "../run-scratch.js";
+import { hasStoppedLocalProcessTree } from "./process-settlement.js";
 
 const LEGACY_HANDOFF_CLEANUP_VERIFIED = "legacy.case_handoff_cleanup_verified";
 const LEGACY_HANDOFF_CLEANUP_SCHEMA = "paperclip.legacy-case-handoff-cleanup.v1";
@@ -54,9 +55,7 @@ export async function recordLegacyCaseHandoffCleanupVerified(db: Db, input: {
     const [run] = await tx.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, input.runId)).for("update");
     if (!run || run.runtimeMode !== "legacy" || run.controllerBootId !== input.controllerBootId ||
         !["succeeded", "failed", "cancelled", "interrupted", "timed_out"].includes(run.status) ||
-        !run.processPid || !Number.isSafeInteger(run.processPid) || run.processPid <= 1 ||
-        !run.processGroupId || !Number.isSafeInteger(run.processGroupId) || run.processGroupId <= 1 ||
-        !localProcessAbsent(run.processPid) || !localProcessAbsent(-run.processGroupId)) return;
+        !hasStoppedLocalProcessTree(run)) return;
     const handoff = await pendingCaseHandoffForRun(tx, run.id, run.companyId);
     const metadata = input.scratch.metadata;
     if (!handoff || metadata.companyId !== run.companyId || metadata.agentId !== run.agentId ||
@@ -89,12 +88,13 @@ async function recoverLegacyCaseHandoffCleanup(db: Db, run: typeof heartbeatRuns
       receipt.host !== hostname() || receipt.issueId !== issueId ||
       !run.controllerBootId || receipt.controllerBootId !== run.controllerBootId ||
       !run.processPid || !Number.isSafeInteger(run.processPid) || run.processPid <= 1 ||
-      !run.processGroupId || !Number.isSafeInteger(run.processGroupId) || run.processGroupId <= 1 ||
+      (process.platform !== "win32" && (!run.processGroupId || !Number.isSafeInteger(run.processGroupId) || run.processGroupId <= 1)) ||
       receipt.processPid !== run.processPid || receipt.processGroupId !== run.processGroupId ||
       receipt.processStartedAt !== (run.processStartedAt?.toISOString() ?? null)) return false;
   if (intent) {
+    if (process.platform === "win32" && !hasStoppedLocalProcessTree(run)) return false;
     if (receipt.runStartedAt !== (run.startedAt?.toISOString() ?? null) ||
-        !localProcessAbsent(run.processPid) || !localProcessAbsent(-run.processGroupId)) return false;
+        !localProcessAbsent(run.processPid) || (process.platform !== "win32" && !localProcessAbsent(-run.processGroupId!))) return false;
     const leases = await db.select({ provider: environmentLeases.provider }).from(environmentLeases)
       .where(and(eq(environmentLeases.companyId, run.companyId), eq(environmentLeases.heartbeatRunId, run.id)));
     if (leases.some(lease => lease.provider !== "local")) return false;
@@ -109,7 +109,7 @@ async function recoverLegacyCaseHandoffCleanup(db: Db, run: typeof heartbeatRuns
   // A crash immediately before removal can safely retry the same marked
   // directory. A live/reused process group or changed ownership stays held.
   const result = await cleanupHeartbeatRunScratch({ scratch, processGroupId: run.processGroupId,
-    isProcessGroupAlive: group => !localProcessAbsent(-group!) });
+    isProcessGroupAlive: group => process.platform !== "win32" && !localProcessAbsent(-group!) });
   return result.removed;
 }
 

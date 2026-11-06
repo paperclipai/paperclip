@@ -40,7 +40,7 @@ patchedDependencies:
     hash: vbylpnnxt5av2zdnuqmf6hjyjy
     path: patches/@discordjs__ws@1.2.3.patch
   acpx@0.12.0:
-    hash: 6st5fzvttegjv64llnfegwwpca
+    hash: wdjgu7ncdys5laj4uno4gvcnwa
     path: patches/acpx@0.12.0.patch
   acpx@0.13.1:
     hash: ujlgpkxl4mvt34bejc3uxyvthq
@@ -48,6 +48,9 @@ patchedDependencies:
   embedded-postgres@18.1.0-beta.16:
     hash: 55uhvnotpqyiy37rn3pqpukhei
     path: patches/embedded-postgres@18.1.0-beta.16.patch
+  node-pty@1.1.0:
+    hash: g35b7mhsksli7c5sr6znduqwb4
+    path: patches/node-pty@1.1.0.patch
   postgres@3.4.9:
     hash: 6q4cic6qawywsyeo2spgnjamda
     path: patches/postgres@3.4.9.patch
@@ -167,7 +170,7 @@ importers:
         version: link:../shared
       acpx:
         specifier: 0.12.0
-        version: 0.12.0(patch_hash=6st5fzvttegjv64llnfegwwpca)
+        version: 0.12.0(patch_hash=wdjgu7ncdys5laj4uno4gvcnwa)
       picocolors:
         specifier: ^1.1.1
         version: 1.1.1
@@ -1125,6 +1128,9 @@ importers:
       '@github/copilot-linux-x64':
         specifier: 1.0.88
         version: 1.0.88
+      node-pty:
+        specifier: 1.1.0
+        version: 1.1.0(patch_hash=g35b7mhsksli7c5sr6znduqwb4)
     devDependencies:
       '@opentelemetry/context-async-hooks':
         specifier: 2.10.0
@@ -7966,6 +7972,9 @@ packages:
   nice-grpc@2.1.17:
     resolution: {integrity: sha512-pu9xYPlWSeqoYQOCqb2ftQqZi/P2DaI70PSuwnxvoyIRiilaOVtktyPe6LmuXegWB4Ic1sPuDGCnCCASbwzK0w==}
 
+  node-addon-api@7.1.1:
+    resolution: {integrity: sha512-5m3bsyrjFWE1xf7nz7YXdN4udnVtXK6/Yfgn5qnahL6bCkf2yKt4k3nuTKAtT4r3IG8JNR2ncsIMdZuAzJjHQQ==}
+
   node-domexception@1.0.0:
     resolution: {integrity: sha512-/jKZoMpw0F8GRwl4/eLROPA3cfcXtLApP0QzLmUT/HuPCZWyB7IY9ZrMeKw2O/nFIqPQB3PVM9aYm0F312AXDQ==}
     engines: {node: '>=10.5.0'}
@@ -7974,6 +7983,9 @@ packages:
   node-fetch@3.3.2:
     resolution: {integrity: sha512-dRB78srN/l6gqWulah9SrxeYnxeddIG30+GOqK/9OlLVyLg3HPnr6SqOWTWOXKRwC2eGYCkZ59NNuSgvSrpgOA==}
     engines: {node: ^12.20.0 || ^14.13.1 || >=16.0.0}
+
+  node-pty@1.1.0:
+    resolution: {integrity: sha512-20JqtutY6JPXTUnL0ij1uad7Qe1baT46lyolh2sSENDd4sTzKZ4nmAFkeAARDKwmlLjPx6XKRlwRUxwjOy+lUg==}
 
   node-releases@2.0.53:
     resolution: {integrity: sha512-D9UOmYG3UH1V+ENW56t5QXBwJw1YEY18ruVeus89Rw+SyIgjPkCO84bRzO3uNIYosJbNwiabWVn48o3uJLjxFQ==}
@@ -13902,7 +13914,7 @@ snapshots:
 
   acorn@8.18.0: {}
 
-  acpx@0.12.0(patch_hash=6st5fzvttegjv64llnfegwwpca):
+  acpx@0.12.0(patch_hash=wdjgu7ncdys5laj4uno4gvcnwa):
     dependencies:
       '@agentclientprotocol/sdk': 1.2.1(zod@4.4.3)
       commander: 15.0.0
@@ -16239,6 +16251,9 @@ snapshots:
       abort-controller-x: 0.5.0
       nice-grpc-common: 2.0.4
 
+  node-addon-api@7.1.1:
+    optional: true
+
   node-domexception@1.0.0: {}
 
   node-fetch@3.3.2:
@@ -16246,6 +16261,11 @@ snapshots:
       data-uri-to-buffer: 4.0.1
       fetch-blob: 3.2.0
       formdata-polyfill: 4.0.10
+
+  node-pty@1.1.0(patch_hash=g35b7mhsksli7c5sr6znduqwb4):
+    dependencies:
+      node-addon-api: 7.1.1
+    optional: true
 
   node-releases@2.0.53: {}
 

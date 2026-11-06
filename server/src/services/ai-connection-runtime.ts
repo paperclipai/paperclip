@@ -27,7 +27,8 @@ import { NativeEnvironmentProbeCleanupError, sanitizeAntigravityCredential } fro
 import { readLocalAiCredentialFile } from "./local-ai-credential-file.js";
 import { prepareAntigravityCredentialWriteback } from "./native-runtime/antigravity-runner-credentials.js";
 import { quotaCredentialHash, quotaCredentialRecovery, RetiredCredentialRecoveryError } from "./quota-credential-recovery.js";
-import { bindRetainedAiCredentialHome, reconcileRetainedAiCleanup, retainAiCredentialCleanup } from "./retained-ai-credential-cleanup.js";
+import { assertAiCredentialCleanupSettled, bindRetainedAiCredentialHome, reconcileRetainedAiCleanup, retainAiCredentialCleanup, type RetainedAiCleanupScope } from "./retained-ai-credential-cleanup.js";
+import { queueTemporaryDirectoryCleanup } from "./temporary-directory-cleanup.js";
 
 export function isAiConnectionBusy(error: unknown): error is HttpError {
   return error instanceof HttpError && error.status === 422 &&
@@ -438,7 +439,7 @@ export async function prepareManagedAiRuntime(
     let removalOnly = false;
     let deferredWriteback: { cause: unknown } | undefined;
     const removeHome = async () => {
-      if (home) await rm(home, { recursive: true, force: true });
+      if (home) await queueTemporaryDirectoryCleanup(home);
       homeRemoved = true;
       releaseCredentialHome?.();
     };
@@ -625,7 +626,7 @@ export async function prepareManagedAiRuntime(
       cleanup: cleanupRuntime,
     };
   } catch (error) {
-    if (home) await rm(home, { recursive: true, force: true });
+    if (home) await queueTemporaryDirectoryCleanup(home);
     releaseCredentialHome?.();
     throw error;
   }

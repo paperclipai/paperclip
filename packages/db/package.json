@@ -39,11 +39,11 @@
   ],
   "scripts": {
     "check:migrations": "tsx src/check-migration-numbering.ts && tsx src/check-migration-safety.ts",
-    "build": "pnpm run check:migrations && tsc && rm -rf dist/migrations && mkdir -p dist/migrations/meta && cp src/migrations/*.sql dist/migrations/ && cp src/migrations/meta/_journal.json dist/migrations/meta/",
-    "clean": "rm -rf dist",
+    "build": "pnpm run check:migrations && tsc && node scripts/copy-migrations.mjs",
+    "clean": "node scripts/clean.mjs",
     "typecheck": "pnpm run check:migrations && tsc --noEmit",
     "generate": "pnpm run check:migrations && pnpm run clean && tsc -p tsconfig.json && drizzle-kit generate && pnpm run prune:snapshots",
-    "prune:snapshots": "ls src/migrations/meta/*_snapshot.json | sort -r | tail -n +6 | xargs rm -f",
+    "prune:snapshots": "node scripts/prune-snapshots.mjs",
     "migrate": "pnpm run check:migrations && tsx src/migrate.ts",
     "seed": "pnpm --filter @paperclipai/server exec tsx scripts/seed.ts"
   },

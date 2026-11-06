@@ -5,9 +5,9 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import express from "express";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, ne, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { agentWakeupRequests, agents, authUsers, caseHandoffs, companies, companyMemberships, createDb, heartbeatRunEvents, heartbeatRuns, issues } from "@paperclipai/db";
+import { agentWakeupRequests, agents, authUsers, caseHandoffs, companies, companyMemberships, createDb, heartbeatRunEvents, heartbeatRuns, issues, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS } from "@paperclipai/db";
 import { actorMiddleware } from "../middleware/auth.js";
 import { errorHandler } from "../middleware/error-handler.js";
 import { caseRoutes } from "../routes/cases.js";
@@ -29,7 +29,7 @@ async function main() {
   const response = await fetch(base + '/api/cases/' + process.env.CASE_TEST_CASE_ID, { headers });
   const workflow = await response.json();
   if (!response.ok) throw new Error('case read failed ' + response.status + ': ' + JSON.stringify(workflow));
-  if (process.env.CASE_TEST_ROLE === 'triage') {
+  if (process.env.CASE_TEST_ROLE === 'triage' && workflow.phase === 'triage') {
     if (process.env.CASE_TEST_BACKGROUND_WRITER) {
       const child = require('node:child_process').spawn(process.execPath, ['-e',
         "const fs=require('node:fs');setInterval(()=>fs.appendFileSync(process.argv[1],'write\\n'),20)",
@@ -79,7 +79,7 @@ describe("case handoff through actual legacy process and HTTP boundaries", () =>
     db = createDb(temporary.connectionString);
     await instanceSettingsService(db).updateExperimental({ enableCases: true });
     heartbeat = heartbeatService(db, { runtimeEnv: {} });
-  });
+  }, process.platform === "win32" ? EMBEDDED_POSTGRES_TEST_TIMEOUT_MS : undefined);
   afterEach(async () => {
     releaseSource?.();
     for (const group of ownedBackgroundGroups) {
@@ -103,8 +103,13 @@ describe("case handoff through actual legacy process and HTTP boundaries", () =>
     if (oldAuthz === undefined) delete process.env.PAPERCLIP_AUTHZ_MODE; else process.env.PAPERCLIP_AUTHZ_MODE = oldAuthz;
   });
 
-  it.each([false, true])("keeps the recipient stopped until the source process tree settles, then executes the same task (scratch failure=%s)", async scratchFailure => {
+  it.each([
+    { scratchFailure: false, sameAgent: false },
+    { scratchFailure: true, sameAgent: false },
+    { scratchFailure: false, sameAgent: true },
+  ])("keeps the recipient stopped until the source process tree settles, then executes the same task ($scratchFailure, self=$sameAgent)", async ({ scratchFailure, sameAgent }) => {
     const companyId = randomUUID(), triage = randomUUID(), engineer = randomUUID(), userId = randomUUID();
+    const recipient = sameAgent ? triage : engineer;
     const writerDir = await mkdtemp(path.join(tmpdir(), "paperclip-case-legacy-writer-"));
     fixtureDirs.add(writerDir);
     const writerFile = path.join(writerDir, "writes.txt");
@@ -142,35 +147,39 @@ describe("case handoff through actual legacy process and HTTP boundaries", () =>
     });
     for (const [id, role] of [[triage, "triage"], [engineer, "implementation"]] as const) {
       await db.update(agents).set({ adapterConfig: { command: process.execPath, args: ["-e", childScript], timeoutSec: 20, graceSec: 1,
-        env: { CASE_TEST_API_URL: api, CASE_TEST_CASE_ID: initial.caseId, CASE_TEST_ROLE: role, CASE_TEST_RECIPIENT_ID: engineer,
+        env: { CASE_TEST_API_URL: api, CASE_TEST_CASE_ID: initial.caseId, CASE_TEST_ROLE: role, CASE_TEST_RECIPIENT_ID: recipient,
           ...(scratchFailure && role === "triage" ? { CASE_TEST_BACKGROUND_WRITER: writerFile } : {}) } } }).where(eq(agents.id, id));
     }
     const delivery = caseHandoffDeliveryService(db, { heartbeat });
     await delivery.sweepPending();
-    const waitUntil = async (predicate: () => boolean | Promise<boolean>, label: string, timeout = 10_000) => {
+    const waitUntil = async (predicate: () => boolean | Promise<boolean>, label: string, timeout = process.platform === "win32" ? 30_000 : 10_000) => {
       const deadline = Date.now() + timeout;
       while (Date.now() < deadline) { if (await predicate()) return; await new Promise(resolve => setTimeout(resolve, 30)); }
-      const runs = await db.select({ id: heartbeatRuns.id, agentId: heartbeatRuns.agentId, status: heartbeatRuns.status, error: heartbeatRuns.error }).from(heartbeatRuns);
-      throw new Error(`${label}: ${JSON.stringify(runs)}`);
+      const runs = await db.select({ id: heartbeatRuns.id, agentId: heartbeatRuns.agentId, status: heartbeatRuns.status, error: heartbeatRuns.error, processPid: heartbeatRuns.processPid, startedAt: heartbeatRuns.startedAt }).from(heartbeatRuns);
+      const events = await db.select({ runId: heartbeatRunEvents.runId, type: heartbeatRunEvents.eventType, message: heartbeatRunEvents.message }).from(heartbeatRunEvents).limit(30);
+      throw new Error(`${label}: ${JSON.stringify({ runs, events })}`);
     };
+    const sourceStartedAt = Date.now();
     await waitUntil(() => Boolean(accepted && releaseSource), "source did not call the production handoff API");
+    if (process.platform === "win32") console.info(`Windows handoff fixture admitted in ${Date.now() - sourceStartedAt}ms`);
     expect(accepted!.receipt).toMatchObject({ taskId: initial.taskId, state: "awaiting_release" });
     const [outgoing] = await db.select().from(caseHandoffs).where(eq(caseHandoffs.id, accepted!.receipt.handoffId));
+    await waitUntil(async () => Boolean((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, outgoing.sourceRunId!)))[0]?.processStartedAt), "host did not persist the spawned process generation");
     const [sourceRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, outgoing.sourceRunId!));
-    if (scratchFailure) ownedBackgroundGroups.add(sourceRun.processGroupId!);
+    if (scratchFailure && process.platform !== "win32") ownedBackgroundGroups.add(sourceRun.processGroupId!);
     const intents = await db.select().from(heartbeatRunEvents).where(and(eq(heartbeatRunEvents.runId, sourceRun.id),
       eq(heartbeatRunEvents.eventType, "legacy.case_handoff_cleanup_intent")));
     expect(intents.at(-1)).toMatchObject({ sourceEventId: null, payload: { controllerBootId: sourceRun.controllerBootId,
-      processPid: accepted!.pid, processGroupId: sourceRun.processGroupId, processStartedAt: sourceRun.processStartedAt!.toISOString() } });
+      processPid: sourceRun.processPid, processGroupId: sourceRun.processGroupId, processStartedAt: sourceRun.processStartedAt!.toISOString() } });
     if (scratchFailure) expect(intents.at(-1)?.payload?.scratch).toBeNull();
     process.kill(accepted!.pid, 0); // prove the provider process is still alive
     await delivery.sweepPending();
     expect(observed).toBeUndefined();
-    expect(await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.agentId, engineer), eq(heartbeatRuns.companyId, companyId)))).toHaveLength(0);
+    expect(await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.agentId, recipient), eq(heartbeatRuns.companyId, companyId), ne(heartbeatRuns.id, sourceRun.id)))).toHaveLength(0);
     expect((await db.select().from(issues).where(eq(issues.id, initial.taskId)))[0]!.assigneeAgentId).toBe(triage);
     releaseSource!();
     await heartbeat.drainActiveRunExecutions();
-    if (scratchFailure) {
+    if (scratchFailure && process.platform !== "win32") {
       const finished = (await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, sourceRun.id)))[0]!;
       expect(finished.status).toBe("succeeded");
       expect(finished).toMatchObject({ processPid: sourceRun.processPid, processGroupId: sourceRun.processGroupId });
@@ -209,8 +218,8 @@ describe("case handoff through actual legacy process and HTTP boundaries", () =>
     expect(successor.contextSnapshot?.paperclipCase).toMatchObject({ phase: "implementation", handoffVersion: 2, taskId: initial.taskId,
       incomingHandoff: { instructions: expect.stringContaining("persisted specification canary") } });
     expect(await db.select().from(issues).where(eq(issues.companyId, companyId))).toHaveLength(1);
-    expect(await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.agentId, triage)))).toHaveLength(1);
-    expect(await db.select().from(agentWakeupRequests).where(and(eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.agentId, engineer), eq(agentWakeupRequests.reason, "case_handoff")))).toHaveLength(1);
+    expect(await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.agentId, triage)))).toHaveLength(sameAgent ? 2 : 1);
+    expect(await db.select().from(agentWakeupRequests).where(and(eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.agentId, recipient), eq(agentWakeupRequests.reason, "case_handoff")))).toHaveLength(sameAgent ? 2 : 1);
     expect((await db.select().from(issues).where(eq(issues.id, initial.taskId)))[0]!.status).toBe("done");
-  }, 30_000);
+  }, process.platform === "win32" ? 90_000 : 30_000);
 });

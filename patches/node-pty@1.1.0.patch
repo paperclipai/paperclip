@@ -1,0 +1,179 @@
+diff --git a/lib/conpty_console_list_agent.js b/lib/conpty_console_list_agent.js
+index 8c4fca9022a6d6f015bca87f61625cde2278f428..26a254f46f049b3785678ff54f096bd8491a3c85 100644
+--- a/lib/conpty_console_list_agent.js
++++ b/lib/conpty_console_list_agent.js
+@@ -10,7 +10,14 @@ Object.defineProperty(exports, "__esModule", { value: true });
+ var utils_1 = require("./utils");
+ var getConsoleProcessList = utils_1.loadNativeModule('conpty_console_list').module.getConsoleProcessList;
+ var shellPid = parseInt(process.argv[2], 10);
+-var consoleProcessList = getConsoleProcessList(shellPid);
+-process.send({ consoleProcessList: consoleProcessList });
++var consoleProcessList = [shellPid];
++try {
++    consoleProcessList = getConsoleProcessList(shellPid);
++} catch (e) {
++    // AttachConsole can fail if target has no console or process already exited.
++}
++if (process.send) {
++    process.send({ consoleProcessList: consoleProcessList });
++}
+ process.exit(0);
+ //# sourceMappingURL=conpty_console_list_agent.js.map
+\ No newline at end of file
+diff --git a/lib/windowsPtyAgent.js b/lib/windowsPtyAgent.js
+index a358ffb177357e177661033c1b092f9c9d0e5f5a..420085d96e70c9117da05e6e01aade4b49c59081 100644
+--- a/lib/windowsPtyAgent.js
++++ b/lib/windowsPtyAgent.js
+@@ -132,6 +132,10 @@ var WindowsPtyAgent = /** @class */ (function () {
+     };
+     WindowsPtyAgent.prototype.kill = function () {
+         var _this = this;
++        if (this._killed) {
++            return;
++        }
++        this._killed = true;
+         // Tell the agent to kill the pty, this releases handles to the process
+         if (this._useConpty) {
+             if (!this._useConptyDll) {
+@@ -140,22 +144,32 @@ var WindowsPtyAgent = /** @class */ (function () {
+                 this._getConsoleProcessList().then(function (consoleProcessList) {
+                     consoleProcessList.forEach(function (pid) {
+                         try {
+-                            process.kill(pid);
++                            if (pid !== process.pid) {
++                                process.kill(pid);
++                            }
+                         }
+                         catch (e) {
+                             // Ignore if process cannot be found (kill ESRCH error)
+                         }
+                     });
+-                });
+-                this._ptyNative.kill(this._pty, this._useConptyDll);
+-                this._conoutSocketWorker.dispose();
++                }).catch(function () {});
++                try {
++                    this._ptyNative.kill(this._pty, this._useConptyDll);
++                } catch (e) {}
++                try {
++                    this._conoutSocketWorker.dispose();
++                } catch (e) {}
+             }
+             else {
+                 // Close the input write handle to signal the end of session.
+                 this._inSocket.destroy();
+-                this._ptyNative.kill(this._pty, this._useConptyDll);
++                try {
++                    this._ptyNative.kill(this._pty, this._useConptyDll);
++                } catch (e) {}
+                 this._outSocket.on('data', function () {
+-                    _this._conoutSocketWorker.dispose();
++                    try {
++                        _this._conoutSocketWorker.dispose();
++                    } catch (e) {}
+                 });
+             }
+         }
+@@ -167,10 +181,14 @@ var WindowsPtyAgent = /** @class */ (function () {
+             // seem to become detached and remain running (see
+             // Microsoft/vscode#26807).
+             var processList = this._ptyNative.getProcessList(this._pid);
+-            this._ptyNative.kill(this._pid, this._innerPid);
++            try {
++                this._ptyNative.kill(this._pid, this._innerPid);
++            } catch (e) {}
+             processList.forEach(function (pid) {
+                 try {
+-                    process.kill(pid);
++                    if (pid !== process.pid) {
++                        process.kill(pid);
++                    }
+                 }
+                 catch (e) {
+                     // Ignore if process cannot be found (kill ESRCH error)
+@@ -181,16 +199,24 @@ var WindowsPtyAgent = /** @class */ (function () {
+     WindowsPtyAgent.prototype._getConsoleProcessList = function () {
+         var _this = this;
+         return new Promise(function (resolve) {
+-            var agent = child_process_1.fork(path.join(__dirname, 'conpty_console_list_agent'), [_this._innerPid.toString()]);
+-            agent.on('message', function (message) {
+-                clearTimeout(timeout);
+-                resolve(message.consoleProcessList);
+-            });
+-            var timeout = setTimeout(function () {
+-                // Something went wrong, just send back the shell PID
+-                agent.kill();
++            try {
++                var agent = child_process_1.fork(path.join(__dirname, 'conpty_console_list_agent'), [_this._innerPid.toString()]);
++                agent.on('error', function () {
++                    clearTimeout(timeout);
++                    resolve([_this._innerPid]);
++                });
++                agent.on('message', function (message) {
++                    clearTimeout(timeout);
++                    resolve(message.consoleProcessList || [_this._innerPid]);
++                });
++                var timeout = setTimeout(function () {
++                    // Something went wrong, just send back the shell PID
++                    try { agent.kill(); } catch (e) {}
++                    resolve([_this._innerPid]);
++                }, 5000);
++            } catch (e) {
+                 resolve([_this._innerPid]);
+-            }, 5000);
++            }
+         });
+     };
+     Object.defineProperty(WindowsPtyAgent.prototype, "exitCode", {
+diff --git a/lib/windowsTerminal.js b/lib/windowsTerminal.js
+index 3c38f89d14cece8081782a9600ebc582b7c2a62a..f21e7f591e648ff535489081faeee1725a54258e 100644
+--- a/lib/windowsTerminal.js
++++ b/lib/windowsTerminal.js
+@@ -85,12 +85,12 @@ var WindowsTerminal = /** @class */ (function (_super) {
+                 // node < 0.6.14: errno 5
+                 // node >= 0.6.14: read EIO
+                 if (err.code) {
+-                    if (~err.code.indexOf('errno 5') || ~err.code.indexOf('EIO'))
++                    if (~err.code.indexOf('errno 5') || ~err.code.indexOf('EIO') || ~err.code.indexOf('ECONNRESET'))
+                         return;
+                 }
+-                // Throw anything else.
+-                if (_this.listeners('error').length < 2) {
+-                    throw err;
++                // Do not throw unhandled socket errors to crash the host process when closing.
++                if (_this._killed || _this._agent.exitCode !== undefined || _this.listeners('error').length < 2) {
++                    return;
+                 }
+             });
+             // Cleanup after the socket is closed.
+@@ -146,6 +146,10 @@ var WindowsTerminal = /** @class */ (function (_super) {
+     };
+     WindowsTerminal.prototype.kill = function (signal) {
+         var _this = this;
++        if (this._killed) {
++            return;
++        }
++        this._killed = true;
+         this._deferNoArgs(function () {
+             if (signal) {
+                 throw new Error('Signals not supported on windows.');
+diff --git a/src/conpty_console_list_agent.ts b/src/conpty_console_list_agent.ts
+index 181ccabbbe9c4948a9725fb1db907a68e9de01fc..192358700de9fd1940fb7198c0be6a1e8454bfe0 100644
+--- a/src/conpty_console_list_agent.ts
++++ b/src/conpty_console_list_agent.ts
+@@ -10,6 +10,13 @@ import { loadNativeModule } from './utils';
+ 
+ const getConsoleProcessList = loadNativeModule('conpty_console_list').module.getConsoleProcessList;
+ const shellPid = parseInt(process.argv[2], 10);
+-const consoleProcessList = getConsoleProcessList(shellPid);
+-process.send!({ consoleProcessList });
++let consoleProcessList: number[] = [shellPid];
++try {
++  consoleProcessList = getConsoleProcessList(shellPid);
++} catch {
++  // AttachConsole can fail if target has no console or process already exited.
++}
++if (process.send) {
++  process.send({ consoleProcessList });
++}
+ process.exit(0);

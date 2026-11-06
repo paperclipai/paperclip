@@ -86,6 +86,7 @@ import { reconcileAbandonedExecutionControl } from "./services/execution-control
 import { acknowledgeNativeStartupCleanup } from "./services/native-runtime/native-startup-cleanup.js";
 import { executionControlSchedule, registerExecutionControlWork } from "./services/execution-control-work.js";
 import { connectionIntentDeliveryService } from "./services/connection-intent-delivery.js";
+import { registerTemporaryDirectoryCleanupWork, retryTemporaryDirectoryCleanupNow } from "./services/temporary-directory-cleanup.js";
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import type { Server, RequestListener } from "node:http";
 import { createPaperclipHttpServer } from "./http/server.js";
@@ -1282,6 +1283,7 @@ async function startServerWithDatabaseTeardown(
     heartbeat: environmentLeaseCleanupHeartbeat,
     resolveNativeQuestion: (interaction) => deliverNativeQuestionResponse(db as any, interaction),
   });
+  registerTemporaryDirectoryCleanupWork(deliveryWork);
   externalObjects.registerRefreshWork(deliveryWork,
     () => !heartbeatSchedulerStopped && !isIdleTaskDrainActive() && !isWarmStandby());
   if (config.nativeHarnessBackupExpirationEnabled) {
@@ -2041,6 +2043,12 @@ async function startServerWithDatabaseTeardown(
     await runtimeResponseDelivery?.stop();
     await deploymentHints?.stop();
     await deliveryWork.stop();
+
+    // Finalizers can enqueue sensitive temporary directories after the shared
+    // worker stops. Sweep that durable queue once more before process exit.
+    await retryTemporaryDirectoryCleanupNow().catch((err) => {
+      logger.error({ err, signal }, "final temporary-directory cleanup sweep failed");
+    });
 
     // Whatever the drain did not finalize (timed-out runs, the hot-restart
     // skip path) still has a local-only tail when the in-flight run-log

@@ -12,6 +12,12 @@ import {
 } from "./local-process-sandbox.js";
 import { buildSshSpawnTarget, type SshRemoteExecutionSpec } from "./ssh.js";
 import { redactCommandText } from "./command-redaction.js";
+import {
+  forceWindowsProcessJobStop,
+  prepareWindowsProcessJob,
+  requestWindowsProcessJobStop,
+} from "./windows-process-job.js";
+import { resolveCommandPath, windowsCommandTarget } from "./process-command.js";
 import { paperclipChatFilePreparationDelivery } from "./chat-file-delivery.js";
 import {
   PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES,
@@ -125,6 +131,11 @@ export function signalRunningProcess(
   running: Pick<RunningProcess, "child" | "processGroupId">,
   signal: NodeJS.Signals,
 ) {
+  if (process.platform === "win32" && running.child.pid &&
+      running.child.exitCode === null && running.child.signalCode === null &&
+      (signal === "SIGKILL"
+        ? forceWindowsProcessJobStop(running.child)
+        : requestWindowsProcessJobStop(running.child, signal))) return;
   if (
     process.platform !== "win32" &&
     running.processGroupId &&
@@ -3551,57 +3562,6 @@ export function defaultPathForPlatform() {
   return "/usr/local/bin:/opt/homebrew/bin:/usr/local/sbin:/usr/bin:/bin:/usr/sbin:/sbin";
 }
 
-function windowsPathExts(env: NodeJS.ProcessEnv): string[] {
-  return (env.PATHEXT ?? ".EXE;.CMD;.BAT;.COM").split(";").filter(Boolean);
-}
-
-async function pathExists(candidate: string) {
-  try {
-    await fs.access(
-      candidate,
-      process.platform === "win32" ? fsConstants.F_OK : fsConstants.X_OK,
-    );
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-async function resolveCommandPath(
-  command: string,
-  cwd: string,
-  env: NodeJS.ProcessEnv,
-): Promise<string | null> {
-  const hasPathSeparator = command.includes("/") || command.includes("\\");
-  if (hasPathSeparator) {
-    const absolute = path.isAbsolute(command)
-      ? command
-      : path.resolve(cwd, command);
-    return (await pathExists(absolute)) ? absolute : null;
-  }
-
-  const pathValue = env.PATH ?? env.Path ?? "";
-  const delimiter = process.platform === "win32" ? ";" : ":";
-  const dirs = pathValue.split(delimiter).filter(Boolean);
-  const exts = process.platform === "win32" ? windowsPathExts(env) : [""];
-  const hasExtension =
-    process.platform === "win32" && path.extname(command).length > 0;
-
-  for (const dir of dirs) {
-    const candidates =
-      process.platform === "win32"
-        ? hasExtension
-          ? [path.join(dir, command)]
-          : exts.map((ext) => path.join(dir, `${command}${ext}`))
-        : [path.join(dir, command)];
-    for (const candidate of candidates) {
-      if (await pathExists(candidate)) return candidate;
-    }
-  }
-
-  return null;
-}
-
 export async function resolveCommandForLogs(
   command: string,
   cwd: string,
@@ -3617,23 +3577,11 @@ export async function resolveCommandForLogs(
   return (await resolveCommandPath(command, cwd, env)) ?? command;
 }
 
-function quoteForCmd(arg: string) {
-  if (!arg.length) return '""';
-  const escaped = arg.replace(/"/g, '""');
-  return /[\s"&<>|^()]/.test(escaped) ? `"${escaped}"` : escaped;
-}
-
 export function sanitizeSshRemoteEnv(
   env: Record<string, string>,
   inheritedEnv: NodeJS.ProcessEnv = process.env,
 ): Record<string, string> {
   return sanitizeRemoteExecutionEnv(env, inheritedEnv);
-}
-
-function resolveWindowsCmdShell(env: NodeJS.ProcessEnv): string {
-  const fallbackRoot =
-    env.SystemRoot || process.env.SystemRoot || "C:\\Windows";
-  return path.join(fallbackRoot, "System32", "cmd.exe");
 }
 
 async function resolveSpawnTarget(
@@ -3703,21 +3651,7 @@ async function resolveSpawnTarget(
     return { command: executable, args };
   }
 
-  if (/\.(cmd|bat)$/i.test(executable)) {
-    // Always use cmd.exe for .cmd/.bat wrappers. Some environments override
-    // ComSpec to PowerShell, which breaks cmd-specific flags like /d /s /c.
-    const shell = resolveWindowsCmdShell(env);
-    const commandLine = [
-      quoteForCmd(executable),
-      ...args.map(quoteForCmd),
-    ].join(" ");
-    return {
-      command: shell,
-      args: ["/d", "/s", "/c", commandLine],
-    };
-  }
-
-  return { command: executable, args };
+  return windowsCommandTarget(executable, args, env);
 }
 
 export function ensurePathInEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
@@ -4765,19 +4699,23 @@ export async function runChildProcess(
       remoteEnv: opts.remoteExecution ? opts.env : null,
       localProcessSandbox: opts.localProcessSandbox ?? null,
     })
-      .then((target) => {
+      .then(async (target) => {
+        const job = process.platform === "win32" && opts.onSpawn && !opts.remoteExecution
+          ? await prepareWindowsProcessJob(target.command, target.args, target.cwd ?? opts.cwd, { ...mergedEnv, ...target.env }) : null;
         const childEnv = { ...mergedEnv, ...target.env };
         for (const [key, value] of Object.entries(childEnv)) {
           if (value === undefined) delete childEnv[key];
         }
-        const child = spawn(target.command, target.args, {
+        const child = spawn(job?.command ?? target.command, job?.args ?? target.args, {
           cwd: target.cwd ?? opts.cwd,
           env: childEnv,
           detached: process.platform !== "win32",
           shell: false,
+          windowsHide: true,
           stdio: [opts.stdin != null ? "pipe" : "ignore", "pipe", "pipe"],
         }) as ChildProcessWithEvents;
         const startedAt = new Date().toISOString();
+        if (child.pid) job?.attach(child, startedAt);
         const processGroupId = resolveProcessGroupId(child);
 
         const spawnPersistPromise =
@@ -4942,6 +4880,7 @@ export async function runChildProcess(
           clearTerminalCleanupTimers();
           runningProcesses.delete(runId);
           void target.cleanup?.();
+          void job?.settle().catch(err => onLogError(err, runId, "failed to clean Windows process job"));
           const errno = (err as NodeJS.ErrnoException).code;
           const pathValue = mergedEnv.PATH ?? mergedEnv.Path ?? "";
           const msg =
@@ -4963,6 +4902,8 @@ export async function runChildProcess(
             runningProcesses.delete(runId);
             void logChain.finally(() => {
               void Promise.resolve()
+                .then(() => spawnPersistPromise)
+                .then(() => job?.settle().catch(err => onLogError(err, runId, "failed to clean Windows process job")))
                 .then(() => target.cleanup?.())
                 .finally(() => {
                   resolve({
