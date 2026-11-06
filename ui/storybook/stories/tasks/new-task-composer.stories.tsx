@@ -13,6 +13,7 @@ import {
 } from "@paperclipai/shared";
 import { MarkdownBody } from "@/components/MarkdownBody";
 import { composerImageFiles } from "../../support/composerImageFiles";
+import { composerSkills as SKILLS } from "../../support/composerSkills";
 import { NewIssueDialog } from "@/components/NewIssueDialog";
 import { useCompany } from "@/context/CompanyContext";
 import { useDialog } from "@/context/DialogContext";
@@ -35,7 +36,6 @@ const NEW_TASK_AGENTS = [...storybookAgents, { ...storybookAgents[2]!, id: "agen
     : { ...agent, appearance: appearanceForPalette("pink-lemonade") },
 );
 const REQUEST = "Review the sign-in flow and fix the redirect after a session expires.";
-const SKILLS = [{ id: "skill-test-drive", key: "test-it-for-real", slug: "test-it-for-real", name: "Test it for real", description: "Walk through the feature in the browser." }];
 const ROUTINES = [{ id: "routine-daily-check", title: "Daily check-in", status: "active" }];
 const RICH_REQUEST = [
   `Ask [@CodexCoder](${buildAgentMentionHref("agent-codex", "code")}) and [@QAChecker](${buildAgentMentionHref("agent-qa", "shield")}) to review [@Board UI](${buildProjectMentionHref("project-board-ui", storybookProjects[0]!.color)}).`,
@@ -481,10 +481,13 @@ export const MentionPicker: Story = {
 export const SlashCommands: Story = {
   play: async ({ canvasElement }) => {
     const page = within(canvasElement.ownerDocument.body);
-    await userEvent.type(await page.findByRole("textbox", { name: "editable markdown" }), "/");
+    await waitFor(() => expect(page.getByTestId("task-chat-composer-assignee-label")).toHaveTextContent("CEO"));
+    await userEvent.type(await page.findByRole("textbox", { name: "editable markdown" }), "/", { delay: 25 });
     const menuElement = await page.findByTestId("mention-autocomplete-menu");
     const menu = within(menuElement);
     await expect(menu.getByText("/test-it-for-real")).toBeVisible();
+    await expect(menu.getByText(SKILLS[0]!.description!)).toBeVisible();
+    await expect(menu.getByText("/release-notes")).toBeVisible();
     await expect(menu.getByText("/routine:Daily check-in")).toBeVisible();
     await expect(menuElement.getBoundingClientRect().right).toBeLessThanOrEqual(canvasElement.ownerDocument.defaultView!.innerWidth);
   },
@@ -552,6 +555,21 @@ export const MobileMentionPicker: Story = { ...MentionPicker, globals: { viewpor
 export const MobileSlashCommands: Story = { ...SlashCommands, globals: { viewport: { value: "mobile", isRotated: false } } };
 export const MobileRichChips: Story = { ...RichChips, globals: { viewport: { value: "mobile", isRotated: false } } };
 export const MobileInsertRichChips: Story = { ...InsertRichChips, globals: { viewport: { value: "mobile", isRotated: false } } };
+
+export const InlineSkill: Story = {
+  play: async ({ canvasElement }) => {
+    const page = within(canvasElement.ownerDocument.body);
+    await waitFor(() => expect(page.getByTestId("task-chat-composer-assignee-label")).toHaveTextContent("CEO"));
+    const editor = await page.findByRole("textbox", { name: "editable markdown" });
+    await userEvent.type(editor, "Use /test-it", { delay: 25 });
+    await expect(await page.findByTestId("mention-autocomplete-menu")).toBeVisible();
+    await userEvent.keyboard("{Tab}");
+    await waitFor(() => expect(editor.querySelector('[data-mention-kind="skill"]')).toBeVisible());
+    await userEvent.keyboard(" to verify the sign-in redirect.", { delay: 25 });
+    await expect(editor).toHaveTextContent("Use /test-it-for-real to verify the sign-in redirect.");
+  },
+};
+export const MobileInlineSkill: Story = { ...InlineSkill, globals: { viewport: { value: "mobile", isRotated: false } } };
 
 export const ScreenDragOver: Story = {
   play: async ({ canvasElement }) => {
