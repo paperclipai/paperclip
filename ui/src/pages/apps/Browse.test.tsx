@@ -751,10 +751,11 @@ describe("Connectors landing page", () => {
   });
 
   // The other tests use a handful of catalog entries, which hides how the work grows.
-  // Load the shipped catalogs (about 1,600 aggregator apps and every native connector) on
-  // Cloud, where native rows check aggregator routes, and bound the identity work. A
-  // nested scan of the catalog per row needs tens of millions of calls and stalls the tab.
-  it("builds the full Cloud catalog with work proportional to its size, and not again for a search or an unchanged refetch", async () => {
+  // Load the shipped catalogs (about 1,600 aggregator apps and every native connector) in
+  // managed-instance mode, where native rows check aggregator routes, and bound the
+  // identity work. A nested scan of the catalog per row needs tens of millions of calls
+  // and stalls the tab.
+  it("builds the full shipped catalog on a managed instance with work proportional to its size, and not again for a search or an unchanged refetch", async () => {
     const { AGGREGATOR_APP_CATALOG: shippedCatalog } = await vi.importActual<typeof import("@paperclipai/shared/aggregator-app-catalog")>("@paperclipai/shared/aggregator-app-catalog");
     aggregatorCatalogMock.push(...shippedCatalog);
     experimentalMock.mockResolvedValue({});
