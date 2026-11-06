@@ -2,6 +2,7 @@ import { createProviderStoppedBoundary } from "@paperclipai/adapter-utils/provid
 import { withWorkspaceRestore } from "@paperclipai/adapter-utils/workspace-restore-result";
 import { cancellableSandboxStartup } from "@paperclipai/adapter-utils/acpx-engine/startup-cancellation";
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
@@ -524,7 +525,11 @@ async function executeTurn(ctx: AdapterExecutionContext): Promise<AdapterExecuti
     }
 
     const commandNotes = (() => {
-      const notes: string[] = ["Prompt is passed to Grok via --single in headless mode."];
+      const notes: string[] = [
+        executionTargetIsRemote
+          ? "Prompt is passed to Grok via --single in headless mode."
+          : "Prompt is passed to Grok via --prompt-file in headless mode.",
+      ];
       if (alwaysApprove) notes.push("Added --always-approve for unattended execution.");
       if (stagedAssets.stagedInstructionsPath) {
         notes.push(`Staged project instructions at ${stagedAssets.stagedInstructionsPath} for native Grok discovery.`);
@@ -551,7 +556,7 @@ async function executeTurn(ctx: AdapterExecutionContext): Promise<AdapterExecuti
     const paperclipEnvNote = renderPaperclipEnvNote(env);
     const apiAccessNote = renderApiAccessNote(env);
 
-    const buildArgs = (resumeSessionId: string | null, prompt: string) => {
+    const buildArgs = (resumeSessionId: string | null, promptArgs: string[]) => {
       const args = ["--cwd", effectiveExecutionCwd, "--output-format", "streaming-json"];
       if (resumeSessionId) args.push("--resume", resumeSessionId);
       if (model && model !== DEFAULT_GROK_LOCAL_MODEL) args.push("--model", model);
@@ -567,8 +572,21 @@ async function executeTurn(ctx: AdapterExecutionContext): Promise<AdapterExecuti
         return asStringArray(config.args);
       })();
       if (extraArgs.length > 0) args.push(...extraArgs);
-      args.push("--single", prompt);
+      args.push(...promptArgs);
       return args;
+    };
+
+    const writePromptFile = async (prompt: string) => {
+      const dir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-grok-prompt-"));
+      const filePath = path.join(dir, "prompt.md");
+      const remove = () => fs.rm(dir, { recursive: true, force: true });
+      try {
+        await fs.writeFile(filePath, prompt, { encoding: "utf8", mode: 0o600 });
+      } catch (error) {
+        await remove().catch(() => undefined);
+        throw error;
+      }
+      return { filePath, remove };
     };
 
     const runAttempt = async (resumeSessionId: string | null) => {
@@ -603,37 +621,45 @@ async function executeTurn(ctx: AdapterExecutionContext): Promise<AdapterExecuti
         runtimeNoteChars: paperclipEnvNote.length + apiAccessNote.length,
         heartbeatPromptChars: attemptRenderedPrompt.length,
       };
-      const args = buildArgs(resumeSessionId, prompt);
-      if (onMeta) {
-        await onMeta({
-          adapterType: "grok_local",
-          command: resolvedCommand,
-          cwd: effectiveExecutionCwd,
-          commandNotes,
-          commandArgs: args.map((value, index) => (
-            index === args.length - 1 ? `<prompt ${prompt.length} chars>` : value
-          )),
-          env: loggedEnv,
-          prompt,
-          promptMetrics: { ...promptMetrics, promptChars: prompt.length },
-          context,
-        });
-      }
+      const promptFile = executionTargetIsRemote ? null : await writePromptFile(prompt);
+      try {
+        const args = buildArgs(
+          resumeSessionId,
+          promptFile ? ["--prompt-file", promptFile.filePath] : ["--single", prompt],
+        );
+        if (onMeta) {
+          await onMeta({
+            adapterType: "grok_local",
+            command: resolvedCommand,
+            cwd: effectiveExecutionCwd,
+            commandNotes,
+            commandArgs: args.map((value, index) => (
+              !promptFile && index === args.length - 1 ? `<prompt ${prompt.length} chars>` : value
+            )),
+            env: loggedEnv,
+            prompt,
+            promptMetrics: { ...promptMetrics, promptChars: prompt.length },
+            context,
+          });
+        }
 
-      const proc = await runAdapterExecutionTargetProcess(runId, runtimeExecutionTarget, command, args, {
-        onProcessStopped: providerStop.beginInvocation(),
-        cwd,
-        env,
-        timeoutSec,
-        graceSec,
-        onSpawn,
-        onRuntimeProgress: ctx.onRuntimeProgress,
-        onLog,
-      });
-      return {
-        proc,
-        parsed: parseGrokJsonl(proc.stdout),
-      };
+        const proc = await runAdapterExecutionTargetProcess(runId, runtimeExecutionTarget, command, args, {
+          onProcessStopped: providerStop.beginInvocation(),
+          cwd,
+          env,
+          timeoutSec,
+          graceSec,
+          onSpawn,
+          onRuntimeProgress: ctx.onRuntimeProgress,
+          onLog,
+        });
+        return {
+          proc,
+          parsed: parseGrokJsonl(proc.stdout),
+        };
+      } finally {
+        await promptFile?.remove().catch(() => undefined);
+      }
     };
 
     const toResult = (
