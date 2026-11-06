@@ -426,6 +426,61 @@ describe("Codex app-server Codex driver", () => {
     expect(close).not.toHaveBeenCalled();
   });
 
+  it("ends the detached controller's event stream so its consumer can unwind", async () => {
+    const transport = new FakeCodexTransport();
+    Object.assign(transport, { detachControllerForRestart: vi.fn(async () => undefined) });
+    const driver = makeDriver([transport]);
+    const session = await driver.openSession({
+      runId: "run-detach-consumer",
+      normalizedSessionId: "normalized-detach-consumer",
+      workingDirectory: WORKSPACE,
+    });
+    await session.startTurn({ message: { role: "user", text: "Keep working" } });
+    transport.push("turn/started", { threadId: "thread-1", turn: { id: "turn-1", status: "inProgress", items: [] } });
+    const iterator = session.events()[Symbol.asyncIterator]();
+    // Drain what the provider published before the restart.
+    for (;;) {
+      const pending = await Promise.race([
+        iterator.next(),
+        new Promise<"waiting">(resolve => setTimeout(() => resolve("waiting"), 20)),
+      ]);
+      if (pending === "waiting") break;
+      expect(pending.done).toBe(false);
+    }
+    const next = iterator.next();
+
+    await session.detachControllerForRestart?.();
+    // The provider keeps running for the next controller; a late notification
+    // must not reach the detached consumer.
+    transport.push("item/agentMessage/delta", { threadId: "thread-1", turnId: "turn-1", itemId: "m", delta: "late" });
+
+    await expect(Promise.race([
+      next,
+      new Promise<"hung">(resolve => setTimeout(() => resolve("hung"), 200)),
+    ])).resolves.toEqual({ value: undefined, done: true });
+  });
+
+  it("drops events the detached controller had not read yet", async () => {
+    const transport = new FakeCodexTransport();
+    Object.assign(transport, { detachControllerForRestart: vi.fn(async () => undefined) });
+    const driver = makeDriver([transport]);
+    const session = await driver.openSession({
+      runId: "run-detach-buffered",
+      normalizedSessionId: "normalized-detach-buffered",
+      workingDirectory: WORKSPACE,
+    });
+    await session.startTurn({ message: { role: "user", text: "Keep working" } });
+    transport.push("turn/started", { threadId: "thread-1", turn: { id: "turn-1", status: "inProgress", items: [] } });
+    // Let the notification pump buffer these events without a reader.
+    await new Promise(resolve => setTimeout(resolve, 20));
+
+    await session.detachControllerForRestart?.();
+
+    // The next controller replays them from the runner journal instead.
+    await expect(session.events()[Symbol.asyncIterator]().next())
+      .resolves.toEqual({ value: undefined, done: true });
+  });
+
   it("sends direct chat as plain text and permits a follow-up turn", async () => {
     const transport = new FakeCodexTransport();
     const driver = makeDriver([transport], { conversationMode: "direct" });
