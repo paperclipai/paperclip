@@ -177,6 +177,9 @@ const PAPERCLIP_SKILL_ROOT_RELATIVE_CANDIDATES = [
   "../../../../../skills",
 ];
 const MATERIALIZED_SKILL_SENTINEL = ".paperclip-materialized-skill.json";
+// Monotonic counter for staged-link file names, so two repairs in the same
+// process never collide.
+let repairCounter = 0;
 const MATERIALIZED_SKILL_LOCK_OWNER = "owner.json";
 const MATERIALIZED_SKILL_LOCK_STALE_MS = 30_000;
 
@@ -4360,6 +4363,60 @@ export function writePaperclipSkillSyncPreference(
   return next;
 }
 
+/**
+ * True when `candidate` is a Paperclip-owned skill directory for `skillName`.
+ *
+ * Paperclip owns skill sources under its own home (CLI install payloads and
+ * instance-managed skill roots) and inside a managed package's bundled skills
+ * directory. A link into any of those is Paperclip's own: when it points at a
+ * different payload of the same skill it is stale, not a foreign
+ * installation.
+ *
+ * A link that resolves to the same skill name somewhere else (a user-managed
+ * skill, another tool's installation) is NOT Paperclip-owned and must be left
+ * alone.
+ */
+export function isPaperclipManagedSkillSource(
+  candidate: string,
+  skillName: string,
+  options: { paperclipHome?: string | null } = {},
+): boolean {
+  if (!candidate || !skillName) return false;
+  if (path.basename(candidate) !== skillName) return false;
+
+  const normalized = path.resolve(candidate);
+
+  // CLI install payloads and instance-managed skill roots.
+  const paperclipHome = options.paperclipHome?.trim();
+  if (paperclipHome) {
+    const root = path.resolve(expandHomePrefix(paperclipHome));
+    const relative = path.relative(root, normalized);
+    if (relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative))) {
+      return true;
+    }
+  }
+
+  // Skills shipped by a managed package.
+  if (normalized.includes(`${path.sep}node_modules${path.sep}@paperclipai${path.sep}`)) {
+    return true;
+  }
+
+  return false;
+}
+
+/**
+ * Ensure `target` is a symlink pointing at `source`.
+ *
+ * A link that already resolves to `source` is left alone. A link whose target
+ * no longer exists is repaired. A link that still resolves but points at a
+ * DIFFERENT path is only repaired when Paperclip owns that path too (see
+ * `isPaperclipManagedSkillSource`): the CLI updater keeps previous install
+ * payloads on disk for `update --rollback`, so after an upgrade the link
+ * still resolves to the old payload and would otherwise be reported as
+ * "occupied by another installation" and abort every agent run. A link owned
+ * by a foreign installation is left untouched so the caller can still detect
+ * the conflict.
+ */
 export async function ensurePaperclipSkillSymlink(
   source: string,
   target: string,
@@ -4367,6 +4424,7 @@ export async function ensurePaperclipSkillSymlink(
     linkSource,
     linkTarget,
   ) => fs.symlink(linkSource, linkTarget),
+  options: { paperclipHome?: string | null } = {},
 ): Promise<"created" | "repaired" | "skipped"> {
   const existing = await fs.lstat(target).catch(() => null);
   if (!existing) {
@@ -4382,7 +4440,7 @@ export async function ensurePaperclipSkillSymlink(
   if (!linkedPath) return "skipped";
 
   const resolvedLinkedPath = path.resolve(path.dirname(target), linkedPath);
-  if (resolvedLinkedPath === source) {
+  if (resolvedLinkedPath === path.resolve(source)) {
     return "skipped";
   }
 
@@ -4391,11 +4449,27 @@ export async function ensurePaperclipSkillSymlink(
     .then(() => true)
     .catch(() => false);
   if (linkedPathExists) {
-    return "skipped";
+    // The link still resolves, but at a different path. Only take it over when
+    // Paperclip owns both sides and the link points at the SAME skill (a
+    // different payload of it), not at a different skill. A foreign
+    // installation must survive so the caller can still report the conflict
+    // instead of silently clobbering it.
+    const skillName = path.basename(path.resolve(source));
+    if (!isPaperclipManagedSkillSource(resolvedLinkedPath, skillName, options)) {
+      return "skipped";
+    }
   }
 
-  await fs.unlink(target);
-  await linkSkill(source, target);
+  // Build the replacement next to the target and swap it in with a rename so
+  // the slot is never empty and the original link survives a failed write.
+  const staged = `${target}.paperclip-repair-${process.pid}-${repairCounter++}`;
+  try {
+    await linkSkill(source, staged);
+    await fs.rename(staged, target);
+  } catch (error) {
+    await fs.unlink(staged).catch(() => {});
+    throw error;
+  }
   return "repaired";
 }
 
