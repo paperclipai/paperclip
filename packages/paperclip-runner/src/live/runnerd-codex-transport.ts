@@ -818,6 +818,9 @@ function terminalMayBelongToPendingTurnStart(input: {
   );
 }
 
+/** Part of the turn-start bound kept for the accepted-turn adoption check. */
+const TURN_START_ADOPTION_CHECK_RESERVE_MS = 5_000;
+
 function turnStartNotificationDisposition(input: {
   responsePending: boolean;
   expectedProviderTurnId: string | null;
@@ -6831,6 +6834,10 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         throw error;
       }
       this.#expectedProviderTurnId = expectedProviderTurnId;
+      // The exact local provider process that accepted this turn. Adoption
+      // below requires that same process to still be alive.
+      const acceptingProviderPid = this.#evidence.providerPid;
+      const acceptingProviderStartedAt = this.#evidence.providerProcessStartedAt;
       // Command completion only means runnerd accepted the command. Bind the
       // provider turn from the subsequent turn/started event before answering
       // the strict driver. Correlate that event with the exact identity in this
@@ -6848,8 +6855,14 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
           expectedProviderTurnId,
           boundTurnId: this.#turnId,
         });
+      // Keep the adoption check inside the configured bound: stop waiting for
+      // the start event early enough to read the runner's snapshot before it.
+      const adoptionCheckAt = deadline - Math.min(
+        TURN_START_ADOPTION_CHECK_RESERVE_MS,
+        Math.floor(Math.max(0, deadline - Date.now()) / 4),
+      );
       const waitForStarted = async () => {
-      while (!providerTurnStarted() && Date.now() < deadline) {
+      while (!providerTurnStarted() && Date.now() < adoptionCheckAt) {
         this.#throwIfFailed();
         this.#pumpEvents();
         if (providerTurnStarted()) break;
@@ -6871,10 +6884,16 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         if (await this.#runnerHasExited())
           throw new Error("runnerd exited before provider turn startup");
         const snapshot = await this.#commandResult(
-          "session.snapshot", {}, Date.now() + 10_000,
+          "session.snapshot", {}, deadline,
         ).catch(() => null);
         if (!providerTurnStarted()) {
-          if (snapshot?.activeProviderTurnId !== expectedProviderTurnId)
+          // A runner can still list a turn whose provider died and was
+          // relaunched; only the same live local process proves it runs.
+          const acceptingProviderAlive = acceptingProviderPid !== null &&
+            acceptingProviderStartedAt !== null &&
+            this.#evidence.providerPid === acceptingProviderPid &&
+            readLocalProcessStartedAt(acceptingProviderPid) === acceptingProviderStartedAt;
+          if (snapshot?.activeProviderTurnId !== expectedProviderTurnId || !acceptingProviderAlive)
             throw new Error("runnerd did not report the provider turn identity");
           this.#turnId = expectedProviderTurnId;
           this.#observedTurnStartEpoch = responseEpoch;

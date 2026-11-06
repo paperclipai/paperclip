@@ -56,6 +56,30 @@ it("adopts a durably accepted turn whose start notification outlives the turn-st
   }
 }, 60_000);
 
+it("does not adopt an accepted turn the runner no longer reports active", async () => {
+  // The provider accepts the turn, then its process ends before the turn
+  // starts. The accepted turn is not live, so the start fails within its bound.
+  const stateDirectory = await mkdtemp(join(tmpdir(), "runnerd-lost-turn-start-"));
+  const bundle = createCapabilityRunnerdCodexTransport({
+    runnerBinary: defaultCapabilityRunnerdBinary(), codexCommand: fakeCodex,
+    codexArgs: fakeCodexArgs(stateDirectory, "--exit-before-turn-started"),
+    stateDirectory, turnStartTimeoutMs: 2_000,
+  });
+  try {
+    await bundle.transport.request("thread/start", { cwd: tmpdir(), dynamicTools: [] });
+    const started = Date.now();
+    // The runner may still list the turn after relaunching its provider; the
+    // process that accepted it is gone, so the turn is not adopted.
+    await expect(bundle.transport.request("turn/start", { input: [{ type: "text", text: "Lose this turn." }] }))
+      .rejects.toThrow("runnerd did not report the provider turn identity");
+    // The adoption check stays inside the configured bound (plus scheduling slack).
+    expect(Date.now() - started).toBeLessThan(2_000 + 1_500);
+  } finally {
+    await bundle.transport.close().catch(() => undefined);
+    await rm(stateDirectory, { recursive: true, force: true });
+  }
+}, 60_000);
+
 it("keeps a quiet active Codex turn in the same process across connection lease expiry", async () => {
   const stateDirectory = await mkdtemp(join(tmpdir(), "runnerd-renew-active-"));
   const callsPath = join(stateDirectory, "calls.log");
