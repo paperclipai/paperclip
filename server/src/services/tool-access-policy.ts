@@ -1525,7 +1525,32 @@ export function toolAccessPolicyService(db: Pick<Db, "select" | "insert" | "upda
       return decision("deny", "deny_policy_block", "Tool invocation no longer matches this admission.", [], []);
     }
     if (input.consumeRateLimit === true) consumedRateAdmissions.push(...(admittedRates ?? []));
-    const profileState = await effectiveProfiles(ctx, cache);
+    const gatewayId = ctx.gatewayId;
+    const [runtimeGateway] = ctx.providerType === "paperclip_plugin" && gatewayId
+      ? await cachedRead(cache, `runtime-plugin-gateway:${ctx.companyId}:${gatewayId}`, async () =>
+          db.select({ profileId: toolMcpGateways.profileId, metadata: toolMcpGateways.metadata })
+            .from(toolMcpGateways)
+            .where(and(eq(toolMcpGateways.companyId, ctx.companyId), eq(toolMcpGateways.id, gatewayId)))
+            .limit(1))
+      : [];
+    const isRuntimePlugin = typeof runtimeGateway?.metadata?.nativeRuntimeAssignmentDigest === "string";
+    if (runtimeGateway && isRuntimePlugin) {
+      const entries = await cachedRead(cache, `runtime-plugin-entries:${ctx.companyId}:${runtimeGateway.profileId}`, async () =>
+        db.select({ effect: toolProfileEntries.effect, toolName: toolProfileEntries.toolName })
+          .from(toolProfileEntries)
+          .innerJoin(toolProfiles, eq(toolProfiles.id, toolProfileEntries.profileId))
+          .where(and(
+            eq(toolProfileEntries.companyId, ctx.companyId),
+            eq(toolProfileEntries.profileId, runtimeGateway.profileId),
+            eq(toolProfiles.status, "active"),
+            eq(toolProfileEntries.selectorType, "tool_name"),
+          )));
+      const matchingEntries = entries.filter((entry) => entry.toolName === ctx.toolName);
+      if (!matchingEntries.some((entry) => entry.effect === "include") || matchingEntries.some((entry) => entry.effect === "exclude")) {
+        return decision("deny", "deny_default", "Plugin tool is outside this run's MCP assignment.", [], [], { redactionPlan: redaction.redactionPlan });
+      }
+    }
+    const profileState = await effectiveProfiles(isRuntimePlugin ? { ...ctx, gatewayId: null } : ctx, cache);
     const effectiveProfileIds = profileState.profiles.map((profile) => profile.id);
     const permittedByProfile = profileState.profiles.some((profile) => {
       const matchingEntries = profileState.entries.filter((entry) => entry.profileId === profile.id && profileEntryMatches(entry, ctx));
