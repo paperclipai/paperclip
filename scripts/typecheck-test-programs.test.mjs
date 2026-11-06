@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import {
   checkCoverage,
   findUncheckedTests,
+  LOCKED_PROVIDERS,
   PROGRAMS,
   PROVIDER_WORKSPACE,
   SANDBOX_PROVIDERS,
@@ -62,12 +63,20 @@ test("every program exists, and the provider list matches the tracked provider p
   assert.deepEqual(manifests.map((manifest) => path.dirname(manifest)).sort(), [...SANDBOX_PROVIDERS].sort());
 });
 
-test("the provider workspace lists every provider by its full path, so Dependabot sees them", () => {
+test("the provider workspace lists every provider without its own lockfile by full path, so Dependabot sees them", () => {
   const workspace = readFileSync(path.join(root, PROVIDER_WORKSPACE, "pnpm-workspace.yaml"), "utf8");
   const listed = [...workspace.matchAll(/^\s+-\s+(\S+)\s*$/gm)].map((match) => match[1]);
   assert.ok(listed.every((entry) => !entry.includes("*")), "Dependabot does not expand a glob that starts with ../");
   const providers = listed.map((entry) => path.posix.normalize(path.posix.join(PROVIDER_WORKSPACE, entry)));
-  assert.deepEqual(providers.sort(), [...SANDBOX_PROVIDERS].sort());
+  const unlocked = SANDBOX_PROVIDERS.filter((provider) => !LOCKED_PROVIDERS.includes(provider));
+  assert.deepEqual(providers.sort(), unlocked.sort());
+});
+
+test("each provider with its own lockfile is a provider and has that lockfile", () => {
+  for (const provider of LOCKED_PROVIDERS) {
+    assert.ok(SANDBOX_PROVIDERS.includes(provider), provider);
+    assert.ok(existsSync(path.join(root, provider, "pnpm-lock.yaml")), provider);
+  }
 });
 
 test("no provider commits a lockfile, except the one Daytona already has", () => {
@@ -110,6 +119,27 @@ test("providers install frozen without scripts, then relink the SDK", () => {
   assert.ok(install.args.includes("--frozen-lockfile"));
   assert.ok(install.args.includes("--ignore-scripts"));
   assert.equal(calls.linked, 1);
+});
+
+test("a locked provider installs frozen from its own lockfile, outside any workspace", () => {
+  const { options, calls } = harness();
+  assert.equal(typecheckTestPrograms(options), 0);
+  for (const provider of LOCKED_PROVIDERS) {
+    const install = calls.pnpm.find(({ cwd }) => cwd === path.join("/repo", provider));
+    assert.ok(install.args.includes("--ignore-workspace"));
+    assert.ok(install.args.includes("--frozen-lockfile"));
+    assert.ok(install.args.includes("--ignore-scripts"));
+  }
+});
+
+test("a stale locked-provider lockfile fails before any program runs and names the fix", () => {
+  const [provider] = LOCKED_PROVIDERS;
+  const { options, calls } = harness({
+    pnpm: (args, { cwd }) => (cwd === path.join("/repo", provider) ? 1 : 0),
+  });
+  assert.equal(typecheckTestPrograms(options), 1);
+  assert.equal(calls.tsc.length, 0);
+  assert.match(calls.errors[0], new RegExp(`${provider}.*--ignore-workspace`));
 });
 
 test("a stale provider lockfile fails before any program runs and names the fix", () => {

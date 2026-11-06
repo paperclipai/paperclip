@@ -35,13 +35,17 @@ updates:
   # sees them. Each provider is a standalone published package with its own
   # version ranges.
   #
+  # Each lockfile has exactly one entry, so every pull request changes a
+  # manifest and the lockfile that installs it together, and CI can pass.
+  #
   # scripts/typecheck-sandbox-providers is a small pnpm workspace that lists every
-  # provider and holds one lockfile. CI installs that lockfile frozen. Dependabot
-  # updates this workspace as one unit: one pull request per dependency changes
-  # every provider that uses the dependency, and the shared lockfile, together.
-  # So this entry needs no `groups`. One entry per provider would open a separate
-  # pull request for each provider for the same package, and each one would fail
-  # CI because the shared lockfile would stay old.
+  # provider without its own lockfile, and holds one lockfile for them. CI
+  # installs that lockfile frozen. Dependabot updates this workspace as one unit:
+  # one pull request per dependency changes every provider that uses the
+  # dependency, and the shared lockfile, together. So this entry needs no
+  # `groups`. One entry per provider would open a separate pull request for each
+  # provider for the same package, and each one would fail CI because the shared
+  # lockfile would stay old.
   #
   # Dependabot does not expand a workspace glob that starts with ../, so that
   # workspace lists each provider by its full path. A test checks the list.
@@ -64,13 +68,11 @@ updates:
         update-types:
           - "version-update:semver-major"
 
-  # Daytona is the only provider with its own lockfile. The release image and the
-  # Daytona end-to-end job install it frozen. The workspace entry above changes
-  # Daytona's package.json but not this lockfile, so this entry keeps it current.
-  # For a dependency that both entries update, merge the workspace pull request
-  # first. Dependabot then rebases this entry's pull request, which then changes
-  # only Daytona's lockfile, and CI passes. If this entry's pull request goes
-  # first, the typecheck job fails because the shared lockfile is old.
+  # Daytona is the only provider with its own lockfile. The release build and the
+  # Daytona end-to-end job install it frozen, so the shared workspace above leaves
+  # Daytona out, and scripts/typecheck-test-programs.mjs installs Daytona from
+  # this lockfile (LOCKED_PROVIDERS). This entry is the only one that changes
+  # Daytona's package.json, and it changes this lockfile in the same pull request.
   - package-ecosystem: npm
     directory: "/packages/plugins/sandbox-providers/daytona"
     schedule:

@@ -6,7 +6,8 @@
 // in PROGRAMS reads them without emitting. Sandbox providers are outside the
 // workspace, so the root install has none of their dependencies. They install from
 // typecheck-sandbox-providers/pnpm-lock.yaml here, because their SDK types are part
-// of what a test checks.
+// of what a test checks. A provider with its own lockfile (LOCKED_PROVIDERS) installs
+// from that lockfile instead, so each lockfile has one owner and one Dependabot entry.
 //
 // The script then fails if a tracked test file is in no program. tsc decides that,
 // not a glob: `include` silently drops foo.test.tsx when foo.test.ts exists.
@@ -37,6 +38,10 @@ export const SANDBOX_PROVIDERS = [
   "packages/plugins/sandbox-providers/novita",
 ];
 
+// Providers that commit their own pnpm-lock.yaml. The release build and the Daytona
+// end-to-end job install it frozen, so the shared workspace leaves them out.
+export const LOCKED_PROVIDERS = ["packages/plugins/sandbox-providers/daytona"];
+
 export const PROGRAMS = [
   "packages/db/tsconfig.test.json",
   "packages/kv-demo-mcp-server/tsconfig.test.json",
@@ -60,6 +65,7 @@ const PREPARE_STEPS = [
 ];
 // Replacing a provider's standalone node_modules would otherwise ask for confirmation.
 const INSTALL_ARGS = ["install", "--frozen-lockfile", "--ignore-scripts", "--prefer-offline", "--config.confirmModulesPurge=false"];
+const LOCKED_INSTALL_ARGS = ["install", "--ignore-workspace", ...INSTALL_ARGS.slice(1)];
 
 export function findUncheckedTests({ trackedFiles, checkedFiles, checkedElsewhere = CHECKED_ELSEWHERE }) {
   const checked = new Set(checkedFiles);
@@ -172,7 +178,17 @@ export function typecheckTestPrograms({
     );
     return installed;
   }
-  // The install removes the SDK link from each provider's node_modules.
+  for (const provider of LOCKED_PROVIDERS) {
+    const status = pnpm(LOCKED_INSTALL_ARGS, { cwd: path.join(root, provider), env });
+    if (status !== 0) {
+      logError(
+        `typecheck:test-programs: if ${provider}/package.json changed, run ` +
+          `\`pnpm install --ignore-workspace --ignore-scripts --lockfile-only\` in ${provider} and commit its pnpm-lock.yaml`,
+      );
+      return status;
+    }
+  }
+  // The installs remove the SDK link from each provider's node_modules.
   linkPlugins();
 
   let exitCode = 0;

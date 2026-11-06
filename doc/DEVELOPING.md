@@ -1353,9 +1353,17 @@ Do not commit a lockfile inside a provider.
 `scripts/build-standalone-public-packages.mjs` uses a frozen install when one
 exists, which changes what a release resolves.
 
+Daytona is the one exception: it commits its own lockfile, so the workspace
+leaves it out and the script installs it from that lockfile (`LOCKED_PROVIDERS`).
+After changing Daytona's `package.json`, refresh that lockfile instead:
+
+```sh
+pnpm -C packages/plugins/sandbox-providers/daytona install --ignore-workspace --ignore-scripts --lockfile-only
+```
+
 Dependabot updates the providers through this workspace (see
-`.github/dependabot.yml`), and Daytona's own lockfile through a second entry.
-Dependabot does not expand a workspace glob that starts with `../`, so
+`.github/dependabot.yml`), and Daytona through a second entry. Dependabot does
+not expand a workspace glob that starts with `../`, so
 `scripts/typecheck-sandbox-providers/pnpm-workspace.yaml` lists each provider by
 its full path. When you add a provider, add it there and to `SANDBOX_PROVIDERS`
 in `scripts/typecheck-test-programs.mjs`. A test checks that the two lists match.
