@@ -1,6 +1,9 @@
+import { CHAT_NATIVE_TIMEOUT_POLICY } from "./chat-native-timeout-policy.js";
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { parseDocument } from "yaml";
+import { chatCatalogCases } from "./chat-catalog-registry.js";
+import { chatCatalogScenarios } from "./chat-catalog-inventory.js";
 import type { RunnerProfileFixture, RunnerTaskFixture } from "./types.js";
 
 export const CHAT_FEATURE_SUITE = "chat-features";
@@ -35,21 +38,38 @@ export function readChatFeatureScenarios(text = readFileSync(new URL("./chat-sce
   });
 }
 export const chatFeatureScenarios = readChatFeatureScenarios();
+function definitionSources(directory = new URL("./", import.meta.url)): string[] {
+  return readdirSync(directory, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name)).flatMap(entry => {
+    if (entry.isDirectory()) return ["node_modules", "results", "test-results", "playwright-report", ".results"].includes(entry.name)
+      ? [] : definitionSources(new URL(`${entry.name}/`, directory));
+    return /\.(ts|mjs|yaml|json)$/.test(entry.name) && !entry.name.endsWith(".test.ts") && !entry.name.startsWith("chat-campaign")
+      ? [new URL(entry.name, directory).href] : [];
+  });
+}
+// Includes every domain, helper, matcher and fixture source in this Product E2E family.
 export const chatFeatureDefinitionDigest = createHash("sha256").update([
-  "chat-feature-cases.ts", "chat-feature-flow.ts", "chat-feature-scoring.ts", "chat-flow.ts",
-  "completion-updates.ts", "non-execution-wake.ts", "redaction.ts", "launch.ts", "chat-scenarios/tasks.yaml", "chat-scenarios/defaults.yaml",
-  "../../server/src/services/agent-conversations.ts",
-].map(file => readFileSync(new URL(file, import.meta.url), "utf8")).join("\n")).digest("hex");
+  ...definitionSources(), new URL("../../server/src/services/agent-conversations.ts", import.meta.url).href,
+].map(file => {
+  const relative = new URL(file).pathname.replace(new URL("../../", import.meta.url).pathname, "");
+  const body = readFileSync(new URL(file), "utf8");
+  return JSON.stringify([relative, body]);
+}).join("\n")).digest("hex");
 
 export function chatFeatureProfile(profile: RunnerProfileFixture): RunnerProfileFixture {
   return { ...profile, buildAgent(input) {
     const { instructionsBundle: _manual, ...payload } = profile.buildAgent(input);
     const config = payload.adapterConfig as Record<string, unknown>;
     const { codexPermissionMode: _permission, ...adapterConfig } = config;
+    const throughputRouting = profile.id === "runner-opencode" && profile.provider === "opencode"
+      && profile.model === CHAT_FEATURE_OPENCODE_MODEL && profile.adapterType === "paperclip_runner" && profile.credential === "OPENROUTER_API_KEY";
     return { ...payload, name: "CEO", title: "CEO", role: "ceo",
       capabilities: "Coordinates company work and delegates tasks to the team.",
       budgetMonthlyCents: CHAT_FEATURE_BUDGET_CENTS,
-      adapterConfig: { ...adapterConfig, timeoutSec: 120, ...(profile.id === "runner-opencode-deepseek-1017" ? {} : { modelReasoningEffort: "low" }) },
+      adapterConfig: { ...adapterConfig, ...(throughputRouting ? { env: { ...(adapterConfig.env as Record<string, unknown>),
+        OPENCODE_CONFIG_CONTENT: JSON.stringify({ provider: { openrouter: { models: {
+          "deepseek/deepseek-v4.1-flash-1017": { options: { provider: { sort: "throughput" } } },
+        } } } }),
+      } } : {}), timeoutSec: profile.id === "runner-opencode" ? CHAT_NATIVE_TIMEOUT_POLICY.savedAgentTimeoutSec : 120, ...(profile.provider === "codex" ? { modelReasoningEffort: "low" } : {}) },
       runtimeConfig: { ...(payload.runtimeConfig as Record<string, unknown>),
         heartbeat: { enabled: false, maxConcurrentRuns: 1, maxDailyRuns: 3, maxDailyCostCents: CHAT_FEATURE_BUDGET_CENTS } },
     };
@@ -67,3 +87,22 @@ export const chatFeatureTasks: readonly RunnerTaskFixture[] = CHAT_FEATURE_CASES
   buildVisibleMarker: nonce => `ACORN${nonce.replace(/[^a-zA-Z0-9]/g, "")}`,
   buildMatchers: () => [{ kind: "issue_status", expected: "in_review" }],
 }));
+
+
+/** Only executable domain cases become selectable cells. Missing cases remain in the frozen denominator. */
+export const chatCatalogTasks: readonly RunnerTaskFixture[] = chatCatalogCases.map(implementation => {
+  const scenario = chatCatalogScenarios.find(row => row.id === implementation.scenarioId)!;
+  return {
+    requiredCredentials: implementation.requiredCredentials,
+    id: scenario.id, label: scenario.id, groups: ["chat"], flow: "agent_chat", workMode: "standard",
+    expectedRunCount: implementation.expectedRunCount, minimumExpectedRunCount: implementation.minimumRunCount,
+    ...(implementation.optionalCompanySecretBindingApproval===true?{expectedHumanMessageCount:implementation.expectedHumanMessageCount,optionalCompanySecretBindingApproval:true as const}:{}),
+    automaticRetryPolicy: "single_attempt", turnTimeoutMs: CHAT_NATIVE_TIMEOUT_POLICY.effectiveNativeTurnTimeoutMs,
+    attemptTimeoutMs: { local: implementation.attemptTimeoutMs, daytona: implementation.attemptTimeoutMs },
+    expectedTerminalState: { issue: "in_review", run: "succeeded" },
+    buildTitle: nonce => `Chat catalog ${scenario.id} ${nonce}`,
+    buildPrompt: () => scenario.query,
+    buildVisibleMarker: nonce => `CATALOG${nonce.replace(/[^a-zA-Z0-9]/g, "")}`,
+    buildMatchers: () => [{ kind: "issue_status", expected: "in_review" }],
+  };
+});

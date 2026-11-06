@@ -1,0 +1,59 @@
+{
+  "html": "<div data-testid=\"task-chat-thread\"><div><div data-testid=\"task-chat-history-content\"><div><div data-testid=\"task-chat-scroller\"><div><div data-thread-anchor=\"optimistic-e69226c8-8ad4-4645-b859-a3dda913f56b\" id=\"comment-edf2bd07-4cc2-4aad-835e-b69deaf22e4d\" data-thread-item-kind=\"human\"><div><div data-testid=\"task-chat-human-bubble\"><div style=\"overflow-wrap: anywhere; word-break: break-word;\"><p style=\"overflow-wrap: anywhere; word-break: break-word;\">Create a project called Launch for the new website.</p></div></div><span>2:48 AM</span></div></div><div data-thread-anchor=\"project-created:6dd3e7e2-8856-4628-a0bb-bd6c7b3511ab\" data-thread-item-kind=\"project_created\"><article aria-label=\"Project created: Launch\"><div><div><p>Project created</p><a href=\"/RUN/projects/6dd3e7e2-8856-4628-a0bb-bd6c7b3511ab\">Launch</a></div></div></article></div><div data-thread-anchor=\"35fac4e2-1156-41e1-a6f9-a3c81f65a01a\" id=\"comment-35fac4e2-1156-41e1-a6f9-a3c81f65a01a\" data-thread-item-kind=\"agent\"><div><div><div data-testid=\"task-chat-turn\"><div data-testid=\"task-chat-turn-summary\"><span data-testid=\"task-chat-agent-identity\"><span data-testid=\"task-chat-agent-avatar\"><span aria-hidden=\"true\"><img></img></span></span><span>CEO</span></span></div><div data-testid=\"task-chat-turn-timeline\"><div data-testid=\"task-chat-turn-timeline-row\" data-thread-anchor=\"06c67909-f1f3-4320-9ed6-50a65e2a767c:tool:2:phase:opening\"><section data-testid=\"task-chat-activity-phase\"><div></div></section></div></div></div></div><div data-testid=\"task-chat-agent-bubble\"><div style=\"overflow-wrap: anywhere; word-break: break-word;\"><p style=\"overflow-wrap: anywhere; word-break: break-word;\">Created the <strong>Launch</strong> project for the new website (status: in_progress, target date 2026-11-30). No repositories are connected yet, so it uses the managed default workspace. Let me know if you want repositories attached or tasks created under it.</p></div></div><div><span>2:48 AM</span><div data-testid=\"task-chat-bubble-actions\"></div></div></div></div></div></div></div></div></div></div>",
+  "input": {
+    "origin": "https://fixture.test",
+    "companyId": "698b3845-438b-496a-b1e4-22655b229808",
+    "companyPrefix": "RUN",
+    "sourceId": "30f0a30d-7f32-494e-b85e-dccc8e082dad",
+    "leadId": "dac24d01-43ab-4bcb-b0f8-fbec367baf26",
+    "comments": [
+      {
+        "id": "edf2bd07-4cc2-4aad-835e-b69deaf22e4d",
+        "companyId": "698b3845-438b-496a-b1e4-22655b229808",
+        "issueId": "30f0a30d-7f32-494e-b85e-dccc8e082dad",
+        "authorAgentId": null,
+        "createdByRunId": null
+      },
+      {
+        "id": "35fac4e2-1156-41e1-a6f9-a3c81f65a01a",
+        "companyId": "698b3845-438b-496a-b1e4-22655b229808",
+        "issueId": "30f0a30d-7f32-494e-b85e-dccc8e082dad",
+        "authorAgentId": "dac24d01-43ab-4bcb-b0f8-fbec367baf26",
+        "createdByRunId": "06c67909-f1f3-4320-9ed6-50a65e2a767c"
+      }
+    ],
+    "runs": [
+      {
+        "id": "06c67909-f1f3-4320-9ed6-50a65e2a767c",
+        "companyId": "698b3845-438b-496a-b1e4-22655b229808",
+        "agentId": "dac24d01-43ab-4bcb-b0f8-fbec367baf26",
+        "status": "succeeded",
+        "contextSnapshot": {
+          "issueId": "30f0a30d-7f32-494e-b85e-dccc8e082dad"
+        },
+        "nativeIssueId": "30f0a30d-7f32-494e-b85e-dccc8e082dad"
+      }
+    ],
+    "projects": [
+      {
+        "id": "6dd3e7e2-8856-4628-a0bb-bd6c7b3511ab",
+        "companyId": "698b3845-438b-496a-b1e4-22655b229808",
+        "name": "Launch"
+      }
+    ],
+    "activity": [
+      {
+        "id": "30c35fa8-dfef-46ad-970d-5b890cb14937",
+        "companyId": "698b3845-438b-496a-b1e4-22655b229808",
+        "action": "project.created",
+        "entityType": "project",
+        "entityId": "6dd3e7e2-8856-4628-a0bb-bd6c7b3511ab",
+        "actorType": "agent",
+        "actorId": "dac24d01-43ab-4bcb-b0f8-fbec367baf26",
+        "agentId": "dac24d01-43ab-4bcb-b0f8-fbec367baf26",
+        "runId": "06c67909-f1f3-4320-9ed6-50a65e2a767c"
+      }
+    ]
+  },
+  "expectedHref": "/RUN/projects/6dd3e7e2-8856-4628-a0bb-bd6c7b3511ab"
+}

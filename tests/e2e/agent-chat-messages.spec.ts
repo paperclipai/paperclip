@@ -8,6 +8,7 @@ test("a routine delivers a first digest, unread state, source link and replyable
   const f = await setup(request);
   try {
     await page.goto(`/${f.company.issuePrefix}/chats/${f.agents[1].id}`);
+    await expect(page.getByTestId("task-chat-thread").locator(':scope > [aria-busy="false"]')).toBeVisible({ timeout: 20_000 });
     await expect(page.getByTestId("task-chat-composer-input")).toBeVisible();
     const routine = await json(await request.post(`/api/companies/${f.company.id}/routines`, { data: {
       title: "Morning PR review", description: "proactive-digest-fixture", assigneeAgentId: f.agent.id,

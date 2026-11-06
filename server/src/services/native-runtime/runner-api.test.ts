@@ -164,6 +164,48 @@ describe("runner API catalog", () => {
     expect(operation.authorization.actor).toBeTruthy();
   });
 
+  it("exposes team preview and install bodies through the actual adapter override search", () => {
+    const results = searchRunnerApi({ query: "adapterOverrides install team under manager parentAgentId", limit: 10 }).results;
+    const preview = results.find(row => row.operationId === "POST /api/companies/{companyId}/teams/catalog/{catalogId}/preview")!;
+    const install = results.find(row => row.operationId === "POST /api/companies/{companyId}/teams/catalog/{catalogId}/install")!;
+    const previewBody = preview.requestBody?.content["application/json"].schema;
+    const installBody = install.requestBody?.content["application/json"].schema;
+    expect(previewBody).toMatchObject({ additionalProperties: false, properties: { targetManagerAgentId: expect.any(Object), nameOverrides: expect.any(Object) } });
+    expect(installBody).toMatchObject({ additionalProperties: false, properties: { targetManagerAgentId: expect.any(Object), adapterOverrides: expect.any(Object), secretValues: expect.any(Object) } });
+    expect(previewBody.properties).not.toHaveProperty("adapterOverrides");
+  });
+
+  it("discovers proposal revision without confusing it with hiring, approval decisions, or reads", () => {
+    const resubmit = "POST /api/approvals/{id}/resubmit";
+    for (const query of [
+      "revise changes-requested hire proposal",
+      "resubmit approval after changes",
+      "Change the proposed hire to the cheaper model and send it back for approval.",
+    ]) expect(searchRunnerApi({ query }).results.map(row => row.operationId), query).toContain(resubmit);
+    for (const [query, expected] of [
+      ["GET /api/approvals/{id}", "GET /api/approvals/{id}"],
+      ["get approval", "GET /api/approvals/{id}"],
+      ["hire agent", "POST /api/companies/{companyId}/agent-hires"],
+      ["approve approval", "POST /api/approvals/{id}/approve"],
+      ["reject approval", "POST /api/approvals/{id}/reject"],
+      [resubmit, resubmit],
+    ]) expect(searchRunnerApi({ query }).results[0]?.operationId, query).toBe(expected);
+    const operation = runnerApiOperation(resubmit);
+    expect(operation.requestBody?.content?.["application/json"]?.schema.properties).toHaveProperty("payload");
+    expect(operation.description).toContain("returns to pending");
+  });
+
+  it("keeps natural-language function words from hiding the requested API resource", () => {
+    expect(searchRunnerApi({ query: "list comments for an issue" }).results[0]?.operationId)
+      .toBe("GET /api/issues/{id}/comments");
+    for (const [query, operation] of [
+      ["queued comments for an issue", "GET /api/issues/{id}/queued-comments"],
+      ["activity for an issue", "GET /api/issues/{id}/activity"],
+      ["runs for an issue", "GET /api/issues/{id}/runs"],
+    ]) expect(searchRunnerApi({ query }).results.map(row => row.operationId)).toContain(operation);
+    expect(searchRunnerApi({ query: "for an the" }).results).toEqual([]);
+  });
+
   it("ranks natural language, explains dedicated alternatives, and supports exact lookup", () => {
     expect(
       searchRunnerApi({ query: "create project" }).results.map(

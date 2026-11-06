@@ -1,3 +1,4 @@
+import { CHAT_SETUP_HEALTH_SUITE } from "./chat-setup-health.js";
 import { isEvalRemoteOrigin } from "./eval-remote-gateway.js";
 import { isEverydayReliabilityCase } from "./everyday-reliability-cases.js";
 import type { AiConnectionBinding } from "../../packages/shared/src/ai-connections.js";
@@ -219,7 +220,7 @@ export async function setupLiveFixtures(input: {
       const company = await api.post<CompanyRecord>("/api/companies", {
         name: `Runner E2E ${execution.id} ${input.executionNonce}`,
         description: "Ephemeral paid full-stack runner acceptance fixture",
-        budgetMonthlyCents: execution.suite.id === CHAT_FEATURE_SUITE ? CHAT_FEATURE_BUDGET_CENTS
+        budgetMonthlyCents: [CHAT_FEATURE_SUITE, CHAT_SETUP_HEALTH_SUITE].includes(execution.suite.id) ? CHAT_FEATURE_BUDGET_CENTS
           : receiptSmoke ? CASE_RECEIPT_BUDGET_CENTS
           : ["native-completion", "native-instruction-consolidation", "native-connection-guidance"].includes(execution.suite.id)
           || (execution.suite.id === "everyday-workflows" && (["hire-reuse", "delegate-feedback"].includes(execution.task.id)
@@ -243,7 +244,9 @@ export async function setupLiveFixtures(input: {
     async setup(resolved) {
       const company = value<CompanyRecord>(resolved, "company");
       const refs: SecretReferenceMap = {};
-      for (const credentialName of execution.requiredCredentials) {
+      for (const credentialName of execution.suite.id === "chat-features"
+        ? [...new Set([execution.profile.credential, execution.environment.credential].filter((name): name is CredentialName => !!name))]
+        : execution.requiredCredentials) {
         if (["GROK_AUTH_JSON", "CODEX_AUTH_JSON"].includes(credentialName)) continue;
         const rawValue = input.credentials[credentialName];
         if (!rawValue) throw new Error(`Missing credential ${credentialName}`);

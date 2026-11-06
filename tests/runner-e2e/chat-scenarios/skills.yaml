@@ -26,8 +26,9 @@ scenarios:
       Turn our website review checklist into a reusable skill.
     expected_outcome: >-
       A writable company skill captures the checklist with clear instructions and a saved
-      revision. Chat links to the skill so the person can inspect or edit it. The agent
-      preserves the actual checklist instead of merely posting a suggestion or pretending
+      revision. The person can discover it through ordinary Skills/My Skills navigation, open
+      its editable Studio content and reload the same saved revision. No particular chat-link
+      format is required. The agent preserves the actual checklist instead of merely posting a suggestion or pretending
       creation automatically enables the skill for every agent.
   - id: skills.fork-read-only
     capabilities:

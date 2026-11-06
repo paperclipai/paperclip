@@ -1,0 +1,27 @@
+{
+  "syntheticOnly": true,
+  "tests": 2,
+  "actualStandaloneChildRejectedBeforeBrowser": true,
+  "expectedParentFailureIncluded": true,
+  "realProviderCalls": 0,
+  "canonicalAttempts": 0,
+  "browserLaunches": 0,
+  "qualificationClaim": "private child/reporting rejection boundary only; positive human UI, clipboard, OAuth and actual Bot pairing/round-trip remain unqualified",
+  "checkedSinks": [
+    "stdout",
+    "JUnit",
+    "blob ZIP entries",
+    "HTML embedded report ZIP",
+    "error-context"
+  ],
+  "scannedItems": 12,
+  "privateValueCount": 4,
+  "findings": [],
+  "sourceSha256": {
+    "runtime-grok-operator.ts": "2185f117320149c428328922b383de61e9fd49333ea400ba11858c92f5e00e22",
+    "runtime-grok-operator-worker.ts": "0d135a8d98286fe0f93b700e1473d6d0d4f36ca2320170d48d8c9d8be6c61870",
+    "runtime-grok-operator-contract.ts": "6ab17ae769398340d6310bef769b40588dc48ca6584a8899403632b960f3b6dc",
+    "runtime-grok-operator-privacy.spec.ts": "34d60ce125d03f3eaa48d02231c37b839e6cc994129537c275e1f6f0a58acb5a"
+  },
+  "configSha256": "a3ecb8c311f3c2f550b95e511c9245e2187e6fd06338445da51002e381a5f889"
+}

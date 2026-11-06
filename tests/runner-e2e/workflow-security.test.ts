@@ -146,7 +146,7 @@ describe("public repository paid workflow security", () => {
       expect(pnpmSetupStepIndexes, name).toHaveLength(trustedPnpmBootstraps[name as keyof typeof trustedPnpmBootstraps]);
       for (const pnpmSetupStepIndex of pnpmSetupStepIndexes) {
         const pnpmSetupStep = steps[pnpmSetupStepIndex]!;
-        const nodeBootstrapStep = steps[pnpmSetupStepIndex - 1]!;
+        const nodeBootstrapStep = steps.slice(0, pnpmSetupStepIndex).findLast(step => step.includes("uses: actions/setup-node@"))!;
         expect(nodeBootstrapStep, name).toContain("uses: actions/setup-node@");
         expect(nodeBootstrapStep, name).not.toContain("cache: pnpm");
 

@@ -1,3 +1,4 @@
+import { admitsInstalledChat } from "./chat-installed-lane.js";
 /** Optional published-install lane. No production hook or admission override. */
 import { constants } from "node:fs";
 import { lstat, mkdir, mkdtemp, open, realpath, rm } from "node:fs/promises";
@@ -47,6 +48,7 @@ export function usesInstalledCli(env: NodeJS.ProcessEnv): boolean {
 export function assertInstalledCliSelection(env: NodeJS.ProcessEnv, executions: readonly MatrixExecution[]): void {
   if (!usesInstalledCli(env)) return;
   if (!installedCliKeys.every(key => Boolean(env[key])) || executions.length === 0 || executions.some(e => !(
+    admitsInstalledChat(e) ||
     (e.profile.id === "runner-acpx-pi" && e.profile.qualificationCandidate === "pi" && e.suite.manualOnly && suites.has(e.suite.id)) ||
     (e.profile.id === "runner-codex" && e.profile.provider === "codex" && installedCodexCells.has(e.id)) ||
     (e.profile.id === "runner-acpx-copilot" && e.profile.qualificationCandidate === "copilot" && e.suite.manualOnly && installedCopilotCells.has(e.id))

@@ -1,3 +1,7 @@
+import { readChatReadinessReceipts } from "./chat-readiness-observer.js";
+import { legacyChatFeatureFingerprint } from "./chat-catalog-fingerprint.js";
+import { runChatCatalogFlow } from "./chat-catalog-flow.js";
+import { chatCatalogScenarios } from "./chat-catalog-inventory.js";
 import { expect } from "@playwright/test";
 import { pollUntil } from "./api.js";
 import { collectChatRunEvidence, sendChatMessage, type ChatFlowInput, type ChatIssue, type ChatRun } from "./chat-flow.js";
@@ -7,11 +11,18 @@ import { CHAT_FEATURE_BUDGET_CENTS, CHAT_FEATURE_GRADER, chatFeatureScenarios, t
 import { chatFeatureExecutionRuns, gradeChatFeature, linksFeatureTask, type ChatFeatureObservation, type FeatureDocument, type FeatureTask } from "./chat-feature-scoring.js";
 
 export async function runChatFeatureFlow(context: {
-  input: ChatFlowInput; issue(): ChatIssue | undefined; allRuns(): Promise<ChatRun[]>; refreshIssue(): Promise<void>;
+  input: ChatFlowInput; issue(): ChatIssue | undefined; allRuns(): Promise<ChatRun[]>; refreshIssue(): Promise<void>; selectSlackSource?(issueId: string): Promise<void>;
 }) {
   const { input } = context;
   const { api, page, fixtures: f, execution, nonce } = input;
+  if (!["create-backlog", "delegate-announcement"].includes(execution.task.id)) {
+    const scenario = chatCatalogScenarios.find(row => row.id === execution.task.id);
+    if (!scenario) throw new Error(`Unknown catalog scenario: ${execution.task.id}`);
+    return runChatCatalogFlow({ ...context, scenario });
+  }
   const caseId = execution.task.id as ChatFeatureCase;
+  await input.evidence("chat-catalog-definition.json", { scenarioId: `tasks.${caseId}`,
+    ...legacyChatFeatureFingerprint(execution), suiteDefinitionHash: execution.suiteDefinitionHash, journeyKind: "agent-chat" });
   const scenario = chatFeatureScenarios.find(row => row.id === `tasks.${caseId}`);
   if (!scenario) throw new Error(`Unregistered chat feature scenario: ${caseId}`);
   const marker = execution.task.buildVisibleMarker(nonce);
@@ -69,7 +80,8 @@ export async function runChatFeatureFlow(context: {
   async function saveEvidence() {
     await input.evidence("chat-feature.json", { schema: CHAT_FEATURE_GRADER, scenarioId: scenario!.id,
       capabilities: scenario!.capabilities, observation, grade: gradeChatFeature(observation),
-      setupObservations, setupUsageCoverage: "Production agent hello probes are outside heartbeat usage; their detailed tokens and cost are unavailable." });
+      setupObservations, setupProbeReceipts: await readChatReadinessReceipts(process.env.PAPERCLIP_RUNNER_E2E_TEMP_ROOT ?? "", f.company.id),
+      setupUsageCoverage: "Production agent hello probes are outside heartbeat usage; their detailed tokens and cost are unavailable." });
   }
   try {
     expect(await api.get(`${company}/issues?includeAgentCreatedTasks=true`)).toEqual([]);
@@ -77,7 +89,8 @@ export async function runChatFeatureFlow(context: {
       await pollUntil({ label: `chat feature agent readiness ${agentId}`, deadlineAt: Date.now() + 45_000, intervalMs: 500,
         load: async () => {
           const agent = await api.get<{ lifecycleState: string; status: string; lifecycleError?: string; lifecycleHolds?: string[] }>(`/api/agents/${agentId}`);
-          setupObservations.push({ agentId, lifecycleState: agent.lifecycleState, status: agent.status });
+          setupObservations.push({ agentId, lifecycleState: agent.lifecycleState, status: agent.status,
+            lifecycleErrorPresent: !!agent.lifecycleError, lifecycleHeld: !!agent.lifecycleHolds?.length });
           return agent;
         },
         accept: agent => agent.lifecycleState === "ready" && ["idle", "active"].includes(agent.status),

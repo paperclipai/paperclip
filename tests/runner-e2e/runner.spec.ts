@@ -1,5 +1,17 @@
 import { isRollingWebDeployment, validControllerRollingDeploymentReceipt } from "./controller-rolling-deployment.js";
 import type { ControllerReplacementReceipt } from "./controller-replacement.js";
+import { withSdkCanaryPreFixture, captureSdkCanaryPreFixture } from "./sdk-canary-prefixture.js";
+import { withholdPrivateScreenshots } from "./screenshot-privacy.js";
+import { ordinaryChatCapture } from "./chat-screenshot-capture.js";
+import { checkSetupHealthCredential } from "./chat-setup-credential.js";
+import { SetupHealthAbort, runChatSetupHealth, captureSetupHealthProfile } from "./chat-setup-health.js";
+import { bindInvitationEnrollmentPrerequisite } from "./chat-catalog-domains/identity-invite-prerequisite.js";
+import { verifyInvitationSourceProof } from "./chat-catalog-domains/identity-invite-source-proof.js";
+import { readChatPrivateInputs, chatPrivateSetupBlockers, chatPrivateInputRequirements } from "./chat-private-inputs.js";
+import { trackedPrivateSecrets } from "./private-diagnostics.js";
+import { findChatCatalogCase } from "./chat-catalog-registry.js";
+import { runChatBoundaryFlow } from "./chat-boundary-flow.js";
+import { chatCatalogScenarios } from "./chat-catalog-inventory.js";
 import { kimiCandidateAdmissionForExecution } from "./server-restart-request.js";
 import { runPlanRevisionAcceptance, isPendingPlanConfirmation, normalizePlanMarkdown, expectPlanStageVisible } from "./plan-revision-flow.js";
 import { createWorkerTiming } from "./worker-timing.js";
@@ -41,7 +53,7 @@ import { summarizeStartupReuse } from "../../packages/adapter-utils/src/startup-
 import { gitFinalizationEvidence, gitStreamingEvidence, setupGitStreamingWorkspace } from "./daytona-git-streaming.js";
 import { runsCompletionUpdateProbe, completionQualityControls, completionQualityStatus, judgeCompletionQuality, reserveCompletionQuality, type CompletionQualityRecord } from "./completion-quality.js";
 import { runNativeProviderLossFlow } from "./native-provider-loss-flow.js";
-import { mayAllocateRemoteResources, runCleanupWithObservers, verifyCleanupAssertions, type CleanupAssertion } from "./cleanup-verification.js";
+import { ownedActiveCleanupRunIds, mayAllocateRemoteResources, runCleanupWithObservers, verifyCleanupAssertions, type CleanupAssertion } from "./cleanup-verification.js";
 import { completionDelivery, type CompletionObservation } from "./completion-updates.js";
 import { runInstructionPersistenceFlow } from "./instruction-persistence.js";
 import { gradeApiResponsePaging, readResponseProof, responseEvidenceDescription } from "./api-response-reading.js";
@@ -98,6 +110,7 @@ import { resolveRunnerE2ESource } from "./source.js";
 import { isValidNativePrpEnvelope } from "./native-event-envelope.js";
 import {
   isPublicRunnerScreenshotRoute,
+  isDisabledChatBoundaryScreenshotRoute,
   PUBLIC_RUNNER_SCREENSHOT_MARKER,
 } from "./screenshot-policy.js";
 import {
@@ -566,6 +579,9 @@ function nativeRunEventIntegrityFailures(
 }
 
 for (const execution of executions) {
+  test.describe(execution.id, () => {
+  const browserTimezone = execution.suite.id === "chat-features" ? findChatCatalogCase(execution.task.id)?.browserTimezone : undefined;
+  if (browserTimezone) test.use({ timezoneId: browserTimezone });
   const controllerOutage = controllerOutageForExecution(execution, process.env);
   const privateDir = path.join(privateRoot, "cases", execution.task.id);
   const resultPath = path.join(privateDir, "result.json");
@@ -609,7 +625,8 @@ for (const execution of executions) {
       verifyNativeInstructionPreflight(process.env[NATIVE_INSTRUCTION_PREFLIGHT_ENV]);
     }
     const credentials = credentialValues();
-    const secrets = normalizedSecrets([...Object.values(credentials), ...EVAL_OBSERVABILITY_SECRET_NAMES.map(name => process.env[name]), process.env.PAPERCLIP_E2E_GATEWAY_TOKEN]);
+    const secrets = trackedPrivateSecrets(normalizedSecrets([...Object.values(credentials), ...EVAL_OBSERVABILITY_SECRET_NAMES.map(name => process.env[name]), process.env.PAPERCLIP_E2E_GATEWAY_TOKEN]), execution.id);
+    const privateInputs = execution.suite.id === "chat-features" ? readChatPrivateInputs(execution.id, secrets) : undefined;
     const traceConfig = evalBraintrustConfig(process.env);
     const trace = traceConfig ? new EvalAttemptTrace(traceConfig, {
       campaignId: process.env.PAPERCLIP_E2E_ACCOUNTING_CAMPAIGN_ID ?? "",
@@ -642,6 +659,7 @@ for (const execution of executions) {
     let nativeInitial: { issueIds: string[]; agentIds: string[]; workspaceDigest: string | null } | undefined;
     const nativeWorkspaceDigest = () => execution.task.id === "native-blocked-report"
       ? nativeCompletionWorkspaceDigest(workspacePath!) : Promise.resolve(null);
+    let boundaryScreenshotResources: { companyId?: string; agentId?: string } = {};
     let fixtures: LiveFixtureValues | undefined;
     let reviewProvider: Awaited<ReturnType<typeof setupConnectionReview>> | undefined;
     let issue: IssueRecord | undefined;
@@ -686,6 +704,7 @@ for (const execution of executions) {
     let cursorCloudObserver: CursorCloudOwnedObserver | undefined;
     let primaryError: unknown;
     let failureClassOverride: FailureClass | undefined;
+    let innerSecretFinding = false;
     let cleanup: RunnerE2EResult["cleanup"] = "not_started";
     const cleanupAssertions: CleanupAssertion[] = [];
     const beforeEnvironmentTeardownAssertions: CleanupAssertion[] = [];
@@ -722,7 +741,22 @@ for (const execution of executions) {
       label: string,
       file: string,
     ) => {
-      if (!isReviewedFixtureScreenshotRoute()) {
+      let reviewedBoundary = false;
+      if (execution.suite.id === "chat-features" && execution.task.id === "agent-chat.chat-disabled"
+        && boundaryScreenshotResources.companyId && boundaryScreenshotResources.agentId
+        && findChatCatalogCase(execution.task.id)?.journeyKind === "browser-boundary") {
+        const [company, agent, session, settings] = await Promise.all([
+          api.get<{ id: string; issuePrefix: string }>(`/api/companies/${boundaryScreenshotResources.companyId}`),
+          api.get<{ id: string; companyId: string }>(`/api/agents/${boundaryScreenshotResources.agentId}`),
+          api.get<{ user: { id: string } }>("/api/auth/get-session"),
+          api.get<{ enableAgentChat: boolean }>("/api/instance/settings/experimental"),
+        ]);
+        reviewedBoundary = company.id === boundaryScreenshotResources.companyId && agent.id === boundaryScreenshotResources.agentId
+          && isDisabledChatBoundaryScreenshotRoute(page.url(), { scenarioId: execution.task.id, origin: api.baseURL,
+            companyId: company.id, agentCompanyId: agent.companyId, issuePrefix: company.issuePrefix,
+            agentId: agent.id, authenticatedPersonId: session.user.id, agentChatEnabled: settings.enableAgentChat });
+      }
+      if (!isReviewedFixtureScreenshotRoute() && !reviewedBoundary) {
         throw new Error(
           `Public runner screenshot blocked on non-task route ${page.url()}`,
         );
@@ -749,13 +783,17 @@ for (const execution of executions) {
         setupProbeLeaseId: fixtures.setupProbe?.leaseId, setupLeaseIds: fixtures.setupLeases?.map(lease => lease.leaseId) });
     };
 
-    const cancelActiveRunsForCleanup = async () => {
+    const cancelActiveRunsForCleanup = async (budgetMs?: number) => {
       if (!issue && !(companyRunFlow && fixtures)) return;
       const cleanupIssueId = issue?.id;
+      const cleanupDeadline = budgetMs === undefined ? undefined : Date.now() + budgetMs;
+      const cleanupRequestOptions = () => cleanupDeadline === undefined ? undefined : { timeout: Math.max(1, cleanupDeadline - Date.now()) };
       const runs = await api.get<RunRecord[]>(
-        companyRunFlow && fixtures ? `/api/companies/${fixtures.company.id}/heartbeat-runs?limit=100` : `/api/issues/${cleanupIssueId}/runs`,
+        companyRunFlow && fixtures ? `/api/companies/${fixtures.company.id}/heartbeat-runs?limit=100` : `/api/issues/${cleanupIssueId}/runs`, cleanupRequestOptions(),
       );
-      const activeRunIds = [
+      const activeRunIds = companyRunFlow && fixtures
+        ? ownedActiveCleanupRunIds(runs, fixtures.company.id, TERMINAL_RUN_STATUSES)
+        : [
         ...new Set(
           runs
             .filter((run) => !TERMINAL_RUN_STATUSES.has(run.status))
@@ -767,14 +805,14 @@ for (const execution of executions) {
         ),
       ];
       for (const runId of activeRunIds) {
-        await api.post(`/api/heartbeat-runs/${runId}/cancel`);
+        await api.post(`/api/heartbeat-runs/${runId}/cancel`, undefined, cleanupRequestOptions());
       }
       if (activeRunIds.length === 0) return;
       const activeIds = new Set(activeRunIds);
       await pollUntil({
         label: `cleanup cancellation for issue ${cleanupIssueId}`,
-        deadlineAt: Date.now() + 45_000,
-        load: () => api.get<RunRecord[]>(companyRunFlow && fixtures ? `/api/companies/${fixtures.company.id}/heartbeat-runs?limit=100` : `/api/issues/${cleanupIssueId}/runs`),
+        deadlineAt: cleanupDeadline ?? Date.now() + 45_000,
+        load: () => api.get<RunRecord[]>(companyRunFlow && fixtures ? `/api/companies/${fixtures.company.id}/heartbeat-runs?limit=100` : `/api/issues/${cleanupIssueId}/runs`, cleanupRequestOptions()),
         accept: (currentRuns) =>
           currentRuns
             .filter((run) => activeIds.has(run.id))
@@ -783,8 +821,9 @@ for (const execution of executions) {
       });
     };
 
+    let catalogFailureCaptureAttempted = false;
     const captureApiState = async (capturePhase: "failure" | "final" = "failure") => {
-      if (!fixtures) return;
+      if (!fixtures || capturePhase === "failure" && catalogFailureCaptureAttempted) return;
       if (execution.task.flow === "followup_stop_resume") {
         const captured = await captureFollowupStopFailureApiState({ api, companyId: fixtures.company.id,
           agentId: fixtures.agent.id, issueId: issue?.id,
@@ -918,10 +957,53 @@ for (const execution of executions) {
       trace?.phase("setup");
       await saveTrace();
       if (execution.profile.provider === "cursor_cloud") await assertCursorCloudCallbackIngress(process.env.PAPERCLIP_PUBLIC_URL!);
-      if (execution.task.flow === "public_mcp") publicMcpUserId = await establishPublicMcpSession(api, page, secrets);
+      const catalogDescriptor = execution.suite.id === "chat-features" ? findChatCatalogCase(execution.task.id) : undefined;
+      if (catalogDescriptor) {
+        bindInvitationEnrollmentPrerequisite(api, {
+          verifyRuntime: () => verifyInvitationSourceProof({ temporaryRoot, sourceRoot: path.resolve(import.meta.dirname, "../.."),
+            apiOrigin: api.baseURL, attemptId: process.env.PAPERCLIP_E2E_ACCOUNTING_ATTEMPT_ID ?? "", executionId: execution.id,
+            health: () => api.get("/api/health") }),
+          evidence: completionEvidence,
+        });
+        const blockers = chatPrivateSetupBlockers(privateInputs, catalogDescriptor);
+        if (blockers.length) {
+          failureClassOverride = "permanent_infrastructure";
+          await writeSanitizedJson(snapshotsDir, "chat-catalog-input-prerequisite.json", { scenarioId: execution.task.id, phase: "reserved-setup", querySent: false, modelAdmissions: 0,
+            requirements: chatPrivateInputRequirements(catalogDescriptor), blockers, inputCleanup: "owned by launcher finally" }, secrets);
+          throw new Error(`Selected case setup prerequisite unavailable: ${blockers.join(", ")}`);
+        }
+      }
+      if (catalogDescriptor?.journeyKind === "browser-boundary") {
+        const scenario = chatCatalogScenarios.find(row => row.id === execution.task.id);
+        if (!scenario || !catalogDescriptor.boundaryTarget) throw new Error("Boundary scenario or target identity missing");
+        await workerTiming.enter("execution"); trace?.phase("execution");
+        const checks = await runChatBoundaryFlow({ journeyKind: "browser-boundary", boundaryTarget: catalogDescriptor.boundaryTarget,
+          scenario, page, api, execution, nonce, credentials: { ...credentials, ...privateInputs?.credentials }, privateSecrets: secrets, privateDir, deadlineAt: startedAtMs + deadlineMs,
+          capture: captureScreenshot,
+          evidence: async (name, value) => {
+            await writeSanitizedJson(snapshotsDir, name, value, secrets);
+            if (name === "chat-boundary-cleanup.json") cleanup = (value as { cleanup?: string }).cleanup === "complete" ? "passed" : "failed";
+          },
+          observeResources(value) {
+            if (execution.task.id === "agent-chat.chat-disabled") boundaryScreenshotResources = { companyId: value.companyId, agentId: value.agentId };
+            // Boundaries independently collect their real resources. They do not
+            // manufacture LiveFixtureValues or a source issue for result fields.
+            if (value.runIds.length) matcherResults.push({ matcher: { kind: "json_path", path: "boundary.actual-agent-dispatch", expected: true },
+              passed: false, detail: "This pre-chat boundary observed an unexpected real provider admission." });
+          },
+        }, catalogDescriptor);
+        matcherResults.push(...checks.map(check => ({ matcher: { kind: "json_path" as const, path: `boundary.${check.id}`, expected: true }, passed: check.passed, detail: check.detail })));
+      } else {
+      if (execution.task.flow === "public_mcp" || execution.suite.id === "chat-features" && findChatCatalogCase(execution.task.id)?.authentication === "human-session") publicMcpUserId = await establishPublicMcpSession(api, page, secrets);
       if (execution.suite.id === "stock-harness") {
         const receipt = verifyStockHarnessPreflight(process.env[STOCK_PREFLIGHT_ENV]);
         await writeSanitizedJson(snapshotsDir, "stock-harness-preflight.json", receipt, secrets);
+      }
+      if (execution.task.flow === "setup_health") {
+        const credential = await checkSetupHealthCredential({ executionId: execution.id, provider: execution.profile.provider,
+          model: execution.profile.model, credential: credentials.OPENROUTER_API_KEY, env: process.env, secrets });
+        await writeSanitizedJson(snapshotsDir, "chat-setup-credential.json", credential, secrets);
+        if (!credential.recognized) throw new Error(`Setup-health credential prerequisite failed: ${credential.code}`);
       }
       const nativeRolloutEnabled = execution.profile.provider !== "codex";
       const experimental = await api.patch<{
@@ -946,7 +1028,11 @@ for (const execution of executions) {
       if (execution.suite.id === "daytona-git-streaming") {
         await setupGitStreamingWorkspace(workspacePath);
       }
-      fixtures = execution.task.flow === "first_task"
+      fixtures = await withSdkCanaryPreFixture({ execution, sourceRevision: resolveRunnerE2ESource().sha,
+        capture: () => captureSdkCanaryPreFixture({ execution, repositoryRoot: path.resolve(import.meta.dirname, "../.."), temporaryRoot,
+          sourceRevision: resolveRunnerE2ESource().sha, secrets }),
+        retain: proof => writeSanitizedJson(snapshotsDir, "sdk-canary-pre-fixture.json", proof, secrets),
+        fixtures: async () => execution.task.flow === "first_task"
         ? await setupFirstTaskFixtures({ page, api, execution, nonce, credentials, daytonaImage: process.env.PAPERCLIP_E2E_DAYTONA_IMAGE, deadlineAt: startedAtMs + deadlineMs, observe: value => { fixtures = value; }, onCompanyCreated })
         : await setupLiveFixtures({
         api,
@@ -957,7 +1043,7 @@ for (const execution of executions) {
         daytonaImage: process.env.PAPERCLIP_E2E_DAYTONA_IMAGE,
         cleanupDeadlineAt: kimiLifecycleTiming?.cleanupDeadlineAt,
         onCompanyCreated,
-      });
+      }) });
       if (execution.profile.provider === "cursor_cloud") {
         cursorCloudObserver = new CursorCloudOwnedObserver(api, fixtures.company.id, fixtures.agent.id, credentials.CURSOR_API_KEY!);
         registerBeforeEnvironmentTeardownAssertion(() => cursorCloudObserver!.cleanup());
@@ -1322,17 +1408,32 @@ for (const execution of executions) {
         });
         issue = contextIntegrity.issue as unknown as IssueRecord;
         selectedRuns = contextIntegrity.runs as unknown as RunRecord[];
+      } else if (execution.task.flow === "setup_health") {
+        await runChatSetupHealth({ api, fixtures, temporaryRoot: temporaryRoot!, evidence: completionEvidence });
+        await captureSetupHealthProfile({ executionId: execution.id, api, page,
+          companyId: fixtures.company.id, agentId: fixtures.agent.id, capturePrivate: capturePrivateScreenshot });
+        matcherResults = [{ matcher: { kind: "json_path", path: "setupHealth.closed-checks", expected: true }, passed: true,
+          detail: "One genuine ordinary setup hello, exact saved configuration, zero chat/task work." }];
       } else if (execution.task.flow === "agent_chat") {
         const chat = await runChatFlow({
+          privateSecrets: secrets, privateInputs,
           page, api, fixtures, execution, nonce, workspacePath,
           deadlineAt: startedAtMs + deadlineMs,
           restart: () => restartChatServer(page, () => restartIsolatedPaperclipServer({ api, requestId: `chat-${nonce}`, deadlineAt: startedAtMs + deadlineMs })),
+          retireFailedAttempt: async error => {
+            catalogFailureCaptureAttempted = true;
+            primaryError ??= error;
+            try { await writeSanitizedJson(snapshotsDir, "failed-attempt-checkpoint.json", {
+              schema: "paperclip.runner-e2e.failed-attempt-checkpoint/v1", executionId: execution.id,
+              qualification: "unqualified", featureOutcome: "unknown", phase: "before_owned_retirement",
+            }, secrets); } finally { await cancelActiveRunsForCleanup(20_000); }
+          },
           observe: (chatIssue, chatRuns) => { issue = chatIssue; selectedRuns = chatRuns; },
-          capture: captureScreenshot,
+          capture: ordinaryChatCapture(execution.suite.id, capturePrivateScreenshot, captureScreenshot),
           evidence: completionEvidence,
           check: (id, passed, detail) => matcherResults.push({ matcher: { kind: "json_path", path: `chat.${id}`, expected: true }, passed, detail }),
         });
-        issue = chat.issue; selectedRuns = chat.runs;
+        if (chat) { issue = chat.issue; selectedRuns = chat.runs; }
         if (matcherResults.length === 0) matcherResults = [{ matcher: { kind: "issue_status", expected: "in_review" }, passed: true, detail: "Chat workflow and durable handoff/session assertions passed" }];
       } else if (execution.task.flow === "first_task") {
         const firstTask = await runFirstTaskFlow({
@@ -2992,16 +3093,19 @@ for (const execution of executions) {
         }
         expect(qualification, "completion reply accuracy").toBe("passed");
       }
+      }
     } catch (error) {
       primaryError = error;
+      innerSecretFinding ||= classifyFailure(error) === "secret_leak";
       if (execution.task.flow === "first_task" && !firstTaskEvidence && classifyFailure(error) === "candidate_failure") {
         failureClassOverride = "permanent_infrastructure";
       }
       try {
-        await captureApiState();
+        if (!(error instanceof SetupHealthAbort)) await captureApiState();
       } catch (captureError) {
         const failureClass = classifyFailure(captureError);
         if (failureClass === "secret_leak") {
+          innerSecretFinding = true;
           failureClassOverride = "secret_leak";
           primaryError = new AggregateError(
             [primaryError, captureError],
@@ -3016,7 +3120,7 @@ for (const execution of executions) {
           });
         }
       }
-      if (!page.isClosed()) {
+      if (!(error instanceof SetupHealthAbort) && !page.isClosed()) {
         if (isReviewedFixtureScreenshotRoute()) {
           await captureScreenshot(
             "failure",
@@ -3030,6 +3134,7 @@ for (const execution of executions) {
         }
       }
     } finally {
+      const healthAbort = primaryError instanceof SetupHealthAbort;
       await workerTiming.enter("cleanup");
       trace?.phase("cleanup", Boolean(primaryError));
       await responseTiming?.stop();
@@ -3052,9 +3157,11 @@ for (const execution of executions) {
           `Browser diagnostics contained unsafe data: ${error instanceof Error ? error.message : String(error)}`,
         );
         failureClassOverride = "secret_leak";
+        innerSecretFinding = true;
       }
       browserBootstrap.dispose();
-      if (fixtures) {
+      if (healthAbort) { cleanup = "failed"; failureClassOverride = "cleanup_failure"; }
+      if (fixtures && !healthAbort) {
         await captureRuntimeLeases().catch((error) => {
           networkDiagnostics.push({
             runtimeBillingCaptureError:
@@ -3134,6 +3241,7 @@ for (const execution of executions) {
             ? classifyFailure(primaryError)
             : undefined;
           const cleanupFailureClass = classifyFailure(error);
+          innerSecretFinding ||= priorFailureClass === "secret_leak" || cleanupFailureClass === "secret_leak";
           failureClassOverride =
             priorFailureClass === "secret_leak"
               ? priorFailureClass
@@ -3198,9 +3306,12 @@ for (const execution of executions) {
         if (checks.some(check => !check.passed)) primaryError ??= new Error("Feedback persistence matcher failed");
       }
 
-      const traceReceipt = await trace?.export({ failed: Boolean(primaryError), runIds: selectedRuns.map(run => run.id),
-        cleanup, complaints: feedback.complaints, suggestions: feedback.suggestions });
-      await saveTrace();
+      let traceReceipt: Awaited<ReturnType<NonNullable<typeof trace>["export"]>> | undefined;
+      try {
+        traceReceipt = await trace?.export({ failed: Boolean(primaryError), runIds: selectedRuns.map(run => run.id),
+          cleanup, complaints: feedback.complaints, suggestions: feedback.suggestions });
+        await saveTrace();
+      } catch (error) { primaryError ??= error; }
       const finishedAtMs = Date.now();
       const runtimeUsage = fixtureRuntimeCostCoverage(buildRuntimeUsage({
         environmentId: execution.environment.id,
@@ -3272,10 +3383,10 @@ for (const execution of executions) {
         screenshots,
         cleanup,
       };
-      const result: RunnerE2EResult = {
+      const result: RunnerE2EResult = withholdPrivateScreenshots({
         ...resultWithoutBilling,
         billing: summarizeExecutionBilling(resultWithoutBilling),
-      };
+      }, { innerSecretFinding });
       if (firstTaskEvidence) {
         await writeSanitizedJson(snapshotsDir, "first-task-result-private.json", result, secrets);
       }
@@ -3292,5 +3403,6 @@ for (const execution of executions) {
     }
 
     if (primaryError) throw primaryError;
+  });
   });
 }

@@ -1,0 +1,308 @@
+{
+  "schemaVersion": 1,
+  "scope": 60,
+  "liveOperations": 0,
+  "note": "Capability audit only. Local means constructible investigation path, not implemented or passing. Provider means genuine prerequisite required, not an inferred unsupported product capability. All frozen scenarios stay in denominator.",
+  "scenarios": [
+    {
+      "scenarioId": "agents.hire-claude-code",
+      "readinessClass": "provider",
+      "needs": "Eligible Claude account, qualified computer; must bind account and perform true validation."
+    },
+    {
+      "scenarioId": "agents.hire-needs-account",
+      "readinessClass": "provider",
+      "needs": "Start genuinely without eligible Anthropic access, then complete supported human account setup; resumed branch requires real Claude credentials."
+    },
+    {
+      "scenarioId": "agents.hire-needs-approval",
+      "readinessClass": "implemented",
+      "needs": "Actual company approval policy; real pending Morgan proposal rejected by human; explicit changed Jules request accepted against same proposed identity; counted exact decision notifications and no premature worker runs."
+    },
+    {
+      "scenarioId": "agents.hire-denied",
+      "readinessClass": "implemented",
+      "needs": "Effective deny via public permissions; independent bearer probe; assert no employee/proposal/delegated task and honest human path."
+    },
+    {
+      "scenarioId": "agents.ambiguous-cloud-code",
+      "readinessClass": "provider",
+      "needs": "Both Claude Code and cloud execution must genuinely be available; human choice before any harness/target commit."
+    },
+    {
+      "scenarioId": "agents.edit-instructions",
+      "readinessClass": "implemented",
+      "needs": "Versioned instructions with genuine concurrent public human revision during active query; preserve unrelated guidance, merge testing rule or expose conflict."
+    },
+    {
+      "scenarioId": "agents.restore-instructions",
+      "readinessClass": "implemented",
+      "needs": "Two real saved instruction revisions; restore exact predecessor; history, side file, source-run/agent attribution and profile UI."
+    },
+    {
+      "scenarioId": "agents.change-manager",
+      "readinessClass": "implemented",
+      "needs": "Real same-company Morgan/Riley; tree validity, unchanged account/config/task ownership; saved attribution and profile reload."
+    },
+    {
+      "scenarioId": "agents.choose-primary",
+      "readinessClass": "implemented",
+      "needs": "Real authenticated primary replacement, visible confirmation, independently unchanged secondary person/company and recent-chat precedence without new runs."
+    },
+    {
+      "scenarioId": "agents.pause-agent",
+      "readinessClass": "implemented",
+      "needs": "Genuine active worker; board profile Pause; observe pause state and actual old-run settlement without acknowledgement credit."
+    },
+    {
+      "scenarioId": "agents.resume-agent",
+      "readinessClass": "implemented",
+      "needs": "Public manual pause plus independently preserved readiness; permitted resume and separate remaining-gate branch."
+    },
+    {
+      "scenarioId": "agents.retire-agent",
+      "readinessClass": "implemented",
+      "needs": "Actual busy native assignment and truthful human-authored historical task/documents; agent denial, human Terminate UI, confirmed cancellation and retained identity/history/attribution."
+    },
+    {
+      "scenarioId": "agents.configure-required-agent",
+      "readinessClass": "implemented",
+      "needs": "Public built-in summarizer provision; change only supported config with protected identity/history unchanged."
+    },
+    {
+      "scenarioId": "agents.agent-api-key",
+      "readinessClass": "implemented",
+      "needs": "Human-session canonical query, real agent-only denial; standalone browser child (not merely newContext) owns actual human one-time key creation, /agents/me identity, reload disappearance and revoke401. Token stays exclusively in child memory; child privately scans complete generated document/artifact/run evidence, returning only closed validated boolean/UUID metadata. Synthetic real Test raw API debug/report canary passed offline; no live key qualification claimed."
+    },
+    {
+      "scenarioId": "agents.existing-grok-bot",
+      "readinessClass": "provider",
+      "needs": "Existing owned Grok Bot, experiment enabled, real two-way authenticated challenge; no local substitute."
+    },
+    {
+      "scenarioId": "agents.managed-profile",
+      "readinessClass": "implemented",
+      "needs": "Credential-free exact unavailable starting context: actual empty managed profile inventory, ordinary-agent read/provision403, actual operator GET/OpenAPI contract and rejected retention/qualification422 probes before any provisioning. Native chat must identify operator qualification, locked/restricted environment and retention acknowledgement without false readiness; all profiles/tasks/agent configuration remain unchanged. No provider resources or ready-profile end state required by frozen YAML."
+    },
+    {
+      "scenarioId": "agent-chat.reopen-conversation",
+      "readinessClass": "implemented",
+      "needs": "Genuine native setup history and declared canonical query boundary; same owned Morgan source, actual run-bound navigation guidance, private-list denial and no navigation execution."
+    },
+    {
+      "scenarioId": "agent-chat.remember-and-follow-up",
+      "readinessClass": "implemented",
+      "needs": "Genuine native blue preview and retained agreement after reload; exact canonical preview link; explicit never-selected alternate-design follow-up with independent phase clarification."
+    },
+    {
+      "scenarioId": "agent-chat.track-delegated-work",
+      "readinessClass": "implemented",
+      "needs": "Genuine native prior source handoff; real Morgan active process; canonical status/run/link attribution; actual released brief and automatic source-correlated completion with saved result and no duplicate work."
+    },
+    {
+      "scenarioId": "agent-chat.multiple-handoffs",
+      "readinessClass": "implemented",
+      "needs": "Real Riley Logo task/native SVG artifact completes first; genuine source setup human/native turn retains distinct completed Logo and active Morgan Website references. Canonical own-run reply and one source-attributed headline queue entry precede one normal consuming Website continuation. Exact native saved comment input/latest headline revision and retained original revision are checked; Logo task, SVG bytes, attachment identity and every document revision remain unchanged. No live qualification claimed."
+    },
+    {
+      "scenarioId": "agent-chat.conference-room",
+      "readinessClass": "implemented",
+      "needs": "Enable supported local-trusted board surface; exact company route/browser scope and differing protocol honestly described."
+    },
+    {
+      "scenarioId": "agent-chat.chat-disabled",
+      "readinessClass": "implemented",
+      "needs": "Actual allowlisted authenticated-harness boundary; disable Agent Chat itself; real Morgan route unavailable/no composer, agent settings denial, create-chat 404, usable Morgan profile and zero tasks/chats/native admissions."
+    },
+    {
+      "scenarioId": "runs-adapters.list-model-options",
+      "readinessClass": "implemented",
+      "needs": "Real admitted model discovery/account inventory; independently compare restrictions, availability and binding, secrets never exposed."
+    },
+    {
+      "scenarioId": "runs-adapters.validate-hire",
+      "readinessClass": "provider",
+      "needs": "Eligible selected account with genuine target authentication failure; deterministic failure must not be synthesized in saved state."
+    },
+    {
+      "scenarioId": "runs-adapters.inspect-failed-run",
+      "readinessClass": "implemented",
+      "needs": "Public unavailable-model configuration must actually admit one native failed run with model/task/actor/terminal-event evidence; restore exact configuration, one actual human Retry, later successful HTML artifact, retained failure/source links and truthful missing logs/cost."
+    },
+    {
+      "scenarioId": "runs-adapters.reset-session",
+      "readinessClass": "implemented",
+      "needs": "Real native saved session/file/artifact prerequisite; actual human reset; exact new user continuation; fresh future session with retained history and bytes."
+    },
+    {
+      "scenarioId": "runs-adapters.upgrade-runner",
+      "readinessClass": "provider",
+      "needs": "Qualified legacy Claude target and compatible config/account; real human upgrade plus unsupported-setting atomic rejection branch."
+    },
+    {
+      "scenarioId": "execution-environments.add-computer",
+      "readinessClass": "provider",
+      "needs": "No SSH target; human operator connection details, real saved target and qualification before completion."
+    },
+    {
+      "scenarioId": "execution-environments.choose-capable-target",
+      "readinessClass": "provider",
+      "needs": "Two genuine targets with differing selected Claude support; authorized discovery boundary independently probed."
+    },
+    {
+      "scenarioId": "execution-environments.test-computer",
+      "readinessClass": "provider",
+      "needs": "Real SSH environment and operator probe; actual remote login/missing-runtime outcome, never localhost substitute."
+    },
+    {
+      "scenarioId": "execution-environments.assign-computer",
+      "readinessClass": "provider",
+      "needs": "Same-company qualified cloud target; public saved agent binding and protected/unsupported branch."
+    },
+    {
+      "scenarioId": "execution-environments.prepare-image",
+      "readinessClass": "provider",
+      "needs": "Real sandbox provider administration, image preparation status, immutable pinned usable image; Daytona key/image absent."
+    },
+    {
+      "scenarioId": "recovery.explain-stall",
+      "readinessClass": "implemented",
+      "needs": "Actual local native process-fault fixture verifies public PID/company/task/actor, OS UID/group/start/executable and attempt-owned realpath runtime root twice before signalling only the exact owned Runner PID. Requires three distinct actual coordinator process attempts on the same heartbeat and genuine terminal native_session_retry_exhausted source-scoped board recovery action with retained run/cause/maxAttempts/nextAction. Unexpected quarantine, permanent/model failure or replacement heartbeat blocks setup concretely, never relabelled. Canonical reply must preserve original task/action/owner and failure, no duplicate repair; diagnosis additionally binds actual three-attempt infrastructure facts. All paths authored; no process signals or live qualification performed."
+    },
+    {
+      "scenarioId": "recovery.controller-restart",
+      "readinessClass": "implemented",
+      "needs": "Existing input.restart supports action; native saved file/instruction before canonical query requires declared setup-human boundary."
+    },
+    {
+      "scenarioId": "recovery.source-action",
+      "readinessClass": "implemented",
+      "needs": "Actual local native process-fault fixture verifies public PID/company/task/actor, OS UID/group/start/executable and attempt-owned realpath runtime root twice before signalling only the exact owned Runner PID. Requires three distinct actual coordinator process attempts on the same heartbeat and genuine terminal native_session_retry_exhausted source-scoped board recovery action with retained run/cause/maxAttempts/nextAction. Unexpected quarantine, permanent/model failure or replacement heartbeat blocks setup concretely, never relabelled. Canonical reply must preserve original task/action/owner and failure, no duplicate repair; diagnosis additionally binds actual three-attempt infrastructure facts. All paths authored; no process signals or live qualification performed."
+    },
+    {
+      "scenarioId": "recovery.retry-exhausted",
+      "readinessClass": "implemented",
+      "needs": "Same genuine three owned native-process faults/coordinator exhaustion fixture; initial ordinary human Retry guidance. Actual hard-stop budget prevents first Retry admission and retains visible failure; explicit follow-up gets its own actual gate report. Actual operator restores budget/clears recorded error only if needed, one eligible human Retry with server-owned original failed context admits one native result; exact retryOfRunId/createdAt/current gate/original failed row/latest output verified. Final explicit human query/native reply reports actual outcome. Both blocked and eligible phases authored; no live fault or Retry qualification claimed."
+    },
+    {
+      "scenarioId": "recovery.workspace-repair",
+      "readinessClass": "local",
+      "needs": "Real export failure and newer destination edits; board reconciliation and uncertain-source hold; owned filesystem fixtures allowed."
+    },
+    {
+      "scenarioId": "recovery.unknown-email-outcome",
+      "readinessClass": "provider",
+      "needs": "Authorized real email with lost response after possible acceptance and unresolved provider receipt; no automatic resend, independent duplicates check."
+    },
+    {
+      "scenarioId": "recovery.post-stop-message",
+      "readinessClass": "local",
+      "needs": "Real run cleanup boundary; explicit Stop and saved new direction, single eligible continuation, no concurrent owner."
+    },
+    {
+      "scenarioId": "recovery.browser-reconnect",
+      "readinessClass": "implemented",
+      "needs": "Three executable real offline phases: native completion, independently observed still-running work, and mandatory actually admitted failed native attempt under explicit unavailable-model configuration; each answer bound to its own persisted human/native run. No live qualification claimed."
+    },
+    {
+      "scenarioId": "steering.queue-follow-up",
+      "readinessClass": "implemented",
+      "needs": "Actual busy native Morgan; canonical contact instruction saved once into correct ordered task queue with source-run attribution, visible waiting UI; one normal later native input consumes exact saved comment and preserves initial document revision plus contact result."
+    },
+    {
+      "scenarioId": "steering.edit-queued-message",
+      "readinessClass": "implemented",
+      "needs": "Genuine human-owned red request behind active native Morgan; board-only edit and reorder, two real browser tabs exercise concurrent revision 409, merged full blue text and first position persist, one ordinary successor consumes exact ordered comments, consumed edit rejects and real UI offers new direction. No live qualification claimed."
+    },
+    {
+      "scenarioId": "steering.discard-queued-message",
+      "readinessClass": "implemented",
+      "needs": "Actual human-owned pending contact request removed through supported discard while neighbour persists; public comment404 and human audit prove deletion, no native wake receives it. A distinct later contact request is actually consumed, rejects late discard409, and an explicit phase-bound human source follow-up sends one real new-direction continuation without erasing history. No live qualification claimed."
+    },
+    {
+      "scenarioId": "steering.steer-active",
+      "readinessClass": "implemented",
+      "needs": "Actual running native owner and saved human message with real advertised steering; canonical human-control guidance and ordinary-agent403, actual Steer click, independently retained same-run ACK/audit and idempotent replay, or actual provider rejection retaining visible exact message for one normal continuation. Actual registered HTML is rendered offline with network and JavaScript disabled and computed visible blue colors plus latest native-attributed design revision. Both outcome branches authored; neither branch live qualified."
+    },
+    {
+      "scenarioId": "steering.interrupt-with-direction",
+      "readinessClass": "implemented",
+      "needs": "Actual native busy owner plus truthful human-authored saved simpler plan and actual human plan-confirmation acceptance before canonical query. Accepted plan response independently requiresFreshSession=true, source-qualified native production Interrupt control (no legacy substitute) enabled but no setup interruption/admission. Canonical guidance precedes actual human Interrupt; exact native cancellation ACK/retained full event history, original finishedAt before one successor startedAt, observed no concurrent owners, exact accepted revision/context forceFreshSession and real registered simpler HTML/latest delivery revision. Accepted original plan revision remains in public revision history. No live qualification claimed."
+    },
+    {
+      "scenarioId": "steering.stop-versus-pause",
+      "readinessClass": "implemented",
+      "needs": "Real Launch parent, two concurrently native-running descendants and separately human-paused child with independent effective budget hold. Actual human Pause subtree yields retained parent/membership and both acknowledged native cancellations; actual later Resume with wake disabled releases only parent hold, preserving original child hold and budget. Already-held child is correctly retained as skipped/already_held in public preview/membership. No invented tomorrow schedule or live qualification."
+    },
+    {
+      "scenarioId": "steering.preserve-draft",
+      "readinessClass": "implemented",
+      "needs": "Unsent canonical query and completed upload receipt must survive task switch/reload before send; shared flow sends original query immediately after setup."
+    },
+    {
+      "scenarioId": "steering.approval-delivery",
+      "readinessClass": "implemented",
+      "needs": "Actual Morgan native run creates one ordinary durable naming question then waits in real tool process while two real human comments remain queued. Canonical run may answer only with actual authorized interaction audit, or real human uses supported response card. Typed Acorn decision retains exact question/actor/result while actual human UI edits, keyboard-reorders and discards ordinary comments. Remaining response projection is immutable and ordinary mutation rejects; one normal native successor has exact question ID/answer input and actual Acorn latest output with earlier revision retained. Both valid response actors authored and calibrated; no live qualification claimed."
+    },
+    {
+      "scenarioId": "task-coordination.delegate-with-context",
+      "readinessClass": "implemented",
+      "needs": "Real human-authored Launch task brief comment+uploaded attachment bytes, actual CEO ownership and genuine pre-query source acknowledgement. Canonical creates one Morgan child or actually linked work task, durable original/copied brief and independent Morgan bearer download hash. Real gated native implementation produces registered HTML and latest non-plan delivery revision; correlated automatic source completion incorporates actual result with no parent execution or duplicate task. No live qualification claimed."
+    },
+    {
+      "scenarioId": "task-coordination.block-on-design",
+      "readinessClass": "implemented",
+      "needs": "Actual first-class Design dependency saved by CEO on Website, reloaded blocker UI and ordinary human start attempt before approval admit no worker. Actual human Design completion clears prerequisite; ordinary eligible admission produces one genuine Morgan document/result. Explicit second source human/native phase reports actual completion. Public full HeartbeatRun.createdAt is joined to real human approval audit timing. No live qualification claimed."
+    },
+    {
+      "scenarioId": "task-coordination.reject-dependency-cycle",
+      "readinessClass": "implemented",
+      "needs": "Real Design\u2192Website edge before query; reject reverse edge, unchanged records, both detail endpoint sets and actual task links."
+    },
+    {
+      "scenarioId": "task-coordination.independent-review",
+      "readinessClass": "implemented",
+      "needs": "Real Morgan native implementation registers HTML and blocks before any review request; configured eligible Riley review policy remains unchanged. Genuine source setup context, canonical CEO stage transition with source-run audit, actual Riley waiting run and bearer-read deliverable/acceptance check; Morgan self-approval rejects while policy remains pending. Riley actual native approval/activity/latest decision and review document resolve same task with original implementation hash retained; explicit final human query receives its own attributed actual completion report. No live qualification claimed."
+    },
+    {
+      "scenarioId": "task-coordination.pause-tree",
+      "readinessClass": "implemented",
+      "needs": "Real Launch parent, two concurrently native-running descendants and separately human-paused child with independent effective budget hold. Actual human Pause subtree yields retained parent/membership and both acknowledged native cancellations; actual later Resume with wake disabled releases only parent hold, preserving original child hold and budget. Already-held child is correctly retained as skipped/already_held in public preview/membership. No invented tomorrow schedule or live qualification."
+    },
+    {
+      "scenarioId": "workspaces.locate-files",
+      "readinessClass": "implemented",
+      "needs": "Actual projectless task execution binding; independent read active binding and distinguish pending choice from agent defaults."
+    },
+    {
+      "scenarioId": "workspaces.prepare-repository",
+      "readinessClass": "provider",
+      "needs": "Authorized acorn/site source currently unavailable; use auditable incidental fixture binding only if manager approves real owned Git fixture identity."
+    },
+    {
+      "scenarioId": "workspaces.private-repository-no-access",
+      "readinessClass": "provider",
+      "needs": "Real private repository and absent eligible Git connection, followed by genuine human access grant and intended-source preparation."
+    },
+    {
+      "scenarioId": "workspaces.preview-service",
+      "readinessClass": "implemented",
+      "needs": "Actual native HTML prerequisite; preconfigured stopped managed service, canonical start, independent HTTP/content/browser/service/work-product identity, explicit actual failed restart and phase-attributed actionable error."
+    },
+    {
+      "scenarioId": "workspaces.inspect-git",
+      "readinessClass": "implemented",
+      "needs": "Genuine native task workspace, owned synthetic Git baseline and two actual uncommitted edits; speaking agent admitted into that exact bound workspace; independent HEAD/diff/status/bytes and real file browser."
+    },
+    {
+      "scenarioId": "workspaces.close-and-reopen",
+      "readinessClass": "implemented",
+      "needs": "Genuine Morgan file/artifact plus separate real Riley workspace; native setup context pins exact closure target. Authorized close, retained source fields and unchanged original artifact bytes, actual browser download and untouched Riley workspace/file."
+    },
+    {
+      "scenarioId": "workspaces.recover-lost-sandbox",
+      "readinessClass": "provider",
+      "needs": "True historical export failure and destroyed exact sandbox, surviving attachments; board saved-source reconstruction and fresh admission, no false recovered lost files."
+    }
+  ]
+}

@@ -1,0 +1,173 @@
+{
+  "schema": "paperclip.chat-catalog-preservation/v1",
+  "productionBaseline": "39e811c9c5226979fce42e052a27cfb28301018a",
+  "canonicalEvalBase": "0098da56f4c10f3154ed4ed96b1404fdf7a021ca",
+  "scenarioCount": 244,
+  "lazyCatalogEntries": 242,
+  "standaloneFlows": [
+    "tasks.create-backlog",
+    "tasks.delegate-announcement"
+  ],
+  "purpose": "Eval source preservation only; no qualification, new attempt, budget reset or live admission.",
+  "components": [
+    {
+      "name": "SDK",
+      "sourceRevision": "9754e46d89bfa99e913efaf1769fe2d8b403fc4d"
+    },
+    {
+      "name": "overview-related",
+      "sourceRevision": "a62a023a5544ffcab98ee6624b0a583a6e8e6775"
+    },
+    {
+      "name": "status-card",
+      "sourceRevision": "97bcf2476d9f03bec70bec4ebd788e113fcc4425"
+    },
+    {
+      "name": "skills",
+      "sourceRevision": "bdca7305bf4c64fea033ae6ceec07927d2a754e2"
+    },
+    {
+      "name": "Ready2",
+      "sourceRevision": "819b7cf649c5551c32ba913509790ad16c1d5008"
+    },
+    {
+      "name": "repo",
+      "sourceRevision": "2a630b6b09efe4711dbbc42d0e0fc070067bbb17"
+    },
+    {
+      "name": "formal-model",
+      "sourceRevision": "687efafc61f841342c52b7d2a8c920b75c218d16"
+    },
+    {
+      "name": "formal-clock",
+      "sourceRevision": "f09af3cdebd58376d095d6f49d53aae80b635b6e"
+    },
+    {
+      "name": "new-company",
+      "sourceRevision": "6726c40f01342081557c265944ab8783f9ee82b4"
+    },
+    {
+      "name": "history-eval-only",
+      "sourceRevision": "2b84e38c15b10e10ef6c063984d375a14b307c4a"
+    },
+    {
+      "name": "ordinary-original-clock-multipart",
+      "sourceRevision": "73856cebe07cab32df42fdec7ff6ea7192cdd474"
+    },
+    {
+      "name": "new-company-original-clock",
+      "sourceRevision": "7c846a27a0b1ac1908d929209b60d7942f4246fb"
+    },
+    {
+      "name": "sdk-two-public-setup",
+      "sourceRevision": "8cb209e726237644f1312d2385da460083d0a035"
+    },
+    {
+      "name": "task-two-public-prerequisites",
+      "sourceRevision": "ef45d57ab8919854e7203ee789f6441db1470b87"
+    },
+    {
+      "name": "document-restore-decision-audience",
+      "sourceRevision": "8bf05430d65f1bd354b3eceea4e6a7963aca6a6c"
+    },
+    {
+      "name": "outbound-standing-native-provenance",
+      "sourceRevision": "7db3308ea4e48f4d87130e384a672b1ebd5f5394"
+    }
+  ],
+  "productionPrerequisites": [
+    {
+      "scenarioId": "onboarding.new-company",
+      "corePullRequest": 18103,
+      "reason": "Actual local OpenCode native authentication/hello probe, absent from frozen production baseline."
+    },
+    {
+      "scenarioId": "questions-and-approvals.formal-hire-revision",
+      "corePullRequest": 18105,
+      "reason": "Permission-qualified, truthful responseText pre-dispatch recovery guidance, absent from frozen production baseline."
+    },
+    {
+      "scenarioId": "routines.read-history",
+      "corePullRequest": 18033,
+      "reason": "Actual local-native task status must finalize public routine history; merged after the frozen production baseline."
+    }
+  ],
+  "coreChangesIncluded": false,
+  "candidateOutcomesQualifyFrozenBaseline": false,
+  "historicalResultsCarriedToThisHead": 0,
+  "knownUnqualifiedFixtureFindings": [
+    {
+      "scenarioIds": [
+        "plugins.disable-plugin"
+      ],
+      "finding": "The preserved fixture sends a secret_ref object to an apiKey schema declared string with secret-ref format. The returned final reached this setup request and received HTTP400; the public validator requires the secure secret UUID string. This spent failure is retained without repair or rerun."
+    },
+    {
+      "scenarioIds": [
+        "plugins.configure-plugin"
+      ],
+      "finding": "The returned final stopped earlier at the initial-identity wait. Its later UI/configuration leg was not exercised. The preserved object-vs-string secret-ref expectation is therefore a source-only finding for that later leg, not attribution of the observed failure. The spent raw failure remains unchanged without rerun."
+    }
+  ],
+  "readinessLimits": {
+    "declaredUnsupportedFreshContext": [
+      "access.invite-teammate",
+      "access.manage-membership",
+      "activity.routine-audit",
+      "agents.restore-instructions",
+      "budgets-costs.subscription-fees",
+      "navigation-preferences.sidebar-order"
+    ],
+    "currentProfileOrPublicCapabilityGaps": [
+      "assistant-connections.use-scoped-client",
+      "companies.configure-decision-model",
+      "steering.steer-active"
+    ],
+    "otherRequirements": "Official provider resources, selected credentials, authorized operators and actual remote targets still require their declared public prerequisites. Importability is not runtime readiness.",
+    "attempts": "All original raw grades, source fingerprints, ordinals, usage, billing, privacy and cleanup remain bound to their original measurements. Exhausted cases remain exhausted.",
+    "sidebarOrdering": "The frozen legacy Projects manual-order surface is absent from both current39e layouts. No injected classic UI, fabricated ordering or feature revival is included."
+  },
+  "preservationParentRevision": "372b192327e6a02c6ab3da4961521b8632a60fb6",
+  "latestAcceptedEvalOnlyOverlays": {
+    "sdk-two-public-setup": {
+      "sourceRevision": "8cb209e726237644f1312d2385da460083d0a035",
+      "scenarioIds": [
+        "secrets.least-scope-delivery",
+        "routines.plugin-managed-routine"
+      ],
+      "contracts": "Actual public resume Agent/state/version plus new unique public plugin operation receipt inside unchanged90s; managed selected saved resource facts in ordinary source description/CEO readback and structural JSON equality only."
+    },
+    "task-two-public-prerequisites": {
+      "sourceRevision": "ef45d57ab8919854e7203ee789f6441db1470b87",
+      "scenarioIds": [
+        "tasks.organize-open-work",
+        "task-coordination.delegate-with-context"
+      ],
+      "contracts": "Actual ready-to-paused owners/version/manual holds with original deadline/no work; owned human browser Origin on original exact attachment upload with unchanged production guard."
+    },
+    "document-restore-decision-audience": {
+      "sourceRevision": "8bf05430d65f1bd354b3eceea4e6a7963aca6a6c",
+      "scenarioIds": [
+        "documents-artifacts.restore-document",
+        "inbox-search.show-decisions"
+      ],
+      "contracts": "Exact public document id/task/key/revision/bytes plus actual Plans UI identity; independently authenticated addressed Riley pending-decision feed with explicit owner/Riley principal guards. Actual returned final failures stay exhausted and source preservation does not change outcomes."
+    },
+    "outbound-standing-native-provenance": {
+      "sourceRevision": "7db3308ea4e48f4d87130e384a672b1ebd5f5394",
+      "scenarioIds": [
+        "chat-channels.outbound-email"
+      ],
+      "contracts": "Canonical source-human/native run, actual ordinary task creating actor/originRunId, public creation audit and unique native assignment admission. Standing-chat parentNULL and actual public issue.create omitted parent projection supported; explicit email-child/thread/endpoint and all original provider-receipt/duplicate/draft controls preserved. Authorized AgentMail input remains an external gate."
+    }
+  },
+  "ordinaryComposedHeadRuntimeQualification": 0,
+  "excludedCandidatePrerequisitesUnchanged": [
+    18103,
+    18105,
+    18033,
+    17917,
+    17848
+  ],
+  "acceptedSourceDoesNotCureSpentRawFailures": true
+}

@@ -1,3 +1,4 @@
+import { readDockerConfigForSecretScan, type DockerConfigCustody } from "./docker-config-custody.js";
 import { createReadStream } from "node:fs";
 import { lstat, readdir } from "node:fs/promises";
 import path from "node:path";
@@ -11,6 +12,17 @@ const SECRET_SHAPES = [
   /\bsk-(?:proj-)?[A-Za-z0-9_-]{16,}\b/g,
   /\b(?:openrouter|daytona)[-_]?(?:api)?[-_]?key["'=:\s]+[A-Za-z0-9._-]{12,}\b/gi,
 ] as const;
+
+export function secretShapeObservations(text: string) {
+  const matches: Array<{ detector: number; start: number; end: number }> = [];
+  for (const [detector, pattern] of SECRET_SHAPES.entries()) {
+    for (const match of text.matchAll(new RegExp(pattern.source, pattern.flags))) {
+      if (matches.length >= 32) return { bounded: false, matches };
+      matches.push({ detector, start: match.index!, end: match.index! + match[0].length });
+    }
+  }
+  return { bounded: true, matches: matches.sort((a, b) => a.start - b.start || a.detector - b.detector) };
+}
 
 const SENSITIVE_JSON_KEY =
   /^(?:api[-_]?key|access[-_]?token|refresh[-_]?token|auth(?:orization)?|bearer|client[-_]?secret|cookie|password|secret|token)$/i;
@@ -272,9 +284,12 @@ export async function findSecretLeakInDirectory(
     ignoreFile?: (file: string) => boolean;
     allowDisappearedFile?: (file: string) => boolean;
     privateCodexRuntimeIdentityRoot?: string;
+    privateDockerDatabaseConfig?: DockerConfigCustody;
   } = {},
 ): Promise<({ file: string } & SecretLeakMatch) | null> {
   const index = secretMatchIndex(secrets, options.sources);
+  if (options.privateDockerDatabaseConfig && root !== path.join(options.privateDockerDatabaseConfig.temporaryRoot, "paperclip-home")) throw new Error("Docker config custody requires the isolated home scan");
+  const dockerConfigText = options.privateDockerDatabaseConfig ? await readDockerConfigForSecretScan(root, options.privateDockerDatabaseConfig) : undefined;
   let privateIdentity: string | undefined;
   if (options.privateCodexRuntimeIdentityRoot) {
     if (path.resolve(options.privateCodexRuntimeIdentityRoot) !== path.resolve(root)) {
@@ -305,6 +320,11 @@ export async function findSecretLeakInDirectory(
         if (leak) return leak;
       } else if (entry.isFile()) {
         if (options.ignoreFile?.(file)) continue;
+        if (options.privateDockerDatabaseConfig && file === options.privateDockerDatabaseConfig.configPath) {
+          const match = matchSecret(dockerConfigText!, index, options);
+          if (match) return { file, ...match };
+          continue;
+        }
         if (privateIdentity && options.privateCodexRuntimeIdentityRoot && isEphemeralCodexRolloutFile(options.privateCodexRuntimeIdentityRoot, file)) {
           const stream = createReadStream(file);
           const lines = createInterface({ input: stream, crlfDelay: Infinity });

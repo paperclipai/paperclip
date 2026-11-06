@@ -154,4 +154,35 @@ describeEmbeddedPostgres("teams catalog install with no caller adapter overrides
       .map((row) => row.adapterType);
     expect(otherAdapters).toEqual(["paperclip_runner", "paperclip_runner"]);
   });
+  it("derived catalog installs selected native runtime without caller overrides", async () => {
+    const repositoryRoot = path.resolve(import.meta.dirname, "../../..");
+    const temporaryRoot = await fs.mkdtemp(path.join(os.tmpdir(), "team-runtime-derived-pg-"));
+    const oldDir = process.env.PAPERCLIP_TEAMS_CATALOG_DIR, oldDefault = process.env.PAPERCLIP_TEAMS_CATALOG_DEFAULT_ADAPTER_TYPE;
+    try {
+      const helper = await import("../../../tests/runner-e2e/chat-catalog-domains/external-team-runtime-fixture.js");
+      Object.assign(process.env, await helper.teamRuntimeCatalogServerEnvironment({ repositoryRoot, temporaryRoot, executionIds: ["chat-features.runner-opencode.local.teams.install-team"] }));
+      const companyId = await seedEmptyCompany();
+      const { secretService } = await import("../services/secrets.js");
+      const account = await secretService(db).create(companyId, { name: "Derived package account", provider: "local_encrypted", value: "synthetic-model-free-account" });
+      const manifest = JSON.parse(await fs.readFile(path.join(repositoryRoot, "packages/teams-catalog/generated/catalog.json"), "utf8"));
+      const team = manifest.teams.find((row: {slug: string}) => row.slug === "product-engineering");
+      const config = { provider: "opencode", model: "openrouter/deepseek/deepseek-v4.1-flash-1017", timeoutSec: 0, lifecycleMode: "per_turn", opencodePermissionMode: "allow", env: { OPENROUTER_API_KEY: { type: "secret_ref", secretId: account.id, version: "latest" } } };
+      const derived = await helper.normalizeTeamRuntimeCatalog({ repositoryRoot, temporaryRoot, team, adapters: Object.fromEntries(team.agentSlugs.map((slug: string) => [slug, { adapterType: "paperclip_runner", adapterConfig: config }])) });
+      vi.resetModules();
+      const { teamsCatalogService: actualService, getCatalogTeamOrThrow } = await import("../services/teams-catalog.js");
+      expect((await getCatalogTeamOrThrow(team.id)).contentHash).toBe(derived.effectiveContentHash);
+      const svc = actualService(db);
+      const preview = await svc.previewCatalogTeamImport(companyId, team.id, {});
+      for (const member of preview.portabilityPreview.manifest.agents) expect(member.adapterConfig).toMatchObject(config);
+      await svc.installCatalogTeam(companyId, team.id, { collisionStrategy: "rename", include: { projects: false, issues: false } });
+      const saved = await db.select().from(agents).where(eq(agents.companyId, companyId));
+      expect(saved).toHaveLength(3);
+      for (const member of saved) { expect(member.adapterType).toBe("paperclip_runner"); expect(member.adapterConfig).toMatchObject(config); }
+    } finally {
+      if (oldDir === undefined) delete process.env.PAPERCLIP_TEAMS_CATALOG_DIR; else process.env.PAPERCLIP_TEAMS_CATALOG_DIR = oldDir;
+      if (oldDefault === undefined) delete process.env.PAPERCLIP_TEAMS_CATALOG_DEFAULT_ADAPTER_TYPE; else process.env.PAPERCLIP_TEAMS_CATALOG_DEFAULT_ADAPTER_TYPE = oldDefault;
+      await fs.rm(temporaryRoot, { recursive: true, force: true });
+    }
+  }, 30_000);
+
 });

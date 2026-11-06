@@ -1,0 +1,26 @@
+{
+  "syntheticOnly": true,
+  "tests": 2,
+  "childFailureAndExpectedParentFailure": true,
+  "invalidOwnedBindingRejectedBeforeHttp": true,
+  "realProviderCalls": 0,
+  "canonicalAttempts": 0,
+  "browserLaunches": 0,
+  "qualificationClaim": "private child/reporting failure boundary only, including separate reviewer credential; actual AgentMail setup, inbound fixture sends and positive provider receipt unqualified",
+  "checkedSinks": [
+    "stdout",
+    "JUnit",
+    "blob ZIP entries",
+    "HTML embedded report ZIP",
+    "error-context"
+  ],
+  "scannedItems": 12,
+  "privateValueCount": 6,
+  "findings": [],
+  "sourceSha256": {
+    "runtime-email-private.ts": "3c6c800165e63237e799756d785271ccf7300209b181256e7567247ab933e6f7",
+    "runtime-email-private-worker.ts": "806a0f00950f848f242c1b498a2ccdcd3f616cb96e7724e911c5cbeb4925c77c",
+    "runtime-email-private-privacy.spec.ts": "7555b21083352ff568e001e559e580dc7ff354787638f20914b74c5f195a0658"
+  },
+  "configSha256": "dcfb8e7013a1c2ff81277bb44bc5214357dc6fb5eacd2073cfaafca1790b31b1"
+}

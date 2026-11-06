@@ -46,6 +46,19 @@ describe("QuestionForm initial text", () => {
     await remount(refreshed); expect(input().value).toBe("Operator edit\n");
     expect(submit).not.toHaveBeenCalled();
   });
+  it("shows required validation without advancing or submitting after enabled Next", async () => {
+    await render({ schema: "paperclip.question_set.v1", questions: [
+      { id: "audience", prompt: "Who is the audience?", required: true, answerMode: "text" },
+      { id: "tone", prompt: "What tone should we use?", required: true, answerMode: "text" },
+    ] });
+    const next = Array.from(container.querySelectorAll("button")).find(button => button.textContent === "Next")!;
+    expect(next.disabled).toBe(false);
+    await act(async () => next.click());
+    expect(container.textContent).toContain("This question is required.");
+    expect(container.textContent).toContain("Who is the audience?");
+    expect(container.textContent).not.toContain("What tone should we use?");
+    expect(submit).not.toHaveBeenCalled();
+  });
   it("retains an explicitly cleared draft and required validation across reload", async () => {
     await render(); await edit(""); await remount();
     expect(input().value).toBe("");
