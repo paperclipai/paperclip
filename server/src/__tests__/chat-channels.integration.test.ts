@@ -58500,7 +58500,14 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     ]);
   });
 
-  it.each(["new", "close"] as const)("binds Slack DM slash controls to the native root returned for the latest task (%s)", async (control) => {
+  it.each([
+    { control: "new", status: "todo", state: "active" },
+    { control: "close", status: "todo", state: "active" },
+    { control: "new", status: "done", state: "active" },
+    { control: "close", status: "cancelled", state: "active" },
+    { control: "new", status: "done", state: "completed" },
+    { control: "close", status: "cancelled", state: "completed" },
+  ] as const)("binds Slack DM slash controls to the latest task ($control, $status, $state)", async ({ control, status, state }) => {
     const fixture = await seedCompany();
     const { callbacks, endpoint, runtime, service } =
       await configuredSlackEndpoint(fixture);
@@ -58557,18 +58564,20 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     );
     const [conversation] = await service.listConversations(endpoint.id);
     expect(conversation.externalThreadId).toBe(starterThreadId);
+    await db.update(issues).set({ status }).where(eq(issues.id, conversation.issueId));
+    await db.update(chatConversations).set({ state }).where(eq(chatConversations.id, conversation.id));
 
     await invoke("status");
     await service.processPendingPublications();
     expect(runtime.endpoints.get(endpoint.id)?.posts.at(-1)).toMatchObject({
       threadId: starterThreadId,
-      text: expect.stringMatching(/— todo$/),
+      text: expect.stringMatching(new RegExp(`— ${status}$`)),
     });
     await invoke(control);
-    await expect(service.listConversations(endpoint.id)).resolves.toEqual([
+    await expect(readChatConversationsByEndpointId(endpoint.id)).resolves.toEqual([
       expect.objectContaining({
         externalThreadId: starterThreadId,
-        state: "active",
+        state,
       }),
     ]);
     await service.processPendingPublications();
@@ -58578,6 +58587,11 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         state: "completed",
       }),
     ]);
+    const [completion] = await db.select().from(chatPublications).where(and(
+      eq(chatPublications.conversationId, conversation.id),
+      like(chatPublications.idempotencyKey, `control:${control}:%`),
+    ));
+    expect(completion?.state).toBe("published");
     expect(await readIssuesByCompanyId(fixture.companyId)).toHaveLength(1);
     const providerTime = Date.now();
     const providerTimestamp = `${Math.floor(providerTime / 1_000)}.${String((providerTime % 1_000) * 1_000).padStart(6, "0")}`;
