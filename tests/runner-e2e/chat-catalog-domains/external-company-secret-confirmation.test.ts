@@ -29,3 +29,8 @@ it("keeps optional metadata bounded and matches the production canonical-key fun
  const actual=new Function(source.slice(start,end+2).replace("export function normalizeSecretKey(input: string)","function normalizeSecretKey(input)")+";return normalizeSecretKey")() as (key:string)=>string;
  for(const key of ["DEPLOYMENT_API_KEY","deployment.api-key"])expect(canonicalCompanySecretKey(key)).toBe(actual(key));
 });
+
+it("preserves either supported accept-response policy and rejects no continuation",()=>{
+ for(const continuationPolicy of ["wake_assignee","wake_assignee_on_accept"])expect(companySecretConfirmationHandoff({...card(),continuationPolicy},binding,guidance)?.continuationPolicy).toBe(continuationPolicy);
+ expect(companySecretConfirmationHandoff({...card(),continuationPolicy:"none"},binding,guidance)).toBeUndefined();
+});

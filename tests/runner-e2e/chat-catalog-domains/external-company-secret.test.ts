@@ -369,7 +369,7 @@ function confirmationOutcome(){
  Object.assign(o.runs[0]!,{exitCode:0});Object.assign(o.runs[1]!,{exitCode:0,contextSnapshot:{issueId:"source",interactionId:"ack"}});
  o.activity[0]={id:"save",companyId:"company",entityId:"secret",action:"secret.created",actorType:"user",actorId:"person",createdAt:"2026-11-04T13:35:00Z"};
  o.activity.push({id:"accepted",companyId:"company",entityId:"source",action:"issue.thread_interaction_accepted",actorType:"user",actorId:"person",createdAt:"2026-11-04T13:40:00Z",details:{interactionId:"ack",interactionKind:"request_confirmation",interactionStatus:"accepted"}});
- Object.assign(o.state,{initialConfirmationId:"ack",initialConfirmationPayloadHash:createHash("sha256").update(JSON.stringify(payload)).digest("hex"),canonicalHumanCommentId:"initial-human",confirmationVisibleBeforeEntry:true,confirmationAnsweredThroughUi:true,confirmationResponseVerified:true,requestedCompanyName:"Deployment API Key",requestedCompanyKey:"DEPLOYMENT_API_KEY",savedCompanyName:"Deployment API Key",savedCompanyKey:"deployment_api_key",companySourceComments:[{id:"initial-human",companyId:"company",issueId:"source",authorUserId:"person",createdAt:"2026-11-04T12:59:00Z",body:"Add our deployment API key so Morgan can use it."}]});
+ Object.assign(o.state,{initialConfirmationId:"ack",initialConfirmationContinuationPolicy:"wake_assignee",initialConfirmationPayloadHash:createHash("sha256").update(JSON.stringify(payload)).digest("hex"),canonicalHumanCommentId:"initial-human",confirmationVisibleBeforeEntry:true,confirmationAnsweredThroughUi:true,confirmationResponseVerified:true,requestedCompanyName:"Deployment API Key",requestedCompanyKey:"DEPLOYMENT_API_KEY",savedCompanyName:"Deployment API Key",savedCompanyKey:"deployment_api_key",companySourceComments:[{id:"initial-human",companyId:"company",issueId:"source",authorUserId:"person",createdAt:"2026-11-04T12:59:00Z",body:"Add our deployment API key so Morgan can use it."}]});
  return o;
 }
 it("counts only a saved current-human confirmation and proves its actual bound native binding",()=>{
@@ -388,12 +388,23 @@ it.each(["pre-save","wrong person","wrong source","wrong scope","effect","unsafe
 it("keeps secure-save ACK and the later executed binding approval as distinct real human actions",()=>{
  const {o,card,marker}=governedCompanyOutcome(),direct=confirmationOutcome(),ack=direct.interactions[0]!;
  o.interactions.push(ack);o.phaseReplies=o.phaseReplies.filter(reply=>reply.runId!=="first");
- for(const key of ["initialConfirmationId","initialConfirmationPayloadHash","canonicalHumanCommentId","confirmationVisibleBeforeEntry","confirmationAnsweredThroughUi","confirmationResponseVerified","requestedCompanyName","requestedCompanyKey","savedCompanyName","savedCompanyKey","companySourceComments"])o.state[key]=direct.state[key];
+ for(const key of ["initialConfirmationId","initialConfirmationPayloadHash","initialConfirmationContinuationPolicy","canonicalHumanCommentId","confirmationVisibleBeforeEntry","confirmationAnsweredThroughUi","confirmationResponseVerified","requestedCompanyName","requestedCompanyKey","savedCompanyName","savedCompanyKey","companySourceComments"])o.state[key]=direct.state[key];
  Object.assign(o.secrets[0]!,{name:"Deployment API Key"});Object.assign(o.runs[0]!,{exitCode:0});Object.assign(o.runs[1]!,{exitCode:0,contextSnapshot:{issueId:"source",interactionId:"ack"}});
  o.activity[0]=direct.activity[0]!;o.activity.push(direct.activity.at(-1)!);
  card.payload.secretProposal!.sourceSecretLabel="Deployment API Key";
- Object.assign(marker,{humanInputKind:"confirmation",humanInputId:"ack",humanInputPayloadHash:o.state.initialConfirmationPayloadHash,humanInputSecretKey:"deployment_api_key",payloadHash:createHash("sha256").update(JSON.stringify(card.payload)).digest("hex")});
+ Object.assign(marker,{humanInputKind:"confirmation",humanInputId:"ack",humanInputPayloadHash:o.state.initialConfirmationPayloadHash,humanInputSecretKey:"deployment_api_key",humanInputContinuationPolicy:"wake_assignee",payloadHash:createHash("sha256").update(JSON.stringify(card.payload)).digest("hex")});
  const grade=companySecretExternalCases[0]!.grade(o);expect(grade.passed,JSON.stringify(grade.checks.filter(c=>!c.passed))).toBe(true);
  expect(companySecretExternalCases[0]!.expectedHumanQuestionAnswer!(o)?.companySecretConfirmation).toBeDefined();expect(companySecretExternalCases[0]!.expectedCompanySecretBindingApproval!(o)).toBeDefined();
  Object.assign(ack,{status:"pending",result:null,resolvedAt:null,resolvedByUserId:null});expect(companySecretExternalCases[0]!.grade(o).passed).toBe(false);
+});
+
+it("retains either supported ACK continuation policy and rejects a changed or absent continuation",()=>{
+ for(const policy of ["wake_assignee","wake_assignee_on_accept"]){
+  const o=confirmationOutcome();Object.assign(o.interactions[0]!,{continuationPolicy:policy});o.state.initialConfirmationContinuationPolicy=policy;
+  const definition=companySecretExternalCases[0]!;expect(definition.grade(o).passed,policy).toBe(true);expect(definition.expectedHumanQuestionAnswer!(o)?.companySecretConfirmation?.continuationPolicy).toBe(policy);
+ }
+ const o=confirmationOutcome(),expected=companySecretExternalCases[0]!.expectedHumanQuestionAnswer!(o)!;
+ Object.assign(o.interactions[0]!,{continuationPolicy:"wake_assignee_on_accept"});expect(companySecretExternalCases[0]!.grade(o).passed).toBe(false);
+ expect(verifyChatCatalogHumanQuestionAnswer({expected,companyId:"company",issueId:"source",agentId:"ceo",canonicalComment:{id:"initial-human",authorUserId:"person"},interactions:o.interactions as never,activity:o.activity,companySecrets:o.secrets as never,runs:o.runs})).toBeUndefined();
+ Object.assign(o.interactions[0]!,{continuationPolicy:"none"});expect(companySecretExternalCases[0]!.grade(o).passed).toBe(false);
 });
