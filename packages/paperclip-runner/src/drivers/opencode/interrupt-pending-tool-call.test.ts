@@ -108,6 +108,9 @@ it.each(["idle-after-settle", "idle-before-settle", "aborted-error"] as const)(
       }
       if (abortReport !== "aborted-error")
         emit({ type: "session.idle", properties: { sessionID: ownedSessionId } });
+      // Wait for the terminal frame with a bound rather than a fixed delay, then
+      // give a corrective prompt (the regression) time to appear.
+      await expect.poll(terminalEvents, { timeout: 5_000 }).toHaveLength(1);
       await settle();
 
       expect(prompts).toHaveLength(1);
