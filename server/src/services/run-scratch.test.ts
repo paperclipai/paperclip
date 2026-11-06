@@ -7,7 +7,9 @@ import {
   buildHeartbeatRunScratchEnv,
   cleanupHeartbeatRunScratch,
   prepareHeartbeatRunScratch,
+  sweepOrphanedRunScratch,
   type HeartbeatRunScratch,
+  type RunScratchSweepRunState,
 } from "./run-scratch.js";
 
 const cleanupDirs = new Set<string>();
@@ -121,5 +123,90 @@ describe("heartbeat run scratch cleanup", () => {
     expect(result.env.TEMP).toBe(scratch.dir);
     expect(result.env.TMP).toBe(scratch.dir);
     expect(result.tempKeysApplied).toEqual(["TEMP", "TMP"]);
+  });
+});
+
+describe("orphaned run scratch sweep", () => {
+  async function makeRoot() {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-sweep-test-"));
+    cleanupDirs.add(root);
+    return root;
+  }
+  async function leave(root: string, runId: string, createdAt = new Date().toISOString()) {
+    const dir = await fs.mkdtemp(path.join(root, `paperclip-run-x-${runId}-`));
+    await fs.writeFile(
+      path.join(dir, HEARTBEAT_RUN_SCRATCH_MARKER),
+      JSON.stringify({ version: 1, companyId: "c", agentId: "a", runId, issueId: null, issueIdentifier: null, createdAt }),
+    );
+    return dir;
+  }
+  const exists = (p: string) => fs.stat(p).then(() => true, () => false);
+  const states = (m: Record<string, RunScratchSweepRunState>) => async (ids: string[]) =>
+    new Map(ids.map((id) => [id, m[id] ?? "missing"] as const));
+
+  it("removes leftover attempt dirs of a terminal run, keeps active and unmarked dirs", async () => {
+    const root = await makeRoot();
+    const killedA = await leave(root, "run-done");
+    const killedB = await leave(root, "run-done");
+    const active = await leave(root, "run-live");
+    const unmarked = await fs.mkdtemp(path.join(root, "paperclip-run-x-nomarker-"));
+    const foreign = await fs.mkdtemp(path.join(root, "other-"));
+
+    const result = await sweepOrphanedRunScratch({
+      tmpRoot: root,
+      resolveRunStates: states({ "run-done": "terminal", "run-live": "active" }),
+    });
+
+    expect(result.removed.sort()).toEqual([killedA, killedB].sort());
+    expect(await exists(killedA)).toBe(false);
+    expect(await exists(killedB)).toBe(false);
+    expect(await exists(active)).toBe(true);
+    expect(await exists(unmarked)).toBe(true);
+    expect(await exists(foreign)).toBe(true);
+  });
+
+  it("limits a per-run sweep to that run", async () => {
+    const root = await makeRoot();
+    const a = await leave(root, "run-a");
+    const b = await leave(root, "run-b");
+    await sweepOrphanedRunScratch({
+      tmpRoot: root,
+      runId: "run-a",
+      resolveRunStates: states({ "run-a": "terminal", "run-b": "terminal" }),
+    });
+    expect(await exists(a)).toBe(false);
+    expect(await exists(b)).toBe(true);
+  });
+
+  it("removes missing-run dirs only after the minimum age", async () => {
+    const root = await makeRoot();
+    const fresh = await leave(root, "run-gone-new");
+    const old = await leave(root, "run-gone-old", new Date(Date.now() - 2 * 3600_000).toISOString());
+    await sweepOrphanedRunScratch({ tmpRoot: root, resolveRunStates: states({}) });
+    expect(await exists(fresh)).toBe(true);
+    expect(await exists(old)).toBe(false);
+  });
+
+  it("does not follow symlinks and bounds removals per sweep", async () => {
+    const root = await makeRoot();
+    const outside = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-sweep-outside-"));
+    cleanupDirs.add(outside);
+    await fs.writeFile(
+      path.join(outside, HEARTBEAT_RUN_SCRATCH_MARKER),
+      JSON.stringify({ version: 1, companyId: "c", agentId: "a", runId: "run-t", createdAt: new Date().toISOString() }),
+    );
+    await fs.symlink(outside, path.join(root, "paperclip-run-x-link"));
+    const dirs = [await leave(root, "run-t"), await leave(root, "run-t"), await leave(root, "run-t")];
+
+    const result = await sweepOrphanedRunScratch({
+      tmpRoot: root,
+      maxRemove: 2,
+      resolveRunStates: states({ "run-t": "terminal" }),
+    });
+
+    expect(await exists(outside)).toBe(true);
+    expect(result.removed).toHaveLength(2);
+    expect(result.truncated).toBe(true);
+    expect((await Promise.all(dirs.map(exists))).filter(Boolean)).toHaveLength(1);
   });
 });
