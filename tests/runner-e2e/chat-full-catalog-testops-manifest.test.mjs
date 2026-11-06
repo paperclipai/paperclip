@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { readFileSync, readdirSync } from 'node:fs';
 import { createRequire } from 'node:module';
-import { catalogTargetSha, catalogManifestSha256, fullCatalogPlanName, fullCatalogCases, validateFullCatalogManifest } from './chat-full-catalog-testops-manifest.mjs';
+import { catalogTargetSha, catalogManifestSha256, fullCatalogPlanName, fullCatalogCases, validateFullCatalogManifest, companySecretBindingApprovalMetadata, validateCompanySecretBindingApprovalSource } from './chat-full-catalog-testops-manifest.mjs';
 
 const { parseDocument } = createRequire(import.meta.url)('yaml');
 const bytes = readFileSync(new URL('./chat-full-catalog-testops-manifest.json', import.meta.url));
@@ -350,6 +350,9 @@ test('repair source metadata binds the corrected candidate and explicit changed 
     assert.equal(value.oracleVersion, declaration.oracleVersion);
     assert.equal(value.minimumRuns, declaration.minimumRunCount ?? declaration.expectedRunCount);
     assert.equal(value.maximumRuns, declaration.expectedRunCount);
+    const approval = companySecretBindingApprovalMetadata(declaration);
+    assert.deepEqual(Object.fromEntries(Object.keys(approval).map(key => [key, value[key]])), approval);
+    assert.equal(Object.hasOwn(value, 'optionalCompanySecretBindingApproval'), Object.hasOwn(approval, 'optionalCompanySecretBindingApproval'));
     assert.equal(value.declaredTurnTimeoutMs, declaration.turnTimeoutMs);
     assert.equal(value.attemptTimeoutMs, declaration.attemptTimeoutMs);
   }
@@ -374,4 +377,45 @@ test('repair source metadata binds the corrected candidate and explicit changed 
   ],
   "actualPostAssertionPGCasesPassed": 2
 });
+});
+
+
+test('Company approval metadata is projected without executing a fixture and rejects foreign or changed bounds', () => {
+  const declaration = { scenarioId: 'secrets.configure-company-secret', optionalCompanySecretBindingApproval: true,
+    expectedRunCount: 3, minimumRunCount: 2, expectedHumanMessageCount: 2, attemptTimeoutMs: 480000,
+    setup() { throw new Error('Fixture must not execute'); } };
+  assert.deepEqual(companySecretBindingApprovalMetadata(declaration),
+    { optionalCompanySecretBindingApproval: true, expectedHumanMessageCount: 2 });
+  assert.deepEqual(companySecretBindingApprovalMetadata({ scenarioId: 'other' }), {});
+  const future = structuredClone(manifest);
+  Object.assign(future.cases.find(value => value.key === declaration.scenarioId),
+    companySecretBindingApprovalMetadata(declaration), { minimumRuns: 2, maximumRuns: 3 });
+  assert.equal(validateFullCatalogManifest(future), future);
+  for (const mutation of [
+    { scenarioId: 'secrets.personal-secret' }, { optionalCompanySecretBindingApproval: false },
+    { expectedRunCount: 2 }, { minimumRunCount: 3 }, { expectedHumanMessageCount: 3 }, { attemptTimeoutMs: 480001 },
+  ]) assert.throws(() => companySecretBindingApprovalMetadata({ ...declaration, ...mutation }), /company_approval_invalid/);
+  for (const mutation of [
+    { key: 'secrets.personal-secret' }, { optionalCompanySecretBindingApproval: false },
+    { maximumRuns: 2 }, { minimumRuns: 3 }, { expectedHumanMessageCount: 3 }, { attemptTimeoutMs: 480001 },
+  ]) {
+    const invalid = structuredClone(future);
+    Object.assign(invalid.cases.find(value => value.key === declaration.scenarioId), mutation);
+    assert.throws(() => validateFullCatalogManifest(invalid), /company_approval_invalid/);
+  }
+});
+
+
+test('source admission joins the optional Company approval and base humans to actual static task metadata', () => {
+  const row = { key: 'secrets.configure-company-secret', optionalCompanySecretBindingApproval: true,
+    minimumRuns: 2, maximumRuns: 3, expectedHumanMessageCount: 2, attemptTimeoutMs: 480000 };
+  const task = { id: row.key, optionalCompanySecretBindingApproval: true, minimumExpectedRunCount: 2,
+    expectedRunCount: 3, expectedHumanMessageCount: 2, attemptTimeoutMs: { local: 480000 } };
+  assert.doesNotThrow(() => validateCompanySecretBindingApprovalSource(row, task));
+  for (const mutation of [{ optionalCompanySecretBindingApproval: undefined }, { expectedHumanMessageCount: 3 },
+    { id: 'secrets.personal-secret' }, { expectedRunCount: 2 }, { minimumExpectedRunCount: 3 }]) {
+    assert.throws(() => validateCompanySecretBindingApprovalSource(row, { ...task, ...mutation }));
+  }
+  const unmarked = { ...row }; delete unmarked.optionalCompanySecretBindingApproval;
+  assert.throws(() => validateCompanySecretBindingApprovalSource(unmarked, task), /approval mismatch/);
 });
