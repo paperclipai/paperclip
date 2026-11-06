@@ -3043,8 +3043,15 @@
     {
       "idx": 436,
       "version": "7",
-      "when": 1793955598405,
-      "tag": "0436_hesitant_wild_pack",
+      "when": 1793952565204,
+      "tag": "0436_legal_reavers",
+      "breakpoints": true
+    },
+    {
+      "idx": 437,
+      "version": "7",
+      "when": 1793956077407,
+      "tag": "0437_common_vivisector",
       "breakpoints": true
     }
   ]
