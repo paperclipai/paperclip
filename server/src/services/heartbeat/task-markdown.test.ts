@@ -8,6 +8,38 @@ const issue = {
 };
 
 describe("heartbeat task markdown rendering", () => {
+  it.each([
+    [true, true], [true, false], [false, true], [false, false],
+  ])("bounds plan context in every assignment variant (description=%s, comments=%s)", (includeDescription, includeWakeComments) => {
+    const head = "Outcome\n````\n" + "x".repeat(12_000 - 13);
+    const body = head + "omitted-tail".repeat(10_000);
+    const taskPlan = Object.freeze({ documentId: "plan-document", revisionId: "approved-revision", revisionNumber: 7, body });
+    const markdown = buildPaperclipTaskMarkdown({
+      issue, taskPlan, includeDescription, includeWakeComments,
+      acceptedPlanContinuation: true,
+      acceptedPlan: taskPlan,
+    })!;
+
+    expect(markdown).toContain(`\`\`\`\`\`text\n${head}\n\`\`\`\`\``);
+    expect(markdown).not.toContain("omitted-tail");
+    expect(markdown).toContain("Task plan document plan-document, revision 7 (approved-revision):");
+    expect(markdown).toContain(`Plan truncated at 12000 of ${body.length} chars`);
+    expect(markdown).toContain("GET /api/issues/task-1/documents/plan/revisions/approved-revision");
+    expect(markdown.length).toBeLessThan(16_000);
+    expect(taskPlan.body).toBe(body);
+  });
+
+  it.each(["", "  \n ", "short plan", "x".repeat(12_000)])("preserves plans within the inline limit (%#)", (body) => {
+    const markdown = buildPaperclipTaskMarkdown({
+      issue,
+      taskPlan: { documentId: "plan", revisionId: "revision", revisionNumber: 1, body },
+    })!;
+
+    expect(markdown).not.toContain("Plan truncated");
+    if (body.trim()) expect(markdown).toContain(`\`\`\`text\n${body.trim()}\n\`\`\``);
+    else expect(markdown).not.toContain("Task plan document");
+  });
+
   it.each([true, false])("keeps native task clarification in the current task on full and resumed assignments (description=%s)", (includeDescription) => {
     const markdown = buildPaperclipTaskMarkdown({
       issue: { ...issue, description: "Write a blog post about our launch." },
