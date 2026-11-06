@@ -5168,6 +5168,14 @@ mod tests {
         assert_eq!(events[0].payload["replayAllowed"], false);
         assert_eq!(events[1].event_type, "turn.failed");
         assert_eq!(events[1].payload["providerShutdownFailed"], true);
+        // An unanswered runtime request (and an unproven original lifetime)
+        // keeps the close path. Its cause survives the controller facade and
+        // is not offered for the restart continuation.
+        assert_eq!(
+            events[1].payload["error"]["code"],
+            "acpx_active_turn_recovery_closed"
+        );
+        assert_eq!(events[1].payload["error"]["recoverable"], false);
         assert_eq!(events[2].event_type, "run.terminal");
         assert_eq!(events[2].payload["schema"], "paperclip.prp.terminal.v1");
         assert_eq!(events[2].payload["turnTerminalState"], "failed");
@@ -5194,6 +5202,74 @@ mod tests {
         .expect("parse cleared ACPX state");
         assert!(!persisted.provider_exit_unconfirmed);
         assert!(!marker.exists());
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn lost_turn_restoration_refuses_unreconciled_state_before_touching_the_provider() {
+        let directory = temporary_directory("lost-turn-guards");
+        let provider_descriptor: AcpxProviderDescriptor =
+            serde_json::from_value(descriptor("claude")).unwrap();
+        let operations = Vec::new();
+        let tool_set = AuthorizedToolSet {
+            schema: TOOL_SET_SCHEMA.to_owned(),
+            schema_version: 1,
+            catalog_digest: authorized_tool_catalog_digest(&operations).unwrap(),
+            operations,
+        };
+        let identity = AcpxProviderSessionIdentity {
+            kind: "acpx".to_owned(),
+            normalized_session_id: "session-1".to_owned(),
+            acpx_record_id: "record-1".to_owned(),
+            backend_session_id: "backend-1".to_owned(),
+            agent_session_id: "agent-1".to_owned(),
+            profile_digest: provider_descriptor.command_digest.clone(),
+            workspace_digest: format!("sha256:{}", "a".repeat(64)),
+            requested_model: provider_descriptor.model.clone(),
+            effective_model: provider_descriptor.model.clone(),
+            permission_mode: Some(provider_descriptor.permission_mode),
+            mode: provider_descriptor.mode.clone(),
+            pi_thinking_level: provider_descriptor.pi_thinking_level,
+            claude_effort: provider_descriptor.claude_effort.clone(),
+            grok_effort: provider_descriptor.grok_effort.clone(),
+            grok_disable_web_search: provider_descriptor.grok_disable_web_search.clone(),
+            provider_lifetime_fence_candidates: [60_001, 60_002, 60_003],
+        };
+        let guards: [(&str, fn(&mut AcpxDurableState)); 4] = [
+            ("provider_exit_unconfirmed", |state| {
+                state.provider_exit_unconfirmed = true
+            }),
+            ("accepted_semantic_result", |state| {
+                state.semantic_result = Some(json!({"reportedWorkDisposition": "done"}))
+            }),
+            ("unanswered_runtime_request", |state| {
+                state
+                    .pending_runtime_requests
+                    .insert("input-1".to_owned(), pending_input_request("input-1"));
+            }),
+            ("active_goal", |state| {
+                state.goal_projection = json!({"goal": {"status": "active"}})
+            }),
+        ];
+        for (label, seed) in guards {
+            let mut state =
+                AcpxDurableState::new(provider_descriptor.clone(), tool_set.clone(), "d".into());
+            state.lifecycle = "turn_active".to_owned();
+            state.identity = Some(identity.clone());
+            state.active_turn_id = Some("turn-1".to_owned());
+            seed(&mut state);
+            let mut executor =
+                AcpxCommandExecutor::with_runner_config(&directory, &test_config(&directory, None));
+            executor.state = Some(state.clone());
+            assert!(
+                !executor
+                    .restore_conversation_after_lost_turn(Some("turn-1".to_owned()))
+                    .unwrap(),
+                "{label} must keep the close path"
+            );
+            assert!(executor.session.is_none(), "{label} started a provider");
+            assert_eq!(executor.state, Some(state), "{label} changed saved state");
+        }
         fs::remove_dir_all(directory).unwrap();
     }
 
