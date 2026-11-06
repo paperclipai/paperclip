@@ -31,6 +31,11 @@ import { createLocalDiskStorageProvider } from "../../storage/local-disk-provide
 import { idleMcpHistoryChecks } from "./idle-history-proof.js";
 import { idleWorkSnapshot } from "../task-admission.js";
 
+vi.mock("../cloud-runtime-identity.js", async importOriginal => ({
+  ...await importOriginal<typeof import("../cloud-runtime-identity.js")>(),
+  getCloudRuntimeIdentity: () => ({ stackId: "fixture-stack", canonicalOrigin: "https://paperclip.example" }),
+}));
+
 const externalUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_MCP_SLEEP_TEST_DATABASE_URL");
 const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTestSupport();
 
@@ -295,7 +300,10 @@ describe.skipIf(!support.supported)("MCP event committed work", () => {
       expect((await inspect()).transfers.blocked).toBe(true);
       expect(coordinator.nextWakeAt()).not.toBeNull();
       await vi.advanceTimersByTimeAsync(610_000); await settle();
-      const expired = await inspect(); expect(expired.transfers.blocked).toBe(false); expect(expired.schedule.blocked).toBe(false);
+      const expired = await inspect(); expect(expired.transfers.blocked).toBe(false);
+      expect(expired.frontDoor.blocked).toBe(true);
+      expect(expired.deviceStatus).toEqual({blocked:true,state:"missing-device-status-proof",deadlines:[]});
+      expect(expired.schedule.blocked).toBe(true);expect(expired.schedule.deadlines).toEqual([]);
       expect((await db.execute(idleMcpWorkQuery("mcp_file_tickets",{ ingress: expired.ingress, transfers: expired.transfers })!)).length).toBe(0);
       expect(await db.select().from(mcpFileTickets)).toHaveLength(2);
       expect((await db.execute(sql.raw(idleMcpHistoryChecks.find(check => check.reason === "mcp_attachment_uploads")!.query))).length).toBe(0);

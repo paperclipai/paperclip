@@ -7,7 +7,7 @@ const identity={version:1 as const,instanceId:"instance-1",origin:"https://tenan
 const receipt={...identity,enabled:true,generation:mcpClientMirrorGeneration(identity)};
 const complete={...receipt,frontDoor:"tenant-personal-v1" as const,deviceStatus:{keyId:"a".repeat(64),generation:"b".repeat(64),count:0}};
 complete.generation=mcpClientMirrorGeneration(complete);
-const rowFor=(value=receipt)=>({revision:7,enabled:true,remoteResponsibility:true,receipt:value,deviceCutoverAt:new Date(1),deviceCutoverStackId:"original-managed-stack"});
+const rowFor=(value=receipt)=>({revision:7,enabled:true,remoteResponsibility:true,receipt:value,deviceCutoverAt:new Date(1),deviceCutoverStackId:"stack"});
 function fixture(row:unknown){
   let queries=0,reads=0,checks=0;
   const tx={select:()=>{queries++;return{from:()=>({where:async()=>row===undefined?[]:[row]})};}} as unknown as Pick<Db,"select">;
@@ -33,7 +33,7 @@ describe("MCP client mirror inspection",()=>{
   it("only actual capability, status ref and durable cutover permit the personal profile",async()=>{
     const f=fixture(rowFor(complete)),result=await readIdleMcpClientMirror(f.tx,f.context);
     expect(result.blocked).toBe(false);expect(result.receipt).toEqual(complete);expect(result.deadlines).toEqual([]);
-    for(const patch of [{deviceCutoverAt:null},{deviceCutoverStackId:null}]){const missing=fixture({...rowFor(complete),...patch});expect((await readIdleMcpClientMirror(missing.tx,missing.context)).blocked).toBe(true);}
+    for(const patch of [{deviceCutoverAt:null},{deviceCutoverStackId:null},{deviceCutoverStackId:"foreign-stack"}]){const missing=fixture({...rowFor(complete),...patch});expect((await readIdleMcpClientMirror(missing.tx,missing.context)).blocked).toBe(true);}
     expect((await readIdleMcpClientMirror(f.tx,{...f.context,unsupportedProfiles:true})).blocked).toBe(true);
     expect(f.counts()).toEqual({queries:2,reads:2,checks:2});
   });
@@ -56,4 +56,15 @@ describe("MCP client mirror inspection",()=>{
     const f=fixture({...rowFor(),revision:8,enabled:false,receipt:null});expect((await readIdleMcpClientMirror(f.tx,{...f.context,enabled:false,managedStackId:undefined})).blocked).toBe(false);
     expect(f.counts()).toEqual({queries:0,reads:0,checks:0});
   });
+  it("strict retired namespace ACK remains absent after managed instance and origin replacement",async()=>{
+    const disabled={...receipt,enabled:false,revision:8,generation:mcpClientMirrorGeneration({...receipt,enabled:false,revision:8})};
+    const row={...rowFor(),revision:9,enabled:false,remoteResponsibility:false,receipt:disabled};
+    const f=fixture(row),next={...f.context,enabled:false,instanceId:"replacement-instance",origin:"https://replacement.example.test",managedStackId:"replacement-stack"};
+    expect(await readIdleMcpClientMirror(f.tx,next)).toEqual({blocked:false,state:"absent",deadlines:[]});
+    for(const patch of [{remoteResponsibility:true},{enabled:true},{revision:7},{receipt:{...disabled,generation:"0".repeat(64)}},{receipt:{...disabled,enabled:true}}]){
+      const pending=fixture({...row,...patch});expect((await readIdleMcpClientMirror(pending.tx,next)).blocked).toBe(true);
+      expect((await readIdleMcpClientMirror(pending.tx,{...next,origin:undefined,instanceId:undefined})).blocked).toBe(true);
+    }
+  });
+
 });

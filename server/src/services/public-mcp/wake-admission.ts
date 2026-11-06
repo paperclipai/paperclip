@@ -128,12 +128,3 @@ export function matchesMcpWakeClaim(receipt: McpWakeAdmission, claim: McpWakeCla
     lane.profile === claim.profile && lane.tokenKind === claim.tokenKind && lane.keys.some(key =>
       key.fingerprint === claim.fingerprint && (key.expiresAt === null || Date.parse(key.expiresAt) > now)));
 }
-
-export function hasCompletePersonalMcpFrontDoor(receipt:McpWakeAdmission){
-  const discovery=receipt.discovery,mirror=receipt.clientMirror;
-  return Boolean(discovery&&discovery.profiles.length===1&&discovery.profiles[0]==="personal-mcp"&&receipt.lanes.every(lane=>lane.profile==="personal-mcp")
-    &&mirror?.enabled&&mirror.frontDoor==="tenant-personal-v1"&&mirror.deviceStatus&&mirror.origin===discovery.origin
-    &&discovery.authorizationOrigin===discovery.origin&&(mirror.authorizationOrigin??mirror.origin)===discovery.origin);
-}
-
-export function isAbsentMcpAdmission(receipt:McpWakeAdmission){return receipt.absent===true&&receipt.lanes.length===0&&receipt.revocationAuthorities.length===0&&!receipt.discovery&&!receipt.clientMirror;}

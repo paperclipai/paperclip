@@ -275,6 +275,7 @@ export function createPublicMcpOAuth(db: Db, config: PublicMcpConfig, options: {
       && (s !== "paperclip:configure" || input.allowConfiguration === true));
     await notifyDeliveryWork(tx, DELIVERY_QUEUES.mcpIngressHandoffs);
     const [grant] = await tx.insert(mcpOauthGrants).values({ companyId: input.companyId!, userId: actor.userId, clientId: request.clientId, resource: request.resource, scopes, purpose: agentConnection ? "agent" : "personal" }).returning();
+    await notifyDeliveryWork(tx, DELIVERY_QUEUES.mcpRevocationIndex, grant!.id);
     await tx.insert(activityLog).values({ companyId: grant!.companyId, actorType: "user", actorId: actor.userId,
       action: "mcp.connection_authorized", entityType: "mcp_connection", entityId: grant!.id, details: { clientId: grant!.clientId, scopes } });
     return grant!;

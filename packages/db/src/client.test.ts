@@ -22,10 +22,28 @@ import {
 } from "./test-embedded-postgres.js";
 
 const cleanups: Array<() => Promise<void>> = [];
-const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+const historyExternalVariables = {
+  master0346: ["PAPERCLIP_DB_HISTORY_MASTER_REFERENCE_URL", "PAPERCLIP_DB_HISTORY_MASTER_TARGET_URL"],
+  muse0348: ["PAPERCLIP_DB_HISTORY_MUSE_REFERENCE_URL", "PAPERCLIP_DB_HISTORY_MUSE_TARGET_URL"],
+} as const;
+const anyHistoryExternal = Object.values(historyExternalVariables).flat().some(name => process.env[name]);
+const historyExternal = anyHistoryExternal ? Object.fromEntries(Object.entries(historyExternalVariables).map(([baseline, names]) => {
+  const values = names.map(name => {
+    const raw = process.env[name];
+    if (!raw) throw new Error(`Supply all explicit retained-history fixture URLs: missing ${name}`);
+    const url = new URL(raw);
+    if (!["postgres:", "postgresql:"].includes(url.protocol) || !/^[A-Za-z0-9_]+_test$/.test(decodeURIComponent(url.pathname.slice(1)))
+      || url.search || url.hash) throw new Error(`${name} requires an explicit dedicated *_test database without overrides`);
+    return raw;
+  });
+  return [baseline, { reference: values[0]!, target: values[1]! }];
+})) : undefined;
+if (historyExternal && new Set(Object.values(historyExternal).flatMap(pair => [new URL(pair.reference).pathname, new URL(pair.target).pathname])).size !== 4) throw new Error("Retained-history fixture databases must be distinct");
+const embeddedPostgresSupport: Awaited<ReturnType<typeof getEmbeddedPostgresTestSupport>> = historyExternal ? { supported: true } : await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
 async function createTempDatabase(): Promise<string> {
+  if (historyExternal) throw new Error("Explicit retained-history mode permits only its two selected migration cases");
   const db = await startEmbeddedPostgresTestDatabase("paperclip-db-client-");
   cleanups.push(db.cleanup);
   return db.connectionString;
@@ -267,12 +285,16 @@ describeEmbeddedPostgres("merged Muse migration histories", () => {
   }
 
   it.each(["fresh", "master0346", "muse0348"] as const)("migrates %s through the normal loader without rewriting historical receipts", async baseline => {
-    const referenceUrl = await createTempDatabase();
+    const externalPair = historyExternal?.[baseline];
+    const referenceUrl = externalPair?.reference ?? await createTempDatabase();
+    if (externalPair) await applyPendingMigrations(referenceUrl);
     const adminUrl = new URL(referenceUrl), databaseName = `merged_muse_${baseline.toLowerCase()}`;
-    adminUrl.pathname = "/postgres";
-    await ensurePostgresDatabase(adminUrl.toString(), databaseName);
-    adminUrl.pathname = `/${databaseName}`;
-    const connectionString = adminUrl.toString();
+    if (!externalPair) {
+      adminUrl.pathname = "/postgres";
+      await ensurePostgresDatabase(adminUrl.toString(), databaseName);
+      adminUrl.pathname = `/${databaseName}`;
+    }
+    const connectionString = externalPair?.target ?? adminUrl.toString();
     const sql = postgres(connectionString, { max: 1, onnotice: () => {} });
     const reference = postgres(referenceUrl, { max: 1, onnotice: () => {} });
     try {
@@ -295,7 +317,7 @@ describeEmbeddedPostgres("merged Muse migration histories", () => {
       const retainedRows = baseline === "fresh" ? null : await seedRetainedRows(sql, baseline === "muse0348");
       const beforeRows = await retainedRows?.();
       const expectedRetainedRows = beforeRows
-        ? { ...beforeRows, run: { ...beforeRows.run, legacy_process_settlement: null } }
+        ? { ...beforeRows, run: { ...beforeRows.run, legacy_process_settlement: null }, grant: { ...beforeRows.grant, revocation_index_receipt: null, revocation_revision: 0 } }
         : beforeRows;
       const state = await inspectMigrations(connectionString);
       expect(state.status).toBe("needsMigrations");

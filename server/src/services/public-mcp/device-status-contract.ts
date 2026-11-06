@@ -20,10 +20,3 @@ export function mcpDeviceStatusGeneration(input:{instanceId:string;origin:string
   if(new Set(parsed.map(entry=>entry.requestId)).size!==parsed.length||new Set(parsed.map(entry=>entry.fingerprint)).size!==parsed.length||parsed.some(entry=>entry.resource!==input.origin+"/mcp/paperclip"))throw new Error("MCP device status identity changed");
   return createHash("sha256").update(JSON.stringify(["mcp-device-status-snapshot-v1",input,parsed])).digest("hex");
 }
-export function mcpDeviceStatusError(entry:McpDeviceStatusEntry|undefined,input:{clientId:string;resource:string;now:number;publicLegacy:boolean}):"invalid_grant"|"expired_token"|"access_denied"|"authorization_pending"|"tenant_required"{
-  if(!entry||entry.clientId!==input.clientId||entry.resource!==input.resource||input.publicLegacy&&entry.ingressOwner!=="tenant")return"invalid_grant";
-  if(entry.status==="consumed")return"invalid_grant";
-  if(entry.expiresAt<=input.now)return"expired_token";
-  if(entry.status==="denied")return"access_denied";
-  return entry.status==="approved"||input.publicLegacy?"tenant_required":"authorization_pending";
-}

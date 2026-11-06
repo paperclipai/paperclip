@@ -127,11 +127,7 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       }
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
-    const runIds = await db
-      .select({ id: heartbeatRuns.id })
-      .from(heartbeatRuns)
-      .then((runs) => runs.map((run) => run.id));
-    await Promise.all(runIds.map((runId) => heartbeat.waitForRunExecutionDrain(runId)));
+    await heartbeat.drainActiveRunExecutions();
     mockAdapterExecute.mockReset();
     mockAdapterExecute.mockImplementation(async () => ({
       exitCode: 0,

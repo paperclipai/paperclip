@@ -37,7 +37,3 @@ export function mcpDiscoveryDocuments(raw: McpDiscovery): Array<{ path: string; 
   }
   return documents;
 }
-export function isMcpDiscoveryRequest(request: { method?: string; url?: string }): boolean {
-  return ["GET","HEAD"].includes(request.method ?? "") && ["/.well-known/oauth-protected-resource","/.well-known/oauth-protected-resource/mcp/paperclip","/.well-known/oauth-protected-resource/mcp/runner",
-    "/.well-known/oauth-authorization-server","/.well-known/oauth-authorization-server/mcp/runner/oauth"].includes(request.url ?? "");
-}
