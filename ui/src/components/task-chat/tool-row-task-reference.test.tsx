@@ -6,11 +6,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TranscriptEntry } from "@/adapters";
 import { queryKeys } from "../../lib/queryKeys";
 import { TaskChatRunnerActivityGroup } from "./TaskChatRunnerActivityGroup";
+import { TaskChatToolCard } from "./TaskChatToolCard";
 import { summarizeToolInput, transcriptToTaskChatItems } from "./transcript-adapter";
 import type { TaskChatActivityPhaseItem, TaskChatToolItem } from "./task-chat-model";
 
-const getIssue = vi.hoisted(() => vi.fn());
-vi.mock("../../api/issues", () => ({ issuesApi: { get: getIssue } }));
+const issuesApi = vi.hoisted(() => ({ get: vi.fn(), getCore: vi.fn() }));
+vi.mock("../../api/issues", () => ({ issuesApi }));
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -38,7 +39,8 @@ describe("tool rows never show raw task UUIDs", () => {
   let root: Root;
   let queryClient: QueryClient;
   beforeEach(() => {
-    getIssue.mockReset();
+    issuesApi.get.mockReset();
+    issuesApi.getCore.mockReset();
     container = document.createElement("div");
     document.body.appendChild(container);
     root = createRoot(container);
@@ -73,8 +75,24 @@ describe("tool rows never show raw task UUIDs", () => {
     expect(row?.textContent).toContain("PIX-3");
   });
 
+  it("reads only the core task view for an uncached task, on both tool-row surfaces", async () => {
+    issuesApi.getCore.mockResolvedValue({ id: TASK_UUID, identifier: "PIX-3", title: "Create printable cake menu and logo" });
+    const tool = taskLookupRow();
+    act(() => root.render(
+      <QueryClientProvider client={queryClient}>
+        <TaskChatToolCard item={tool} />
+      </QueryClientProvider>,
+    ));
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    const card = container.querySelector('[data-testid="task-chat-tool-card"]');
+    expect(card?.textContent).toContain("PIX-3");
+    expect(card?.textContent).not.toContain(TASK_UUID);
+    expect(issuesApi.getCore).toHaveBeenCalledTimes(1);
+    expect(issuesApi.get).not.toHaveBeenCalled();
+  });
+
   it("falls back to a plain word while the task cannot be resolved", async () => {
-    getIssue.mockRejectedValue(new Error("not found"));
+    issuesApi.getCore.mockRejectedValue(new Error("not found"));
     const row = renderRow(taskLookupRow());
     await act(async () => { await Promise.resolve(); });
     expect(row?.textContent).not.toContain(TASK_UUID);
