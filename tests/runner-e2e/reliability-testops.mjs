@@ -37,8 +37,16 @@ export const reliabilityDefinitions = Object.freeze([
 // Until every case and the plan have an identity, selecting this plan fails
 // closed with `product_regression_testops_reliability_unregistered`.
 export const reliabilityRegistration = Object.freeze({
-  planId: null,
-  caseIds: Object.freeze({}),
+  planId: 135,
+  caseIds: Object.freeze({
+    'interrupt-redirect': 885,
+    'reassign-midrun': 886,
+    'three-turn-revise': 887,
+    'long-silent-command': 888,
+    'tree-pause-release': 889,
+    'queue-steer': 890,
+    'queued-across-restart': 891,
+  }),
 });
 
 const fail = code => { throw new Error(`product_regression_testops_${code}`); };
