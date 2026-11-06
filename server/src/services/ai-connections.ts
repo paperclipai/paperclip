@@ -714,34 +714,48 @@ export function aiConnectionService(db: Db) {
           { userId },
         );
       else if (input.ownership === "personal") {
-        const definition = await secrets.createUserSecretDefinition(
+        const key = `ai_${grantId.replaceAll("-", "_")}`;
+        const slot = (await secrets.listCurrentUserSecretValues(companyId, userId))
+          .find((entry) => entry.definition.key === key);
+        const definition = slot?.definition ?? await secrets.createUserSecretDefinition(
           companyId,
           {
-            key: `ai_${grantId.replaceAll("-", "_")}`,
+            key,
             name: input.name,
             provider: "local_encrypted",
           },
           { userId },
         );
-        const secret = await secrets.createCurrentUserSecretValue(
-          companyId,
-          userId,
-          { definitionId: definition.id, value: verifiedCredential },
-          { userId },
-        );
-        secretId = secret.id;
-      } else
-        secretId = (
-          await secrets.create(
+        if (slot?.secret) {
+          await secrets.rotate(slot.secret.id, { value: verifiedCredential }, { userId });
+          secretId = slot.secret.id;
+        } else {
+          const secret = await secrets.createCurrentUserSecretValue(
             companyId,
-            {
-              name: `ai-${grantId}`,
-              provider: "local_encrypted",
-              value: verifiedCredential,
-            },
+            userId,
+            { definitionId: definition.id, value: verifiedCredential },
             { userId },
-          )
-        ).id;
+          );
+          secretId = secret.id;
+        }
+      } else {
+        const retained = await secrets.getByName(companyId, `ai-${grantId}`);
+        if (retained) {
+          await secrets.rotate(retained.id, { value: verifiedCredential }, { userId });
+          secretId = retained.id;
+        } else
+          secretId = (
+            await secrets.create(
+              companyId,
+              {
+                name: `ai-${grantId}`,
+                provider: "local_encrypted",
+                value: verifiedCredential,
+              },
+              { userId },
+            )
+          ).id;
+      }
       if (input.agentIds.length) {
         const targets = await tx
           .select({ id: agents.id })
