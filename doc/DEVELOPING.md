@@ -573,6 +573,7 @@ revision is known. Document activity refreshes the interaction list, and a
 superseded or stale-target response refreshes it immediately. The UI keeps a
 newer review visible if its document query still has an older revision. These
 display rules do not resolve requests or change the server's approval checks.
+Recovery retry uses the same plan freshness check as the composer.
 
 Use **Chat & Comments → Task Chat Unanswered Questions → Test Drive** to
 try a regular task question: dismiss it, reload, reopen its compact feed entry,

@@ -3,7 +3,7 @@ import type { IssueDocument } from "@paperclipai/shared";
 
 export function isOutdatedPlanConfirmation(
   interaction: IssueThreadInteraction,
-  plan: IssueDocument | null | undefined,
+  plan: Pick<IssueDocument, "id" | "companyId" | "issueId" | "latestRevisionId" | "latestRevisionNumber" | "updatedAt"> | null | undefined,
 ): boolean {
   if (!plan || interaction.status !== "pending" || interaction.kind !== "request_confirmation") return false;
   const target = interaction.payload.target;

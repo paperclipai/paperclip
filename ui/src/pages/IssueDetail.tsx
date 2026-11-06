@@ -261,6 +261,7 @@ import { waitForStoppedRuns } from "../lib/wait-for-stopped-runs";
 import { useIssueExternalObjects } from "../hooks/useIssueExternalObjects";
 import { IssueGalleryContext } from "../context/IssueGalleryContext";
 import { useIssuePlanDocument } from "../hooks/useIssuePlanDocument";
+import { isOutdatedPlanConfirmation } from "../components/task-chat/interaction-thread-order";
 import { useTaskArtifactArrival } from "../hooks/useTaskArtifactArrival";
 import { IssueRunLedger } from "../components/IssueRunLedger";
 import { IssueWorkspaceCard } from "../components/IssueWorkspaceCard";
@@ -4013,9 +4014,15 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
   const shouldDeferPanelUntilPlan =
     taskChatShellEnabled &&
     (isOnboardingFirstTask || issue?.workMode === "planning");
+  const hasPendingPlanConfirmation = interactions.some(interaction =>
+    interaction.status === "pending" && interaction.kind === "request_confirmation"
+    && interaction.payload.target?.type === "issue_document" && interaction.payload.target.key === "plan");
   const { data: deferredPanelPlanDoc } = useIssuePlanDocument(
-    shouldDeferPanelUntilPlan ? issue?.id : null,
+    shouldDeferPanelUntilPlan || hasPendingPlanConfirmation ? issue?.id : null,
   );
+  const hasPendingInteraction = interactions.some(interaction =>
+    interaction.status === "pending" && !isDeferredConversationInteraction(interaction)
+    && !isOutdatedPlanConfirmation(interaction, deferredPanelPlanDoc));
   const [panelBeforePlanOverrideIssueId, setPanelBeforePlanOverrideIssueId] =
     useState<string | null>(null);
   const panelBeforePlanOverride =
@@ -8479,11 +8486,11 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
                     : treeControlStateError ? "Couldn’t check whether this task is paused. Refresh to try again."
                     : activePauseHold ? "Resume the task before retrying."
                     : issue.project?.pausedAt ? "Resume the project before retrying."
-                    : interactions.some(i => i.status === "pending" && !isDeferredConversationInteraction(i)) ? "Respond to the pending question or confirmation before retrying." : null}>
+                    : hasPendingInteraction ? "Respond to the pending question or confirmation before retrying." : null}>
                 <DispositionRecoveryProvider value={{
                   issue,
                   agentMap,
-                  hasPendingInteraction: interactions.some((interaction) => interaction.status === "pending" && !isDeferredConversationInteraction(interaction)),
+                  hasPendingInteraction,
                   unavailableReason: boardAccess && !canResolveBoardRecoveryAction
                     ? "You don’t have permission to retry this recovery action."
                     : treeControlStateError

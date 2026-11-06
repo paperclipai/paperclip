@@ -3901,7 +3901,7 @@ describe("IssueDetail", () => {
     mockIssuesApi.resolveRecoveryAction.mockReset();
   });
 
-  it.each(["success", "failure", "pending question"])("connects the inline disposition retry to current state (%s)", async outcome => {
+  it.each(["success", "failure", "pending question", "outdated plan", "current plan"])("connects the inline disposition retry to current state (%s)", async outcome => {
     const fail = outcome === "failure";
     const actionId = "recovery-action-inline";
     const snapshot: DispositionRecoverySnapshot = { kind: "disposition_repair_escalated", actionId, attemptCount: 2, maxAttempts: 2, reason: "unchanged_source_state_exhausted", assigneeAgentId: "agent-1" };
@@ -3914,13 +3914,28 @@ describe("IssueDetail", () => {
     mockIssuesApi.get.mockResolvedValue(issue);
     mockIssuesApi.listComments.mockResolvedValue([{ id: "notice-inline", companyId: issue.companyId, issueId: issue.id, authorType: "system", body: "Unrelated prose", createdAt: new Date(), updatedAt: new Date(), metadata: { version: 1, sections: [], recovery: snapshot } }]);
     if (outcome === "pending question") mockIssuesApi.listInteractions.mockResolvedValue([{ id: "question-1", kind: "ask_user_questions", status: "pending", payload: { version: 1, questions: [] } }]);
+    if (outcome.endsWith("plan")) {
+      mockIssuesApi.getDocument.mockResolvedValue({
+        id: "plan-document", companyId: issue.companyId, issueId: issue.id, key: "plan", title: "Plan", format: "markdown", body: "# Current plan",
+        latestRevisionId: "revision-4", latestRevisionNumber: 4,
+        createdAt: new Date("2026-11-01T10:00:00Z"), updatedAt: new Date("2026-11-01T10:03:00Z"),
+        createdByAgentId: "agent-1", createdByUserId: null, updatedByAgentId: "agent-1", updatedByUserId: null,
+        lockedAt: null, lockedByAgentId: null, lockedByUserId: null,
+      });
+      const fixture = (await import("@/fixtures/issueThreadInteractionFixtures")).genericPendingRequestConfirmationInteraction;
+      const revision = outcome === "outdated plan" ? 3 : 4;
+      mockIssuesApi.listInteractions.mockResolvedValue([{
+        ...fixture, companyId: issue.companyId, issueId: issue.id, createdAt: new Date("2026-11-01T10:01:00Z"),
+        payload: { version: 1, prompt: "Approve the plan?", target: { type: "issue_document", key: "plan", documentId: "plan-document", revisionId: `revision-${revision}`, revisionNumber: revision } },
+      }]);
+    }
     if (fail) mockIssuesApi.resolveRecoveryAction.mockRejectedValue(new Error("The task is now paused."));
     else mockIssuesApi.resolveRecoveryAction.mockResolvedValue({ issue: { ...issue, status: "todo", activeRecoveryAction: null }, recoveryAction: { ...issue.activeRecoveryAction, status: "resolved" } });
     await act(async () => renderIssueView());
     await flushReact(); await flushReact();
     const retry = Array.from(container.querySelectorAll("button")).find(b => b.textContent === "Retry agent");
     expect(retry).toBeDefined();
-    if (outcome === "pending question") {
+    if (outcome === "pending question" || outcome === "current plan") {
       expect(retry!.disabled).toBe(true);
       expect(container.textContent).toContain("Respond to the pending question or confirmation before retrying.");
       await act(async () => retry!.click());
