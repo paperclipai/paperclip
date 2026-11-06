@@ -2479,6 +2479,10 @@ start until that controller settles. The queued turn's projection names this
 wait ("Waiting for previous run to stop", cause `previous_run_settling`) while
 the predecessor's finalization lease is held and unexpired. The ingress liveness
 bound above makes that controller settle, and its cleanup starts the queued turn.
+Such a stopped run can then settle as `failed` when its transport fails closed.
+Its recorded user Stop still marks later messages as new direction. When the
+dispatch gate withholds the queued turn behind saved-work recovery, it saves
+that message for the deferred-receipt worker, as it does for a cancelled source.
 
 A bounded transport close can return before artifact staging settles. That
 return does not prove cleanup completed or release the retained-state obligation.
