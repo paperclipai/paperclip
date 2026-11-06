@@ -4710,7 +4710,39 @@ export function toolAccessService(
               await notifyGitHubCredentialChange(tx, { companyId: existing.companyId, config });
             }
             if (existing.transport === "voice") await notifyVoiceChange(tx, { kind: "connection", id: existing.id });
+            if (existing.transport === "mcp_remote" && input.credentialSecretRefs !== undefined) {
+              await tx.select({ id: connectionGrants.id }).from(connectionGrants)
+                .where(and(eq(connectionGrants.companyId, existing.companyId), eq(connectionGrants.connectionId, existing.id)))
+                .orderBy(connectionGrants.id).for("update");
+            }
             const rows = await write(tx);
+            if (existing.transport === "mcp_remote" && input.credentialSecretRefs !== undefined) {
+              const nextRefs = rows[0]!.credentialSecretRefs;
+              const connectionOwnedPaths = new Set([...existing.credentialSecretRefs, ...nextRefs].map((ref) => ref.configPath));
+              const grants = await tx
+                .select()
+                .from(connectionGrants)
+                .where(and(
+                  eq(connectionGrants.companyId, existing.companyId),
+                  eq(connectionGrants.connectionId, existing.id),
+                  eq(connectionGrants.kind, "organization"),
+                  eq(connectionGrants.isDefault, true),
+                  eq(connectionGrants.status, "active"),
+                ));
+              for (const grant of grants) {
+                await tx
+                  .update(connectionGrants)
+                  .set({
+                    credentialSecretRefs: [
+                      ...grant.credentialSecretRefs.filter((ref) => !connectionOwnedPaths.has(ref.configPath)),
+                      ...nextRefs,
+                    ],
+                    providerTenant: sql`case when jsonb_typeof(${connectionGrants.providerTenant}) = 'object' then ${connectionGrants.providerTenant} #- '{oauth,refreshLease}' else ${connectionGrants.providerTenant} end`,
+                    updatedAt: new Date(),
+                  })
+                  .where(eq(connectionGrants.id, grant.id));
+              }
+            }
             await syncCredentialBindings(rows[0]!, [], tx);
             await createToolRuntimeSlots(tx, runtimeSupervisor).ensureRuntimeSlot(rows[0]!);
             return rows;
