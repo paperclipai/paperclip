@@ -24,7 +24,9 @@ export function createIsolatedTestHome() {
         if (entry.isDirectory()) makeDirectoriesWritable(path.join(directory, entry.name));
       }
     };
-    makeDirectoriesWritable(home);
+    // Windows does not support fchmod on directory descriptors. rm handles its
+    // read-only attributes; the identity check above still protects the root.
+    if (process.platform !== "win32") makeDirectoriesWritable(home);
     rmSync(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 50 });
   };
   return { home, cleanup };

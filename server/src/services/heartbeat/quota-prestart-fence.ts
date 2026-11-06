@@ -3,6 +3,7 @@ import { agentTaskSessions, agentWakeupRequests, agents, aiConnectionTaskPins, h
 import { aiConnectionRouterService } from "../ai-connection-router.js";
 import { conflict } from "../../errors.js";
 import { cancellationRequestId } from "../native-runtime/native-cancellation-request.js";
+import { poolFailureKind } from "./pool-failover.js";
 
 const KEY = "legacyQuotaPrestartFence";
 
@@ -89,6 +90,7 @@ export async function switchUnstartedLegacyQuotaPin(tx: Db, input: { companyId: 
 
 /** Serialize user Stop with a not-yet-started pool retry. */
 export function isLegacyQuotaPrestartStopCandidate(run: typeof heartbeatRuns.$inferSelect): boolean {
+  if (run.runtimeMode !== "native" && run.issueId && poolFailureKind(run)) return true;
   const fence = run.runnerProfileJson?.[KEY] as Record<string, unknown> | undefined;
   const recovery = run.resultJson?.executionRecovery as Record<string, unknown> | undefined;
   return run.status === "cancelled" && run.errorCode === "ai_connection_pool_exhausted" && Boolean(run.issueId) &&

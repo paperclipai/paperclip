@@ -2,10 +2,14 @@
 
 The built-in **Ordered failover pool** is available without a router plugin or
 the experimental router flag. It is configured with existing AI connections,
-ordered by preference and bound to a Paperclip Runner or legacy Claude agent. On a confirmed
+ordered by preference and bound to a Paperclip Runner or a supported local agent.
+Local Claude, Codex, Grok, and OpenCode agents can use mixed-provider pools.
+Each run records its effective adapter without changing the agent's primary adapter. On a confirmed
 account allowance exhaustion, Paperclip records a company-scoped cooldown for
 the credential and skips it until its reset time. A known provider reset is
-preserved; without one the default cooldown is one hour. Accounts sharing the
+preserved; without one the default quota cooldown is two hours. Authentication
+failures also cool down the failed credential; reconnecting changes its identity.
+A confirmed local runner crash uses a five-minute cooldown. Accounts sharing the
 same stored credential and epoch share a cooldown. Independently stored
 credentials are not assumed to represent the same external account.
 
@@ -18,17 +22,18 @@ selection. This observation is a momentary preflight; it cannot guarantee that
 capacity remains available when the provider starts. Existing task pins are not
 changed by this check.
 
-Legacy `claude_local` agents can select only Claude accounts from a pool;
-Codex and other providers require Paperclip Runner. This supports selection
-before a task starts, not automatic takeover of an interrupted Claude run.
-If a selected account becomes unavailable before provider startup, Paperclip
-can atomically choose another Claude account and schedule a fresh attempt only
-when the original run's durable prestart fence, task history, session and
-current ownership checks all permit it. Otherwise it retains the existing
-account and waits for its cooldown. User Stop is serialized with that retry.
+Healthy tasks stay on their selected account, including after a backup takes over.
+When a conversation fails because of quota, authentication, or confirmed runner
+failure, Paperclip can select the next available account after the previous
+execution and local workspace cleanup have settled. The task pin and successor
+run commit together. Stop is serialized with successor creation. Ordinary task
+errors do not trigger a provider change. If all eligible accounts are cooling
+down, the successor waits for the earliest reset instead of probing them repeatedly.
 
 An automatic continuation must prove that the prior execution is stopped and
-that workspace, history and action outcomes are safe to continue. When that
+that the workspace and history are preserved. Known unfinished external changes
+retain their reconciliation requirement. Completed actions enter the new conversation
+as evidence, never as tool calls to replay. When the required
 evidence is unavailable, the task remains held for recovery. A provider switch
 starts a separate provider conversation with bounded Paperclip task history;
 provider-private conversation state and full tool history are not transferred.
@@ -67,7 +72,8 @@ the original run ID as an affinity key in retry context. Conflicts retry at most
 
 Pins snapshot the concrete binding and member profile. Removing or editing a
 member affects future allocations. Composer changes can change a supported
-model or effort, with a note on fallback, but never the account or harness.
+model or effort, with a note on fallback. Only an admitted pool failover can
+change the task's account or harness.
 Session reset and compaction retain the pin. Revocation requires operator repair.
 Authentication repair uses the failed run’s durable concrete allocation and
 current member permissions; reconnect-and-continue preserves the agent’s pool

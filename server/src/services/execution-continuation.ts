@@ -4,6 +4,7 @@ import { z } from "zod";
 import {
   agentWakeupRequests,
   heartbeatRuns,
+  heartbeatRunEvents,
   issueComments,
   issueRecoveryActions,
   issueThreadInteractions,
@@ -414,6 +415,20 @@ export async function buildExecutionContinuation(input: {
       },
     ),
   );
+  if (sourceRunId && priorRuns.some(run => run.id === sourceRunId)) {
+    const actions = await db.select({ id: heartbeatRunEvents.id,
+      name: sql<string>`left(coalesce(${heartbeatRunEvents.payload}#>>'{prpEvent,payload,name}', ${heartbeatRunEvents.payload}->>'name'), 256)`,
+      status: sql<string>`coalesce(${heartbeatRunEvents.payload}#>>'{prpEvent,payload,status}', ${heartbeatRunEvents.payload}->>'status')`,
+    }).from(heartbeatRunEvents).where(and(eq(heartbeatRunEvents.companyId, companyId),
+      eq(heartbeatRunEvents.runId, sourceRunId), eq(heartbeatRunEvents.eventType, "tool.execution.completed")))
+      .orderBy(desc(heartbeatRunEvents.seq)).limit(200);
+    for (const action of actions.reverse()) {
+      if (action.name && ["succeeded", "completed"].includes(action.status)) completedActions.push({
+        runId: sourceRunId, receiptId: String(action.id), operationId: action.name,
+        result: { status: action.status, eventId: action.id, outputOmitted: true },
+      });
+    }
+  }
   completedActions.push(...await githubRecoveryReceipts(db, companyId, issueId));
   const reconciliations = await db
     .select({

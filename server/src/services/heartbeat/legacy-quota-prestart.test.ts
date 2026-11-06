@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { and, eq } from "drizzle-orm";
-import { agentTaskSessions, agentWakeupRequests, agents, aiConnectionTaskPins, authUsers, companies, companyMemberships, companySecrets, connectionGrants, createDb, heartbeatRuns, issues, type Db } from "@paperclipai/db";
+import { agentTaskSessions, agentWakeupRequests, agents, aiConnectionTaskPins, authUsers, companies, companyMemberships, companySecrets, connectionGrants, createDb, heartbeatRunEvents, heartbeatRuns, issues, type Db } from "@paperclipai/db";
 import { BUILTIN_AI_FAILOVER_ROUTER_KEY } from "@paperclipai/shared";
 import { startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import { aiConnectionService } from "../ai-connections.js";
@@ -12,13 +12,14 @@ import { aiConnectionRouterService } from "../ai-connection-router.js";
 import { AI_CONNECTION_POOL_WAIT_RETRY_REASON } from "../../modules/run-dispatch/index.js";
 import { createHeartbeatRetries, type HeartbeatRetryDependencies } from "./retries.js";
 import { fenceLegacyQuotaPrestartStop, switchUnstartedLegacyQuotaPin } from "./quota-prestart-fence.js";
+import { recordVerifiedRouterQuotaCooldown } from "./run-completion.js";
 
 describe("legacy quota prestart retry", () => {
   let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>, db: Db, home: string;
   beforeAll(async () => { home = await mkdtemp(path.join(os.tmpdir(), "quota-prestart-home-")); vi.stubEnv("PAPERCLIP_HOME", home);
     vi.stubEnv("PAPERCLIP_INSTANCE_ID", "legacy-quota-test"); database = await startEmbeddedPostgresTestDatabase("legacy-quota-prestart-"); db = createDb(database.connectionString, { maxConnections: 8 }); }, 90_000);
   afterAll(async () => { await db?.$client.end(); await database?.cleanup(); vi.unstubAllEnvs(); if (home) await rm(home, { recursive: true, force: true }); });
-  async function fixture() {
+  async function fixture(postStart = false) {
     const companyId = randomUUID(), userId = randomUUID();
     await db.insert(companies).values({ id: companyId, name: "Quota prestart", issuePrefix: `Q${companyId.slice(0, 8)}` });
     await db.insert(authUsers).values({ id: userId, name: "User", email: `${userId}@example.test`, createdAt: new Date(), updatedAt: new Date() });
@@ -46,6 +47,17 @@ describe("legacy quota prestart retry", () => {
     const [source] = await db.update(heartbeatRuns).set({ status: "cancelled", finishedAt: new Date(), errorCode: "ai_connection_pool_exhausted",
       runnerProfileJson: { legacyQuotaPrestartFence: { schema: "paperclip.legacy-quota-prestart.v1", companyId, agentId: agent.id, runId: run.id, state: "preparing" } },
       resultJson: { executionRecovery: { kind: "ai_connection_wait", providerWorkStarted: false }, cancellation: { source: "control_plane", reason: "Waiting for an AI connection pool account" } } }).where(eq(heartbeatRuns.id, run.id)).returning();
+    if (postStart) {
+      const contextSnapshot = { ...source!.contextSnapshot, aiRouterSelection: selected };
+      const resultJson = { errorFamily: "provider_quota", conversationContinuation: "continue_conversation_v1",
+        executionSettlement: { providerStopped: true, workspaceSettled: true, actionOutcomes: "unknown" },
+        summary: "Completed the first change; continue with verification." };
+      const [failed] = await db.update(heartbeatRuns).set({ status: "failed", errorCode: "provider_quota",
+        contextSnapshot, resultJson, sessionIdAfter: "claude-original-session" }).where(eq(heartbeatRuns.id, source!.id)).returning();
+      Object.assign(source!, failed);
+      expect(await recordVerifiedRouterQuotaCooldown(db, { companyId, agentId: agent.id, runId: run.id,
+        credentialIdentity: `${first.grantId}:fixture:${ref.secretId}:${secret!.aiSessionEpoch}`, retryNotBefore: null })).toBe(true);
+    }
     await db.update(issues).set({ executionRunId: run.id, checkoutRunId: run.id }).where(eq(issues.id, issue.id));
     const deps = { hasCaseHandoffForRun: async () => false, getRun: async () => null, getAgent: async () => undefined,
       resolveSessionBeforeForWakeup: async () => null, resolveResponsibleUserIdForRunContext: async () => userId,
@@ -58,9 +70,70 @@ describe("legacy quota prestart retry", () => {
         promoteDueScheduledRetries: async () => ({ promoted: 0, runIds: [], postCommitEffects: [] }), promoteScheduledRetry: async () => ({ outcome: "not_promoted" }) },
     } as unknown as HeartbeatRetryDependencies;
     const retries = createHeartbeatRetries(db, deps);
-    const schedule = () => retries.scheduleBoundedRetryForRun(source!, updatedAgent!, { retryReason: AI_CONNECTION_POOL_WAIT_RETRY_REASON, wakeReason: "ai_connection_pool_retry", maxAttempts: 5, delayMs: 3_600_000 });
-    return { companyId, userId, agent: updatedAgent!, issue, source: source!, pool, members, selected, schedule };
+    const schedule = () => retries.scheduleBoundedRetryForRun(source!, updatedAgent!, postStart
+      ? { maxAttempts: 5, delayMs: 3_600_000 }
+      : { retryReason: AI_CONNECTION_POOL_WAIT_RETRY_REASON, wakeReason: "ai_connection_pool_retry", maxAttempts: 5, delayMs: 3_600_000 });
+    return { companyId, userId, agent: updatedAgent!, issue, source: source!, pool, members, selected, schedule, router,
+      credentialIdentity: `${first.grantId}:fixture:${ref.secretId}:${secret!.aiSessionEpoch}` };
   }
+  it("continues a quota-interrupted conversation on the next account with a fresh session", async () => {
+    const f = await fixture(true);
+    const result = await f.schedule();
+    expect(result.outcome).toBe("scheduled");
+    const [successor] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, f.source.id));
+    expect(successor?.contextSnapshot?.aiRouterSelection).toMatchObject({ memberId: f.members[1]!.id });
+    expect(successor?.contextSnapshot?.forceFreshSession).toBe(true);
+    expect(successor?.contextSnapshot?.previousRunId).toBe(f.source.id);
+    expect(successor?.sessionIdBefore).toBeNull();
+    expect(successor!.scheduledRetryAt!.getTime()).toBeLessThan(Date.now() + 10_000);
+  }, 30_000);
+  it("creates one backup successor when two workers reconcile the same interrupted run", async () => {
+    const f = await fixture(true);
+    const results = await Promise.all([f.schedule(), f.schedule()]);
+    expect(results.every(result => result.outcome === "scheduled")).toBe(true);
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, f.source.id))).toHaveLength(1);
+    const [pin] = await db.select().from(aiConnectionTaskPins).where(eq(aiConnectionTaskPins.poolId, f.pool.id));
+    expect(pin?.selection.memberId).toBe(f.members[1]!.id);
+  }, 30_000);
+  it.each(["auth", "runner"] as const)("uses the backup after a confirmed %s failure", async failureKind => {
+    const f = await fixture(true);
+    const [failed] = await db.update(heartbeatRuns).set({ errorCode: failureKind === "auth" ? "claude_auth_required" : "codex_harness_crash",
+      resultJson: { ...f.source.resultJson, errorFamily: failureKind === "auth" ? "refresh_token_expired" : "transient_upstream" } })
+      .where(eq(heartbeatRuns.id, f.source.id)).returning();
+    Object.assign(f.source, failed);
+    expect(await recordVerifiedRouterQuotaCooldown(db, { companyId: f.companyId, agentId: f.agent.id, runId: f.source.id,
+      credentialIdentity: f.credentialIdentity, retryNotBefore: null, failureKind })).toBe(true);
+    expect((await f.schedule()).outcome).toBe("scheduled");
+    const [successor] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, f.source.id));
+    expect(successor?.contextSnapshot?.aiRouterSelection).toMatchObject({ memberId: f.members[1]!.id });
+    expect(successor?.contextSnapshot?.aiPoolFailover).toMatchObject({ reason: failureKind });
+  }, 30_000);
+  it.each(["stop", "unsettled", "missing_receipt", "reassigned", "paused"] as const)("does not switch the failed pin when %s prevents continuation", async condition => {
+    const f = await fixture(true);
+    if (condition === "stop") await db.update(heartbeatRuns).set({ resultJson: { ...f.source.resultJson, legacyQuotaStopRequested: { requestedAt: new Date().toISOString() } } }).where(eq(heartbeatRuns.id, f.source.id));
+    if (condition === "unsettled") await db.update(heartbeatRuns).set({ resultJson: { ...f.source.resultJson, executionSettlement: undefined } }).where(eq(heartbeatRuns.id, f.source.id));
+    if (condition === "missing_receipt") await db.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, f.source.id));
+    if (condition === "reassigned") await db.update(issues).set({ assigneeAgentId: null }).where(eq(issues.id, f.issue.id));
+    if (condition === "paused") await db.update(agents).set({ status: "paused" }).where(eq(agents.id, f.agent.id));
+    expect((await f.schedule()).outcome).toBe("not_scheduled");
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, f.source.id))).toHaveLength(0);
+    const [pin] = await db.select().from(aiConnectionTaskPins).where(eq(aiConnectionTaskPins.poolId, f.pool.id));
+    expect(pin?.selection.memberId).toBe(f.members[0]!.id);
+  }, 30_000);
+  it("waits for the earliest backup cooldown when every account is exhausted", async () => {
+    const f = await fixture(true);
+    const second = f.members[1]!;
+    const [grant] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, second.binding.grantId));
+    const ref = grant!.credentialSecretRefs.find(item => item.configPath === "ai.credential")!;
+    const [secret] = await db.select().from(companySecrets).where(eq(companySecrets.id, ref.secretId));
+    const deadline = new Date(Date.now() + 30 * 60_000);
+    await f.router.recordQuotaCooldown(f.companyId, second.binding.connectionId, `secret:${ref.secretId}:${secret!.aiSessionEpoch}`, deadline);
+    expect((await f.schedule()).outcome).toBe("scheduled");
+    const [successor] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, f.source.id));
+    expect(successor?.contextSnapshot?.aiRouterSelection).toMatchObject({ memberId: second.id });
+    expect(successor?.scheduledRetryAt?.getTime()).toBe(deadline.getTime());
+    expect(successor?.contextSnapshot?.aiPoolFailover).toMatchObject({ reason: "quota", waitingUntil: deadline.toISOString() });
+  }, 30_000);
   it("atomically switches one pin and creates one immediate successor across concurrent claims", async () => {
     const f = await fixture();
     const results = await Promise.all([f.schedule(), f.schedule()]);

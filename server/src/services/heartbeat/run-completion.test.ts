@@ -241,7 +241,7 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
     expect(await receipts()).toEqual([]);
     expect(await db.select().from(aiConnectionQuotaCooldowns)).toEqual([]);
     expect(await recordVerifiedRouterQuotaCooldown(db, { ...call, retryNotBefore: null, now, credentialIdentity: `${grantId}:shared:no-auth` })).toBe(true);
-    expect((await db.select().from(aiConnectionQuotaCooldowns))[0]!.retryAt).toEqual(new Date(now.getTime() + PROVIDER_LIMIT_DEFAULT_COOLDOWN_MS));
+    expect((await db.select().from(aiConnectionQuotaCooldowns))[0]!.retryAt).toEqual(new Date(now.getTime() + 2 * 60 * 60_000));
     const distant = new Date(now.getTime() + 30 * 24 * 60 * 60_000);
     await db.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.sourceEventId, receiptId));
     expect(await recordVerifiedRouterQuotaCooldown(db, { ...call, retryNotBefore: distant.toISOString(), now, credentialIdentity: `${grantId}:shared:no-auth` })).toBe(true);

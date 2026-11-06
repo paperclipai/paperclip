@@ -5,6 +5,7 @@ import { normalizeAgentNameKey } from "../agent-name-key.js";
 import { notifyStatusCardIssueChange } from "../status-card-notifications.js";
 import { notifyScheduledRetryDispatch } from "../run-dispatch-notifications.js";
 import { switchUnstartedLegacyQuotaPin } from "./quota-prestart-fence.js";
+import { poolFailureKind, switchFailedPoolPin } from "./pool-failover.js";
 import { deriveTaskKeyWithHeartbeatFallback } from "./run-state.js";
 import { infrastructureRetryDelayMs } from "../system-recovery-state.js";
 import {
@@ -489,6 +490,7 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
         errorCode: "chat_completion_outbox_owns_retry" as const, issueId: readNonEmptyString(run.contextSnapshot.issueId) };
     }
     const now = opts?.now ?? new Date();
+    const poolFailure = poolFailureKind(run);
     const preparationRecovery = parseObject(run.resultJson?.executionRecovery);
     const interruptedPreparation = ["interrupted", "failed"].includes(run.status) &&
       preparationRecovery.kind === "bootstrap" && preparationRecovery.providerWorkStarted === false
@@ -505,7 +507,8 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
     const maxAttempts = Math.max(
       0,
       Math.floor(
-        opts?.maxAttempts ?? (quotaRetry ? PROVIDER_QUOTA_RETRY_DELAYS_MS.length : BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS),
+        opts?.maxAttempts ?? (poolFailure ? Math.max(100, poolFailure === "quota" ? (run.scheduledRetryAttempt ?? 0) + 1 : 100)
+          : quotaRetry ? PROVIDER_QUOTA_RETRY_DELAYS_MS.length : BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS),
       ),
     );
     const consumedAttempts = executionRetryAttemptCount(run, retryReason);
@@ -523,6 +526,8 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
               maxAttempts,
             }
           : null
+        : poolFailure && nextAttempt <= maxAttempts
+          ? { attempt: nextAttempt, baseDelayMs: 0, delayMs: 0, dueAt: now, maxAttempts }
         : nextAttempt <= maxAttempts && quotaRetry
           ? (() => {
               const baseDelayMs = PROVIDER_QUOTA_RETRY_DELAYS_MS[nextAttempt - 1];
@@ -640,6 +645,7 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
         : baseSchedule;
 
     const requiresIssueGate =
+      Boolean(poolFailure) ||
       interruptedPreparation || retryReason === "interrupted_preparation" ||
       (run.status === "interrupted" && run.errorCode === "server_shutdown_interrupted") ||
       isTransientWorkspacePreparationCode(run.errorCode) ||
@@ -676,7 +682,7 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
       }
     }
     const taskKey = deriveTaskKeyWithHeartbeatFallback(contextSnapshot, null);
-    const sessionBefore = await resolveSessionBeforeForWakeup(agent, taskKey);
+    let sessionBefore = await resolveSessionBeforeForWakeup(agent, taskKey);
     const interactionRunnerWait = retryReason === RUNNER_REVISION_WAIT_RETRY_REASON
       && isResolvedInteractionContinuationWakeContext(run.contextSnapshot);
     const interactionContinuationPayload =
@@ -808,7 +814,7 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
           await tx.execute(
             sql`select id from heartbeat_runs where company_id = ${run.companyId} and id = ${run.id} for update`,
           );
-          if (retryReason === AI_CONNECTION_POOL_WAIT_RETRY_REASON) {
+          if (retryReason === AI_CONNECTION_POOL_WAIT_RETRY_REASON || poolFailure) {
             const [current] = await tx.select({ resultJson: heartbeatRuns.resultJson }).from(heartbeatRuns)
               .where(and(eq(heartbeatRuns.companyId, run.companyId), eq(heartbeatRuns.id, run.id)));
             if (current?.resultJson?.legacyQuotaStopRequested) return {
@@ -1073,6 +1079,26 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
           }
         }
 
+        if (poolFailure && issueId) {
+          const transition = await switchFailedPoolPin(tx as unknown as Db, { run, agent, userId: responsibleUserId });
+          if (!transition || transition.kind !== "selected") return {
+            outcome: "not_scheduled", issueId, errorCode: "issue_execution_lock_changed",
+            reason: "No authorized backup with settled predecessor execution is available", details: {},
+          };
+          schedule.dueAt = transition.retryAt ?? now;
+          schedule.delayMs = Math.max(0, schedule.dueAt.getTime() - now.getTime());
+          retryContextSnapshot.aiRouterSelection = transition.selection;
+          retryContextSnapshot.previousRunId = run.id;
+          retryContextSnapshot.forceFreshSession = true;
+          retryContextSnapshot.aiPoolFailover = { sourceRunId: run.id, reason: poolFailure,
+            ...(schedule.dueAt > now ? { waitingUntil: schedule.dueAt.toISOString() } : {}) };
+          retryContextSnapshot.scheduledRetryAt = schedule.dueAt.toISOString();
+          delete retryContextSnapshot.resumeSessionParams;
+          delete retryContextSnapshot.resumeSessionDisplayId;
+          delete retryContextSnapshot.providerQuotaRetryNotBefore;
+          delete retryContextSnapshot.transientRetryNotBefore;
+          sessionBefore = null;
+        }
         if (retryReason === AI_CONNECTION_POOL_WAIT_RETRY_REASON && issueId && !sessionBefore && agent.adapterType === "claude_local") {
           const selected = await switchUnstartedLegacyQuotaPin(tx as unknown as Db, { companyId: run.companyId,
             runId: run.id, issueId, agentId: run.agentId, userId: responsibleUserId });
