@@ -135,6 +135,11 @@ export function stormActive(storm: StormPlan, state: StormState, now: number): b
   return now < state.startedAt + storm.durationMs;
 }
 
+/** Whether a new task may launch now: always outside a storm, and only while a storm lasts. */
+export function stormMayLaunch(storm: StormPlan | undefined, state: StormState, now: number): boolean {
+  return !storm || stormActive(storm, state, now);
+}
+
 /**
  * The next storm fault once its gap has passed. Gaps run from the previous
  * fault settling, so a K4 hold never eats the next gap. The caller must not

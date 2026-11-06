@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { parseCommand, parseReplayRef, waveIdFor } from "./config.js";
 import { K4_HOLD_RANGE_MS, STORM_GAP_RANGE_MS, createRng, observedFaultSchedule, planStorm, planTasks, planWave, replayWave,
-  stormActive, stormFaultDue, taskFaultSchedule, type StormState } from "./scheduler.js";
+  stormActive, stormFaultDue, stormMayLaunch, taskFaultSchedule, type StormState } from "./scheduler.js";
 import type { WaveOptions } from "./types.js";
 import { workloadDefinitions } from "./workloads.js";
 
@@ -192,6 +192,20 @@ describe("K13 restart storm", () => {
     expect(stormFaultDue(storm, state, 700_000)).toBeNull();
     state.fired = 3;
     expect(stormFaultDue({ ...storm, durationMs: 10_000_000 }, state, 9_000_000)).toBeNull();
+  });
+
+  it("rechecks the storm clock after slow work: no launch and no fault once the storm has ended", () => {
+    const storm = { durationMs: 300_000, faults: [{ kind: "K1" as const, holdMs: 0, gapMs: 120_000 }, { kind: "K2" as const, holdMs: 0, gapMs: 120_000 }] };
+    const state: StormState = { startedAt: 0, fired: 1, lastSettledAt: 170_000 };
+    // A launch decided just before the end is refused when ensureServing or a prior launch crossed the end.
+    expect(stormMayLaunch(storm, state, 299_999)).toBe(true);
+    expect(stormMayLaunch(storm, state, 300_000)).toBe(false);
+    expect(stormMayLaunch(undefined, state, 10_000_000)).toBe(true);
+    // A fault selected before the end, with pre-fault snapshots finishing after it, no longer fires.
+    const due = stormFaultDue(storm, state, 295_000);
+    expect(due).toEqual(storm.faults[1]);
+    expect(stormFaultDue(storm, state, 295_500)).toBe(due);
+    expect(stormFaultDue(storm, state, 301_000)).toBeNull();
   });
 
   it("parses --storm-minutes with storm defaults and keeps replays storm-free", () => {

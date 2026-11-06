@@ -20,7 +20,7 @@ import { knownSecretValues, writeEvidenceBundle } from "./evidence.js";
 import { gradeTask } from "./grader.js";
 import { appendLedger, ledgerLine, writeSummary, type LedgerLine } from "./ledger.js";
 import { TaskObserver } from "./observer.js";
-import { observedFaultSchedule, planWave, replayWave, stormActive, stormFaultDue, type StormState } from "./scheduler.js";
+import { observedFaultSchedule, planWave, replayWave, stormActive, stormFaultDue, stormMayLaunch, type StormState } from "./scheduler.js";
 import { seedChaosLab } from "./seed.js";
 import { ChaosSupervisor } from "./supervisor.js";
 import { Timeline } from "./timeline.js";
@@ -189,7 +189,9 @@ async function main(): Promise<number> {
       // A failed fault or an unexpected exit leaves the server not ready.
       // Recover within a bound, or fail the wave instead of waiting forever.
       if (!supervisor.serverReady && !supervisor.faultInProgress) await supervisor.ensureServing();
-      while (active.length < plan.options.concurrency && pending.length && supervisor.serverReady && !supervisor.faultInProgress) {
+      // Recheck the storm clock per launch: ensureServing or a slow launch can cross the storm's end.
+      while (active.length < plan.options.concurrency && pending.length && supervisor.serverReady && !supervisor.faultInProgress
+        && stormMayLaunch(storm, stormState, Date.now())) {
         const next = pending.shift()!;
         launched.push(next);
         await next.launch();
@@ -216,9 +218,12 @@ async function main(): Promise<number> {
         if (due) {
           const exposed = active.filter(candidate => !candidate.done);
           await Promise.all(exposed.map(candidate => candidate.snapshotBeforeFault()));
-          stormState.fired += 1;
-          timeline.add("storm_fault", { index: stormState.fired, kind: due.kind, gapMs: due.gapMs, holdMs: due.holdMs, exposed: exposed.map(candidate => candidate.plan.taskId) });
-          fireFault(due.kind, due.holdMs, "storm", exposed, undefined, () => { stormState.lastSettledAt = Date.now(); });
+          // The snapshots take time; a storm that ended meanwhile is draining and gets no new fault.
+          if (stormFaultDue(storm, stormState, Date.now()) === due) {
+            stormState.fired += 1;
+            timeline.add("storm_fault", { index: stormState.fired, kind: due.kind, gapMs: due.gapMs, holdMs: due.holdMs, exposed: exposed.map(candidate => candidate.plan.taskId) });
+            fireFault(due.kind, due.holdMs, "storm", exposed, undefined, () => { stormState.lastSettledAt = Date.now(); });
+          }
         }
       }
       for (let index = active.length - 1; index >= 0; index -= 1) {
