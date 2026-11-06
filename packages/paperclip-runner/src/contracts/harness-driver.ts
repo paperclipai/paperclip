@@ -543,6 +543,8 @@ export interface HarnessSession {
      * submitting `message`. Only for a resumed session with prior context.
      */
     compact?: true;
+    /** Last context occupancy Paperclip recorded before a compaction turn. */
+    contextTokensBefore?: number;
   }): Promise<{
     turnId: string;
     effectiveCollaborationMode?: "default" | "plan";

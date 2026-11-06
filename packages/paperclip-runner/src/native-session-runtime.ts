@@ -235,7 +235,7 @@ export interface ExecuteNativeSessionOptions {
    * ordinary turn. The run settles with a synthesized result once the
    * provider's compaction turn completes; it does no task work.
    */
-  sessionCompaction?: { requestId: string } | null;
+  sessionCompaction?: { requestId: string; contextTokensBefore?: number } | null;
   /**
    * Wait for the backend's close contract before returning a durable result.
    * Use this only for backends whose close path is internally bounded and
@@ -1552,9 +1552,13 @@ export async function applyNativeSessionGoalControl(
 
 /**
  * Result for a compaction-only run. Compaction does no task work, so the
- * result yields with no continuation; the server preserves the task status.
+ * result yields back to the same agent; the server's status arbiter preserves
+ * the task status and schedules nothing for a compaction run.
  */
-export function sessionCompactionResult(input: NativeExecutionInput): PrpStructuredRunResult {
+export function sessionCompactionResult(
+  input: NativeExecutionInput,
+  requestId: string,
+): PrpStructuredRunResult {
   const summary = "Context compacted on request.";
   return {
     schema: "paperclip.run_result.v1",
@@ -1575,6 +1579,11 @@ export function sessionCompactionResult(input: NativeExecutionInput): PrpStructu
     verification: [],
     attentionRequests: [],
     artifacts: [],
+    continuation: {
+      kind: "same_agent",
+      summary: "The agent's context was compacted; the task continues unchanged.",
+      idempotencyKey: `context-compaction:${input.binding.issueId}:${requestId}`,
+    },
   };
 }
 
@@ -2615,7 +2624,9 @@ export async function executeNativeSession(
                 await checkpoint(signal);
               },
               governedWait,
-              options.sessionCompaction ? sessionCompactionResult(input) : undefined,
+              options.sessionCompaction
+                ? sessionCompactionResult(input, options.sessionCompaction.requestId)
+                : undefined,
             )
           : Promise.resolve({
               event: recoveryTerminal,
@@ -2649,6 +2660,9 @@ export async function executeNativeSession(
             message: { role: "user", text: "" },
             continuation: true,
             compact: true,
+            ...(options.sessionCompaction.contextTokensBefore === undefined
+              ? {}
+              : { contextTokensBefore: options.sessionCompaction.contextTokensBefore }),
           });
           await checkpoint();
         } else if (options.sessionGoalControl) {

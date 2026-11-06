@@ -185,6 +185,8 @@ export class CodexHarnessSession
     reasoningMode?: "default" | "disabled";
     /** Run the provider's context compaction as this turn. */
     compact?: true;
+    /** Last context occupancy recorded before a compaction turn. */
+    contextTokensBefore?: number;
   }): Promise<{
     turnId: string;
     effectiveCollaborationMode: "default" | "plan";
@@ -192,6 +194,11 @@ export class CodexHarnessSession
     this.assertProtocolIntegrity();
     if (input.compact === true && (input.reasoningMode !== undefined || this.dispositionOnlyRecoveryAvailable)) {
       throw this.unsupported("context compaction", "compaction cannot combine with reasoning or disposition recovery");
+    }
+    // A compaction-only run resumes the session without a fresh usage report;
+    // seed the "before" size the divider shows from Paperclip's last reading.
+    if (input.compact === true && input.contextTokensBefore !== undefined) {
+      this.lastContextUsedTokens ??= input.contextTokensBefore;
     }
     if (input.reasoningMode !== undefined && !this.supportsTurnReasoning()) {
       throw new Error("Per-turn reasoning is not supported by this provider");

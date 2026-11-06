@@ -8516,7 +8516,7 @@ export async function executePaperclipNativeSession(input: {
   sessionGoalControl?: NativeSessionGoalControl | null;
   resumeSessionGoalHeartbeat?: boolean;
   /** Compact the resumed provider session instead of running a task turn. */
-  sessionCompaction?: { requestId: string } | null;
+  sessionCompaction?: { requestId: string; contextTokensBefore?: number } | null;
   preparationSpans?: NativeRunHistoricalSpan[];
   /** Use a session-owned GitHub broker, rebound only after run ownership is acquired. */
   managedGitHub?: boolean;

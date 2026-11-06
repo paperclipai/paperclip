@@ -32,9 +32,16 @@ function nonEmptyString(value: unknown): string | null {
 }
 
 /** The compaction request a run was admitted for, if it is a compaction run. */
-export function readContextCompactionRequest(context: unknown): { requestId: string } | null {
-  const requestId = nonEmptyString(asRecord(context).contextCompactionRequestId);
-  return requestId ? { requestId } : null;
+export function readContextCompactionRequest(
+  context: unknown,
+): { requestId: string; contextTokensBefore?: number } | null {
+  const record = asRecord(context);
+  const requestId = nonEmptyString(record.contextCompactionRequestId);
+  if (!requestId) return null;
+  const before = record.contextCompactionTokensBefore;
+  return typeof before === "number" && Number.isSafeInteger(before) && before >= 0
+    ? { requestId, contextTokensBefore: before }
+    : { requestId };
 }
 
 export function isContextCompactionRun(context: unknown): boolean {
@@ -140,6 +147,8 @@ export function contextCompactionService(db: Db, deps: { wakeup?: WakeupFn } = {
     companyId: string;
     issue: { id: string; assigneeAgentId: string | null; status: string };
     userId: string;
+    /** The session's last context reading, shown as the divider's "before" size. */
+    contextTokensBefore?: number | null;
   }): Promise<{ requestId: string; runId: string }> {
     const current = await availability(input.companyId, input.issue);
     if (current.status === "pending") {
@@ -167,6 +176,9 @@ export function contextCompactionService(db: Db, deps: { wakeup?: WakeupFn } = {
         taskKey: input.issue.id,
         resumeIntent: true,
         contextCompactionRequestId: requestId,
+        ...(typeof input.contextTokensBefore === "number"
+          ? { contextCompactionTokensBefore: input.contextTokensBefore }
+          : {}),
         skipIssueComment: true,
       },
     });

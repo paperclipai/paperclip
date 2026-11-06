@@ -229,6 +229,7 @@ import {
   RunnerGoalConflictError,
 } from "../services/runner-goals.js";
 import { ContextCompactionError, contextCompactionService } from "../services/context-compaction.js";
+import { issueContextUsage } from "../services/issue-context-usage.js";
 import { queueLiveRunnerPrpCommand } from "../realtime/runner-prp-ws.js";
 import { questionResponseDeliveryService } from "../services/question-response-delivery.js";
 import { emitAgentTaskRunById } from "../services/agent-task-run-telemetry.js";
@@ -9236,10 +9237,12 @@ export function issueRoutes(
     const decision = await decideIssueAccess(req, issue, "issue:mutate");
     if (!decision.allowed) throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
     try {
+      const reading = await issueContextUsage(db, issue.companyId, issue);
       const accepted = await contextCompaction.request({
         companyId: issue.companyId,
         issue,
         userId: req.actor.userId,
+        contextTokensBefore: reading?.usedTokens ?? null,
       });
       const actor = getActorInfo(req);
       await logActivity(db, {

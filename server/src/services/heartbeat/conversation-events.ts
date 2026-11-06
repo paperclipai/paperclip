@@ -32,10 +32,26 @@ function planWriteCondition(runId: string) {
 }
 
 /**
+ * Context readings of a run that compacted its context. The compaction divider
+ * reads its "before → after" sizes from the readings around the compaction.
+ * Runs that never compacted keep their usage out of the conversation view.
+ */
+function compactionUsageCondition(runId: string) {
+  return sql`(${heartbeatRunEvents.eventType} = 'item.completed'
+      and (${heartbeatRunEvents.payload} -> 'prpEvent' -> 'payload' ->> 'kind') = 'usage'
+      and ${heartbeatRunEvents.payload} -> 'prpEvent' -> 'payload' -> 'usage' ? 'context'
+      and exists (
+        select 1 from heartbeat_run_events c
+        where c.run_id = ${runId} and c.event_type = 'context.compacted'
+      ))`;
+}
+
+/**
  * Canonical PRP conversation data, excluding ordinary historical tool activity.
  * Successful document writes retain a body-free boundary for saved Plan cards.
  * Keep request lifecycles so a cold open cannot hide a question or approval.
  * Keep MCP startup failures so a settled run still explains missing tools.
+ * Keep context compactions, with their run's context readings, for the divider.
  * Item identity may occur on started/completed rather than each text delta.
  */
 export function conversationEventCondition(runId: string) {
@@ -48,6 +64,10 @@ export function conversationEventCondition(runId: string) {
     or (
       ${heartbeatRunEvents.eventType} = 'provider.notice.recorded'
       and ${heartbeatRunEvents.payload} #>> '{prpEvent,payload,category}' = 'mcp_server_startup_failed'
+    )
+    or ${heartbeatRunEvents.eventType} = 'context.compacted'
+    or (
+      ${compactionUsageCondition(runId)}
     )
     or (
       ${heartbeatRunEvents.eventType} in ('item.started', 'item.delta', 'item.completed')
