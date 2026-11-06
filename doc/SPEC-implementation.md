@@ -472,6 +472,7 @@ Invariants:
 - single assignee only
 - task must trace to company goal chain via `goal_id`, `parent_id`, or project-goal linkage
 - `in_progress` requires assignee
+- agent task presentation reserves **In Progress** for a task-linked queued or running run; inactive tasks project recovery as **Blocked**, pending responses/review as **In Review**, scheduled checks as **Monitoring**, or remaining work as **Todo** without changing lifecycle/admission state
 - an `in_review -> done | cancelled` verdict is authorized against the current review policy while the issue row is locked; a policy change in the same request or a concurrent request cannot relax that verdict gate
 - accepting or rejecting the review-confirmation interaction locks the issue row before resolving the interaction and reauthorizes against the current review policy in that transaction
 - accepting a fresh `request_confirmation` for the current issue's `plan` revision changes `work_mode = planning` to `work_mode = standard` in the same transaction as the accepted interaction; the existing agent-return transition also moves an eligible `in_review` issue to `todo` without changing its agent owner

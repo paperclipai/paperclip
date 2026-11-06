@@ -128,7 +128,7 @@ The issue is actively owned work.
 
 For agent-owned issues, `in_progress` should not be allowed to become a silent dead state.
 
-### Monitoring presentation
+### Execution-backed presentation
 
 An agent-owned `in_progress` task displays **Monitoring** with a blue clock while
 it has a persisted ordinary monitor deadline and no active run, execution or
@@ -136,6 +136,16 @@ checkout lock, review participant, or active recovery action. The persisted
 status remains `in_progress`. Monitor admission, checkout, finalization, recovery,
 and agent lifecycle filters keep their existing contracts. Review, blocked,
 terminal, and provider-quota recovery states keep their own presentation.
+
+For agent-owned tasks whose lifecycle status is `in_progress`, the visible
+**In Progress** state requires a task-linked `queued` or `running` run. Stale
+execution/checkout locks and scheduled retries alone do not establish activity.
+Without an active run, an open recovery action displays **Blocked**, a review
+participant or pending thread interaction displays **In Review**, an ordinary
+scheduled monitor displays **Monitoring**, and other work displays **Todo**.
+These projections do not change stored lifecycle status, locks, admission,
+continuation authority, or recovery. Human-owned tasks retain their explicit
+ownership status.
 
 Task reads expose optional, read-only `displayStatus`. Board task collections and
 search can filter by `displayStatus`; filtering happens before pagination and

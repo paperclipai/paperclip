@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
 import { expect, it } from "vitest";
 import request from "supertest";
-import { agents, heartbeatRuns, issueRecoveryActions, issueRelations, issues, statusCards } from "@paperclipai/db";
+import { agents, heartbeatRuns, issueRecoveryActions, issueRelations, issueThreadInteractions, issues, statusCards } from "@paperclipai/db";
 import { companySearchQuerySchema, createIssueSchema, defaultStatusCardRefreshPolicy, PROVIDER_QUOTA_MONITOR_SERVICE_NAME, type Issue } from "@paperclipai/shared";
 import { issueDisplayStatusSql } from "../services/issue-display-status.js";
 import { issueService } from "../services/issues.js";
@@ -14,7 +14,7 @@ import {
   seedCompanyWithBoardAccess, useEmbeddedPostgres,
 } from "./helpers/route-test-harness.js";
 
-describeEmbeddedPostgres("Monitoring task presentation", () => {
+describeEmbeddedPostgres("Execution-backed task presentation", () => {
   const ctx = useEmbeddedPostgres("paperclip-monitoring-status-", {
     resetEach: async (db) => { await db.execute(sql`SET client_min_messages = warning`); await db.execute(sql`TRUNCATE TABLE companies CASCADE`); },
   });
@@ -39,6 +39,47 @@ describeEmbeddedPostgres("Monitoring task presentation", () => {
     return row;
   }
 
+  it.each(["failed", "cancelled", "timed_out", "succeeded", "scheduled_retry"])("does not show In Progress after a run becomes %s, even with stale locks", async (status) => {
+    const f = await fixture();
+    await ctx.db.update(issues).set({ monitorNextCheckAt: null, executionPolicy: null }).where(eq(issues.id, f.issueId));
+    const [run] = await ctx.db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, issueId: f.issueId, status }).returning();
+    await ctx.db.update(issues).set({ executionRunId: run!.id, checkoutRunId: run!.id }).where(eq(issues.id, f.issueId));
+    expect(await displayStatus(f.issueId)).toEqual({ status: "in_progress", displayStatus: "todo" });
+    const svc = issueService(ctx.db);
+    expect(await svc.count(f.companyId, { displayStatus: "in_progress" })).toBe(0);
+    expect(await svc.list(f.companyId, { displayStatus: "todo", limit: 1 })).toEqual([expect.objectContaining({ id: f.issueId })]);
+    // Presentation must not clear ownership or change recovery/admission inputs.
+    expect((await ctx.db.select().from(issues).where(eq(issues.id, f.issueId)))[0]).toMatchObject({ status: "in_progress", executionRunId: run!.id, checkoutRunId: run!.id });
+  });
+
+  it("shows a stopped task waiting for a human as In Review across API reads and search", async () => {
+    const f = await fixture();
+    await ctx.db.update(issues).set({ monitorNextCheckAt: null, executionPolicy: null }).where(eq(issues.id, f.issueId));
+    await ctx.db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, issueId: f.issueId, status: "failed", errorCode: "authentication_failed" });
+    const [interaction] = await ctx.db.insert(issueThreadInteractions).values({ companyId: f.companyId, issueId: f.issueId, kind: "request_confirmation", addresseeUserId: f.actor.userId,
+      payload: { version: 1, prompt: "Authorize the connection" } }).returning();
+    const app = routeApp(ctx.db, f.actor, issueRoutes);
+    expect((await request(app).get(`/api/issues/${f.issueId}`).expect(200)).body).toMatchObject({ status: "in_progress", displayStatus: "in_review" });
+    const summary = await request(app).get(`/api/companies/${f.companyId}/issues/summaries?ids=${f.issueId}`).expect(200);
+    expect(summary.body[0]).toMatchObject({ displayStatus: "in_review" });
+    const result = await companySearchService(ctx.db).search(f.companyId, companySearchQuerySchema.parse({ q: "deployment", displayStatus: "in_review" }));
+    expect(result.results[0]?.issue).toMatchObject({ id: f.issueId, displayStatus: "in_review" });
+    await ctx.db.update(issueThreadInteractions).set({ status: "answered" }).where(eq(issueThreadInteractions.id, interaction!.id));
+    expect((await displayStatus(f.issueId)).displayStatus).toBe("todo");
+  });
+
+  it("requires task-scoped active execution and preserves human ownership", async () => {
+    const f = await fixture();
+    await ctx.db.update(issues).set({ monitorNextCheckAt: null, executionPolicy: null }).where(eq(issues.id, f.issueId));
+    await ctx.db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, status: "running" });
+    expect((await displayStatus(f.issueId)).displayStatus).toBe("todo");
+    const foreign = await fixture();
+    await ctx.db.insert(heartbeatRuns).values({ companyId: foreign.companyId, agentId: foreign.agentId, issueId: f.issueId, status: "running" });
+    expect((await displayStatus(f.issueId)).displayStatus).toBe("todo");
+    await ctx.db.update(issues).set({ assigneeAgentId: null, assigneeUserId: f.actor.userId }).where(eq(issues.id, f.issueId));
+    expect((await displayStatus(f.issueId)).displayStatus).toBe("in_progress");
+  });
+
   it("projects a scheduled wait consistently across detail, compact rows, summaries, search and counts", async () => {
     const f = await fixture();
     const svc = issueService(ctx.db);
@@ -61,7 +102,8 @@ describeEmbeddedPostgres("Monitoring task presentation", () => {
 
   it("filters before pagination and keeps In Progress separate from Monitoring", async () => {
     const f = await fixture();
-    await ctx.db.insert(issues).values({ companyId: f.companyId, title: "Ordinary work", status: "in_progress", assigneeAgentId: f.agentId });
+    const [active] = await ctx.db.insert(issues).values({ companyId: f.companyId, title: "Ordinary work", status: "in_progress", assigneeAgentId: f.agentId }).returning();
+    await ctx.db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, issueId: active!.id, status: "running" });
     const svc = issueService(ctx.db);
     expect(await svc.list(f.companyId, { displayStatus: "monitoring", limit: 1, offset: 0 })).toEqual([expect.objectContaining({ id: f.issueId })]);
     expect(await svc.list(f.companyId, { displayStatus: "monitoring", limit: 1, offset: 1 })).toEqual([]);
@@ -104,24 +146,24 @@ describeEmbeddedPostgres("Monitoring task presentation", () => {
   it("does not label cleared, consumed, orphaned or quota-recovery schedules Monitoring", async () => {
     const f = await fixture();
     await ctx.db.update(issues).set({ executionState: { monitor: { status: "cleared" } } }).where(eq(issues.id, f.issueId));
-    expect((await displayStatus(f.issueId)).displayStatus).toBe("in_progress");
+    expect((await displayStatus(f.issueId)).displayStatus).toBe("todo");
     await ctx.db.update(issues).set({ executionState: null, monitorNextCheckAt: null }).where(eq(issues.id, f.issueId));
-    expect((await displayStatus(f.issueId)).displayStatus).toBe("in_progress");
+    expect((await displayStatus(f.issueId)).displayStatus).toBe("todo");
     await ctx.db.update(issues).set({ monitorNextCheckAt: new Date(), executionPolicy: { monitor: { serviceName: PROVIDER_QUOTA_MONITOR_SERVICE_NAME } } }).where(eq(issues.id, f.issueId));
-    expect((await displayStatus(f.issueId)).displayStatus).toBe("in_progress");
+    expect((await displayStatus(f.issueId)).displayStatus).toBe("todo");
     await ctx.db.update(issues).set({ executionPolicy: null }).where(eq(issues.id, f.issueId));
-    expect((await displayStatus(f.issueId)).displayStatus).toBe("in_progress");
+    expect((await displayStatus(f.issueId)).displayStatus).toBe("todo");
   });
 
   it("keeps recovery and review holds visible and never writes a new lifecycle state", async () => {
     const f = await fixture();
     await ctx.db.insert(issueRecoveryActions).values({ companyId: f.companyId, sourceIssueId: f.issueId, kind: "source", ownerType: "board", cause: "process_lost", fingerprint: randomUUID(), nextAction: "Inspect stopped run" });
-    expect((await displayStatus(f.issueId)).displayStatus).toBe("in_progress");
+    expect((await displayStatus(f.issueId)).displayStatus).toBe("blocked");
     await ctx.db.execute(sql`UPDATE issue_recovery_actions SET status = 'escalated' WHERE source_issue_id = ${f.issueId}`);
-    expect((await displayStatus(f.issueId)).displayStatus).toBe("in_progress");
+    expect((await displayStatus(f.issueId)).displayStatus).toBe("blocked");
     await ctx.db.execute(sql`UPDATE issue_recovery_actions SET status = 'resolved' WHERE source_issue_id = ${f.issueId}`);
     expect((await displayStatus(f.issueId)).displayStatus).toBe("monitoring");
     await ctx.db.update(issues).set({ executionState: { currentParticipant: { type: "user", userId: "reviewer" } } }).where(eq(issues.id, f.issueId));
-    expect((await displayStatus(f.issueId)).displayStatus).toBe("in_progress");
+    expect((await displayStatus(f.issueId)).displayStatus).toBe("in_review");
   });
 });
