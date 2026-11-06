@@ -802,10 +802,10 @@ export function agentRoutes(
   const agentFiles = agentFileStore(db);
   const instructionRevisions = agentInstructionRevisionService(db);
   const instructionWorkingCopies = agentInstructionWorkingCopyService(db);
-  function instructionFileDetail(snapshot: import("@paperclipai/shared").AgentInstructionSnapshot,
+  async function instructionFileDetail(agent: NonNullable<Awaited<ReturnType<typeof svc.getById>>>, snapshot: import("@paperclipai/shared").AgentInstructionSnapshot,
     receipt?: import("@paperclipai/shared").AgentInstructionCommitReceipt) {
     const path = snapshot.revision.entryFile;
-    return { path, content: snapshot.content, contentHash: snapshot.revision.contentHash, size: snapshot.revision.byteLength, revision: snapshot.revision, receipt,
+    return { path, ...await instructions.getFileDates(agent, path, snapshot.revision.contentHash), content: snapshot.content, contentHash: snapshot.revision.contentHash, size: snapshot.revision.byteLength, revision: snapshot.revision, receipt,
       language: path.toLowerCase().endsWith(".md") ? "markdown" : "text", markdown: path.toLowerCase().endsWith(".md"),
       isEntryFile: true, editable: true, deprecated: false, virtual: false };
   }
@@ -5251,7 +5251,7 @@ export function agentRoutes(
     }
     if (agentInstructionsBundleMode(existing) !== "external" && instructionPath(relativePath) === deriveBundleState(existing).entryFile) {
       const snapshot = await instructionRevisions.readCurrent({ companyId: existing.companyId, agentId: existing.id }, req.actor);
-      if (snapshot) { res.json(instructionFileDetail(snapshot)); return; }
+      if (snapshot) { res.json(await instructionFileDetail(existing, snapshot)); return; }
     }
     res.json(await instructions.readFile(existing, relativePath));
   });
@@ -5287,7 +5287,7 @@ export function agentRoutes(
           await svc.update(existing.id, { adapterConfig });
         }
       }
-      res.json(instructionFileDetail(receipt, receipt));
+      res.json(await instructionFileDetail(existing, receipt, receipt));
       return;
     }
     await assertCanManageInstructionsPath(req, existing);
@@ -5332,6 +5332,8 @@ export function agentRoutes(
       entityId: existing.id,
       details: {
         path: result.file.path,
+        contentHash: result.file.contentHash,
+        created: Boolean(result.file.createdAt),
         size: result.file.size,
         clearLegacyPromptTemplate: req.body.clearLegacyPromptTemplate === true,
       },
@@ -5355,7 +5357,7 @@ export function agentRoutes(
     if (!isUuidLike(runId)) throw unprocessable("Invalid instruction candidate run id");
     const receipt = await instructionWorkingCopies.resolve({ companyId: existing.companyId, agentId: existing.id,
       runId, baseRevisionId: req.body.baseRevisionId, content: req.body.content }, req.actor);
-    res.json(instructionFileDetail(receipt, receipt));
+    res.json(await instructionFileDetail(existing, receipt, receipt));
   });
 
   router.get("/agents/:id/instructions-bundle/history", async (req, res) => {
@@ -5397,7 +5399,7 @@ export function agentRoutes(
         runId: req.actor.runId, entryFile: receipt.revision.entryFile, revisionId: receipt.revision.id,
         contentHash: receipt.revision.contentHash }).catch(() => undefined);
     }
-    res.json(instructionFileDetail(receipt, receipt));
+    res.json(await instructionFileDetail(existing, receipt, receipt));
   });
 
   router.delete("/agents/:id/instructions-bundle/file", async (req, res) => {
