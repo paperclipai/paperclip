@@ -49,6 +49,13 @@ export function readVisibleSkillReview(input: { runId: string; humanCommentId: s
   }).flatMap(turn => [...turn.querySelectorAll('[data-testid="task-chat-final-response"]')]
     .filter(node => visible(node)).map(node => (node as HTMLElement).innerText)).join("\n");
 }
+export async function waitForVisibleSkillReview(ctx: ChatCatalogContext, input: { runId: string; humanCommentId: string }) {
+  remainingIdentityObservationBudget(ctx);
+  return pollUntil({ label: "current visible skill-review completion", deadlineAt: ctx.observationDeadlineAt!, intervalMs: 250,
+    load: () => ctx.input.page.evaluate(readVisibleSkillReview, input),
+    accept: text => Date.now() < ctx.observationDeadlineAt! && !!text.trim(),
+  });
+}
 export function skillReviewPreviewText(o: UpdateObservation) {
   const evidence = o.visibleReview, issueId = o.state.sourceIssueId;
   if (!evidence || typeof issueId !== "string") return o.reply;
@@ -80,7 +87,7 @@ async function observeUpdate(ctx: ChatCatalogContext, state: Record<string, unkn
     const run = acceptedSkillReviewRun(base, issueId);
     if (run) {
       const humanCommentId = run.contextSnapshot!.commentId as string;
-      const visibleText = await ctx.input.page.evaluate(readVisibleSkillReview, { runId: run.id, humanCommentId });
+      const visibleText = await waitForVisibleSkillReview(ctx, { runId: run.id, humanCommentId });
       if (visibleText.trim()) visibleReview = { runId: run.id, issueId, humanCommentId, summary: run.resultJson!.summary as string, visibleText };
     }
   }

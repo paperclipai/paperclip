@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { readVisibleSkillReview } from "./integrator-skill-update.js";
+import { readVisibleSkillReview, waitForVisibleSkillReview } from "./integrator-skill-update.js";
 const input = { runId: "run", humanCommentId: "human" };
 const thread = (body: string) => `<section data-testid="task-chat-thread"><div id="comment-human">Review before updating.</div>${body}</section>`;
 const response = '<div data-thread-anchor="run:turn:0"><div data-testid="task-chat-final-response"><strong>Installed 0.4</strong><p>Regression tests; split forms into smaller steps. No update applied yet.</p></div></div>';
@@ -10,7 +10,7 @@ beforeEach(() => {
   Object.defineProperty(HTMLElement.prototype, "innerText", { configurable: true, get() { return this.textContent ?? ""; } });
   document.body.innerHTML = thread(response);
 });
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); });
 it("reads rendered current completion only, excluding reasoning and tool output", () => {
   document.querySelector('[data-thread-anchor]')!.insertAdjacentHTML("afterbegin", '<div data-testid="task-chat-reasoning">PRIVATE REASONING</div><pre>TOOL STDOUT</pre>');
   expect(readVisibleSkillReview(input)).toContain("Installed 0.4");
@@ -22,4 +22,23 @@ it("rejects hidden, foreign, old and ambiguously anchored conversation surfaces"
   }
   document.body.innerHTML = thread(response).replace('comment-human', 'comment-foreign'); expect(readVisibleSkillReview(input)).toBe("");
   document.body.innerHTML = thread(response) + thread(response); expect(readVisibleSkillReview(input)).toBe("");
+});
+
+it("waits for eventual current response hydration within the original deadline only", async () => {
+  vi.useFakeTimers(); vi.setSystemTime(1_000);
+  document.body.innerHTML = thread("");
+  const evaluate = vi.fn(async () => readVisibleSkillReview(input));
+  const ctx = { observationDeadlineAt: 2_000, input: { page: { evaluate } } } as unknown as Parameters<typeof waitForVisibleSkillReview>[0];
+  const pending = waitForVisibleSkillReview(ctx, input);
+  await vi.advanceTimersByTimeAsync(250);
+  document.body.innerHTML = thread(response);
+  await vi.advanceTimersByTimeAsync(250);
+  expect(await pending).toContain("Installed 0.4");
+  expect(evaluate).toHaveBeenCalledTimes(3);
+  expect(ctx.observationDeadlineAt).toBe(2_000);
+  document.body.innerHTML = thread(response.replace('run:turn:0', 'foreign:turn:0'));
+  const timeout = expect(waitForVisibleSkillReview(ctx, input)).rejects.toThrow("Timed out waiting");
+  await vi.advanceTimersByTimeAsync(500); await timeout;
+  expect(ctx.observationDeadlineAt).toBe(2_000);
+  await expect(waitForVisibleSkillReview(ctx, input)).rejects.toThrow("budget exhausted");
 });
