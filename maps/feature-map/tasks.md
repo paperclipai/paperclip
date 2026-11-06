@@ -90,8 +90,6 @@ Automated: [task-list helpers](../../ui/src/pages/Issues.test.tsx) cover search 
 
 Manual: Seed human-created, agent-created, scheduled routine, human-initiated chat-channel, and creator-less tasks. Confirm automation is hidden by default, **Show agent-created tasks** reveals it, reload preserves the choice, and Clear filters hides it again. Verify list and board search with automation newer than the human results, and expand contextual ancestors/subtasks without promoting unrelated automated roots. Repeat in project task lists. Agent profiles and task-detail subtasks retain complete history.
 
-Manual: In the shared task table, enable Assignee in Columns. Confirm agent avatars and human profile photos from Paperclip assets appear beside their names. Check the shared fallbacks for missing images and external human profile URLs, an unassigned row without an avatar, and long-name reveal on hover or focus. External profile URLs must cause no image request. Hide Assignee and confirm its avatars disappear.
-
 Manual: Filter by status and assignee, change grouping/sort, open a task, and return. Verify the correct records and selected view survive navigation and reload. Include an empty result and a failed request.
 
 ### `task-detail`
