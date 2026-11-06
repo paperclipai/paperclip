@@ -131,6 +131,8 @@ import {
 } from "./issue-review-policy.js";
 import {
   issueService,
+  executeIssuePostCommitActions,
+  type IssuePostCommitAction,
   ensureAssignmentIssueAccessGrant,
   readAcceptedPlanConfirmationTarget,
   runWorkspaceIsFinalized,
@@ -1038,6 +1040,9 @@ async function supersedeOnboardingTaskQuestionsMovedToChat(
     conversationUserId: string;
     replacementInteractionId: string;
     actor: InteractionActor;
+    conversationIssue: { id: string; identifier: string | null };
+    postCommitActivityPublications: ActivityPublication[];
+    postCommitIssueActions: IssuePostCommitAction[];
   },
 ) {
   const onboardingTaskIds = tx.select({ id: issues.id }).from(issues).where(and(
@@ -1081,7 +1086,71 @@ async function supersedeOnboardingTaskQuestionsMovedToChat(
   for (const row of rows) {
     await enqueueTerminalIssueInteractionChatPublications(tx, hydrateInteraction(row));
   }
+  for (const issueId of new Set(rows.map(row => row.issueId))) {
+    await completeOnboardingTaskMovedToChat(tx, { ...input, issueId });
+  }
   return rows;
+}
+
+// The onboarding task was waiting in review on the interview that just moved
+// to chat. Nothing drives it any more, so it would surface as a stalled review
+// asking the user how an internal task continues. Close it with a link to the
+// chat instead. A task still waiting on another pending card stays open.
+async function completeOnboardingTaskMovedToChat(
+  tx: Db,
+  input: {
+    companyId: string;
+    agentId: string;
+    issueId: string;
+    conversationIssue: { id: string; identifier: string | null };
+    postCommitActivityPublications: ActivityPublication[];
+    postCommitIssueActions: IssuePostCommitAction[];
+  },
+) {
+  const [task] = await tx.select({ id: issues.id, status: issues.status, identifier: issues.identifier })
+    .from(issues)
+    .where(and(eq(issues.id, input.issueId), eq(issues.companyId, input.companyId)))
+    .for("update");
+  if (task?.status !== "in_review") return;
+  const [stillPending] = await tx.select({ id: issueThreadInteractions.id })
+    .from(issueThreadInteractions)
+    .where(and(
+      eq(issueThreadInteractions.companyId, input.companyId),
+      eq(issueThreadInteractions.issueId, task.id),
+      eq(issueThreadInteractions.status, "pending"),
+    ))
+    .limit(1);
+  if (stillPending) return;
+  const chatRef = input.conversationIssue.identifier ?? input.conversationIssue.id;
+  const svc = issueService(tx);
+  const comment = await svc.addComment(
+    task.id,
+    `Onboarding continues in [chat](/issues/${chatRef}). This task is closed so nothing is left waiting here.`,
+    {},
+    { authorType: "system" },
+    tx,
+  );
+  const updated = await svc.update(task.id, { status: "done", actorAgentId: input.agentId }, tx,
+    input.postCommitActivityPublications, input.postCommitIssueActions);
+  if (!updated) return;
+  await logActivity(tx, {
+    companyId: input.companyId,
+    actorType: "agent",
+    actorId: input.agentId,
+    agentId: input.agentId,
+    action: "issue.updated",
+    entityType: "issue",
+    entityId: task.id,
+    issueId: task.id,
+    details: {
+      status: "done",
+      identifier: task.identifier,
+      source: "onboarding_moved_to_chat",
+      conversationIssueId: input.conversationIssue.id,
+      commentId: comment.id,
+      _previous: { status: task.status },
+    },
+  }, input.postCommitActivityPublications);
 }
 
 function buildAdministrativeOutcomeResult(
@@ -3843,6 +3912,8 @@ export function issueThreadInteractionService(
 
       let created: IssueThreadInteractionRow;
       let superseded: IssueThreadInteractionRow[] = [];
+      const postCommitActivityPublications: ActivityPublication[] = [];
+      const postCommitIssueActions: IssuePostCommitAction[] = [];
       try {
         // A terminal issue must not regain pending actionable cards. FOR UPDATE
         // on the issue row serializes this insert both against terminal status
@@ -3852,7 +3923,7 @@ export function issueThreadInteractionService(
         const result = await db.transaction(async (tx) => {
           await assertInteractionRunWriteAllowed(tx as unknown as Db, issue, actor);
           const [issueRow] = await tx
-            .select({ executionPolicy: issues.executionPolicy, status: issues.status, assigneeAgentId: issues.assigneeAgentId, assigneeUserId: issues.assigneeUserId, conversationAgentId: issues.conversationAgentId, conversationUserId: issues.conversationUserId })
+            .select({ executionPolicy: issues.executionPolicy, status: issues.status, assigneeAgentId: issues.assigneeAgentId, assigneeUserId: issues.assigneeUserId, conversationAgentId: issues.conversationAgentId, conversationUserId: issues.conversationUserId, identifier: issues.identifier })
             .from(issues)
             .where(
               and(
@@ -4083,6 +4154,9 @@ export function issueThreadInteractionService(
                     conversationUserId: issueRow.conversationUserId,
                     replacementInteractionId: row.id,
                     actor,
+                    conversationIssue: { id: issue.id, identifier: issueRow.identifier },
+                    postCommitActivityPublications,
+                    postCommitIssueActions,
                   })
                 : [];
             await enqueueIssueInteractionChatPublications(
@@ -4180,6 +4254,8 @@ export function issueThreadInteractionService(
         return interaction;
       }
 
+      for (const publication of postCommitActivityPublications) publishActivity(publication);
+      await executeIssuePostCommitActions(db, postCommitIssueActions);
       await touchIssue(db, issue.id, issue.companyId);
       if (superseded.length > 0) {
         await emitResolvedInteractionsTelemetry(
