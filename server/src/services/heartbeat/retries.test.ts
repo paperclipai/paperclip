@@ -200,68 +200,43 @@ describe("heartbeat retry module callbacks", () => {
   });
 
   describe("readLimitResetRetryAt", () => {
-    it("returns undefined when message does not match limit.*resets", () => {
+    it("returns undefined when run is not a provider quota failure", () => {
       const now = new Date("2026-11-06T14:00:00.000Z");
-      expect(extracted.readLimitResetRetryAt({ error: "connection refused", resultJson: null }, now)).toBeUndefined();
-      expect(extracted.readLimitResetRetryAt({ error: null, resultJson: { errorMessage: "timeout" } }, now)).toBeUndefined();
+      expect(extracted.readLimitResetRetryAt({ errorCode: null, resultJson: null }, now)).toBeUndefined();
+      expect(extracted.readLimitResetRetryAt({ errorCode: "other_error", resultJson: { errorMessage: "timeout" } }, now)).toBeUndefined();
     });
 
-    it("prioritizes structured retryNotBefore when present", () => {
+    it("returns null when provider quota failure has no retryNotBefore", () => {
+      const now = new Date("2026-11-06T14:00:00.000Z");
+      expect(extracted.readLimitResetRetryAt({ errorCode: "provider_quota", resultJson: null }, now)).toBeNull();
+      expect(extracted.readLimitResetRetryAt({ errorCode: null, resultJson: { errorFamily: "provider_quota" } }, now)).toBeNull();
+    });
+
+    it("returns retryNotBefore Date when present", () => {
       const now = new Date("2026-11-06T14:30:00.000Z");
       const structured = new Date("2026-11-06T15:00:00.000Z");
       const run = {
-        error: "You've hit your limit · resets 3pm (UTC)",
-        resultJson: { retryNotBefore: structured.toISOString() },
+        errorCode: "provider_quota",
+        resultJson: { errorFamily: "provider_quota", retryNotBefore: structured.toISOString() },
       };
-      expect(extracted.readLimitResetRetryAt(run, now)).toEqual(new Date("2026-11-06T15:00:00.000Z"));
+      expect(extracted.readLimitResetRetryAt(run, now)).toEqual(structured);
     });
 
-    it("parses 12-hour UTC clock format to reset + 1 minute on same day when in future", () => {
-      const now = new Date("2026-11-06T14:30:00.000Z");
-      const run = { error: "You've hit your limit · resets 3pm (UTC)", resultJson: null };
-      expect(extracted.readLimitResetRetryAt(run, now)).toEqual(new Date("2026-11-06T15:01:00.000Z"));
-    });
-
-    it("advances to tomorrow at reset + 1 minute when reset hour has passed today", () => {
+    it("ensures retry date is in the future when retryNotBefore was in the past", () => {
       const now = new Date("2026-11-06T15:30:00.000Z");
-      const run = { error: "You've hit your limit · resets 3pm (UTC)", resultJson: null };
-      expect(extracted.readLimitResetRetryAt(run, now)).toEqual(new Date("2026-11-07T15:01:00.000Z"));
-    });
-
-    it("parses clock with minutes correctly", () => {
-      const now = new Date("2026-11-06T02:00:00.000Z");
-      const run = { error: "You've hit your limit · resets 3:45am (UTC)", resultJson: null };
-      expect(extracted.readLimitResetRetryAt(run, now)).toEqual(new Date("2026-11-06T03:46:00.000Z"));
-    });
-
-    it("handles 12am and 12pm midnight/noon boundaries", () => {
-      const now = new Date("2026-11-06T10:00:00.000Z");
-      expect(extracted.readLimitResetRetryAt({ error: "limit resets 12am (UTC)", resultJson: null }, now)).toEqual(
-        new Date("2026-11-07T00:01:00.000Z"),
-      );
-      expect(extracted.readLimitResetRetryAt({ error: "limit resets 12pm (UTC)", resultJson: null }, now)).toEqual(
-        new Date("2026-11-06T12:01:00.000Z"),
-      );
-    });
-
-    it("returns null when timezone is ambiguous or not UTC", () => {
-      const now = new Date("2026-11-06T14:00:00.000Z");
-      const run = { error: "You've hit your limit · resets 4pm (America/Chicago)", resultJson: null };
-      expect(extracted.readLimitResetRetryAt(run, now)).toBeNull();
-    });
-
-    it("returns null when reset text cannot be parsed or hour is invalid", () => {
-      const now = new Date("2026-11-06T14:00:00.000Z");
-      expect(extracted.readLimitResetRetryAt({ error: "limit reached; resets tomorrow", resultJson: null }, now)).toBeNull();
-      expect(extracted.readLimitResetRetryAt({ error: "limit resets 13pm (UTC)", resultJson: null }, now)).toBeNull();
-      expect(extracted.readLimitResetRetryAt({ error: "limit resets 0pm (UTC)", resultJson: null }, now)).toBeNull();
+      const past = new Date("2026-11-06T15:00:00.000Z");
+      const run = {
+        errorCode: "provider_quota",
+        resultJson: { errorFamily: "provider_quota", retryNotBefore: past.toISOString() },
+      };
+      expect(extracted.readLimitResetRetryAt(run, now)).toEqual(new Date("2026-11-06T15:30:01.000Z"));
     });
   });
 
   it("suppresses automatic fast retry when limit reset time is ambiguous", async () => {
     const database = guardedDatabase();
     const deps = callbacks();
-    const run = { ...unitRun(), error: "You've hit your limit · resets 4pm (America/Chicago)" };
+    const run = { ...unitRun(), errorCode: "provider_quota", resultJson: { errorFamily: "provider_quota" } };
     const retry = await extracted.createHeartbeatRetries(database.db, deps).scheduleBoundedRetryForRun(
       run, { adapterType: "claude_local" } as Agent,
     );
@@ -273,14 +248,54 @@ describe("heartbeat retry module callbacks", () => {
     expect(database.access).not.toHaveBeenCalled();
   });
 
+  it("schedules quota retry when earlier transient retry occurred without blocking", async () => {
+    const database = guardedDatabase();
+    const deps = callbacks();
+    deps.getAgentInvokability = vi.fn<HeartbeatRetryDependencies["getAgentInvokability"]>(async () => ({
+      invokable: false,
+      reason: "paused",
+      message: "agent is paused",
+      details: {},
+      invalidOrgChain: false,
+    }));
+    const resetAt = new Date("2026-11-06T15:00:00.000Z");
+    const run = {
+      ...unitRun(),
+      errorCode: "provider_quota",
+      resultJson: { errorFamily: "provider_quota", retryNotBefore: resetAt.toISOString() },
+      scheduledRetryReason: "transient_failure",
+      scheduledRetryAttempt: 1,
+      contextSnapshot: { issueId: "issue", executionRetryAccounting: { version: 1, failureRetries: 1, maxTurnContinuations: 0 } },
+    };
+    const retry = await extracted.createHeartbeatRetries(database.db, deps).scheduleBoundedRetryForRun(
+      run, { adapterType: "claude_local" } as Agent, { now: new Date("2026-11-06T14:30:00.000Z") },
+    );
+    expect(retry).toEqual({
+      outcome: "not_scheduled",
+      reason: "Scheduled retry suppressed because the agent is not invokable",
+      errorCode: "agent_not_invokable",
+      issueId: "issue",
+    });
+    expect(deps.appendRunEvent).toHaveBeenCalledWith(run, expect.objectContaining({
+      payload: expect.objectContaining({ scheduledRetryAttempt: 2, maxAttempts: 2 }),
+    }));
+    expect(database.access).not.toHaveBeenCalled();
+  });
+
   it("caps limit reset retries at 1 attempt and reports exhaustion on attempt 2", async () => {
     const database = guardedDatabase();
     const deps = callbacks();
     const run = {
       ...unitRun(),
-      error: "You've hit your limit · resets 3pm (UTC)",
+      errorCode: "provider_quota",
+      resultJson: { errorFamily: "provider_quota", retryNotBefore: "2026-11-06T15:00:00.000Z" },
       scheduledRetryReason: "transient_failure",
       scheduledRetryAttempt: 1,
+      contextSnapshot: {
+        issueId: "issue",
+        providerQuotaRetryAttempt: 1,
+        providerQuotaRetryNotBefore: "2026-11-06T15:00:00.000Z",
+      },
     };
     const retry = await extracted.createHeartbeatRetries(database.db, deps).scheduleBoundedRetryForRun(
       run, { adapterType: "claude_local" } as Agent,
@@ -288,6 +303,27 @@ describe("heartbeat retry module callbacks", () => {
     expect(retry).toMatchObject({ outcome: "retry_exhausted", attempt: 2, maxAttempts: 1 });
     expect(deps.appendRunEvent).toHaveBeenCalledWith(run, expect.objectContaining({
       retryExhaustion: { retryReason: "transient_failure", scheduledRetryAttempt: 1, maxAttempts: 1 },
+    }));
+    expect(database.access).not.toHaveBeenCalled();
+  });
+
+  it("preserves overall failure budget when overall attempts are spent", async () => {
+    const database = guardedDatabase();
+    const deps = callbacks();
+    const run = {
+      ...unitRun(),
+      errorCode: "provider_quota",
+      resultJson: { errorFamily: "provider_quota", retryNotBefore: "2026-11-06T15:00:00.000Z" },
+      scheduledRetryReason: "transient_failure",
+      scheduledRetryAttempt: 2,
+      contextSnapshot: { issueId: "issue", executionRetryAccounting: { version: 1, failureRetries: 2, maxTurnContinuations: 0 } },
+    };
+    const retry = await extracted.createHeartbeatRetries(database.db, deps).scheduleBoundedRetryForRun(
+      run, { adapterType: "claude_local" } as Agent,
+    );
+    expect(retry).toMatchObject({ outcome: "retry_exhausted", attempt: 3, maxAttempts: 2 });
+    expect(deps.appendRunEvent).toHaveBeenCalledWith(run, expect.objectContaining({
+      retryExhaustion: { retryReason: "transient_failure", scheduledRetryAttempt: 2, maxAttempts: 2 },
     }));
     expect(database.access).not.toHaveBeenCalled();
   });
@@ -483,12 +519,17 @@ describePostgres("heartbeat retry module database wiring", () => {
     expect(await retries.retryScheduledRetryNow({ issueId: selected.issue.id, now })).toMatchObject({ outcome: "already_promoted" });
   });
 
-  it("schedules a single retry at reset + 1 minute for a limit reset error", async () => {
+  it("schedules a single retry at reset time for a limit reset error", async () => {
     const { run, agent } = await fixture();
     const testNow = new Date("2026-10-08T14:00:00Z");
     const [failed] = await db.update(heartbeatRuns).set({
       status: "failed",
-      error: "You've hit your limit · resets 3pm (UTC)",
+      errorCode: "provider_quota",
+      resultJson: {
+        executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+        errorFamily: "provider_quota",
+        retryNotBefore: "2026-10-08T15:00:00.000Z",
+      },
     }).where(eq(heartbeatRuns.id, run.id)).returning();
     const result = await boundRetries().retries.scheduleBoundedRetryForRun(failed!, agent, { now: testNow });
     expect(result.outcome).toBe("scheduled");
@@ -497,7 +538,37 @@ describePostgres("heartbeat retry module database wiring", () => {
       status: "scheduled_retry",
       scheduledRetryReason: "transient_failure",
       scheduledRetryAttempt: 1,
-      scheduledRetryAt: new Date("2026-10-08T15:01:00.000Z"),
+      scheduledRetryAt: new Date("2026-10-08T15:00:00.000Z"),
     });
+  });
+
+  it("schedules quota retry when earlier transient retry occurred in database", async () => {
+    const { run, agent } = await fixture();
+    const testNow = new Date("2026-10-08T14:00:00Z");
+    const [failed] = await db.update(heartbeatRuns).set({
+      status: "failed",
+      errorCode: "provider_quota",
+      scheduledRetryReason: "transient_failure",
+      scheduledRetryAttempt: 1,
+      contextSnapshot: {
+        issueId: run.issueId,
+        executionRetryAccounting: { version: 1, failureRetries: 1, maxTurnContinuations: 0 },
+      },
+      resultJson: {
+        executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+        errorFamily: "provider_quota",
+        retryNotBefore: "2026-10-08T15:00:00.000Z",
+      },
+    }).where(eq(heartbeatRuns.id, run.id)).returning();
+    const result = await boundRetries().retries.scheduleBoundedRetryForRun(failed!, agent, { now: testNow });
+    expect(result.outcome).toBe("scheduled");
+    const [successor] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, run.id));
+    expect(successor).toMatchObject({
+      status: "scheduled_retry",
+      scheduledRetryReason: "transient_failure",
+      scheduledRetryAttempt: 2,
+      scheduledRetryAt: new Date("2026-10-08T15:00:00.000Z"),
+    });
+    expect((successor?.contextSnapshot as Record<string, unknown> | null)?.providerQuotaRetryAttempt).toBe(1);
   });
 });

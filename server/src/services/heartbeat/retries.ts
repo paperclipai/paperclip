@@ -287,7 +287,10 @@ function readTransientRetryNotBeforeFromRun(
   run: Pick<typeof heartbeatRuns.$inferSelect, "resultJson">,
 ) {
   const resultJson = parseObject(run.resultJson);
-  const value = resultJson.retryNotBefore ?? resultJson.transientRetryNotBefore;
+  const value =
+    resultJson.retryNotBefore ??
+    resultJson.transientRetryNotBefore ??
+    resultJson.providerQuotaRetryNotBefore;
   if (!(
     typeof value === "string" ||
     typeof value === "number" ||
@@ -297,6 +300,18 @@ function readTransientRetryNotBeforeFromRun(
   }
   const parsed = new Date(value);
   return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function providerQuotaRetryCount(run: {
+  contextSnapshot?: Record<string, unknown> | null;
+}): number {
+  const snapshot = parseObject(run.contextSnapshot);
+  const value =
+    snapshot.providerQuotaRetryAttempt ?? snapshot.providerQuotaRetries;
+  if (typeof value === "number" && Number.isSafeInteger(value) && value >= 0) {
+    return value;
+  }
+  return snapshot.providerQuotaRetryNotBefore ? 1 : 0;
 }
 
 export function readTransientRecoveryContractFromRun(
@@ -313,32 +328,16 @@ export function readTransientRecoveryContractFromRun(
 }
 
 export function readLimitResetRetryAt(
-  run: Pick<typeof heartbeatRuns.$inferSelect, "error" | "resultJson">,
+  run: Pick<typeof heartbeatRuns.$inferSelect, "errorCode" | "resultJson">,
   now: Date,
 ): Date | null | undefined {
-  const result = parseObject(run.resultJson);
-  const message = [run.error, result.errorMessage, result.message, result.error]
-    .filter((value): value is string => typeof value === "string")
-    .join(" ");
-  if (!/limit.*resets/i.test(message)) return undefined;
+  const transient = readTransientRecoveryContractFromRun(run);
+  if (transient?.errorFamily !== "provider_quota") return undefined;
 
-  const structured = readTransientRetryNotBeforeFromRun(run);
-  if (structured) {
-    return new Date(Math.max(now.getTime() + 1_000, structured.getTime()));
-  }
+  const retryNotBefore = transient.retryNotBefore;
+  if (!retryNotBefore) return null;
 
-  const match = /resets\s+(\d{1,2})(?::([0-5]\d))?\s*(am|pm)\s*\(UTC\)/i.exec(message);
-  if (!match || Number(match[1]) < 1 || Number(match[1]) > 12) {
-    return null;
-  }
-  const hour = (Number(match[1]) % 12) + (match[3].toLowerCase() === "pm" ? 12 : 0);
-  const dueAt = new Date(now);
-  dueAt.setUTCHours(hour, Number(match[2] ?? 0), 0, 0);
-  dueAt.setTime(dueAt.getTime() + 60_000);
-  if (dueAt.getTime() <= now.getTime()) {
-    dueAt.setUTCDate(dueAt.getUTCDate() + 1);
-  }
-  return dueAt;
+  return new Date(Math.max(now.getTime() + 1_000, retryNotBefore.getTime()));
 }
 
 function isSpawnLikeFailureMessage(value: unknown) {
@@ -496,22 +495,27 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
         issueId: readNonEmptyString(run.contextSnapshot?.issueId),
       };
     }
-    const maxAttempts = limitRetryAt
-      ? 1
-      : Math.max(
-          0,
-          Math.floor(
-            opts?.maxAttempts ?? BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS,
-          ),
-        );
+    const maxAttempts = Math.max(
+      0,
+      Math.floor(
+        opts?.maxAttempts ?? BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS,
+      ),
+    );
     const consumedAttempts = executionRetryAttemptCount(run, retryReason);
     const nextAttempt = consumedAttempts + 1;
+    const consumedQuotaAttempts =
+      limitRetryAt !== undefined ? providerQuotaRetryCount(run) : 0;
+    const nextQuotaAttempt = consumedQuotaAttempts + 1;
+    const quotaExhausted = limitRetryAt !== undefined && nextQuotaAttempt > 1;
+    const overallExhausted = nextAttempt > maxAttempts;
+
     const retryDelayMs = limitRetryAt
       ? Math.max(1_000, limitRetryAt.getTime() - now.getTime())
       : opts?.delayMs;
     const computedBaseSchedule =
-      retryDelayMs != null
-        ? nextAttempt <= maxAttempts
+      quotaExhausted || overallExhausted
+        ? null
+        : retryDelayMs != null
           ? {
               attempt: nextAttempt,
               baseDelayMs: Math.max(0, Math.floor(retryDelayMs)),
@@ -519,18 +523,15 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
               dueAt: new Date(
                 now.getTime() + Math.max(0, Math.floor(retryDelayMs)),
               ),
-              maxAttempts,
+              maxAttempts: quotaExhausted ? 1 : maxAttempts,
             }
-          : null
-        : nextAttempt <= maxAttempts
-          ? computeBoundedTransientHeartbeatRetrySchedule(
+          : computeBoundedTransientHeartbeatRetrySchedule(
               nextAttempt,
               now,
               opts?.random,
-            )
-          : null;
+            );
     const baseSchedule = computedBaseSchedule
-      ? { ...computedBaseSchedule, maxAttempts }
+      ? { ...computedBaseSchedule, maxAttempts: quotaExhausted ? 1 : maxAttempts }
       : null;
     const transientRecovery =
       retryReason === BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON
@@ -551,14 +552,16 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
     if (!baseSchedule) {
       const exhaustion = {
         retryReason,
-        scheduledRetryAttempt: consumedAttempts,
-        maxAttempts,
+        scheduledRetryAttempt: quotaExhausted
+          ? consumedQuotaAttempts
+          : consumedAttempts,
+        maxAttempts: quotaExhausted ? 1 : maxAttempts,
       };
       await appendRunEvent(run, {
         eventType: "lifecycle",
         stream: "system",
         level: "warn",
-        message: `Bounded retry exhausted after ${consumedAttempts} scheduled attempts; no further automatic retry will be queued`,
+        message: `Bounded retry exhausted after ${exhaustion.scheduledRetryAttempt} scheduled attempts; no further automatic retry will be queued`,
         payload: exhaustion,
         retryExhaustion: exhaustion,
       });
@@ -580,8 +583,8 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
       }
       return {
         outcome: "retry_exhausted" as const,
-        attempt: nextAttempt,
-        maxAttempts,
+        attempt: quotaExhausted ? nextQuotaAttempt : nextAttempt,
+        maxAttempts: quotaExhausted ? 1 : maxAttempts,
       };
     }
 
@@ -744,6 +747,7 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
         ...(transientRecovery?.errorFamily === "provider_quota" &&
         transientRetryNotBefore
           ? {
+              providerQuotaRetryAttempt: nextQuotaAttempt,
               providerQuotaRetryNotBefore:
                 transientRetryNotBefore.toISOString(),
             }
@@ -1106,6 +1110,7 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
                 ...(transientRecovery?.errorFamily === "provider_quota" &&
                 transientRetryNotBefore
                   ? {
+                      providerQuotaRetryAttempt: nextQuotaAttempt,
                       providerQuotaRetryNotBefore:
                         transientRetryNotBefore.toISOString(),
                     }
@@ -1364,6 +1369,7 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
         ...(transientRecovery?.errorFamily === "provider_quota" &&
         transientRetryNotBefore
           ? {
+              providerQuotaRetryAttempt: nextQuotaAttempt,
               providerQuotaRetryNotBefore:
                 transientRetryNotBefore.toISOString(),
             }
