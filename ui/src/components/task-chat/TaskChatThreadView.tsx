@@ -19,6 +19,7 @@ import { TaskChatMarker } from "./TaskChatMarker";
 import { TaskChatStatusPill } from "./TaskChatStatusPill";
 import { TaskChatToolCard } from "./TaskChatToolCard";
 import { TaskChatUsageReadout } from "./TaskChatUsageReadout";
+import { TaskChatSubagentTree } from "./TaskChatSubagentCard";
 import { TaskChatRunnerActivityGroup } from "./TaskChatRunnerActivityGroup";
 import { TaskChatActivityPhase } from "./TaskChatActivityPhase";
 import { TaskChatThinking } from "./TaskChatThinking";
@@ -236,6 +237,8 @@ function renderItem(
       );
     case "brief":
       return renderBrief ? renderBrief() : null;
+    case "subagent_group":
+      return <TaskChatSubagentTree subagents={item.subagents} />;
     case "turn":
       return (
         <TaskChatTurn

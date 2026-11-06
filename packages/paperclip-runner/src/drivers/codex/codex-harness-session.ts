@@ -1,5 +1,5 @@
 import { readCodexThreadState, readCodexTurnMetadata, readCodexTurnItems } from "./codex-history.js";
-import { codexRunUsage, observeCodexUsage } from "./codex-usage-baseline.js";
+import { codexRunUsage, codexUsageBaselineForNextRun, observeCodexUsage } from "./codex-usage-baseline.js";
 import { randomUUID } from "node:crypto";
 import { NativeProviderTerminalFailure } from "../../contracts/native-session-backend.js";
 
@@ -56,10 +56,15 @@ import {
 } from "./codex-session-terminal.js";
 import { boundedText, record, text, userInput } from "./codex-driver-values.js";
 
+/** TurnStartParams.summary: provider-written reasoning summaries for every turn. */
+export const CODEX_REASONING_SUMMARY = "auto";
+
 export class CodexHarnessSession
   extends CodexSessionState
   implements HarnessSession
 {
+  #deferredNotificationPump = false;
+
   constructor(input: CodexSessionStateInput) {
     super(input);
     this.transport.setServerRequestHandler((request) =>
@@ -77,6 +82,7 @@ export class CodexHarnessSession
       ));
     }
     if (this.terminal) {
+      this.#deferredNotificationPump = true;
       this.eventQueue.close();
     } else {
       void pumpNotifications(this);
@@ -134,7 +140,7 @@ export class CodexHarnessSession
         this.eventQueue.clear();
       }
       if (this.codexUsageBaseline && input.runId !== this.runId) {
-        this.codexUsageBaseline = { baseline: { ...this.codexUsageBaseline.latest }, latest: { ...this.codexUsageBaseline.latest } };
+        this.codexUsageBaseline = codexUsageBaselineForNextRun(this.codexUsageBaseline);
         this.usageSnapshot = codexRunUsage(this.codexUsageBaseline);
       }
       this.runId = input.runId;
@@ -150,6 +156,11 @@ export class CodexHarnessSession
       this.protocolFailed = false;
       this.protocolFailureCode = null;
       this.protocolFailureMessage = null;
+      if (this.#deferredNotificationPump) {
+        this.eventQueue.reopen();
+        this.#deferredNotificationPump = false;
+        void pumpNotifications(this);
+      }
       this.emit("run.attached", { runId: input.runId, sameSession: true });
     } finally {
       this.pendingRunAttachment = null;
@@ -251,6 +262,10 @@ export class CodexHarnessSession
         threadId: this.opened.threadId,
         ...(input.reasoningMode === undefined ? {} : { reasoningMode: input.reasoningMode }),
         ...(this.reasoningEffort ? { effort: this.reasoningEffort } : {}),
+        // Codex resolves an unset summary from the model, and current models
+        // resolve it to "none": reasoning items then carry no text at all.
+        // Request provider-written summaries so the task chat can show them.
+        ...(this.driverKind === "codex_app_server" ? { summary: CODEX_REASONING_SUMMARY } : {}),
         cwd: this.opened.context.workingDirectory,
         permissions:
           text(record(record(this.opened.context.sandbox).permissionProfile).id) || (requestedMode === "plan"
@@ -729,6 +744,9 @@ export class CodexHarnessSession
           reconciledUsage.total,
           false,
         );
+        // Only an active turn's report belongs to this run. An idle thread read
+        // can include late usage that no run has been charged for yet.
+        if (this.activeTurnId !== null) this.codexUsageBaseline.accounted = { ...this.codexUsageBaseline.latest };
         this.usageSnapshot = {
           ...reconciledUsage,
           ...codexRunUsage(this.codexUsageBaseline),

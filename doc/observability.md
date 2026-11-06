@@ -1134,10 +1134,12 @@ untyped capacity text, and Codex CLI transient upstream failures remain reportab
 The run keeps its failed state and its terminal diagnostic.
 
 A native Codex model capacity failure stays local only while its automatic
-retry owns recovery. The run must carry `native_provider_overloaded`, the closed
-`codex`/`server_overloaded` diagnostic, and a committed finalization whose
-reason is `native_provider_overloaded`. The report also requires the
-`native_provider_overloaded` retry run that the same status transaction created.
+retry owns recovery. The run must carry `native_provider_overloaded`. The proof
+of the retry is the `native_provider_overloaded` successor run for the same
+task, which only the committed capacity status decision creates, and only for
+the typed `codex`/`server_overloaded` diagnostic. The run's own `resultJson` is
+not required: the live heartbeat's failed-status write replaces it with the
+adapter's copy, which lacks the finalizer's diagnostic and finalization fields.
 Exhausted or held capacity failures, other retry lanes, setup failures, signals,
 and unreadable retry evidence remain reportable. A failed retry reports its own
 outcome.
@@ -1386,6 +1388,18 @@ different tools with different permission rules. Read them this way:
 
 Both fields hold only counts.
 
+A sandbox ACP run also records how its agent process session ended, when the
+host bridge saw it end before finalization. Startup failures (`create_runtime`,
+`ensure_session`, `configure_session`) carry the same fields, so an agent process
+that dies during the handshake is reported too. `acpProcessTerminalSource` is one of
+`remote_event`, `input_delivery`, `output_poll`, `output_stream`, or
+`proxy_close`, and `acpProcessTerminalOutcome` is `exit` or `error`.
+`acpProcessTerminalExitCode` (0–255) and `acpProcessTerminalSignal` (a closed
+POSIX signal name) are present only when known. These are the same values as the
+run log's `ACP process session terminal:` line. They separate a killed or exited
+agent process from a host proxy close after a generic ACP connection failure. The
+server drops all of them if the source is not a closed label.
+
 ACP and legacy OpenCode results retain the adapter's resolved wall-clock timeout as
 `adapterExecutionTimeout` in the instance run result. Finalization uses it for
 `effectiveTimeoutSec`, `timeoutSource`, and `timeoutConfigured`. Sources are
@@ -1625,6 +1639,20 @@ These fields contain build identifiers; they add no tenant or user identity.
   event carries five context fields: `taskId`, `runId`, `errorMessage`,
   `errorCode`, and `agentAdapter`. The server redacts the error message and
   the error code before it sends the event.
+
+A server event whose original error has the code
+`ERR_VM_DYNAMIC_IMPORT_CALLBACK_MISSING` gets bounded provenance. The tag
+`dynamic_import_inspector` holds `open`, `closed`, or `unavailable`. The
+`dynamic_import_provenance` context holds the same state, the process id, the
+parent process id, the main-thread flag, the uptime in seconds, and the names
+of inspector-related Node flags from `execArgv` and `NODE_OPTIONS`. The event
+never holds the inspector URL, because that URL contains a session secret. It
+also never holds a flag value or any other flag. This error has reached
+Sentry with no first-party frame. The state shows whether an inspector
+session was open when the server reported the event. It does not prove which
+code caused the error: code compiled without a filename fails the same way
+while a debugger is attached. A `closed` state rules out an expression that a
+still-open session evaluated. Other events do not change.
 
 Native runner identity and harness failures retain their existing error prefixes.
 Their terminal messages now include a bounded guard reason, such as
@@ -2186,7 +2214,7 @@ expired and cross-invocation context cannot select another call's parent.
 | --- | --- | --- | --- |
 | Dispatch / receipt / return | `execution.plugin_dispatch` → `plugin.worker` | Host invocation; worker monotonic durations anchored to its epoch start | Outer minus worker time is an unattributed dispatch/scheduling remainder. It is not network latency. |
 | Repeated host reads | `plugin.host.identity.read`, `config.read`, `progress.read`, `progress.write` | Worker invocation, one span per awaited call, bounded by receipt budget | Round trip and host service together. Span count is call count; overlapping reads are not additive. |
-| Plugin coordination | `plugin.storage.queue`, `storage.execute`, `runtime.queue`, `runtime.prepare`, `runtime.reconcile`, `runtime.verify`, `workspace.prepare` | Invoking plugin, monotonic durations | The plugin keeps its locking and authorization owners. `plugin.reused` is boolean. |
+| Plugin coordination | `plugin.storage.queue`, `storage.execute`, `runtime.queue`, `runtime.prepare`, `runtime.reconcile`, `runtime.verify`, `workspace.prepare`, `workspace.failure` | Invoking plugin, monotonic durations | The plugin keeps its locking and authorization owners. `plugin.reused` is boolean. `plugin.failure_reason` on `workspace.failure` is a closed workspace operation failure reason or `unknown`. |
 | Completed remote lifecycle | `plugin.remote.lifecycle`, linked to the host-owned observer | Bounded prior monotonic durations, up to ten minutes old | Independent lifecycle trace; never a child of a later polling request. The worker cannot supply link IDs. |
 | Remote operation receipt | `plugin.remote.request` → `plugin.remote.operation` | Remote monotonic offsets, checked against local round trip and parent bounds | Closed operation classes cover mount refresh, guest setup, process execution, scripts and cleanup. No remote wall-clock subtraction. |
 | Retained/cold transport | `runner.transport.attach`, `resume`, `cold_start`, `prepare`, `registration`, `provider_identity` | Controller process, current active context on every operation | A retained transport must not capture the preceding run's trace. These parents overlap their children. |

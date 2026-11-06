@@ -1,5 +1,5 @@
 {
-  "id": "60310453-2eff-402e-b46a-e31ff8af6a16",
+  "id": "a87278a8-15b3-4187-94a9-f4bb79d8640d",
   "prevId": "9fcf29d1-a9a6-4ead-8d43-7e087a2b2b24",
   "version": "7",
   "dialect": "postgresql",
@@ -3901,28 +3901,6 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "agent_wakeup_requests_company_pending_issue_key_idx": {
-          "name": "agent_wakeup_requests_company_pending_issue_key_idx",
-          "columns": [
-            {
-              "expression": "(coalesce(\"payload\"->>'issueId', \"payload\"->>'taskId', \"payload\"->'_paperclipWakeContext'->>'issueId'))",
-              "asc": true,
-              "isExpression": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "company_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "where": "\"agent_wakeup_requests\".\"status\" in ('queued', 'claimed', 'deferred_issue_execution')",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -34208,6 +34186,50 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
+        },
+        "heartbeat_run_events_usage_item_run_idx": {
+          "name": "heartbeat_run_events_usage_item_run_idx",
+          "columns": [
+            {
+              "expression": "run_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"heartbeat_run_events\".\"event_type\" = 'item.completed' and (\"heartbeat_run_events\".\"payload\" -> 'prpEvent' -> 'payload' ->> 'kind') = 'usage'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "heartbeat_run_events_compaction_session_idx": {
+          "name": "heartbeat_run_events_compaction_session_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "(\"payload\" -> 'prpEvent' ->> 'normalizedSessionId')",
+              "asc": true,
+              "isExpression": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"heartbeat_run_events\".\"event_type\" = 'context.compacted'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         }
       },
       "foreignKeys": {
@@ -35185,28 +35207,6 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "heartbeat_runs_company_unfinished_issue_key_idx": {
-          "name": "heartbeat_runs_company_unfinished_issue_key_idx",
-          "columns": [
-            {
-              "expression": "(coalesce(\"context_snapshot\"->>'issueId', \"context_snapshot\"->>'taskId', \"native_issue_id\"::text))",
-              "asc": true,
-              "isExpression": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "company_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "where": "\"heartbeat_runs\".\"status\" in ('queued', 'running', 'scheduled_retry')",
           "concurrently": false,
           "method": "btree",
           "with": {}

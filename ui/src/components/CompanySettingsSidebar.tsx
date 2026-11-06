@@ -70,7 +70,6 @@ export function CompanySettingsSidebar() {
       }
     },
     enabled: !!selectedCompanyId,
-    retry: false,
     refetchInterval: 15_000,
   });
   const { data: plugins } = useQuery({
