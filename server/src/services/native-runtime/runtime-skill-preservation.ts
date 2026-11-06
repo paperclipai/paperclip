@@ -83,7 +83,7 @@ export async function preserveRuntimeSkillAssets(db: Db, input: { companyId: str
     for (const asset of existing.assets) {
       manifestFiles(asset.bundle, asset.manifestText);
       const row = await store.descriptor(input.companyId, asset.packageSnapshotId);
-      if (row.storage?.provider !== "s3" || row.contentHash !== asset.packageContentHash
+      if (row.storage?.provider !== "s3" || row.storage.durable !== true || row.contentHash !== asset.packageContentHash
         || !await store.verifyDurable(input.companyId, asset.packageSnapshotId, input.signal)) throw new Error("runtime_skill_package_not_durable");
     }
     return { preserved: existing.assets.length };
@@ -107,7 +107,8 @@ export async function preserveRuntimeSkillAssets(db: Db, input: { companyId: str
     // deletion won, publication fails and leaves every local asset untouched.
     for (const asset of [...assets].sort((a, b) => a.packageSnapshotId.localeCompare(b.packageSnapshotId))) {
       const [row] = await tx.select().from(snapshots).where(and(eq(snapshots.companyId, input.companyId), eq(snapshots.id, asset.packageSnapshotId))).for("update");
-      if (!row?.storage || row.storage.provider !== "s3" || row.contentHash !== asset.packageContentHash) throw new Error("runtime_skill_package_not_durable");
+      if (!row?.storage || row.storage.provider !== "s3" || row.storage.durable !== true
+        || row.contentHash !== asset.packageContentHash) throw new Error("runtime_skill_package_not_durable");
     }
     await tx.update(heartbeatRuns).set({ runnerProfileJson: { ...current.runnerProfileJson,
       [RUNTIME_SKILL_PRESERVATION_KEY]: { schema: RUNTIME_SKILL_PRESERVATION_SCHEMA, inputDigest: admitted.inputDigest,
@@ -143,7 +144,7 @@ export async function hasLocalRuntimeSkillObligations(db: Db): Promise<boolean> 
             .where(and(eq(snapshots.companyId, row.companyId), eq(snapshots.id, asset.packageSnapshotId)));
           if (snapshot) checkedPackages.set(key, snapshot);
         }
-        if (snapshot?.storage?.provider !== "s3" || snapshot.hash !== asset.packageContentHash) return true;
+        if (snapshot?.storage?.provider !== "s3" || snapshot.storage.durable !== true || snapshot.hash !== asset.packageContentHash) return true;
       }
     }
     if (rows.length < 100) return false;
@@ -179,7 +180,8 @@ export async function rehydratePreservedRuntimeSkill(db: Db, row: Parameters<typ
   const files = manifestFiles(asset.bundle, asset.manifestText);
   const store = skillPackageStore(db);
   const descriptor = await store.descriptor(row.companyId, asset.packageSnapshotId);
-  if (descriptor.storage?.provider !== "s3" || descriptor.contentHash !== asset.packageContentHash) throw new Error("runtime_skill_package_not_durable");
+  if (descriptor.storage?.provider !== "s3" || descriptor.storage.durable !== true
+    || descriptor.contentHash !== asset.packageContentHash) throw new Error("runtime_skill_package_not_durable");
   return store.withIsolatedPackage(row.companyId, asset.packageSnapshotId, async (root, manifest) => {
     if (manifest.files.length !== files.length || files.some(file => !manifest.files.some(entry => entry.path === file.path
       && entry.sha256 === file.sha256 && entry.size === file.size && entry.executable === Boolean(file.mode & 0o111)))) throw new Error("runtime_skill_package_mismatch");

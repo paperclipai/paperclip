@@ -139,6 +139,9 @@ describe("admitted unversioned runtime skill preservation", () => {
     const [snapshot] = await db.select().from(snapshots).where(eq(snapshots.companyId, f.companyId));
     await db.update(snapshots).set({ storage: null }).where(eq(snapshots.id, snapshot!.id));
     expect(await hasLocalRuntimeSkillObligations(db)).toBe(true);
+    await db.update(snapshots).set({ storage: { ...snapshot!.storage!, durable: false } }).where(eq(snapshots.id, snapshot!.id));
+    expect(await hasLocalRuntimeSkillObligations(db)).toBe(true);
+    await expect(rehydratePinnedSkillAssets(db, f, f.context)).rejects.toThrow("package_not_durable");
     await db.update(snapshots).set({ storage: snapshot!.storage }).where(eq(snapshots.id, snapshot!.id));
     const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
     const receipt = run!.runnerProfileJson!.nativeRuntimeSkillPreservation as { assets: Array<{ manifestText: string }> };
