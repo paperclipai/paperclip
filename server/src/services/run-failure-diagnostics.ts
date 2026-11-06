@@ -13,6 +13,7 @@ import {
   ACP_TOOL_KINDS,
 } from "@paperclipai/adapter-utils/acpx-engine/constants";
 import { redactCurrentUserText } from "../log-redaction.js";
+import { storageFailureDiagnosticsFor } from "../storage/failure-diagnostics.js";
 import { redactSensitiveText, REDACTED_EVENT_VALUE } from "../redaction.js";
 import { readNativeModelRejectionDiagnostic, readNativeTurnFailureDiagnostic } from "./native-runtime/native-provider-failure.js";
 import { readRemoteRunnerRecoveryDiagnostic, readRemoteRunnerRecoveryError } from "./native-runtime/remote-runner-recovery-diagnostics.js";
@@ -434,6 +435,17 @@ export function collectRunFailureDiagnostics(run: Run, options: RunFailureReport
           execution[`restoreLock${field[0]!.toUpperCase()}${field.slice(1)}`] = value;
         }
       }
+    }
+    // A bare socket error ("aborted", ECONNRESET) cannot say which storage
+    // read it interrupted; the provider's fixed-shape record can.
+    const storage = storageFailureDiagnosticsFor(error);
+    if (storage && execution.storageOperation === undefined) {
+      execution.storageProvider = storage.provider;
+      execution.storageOperation = storage.operation;
+      execution.storageErrorCode = storage.errorCode;
+      if (storage.httpStatus !== null) execution.storageHttpStatus = storage.httpStatus;
+      if (storage.requestId !== null) execution.storageRequestId = storage.requestId;
+      if (storage.attempts !== null) execution.storageAttempts = storage.attempts;
     }
     const entry: RunFailureException = {};
     for (const field of ["name", "message", "stack", "code"] as const) {

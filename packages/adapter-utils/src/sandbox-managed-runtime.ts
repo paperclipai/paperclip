@@ -451,6 +451,12 @@ export interface SandboxTransferProgressOptions {
   onProgress?: (transferredBytes: number, totalBytes: number | null) => void | Promise<void>;
 }
 
+export const MAX_SANDBOX_SYNC_TIMEOUT_MS = 30 * 60_000;
+
+export interface SandboxSyncOptions {
+  minimumTimeoutMs?: number;
+}
+
 /**
  * A single source→target file or directory transfer within a sync operation.
  * Mirrors the plugin SDK `PluginSyncFileMapping`; kept as a local structural
@@ -561,9 +567,9 @@ export interface SandboxManagedRuntimeClient {
    * orchestrator falls back to the tar + base64 `writeFile`/`run` path so
    * behavior is byte-identical to a provider that never opted in.
    */
-  syncIn?(operations: SandboxSyncOperation[]): Promise<SandboxSyncResult>;
+  syncIn?(operations: SandboxSyncOperation[], options?: SandboxSyncOptions): Promise<SandboxSyncResult>;
   /** Optional native outbound transfer. See {@link syncIn}. */
-  syncOut?(operations: SandboxSyncOperation[]): Promise<SandboxSyncResult>;
+  syncOut?(operations: SandboxSyncOperation[], options?: SandboxSyncOptions): Promise<SandboxSyncResult>;
 }
 
 /**
