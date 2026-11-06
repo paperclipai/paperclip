@@ -32,8 +32,8 @@ it("adopts a durably accepted turn whose start notification outlives the turn-st
   const callsPath = join(stateDirectory, "calls.log");
   const bundle = createCapabilityRunnerdCodexTransport({
     runnerBinary: defaultCapabilityRunnerdBinary(), codexCommand: fakeCodex,
-    codexArgs: fakeCodexArgs(stateDirectory, "--turn-started-delay-ms", "3000", "--fail-turn-immediately", "--call-log", callsPath),
-    stateDirectory, turnStartTimeoutMs: 1_000,
+    codexArgs: fakeCodexArgs(stateDirectory, "--turn-started-delay-ms", "12000", "--fail-turn-immediately", "--call-log", callsPath),
+    stateDirectory, turnStartTimeoutMs: 8_000,
   });
   try {
     await bundle.transport.request("thread/start", { cwd: tmpdir(), dynamicTools: [] });

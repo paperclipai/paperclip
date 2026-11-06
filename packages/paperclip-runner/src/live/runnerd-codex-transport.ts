@@ -6742,6 +6742,35 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     return this.options.measureOperation ? this.options.measureOperation("runner.transport.turn_start", () => this.#startTurnWork(params), {inputBytes:Buffer.byteLength(JSON.stringify(params)), tokenDataAvailable:false}) : this.#startTurnWork(params);
   }
 
+  /**
+   * Live-turn proof for adopting an accepted turn whose start event is late:
+   * the runner still reports it active, the runner attributed no provider
+   * launch to a command after this turn.start, and, when the accepting provider is a
+   * local process, that exact process (pid and start time) is still alive.
+   */
+  #acceptedTurnProvablyLive(input: {
+    snapshot: Record<string, unknown> | null;
+    expectedProviderTurnId: string;
+    acceptingProviderPid: number | null;
+    acceptingProviderStartedAt: string | null;
+    acceptingCommandSeq: number;
+  }): boolean {
+    if (input.snapshot?.activeProviderTurnId !== input.expectedProviderTurnId) return false;
+    if (!Number.isSafeInteger(input.acceptingCommandSeq)) return false;
+    const relaunched = (this.#core?.store.state.committedEvents ?? []).some((event) => {
+      if (event.eventType !== "harness.diagnostic") return false;
+      const payload = record(record(event.envelope.payload).payload);
+      return payload.code === "provider_startup_ownership" &&
+        Number(record(record(payload.startup).command).controllerSeq) > input.acceptingCommandSeq;
+    });
+    if (relaunched) return false;
+    if (input.acceptingProviderPid === null || this.#evidence.providerPid !== input.acceptingProviderPid) return false;
+    // A remote provider's pid names no local process; the runner's own
+    // launch reports above are its replacement evidence.
+    if (input.acceptingProviderStartedAt === null) return true;
+    return readLocalProcessStartedAt(input.acceptingProviderPid) === input.acceptingProviderStartedAt;
+  }
+
   async #startTurnWork(
     params: Record<string, unknown>,
   ): Promise<Record<string, unknown>> {
@@ -6838,6 +6867,10 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       // below requires that same process to still be alive.
       const acceptingProviderPid = this.#evidence.providerPid;
       const acceptingProviderStartedAt = this.#evidence.providerProcessStartedAt;
+      // The durable controller sequence of this turn.start command. A provider
+      // launch the runner attributes to a later command replaced the provider.
+      const acceptingCommandSeq = Number(record([...(this.#core?.store.state.commands ?? [])]
+        .reverse().find((command) => command.type === "turn.start")?.result).controllerSeq);
       // Command completion only means runnerd accepted the command. Bind the
       // provider turn from the subsequent turn/started event before answering
       // the strict driver. Correlate that event with the exact identity in this
@@ -6873,34 +6906,41 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       if (!providerTurnStarted()) {
         // The durable command result already carries the provider's own
         // acceptance and turn id. A loaded provider can start that turn after
-        // this bound, and it still runs it. Failing here would abandon a live
-        // turn that no controller owns, so its tools and close could never
-        // settle. Bind the exact accepted identity instead; its turn/started
-        // is then accepted in order, and the turn's own terminal, timeout and
-        // Stop paths own it from here. Adopt only a turn the runner still
-        // reports active: a turn that was accepted and then lost (for example
-        // across a provider restart) keeps failing so recovery can resume.
+        // this bound, and it still runs it. Failing would abandon a live turn
+        // that no controller owns, so its tools and close could never settle.
+        // Bind the exact accepted identity when the runner proves it is live;
+        // its turn/started is then accepted in order, and the turn's own
+        // terminal, timeout and Stop paths own it from here.
         this.#throwIfFailed();
         if (await this.#runnerHasExited())
           throw new Error("runnerd exited before provider turn startup");
         const snapshot = await this.#commandResult(
           "session.snapshot", {}, deadline,
         ).catch(() => null);
-        if (!providerTurnStarted()) {
-          // A runner can still list a turn whose provider died and was
-          // relaunched; only the same live local process proves it runs.
-          const acceptingProviderAlive = acceptingProviderPid !== null &&
-            acceptingProviderStartedAt !== null &&
-            this.#evidence.providerPid === acceptingProviderPid &&
-            readLocalProcessStartedAt(acceptingProviderPid) === acceptingProviderStartedAt;
-          if (snapshot?.activeProviderTurnId !== expectedProviderTurnId || !acceptingProviderAlive)
-            throw new Error("runnerd did not report the provider turn identity");
+        // Ingest any runner-reported provider launch committed before it.
+        this.#pumpEventsSafely();
+        if (!providerTurnStarted() && this.#acceptedTurnProvablyLive({
+          snapshot, expectedProviderTurnId, acceptingProviderPid,
+          acceptingProviderStartedAt, acceptingCommandSeq,
+        })) {
           this.#turnId = expectedProviderTurnId;
           this.#observedTurnStartEpoch = responseEpoch;
           this.#diagnostic(
             "provider turn start outlived its bound; adopting the durably accepted active provider turn",
           );
         }
+        // Not provably live: keep the original contract and wait for the
+        // start event until the configured bound, then fail as before.
+        while (!providerTurnStarted() && Date.now() < deadline) {
+          this.#throwIfFailed();
+          this.#pumpEvents();
+          if (providerTurnStarted()) break;
+          if (await this.#runnerHasExited())
+            throw new Error("runnerd exited before provider turn startup");
+          await new Promise((resolveWait) => setTimeout(resolveWait, 10));
+        }
+        if (!providerTurnStarted())
+          throw new Error("runnerd did not report the provider turn identity");
       }
       };
       if (this.options.measureOperation) await this.options.measureOperation("runner.transport.started_event", waitForStarted);
