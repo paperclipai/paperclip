@@ -2047,6 +2047,14 @@ unmarked row for the same plugin and driver. While the plugin is down, the row i
 archived; it comes back when the worker is ready. Removing an entry never archives
 its row. Plugin entries do not change the instance default.
 
+Under `enableManagedSandboxOnly`, boot fills the instance default with the
+managed sandbox only when the default is unset, names the local environment, or
+names a deleted one. The fill locks the default row and rechecks it, so a
+concurrent boot or admin write is never overwritten. A filled default is an
+ordinary set value: nothing reverts it when the mode is later turned off, and an
+admin can change it in instance settings.
+
+
 ### Experimental native remote workspace storage
 
 `experimental.remoteWorkspaceStorageEnabled` is a managed feature, on by default
