@@ -1801,19 +1801,22 @@ export async function startSandboxCallbackBridgeServer(input: {
       ? readyData.baseUrl.trim()
       : `http://${host}:${port}`;
 
+  const serverPid =
+    typeof readyData.pid === "number" && Number.isInteger(readyData.pid) && readyData.pid > 0 ? readyData.pid : 0;
+
   return {
     baseUrl,
     host,
     port,
-    pid: typeof readyData.pid === "number" && Number.isFinite(readyData.pid) ? readyData.pid : 0,
+    pid: serverPid,
     directories,
     stop: async () => {
       const stopResult = await runSandboxBridgeControlCommand(input.runner, {
         command: shellCommand,
         args: shellCommandArgs(
           [
-            `if [ -s ${shellQuote(directories.pidFile)} ]; then`,
-            `  pid="$(cat ${shellQuote(directories.pidFile)})"`,
+            serverPid > 0 ? `pid=${serverPid}` : `pid="$(cat ${shellQuote(directories.pidFile)} 2>/dev/null)"`,
+            `if [ -n "$pid" ]; then`,
             "  kill \"$pid\" 2>/dev/null || true",
             "  i=0",
             "  while kill -0 \"$pid\" 2>/dev/null && [ \"$i\" -lt 40 ]; do",

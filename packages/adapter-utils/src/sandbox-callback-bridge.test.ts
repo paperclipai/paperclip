@@ -1816,6 +1816,47 @@ describe("sandbox callback bridge", () => {
     }
   });
 
+  function bridgeRunnerReporting(ready: Record<string, unknown>) {
+    const scripts: string[] = [];
+    const runner = {
+      execute: vi.fn(async (input: { args?: string[] }) => {
+        scripts.push(input.args?.[1] ?? "");
+        return {
+          exitCode: 0, signal: null, timedOut: false, stderr: "", pid: null,
+          startedAt: new Date().toISOString(), stdout: JSON.stringify(ready),
+        };
+      }),
+    };
+    return { runner, scripts };
+  }
+
+  it("stops the bridge by the pid the gateway reported in ready.json, not the shell's $!", async () => {
+    const { runner, scripts } = bridgeRunnerReporting({ host: "127.0.0.1", port: 3101, pid: 42000 });
+    const bridge = await startSandboxCallbackBridgeServer({
+      runner, remoteCwd: "/workspace", assetRemoteDir: "/workspace/assets",
+      queueDir: "/workspace/queue", bridgeToken: "private-bridge-token", timeoutMs: 30_000,
+    });
+    expect(bridge.pid).toBe(42000);
+    await bridge.stop();
+    const stopScript = scripts.at(-1) ?? "";
+    expect(stopScript).toContain("pid=42000");
+    expect(stopScript).toContain('kill "$pid"');
+    expect(stopScript).not.toContain("cat ");
+  });
+
+  it("falls back to the pid file when ready.json carries no pid", async () => {
+    const { runner, scripts } = bridgeRunnerReporting({ host: "127.0.0.1", port: 3101 });
+    const bridge = await startSandboxCallbackBridgeServer({
+      runner, remoteCwd: "/workspace", assetRemoteDir: "/workspace/assets",
+      queueDir: "/workspace/queue", bridgeToken: "private-bridge-token", timeoutMs: 30_000,
+    });
+    expect(bridge.pid).toBe(0);
+    await bridge.stop();
+    const stopScript = scripts.at(-1) ?? "";
+    expect(stopScript).toContain("server.pid");
+    expect(stopScript).toContain('kill "$pid"');
+  });
+
   it("marks command-managed bridge operations with the bridge execution channel", async () => {
     const runner = {
       execute: vi.fn(async () => ({
