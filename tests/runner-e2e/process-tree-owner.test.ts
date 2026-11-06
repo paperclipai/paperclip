@@ -174,3 +174,38 @@ it.skipIf(process.platform === 'win32')('bounds fallback even when the known dir
     expect(signals).toEqual(['SIGTERM', 'SIGKILL']);
   } finally { owner.stopObserving(); }
 });
+
+function epermFixture(afterSignal: ProcessObservation[]) {
+  let table = [row(process.pid, 1, 10), row(100, process.pid, 100), row(200, 100, 200)];
+  const root = { pid: 100, exitCode: null as number | null, signalCode: null as NodeJS.Signals | null };
+  const attempts: Array<[number, NodeJS.Signals]> = [];
+  const owner = createProcessTreeOwner(root as ChildProcess, {
+    readTable: async () => table,
+    signalGroup: (pid, signal) => {
+      attempts.push([pid, signal]);
+      if (pid !== 200) return;
+      // Darwin killpg reports EPERM, not ESRCH, once every group member exited
+      // but is not reaped yet. The group exits between inspection and signal.
+      table = [row(process.pid, 1, 10), row(100, process.pid, 100), ...afterSignal];
+      throw Object.assign(new Error("kill EPERM"), { code: "EPERM" });
+    },
+  });
+  return { owner, attempts };
+}
+
+it.skipIf(process.platform === "win32")("treats EPERM from a group that is now only zombies as already exited", async () => {
+  const f = epermFixture([row(200, 100, 200, "start-200", "Z")]);
+  try {
+    await f.owner.observe();
+    await expect(f.owner.signal("SIGKILL")).resolves.toEqual([100]);
+    expect(f.attempts).toEqual([[200, "SIGKILL"], [100, "SIGKILL"]]);
+  } finally { f.owner.stopObserving(); }
+});
+
+it.skipIf(process.platform === "win32")("keeps EPERM fatal while the group still has a running member", async () => {
+  const f = epermFixture([row(200, 100, 200, "start-200", "Z"), row(201, 200, 200)]);
+  try {
+    await f.owner.observe();
+    await expect(f.owner.signal("SIGKILL")).rejects.toThrow("kill EPERM");
+  } finally { f.owner.stopObserving(); }
+});

@@ -4,6 +4,7 @@ import { notifyExecutionRunWork } from "./execution-control-notifications.js";
 import { canSelectFreshWorkspace, type ContinuationReadiness } from "./fresh-workspace-continuation.js";
 import { verifiedWorkspaceSnapshotReceipt } from "./workspace-recovery-snapshot.js";
 import { readTaskRetryIntent } from "./task-retry.js";
+import { isPreDispatchExecutionWaitVerified } from "./pre-dispatch-execution-wait.js";
 import { readSystemRecovery } from "./system-recovery-state.js";
 import { hasRequiredWorkspaceRecovery } from "./workspace-restore-recovery-state.js";
 import { hasVerifiedWorkspaceRepair } from "./workspace-recovery-receipt.js";
@@ -269,7 +270,8 @@ export async function admitExplicitNativeContinuation(input: {
       eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.id, taskRetry.sourceRunId), eq(heartbeatRuns.agentId, agentId),
     )).for("update");
     if (!source || (source.nativeIssueId ?? source.issueId ?? source.contextSnapshot?.issueId) !== issueId
-      || adapterExecutionControls.has(source.id) || !await isFailedNativePreparation(db, source, coordinator)) return null;
+      || adapterExecutionControls.has(source.id) ||
+      !(await isFailedNativePreparation(db, source, coordinator) || await isPreDispatchExecutionWaitVerified(db, source))) return null;
     sourceChecks.push({ cause: "legacy_execution_requires_reconciliation", evidence: { runId: source.id } });
   }
   if (!sourceChecks.length) return null;
@@ -317,7 +319,8 @@ export async function admitExplicitNativeContinuation(input: {
     const failedPreparation = await isFailedNativePreparation(db, run, coordinator);
     const unusedAdmission = run.status === "cancelled" && !run.startedAt &&
       run.errorCode === "execution_reconciliation_required" &&
-      !run.processPid && !run.processGroupId && !run.nativeSessionId;
+      !run.processPid && !run.processGroupId && !run.nativeSessionId &&
+      (!taskRetry || await isPreDispatchExecutionWaitVerified(db, run));
     const sourceRunId = run.id;
     const strategyRequestId = input.taskRetryRequestId ?? input.queuedCommentRequestId ?? savedChatRequestId;
     const strategyEvidence = strategyRequestId && !Object.hasOwn(action.evidence, "systemRecovery")
@@ -492,7 +495,8 @@ export async function admitExplicitNativeContinuation(input: {
     ne(heartbeatRuns.id, input.successorRunId),
   )).limit(1);
   if (active) return blocked("execution_active", "Waiting for the current run. Your message is saved.");
-  const previous = executedSources.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())[0]!;
+  const previous = taskRetry ? sources.find(run => run.id === taskRetry.sourceRunId)!
+    : executedSources.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())[0]!;
   // Prove required task history is available before retiring any hold.
   await buildExecutionContinuation({ db, companyId, issueId, agentId,
     context: { previousRunId: previous.id, wakeCommentId: commentId },

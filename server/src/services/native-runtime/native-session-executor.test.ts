@@ -1638,6 +1638,82 @@ describe("native incomplete-bootstrap evidence", () => {
       await rm(root, { recursive: true, force: true });
     }
   });
+
+  // A restart can land after the runner connected and acknowledged
+  // run.prepare but before session.open finished. Both journals then prove no
+  // provider session or turn exists, so recovery may bootstrap again.
+  const connectedBeforeSessionOpen = () => ({
+    controlPlane: {
+      schema: "paperclip.runner.durable.control-plane-state.v2",
+      identity: { runId: "run-1", normalizedSessionId: "session-1" },
+      bootstrapHistory: { schema: "paperclip.runner.bootstrap-history.v1", credentialsIssued: 1, adopted: false },
+      commands: [
+        { type: "run.prepare", status: "completed", result: { status: "completed" } },
+        { type: "session.open", status: "pending", result: null },
+      ] as Array<Record<string, unknown>>,
+      committedEvents: [] as unknown[],
+      ackedSourceSeq: 0,
+      connectionCount: 1,
+      freshBootstraps: 1,
+    } as Record<string, unknown>,
+    runner: {
+      schema: "paperclip.runner.durable.state.v1",
+      lifecycle: "ready",
+      nextSourceSeq: 1,
+      ackedSourceSeq: 0,
+      outbox: [] as unknown[],
+      processedCommands: {
+        command_prp_00000001: { commandType: "run.prepare", status: "completed" },
+        command_prp_00000002: { commandType: "session.open", status: "pending",
+          result: { code: "execution_indeterminate" } },
+      } as Record<string, Record<string, unknown>>,
+    } as Record<string, unknown>,
+  });
+
+  async function provesWith(fixture: ReturnType<typeof connectedBeforeSessionOpen>, runner: "present" | "absent" | "torn" = "present") {
+    const root = await mkdtemp(join(tmpdir(), "native-bootstrap-connected-"));
+    try {
+      await mkdir(join(root, "control-plane"), { recursive: true });
+      await writeFile(join(root, "control-plane", "control-plane-state.json"), JSON.stringify(fixture.controlPlane));
+      if (runner !== "absent") {
+        await mkdir(join(root, "runner"), { recursive: true });
+        await writeFile(join(root, "runner", "runner-state.json"),
+          runner === "torn" ? "{\"schema\":" : JSON.stringify(fixture.runner));
+      }
+      return runnerdStateProvesIncompleteBootstrap(root);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  }
+
+  it("allows a fresh bootstrap after connect and run.prepare when session.open never completed", async () => {
+    expect(await provesWith(connectedBeforeSessionOpen())).toBe(true);
+    expect(await provesWith(connectedBeforeSessionOpen(), "absent")).toBe(true);
+    const preparing = connectedBeforeSessionOpen();
+    (preparing.controlPlane.commands as Array<Record<string, unknown>>)[0]!.status = "pending";
+    expect(await provesWith(preparing)).toBe(true);
+  });
+
+  it.each<[string, (fixture: ReturnType<typeof connectedBeforeSessionOpen>) => void]>([
+    ["session.open completed", f => { (f.controlPlane.commands as Array<Record<string, unknown>>)[1]!.status = "completed"; }],
+    ["an event was committed", f => { f.controlPlane.committedEvents = [{ eventType: "session.started" }]; }],
+    ["an event was acknowledged", f => { f.controlPlane.ackedSourceSeq = 1; }],
+    ["a turn was issued", f => { (f.controlPlane.commands as unknown[]).push({ type: "turn.start", status: "pending" }); }],
+    ["run.prepare failed", f => { (f.controlPlane.commands as Array<Record<string, unknown>>)[0]!.status = "failed"; }],
+    ["the state was adopted", f => { f.controlPlane.bootstrapHistory = { adopted: true }; }],
+    ["a warm transition is retained", f => { f.controlPlane.warmTransition = { receipt: {} }; }],
+    ["the runner emitted an uncommitted event", f => { f.runner.nextSourceSeq = 2; f.runner.outbox = [{ sourceSeq: 1 }]; }],
+    ["the runner completed session.open", f => { (f.runner.processedCommands as Record<string, Record<string, unknown>>).command_prp_00000002!.status = "completed"; }],
+    ["the runner processed a turn", f => { (f.runner.processedCommands as Record<string, unknown>).command_prp_00000003 = { commandType: "turn.start", status: "pending" }; }],
+  ])("stays fail-closed when %s", async (_label, mutate) => {
+    const fixture = connectedBeforeSessionOpen();
+    mutate(fixture);
+    expect(await provesWith(fixture)).toBe(false);
+  });
+
+  it("stays fail-closed when the runner journal is unreadable", async () => {
+    expect(await provesWith(connectedBeforeSessionOpen(), "torn")).toBe(false);
+  });
 });
 
 describe("native provider usage normalization", () => {
@@ -14997,10 +15073,11 @@ describe("runnerd provider runtime wiring", () => {
     const driver = { prepareLaunch: vi.fn(), runnerProcessLauncher: launcher, controlPlaneRegistration: registration };
     state.toolAuthorityDefinitions.mockImplementation(async binding => binding.readRemoteTaskFile ? [{ name: "register_deliverable" }] as never : []);
     const readWorkspaceFile = vi.fn(async () => Buffer.from("proof"));
-    const owner = vi.spyOn(pluginTaskRuntime, "createPluginRunnerTaskOwner").mockReturnValue({ launcher, registration, driver, readWorkspaceFile, isRetired: () => false, rebind:vi.fn() });
+    const release = vi.fn(async () => {}), resume = vi.fn(async () => "resumed" as const);
+    const owner = vi.spyOn(pluginTaskRuntime, "createPluginRunnerTaskOwner").mockReturnValue({ launcher, registration, driver, readWorkspaceFile, release, resume, isRetired: () => false, rebind:vi.fn() });
     const task = vi.fn(async (operation: unknown) => {
       environmentTaskOperationSchema.parse(operation);
-      return { kind: "description", launchPreparationVersion: 1, projectAuthCheckVersion: 1, ...(kind === "codex" ? { workspaceFileReadVersion: 1 } : {}), taskId: "task", runner: { version: "fixture", digest: `sha256:${"a".repeat(64)}` } };
+      return { kind: "description", launchPreparationVersion: 1, projectAuthCheckVersion: 1, releaseResumeVersion: 1, ...(kind === "codex" ? { workspaceFileReadVersion: 1 } : {}), taskId: "task", runner: { version: "fixture", digest: `sha256:${"a".repeat(64)}` } };
     });
     const target = { kind: "remote", transport: "sandbox", providerKey: "plugin", leaseId: "plugin-task-lease",
       remoteCwd: "/unused", runnerTask: task, runnerTaskProjectIds: ["10000000-0000-4000-8000-000000000001"] } as const;
@@ -15017,7 +15094,7 @@ describe("runnerd provider runtime wiring", () => {
       expect(state.toolAuthorityDefinitions).toHaveBeenCalledWith(expect.objectContaining({ assignedMcpTools }));
       expect(state.createAssignedMcpTools).toHaveBeenCalledWith(expect.objectContaining({ gatewayPublicId: "assigned-test", bearerToken: "fixture-mcp-secret" }));
       expect(owner).toHaveBeenCalledWith(expect.objectContaining({ task, projectIds: target.runnerTaskProjectIds,
-        credentialIdentity: undefined }));
+        credentialIdentity: undefined, releaseResumeVersion: 1 }));
       expect(state.createBackend.mock.calls.at(-1)![1]).toMatchObject({ workingDirectoryAuthority: "runner_prepared_launch", environment: {} });
       state.createBackend.mock.calls.at(-1)![1].codexTransportFactory!();
       const options = state.createTransport.mock.calls.at(-1)![0];
@@ -15031,6 +15108,8 @@ describe("runnerd provider runtime wiring", () => {
         expect(options).not.toHaveProperty(key);
       }
       expect(task.mock.calls).toEqual([[{ kind: "describe" }]]);
+      expect(release).not.toHaveBeenCalled();
+      expect(resume).not.toHaveBeenCalled();
       const binding = state.toolAuthorityDefinitions.mock.calls.at(-1)![0] as unknown as {
         readRemoteApiFile?: (path: string, maxBytes: number) => Promise<Buffer>;
         readRemoteTaskFile?: (file: {contentRef: string;byteSize: number;sha256: string}) => Promise<Buffer>;

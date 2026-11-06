@@ -1,3 +1,4 @@
+import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { notifyNativeStatusReassessment } from "./native-status-reassessment-notifications.js";
 import { notifyUnsafeWorkspaceExportRecovery } from "./unsafe-workspace-export-notifications.js";
 import { notifyInstructionCollection } from "./instruction-collection-notifications.js";
@@ -96,7 +97,7 @@ export function legacyExecutionNeedsReconciliation(
 /** Admission-wait receipts are only exempt after retained execution evidence agrees.
  * The synchronous classifier stays conservative for callers without a DB proof. */
 export async function legacyExecutionNeedsReconciliationWithEvidence(db: Db, run: Run): Promise<boolean> {
-  if (run.status === "interrupted" && await isInterruptedNativePreparation(db, run)) return false;
+  if (await isInterruptedNativePreparation(db, run)) return false;
   return await hasUnrestoredRemoteWorkspace(db, run) ||
     (legacyExecutionNeedsReconciliation(run) && !(await isPreDispatchReviewWaitVerified(db, run))
       && !(await isPreDispatchExecutionWaitVerified(db, run)));
@@ -369,20 +370,46 @@ export async function settleInterruptedNativeBootstrap(
     const [settled] = await tx.update(heartbeatRuns).set({ resultJson: { ...run.resultJson,
       executionRecovery: { kind: "bootstrap", providerWorkStarted: false, preparationSettledAt: now.toISOString() },
     }, updatedAt: now }).where(eq(heartbeatRuns.id, run.id)).returning();
-    if (holds.length) await notifyUnsafeWorkspaceExportRecovery(tx, { companyId: task.companyId, issueId: task.id });
+    if (holds.length) {
+      await notifyUnsafeWorkspaceExportRecovery(tx, { companyId: task.companyId, issueId: task.id });
+      await notifyDeliveryWork(tx, DELIVERY_QUEUES.workspaceRecovery);
+    }
     const resolved = holds.length ? await tx.update(issueRecoveryActions).set({ status: "resolved", outcome: "false_positive",
       resolutionNote: "The interrupted preparation has no provider execution and its cleanup is complete.",
       resolvedAt: now, updatedAt: now,
       // An automatic disposition may already have resolved the incident but
       // left replay blocked. Preserve its history while correcting that verdict.
       evidence: sql`jsonb_set(${issueRecoveryActions.evidence}, '{automaticRecovery,replay}', '"allowed"'::jsonb, false) ||
-        ${JSON.stringify({ bootstrapPreparationSettledAt: now.toISOString() })}::jsonb`,
+        ${JSON.stringify({ bootstrapPreparationSettledAt: now.toISOString(), bootstrapPreparationContinuation: "pending" })}::jsonb`,
     }).where(inArray(issueRecoveryActions.id, holds.map(hold => hold.id))).returning({ id: issueRecoveryActions.id }) : [];
     if (resolved.length) await logActivity(tx as unknown as Db, { companyId: run.companyId, actorType: "system", actorId: "system",
       action: "issue.recovery_action_resolved", entityType: "issue", entityId: task.id, agentId: run.agentId, runId: run.id,
       details: { reason: "native_bootstrap_stopped_before_provider", recoveryActionIds: resolved.map(r => r.id) },
     });
     return settled;
+  });
+}
+
+/** The source stays discoverable until normal admission records a successor.
+ * Known admission gates wait for eligibility events; unresolved writes retain
+ * the pending delivery deadline. Concurrent successful delivery never regresses. */
+export async function recordInterruptedPreparationContinuation(db: Db, run: Pick<Run, "id" | "companyId">,
+  state: "deferred" | "delivered" | "delegated" | "exhausted" | "blocked", successorRunId?: string) {
+  return db.transaction(async tx => {
+    const actions = await tx.select().from(issueRecoveryActions).where(and(
+      eq(issueRecoveryActions.companyId, run.companyId), eq(issueRecoveryActions.fingerprint, `legacy-execution:${run.id}`),
+      sql`${issueRecoveryActions.evidence}->>'runId' = ${run.id}`,
+      sql`${issueRecoveryActions.evidence}->>'bootstrapPreparationSettledAt' is not null`,
+    )).for("update");
+    const pending = actions.filter(action =>
+      !["delivered", "delegated", "exhausted", "blocked"].includes(String(action.evidence.bootstrapPreparationContinuation))
+      && action.evidence.bootstrapPreparationContinuation !== state);
+    if (!pending.length) return;
+    await notifyDeliveryWork(tx, DELIVERY_QUEUES.workspaceRecovery);
+    for (const action of pending) await tx.update(issueRecoveryActions).set({ updatedAt: new Date(), evidence: {
+      ...action.evidence, bootstrapPreparationContinuation: state,
+      ...(successorRunId ? { bootstrapPreparationContinuationRunId: successorRunId } : {}),
+    } }).where(eq(issueRecoveryActions.id, action.id));
   });
 }
 

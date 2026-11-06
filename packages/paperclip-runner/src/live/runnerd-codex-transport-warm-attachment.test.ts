@@ -13,6 +13,7 @@ import { codexSemanticToolSpecs } from "../drivers/codex/codex-app-server-driver
 import { releaseMaterializedNativeRuntimeSkills } from "../drivers/runtime-context-materializer.js";
 import { createCapabilityRunnerdCodexTransport, readRunnerdArtifactBinding } from "./runnerd-codex-transport.js";
 import {
+  committableStore,
   defaultCapabilityRunnerdBinary,
   fakeCodex,
   fakeCodexArgs,
@@ -163,8 +164,9 @@ it.each([
       providerPid = bundle.evidence().codexPid;
       const rotations: (typeof core.store.state)[] = [];
       const preparedStates: (typeof core.store.state)[] = [];
-      const commit = core.store.commit.bind(core.store);
-      vi.spyOn(core.store, "commit").mockImplementation((candidate) => {
+      const store = committableStore(core);
+      const commit = store.commit.bind(store);
+      vi.spyOn(store, "commit").mockImplementation((candidate) => {
         commit(candidate);
         // Capture the durable old epoch at publication. The authenticated
         // successor may activate before attachRun observes the completed command.
@@ -716,7 +718,7 @@ it("recovers an active second warm business run after deleting its controller co
   await writeFile(join(skillRoot, "SKILL.md"), "# Pinned skill\n");
   await writeFile(join(instructionRoot, "AGENTS.md"), "Pinned instructions\n");
   const server = createServer();
-  let authority: DurablePrpControlPlane | null = null, generation = 0;
+  let authority = null as DurablePrpControlPlane | null, generation = 0;
   let checkpoint: durableControlPlane.DurablePrpCheckpoint | undefined;
   const registered = new WeakSet<DurablePrpControlPlane>();
   server.on("upgrade", (request, socket, head) => authority
@@ -760,7 +762,7 @@ it("recovers an active second warm business run after deleting its controller co
     providerPid = first.evidence().codexPid;
     expect(providerPid).toEqual(expect.any(Number));
     const providerStart = execFileSync("ps", ["-p", String(providerPid), "-o", "lstart="], { encoding: "utf8" }).trim();
-    const startedAt = first.transport.processInfo().startedAt;
+    const startedAt = first.transport.processInfo!().startedAt;
     const firstCompleted = waitComplete(first.transport);
     await within("first turn/start", first.transport.request("turn/start", { input: [{ type: "text", text: "first healthy business run" }] }));
     await within("healthy first turn completion", firstCompleted);
@@ -805,7 +807,7 @@ it("recovers an active second warm business run after deleting its controller co
     expect(execFileSync("ps", ["-p", String(providerPid), "-o", "lstart="], { encoding: "utf8" }).trim()).toBe(providerStart);
     expect(calls).toBe(2);
     expect(authority!.store.state.commands.filter(command => command.type === "semantic_tool.result")).toHaveLength(0);
-    expect(recovered.transport.processInfo().startedAt).toBe(startedAt);
+    expect(recovered.transport.processInfo!().startedAt).toBe(startedAt);
     expect(authority!.store.state.identity).toEqual(savedIdentity);
     expect(authority!.store.state.commands.filter(command => command.type === "turn.start")).toHaveLength(1);
     expect(noSpawn).not.toHaveBeenCalled();

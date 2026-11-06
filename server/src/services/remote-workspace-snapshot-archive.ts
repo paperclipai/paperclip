@@ -252,6 +252,7 @@ async function workspaceArchive(input: {
       const before = await handle.stat({ bigint: true });
       if (!before.isFile() || original.dev !== before.dev || original.ino !== before.ino || await fs.realpath(source) !== source) fail("changed");
       const digest = crypto.createHash("sha256"); let size = 0;
+      check();
       for await (const bytes of handle.createReadStream({ autoClose: false, signal: input.signal })) {
         check(); digest.update(bytes); size += bytes.length;
         await consume?.(bytes);
@@ -305,10 +306,19 @@ async function workspaceArchive(input: {
   };
   const directories: string[] = [];
   const excludedPaths = new Set<string>();
+  for (const relative of input.exclude ?? []) {
+    if (!safeRelative(relative)) fail("unsupported_filename");
+    excludedPaths.add(relative);
+  }
   const excluded = (next: string) => input.exclude?.some(item => next === item || next.startsWith(`${item}/`))
     || next === ".paperclip-runtime" || next.startsWith(".paperclip-runtime/");
   const walk = async (root: string, skipGit = false) => {
     const entries: Entry[] = [];
+    // One bound for the whole walk, including nested directories. Reserve each
+    // entry's position before hashing so completion order cannot change identity.
+    const pending = new Set<Promise<void>>();
+    let failed = false, failure: unknown;
+    const checkWalk = () => { if (failed) throw failure; check(); };
     const visit = async (relative: string, parentIsRepository = false) => {
       const directory = relative ? path.join(root, relative) : root;
       const directoryStat = await fs.lstat(directory);
@@ -322,7 +332,7 @@ async function workspaceArchive(input: {
         await assertRepositoryRoot(directory);
       }
       for (const name of names) {
-        check();
+        checkWalk();
         const next = relative ? `${relative}/${name}` : name;
         if (!safeRelative(next)) fail("unsupported_filename");
         if (excluded(next)) {
@@ -356,12 +366,27 @@ async function workspaceArchive(input: {
           if (!safeLink(next, link)) fail("unsafe_symlink");
           entries.push({ path: next, type: "symlink", target: link });
         } else if (stat.isFile()) {
-          entries.push({ path: next, type: "file", ...await readStableFile(source) });
+          const entry: Entry = { path: next, type: "file" };
+          entries.push(entry);
+          const read = readStableFile(source).then(value => { Object.assign(entry, value); }, error => {
+            if (!failed) { failed = true; failure = error; }
+          });
+          pending.add(read);
+          void read.then(() => pending.delete(read));
+          if (pending.size >= 4) { await Promise.race(pending); checkWalk(); }
         } else fail("unsupported_entry");
       }
     };
-    await visit("");
-    return entries;
+    try {
+      await visit("");
+      await Promise.all(pending);
+      checkWalk();
+      return entries;
+    } finally {
+      // A rejected/cancelled walk must close every active stable read before its
+      // caller removes scratch or returns control to a mutating source owner.
+      await Promise.all(pending);
+    }
   };
   const manifestHash = (manifest: { schema: string; entries: Entry[] }) => crypto.createHash("sha256").update(JSON.stringify(manifest)).digest("hex");
   if (input.kind === "capture") {
