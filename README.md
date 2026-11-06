@@ -57,7 +57,7 @@ It looks like a task manager. Under the hood: org charts, budgets, governance, g
 <div align="center">
 <table>
   <tr>
-    <td align="center" rowspan="2"><strong>Works<br/>with</strong></td>
+    <td align="center" rowspan="3"><strong>Works<br/>with</strong></td>
     <td align="center" valign="top"><img src="doc/assets/logos/openclaw.svg" width="32" height="32" alt="OpenClaw" /><br/><sub>OpenClaw</sub></td>
     <td align="center" valign="top"><img src="doc/assets/logos/claude.svg" width="32" height="32" alt="Claude Code" /><br/><sub>Claude Code</sub></td>
     <td align="center" valign="top"><img src="ui/public/brands/codex-color.svg" width="32" height="32" alt="Codex" /><br/><sub>Codex</sub></td>
@@ -70,6 +70,9 @@ It looks like a task manager. Under the hood: org charts, budgets, governance, g
     <td align="center" valign="top"><picture><source media="(prefers-color-scheme: dark)" srcset="ui/public/brands/adapters/hermesagent-dark.svg" /><img src="ui/public/brands/adapters/hermesagent.svg" width="32" height="32" alt="Hermes and Hermes Gateway" /></picture><br/><sub>Hermes<br/>+ Gateway</sub></td>
     <td align="center" valign="top"><picture><source media="(prefers-color-scheme: dark)" srcset="ui/public/brands/adapters/grok-dark.svg" /><img src="ui/public/brands/adapters/grok.svg" width="32" height="32" alt="Grok Build" /></picture><br/><sub>Grok Build</sub></td>
     <td align="center" valign="top"><picture><source media="(prefers-color-scheme: dark)" srcset="ui/public/brands/adapters/kimi-color.svg" /><img src="ui/public/brands/adapters/kimi-color-light.svg" width="32" height="32" alt="Kimi Code" /></picture><br/><sub>Kimi Code</sub></td>
+  </tr>
+  <tr>
+    <td align="center" valign="top" colspan="5"><img src="doc/assets/logos/n8n-claw.svg" width="32" height="32" alt="n8n-claw" /><br/><sub>n8n-claw</sub></td>
   </tr>
 </table>
 
