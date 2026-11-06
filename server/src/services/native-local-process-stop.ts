@@ -3,6 +3,7 @@ import { and, asc, desc, eq, exists, gt, inArray, isNotNull, isNull, or, sql } f
 import { environmentLeases, heartbeatRunEvents, heartbeatRuns, nativeRunFinalizations, type Db } from "@paperclipai/db";
 import { notifyRetainedNativeSessionCleanup } from "./retained-native-session-cleanup-notifications.js";
 import { appendHeartbeatRunEvent } from "./heartbeat-run-events.js";
+import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { nativeSessionProviderEvidence } from "./native-runtime/native-session-resume.js";
 import { hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
 import os from "node:os";
@@ -56,6 +57,8 @@ export async function recordNativeLocalProcessStop(db: Db, run: Pick<typeof hear
   if (leases.some(lease => lease.provider !== "local")) return false;
   if ((run.processPid && !absent(run.processPid)) ||
       (run.processGroupId && !absent(-run.processGroupId))) return false;
+  await notifyDeliveryWork(db, DELIVERY_QUEUES.executionReplacement,
+    JSON.stringify({ companyId: run.companyId, runId: run.id }));
   await appendHeartbeatRunEvent(db, {
     companyId: run.companyId,
     runId: run.id,
@@ -68,6 +71,15 @@ export async function recordNativeLocalProcessStop(db: Db, run: Pick<typeof hear
       processStartedAt: run.processStartedAt?.toISOString() ?? null },
   });
   return true;
+}
+
+/** Transaction form for callers that clear the process identity: a stopped
+ * provider closes its usage source, so accounting may settle a terminal run
+ * whose final receipt can no longer arrive. */
+export async function recordNativeLocalProcessStopInTransaction(tx: Db, run: Parameters<typeof recordNativeLocalProcessStop>[1]) {
+  const recorded = await recordNativeLocalProcessStop(tx, run);
+  if (recorded) await notifyDeliveryWork(tx, DELIVERY_QUEUES.accounting, run.companyId);
+  return recorded;
 }
 
 /** Only server-authored evidence counts. A later launch invalidates the receipt. */
@@ -200,6 +212,8 @@ export async function releaseSettledNativeRunProcess(db: Db, runId: string, opti
     }
     await notifyLiveRunRecovery(tx, { companyId: run.companyId, runId: run.id, agentId: run.agentId });
     await notifyRetainedNativeSessionCleanup(tx, { companyId: run.companyId, runId: run.id });
+    // Local and remote stops both close the run's usage source.
+    await notifyDeliveryWork(tx, DELIVERY_QUEUES.accounting, run.companyId);
     await tx.update(heartbeatRuns).set({
       processPid: null, processGroupId: null, processStartedAt: null, updatedAt: new Date(),
     }).where(eq(heartbeatRuns.id, run.id));

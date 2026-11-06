@@ -14,9 +14,18 @@ import { expect, it, vi } from "vitest";
 import { DurablePrpControlPlane } from "../control-plane/durable-prp-control-plane.js";
 import * as durableControlPlane from "../control-plane/durable-prp-control-plane.js";
 import { createCapabilityRunnerdCodexTransport, readRunnerdArtifactBinding } from "./runnerd-codex-transport.js";
-import { defaultCapabilityRunnerdBinary, fakeCodex, fakeCodexArgs } from "../../test/support/runnerd-transport.js";
+import { committableStore, defaultCapabilityRunnerdBinary, fakeCodex, fakeCodexArgs } from "../../test/support/runnerd-transport.js";
 
-it.each([
+type WarmAttachRecoveryCase = {
+  lossPoint: string;
+  routed: boolean;
+  recoveryFault: string;
+  executionPrepared?: boolean;
+  externalArtifact?: boolean;
+  ordinaryFollowup?: boolean | string;
+};
+
+it.each<WarmAttachRecoveryCase>([
   ...[
     "before-result",
     "after-result",
@@ -478,14 +487,15 @@ it.each([
           ).toBe(false);
         return;
       }
-      const commit = core.store.commit.bind(core.store);
+      const store = committableStore(core);
+      const commit = store.commit.bind(store);
       let lossObserved = false;
       let signalLoss!: () => void;
       const loss = new Promise<void>((resolveLoss) => {
         signalLoss = resolveLoss;
       });
       commitSpy = vi
-        .spyOn(core.store, "commit")
+        .spyOn(store, "commit")
         .mockImplementation((candidate) => {
           // The selected process-crash boundary stays unavailable until the
           // exact owned runner is joined. A later replay must not silently

@@ -1,5 +1,5 @@
 {
-  "id": "8f3ae009-442f-4aea-aef6-c9414e722ce1",
+  "id": "2c0cb580-67fc-45d3-9ca5-cce4148dd1a4",
   "prevId": "a80d63fe-5111-49e8-a39a-7a5589b3b31a",
   "version": "7",
   "dialect": "postgresql",
@@ -16082,12 +16082,6 @@
           "notNull": true,
           "default": "'{}'::jsonb"
         },
-        "default_execution_policy": {
-          "name": "default_execution_policy",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
-        },
         "feedback_data_sharing_enabled": {
           "name": "feedback_data_sharing_enabled",
           "type": "boolean",
@@ -28986,6 +28980,22 @@
           ],
           "isUnique": true,
           "where": "\"environments\".\"driver\" = 'sandbox' AND (\"environments\".\"metadata\" ->> 'managedByPaperclip')::boolean = true",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "environments_managed_plugin_environment_idx": {
+          "name": "environments_managed_plugin_environment_idx",
+          "columns": [
+            {
+              "expression": "(\"metadata\" ->> 'managedPluginEnvironment')",
+              "asc": true,
+              "isExpression": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "jsonb_typeof(\"environments\".\"metadata\" -> 'managedPluginEnvironment') = 'string'",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -50097,12 +50107,6 @@
         },
         "execution_workspace_policy": {
           "name": "execution_workspace_policy",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "default_execution_policy": {
-          "name": "default_execution_policy",
           "type": "jsonb",
           "primaryKey": false,
           "notNull": false

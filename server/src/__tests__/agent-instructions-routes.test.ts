@@ -17,6 +17,7 @@ const mockBuiltInAgentService = vi.hoisted(() => ({
 
 const mockAgentInstructionsService = vi.hoisted(() => ({
   getBundle: vi.fn(),
+  getFileDates: vi.fn(),
   readFile: vi.fn(),
   updateBundle: vi.fn(),
   writeFile: vi.fn(),
@@ -206,6 +207,7 @@ describe("agent instructions bundle routes", () => {
       ...makeAgent(),
       adapterConfig: patch.adapterConfig ?? {},
     }));
+    mockAgentInstructionsService.getFileDates.mockResolvedValue({ updatedAt: "2026-11-05T12:00:00.000Z" });
     mockAgentInstructionsService.getBundle.mockResolvedValue({
       agentId: "11111111-1111-4111-8111-111111111111",
       companyId: "company-1",
@@ -597,6 +599,7 @@ describe("agent instructions bundle routes", () => {
       .get("/api/agents/11111111-1111-4111-8111-111111111111/instructions-bundle/file?path=AGENTS.md"));
     expect(res.status).toBe(200);
     expect(res.body.content).toBe("committed");
+    expect(res.body.updatedAt).toBe("2026-11-05T12:00:00.000Z");
     expect(res.body.revision.id).toBe("33333333-3333-4333-8333-333333333333");
     expect(mockAgentInstructionsService.readFile).not.toHaveBeenCalled();
   });

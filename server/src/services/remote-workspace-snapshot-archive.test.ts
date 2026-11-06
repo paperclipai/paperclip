@@ -6,18 +6,26 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { captureRemoteWorkspaceDirectory, remoteWorkspaceArchiveScript, remoteWorkspaceCaptureFailureMessage, restoreRemoteWorkspaceArchive } from "./remote-workspace-snapshot-archive.js";
+import { captureRemoteWorkspaceDirectory, readRemoteWorkspaceArchiveDirectories, remoteWorkspaceArchiveScript, remoteWorkspaceCaptureFailureMessage, restoreRemoteWorkspaceArchive } from "./remote-workspace-snapshot-archive.js";
 
 const archiveIo = vi.hoisted(() => ({
   afterChmod: undefined as ((target: string, mode: number) => void) | undefined,
   beforeOpen: undefined as ((target: string) => Promise<void>) | undefined,
+  afterOpen: undefined as ((target: string) => Promise<void>) | undefined,
+  afterClose: undefined as ((target: string) => void) | undefined,
   captures: [] as string[],
 }));
 vi.mock("node:fs/promises", async importOriginal => {
   const actual = await importOriginal<typeof import("node:fs/promises")>();
   return { ...actual, async open(...args: Parameters<typeof actual.open>) {
     await archiveIo.beforeOpen?.(String(args[0]));
-    return actual.open(...args);
+    const handle = await actual.open(...args), close = handle.close.bind(handle);
+    let closed = false;
+    handle.close = async () => {
+      try { await close(); } finally { if (!closed) { closed = true; archiveIo.afterClose?.(String(args[0])); } }
+    };
+    await archiveIo.afterOpen?.(String(args[0]));
+    return handle;
   }, async mkdtemp(...args: Parameters<typeof actual.mkdtemp>) {
     const directory = await actual.mkdtemp(...args);
     if (String(args[0]).includes("pc-workspace-capture-")) archiveIo.captures.push(String(directory));
@@ -35,7 +43,8 @@ describe("portable remote workspace archives", () => {
   let root: string;
   beforeEach(async () => { root = await fs.mkdtemp(path.join(os.tmpdir(), "pc-workspace-archive-test-")); });
   afterEach(async () => {
-    archiveIo.afterChmod = undefined; archiveIo.beforeOpen = undefined; archiveIo.captures = [];
+    archiveIo.afterChmod = undefined; archiveIo.beforeOpen = undefined; archiveIo.afterOpen = undefined;
+    archiveIo.afterClose = undefined; archiveIo.captures = [];
     await fs.rm(root, { recursive: true, force: true });
   });
   async function source() { const cwd = path.join(root, "source"); await fs.mkdir(cwd); return cwd; }
@@ -54,6 +63,125 @@ describe("portable remote workspace archives", () => {
     }
     return JSON.stringify(entries);
   }
+  function deferred() {
+    let resolve!: () => void;
+    const promise = new Promise<void>(done => { resolve = done; });
+    return { promise, resolve };
+  }
+  async function parallelSource() {
+    const cwd = await source();
+    for (const name of ["a", "b", "c", "d", "e", "f"]) {
+      await fs.mkdir(path.join(cwd, name));
+      await fs.writeFile(path.join(cwd, name, "file"), name.repeat(1024));
+    }
+    return fs.realpath(cwd);
+  }
+  it.each(["normal", "reordered"])("bounds stable reads with %s opens and preserves out-of-order bytes", async opening => {
+    const cwd = await parallelSource(), blocked = new Map<string, ReturnType<typeof deferred>>();
+    const admitFirst = deferred();
+    archiveIo.beforeOpen = async target => {
+      if (opening === "reordered" && target === path.join(cwd, "a", "file")) await admitFirst.promise;
+    };
+    let gating = true, active = 0, maximum = 0;
+    const closed: string[] = [];
+    archiveIo.afterOpen = async target => {
+      if (!target.startsWith(`${cwd}${path.sep}`)) return;
+      maximum = Math.max(maximum, ++active);
+      if (gating) { const gate = deferred(); blocked.set(target, gate); if (blocked.size === 3) admitFirst.resolve(); await gate.promise; }
+    };
+    archiveIo.afterClose = target => {
+      if (target.startsWith(`${cwd}${path.sep}`)) { active--; closed.push(target); }
+    };
+    const capturing = capture(cwd);
+    try {
+      await expect.poll(() => blocked.size).toBe(4);
+      expect(active).toBe(4);
+      blocked.get(path.join(cwd, "d", "file"))!.resolve();
+      await expect.poll(() => blocked.size).toBe(5);
+      expect(closed[0]).toBe(path.join(cwd, "d", "file"));
+      expect(maximum).toBe(4);
+    } finally {
+      gating = false;
+      admitFirst.resolve();
+      for (const gate of blocked.values()) gate.resolve();
+      await capturing;
+    }
+    const snapshot = await capturing;
+    expect(active).toBe(0); expect(maximum).toBe(4);
+    archiveIo.afterOpen = undefined; archiveIo.afterClose = undefined;
+    const helper = path.join(root, "helper.cjs"), archivePath = path.join(root, "serialized.pcws");
+    await fs.writeFile(helper, remoteWorkspaceArchiveScript());
+    const serialized = JSON.parse((await execute(process.execPath, [helper, "capture", cwd, archivePath])).stdout);
+    expect(serialized).toMatchObject({ manifestDigest: snapshot.manifestDigest, sha256: snapshot.sha256 });
+    expect(await fs.readFile(archivePath)).toEqual(await fs.readFile(snapshot.archivePath));
+  });
+  it.each([
+    { kind: "cancel", opening: "normal" }, { kind: "replace", opening: "normal" },
+    { kind: "cancel", opening: "reordered" }, { kind: "replace", opening: "reordered" },
+  ])("drains every parallel stable read after $kind with $opening opens", async ({ kind, opening }) => {
+    const cwd = await parallelSource(), blocked = new Map<string, ReturnType<typeof deferred>>();
+    const admitFirst = deferred(), firstClosed = deferred(), first = path.join(cwd, "a", "file");
+    archiveIo.beforeOpen = async target => {
+      if (opening === "reordered" && target === first) await admitFirst.promise;
+    };
+    const controller = new AbortController(), reason = new Error("capture cancelled");
+    let gating = true, active = 0, settled = false;
+    archiveIo.afterOpen = async target => {
+      if (!target.startsWith(`${cwd}${path.sep}`)) return;
+      active++;
+      if (gating) { const gate = deferred(); blocked.set(target, gate); if (blocked.size === 3) admitFirst.resolve(); await gate.promise; }
+    };
+    archiveIo.afterClose = target => {
+      if (target.startsWith(`${cwd}${path.sep}`)) active--;
+      if (target === first) firstClosed.resolve();
+    };
+    const capturing = captureRemoteWorkspaceDirectory({ cwd, archivePath: path.join(root, "snapshot.pcws"), signal: controller.signal })
+      .then(() => { settled = true; return null; }, error => { settled = true; return error as Error; });
+    try {
+      await expect.poll(() => blocked.size).toBe(4);
+      if (kind === "cancel") controller.abort(reason);
+      else {
+        await fs.unlink(path.join(cwd, "a", "file"));
+        await fs.writeFile(path.join(cwd, "a", "file"), "replacement");
+      }
+      blocked.get(first)!.resolve();
+      await firstClosed.promise;
+      await new Promise<void>(resolve => setImmediate(resolve));
+      for (const name of ["b", "c"]) blocked.get(path.join(cwd, name, "file"))!.resolve();
+      await expect.poll(() => active).toBe(1);
+      expect(settled).toBe(false);
+    } finally {
+      gating = false;
+      admitFirst.resolve();
+      for (const gate of blocked.values()) gate.resolve();
+      await capturing;
+    }
+    const error = await capturing;
+    if (kind === "cancel") expect(error === reason || error?.cause === reason).toBe(true);
+    else expect(error?.message).toBe("remote_workspace_archive_changed");
+    expect(active).toBe(0);
+    await expect(fs.access(path.join(root, "snapshot.pcws"))).rejects.toMatchObject({ code: "ENOENT" });
+    for (const directory of archiveIo.captures) await expect(fs.access(directory)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+  it("reads captured directory coverage and rejects a different manifest digest", async () => {
+    const cwd = await source();
+    await fs.mkdir(path.join(cwd, "checkout"));
+    await fs.writeFile(path.join(cwd, "checkout", "file.txt"), "saved");
+    const snapshot = await capture(cwd);
+    expect(await readRemoteWorkspaceArchiveDirectories(snapshot.archivePath, snapshot.manifestDigest))
+      .toEqual(new Set(["checkout"]));
+    await expect(readRemoteWorkspaceArchiveDirectories(snapshot.archivePath, "0".repeat(64)))
+      .rejects.toThrow("manifest_mismatch");
+  });
+
+  it("rejects oversized coverage manifests before reading their body", async () => {
+    const archivePath = path.join(root, "oversized.pcws"), header = Buffer.alloc(10);
+    header.write("PCWS1\n"); header.writeUInt32BE(64 * 1024 * 1024 + 1, 6);
+    await fs.writeFile(archivePath, header);
+    await expect(readRemoteWorkspaceArchiveDirectories(archivePath, "0".repeat(64)))
+      .rejects.toThrow("manifest_too_large");
+  });
+
   it("keeps every serialized capture validation reason in the closed diagnostic contract", () => {
     const script = remoteWorkspaceArchiveScript(), start = script.indexOf("const archive = ");
     const restore = script.indexOf("if (!input.targetDir", start);

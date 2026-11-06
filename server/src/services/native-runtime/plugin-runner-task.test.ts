@@ -529,6 +529,101 @@ describe("plugin native Runner ownership", () => {
 });
 
 
+describe("plugin Runner release/resume facade", () => {
+  const input = (harness: string) => ({ taskId: "task", projectIds: ["project"], harness,
+    warmTaskVersion: 1 as const, releaseResumeVersion: 1 as const,
+    accountIdentity: "selected-account", credentialIdentity: "selected-credential",
+    adoptIdentity: requirements.identity, authorityRunId: "run" });
+  const lifecycleTask = () => vi.fn(async (operation: any): Promise<unknown> => operation.kind === "release"
+    ? { kind: "released", taskId: "task" }
+    : { kind: "resume", taskId: "task", outcome: "resumed" });
+
+  it.each(["codex", "claude"])("forwards both %s operations through the current checked owner", async harness => {
+    const firstTask = lifecycleTask();
+    const currentTask = lifecycleTask();
+    const original = { ...input(harness), task: firstTask };
+    const owner = createPluginRunnerTaskOwner(original);
+    await expect(owner.release(requirements.identity)).resolves.toBeUndefined();
+    expect(firstTask).toHaveBeenCalledExactlyOnceWith({ kind: "release", identity: requirements.identity }, { expectedTaskId: "task" });
+    expect(() => owner.rebind({ ...original, task: currentTask, authorityRunId: "next", accountIdentity: "changed" })).toThrow("cannot be rebound");
+    expect(currentTask).not.toHaveBeenCalled();
+    owner.rebind({ ...original, task: currentTask, authorityRunId: "next" });
+    await expect(owner.resume(requirements.identity, "transient-ticket")).resolves.toBe("resumed");
+    expect(currentTask).toHaveBeenCalledExactlyOnceWith({ kind: "resume", identity: requirements.identity, bootstrapTicket: "transient-ticket" }, { expectedTaskId: "task" });
+    currentTask.mockResolvedValueOnce({ kind: "resume", taskId: "task", outcome: "unavailable" });
+    await expect(owner.resume(requirements.identity, "transient-ticket")).resolves.toBe("unavailable");
+    expect(firstTask).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["codex", "claude"])("requires capability, warm support and account for %s", async harness => {
+    for (const missing of ["releaseResumeVersion", "warmTaskVersion", "accountIdentity"] as const) {
+      const task = lifecycleTask();
+      const owner = createPluginRunnerTaskOwner({ ...input(harness), task, [missing]: undefined });
+      await expect(owner.release(requirements.identity)).rejects.toThrow("release/resume unavailable");
+      await expect(owner.resume(requirements.identity, "transient-ticket")).rejects.toThrow("release/resume unavailable");
+      expect(task).not.toHaveBeenCalled();
+    }
+  });
+
+  it.each(["released", "detached", "cancelled"] as const)("does not dispatch after the owner is %s", async state => {
+    const task = provider().task;
+    const context = new NativeExecutionContext({ binding: { companyId: "company", agentId: "agent", runId: "run" } } as never, 1_000);
+    const owner = createPluginRunnerTaskOwner({ ...input("codex"), task, executionContext: context });
+    try {
+      if (state === "cancelled") context.abort(new Error("fixture cancellation"));
+      else await (await owner.registration({} as never, "run")).release(state === "detached" ? "detach" : undefined);
+      task.mockClear();
+      await expect(owner.release(requirements.identity)).rejects.toThrow("operation cancelled");
+      await expect(owner.resume(requirements.identity, "transient-ticket")).rejects.toThrow("operation cancelled");
+      expect(task).not.toHaveBeenCalled();
+    } finally { context.finish(); }
+  });
+
+  it.each(["release", "resume"] as const)("does not accept a late %s receipt after detachment", async operation => {
+    let reply!: (value: unknown) => void;
+    const task = vi.fn(() => new Promise<unknown>(resolve => { reply = resolve; }));
+    const owner = createPluginRunnerTaskOwner({ ...input("codex"), task });
+    const pending = operation === "release" ? owner.release(requirements.identity) : owner.resume(requirements.identity, "transient-ticket");
+    await (await owner.registration({} as never, "run")).release("detach");
+    reply(operation === "release" ? { kind: "released", taskId: "task" } : { kind: "resume", taskId: "task", outcome: "resumed" });
+    await expect(pending).rejects.toThrow("operation cancelled");
+    expect(task).toHaveBeenCalledTimes(1);
+  });
+
+  it("can receive unavailable after an observed natural exit", async () => {
+    const task = vi.fn(async (operation: any): Promise<unknown> => operation.kind === "status"
+      ? { kind: "status", taskId: "task", phase: "completed", executionStopped: true, exitCode: 0 }
+      : { kind: "resume", taskId: "task", outcome: "unavailable" });
+    const owner = createPluginRunnerTaskOwner({ ...input("codex"), task });
+    expect(await owner.driver.adoptExistingRunner!.isAlive()).toBe(false);
+    await expect(owner.resume(requirements.identity, "transient-ticket")).resolves.toBe("unavailable");
+    expect(task.mock.calls.map(([operation]) => operation.kind)).toEqual(["status", "resume"]);
+  });
+
+  it.each(["release", "resume"] as const)("validates exact task and closed %s result", async operation => {
+    const task = lifecycleTask();
+    const owner = createPluginRunnerTaskOwner({ ...input("codex"), task });
+    const invoke = () => operation === "release" ? owner.release(requirements.identity) : owner.resume(requirements.identity, "transient-ticket");
+    for (const result of [
+      { kind: operation === "release" ? "released" : "resume", taskId: "other-task", ...(operation === "resume" ? { outcome: "resumed" } : {}) },
+      { kind: "accepted", taskId: "task" },
+      { kind: "resume", taskId: "task", outcome: "unknown" },
+    ]) {
+      task.mockResolvedValueOnce(result);
+      await expect(invoke()).rejects.toThrow();
+    }
+  });
+
+  it.each(["release", "resume"] as const)("preserves ambiguous %s errors without another operation", async operation => {
+    const task = lifecycleTask();
+    const owner = createPluginRunnerTaskOwner({ ...input("codex"), task });
+    const error = new Error("fixture transport lost its reply");
+    task.mockRejectedValueOnce(error);
+    await expect(operation === "release" ? owner.release(requirements.identity) : owner.resume(requirements.identity, "transient-ticket")).rejects.toBe(error);
+    expect(task).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe("plugin task workspace file transfer", () => {
   it("reads only a submitted task, validates bytes, and rejects late responses after release", async () => {
     const {task}=provider(); const perform=task.getMockImplementation()!;

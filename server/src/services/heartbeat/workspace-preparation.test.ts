@@ -331,6 +331,8 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
         expect(retained.metadata?.configFingerprint).toMatchObject({
           workspaceHash: (saved.metadata?.configFingerprint as { workspaceHash: string }).workspaceHash,
         });
+        if (!strategyChange) expect((retained.metadata?.configFingerprint as { lastEvaluatedAt: string }).lastEvaluatedAt)
+          .not.toBe((saved.metadata?.configFingerprint as { lastEvaluatedAt: string }).lastEvaluatedAt);
         expect(retained.metadata?.remoteWorkspace).toMatchObject({ writerRunId: nextRun.id });
       }
     } finally {

@@ -43,6 +43,7 @@ import { prepareHeartbeatTaskContext } from "./heartbeat/task-context.js";
 import { selectHeartbeatEnvironment } from "./heartbeat/environment-selection.js";
 import { reconcileMuseNativeTerminalRun } from "./native-runtime/muse-terminal-reconciliation.js";
 import { prepareHeartbeatWorkspace } from "./heartbeat/workspace-preparation.js";
+import { nativeRecoveryClaimRelinquished } from "./native-runtime/native-execution-lease.js";
 import { executeHeartbeatRuntime, NativeSessionResumeScheduledError, NativeWorkspaceFinalizeScheduledError } from "./heartbeat/runtime-execution.js";
 import { preserveNativeFailedWorkspace } from "./native-runtime/native-failed-workspace-recovery.js";
 import { nativeRunHasNoWorkspaceAccess } from "./workspace-restore-recovery-state.js";
@@ -277,7 +278,7 @@ import {
 } from "./agent-conversations.js";
 import { withAdapterExecutionPhase } from "@paperclipai/adapter-utils/execution-phase";
 import {
-  recordNativeLocalProcessStop,
+  recordNativeLocalProcessStopInTransaction,
   settleNativeRunProcess,
 } from "./native-local-process-stop.js";
 
@@ -406,6 +407,7 @@ import {
   NATIVE_OWNERSHIP_UNVERIFIED_ERROR_CODE,
 } from "./native-runtime/native-runner-ownership.js";
 import { NativeStartupCleanupPendingError, requestNativeStartupCleanup, verifyNativeStartupCleanup, readNativeStartupCleanup } from "./native-runtime/native-startup-cleanup.js";
+import { settleUnstartedNativeSessionResume } from "./native-runtime/native-failed-run-owner-release.js";
 import {
   emitAgentTaskRun,
   emitAgentTaskRunById,
@@ -1783,7 +1785,7 @@ export function heartbeatService(
                 { err: error, runId: claim.runId },
                 "scheduled native session resume failed",
               );
-            });
+            }).finally(() => settleUnstartedNativeSessionResume(db, claim));
             activeRunExecutionPromises.add(execution);
             void execution.finally(() =>
               activeRunExecutionPromises.delete(execution),
@@ -1966,7 +1968,7 @@ export function heartbeatService(
             )
             .returning()
             .then((rows) => rows[0] ?? null);
-          if (cleared) await recordNativeLocalProcessStop(tx as unknown as Db, run);
+          if (cleared) await recordNativeLocalProcessStopInTransaction(tx as unknown as Db, run);
           return cleared;
         });
         if (!cleared) {
@@ -2923,19 +2925,28 @@ export function heartbeatService(
       const dispatchResolvedInteractionContinuationWithAtomicGate = async <T>(
         dispatch: (markDispatchStarted: () => void) => Promise<T>,
       ) => {
+        const relinquished = async () => runOptions.nativeLeaseOwner !== undefined && await nativeRecoveryClaimRelinquished({
+          db, companyId: run.companyId, runId: run.id, leaseOwner: runOptions.nativeLeaseOwner });
         // Admission can wait for accounting locks. Finish that wait before the
         // final ownership gate, whose callback must enter the adapter directly.
         const reservation = await measureRunPhase("execution.budget_reservation", () =>
           reserveRunBudget(db, run.companyId, run.id,
-            readNonEmptyString(runLedgerScope.projectId), runLedgerScope, runOptions.nativeLeaseOwner));
-        let entered = false;
+            readNonEmptyString(runLedgerScope.projectId), runLedgerScope, runOptions.nativeLeaseOwner))
+          .catch(async (error: unknown) => { throw await relinquished() ? new NativeControllerDetachedForRestartError() : error; });
+        let entered = false, handedOff = false;
         try {
           return await dispatchResolvedInteractionContinuationAfterAdmission((markDispatchStarted) => {
             entered = true;
             return dispatch(markDispatchStarted);
           }, reservation);
+        } catch (error) {
+          if (!entered && await relinquished()) {
+            handedOff = true;
+            throw new NativeControllerDetachedForRestartError();
+          }
+          throw error;
         } finally {
-          if (!entered && !reservation.reused) {
+          if (!entered && !reservation.reused && !handedOff) {
             await db.update(heartbeatRuns).set({ costAccountingPending: true,
               usageJson: sql`coalesce(${heartbeatRuns.usageJson}, '{}'::jsonb) || '{"accountingProviderWorkStarted":false}'::jsonb`,
             }).where(and(eq(heartbeatRuns.id, run.id), isNull(heartbeatRuns.costAccountedAt)));
@@ -4355,6 +4366,7 @@ export function heartbeatService(
         createNativeBatch: heartbeatQueue.createNativeStatusWakeBatch,
         schedulingSuppressed: async () => (await getSchedulingSuppression(true)).suppressed,
       }, () => canRun() && readTaskDrain(new Date()) === null),
+    readIdleWatchdogSchedule: taskWatchdogs.readIdleSchedule,
     registerIssueStateRecoveryWork: (coordinator: Parameters<typeof registerIssueRecoveryWork>[1], canRun: () => boolean) =>
       registerIssueRecoveryWork(db, coordinator, {
         stranded: scope => reconcileStrandedAssignedIssues({ ...scope, skipExternalConversationSettlement: true, skipRelatedRecovery: true }),

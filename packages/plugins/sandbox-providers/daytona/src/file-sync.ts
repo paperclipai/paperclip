@@ -254,11 +254,16 @@ export function splitLinkEntryOnce(field: string, delimiter: string): { name: st
  */
 class UnsafeOutboundArchiveError extends Error {}
 
-function assertTarListingLineConfined(line: string): void {
+function assertTarListingLineConfined(line: string, rejectSpecialModes = false): void {
   if (line.trim().length === 0) return;
   const parsed = parseTarVerboseListingLine(line);
   if (!parsed) {
     throw new UnsafeOutboundArchiveError(`Daytona syncOut refusing tarball with an unparseable entry listing: ${line}`);
+  }
+  // Source preservation promises ordinary 0777 permissions, not host special
+  // execution bits. Refuse before extraction; this must not trigger link repair.
+  if (rejectSpecialModes && /[sStT]/.test(line.trimStart().slice(0, 10))) {
+    throw new Error("Daytona syncOut source preservation does not support special mode bits");
   }
   const typeFlag = parsed.typeFlag;
   let name = parsed.rest;
@@ -302,12 +307,17 @@ const TAR_LISTING_TIMEOUT_MS = 120_000;
 export async function assertTarballEntriesConfined(
   archivePath: string,
   timeoutMs = TAR_LISTING_TIMEOUT_MS,
+  rejectSpecialModes = false,
 ): Promise<void> {
   // A valid large workspace can exceed execFile's buffer. Stream within both
   // aggregate admission quotas and per-entry/diagnostic memory bounds, checking
   // every entry before extraction. Keep bytes until a full line to preserve
   // UTF-8 characters split across pipe chunks.
-  const child = spawn("tar", ["-tvf", archivePath], {
+  // AppleDouble interpretation must also be disabled while validating, or
+  // libarchive hides `._*` members that the preserving extractor will write.
+  const rawMacEntries = rejectSpecialModes && process.platform === "darwin"
+    && (await execFileAsync("tar", ["--version"])).stdout.includes("bsdtar");
+  const child = spawn("tar", ["-tvf", archivePath, ...(rawMacEntries ? ["--options=!mac-ext"] : [])], {
     env: { ...process.env, COPYFILE_DISABLE: "1" },
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -322,7 +332,7 @@ export async function assertTarballEntriesConfined(
     if (++entries > TAR_LISTING_MAX_ENTRIES) {
       throw recordEnvironmentSyncError(new Error("Daytona syncOut tar listing entry limit exceeded (250000)"), { transferFailureKind: "listing_entry_limit" });
     }
-    try { assertTarListingLineConfined(line.toString("utf8")); }
+    try { assertTarListingLineConfined(line.toString("utf8"), rejectSpecialModes); }
     catch (error) {
       if (error instanceof UnsafeOutboundArchiveError) recordEnvironmentSyncError(error, { transferFailureKind: "unsafe_archive" });
       throw error;
@@ -386,13 +396,22 @@ export async function assertTarballEntriesConfined(
   }
 }
 
-async function extractHostTarball(input: { archivePath: string; localDir: string }): Promise<void> {
+async function extractHostTarball(input: { archivePath: string; localDir: string; preserveSourceEntries?: boolean }): Promise<void> {
   // The archive is sandbox-authored and untrusted: validate every member (and
   // link target) is confined before letting host-side tar write a single byte.
-  await withEnvironmentSyncTransferStep("archive_validate", () => assertTarballEntriesConfined(input.archivePath));
+  await withEnvironmentSyncTransferStep("archive_validate", () => assertTarballEntriesConfined(input.archivePath, TAR_LISTING_TIMEOUT_MS, input.preserveSourceEntries));
   await withEnvironmentSyncTransferStep("archive_extract", async () => {
     await fs.mkdir(input.localDir, { recursive: true });
-    await execFileAsync("tar", ["-xf", input.archivePath, "-C", input.localDir], {
+    // macOS tar otherwise consumes source files named `._*` as AppleDouble
+    // metadata instead of writing their bytes. These are ordinary user entries.
+    // Preserve mode also ignores the host umask without adopting archive owners,
+    // ACLs, attributes or file flags from the sandbox.
+    const hostTarIsBsd = input.preserveSourceEntries
+      && (await execFileAsync("tar", ["--version"])).stdout.includes("bsdtar");
+    await execFileAsync("tar", ["-xf", input.archivePath, "-C", input.localDir,
+      ...(input.preserveSourceEntries ? ["-p", "--no-same-owner", "--no-acls", "--no-xattrs"] : []),
+      ...(hostTarIsBsd ? ["--no-fflags"] : []),
+      ...(hostTarIsBsd && process.platform === "darwin" ? ["--no-mac-metadata", "--options=!mac-ext"] : [])], {
       env: { ...process.env, COPYFILE_DISABLE: "1" },
       maxBuffer: 32 * 1024 * 1024,
     });
@@ -1346,11 +1365,20 @@ async function syncOutDirectoryMapping(input: {
   return withHostTempDir(async (tmp) => {
     const remoteTar = path.posix.join(remoteDir, scratchName(".tar"));
     const remoteList = path.posix.join(remoteDir, scratchName(".list"));
-    const excludes = ["._*", `${SCRATCH_PREFIX}*`, ...(mapping.exclude ?? [])];
-    const excludeFlags = excludes
-      .flatMap((entry) => [entry, `${entry.replace(/\/$/, "")}/*`])
-      .map((entry) => `--exclude ${shellQuote(entry)}`)
-      .join(" ");
+    const scratchPaths = [remoteTar, remoteList].flatMap(file => {
+      const relative = path.posix.relative(mapping.sourcePath, file);
+      return relative && !relative.startsWith("../") && !path.posix.isAbsolute(relative)
+        ? [relative, `./${relative}`] : [];
+    });
+    const excludes = [...(mapping.preserveSourceEntries ? scratchPaths : ["._*", `${SCRATCH_PREFIX}*`]), ...(mapping.exclude ?? [])];
+    // Preservation exclusions are literal paths relative to this source, not
+    // basename patterns. Both archive naming forms occur in the repair path.
+    const literalExcludes = [...new Set(excludes.map(entry => entry.replace(/^(?:\.\/)+/, "").replace(/\/+$/, "")))];
+    const excludeFlags = (mapping.preserveSourceEntries ? "--anchored --no-wildcards " : "") +
+      (mapping.preserveSourceEntries
+        ? literalExcludes.flatMap(entry => [entry, `./${entry}`])
+        : excludes.flatMap(entry => [entry, `${entry.replace(/\/$/, "")}/*`]))
+        .map(entry => `--exclude ${shellQuote(entry)}`).join(" ");
     // Tar the source in-sandbox (naming top-level entries so no "." self-entry is
     // embedded), reproducing the `followSymlinks` → `-h` mapping, then stream the
     // single archive back over the native bulk channel.
@@ -1366,9 +1394,13 @@ async function syncOutDirectoryMapping(input: {
     // resolved targets remain inside this mapping. Nothing is deleted or
     // dereferenced. Host validation still checks the rebuilt archive, including
     // links changed by the sandbox between enumeration and tar creation.
-    const prunePaths = excludes.flatMap((entry) => [
-      `-path ${shellQuote(`./${entry}`)}`, `-path ${shellQuote(`*/${entry}`)}`,
-    ]).join(" -o ");
+    // find -path also interprets glob characters, even inside shell quotes.
+    // Pruning a literal directory already removes its complete subtree.
+    const prunePaths = (mapping.preserveSourceEntries
+      ? literalExcludes.map(entry => `-path ${shellQuote(`./${entry.replace(/[\\*?[\]]/g, "\\$&")}`)}`)
+      : excludes.flatMap(entry => [
+        `-path ${shellQuote(`./${entry}`)}`, `-path ${shellQuote(`*/${entry}`)}`,
+      ])).join(" -o ");
     const filterLinks = [
       ...canonicalizerPreamble(shellQuote(mapping.sourcePath)),
       'for _pc_link do',
@@ -1381,7 +1413,7 @@ async function syncOutDirectoryMapping(input: {
     ].join("\n");
     const confinedEntriesScript = (archive: string | null) => [
       `cd ${shellQuote(mapping.sourcePath)}`,
-      `find . -mindepth 1 \\( ${prunePaths} \\) -prune -o -type l -exec sh -c ${shellQuote(filterLinks)} sh {} + -o \\( -type f -o -type d \\) -print0 ${archive ? `> ${shellQuote(remoteList)} && ` : "| "}` +
+      `find . -mindepth 1 ${prunePaths ? `\\( ${prunePaths} \\) -prune -o ` : ""}-type l -exec sh -c ${shellQuote(filterLinks)} sh {} + -o \\( -type f -o -type d \\) -print0 ${archive ? `> ${shellQuote(remoteList)} && ` : "| "}` +
       `tar -c --no-xattrs --hard-dereference --no-recursion --null ${excludeFlags} -f ${shellQuote(archive ?? "-")} -T ${shellQuote(archive ? remoteList : "-")}`,
     ].join(" && ");
 
@@ -1431,7 +1463,7 @@ async function syncOutDirectoryMapping(input: {
         }
         bytesTransferred += await withEnvironmentSyncTransferStep("archive_download", async () => (await fs.stat(localTar)).size);
         try {
-          await extractHostTarball({ archivePath: localTar, localDir: mapping.targetPath });
+          await extractHostTarball({ archivePath: localTar, localDir: mapping.targetPath, preserveSourceEntries: mapping.preserveSourceEntries });
           break;
         } catch (error) {
           if (!(error instanceof UnsafeOutboundArchiveError) || attempt > 0) throw error;
@@ -1444,7 +1476,7 @@ async function syncOutDirectoryMapping(input: {
       // cleaned by withHostTempDir.
       await Promise.all([remoteTar, remoteList].map((file) => sandbox.fs.deleteFile(file).catch(() => undefined)));
     }
-    const filesTransferred = await countHostFiles(mapping.targetPath, mapping.exclude);
+    const filesTransferred = await countHostFiles(mapping.targetPath, mapping.preserveSourceEntries ? undefined : mapping.exclude);
     return { filesTransferred, bytesTransferred };
   });
 }

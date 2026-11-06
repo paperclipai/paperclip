@@ -32,7 +32,7 @@
 // build's `--finish` drops the stamp if its inputs did.
 //
 // Inputs: every file under packages/paperclip-runner except its build outputs
-// (dist, dist-browser, runner/target), node_modules and dot-directories (tool
+// (dist, dist-browser, runner/target, provider-assets), node_modules and dot-directories (tool
 // caches); every file under packages/paperclip-eval-kernel except dist and
 // node_modules, because build:typescript builds that package first; every
 // file under the root patches directory, because check:acpx-profiles hashes
@@ -76,7 +76,14 @@ const ROOT_INPUT_FILES = [
 ];
 const OUTPUT_DIRECTORY_RELATIVE = "dist";
 const SKIPPED_DIRECTORY_NAMES = new Set(["node_modules", "dist", "dist-browser"]);
-const RUNNER_SKIPPED_DIRECTORIES = new Set([`${RUNNER_PACKAGE_RELATIVE}/runner/target`]);
+// provider-assets is written by the build itself (install-copilot-assets.mjs,
+// the last step of build:typescript) from a lockfile-pinned package. Counting
+// it as an input made the first build in every fresh checkout see its inputs
+// change while it ran, so that build never recorded a stamp.
+const RUNNER_SKIPPED_DIRECTORIES = new Set([
+  `${RUNNER_PACKAGE_RELATIVE}/runner/target`,
+  `${RUNNER_PACKAGE_RELATIVE}/provider-assets`,
+]);
 
 export function runnerPackageRootFromScripts() {
   return path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");

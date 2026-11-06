@@ -9642,7 +9642,7 @@ registry.registerPath({
           agentId: z.string(),
           runId: z.string(),
           companyId: z.string(),
-          projectId: z.string(),
+          projectId: z.string().nullable().optional(),
         }),
       }),
     ),

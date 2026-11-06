@@ -17,6 +17,7 @@ import { readRunFailureReportingMode, type RunFailureReportingMode } from "../se
 import { RESTRICTED_WORKSPACE_SOURCE_REASON } from "./workspace-source-restriction.js";
 import { PLUGIN_RUNNER_AI_CONNECTION_REQUIRED } from "./plugin-runner-ai-connection.js";
 import { NATIVE_PROVIDER_OVERLOADED_CODE } from "./native-runtime/native-provider-failure.js";
+import { PROJECT_ACCESS_DENIED } from "./project-access-denial.js";
 
 type HeartbeatRun = typeof heartbeatRuns.$inferSelect;
 
@@ -170,6 +171,18 @@ function isPluginRunnerAiConnectionRequiredBlocker(run: HeartbeatRun, options: R
   const configuration = asRecord(run.resultJson?.configurationIncomplete);
   const recovery = asRecord(run.resultJson?.executionRecovery);
   return configuration?.reason === PLUGIN_RUNNER_AI_CONNECTION_REQUIRED &&
+    recovery?.kind === "bootstrap" && recovery.providerWorkStarted === false;
+}
+
+function isProjectAccessDenialBlocker(run: HeartbeatRun, options: RunFailureReportOptions): boolean {
+  if (
+    run.status !== "failed" || run.errorCode !== PROJECT_ACCESS_DENIED ||
+    run.executionStage !== "preparing" || options.phase !== "setup" ||
+    run.exitCode != null || run.signal != null
+  ) return false;
+  const denial = asRecord(run.resultJson?.projectAccessDenied);
+  const recovery = asRecord(run.resultJson?.executionRecovery);
+  return typeof denial?.projectId === "string" &&
     recovery?.kind === "bootstrap" && recovery.providerWorkStarted === false;
 }
 
@@ -333,6 +346,7 @@ export function reportRunFailure(db: Db, run: HeartbeatRun, options: RunFailureR
     isLocalPathWorkspaceConfigurationBlocker(run, options) ||
     isRestrictedWorkspaceSourceBlocker(run, options) ||
     isPluginRunnerAiConnectionRequiredBlocker(run, options) ||
+    isProjectAccessDenialBlocker(run, options) ||
     isGitConnectionFailure(run, options) ||
     isProviderQuotaFailure(run, options) ||
     isCodexAcpModelCapacityFailure(run, options) ||
@@ -359,7 +373,7 @@ async function captureTerminalRunFailure(
       errorCode: run.errorCode ?? null,
       diagnostics: collectRunFailureDiagnostics(run, options),
     }, [...new Set([
-      ...collectRunFailureSecretValues(process.env, [], true),
+      ...collectRunFailureSecretValues(process.env),
       ...(options.secretValues ?? []),
     ])].sort((a, b) => b.length - a.length));
     const agent = await db
