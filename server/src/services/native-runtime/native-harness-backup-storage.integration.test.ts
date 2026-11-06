@@ -348,6 +348,25 @@ describeEmbeddedPostgres("durable native provider backups", () => {
     try { await expect(nativeRunnerCheckpointWriter(f.db, currentOwner)(checkpoint)).rejects.toThrow("native_runner_checkpoint_retired"); }
     finally { await f.db.update(nativeRunFinalizations).set({ phase: priorOwner.phase, leaseOwner: null,
       leaseExpiresAt: null }).where(eq(nativeRunFinalizations.runId, f.runId)); }
+    const consumerRunId = randomUUID(), consumerLeaseId = randomUUID();
+    await f.db.insert(heartbeatRuns).values({ id: consumerRunId, companyId: f.companyId, agentId: environment.current.agentId,
+      issueId: f.issueId, nativeIssueId: f.issueId, nativeSessionId: f.identity.normalizedSessionId, status: "running" });
+    await f.db.insert(nativeRunFinalizations).values({ runId: consumerRunId, companyId: f.companyId, issueId: f.issueId,
+      phase: "observed", controllerBootId: f.owner.bootId, controllerGeneration: 1, leaseOwner: "late-source-consumer",
+      leaseExpiresAt: new Date(Date.now() + 60_000) });
+    await f.db.update(issues).set({ status: "in_progress", executionRunId: consumerRunId }).where(eq(issues.id, f.issueId));
+    await f.db.update(environmentLeases).set({ metadata: { remoteExecutionTermination: {
+      schema: "paperclip.remote-termination.v1", companyId: f.companyId, runId: f.runId, leaseId, provider: "daytona",
+      providerLeaseId, state: "destroyed", confirmedAt: confirmedAt.toISOString() },
+      runnerTaskSourceConsumer: { leaseId: consumerLeaseId, runId: consumerRunId, accountIdentity: "owned-fixture-account", identity } } })
+      .where(eq(environmentLeases.id, leaseId));
+    await f.db.insert(environmentLeases).values({ id: consumerLeaseId, companyId: f.companyId, heartbeatRunId: consumerRunId,
+      issueId: f.issueId, provider: "daytona", providerLeaseId: randomUUID(), status: "active", metadata: { runnerTaskSourceRecovery: {
+        schema: "paperclip.runner.source-recovery.v1", sourceLeaseId: leaseId, consumerLeaseId, consumerRunId,
+        accountIdentity: "owned-fixture-account", controllerBootId: f.owner.bootId, controllerGeneration: 1, identity } } });
+    const lateCheckpoint = { ...checkpoint, reset: false, changedRecords: new Map([["cursor", checkpoint.records.get("cursor")!]]), removedRecords: [] };
+    await expect(nativeRunnerCheckpointWriter(f.db, { ...f.owner, authorityRunId: consumerRunId, generation: 1,
+      leaseOwner: "late-source-consumer" })(lateCheckpoint)).rejects.toThrow("native_runner_checkpoint_retired");
     const restarted = nativeHarnessBackupExpirationService(f.db, { storage: f.storage });
     expect((await restarted.tickCheckpoints()).expiredCheckpoints).toBe(1);
     expect(await f.db.select().from(nativeProviderArtifacts).where(eq(nativeProviderArtifacts.id, artifact.id))).toEqual([]);

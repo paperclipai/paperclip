@@ -63,7 +63,9 @@ Checkpoint expiration checks current resume handles under its existing locks.
 It then fences old generations and atomically replaces the expired header with
 a versioned, company/run-scoped retirement marker. An earlier handle keeps the
 original checkpoint and files. After retirement, readers and header writers
-refuse the old checkpoint. The marker stays in the existing header index until
+refuse the old checkpoint. Source consumers also check retirement in their
+existing ownership query, so a cached old snapshot cannot bypass the barrier.
+The marker stays in the existing header index until
 external artifact deletion succeeds, including after a server restart. No
 transaction waits for a network delete. Families with more than 100 related
 runs keep every pin and checkpoint. Missing object storage keeps the marker and
