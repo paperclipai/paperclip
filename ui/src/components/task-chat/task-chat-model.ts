@@ -578,6 +578,8 @@ export interface TaskChatMaterializedResourceItem {
   document?: IssueDocumentSummary;
   workProduct?: IssueWorkProduct;
   attachment?: IssueAttachment;
+  /** Adjacent images from one turn; the first resource retains the row identity. */
+  imageItems?: TaskChatMaterializedResourceItem[];
 }
 
 export type TaskChatProtocolItem =

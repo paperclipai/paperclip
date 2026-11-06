@@ -112,7 +112,7 @@ export function ImageGalleryModal({
               {filename}
             </span>
             <div className="flex items-center gap-4">
-              <span className="text-white/40 tabular-nums text-xs">
+              <span className="tabular-nums text-xs">
                 {currentIndex + 1} / {items.length}
               </span>
               <a

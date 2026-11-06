@@ -177,10 +177,10 @@ describe("TaskChatProtocolCard", () => {
       workProduct: product,
     });
 
-    const chip = Array.from(container.querySelectorAll("span")).find((node) => node.textContent === "Pending");
+    const chip = container.querySelector(".status-chip");
     expect(chip?.className).toContain("border-dashed");
     expect(container.textContent).toContain("Image · 2.0 KB");
-    expect(container.textContent).toContain("Open gallery");
+    expect(container.querySelector('button[aria-label^="Open gallery:"]')).not.toBeNull();
   });
 
   it.each([

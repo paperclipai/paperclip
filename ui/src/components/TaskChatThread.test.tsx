@@ -1248,6 +1248,36 @@ function renderThread(props: ComponentProps<typeof TaskChatThread>) {
 }
 
 describe("TaskChatThread draft pass-through", () => {
+  it("groups PAP-2525 native image uploads despite their generated preparation receipts", async () => {
+    const comment = (id: string, body: string, runId?: string) => ({
+      id, body, companyId: "company", issueId: "issue", authorType: "agent" as const, authorAgentId: "agent", authorUserId: null,
+      createdByRunId: runId ?? null, createdAt: new Date("2026-11-06T13:32:00Z"), updatedAt: new Date("2026-11-06T13:32:00Z"),
+      metadata: null, presentation: null,
+    });
+    type Props = ComponentProps<typeof TaskChatThread>;
+    const workProducts = [1, 2].map(n => ({
+      id: `image-${n}`, type: "artifact", provider: "paperclip", title: `Screen ${n}`, status: "active", reviewState: "none", healthStatus: "unknown",
+      createdByRunId: "images-run", createdAt: new Date(`2026-11-06T13:31:0${n}Z`), updatedAt: new Date(`2026-11-06T13:31:0${n}Z`),
+      metadata: { attachmentId: `00000000-0000-4000-8000-00000000000${n}`, originalFilename: `screen-${n}.png`, contentType: "image/png", byteSize: 2048, contentPath: `/api/attachments/00000000-0000-4000-8000-00000000000${n}/content`, openPath: `/api/attachments/00000000-0000-4000-8000-00000000000${n}/content`, downloadPath: `/api/attachments/00000000-0000-4000-8000-00000000000${n}/content?download=1` },
+    })) as unknown as NonNullable<Props["workProducts"]>;
+    const attachments = workProducts.map((w, n) => ({ id: w.metadata!.attachmentId, issueCommentId: `receipt-${n}`, originatingRunId: "images-run", createdByAgentId: "agent",
+      originalFilename: `screen-${n}.png`, contentType: "image/png", contentPath: w.metadata!.contentPath,
+      createdAt: w.createdAt, updatedAt: w.updatedAt, byteSize: 2048,
+    })) as unknown as NonNullable<Props["attachments"]>;
+    const comments = workProducts.map((w, n) => ({ ...comment(`receipt-${n}`, `Prepared ${w.title} for this response.`, "images-run"),
+      createdAt: new Date(new Date(w.createdAt).getTime() + 100), metadata: { version: 1 as const, sections: [], authorizationReason: "paperclip_runner_protocol" },
+    }));
+    const props: Props = { comments, workProducts, attachments, onAdd: async () => {}, issueStatus: "done" };
+    render(<TaskChatThread {...props} />);
+    await settleThreadLayout();
+    expect(container.textContent).not.toContain("Prepared Screen");
+    expect(container.querySelectorAll('[data-testid="task-chat-image-grid"]')).toHaveLength(1);
+    expect(container.querySelectorAll('button[aria-label^="Open gallery:"]')).toHaveLength(2);
+    // The same words written by a person are conversation and must remain.
+    render(<TaskChatThread {...props} comments={[...comments, { ...comment("human-receipt-words", "Prepared Screen 1 for this response."), authorAgentId: null, authorType: "user", authorUserId: "viewer" }]} />);
+    expect(container.textContent).toContain("Prepared Screen 1 for this response.");
+  });
+
   it("aligns the desktop thread header with the side-panel tab row", () => {
     renderThread({
       comments: [

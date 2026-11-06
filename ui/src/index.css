@@ -5317,3 +5317,17 @@ html:not(.dark) .coordinator-sidebar {
 @media (prefers-reduced-motion: reduce) {
   .agent-selection-bar { transition: none; transform: translate(-50%, 0); }
 }
+
+/* Compact image batches in task history and the live results stream. */
+:root {
+  --tc-image-grid-columns: repeat(auto-fill, minmax(min(100%, 8rem), 1fr));
+  --tc-image-grid-max-width: 40rem;
+}
+
+.tc-image-grid {
+  display: grid;
+  grid-template-columns: var(--tc-image-grid-columns);
+  gap: calc(var(--spacing) * 2);
+  width: 100%;
+  max-width: var(--tc-image-grid-max-width);
+}
