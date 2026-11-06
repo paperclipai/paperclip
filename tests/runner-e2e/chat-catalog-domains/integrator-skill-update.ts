@@ -84,12 +84,7 @@ async function observeUpdate(ctx: ChatCatalogContext, state: Record<string, unkn
   const issueId = ctx.issue()?.id;
   if (checkpoint && issueId) {
     state.sourceIssueId = issueId;
-    const run = acceptedSkillReviewRun(base, issueId);
-    if (run) {
-      const humanCommentId = run.contextSnapshot!.commentId as string;
-      const visibleText = await waitForVisibleSkillReview(ctx, { runId: run.id, humanCommentId });
-      if (visibleText.trim()) visibleReview = { runId: run.id, issueId, humanCommentId, summary: run.resultJson!.summary as string, visibleText };
-    }
+    visibleReview = await collectVisibleSkillReviewFallback(ctx, base, issueId);
   }
   return { ...base, ...saved, updateStatus: status, ...(visibleReview ? { visibleReview } : {}) };
 }
@@ -105,14 +100,27 @@ function claimsAppliedUpdate(reply: string) {
   return [...reply.matchAll(/\b(?:I (?:have )?(?:updated|applied|installed)|update (?:is |has been )?(?:applied|installed|complete))\b/gi)]
     .some(match => !/^update /i.test(match[0]) || !/\bno\s+$/i.test(reply.slice(0, match.index)));
 }
+function previewNarrativeCorrect(reply: string) {
+  return (reply.includes(accessibilityUpdatePins.oldCommit.slice(0, 7)) || /(?:installed|current|currently)[^\n]{0,80}\b0\.4\b|\b0\.4\b[^\n]{0,80}(?:installed|current)/i.test(reply))
+    && substantiveDiff(reply) && !claimsAppliedUpdate(reply);
+}
+export async function collectVisibleSkillReviewFallback(ctx: ChatCatalogContext, base: InternalObservation, issueId: string): Promise<VisibleSkillReview | undefined> {
+  // A complete persisted review is already the ordinary user-facing answer.
+  // Its deduplicated native bubble need not exist for the original path to pass.
+  if (previewNarrativeCorrect(base.reply)) return undefined;
+  const run = acceptedSkillReviewRun(base, issueId);
+  if (!run) return undefined;
+  const humanCommentId = run.contextSnapshot!.commentId as string;
+  const visibleText = await waitForVisibleSkillReview(ctx, { runId: run.id, humanCommentId });
+  return { runId: run.id, issueId, humanCommentId, summary: run.resultJson!.summary as string, visibleText };
+}
 function previewCorrect(o: UpdateObservation) {
   const before = o.state.upstream as CompanySkillDetail;
   const reply = skillReviewPreviewText(o);
   return o.upstream.currentVersionId === before.currentVersionId && o.upstream.sourceRef === accessibilityUpdatePins.oldCommit && hash(o.upstream.markdown) === accessibilityUpdatePins.oldSha256
     && o.source.lastScanCommit === accessibilityUpdatePins.oldCommit && o.source.trackingRef === accessibilityUpdatePins.newCommit && o.source.automaticUpdates === false
     && o.updateStatus.supported && o.updateStatus.hasUpdate && o.updateStatus.currentRef === accessibilityUpdatePins.oldCommit && o.updateStatus.latestRef === accessibilityUpdatePins.newCommit
-    && (reply.includes(accessibilityUpdatePins.oldCommit.slice(0, 7)) || /(?:installed|current|currently)[^\n]{0,80}\b0\.4\b|\b0\.4\b[^\n]{0,80}(?:installed|current)/i.test(reply))
-    && substantiveDiff(reply) && !claimsAppliedUpdate(reply);
+    && previewNarrativeCorrect(reply);
 }
 export function gradeIntegratorSkillUpdate(value: unknown) {
   const c = checks(); const o = updateObservation(value); c.add("real-tracked-source-and-saved-versions", !!o, "Requires actual public GitHub source tracking, installed snapshot versions and preserved editable fork."); if (!o) return c.result();

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { readVisibleSkillReview, waitForVisibleSkillReview } from "./integrator-skill-update.js";
+import { readVisibleSkillReview, waitForVisibleSkillReview, collectVisibleSkillReviewFallback } from "./integrator-skill-update.js";
 const input = { runId: "run", humanCommentId: "human" };
 const thread = (body: string) => `<section data-testid="task-chat-thread"><div id="comment-human">Review before updating.</div>${body}</section>`;
 const response = '<div data-thread-anchor="run:turn:0"><div data-testid="task-chat-final-response"><strong>Installed 0.4</strong><p>Regression tests; split forms into smaller steps. No update applied yet.</p></div></div>';
@@ -29,11 +29,16 @@ it("waits for eventual current response hydration within the original deadline o
   document.body.innerHTML = thread("");
   const evaluate = vi.fn(async () => readVisibleSkillReview(input));
   const ctx = { observationDeadlineAt: 2_000, input: { page: { evaluate } } } as unknown as Parameters<typeof waitForVisibleSkillReview>[0];
-  const pending = waitForVisibleSkillReview(ctx, input);
+  const summary = "Installed 0.4. Regression tests and forms split into small steps.";
+  const base = { reply: "See the complete diff above. No update applied yet.", companyId: "company", leadId: "ceo",
+    runs: [{ id: "run", companyId: "company", agentId: "ceo", status: "succeeded", runtimeMode: "native", nativeIssueId: "source",
+      contextSnapshot: { issueId: "source", commentId: "human" }, resultJson: { summary, finalizationPhase: "committed", finalizationReasonCode: "conversation_turn_finished",
+        prpRunTerminalState: "succeeded", prpTurnTerminalState: "completed", nativeResult: { schema: "paperclip.run_result.v1", reportedWorkDisposition: "done", summary } } }] } as unknown as Parameters<typeof collectVisibleSkillReviewFallback>[1];
+  const pending = collectVisibleSkillReviewFallback(ctx, base, "source");
   await vi.advanceTimersByTimeAsync(250);
   document.body.innerHTML = thread(response);
   await vi.advanceTimersByTimeAsync(250);
-  expect(await pending).toContain("Installed 0.4");
+  expect((await pending)?.visibleText).toContain("Installed 0.4");
   expect(evaluate).toHaveBeenCalledTimes(3);
   expect(ctx.observationDeadlineAt).toBe(2_000);
   document.body.innerHTML = thread(response.replace('run:turn:0', 'foreign:turn:0'));

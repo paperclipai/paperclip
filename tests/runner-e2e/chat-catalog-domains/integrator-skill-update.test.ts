@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { SkillSourceUpdateReadError } from "../api.js";
 import { readFileSync } from "node:fs";
-import { accessibilityUpdatePins as pins, gradeIntegratorSkillUpdate, requireSkillUpdatePrerequisite, integratorSkillUpdateCases, acceptedSkillReviewRun } from "./integrator-skill-update.js";
+import { accessibilityUpdatePins as pins, gradeIntegratorSkillUpdate, requireSkillUpdatePrerequisite, integratorSkillUpdateCases, acceptedSkillReviewRun, collectVisibleSkillReviewFallback } from "./integrator-skill-update.js";
 // Unmodified MIT-licensed source bytes, with LICENSE.md in the same fixture
 // directory. Product setup still fetches the actual GitHub commit snapshots.
 import { createHash } from "node:crypto";
@@ -44,6 +44,15 @@ describe("genuine immutable public skill update qualification", () => {
     const changed = structuredClone(truthful);
     changed.state.reviewCheckpoint.upstream.currentVersionId = "premature";
     expect(gradeIntegratorSkillUpdate(changed).checks.find(check => check.id === "review-diff-before-update")?.passed).toBe(false);
+  });
+
+  it("keeps a complete persisted preview on the original path without any DOM read", async () => {
+    const first = valid(bytes.old, bytes.next).state.reviewCheckpoint;
+    const evaluate = vi.fn(async () => { throw new Error("No additional native bubble exists"); });
+    const ctx = { input: { page: { evaluate } } } as unknown as Parameters<typeof collectVisibleSkillReviewFallback>[0];
+    expect(await collectVisibleSkillReviewFallback(ctx, first, "source")).toBeUndefined();
+    expect(evaluate).not.toHaveBeenCalled();
+    expect(gradeIntegratorSkillUpdate(valid(bytes.old, bytes.next)).passed).toBe(true);
   });
 
   it("admits only a visible committed current-run review alongside the shorter final comment", () => {
