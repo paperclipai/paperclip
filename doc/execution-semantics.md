@@ -3346,12 +3346,17 @@ A provider checkpoint copied from a completed run retains conversation history;
 its normalized current run ID does not prove that the current controller attached.
 Fenced Runner recovery requires a matching durable controller checkpoint or a
 valid staged attachment for the target run before selecting exact-checkpoint
-resume. If the first attachment finds the retained runner gone before the new
-turn starts, ordinary failure settlement requests one normal Retry under the
+resume. If the first attachment finds the retained runner gone, or replacement
+cannot archive its remote state before the new turn starts, ordinary failure
+settlement requests one normal Retry under the
 original user's saved wake and comment authority. Current authorization, Stop,
 provider-turn settlement, workspace preservation and cleanup gates still apply.
 The same request remains idempotent, and an automatic successor does not request
 another automatic Retry. System wakes and unsettled provider turns remain held.
+
+Continuity replacement confirms remote state archiving before moving the local
+controller journal and provider checkpoint. A failed or timed-out remote archive
+retains those local recovery files and does not start a replacement provider.
 
 Both graceful and hot restarts detach the old controller from native sessions.
 A graceful shutdown can also suspend a restart-recovery claim whose execution
