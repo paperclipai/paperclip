@@ -288,8 +288,14 @@ it("accepts a same-task named-worker transition without requiring an assignment 
   expect(gradeImplicitTransition(implicitTransitionAccount)).toBe(true);
   expect(gradeImplicitTransition(implicitTransitionAccount.replace("## Signup implementation — RUN-3", "2. **Signup implementation — RUN-3**"))).toBe(true);
 });
+it("keeps automatic verification and another task's requirements as context", () => {
+  expect(gradeImplicitTransition(implicitTransitionAccount.replace("The verification command returned exit 1", "The verification command failed. The validator automatically reported exit 1"))).toBe(true);
+  expect(gradeImplicitTransition(implicitTransitionAccount.replace("RUN-3", "RUN-3 implements requirements from [RUN-2](/RUN/issues/RUN-2)"))).toBe(true);
+});
 it.each([
   implicitTransitionAccount.replace("Riley added", "Riley repaired RUN-4 and added"),
+  implicitTransitionAccount.replace("the missing label and", "the missing label automatically and"),
+  implicitTransitionAccount.replace("The task paused as blocked.", "The task paused as blocked. The task recovered automatically."),
   implicitTransitionAccount.replace("- Riley", "\n## Separate work — RUN-4\n- Riley"),
   implicitTransitionAccount.replace("The task paused as blocked.\n- Riley added the missing label and re-ran verification: exit 0.", "Riley added the missing label and re-ran verification: exit 0. The task paused as blocked."),
   implicitTransitionAccount.replace("The task paused as blocked.", ""),

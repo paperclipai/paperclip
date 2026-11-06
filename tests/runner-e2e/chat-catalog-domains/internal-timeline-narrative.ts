@@ -208,7 +208,8 @@ export function truthfulTimelineAccount(input: {
       commandLead.test(prefix.slice(0, success.index)) && successIsOwned(text, success.index)
       && causedByRepair.test(prefix.slice(success.index + success[0].length)));
   }).map(match => ({ at: at + match.index
-    + (new RegExp(`^${successorOwnership.source}`, "i").test(match[0]) ? match[0].indexOf(",") + 1 : 0) })));
+    + (new RegExp(`^${successorOwnership.source}`, "i").test(match[0]) ? match[0].indexOf(",") + 1 : 0),
+    claim: text.slice(match.index), clause: text })));
   const pauseCausedByFailure = new RegExp(`\\b(?:after|because)\\s+(?:(?:the|his|her|their|its|${escape(firstWorker)}['’]s)\\s+)?${commandTail}`, "i");
   const failureAfterPause = new RegExp(`\\bafter\\s+(?:(?:the|his|her|their|its|a)\\s+)?(?:task|work|it|${escape(firstWorker)})(?:\\s+(?:was|got|had been|has been))?\\s*$`, "i");
   const pauseBetween = (failure: typeof failures[number], end: number) =>
@@ -228,11 +229,14 @@ export function truthfulTimelineAccount(input: {
   const implicitTransition = !!taskReference && paragraphs.some(paragraph => {
     if (!taskReference.test(paragraph.text.split("\n")[0]!)
       || new RegExp(assignment, "i").test(paragraph.text) || new RegExp(successorOwnership.source, "i").test(paragraph.text)
-      || /\b(?:automatically|autonomously|self-assigned)\b|\b(?:another|different|other)\s+(?:task|issue|work)\b/i.test(paragraph.text)
-      || taskNamespace && [...paragraph.text.matchAll(taskNamespace)].some(match => match[0].toLowerCase() !== input.taskIdentifier!.toLowerCase())) return false;
+      || new RegExp(`${taskSubject}\\s+(?:was\\s+)?(?:(?:automatically|autonomously)\\s+(?:recovered|resumed)|(?:recovered|resumed)\\s+(?:automatically|autonomously))\\b`, "i").test(paragraph.text)
+      || taskNamespace && paragraph.text.split("\n")[0]!.match(taskNamespace)?.[0]?.toLowerCase() !== input.taskIdentifier!.toLowerCase()) return false;
     return failures.some(failure => failure.at >= paragraph.start && failure.at < paragraph.end
       && mentions(body.slice(paragraph.start, failure.at), firstWorker)
-      && repairs.some(repair => repair.at > failure.at && repair.at < paragraph.end && pauseBetween(failure, repair.at)));
+      && repairs.some(repair => repair.at > failure.at && repair.at < paragraph.end && pauseBetween(failure, repair.at)
+        && !/\b(?:automatically|autonomously|self-assigned)\b/i.test(repair.claim.split(/\b(?:and|then|while)\b/i)[0]!)
+        && !/\b(?:another|different|other)\s+(?:task|issue|work)\b/i.test(repair.clause)
+        && (!taskNamespace || [...repair.clause.matchAll(taskNamespace)].every(match => match[0].toLowerCase() === input.taskIdentifier!.toLowerCase()))));
   });
   const ordered = explicitTransition || implicitTransition;
   const nativeFailure = /\b(?:native|runner|execution)\s+runs?\s+(?:(?:themselves|were|was|had|also|both|[a-z]+ly)\s+){0,3}(?:failed|failures?|unsuccessful)\b|\b(?:native|runner|execution)\s+runs?\s+(?:ended|finished)\s+(?:in|with)\s+(?:a\s+)?failure\b|\bfailed\s+(?:native|runner|execution)\s+runs?\b/i;
