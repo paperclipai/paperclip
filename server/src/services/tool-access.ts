@@ -4531,6 +4531,13 @@ export function toolAccessService(
       let applicationNamespace = input.applicationName ?? input.name;
       const transport = input.transport;
       if (!transport) throw badRequest("Tool connection transport is required");
+      // This path writes only tool connections. Channel setup has its own
+      // services. Reject other purposes here, before any row is written, so the
+      // database purpose/transport check never turns them into a 500.
+      if (input.connectionPurpose !== undefined && input.connectionPurpose !== "tool")
+        throw unprocessable("Only tool connections can be created here");
+      if (transport === "chat_sdk" || transport === "voice")
+        throw unprocessable("Chat and voice connections cannot be created here");
       const config = normalizeGoogleSheetsConnectionConfig(
         input.config ?? input.transportConfig ?? {},
       );

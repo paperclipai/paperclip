@@ -548,8 +548,14 @@ an active or ephemeral one. It records the save obligation for the exact writer
 run while the workspace is still bound to that writer. A Stop during an
 accepted result's copy-back retries ends that copy-back, and no finalization
 exports those files afterwards. Preservation admits that writer as well and
-leaves the accepted result uncommitted. Other accepted results keep their own
-export repair path. Paperclip's workspace recovery then saves those files, which
+leaves the accepted result uncommitted. A failed remote writer whose accepted
+result exhausted its copy-back retries can also retain its files through this
+path. It needs the exact stopped sandbox receipt, accepted completion contract,
+and unchanged dirty workspace binding. This works even when a newer setup
+attempt has failed on the old writer's hold. File recovery preserves both
+attempts and the accepted result; it does not apply that result or repeat the
+provider work. Other accepted results keep their own export repair path.
+Paperclip's workspace recovery then saves those files, which
 releases the hold. It never replays the stopped run. While that save is in
 progress, its last progress counts as the ended writer's activity for the holder cutoff. A waiter keeps waiting instead of
 failing setup. The save's retry budget bounds that wait. A save that exhausts
@@ -1009,8 +1015,45 @@ does not repack an already dissociated mirror. Each streamed file must match its
 recorded hash, size and mode and retain its filesystem identity while read.
 Capture rechecks the complete source inventory and Git state before returning a
 receipt. A changed source or cancelled capture removes its incomplete archive;
-an existing archive remains untouched. Temporary space must still hold the
-normalized Git metadata and the complete archive together.
+an existing archive remains untouched. Temporary sandbox space normally holds
+the normalized Git metadata and the complete archive together. An exact disk-full
+failure invokes one read-only export fallback. It fingerprints a standalone
+source, transfers its files through the provider's existing bulk channel, and
+checks the received inventory and the source again before sealing a portable
+archive on the controller. It rechecks the source after sealing. No source files
+or provider caches are removed. Linked Git worktrees, initialized submodules, alternate object stores,
+Git administrative symlinks, setuid/setgid/sticky entries, and configuration outside the portable key contract
+cannot use this fallback. Pure file-based config reads do not follow includes;
+controller Git normalization starts only after every config passes that contract.
+They remain retained if their normal archive cannot be saved. Transfer failures
+or changed files retain the original disk-full error and do not produce a
+preservation receipt.
+
+The fallback's `portableKey` allowlist in
+`server/src/services/remote-workspace-readonly-inventory.ts` is authoritative and
+intentionally stricter than normal capture's `portableGitSettings` sanitizer.
+Normal capture drops unrelated settings; the fallback rejects every unlisted key
+before controller Git can read the copied source configuration. This includes
+otherwise ordinary settings such as `pull.rebase`, `commit.gpgsign`, `fetch.prune`,
+`extensions.worktreeConfig`, and `remote.origin.mirror`.
+
+The directory transfer requests `preserveSourceEntries` to preserve ordinary
+filenames and permissions. Its exclusions are literal root-relative paths,
+including directory descendants; ordinary transfers keep glob exclusions. Daytona and
+Kubernetes implement and qualify this mapping contract. Other providers have not
+been qualified for this fallback; inventory verification still prevents a
+provider that omits or alters entries from publishing an incomplete save.
+
+The fallback applies the normal untracked dependency exclusions before inspecting
+links inside reinstallable environments. Tracked environment files remain part of
+the save. Its outbound mapping requests `preserveSourceEntries`; providers retain
+ordinary `._*` and scratch-like user filenames while excluding only the current
+transfer's own scratch paths and the explicit source exclusions. Older providers
+that omit files fail inventory verification rather than publish an incomplete save.
+Fallback inventory is limited to 100,000 entries, 64 standalone repositories,
+1 MiB of configuration, 1,024 settings and 256 refspec/merge entries. Controller
+verification and archive normalization share a two-minute cancellation deadline.
+These limits reject excessive work before publication and keep the source retained.
 
 Shallow and partial Git checkouts retain their available object files instead
 of asking a mirror clone to transfer promised or index-only objects. Capture
@@ -2589,13 +2632,26 @@ Shutdown, process loss, and provider failure use the existing durable failure re
 If shutdown or a recorded unexpected system interruption stops Paperclip Runner
 preparation before native execution was selected, recovery verifies that no
 provider, process launch, native result or coordinator exists. The previous
-controller must have settled or lost its lease.
+controller must have settled or lost its lease. A failed `process_lost` run also
+qualifies when restart recovery committed its explicit bootstrap certificate
+that provider work did not start. The error label alone grants no replay.
 Required workspace recovery must have an exact saved-file receipt and stopped
 leases before the task can continue. Once these checks pass, the server retires
 its own unchanged bootstrap-failure block and schedules one bounded retry.
 Startup also discovers this obligation when file recovery completed before the
 restart. A pending Retry or saved message owns its continuation instead of
-starting a competing automatic attempt. Retry uses the same preparation proof
+starting a competing automatic attempt. If a replacement was already withheld
+by the workspace gate before execution, continuation retains that cancelled row
+and uses its existing predecessor claim and remaining failure budget.
+Recovery adopts that withheld row only when it is the source's sole retry child.
+Multiple-child history reuses the newest existing child, ordered by creation time
+and run ID, without scheduling another replacement.
+Clearing the file hold records a pending continuation before enqueue. Restart
+reconstructs that obligation until a successor is recorded. Known admission
+gates defer it without a polling deadline; eligibility changes wake the existing
+recovery worker. An unresolved enqueue or receipt write keeps its shared retry
+deadline. Delivery or exhaustion retires that obligation.
+Retry uses the same preparation proof
 and preserves the recovered workspace. Current task ownership, human blocks,
 pauses, approvals, budgets and the existing retry limit remain effective.
 Operator Stops retain their explicit continuation requirements. Other ambiguous
