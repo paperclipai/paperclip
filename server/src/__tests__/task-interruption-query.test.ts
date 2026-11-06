@@ -51,21 +51,33 @@ describe.skipIf(!support.supported)("task interruption latest run query", () => 
       return readNativeSessionResumptionAgent(db, { issue: currentIssue!, run: currentRun!, coordinator: coordinator! });
     };
     expect(await admission()).not.toBeNull();
+    const otherRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: otherRunId, companyId, agentId: otherAgentId, status: "cancelled",
+      finishedAt: new Date(Date.now() - 60_000), createdAt: new Date(Date.now() - 60 * 60_000) });
+    const terminatedManagerId = randomUUID();
+    await db.insert(agents).values({ id: terminatedManagerId, companyId, name: "Former manager",
+      adapterType: "paperclip_runner", status: "terminated" });
     for (const [table, change, restore] of [
       ["issue", { assigneeAgentId: otherAgentId }, { assigneeAgentId: agentId }],
       ["issue", { status: "blocked" }, { status: "in_progress" }],
-      ["agent", { status: "paused" }, { status: "idle" }],
+      ["issue", { executionRunId: otherRunId }, { executionRunId: null }],
+      ["issue", { checkoutRunId: otherRunId }, { checkoutRunId: null }],
+      ["run", { contextSnapshot: { nativeQuestionCancellation: { requestId: "q" } } }, { contextSnapshot: {} }],
+      // Invokability is more than status: an idle agent under a terminated manager is refused.
+      ["agent", { reportsTo: terminatedManagerId }, { reportsTo: null }],
     ] as const) {
       if (table === "issue") await db.update(issues).set(change).where(eq(issues.id, issue.id));
+      else if (table === "run") await db.update(heartbeatRuns).set(change).where(eq(heartbeatRuns.id, runId));
       else await db.update(agents).set(change).where(eq(agents.id, agentId));
-      // The scheduler would defer this candidate, so the task never claims to
-      // be resuming: it offers Retry, or a paused agent asks to be resumed.
-      expect(await admission()).toBeNull();
-      expect((await taskInterruptionPresentations(db, companyId, [issue])).get(issue.id)).toMatchObject(table === "agent"
-        ? { state: "waiting_for_user", userAction: "resume" } : { state: "failed", canRetry: true });
+      // The scheduler would defer this candidate, so the task offers Retry.
+      if (table !== "run") expect(await admission()).toBeNull();
+      expect((await taskInterruptionPresentations(db, companyId, [issue])).get(issue.id))
+        .toMatchObject({ state: "failed", canRetry: true });
       if (table === "issue") await db.update(issues).set(restore).where(eq(issues.id, issue.id));
+      else if (table === "run") await db.update(heartbeatRuns).set(restore).where(eq(heartbeatRuns.id, runId));
       else await db.update(agents).set(restore).where(eq(agents.id, agentId));
     }
+    expect(await admission()).not.toBeNull();
     // A provider cooldown can schedule the resume an hour out; it stays visible.
     const cooldown = new Date(Date.now() + 60 * 60_000);
     await db.update(nativeRunFinalizations).set({ nextAttemptAt: cooldown }).where(eq(nativeRunFinalizations.runId, runId));
