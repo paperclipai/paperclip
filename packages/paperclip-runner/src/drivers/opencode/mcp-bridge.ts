@@ -29,6 +29,7 @@ export interface OpenCodeMcpBridgeOptions {
   /** Runner-owned operations callable only by a trusted harness extension and never advertised to the model. */
   privateTools?: readonly Readonly<Record<string, unknown>>[];
   handler: (call: OpenCodeMcpCall) => Promise<unknown>;
+  onRejectedCall?: (call: Pick<OpenCodeMcpCall, "tool" | "callId" | "arguments">, error: string) => void;
   /** Null leaves durable requests with the owning Runner lease and bridge close. */
   timeoutMs?: number | null;
   /** Human-gated private operations may remain pending much longer than model tool calls. */
@@ -103,6 +104,7 @@ export async function startOpenCodeMcpBridge(
       calls,
       controllers,
       handler: options.handler,
+      onRejectedCall: options.onRejectedCall,
       diagnoseFinishInput,
       timeoutMs: options.timeoutMs === null ? null : options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
       privateToolTimeoutMs: options.privateToolTimeoutMs ?? options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
@@ -186,6 +188,7 @@ async function handleRequest(
     calls: Map<string, { fingerprint: string; promise: Promise<unknown> }>;
     controllers: Map<string, AbortController>;
     handler: OpenCodeMcpBridgeOptions["handler"];
+    onRejectedCall: OpenCodeMcpBridgeOptions["onRejectedCall"];
     timeoutMs: number | null;
     privateToolTimeoutMs: number;
     privateToolNames: ReadonlySet<string>;
@@ -283,15 +286,18 @@ async function handleRequest(
       context.diagnoseFinishInput({ input: params.arguments, callId, validationCategory });
     }
     const detail = validator?.errors?.map((error) => `${error.instancePath || "/"} ${error.message ?? "is invalid"}`).join("; ");
+    const error = `Invalid tool input${detail ? `: ${detail}` : "."}`;
+    try { context.onRejectedCall?.({ tool, callId, arguments: args }, error); } catch {}
     writeRpc(response, id, {
       isError: true,
-      content: [{ type: "text", text: `Invalid tool input${detail ? `: ${detail}` : "."}` }],
+      content: [{ type: "text", text: error }],
     });
     return;
   }
   const fingerprint = canonicalJson({ tool, args });
   const existing = context.calls.get(callId);
   if (existing && existing.fingerprint !== fingerprint) {
+    try { context.onRejectedCall?.({ tool, callId, arguments: args }, "Duplicate call identity conflict."); } catch {}
     writeRpc(response, id, { isError: true, content: [{ type: "text", text: "Duplicate call identity conflict." }] });
     return;
   }
