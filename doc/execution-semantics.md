@@ -2415,8 +2415,11 @@ run, release its environment, or start another provider. Lease expiry alone does
 not authorize that stale preparation to take ownership; normal recovery must
 establish a new claim first.
 
-An exact local Codex restart can restore the conversation after losing its active
-turn. Runnerd records this as `provider_turn_lost_on_restore`, with no invented
+An exact local Codex, OpenCode, or ACPX restart can restore the conversation after
+losing its active turn. ACPX first requires the original provider lifetime to lose
+its fence quorum; without that proof, or with an accepted result, unanswered
+runtime request, or active goal, it closes the session as before. Cursor Cloud
+agents run remotely and are excluded. Runnerd records this as `provider_turn_lost_on_restore`, with no invented
 task result. The admitted restart attempt may send one continuation in that same
 conversation. It preserves the workspace and asks the agent to reconcile unfinished
 commands and external actions before proceeding. It does not resend the task or
