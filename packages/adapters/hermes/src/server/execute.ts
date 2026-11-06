@@ -509,11 +509,20 @@ export async function execute(
     }
   }
 
+  const sessionId = persistSession ? prevSessionId : undefined;
+
   // A resumed session accumulates ledger rows, so the pre-run total is the
   // baseline for the delta. A fresh run has no prior rows and needs none.
-  const usageBefore = prevSessionId ? readSessionUsage(prevSessionId, findLedgerForSession(prevSessionId)) : null;
-
-  const sessionId = persistSession ? prevSessionId : undefined;
+  // The effective home is the child's own HERMES_HOME when the adapter config
+  // sets one; the parent environment is only the fallback.
+  const childHermesHome =
+    typeof (config.env as Record<string, unknown> | undefined)?.HERMES_HOME === "string"
+      ? ((config.env as Record<string, unknown>).HERMES_HOME as string)
+      : undefined;
+  const usageBefore = sessionId ? readSessionUsage(sessionId, findLedgerForSession(sessionId, childHermesHome)) : null;
+  // A resumed run whose starting total is unknown must not charge the whole
+  // session: report no usage for it at all.
+  const usageBaselineMissing = Boolean(sessionId) && usageBefore === null;
   const prompt = buildPrompt(ctx, promptConfig, { resumedSession: Boolean(sessionId) });
 
   // ── Build command args ─────────────────────────────────────────────────
@@ -691,29 +700,55 @@ export async function execute(
   // Tokens come from Hermes' own ledger: stream-json's `tokens.input` folds the
   // cache into the input count. When the session id or the ledger is missing we
   // report no usage rather than a wrong or zeroed number.
-  if (parsed.sessionId) {
-    // Hermes writes its ledger rows shortly after the child exits, so the first
-    // read can miss them. Poll until the final turn row appears: it carries the
-    // run's token volume, while small rows are auxiliary calls such as title
-    // generation. The run has already finished, so waiting costs time, not
-    // tokens.
-    const ledgerPath = findLedgerForSession(parsed.sessionId);
+  if (parsed.sessionId && !usageBaselineMissing) {
+    // Hermes writes its ledger rows through a background writer, so they can
+    // arrive after the child exits. Poll until the totals stop moving: three
+    // equal non-zero reads are the completion evidence, not the presence of a
+    // cached token count (an auxiliary row can carry cache too). Discovery is
+    // retried while no ledger is known, because a fresh session's first row
+    // creates the entry the search looks for.
+    let ledgerPath = findLedgerForSession(parsed.sessionId, childHermesHome);
     let runUsage: UsageTotals | null = null;
+    let previous = "";
+    let stableReads = 0;
+    let complete = false;
+    let discoveryAttempts = 0;
     for (const delayMs of [0, 1000, 2000, 3000, 5000, 8000, 10000, 10000]) {
       if (delayMs > 0) await new Promise((resolve) => setTimeout(resolve, delayMs));
-      if (!ledgerPath) break;
+      ledgerPath ??= findLedgerForSession(parsed.sessionId, childHermesHome);
+      if (!ledgerPath) {
+        // A fresh session's first row lands quickly; do not wait out the whole
+        // window for a ledger that will never exist (unknown profile layout).
+        if (++discoveryAttempts >= 3) break;
+        continue;
+      }
       runUsage = readRunUsageDelta(parsed.sessionId, ledgerPath, usageBefore);
-      if (runUsage?.cachedInputTokens) break;
+      if (!runUsage) continue;
+      const total =
+        runUsage.inputTokens + runUsage.cachedInputTokens + runUsage.cacheWriteTokens + runUsage.outputTokens;
+      const signature = JSON.stringify(runUsage);
+      stableReads = total > 0 && signature === previous ? stableReads + 1 : 0;
+      previous = signature;
+      if (stableReads >= 2) {
+        complete = true;
+        break;
+      }
     }
+    // An unfinished or never-written ledger leaves usage unknown. Publishing
+    // partial totals would charge a fraction of the run as if it were all.
+    if (!complete) runUsage = null;
     await ctx.onLog(
       "stdout",
       `[hermes] Ledger ${ledgerPath ?? "not found"}: ${runUsage ? `input ${runUsage.inputTokens}, cached ${runUsage.cachedInputTokens}, output ${runUsage.outputTokens}` : "unavailable"}\n`,
     );
-    if (runUsage && (runUsage.inputTokens || runUsage.cachedInputTokens || runUsage.outputTokens)) {
+    if (runUsage) {
+      // Paperclip's UsageSummary contract: inputTokens is uncached input plus
+      // cache writes, cachedInputTokens is cache reads only.
       parsed.usage = {
-        inputTokens: runUsage.inputTokens,
+        inputTokens: runUsage.inputTokens + runUsage.cacheWriteTokens,
         outputTokens: runUsage.outputTokens,
         cachedInputTokens: runUsage.cachedInputTokens,
+        cacheWriteTokens: runUsage.cacheWriteTokens,
       };
     }
   }

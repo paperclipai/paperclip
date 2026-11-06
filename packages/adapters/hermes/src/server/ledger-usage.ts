@@ -20,8 +20,11 @@ import { createRequire } from "node:module";
 import path from "node:path";
 
 export interface UsageTotals {
+  /** Uncached input. Cache writes are reported separately, per the ledger. */
   inputTokens: number;
+  /** Cache reads only. Paperclip's UsageSummary puts cache writes in inputTokens. */
   cachedInputTokens: number;
+  cacheWriteTokens: number;
   outputTokens: number;
 }
 
@@ -54,12 +57,19 @@ function loadSqlite(): SqliteModule | null {
  * and the one containing the session wins. A direct hit on `HERMES_HOME` (or
  * `~/.hermes`) is tried first, then every `profiles/<name>/state.db`.
  */
-export function findLedgerForSession(sessionId: string | null | undefined): string | null {
+export function findLedgerForSession(
+  sessionId: string | null | undefined,
+  preferredHome?: string | null,
+): string | null {
   if (!sessionId) return null;
 
   const roots: string[] = [];
+  // The run's effective home comes first: an adapter config can point the
+  // child at a HERMES_HOME the parent process never sees.
+  const preferred = preferredHome?.trim();
+  if (preferred) roots.push(preferred);
   const explicit = process.env.HERMES_HOME?.trim();
-  if (explicit) roots.push(explicit);
+  if (explicit && explicit !== preferred) roots.push(explicit);
   const defaultRoot = path.join(process.env.HOME ?? "", ".hermes");
   roots.push(defaultRoot);
 
@@ -84,7 +94,7 @@ export function findLedgerForSession(sessionId: string | null | undefined): stri
     if (!existsSync(candidate)) continue;
     const usage = readSessionUsage(sessionId, candidate);
     if (!usage) continue;
-    const volume = usage.inputTokens + usage.cachedInputTokens + usage.outputTokens;
+    const volume = usage.inputTokens + usage.cachedInputTokens + usage.cacheWriteTokens + usage.outputTokens;
     if (volume > 0 && (!best || volume > best.volume)) best = { path: candidate, volume };
   }
   return best?.path ?? null;
@@ -127,7 +137,8 @@ export function readSessionUsage(
     if (!row) return null;
     return {
       inputTokens: counter(row.input_tokens),
-      cachedInputTokens: counter(row.cache_read_tokens) + counter(row.cache_write_tokens),
+      cachedInputTokens: counter(row.cache_read_tokens),
+      cacheWriteTokens: counter(row.cache_write_tokens),
       outputTokens: counter(row.output_tokens),
     };
   } catch {
@@ -143,10 +154,11 @@ export function readSessionUsage(
 }
 
 function subtract(after: UsageTotals, before: UsageTotals | null): UsageTotals {
-  const base = before ?? { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0 };
+  const base = before ?? { inputTokens: 0, cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 0 };
   return {
     inputTokens: Math.max(0, after.inputTokens - base.inputTokens),
     cachedInputTokens: Math.max(0, after.cachedInputTokens - base.cachedInputTokens),
+    cacheWriteTokens: Math.max(0, after.cacheWriteTokens - base.cacheWriteTokens),
     outputTokens: Math.max(0, after.outputTokens - base.outputTokens),
   };
 }
