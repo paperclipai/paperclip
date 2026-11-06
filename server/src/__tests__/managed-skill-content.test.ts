@@ -384,13 +384,93 @@ describe.skipIf(!support.supported)("managed skills use committed versions", () 
     await db.update(companySkillVersions).set({ packageFileMap: null }).where(eq(companySkillVersions.id, version.id));
     const maintenance = skillInstallationMaintenance(db);
     expect((await maintenance.installations({ id: legacy!.id })).results[0]!.status).toBe("conversion_required");
-    await expect(maintenance.installations({ companyId, apply: true })).rejects.toMatchObject({ status: 409 });
-    expect((await maintenance.installations({ id: legacy!.id, apply: true, writersStopped: true })).results)
+    expect((await maintenance.installations({ id: legacy!.id, apply: true })).results)
       .toEqual([expect.objectContaining({ skillId: legacy!.id, versionId: version.id, status: "converted" })]);
     await fs.rm(directory, { recursive: true });
     expect(await service.getById(companyId, legacy!.id)).toMatchObject({ sourceType: "managed", sourceLocator: null, currentVersionId: version.id });
     expect(await service.readFile(companyId, legacy!.id, "support.txt")).toMatchObject({ content: "support" });
     expect((await maintenance.eligibility({ id: legacy!.id })).results[0]!.status).toBe("version_backed");
+  });
+
+  it("copies an installation online while preserving unknown old pins, old inline bytes, files, and active work", async () => {
+    const companyId = await company(), directory = path.join(root, `copy-only-${randomUUID()}`);
+    await fs.mkdir(directory);
+    await fs.writeFile(path.join(directory, "SKILL.md"), "# Preserved skill");
+    const [skill] = await db.insert(companySkills).values({ companyId, key: "copy-only", slug: "copy-only", name: "Copy only",
+      markdown: "# Preserved skill", sourceType: "local_path", sourceLocator: directory,
+      fileInventory: [{ path: "SKILL.md", kind: "skill" }], metadata: { sourceKind: "managed_local" } }).returning();
+    const files = [{ path: "SKILL.md", kind: "skill" as const, content: "# Preserved skill" }];
+    const [version] = await db.insert(companySkillVersions).values({ companyId, companySkillId: skill.id,
+      revisionNumber: 1, fileInventory: files }).returning();
+    await db.update(companySkills).set({ currentVersionId: version.id }).where(eq(companySkills.id, skill.id));
+    const [agent] = await db.insert(agents).values({ companyId, name: "Unrelated active worker" }).returning();
+    const [active] = await db.insert(heartbeatRuns).values({ companyId, agentId: agent.id, runtimeMode: "native",
+      status: "running", contextSnapshot: {} }).returning();
+    const maintenance = skillInstallationMaintenance(db);
+    expect((await maintenance.installations({ id: skill.id, apply: true })).results)
+      .toEqual([expect.objectContaining({ skillId: skill.id, status: "converted" })]);
+    expect((await db.select().from(companySkillVersions).where(eq(companySkillVersions.id, version.id)))[0].fileInventory).toEqual(files);
+    expect(await fs.readFile(path.join(directory, "SKILL.md"), "utf8")).toBe("# Preserved skill");
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, active.id)))[0]).toEqual(active);
+    // Copy-only publication does not release retention or volume-removal guards.
+    expect((await maintenance.eligibility({ id: skill.id })).results[0].status).toBe("unsupported_active_run");
+  });
+
+  it.each(["files", "source_locator"])("keeps a concurrent %s change instead of publishing the earlier conversion", async change => {
+    const companyId = await company(), directory = path.join(root, `conversion-race-${randomUUID()}`);
+    await fs.mkdir(directory);
+    await fs.writeFile(path.join(directory, "SKILL.md"), "# Race");
+    await fs.writeFile(path.join(directory, "support.txt"), "old version");
+    const [skill] = await db.insert(companySkills).values({ companyId, key: "conversion-race", slug: "conversion-race", name: "Race",
+      markdown: "# Race", sourceType: "local_path", sourceLocator: directory,
+      fileInventory: [{ path: "SKILL.md", kind: "skill" }, { path: "support.txt", kind: "other" }],
+      metadata: { sourceKind: "managed_local" } }).returning();
+    const version = await companySkillService(db).createVersion(companyId, skill.id);
+    await fs.writeFile(path.join(directory, "support.txt"), "captured unsaved edit");
+    const storage = storageModule.getStorageService(), put = storage.putFile.bind(storage);
+    let changed = false;
+    const nextDirectory = path.join(root, `new-source-${randomUUID()}`);
+    const upload = vi.spyOn(storage, "putFile").mockImplementation(async input => {
+      const saved = await put(input);
+      if (!changed) {
+        changed = true;
+        if (change === "files") await fs.writeFile(path.join(directory, "support.txt"), "newer unsaved edit");
+        else {
+          await fs.mkdir(nextDirectory);
+          await fs.writeFile(path.join(nextDirectory, "SKILL.md"), "# New source");
+          await db.transaction(async tx => {
+            await tx.select().from(companySkills).where(eq(companySkills.id, skill.id)).for("update");
+            await tx.update(companySkills).set({ sourceLocator: nextDirectory }).where(eq(companySkills.id, skill.id));
+          });
+        }
+      }
+      return saved;
+    });
+    try {
+      const result = await skillInstallationMaintenance(db, storage).installations({ id: skill.id, apply: true });
+      expect(changed).toBe(true);
+      expect(result.results).toEqual([expect.objectContaining({ status: "blocked" })]);
+      const [current] = await db.select().from(companySkills).where(eq(companySkills.id, skill.id));
+      expect(current).toMatchObject({ sourceType: "local_path", currentVersionId: version.id,
+        sourceLocator: change === "files" ? directory : nextDirectory });
+      expect(await fs.readFile(path.join(directory, "support.txt"), "utf8"))
+        .toBe(change === "files" ? "newer unsaved edit" : "captured unsaved edit");
+    } finally { upload.mockRestore(); }
+  });
+
+  it("holds a hard-linked local skill instead of adopting another file owner's mutable bytes", async () => {
+    const companyId = await company(), directory = path.join(root, `linked-conversion-${randomUUID()}`);
+    await fs.mkdir(directory);
+    const original = path.join(root, `shared-content-${randomUUID()}.md`);
+    await fs.writeFile(original, "# Shared source");
+    await fs.link(original, path.join(directory, "SKILL.md"));
+    const [skill] = await db.insert(companySkills).values({ companyId, key: "linked-conversion", slug: "linked-conversion", name: "Linked",
+      markdown: "# Shared source", sourceType: "local_path", sourceLocator: directory,
+      fileInventory: [{ path: "SKILL.md", kind: "skill" }], metadata: { sourceKind: "managed_local" } }).returning();
+    expect((await skillInstallationMaintenance(db).installations({ id: skill.id, apply: true })).results)
+      .toEqual([expect.objectContaining({ status: "blocked" })]);
+    expect((await db.select().from(companySkills).where(eq(companySkills.id, skill.id)))[0]).toEqual(skill);
+    expect(await fs.readFile(original, "utf8")).toBe("# Shared source");
   });
 
   it("reports an unrecoverable legacy installation and leaves linked sources alone", async () => {

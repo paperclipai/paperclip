@@ -24,6 +24,18 @@ function coversInstalledInventory(skill: typeof companySkills.$inferSelect, file
   return paths.has("SKILL.md") && skill.fileInventory.every(file => typeof file.path === "string" && paths.has(file.path));
 }
 
+async function legacySourceIdentity(skill: typeof companySkills.$inferSelect) {
+  if (!skill.sourceLocator || !path.isAbsolute(skill.sourceLocator)) return null;
+  const source = path.resolve(skill.sourceLocator), root = path.basename(source) === "SKILL.md" ? path.dirname(source) : source;
+  const stat = await fs.lstat(root).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  });
+  if (!stat) return null;
+  if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error("Legacy skill root is not a safe directory");
+  return { root: await fs.realpath(root), device: stat.dev, inode: stat.ino };
+}
+
 async function legacyFiles(skill: typeof companySkills.$inferSelect, signal?: AbortSignal) {
   if (!skill.sourceLocator || !path.isAbsolute(skill.sourceLocator)) return null;
   const source = path.resolve(skill.sourceLocator);
@@ -48,7 +60,7 @@ async function legacyFiles(skill: typeof companySkills.$inferSelect, signal?: Ab
       const handle = await fs.open(absolute, constants.O_RDONLY | constants.O_NOFOLLOW);
       try {
         const stat = await handle.stat();
-        if (!stat.isFile()) throw new Error("Legacy skill contains an unsupported file");
+        if (!stat.isFile() || stat.nlink !== 1) throw new Error("Legacy skill contains an unsupported file");
         bytes += stat.size;
         if (files.length >= MAX_SKILL_SNAPSHOT_FILES || bytes > MAX_SKILL_SNAPSHOT_BYTES) throw new Error("Legacy skill exceeds package limits");
         const body = Buffer.alloc(stat.size);
@@ -80,7 +92,6 @@ export function skillInstallationMaintenance(db: Db, storage?: StorageService) {
       options.after ? gt(companySkills.id, options.after) : undefined);
   }
   async function installations(options: Conversion = {}) {
-    if (options.apply && !options.writersStopped) throw conflict("Installation conversion requires stopped admission and retired legacy writers (--writers-stopped).");
     const skills = await db.select().from(companySkills).where(scope(options)).orderBy(asc(companySkills.id)).limit(limit(options));
     const results: Array<{ skillId: string; companyId: string; status: string; versionId?: string | null; reason?: string }> = [];
     for (const skill of skills) {
@@ -97,60 +108,83 @@ export function skillInstallationMaintenance(db: Db, storage?: StorageService) {
           results.push({ skillId: skill.id, companyId: skill.companyId, status: "unchanged", versionId: skill.currentVersionId });
           continue;
         }
-        const pins = await protectedVersions(db, skill.companyId);
-        if (pins.versions === null) throw new Error("Active run lacks an exact durable skill selection; settle or snapshot it on the legacy server first");
-        const saved = version ? await store.versionFiles(version) : null;
-        const local = await legacyFiles(skill, options.signal);
-        const completeSaved = saved && coversInstalledInventory(skill, saved) ? saved : null;
-        const files = local ?? completeSaved ?? ((skill.sourceType === "github" || skill.sourceType === "skills_sh" || skill.sourceType === "url")
-          ? await companySkillService(db).captureLegacyInstallation(skill.companyId, skill.id) : null);
-        const origin = catalogOrigin && typeof skill.metadata?.originSnapshotLocator === "string"
-          ? await legacyFiles({ ...skill, sourceLocator: skill.metadata.originSnapshotLocator }, options.signal) : null;
-        if (catalogOrigin && !origin && skill.metadata?.userModifiedAt) {
-          throw new Error("Catalog reset snapshot is unavailable; preserve the original installed package before conversion");
-        }
-        if (!files?.length || !files.some(file => file.path === "SKILL.md")) throw new Error("Neither complete legacy files nor a saved version is available");
-        if (!local && !coversInstalledInventory(skill, files)) {
-          throw new Error("Saved version does not cover the installed inventory");
-        }
-        if (!options.apply) {
-          results.push({ skillId: skill.id, companyId: skill.companyId, status: "conversion_required", versionId: skill.currentVersionId });
-          continue;
-        }
-        if (version && saved && !version.packageSnapshotId && skillSnapshotHash(saved) === skillSnapshotHash(files)) {
-          await skillPackageMaintenance(db, storage).migrateVersions({ id: version.id, apply: true, clearLegacy: true, signal: options.signal });
-        }
-        const candidate = await content.prepare(skill.companyId, files, options.signal);
-        if (!candidate.packageSnapshotId || !await store.verifyDurable(skill.companyId, candidate.packageSnapshotId, options.signal)) {
-          throw new Error("Final snapshot is not independently recoverable from object storage");
-        }
-        let originVersionId = typeof skill.metadata?.originVersionId === "string" ? skill.metadata.originVersionId : null;
-        if (catalogOrigin && origin && skillSnapshotHash(origin) !== skillSnapshotHash(files)) {
-          originVersionId = (await companySkillService(db).createVersion(skill.companyId, skill.id,
-            { label: "Original catalog package" }, { type: "system" }, {
-              fileInventory: origin, updateCurrentVersion: false, skipInventoryRefresh: true,
-            })).id;
-        }
-        const markdown = files.find(file => file.path === "SKILL.md")!.content;
-        const parsed = parseFrontmatterMarkdown(markdown);
-        const { missingSource: _missing, ...metadata } = skill.metadata ?? {};
-        const result = await withSkillVersionCacheLock(db, skill.companyId, () => content.publish(skill, candidate, {
-          ...(legacyManaged(skill) ? { sourceType: "managed", sourceLocator: null } : {}), markdown,
-          name: typeof parsed.frontmatter.name === "string" ? parsed.frontmatter.name : skill.name,
-          description: typeof parsed.frontmatter.description === "string" ? parsed.frontmatter.description : skill.description,
-          fileInventory: files.map(({ path, kind }) => ({ path, kind })),
-          trustLevel: files.some(file => file.kind === "script" || file.executable) ? "scripts_executables"
-            : files.some(file => file.kind === "asset" || file.kind === "other") ? "assets" : "markdown_only",
-          metadata: { ...metadata, ...(legacyManaged(skill) ? { sourceKind: "managed" } : {}),
-            ...(originVersionId ? { originVersionId } : {}) },
-        }, { type: "system" }, { label: "Legacy installation conversion",
-          reuseCurrentVersion: Boolean(saved && skillSnapshotHash(saved) === skillSnapshotHash(files)),
-          afterPublish: async (tx, row, version) => {
-            if (catalogOrigin && !originVersionId) await tx.update(companySkills)
-              .set({ metadata: { ...row.metadata, originVersionId: version.id } }).where(eq(companySkills.id, row.id));
-          },
-        }));
-        results.push({ skillId: skill.id, companyId: skill.companyId, status: "converted", versionId: result.version.id });
+        // Conversion copies current content. Keep old directories, versions and
+        // inline bytes; unknown historical pins still block retention/eviction.
+        const convert = async () => {
+          const saved = version ? await store.versionFiles(version) : null;
+          const sourceIdentity = await legacySourceIdentity(skill);
+          const local = await legacyFiles(skill, options.signal);
+          const completeSaved = saved && coversInstalledInventory(skill, saved) ? saved : null;
+          const files = local ?? completeSaved ?? ((skill.sourceType === "github" || skill.sourceType === "skills_sh" || skill.sourceType === "url")
+            ? await companySkillService(db).captureLegacyInstallation(skill.companyId, skill.id) : null);
+          const originSource = catalogOrigin && typeof skill.metadata?.originSnapshotLocator === "string"
+            ? { ...skill, sourceLocator: skill.metadata.originSnapshotLocator } : null;
+          const originIdentity = originSource ? await legacySourceIdentity(originSource) : null;
+          const origin = originSource ? await legacyFiles(originSource, options.signal) : null;
+          if (catalogOrigin && !origin && skill.metadata?.userModifiedAt) {
+            throw new Error("Catalog reset snapshot is unavailable; preserve the original installed package before conversion");
+          }
+          if (!files?.length || !files.some(file => file.path === "SKILL.md")) throw new Error("Neither complete legacy files nor a saved version is available");
+          if (!local && !coversInstalledInventory(skill, files)) {
+            throw new Error("Saved version does not cover the installed inventory");
+          }
+          if (!options.apply) {
+            return { skillId: skill.id, companyId: skill.companyId, status: "conversion_required", versionId: skill.currentVersionId };
+          }
+          if (version && saved && !version.packageSnapshotId && !version.repositorySnapshotId
+            && skillSnapshotHash(saved) === skillSnapshotHash(files)) {
+            await skillPackageMaintenance(db, storage).migrateVersions({ id: version.id, apply: true, clearLegacy: false, signal: options.signal });
+          }
+          const candidate = await content.prepare(skill.companyId, files, options.signal);
+          if (!candidate.packageSnapshotId || !await store.verifyDurable(skill.companyId, candidate.packageSnapshotId, options.signal)) {
+            throw new Error("Final snapshot is not independently recoverable from object storage");
+          }
+          let originVersionId = typeof skill.metadata?.originVersionId === "string" ? skill.metadata.originVersionId : null;
+          if (catalogOrigin && origin && skillSnapshotHash(origin) !== skillSnapshotHash(files)) {
+            originVersionId = (await companySkillService(db).createVersion(skill.companyId, skill.id,
+              { label: "Original catalog package" }, { type: "system" }, {
+                fileInventory: origin, updateCurrentVersion: false, skipInventoryRefresh: true,
+              })).id;
+          }
+          const markdown = files.find(file => file.path === "SKILL.md")!.content;
+          const parsed = parseFrontmatterMarkdown(markdown);
+          const { missingSource: _missing, ...metadata } = skill.metadata ?? {};
+          const result = await content.publish(skill, candidate, {
+            ...(legacyManaged(skill) ? { sourceType: "managed", sourceLocator: null } : {}), markdown,
+            name: typeof parsed.frontmatter.name === "string" ? parsed.frontmatter.name : skill.name,
+            description: typeof parsed.frontmatter.description === "string" ? parsed.frontmatter.description : skill.description,
+            fileInventory: files.map(({ path, kind }) => ({ path, kind })),
+            trustLevel: files.some(file => file.kind === "script" || file.executable) ? "scripts_executables"
+              : files.some(file => file.kind === "asset" || file.kind === "other") ? "assets" : "markdown_only",
+            metadata: { ...metadata, ...(legacyManaged(skill) ? { sourceKind: "managed" } : {}),
+              ...(originVersionId ? { originVersionId } : {}) },
+          }, { type: "system" }, { label: "Legacy installation conversion",
+            reuseCurrentVersion: Boolean(saved && skillSnapshotHash(saved) === skillSnapshotHash(files)),
+            validate: async tx => {
+              // publish already holds the canonical slug and skill-row locks.
+              // Recheck filesystem writers after upload, before changing authority.
+              const [current] = await tx.select().from(companySkills).where(and(
+                eq(companySkills.companyId, skill.companyId), eq(companySkills.id, skill.id)));
+              if (!current || current.slug !== skill.slug || current.sourceLocator !== skill.sourceLocator
+                || current.sourceRef !== skill.sourceRef || JSON.stringify(current.fileInventory) !== JSON.stringify(skill.fileInventory)
+                || JSON.stringify(await legacySourceIdentity(current)) !== JSON.stringify(sourceIdentity))
+                throw conflict("Legacy skill source changed during conversion. Retry the operation.");
+              const latest = await legacyFiles(current, options.signal);
+              if ((latest ? skillSnapshotHash(latest) : null) !== (local ? skillSnapshotHash(local) : null))
+                throw conflict("Legacy skill files changed during conversion. Retry the operation.");
+              if (originSource && (JSON.stringify(await legacySourceIdentity(originSource)) !== JSON.stringify(originIdentity)
+                || (await legacyFiles(originSource, options.signal).then(value => value ? skillSnapshotHash(value) : null))
+                  !== (origin ? skillSnapshotHash(origin) : null)))
+                throw conflict("Catalog origin changed during conversion. Retry the operation.");
+            },
+            afterPublish: async (tx, row, version) => {
+              if (catalogOrigin && !originVersionId) await tx.update(companySkills)
+                .set({ metadata: { ...row.metadata, originVersionId: version.id } }).where(eq(companySkills.id, row.id));
+            },
+          });
+          return { skillId: skill.id, companyId: skill.companyId, status: "converted", versionId: result.version.id };
+        };
+        results.push(options.apply ? await withSkillVersionCacheLock(db, skill.companyId, convert) : await convert());
       } catch (error) {
         results.push({ skillId: skill.id, companyId: skill.companyId, status: "blocked", reason: error instanceof Error ? error.message : "Conversion failed" });
       }
