@@ -1548,8 +1548,11 @@ without one, the report has no synthetic reporting stack.
 
 Credential patterns, the current user's home path, registered run-secret values,
 and known host/runtime environment credentials are removed before truncation.
-Declared environment secret bindings are included even when their key has no
-credential-like name. Runtime values are used only for redaction and are never
+Environment values qualify when their name identifies a credential, their value
+contains a recognizable credential, or a URL includes a password. Ordinary flags,
+counts, regions, paths, and mode labels do not become secrets just because their
+names are unknown. Declared environment secret bindings remain private under any
+name, including short values. Runtime values are used only for redaction and are never
 copied into an event. Stack fields are limited to 8,192 characters,
 exception messages to 2,048, provider titles to 4,096, and provider details to
 12,288. Other diagnostic strings are limited to 200 characters (adapter cause

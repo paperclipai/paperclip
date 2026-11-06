@@ -5,7 +5,7 @@ import { readControllerLeaseLoss, readControllerLeaseLossCause, readRunCancellat
 import { readProcessLossDiagnostic } from "./process-loss-diagnostics.js";
 import { readReviewedChatBindingDenialReason } from "./reviewed-chat-binding-diagnostics.js";
 import { WORKSPACE_RESTORE_FAILURE_CODES } from "@paperclipai/shared";
-import { redactDiagnosticText } from "@paperclipai/adapter-utils/command-redaction";
+import { collectDiagnosticEnvironmentSecrets, redactDiagnosticText } from "@paperclipai/adapter-utils/command-redaction";
 import { directoryMergeLockTimeoutDiagnosticsFor } from "@paperclipai/adapter-utils/directory-merge-lock-diagnostics";
 import { sanitizeWorkspaceRestoreDiagnostic } from "@paperclipai/adapter-utils/workspace-restore-diagnostics";
 import {
@@ -165,64 +165,8 @@ function scalars(value: unknown, fields: readonly string[]): Context {
   return result;
 }
 
-// Unknown inherited values may contain credentials under arbitrary names.
-// Explicitly configured values remain private, including overrides of these keys.
-const PUBLIC_ENV_KEYS = new Set([
-  "PATH", "PATHEXT", "SYSTEMROOT", "WINDIR", "COMSPEC", "HOME", "USERPROFILE",
-  "HOMEDRIVE", "HOMEPATH", "USER", "USERNAME", "LOGNAME", "SHELL", "LANG",
-  "LANGUAGE", "LC_ALL", "LC_CTYPE", "TZ", "TMPDIR", "TEMP", "TMP", "NODE_ENV",
-  "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME",
-  "PWD", "OLDPWD", "INIT_CWD", "SHLVL", "_", "TERM", "TERM_PROGRAM", "TERM_PROGRAM_VERSION", "COLORTERM",
-  "NPM_LIFECYCLE_EVENT", "NPM_COMMAND", "NPM_EXEC_PATH", "NPM_EXECPATH", "NPM_NODE_EXECPATH",
-  "NPM_PACKAGE_NAME", "NPM_PACKAGE_VERSION", "NPM_PACKAGE_JSON", "NPM_CONFIG_USER_AGENT",
-  "XPC_SERVICE_NAME", "VITEST_POOL_ID", "VITEST_WORKER_ID",
-  "PAPERCLIP_AGENT_ID", "PAPERCLIP_COMPANY_ID", "PAPERCLIP_RUN_ID", "PAPERCLIP_TASK_ID",
-]);
-const PUBLIC_BOOLEAN_ENV_KEYS = new Set([
-  "OPENCODE_ALLOW_ALL_MODELS", "CLAUDE_CODE_USE_BEDROCK", "GOOGLE_GENAI_USE_GCA",
-  "CI", "NO_COLOR", "FORCE_COLOR",
-  "VITEST", "MALLOCNANOZONE", "CODEX_CI", "CODEX_SHELL", "CODEX_SAGE_BACKFILL_TRACKER_TAB_REUSE",
-  "DEV", "PROD", "SSR", "PAPERCLIP_REQUIRE_SENTRY_TEST_SDK",
-  "PAPERCLIP_DB_BACKUP_ENABLED", "PAPERCLIP_WORKSPACE_COMPACTION_ENABLED", "PAPERCLIP_AUTH_DISABLE_SIGN_UP", "PAPERCLIP_ENABLE_COMPANY_DELETION",
-  "PAPERCLIP_STORAGE_S3_FORCE_PATH_STYLE", "PAPERCLIP_SECRETS_STRICT_MODE",
-  "SERVE_UI", "PAPERCLIP_UI_DEV_MIDDLEWARE", "HEARTBEAT_SCHEDULER_ENABLED", "PAPERCLIP_ANNOUNCEMENTS_ENABLED",
-  "GITHUB_ACTIONS", "GITHUB_REF_PROTECTED", "RUNNER_DEBUG", "ACTIONS_RUNNER_DEBUG", "ACTIONS_STEP_DEBUG",
-]);
-const PUBLIC_NUMBER_ENV_KEYS = new Set([
-  "PORT", "PAPERCLIP_DB_BACKUP_INTERVAL_MINUTES", "PAPERCLIP_DB_BACKUP_RETENTION_DAYS",
-  "PAPERCLIP_WORKSPACE_REAPER_COOLDOWN_DAYS", "PAPERCLIP_WORKSPACE_COMPACTION_DELAY_HOURS",
-  "HEARTBEAT_SCHEDULER_INTERVAL_MS",
-  "GITHUB_RUN_ATTEMPT", "GITHUB_RUN_NUMBER", "GITHUB_RUN_ID", "GITHUB_RETENTION_DAYS",
-]);
-
-/** Include declared bindings and unknown values, not just credential-like keys. */
-export function collectRunFailureSecretValues(
-  env: unknown, secretKeys: Iterable<string> = [], inherited = false,
-): string[] {
-  if (!env || typeof env !== "object") return [];
-  const strings = Object.fromEntries(Object.entries(env).filter(
-    (entry): entry is [string, string] => typeof entry[1] === "string",
-  ));
-  const declared = new Set(secretKeys);
-  const values: string[] = [];
-  for (const [key, value] of Object.entries(strings)) {
-    if (!value) continue;
-    const publicSetting = (inherited && (
-      PUBLIC_ENV_KEYS.has(key.toUpperCase()) ||
-      (PUBLIC_NUMBER_ENV_KEYS.has(key.toUpperCase()) && /^\d+$/.test(value)) ||
-      (key === "BASE_URL" && value === "/") ||
-      (key === "MODE" && /^(?:test|development|production)$/.test(value)) ||
-      (key === "PAPERCLIP_SENTRY_RUN_FAILURES" && /^(?:off|unexpected|all)$/.test(value))
-    )) ||
-      (PUBLIC_BOOLEAN_ENV_KEYS.has(key.toUpperCase()) && /^(?:0|1|true|false)$/i.test(value));
-    if (declared.has(key) || !publicSetting) values.push(value);
-    try {
-      const password = new URL(value).password;
-      if (password) values.push(value, password, decodeURIComponent(password));
-    } catch { /* ordinary environment values are not URLs */ }
-  }
-  return [...new Set(values)].sort((a, b) => b.length - a.length);
-}
+/** Select credential fields, credential-shaped values, and declared bindings. */
+export const collectRunFailureSecretValues = collectDiagnosticEnvironmentSecrets;
 
 /** Redact literal, JSON-escaped and URI-encoded forms without rewriting markers. */
 export function redactRunFailureSecretValues<T>(input: T, values: readonly string[]): T {

@@ -11,6 +11,7 @@ describe("explicit diagnostic credential forms", () => {
 });
 import {
   REDACTED_COMMAND_TEXT_VALUE,
+  collectDiagnosticEnvironmentSecrets,
   looksLikeCredentialJwt,
   redactDiagnosticText,
   redactCommandText,
@@ -182,5 +183,37 @@ describe("redactCommandText on long runs", () => {
       expect(redactWithinTimeBudget(`${run} --token run-secret`)).toBe(`${run} --token ${REDACTED_COMMAND_TEXT_VALUE}`);
       expect(redactWithinTimeBudget(`${run}--token run-secret`)).toBe(`${run}--token ${REDACTED_COMMAND_TEXT_VALUE}`);
     }
+  });
+});
+
+
+describe("diagnostic environment secret selection", () => {
+  it("does not infer secrets from ordinary configuration values", () => {
+    expect(collectDiagnosticEnvironmentSecrets({
+      FEATURE_FLAG: "1", WORKER_COUNT: "2", MODE: "safe", REGION: "us-east-1",
+      NODE_ENV: "production", HOME: "/home/operator", PORT: "3100", MAX_TOKENS: "4096",
+      PUBLIC_KEY_PATH: "/workspace/key.pem", KEYBOARD_LAYOUT: "us",
+    })).toEqual([]);
+  });
+
+  it.each(["API_KEY", "KEY", "ACCESS_TOKEN", "AWS_SECRET_ACCESS_KEY", "AWS_ACCESS_KEY_ID",
+    "CLIENT_SECRET", "PASSWORD", "AUTHORIZATION", "PRIVATE_KEY", "API_KEY_PRODUCTION"])(
+    "keeps short credentials private under %s", key => {
+      expect(collectDiagnosticEnvironmentSecrets({ [key]: "1" })).toEqual(["1"]);
+    },
+  );
+
+  it("recognizes credential content and declared bindings under arbitrary names", () => {
+    const jwt = `${Buffer.from('{"alg":"HS256"}').toString("base64url")}.e30.c2ln`;
+    const pem = "-----BEGIN PRIVATE KEY-----\nprivate-canary\n-----END PRIVATE KEY-----";
+    const key = "sk-fixturecredential12345";
+    const selected = collectDiagnosticEnvironmentSecrets({ A: jwt, B: pem, C: key, D: "safe", E: "false" }, ["D"]);
+    expect(new Set(selected)).toEqual(new Set([jwt, pem, key, "safe"]));
+  });
+
+  it("extracts encoded URL passwords and deduplicates selected values", () => {
+    const url = "postgres://user:private%20password@db.test/database";
+    expect(new Set(collectDiagnosticEnvironmentSecrets({ DATABASE_URL: url, PASSWORD: "private password" })))
+      .toEqual(new Set([url, "private%20password", "private password"]));
   });
 });

@@ -551,9 +551,27 @@ describe("run failure diagnostics", () => {
   it("selects declared environment secrets under opaque names and common credential keys", () => {
     expect(collectRunFailureSecretValues({
       CUSTOM_BINDING: "bound-opaque-value", ACCESS_TOKEN: "plain-opaque-value", REGION: "us-east-1", EMPTY_KEY: "",
-    }, ["CUSTOM_BINDING"])).toEqual(["bound-opaque-value", "plain-opaque-value", "us-east-1"]);
-    expect(collectRunFailureSecretValues({ PATH: "/usr/bin", CUSTOM_BINDING: "opaque" }, [], true)).toEqual(["opaque"]);
-    expect(collectRunFailureSecretValues({ PATH: "secret-override" }, ["PATH"], true)).toEqual(["secret-override"]);
+    }, ["CUSTOM_BINDING"])).toEqual(["bound-opaque-value", "plain-opaque-value"]);
+    expect(collectRunFailureSecretValues({ PATH: "/usr/bin", CUSTOM_BINDING: "opaque" })).toEqual([]);
+    expect(collectRunFailureSecretValues({ PATH: "secret-override" }, ["PATH"])).toEqual(["secret-override"]);
+  });
+
+  it("keeps screenshot diagnostics intact when ordinary flags overlap their text", () => {
+    const diagnostic = collectRunFailureDiagnostics(run({
+      runtimeMode: "native", driverKind: "codex_app_server", driverVersion: "phase6-v2",
+      startedAt: new Date("2026-10-19T19:18:20.617Z"), finishedAt: new Date("2026-10-19T19:21:20.385Z"),
+      runnerProfileJson: { nativeExecutionInput: { provider: { kind: "codex", model: "gpt-6.1-sol" } } },
+    }), {});
+    const input = { diagnostics: diagnostic, errorMessage: "Reconcile any uncertain external action before safely continuing this task." };
+    const values = collectRunFailureSecretValues({ FEATURE_FLAG: "1", WORKER_COUNT: "2", MODE: "safe", REGION: "us-east-1" });
+    expect(redactRunFailureSecretValues(input, values)).toEqual(input);
+  });
+
+  it("finds credentials by content and keeps short declared secrets private", () => {
+    const key = "sk-fixturecredential12345";
+    const values = collectRunFailureSecretValues({ CUSTOM_SETTING: key, FEATURE_FLAG: "1", CUSTOM_BINDING: "2" }, ["CUSTOM_BINDING"]);
+    expect(values).toEqual([key, "2"]);
+    expect(redactRunFailureSecretValues(`key ${key} code 2`, values)).toBe("key ***REDACTED*** code ***REDACTED***");
   });
 
   it("redacts encoded credentials and URL passwords without expanding replacement markers", () => {
@@ -565,12 +583,12 @@ describe("run failure diagnostics", () => {
     expect(result.text).not.toContain("***[REDACTED]");
   });
 
-  it("preserves known boolean and numeric settings without exempting unknown or declared secrets", () => {
+  it("preserves ordinary settings while retaining declared secrets", () => {
     const env = { PAPERCLIP_DB_BACKUP_ENABLED: "false", PAPERCLIP_DB_BACKUP_RETENTION_DAYS: "1" };
-    expect(collectRunFailureSecretValues(env, [], true)).toEqual([]);
-    expect(collectRunFailureSecretValues(env, ["PAPERCLIP_DB_BACKUP_ENABLED"], true)).toEqual(["false"]);
-    expect(collectRunFailureSecretValues({ CUSTOM_BINDING: "1" }, [], true)).toEqual(["1"]);
-    expect(collectRunFailureSecretValues({ PAPERCLIP_DB_BACKUP_ENABLED: "opaque" }, [], true)).toEqual(["opaque"]);
+    expect(collectRunFailureSecretValues(env)).toEqual([]);
+    expect(collectRunFailureSecretValues(env, ["PAPERCLIP_DB_BACKUP_ENABLED"])).toEqual(["false"]);
+    expect(collectRunFailureSecretValues({ CUSTOM_BINDING: "1" })).toEqual([]);
+    expect(collectRunFailureSecretValues({ PAPERCLIP_DB_BACKUP_ENABLED: "opaque" })).toEqual([]);
   });
   it("preserves generic exceptions, numeric codes and nested network causes", () => {
     const root = Object.assign(new Error("network failed"), { code: "ECONNRESET", statusCode: 502, request_id: "req-123" });

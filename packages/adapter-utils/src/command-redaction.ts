@@ -147,3 +147,36 @@ export function redactDiagnosticText(
     .replace(JSON_ESCAPED_SECRET_FIELD_RE, `$1${redactedValue}$2`)
     .replace(JSON_SECRET_FIELD_RE, `$1${redactedValue}$2`);
 }
+
+/**
+ * Select credential material for diagnostic replacement. Ordinary environment
+ * settings are not secrets merely because their names are unknown. Callers must
+ * supply resolved secret binding names when a credential has an arbitrary name.
+ */
+export function collectDiagnosticEnvironmentSecrets(
+  env: unknown,
+  secretKeys: Iterable<string> = [],
+): string[] {
+  if (!env || typeof env !== "object") return [];
+  const declared = new Set(secretKeys);
+  const secretName = new RegExp(`^(?:${SECRET_NAME_PATTERN})$`, "i");
+  const keyName = /(?:^|[_-])key(?:[_-](?:id|value|prod(?:uction)?|dev(?:elopment)?|test|staging|primary|secondary))*$/i;
+  const values = new Set<string>();
+  for (const [key, value] of Object.entries(env)) {
+    if (typeof value !== "string" || !value) continue;
+    if (declared.has(key) || secretName.test(key) || keyName.test(key) ||
+      redactDiagnosticText(value) !== value || looksLikeCredentialJwt(value) ||
+      /-----BEGIN (?:[A-Z]+ )*PRIVATE KEY-----/.test(value)) {
+      values.add(value);
+    }
+    try {
+      const url = new URL(value);
+      if (url.password) {
+        values.add(value);
+        values.add(url.password);
+        values.add(decodeURIComponent(url.password));
+      }
+    } catch { /* ordinary settings and malformed URLs need no URL projection */ }
+  }
+  return [...values].sort((a, b) => b.length - a.length);
+}

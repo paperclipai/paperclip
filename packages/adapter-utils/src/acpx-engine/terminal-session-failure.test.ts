@@ -87,12 +87,12 @@ describe("terminal session failure diagnostics", () => {
     );
   });
 
-  it("redacts unknown inherited launch values while preserving public process context", () => {
+  it("preserves ordinary inherited launch settings and diagnostic text", () => {
     const diagnostic = sanitizeTerminalSessionFailure({
       category: "service",
       details: "request_id=req_123 inherited-canary A /workspace",
     }, { UNEXPECTED_VARIABLE: "inherited-canary", ANOTHER_VARIABLE: "A", HOME: "/workspace" });
-    expect(diagnostic.details).toBe("request_id=req_123 ***REDACTED*** ***REDACTED*** /workspace");
+    expect(diagnostic.details).toBe("request_id=req_123 inherited-canary A /workspace");
   });
 
   it("preserves known boolean settings, HTTP codes and request IDs", () => {
