@@ -126,7 +126,7 @@ describe("qualified ACPX runtime sidecar", () => {
     const baseHost = new URL("../test-support/acpx-blocked-output-host.mjs", import.meta.url).href;
     const capability = { version: 1, controlMethod: "_session/goal", actions: ["set", "clear"] as Array<"set" | "clear"> };
     const goal = { objective: mode === "oversized" ? "x".repeat(ACPX_SIDECAR_MAX_FRAME_BYTES) : "Retain the completed goal",
-      status: "paused" as const, iterations: 1, lastReason: "Unicode Ã©ðŸ™‚, quote \" and slash \\ and newline\n" };
+      status: "paused" as const, iterations: 1, lastReason: "Unicode ÃƒÂ©Ã°Å¸â„¢â€š, quote \" and slash \\ and newline\n" };
     if (mode.startsWith("payload-")) {
       const bytes = Buffer.byteLength(JSON.stringify({status:"completed", goalAtTerminal:{
         ...acpxGoalProjection(capability, goal, false), providerRevision:1 }}));
@@ -1673,8 +1673,8 @@ class SidecarProcess {
 
   constructor(options: {loader?:string;environment?:Record<string,string>} = {}) {
     this.#child = spawn(
-      options.loader ? process.execPath : fileURLToPath(new URL("../../node_modules/.bin/tsx", import.meta.url)),
-      [...(options.loader ? ["--import", "tsx", "--import", options.loader] : []), fileURLToPath(new URL("./acpx-runtime-sidecar.ts", import.meta.url))],
+      process.execPath,
+      ["--import", "tsx", ...(options.loader ? ["--import", options.loader] : []), fileURLToPath(new URL("./acpx-runtime-sidecar.ts", import.meta.url))],
       { stdio: ["pipe", "pipe", "pipe"], env: { PATH: process.env.PATH, LANG: "C.UTF-8", ...(process.env.NODE_PATH ? { NODE_PATH: process.env.NODE_PATH } : {}), ...(process.env.PAPERCLIP_TEST_SIDECAR_ESBUILD ? { ESBUILD_BINARY_PATH: process.env.PAPERCLIP_TEST_SIDECAR_ESBUILD } : {}), ...options.environment } },
     );
     let stdout = "";
