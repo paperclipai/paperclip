@@ -31,8 +31,7 @@ Policy: Instance setup is operator work; company creation is board; agent creati
 creation retain their individual permissions.
 
 Evidence: `source-only` —
-[draft storage](../../ui/src/lib/onboarding-state.ts) and
-[wizard](../../ui/src/components/OnboardingWizard.tsx) at the reviewed
+[implementation](../../ui/src/components/OnboardingWizard.tsx#L279) at the reviewed
 commit above.
 
 Verification: `not-run` — exercise the listed local workflow in an authorized, owned
@@ -265,9 +264,7 @@ API: `not-applicable` — No server onboarding-draft API for this browser-local 
 classify explicitly or intentionally make it a cross-client product feature.
 
 Agent access: `not-applicable` — Browser localStorage wizard draft; persisted resources
-use their domain APIs. Dashboard refresh resumes only the matching saved setup
-when no completed agent exists. The connection-test deadline changes browser
-waiting only; it grants no new API authority.
+use their domain APIs.
 
 Policy: Instance setup is operator work; company creation is board; agent creation/task
 creation retain their individual permissions.

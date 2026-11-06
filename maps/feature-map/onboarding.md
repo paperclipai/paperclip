@@ -183,7 +183,7 @@ Capability ID: `onboarding/resume`.
 
 Scope: ui
 Storybook: Restored incomplete wizard; invalid or unauthorized saved company; temporarily withheld draft; account switch; storage failure.
-Production: Reload the dashboard during an unfinished first-agent setup and resume the same saved setup at Connect. Confirm a completed agent stays on the dashboard. A connection check that does not finish stops after two minutes, keeps the saved account, and allows Connect to retry. A late response must not hire an agent. Restore only the authorized company draft and retain input after recoverable loading failure.
+Production: Reload company-prefixed onboarding without duplicating company; restore only authorized account/company draft and retain input after recoverable loading failure.
 Sources: Source: [OnboardingWizard.tsx](../../ui/src/components/OnboardingWizard.tsx), [onboarding-state.ts](../../ui/src/lib/onboarding-state.ts). Tests: [OnboardingWizard.test.tsx](../../ui/src/components/OnboardingWizard.test.tsx), [onboarding-state.test.ts](../../ui/src/lib/onboarding-state.test.ts), [onboarding.spec.ts](../../tests/e2e/onboarding.spec.ts)
 
 #### `instance`
