@@ -24,6 +24,16 @@ node scripts/typecheck-test-projects.mjs tests/restart-chaos        # typecheck
 Options: `--triggers time,comment,retry,queued,tool` (fault timing, below),
 `--workloads A1,B1,B5,C1`, `--budget-cents` (company hard cap,
 default 3000), `--poll-ms` (2000–5000), `--keep` (keep the temporary instance).
+
+`--rc06-masked` keeps the company budget amount but disables its hard stop on
+the isolated Chaos Lab company, so one stuck accounting row (RC-06) cannot
+wedge every later task. Masked tasks are marked `rc06-masked` in the ledger and
+summary, and each wave still records its spend (`wave_spend` in the timeline).
+A replay inherits the masks saved in the source wave's `plan.json`;
+`--replay <wave>/<task> --rc06-masked` adds the mask to a replay of an unmasked wave.
+Each fault receipt records the host 1-minute load average (`loadAvg1m`); treat
+timeout failures above about 16 as load-suspect.
+
 ## Daytona (`--env daytona`)
 
 The control plane stays local; agent runs execute in Daytona sandboxes from an
