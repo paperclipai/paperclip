@@ -216,6 +216,7 @@ export interface AgentChatPrototypeProps {
   entryScenario?: EntryScenario;
   sidebarScenario?: SidebarScenario;
   coordinator?: boolean;
+  unreadMessageCounts?: Record<string, number>;
 }
 
 /** Production pages with an in-memory API. No alternate chat controller. */
@@ -226,6 +227,7 @@ export function AgentChatPrototype({
   entryScenario,
   sidebarScenario,
   coordinator = false,
+  unreadMessageCounts,
 }: AgentChatPrototypeProps) {
   const [ready, setReady] = useState(false);
   const navigate = useNavigate();
@@ -251,6 +253,8 @@ export function AgentChatPrototype({
         conversationAgentId?: string | null;
         conversationUserId?: string | null;
         conversationState?: "waiting";
+        isUnreadForMe?: boolean;
+        unreadMessageCount?: number;
       }
     >();
     const messages = new Map<string, IssueChatComment[]>();
@@ -284,6 +288,8 @@ export function AgentChatPrototype({
         conversationAgentId: taskComparison ? null : a.id,
         conversationUserId: taskComparison ? null : "user-board",
         conversationState: "waiting" as const,
+        isUnreadForMe: (unreadMessageCounts?.[a.id] ?? 0) > 0,
+        unreadMessageCount: unreadMessageCounts?.[a.id] ?? 0,
       };
       const hasExistingChat = sidebarScenario
         ? (sidebarScenario === "large-team" || sidebarAgents.some(initial => initial.id === a.id)) && (scenario !== "empty" || a.id !== agent.id)
@@ -429,7 +435,11 @@ export function AgentChatPrototype({
         messages.set(task.id, [...(messages.get(task.id) ?? []), row]);
         return Response.json(row);
       }
-      if (method === "POST" && path.endsWith("/read")) return Response.json({});
+      if (method === "POST" && path.endsWith("/read")) {
+        const conversation = [...chats.values()].find(chat => chat.id === task.id);
+        if (conversation) { conversation.isUnreadForMe = false; conversation.unreadMessageCount = 0; }
+        return Response.json({});
+      }
       if (method === "PATCH" && /\/issues\/[^/]+$/.test(path)) {
         Object.assign(task, body);
         return Response.json(task);
@@ -613,7 +623,7 @@ export function AgentChatPrototype({
       }
       queryClient.clear();
     };
-  }, [scenario, taskComparison, entryScenario, sidebarScenario, coordinator, contextInitiallyOpen, queryClient]);
+  }, [scenario, taskComparison, entryScenario, sidebarScenario, coordinator, unreadMessageCounts, contextInitiallyOpen, queryClient]);
   useLayoutEffect(() => {
     if (ready && !initialRouteSet.current) {
       initialRouteSet.current = true;

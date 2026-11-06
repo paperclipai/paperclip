@@ -126,6 +126,7 @@ import {
   opendirSync,
   readFileSync,
   readdirSync,
+  rmdirSync,
   readlinkSync,
   readSync,
   renameSync,
@@ -6044,8 +6045,22 @@ export async function restoreRemoteBootstrapCheckpointForRecovery(input: {
 }): Promise<void> {
   const target = input.runnerExecutionTarget;
   if (input.restartRecovery?.kind !== "bootstrap_incomplete" || target?.kind !== "remote"
-    || target.transport !== "sandbox" || target.runnerTask || !existsSync(input.root)
-    || readRunnerdDurableIdentity(input.root) !== null) return;
+    || target.transport !== "sandbox" || target.runnerTask || !isSafeNativeStateDirectory(input.root)) return;
+  // Preparation can create the session root before the executor opens any
+  // controller state. An empty root holds no evidence; remove it so the fresh
+  // bootstrap does not read it as an unreadable identity.
+  if (readdirSync(input.root).length === 0) {
+    try {
+      rmdirSync(input.root);
+      return;
+    } catch (error) {
+      // An entry that appeared after the read goes through the checks below.
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === "ENOENT") return;
+      if (code !== "ENOTEMPTY" && code !== "EEXIST") throw error;
+    }
+  }
+  if (readRunnerdDurableIdentity(input.root) !== null) return;
   const marker = readRunnerdDurableIdentity(input.root, true);
   if (!marker || marker.runId !== input.execution.binding.runId) return;
   await restoreNativeRunnerCheckpoint(input.db, input.execution.binding, input.root, nativeSessionKey(input.execution));
@@ -7437,6 +7452,10 @@ export function nativeSessionFailureSourceCode(
       )
     )
       return "native_event_replay_conflict";
+    // The runner marks a non-recoverable rejection of the selected model in the
+    // terminal message; it needs a model choice, not a generic provider failure.
+    if (!error.recoverable && /^native_provider_model_rejected:/.test(error.message))
+      return "native_provider_model_rejected";
     return "native_provider_terminal_failed";
   }
   if (error instanceof NativeSessionProtocolIntegrityError)
