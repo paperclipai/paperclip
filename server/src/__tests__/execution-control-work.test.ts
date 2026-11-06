@@ -253,7 +253,7 @@ describe.skipIf(!support.supported)("execution-control durable work", () => {
   });
 
   it("visits a newly committed earlier Retry during a busy recovered-source pass, then becomes quiet", async () => {
-    const sources = [];
+    const sources: Awaited<ReturnType<typeof pausedRecoveredSource>>[] = [];
     for (let index = 0; index < 3; index++) {
       sources.push(await pausedRecoveredSource(`ffffffff-000${index}-4000-8000-${randomUUID().slice(-12)}`));
     }
