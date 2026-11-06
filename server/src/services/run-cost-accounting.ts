@@ -11,6 +11,9 @@ import { queueBudgetEvaluation } from "./budget-evaluation-work.js";
 import { ensureRuntimeAccountingBaseline } from "./runtime-accounting-totals.js";
 import { logger } from "../middleware/logger.js";
 import { promises as fs } from "node:fs";
+import { priceAnthropicReceipt } from "./anthropic-pricing.js";
+import { priceCodexReceipt } from "./codex-pricing.js";
+import type { AdapterUsageCheckpoint } from "@paperclipai/adapter-utils";
 import { replayUsageReceipts, indexPendingUsageReceipts, readPendingRunUsageReceipts, persistUsageReceiptInTransaction, reconcileLateRunUsageReceiptInTransaction, type UsageReceiptIndex } from "./usage-receipts.js";
 
 const terminalStatuses = ["succeeded", "failed", "timed_out", "cancelled", "interrupted"];
@@ -63,6 +66,33 @@ async function nativeReceiptSourceClosed(db: Db, runId: string) {
   const [row] = await db.select({ closed: sql<boolean>`${closedNativeReceiptSource}` }).from(heartbeatRuns)
     .where(eq(heartbeatRuns.id, runId));
   return row?.closed === true;
+}
+
+/** A receipt lost with its stopped provider still carries the usage observed
+ * before the loss. When the model and token counts are known, price them from
+ * the rate card as an estimate marked as a lower bound, instead of leaving
+ * known numbers unpriced. Zero observed tokens stay unpriced: unknown is never
+ * presented as zero cost. */
+function estimateLostReceipt(usage: Record<string, unknown>) {
+  const count = (key: string) => amount(usage[key]);
+  const inputTokens = count("inputTokens") ?? 0, outputTokens = count("outputTokens") ?? 0;
+  const cachedInputTokens = count("cachedInputTokens"), cacheWriteTokens = count("cacheWriteTokens");
+  if (inputTokens + outputTokens + (cachedInputTokens ?? 0) <= 0) return null;
+  if ((usage.usageSource ?? "per_run") !== "per_run") return null;
+  const billingType = text(usage.billingType);
+  const priced = priceAnthropicReceipt(priceCodexReceipt({
+    complete: true, usageBasis: "per_run", provider: text(usage.provider) ?? undefined,
+    biller: text(usage.biller) ?? undefined, model: text(usage.model) ?? undefined,
+    billingType: billingType === "metered_api" ? "api" : billingType ?? undefined,
+    usage: { inputTokens, outputTokens,
+      ...(cachedInputTokens !== null ? { cachedInputTokens } : {}),
+      ...(cacheWriteTokens !== null ? { cacheWriteTokens } : {}) },
+  } as AdapterUsageCheckpoint));
+  const exact = text(priced.costUsdExact);
+  if (exact === null || !priced.pricingProvenance) return null;
+  const evidence = text(priced.pricingProvenance.evidence);
+  return { costUsdExact: exact, pricingProvenance: { ...priced.pricingProvenance,
+    evidence: [evidence, "final receipt lost; observed usage is a lower bound"].filter(Boolean).join("; ") } };
 }
 
 /** The run's persisted usage is a durable receipt. Ledger, reservation handoff
@@ -156,7 +186,9 @@ export async function accountRunCost(db: Db, runId: string, hooks: BudgetService
         if (!linked) scope[key] = null;
       }
     }
-    const costUsd = amount(usage.cacheAdjustedCostUsd) ?? text(usage.costUsdExact) ?? amount(usage.costUsd);
+    const knownCostUsd = amount(usage.cacheAdjustedCostUsd) ?? text(usage.costUsdExact) ?? amount(usage.costUsd);
+    const lostReceiptEstimate = receiptUnavailable && knownCostUsd === null ? estimateLostReceipt(usage) : null;
+    const costUsd = knownCostUsd ?? lostReceiptEstimate?.costUsdExact ?? null;
     const billingType = text(usage.billingType) ?? "unknown";
     const costUnits = billingType === "subscription_included" ? 0n : usdToUnits(costUsd ?? 0);
     const costCents = unitsToCents(costUnits);
@@ -170,9 +202,9 @@ export async function accountRunCost(db: Db, runId: string, hooks: BudgetService
       issueId: text(scope.issueId), projectId: text(scope.projectId), billingCode: text(scope.billingCode),
       provider: text(usage.provider) ?? "unknown", biller: text(usage.biller) ?? text(usage.provider) ?? "unknown",
       providerRequestId: text(usage.providerRequestId),
-      pricingProvenance: object(usage.pricingProvenance),
+      pricingProvenance: lostReceiptEstimate?.pricingProvenance ?? object(usage.pricingProvenance),
       model: text(usage.model) ?? "unknown", billingType,
-      costStatus: (costUsd === null || usage.costStatus === "unpriced" || receiptUnavailable) && billingType !== "subscription_included" && hasBillableEvidence ? "unpriced" : usage.costStatus === "estimated" ? "estimated" : "reported",
+      costStatus: lostReceiptEstimate ? "estimated" : (costUsd === null || usage.costStatus === "unpriced" || receiptUnavailable) && billingType !== "subscription_included" && hasBillableEvidence ? "unpriced" : usage.costStatus === "estimated" ? "estimated" : "reported",
       inputTokens: amount(usage.inputTokens) ?? 0, cachedInputTokens: amount(usage.cachedInputTokens) ?? 0, outputTokens: amount(usage.outputTokens) ?? 0,
       costCents, occurredAt: run.finishedAt ?? run.createdAt,
     };
@@ -207,7 +239,12 @@ export async function accountRunCost(db: Db, runId: string, hooks: BudgetService
     await tx.update(heartbeatRuns).set({ costAccountingPending: lateDebt, costAccountedAt: new Date(), accountingProjectionVersion: "v2",
       accountingLastError: lateDebt ? "late_usage_requires_reconciliation" : null, accountingLastAttemptAt: new Date(),
       // A complete receipt arriving later may price this charge (see usage-receipts).
-      ...(receiptUnavailable ? { usageJson: sql`coalesce(${heartbeatRuns.usageJson}, '{}'::jsonb) || '{"accountingReceiptUnavailable":true}'::jsonb` } : {}),
+      ...(receiptUnavailable ? { usageJson: sql`coalesce(${heartbeatRuns.usageJson}, '{}'::jsonb) || ${JSON.stringify({
+        accountingReceiptUnavailable: true,
+        // Late reconciliation measures a later receipt from the accepted money.
+        ...(lostReceiptEstimate ? { costUsdExact: lostReceiptEstimate.costUsdExact, costStatus: "estimated",
+          pricingProvenance: lostReceiptEstimate.pricingProvenance } : {}),
+      })}::jsonb` } : {}),
     }).where(eq(heartbeatRuns.id, run.id));
     return true;
   }), { "budget.accounting.owner": "run" });
