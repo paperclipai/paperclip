@@ -2846,6 +2846,11 @@ precedence and dependency failures use the original built-in detector.
 
 ### Personal workspace preference
 
+Tasks defaults to All tasks when the viewer has no saved task view. Explicit
+view URLs and existing saved task views retain precedence.
+Task tables default to Last updated descending without an active sort header;
+an explicit column sort selects the header and shows its direction.
+
 Coordinator is the standard workspace for every person. It is not an experiment.
 Settings → Experimental offers **Classic workspace**, a personal opt-in that
 defaults off. Existing Coordinator experiment values, including historical off
