@@ -156,7 +156,7 @@ async function renderSidebar() {
 }
 const decisionLink = () => container.querySelector('a[href="/decisions"]')!;
 
-describe("Coordinator Needs You badge", () => {
+describe("Coordinator Inbox badge", () => {
   it("counts every canonical outstanding decision even when none arrived today", async () => {
     // Personal page filters and completed receipts are separate cache entries.
     client.setQueryData([...coordinatorAttentionQueryKey("company"), { search: "no match" }], feed([]));
@@ -179,13 +179,13 @@ describe("Coordinator Needs You badge", () => {
     await act(async () => { await client.invalidateQueries({ queryKey: queryKeys.attention("company") }); });
     await flush();
     expect(decisionLink().querySelector('[data-slot="badge"]')).toBeNull();
-    expect(decisionLink().textContent).toBe("Needs you");
+    expect(decisionLink().textContent).toBe("Inbox");
   });
 
   it("announces the full outstanding count when the sidebar is collapsed", async () => {
     fixture.collapsed = true;
     await renderSidebar();
-    expect(decisionLink().getAttribute("aria-label")).toBe("Needs you, 2 decisions");
+    expect(decisionLink().getAttribute("aria-label")).toBe("Inbox, 2 decisions");
   });
 });
 
@@ -211,7 +211,7 @@ describe("Coordinator collection reads", () => {
     expect(fixture.attention).not.toHaveBeenCalled();
   });
 
-  it("reuses the page-owned complete feed on Needs You without a second summary read", async () => {
+  it("reuses the page-owned complete feed on Inbox without a second summary read", async () => {
     fixture.pathname = "/COO/decisions";
     client.setQueryData(coordinatorAttentionQueryKey("company"), feed([pending("review")]));
     await renderSidebar();
