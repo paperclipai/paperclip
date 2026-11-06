@@ -239,6 +239,24 @@ describe("decideScheduledRetryGate", () => {
     expect(decideScheduledRetryGate(facts, NOW)).toEqual({ allowed: true });
   });
 
+  it("lets a pending-addressee retry pass the ownership and review-participant checks", () => {
+    const facts: ScheduledRetryFacts = {
+      ...baseGateFacts(),
+      issueStatus: "in_review",
+      issueAssigneeAgentId: "agent-2",
+      reviewParticipant: {
+        isInReview: true,
+        hasParticipant: true,
+        participantIsAgent: true,
+        participantAgentId: "agent-3",
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: "agent-3" },
+      },
+    };
+    expect(decideScheduledRetryGate(facts, NOW)).toMatchObject({ allowed: false });
+    expect(decideScheduledRetryGate({ ...facts, isPendingAddresseeWake: true }, NOW)).toMatchObject({ allowed: true });
+  });
+
   it("allows a reassigned issue when the retry is a non-assignee workspace-busy retry", () => {
     const facts: ScheduledRetryFacts = {
       ...baseGateFacts(),

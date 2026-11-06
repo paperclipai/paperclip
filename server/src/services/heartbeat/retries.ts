@@ -801,6 +801,10 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
         ...(opts?.preserveWakeContext
           ? { preparationWait: { kind: retryReason, attempt: schedule.attempt, nextAttemptAt: schedule.dueAt.toISOString() } }
           : { wakeReason, retryReason }),
+        // wakeReason is replaced above; keep the addressee authority for the retry gate.
+        ...(contextSnapshot.wakeReason === "interaction_pending" || contextSnapshot.interactionPendingWake === true
+          ? { interactionPendingWake: true }
+          : {}),
         ...(interactionRunnerWait ? { mutation: "interaction" } : {}),
         ...(retryReason === ENVIRONMENT_PROVIDER_WAIT_RETRY_REASON
           ? { [ENVIRONMENT_PROVIDER_WAIT_KEY]: environmentProviderWaitFor(run, now) }
