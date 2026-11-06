@@ -5774,7 +5774,12 @@ registry.registerPath({
   method: "post",
   path: "/api/approvals/{id}/resubmit",
   tags: ["approvals"],
-  summary: "Resubmit an approval",
+  summary: "Revise and resubmit an approval or proposed hire",
+  description:
+    "Replace the payload of an approval whose status is revision_requested, or resubmit its existing payload. " +
+    "Use this operation to revise a changes-requested hire proposal, such as changing its agent configuration to a cheaper model, and send it back for board review. " +
+    "An agent must be the original requesting agent; board callers still need access to the company and approval. " +
+    "The approval returns to pending. This operation does not approve the request or create or execute the hire.",
   request: {
     params: z.object({ id: z.string() }),
     body: jsonBody(resubmitApprovalSchema),

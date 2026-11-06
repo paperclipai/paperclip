@@ -164,6 +164,24 @@ describe("runner API catalog", () => {
     expect(operation.authorization.actor).toBeTruthy();
   });
 
+  it("discovers proposal revision without confusing it with approval decisions or reads", () => {
+    const resubmit = "POST /api/approvals/{id}/resubmit";
+    for (const query of [
+      "revise changes-requested hire proposal",
+      "resubmit approval after changes",
+      "Change the proposed hire to the cheaper model and send it back for approval.",
+    ]) expect(searchRunnerApi({ query }).results.map(row => row.operationId), query).toContain(resubmit);
+    for (const [query, expected] of [
+      ["GET /api/approvals/{id}", "GET /api/approvals/{id}"],
+      ["approve approval", "POST /api/approvals/{id}/approve"],
+      ["reject approval", "POST /api/approvals/{id}/reject"],
+      [resubmit, resubmit],
+    ]) expect(searchRunnerApi({ query }).results[0]?.operationId, query).toBe(expected);
+    const operation = runnerApiOperation(resubmit);
+    expect(operation.requestBody?.content?.["application/json"]?.schema.properties).toHaveProperty("payload");
+    expect(operation.description).toContain("returns to pending");
+  });
+
   it("ranks natural language, explains dedicated alternatives, and supports exact lookup", () => {
     expect(
       searchRunnerApi({ query: "create project" }).results.map(
