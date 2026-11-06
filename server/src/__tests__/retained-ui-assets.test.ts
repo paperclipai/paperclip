@@ -57,6 +57,43 @@ it("serves an old tab's lazy chunk from shared storage after removing its entire
   expect(idleWorkSnapshot().active).toBe(before);
 });
 
+function cutOffBody(bytes: Buffer): Readable {
+  // The shape Node gives an S3 response body when the socket resets mid-download.
+  return Readable.from((async function* () {
+    yield bytes.subarray(0, 1);
+    throw Object.assign(new Error("aborted"), { code: "ECONNRESET" });
+  })());
+}
+
+it("verifies an already-published asset again when its download is cut off", async () => {
+  const root = await directory(), { provider, objects } = storage();
+  const retained = retainedUiAssets(provider);
+  await fs.writeFile(path.join(root, "chunk-hash.js"), "original");
+  await retained.publish(root);
+  const getObject = provider.getObject.bind(provider);
+  let reads = 0;
+  provider.getObject = async (input) => {
+    const object = await getObject(input);
+    return ++reads === 1 ? { ...object, stream: cutOffBody(objects.get(input.objectKey)!) } : object;
+  };
+  await expect(retained.publish(root)).resolves.toBeUndefined(); // A restart of the same image.
+  expect(reads).toBe(2);
+});
+
+it("stops verifying after a bounded number of cut-off downloads", async () => {
+  const root = await directory(), { provider, objects } = storage();
+  const retained = retainedUiAssets(provider);
+  await fs.writeFile(path.join(root, "chunk-hash.js"), "original");
+  await retained.publish(root);
+  let reads = 0;
+  provider.getObject = async (input) => {
+    reads++;
+    return { stream: cutOffBody(objects.get(input.objectKey)!) };
+  };
+  await expect(retained.publish(root)).rejects.toMatchObject({ message: "aborted", code: "ECONNRESET" });
+  expect(reads).toBe(3);
+});
+
 it("refuses a build which reuses a published name for different bytes", async () => {
   const root = await directory(), { provider, objects } = storage();
   const retained = retainedUiAssets(provider);
