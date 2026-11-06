@@ -7,7 +7,7 @@ import { useDialogActions } from "@/context/DialogContext";
 import { useCoordinatorWorkspaceEnabled } from "@/hooks/useCoordinatorWorkspaceEnabled";
 import { loadTaskListView, taskListViewStorageKey } from "@/lib/task-list-views";
 import { ORGANIZATION_SCOPED_PARAMS, normalizeTaskViewKey, resolveInitialTaskView, taskView, type TaskViewKey } from "@/lib/task-views";
-import { useLocation, useNavigate, useSearchParams } from "@/lib/router";
+import { Navigate, useLocation, useNavigate, useSearchParams } from "@/lib/router";
 import { CoordinatorTasks } from "./CoordinatorTasks";
 import { Inbox } from "./Inbox";
 
@@ -40,11 +40,12 @@ export function CoordinatorTaskViews() {
     if (!loaded || !userId || !selectedCompanyId) return;
     try { localStorage.setItem(key, view); } catch {}
     setPreference(current => current.key === key && current.view === view ? current : { key, view });
-    if (params.get("view") === view) return;
+  }, [key, loaded, userId, selectedCompanyId, view]);
+  if ((loaded || organizationScoped) && params.get("view") !== view) {
     const next = new URLSearchParams(params);
     next.set("view", view);
-    navigate({ search: next.toString(), hash: location.hash }, { replace: true });
-  }, [key, loaded, userId, selectedCompanyId, view, params, navigate, location.hash]);
+    return <Navigate to={`/issues?${next.toString()}${location.hash}`} replace />;
+  }
   const views = <TaskViewsMenu coordinator value={view} onChange={next => navigate(`/issues?view=${next}`)} />;
   if (definition.surface === "issues") return <CoordinatorTasks viewControl={views} />;
   return <section className="coordinator-task-list" aria-label="Tasks"><Inbox

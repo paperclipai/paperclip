@@ -1,21 +1,27 @@
 // @vitest-environment jsdom
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
-import { MemoryRouter, Route, Routes, useLocation, } from "react-router-dom";
+import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { beforeEach, expect, it, vi } from "vitest";
 import { Issues } from "./Issues";
 import { Inbox } from "./Inbox";
+
+const mountedRoutes = vi.hoisted(() => ({ organization: [] as string[] }));
 
 vi.mock("../context/DesignSandboxContext", () => ({ useDesignSandbox: () => false }));
 vi.mock("../hooks/useCoordinatorWorkspaceEnabled", () => ({ useCoordinatorWorkspaceEnabled: () => ({ enabled: true, loaded: true, userId: "viewer" }) }));
 vi.mock("../hooks/useStreamlinedUiEnabled", () => ({ useStreamlinedUiEnabled: () => ({ enabled: true }) }));
 vi.mock("../hooks/useCombinedInboxTasksEnabled", () => ({ useCombinedInboxTasksEnabled: () => ({ enabled: false }) }));
 vi.mock("../context/CompanyContext", () => ({ useCompany: () => ({ selectedCompanyId: "company", selectedCompany: { issuePrefix: "ORG" } }) }));
-vi.mock("./CoordinatorTasks", () => ({ CoordinatorTasks: () => <p>Coordinator tasks</p> }));
+vi.mock("./CoordinatorTasks", () => ({ CoordinatorTasks: () => {
+  const location = useLocation();
+  mountedRoutes.organization.push(`${location.search}${location.hash}`);
+  return <p>Coordinator tasks</p>;
+} }));
 vi.mock("./Inbox", () => ({ Inbox: ({ tab, surfaceLabel }: { tab: string; surfaceLabel: string }) => <p>{surfaceLabel} Inbox owner:{tab}</p> }));
 vi.mock("../context/DialogContext", () => ({ useDialogActions: () => ({ openNewIssue: vi.fn() }) }));
 
-beforeEach(() => localStorage.clear());
+beforeEach(() => { localStorage.clear(); mountedRoutes.organization = []; });
 
 function Location() { const location = useLocation(); return <output>{location.pathname}{location.search}{location.hash}</output>; }
 function render(url: string) {
@@ -38,9 +44,9 @@ it.each(["needs_attention", "all"])("keeps the %s task view in Coordinator", vie
   try { expect(host.textContent).toContain("Coordinator tasks"); expect(host.textContent).not.toContain("Inbox owner"); }
   finally { cleanup(); }
 });
-it.each(["workspace=workspace", "originKind=routine_execution"])("keeps organization-scoped task links out of Inbox: %s", filter => {
+it.each(["workspace=workspace", "originKind=routine_execution"])("keeps organization-scoped task links out of Inbox: %s", async filter => {
   const { host, cleanup } = render(`/ORG/issues?view=mine&${filter}`);
-  try { expect(host.textContent).toContain("Coordinator tasks"); expect(host.textContent).not.toContain("Inbox owner"); }
+  try { await vi.waitFor(() => expect(host.textContent).toContain("Coordinator tasks")); expect(host.textContent).not.toContain("Inbox owner"); }
   finally { cleanup(); }
 });
 
@@ -69,4 +75,13 @@ it("defaults Tasks to Mine and remembers a deliberate organization view", async 
     await vi.waitFor(() => expect(returned.host.querySelector("output")?.textContent).toBe("/ORG/issues?view=done"));
     expect(returned.host.textContent).toContain("Coordinator tasks");
   } finally { returned.cleanup(); }
+});
+
+it.each(["mine", "blocked", "recent", "everything"])("normalizes a filtered %s link before mounting its task collection", async view => {
+  const { host, cleanup } = render(`/ORG/issues?view=${view}&label=qa&keep=value#saved`);
+  try {
+    await vi.waitFor(() => expect(host.querySelector("output")?.textContent).toBe("/ORG/issues?view=all&label=qa&keep=value#saved"));
+    expect(mountedRoutes.organization.length).toBeGreaterThan(0);
+    expect(mountedRoutes.organization.every(route => new URLSearchParams(route.split("#")[0]).get("view") === "all")).toBe(true);
+  } finally { cleanup(); }
 });
