@@ -57,7 +57,29 @@ const REUSABLE_SESSION_CANCELLATION_SETTLEMENT_GRACE_MS = 10_000;
 const GOVERNED_ACCOUNTING_DRAIN_MS = 15_000;
 const MAX_GOVERNED_ACCOUNTING_DRAIN_MS = 30_000;
 const DEFAULT_NATIVE_CHECKPOINT_TIMEOUT_MS = 30_000;
-type NativeSessionCleanupDomain = string;
+/**
+ * A retained cleanup owner can only still hold resources it was bound to.
+ * `key` names the backend (company, backend kind/name, optional remote
+ * resource). `resources` names the task and provider conversation the owner
+ * may still be writing: its issue and normalized session. Admission is gated
+ * only when both the backend and one of those resources match, so one
+ * session's unrecoverable close cannot block unrelated tasks in the company.
+ */
+interface NativeSessionCleanupDomain {
+  key: string;
+  resources: readonly string[];
+}
+
+function nativeSessionCleanupScopeBlocks(
+  owner: NativeSessionCleanupDomain,
+  admission: NativeSessionCleanupDomain,
+): boolean {
+  return (
+    owner === admission ||
+    (owner.key === admission.key &&
+      owner.resources.some((resource) => admission.resources.includes(resource)))
+  );
+}
 
 const failedSessionCleanupOwners = new Map<
   Promise<void>,
@@ -112,7 +134,7 @@ export function completeRetainedNativeSessionCleanup(
   const matches = [...quarantinedSessionCleanups].filter((entry) => {
     const identity = entry.session.identity();
     return (
-      entry.domain === domain &&
+      entry.domain.key === domain &&
       Object.entries(proof.binding).every(
         ([key, value]) => identity[key as keyof typeof identity] === value,
       )
@@ -151,7 +173,7 @@ export function completeTerminatedRemoteNativeSessionCleanup(binding: {
     const identity = session.identity();
     // Domains are created internally from company, backend kind/name, and the
     // optional remote resource. Local domains have no fourth element.
-    const [, , , remoteCleanupScope] = JSON.parse(domain) as string[];
+    const [, , , remoteCleanupScope] = JSON.parse(domain.key) as string[];
     return identity.companyId === binding.companyId && identity.runId === binding.runId &&
       remoteCleanupScope === binding.remoteCleanupScope;
   });
@@ -175,7 +197,7 @@ export function completeTerminatedLocalNativeSessionCleanup(binding: {
 }): boolean {
   const matches = [...quarantinedSessionCleanups].filter(({ session, domain }) => {
     const identity = session.identity();
-    const parts = JSON.parse(domain) as string[];
+    const parts = JSON.parse(domain.key) as string[];
     return parts.length === 3 && identity.companyId === binding.companyId && identity.runId === binding.runId;
   });
   if (matches.some(entry => entry.attempt || entry.recovery ||
@@ -802,18 +824,22 @@ async function retryQuarantinedSessionCleanups(
     if (
       [...quarantinedSessionCleanups].some(
         (cleanup) =>
-          cleanup.domain === cleanupDomain && cleanup.operatorRecoveryRequired,
+          nativeSessionCleanupScopeBlocks(cleanup.domain, cleanupDomain) &&
+          cleanup.operatorRecoveryRequired,
       )
     ) {
       throw new NativeSessionCleanupQuarantinedError();
     }
     const cleanupOwners = new Set<Promise<void>>(
       [...failedSessionCleanupOwners]
-        .filter(([, domain]) => domain === cleanupDomain)
+        .filter(([, domain]) =>
+          nativeSessionCleanupScopeBlocks(domain, cleanupDomain),
+        )
         .map(([owner]) => owner),
     );
     for (const cleanup of quarantinedSessionCleanups) {
-      if (cleanup.domain !== cleanupDomain) continue;
+      if (!nativeSessionCleanupScopeBlocks(cleanup.domain, cleanupDomain))
+        continue;
       if (cleanup.timer) {
         clearTimeout(cleanup.timer);
         cleanup.timer = null;
@@ -869,18 +895,19 @@ async function retryQuarantinedSessionCleanups(
     }
   }
   if (
-    [...failedSessionCleanupOwners.values()].some(
-      (domain) => domain === cleanupDomain,
+    [...failedSessionCleanupOwners.values()].some((domain) =>
+      nativeSessionCleanupScopeBlocks(domain, cleanupDomain),
     ) ||
-    [...quarantinedSessionCleanups].some(
-      (cleanup) => cleanup.domain === cleanupDomain,
+    [...quarantinedSessionCleanups].some((cleanup) =>
+      nativeSessionCleanupScopeBlocks(cleanup.domain, cleanupDomain),
     )
   ) {
     // Admission may have pulled a scheduled retry forward and observed a
     // complete recovery batch that still failed. Restore autonomous ownership
     // before rejecting so cleanup cannot remain dormant until another run.
     for (const cleanup of quarantinedSessionCleanups) {
-      if (cleanup.domain !== cleanupDomain) continue;
+      if (!nativeSessionCleanupScopeBlocks(cleanup.domain, cleanupDomain))
+        continue;
       scheduleQuarantinedSessionCleanup(cleanup);
     }
     throw new Error(
@@ -2014,12 +2041,24 @@ export async function executeNativeSession(
 ): Promise<NativeSessionExecutionResult> {
   const input = parseNativeExecutionInput(options.input);
   const descriptor = await options.backend.descriptor();
-  const cleanupDomain = JSON.stringify([
-    input.binding.companyId,
-    descriptor.kind,
-    descriptor.name,
-    ...(options.remoteCleanupScope ? [options.remoteCleanupScope] : []),
-  ]);
+  const cleanupDomain: NativeSessionCleanupDomain = {
+    key: JSON.stringify([
+      input.binding.companyId,
+      descriptor.kind,
+      descriptor.name,
+      ...(options.remoteCleanupScope ? [options.remoteCleanupScope] : []),
+    ]),
+    // A failed close can leave its provider owning this task's workspace and
+    // this provider conversation. Nothing else is shared between sessions of
+    // the same backend, so other tasks are not gated by it.
+    resources: [
+      JSON.stringify(["issue", input.binding.issueId]),
+      JSON.stringify([
+        "session",
+        input.session.normalizedSessionId ?? `run:${input.binding.runId}`,
+      ]),
+    ],
+  };
   await retryQuarantinedSessionCleanups(cleanupDomain, options.signal);
   if ("runtimeContext" in input) {
     const capabilities = descriptor.runtimeContextCapabilities;

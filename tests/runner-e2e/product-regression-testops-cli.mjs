@@ -5,7 +5,7 @@ import { appendFile, lstat, mkdir, readFile, writeFile } from 'node:fs/promises'
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { testopsClient } from './chat-feature-testops-api.mjs';
-import { endpoint, workflowUrls, selectProductRegression, validateSelection, projectProductResults } from './product-regression-testops.mjs';
+import { endpoint, workflowUrls, selectProductRegression, validateSelection, projectProductResults, testOpsPlans, testOpsPlanDetails } from './product-regression-testops.mjs';
 
 const execute = promisify(execFile);
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
@@ -69,14 +69,18 @@ export function validateUploadedProductResults(details, selection, summary) {
 }
 
 export async function productTestOps(command, argument, env = process.env, exec = execute, fetchImpl = fetch,
-  wait = ms => new Promise(resolve => setTimeout(resolve, ms))) {
+  wait = ms => new Promise(resolve => setTimeout(resolve, ms)), plans = testOpsPlans()) {
   admitProductTestOps(env);
   if (command === 'select') {
     const requestedJob = env.ALLURE_JOB_RUN_ID || '';
     if (requestedJob && !positive(requestedJob)) fail('job_run_invalid');
-    // Reject a bad bootstrap selector before opening any run. Before adopting
-    // a TestOps dispatch, independently check its pending job and project.
-    const manualCases = requestedJob ? undefined : selectProductRegression(undefined, env.TESTOPS_CASE || 'all');
+    // The bootstrap plan applies only to a manual bootstrap. A TestOps dispatch
+    // names its plan through the case identities in its own selection.
+    const planKey = env.TESTOPS_PLAN || 'product-regression';
+    if (!Object.hasOwn(testOpsPlanDetails, planKey)) fail('plan_invalid');
+    // Reject a bad or unregistered bootstrap selector before opening any run.
+    // Before adopting a TestOps dispatch, independently check its pending job and project.
+    const manualCases = requestedJob ? undefined : selectProductRegression(undefined, env.TESTOPS_CASE || 'all', false, planKey, plans);
     const api = await testopsClient(env.ALLURE_TOKEN, fetchImpl);
     if (requestedJob) {
       const pending = await api(`/api/jobrun/${requestedJob}`);
@@ -102,11 +106,11 @@ export async function productTestOps(command, argument, env = process.env, exec 
         { env: boundEnv, timeout: 30_000, maxBuffer: 32_768 });
       plan = await readJson(planFile, 65_536);
     }
-    const cases = manualCases ?? selectProductRegression(plan, env.TESTOPS_CASE || 'all', true);
+    const cases = manualCases ?? selectProductRegression(plan, env.TESTOPS_CASE || 'all', true, planKey, plans);
     const selection = { schema: 'paperclip.product-regression-testops-selection/v1',
       runId: env.GITHUB_RUN_ID, attempt: env.GITHUB_RUN_ATTEMPT, workflowSha: env.GITHUB_SHA,
       targetSha: env.SOURCE_SHA, ...context, ...job, cases };
-    validateSelection(selection, env);
+    validateSelection(selection, env, plans);
     const bytes = Buffer.from(JSON.stringify(selection, null, 2));
     await mkdir(path.dirname(argument), { recursive: true });
     await writeFile(argument, bytes, { flag: 'wx', mode: 0o600 });
@@ -116,7 +120,7 @@ export async function productTestOps(command, argument, env = process.env, exec 
   if (!['project', 'verify'].includes(command)) fail('command_invalid');
   const bytes = await readFile(argument);
   if (bytes.length > 65_536 || hash(bytes) !== env.SELECTION_SHA256) fail('selection_hash');
-  const selection = validateSelection(JSON.parse(bytes), env);
+  const selection = validateSelection(JSON.parse(bytes), env, plans);
   if (env.ALLURE_JOB_RUN_ID !== selection.jobRunId) fail('job_run_mismatch');
   if (command === 'project') {
     let campaign;
@@ -126,7 +130,8 @@ export async function productTestOps(command, argument, env = process.env, exec 
     await mkdir(env.ALLURE_RESULTS, { recursive: false, mode: 0o700 });
     for (const row of records) await writeFile(path.join(env.ALLURE_RESULTS, row.file), JSON.stringify(row.value), { flag: 'wx', mode: 0o600 });
     await writeFile(env.EXPORT_SUMMARY, JSON.stringify(summary), { flag: 'wx', mode: 0o600 });
-    await appendFile(env.GITHUB_STEP_SUMMARY, `### [Product regression TestOps results](${endpoint}/launch/${selection.launchId})\n\n${summary.passed}/${summary.selected} passed; ${summary.failed} failed; ${summary.broken} broken. ${summary.fullPlan ? 'Complete 20-case plan selection.' : 'Targeted selection; not a full-plan verdict.'}\n`);
+    const details = testOpsPlanDetails[summary.plan];
+    await appendFile(env.GITHUB_STEP_SUMMARY, `### [${details.label} TestOps results](${endpoint}/launch/${selection.launchId})\n\n${summary.passed}/${summary.selected} passed; ${summary.failed} failed; ${summary.broken} broken. ${summary.fullPlan ? `Complete ${details.size}-case plan selection.` : 'Targeted selection; not a full-plan verdict.'}\n`);
     return 0;
   }
   const api = await testopsClient(env.ALLURE_TOKEN, fetchImpl);

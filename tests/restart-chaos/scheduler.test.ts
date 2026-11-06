@@ -114,3 +114,17 @@ describe("CLI parsing", () => {
     expect(() => parseCommand(["--poll-ms", "500"])).toThrow(/between 2000 and 5000/);
   });
 });
+
+describe("Daytona options", () => {
+  const image = `ghcr.io/paperclipai/paperclip-daytona-runner@sha256:${"a".repeat(64)}`;
+  it("defaults to 4 vCPU sandboxes, excludes B5, and keeps the image in the plan", () => {
+    const parsed = parseCommand(["--env", "daytona", "--daytona-image", image, "--concurrency", "10"]);
+    expect(parsed).toMatchObject({ mode: "wave", options: { daytonaImage: image, daytonaCpu: 4, concurrency: 10 } });
+    if (parsed.mode === "wave") expect(parsed.options.workloads).not.toContain("B5");
+  });
+  it("refuses waves over the 40 vCPU chaos budget, mutable images, and Daytona flags without Daytona", () => {
+    expect(() => parseCommand(["--env", "daytona", "--daytona-image", image, "--concurrency", "11"])).toThrow(/exceeds the Daytona vCPU budget of 40/);
+    expect(() => parseCommand(["--env", "daytona", "--daytona-image", "ghcr.io/x/y:latest"])).toThrow(/immutable runner image/);
+    expect(() => parseCommand(["--env", "local", "--daytona-cpu", "2"])).toThrow(/only to --env daytona/);
+  });
+});
