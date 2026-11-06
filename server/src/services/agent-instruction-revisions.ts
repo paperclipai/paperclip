@@ -329,10 +329,13 @@ export function agentInstructionRevisionService(db: Db) {
         await bindEntry();
         return { row: await withSaveRecord(tx, current), changed: false };
       }
-      // A pre-upgrade run can still pin a historical UUID. Compare its bytes,
-      // never let the old head project over a newer directory.
+      // A pre-upgrade run can still pin a historical UUID, and a history read
+      // returns a save record ID. Compare their bytes, never let an old base
+      // project over a newer directory.
       const legacyBase = input.baseRevisionId && current?.id !== input.baseRevisionId
-        ? await tx.select().from(revisions).where(and(owner(input, input.entryFile), eq(revisions.id, input.baseRevisionId))).then(rows => rows[0])
+        ? await tx.select({ contentHash: revisions.contentHash }).from(revisions).where(and(owner(input, input.entryFile), eq(revisions.id, input.baseRevisionId))).then(rows => rows[0])
+          ?? await tx.select({ contentHash: sql<string>`${activityLog.details}->>'contentHash'` }).from(activityLog)
+            .where(and(saveRecords(input, input.entryFile), eq(activityLog.id, input.baseRevisionId))).then(rows => rows[0])
         : null;
       if ((current?.id ?? null) !== input.baseRevisionId && !(legacyBase && legacyBase.contentHash === current?.contentHash)) {
         throw conflict(
