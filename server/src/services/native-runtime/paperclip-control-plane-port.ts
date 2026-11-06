@@ -406,6 +406,8 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
       }
     }
     event = redactRunnerApiEvent(event);
+    const observerKey = JSON.stringify([event.sourceInstanceId, event.sourceEventId]);
+    const pendingObservation = this.#deferredEventObservers.get(observerKey);
     const persisted = await this.#db.transaction(async tx => {
       this.#assertActive(options);
       const receipt = await appendHeartbeatRunEvent(tx as unknown as Db, {
@@ -431,8 +433,7 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
     });
     this.#assertActive(options);
     const persistenceEndedAt = persistenceStartedAt + performance.now() - persistenceClock;
-    const observerKey = JSON.stringify([event.sourceInstanceId, event.sourceEventId]);
-    let observation = this.#deferredEventObservers.get(observerKey);
+    let observation = pendingObservation ?? this.#deferredEventObservers.get(observerKey);
     if (!observation) observation = (async () => {
       try { await this.#onEventPersistence?.(event, persistenceStartedAt, persistenceEndedAt); } catch {}
       if (persisted.disposition === "committed") {

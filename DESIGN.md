@@ -153,7 +153,7 @@ results in place; keep failures actionable inline. Notifications for other work
 remain useful. Repeated delivery of the same run outcome must refresh cached state
 without repeating its toast, including after reconnecting. A terminal outcome
 delivered more than five minutes after the run finished is historical and should
-refresh state silently. Expected cancellation is neutral gray, not an error. The composer's Stop action stops the current response and leaves the composer available for a new message. Pause work is a separate explicit task or subtree action. A paused task replaces the composer with an amber takeover. It says “Task is
+refresh state silently. Expected cancellation is neutral gray, not an error. A busy workspace is a transient system wait with no user action. Show it only as a quiet status in the composer strip and the Workspace property row, never as a pinned banner, conversation notice or toast. The composer's Stop action stops the current response and leaves the composer available for a new message. Pause work is a separate explicit task or subtree action. A paused task replaces the composer with an amber takeover. It says “Task is
 paused.” and “Resume this task to send a message.” with a “Resume task” action.
 Subtrees use “Subtree is paused.” and “Resume subtree.” The takeover cannot be
 dismissed, retains drafts, and hides message inputs until the pause is released.
@@ -407,9 +407,12 @@ Project, Parent Task, Tags, Worktree, Last updated**. The reusable
 width tokens and configurable column order. Review the complete composition in
 **Design proposals → Components → Task list → All columns**.
 
-- Created by is the recorded creator (human or agent); Assignee is the current
-  assignee. Both show names without avatars. Do not infer either from tree depth
-  or task status.
+- Created by is the recorded creator (human or agent) and shows a name. Assignee
+  shows the current agent's avatar or human's profile photo beside their name,
+  with the shared avatar fallback when an image is unavailable. Human photos load
+  only from Paperclip asset URLs; external profile URLs use initials. The avatar stays
+  visible while a long name reveals on hover or focus. Do not infer either
+  identity from tree depth or task status.
 - Task combines the status icon and title under one header and one Columns-menu
   choice. Sorting Task uses the title. Status sorting is unavailable for now.
 - Parent Task refers to the structural parent; it can show its ID and title.

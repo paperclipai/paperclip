@@ -324,6 +324,20 @@ export const ResultDetails: Story = {
 export const ExecutionFailed: Story = {
   render: () => <TaskScreen initial={[failedToolActionInteraction]} />,
 };
+export const GitHubAccessNeeded: Story = {
+  render: () => <TaskScreen initial={[{
+    ...failedToolActionInteraction,
+    payload: { ...failedToolActionInteraction.payload, toolAction: {
+      ...failedToolActionInteraction.payload.toolAction!, appDisplayName: "GitHub", toolDisplayName: "Create repository",
+      previewMarkdown: "Create a private repository for the storefront prototype.",
+      argumentsSummaryJson: '{"name":"storefront-prototype","private":true}',
+    } },
+    result: { ...failedToolActionInteraction.result!, toolAction: {
+      ...failedToolActionInteraction.result!.toolAction!, errorCode: "github_access_denied",
+      errorMessage: "failed to create repository: POST https://api.github.com/user/repos: 403 Resource not accessible by integration []",
+    } },
+  }]} />,
+};
 export const Declined: Story = {
   render: () => <TaskScreen initial={[declinedToolActionInteraction]} />,
 };

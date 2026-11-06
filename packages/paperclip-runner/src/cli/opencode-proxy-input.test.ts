@@ -17,14 +17,18 @@ describe("OpenCode proxy input sequencing", () => {
         await firstBlocked;
         events.push("initialize:complete");
       },
-      () => events.push("initialize:error"),
+      () => {
+        events.push("initialize:error");
+      },
     );
     pending = enqueueOpenCodeProxyInput(
       pending,
       async () => {
         events.push("thread:start");
       },
-      () => events.push("thread:error"),
+      () => {
+        events.push("thread:error");
+      },
     );
     const shutdown = pending.then(() => {
       events.push("shutdown");
@@ -50,7 +54,9 @@ describe("OpenCode proxy input sequencing", () => {
       async () => {
         throw new Error("initialize failed");
       },
-      (error) => events.push((error as Error).message),
+      (error) => {
+        events.push((error as Error).message);
+      },
     );
 
     await pending;

@@ -21,6 +21,8 @@ import { nativeProviderCatalogFor } from "./native-provider-catalogs.js";
 import { composeConnectionInstructions } from "./connection-instructions.js";
 import { googleWorkspaceToolTarget, googleWorkspaceGrantedScopes, isGoogleWorkspaceToolGranted } from "@paperclipai/shared";
 import { isInsufficientConnectionScope, INSUFFICIENT_CONNECTION_SCOPE_MESSAGE } from "./connection-permission-errors.js";
+import { githubAccessError } from "./tool-access/github-access-errors.js";
+import { toolSourceTemplateKeySql } from "./tool-access/source-template-key.js";
 import { boundedMcpToolName } from "./mcp-tool-names.js";
 import { browserUseService } from "./browser-use.js";
 import { isBrowserUseConnection } from "./browser-use-client.js";
@@ -5016,9 +5018,13 @@ export function createToolGatewayService(
         "tool_not_found",
       );
     }
-    const [connection] = await db
-      .select()
+    const [connected] = await db
+      .select({ connection: toolConnections, sourceTemplateKey: toolSourceTemplateKeySql })
       .from(toolConnections)
+      .innerJoin(toolApplications, and(
+        eq(toolApplications.id, toolConnections.applicationId),
+        eq(toolApplications.companyId, toolConnections.companyId),
+      ))
       .where(
         and(
           eq(toolConnections.id, entry.connectionId),
@@ -5026,6 +5032,7 @@ export function createToolGatewayService(
         ),
       )
       .limit(1);
+    const connection = connected?.connection;
     if (!connection || (connection.transport !== "mcp_remote" && !isBrowserUseConnection(connection) && !nativeProviderCatalogFor(connection) && !restConnectorFor(connection))) {
       throw new ToolGatewayHttpError(
         404,
@@ -5057,7 +5064,7 @@ export function createToolGatewayService(
     if (restConnector && !restConnector.isCurrent(entry)) {
       throw new ToolGatewayHttpError(409, `${restConnector.name}'s action catalog changed. Review the updated actions in Permissions.`, "provider_catalog_changed");
     }
-    return { entry, connection };
+    return { entry, connection, sourceTemplateKey: connected?.sourceTemplateKey ?? null };
   }
 
   async function governedToolArguments(
@@ -6170,7 +6177,7 @@ export function createToolGatewayService(
         spawnedLocalProcess,
       },
       ...(record.isError === true
-        ? { error: "MCP tool returned an error result" }
+        ? { error: "MCP tool returned an error result", ...githubAccessError(sourceTemplateKey, providerContent) }
         : {}),
     };
   }
@@ -6184,7 +6191,7 @@ export function createToolGatewayService(
     callerHeaders?: ExecuteGatewayToolInput["callerHeaders"],
     useDefaultTimeout = false,
   ): Promise<RemoteHttpExecutionResult> {
-    const { entry, connection } = await resolveConnectedRemoteTool(
+    const { entry, connection, sourceTemplateKey } = await resolveConnectedRemoteTool(
       session,
       tool,
     );
@@ -6591,10 +6598,6 @@ export function createToolGatewayService(
           request: resultElicitation,
         });
       }
-      const sourceTemplateKey =
-        typeof connection.config.sourceTemplateKey === "string"
-          ? connection.config.sourceTemplateKey
-          : null;
       const result = normalizeMcpToolResult(
         payloadRecord.result,
         "mcp_http",
@@ -7662,8 +7665,9 @@ export function createToolGatewayService(
       });
       const providerResult = asRecord(resultValidation.value);
       if (providerResult?.error) {
-        throw new ToolGatewayHttpError(502, String(providerResult.content || providerResult.error),
-          "tool_error", { execution: connectedMcpExecution.execution });
+        throw new ToolGatewayHttpError(providerResult.errorCode === "github_access_denied" ? 403 : 502,
+          String(providerResult.content || providerResult.error),
+          providerResult.errorCode === "github_access_denied" ? "github_access_denied" : "tool_error", { execution: connectedMcpExecution.execution });
       }
     } catch (err) {
       const status = err instanceof ToolGatewayHttpError ? err.status : 502;
@@ -8470,9 +8474,9 @@ export function createToolGatewayService(
       const resultRecord = asRecord(result);
       if (resultRecord?.error)
         throw new ToolGatewayHttpError(
-          502,
+          resultRecord.errorCode === "github_access_denied" ? 403 : 502,
           String(resultRecord.content || resultRecord.error),
-          "tool_execution_failed",
+          resultRecord.errorCode === "github_access_denied" ? "github_access_denied" : "tool_execution_failed",
         );
       const resultValidation = await validateToolContent({
         value: result,
@@ -11203,9 +11207,9 @@ export function createToolGatewayService(
           : null;
         if (validatedMcpResult?.error) {
           throw new ToolGatewayHttpError(
-            502,
+            validatedMcpResult.errorCode === "github_access_denied" ? 403 : 502,
             String(validatedMcpResult.content || validatedMcpResult.error),
-            "tool_error",
+            validatedMcpResult.errorCode === "github_access_denied" ? "github_access_denied" : "tool_error",
             { execution: connectedMcpExecution?.execution },
           );
         }

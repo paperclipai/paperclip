@@ -1,4 +1,5 @@
 import { readClaimedNativeStopRecovery } from "../native-runtime/native-cancellation-request.js";
+import { readContextCompactionRequest } from "../context-compaction.js";
 import { remoteWorkspaceFailureCause } from "../remote-workspace-transport.js";
 import { readNativePostResultFailureDiagnostic } from "../native-runtime/native-post-result-failure.js";
 import { NativeStartupCleanupPendingError } from "../native-runtime/native-startup-cleanup.js";
@@ -635,6 +636,7 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
               useRunnerd: agent.adapterType === "paperclip_runner",
               adapterType: agent.adapterType,
               sessionGoalControl,
+              sessionCompaction: readContextCompactionRequest(context),
               resumeSessionGoalHeartbeat:
                 context.resumeSessionGoalHeartbeat === true ||
                 completedGoalControl,

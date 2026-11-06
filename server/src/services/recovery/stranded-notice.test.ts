@@ -137,6 +137,17 @@ describe("buildStrandedRecoveryEscalationNotice", () => {
     expect(notice.body).not.toContain("retried continuation");
     expect(JSON.stringify(notice.metadata)).toContain("repository access and server load");
   });
+  it("names an environment plugin that was not running after its bounded retries", () => {
+    const notice = buildStrandedRecoveryEscalationNotice({
+      seed: buildImmediateExecutionPathRecoveryNoticeSeed({ status: "in_progress" }),
+      recoveryActionId: "worker-recovery",
+      recoveryOwner: null,
+      sourceRun: { id: "failed-run", status: "failed", errorCode: "plugin_worker_unavailable" },
+    });
+    expect(notice.presentation.title).toBe("Environment plugin was not running");
+    expect(notice.body).toContain("before the agent started");
+    expect(JSON.stringify(notice.metadata)).toContain("worker status");
+  });
   const actionId = "6a2f8e64-6f5e-4b58-b7fd-111111111111";
   const owner = { id: "9b1c2d3e-4f50-4a61-8b72-222222222222", name: "CTO" };
   const sourceRun = {
@@ -346,4 +357,41 @@ describe("execution review participant workspace validation seed", () => {
     expect(seed.body).not.toContain("recorded diagnosis");
     expect(seed.body).toContain("failed workspace validation. Moving the issue to");
   });
+});
+
+it("names a found project authentication conflict instead of suggesting secret bindings", () => {
+  const notice = buildConfigurationIncompleteRecoveryNoticeSeed({ reason: "ai_connection_incompatible", actionUrl: "/agents/agent-1/runtime" });
+  expect(notice.title).toBe("AI connection conflicts with project settings");
+  expect(notice.body).toContain("apiKeyHelper");
+  expect(notice.nextAction).toContain("choose a different AI connection");
+  expect(notice.body).not.toContain("secret/env");
+});
+
+it("names a remote Runner that was still not updated after its retries", () => {
+  const notice = buildStrandedRecoveryEscalationNotice({
+    seed: buildImmediateExecutionPathRecoveryNoticeSeed({ status: "in_progress" }),
+    recoveryActionId: "runner-recovery",
+    recoveryOwner: null,
+    sourceRun: { id: "failed-run", status: "failed", errorCode: "runner_revision_mismatch" },
+  });
+  expect(notice.presentation.title).toBe("Remote Runner is out of date");
+  expect(notice.body).toContain("Runner was still not updated");
+  expect(notice.body).not.toContain("workspace");
+  expect(notice.body).not.toContain("authentication");
+  expect(JSON.stringify(notice.metadata)).toContain("remote Runner received the update");
+});
+
+it("names the managed AI connection a plugin Runner-task environment requires", () => {
+  const notice = buildConfigurationIncompleteRecoveryNoticeSeed({ reason: "ai_connection_required" });
+  expect(notice.title).toBe("AI connection required");
+  expect(notice.body).toContain("requires a managed AI connection");
+  expect(notice.nextAction).toContain("Choose an AI connection");
+  expect(notice.body).not.toContain("secret/env");
+});
+
+it("tells the operator to switch a preconfigured Runner home to an isolated one", () => {
+  const notice = buildConfigurationIncompleteRecoveryNoticeSeed({ reason: "ai_connection_required", homeMode: "preconfigured" });
+  expect(notice.title).toBe("Isolated Runner home required");
+  expect(notice.nextAction).toContain("isolated Runner home");
+  expect(notice.nextAction).not.toContain("Choose an AI connection");
 });

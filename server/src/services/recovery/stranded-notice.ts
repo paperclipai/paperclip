@@ -56,11 +56,23 @@ const WORKSPACE_SCAN_NOTICES: Record<string, { title: string; nextAction: string
   workspace_git_scan_timeout: { title: "Workspace scan timed out", nextAction: "Check repository access and server load, then retry the task." },
   remote_workspace_prepare_timeout: { title: "Workspace setup timed out", nextAction: "Inspect the failed run and check repository access and sandbox load before retrying the task." },
   remote_workspace_restore_failed: { title: "Saved workspace could not be restored", nextAction: REMOTE_WORKSPACE_RESTORE_NEXT_ACTION },
+  plugin_worker_unavailable: { title: "Environment plugin was not running", nextAction: "Check the environment plugin's worker status, then retry the task once it is running." },
+  environment_provider_unavailable: { title: "Environment provider was temporarily unavailable", nextAction: "Paperclip retried automatically before the agent started, but the provider was still unavailable. No agent work started. Retry the task once the provider is available." },
   reusable_sandbox_resume_failed: { title: "Saved sandbox could not be resumed", nextAction: "Inspect the failed run and the sandbox provider; the saved sandbox was kept. Retry the task once the provider can start it." },
   workspace_git_scan_saturated: { title: "Workspace scan queue is full", nextAction: "Check server load and the workspace scan queue, then retry the task." },
   workspace_git_scan_output_limit: { title: "Workspace scan exceeded its limit", nextAction: "Check the repository size and workspace scan output limit before retrying the task." },
   workspace_git_scan_failed: { title: "Workspace scan failed", nextAction: "Inspect the failed run and check repository access and integrity before retrying the task." },
   workspace_git_scan_cancelled: { title: "Workspace scan was cancelled", nextAction: "Inspect why workspace preparation was cancelled before retrying the task." },
+};
+
+const SETUP_FAILURE_NOTICES: Record<string, StrandedRecoveryNoticeSeed> = {
+  runner_revision_mismatch: {
+    title: "Remote Runner is out of date",
+    body: "The remote Runner does not match this Paperclip version, which is expected for a few minutes while a release updates the Runner. "
+      + "Paperclip retried before the agent started, but the Runner was still not updated.",
+    nextAction: "Check that the remote Runner received the update for this release, then retry the task.",
+    tone: "danger",
+  },
 };
 
 export function buildImmediateExecutionPathRecoveryNoticeSeed(input: {
@@ -153,11 +165,37 @@ export function buildConfigurationIncompleteRecoveryNoticeSeed(
       tone: "danger",
     };
   }
+  if (readNonEmptyStringField(configurationIncomplete, "reason") === "ai_connection_required") {
+    if (readNonEmptyStringField(configurationIncomplete, "homeMode") === "preconfigured") {
+      return {
+        title: "Isolated Runner home required",
+        body: "Paperclip stopped before the agent started because this agent runs in a plugin-provided environment, which requires a managed AI connection. A preconfigured Runner home does not use the agent's AI connection. The task is blocked until the agent uses an isolated Runner home.",
+        nextAction: "Switch this agent to an isolated Runner home in Configuration, then retry the task.",
+        tone: "danger",
+      };
+    }
+    return {
+      title: "AI connection required",
+      body: "Paperclip stopped before the agent started because this agent runs in a plugin-provided environment, which requires a managed AI connection. The task is blocked until the agent has one.",
+      nextAction: "Choose an AI connection for this agent in Configuration, then retry the task.",
+      tone: "danger",
+    };
+  }
   if (readNonEmptyStringField(configurationIncomplete, "reason") === "ai_connection_unavailable") {
     return {
       title: "AI connection needs attention",
       body: "This task paused because its selected AI account is unavailable. Reconnect the account or choose an available connection to continue.",
       nextAction: "Reconnect the selected AI account or choose an available connection, then continue the task.",
+      tone: "danger",
+    };
+  }
+  if (readNonEmptyStringField(configurationIncomplete, "reason") === "ai_connection_incompatible") {
+    return {
+      title: "AI connection conflicts with project settings",
+      body: "Paperclip stopped before the agent started because this agent's managed AI connection conflicts with authentication settings "
+        + "in the project or the agent's arguments, such as an API key, token or apiKeyHelper. The task is blocked until the conflict is removed.",
+      nextAction: "Remove the API key, token or apiKeyHelper from the project's Claude or Codex settings or the agent's arguments, "
+        + "or choose a different AI connection for this agent, then retry the task.",
       tone: "danger",
     };
   }
@@ -249,7 +287,7 @@ export function buildStrandedRecoveryEscalationNotice(input: {
     ...workspaceScan,
     body: `Paperclip could not prepare the workspace before the agent started. Automatic recovery could not continue. ${workspaceScan.nextAction}`,
     tone: "danger" as const,
-  } : input.seed;
+  } : SETUP_FAILURE_NOTICES[input.sourceRun?.errorCode ?? ""] ?? input.seed;
   const fallbackBody = input.fallbackBody?.trim();
   const body = seed?.body ?? (fallbackBody || DEFAULT_STRANDED_RECOVERY_NOTICE_BODY);
   const title =

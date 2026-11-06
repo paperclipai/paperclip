@@ -1,3 +1,5 @@
+import { createServer } from "node:http";
+import type { AddressInfo, Socket } from "node:net";
 import express from "express";
 import request from "supertest";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -48,6 +50,10 @@ function createApp(options: {
   return app;
 }
 
+function fetchReset(code: string) {
+  return new TypeError("private fetch message", { cause: Object.assign(new Error("private cause"), { code }) });
+}
+
 function jsonResponse(payload: unknown, status = 200) {
   return new Response(JSON.stringify(payload), {
     status,
@@ -78,9 +84,32 @@ describe("GET /api/cloud/stacks", () => {
     expect(JSON.stringify(warn.mock.calls)).not.toContain("private");
   });
 
-  it("classifies a fetch reset without retrying or caching the failure", async () => {
+  it.each(["ECONNRESET", "UND_ERR_SOCKET"])("retries one pre-response %s within the same deadline", async (code) => {
     const fetchImpl = vi.fn<typeof fetch>()
-      .mockRejectedValueOnce(new TypeError("private fetch message", { cause: Object.assign(new Error("private cause"), { code: "ECONNRESET" }) }))
+      .mockRejectedValueOnce(fetchReset(code))
+      .mockResolvedValueOnce(jsonResponse({ stacks: [] }));
+    const capture = vi.spyOn(sentry, "captureException").mockImplementation(() => {});
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+    const timeout = vi.spyOn(AbortSignal, "timeout");
+    const response = await request(createApp({ fetchImpl })).get("/api/cloud/stacks");
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({ stacks: [] });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(timeout).toHaveBeenCalledTimes(1);
+    expect(fetchImpl.mock.calls[1]![1]?.signal).toBe(fetchImpl.mock.calls[0]![1]?.signal);
+    expect(fetchImpl.mock.calls[1]![1]?.headers).toEqual(fetchImpl.mock.calls[0]![1]?.headers);
+    expect(capture).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith(
+      { cloudPortfolio: expect.objectContaining({ phase: "fetch", upstreamStatus: null, networkCode: code }) },
+      "Paperclip Cloud portfolio connection reset; retrying once",
+    );
+    expect(JSON.stringify(warn.mock.calls)).not.toContain("private");
+  });
+
+  it("reports a second consecutive fetch reset without caching the failure", async () => {
+    const fetchImpl = vi.fn<typeof fetch>()
+      .mockRejectedValueOnce(fetchReset("ECONNRESET"))
+      .mockRejectedValueOnce(fetchReset("ECONNRESET"))
       .mockResolvedValueOnce(jsonResponse({ stacks: [] }));
     const capture = vi.spyOn(sentry, "captureException").mockImplementation(() => {});
     const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
@@ -88,13 +117,77 @@ describe("GET /api/cloud/stacks", () => {
     const failure = await request(app).get("/api/cloud/stacks");
     expect(failure.status).toBe(502);
     expect(failure.body).toEqual({ error: "Paperclip Cloud portfolio request failed", code: "cloud_portfolio_upstream_error", details: { code: "cloud_portfolio_upstream_error" } });
-    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(capture).toHaveBeenCalledTimes(1);
     const error = capture.mock.calls[0]![0] as CloudPortfolioError;
     expect(error.diagnostics).toMatchObject({ phase: "fetch", upstreamStatus: null, networkCode: "ECONNRESET" });
+    expect(error.stack).toContain("routes/cloud.ts:");
+    expect(warn).toHaveBeenLastCalledWith({ cloudPortfolio: error.diagnostics }, "Paperclip Cloud portfolio request failed");
     expect(JSON.stringify(warn.mock.calls)).not.toContain("private");
     expect((await request(app).get("/api/cloud/stacks")).body).toEqual({ stacks: [] });
-    expect((await request(app).get("/api/cloud/stacks")).body).toEqual({ stacks: [] });
-    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+  });
+
+  it.each(["ECONNREFUSED", "ENOTFOUND", "UND_ERR_CONNECT_TIMEOUT", "unclassified"])("does not retry a %s fetch failure", async (code) => {
+    const fetchImpl = vi.fn<typeof fetch>().mockRejectedValue(fetchReset(code));
+    const capture = vi.spyOn(sentry, "captureException").mockImplementation(() => {});
+    vi.spyOn(logger, "warn").mockImplementation(() => {});
+    const response = await request(createApp({ fetchImpl })).get("/api/cloud/stacks");
+    expect(response.status).toBe(502);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect((capture.mock.calls[0]![0] as CloudPortfolioError).diagnostics).toMatchObject({
+      phase: "fetch", networkCode: code === "unclassified" ? "unknown" : code,
+    });
+  });
+
+  it("does not retry a reset that arrives after the deadline", async () => {
+    const signal = AbortSignal.abort(new DOMException("private timeout", "TimeoutError"));
+    vi.spyOn(AbortSignal, "timeout").mockReturnValue(signal);
+    const fetchImpl = vi.fn<typeof fetch>().mockRejectedValue(fetchReset("ECONNRESET"));
+    const capture = vi.spyOn(sentry, "captureException").mockImplementation(() => {});
+    vi.spyOn(logger, "warn").mockImplementation(() => {});
+    const response = await request(createApp({ fetchImpl })).get("/api/cloud/stacks");
+    expect(response.status).toBe(502);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect((capture.mock.calls[0]![0] as CloudPortfolioError).diagnostics).toMatchObject({ phase: "fetch", networkCode: "DEADLINE_EXCEEDED" });
+  });
+
+  it.each([
+    ["ECONNRESET", (socket: Socket) => socket.resetAndDestroy()],
+    ["UND_ERR_SOCKET", (socket: Socket) => socket.destroy()],
+  ] as const)("recovers from a real %s on the native fetch path", async (code, closeSocket) => {
+    let requests = 0;
+    const server = createServer((req, res) => {
+      requests++;
+      if (requests === 1) {
+        closeSocket(req.socket);
+        return;
+      }
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({ stacks: [{ slug: "current" }], authorization: req.headers.authorization }));
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    try {
+      const { port } = server.address() as AddressInfo;
+      const capture = vi.spyOn(sentry, "captureException").mockImplementation(() => {});
+      const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+      const app = createApp({
+        fetchImpl: fetch,
+        runtimeEnv: { ...cloudEnv, PAPERCLIP_CLOUD_API_ORIGIN: `http://127.0.0.1:${port}` },
+      });
+      const response = await request(app).get("/api/cloud/stacks");
+      expect(response.status).toBe(200);
+      expect(response.body).toEqual({ stacks: [{ slug: "current" }], authorization: "Bearer tenant-secret" });
+      expect(requests).toBe(2);
+      expect(capture).not.toHaveBeenCalled();
+      expect(warn).toHaveBeenCalledWith(
+        { cloudPortfolio: expect.objectContaining({ phase: "fetch", networkCode: code }) },
+        "Paperclip Cloud portfolio connection reset; retrying once",
+      );
+    } finally {
+      server.closeAllConnections();
+      await new Promise((resolve) => server.close(resolve));
+    }
   });
 
   it.each(["invalid_json", "body_reset", "deadline"] as const)("keeps body-phase %s failures separate from fetch failures", async (kind) => {

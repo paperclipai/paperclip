@@ -351,6 +351,44 @@ describe("MarkdownEditor", () => {
     mdxEditorMockState.suppressHtmlProcessingValues = [];
   });
 
+  it.each([false, true])("handles submission, newlines, and IME confirmation (raw fallback=%s)", async (fallback) => {
+    mdxEditorMockState.emitMountParseError = fallback;
+    const onSubmit = vi.fn();
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(<MarkdownEditor value="hello" onChange={() => {}} onSubmit={onSubmit} submitKey="enter" />);
+    });
+    await flush();
+    if (fallback) {
+      await vi.waitFor(() => expect(container.querySelector("textarea")).not.toBeNull());
+    }
+    const input = container.querySelector(fallback ? "textarea" : '[contenteditable="true"]')!;
+    for (const modifiers of [{ shiftKey: true }, { isComposing: true }, { keyCode: 229 }]) {
+      const event = new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true, ...modifiers });
+      await act(() => { input.dispatchEvent(event); });
+      expect(event.defaultPrevented).toBe(false);
+    }
+    expect(onSubmit).not.toHaveBeenCalled();
+    const enter = new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true });
+    await act(() => { input.dispatchEvent(enter); });
+    expect(enter.defaultPrevented).toBe(true);
+    expect(onSubmit).toHaveBeenCalledTimes(1);
+    await act(() => root.unmount());
+  });
+
+  it("keeps ordinary document editors on Command/Ctrl+Enter", async () => {
+    const onSubmit = vi.fn();
+    const root = createRoot(container);
+    await act(async () => { root.render(<MarkdownEditor value="hello" onChange={() => {}} onSubmit={onSubmit} />); });
+    await flush();
+    const input = container.querySelector('[contenteditable="true"]')!;
+    await act(() => { input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })); });
+    expect(onSubmit).not.toHaveBeenCalled();
+    await act(() => { input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, metaKey: true })); });
+    expect(onSubmit).toHaveBeenCalledTimes(1);
+    await act(() => root.unmount());
+  });
+
   it("applies async external value updates once the editor ref becomes ready", async () => {
     const root = createRoot(container);
 
@@ -936,6 +974,99 @@ describe("MarkdownEditor", () => {
     // stray `\<` would leak into a prompt.
     expect(handleChange).toHaveBeenCalledWith(value);
     expect(handleChange.mock.calls.every(([next]) => !String(next).includes("\\<"))).toBe(true);
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it.each([
+    ["Steer the current turn&#x20;", "Steer the current turn "],
+    ["Steer the current turn &#x20;\n", "Steer the current turn  \n"],
+    ["Use `&#x20;`&#x20;", "Use `&#x20;` "],
+    ["First line&#x20;\nsecond&#x20;\n", "First line&#x20;\nsecond \n"],
+    ["**bold&#x20;**&#x20;\n", "**bold&#x20;** \n"],
+    ["First line&#x20;\nsecond", "First line&#x20;\nsecond"],
+    ["**bold&#x20;**\n", "**bold&#x20;**\n"],
+    ["Use \\&#x20;", "Use \\&#x20;"],
+    ["```text\n&#x20;", "```text\n&#x20;"],
+    ["    &#x20;", "    &#x20;"],
+  ])("stores trailing editor spaces without changing literal entities: %s", async (exported, stored) => {
+    mdxEditorMockState.emitMountChange = exported;
+    const handleChange = vi.fn();
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(<MarkdownEditor value="Draft" onChange={handleChange} />);
+    });
+    await flush();
+
+    expect(handleChange).toHaveBeenCalledWith(stored);
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("stores intraword underscores as typed instead of the exporter's escaped form", async () => {
+    const value = "Your final answer must be exactly E2E_ASK_12_journey_1793913565974_507b01b8.";
+    // The real exporter escapes every literal underscore, including inside words.
+    mdxEditorMockState.emitMountChange =
+      "Your final answer must be exactly E2E\\_ASK\\_12\\_journey\\_1793913565974\\_507b01b8.";
+    const handleChange = vi.fn();
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <MarkdownEditor value={value} onChange={handleChange} placeholder="Markdown body" />,
+      );
+    });
+
+    await flush();
+
+    expect(handleChange).toHaveBeenCalledWith(value);
+    expect(handleChange.mock.calls.every(([next]) => !String(next).includes("\\_"))).toBe(true);
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("round-trips code with its backslashes while storing prose underscores as typed", async () => {
+    const stored = "Run snake_case:\n\n```py\nprint('a\\_b')\n```\n\nThen `keep\\_this` and \\_\\_init\\_\\_.";
+    // The exporter escapes the prose underscore; code and the boundary run are as typed.
+    mdxEditorMockState.emitMountChange =
+      "Run snake\\_case:\n\n```py\nprint('a\\_b')\n```\n\nThen `keep\\_this` and \\_\\_init\\_\\_.";
+    const handleChange = vi.fn();
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(<MarkdownEditor value={stored} onChange={handleChange} placeholder="Markdown body" />);
+    });
+
+    await flush();
+
+    expect(handleChange).toHaveBeenCalledWith(stored);
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("keeps a code span after an escaped HTML-like tag byte-identical", async () => {
+    const stored = "<div>\n`a\\_b` and snake_case";
+    // The exporter escapes the `<` (reversed on storage) and the prose underscore.
+    mdxEditorMockState.emitMountChange = "\\<div>\n`a\\_b` and snake\\_case";
+    const handleChange = vi.fn();
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(<MarkdownEditor value={stored} onChange={handleChange} placeholder="Markdown body" />);
+    });
+
+    await flush();
+
+    expect(handleChange).toHaveBeenCalledWith(stored);
 
     await act(async () => {
       root.unmount();
@@ -1593,6 +1724,7 @@ describe("MarkdownEditor", () => {
       },
     ],
     matchText = "Paperclip App",
+    onSubmit?: () => void,
   ): Promise<{ option: HTMLButtonElement; root: ReturnType<typeof createRoot>; menu: HTMLElement }> {
     const root = createRoot(container);
 
@@ -1602,6 +1734,8 @@ describe("MarkdownEditor", () => {
           value="@Pap"
           onChange={handleChange}
           mentions={mentions}
+          onSubmit={onSubmit}
+          submitKey="enter"
         />,
       );
     });
@@ -1632,6 +1766,21 @@ describe("MarkdownEditor", () => {
     expect(menu).toBeTruthy();
     return { option: option!, root, menu: menu! };
   }
+
+  it("accepts a mention on Enter before submitting the message", async () => {
+    const onSubmit = vi.fn();
+    const handleChange = vi.fn();
+    const { root } = await openMentionMenuFor(handleChange, undefined, undefined, onSubmit);
+    const editable = container.querySelector('[contenteditable="true"]')!;
+    const shiftEnter = new KeyboardEvent("keydown", { key: "Enter", shiftKey: true, bubbles: true, cancelable: true });
+    await act(() => { editable.dispatchEvent(shiftEnter); });
+    expect(shiftEnter.defaultPrevented).toBe(false);
+    expect(handleChange).not.toHaveBeenCalled();
+    await act(() => { editable.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })); });
+    expect(onSubmit).not.toHaveBeenCalled();
+    expect(handleChange).toHaveBeenCalled();
+    await act(() => { root.unmount(); });
+  });
 
   it("accepts mention selection from a touch tap", async () => {
     const handleChange = vi.fn();
