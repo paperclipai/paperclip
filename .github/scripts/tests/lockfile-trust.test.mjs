@@ -8,6 +8,7 @@ import {
   classifyPullRequest,
   findDependabotLockCommit,
   findMergedDependabotPull,
+  isDependabotCommit,
   isGitHubSignedCommit,
 } from '../lockfile-trust.mjs';
 
@@ -82,15 +83,30 @@ test('finds only verified Dependabot commits that hold the exact lockfile', () =
   const blobs = { a: 'lock-1', b: 'lock-2', c: 'lock-2', d: 'lock-2' };
   const lockBlobAt = (sha) => blobs[sha] ?? null;
   const commits = [
-    { sha: 'a', login: 'dependabot[bot]', verified: true },
-    { sha: 'b', login: 'dependabot[bot]', verified: false },
-    { sha: 'c', login: 'someuser', verified: true },
+    { sha: 'a', login: 'dependabot[bot]', committer: 'web-flow', verified: true },
+    { sha: 'b', login: 'dependabot[bot]', committer: 'web-flow', verified: false },
+    { sha: 'c', login: 'someuser', committer: 'web-flow', verified: true },
   ];
   assert.equal(findDependabotLockCommit({ lockBlob: 'lock-2', commits, lockBlobAt }), null);
   assert.equal(findDependabotLockCommit({ lockBlob: 'lock-1', commits, lockBlobAt }), 'a');
   assert.equal(findDependabotLockCommit({ lockBlob: 'lock-2', lockBlobAt,
-    commits: [...commits, { sha: 'd', login: 'dependabot[bot]', verified: true }] }), 'd');
+    commits: [...commits, { sha: 'd', login: 'dependabot[bot]', committer: 'web-flow', verified: true }] }), 'd');
   assert.equal(findDependabotLockCommit({ lockBlob: null, commits, lockBlobAt }), null);
+});
+
+test('requires a Dependabot author with GitHub as the verified committer', () => {
+  assert.equal(isDependabotCommit({ login: 'dependabot[bot]', committer: 'web-flow', verified: true }), true);
+  // A collaborator can sign with their own key and set Dependabot as the author.
+  assert.equal(isDependabotCommit({ login: 'dependabot[bot]', committer: 'someuser', verified: true }), false);
+  assert.equal(isDependabotCommit({ login: 'dependabot[bot]', committer: null, verified: true }), false);
+  assert.equal(isDependabotCommit({ login: 'dependabot[bot]', committer: 'web-flow', verified: false }), false);
+  assert.equal(isDependabotCommit({ login: 'someuser', committer: 'web-flow', verified: true }), false);
+});
+
+test('ignores a lockfile commit with a spoofed Dependabot author', () => {
+  const lockBlobAt = () => 'lock-1';
+  const spoofed = [{ sha: 'x', login: 'dependabot[bot]', committer: 'someuser', verified: true }];
+  assert.equal(findDependabotLockCommit({ lockBlob: 'lock-1', commits: spoofed, lockBlobAt }), null);
 });
 
 test('finds the merged Dependabot pull request for a master commit', () => {
@@ -104,9 +120,9 @@ test('finds the merged Dependabot pull request for a master commit', () => {
 });
 
 test('trusts only merge commits that GitHub created and signed', () => {
-  assert.equal(isGitHubSignedCommit({ committer: { login: 'web-flow' }, commit: { verification: { verified: true } } }), true);
-  assert.equal(isGitHubSignedCommit({ committer: { login: 'web-flow' }, commit: { verification: { verified: false } } }), false);
-  assert.equal(isGitHubSignedCommit({ committer: { login: 'someuser' }, commit: { verification: { verified: true } } }), false);
+  assert.equal(isGitHubSignedCommit({ committer: { login: 'web-flow' }, commit: { verification: { committer: 'web-flow', verified: true } } }), true);
+  assert.equal(isGitHubSignedCommit({ committer: { login: 'web-flow' }, commit: { verification: { committer: 'web-flow', verified: false } } }), false);
+  assert.equal(isGitHubSignedCommit({ committer: { login: 'someuser' }, commit: { verification: { committer: 'web-flow', verified: true } } }), false);
   assert.equal(isGitHubSignedCommit(null), false);
 });
 
@@ -146,7 +162,7 @@ test('pr command admits a Dependabot lockfile after a later non-lockfile commit'
   const result = runPrCheck((commit) => {
     const sha = commit('dependabot', { 'pnpm-lock.yaml': 'lock: dependabot\n', 'package.json': '{"zod":"4.6.6"}\n' });
     commit('maintainer', { 'notes.md': 'fix\n' });
-    return { author: 'dependabot[bot]', commits: [{ sha, login: 'dependabot[bot]', verified: true }] };
+    return { author: 'dependabot[bot]', commits: [{ sha, login: 'dependabot[bot]', committer: 'web-flow', verified: true }] };
   });
   assert.equal(result.status, 0, result.stdout);
   assert.match(result.output, /^writer=dependabot$/m);
@@ -157,9 +173,18 @@ test('pr command blocks a lockfile edited after the Dependabot commit', () => {
     const sha = commit('dependabot', { 'pnpm-lock.yaml': 'lock: dependabot\n' });
     const edit = commit('maintainer', { 'pnpm-lock.yaml': 'lock: edited\n' });
     return { author: 'dependabot[bot]', commits: [
-      { sha, login: 'dependabot[bot]', verified: true },
-      { sha: edit, login: 'maintainer', verified: true },
+      { sha, login: 'dependabot[bot]', committer: 'web-flow', verified: true },
+      { sha: edit, login: 'maintainer', committer: 'web-flow', verified: true },
     ] };
+  });
+  assert.equal(result.status, 1);
+  assert.match(result.stdout, /Untrusted lockfile change/);
+});
+
+test('pr command blocks a lockfile commit whose Dependabot author another committer signed', () => {
+  const result = runPrCheck((commit) => {
+    const sha = commit('maintainer', { 'pnpm-lock.yaml': 'lock: spoofed\n' });
+    return { author: 'dependabot[bot]', commits: [{ sha, login: 'dependabot[bot]', committer: 'maintainer', verified: true }] };
   });
   assert.equal(result.status, 1);
   assert.match(result.stdout, /Untrusted lockfile change/);

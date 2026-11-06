@@ -29,19 +29,31 @@ export const REPORT_LOCK_FILES = ['tests/runner-e2e/report-lock.json', 'tests/ru
 export const DEPENDABOT_LOGIN = 'dependabot[bot]';
 export const REFRESH_BRANCH = 'chore/refresh-lockfile';
 export const REFRESH_PR_AUTHOR = 'github-actions[bot]';
+// GitHub commits and signs Dependabot commits as web-flow. A verified signature proves only who
+// committed, and anyone can set the author field, so require GitHub as the committer as well.
+export const GITHUB_COMMITTER_LOGIN = 'web-flow';
 
 const RECREATE_HINT = 'Comment `@dependabot recreate` so Dependabot rebuilds the lockfile, instead of merging or editing it by hand.';
 
 /**
- * Find a commit in the pull request that is authored by Dependabot, carries a verified signature,
- * and holds exactly the lockfile under review.
- * @param {{ lockBlob: string | null, commits: Array<{ sha: string, login: string | null, verified: boolean }>,
+ * True for a commit that Dependabot authored and GitHub committed and signed.
+ * @param {{ login: string | null, committer: string | null, verified: boolean }} commit
+ */
+export function isDependabotCommit(commit) {
+  return commit.login === DEPENDABOT_LOGIN && commit.committer === GITHUB_COMMITTER_LOGIN && commit.verified === true;
+}
+
+/**
+ * Find a Dependabot commit (see isDependabotCommit) in the pull request that holds exactly the
+ * lockfile under review.
+ * @param {{ lockBlob: string | null,
+ *   commits: Array<{ sha: string, login: string | null, committer: string | null, verified: boolean }>,
  *   lockBlobAt: (sha: string) => string | null }} input
  */
 export function findDependabotLockCommit({ lockBlob, commits, lockBlobAt }) {
   if (!lockBlob) return null;
   for (const commit of [...commits].reverse()) {
-    if (commit.login !== DEPENDABOT_LOGIN || commit.verified !== true) continue;
+    if (!isDependabotCommit(commit)) continue;
     if (lockBlobAt(commit.sha) === lockBlob) return commit.sha;
   }
   return null;
@@ -85,7 +97,7 @@ export function classifyPullRequest({ changedPaths, author, headRepo, baseRepo, 
  * @param {any} commit Response of GET /repos/{repo}/commits/{sha}.
  */
 export function isGitHubSignedCommit(commit) {
-  return commit?.committer?.login === 'web-flow' && commit?.commit?.verification?.verified === true;
+  return commit?.committer?.login === GITHUB_COMMITTER_LOGIN && commit?.commit?.verification?.verified === true;
 }
 
 /**
@@ -112,7 +124,7 @@ function ghJsonLines(endpoint, jq) {
 
 function pullCommits(repository, number) {
   return ghJsonLines(`repos/${repository}/pulls/${number}/commits?per_page=100`,
-    '.[] | {sha, login: .author.login, verified: .commit.verification.verified}');
+    '.[] | {sha, login: .author.login, committer: .committer.login, verified: .commit.verification.verified}');
 }
 
 function writeOutputs(values) {
