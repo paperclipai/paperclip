@@ -372,6 +372,12 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     // Re-register with an existing durable deadline inside the coalescing
     // window. A company hint must not make that real deadline wait one second.
     await coordinator!.stop(); coordinator = undefined;
+    let deadlineWakeAt: number | undefined;
+    const originalWakeup = wakeup.getMockImplementation()!;
+    wakeup.mockImplementation(async (...args) => {
+      deadlineWakeAt ??= Date.now();
+      return originalWakeup(...args);
+    });
     const dueAt = Date.now() + 500;
     await db.update(statusCards).set({ nextEvalAt: new Date(dueAt), nextEvalReason: "refresh" }).where(eq(statusCards.id, other.id));
     await start(service); await flush();
@@ -379,9 +385,10 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     await issueService(db).addComment((await db.select({ id: issues.id }).from(issues).where(eq(issues.companyId, originalCompany)))[0]!.id,
       "More changes while another company is due", { userId: "board-user" });
     await flush();
-    await vi.advanceTimersByTimeAsync(500); await flush();
+    await vi.advanceTimersByTimeAsync(Math.max(0, dueAt - Date.now())); await flush();
     await vi.waitFor(() => expect(wakeup).toHaveBeenCalledOnce());
-    expect(Date.now()).toBeLessThan(dueAt + 500);
+    expect(deadlineWakeAt).toBeGreaterThanOrEqual(dueAt);
+    expect(deadlineWakeAt).toBeLessThan(dueAt + 500);
     expect(wakeup.mock.calls[0]![0]).not.toBe(originalAgent);
     const generated = (await statusCardService(db).getById(other.id))!;
     expect(generated.generatingIssueId).toBeTruthy();
