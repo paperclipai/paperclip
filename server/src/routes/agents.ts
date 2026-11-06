@@ -2170,7 +2170,7 @@ export function agentRoutes(
   }
 
   async function assertBuiltinPoolAdapter(companyId: string, adapterType: string, binding: AiRuntimeConnectionBinding | undefined) {
-    if (adapterType === "paperclip_runner" || binding?.mode !== "router") return;
+    if (adapterType === "paperclip_runner" || adapterType === "claude_local" || binding?.mode !== "router") return;
     const [pool] = await db.select({ pluginKey: aiConnectionPools.pluginKey }).from(aiConnectionPools).where(and(
       eq(aiConnectionPools.companyId, companyId), eq(aiConnectionPools.id, binding.connectionId),
     ));

@@ -73,7 +73,7 @@ describePostgres("agent configuration save latency", () => {
     if (home) await rm(home, { recursive: true, force: true });
   });
 
-  it("rejects the built-in pool for a legacy adapter with migration guidance", async () => {
+  it("rejects a Codex-only pool for a legacy Claude adapter", async () => {
     const member = { id: randomUUID(), binding: { mode: "delegated" as const, provider: "openai" as const, method: "api_key" as const, ...account },
       profile: { provider: "codex" as const, model: "gpt-5.6-sol" } };
     const pool = await aiConnectionRouterService(db).save(BUILTIN_AI_FAILOVER_ROUTER_KEY, { companyId: agent.companyId,
@@ -81,8 +81,23 @@ describePostgres("agent configuration save latency", () => {
     await db.update(agents).set({ adapterType: "claude_local", adapterConfig: { model: "claude-sonnet-5" } }).where(eq(agents.id, agent.id));
     const response = await request(app).patch(`/api/agents/${agent.id}`).send({ runtimeConfig: { aiConnection: { mode: "router", connectionId: pool.id } } });
     expect(response.status, JSON.stringify(response.body)).toBe(422);
-    expect(response.body.error).toMatch(/migrate this agent to Paperclip Runner/i);
+    expect(response.body.error).toMatch(/no compatible harness/i);
     expect((await readAgent()).runtimeConfig.aiConnection).toBeUndefined();
+  });
+
+  it("allows a legacy Claude agent to bind a pool containing a permitted Claude account", async () => {
+    const claude = await aiConnectionService(db).save(agent.companyId, userId, {
+      provider: "anthropic", method: "subscription", ownership: "personal", name: "Claude account", loginSessionId: "fixture", agentIds: [agent.id], allAgents: false,
+    }, "fixture-claude-key");
+    const member = { id: randomUUID(), binding: { mode: "delegated" as const, provider: "anthropic" as const, method: "subscription" as const, ...claude },
+      profile: { provider: "acpx" as const, acpxAgent: "claude" as const, model: "claude-sonnet-5" } };
+    const pool = await aiConnectionRouterService(db).save(BUILTIN_AI_FAILOVER_ROUTER_KEY, { companyId: agent.companyId,
+      config: { name: "Claude pool", enabled: true, mode: "failover", thresholdPercent: 90, members: [member] } }, userId);
+    await db.update(agents).set({ adapterType: "claude_local", adapterConfig: { model: "claude-sonnet-5" } }).where(eq(agents.id, agent.id));
+    const response = await request(app).patch(`/api/agents/${agent.id}`).send({ runtimeConfig: { aiConnection: { mode: "router", connectionId: pool.id } } });
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    expect((await readAgent()).runtimeConfig.aiConnection).toEqual({ mode: "router", connectionId: pool.id });
+    expect(globalThis.fetch).not.toHaveBeenCalled();
   });
 
   it("saves an installed healthy account without allocating a computer or sending a prompt", async () => {

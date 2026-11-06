@@ -37,6 +37,8 @@ export function poolMemberRuntimeConfig(member: AiConnectionPoolMember, adapterT
     : provider === "xai" ? profile.provider === "acpx" && profile.acpxAgent === "grok"
     : profile.provider === "opencode";
   if (!expected) throw unprocessable("Pool member harness does not match its account");
+  if (adapterType === "claude_local" && (provider !== "anthropic" || profile.provider !== "acpx" || profile.acpxAgent !== "claude"))
+    throw unprocessable("Claude agents can use only Claude accounts in this pool");
   const supportsModel = (value: string) => provider === "openai" ? isCodexLocalKnownModel(value)
     : provider === "anthropic" ? claudeModels.some((m) => m.id === value)
     : provider === "xai" ? grokModels.some((m) => m.id === value) : value.startsWith("openrouter/");
@@ -262,11 +264,14 @@ export function aiConnectionRouterService(db: Db, workerManager?: PluginWorkerMa
     const validateSelection = async (selection: AiConnectionRouterSelection, client = db) => aiConnectionService(client).select({ companyId: input.companyId, agentId: input.agentId, userId: input.userId, adapterType: input.adapterType, binding: selection.binding, model: selection.runtimeConfig.model, runnerProvider: selection.runtimeConfig.provider, acpxAgent: selection.runtimeConfig.acpxAgent });
     if (input.persisted) {
       if (input.persisted.poolId !== input.poolId) throw unprocessable("Persisted pool selection does not match this run");
-      if (input.adapterType !== "paperclip_runner") {
+      if (input.adapterType !== "paperclip_runner" && input.adapterType !== "claude_local") {
         const [pool] = await db.select({ pluginKey: aiConnectionPools.pluginKey }).from(aiConnectionPools)
           .where(and(eq(aiConnectionPools.companyId, input.companyId), eq(aiConnectionPools.id, input.poolId)));
         if (pool?.pluginKey === BUILTIN_AI_FAILOVER_ROUTER_KEY) throw unprocessable("The built-in failover pool requires the Paperclip runner; migrate this agent before using the pool");
       }
+      if (input.adapterType === "claude_local" && (input.persisted.binding.provider !== "anthropic" ||
+          input.persisted.runtimeConfig.provider !== "acpx" || input.persisted.runtimeConfig.acpxAgent !== "claude"))
+        throw unprocessable("Claude agents can use only Claude accounts in this pool");
       if (input.requireExisting && (input.persisted.binding.mode === "responsible_user" || input.persisted.binding.grantId !== input.existingGrantId)) throw unprocessable("Reset this task session before adopting the connection pool");
       const [pin] = await db.select().from(aiConnectionTaskPins).where(pinWhere);
       // Uninstall can remove the virtual connection. Server-owned native recovery
@@ -283,7 +288,7 @@ export function aiConnectionRouterService(db: Db, workerManager?: PluginWorkerMa
       const row = record.pool;
       if (!row.config.enabled) throw unprocessable("Enable the selected connection pool");
       const builtin = row.pluginKey === BUILTIN_AI_FAILOVER_ROUTER_KEY;
-      if (builtin && input.adapterType !== "paperclip_runner") throw unprocessable("The built-in failover pool requires the Paperclip runner; migrate this agent before using the pool");
+      if (builtin && input.adapterType !== "paperclip_runner" && input.adapterType !== "claude_local") throw unprocessable("The built-in failover pool requires the Paperclip runner; migrate this agent before using the pool");
       if (!builtin) await enabled();
       if (builtin && row.config.mode !== "failover") throw unprocessable("Invalid built-in pool mode");
       const plugin = builtin ? null : await owner(row.pluginKey);

@@ -2,7 +2,7 @@
 
 The built-in **Ordered failover pool** is available without a router plugin or
 the experimental router flag. It is configured with existing AI connections,
-ordered by preference and bound to a Paperclip Runner agent. On a confirmed
+ordered by preference and bound to a Paperclip Runner or legacy Claude agent. On a confirmed
 account allowance exhaustion, Paperclip records a company-scoped cooldown for
 the credential and skips it until its reset time. A known provider reset is
 preserved; without one the default cooldown is one hour. Accounts sharing the
@@ -17,6 +17,10 @@ scoped limits, missing authorization and unsuccessful usage checks do not block
 selection. This observation is a momentary preflight; it cannot guarantee that
 capacity remains available when the provider starts. Existing task pins are not
 changed by this check.
+
+Legacy `claude_local` agents can select only Claude accounts from a pool;
+Codex and other providers require Paperclip Runner. This supports selection
+before a task starts, not automatic takeover of an interrupted Claude run.
 
 An automatic continuation must prove that the prior execution is stopped and
 that workspace, history and action outcomes are safe to continue. When that
