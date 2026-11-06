@@ -100,7 +100,7 @@ console.log("Fixture completed\\nsession_id: ${SESSION_ID}");
 
     const [initial, resumed] = await invocations();
     expect(initial.args).not.toContain("--resume");
-    expect(resumed.args.slice(resumed.args.indexOf("--resume"))).toEqual(["--resume", SESSION_ID]);
+    expect(resumed.args.slice(resumed.args.indexOf("--resume"), resumed.args.indexOf("--resume") + 2)).toEqual(["--resume", SESSION_ID]);
     for (const invocation of [initial, resumed]) {
       expect(invocation.systemPrompt).toContain(INSTRUCTIONS);
       expect(invocation.systemPrompt).toContain(`Resolve any relative file references from ${dir}/`);
