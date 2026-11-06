@@ -446,6 +446,9 @@ jobs:
       - name: Typecheck workspaces whose build scripts skip TypeScript
         run: pnpm run typecheck:build-gaps
 
+      - name: Typecheck test files that no build reads
+        run: node scripts/typecheck-test-programs.mjs --low-memory
+
       - name: Typecheck the server in low-memory layers
         env:
           PAPERCLIP_TYPECHECK_LOW_MEMORY: "1"

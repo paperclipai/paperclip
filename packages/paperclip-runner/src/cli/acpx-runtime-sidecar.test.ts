@@ -449,7 +449,7 @@ describe("qualified ACPX runtime sidecar", () => {
         // The receipt hashes the actual emitted input, not a second normalization.
         await loadActualToolCommands(tools).resolve({ callId: "3", turnId: "test-turn", result: { accepted: true }, error: null });
       }
-      const body = await (await response).json();
+      const body = await (await response).json() as ToolCallResponseBody;
       const receipt = readNativeSemanticReceipt({ contents: body.result.content });
       expect(receipt).toMatchObject({ schema: "paperclip.semantic_tool_receipt.v2", inputSha256: semanticInputSha256(raw),
         normalizedInputSha256: mode === "forwarded" ? semanticInputSha256(emitted[0].input) : null,
@@ -490,7 +490,7 @@ describe("qualified ACPX runtime sidecar", () => {
         expect(validatePrpStructuredRunResult(emitted[1].input).ok).toBe(true);
         await commands.resolve({ callId: "3", turnId: "test-turn", result: { accepted: true }, error: null });
       }
-      const body = await (await response).json();
+      const body = await (await response).json() as ToolCallResponseBody;
       const receipt = readNativeSemanticReceipt({ contents: body.result.content });
       expect(receipt).toMatchObject({ inputSha256: semanticInputSha256(raw),
         normalizedInputSha256: eligible ? semanticInputSha256(emitted[1].input) : null, outcome: eligible ? "returned" : "error" });
@@ -517,7 +517,7 @@ describe("qualified ACPX runtime sidecar", () => {
       await vi.waitFor(() => expect(emitted).toHaveLength(1));
       await expect(handler(call)).rejects.toThrow("duplicated");
     } finally { controller.abort(); }
-    expect((await result).message).toContain("cancelled");
+    expect((await result as Error).message).toContain("cancelled");
     expect(capture).not.toHaveBeenCalled();
     expect(tools.size).toBe(0);
     expect(emitted[0].operationId).toBe("get_task_context");
@@ -547,7 +547,7 @@ describe("qualified ACPX runtime sidecar", () => {
     const bridge = await startRunnerToolBridge({ handler, captureSemanticReceipt: () => () => {} });
     try {
       const body = await (await fetch(bridge.url, { method: "POST", headers: { Authorization: `Bearer ${bridge.secret}`, "Content-Type": "application/json" },
-        body: JSON.stringify(request) })).json();
+        body: JSON.stringify(request) })).json() as ToolCallResponseBody;
       expect(body.result.isError).toBe(true);
       expect(body.result.content[0].text).toBe("ACPX semantic tool call exceeds the sidecar frame limit");
       expect(readNativeSemanticReceipt({ contents: body.result.content })).toMatchObject({ outcome: "error", normalizedInputSha256: null });
@@ -561,7 +561,7 @@ describe("qualified ACPX runtime sidecar", () => {
     } finally { await bridge.close(); }
   });
 
-  it.each(["backpressure", "throws"])("uses actual writer acceptance, preserving %s semantics", async mode => {
+  it.each(["backpressure", "throws"] as const)("uses actual writer acceptance, preserving %s semantics", async mode => {
     const wire = loadActualSidecarWriter(mode);
     const tools = new Map<string, any>(), emitted: any[] = [], commit = vi.fn(), capture = vi.fn((_input: unknown) => commit);
     const raw = { reportedWorkDisposition: "done", summary: "Complete", evidence: [], verification: [],
@@ -727,7 +727,7 @@ describe("qualified ACPX runtime sidecar", () => {
           expect(Buffer.byteLength(JSON.stringify(JSON.parse(wire.writes[0]!).payload))).toBeGreaterThan(256 * 1024);
           expect(Buffer.byteLength(wire.writes[0]!)).toBeLessThan(ACPX_SIDECAR_MAX_FRAME_BYTES);
         }
-        const body = await (await response).json();
+        const body = await (await response).json() as ToolCallResponseBody;
         if (mode === "error") {
           expect(JSON.stringify(body)).not.toContain(credentialCanary);
           expect(JSON.stringify(body)).toContain("[REDACTED]");
@@ -820,8 +820,9 @@ describe("qualified ACPX runtime sidecar", () => {
     const sanitize = new Function("boundedOptionalText", "stableProviderIdentity", `return event => {${source.slice(start, end)} return null;}`)(
       (value: string) => value, (value: string) => `stable-${value}`,
     );
-    const projection = createPiMessageProjection<{ type: string; text: string; stream: string; messageId: string; meta: Record<string, string> }>();
-    const event = (kind: string) => ({ type: "text_delta", text: "", stream: "output", messageId: `pi-message-${"a".repeat(64)}`,
+    type PiTextFrame = { type: string; text: string; stream: string; messageId: string; meta: Record<string, string> };
+    const projection = createPiMessageProjection<PiTextFrame>();
+    const event = (kind: string): PiTextFrame => ({ type: "text_delta", text: "", stream: "output", messageId: `pi-message-${"a".repeat(64)}`,
       meta: { origin: "pi-native-assistant", source: "pi-rpc-message-v1", kind, secret: "DROP_ME" } });
     const startFrame = sanitize(projection.normalize(event("start")));
     const endFrame = sanitize(projection.normalize(event("end:toolUse")));
@@ -830,7 +831,7 @@ describe("qualified ACPX runtime sidecar", () => {
     expect(startFrame.messageId).toBe(endFrame.messageId);
     expect(JSON.stringify([startFrame, endFrame])).not.toContain("DROP_ME");
     projection.settle();
-    const loaded = createPiMessageProjection<ReturnType<typeof event>>();
+    const loaded = createPiMessageProjection<PiTextFrame>();
     const history = sanitize(loaded.normalize({ ...event("history"), messageId: `pi-history-message-${"b".repeat(64)}`,
       text: "old reply", meta: { origin: "pi-history-assistant", source: "pi-session-history-v1", kind: "history" } }));
     expect(history).toMatchObject({ text: "old reply", piMessageHistory: true }); loaded.settle();
@@ -1743,6 +1744,8 @@ class SidecarProcess {
     await Promise.race([exit, timeout]);
   }
 }
+
+type ToolCallResponseBody = { result: { content: Array<{ text: string }>; isError?: boolean } };
 
 function loadWaitForTool(input: {
   tools: Map<string, unknown>;

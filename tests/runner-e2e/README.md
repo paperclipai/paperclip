@@ -675,8 +675,10 @@ before execution.
 
 The idle chat cell asks the agent to delegate one welcome note to a named worker and
 report its result without another user message. A bounded local file read in
-the managed project workspace delays completion until the source chat is positively
-observed idle, with a three-minute handoff setup budget and a four-minute worker
+the worker task's own isolated task directory delays completion until the source
+chat is positively observed idle. The wait command names only cwd-relative files,
+because native providers cannot read agent homes or unconfigured project roots. The
+setup uses a three-minute handoff setup budget and a four-minute worker
 wait limit. The brief is then released, the worker must save the output and
 reach Done. Its output must include the start time supplied only in that brief, allowing
 ordinary numeric and written forms. That check runs after completion observation
@@ -2137,7 +2139,10 @@ retirement.
 Launcher cancellation first signals its outer group, so Playwright and the wrapper
 own graceful server shutdown. It allows 45 seconds for that chain before bounded
 5-second forced cleanup of revalidated descendants. Normal launcher exit uses the
-same retained descendant inventory. Zombies count as stopped; an unavailable or
+same retained descendant inventory. Zombies count as stopped, including when
+macOS answers a group signal with EPERM because every remaining member is an
+unreaped zombie; EPERM stays fatal while a fresh inspection shows a running
+member. An unavailable or
 uncertain identity inspection triggers bounded direct-child-only retirement and
 still fails the tree audit. Failed cleanup preserves the temporary state. Graceful
 owners are selected from the same validated table used for delivery; ESRCH allows
