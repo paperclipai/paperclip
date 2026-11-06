@@ -1132,12 +1132,28 @@ export function selectSessionCompactionRunColumns(unsafeTextProjection: boolean)
 /**
  * Postgres raises SQLSTATE 22021 (`invalid byte sequence for encoding "UTF8"`)
  * when a query decodes invalid bytes stored in a legacy SQL_ASCII cluster.
+ *
+ * Drizzle re-throws driver errors inside a `DrizzleQueryError`, so the real
+ * `22021` can sit below the top-level error. Walk the `.cause` chain the same
+ * way `isIssuePrefixConflict` does; the `seen` set guards against a
+ * self-referential chain.
  */
 export function isInvalidEncodingByteSequenceError(err: unknown): boolean {
-  if (typeof err !== "object" || err === null) return false;
-  if ((err as { code?: unknown }).code === "22021") return true;
-  const message = (err as { message?: unknown }).message;
-  return typeof message === "string" && message.includes("invalid byte sequence for encoding");
+  const seen = new Set<unknown>();
+  let current: unknown = err;
+  while (typeof current === "object" && current !== null && !seen.has(current)) {
+    seen.add(current);
+    const maybe = current as { code?: unknown; message?: unknown; cause?: unknown };
+    if (maybe.code === "22021") return true;
+    if (
+      typeof maybe.message === "string" &&
+      maybe.message.includes("invalid byte sequence for encoding")
+    ) {
+      return true;
+    }
+    current = maybe.cause;
+  }
+  return false;
 }
 
 /** Run retrieval and session persistence bound to one service database. */

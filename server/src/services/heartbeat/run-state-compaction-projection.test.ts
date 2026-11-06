@@ -1,7 +1,9 @@
 import { QueryBuilder } from "drizzle-orm/pg-core";
-import { describe, expect, it } from "vitest";
-import { heartbeatRuns } from "@paperclipai/db";
+import { describe, expect, it, vi } from "vitest";
+import type { Db } from "@paperclipai/db";
+import { agents, heartbeatRuns } from "@paperclipai/db";
 import {
+  createHeartbeatRunState,
   isInvalidEncodingByteSequenceError,
   selectSessionCompactionRunColumns,
 } from "./run-state.js";
@@ -90,6 +92,27 @@ describe("isInvalidEncodingByteSequenceError", () => {
     ).toBe(true);
   });
 
+  it("walks the cause chain Drizzle wraps the driver error in", () => {
+    const wrapped = new Error("Failed query") as Error & { cause?: unknown };
+    wrapped.cause = { code: "22021" };
+    expect(isInvalidEncodingByteSequenceError(wrapped)).toBe(true);
+  });
+
+  it("walks nested cause chains that only carry the message", () => {
+    const inner = new Error('invalid byte sequence for encoding "UTF8": 0xe2');
+    const middle = new Error("Failed query") as Error & { cause?: unknown };
+    middle.cause = inner;
+    const outer = new Error("heartbeat setup failed") as Error & { cause?: unknown };
+    outer.cause = middle;
+    expect(isInvalidEncodingByteSequenceError(outer)).toBe(true);
+  });
+
+  it("terminates on a self-referential cause chain", () => {
+    const cyclic: { code: string; cause?: unknown } = { code: "23505" };
+    cyclic.cause = cyclic;
+    expect(isInvalidEncodingByteSequenceError(cyclic)).toBe(false);
+  });
+
   it("does not match unrelated errors", () => {
     expect(isInvalidEncodingByteSequenceError(null)).toBe(false);
     expect(isInvalidEncodingByteSequenceError(undefined)).toBe(false);
@@ -97,5 +120,74 @@ describe("isInvalidEncodingByteSequenceError", () => {
     expect(
       isInvalidEncodingByteSequenceError(new Error("connection reset")),
     ).toBe(false);
+  });
+});
+
+const compactionAgent = {
+  id: "agent-compaction",
+  adapterType: "codex_local",
+  runtimeConfig: {
+    heartbeat: { sessionCompaction: { enabled: true, maxSessionRuns: 8 } },
+  },
+} as unknown as typeof agents.$inferSelect;
+
+/**
+ * Minimal run-state database: the encoding probe answers, and the run-history
+ * select either resolves to no rows or rejects with `selectFailure`.
+ */
+function compactionDatabase(serverEncoding: string, selectFailure?: unknown) {
+  const execute = vi.fn(async () => [{ server_encoding: serverEncoding }]);
+  const select = vi.fn(() => {
+    const query = {
+      from: () => query,
+      where: () => query,
+      orderBy: () => query,
+      limit: () => query,
+      then: (resolve: (rows: unknown[]) => unknown, reject: (err: unknown) => unknown) =>
+        (selectFailure === undefined
+          ? Promise.resolve([] as unknown[])
+          : Promise.reject(selectFailure)
+        ).then(resolve, reject),
+    };
+    return query;
+  });
+  return { db: { execute, select } as unknown as Db, execute, select };
+}
+
+describe("evaluateSessionCompaction legacy-encoding recovery", () => {
+  it("rotates the session when the run-history query fails with a Drizzle-wrapped 22021", async () => {
+    // Drizzle re-throws driver failures inside DrizzleQueryError, so the
+    // SQLSTATE only appears on `.cause`. This is the shape that used to wedge
+    // heartbeat setup: the outer error matched nothing and was rethrown.
+    const wrapped = Object.assign(new Error("Failed query"), {
+      cause: { code: "22021", message: 'invalid byte sequence for encoding "UTF8": 0xe2' },
+    });
+    const binding = compactionDatabase("UTF8", wrapped);
+    const state = createHeartbeatRunState(binding.db);
+
+    const decision = await state.evaluateSessionCompaction({
+      agent: compactionAgent,
+      sessionId: "session-legacy",
+      issueId: null,
+    });
+
+    expect(binding.select).toHaveBeenCalled();
+    expect(decision.rotate).toBe(true);
+    expect(decision.handoffMarkdown).toBeNull();
+    expect(decision.previousRunId).toBeNull();
+    expect(decision.reason).toMatch(/rotating to recover/i);
+  });
+
+  it("rethrows a run-history failure that is not an encoding error", async () => {
+    const binding = compactionDatabase("UTF8", new Error("connection reset"));
+    const state = createHeartbeatRunState(binding.db);
+
+    await expect(
+      state.evaluateSessionCompaction({
+        agent: compactionAgent,
+        sessionId: "session-legacy",
+        issueId: null,
+      }),
+    ).rejects.toThrow("connection reset");
   });
 });
