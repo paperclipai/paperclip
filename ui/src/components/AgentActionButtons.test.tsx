@@ -380,7 +380,9 @@ describe("AgentActionButtons", () => {
     await flushReact();
     await act(async () => { container.querySelector<HTMLButtonElement>('[aria-label="Open actions for Alpha Agent"]')!.click(); });
     await flushReact();
-    await act(async () => { Array.from(document.body.querySelectorAll("button")).find(button => button.textContent?.includes("Terminate"))!.click(); });
+    await act(async () => { Array.from(document.body.querySelectorAll("button")).find(button => button.textContent?.trim() === "Terminate")!.click(); });
+    await flushReact();
+    await act(async () => { Array.from(document.body.querySelectorAll("button")).find(button => button.textContent?.trim() === "Terminate agent")!.click(); });
     await flushReact();
     expect(mockAgentsApi.terminate).toHaveBeenCalledWith("agent-1", "company-1");
     expect(onTerminateSuccess).not.toHaveBeenCalled();
@@ -397,12 +399,25 @@ describe("AgentActionButtons", () => {
     });
     await flushReact();
 
-    const terminateButton = Array.from(document.body.querySelectorAll("button"))
-      .find((button) => button.textContent?.includes("Terminate"));
-    expect(terminateButton).toBeTruthy();
+    const terminateMenuItem = Array.from(document.body.querySelectorAll("button"))
+      .find((button) => button.textContent?.trim() === "Terminate");
+    expect(terminateMenuItem).toBeTruthy();
 
     await act(async () => {
-      terminateButton?.click();
+      terminateMenuItem?.click();
+    });
+    await flushReact();
+
+    expect(document.body.textContent).toContain("Terminate Alpha Agent?");
+    expect(document.body.textContent).toContain("archives the agent");
+    expect(document.body.textContent).toContain("reporting chain is repaired");
+
+    const confirmButton = Array.from(document.body.querySelectorAll("button"))
+      .find((button) => button.textContent?.trim() === "Terminate agent");
+    expect(confirmButton).toBeTruthy();
+
+    await act(async () => {
+      confirmButton?.click();
     });
     await flushReact();
 
@@ -416,6 +431,36 @@ describe("AgentActionButtons", () => {
     expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ["agents", "company-1"] });
   });
 
+  it("cancels termination when cancel is clicked in the confirmation dialog", async () => {
+    render(makeAgent());
+    await flushReact();
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[aria-label="Open actions for Alpha Agent"]')?.click();
+    });
+    await flushReact();
+
+    const terminateMenuItem = Array.from(document.body.querySelectorAll("button"))
+      .find((button) => button.textContent?.trim() === "Terminate");
+    await act(async () => {
+      terminateMenuItem?.click();
+    });
+    await flushReact();
+
+    expect(document.body.textContent).toContain("Terminate Alpha Agent?");
+
+    const cancelButton = Array.from(document.body.querySelectorAll("button"))
+      .find((button) => button.textContent?.trim() === "Cancel");
+    expect(cancelButton).toBeTruthy();
+
+    await act(async () => {
+      cancelButton?.click();
+    });
+    await flushReact();
+
+    expect(mockAgentsApi.terminate).not.toHaveBeenCalled();
+  });
+
   it("does not terminate when navigation away from a dirty detail page is rejected", async () => {
     const onBeforeNavigate = vi.fn().mockReturnValue(false);
     render(makeAgent(), { onBeforeNavigate, onTerminateSuccess: vi.fn() });
@@ -426,10 +471,17 @@ describe("AgentActionButtons", () => {
     });
     await flushReact();
 
-    const terminateButton = Array.from(document.body.querySelectorAll("button"))
-      .find((button) => button.textContent?.includes("Terminate"));
+    const terminateMenuItem = Array.from(document.body.querySelectorAll("button"))
+      .find((button) => button.textContent?.trim() === "Terminate");
     await act(async () => {
-      terminateButton?.click();
+      terminateMenuItem?.click();
+    });
+    await flushReact();
+
+    const confirmButton = Array.from(document.body.querySelectorAll("button"))
+      .find((button) => button.textContent?.trim() === "Terminate agent");
+    await act(async () => {
+      confirmButton?.click();
     });
     await flushReact();
 
@@ -456,10 +508,17 @@ describe("AgentActionButtons", () => {
       container.querySelector<HTMLButtonElement>('[aria-label="Open actions for Alpha Agent"]')?.click();
     });
     await flushReact();
-    const terminateButton = Array.from(document.body.querySelectorAll("button"))
-      .find((button) => button.textContent?.includes("Terminate"));
+    const terminateMenuItem = Array.from(document.body.querySelectorAll("button"))
+      .find((button) => button.textContent?.trim() === "Terminate");
     await act(async () => {
-      terminateButton?.click();
+      terminateMenuItem?.click();
+    });
+    await flushReact();
+
+    const confirmButton = Array.from(document.body.querySelectorAll("button"))
+      .find((button) => button.textContent?.trim() === "Terminate agent");
+    await act(async () => {
+      confirmButton?.click();
     });
     await flushReact();
 
@@ -474,5 +533,18 @@ describe("AgentActionButtons", () => {
 
     expect(onBeforeNavigate).toHaveBeenCalledTimes(2);
     expect(onTerminateSuccess).not.toHaveBeenCalled();
+  });
+
+  it("hides terminate from the menu when hideTerminate is set", async () => {
+    render(makeAgent(), { hideTerminate: true, workActionsInMenu: true });
+    await flushReact();
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[aria-label="Open actions for Alpha Agent"]')?.click();
+    });
+    await flushReact();
+
+    const buttons = Array.from(document.body.querySelectorAll("button")).map((b) => b.textContent?.trim());
+    expect(buttons).not.toContain("Terminate");
   });
 });

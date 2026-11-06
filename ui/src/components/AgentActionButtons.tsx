@@ -223,6 +223,7 @@ export function AgentActionButtons({
   const { pushToast } = useToastActions();
   const [moreOpen, setMoreOpen] = useState(false);
   const [pauseConfirmOpen, setPauseConfirmOpen] = useState(false);
+  const [terminateConfirmOpen, setTerminateConfirmOpen] = useState(false);
   const pendingNavigationChangesRef = useRef(hasPendingNavigationChanges);
   const beforeNavigateRef = useRef(onBeforeNavigate);
   const agentActionStartedDirtyRef = useRef(false);
@@ -397,6 +398,30 @@ export function AgentActionButtons({
       </AlertDialogContent>
     </AlertDialog>
   ) : null;
+  const terminateDialog = !hideTerminate ? (
+    <AlertDialog open={terminateConfirmOpen} onOpenChange={setTerminateConfirmOpen}>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Terminate {agent.name}?</AlertDialogTitle>
+          <AlertDialogDescription>
+            This archives the agent and removes it from active agent lists. This cannot be undone from the board. Its run history and configuration are preserved, but it will no longer execute tasks, and any agents reporting to it will pause work until their reporting chain is repaired.
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel>Cancel</AlertDialogCancel>
+          <AlertDialogAction
+            className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            onClick={() => {
+              if (onTerminateSuccess && !confirmNavigationStart(agentActionStartedDirtyRef)) return;
+              agentAction.mutate("terminate");
+            }}
+          >
+            Terminate agent
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  ) : null;
 
   if (workActionsInMenu) {
     const item = "flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-sm transition-colors hover:bg-accent disabled:pointer-events-none disabled:opacity-50";
@@ -510,10 +535,7 @@ export function AgentActionButtons({
                 <button
                   type="button"
                   className={cn(item, "text-destructive")}
-                  onClick={select(() => {
-                    if (onTerminateSuccess && !confirmNavigationStart(agentActionStartedDirtyRef)) return;
-                    agentAction.mutate("terminate");
-                  })}
+                  onClick={select(() => setTerminateConfirmOpen(true))}
                 >
                   <Trash2 className={cn(icon, "text-destructive")} />
                   Terminate
@@ -539,6 +561,7 @@ export function AgentActionButtons({
           </Button>
         )}
         {pauseDialog}
+        {terminateDialog}
       </div>
     );
   }
@@ -616,6 +639,7 @@ export function AgentActionButtons({
           </AlertDialogContent>
         </AlertDialog>
       )}
+      {terminateDialog}
       {showStatus && (
         <span className="hidden sm:inline">
           <AgentStatusBadge status={agent.status} />
@@ -668,8 +692,7 @@ export function AgentActionButtons({
               className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-destructive"
               onClick={() => {
                 setMoreOpen(false);
-                if (onTerminateSuccess && !confirmNavigationStart(agentActionStartedDirtyRef)) return;
-                agentAction.mutate("terminate");
+                setTerminateConfirmOpen(true);
               }}
             >
               <Trash2 className="h-3 w-3" />
