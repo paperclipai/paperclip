@@ -136,7 +136,7 @@ describe("run liveness classifier", () => {
     expect(classification.livenessState).toBe("advanced");
   });
 
-  it("classifies done issues as completed", () => {
+  it("classifies done issues with durable output as completed", () => {
     const classification = classifyRunLiveness({
       ...baseInput,
       issue: {
@@ -145,6 +145,78 @@ describe("run liveness classifier", () => {
       },
       resultJson: {
         summary: "Finished the implementation.",
+      },
+      evidence: {
+        issueCommentsCreated: 1,
+        latestEvidenceAt: new Date("2026-04-18T12:00:00Z"),
+      },
+    });
+
+    expect(classification.livenessState).toBe("completed");
+  });
+
+  it("completion guard: rejects done with zero comments/work-products/doc-revisions", () => {
+    const classification = classifyRunLiveness({
+      ...baseInput,
+      issue: {
+        ...baseInput.issue,
+        status: "done",
+      },
+      resultJson: {
+        summary: "Finished the implementation.",
+      },
+      evidence: {
+        // Internal tool/activity events only — no durable output the user can read.
+        toolOrActionEventsCreated: 5,
+        activityEventsCreated: 2,
+        workspaceOperationsCreated: 1,
+      },
+    });
+
+    expect(classification.livenessState).not.toBe("completed");
+    expect(classification.livenessState).toBe("empty_response");
+    expect(classification.livenessReason).toContain("no completion evidence");
+  });
+
+  it("completion guard: an explicit no-op completion comment still completes cleanly", () => {
+    const classification = classifyRunLiveness({
+      ...baseInput,
+      issue: {
+        ...baseInput.issue,
+        status: "done",
+      },
+      issueCommentBodies: ["No action needed this cycle — inbox already clear."],
+      evidence: {
+        issueCommentsCreated: 1,
+        latestEvidenceAt: new Date("2026-04-18T12:00:00Z"),
+      },
+    });
+
+    expect(classification.livenessState).toBe("completed");
+  });
+
+  it("completion guard: a work product or doc revision also satisfies completion", () => {
+    const withWorkProduct = classifyRunLiveness({
+      ...baseInput,
+      issue: { ...baseInput.issue, status: "done" },
+      evidence: { workProductsCreated: 1 },
+    });
+    const withDocRevision = classifyRunLiveness({
+      ...baseInput,
+      issue: { ...baseInput.issue, status: "done" },
+      evidence: { documentRevisionsCreated: 1 },
+    });
+
+    expect(withWorkProduct.livenessState).toBe("completed");
+    expect(withDocRevision.livenessState).toBe("completed");
+  });
+
+  it("completion guard does not apply to cancelled issues", () => {
+    const classification = classifyRunLiveness({
+      ...baseInput,
+      issue: {
+        ...baseInput.issue,
+        status: "cancelled",
       },
     });
 
