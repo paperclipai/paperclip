@@ -180,6 +180,7 @@ import {
   INBOX_FILTER_PREFERENCES_KEY_PREFIX,
   INBOX_ISSUE_COLUMNS_KEY,
 } from "../lib/inbox";
+import { collectInboxGroupUnreadIssueIds } from "../lib/inboxGroupUnread";
 import { useDismissedInboxAlerts, useInboxDismissals, useReadInboxItems } from "../hooks/useInboxBadge";
 import { useInboxSortAttention } from "../hooks/useInboxSortAttention";
 import {
@@ -2579,15 +2580,9 @@ function StreamlinedInbox({
   const unreadIssueIds = markAllReadIssues
     .map((issue) => issue.id);
   const canMarkAllRead = unreadIssueIds.length > 0;
-  const unreadIssueIdsInGroup = (group: InboxGroupedSection) => {
-    const groupIssues = [
-      ...group.displayItems.flatMap((item) => (item.kind === "issue" ? [item.issue] : [])),
-      ...[...group.childrenByIssueId.values()].flat(),
-    ];
-    return [...new Set(groupIssues
-      .filter((issue) => issue.isUnreadForMe && !fadingOutIssues.has(issue.id) && !archivingIssueIds.has(issue.id))
-      .map((issue) => issue.id))];
-  };
+  const isIssueLeavingInbox = (issueId: string) => fadingOutIssues.has(issueId) || archivingIssueIds.has(issueId);
+  const unreadIssueIdsInGroup = (group: InboxGroupedSection) =>
+    collectInboxGroupUnreadIssueIds(group, isIssueLeavingInbox);
   const activeIssueFilterCount = countActiveIssueFilters(issueFilters, true);
   const activeInboxScopeFilterCount = tab === "all"
     ? Number(allCategoryFilter !== "everything")

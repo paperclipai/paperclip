@@ -249,6 +249,33 @@ export function BlockedInboxView({
 
   return (
     <div data-testid="blocked-inbox" className="space-y-3">
+      {groupBy !== "none" && (unreadBlockedQuery.isError || markGroupReadMutation.isError) ? (
+        <div
+          data-testid="blocked-inbox-unread-error"
+          role="alert"
+          className="flex items-start gap-2 rounded-md border border-amber-300/70 bg-amber-50/90 px-3 py-2 text-amber-900 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-200"
+        >
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+          <p className="flex-1 text-xs">
+            {unreadBlockedQuery.isError
+              ? `"Mark all as read" is not available. ${describeError(unreadBlockedQuery.error, { action: "load unread blocked tasks" }).body}`
+              : `Couldn't mark the group as read. ${describeError(markGroupReadMutation.error, { action: "mark the group as read" }).body}`}
+          </p>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="h-7 shrink-0 border-amber-400/70 bg-white/40 text-amber-900 hover:bg-white/70 dark:bg-amber-500/20 dark:text-amber-100"
+            onClick={() => {
+              markGroupReadMutation.reset();
+              void unreadBlockedQuery.refetch();
+            }}
+            disabled={unreadBlockedQuery.isFetching}
+          >
+            {unreadBlockedQuery.isFetching ? "Trying…" : "Try again"}
+          </Button>
+        </div>
+      ) : null}
       <div className="overflow-hidden rounded-xl">
         {groupBy === "none" ? (
           sortedRows.map((row) => (

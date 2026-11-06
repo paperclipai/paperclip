@@ -217,4 +217,35 @@ describe("BlockedInboxView source grouping", () => {
     expect(mockIssuesApi.markRead.mock.calls.map(([id]) => id)).toEqual(["work-unread"]);
     act(() => root.unmount());
   });
+
+  it("keeps blocked tasks visible and offers a retry when the unread request fails", async () => {
+    const blockedIssues = [
+      { ...makeIssue("work-unread", "PAP-1", "Work unread", attention()), originKind: "manual" } as Issue,
+    ];
+    let unreadRequests = 0;
+    mockIssuesApi.list.mockImplementation(async (_companyId: string, filters: { unreadForUserId?: string }) => {
+      if (filters.unreadForUserId !== "me") return blockedIssues;
+      unreadRequests += 1;
+      if (unreadRequests === 1) throw new Error("unread request failed");
+      return blockedIssues;
+    });
+
+    const { root } = renderWithClient(
+      <BlockedInboxView {...blockedViewProps} groupBy="source" />,
+      container,
+    );
+    await waitFor(() => container.querySelector('[data-testid="blocked-inbox-unread-error"]') !== null);
+    expect(container.querySelectorAll("a")).toHaveLength(1);
+    expect(container.querySelector('button[aria-label="Mark all in Work as read"]')).toBeNull();
+
+    const retry = Array.from(
+      container.querySelectorAll<HTMLButtonElement>('[data-testid="blocked-inbox-unread-error"] button'),
+    ).find((button) => button.textContent === "Try again");
+    act(() => retry!.click());
+
+    await waitFor(() => container.querySelector('button[aria-label="Mark all in Work as read"]') !== null);
+    expect(container.querySelector('[data-testid="blocked-inbox-unread-error"]')).toBeNull();
+    expect(unreadRequests).toBe(2);
+    act(() => root.unmount());
+  });
 });
