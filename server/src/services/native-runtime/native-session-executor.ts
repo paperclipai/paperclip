@@ -14145,7 +14145,14 @@ async function createRunnerdBackendWithinSessionClaim(
     remotePrepared = true;
   };
 
-  const inspectRemoteHarnessState = async (): Promise<{
+  /**
+   * Inspect the remote harness state. Only in-place host preparation may use
+   * this invocation's archived rotation snapshot; every other caller,
+   * including close checkpointing, must inspect the live Runner state.
+   */
+  const inspectRemoteHarnessState = async (
+    source: "live" | "host_preparation" = "live",
+  ): Promise<{
     complete: boolean;
     runnerState: Record<string, unknown> | null;
     providerSessionIdentity: Record<string, unknown> | null;
@@ -14159,7 +14166,9 @@ async function createRunnerdBackendWithinSessionClaim(
         incompleteReason: "unavailable",
       };
     }
-    const runnerStatePath = archivedRotationRunnerStatePath ??
+    const archivedRunnerStatePath = source === "host_preparation"
+      ? archivedRotationRunnerStatePath : null;
+    const runnerStatePath = archivedRunnerStatePath ??
       posix.join(remoteStateDirectory, "runner-state.json");
     const escapedRunnerState = runnerStatePath.replaceAll("'", "'\\''");
     const requirements = persistenceProfile.directories.flatMap((directory) => {
@@ -14167,7 +14176,7 @@ async function createRunnerdBackendWithinSessionClaim(
       if (!path) return [];
       const escaped = path.replaceAll("'", "'\\''");
       if (directory.name !== "runner") return [`test -d '${escaped}'`];
-      return [archivedRotationRunnerStatePath
+      return [archivedRunnerStatePath
         ? `test -d '${escaped}' && test -f '${escapedRunnerState}'`
         : `test -f '${escaped}/runner-state.json'`];
     });
@@ -14537,7 +14546,7 @@ async function createRunnerdBackendWithinSessionClaim(
                     const state = await measureNativeRunnerSpan(
                       input.trace,
                       "sandbox.lease.resume",
-                      inspectRemoteHarnessState,
+                      () => inspectRemoteHarnessState("host_preparation"),
                       {
                         attributes: {
                           provider: remoteTarget.providerKey ?? "sandbox",
@@ -14601,7 +14610,7 @@ async function createRunnerdBackendWithinSessionClaim(
                     );
                   } else {
                     const reuseStartedAtMs = Date.now();
-                    const state = await measureNativeRunnerSpan(input.trace, "harness_state.inspect", () => inspectRemoteHarnessState());
+                    const state = await measureNativeRunnerSpan(input.trace, "harness_state.inspect", () => inspectRemoteHarnessState("host_preparation"));
                     if (
                       state.complete &&
                       state.runnerState &&
