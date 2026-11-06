@@ -2598,6 +2598,11 @@ restart. A pending Retry or saved message owns its continuation instead of
 starting a competing automatic attempt. If a replacement was already withheld
 by the workspace gate before execution, continuation retains that cancelled row
 and uses its existing predecessor claim and remaining failure budget.
+Clearing the file hold records a pending continuation before enqueue. Restart
+reconstructs that obligation until a successor is recorded. Known admission
+gates defer it without a polling deadline; eligibility changes wake the existing
+recovery worker. An unresolved enqueue or receipt write keeps its shared retry
+deadline. Delivery or exhaustion retires that obligation.
 Retry uses the same preparation proof
 and preserves the recovered workspace. Current task ownership, human blocks,
 pauses, approvals, budgets and the existing retry limit remain effective.

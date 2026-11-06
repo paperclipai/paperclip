@@ -1,3 +1,5 @@
+import { nextWorkspaceRecoveryAt } from "./system-recovery.js";
+import { notifyDeferredExecutionEligibility } from "./deferred-execution-notifications.js";
 import { createAdmissionTransactionScope, createWakeAdmissionReader, createWakeAdmissionWriter } from "../modules/wake-queue/adapters/postgres.js";
 import { createAdmitWakeBehindIssueExecution } from "../modules/wake-queue/application/use-cases.js";
 import { filterZombieCoalesceTarget } from "./heartbeat.js";
@@ -9,7 +11,7 @@ import { isPreDispatchExecutionWaitVerified } from "./pre-dispatch-execution-wai
 import { heartbeatRunEvents } from "@paperclipai/db";
 import { createHeartbeatQueue, shouldDeferFollowupWakeForSameIssue, shouldQueueFollowupForRunningIssueWake } from "./heartbeat/queue.js";
 import { createHeartbeatQueueTestDependencies } from "../__tests__/helpers/heartbeat-queue.js";
-import { recordRequiredWorkspaceRestoreFailure, terminalizeLegacyExecution } from "./legacy-execution-recovery.js";
+import { recordRequiredWorkspaceRestoreFailure, terminalizeLegacyExecution, settleInterruptedNativeBootstrap } from "./legacy-execution-recovery.js";
 import { admitExplicitNativeContinuation } from "./explicit-native-continuation.js";
 import { withQueuedCommentIdsInWakePayload } from "./issue-queued-comment-queue.js";
 import * as recoverySources from "./workspace-recovery-source.js";
@@ -2320,7 +2322,7 @@ describe("automatic retained workspace recovery", () => {
   }, 30_000);
 
   it.each([false, true])("continues recovered lost preparation once after its first retry was withheld (startup=%s)", async alreadyRecovered => {
-    const f = await interruptedRemotePreparation("process_lost"), source = await run(f.runId);
+    const f = await interruptedRemotePreparation("process_lost");
     const withheld = await withheldPreparationRetry(f);
     expect(await isPreDispatchExecutionWaitVerified(db, withheld)).toBe(true);
     if (alreadyRecovered) await recoverRetainedWorkspace(f.input);
@@ -2340,6 +2342,62 @@ describe("automatic retained workspace recovery", () => {
       expect((await run(f.runId)).status).toBe("failed");
       expect(await run(withheld.id)).toMatchObject({ status: "cancelled", startedAt: null });
       expect(await hasVerifiedWorkspaceRepair(db, await run(f.runId))).toBe(true);
+    } finally { await restarted.$client.end(); }
+  }, 30_000);
+
+  it.each(["restart", "pause", "claimed"] as const)("retains preparation continuation after settlement before enqueue (%s)", async mode => {
+    const f = await interruptedRemotePreparation("process_lost"), withheld = await withheldPreparationRetry(f);
+    await recoverRetainedWorkspace(f.input);
+    const source = await run(f.runId);
+    expect(await settleInterruptedNativeBootstrap(db, { run: source, providerDispatchStarted: false })).not.toBeNull();
+    expect((await action(f.actionId)).evidence.automaticRecovery).toMatchObject({ replay: "allowed" });
+    expect(await nextWorkspaceRecoveryAt(db)).not.toBeNull();
+    if (mode === "claimed") {
+      const first = await heartbeatService(db).scheduleBoundedRetry(f.runId);
+      expect(first.outcome).toBe("scheduled");
+      expect((await action(f.actionId)).evidence.bootstrapPreparationContinuation).toBe("pending");
+    }
+    if (mode === "pause") await db.update(agents).set({ status: "paused" }).where(eq(agents.id, source.agentId));
+    const restarted = createDb(connectionString);
+    try {
+      const heartbeat = heartbeatService(restarted);
+      await Promise.all(await reconcileRetainedWorkspaces(restarted, f.environmentRuntime,
+        heartbeat.resumeRemoteStopComments, true) ?? []);
+      if (mode === "pause") {
+        expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, withheld.id))).toHaveLength(0);
+        expect(await nextWorkspaceRecoveryAt(restarted)).toBeNull();
+        expect((await action(f.actionId)).evidence.bootstrapPreparationContinuation).toBe("deferred");
+        const wake = vi.fn(), unsubscribe = subscribeDeliveryWork(restarted, DELIVERY_QUEUES.workspaceRecovery, wake);
+        try {
+          const rollback = new Error("rollback eligibility change");
+          await expect(restarted.transaction(async tx => {
+            await notifyDeferredExecutionEligibility(tx, { companyId: f.companyId });
+            await tx.update(agents).set({ status: "idle" }).where(eq(agents.id, source.agentId));
+            throw rollback;
+          })).rejects.toBe(rollback);
+          expect((await db.select().from(agents).where(eq(agents.id, source.agentId)))[0].status).toBe("paused");
+          await Promise.all(await reconcileRetainedWorkspaces(restarted, f.environmentRuntime,
+            heartbeat.resumeRemoteStopComments, true) ?? []);
+          expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, withheld.id))).toHaveLength(0);
+          expect(await nextWorkspaceRecoveryAt(restarted)).toBeNull();
+          wake.mockClear();
+          await restarted.transaction(async tx => {
+            await notifyDeferredExecutionEligibility(tx, { companyId: f.companyId });
+            await tx.update(agents).set({ status: "idle" }).where(eq(agents.id, source.agentId));
+          });
+          expect(wake).toHaveBeenCalled();
+        } finally { unsubscribe(); }
+        await Promise.all(await reconcileRetainedWorkspaces(restarted, f.environmentRuntime,
+          heartbeat.resumeRemoteStopComments, true) ?? []);
+      }
+      const successors = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, withheld.id));
+      expect(successors).toHaveLength(1);
+      expect(successors[0]).toMatchObject({ status: "scheduled_retry", scheduledRetryAttempt: 2 });
+      expect((await action(f.actionId)).evidence).toMatchObject({ bootstrapPreparationContinuation: "delivered",
+        bootstrapPreparationContinuationRunId: successors[0].id });
+      expect(await nextWorkspaceRecoveryAt(restarted)).toBeNull();
+      expect(await retainedWorkspaceCandidates(restarted, undefined, false, true)).not.toEqual(
+        expect.arrayContaining([expect.objectContaining({ run: expect.objectContaining({ id: f.runId }) })]));
     } finally { await restarted.$client.end(); }
   }, 30_000);
 

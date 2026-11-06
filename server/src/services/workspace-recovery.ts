@@ -502,7 +502,10 @@ export function retainedWorkspaceCandidates(db: Db, cursor?: string, unfinishedO
       and ${heartbeatRuns.resultJson}#>'{executionRecovery,providerWorkStarted}' = 'false'::jsonb))
     and ${heartbeatRuns.runtimeModeResolvedAt} is null and ${heartbeatRuns.executionStage} = 'preparing'
     and ${heartbeatRuns.runnerProfileJson}#>>'{adapterDispatch,adapterType}' = 'paperclip_runner'
-    and ${issueRecoveryActions.evidence}#>>'{automaticRecovery,replay}' = 'blocked'
+    and (${issueRecoveryActions.evidence}#>>'{automaticRecovery,replay}' = 'blocked'
+      or (${issueRecoveryActions.evidence}#>>'{automaticRecovery,replay}' = 'allowed'
+        and ${issueRecoveryActions.evidence}->>'bootstrapPreparationSettledAt' is not null
+        and coalesce(${issueRecoveryActions.evidence}->>'bootstrapPreparationContinuation', 'pending') in ('pending', 'deferred')))
     and exists (select 1 from ${issues} where ${issues.companyId} = ${heartbeatRuns.companyId}
       and ${issues.id} = ${issueRecoveryActions.sourceIssueId} and ${issues.assigneeAgentId} = ${heartbeatRuns.agentId}
       and ${issues.status} in ('todo', 'in_progress', 'in_review', 'blocked')
