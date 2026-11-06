@@ -899,6 +899,26 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             )?;
             continue;
         }
+        if message.get("method").is_none()
+            && message.get("id") == Some(&json!("tool-finish-request"))
+        {
+            if message.pointer("/result/success") != Some(&json!(true)) {
+                return Err(format!("finish semantic tool rejected: {message}").into());
+            }
+            log_call(call_log.as_deref(), "finish-tool-response:success")?;
+            finish_turn(&state_path, &mut state, "completed")?;
+            continue;
+        }
+        if message.get("method").is_none()
+            && message.get("id") == Some(&json!("tool-block-request"))
+        {
+            if message.pointer("/result/success") != Some(&json!(true)) {
+                return Err(format!("blocked semantic tool rejected: {message}").into());
+            }
+            log_call(call_log.as_deref(), "blocked-tool-response:success")?;
+            finish_turn(&state_path, &mut state, "completed")?;
+            continue;
+        }
         if message.get("method").is_none() && message.get("id") == Some(&json!("tool-request-1")) {
             if message.pointer("/result/success") == Some(&json!(false)) {
                 log_call(call_log.as_deref(), "tool-response:failure")?;
@@ -1570,6 +1590,28 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     }))?;
                 } else if exit_after_turn_start {
                     return Ok(());
+                } else if args.iter().any(|value| value == "--test-semantic-finish") {
+                    let finish_input: Value = serde_json::from_str(
+                        &argument(&args, "--test-semantic-finish-result")
+                            .ok_or("--test-semantic-finish-result is required")?,
+                    )?;
+                    send(
+                        json!({"id":"tool-finish-request", "method":"item/tool/call", "params":{
+                            "threadId":state.thread_id, "turnId":provider_turn_id, "callId":"finish-call-1", "tool":"paperclip_finish", "arguments":finish_input
+                        }}),
+                    )?;
+                    log_call(call_log.as_deref(), "finish-tool-request:sent")?;
+                } else if args.iter().any(|value| value == "--test-semantic-block") {
+                    let blocked_input: Value = serde_json::from_str(
+                        &argument(&args, "--test-semantic-block-result")
+                            .ok_or("--test-semantic-block-result is required")?,
+                    )?;
+                    send(
+                        json!({"id":"tool-block-request", "method":"item/tool/call", "params":{
+                            "threadId":state.thread_id, "turnId":provider_turn_id, "callId":"blocked-call-1", "tool":"paperclip_block", "arguments":blocked_input
+                        }}),
+                    )?;
+                    log_call(call_log.as_deref(), "blocked-tool-request:sent")?;
                 } else if emit_tool_call {
                     send(json!({
                         "id": "tool-request-1",

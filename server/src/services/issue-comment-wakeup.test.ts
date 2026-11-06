@@ -2,6 +2,13 @@ import { describe, expect, it } from "vitest";
 import { shouldWakeAssigneeForIssueComment } from "./issue-comment-wakeup.js";
 
 describe("shouldWakeAssigneeForIssueComment", () => {
+  it("does not wake on a comment that marks a running task blocked", () => {
+    const input = { selfComment: false, resumeRequested: false, issueAtCommentStart: { status: "in_progress" }, reopened: false, currentStatus: "blocked" };
+    expect(shouldWakeAssigneeForIssueComment(input)).toBe(false);
+    expect(shouldWakeAssigneeForIssueComment({ ...input, resumeRequested: true })).toBe(true);
+    expect(shouldWakeAssigneeForIssueComment({ ...input, issueAtCommentStart: { status: "blocked" } })).toBe(true);
+  });
+
   it("suppresses explicit resume from the run that currently owns the issue", () => {
     expect(
       shouldWakeAssigneeForIssueComment({

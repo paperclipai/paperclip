@@ -32,6 +32,7 @@
     "skills"
   ],
   "scripts": {
+    "test:heartbeat-native-runner": "node scripts/test-heartbeat-native-runner.mjs",
     "dev": "tsx src/index.ts",
     "dev:watch": "cross-env PAPERCLIP_MIGRATION_PROMPT=never PAPERCLIP_MIGRATION_AUTO_APPLY=true tsx ./scripts/dev-watch.ts",
     "prepare:ui-dist": "bash ../scripts/prepare-server-ui-dist.sh",

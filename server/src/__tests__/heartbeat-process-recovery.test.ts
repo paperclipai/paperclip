@@ -1,3 +1,5 @@
+import { createServer } from "node:http";
+import { registerRunnerPrpAuthority, runnerPrpWebSocketInternals, setupRunnerPrpWebSocketServer } from "../realtime/runner-prp-ws.js";
 import * as controllerLeases from "../services/legacy-controller-lease.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { randomUUID } from "node:crypto";
@@ -5,7 +7,7 @@ import { terminalizeLegacyExecution } from "../services/legacy-execution-recover
 import { issueService } from "../services/issues.js";
 import { getExecutionBlocker } from "../services/execution-blocker.js";
 import { adapterExecutionControls, createAdapterExecutionControl } from "../services/adapter-execution-control.js";
-import { spawn, type ChildProcess } from "node:child_process";
+import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -217,6 +219,7 @@ import {
   currentNativeControllerIdentity,
 } from "../services/native-runtime/native-restart-recovery.ts";
 import { claimNativeSessionResumptions } from "../services/native-runtime/native-finalization-reconciler.ts";
+import { PaperclipRunnerToolAuthority } from "../services/native-runtime/paperclip-runner-tool-authority.js";
 import { PaperclipControlPlanePort } from "../services/native-runtime/paperclip-control-plane-port.js";
 import { finalizeNativeRun } from "../services/native-runtime/native-run-finalizer.js";
 import { recordNativeAttentionAssessment } from "../services/native-runtime/work-assessments.js";
@@ -2565,6 +2568,479 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       await fs.rm(home, { recursive: true, force: true });
     }
   }
+
+  async function awaitRealRunnerFixtureWork(operation: Promise<unknown>, label: string) {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([operation, new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`${label} timed out`)), 30_000);
+      })]);
+    } finally { if (timer) clearTimeout(timer); }
+  }
+
+  async function closeRealRunnerFixture(
+    heartbeat: ReturnType<typeof heartbeatService>,
+    bundles: ReturnType<typeof paperclipRunner.createRunnerdCodexTransport>[],
+    server: ReturnType<typeof createServer>,
+    runId: string,
+  ) {
+    const errors: unknown[] = [];
+    const bounded = async (operation: Promise<unknown>, label: string) => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await Promise.race([operation, new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error(`${label} timed out`)), 8_000);
+        })]);
+      } finally { if (timer) clearTimeout(timer); }
+    };
+    try {
+      for (const bundle of bundles) {
+        const closing = bundle.transport.close();
+        try { await bounded(closing, "runner close"); }
+        catch (error) {
+          errors.push(error);
+          const child = bundle.evidence();
+          if (!child.runnerExited && child.runnerPid) {
+            try { globalThis.process.kill(child.runnerProcessGroupId ? -child.runnerProcessGroupId : child.runnerPid, "SIGKILL"); }
+            catch (killError) { if ((killError as NodeJS.ErrnoException).code !== "ESRCH") errors.push(killError); }
+            try {
+              await bounded((async () => {
+                while (!bundle.evidence().runnerExited) {
+                  try { globalThis.process.kill(child.runnerPid!, 0); }
+                  catch (probeError) {
+                    if ((probeError as NodeJS.ErrnoException).code === "ESRCH") return;
+                    throw probeError;
+                  }
+                  await new Promise(resolve => setTimeout(resolve, 25));
+                }
+              })(), "runner exit confirmation");
+            } catch (exitError) { errors.push(exitError); }
+          }
+          try { await bounded(closing.catch(() => undefined), "runner close join"); }
+          catch (joinError) { errors.push(joinError); }
+        }
+      }
+    } finally {
+      try { await bounded(heartbeat.drainActiveRunExecutions(), "heartbeat drain"); }
+      catch (error) {
+        errors.push(error);
+        try { await bounded(heartbeat.cancelRun(runId), "heartbeat cancel"); }
+        catch (cancelError) { errors.push(cancelError); }
+        try { await bounded(heartbeat.drainActiveRunExecutions(), "heartbeat cancellation join"); }
+        catch (joinError) { errors.push(joinError); }
+      }
+      finally {
+        runnerPrpWebSocketInternals.resetForTests();
+        server.closeAllConnections();
+        try { await bounded(new Promise<void>(resolve => server.close(() => resolve())), "listener close"); }
+        catch (error) { errors.push(error); }
+      }
+    }
+    if (errors.length) throw new AggregateError(errors, "real runner fixture cleanup failed");
+  }
+
+  it("bounds fixture cleanup and joins a killed runner after close stalls", async () => {
+    const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { detached: true, stdio: "ignore" });
+    const exited = new Promise<void>((resolve, reject) => {
+      child.once("exit", () => resolve());
+      child.once("error", reject);
+    });
+    let exitedFlag = false;
+    void exited.then(() => { exitedFlag = true; }, () => undefined);
+    const server = createServer();
+    try {
+      await new Promise<void>((resolve, reject) => { child.once("spawn", resolve); child.once("error", reject); });
+      await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
+      const bundle = {
+        transport: { close: () => exited },
+        evidence: () => ({ runnerExited: exitedFlag, runnerPid: child.pid ?? null, runnerProcessGroupId: child.pid ?? null }),
+      } as unknown as ReturnType<typeof paperclipRunner.createRunnerdCodexTransport>;
+      const heartbeat = { drainActiveRunExecutions: async () => undefined } as unknown as ReturnType<typeof heartbeatService>;
+      await expect(closeRealRunnerFixture(heartbeat, [bundle], server, randomUUID())).rejects.toThrow("real runner fixture cleanup failed");
+      await exited;
+      expect(exitedFlag).toBe(true);
+      expect(server.listening).toBe(false);
+    } finally {
+      if (!exitedFlag && child.pid) {
+        try { process.kill(-child.pid, "SIGKILL"); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error; }
+      }
+      server.closeAllConnections();
+      if (server.listening) await new Promise<void>(resolve => server.close(() => resolve()));
+    }
+  }, 25_000);
+
+  describe("real native runner heartbeat recovery", () => {
+    const runnerWorkspace = path.resolve(import.meta.dirname, "../../../packages/paperclip-runner/runner");
+    let runnerBinary: string;
+    let fakeProvider: string;
+
+    beforeAll(async () => {
+      // Use Cargo's actual artifacts: target-dir and build.target may be configured.
+      const output = execFileSync("cargo", ["build", "--locked", "--message-format=json-render-diagnostics", "-p", "paperclip-runner-core", "--bin", "paperclip-runnerd", "--bin", "fake-codex-app-server"], {
+        cwd: runnerWorkspace,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "inherit"],
+        maxBuffer: 32 * 1024 * 1024,
+        timeout: 600_000,
+      });
+      const artifacts = new Map<string, string>();
+      for (const line of output.split("\n")) {
+        if (!line.trim()) continue;
+        const message = JSON.parse(line) as { reason?: string; target?: { name?: string; kind?: string[] }; executable?: string | null };
+        const name = message.target?.name;
+        if (message.reason !== "compiler-artifact" || !message.target?.kind?.includes("bin") || !message.executable || (name !== "paperclip-runnerd" && name !== "fake-codex-app-server")) continue;
+        if (artifacts.has(name)) throw new Error(`Cargo reported multiple ${name} executables`);
+        artifacts.set(name, message.executable);
+      }
+      runnerBinary = artifacts.get("paperclip-runnerd") ?? "";
+      fakeProvider = artifacts.get("fake-codex-app-server") ?? "";
+      if (!runnerBinary || !fakeProvider) throw new Error("Cargo did not report both native runner test executables");
+      await fs.access(runnerBinary, fs.constants.X_OK);
+      await fs.access(fakeProvider, fs.constants.X_OK);
+      console.info("Native heartbeat runner fixtures:", { runnerBinary, fakeProvider });
+    }, 660_000);
+
+  it("executes and finalizes a productive heartbeat through the real native runner", async () => {
+    await withTempPaperclipHome(async (home) => {
+      const { companyId, agentId, issueId, runId, wakeupRequestId } = await seedQueuedIssueRunFixture();
+      const authority = new PaperclipRunnerToolAuthority(db, { companyId, agentId, issueId, runId });
+      const dynamicTools = await authority.definitions();
+      await db.update(agents).set({ adapterType: "paperclip_runner", adapterConfig: { provider: "codex", model: "test-model" } }).where(eq(agents.id, agentId));
+      const server = createServer();
+      await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
+      const address = server.address();
+      if (!address || typeof address === "string") throw new Error("Expected TCP listener");
+      setupRunnerPrpWebSocketServer(server, { apiUrl: `http://127.0.0.1:${address.port}` });
+      const bundles: ReturnType<typeof paperclipRunner.createRunnerdCodexTransport>[] = [];
+      const heartbeat = heartbeatService(db, {
+        nativeSessionBackendFactory: (execution) => {
+          let pending: Promise<ReturnType<typeof paperclipRunner.createNativeSessionBackend>> | undefined;
+          const real = () => pending ??= db.select({ runnerInstanceId: heartbeatRuns.runnerInstanceId }).from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)).then(([row]) => {
+            const runnerInstanceId = row?.runnerInstanceId;
+            if (!runnerInstanceId) throw new Error("Heartbeat did not persist a runner identity");
+            return paperclipRunner.createNativeSessionBackend(execution, {
+          runnerInstanceId,
+          environment: { ...process.env, PAPERCLIP_WORKSPACE_CWD: execution.workspace.cwd },
+          dynamicTools, dynamicToolHandler: call => authority.execute(call),
+          codexTransportFactory: () => {
+            const bundle = paperclipRunner.createRunnerdCodexTransport({
+              runnerBinary, codexCommand: fakeProvider,
+              codexArgs: ["--state-file", path.join(home, "fake-provider-state.json"), "--test-semantic-finish", "--test-semantic-finish-result", JSON.stringify({
+                schema: "paperclip.run_result.v1", reportedWorkDisposition: "done", summary: "Fixture task completed.",
+                completionClaim: { contractRevision: execution.completionContract.contract.revision, objectiveSatisfied: true, criteria: execution.completionContract.contract.criteria.map(criterion => ({ criterionId: criterion.id, status: "satisfied", evidenceRefs: ["fixture:result"] })), remainingWork: [] },
+                evidence: [{ ref: "fixture:result" }], verification: [], attentionRequests: [], artifacts: [],
+              }), "--call-log", path.join(home, "calls.log")],
+              stateDirectory: path.join(home, "runner-state"),
+              prpIdentity: { runnerInstanceId, environmentLeaseId: `lease-${runId}`, runId, normalizedSessionId: execution.session.normalizedSessionId ?? `session-${runId}`, turnId: `turn-${runId}`, itemId: `item-${runId}` },
+              controlPlaneRegistration: authority => registerRunnerPrpAuthority({ companyId, agentId, issueId, runId, authority }),
+              lifecyclePolicy: { mode: "per_turn", idleTimeoutMs: null },
+            });
+            bundles.push(bundle);
+            return bundle.transport;
+          },
+        });
+          });
+          return { descriptor: async () => (await real()).descriptor(), openSession: async input => (await real()).openSession(input) };
+        },
+      });
+      let releaseBarrier!: () => void;
+      let signalPersisted!: () => void;
+      const persisted = new Promise<void>(resolve => { signalPersisted = resolve; });
+      const held = new Promise<void>(resolve => { releaseBarrier = resolve; });
+      const nativeExecutor = await vi.importActual<typeof import("../services/native-runtime/native-session-executor.js")>("../services/native-runtime/native-session-executor.js");
+      mockExecutePaperclipNativeSession.mockImplementationOnce(async input => {
+        const result = await nativeExecutor.executePaperclipNativeSession(input);
+        signalPersisted();
+        await held;
+        return result;
+      });
+      let timeout: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await heartbeat.resumeQueuedRuns();
+        const drain = heartbeat.drainActiveRunExecutions();
+        await Promise.race([
+          persisted,
+          drain.then(() => { throw new Error("run exited before persisted-result barrier"); }),
+          new Promise<never>((_, reject) => { timeout = setTimeout(() => reject(new Error("timed out waiting for native result")), 30_000); }),
+        ]);
+        if (timeout) clearTimeout(timeout);
+        expect(await db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, runId))).toEqual([expect.objectContaining({ schemaStatus: "accepted" })]);
+        const pendingFinalizations = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, runId));
+        expect(pendingFinalizations).toEqual([expect.objectContaining({ phase: "workspace_finalizing", resultId: expect.any(String), decisionId: null })]);
+        const pendingRun = await heartbeat.getRun(runId);
+        const [pendingIssue] = await db.select().from(issues).where(eq(issues.id, issueId));
+        expect(pendingRun).toMatchObject({ status: "running", runtimeMode: "native", livenessState: null });
+        expect(pendingIssue).toMatchObject({ status: "in_progress", assigneeAgentId: agentId, checkoutRunId: runId, executionRunId: runId });
+        const during = await heartbeat.reconcileStrandedAssignedIssues();
+        expect(during).toMatchObject({ continuationRequeued: 0, escalated: 0 });
+        expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId))).map(row => row.id)).toEqual([runId]);
+        expect(await db.select({ id: agentWakeupRequests.id, runId: agentWakeupRequests.runId, status: agentWakeupRequests.status, reason: agentWakeupRequests.reason }).from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, companyId))).toEqual([{ id: wakeupRequestId, runId, status: "claimed", reason: "issue_assigned" }]);
+        expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.companyId, companyId))).toEqual([]);
+        expect(await heartbeat.getRun(runId)).toMatchObject({ status: "running", runtimeMode: "native", livenessState: null });
+        expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]).toMatchObject({ status: "in_progress", assigneeAgentId: agentId, checkoutRunId: runId, executionRunId: runId });
+        releaseBarrier();
+        await awaitRealRunnerFixtureWork(drain, "heartbeat execution");
+        const run = await heartbeat.getRun(runId);
+        const results = await db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, runId));
+        const finalizations = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, runId));
+        const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
+        expect(await fs.readFile(path.join(home, "calls.log"), "utf8")).toContain("finish-tool-response:success");
+        expect(await db.select().from(heartbeatRunEvents).where(and(eq(heartbeatRunEvents.runId, runId), eq(heartbeatRunEvents.eventType, "run.result.proposed")))).toEqual([expect.objectContaining({ payload: expect.objectContaining({ prpEvent: expect.objectContaining({ sourceKind: "runner", itemId: "finish-call-1", payload: expect.objectContaining({ reportedWorkDisposition: "done" }) }) }) })]);
+        expect(bundles).toHaveLength(1);
+        expect(results).toEqual([expect.objectContaining({ schemaStatus: "accepted", resultJson: expect.objectContaining({ result: expect.objectContaining({ reportedWorkDisposition: "done", summary: "Fixture task completed." }), terminal: expect.objectContaining({ runTerminalState: "succeeded" }) }) })]);
+        expect(finalizations).toEqual([expect.objectContaining({ phase: "committed" })]);
+        expect(run).toMatchObject({ status: "succeeded", runtimeMode: "native", livenessState: "completed" });
+        expect(issue).toMatchObject({ status: "done", assigneeAgentId: agentId, checkoutRunId: null, executionRunId: null });
+        expect(await heartbeat.reconcileStrandedAssignedIssues()).toMatchObject({ continuationRequeued: 0, escalated: 0 });
+        expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId))).map(row => row.id)).toEqual([runId]);
+        expect(await db.select({ id: agentWakeupRequests.id, runId: agentWakeupRequests.runId, status: agentWakeupRequests.status, reason: agentWakeupRequests.reason }).from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, companyId))).toEqual([{ id: wakeupRequestId, runId, status: "completed", reason: "issue_assigned" }]);
+        expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.companyId, companyId))).toEqual([]);
+      } finally {
+        if (timeout) clearTimeout(timeout);
+        releaseBarrier();
+        await closeRealRunnerFixture(heartbeat, bundles, server, runId);
+      }
+    });
+  }, 120_000);
+
+  it("preserves a real native Board wait while successful liveness is pending", async () => {
+    await withTempPaperclipHome(async (home) => {
+      const { companyId, agentId, issueId, runId, wakeupRequestId } = await seedQueuedIssueRunFixture();
+      const commentId = randomUUID();
+      const commentAt = new Date(Date.now() - 1_000);
+      await db.insert(issueComments).values({ id: commentId, companyId, issueId, authorType: "user", authorUserId: "responsible-user", body: "Answer this request and wait for my next response.", createdAt: commentAt, updatedAt: commentAt });
+      await db.update(agentWakeupRequests).set({ source: "automation", reason: "issue_commented", requestedByActorType: "user", requestedByActorId: "responsible-user", payload: { issueId, commentId } }).where(eq(agentWakeupRequests.id, wakeupRequestId));
+      await db.update(heartbeatRuns).set({ invocationSource: "automation", contextSnapshot: { issueId, taskId: issueId, wakeReason: "issue_commented", wakeCommentIds: [commentId] } }).where(eq(heartbeatRuns.id, runId));
+      const authority = new PaperclipRunnerToolAuthority(db, { companyId, agentId, issueId, runId });
+      const dynamicTools = await authority.definitions();
+      await db.update(agents).set({ adapterType: "paperclip_runner", adapterConfig: { provider: "codex", model: "test-model" } }).where(eq(agents.id, agentId));
+      const server = createServer();
+      await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
+      const address = server.address();
+      if (!address || typeof address === "string") throw new Error("Expected TCP listener");
+      setupRunnerPrpWebSocketServer(server, { apiUrl: `http://127.0.0.1:${address.port}` });
+      const bundles: ReturnType<typeof paperclipRunner.createRunnerdCodexTransport>[] = [];
+      const heartbeat = heartbeatService(db, {
+        nativeSessionBackendFactory: (execution) => {
+          let pending: Promise<ReturnType<typeof paperclipRunner.createNativeSessionBackend>> | undefined;
+          const real = () => pending ??= db.select({ runnerInstanceId: heartbeatRuns.runnerInstanceId }).from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)).then(([row]) => {
+            const runnerInstanceId = row?.runnerInstanceId;
+            if (!runnerInstanceId) throw new Error("Heartbeat did not persist a runner identity");
+            return paperclipRunner.createNativeSessionBackend(execution, {
+          runnerInstanceId,
+          environment: { ...process.env, PAPERCLIP_WORKSPACE_CWD: execution.workspace.cwd },
+          dynamicTools, dynamicToolHandler: call => authority.execute(call),
+          codexTransportFactory: () => {
+            const bundle = paperclipRunner.createRunnerdCodexTransport({
+              runnerBinary, codexCommand: fakeProvider,
+              codexArgs: ["--state-file", path.join(home, "fake-provider-state.json"), "--test-semantic-finish", "--test-semantic-finish-result", JSON.stringify({
+                schema: "paperclip.run_result.v1", reportedWorkDisposition: "yielded", summary: "The requested answer is ready.",
+                completionClaim: { contractRevision: execution.completionContract.contract.revision, objectiveSatisfied: false, criteria: execution.completionContract.contract.criteria.map(criterion => ({ criterionId: criterion.id, status: "unknown", evidenceRefs: [] })), remainingWork: [{ description: "Wait for the next Board response.", blocksCompletion: true }] },
+                continuation: { kind: "response_wake", summary: "Wait for the next Board response.", idempotencyKey: `response-${runId}` }, evidence: [], verification: [], attentionRequests: [], artifacts: [],
+              }), "--call-log", path.join(home, "calls.log")],
+              stateDirectory: path.join(home, "runner-state"),
+              prpIdentity: { runnerInstanceId, environmentLeaseId: `lease-${runId}`, runId, normalizedSessionId: execution.session.normalizedSessionId ?? `session-${runId}`, turnId: `turn-${runId}`, itemId: `item-${runId}` },
+              controlPlaneRegistration: authority => registerRunnerPrpAuthority({ companyId, agentId, issueId, runId, authority }),
+              lifecyclePolicy: { mode: "per_turn", idleTimeoutMs: null },
+            });
+            bundles.push(bundle);
+            return bundle.transport;
+          },
+        });
+          });
+          return { descriptor: async () => (await real()).descriptor(), openSession: async input => (await real()).openSession(input) };
+        },
+      });
+      let releaseBarrier!: () => void;
+      let signalAcquired!: (pid: number) => void;
+      const acquired = new Promise<number>(resolve => { signalAcquired = resolve; });
+      const hold = new Promise<void>(resolve => { releaseBarrier = resolve; });
+      const barrier = db.transaction(async tx => {
+        await tx.execute(sql`SET LOCAL lock_timeout = '4s'`);
+        await tx.execute(sql`SELECT pg_advisory_xact_lock(8123473)`);
+        const [row] = await tx.execute<{ pid: number }>(sql`SELECT pg_backend_pid() AS pid`);
+        signalAcquired(row!.pid);
+        await hold;
+      });
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        const barrierPid = await Promise.race([acquired, barrier.then(() => { throw new Error("barrier exited before acquiring lock"); }), new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("barrier acquisition timed out")), 5_000); })]);
+        if (timer) clearTimeout(timer);
+        await db.execute(sql.raw(`CREATE FUNCTION test_hold_native_liveness() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF OLD.id = '${runId}' AND OLD.status = 'succeeded' AND OLD.liveness_state IS NULL AND NEW.liveness_state IS NOT NULL THEN PERFORM pg_advisory_xact_lock(8123473); END IF; RETURN NEW; END $$`));
+        await db.execute(sql.raw("CREATE TRIGGER test_hold_native_liveness_trigger BEFORE UPDATE ON heartbeat_runs FOR EACH ROW EXECUTE FUNCTION test_hold_native_liveness()"));
+        await heartbeat.resumeQueuedRuns();
+        const drain = heartbeat.drainActiveRunExecutions();
+        const pending = await Promise.race([
+          waitForValue(async () => { const run = await heartbeat.getRun(runId); return run?.status === "succeeded" && run.livenessState === null ? run : null; }, 30_000),
+          drain.then(() => { throw new Error("heartbeat drained before missing-liveness boundary"); }),
+        ]);
+        expect(pending).toMatchObject({ status: "succeeded", runtimeMode: "native", livenessState: null });
+        await vi.waitFor(async () => {
+          const [waiters] = await db.execute<{ count: number }>(sql`SELECT count(*)::int AS count FROM pg_stat_activity WHERE datname = current_database() AND ${barrierPid} = ANY(pg_blocking_pids(pid)) AND query ILIKE '%update%heartbeat_runs%'`);
+          expect(waiters!.count).toBeGreaterThan(0);
+        }, { timeout: 5_000 });
+        expect(await db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, runId))).toEqual([expect.objectContaining({ schemaStatus: "accepted", resultJson: expect.objectContaining({ result: expect.objectContaining({ reportedWorkDisposition: "yielded" }) }) })]);
+        expect(await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, runId))).toEqual([expect.objectContaining({ phase: "committed", decisionId: expect.any(String) })]);
+        expect(await db.select().from(statusDecisions).where(eq(statusDecisions.runId, runId))).toEqual([expect.objectContaining({ reasonCode: "board_response_waiting" })]);
+        const before = (await db.select().from(issues).where(eq(issues.id, issueId)))[0];
+        expect(before).toMatchObject({ status: "in_progress", assigneeAgentId: agentId, checkoutRunId: runId, executionRunId: runId });
+        const sweep = await heartbeat.reconcileStrandedAssignedIssues();
+        expect(sweep).toMatchObject({ continuationRequeued: 0, escalated: 0 });
+        expect(await heartbeat.getRun(runId)).toMatchObject({ status: "succeeded", livenessState: null });
+        expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]).toMatchObject({ status: "in_progress", assigneeAgentId: agentId, checkoutRunId: runId, executionRunId: runId });
+        const beforeRelease = { runs: await db.select({ id: heartbeatRuns.id, status: heartbeatRuns.status }).from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId)), wakes: await db.select({ id: agentWakeupRequests.id, runId: agentWakeupRequests.runId, reason: agentWakeupRequests.reason, status: agentWakeupRequests.status }).from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, companyId)), actions: await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.companyId, companyId)) };
+        expect(beforeRelease.runs).toEqual([{ id: runId, status: "succeeded" }]);
+        expect(beforeRelease.wakes).toEqual([{ id: wakeupRequestId, runId, reason: "issue_commented", status: "claimed" }]);
+        expect(beforeRelease.actions).toEqual([]);
+        expect(await hasCommittedNativeBoardResponseWait(db, { companyId, agentId, issueId, runId })).toBe(true);
+        releaseBarrier();
+        await awaitRealRunnerFixtureWork(barrier, "barrier release");
+        await awaitRealRunnerFixtureWork(drain, "heartbeat execution");
+        const settled = await heartbeat.getRun(runId);
+        const after = (await db.select().from(issues).where(eq(issues.id, issueId)))[0];
+        const afterRecords = { runs: await db.select({ id: heartbeatRuns.id, status: heartbeatRuns.status }).from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId)), wakes: await db.select({ id: agentWakeupRequests.id, runId: agentWakeupRequests.runId, reason: agentWakeupRequests.reason, status: agentWakeupRequests.status }).from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, companyId)), actions: await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.companyId, companyId)) };
+        expect(settled).toMatchObject({ status: "succeeded", runtimeMode: "native", livenessState: "advanced" });
+        expect(after).toMatchObject({ status: "in_progress", assigneeAgentId: agentId, checkoutRunId: null, executionRunId: null });
+        expect(afterRecords.runs).toEqual([{ id: runId, status: "succeeded" }]);
+        expect(afterRecords.wakes).toEqual([{ id: wakeupRequestId, runId, reason: "issue_commented", status: "completed" }]);
+        expect(afterRecords.actions).toEqual([]);
+        expect(await hasCommittedNativeBoardResponseWait(db, { companyId, agentId, issueId, runId })).toBe(true);
+        expect(await heartbeat.reconcileStrandedAssignedIssues()).toMatchObject({ continuationRequeued: 0, escalated: 0 });
+        expect(await db.select({ id: heartbeatRuns.id, status: heartbeatRuns.status }).from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId))).toEqual(afterRecords.runs);
+        expect(await db.select({ id: agentWakeupRequests.id, runId: agentWakeupRequests.runId, reason: agentWakeupRequests.reason, status: agentWakeupRequests.status }).from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, companyId))).toEqual(afterRecords.wakes);
+        expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.companyId, companyId))).toEqual([]);
+      } finally {
+        if (timer) clearTimeout(timer);
+        releaseBarrier();
+        try {
+          let cleanupTimer: ReturnType<typeof setTimeout> | undefined;
+          try {
+            await Promise.race([barrier, new Promise<never>((_, reject) => { cleanupTimer = setTimeout(() => reject(new Error("barrier cleanup timed out")), 8_000); })]);
+          } finally { if (cleanupTimer) clearTimeout(cleanupTimer); }
+        } finally {
+          try { await closeRealRunnerFixture(heartbeat, bundles, server, runId); }
+          finally {
+            try { await db.execute(sql.raw("DROP TRIGGER IF EXISTS test_hold_native_liveness_trigger ON heartbeat_runs")); }
+            finally { await db.execute(sql.raw("DROP FUNCTION IF EXISTS test_hold_native_liveness()")); }
+          }
+        }
+      }
+    });
+  }, 120_000);
+
+  it("holds a real semantic blocked result during recovery", async () => {
+    await withTempPaperclipHome(async (home) => {
+      const { companyId, agentId, issueId, runId, wakeupRequestId } = await seedQueuedIssueRunFixture();
+      const authority = new PaperclipRunnerToolAuthority(db, { companyId, agentId, issueId, runId });
+      const dynamicTools = await authority.definitions();
+      await db.update(agents).set({ adapterType: "paperclip_runner", adapterConfig: { provider: "codex", model: "test-model" } }).where(eq(agents.id, agentId));
+      const server = createServer();
+      await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
+      const address = server.address();
+      if (!address || typeof address === "string") throw new Error("Expected TCP listener");
+      setupRunnerPrpWebSocketServer(server, { apiUrl: `http://127.0.0.1:${address.port}` });
+      const bundles: ReturnType<typeof paperclipRunner.createRunnerdCodexTransport>[] = [];
+      const heartbeat = heartbeatService(db, {
+        nativeSessionBackendFactory: (execution) => {
+          let pending: Promise<ReturnType<typeof paperclipRunner.createNativeSessionBackend>> | undefined;
+          const real = () => pending ??= db.select({ runnerInstanceId: heartbeatRuns.runnerInstanceId }).from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)).then(([row]) => {
+            const runnerInstanceId = row?.runnerInstanceId;
+            if (!runnerInstanceId) throw new Error("Heartbeat did not persist a runner identity");
+            return paperclipRunner.createNativeSessionBackend(execution, {
+          runnerInstanceId,
+          environment: { ...process.env, PAPERCLIP_WORKSPACE_CWD: execution.workspace.cwd },
+          dynamicTools, dynamicToolHandler: call => authority.execute(call),
+          codexTransportFactory: () => {
+            const bundle = paperclipRunner.createRunnerdCodexTransport({
+              runnerBinary, codexCommand: fakeProvider,
+              codexArgs: ["--state-file", path.join(home, "fake-provider-state.json"), "--test-semantic-block", "--test-semantic-block-result", JSON.stringify({
+                schema: "paperclip.run_result.v1", reportedWorkDisposition: "blocked", summary: "Access denied; Board must review before work continues.",
+                completionClaim: { contractRevision: execution.completionContract.contract.revision, objectiveSatisfied: false, criteria: execution.completionContract.contract.criteria.map(criterion => ({ criterionId: criterion.id, status: "unknown", evidenceRefs: [] })), remainingWork: [{ description: "Board must resolve denied access.", blocksCompletion: true }] },
+                blocker: { reasonCode: "permission_denied", owner: { kind: "user", name: "Board" }, unblockAction: "Grant the required fixture access, then explicitly retry.", scope: "task_wide" },
+                evidence: [], verification: [], attentionRequests: [], artifacts: [],
+              }), "--call-log", path.join(home, "calls.log")],
+              stateDirectory: path.join(home, "runner-state"),
+              prpIdentity: { runnerInstanceId, environmentLeaseId: `lease-${runId}`, runId, normalizedSessionId: execution.session.normalizedSessionId ?? `session-${runId}`, turnId: `turn-${runId}`, itemId: `item-${runId}` },
+              controlPlaneRegistration: authority => registerRunnerPrpAuthority({ companyId, agentId, issueId, runId, authority }),
+              lifecyclePolicy: { mode: "per_turn", idleTimeoutMs: null },
+            });
+            bundles.push(bundle);
+            return bundle.transport;
+          },
+        });
+          });
+          return { descriptor: async () => (await real()).descriptor(), openSession: async input => (await real()).openSession(input) };
+        },
+      });
+      let releaseBarrier!: () => void;
+      let signalPersisted!: () => void;
+      const persisted = new Promise<void>(resolve => { signalPersisted = resolve; });
+      const held = new Promise<void>(resolve => { releaseBarrier = resolve; });
+      const nativeExecutor = await vi.importActual<typeof import("../services/native-runtime/native-session-executor.js")>("../services/native-runtime/native-session-executor.js");
+      mockExecutePaperclipNativeSession.mockImplementationOnce(async input => {
+        const result = await nativeExecutor.executePaperclipNativeSession(input);
+        signalPersisted();
+        await held;
+        return result;
+      });
+      let timeout: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await heartbeat.resumeQueuedRuns();
+        const drain = heartbeat.drainActiveRunExecutions();
+        await Promise.race([
+          persisted,
+          drain.then(() => { throw new Error("run exited before persisted-result barrier"); }),
+          new Promise<never>((_, reject) => { timeout = setTimeout(() => reject(new Error("timed out waiting for native result")), 30_000); }),
+        ]);
+        if (timeout) clearTimeout(timeout);
+        expect(await db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, runId))).toEqual([expect.objectContaining({ schemaStatus: "accepted" })]);
+        const pendingFinalizations = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, runId));
+        expect(pendingFinalizations).toEqual([expect.objectContaining({ phase: "workspace_finalizing", resultId: expect.any(String), decisionId: null })]);
+        const pendingRun = await heartbeat.getRun(runId);
+        const [pendingIssue] = await db.select().from(issues).where(eq(issues.id, issueId));
+        expect(pendingRun).toMatchObject({ status: "running", runtimeMode: "native", livenessState: null });
+        expect(pendingIssue).toMatchObject({ status: "in_progress", assigneeAgentId: agentId, checkoutRunId: runId, executionRunId: runId });
+        const during = await heartbeat.reconcileStrandedAssignedIssues();
+        expect(during).toMatchObject({ continuationRequeued: 0, escalated: 0 });
+        expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId))).map(row => row.id)).toEqual([runId]);
+        expect(await db.select({ id: agentWakeupRequests.id, runId: agentWakeupRequests.runId, status: agentWakeupRequests.status, reason: agentWakeupRequests.reason }).from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, companyId))).toEqual([{ id: wakeupRequestId, runId, status: "claimed", reason: "issue_assigned" }]);
+        expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.companyId, companyId))).toEqual([]);
+        expect(await heartbeat.getRun(runId)).toMatchObject({ status: "running", runtimeMode: "native", livenessState: null });
+        expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]).toMatchObject({ status: "in_progress", assigneeAgentId: agentId, checkoutRunId: runId, executionRunId: runId });
+        releaseBarrier();
+        await awaitRealRunnerFixtureWork(drain, "heartbeat execution");
+        const run = await heartbeat.getRun(runId);
+        const results = await db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, runId));
+        const finalizations = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, runId));
+        const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
+        const providerCalls = await fs.readFile(path.join(home, "calls.log"), "utf8");
+        expect(providerCalls).toContain("blocked-tool-response:success");
+        expect(await db.select().from(heartbeatRunEvents).where(and(eq(heartbeatRunEvents.runId, runId), eq(heartbeatRunEvents.eventType, "run.result.proposed")))).toEqual([expect.objectContaining({ payload: expect.objectContaining({ prpEvent: expect.objectContaining({ sourceKind: "runner", itemId: "blocked-call-1", payload: expect.objectContaining({ reportedWorkDisposition: "blocked" }) }) }) })]);
+        expect(bundles).toHaveLength(1);
+        expect(results).toEqual([expect.objectContaining({ schemaStatus: "accepted", resultJson: expect.objectContaining({ result: expect.objectContaining({ reportedWorkDisposition: "blocked", summary: "Access denied; Board must review before work continues." }), terminal: expect.objectContaining({ runTerminalState: "succeeded" }) }) })]);
+        expect(finalizations).toEqual([expect.objectContaining({ phase: "committed" })]);
+        expect(run).toMatchObject({ status: "succeeded", runtimeMode: "native", livenessState: "blocked" });
+        expect(issue).toMatchObject({ status: "blocked", assigneeAgentId: agentId, checkoutRunId: null, executionRunId: null, unblockDescriptor: { owner: { agentId }, action: "Grant the required fixture access, then explicitly retry." } });
+        expect(await heartbeat.reconcileStrandedAssignedIssues()).toMatchObject({ continuationRequeued: 0, escalated: 0 });
+        expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]).toMatchObject({ status: "blocked", assigneeAgentId: agentId, unblockDescriptor: { owner: { agentId }, action: "Grant the required fixture access, then explicitly retry." } });
+        expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId))).map(row => row.id)).toEqual([runId]);
+        const wakeRecords = await db.select({ id: agentWakeupRequests.id, runId: agentWakeupRequests.runId, status: agentWakeupRequests.status, reason: agentWakeupRequests.reason }).from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, companyId));
+        expect(wakeRecords).toHaveLength(4);
+        expect(wakeRecords).toEqual(expect.arrayContaining([
+          { id: wakeupRequestId, runId, status: "completed", reason: "issue_assigned" },
+          expect.objectContaining({ runId: null, status: "skipped", reason: "chat_control_recovery_proof_unresolved" }),
+          expect.objectContaining({ runId: null, status: "skipped", reason: "issue_status_changed" }),
+          expect.objectContaining({ runId: null, status: "coalesced", reason: "issue_status_changed" }),
+        ]));
+        expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.companyId, companyId))).toEqual([]);
+      } finally {
+        if (timeout) clearTimeout(timeout);
+        releaseBarrier();
+        await closeRealRunnerFixture(heartbeat, bundles, server, runId);
+      }
+    });
+  }, 120_000);
+  });
 
   it("fences native selection when cancellation wins during preparation", async () => {
     await withTempPaperclipHome(async () => {
@@ -5274,6 +5750,71 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       );
     });
     expect(configurationComment).toBeTruthy();
+  });
+
+  it("does not hand off or retry a successful run that reports denied access", async () => {
+    const { companyId, agentId, runId, issueId } = await seedQueuedIssueRunFixture();
+    // A separate transaction holds the advisory lock until the sweep completes.
+    let releaseBarrier!: () => void;
+    let signalHeld!: () => void;
+    const held = new Promise<void>(resolve => { signalHeld = resolve; });
+    const release = new Promise<void>(resolve => { releaseBarrier = resolve; });
+    const barrier = db.transaction(async tx => {
+      await tx.execute(sql`SET LOCAL lock_timeout = '4s'`);
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(8123471)`);
+      signalHeld();
+      await release;
+    });
+    try {
+    await Promise.race([
+      held,
+      barrier.then(() => { throw new Error("barrier transaction exited before acquiring lock"); }),
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error("timed out acquiring barrier lock")), 5_000)),
+    ]);
+    await db.execute(sql.raw(`CREATE FUNCTION test_delay_liveness() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.id = '${runId}' AND OLD.liveness_state IS NULL AND NEW.liveness_state IS NOT NULL THEN PERFORM pg_advisory_xact_lock(8123471); END IF; RETURN NEW; END $$`));
+    await db.execute(sql.raw("CREATE TRIGGER test_delay_liveness_trigger BEFORE UPDATE ON heartbeat_runs FOR EACH ROW EXECUTE FUNCTION test_delay_liveness()"));
+    mockAdapterExecute.mockImplementationOnce(async (input?: unknown) => {
+      const ctx = input as { runId: string };
+      await db.insert(issueComments).values({ companyId, issueId, authorAgentId: agentId, createdByRunId: ctx.runId, body: "Blocked: cannot proceed because access is denied; board must decide." });
+      return { exitCode: 0, signal: null, timedOut: false, errorMessage: null, summary: "Blocked: cannot proceed because access is denied; board must decide.", provider: "test", model: "test-model" };
+    });
+    const heartbeat = heartbeatService(db);
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, runId, 5_000);
+    const intermediate = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)).then(rows => rows[0]);
+    expect(intermediate).toMatchObject({status: "succeeded", livenessState: null});
+    const during = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(during.continuationRequeued).toBe(0);
+    expect(during.escalated).toBe(0);
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId))).map(r => r.id)).toEqual([runId]);
+    releaseBarrier();
+    await barrier;
+    await waitForHeartbeatIdle(db, 5_000);
+    // Terminal status is written before liveness classification and wake settlement.
+    const source = await waitForValue(async () => {
+      const row = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)).then(rows => rows[0]);
+      return row?.livenessState ? row : null;
+    }, 5_000);
+    expect(source?.livenessState).toBe("blocked");
+    const wakes = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, agentId));
+    expect(wakes.filter(w => w.reason === "finish_successful_run_handoff")).toHaveLength(0);
+    await heartbeat.reconcileStrandedAssignedIssues();
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then(rows => rows[0]);
+    expect(issue?.status).toBe("blocked");
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId))).map(r => r.id)).toEqual([runId]);
+    expect((await heartbeat.reconcileStrandedAssignedIssues()).continuationRequeued).toBe(0);
+    } finally {
+      releaseBarrier();
+      try {
+        await barrier;
+      } finally {
+        try {
+          await db.execute(sql.raw("DROP TRIGGER IF EXISTS test_delay_liveness_trigger ON heartbeat_runs"));
+        } finally {
+          await db.execute(sql.raw("DROP FUNCTION IF EXISTS test_delay_liveness()"));
+        }
+      }
+    }
   });
 
   it("queues one finish-handoff wake when a successful run leaves in-progress work without a next action", async () => {
@@ -8511,12 +9052,25 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
   });
 
+  it("preserves operator returned todo after an unclassified legacy success", async () => {
+    const { companyId, agentId, issueId, runId, wakeupRequestId } = await seedStrandedIssueFixture({ status: "todo", runStatus: "succeeded" });
+    await db.update(agentWakeupRequests).set({ status: "completed" }).where(eq(agentWakeupRequests.id, wakeupRequestId));
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result).toMatchObject({ dispatchRequeued: 0, continuationRequeued: 0, escalated: 0 });
+    expect(await db.select({ status: issues.status, assigneeAgentId: issues.assigneeAgentId, checkoutRunId: issues.checkoutRunId, executionRunId: issues.executionRunId }).from(issues).where(eq(issues.id, issueId))).toEqual([{ status: "todo", assigneeAgentId: agentId, checkoutRunId: null, executionRunId: null }]);
+    expect((await db.select({ id: heartbeatRuns.id, status: heartbeatRuns.status, livenessState: heartbeatRuns.livenessState }).from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId)))).toEqual([{ id: runId, status: "succeeded", livenessState: null }]);
+    expect((await db.select({ id: agentWakeupRequests.id, runId: agentWakeupRequests.runId, status: agentWakeupRequests.status }).from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, companyId)))).toEqual([{ id: wakeupRequestId, runId, status: "completed" }]);
+    expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId))).toEqual([]);
+  });
+
   it("re-enqueues handed-back todo work when its resolving run succeeded but the wake was lost", async () => {
-    const { companyId, agentId, issueId, runId } =
+    const { companyId, agentId, issueId, runId, wakeupRequestId } =
       await seedStrandedIssueFixture({
         status: "todo",
         runStatus: "succeeded",
       });
+    await db.update(agentWakeupRequests).set({ status: "completed" }).where(eq(agentWakeupRequests.id, wakeupRequestId));
     const resolvedAt = new Date("2026-03-19T00:04:00.000Z");
     await db.insert(issueRecoveryActions).values({
       companyId,
@@ -8565,6 +9119,14 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     ).not.toHaveProperty("modelProfile");
     if (retryRun) {
       await waitForRunToSettle(heartbeat, retryRun.id);
+      await heartbeat.drainActiveRunExecutions();
+      const wakes = await db.select({ id: agentWakeupRequests.id, runId: agentWakeupRequests.runId, reason: agentWakeupRequests.reason }).from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, companyId));
+      expect(wakes).toEqual(expect.arrayContaining([
+        { id: wakeupRequestId, runId, reason: "issue_assigned" },
+        { id: expect.any(String), runId: retryRun.id, reason: "issue_assignment_recovery" },
+      ]));
+      expect(wakes.filter((wake) => wake.reason === "issue_assignment_recovery")).toHaveLength(1);
+      expect(await db.select({ status: issueRecoveryActions.status, outcome: issueRecoveryActions.outcome, ownerType: issueRecoveryActions.ownerType }).from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId))).toEqual([{ status: "resolved", outcome: "handed_back", ownerType: "agent" }]);
     }
   });
 
@@ -13220,6 +13782,82 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(runs).toHaveLength(1);
   });
 
+  it.each(["monitor", "chat_active", "chat_waiting", "dependency", "plugin"] as const)(
+    "preserves %s when a legacy success has no liveness classification", async (kind) => {
+      const { companyId, agentId, issueId, runId } = await seedStrandedIssueFixture({ status: "in_progress", runStatus: "succeeded", monitorNextCheckAt: kind === "monitor" ? new Date() : null });
+      if (kind === "plugin") await db.update(issues).set({ originKind: "plugin:test" }).where(eq(issues.id, issueId));
+      if (kind === "chat_active" || kind === "chat_waiting") {
+        await bindChatConversation({ companyId, agentId, issueId, state: kind === "chat_active" ? "active" : "waiting" });
+        await db.update(heartbeatRuns).set({ contextSnapshot: { issueId, source: "chat:slack" } }).where(eq(heartbeatRuns.id, runId));
+      }
+      if (kind === "dependency") {
+        const childId = randomUUID();
+        await db.insert(issues).values({ id: childId, companyId, parentId: issueId, title: "Pending dependency", status: "todo", priority: "medium", issueNumber: 2, identifier: `C-${childId.slice(0, 8)}` });
+        await db.insert(issueRelations).values({ companyId, issueId: childId, relatedIssueId: issueId, type: "blocks" });
+      }
+      const wakesBefore = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, companyId));
+      const runsBefore = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId));
+      const actionsBefore = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.companyId, companyId));
+      const result = await heartbeatService(db).reconcileStrandedAssignedIssues();
+      expect(result.continuationRequeued).toBe(0);
+      expect(result.escalated).toBe(0);
+      expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]?.status).toBe("in_progress");
+      expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, companyId))).toHaveLength(wakesBefore.length);
+      expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId))).toHaveLength(runsBefore.length);
+      expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.companyId, companyId))).toHaveLength(actionsBefore.length);
+    },
+  );
+
+  it("preserves a plugin-managed issue when its last success reports blocked", async () => {
+    const { companyId, issueId } = await seedStrandedIssueFixture({ status: "in_progress", runStatus: "succeeded", livenessState: "blocked" });
+    await db.update(issues).set({ originKind: "plugin:test" }).where(eq(issues.id, issueId));
+    const wakesBefore = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, companyId));
+    const runsBefore = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId));
+    const actionsBefore = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.companyId, companyId));
+    const result = await heartbeatService(db).reconcileStrandedAssignedIssues();
+    expect(result.continuationRequeued).toBe(0);
+    expect(result.escalated).toBe(0);
+    expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]?.status).toBe("in_progress");
+    expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, companyId))).toHaveLength(wakesBefore.length);
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId))).toHaveLength(runsBefore.length);
+    expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.companyId, companyId))).toHaveLength(actionsBefore.length);
+  });
+
+  it("escalates a successful run reporting a blocker without an automatic continuation", async () => {
+    const { companyId, agentId, issueId, runId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "succeeded",
+      livenessState: "blocked",
+    });
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.continuationRequeued).toBe(0);
+    expect(result.escalated).toBe(1);
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then(rows => rows[0]);
+    expect(issue?.status).toBe("blocked");
+    expect(issue?.assigneeAgentId).toBe(agentId);
+    const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs.map(r => r.id)).toEqual([runId]);
+    await expectSourceScopedStrandedRecoveryAction({companyId, agentId, issueId, runId, previousStatus: "in_progress"});
+    const again = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(again.continuationRequeued).toBe(0);
+  });
+
+  it.each(["live", "abandoned"] as const)("preserves %s in-progress legacy success with no classification", async (state) => {
+    const { companyId, agentId, issueId, runId, wakeupRequestId } = await seedStrandedIssueFixture({ status: "in_progress", runStatus: "succeeded" });
+    await db.update(agentWakeupRequests).set({ status: "completed" }).where(eq(agentWakeupRequests.id, wakeupRequestId));
+    if (state === "live") runningProcesses.set(runId, { child: { pid: 12348 } as ChildProcess, graceSec: 1, processGroupId: null });
+    try {
+      const result = await heartbeatService(db).reconcileStrandedAssignedIssues();
+      expect(result).toMatchObject({ continuationRequeued: 0, escalated: 0 });
+      const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
+      expect(issue).toMatchObject({ status: "in_progress", assigneeAgentId: agentId });
+      expect((await db.select({ id: heartbeatRuns.id, status: heartbeatRuns.status, livenessState: heartbeatRuns.livenessState }).from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId)))).toEqual([{ id: runId, status: "succeeded", livenessState: null }]);
+      expect((await db.select({ id: agentWakeupRequests.id, runId: agentWakeupRequests.runId, status: agentWakeupRequests.status }).from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, companyId)))).toEqual([{ id: wakeupRequestId, runId, status: "completed" }]);
+      expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId))).toEqual([]);
+    } finally { runningProcesses.delete(runId); }
+  });
+
   it("blocks stranded in-progress work after a productive continuation retry was already used", async () => {
     const { companyId, agentId, issueId, runId } =
       await seedStrandedIssueFixture({
@@ -13399,6 +14037,18 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
     return { ...fixture, commentId, contractId, summary };
   }
+
+  it("preserves a native passive response with missing liveness classification", async () => {
+    const fixture = await seedNativePassiveBoardResponse();
+    await db.update(heartbeatRuns).set({ livenessState: null }).where(eq(heartbeatRuns.id, fixture.runId));
+    await finalizeNativeRun({ db, runId: fixture.runId, workspaceFinalizeStatus: "succeeded", projectRunStatus: true });
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.continuationRequeued).toBe(0);
+    const issue = await db.select().from(issues).where(eq(issues.id, fixture.issueId)).then(rows => rows[0]);
+    expect(issue?.status).toBe("in_progress");
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, fixture.companyId)))).toHaveLength(1);
+  });
 
   it.each(["issue_commented", "issue_reopened_via_comment"])("commits a native passive Board response without manufacturing immediate work (%s)", async (reason) => {
     const fixture = await seedNativePassiveBoardResponse();

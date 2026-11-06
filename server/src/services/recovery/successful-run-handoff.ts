@@ -530,6 +530,13 @@ export function decideSuccessfulRunHandoff(input: {
     return { kind: "skip", reason: "corrective handoff wake already exists for this source run" };
   }
 
+  // A successful process may still explicitly report that it is blocked. A
+  // corrective wake of the same agent can repeat the denied operation; let
+  // stranded-issue recovery surface the blocker for board disposition instead.
+  if (input.livenessState === "blocked") {
+    return { kind: "skip", reason: "blocked run requires board disposition" };
+  }
+
   const instruction = buildSuccessfulRunHandoffInstruction({
     issueIdentifier: issue.identifier,
     issueTitle: issue.title,

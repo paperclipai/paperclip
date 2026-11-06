@@ -68,6 +68,20 @@ function decide(overrides: Partial<Parameters<typeof decideSuccessfulRunHandoff>
 }
 
 describe("successful run handoff decision", () => {
+  it("does not retry a successful process whose output reported a blocker", () => {
+    expect(decide({ livenessState: "blocked", finalReport: "Tool access was denied." })).toEqual({
+      kind: "skip",
+      reason: "blocked run requires board disposition",
+    });
+  });
+
+  it("does not retry an empty successful response with no action evidence", () => {
+    expect(decide({ livenessState: "empty_response", detectedProgressSummary: null })).toEqual({
+      kind: "skip",
+      reason: "successful run did not produce handoff-relevant progress",
+    });
+  });
+
   it("queues one normal-model corrective wake to the original agent when a successful run has no disposition", () => {
     const decision = decide();
 

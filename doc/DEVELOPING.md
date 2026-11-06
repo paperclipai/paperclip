@@ -1470,3 +1470,12 @@ from stored configuration problems. Verify connection transport and endpoint
 fields before disabling a connection. Verify workspace ownership, active runs,
 Git state, and runtime-service readiness before closing a workspace. A missing
 URL or old workspace timestamp alone does not prove that a row is disposable.
+
+### Native heartbeat recovery runner tests
+
+Run `pnpm --filter @paperclipai/server test:heartbeat-native-runner` to verify the
+three real-runner heartbeat recovery cases. The command builds the debug runner
+and fake provider from the current checkout using Cargo and requires an
+available test PostgreSQL database. It fails if the build fails or if any of
+those three cases is absent, skipped, or fails. The build can take several
+minutes on a clean checkout.

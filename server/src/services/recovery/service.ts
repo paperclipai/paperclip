@@ -4976,6 +4976,33 @@ export function recoveryService(
         }
         continue;
       }
+      // A process can exit successfully after reporting an inability to work
+      // (for example, a denied tool). Never interpret that as permission to
+      // retry the same operation. Preserve the source assignee and move the
+      // missing disposition to the existing board-owned recovery path.
+      if (latestRun?.status === "succeeded" && latestRun.livenessState === "blocked") {
+        if (isPluginManagedIssueLifecycle(issue) || await hasPersistedDurableWaitPath(issue, latestRun)) {
+          result.skipped += 1;
+          continue;
+        }
+        const updated = await escalateStrandedAssignedIssue({
+          issue,
+          previousStatus: "in_progress",
+          latestRun,
+          notice: {
+            body: "The last run reported a blocker and left this issue in progress. No automatic continuation was started; the board must inspect the run and choose the next action.",
+            title: "Reported blocker needs disposition",
+            tone: "danger",
+          },
+        });
+        if (updated) {
+          result.escalated += 1;
+          result.issueIds.push(issue.id);
+        } else {
+          result.skipped += 1;
+        }
+        continue;
+      }
       const handoffEvidence = isExhaustedSuccessfulRunHandoff(latestRun);
       if (handoffEvidence) {
         if (isPluginManagedIssueLifecycle(issue)) {

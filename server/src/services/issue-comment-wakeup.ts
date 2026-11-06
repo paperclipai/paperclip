@@ -5,6 +5,7 @@ export function shouldWakeAssigneeForIssueComment(input: {
   issueAtCommentStart: {
     checkoutRunId?: string | null;
     executionRunId?: string | null;
+    status?: string | null;
   };
   reopened: boolean;
   currentStatus: string | null | undefined;
@@ -21,6 +22,16 @@ export function shouldWakeAssigneeForIssueComment(input: {
   ) {
     return false;
   }
+  // A board note explaining a transition into blocked is not a request to
+  // retry the just-blocked work. Preserve explicit resume/reopen behavior and
+  // comments on issues that were already blocked.
+  if (
+    input.currentStatus === "blocked" &&
+    input.issueAtCommentStart.status != null &&
+    input.issueAtCommentStart.status !== "blocked" &&
+    !input.resumeRequested &&
+    !input.reopened
+  ) return false;
   return (
     input.reopened ||
     (input.currentStatus !== "done" && input.currentStatus !== "cancelled")
