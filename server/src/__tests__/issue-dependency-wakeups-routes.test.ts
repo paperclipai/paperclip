@@ -18,6 +18,7 @@ vi.setConfig({ testTimeout: 30000 });
 
 const mockWakeup = vi.hoisted(() => vi.fn(async () => undefined));
 const mockFindExistingIssueBlockersResolvedWakeForReadyState = vi.hoisted(() => vi.fn(async () => null));
+const mockFindCompletedWakeForResolvedBlockerSet = vi.hoisted(() => vi.fn(async () => null));
 const mockIssueService = vi.hoisted(() => ({
   getAncestors: vi.fn(),
   getById: vi.fn(),
@@ -120,6 +121,8 @@ vi.mock("../services/issue-dependency-wakeups.js", async () => {
     ...actual,
     findExistingIssueBlockersResolvedWakeForReadyState:
       mockFindExistingIssueBlockersResolvedWakeForReadyState,
+    findRecentCompletedWakeForResolvedBlockerSet:
+      mockFindCompletedWakeForResolvedBlockerSet,
   };
 });
 
@@ -167,6 +170,7 @@ describe("issue dependency wakeups in issue routes", () => {
     vi.doUnmock("../middleware/index.js");
     vi.clearAllMocks();
     mockFindExistingIssueBlockersResolvedWakeForReadyState.mockResolvedValue(null);
+    mockFindCompletedWakeForResolvedBlockerSet.mockResolvedValue(null);
     mockIssueService.getAncestors.mockResolvedValue([]);
     mockIssueService.getByIdForUpdate.mockImplementation(async () => mockIssueService.getById());
     mockIssueService.getComment.mockResolvedValue(null);
@@ -686,5 +690,116 @@ describe("issue dependency wakeups in issue routes", () => {
     expect(res.status).toBe(200);
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(mockWakeup).not.toHaveBeenCalled();
+  });
+
+  it("does not re-wake a re-block against the same fully-resolved blocker set", async () => {
+    const parentIssueId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    const childIssueId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    const blockedTransitionAt = new Date("2026-10-10T08:24:58.000Z");
+    mockIssueService.getById.mockResolvedValue(issueRecord({
+      id: parentIssueId,
+      identifier: "PAP-200",
+      title: "Stale blocker hold re-block",
+      status: "in_progress",
+      assigneeAgentId: "agent-2",
+    }));
+    mockIssueService.update.mockResolvedValue(issueRecord({
+      id: parentIssueId,
+      identifier: "PAP-200",
+      title: "Stale blocker hold re-block",
+      status: "blocked",
+      assigneeAgentId: "agent-2",
+      blockedTransitionAt,
+    }));
+    mockIssueService.getDependencyReadiness.mockResolvedValue({
+      issueId: parentIssueId,
+      blockerIssueIds: [childIssueId],
+      unresolvedBlockerIssueIds: [],
+      unresolvedBlockerCount: 0,
+      pendingFinalizeBlockerIssueIds: [],
+      allBlockersDone: true,
+      isDependencyReady: true,
+    });
+    // A wake for this exact blocker set already completed in an earlier
+    // blocked cycle; the restamped cycle must not re-arm the reconciliation
+    // wake (observed livelock: one wake per 30-60s run for 2h+).
+    mockFindCompletedWakeForResolvedBlockerSet.mockResolvedValueOnce({
+      id: "wake-earlier-cycle",
+      status: "completed",
+      payload: { issueId: parentIssueId, blockerIssueIds: [childIssueId] },
+      requestedAt: new Date("2026-10-10T08:20:00.000Z"),
+    });
+
+    const res = await request(await createApp())
+      .patch(`/api/issues/${parentIssueId}`)
+      .send({
+        status: "blocked",
+        blockedByIssueIds: [childIssueId],
+        unblockDescriptor: { owner: "board", action: "Wait for the earlier wake cycle to drain" },
+      });
+
+    expect(res.status).toBe(200);
+    await vi.waitFor(() => {
+      expect(mockFindCompletedWakeForResolvedBlockerSet).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          dependentIssueId: parentIssueId,
+          blockerIssueIds: [childIssueId],
+        }),
+      );
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(mockWakeup).not.toHaveBeenCalled();
+  });
+
+  it("blocker_done primary signal is not gated by the completed-set dedupe", async () => {
+    const reviewIssueId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1";
+    const releaseIssueId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb1";
+    const releaseBlockedAt = new Date("2026-08-01T15:00:00.000Z");
+    mockIssueService.getById.mockResolvedValue(issueRecord({
+      id: reviewIssueId,
+      identifier: "PAP-REVIEW",
+      title: "Review",
+      status: "in_progress",
+    }));
+    mockIssueService.update.mockResolvedValue(issueRecord({
+      id: reviewIssueId,
+      identifier: "PAP-REVIEW",
+      title: "Review",
+      status: "done",
+    }));
+    mockIssueService.listWakeableBlockedDependents.mockResolvedValue([
+      {
+        id: releaseIssueId,
+        assigneeAgentId: "agent-release",
+        blockerIssueIds: [reviewIssueId],
+        blockedTransitionAt: releaseBlockedAt,
+      },
+    ]);
+    // Even when a completed wake exists for the same blocker set, a genuine
+    // new blocker-done transition must still wake the dependent.
+    mockFindCompletedWakeForResolvedBlockerSet.mockResolvedValue({
+      id: "wake-earlier-cycle",
+      status: "completed",
+      payload: { issueId: releaseIssueId, blockerIssueIds: [reviewIssueId] },
+      requestedAt: new Date("2026-07-30T10:00:00.000Z"),
+    });
+
+    const res = await request(await createApp())
+      .patch(`/api/issues/${reviewIssueId}`)
+      .send({ status: "done" });
+
+    expect(res.status).toBe(200);
+    await vi.waitFor(() => {
+      expect(mockWakeup).toHaveBeenCalledTimes(1);
+      expect(mockWakeup).toHaveBeenCalledWith(
+        "agent-release",
+        expect.objectContaining({
+          reason: "issue_blockers_resolved",
+          payload: expect.objectContaining({ mutation: "blocker_done" }),
+        }),
+      );
+    });
+    expect(mockFindCompletedWakeForResolvedBlockerSet).not.toHaveBeenCalled();
   });
 });
