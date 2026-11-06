@@ -2,6 +2,7 @@ import { createProviderStoppedBoundary } from "@paperclipai/adapter-utils/provid
 import { withWorkspaceRestore } from "@paperclipai/adapter-utils/workspace-restore-result";
 import { cancellableSandboxStartup } from "@paperclipai/adapter-utils/acpx-engine/startup-cancellation";
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
@@ -19,7 +20,11 @@ import {
   resolveAdapterExecutionTargetCommandForLogs,
   resolveAdapterExecutionTargetTimeoutSec,
   runAdapterExecutionTargetProcess,
+  runAdapterExecutionTargetShellCommand,
+  writeAdapterExecutionTargetFile,
+  type AdapterExecutionTarget,
 } from "@paperclipai/adapter-utils/execution-target";
+import { shellQuote } from "@paperclipai/adapter-utils/ssh";
 import {
   asBoolean,
   asNumber,
@@ -51,6 +56,74 @@ import { grokHomeHasSession, grokHomeHasUsableAuth, resolveManagedGrokHomeDir, s
 import { isGrokUnknownSessionError, parseGrokJsonl } from "./parse.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
+
+// Linux rejects a spawn when a single argv or environment string reaches
+// MAX_ARG_STRLEN bytes (32 * PAGE_SIZE: 131072 bytes on 4 KiB hosts), so the
+// run dies with `spawn E2BIG` before Grok starts. Paperclip wake prompts with a
+// long comment history, a retained context snapshot, or inline images pass that
+// size, so any prompt above this budget travels through `--prompt-file` instead
+// of `--single <prompt>`. The budget keeps a margin below the kernel limit
+// because the byte length of a UTF-8 prompt is not its character length.
+const GROK_PROMPT_FILE_THRESHOLD_BYTES = 120 * 1024;
+
+type GrokPromptFile = {
+  path: string;
+  cleanup: () => Promise<void>;
+};
+
+/**
+ * Materialize `prompt` where Grok can read it back through `--prompt-file`.
+ *
+ * Local runs write into the run scratch directory (cleaned with the run) and
+ * fall back to the OS temp directory when no run scratch is set. Remote runs
+ * write into the managed runtime directory of the execution target and the
+ * attempt's cleanup removes the file after each run: SSH teardown excludes
+ * `.paperclip-runtime`, so relying on teardown alone would keep the full
+ * prompt on the host between runs.
+ */
+async function writeGrokPromptFile(input: {
+  runId: string;
+  prompt: string;
+  cwd: string;
+  env: Record<string, string>;
+  executionTarget: AdapterExecutionTarget | null | undefined;
+  executionTargetIsRemote: boolean;
+  timeoutSec: number;
+  onLog: AdapterExecutionContext["onLog"];
+}): Promise<GrokPromptFile> {
+  const fileName = `grok-prompt-${input.runId}.txt`;
+  if (input.executionTargetIsRemote) {
+    const filePath = path.posix.join(input.cwd, ".paperclip-runtime", "grok", fileName);
+    await writeAdapterExecutionTargetFile(input.runId, input.executionTarget, filePath, input.prompt, {
+      cwd: input.cwd,
+      env: input.env,
+      timeoutSec: input.timeoutSec,
+      onLog: input.onLog,
+    });
+    return {
+      path: filePath,
+      cleanup: async () => {
+        await runAdapterExecutionTargetShellCommand(input.runId, input.executionTarget, `rm -f -- ${shellQuote(filePath)}`, {
+          cwd: input.cwd,
+          env: input.env,
+          timeoutSec: Math.min(input.timeoutSec || 15, 15),
+          onLog: async () => {},
+        }).catch(() => undefined);
+      },
+    };
+  }
+  const scratchDir = input.env.PAPERCLIP_RUN_SCRATCH_DIR?.trim() ||
+    path.join(os.tmpdir(), `paperclip-grok-${input.runId}`);
+  const filePath = path.join(scratchDir, fileName);
+  await fs.mkdir(scratchDir, { recursive: true });
+  await fs.writeFile(filePath, input.prompt, "utf8");
+  return {
+    path: filePath,
+    cleanup: async () => {
+      await fs.rm(filePath, { force: true }).catch(() => undefined);
+    },
+  };
+}
 
 function firstNonEmptyLine(text: string): string {
   return (
@@ -524,7 +597,9 @@ async function executeTurn(ctx: AdapterExecutionContext): Promise<AdapterExecuti
     }
 
     const commandNotes = (() => {
-      const notes: string[] = ["Prompt is passed to Grok via --single in headless mode."];
+      const notes: string[] = [
+        "Prompt is passed to Grok in headless mode via --single, or via --prompt-file when it exceeds the spawn argv budget.",
+      ];
       if (alwaysApprove) notes.push("Added --always-approve for unattended execution.");
       if (stagedAssets.stagedInstructionsPath) {
         notes.push(`Staged project instructions at ${stagedAssets.stagedInstructionsPath} for native Grok discovery.`);
@@ -551,7 +626,10 @@ async function executeTurn(ctx: AdapterExecutionContext): Promise<AdapterExecuti
     const paperclipEnvNote = renderPaperclipEnvNote(env);
     const apiAccessNote = renderApiAccessNote(env);
 
-    const buildArgs = (resumeSessionId: string | null, prompt: string) => {
+    const buildArgs = async (
+      resumeSessionId: string | null,
+      prompt: string,
+    ): Promise<{ args: string[]; promptFile: GrokPromptFile | null }> => {
       const args = ["--cwd", effectiveExecutionCwd, "--output-format", "streaming-json"];
       if (resumeSessionId) args.push("--resume", resumeSessionId);
       if (model && model !== DEFAULT_GROK_LOCAL_MODEL) args.push("--model", model);
@@ -567,8 +645,26 @@ async function executeTurn(ctx: AdapterExecutionContext): Promise<AdapterExecuti
         return asStringArray(config.args);
       })();
       if (extraArgs.length > 0) args.push(...extraArgs);
+      if (Buffer.byteLength(prompt, "utf8") > GROK_PROMPT_FILE_THRESHOLD_BYTES) {
+        const promptFile = await writeGrokPromptFile({
+          runId,
+          prompt,
+          cwd: effectiveExecutionCwd,
+          env,
+          executionTarget: runtimeExecutionTarget,
+          executionTargetIsRemote,
+          timeoutSec,
+          onLog,
+        });
+        args.push("--prompt-file", promptFile.path);
+        await onLog(
+          "stdout",
+          `[paperclip] Prompt is ${Buffer.byteLength(prompt, "utf8")} bytes, above the ${GROK_PROMPT_FILE_THRESHOLD_BYTES}-byte spawn argv budget; delivered through --prompt-file ${promptFile.path} instead of --single.\n`,
+        );
+        return { args, promptFile };
+      }
       args.push("--single", prompt);
-      return args;
+      return { args, promptFile: null };
     };
 
     const runAttempt = async (resumeSessionId: string | null) => {
@@ -597,43 +693,51 @@ async function executeTurn(ctx: AdapterExecutionContext): Promise<AdapterExecuti
       ]);
       const promptMetrics = {
         promptChars: prompt.length,
+        promptBytes: Buffer.byteLength(prompt, "utf8"),
         wakePromptChars: attemptWakePrompt.length,
         taskContextChars: attemptSections.taskContextNote.length,
         sessionHandoffChars: sessionHandoffNote.length,
         runtimeNoteChars: paperclipEnvNote.length + apiAccessNote.length,
         heartbeatPromptChars: attemptRenderedPrompt.length,
       };
-      const args = buildArgs(resumeSessionId, prompt);
-      if (onMeta) {
-        await onMeta({
-          adapterType: "grok_local",
-          command: resolvedCommand,
-          cwd: effectiveExecutionCwd,
-          commandNotes,
-          commandArgs: args.map((value, index) => (
-            index === args.length - 1 ? `<prompt ${prompt.length} chars>` : value
-          )),
-          env: loggedEnv,
-          prompt,
-          promptMetrics: { ...promptMetrics, promptChars: prompt.length },
-          context,
-        });
-      }
+      const { args, promptFile } = await buildArgs(resumeSessionId, prompt);
+      try {
+        if (onMeta) {
+          await onMeta({
+            adapterType: "grok_local",
+            command: resolvedCommand,
+            cwd: effectiveExecutionCwd,
+            commandNotes,
+            commandArgs: args.map((value, index) => {
+              const flag = index > 0 ? args[index - 1] : "";
+              if (flag === "--single") return `<prompt ${prompt.length} chars>`;
+              if (flag === "--prompt-file") return `<prompt-file ${value} (${prompt.length} chars)>`;
+              return value;
+            }),
+            env: loggedEnv,
+            prompt,
+            promptMetrics: { ...promptMetrics, promptChars: prompt.length },
+            context,
+          });
+        }
 
-      const proc = await runAdapterExecutionTargetProcess(runId, runtimeExecutionTarget, command, args, {
-        onProcessStopped: providerStop.beginInvocation(),
-        cwd,
-        env,
-        timeoutSec,
-        graceSec,
-        onSpawn,
-        onRuntimeProgress: ctx.onRuntimeProgress,
-        onLog,
-      });
-      return {
-        proc,
-        parsed: parseGrokJsonl(proc.stdout),
-      };
+        const proc = await runAdapterExecutionTargetProcess(runId, runtimeExecutionTarget, command, args, {
+          onProcessStopped: providerStop.beginInvocation(),
+          cwd,
+          env,
+          timeoutSec,
+          graceSec,
+          onSpawn,
+          onRuntimeProgress: ctx.onRuntimeProgress,
+          onLog,
+        });
+        return {
+          proc,
+          parsed: parseGrokJsonl(proc.stdout),
+        };
+      } finally {
+        await promptFile?.cleanup();
+      }
     };
 
     const toResult = (

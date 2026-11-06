@@ -23,6 +23,11 @@ const mocks = vi.hoisted(() => {
     ensureCommandMock: vi.fn(async () => {}),
     resolveCommandForLogsMock: vi.fn(async () => "grok"),
     runProcessMock: vi.fn(),
+    writeFileMock: vi.fn(async (..._args: unknown[]) => undefined),
+    runShellMock: vi.fn(async (..._args: unknown[]) => ({
+      exitCode: 0, signal: null, timedOut: false, stdout: "", stderr: "", pid: null,
+      startedAt: new Date().toISOString(),
+    })),
     prepareRuntimeMock: vi.fn(
       async (input: { assets?: Array<{ key: string; localDir: string; followSymlinks?: boolean }> }) => {
         const override = state.prepareRuntimeResult;
@@ -46,6 +51,8 @@ const {
   ensureCommandMock,
   resolveCommandForLogsMock,
   runProcessMock,
+  writeFileMock,
+  runShellMock,
   prepareRuntimeMock,
 } = mocks;
 
@@ -70,10 +77,15 @@ vi.mock("@paperclipai/adapter-utils/execution-target", () => ({
   resolveAdapterExecutionTargetTimeoutSec: (_target: unknown, timeoutSec: number) => timeoutSec,
   runAdapterExecutionTargetProcess: (...args: unknown[]) =>
     (mocks.runProcessMock as (...args: unknown[]) => unknown)(...args),
+  writeAdapterExecutionTargetFile: (...args: unknown[]) =>
+    (mocks.writeFileMock as (...args: unknown[]) => unknown)(...args),
+  runAdapterExecutionTargetShellCommand: (...args: unknown[]) =>
+    (mocks.runShellMock as (...args: unknown[]) => unknown)(...args),
 }));
 
 import { execute } from "./execute.js";
 import { resolveManagedGrokHomeDir } from "./grok-home.js";
+import { shellQuote } from "@paperclipai/adapter-utils/ssh";
 
 const tempRoots: string[] = [];
 
@@ -226,6 +238,8 @@ describe("grok_local execute", () => {
     prepareRuntimeMock.mockClear();
     resolveCommandForLogsMock.mockClear();
     runProcessMock.mockReset();
+    writeFileMock.mockClear();
+    runShellMock.mockClear();
   });
 
   afterEach(async () => {
@@ -690,6 +704,111 @@ describe("grok_local execute", () => {
     expect(runProcessMock).not.toHaveBeenCalled();
     expect(await pathExists(path.join(root, "Agents.md"))).toBe(false);
     expect(await pathExists(path.join(root, ".claude", "skills", "paperclip"))).toBe(false);
+  });
+
+  describe("oversized prompt delivery", () => {
+    // Linux MAX_ARG_STRLEN: one argv or environment string at 131072 bytes
+    // (4 KiB pages) makes spawn fail with E2BIG before Grok starts.
+    const MAX_ARG_STRLEN_BYTES = 131072;
+    const oversizedFiller = "y".repeat(200 * 1024);
+
+    it("sends an oversized prompt through --prompt-file so no argv entry reaches the spawn limit", async () => {
+      const root = await makeTempRoot();
+      const scratchDir = path.join(root, "scratch");
+      let deliveredArgs: string[] = [];
+      let promptFileContent = "";
+      let promptFilePath = "";
+      runProcessMock.mockImplementation(async (_runId: string, _target: unknown, _command: string, args: string[]) => {
+        deliveredArgs = args;
+        const flagIndex = args.indexOf("--prompt-file");
+        if (flagIndex >= 0) {
+          promptFilePath = args[flagIndex + 1] ?? "";
+          promptFileContent = await fs.readFile(promptFilePath, "utf8");
+        }
+        return makeSuccessfulRunResult();
+      });
+
+      const ctx = await makeCtx("oversized-prompt-local", root);
+      ctx.config.promptTemplate = oversizedFiller;
+      ctx.config.env = { PAPERCLIP_RUN_SCRATCH_DIR: scratchDir };
+      const metaEvents: Array<{ promptMetrics?: Record<string, number> }> = [];
+      ctx.onMeta = async (event) => {
+        metaEvents.push(event as { promptMetrics?: Record<string, number> });
+      };
+
+      await execute(ctx);
+
+      expect(deliveredArgs).toContain("--prompt-file");
+      expect(deliveredArgs).not.toContain("--single");
+      expect(promptFilePath.startsWith(`${scratchDir}${path.sep}`)).toBe(true);
+      expect(promptFileContent).toContain(oversizedFiller.slice(0, 4096));
+      expect(
+        deliveredArgs.every((entry) => Buffer.byteLength(entry, "utf8") < MAX_ARG_STRLEN_BYTES),
+      ).toBe(true);
+      expect(metaEvents[0]?.promptMetrics?.promptBytes).toBeGreaterThanOrEqual(oversizedFiller.length);
+      // The attempt removes its own prompt file once the Grok process ended.
+      await expect(fs.access(promptFilePath)).rejects.toThrow();
+    });
+
+    it("keeps a prompt below the budget on the --single argument path", async () => {
+      const root = await makeTempRoot();
+      const scratchDir = path.join(root, "scratch");
+      let deliveredArgs: string[] = [];
+      runProcessMock.mockImplementation(async (_runId: string, _target: unknown, _command: string, args: string[]) => {
+        deliveredArgs = args;
+        return makeSuccessfulRunResult();
+      });
+
+      const ctx = await makeCtx("prompt-below-budget", root);
+      ctx.config.promptTemplate = "Reply with OK.";
+      ctx.config.env = { PAPERCLIP_RUN_SCRATCH_DIR: scratchDir };
+
+      await execute(ctx);
+
+      expect(deliveredArgs).toContain("--single");
+      expect(deliveredArgs).not.toContain("--prompt-file");
+      expect(writeFileMock).not.toHaveBeenCalled();
+      expect(await pathExists(scratchDir)).toBe(false);
+    });
+
+    it("writes an oversized prompt into the remote workspace and passes --prompt-file", async () => {
+      const root = await makeTempRoot();
+      remoteState.isRemote = true;
+      try {
+        let deliveredArgs: string[] = [];
+        runProcessMock.mockImplementation(async (_runId: string, _target: unknown, _command: string, args: string[]) => {
+          deliveredArgs = args;
+          return makeSuccessfulRunResult();
+        });
+        writeFileMock.mockClear();
+
+        const ctx = await makeCtx("oversized-prompt-remote", root);
+        ctx.config.promptTemplate = oversizedFiller;
+        ctx.config.env = { XAI_API_KEY: "fixture-key" };
+
+        await execute(ctx);
+
+        const flagIndex = deliveredArgs.indexOf("--prompt-file");
+        expect(flagIndex).toBeGreaterThan(-1);
+        const writtenPath = deliveredArgs[flagIndex + 1];
+        expect(writtenPath).toMatch(
+          /^\/remote\/workspace\/\.paperclip-runtime\/grok\/grok-prompt-oversized-prompt-remote\.txt$/,
+        );
+        expect(writeFileMock).toHaveBeenCalledTimes(1);
+        expect(String(writeFileMock.mock.calls[0][3])).toContain(oversizedFiller.slice(0, 4096));
+        expect(
+          deliveredArgs.every((entry) => Buffer.byteLength(entry, "utf8") < MAX_ARG_STRLEN_BYTES),
+        ).toBe(true);
+        expect(runShellMock).toHaveBeenCalledWith(
+          expect.anything(),
+          expect.anything(),
+          `rm -f -- ${shellQuote(writtenPath)}`,
+          expect.objectContaining({ timeoutSec: expect.any(Number) }),
+        );
+      } finally {
+        remoteState.isRemote = false;
+      }
+    });
   });
 
   describe("remote lane credential staging", () => {
