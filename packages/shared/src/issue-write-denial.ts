@@ -75,6 +75,18 @@ export interface IssueWriteDenialContext {
   count?: number | null;
   /** ISO timestamp at which log-only rollout becomes enforcement. */
   enforceAt?: string | null;
+  /**
+   * Length of the rolling window the cap was counted over, set only for callers
+   * budgeted by window rather than by run (service keys). Absent means the
+   * per-run cap, whose advice is "continue on the next heartbeat" — advice a
+   * run-less caller cannot act on.
+   */
+  windowMs?: number | null;
+  /**
+   * ISO timestamp at which the oldest counted write ages out of `windowMs`, i.e.
+   * the earliest retry that can succeed. Only meaningful alongside `windowMs`.
+   */
+  retryAfter?: string | null;
 }
 
 export function isIssueWriteDenialCode(
@@ -100,6 +112,21 @@ export function issueWriteDenialCodeForResponsibleUserDenial(
 function issueLabel(identifier: string | null | undefined): string {
   const trimmed = identifier?.trim();
   return trimmed && trimmed.length > 0 ? trimmed : "this task";
+}
+
+/**
+ * "hour" / "15 minutes" for a window length, so the copy names the window in
+ * the words an operator would use rather than echoing a millisecond count.
+ */
+function describeDuration(ms: number): string {
+  const minutes = Math.round(ms / 60_000);
+  if (minutes >= 60 && minutes % 60 === 0) {
+    const hours = minutes / 60;
+    return hours === 1 ? "hour" : `${hours} hours`;
+  }
+  if (minutes >= 1) return minutes === 1 ? "minute" : `${minutes} minutes`;
+  const seconds = Math.max(1, Math.round(ms / 1000));
+  return seconds === 1 ? "second" : `${seconds} seconds`;
 }
 
 /** "the assignee" when the name is unknown. */
@@ -224,6 +251,39 @@ export function describeIssueWriteDenial(
     case "cross_issue_influence_cap_exceeded": {
       const cap = context.cap ?? 20;
       const attempt = context.count ?? null;
+      const windowMs = context.windowMs ?? null;
+      if (windowMs !== null) {
+        // A service key has no run, so neither half of the per-run copy applies:
+        // there is no "next heartbeat" to carry the work and no own task to
+        // consolidate onto. Name the window and the moment it frees up instead,
+        // so the advice is something the integration can actually schedule.
+        const window = describeDuration(windowMs);
+        const retryAfter = context.retryAfter?.trim();
+        return {
+          code,
+          status: 429,
+          tone: "cap",
+          boundary: `Rolling cap of ${cap} writes per ${window}`,
+          title: "This service key has spent its hourly write budget",
+          description:
+            `A service key may make at most ${cap} comments or task updates per ` +
+            `${window}, counted over a rolling window rather than per run because ` +
+            `the key serves many inbound events and never owns a heartbeat` +
+            `${attempt !== null ? `; this was attempt ${attempt}` : ""}. The cap ` +
+            `bounds runaway sprays and loops — it is a rate backstop, not a ` +
+            `permission decision, so ${actor} is still allowed to write to ${issue}.`,
+          whoCanAct:
+            `${actor} on a heartbeat run of its own, which is budgeted separately, ` +
+            `or ${assignee} on ${issue} directly.`,
+          sanctionedPath: retryAfter
+            ? `Retry after ${retryAfter}, when the oldest of those ${cap} writes ages ` +
+              `out of the window — the budget refills gradually, so queue the backlog ` +
+              `rather than re-sending it all at once.`
+            : `Wait for the oldest of those ${cap} writes to age out of the ` +
+              `${window} window and retry; the budget refills gradually, so queue ` +
+              `the backlog rather than re-sending it all at once.`,
+        };
+      }
       return {
         code,
         status: 429,

@@ -74,6 +74,39 @@ describe("describeIssueWriteDenial", () => {
     expect(copy.sanctionedPath).toContain("next heartbeat");
   });
 
+  it("describes the rolling window, not a heartbeat, for a window-budgeted caller", () => {
+    // A service key has no run: "the budget resets per run" and "continue on the
+    // next heartbeat" are both advice it cannot follow. `windowMs` is what
+    // selects the copy that names the window and when it frees up.
+    const copy = describeIssueWriteDenial("cross_issue_influence_cap_exceeded", {
+      cap: 60,
+      count: 61,
+      windowMs: 60 * 60 * 1000,
+      retryAfter: "2026-09-30T08:12:00.000Z",
+      actorLabel: "Inbox Router",
+    });
+    expect(copy.status).toBe(429);
+    expect(copy.tone).toBe("cap");
+    expect(copy.boundary).toContain("60");
+    expect(copy.boundary).toContain("per hour");
+    expect(copy.description).toContain("attempt 61");
+    expect(copy.description).toContain("still allowed");
+    expect(copy.sanctionedPath).toContain("2026-09-30T08:12:00.000Z");
+    expect(copy.sanctionedPath).not.toContain("heartbeat");
+    expect(copy.whoCanAct).toContain("Inbox Router");
+  });
+
+  it("still names the window when no retry timestamp is known", () => {
+    const copy = describeIssueWriteDenial("cross_issue_influence_cap_exceeded", {
+      cap: 60,
+      windowMs: 15 * 60 * 1000,
+    });
+    expect(copy.boundary).toContain("per 15 minutes");
+    expect(copy.sanctionedPath).toContain("15 minutes");
+    expect(copy.sanctionedPath).not.toContain("Invalid Date");
+    expect(copy.sanctionedPath).not.toContain("heartbeat");
+  });
+
   it("defaults the cap to the shipped limit when context omits it", () => {
     const copy = describeIssueWriteDenial("cross_issue_influence_cap_exceeded");
     expect(copy.boundary).toContain("20");
