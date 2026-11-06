@@ -7,7 +7,7 @@ export const recoveryPostgresSupport = process.env.PAPERCLIP_TEST_DATABASE_URL |
   ? { supported: true } : await getEmbeddedPostgresTestSupport();
 
 export async function startRecoveryPostgres(prefix: string, options: { dedicatedDatabaseUrl?: string } = {}) {
-  const dedicated = options.dedicatedDatabaseUrl ?? process.env.PAPERCLIP_RECOVERY_TEST_DATABASE_URL;
+  const dedicated = options.dedicatedDatabaseUrl;
   if (dedicated !== undefined) {
     const connectionString = resolveExternalTestDatabaseUrl("dedicated recovery database", dedicated);
     if (!connectionString) throw new Error("Dedicated recovery database URL is required");
