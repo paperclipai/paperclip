@@ -1015,8 +1015,45 @@ does not repack an already dissociated mirror. Each streamed file must match its
 recorded hash, size and mode and retain its filesystem identity while read.
 Capture rechecks the complete source inventory and Git state before returning a
 receipt. A changed source or cancelled capture removes its incomplete archive;
-an existing archive remains untouched. Temporary space must still hold the
-normalized Git metadata and the complete archive together.
+an existing archive remains untouched. Temporary sandbox space normally holds
+the normalized Git metadata and the complete archive together. An exact disk-full
+failure invokes one read-only export fallback. It fingerprints a standalone
+source, transfers its files through the provider's existing bulk channel, and
+checks the received inventory and the source again before sealing a portable
+archive on the controller. It rechecks the source after sealing. No source files
+or provider caches are removed. Linked Git worktrees, initialized submodules, alternate object stores,
+Git administrative symlinks, setuid/setgid/sticky entries, and configuration outside the portable key contract
+cannot use this fallback. Pure file-based config reads do not follow includes;
+controller Git normalization starts only after every config passes that contract.
+They remain retained if their normal archive cannot be saved. Transfer failures
+or changed files retain the original disk-full error and do not produce a
+preservation receipt.
+
+The fallback's `portableKey` allowlist in
+`server/src/services/remote-workspace-readonly-inventory.ts` is authoritative and
+intentionally stricter than normal capture's `portableGitSettings` sanitizer.
+Normal capture drops unrelated settings; the fallback rejects every unlisted key
+before controller Git can read the copied source configuration. This includes
+otherwise ordinary settings such as `pull.rebase`, `commit.gpgsign`, `fetch.prune`,
+`extensions.worktreeConfig`, and `remote.origin.mirror`.
+
+The directory transfer requests `preserveSourceEntries` to preserve ordinary
+filenames and permissions. Its exclusions are literal root-relative paths,
+including directory descendants; ordinary transfers keep glob exclusions. Daytona and
+Kubernetes implement and qualify this mapping contract. Other providers have not
+been qualified for this fallback; inventory verification still prevents a
+provider that omits or alters entries from publishing an incomplete save.
+
+The fallback applies the normal untracked dependency exclusions before inspecting
+links inside reinstallable environments. Tracked environment files remain part of
+the save. Its outbound mapping requests `preserveSourceEntries`; providers retain
+ordinary `._*` and scratch-like user filenames while excluding only the current
+transfer's own scratch paths and the explicit source exclusions. Older providers
+that omit files fail inventory verification rather than publish an incomplete save.
+Fallback inventory is limited to 100,000 entries, 64 standalone repositories,
+1 MiB of configuration, 1,024 settings and 256 refspec/merge entries. Controller
+verification and archive normalization share a two-minute cancellation deadline.
+These limits reject excessive work before publication and keep the source retained.
 
 Shallow and partial Git checkouts retain their available object files instead
 of asking a mirror clone to transfer promised or index-only objects. Capture

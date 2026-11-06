@@ -19,6 +19,7 @@ import {
 import { conflict, forbidden, unprocessable } from "../errors.js";
 import { isCloudManagedInstance } from "../services/cloud-instance.js";
 import { getManagedInstanceConfig, SECRET_LIKE_CONFIG_KEY_PATTERN } from "../services/managed-config.js";
+import { MANAGED_PLUGIN_ENVIRONMENT_MARKER_KEY } from "../services/managed-plugin-environments.js";
 import { parseExecutionPolicyBootstrapEnv } from "../services/execution-policy-bootstrap.js";
 import { isExecutionForcedToKubernetes } from "../services/execution-allowlist.js";
 import { validate } from "../middleware/validate.js";
@@ -69,8 +70,10 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
 
 /**
  * Whether this environment row was provisioned by the platform: the
- * managed-config environment provisioner marker, or the legacy managed
- * Kubernetes wrapper marker (rows created by builds that predate the
+ * managed-config environment provisioner marker, the managed plugin
+ * environment marker (`"<pluginKey>:<driverKey>"`, stamped next to
+ * `managedByPaperclip` on a managed-config plugin entry's row), or the legacy
+ * managed Kubernetes wrapper marker (rows created by builds that predate the
  * generalized provisioner and have not been adopted yet).
  */
 export function isPlatformProvisionedEnvironment(environment: {
@@ -78,6 +81,7 @@ export function isPlatformProvisionedEnvironment(environment: {
 }): boolean {
   return (
     environment.metadata?.managedByPaperclip === true ||
+    typeof environment.metadata?.[MANAGED_PLUGIN_ENVIRONMENT_MARKER_KEY] === "string" ||
     environment.metadata?.managedKubernetesSandbox === true
   );
 }
@@ -151,6 +155,7 @@ function isTenantEditableManagedSandbox(environment: {
 
 const PLATFORM_PROVISIONED_MARKER_KEYS = [
   "managedByPaperclip",
+  MANAGED_PLUGIN_ENVIRONMENT_MARKER_KEY,
   "managedKubernetesSandbox",
 ] as const;
 

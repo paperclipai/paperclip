@@ -24,7 +24,8 @@ import { useIssueRowDetails } from "@/hooks/useIssueRowDetails";
 import { useCoordinatorWorkspaceEnabled } from "@/hooks/useCoordinatorWorkspaceEnabled";
 import { usePublishSharedQueryData, useSharedPollingQuery } from "@/hooks/useSharedPolling";
 import { collectLiveIssueIds } from "@/lib/liveIssueIds";
-import { buildCompanyUserLabelMap } from "@/lib/company-members";
+import { formatUserLabel } from "@/lib/assignees";
+import { buildCompanyUserProfileMap } from "@/lib/company-members";
 import { coordinatorAttentionTasksQueryKey } from "@/lib/coordinator-attention";
 import { createIssueDetailLocationState } from "@/lib/issueDetailBreadcrumb";
 import { defaultIssueFilterState, type IssueFilterState } from "@/lib/issue-filters";
@@ -155,8 +156,8 @@ export function CoordinatorTasks({ viewControl }: { viewControl?: ReactNode } = 
   const sharedLiveRuns = useSharedPollingQuery({ companyId, resourceKey: "live-runs", queryKey: queryKeys.liveRuns(companyId!), enabled: !!companyId, refetchInterval: false, leaderOnly: true });
   const liveRuns = useQuery({ queryKey: queryKeys.liveRuns(companyId!), queryFn: () => heartbeatsApi.liveRunsForCompany(companyId!), enabled: sharedLiveRuns.enabled, refetchInterval: sharedLiveRuns.refetchInterval });
   usePublishSharedQueryData(sharedLiveRuns, liveRuns.data, liveRuns.dataUpdatedAt);
-  const users = buildCompanyUserLabelMap(directory.data?.users);
-  const agentNames = new Map(agents.data?.map(agent => [agent.id, agent.name]));
+  const users = buildCompanyUserProfileMap(directory.data?.users);
+  const agentById = new Map(agents.data?.map(agent => [agent.id, agent]));
   const projectById = new Map(projects.data?.map(project => [project.id, project]));
   const records = (needsAttention ? attentionTasks.flatMap(task => task.data ?? []) : tasks.data?.pages.flatMap(page => page.items) ?? []) as Issue[];
   const unreadIds = new Set(view === "unread" ? records.map(issue => issue.id) : []);
@@ -190,8 +191,10 @@ export function CoordinatorTasks({ viewControl }: { viewControl?: ReactNode } = 
   const items: TaskListItem[] = [...new Map(scopedRecords.map(issue => [issue.id, issue])).values()].map(issue => ({
     issue: { ...issue, project: issue.project ?? projectById.get(issue.projectId ?? "") },
     unread: unreadIds.has(issue.id) || issue.isUnreadForMe === true,
-    createdBy: issue.createdByAgentId ? agentNames.get(issue.createdByAgentId) ?? "Unknown agent" : users.get(issue.createdByUserId ?? "") ?? "Board",
-    assignee: issue.assigneeAgentId ? agentNames.get(issue.assigneeAgentId) ?? "Unknown agent" : users.get(issue.assigneeUserId ?? "") ?? null,
+    createdBy: issue.createdByAgentId ? agentById.get(issue.createdByAgentId)?.name ?? "Unknown agent" : users.get(issue.createdByUserId ?? "")?.label ?? "Board",
+    assignee: issue.assigneeAgentId ? agentById.get(issue.assigneeAgentId)?.name ?? "Unknown agent" : users.get(issue.assigneeUserId ?? "")?.label ?? formatUserLabel(issue.assigneeUserId),
+    assigneeAgent: agentById.get(issue.assigneeAgentId ?? ""),
+    assigneeUserAvatarUrl: users.get(issue.assigneeUserId ?? "")?.image,
   }));
   const collection = useTaskListCollection({ items, companyId, userId, query, onQueryChange: setQuery, view: needsAttention ? "all" : view,
     layout, onLayoutChange: setLayout,
