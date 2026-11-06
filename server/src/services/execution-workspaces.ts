@@ -521,10 +521,25 @@ async function pathExists(value: string | null | undefined) {
   }
 }
 
+/**
+ * Returns false only when no `.git` entry exists on the path or any ancestor.
+ * Uses lstat so a dangling `.git` symlink still counts, and treats any error
+ * other than ENOENT as "may exist" so unreadable locations fail closed.
+ */
 async function hasGitMarkerInPathOrAncestors(start: string) {
-  let current = path.resolve(start);
+  let current: string;
+  try {
+    current = await fs.realpath(start);
+  } catch {
+    return true;
+  }
   while (true) {
-    if (await pathExists(path.join(current, ".git"))) return true;
+    try {
+      await fs.lstat(path.join(current, ".git"));
+      return true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException | null)?.code !== "ENOENT") return true;
+    }
     const parent = path.dirname(current);
     if (parent === current) return false;
     current = parent;
@@ -977,7 +992,24 @@ async function inspectGitCloseReadiness(workspace: ExecutionWorkspace): Promise<
     // lose. Only treat it that way when no `.git` exists on the path, so a
     // broken or unreadable repository still fails closed.
     if (workspace.providerType !== "git_worktree" && !(await hasGitMarkerInPathOrAncestors(workspacePath))) {
-      return { git: null, warnings, statusInspectionSucceeded: true };
+      return {
+        git: {
+          repoRoot: null,
+          workspacePath,
+          branchName: workspace.branchName,
+          baseRef: workspace.baseRef,
+          hasDirtyTrackedFiles: false,
+          hasUntrackedFiles: false,
+          dirtyEntryCount: 0,
+          untrackedEntryCount: 0,
+          aheadCount: null,
+          behindCount: null,
+          isMergedIntoBase: null,
+          createdByRuntime,
+        },
+        warnings,
+        statusInspectionSucceeded: true,
+      };
     }
     warnings.push(
       `Could not inspect git status for "${workspacePath}": ${error instanceof Error ? error.message : String(error)}`,

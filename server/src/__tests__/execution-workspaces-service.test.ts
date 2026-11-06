@@ -2419,7 +2419,7 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     ]));
   });
 
-  async function seedSharedLocalWorkspace(cwd: string) {
+  async function seedSharedLocalWorkspace(cwd: string, options: { metadata?: Record<string, unknown> } = {}) {
     const companyId = randomUUID();
     const projectId = randomUUID();
     const projectWorkspaceId = randomUUID();
@@ -2457,6 +2457,7 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
       status: "active",
       providerType: "local_fs",
       cwd,
+      metadata: options.metadata ?? null,
     });
     return { executionWorkspaceId };
   }
@@ -2472,10 +2473,42 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     expect(readiness).toMatchObject({
       state: "ready_with_warnings",
       isDestructiveCloseAllowed: true,
-      git: null,
+      git: { repoRoot: null, hasDirtyTrackedFiles: false, hasUntrackedFiles: false },
     });
     expect(readiness?.blockingReasons).toEqual([]);
     expect(readiness?.warnings.some((warning) => warning.startsWith("Could not inspect git status"))).toBe(false);
+  });
+
+  it("plans removal of a runtime-created plain workspace directory", async () => {
+    const parentDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-non-git-runtime-"));
+    tempDirs.add(parentDir);
+    const workspaceDir = path.join(parentDir, "task");
+    await fs.mkdir(workspaceDir);
+    const { executionWorkspaceId } = await seedSharedLocalWorkspace(workspaceDir, {
+      metadata: { createdByRuntime: true },
+    });
+    await db.update(projectWorkspaces).set({ cwd: path.join(parentDir, "primary") })
+      .where(eq(projectWorkspaces.cwd, workspaceDir));
+
+    const readiness = await svc.getCloseReadiness(executionWorkspaceId);
+
+    expect(readiness?.blockingReasons).toEqual([]);
+    expect(readiness?.git).toMatchObject({ repoRoot: null, createdByRuntime: true });
+    expect(readiness?.plannedActions.map((action) => action.kind)).toContain("remove_local_directory");
+  });
+
+  it("still blocks close when the workspace .git marker is a dangling symlink", async () => {
+    const workspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-dangling-git-workspace-"));
+    tempDirs.add(workspaceDir);
+    await fs.symlink(path.join(workspaceDir, "unmounted-repo", ".git"), path.join(workspaceDir, ".git"));
+    const { executionWorkspaceId } = await seedSharedLocalWorkspace(workspaceDir);
+
+    const readiness = await svc.getCloseReadiness(executionWorkspaceId);
+
+    expect(readiness).toMatchObject({ state: "blocked", isDestructiveCloseAllowed: false });
+    expect(readiness?.blockingReasons).toContain(
+      "Paperclip could not verify the workspace git status. Retry before destructive cleanup.",
+    );
   });
 
   it("still blocks close when a workspace git repository cannot be inspected", async () => {
