@@ -12,7 +12,6 @@ export function useTaskReferenceLabel(taskId: string): string {
     queryKey: queryKeys.issues.detail(taskId),
     queryFn: () => issuesApi.get(taskId),
     staleTime: 5 * 60_000,
-    retry: false,
   });
   return data?.identifier?.trim() || "task";
 }
