@@ -34,3 +34,44 @@ describe.each(["provider", "biller"] as const)("%s price status", kind => {
     expect(badges).toEqual([example.estimate, example.unavailable].filter(Boolean));
   });
 });
+
+describe("kimi subscription quota section", () => {
+  let container: HTMLDivElement, root: ReturnType<typeof createRoot>;
+  beforeEach(() => { container = document.createElement("div"); document.body.appendChild(container); root = createRoot(container); });
+  afterEach(() => { act(() => root.unmount()); container.remove(); });
+
+  it("shows the subscription quota section for kimi providers", async () => {
+    const row = { ...base, provider: "kimi", biller: "kimi", costCents: 0, eventCount: 1, estimatedEventCount: 0, unpricedEventCount: 1 };
+    await act(async () => root.render(
+      <ProviderQuotaCard
+        provider="kimi"
+        rows={[row]}
+        windowRows={[]}
+        showDeficitNotch={false}
+        budgetMonthlyCents={0}
+        totalCompanySpendCents={0}
+        weekSpendCents={0}
+        quotaWindows={[{ label: "5 hours", usedPercent: 27.4, resetsAt: null, valueLabel: "73/100", detail: null }]}
+      />,
+    ));
+    expect(container.textContent).toContain("Subscription quota");
+    expect(container.textContent).toContain("73/100");
+  });
+
+  it("keeps the section hidden for providers without subscription quota", async () => {
+    const row = { ...base, provider: "gemini", biller: "gemini", costCents: 0, eventCount: 1, estimatedEventCount: 0, unpricedEventCount: 1 };
+    await act(async () => root.render(
+      <ProviderQuotaCard
+        provider="gemini"
+        rows={[row]}
+        windowRows={[]}
+        showDeficitNotch={false}
+        budgetMonthlyCents={0}
+        totalCompanySpendCents={0}
+        weekSpendCents={0}
+        quotaWindows={[{ label: "5 hours", usedPercent: 27.4, resetsAt: null, valueLabel: "73/100", detail: null }]}
+      />,
+    ));
+    expect(container.textContent).not.toContain("Subscription quota");
+  });
+});

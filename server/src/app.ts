@@ -823,7 +823,7 @@ export async function createApp(
     process.env.PAPERCLIP_TRUSTED_MCP_RUNTIME_HOST ??
     process.env.PAPERCLIP_TOOL_RUNTIME_TRUSTED_HOST ??
     null;
-  api.use(costRoutes(db, { pluginWorkerManager: workerManager }));
+  api.use(costRoutes(db, { pluginWorkerManager: workerManager, deploymentMode: opts.deploymentMode }));
   api.use(activityRoutes(db));
   api.use(dashboardRoutes(db));
   api.use(attentionRoutes(db));

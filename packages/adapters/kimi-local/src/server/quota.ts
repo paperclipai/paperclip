@@ -94,6 +94,9 @@ export async function readKimiApiKey(home: string = kimiCodeHome()): Promise<str
 }
 
 function toPercent(raw: unknown): number | null {
+  // Number(null) is 0: without this guard a missing ratio would read as a
+  // successful zero-usage reading instead of an unknown value.
+  if (raw == null || (typeof raw === "string" && raw.trim().length === 0)) return null;
   const value = Number(raw);
   if (!Number.isFinite(value)) return null;
   // The endpoint reports a 0..1 ratio; accept a 0..100 scale defensively.

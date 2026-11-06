@@ -166,8 +166,15 @@ export function mergeQuotaWindowResults(
   return [...managed, ...adapterReported.filter((result) => !reported.has(result.provider))];
 }
 
-export async function fetchAllQuotaWindows(): Promise<ProviderQuotaResult[]> {
-  const adapters = listServerAdapters().filter((a) => a.getQuotaWindows != null);
+export async function fetchAllQuotaWindows(
+  excludeProviders?: ReadonlySet<string>,
+): Promise<ProviderQuotaResult[]> {
+  // Skip adapters whose provider is already covered: their probes are the
+  // expensive part (codex spawns an app-server, claude runs a CLI check), and
+  // the merge would discard their results anyway.
+  const adapters = listServerAdapters().filter(
+    (a) => a.getQuotaWindows != null && !excludeProviders?.has(providerSlugForAdapterType(a.type)),
+  );
 
   const settled = await Promise.allSettled(
     adapters.map((adapter) => withQuotaTimeout(adapter.type, Promise.resolve().then(() => adapter.getQuotaWindows!()))),
