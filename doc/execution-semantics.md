@@ -1294,6 +1294,23 @@ must bind the company, task, run, allocation, descriptor and final file digest.
 The original accepted result stays unchanged. A coordinator that is still
 committing, an active owner, or an unverified stop keeps its existing hold.
 
+If Retry retains a later selected workspace, preparation attaches the verified
+canonical snapshot from its admitted predecessor under `.paperclip-recovered/`.
+It preserves that workspace's own files and older recovery attachments. The
+provider receives the verified relative paths in its continuation context.
+Missing or invalid canonical recovery evidence blocks the import; it does not
+authorize an empty replacement or replay completed work.
+Read-only imports can use a superseded immutable snapshot with the exact saved
+operation receipt. They do not establish current workspace execution authority.
+Restored sidecars keep user edits, and only paths present with their recorded
+provenance in the current prepared root are published to the provider. Older
+attachment records rebuild this proof from saved receipts; reusing a live
+allocation never replaces their files. For a related task, retention requires
+the selected workspace’s committed migration history and matching source marker,
+or the exact provenance inside its verified committed saved snapshot. The latter
+uses one temporary read-only archive verification per preparation when needed.
+Task relationships alone do not authorize importing or retaining files.
+
 When a legacy turn admitted by an explicit user message fails or times out, a bounded transient retry needs its own durable continuation authorization. Initial admission binds the message's exact body digest and revision. Scheduling requires that original binding and revalidates the human author, source task, assignee, and execution ownership, then records the successor's receipt in the same transaction as its run. Historical receipts without a message binding cannot authorize automatic retries and are not backfilled. The parent receipt remains intact. Dispatch checks the exact successor, retry parent, and unchanged message binding again. Deleted or edited input, changed actors or ownership, superseded work, and duplicate successors cannot renew authority. One-run Retry and Interrupt intents retain their separate admission contracts; they are not renewable user-message authority. Other retry policies cannot borrow this receipt: their scheduling fails closed. Successful explicit turns do not create a prose-only missing-comment follow-up with spent authority.
 
 Explicit retry admission checks the local parent adapter controller and verified environment cleanup. The existing queue-first release policy may retain only its own terminal execution claim while that cleanup is pending; finalization and the periodic stale-lock sweep reconsider the same policy after cleanup. Generic terminal-lock cleanup and stale checkout adoption leave these claims for that settlement. New user input, reassignment, and a successor's claim take precedence. Exhausted retries and revoked or missing authorization release the terminal claim without requesting another retry. Pending or failed environment cleanup cannot mint a successor receipt.
@@ -2665,7 +2682,10 @@ leases before the task can continue. Once these checks pass, the server retires
 its own unchanged bootstrap-failure block and schedules one bounded retry.
 Startup also discovers this obligation when file recovery completed before the
 restart. A pending Retry or saved message owns its continuation instead of
-starting a competing automatic attempt. If a replacement was already withheld
+starting a competing automatic attempt. Explicit admission uses the same verified
+preparation proof, including the certified failed `process_lost` form. A prior
+unstarted retry refused by the execution gate remains historical evidence; its
+host dispatch receipt must also verify before the new turn can start. If a replacement was already withheld
 by the workspace gate before execution, continuation retains that cancelled row
 and uses its existing predecessor claim and remaining failure budget.
 Recovery adopts that withheld row only when it is the source's sole retry child.
@@ -3225,6 +3245,14 @@ must agree with the absence of a native result, coordinator, environment lease,
 controller, process or provider output. A previous session display hint does
 not establish that the failed attempt started a provider.
 
+A recovered historical bootstrap ancestor may contain the host's run-scoped
+skill announcement before dispatch. Admission verifies the complete small log
+against its stored digest, byte count, output watermark and recorded skill
+selection. Missing, slow, changed or additional output remains a hold. This
+exception still requires the host's no-provider bootstrap certificate, exact
+settlement events, stopped leases and verified saved files; it cannot certify
+provider output or authorize replay of an earlier session.
+
 That intent pins the saved comment and accepted identity. Queue admission
 rechecks the source; dispatch rechecks the coalesced intent and its exact claimed
 successor receipt before inheriting the accepted identity. Current permissions,
@@ -3309,6 +3337,15 @@ receipt. The existing sandbox marker, process identity and authenticated PRP
 checkpoint still establish the original execution. Adoption uses that admitted
 artifact identity and does not stage or launch provider assets. Fresh launches
 and recovery without persisted admission retain their release and pack checks.
+Ordinary per-turn OpenCode continuation also retains its recorded qualified
+provider pack when its verified durable session binding and pack receipt remain
+available. A new controller release or diagnostics setting does not replace the
+proxy behind the saved provider state. If the exact artifacts are unavailable,
+continuation stays blocked; this rule grants no fresh-session or replay authority.
+A newly launched daemon binds its current Runner artifact while retaining the
+provider pack. Only a surviving daemon retains its previous Runner artifact.
+An authorized continuity break releases the pack pin after archiving the old
+state, so the fresh session uses normal qualified pack selection.
 Native ACPX semantic tool calls wait on their durable PRP invocation across a
 controller outage. Their provider-side MCP bridge does not impose a separate
 request deadline that could make the provider retry an already queued write.

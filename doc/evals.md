@@ -12,6 +12,18 @@ Subset runs do not qualify the full plan or the historical 355-row snapshot.
 Catalog and projection tests are not live qualification; retain the fresh
 TestOps launch and GitHub run when reporting acceptance.
 
+The sibling **Reliability — staging soak** TestOps plan uses the same lane for
+the seven staging-soak reliability cases. Six run once on native OpenCode with
+DeepSeek 1017 through OpenRouter: on Daytona for `three-turn-revise`,
+`long-silent-command` and `queued-across-restart`, and locally for the others.
+`queue-steer` needs steering, which OpenCode does not support, so it runs on
+native Codex on Daytona.
+A launch selects cases from exactly one plan, so plan 2 keeps its 20-case
+denominator. The plan is launched from TestOps before a release, or bootstrapped
+with `testops_plan=reliability`. It has no schedule and does not run per PR.
+Selection fails closed until TestOps-assigned identities are committed; see the
+[registration steps](../tests/runner-e2e/EVERYDAY-WORKFLOWS.md#testops-reliability-plan).
+
 The explicit deployment-targeted [saved agent instructions journey](../tests/runner-e2e/product-journeys/AGENT-SETTINGS.md) checks an owned agent’s ordinary UI save, persisted instruction bytes, one current-run output, and restoration. The task request omits its instruction-only reference. It reuses the existing Product E2E target and report path; local controls do not establish a staging pass.
 
 The explicit-only [verified API artifact transfer](../tests/runner-e2e/README.md#verified-api-artifact-transfer)
@@ -381,7 +393,7 @@ image digest and `DAYTONA_API_KEY`; follow the README and fixture security guide
 explicitly; use a narrow selector while developing a fixture. Its staging-soak
 reliability cases need `--group reliability` as well; see
 [Everyday workflows](../tests/runner-e2e/EVERYDAY-WORKFLOWS.md#staging-soak-reliability-group)
-for the command and the before-release cadence.
+for the command, the TestOps Reliability plan and the before-release cadence.
 
 For Runner Evals, the narrowest useful local validation is the report program's
 help/validation path and the deterministic Runner checks documented in
