@@ -128,7 +128,6 @@ describeEmbeddedPostgres("native ingress bootstrap retry through the real Runner
     const address = portProbe.address();
     if (!address || typeof address === "string") throw new Error("Missing fixture port");
     const runnerPort = address.port;
-    await new Promise<void>(done => portProbe.close(() => done()));
     let healthy = false, acquisitions = 0, previewUrl = "";
     const preview = createHttpsServer({ key: await readFile(key), cert: await readFile(certificate) }, (request, response) => {
       if (request.url !== "/preview") { response.writeHead(404).end(); return; }
@@ -159,9 +158,12 @@ describeEmbeddedPostgres("native ingress bootstrap retry through the real Runner
       });
     });
     preview.on("tlsClientError", error => { diagnostics.push(`fixture TLS: ${error.message}`); });
-    await new Promise<void>(done => preview.listen(0, "127.0.0.1", done));
+    try {
+      await new Promise<void>(done => preview.listen(0, "127.0.0.1", done));
+    } finally { await new Promise<void>(done => portProbe.close(() => done())); }
     const previewAddress = preview.address();
     if (!previewAddress || typeof previewAddress === "string") throw new Error("Missing preview address");
+    expect(previewAddress.port).not.toBe(runnerPort);
     previewUrl = `wss://127.0.0.1:${previewAddress.port}/api/runner/v1/connect/${runId}`;
     const bundles: ReturnType<typeof createRunnerdCodexTransport>[] = [];
     const handles: RunnerProcessHandle[] = [];
