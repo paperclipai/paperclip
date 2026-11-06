@@ -153,8 +153,6 @@ export interface FaultReceipt {
   serverLogOffsetAtStart: number;
   serverLogOffsetAtReady: number | null;
   error: string | null;
-  /** Host 1-minute load average when the fault started (timeouts above 16 are load-suspect). */
-  loadAverage1m?: number;
 }
 
 export interface OracleArtifacts {
