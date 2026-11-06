@@ -322,6 +322,28 @@ describe("residual recovery production matrix", () => {
     }, { timeout: 45_000 });
     await quiet();
   });
+  it("keeps the age guard when the prior boot dispatched between the scan and the revocation", async () => {
+    // Stage the race: the scanned row says `preparing`, and the row committed
+    // with the revocation says `dispatching` (the old controller's last renewal).
+    const f = await fixture(), expiry = new Date(Date.now() + 2_000);
+    const [run] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agent.id, status: "running",
+      runtimeMode: "legacy", responsibleUserId: f.actorId, controllerBootId: randomUUID(), controllerLeaseExpiresAt: expiry,
+      executionStage: "preparing", updatedAt: new Date(), startedAt: new Date() }).returning();
+    await db.execute(sql.raw(`create or replace function rc27_dispatch_on_revoke() returns trigger language plpgsql as $$
+      begin if new.id = '${run.id}' and new.controller_boot_id is distinct from old.controller_boot_id
+        then new.execution_stage := 'dispatching'; end if; return new; end $$`));
+    await db.execute(sql`create trigger rc27_dispatch_on_revoke before update on heartbeat_runs
+      for each row execute function rc27_dispatch_on_revoke()`);
+    extraStops.push(async () => {
+      await db.execute(sql`drop trigger if exists rc27_dispatch_on_revoke on heartbeat_runs`);
+      await db.execute(sql`drop function if exists rc27_dispatch_on_revoke()`);
+    });
+    await start(true);
+    await vi.waitFor(async () => expect((await getRun(run.id)).controllerBootId).not.toBe(run.controllerBootId), { timeout: 15_000 });
+    await realDelay(5_000); await Promise.allSettled([...passes]);
+    expect(await getRun(run.id)).toMatchObject({ status: "running", executionStage: "dispatching", errorCode: null });
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, run.id))).toEqual([]);
+  });
   it("keeps the stale-age guard for this boot, a recorded process, or a dispatched adapter", async () => {
     const f = await fixture(), now = Date.now(), expired = new Date(now - 1_000);
     const [sameBoot] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agent.id, status: "running",

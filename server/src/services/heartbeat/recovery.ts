@@ -2459,7 +2459,8 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
       if (legacyLease) { scope.onDeferredDeadline?.(legacyLease.getTime()); continue; }
 
       // A legacy controller proves it is alive only by renewing its lease, and
-      // the check above found that lease expired. When the lease belongs to a
+      // the check above found no live lease (a missing expiry also lands here;
+      // revocation below then refuses the row). When the lease belongs to a
       // previous boot, setup never reached adapter dispatch, and no process
       // was recorded, the owner is gone and no provider work can be running:
       // recover now instead of waiting for the age threshold. A dispatched
