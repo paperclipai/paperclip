@@ -104,7 +104,27 @@ function environmentsSeam(overrides: Partial<EnvironmentsSeam> = {}): Environmen
     update: overrides.update ?? vi.fn().mockResolvedValue(environmentRow()),
     findManagedSandboxEnvironment:
       overrides.findManagedSandboxEnvironment ?? vi.fn().mockResolvedValue(null),
+    ensureManagedPluginEnvironment:
+      overrides.ensureManagedPluginEnvironment
+      ?? vi.fn().mockResolvedValue({ environment: pluginEnvironmentRow(), action: "added" }),
+    archiveManagedPluginEnvironment:
+      overrides.archiveManagedPluginEnvironment ?? vi.fn().mockResolvedValue(null),
+    findManagedPluginEnvironment:
+      overrides.findManagedPluginEnvironment ?? vi.fn().mockResolvedValue(null),
   };
+}
+
+const COMPUTER_PLUGIN_KEY = "paperclip-cloud.plugin-agent-computer";
+
+function pluginEnvironmentRow(overrides: Record<string, unknown> = {}) {
+  return environmentRow({
+    id: "computer-env",
+    name: "Paperclip Computer",
+    driver: "plugin",
+    config: { pluginKey: COMPUTER_PLUGIN_KEY, driverKey: "tasks", driverConfig: {} },
+    metadata: { managedByPaperclip: true, managedPluginEnvironment: `${COMPUTER_PLUGIN_KEY}:tasks` },
+    ...overrides,
+  }) as never;
 }
 
 function instanceSettingsSeam(overrides: Partial<InstanceSettingsSeam> = {}): InstanceSettingsSeam {
@@ -650,5 +670,250 @@ describe("applyManagedEnvironments", () => {
     });
 
     expect(instanceSettings.update).not.toHaveBeenCalled();
+  });
+});
+
+describe("applyManagedEnvironments plugin entries", () => {
+  const computerEntry = (overrides: Record<string, unknown> = {}) => ({
+    name: "Paperclip Computer",
+    description: "Runs the agent on its own computer",
+    driver: "plugin",
+    pluginKey: COMPUTER_PLUGIN_KEY,
+    driverKey: "tasks",
+    driverConfig: {},
+    instanceDefault: true,
+    ...overrides,
+  });
+  const configWith = (environments: unknown[]) => parsedConfig({
+    plugins: { autoInstall: ["daytona", COMPUTER_PLUGIN_KEY] },
+    environments,
+  });
+  const readyPlugin = (status = "ready", declaresDriver = true) => vi.fn(async () => ({
+    plugin: { id: "computer-plugin", pluginKey: COMPUTER_PLUGIN_KEY, status },
+    declaresDriver,
+  }));
+  const workerManager = (running = true, handle?: RecoveryHandle) => ({
+    isRunning: vi.fn(() => running),
+    call: vi.fn(),
+    getWorker: vi.fn(() => handle),
+  });
+  const decided = (status: "applied" | "declined" | "pending" | "already_decided" = "applied") =>
+    vi.fn(async () => ({ status, reason: null, previousDefaultEnvironmentId: null }));
+
+  it("ensures a plugin entry with the plugin validator's worker manager and evaluates its instance default", async () => {
+    const environments = environmentsSeam();
+    const applyPluginInstanceDefault = decided();
+    const manager = workerManager();
+    const result = await applyManagedEnvironments(noDb, configWith([computerEntry()]), {
+      env: {},
+      workerManager: manager,
+      environments,
+      instanceSettings: instanceSettingsSeam(),
+      resolveEnvironmentPlugin: readyPlugin(),
+      applyPluginInstanceDefault,
+    });
+
+    expect(environments.ensureManagedPluginEnvironment).toHaveBeenCalledWith({
+      name: "Paperclip Computer",
+      description: "Runs the agent on its own computer",
+      pluginKey: COMPUTER_PLUGIN_KEY,
+      driverKey: "tasks",
+      driverConfig: {},
+      workerManager: { isRunning: expect.any(Function), call: expect.any(Function) },
+    });
+    expect(applyPluginInstanceDefault).toHaveBeenCalledWith({
+      environment: expect.objectContaining({ id: "computer-env", status: "active" }),
+      marker: `${COMPUTER_PLUGIN_KEY}:tasks`,
+    });
+    expect(result).toMatchObject({ ensured: 1, added: 1, failed: 0 });
+    expect(result?.pluginOutcomes).toEqual([{
+      environmentId: "computer-env",
+      name: "Paperclip Computer",
+      pluginKey: COMPUTER_PLUGIN_KEY,
+      driverKey: "tasks",
+      action: "added",
+    }]);
+    expect(environments.ensureManagedSandboxEnvironment).not.toHaveBeenCalled();
+  });
+
+  it("runs the sandbox entry first, so the plugin default sees the sandbox stamp", async () => {
+    const order: string[] = [];
+    const environments = environmentsSeam({
+      ensureManagedSandboxEnvironment: vi.fn(async () => {
+        order.push("sandbox");
+        return reconciliationResult() as never;
+      }),
+      ensureManagedPluginEnvironment: vi.fn(async () => {
+        order.push("plugin");
+        return { environment: pluginEnvironmentRow(), action: "added" as const };
+      }),
+    });
+    await applyManagedEnvironments(noDb, configWith([{ name: "Daytona", provider: "daytona" }, computerEntry()]), {
+      env: {},
+      workerManager: { ...workerManager(), isRunning: vi.fn(() => true) },
+      environments,
+      instanceSettings: instanceSettingsSeam(),
+      resolveSandboxProviderDriver: readyDriverResolver(),
+      resolveEnvironmentPlugin: readyPlugin(),
+      applyPluginInstanceDefault: decided(),
+    });
+    expect(order).toEqual(["sandbox", "plugin"]);
+  });
+
+  it("does not evaluate an instance default for an entry without the flag", async () => {
+    const applyPluginInstanceDefault = decided();
+    await applyManagedEnvironments(noDb, configWith([computerEntry({ instanceDefault: false })]), {
+      env: {},
+      workerManager: workerManager(),
+      environments: environmentsSeam(),
+      instanceSettings: instanceSettingsSeam(),
+      resolveEnvironmentPlugin: readyPlugin(),
+      applyPluginInstanceDefault,
+    });
+    expect(applyPluginInstanceDefault).not.toHaveBeenCalled();
+  });
+
+  it("does not claim the sandbox slot, so a forced execution mode can coexist with plugin-only entries", async () => {
+    await expect(applyManagedEnvironments(noDb, configWith([computerEntry()]), {
+      env: { PAPERCLIP_EXECUTION_MODE: "kubernetes" },
+      workerManager: workerManager(),
+      environments: environmentsSeam(),
+      instanceSettings: instanceSettingsSeam(),
+      resolveEnvironmentPlugin: readyPlugin(),
+      applyPluginInstanceDefault: decided(),
+    })).resolves.toMatchObject({ ensured: 1 });
+  });
+
+  it("archives the row of a plugin that is down, records the pending default, and reactivates on worker recovery", async () => {
+    const { handle, fireReady } = recoveryHandle();
+    const archived = pluginEnvironmentRow({ status: "archived" });
+    const environments = environmentsSeam({
+      archiveManagedPluginEnvironment: vi.fn().mockResolvedValue(archived),
+      findManagedPluginEnvironment: vi.fn().mockResolvedValue(archived),
+    });
+    const applyPluginInstanceDefault = decided("pending");
+    const manager = workerManager(false, handle);
+    const result = await applyManagedEnvironments(noDb, configWith([computerEntry()]), {
+      env: {},
+      workerManager: manager,
+      environments,
+      instanceSettings: instanceSettingsSeam(),
+      resolveEnvironmentPlugin: readyPlugin(),
+      applyPluginInstanceDefault,
+    });
+
+    expect(result).toMatchObject({ ensured: 0, failed: 1 });
+    expect(environments.archiveManagedPluginEnvironment).toHaveBeenCalledWith({ pluginKey: COMPUTER_PLUGIN_KEY, driverKey: "tasks" });
+    expect(environments.ensureManagedPluginEnvironment).not.toHaveBeenCalled();
+    expect(applyPluginInstanceDefault).toHaveBeenCalledWith({
+      environment: { id: "computer-env", status: "unavailable" },
+      marker: `${COMPUTER_PLUGIN_KEY}:tasks`,
+    });
+
+    manager.isRunning.mockReturnValue(true);
+    fireReady();
+    fireReady();
+    await tick();
+
+    expect(environments.ensureManagedPluginEnvironment).toHaveBeenCalledTimes(1);
+    expect(applyPluginInstanceDefault).toHaveBeenLastCalledWith({
+      environment: expect.objectContaining({ id: "computer-env", status: "active" }),
+      marker: `${COMPUTER_PLUGIN_KEY}:tasks`,
+    });
+    expect(handle.off).toHaveBeenCalledTimes(1);
+  });
+
+  it("treats a missing plugin, a plugin without the driver, or a worker manager without call as unavailable", async () => {
+    for (const [resolveEnvironmentPlugin, manager] of [
+      [vi.fn(async () => null), workerManager()],
+      [readyPlugin("ready", false), workerManager()],
+      [readyPlugin("error"), workerManager()],
+      [readyPlugin(), { isRunning: vi.fn(() => true), getWorker: vi.fn(() => undefined) }],
+    ] as const) {
+      const environments = environmentsSeam();
+      const result = await applyManagedEnvironments(noDb, configWith([computerEntry()]), {
+        env: {},
+        workerManager: manager,
+        environments,
+        instanceSettings: instanceSettingsSeam(),
+        resolveEnvironmentPlugin,
+        applyPluginInstanceDefault: decided("pending"),
+      });
+      expect(result).toMatchObject({ ensured: 0, failed: 1 });
+      expect(environments.archiveManagedPluginEnvironment).toHaveBeenCalledTimes(1);
+      expect(environments.ensureManagedPluginEnvironment).not.toHaveBeenCalled();
+      expect(manager.getWorker).not.toHaveBeenCalled();
+    }
+  });
+
+  it("never archives a row whose entry was removed from the document", async () => {
+    const environments = environmentsSeam();
+    expect(await applyManagedEnvironments(noDb, configWith([]), {
+      env: {},
+      workerManager: workerManager(),
+      environments,
+      instanceSettings: instanceSettingsSeam(),
+    })).toBeNull();
+    expect(environments.archiveManagedPluginEnvironment).not.toHaveBeenCalled();
+  });
+
+  it("never lets the sandbox stamp or its revert path replace a plugin default", async () => {
+    const settings = instanceSettingsSeam({
+      get: vi.fn().mockResolvedValue({ defaultEnvironmentId: "computer-env" }) as InstanceSettingsSeam["get"],
+    });
+    const getById = vi.fn().mockResolvedValue(pluginEnvironmentRow());
+    // Stamp side: managed-sandbox-only declared, sandbox entry ensured.
+    await applyManagedEnvironments(noDb, parsedConfig({
+      plugins: { autoInstall: ["daytona", COMPUTER_PLUGIN_KEY] },
+      features: { enableManagedSandboxOnly: true },
+      environments: [{ name: "Daytona", provider: "daytona" }, computerEntry()],
+    }), {
+      env: {},
+      workerManager: workerManager(),
+      instanceSettings: settings,
+      environments: environmentsSeam({ getById }),
+      resolveSandboxProviderDriver: readyDriverResolver(),
+      resolveEnvironmentPlugin: readyPlugin(),
+      applyPluginInstanceDefault: decided("already_decided"),
+    });
+    // Revert side: the mode is off and the sandbox row still carries a stale stamp.
+    await applyManagedEnvironments(noDb, configWith([computerEntry()]), {
+      env: {},
+      workerManager: workerManager(),
+      instanceSettings: settings,
+      environments: environmentsSeam({
+        getById,
+        findManagedSandboxEnvironment: vi.fn().mockResolvedValue(
+          environmentRow({ metadata: { managedByPaperclip: true, managedDefaultStamped: true } }),
+        ),
+      }),
+      resolveEnvironmentPlugin: readyPlugin(),
+      applyPluginInstanceDefault: decided("already_decided"),
+    });
+    expect(settings.update).not.toHaveBeenCalled();
+  });
+
+  it("is fail-safe: an ensure or default failure is logged and counted, not thrown", async () => {
+    const result = await applyManagedEnvironments(noDb, configWith([computerEntry()]), {
+      env: {},
+      workerManager: workerManager(),
+      environments: environmentsSeam({
+        ensureManagedPluginEnvironment: vi.fn().mockRejectedValue(new Error("validator refused")),
+      }),
+      instanceSettings: instanceSettingsSeam(),
+      resolveEnvironmentPlugin: readyPlugin(),
+      applyPluginInstanceDefault: decided(),
+    });
+    expect(result).toMatchObject({ ensured: 0, failed: 1 });
+
+    const defaultFailure = await applyManagedEnvironments(noDb, configWith([computerEntry()]), {
+      env: {},
+      workerManager: workerManager(),
+      environments: environmentsSeam(),
+      instanceSettings: instanceSettingsSeam(),
+      resolveEnvironmentPlugin: readyPlugin(),
+      applyPluginInstanceDefault: vi.fn().mockRejectedValue(new Error("db exploded")),
+    });
+    expect(defaultFailure).toMatchObject({ ensured: 1, failed: 0 });
   });
 });

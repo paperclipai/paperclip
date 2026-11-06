@@ -1175,8 +1175,8 @@ async function startServerWithDatabaseTeardown(
     throw err;
   }
 
-  // Ensure sandbox environments declared in the managed-config document
-  // (`environments` section) before the heartbeat resumes queued runs. The
+  // Ensure the sandbox and plugin environments declared in the managed-config
+  // document (`environments` section) before the heartbeat resumes queued runs. The
   // document already parsed fail-closed above; the ensure step itself is
   // fail-safe per entry (a degraded boot beats a fleet-wide crash loop), but
   // a contradictory deployment that also forces PAPERCLIP_EXECUTION_MODE
@@ -1193,7 +1193,7 @@ async function startServerWithDatabaseTeardown(
       workerManager: pluginWorkerManager,
     });
     if (managedEnvironmentsResult) {
-      logger.warn(managedEnvironmentsResult, "managed sandbox environments ensured from managed config");
+      logger.warn(managedEnvironmentsResult, "managed environments ensured from managed config");
     }
   } catch (err) {
     logger.error({ err }, "failed to apply managed environments from managed config");

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   MANAGED_CONFIG_ENV_KEY,
+  MANAGED_ENVIRONMENT_DRIVERS,
   getManagedInstanceConfig,
   managedFeatureKeySet,
   parseManagedConfigEnv,
@@ -110,6 +111,7 @@ describe("parseManagedConfigEnv", () => {
       features: { enableApps: false, enableStatusCards: true },
       plugins: { autoInstall: ["daytona", "kubernetes"] },
       environments: [],
+      pluginEnvironments: [],
     });
   });
 
@@ -132,6 +134,7 @@ describe("parseManagedConfigEnv", () => {
       features: {},
       plugins: { autoInstall: [] },
       environments: [],
+      pluginEnvironments: [],
     });
   });
 
@@ -342,12 +345,17 @@ describe("parseManagedConfigEnv environments section", () => {
     ).toThrow(/"environments\[0\]" must be an object/);
   });
 
-  it("rejects more than one entry (single managed sandbox slot)", () => {
+  it("rejects more than one sandbox entry (single managed sandbox slot)", () => {
     expect(() =>
       parseManagedConfigEnv(
         envWith(validDoc({ environments: [entry(), entry({ name: "Other", provider: "kubernetes" })] })),
       ),
-    ).toThrow(/at most one entry/);
+    ).toThrow(/at most one sandbox entry/);
+    expect(() =>
+      parseManagedConfigEnv(
+        envWith(validDoc({ environments: [entry(), entry({ name: "Other", driver: "sandbox", provider: "kubernetes" })] })),
+      ),
+    ).toThrow(/at most one sandbox entry/);
   });
 
   it("rejects unknown entry keys", () => {
@@ -403,6 +411,109 @@ describe("parseManagedConfigEnv environments section", () => {
         ),
       ),
     ).toThrow(/adapters\[0\].clientSecret/);
+  });
+});
+
+describe("parseManagedConfigEnv plugin environment entries", () => {
+  const PLUGIN_KEY = "paperclip-cloud.plugin-agent-computer";
+  // The exact entry Paperclip Cloud delivers (Cloud PR 12 contract).
+  const computer = (overrides: Record<string, unknown> = {}) => ({
+    name: "Paperclip Computer",
+    description: "Runs the agent on its own computer",
+    driver: "plugin",
+    pluginKey: PLUGIN_KEY,
+    driverKey: "tasks",
+    driverConfig: {},
+    instanceDefault: true,
+    ...overrides,
+  });
+  const sandbox = { name: "Paperclip Sandbox", provider: "daytona", config: { target: "us" } };
+  const docWith = (environments: unknown[], autoInstall = ["daytona", PLUGIN_KEY]) =>
+    envWith(validDoc({ plugins: { autoInstall }, environments }));
+
+  it("exports the driver list Cloud detects by name", () => {
+    expect(MANAGED_ENVIRONMENT_DRIVERS).toEqual(["sandbox", "plugin"]);
+  });
+
+  it("parses an old document's sandbox entry unchanged", () => {
+    const config = parseManagedConfigEnv(docWith([sandbox]));
+    expect(config?.environments).toEqual([{ name: "Paperclip Sandbox", provider: "daytona", config: { target: "us" } }]);
+    expect(config?.pluginEnvironments).toEqual([]);
+  });
+
+  it("parses the sandbox entry beside the Paperclip Computer entry", () => {
+    const config = parseManagedConfigEnv(docWith([sandbox, computer()]));
+    expect(config?.environments).toEqual([{ name: "Paperclip Sandbox", provider: "daytona", config: { target: "us" } }]);
+    expect(config?.pluginEnvironments).toEqual([{
+      driver: "plugin",
+      name: "Paperclip Computer",
+      description: "Runs the agent on its own computer",
+      pluginKey: PLUGIN_KEY,
+      driverKey: "tasks",
+      driverConfig: {},
+      instanceDefault: true,
+    }]);
+    expect(Object.isFrozen(config?.pluginEnvironments)).toBe(true);
+    expect(Object.isFrozen(config?.pluginEnvironments[0])).toBe(true);
+  });
+
+  it("parses a plugin entry alone, with optional fields omitted", () => {
+    const config = parseManagedConfigEnv(docWith([{ name: "Computer", driver: "plugin", pluginKey: PLUGIN_KEY, driverKey: "tasks" }]));
+    expect(config?.environments).toEqual([]);
+    expect(config?.pluginEnvironments[0]).toMatchObject({ driverConfig: {}, instanceDefault: false });
+    expect(config?.pluginEnvironments[0]?.description).toBeUndefined();
+  });
+
+  it("refuses duplicate names, including across drivers", () => {
+    expect(() => parseManagedConfigEnv(docWith([sandbox, computer({ name: "Paperclip Sandbox" })])))
+      .toThrow(/"environments\[1\].name" duplicates another entry's name/);
+  });
+
+  it("refuses a duplicate pluginKey and driverKey pair", () => {
+    expect(() => parseManagedConfigEnv(docWith([computer(), computer({ name: "Second", instanceDefault: false })])))
+      .toThrow(/duplicates another plugin entry's pluginKey and driverKey/);
+  });
+
+  it("refuses a plugin that plugins.autoInstall does not provision", () => {
+    expect(() => parseManagedConfigEnv(docWith([computer()], ["daytona"])))
+      .toThrow(/"environments\[0\].pluginKey" is "paperclip-cloud.plugin-agent-computer", which is not in "plugins.autoInstall"/);
+  });
+
+  it("refuses instanceDefault on two entries", () => {
+    expect(() => parseManagedConfigEnv(docWith([computer(), computer({ name: "Second", driverKey: "other" })])))
+      .toThrow(/at most one entry may become the instance default/);
+  });
+
+  it("refuses instanceDefault on the sandbox entry, even false", () => {
+    expect(() => parseManagedConfigEnv(docWith([{ ...sandbox, instanceDefault: true }])))
+      .toThrow(/"environments\[0\].instanceDefault" is not allowed on the sandbox entry/);
+    expect(() => parseManagedConfigEnv(docWith([{ ...sandbox, instanceDefault: false }])))
+      .toThrow(/not allowed on the sandbox entry/);
+  });
+
+  it("refuses a non-boolean instanceDefault", () => {
+    expect(() => parseManagedConfigEnv(docWith([computer({ instanceDefault: "yes" })])))
+      .toThrow(/"environments\[0\].instanceDefault" must be a boolean/);
+  });
+
+  it("refuses secret-like driverConfig keys at any depth", () => {
+    expect(() => parseManagedConfigEnv(docWith([computer({ driverConfig: { apiToken: "t" } })])))
+      .toThrow(/"environments\[0\].driverConfig" key "apiToken" looks secret-bearing/);
+    expect(() => parseManagedConfigEnv(docWith([computer({ driverConfig: { auth: [{ password: "p" }] } })])))
+      .toThrow(/auth\[0\].password/);
+  });
+
+  it("refuses unknown keys, including sandbox keys on a plugin entry and the reverse", () => {
+    expect(() => parseManagedConfigEnv(docWith([computer({ envVars: {} })]))).toThrow(/unknown key "envVars"/);
+    expect(() => parseManagedConfigEnv(docWith([computer({ provider: "daytona" })]))).toThrow(/unknown key "provider"/);
+    expect(() => parseManagedConfigEnv(docWith([{ ...sandbox, pluginKey: PLUGIN_KEY }]))).toThrow(/unknown key "pluginKey"/);
+  });
+
+  it("refuses an unknown driver and malformed plugin fields", () => {
+    expect(() => parseManagedConfigEnv(docWith([computer({ driver: "ssh" })]))).toThrow(/"environments\[0\].driver" must be one of "sandbox", "plugin"/);
+    expect(() => parseManagedConfigEnv(docWith([computer({ driverKey: "Tasks" })]))).toThrow(/"environments\[0\].driverKey" must start/);
+    expect(() => parseManagedConfigEnv(docWith([computer({ driverKey: undefined })]))).toThrow(/"environments\[0\].driverKey" must be a non-empty string/);
+    expect(() => parseManagedConfigEnv(docWith([computer({ driverConfig: [] })]))).toThrow(/"environments\[0\].driverConfig" must be an object/);
   });
 });
 

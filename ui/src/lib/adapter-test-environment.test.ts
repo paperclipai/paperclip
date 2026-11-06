@@ -275,6 +275,56 @@ describe("resolveManagedSandboxEnvironmentId", () => {
   });
 });
 
+describe("managed plugin environments under managed-sandbox-only", () => {
+  const local = makeEnvironment({
+    id: "local-env",
+    driver: "local",
+    metadata: { managedByPaperclip: true, defaultForInstance: true },
+  });
+  // Listed first, so a lookup that only excluded `local` would pick it.
+  const computer = makeEnvironment({
+    id: "computer-env",
+    name: "Paperclip Computer",
+    driver: "plugin",
+    config: { pluginKey: "paperclip-cloud.plugin-agent-computer", driverKey: "tasks", driverConfig: {} },
+    metadata: {
+      managedByPaperclip: true,
+      managedPluginEnvironment: "paperclip-cloud.plugin-agent-computer:tasks",
+    },
+  });
+  const sandbox = makeEnvironment({
+    id: "sandbox-env",
+    name: "Paperclip Sandbox",
+    metadata: { managedByPaperclip: true, managedSandboxProvider: "daytona" },
+  });
+  const environments = [local, computer, sandbox];
+  const resolve = (agentDefaultEnvironmentId: string | null, instanceDefaultEnvironmentId: string | null) =>
+    resolveAdapterTestEnvironmentId({
+      agentDefaultEnvironmentId,
+      instanceDefaultEnvironmentId,
+      localDefaultEnvironmentId: resolveLocalDefaultEnvironmentId(environments),
+      managedSandboxOnly: true,
+      managedSandboxEnvironmentId: resolveManagedSandboxEnvironmentId(environments),
+      visibleEnvironmentIds: [computer.id, sandbox.id],
+    });
+
+  it("never mistakes the plugin row for the managed sandbox", () => {
+    expect(resolveManagedSandboxEnvironmentId(environments)).toBe("sandbox-env");
+    expect(resolveManagedSandboxEnvironmentId([local, computer])).toBeNull();
+  });
+
+  it("tests an agent without a computer in the sandbox", () => {
+    expect(resolve("sandbox-env", "computer-env")).toBe("sandbox-env");
+    // An existing stack keeps local as its default: the redirect lands on the sandbox.
+    expect(resolve(null, null)).toBe("sandbox-env");
+  });
+
+  it("tests an agent on Paperclip Computer on its computer", () => {
+    expect(resolve("computer-env", null)).toBe("computer-env");
+    expect(resolve(null, "computer-env")).toBe("computer-env");
+  });
+});
+
 describe("resolveLocalDefaultEnvironmentId", () => {
   it("finds the local-driver instance-default environment", () => {
     const environments = [

@@ -3046,6 +3046,13 @@
       "when": 1793952565204,
       "tag": "0436_legal_reavers",
       "breakpoints": true
+    },
+    {
+      "idx": 437,
+      "version": "7",
+      "when": 1793979019725,
+      "tag": "0437_tiny_warhawk",
+      "breakpoints": true
     }
   ]
 }

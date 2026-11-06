@@ -1885,6 +1885,43 @@ that the whole web server is disposable or that all execution and recovery paths
 survive web-server replacement. Run-log/trace storage and producer retention are
 separate changes.
 
+### Managed environments
+
+The `environments` list in `PAPERCLIP_MANAGED_CONFIG` declares instance-level
+environments that boot provisions and tenants cannot edit. It holds at most one
+sandbox entry (no `driver`, or `driver: "sandbox"`) and any number of
+`driver: "plugin"` entries. A plugin entry names an auto-installed plugin and its
+environment driver:
+
+```json
+{
+  "name": "Paperclip Computer",
+  "description": "Runs the agent on its own computer",
+  "driver": "plugin",
+  "pluginKey": "paperclip-cloud.plugin-agent-computer",
+  "driverKey": "tasks",
+  "driverConfig": {},
+  "instanceDefault": true
+}
+```
+
+Names and `pluginKey`–`driverKey` pairs must be unique, `pluginKey` must be in
+`plugins.autoInstall`, `driverConfig` must not contain secret-like keys, and
+`instanceDefault` is allowed on at most one plugin entry. Any other key refuses
+startup. Boot validates the driver config through the plugin, marks the row
+`managedPluginEnvironment: "<pluginKey>:<driverKey>"`, and adopts an existing
+unmarked row for the same plugin and driver. While the plugin is down, the row is
+archived; it comes back when the worker is ready. Removing an entry never archives
+its row.
+
+`instanceDefault` is decided once per instance, at the first boot that sees it.
+It sets the instance default only when the instance has no agents and the current
+default is unset, local, or the managed sandbox's own stamped default. If the row
+is not active yet, the decision waits and then applies only if no agent follows
+the default by then. The decision is stored in the
+`managed-environment-default:v1` instance settings row, so an admin's later
+change survives reboots.
+
 ### Experimental native remote workspace storage
 
 `experimental.remoteWorkspaceStorageEnabled` is a managed feature, on by default
