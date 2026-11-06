@@ -180,13 +180,50 @@ async function workspaceArchive(input: {
     // unfinished Git operation. Never acknowledge a copy that drops its todo,
     // scripts, autostash, or operation-only object references. Inspect the
     // selected worktree's administration directory without following links.
-    for (const name of ["rebase-merge", "rebase-apply", "sequencer", "MERGE_HEAD", "CHERRY_PICK_HEAD",
+    for (const name of ["rebase-merge", "rebase-apply", "sequencer", "CHERRY_PICK_HEAD",
       "REVERT_HEAD", "MERGE_AUTOSTASH", "BISECT_START"]) {
       const state = await fs.lstat(path.join(gitDir, name)).catch((error: NodeJS.ErrnoException) => {
         if (error.code !== "ENOENT") throw error;
         return null;
       });
       if (state) fail("git_operation_in_progress: finish or abort the Git operation before saving the workspace");
+    }
+    const readState = async (name: string, limit: number) => {
+      const file = path.join(gitDir, name), entry = await fs.lstat(file).catch((error: NodeJS.ErrnoException) => {
+        if (error.code !== "ENOENT") throw error;
+        return null;
+      });
+      if (!entry) return null;
+      if (!entry.isFile() || entry.isSymbolicLink() || entry.size > limit) fail("git_operation_in_progress: finish or abort the Git operation before saving the workspace");
+      const chunks: Buffer[] = []; let size = 0;
+      const saved = await readStableFile(file, async chunk => {
+        size += chunk.length;
+        if (size > limit) fail("git_operation_in_progress: finish or abort the Git operation before saving the workspace");
+        chunks.push(chunk);
+      });
+      return { name, sha256: saved.sha256, text: Buffer.concat(chunks).toString("utf8") };
+    };
+    const mergeHead = await readState("MERGE_HEAD", 8192);
+    if (mergeHead) {
+      for (const name of ["MERGE_RR", "REBASE_HEAD"]) {
+        const exists = await fs.lstat(path.join(gitDir, name)).then(() => true, (error: NodeJS.ErrnoException) => {
+          if (error.code !== "ENOENT") throw error;
+          return false;
+        });
+        if (exists) fail("git_operation_in_progress: finish or abort the Git operation before saving the workspace");
+      }
+      if (await git(repo, ["ls-files", "--unmerged", "-z"])) fail("git_operation_in_progress: finish or abort the Git operation before saving the workspace");
+      const mode = await readState("MERGE_MODE", 16), message = await readState("MERGE_MSG", 4 * 1024 * 1024);
+      const original = await readState("ORIG_HEAD", 128), automatic = await readState("AUTO_MERGE", 128);
+      if (!original || !message || mode && !["", "no-ff"].includes(mode.text.trim())) return fail("git_operation_in_progress: finish or abort the Git operation before saving the workspace");
+      const objects = [...mergeHead.text.trim().split("\n").map(object => ({ object, type: "commit" })),
+        { object: original.text.trim(), type: "commit" }, ...(automatic ? [{ object: automatic.text.trim(), type: "tree" }] : [])];
+      for (const { object, type } of objects) {
+        if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/u.test(object)
+          || await git(repo, ["rev-parse", "--verify", `${object}^{${type}}`]).then(value => value.trim()).catch(() => null) !== object) fail("git_operation_in_progress: finish or abort the Git operation before saving the workspace");
+      }
+      return { objects, metadata: ([["MERGE_HEAD", mergeHead], ["MERGE_MODE", mode], ["MERGE_MSG", message], ["ORIG_HEAD", original], ["AUTO_MERGE", automatic]] as const)
+        .map(([name, entry]) => ({ name, sha256: entry?.sha256 ?? null })) };
     }
     const bookmark = path.join(gitDir, "REBASE_HEAD");
     const state = await fs.lstat(bookmark).catch((error: NodeJS.ErrnoException) => {
@@ -205,7 +242,7 @@ async function workspaceArchive(input: {
     if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/u.test(object)
       || await git(repo, ["rev-parse", "--verify", "REBASE_HEAD^{commit}"]).then(value => value.trim()).catch(() => null) !== object
       || await git(repo, ["ls-files", "--unmerged", "-z"])) fail("git_operation_in_progress: finish or abort the Git operation before saving the workspace");
-    return { object, sha256: entry.sha256 };
+    return { objects: [{ object, type: "commit" }], metadata: [{ name: "REBASE_HEAD", sha256: entry.sha256 }] };
   };
   const readStableFile = async (source: string, consume?: (bytes: Buffer) => Promise<void>) => {
     check();
@@ -341,13 +378,13 @@ async function workspaceArchive(input: {
       const repositories = [...new Set(directories)];
       const gitSignatures = new Map<string, string>();
       const signature = async (repo: string, settings?: Awaited<ReturnType<typeof portableGitSettings>>) => {
-        const rebaseBookmark = await assertGitOperationComplete(repo);
+        const operation = await assertGitOperationComplete(repo);
         const index = (await git(repo, ["rev-parse", "--path-format=absolute", "--git-path", "index"])).trim();
         const indexHash = await hashFile(index).catch((error: NodeJS.ErrnoException) => error.code === "ENOENT" ? null : Promise.reject(error));
         const config = settings ?? await portableGitSettings(repo), shallow = await gitStateHash(repo, "shallow");
         const partial = config.some(setting => /^remote\..*\.promisor$/u.test(setting.key) && setting.value === "true");
         return JSON.stringify([await git(repo, ["status", "--porcelain=v2", "-z", "--untracked-files=no"]), await git(repo, ["for-each-ref", "--format=%(objectname) %(refname)"]), await git(repo, ["symbolic-ref", "-q", "HEAD"]).catch(() => git(repo, ["rev-parse", "HEAD"])), indexHash, config,
-          shallow, await gitStateHash(repo, "info/sparse-checkout"), shallow || partial ? (await gitObjectFiles(repo)).files : null, rebaseBookmark]);
+          shallow, await gitStateHash(repo, "info/sparse-checkout"), shallow || partial ? (await gitObjectFiles(repo)).files : null, operation]);
       };
       for (let index = 0; index < repositories.length; index++) {
         const relative = repositories[index]!, repo = path.join(root, relative), normalized = path.join(scratch, `repo-${index}.git`);
@@ -377,7 +414,7 @@ async function workspaceArchive(input: {
         for (const name of ["HEAD", "index", "ORIG_HEAD", "MERGE_HEAD", "MERGE_MSG", "CHERRY_PICK_HEAD", "REVERT_HEAD"]) {
           await fs.copyFile(path.join(sourceGit, name), path.join(destination, name)).catch((error: NodeJS.ErrnoException) => { if (error.code !== "ENOENT") throw error; });
         }
-        await copyGitFile(path.join(sourceGit, "REBASE_HEAD"), path.join(destination, "REBASE_HEAD"));
+        for (const name of ["REBASE_HEAD", "MERGE_MODE", "AUTO_MERGE"]) await copyGitFile(path.join(sourceGit, name), path.join(destination, name));
         for (const directory of new Set([sourceGit, sourceCommon])) {
           for (const name of await fs.readdir(directory)) if (/^sharedindex\.[a-f0-9]+$/.test(name)) await fs.copyFile(path.join(directory, name), path.join(destination, name));
         }
@@ -399,12 +436,15 @@ async function workspaceArchive(input: {
           const [object, ref] = row.split(" "); return `update ${ref} ${object}\n`;
         }).join("");
         if (updates) await git(restoredRepo, ["update-ref", "--stdin"], updates);
-        const rebaseBookmark = await assertGitOperationComplete(repo);
-        if (rebaseBookmark) {
-          const present = await git(restoredRepo, ["cat-file", "-e", `${rebaseBookmark.object}^{commit}`]).then(() => true).catch(() => false);
+        const operation = await assertGitOperationComplete(repo);
+        for (const entry of operation?.metadata ?? []) {
+          if (await gitStateHash(restoredRepo, entry.name) !== entry.sha256) fail("changed");
+        }
+        for (const { object, type } of operation?.objects ?? []) {
+          const present = await git(restoredRepo, ["cat-file", "-e", `${object}^{${type}}`]).then(() => true).catch(() => false);
           if (!present && !offline) await git(restoredRepo, ["-c", "protocol.file.allow=always", "fetch", "--no-tags", "--no-recurse-submodules",
-            "--no-write-fetch-head", "--no-auto-maintenance", "--", repo, rebaseBookmark.object]);
-          await git(restoredRepo, ["cat-file", "-e", `${rebaseBookmark.object}^{commit}`]);
+            "--no-write-fetch-head", "--no-auto-maintenance", "--", repo, object]);
+          await git(restoredRepo, ["cat-file", "-e", `${object}^{${type}}`]);
         }
         await fs.rm(path.join(destination, "objects", "info", "alternates"), { force: true });
         await git(restoredRepo, ["fsck", "--full", "--no-dangling"]);
