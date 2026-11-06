@@ -3013,6 +3013,15 @@ impl CodexCommandExecutor {
         let mut stable = Vec::new();
         let mut index = 0;
         while index < args.len() {
+            // Codex feature toggles are Paperclip launch policy. The controller
+            // recomputes them for every launch, and a saved thread must follow
+            // a release that turns a feature on or off rather than become
+            // impossible to resume. Sandbox, permission profile, and command
+            // arguments remain protected.
+            if (args[index] == "--enable" || args[index] == "--disable") && index + 1 < args.len() {
+                index += 2;
+                continue;
+            }
             if args[index] == "-c" && index + 1 < args.len() {
                 let key = args[index + 1].split('=').next().unwrap_or("");
                 if matches!(
@@ -6466,6 +6475,113 @@ done
         assert!(rebound.queued_events.is_empty());
         assert!(!rebound.active_terminal_tool_rejected);
         fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn saved_thread_adopts_the_controllers_current_codex_feature_policy() {
+        // A thread saved before a Paperclip upgrade carries that release's
+        // feature toggles. The controller recomputes them for every launch, so a
+        // changed toggle must not strand the saved thread. Sandbox, permission
+        // profile, and command changes stay protected.
+        let saved_args: Vec<String> = vec![
+            "-c",
+            "default_permissions=\"paperclip-runner-workspace-only\"",
+            "-c",
+            "shell_environment_policy.set={PATH=\"/run/a\"}",
+            "--disable",
+            "image_generation",
+            "app-server",
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+        let current_args: Vec<String> = vec![
+            "-c",
+            "default_permissions=\"paperclip-runner-workspace-only\"",
+            "-c",
+            "shell_environment_policy.set={PATH=\"/run/b\"}",
+            "app-server",
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+        let mut settled = opencode_result_state();
+        settled.config.provider = "codex".to_owned();
+        settled.config.driver = "codex_app_server".to_owned();
+        settled.config.command = PathBuf::from("must-not-start-during-attachment");
+        settled.config.model = None;
+        settled.config.args = saved_args.clone();
+        settled.active_provider_turn_id = None;
+        settled.provider_process_generation = 1;
+        settled.lifecycle = "prepared".to_owned();
+
+        let directory = std::env::temp_dir().join(format!(
+            "paperclip-provider-feature-policy-{}",
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(&directory).unwrap();
+        let mut executor = CodexCommandExecutor::new(&directory);
+        executor.state = Some(settled.clone());
+        executor
+            .attach_run(&json!({
+                "provider": settled.config.clone(),
+                "runtimeLaunchArgs": current_args.clone(),
+            }))
+            .expect("a saved thread must follow the current feature policy");
+        let rebound = executor.state.as_ref().unwrap();
+        assert_eq!(rebound.config.args, current_args);
+        assert_eq!(rebound.thread_id.as_deref(), Some("thread-1"));
+        assert_eq!(rebound.lifecycle, "prepared");
+        assert!(executor.provider.is_none());
+        fs::remove_dir_all(directory).unwrap();
+
+        // Tightening the policy follows the controller as well.
+        let mut tightened = settled.clone();
+        tightened.config.args = current_args.clone();
+        let mut disabled = current_args.clone();
+        disabled.splice(4..4, ["--disable".to_owned(), "memories".to_owned()]);
+        let directory = std::env::temp_dir().join(format!(
+            "paperclip-provider-feature-tightening-{}",
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(&directory).unwrap();
+        let mut executor = CodexCommandExecutor::new(&directory);
+        executor.state = Some(tightened.clone());
+        executor
+            .attach_run(&json!({
+                "provider": tightened.config.clone(),
+                "runtimeLaunchArgs": disabled.clone(),
+            }))
+            .unwrap();
+        assert_eq!(executor.state.as_ref().unwrap().config.args, disabled);
+        fs::remove_dir_all(directory).unwrap();
+
+        let mut sandbox_bypass = current_args.clone();
+        sandbox_bypass.insert(4, "--dangerously-bypass-approvals-and-sandbox".to_owned());
+        let mut permission_profile = current_args.clone();
+        permission_profile[1] =
+            "default_permissions=\"paperclip-runner-external-sandbox\"".to_owned();
+        let mut subcommand = current_args.clone();
+        subcommand[4] = "exec".to_owned();
+        for changed in [sandbox_bypass, permission_profile, subcommand] {
+            let before = serde_json::to_value(&settled).unwrap();
+            let mut executor = CodexCommandExecutor::new("unused-protected-launch-change");
+            executor.state = Some(settled.clone());
+            let error = executor
+                .attach_run(&json!({
+                    "provider": settled.config.clone(),
+                    "runtimeLaunchArgs": changed,
+                }))
+                .expect_err("protected launch arguments must stay immutable");
+            assert!(
+                error.to_string().contains("protected launch arguments"),
+                "{error}"
+            );
+            assert_eq!(
+                serde_json::to_value(executor.state.as_ref().unwrap()).unwrap(),
+                before
+            );
+        }
     }
 
     #[test]
