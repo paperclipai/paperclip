@@ -92,6 +92,58 @@ export function issueTreeControlRoutes(
     return root;
   }
 
+  async function resumePauseInterruptedWork(
+    root: { id: string; companyId: string },
+    holdId: string,
+    actor: ReturnType<typeof getActorInfo>,
+  ) {
+    // A pause Stop is an operator hold. Re-dispatch the work it interrupted
+    // once, under current admission gates; never replay uncertain actions.
+    const failures: Array<{ issueId: string; message: string }> = [];
+    const targets = await treeControlSvc.listPauseInterruptedResumeTargets(root.companyId, holdId);
+    for (const target of targets) {
+      try {
+        const blocker = await getExecutionBlocker(db, root.companyId, target.issueId);
+        if (blocker) {
+          await logActivity(db, {
+            companyId: root.companyId, actorType: actor.actorType, actorId: actor.actorId, agentId: actor.agentId,
+            runId: actor.runId, agentApiKeyId: actor.agentApiKeyId, action: "issue.tree_resume_wake_skipped",
+            entityType: "issue", entityId: target.issueId,
+            details: { holdId, rootIssueId: root.id, interruptedRunId: target.interruptedRunId, cause: blocker.cause },
+          });
+          continue;
+        }
+        await heartbeat.wakeup(target.agentId, {
+          source: "assignment",
+          triggerDetail: "system",
+          reason: "issue_tree_resumed",
+          payload: { issueId: target.issueId, rootIssueId: root.id, holdId, interruptedRunId: target.interruptedRunId },
+          requestedByActorType: actor.actorType,
+          requestedByActorId: actor.actorId,
+          contextSnapshot: {
+            issueId: target.issueId,
+            taskId: target.issueId,
+            wakeReason: "issue_tree_resumed",
+            source: "issue.tree_resume",
+            rootIssueId: root.id,
+            holdId,
+            interruptedRunId: target.interruptedRunId,
+          },
+        });
+      } catch (error) {
+        const message = errorToMessage(error);
+        failures.push({ issueId: target.issueId, message });
+        await Promise.resolve(logActivity(db, {
+          companyId: root.companyId, actorType: actor.actorType, actorId: actor.actorId, agentId: actor.agentId,
+          runId: actor.runId, agentApiKeyId: actor.agentApiKeyId, action: "issue.tree_resume_wake_failed",
+          entityType: "issue", entityId: root.id,
+          details: { holdId, issueId: target.issueId, error: message },
+        })).catch(() => null);
+      }
+    }
+    return failures;
+  }
+
   router.post("/issues/:id/tree-control/preview", validate(previewIssueTreeControlSchema), async (req, res) => {
     assertBoard(req);
     const root = await getAccessibleResource(req, res, resolveRootIssue(req), "Root issue not found");
@@ -356,6 +408,14 @@ export function issueTreeControlRoutes(
       }
     }
 
+    if (result.hold.mode === "resume") {
+      const wakeFailures: Array<{ issueId: string; message: string }> = [];
+      for (const pauseHoldId of result.resumedPauseHoldIds ?? []) {
+        wakeFailures.push(...await resumePauseInterruptedWork(root, pauseHoldId, actor));
+      }
+      if (wakeFailures.length) result = { ...result, wakeFailures } as typeof result;
+    }
+
     res
       .status(result.hold.mode === "restore" || result.hold.mode === "resume" ? 200 : 201)
       .json(result);
@@ -542,6 +602,11 @@ export function issueTreeControlRoutes(
             ).catch(() => null);
           }
         }
+      }
+
+      // An explicit wake above already covers every executable member.
+      if (hold.mode === "pause" && req.body.metadata?.wakeAgents !== true) {
+        wakeFailures.push(...await resumePauseInterruptedWork(root, hold.id, actor));
       }
 
       res.json({ ...hold, ...(wakeFailures.length ? { wakeFailures } : {}) });

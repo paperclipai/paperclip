@@ -16,7 +16,10 @@ import { claimedAdapterType, hasConversationContinuationPolicy } from "./convers
 import { canonicalExecutionUuid } from "./execution-identity.js";
 import { randomUUID } from "node:crypto";
 import { and, desc, eq, getTableColumns, inArray, isNull, or, sql, type SQL } from "drizzle-orm";
-import { environmentLeases, heartbeatRuns, issueRecoveryActions, issues, nativeRunFinalizations, type Db } from "@paperclipai/db";
+import { environmentLeases, heartbeatRunEvents, heartbeatRuns, issueRecoveryActions, issues, nativeRunFinalizations, type Db } from "@paperclipai/db";
+import { executionStartedEventPredicate } from "./pre-dispatch-execution-evidence.js";
+import { readRunCancellation } from "./run-cancellation.js";
+import { hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
 import { issueRecoveryActionService } from "./issue-recovery-actions.js";
 import { parseIssueExecutionState } from "./issue-execution-policy.js";
 import { executionFailureRetryCount } from "./execution-recovery-attempt.js";
@@ -378,6 +381,69 @@ export async function settleInterruptedNativeBootstrap(
       action: "issue.recovery_action_resolved", entityType: "issue", entityId: task.id, agentId: run.agentId, runId: run.id,
       details: { reason: "native_bootstrap_stopped_before_provider", recoveryActionIds: resolved.map(r => r.id) },
     });
+    return settled;
+  });
+}
+
+/**
+ * The executor that owned a cancelled legacy run proves that its gated
+ * dispatch never entered the adapter. Such a Stop (for example a subtree pause
+ * during workspace preparation) left no provider actions to reconcile, so the
+ * hold that terminalization conservatively recorded is a false positive. Every
+ * retained execution reference must agree; otherwise the hold stays in force.
+ */
+export async function settleCancelledLegacyPreparation(
+  db: Db, input: { run: Run; providerDispatchStarted: boolean },
+): Promise<Run | null> {
+  if (input.providerDispatchStarted || input.run.runtimeMode !== "legacy" || input.run.status !== "cancelled") return null;
+  const issueId = input.run.issueId ?? input.run.contextSnapshot?.issueId;
+  if (typeof issueId !== "string") return null;
+  return db.transaction(async tx => {
+    const [task] = await tx.select({ id: issues.id }).from(issues)
+      .where(and(eq(issues.id, issueId), eq(issues.companyId, input.run.companyId))).for("update");
+    const [run] = await tx.select().from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.id, input.run.id), eq(heartbeatRuns.companyId, input.run.companyId))).for("update");
+    const recovery = run?.resultJson?.executionRecovery as Record<string, unknown> | undefined;
+    // Only a requested Stop qualifies, and only while it is still classified as
+    // an unknown outcome: existing wait or bootstrap receipts already decide it.
+    if (!task || !run || run.runtimeMode !== "legacy" || run.status !== "cancelled" || !run.finishedAt
+        || readRunCancellation(run.resultJson)?.expected !== true || recovery !== undefined
+        || !legacyExecutionNeedsReconciliation(run)
+        || run.processPid || run.processGroupId || run.processStartedAt || run.sessionIdAfter
+        || run.nativeIssueId || run.nativeSessionId
+        || hasWorkspaceRestoreFailure(run.resultJson) || hasRequiredWorkspaceRecovery(run.resultJson)
+        || run.runnerProfileJson?.nativeExecutionInput != null) return null;
+    const [native] = await tx.select({ id: nativeRunFinalizations.runId }).from(nativeRunFinalizations)
+      .where(and(eq(nativeRunFinalizations.companyId, run.companyId), eq(nativeRunFinalizations.runId, run.id))).limit(1);
+    const leases = await tx.select().from(environmentLeases)
+      .where(and(eq(environmentLeases.companyId, run.companyId), eq(environmentLeases.heartbeatRunId, run.id)));
+    const [execution] = await tx.select({ id: heartbeatRunEvents.id }).from(heartbeatRunEvents).where(and(
+      eq(heartbeatRunEvents.companyId, run.companyId), eq(heartbeatRunEvents.runId, run.id), executionStartedEventPredicate(),
+    )).limit(1);
+    if (native || execution || leases.some(lease => lease.provider === "local"
+      ? !lease.releasedAt || lease.status === "pending_cleanup" || lease.cleanupStatus === "failed"
+      : !hasRemoteTerminationReceipt(lease))) return null;
+    const now = new Date();
+    const [settled] = await tx.update(heartbeatRuns).set({ resultJson: { ...run.resultJson,
+      executionRecovery: { kind: "bootstrap", providerWorkStarted: false, preparationSettledAt: now.toISOString() },
+    }, updatedAt: now }).where(eq(heartbeatRuns.id, run.id)).returning();
+    const resolved = await tx.update(issueRecoveryActions).set({ status: "resolved", outcome: "false_positive",
+      resolutionNote: "The run was stopped before its adapter started; there are no provider actions to reconcile.",
+      resolvedAt: now, updatedAt: now,
+    }).where(and(
+      eq(issueRecoveryActions.companyId, run.companyId), eq(issueRecoveryActions.sourceIssueId, task.id),
+      eq(issueRecoveryActions.cause, LEGACY_RECOVERY_CAUSE), eq(issueRecoveryActions.fingerprint, `legacy-execution:${run.id}`),
+      sql`${issueRecoveryActions.evidence}->>'runId' = ${run.id}`,
+      sql`not (${issueRecoveryActions.evidence} ? 'executionReconciliation')`,
+      inArray(issueRecoveryActions.status, ["active", "escalated"]),
+    )).returning({ id: issueRecoveryActions.id });
+    if (resolved.length) {
+      await notifyUnsafeWorkspaceExportRecovery(tx, { companyId: run.companyId, issueId: task.id });
+      await logActivity(tx as unknown as Db, { companyId: run.companyId, actorType: "system", actorId: "system",
+        action: "issue.recovery_action_resolved", entityType: "issue", entityId: task.id, agentId: run.agentId, runId: run.id,
+        details: { reason: "legacy_cancelled_before_adapter", recoveryActionIds: resolved.map(r => r.id) },
+      });
+    }
     return settled;
   });
 }

@@ -1879,6 +1879,19 @@ interrupt. A verified native stop must not become an unexplained failure simply
 because it came from a subtree action. The explicit pause hold still prevents
 future execution until Resume, and missing stop proof still blocks continuation.
 
+A run interrupted by a pause is an operator hold, not a failure. The hold's member
+snapshot names each interrupted run. Releasing or resuming the hold re-dispatches
+that pending work once (`issue_tree_resumed`, with `holdId` and `interruptedRunId`
+in the wake context), even without `wakeAgents`. Current state governs: the task
+must still be executable by the same agent, with no newer run and no other pause
+covering it, and normal admission gates still apply. A task that still needs
+execution reconciliation is not replayed; the release records
+`issue.tree_resume_wake_skipped` and the blocker stays visible. A legacy run
+stopped before its gated dispatch entered the adapter has no provider actions to
+reconcile. Once the executor confirms no process, session, run-owned lease or
+execution event, it records bootstrap evidence and resolves that run's
+reconciliation hold as a false positive. A hold can be released only once.
+
 ### Late provider usage
 
 Each run measures its usage from the total the previous run accounted for, whether
