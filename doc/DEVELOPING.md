@@ -2,6 +2,10 @@
 
 This project can run fully in local dev without setting up PostgreSQL manually.
 
+## Codex remote home without host credentials
+
+For an externally mediated CLI worker, `adapterConfig.remoteCodexHomeMode = "empty"` requires a remote execution target and an explicitly configured caller-owned `CODEX_HOME`; it rejects extra configured environment variables other than the two non-secret server-owned GitHub/network mode indicators, observability export, a configured OpenAI API key or managed AI connection, and does not support ACP. The adapter stages an empty home rather than transferring the host home, does not copy auth back, and does not forward inherited host environment values during command probes. The Paperclip bridge token remains available as configured. This does not remove files already on a reused remote filesystem, isolate network or workspace data, or replace a protected external inference broker; use a fresh isolated worker and verify its permissions. The default mode is unchanged.
+
 ## Persistent case handoffs
 
 The Cases experiment supports prompt-driven agent workflows on one ordinary task.

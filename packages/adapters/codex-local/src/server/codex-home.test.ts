@@ -1510,3 +1510,21 @@ process.stdin.on("end", () => {
     }
   });
 });
+
+
+describe("empty remote Codex home", () => {
+  it("stages no host credential, configuration, or skills", async () => {
+    const home = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-empty-home-"));
+    let staged: string | undefined;
+    try {
+      await fs.writeFile(path.join(home, "auth.json"), "fixture-secret");
+      await fs.writeFile(path.join(home, "config.toml"), "fixture-config");
+      await fs.mkdir(path.join(home, "skills"));
+      staged = await stageCodexHomeForSync(home, { empty: true });
+      expect(await fs.readdir(staged)).toEqual([]);
+    } finally {
+      if (staged) await fs.rm(staged, { recursive: true, force: true });
+      await fs.rm(home, { recursive: true, force: true });
+    }
+  });
+});
