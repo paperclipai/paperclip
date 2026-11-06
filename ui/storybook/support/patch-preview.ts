@@ -4,7 +4,7 @@ export const patchText = `diff --git a/ui/src/preview.ts b/ui/src/preview.ts
 index 1a2b3c4..5d6e7f8 100644
 --- a/ui/src/preview.ts
 +++ b/ui/src/preview.ts
-@@ -1,4 +1,5 @@
+@@ -1,3 +1,4 @@
  export function preview() {
 -  return "${"old_preview_".repeat(24)}";
 +  const label = "${"new_preview_".repeat(24)}";

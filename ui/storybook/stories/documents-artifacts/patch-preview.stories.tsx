@@ -19,7 +19,7 @@ const meta = {
       status: "current",
       implementation: "production",
       boundary: "fixtures",
-      notes: "Production file-loading attachment card, document cards, attachment and workspace source views, and Markdown. Simulated attachment fetch and static patch data includes long unbroken lines, multiple files, and literal HTML. No live storage or save.",
+      notes: "Production click-to-preview attachment card, document cards, attachment and workspace source views, and Markdown. Simulated attachment fetch and static patch data includes long unbroken lines, multiple files, and literal HTML. No live storage or save.",
     },
   },
   beforeEach: () => {
@@ -54,6 +54,8 @@ export const InlinePatch: Story = {
   render: () => <InlineAttachment />,
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
+    await expect(canvasElement.querySelector('[data-patch-line="add"]')).toBeNull();
+    await userEvent.click(canvas.getByRole("button", { name: "Preview patch" }));
     await waitFor(() => expect(canvasElement.querySelector('[data-patch-line="add"]')).not.toBeNull());
     await userEvent.click(canvas.getByRole("button", { name: "Read document" }));
     const dialog = within(canvasElement.ownerDocument.body).getByRole("dialog");

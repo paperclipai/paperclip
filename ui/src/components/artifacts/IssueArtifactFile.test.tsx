@@ -106,6 +106,29 @@ describe("inline patch attachment preview", () => {
     return { container, cleanup: async () => { await act(async () => root.unmount()); client.clear(); container.remove(); vi.unstubAllGlobals(); } };
   }
 
+  it("does not fetch patch attachments in a large collection until one preview is requested", async () => {
+    const fetch = vi.fn(async () => new Response(text)); vi.stubGlobal("fetch", fetch);
+    const container = document.createElement("div"); document.body.append(container);
+    const root = createRoot(container);
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    try {
+      await act(async () => root.render(<QueryClientProvider client={client}>
+        {Array.from({ length: 200 }, (_, index) => <IssueArtifactFile key={index}
+          id={`patch-${index}`} attachmentId={`patch-${index}`} title={`Patch ${index}`} summary="" author="" updatedAt="Today"
+          filename={`fix-${index}.patch`} contentType="text/x-patch" byteSize={512 * 1024}
+          contentPath={`/api/attachments/patch-${index}/content`} downloadPath={`/api/attachments/patch-${index}/content?download=1`}
+        />)}
+      </QueryClientProvider>));
+      expect(fetch).not.toHaveBeenCalled();
+      const preview = Array.from(container.querySelectorAll("button")).find(button => button.textContent === "Preview patch");
+      expect(preview).toBeDefined();
+      await act(async () => preview!.click());
+      await vi.waitFor(() => expect(container.querySelector('[data-patch-line="add"]')).not.toBeNull());
+      expect(fetch).toHaveBeenCalledTimes(1);
+      expect(fetch).toHaveBeenCalledWith("/api/attachments/patch-0/content", expect.anything());
+    } finally { await act(async () => root.unmount()); client.clear(); container.remove(); vi.unstubAllGlobals(); }
+  });
+
   it.each([
     { filename: "fix.patch", contentType: "application/octet-stream" },
     { filename: "download", contentType: "text/x-diff" },
@@ -113,6 +136,9 @@ describe("inline patch attachment preview", () => {
     const fetch = vi.fn().mockResolvedValue(new Response(text)); vi.stubGlobal("fetch", fetch);
     const { container, cleanup } = await mount(overrides);
     try {
+      expect(fetch).not.toHaveBeenCalled();
+      const preview = Array.from(container.querySelectorAll("button")).find(button => button.textContent === "Preview patch");
+      await act(async () => preview!.click());
       await vi.waitFor(() => expect(container.querySelector('[data-patch-line="add"]')).not.toBeNull());
       expect(container.querySelector("pre")?.textContent).toBe(text);
       expect(container.querySelector("script")).toBeNull();
@@ -140,6 +166,8 @@ describe("inline patch attachment preview", () => {
     vi.stubGlobal("fetch", fetch);
     const { container, cleanup } = await mount();
     try {
+      const preview = Array.from(container.querySelectorAll("button")).find(button => button.textContent === "Preview patch");
+      await act(async () => preview!.click());
       await vi.waitFor(() => expect(container.textContent).toContain("Patch preview failed"));
       expect(container.querySelector('a[download]')).not.toBeNull();
       const retry = Array.from(container.querySelectorAll("button")).find(button => button.textContent?.includes("Retry"));

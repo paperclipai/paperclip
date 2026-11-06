@@ -522,7 +522,9 @@ The suite checks Storybook play and accessibility reports and saves screenshots.
 It does not compare visual baselines or dispatch real agent work.
 
 **Patch previews** mounts production inline document cards, attachment tabs,
-workspace source views, and Markdown diff fences. The fixtures include long
+workspace source views, and Markdown diff fences. Use **Preview patch** to load
+an inline attachment preview. Opening the artifact list does not load patch bytes.
+The fixtures include long
 unbroken lines, multiple files, and literal HTML. The browser checks cover both
 themes at desktop and mobile widths, source preservation, and overflow:
 

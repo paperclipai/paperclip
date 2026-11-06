@@ -1476,6 +1476,17 @@ describe("edit diffs", () => {
     expect(tool).toMatchObject({ kind: "tool", target: "src/price.js", diff: { path: "src/price.js", added: 1, removed: 1 } });
   });
 
+  it("preserves CRLF changes after a no-newline marker in an edit transcript", () => {
+    const entries = nativeRunEventsToTranscript([
+      event(1, "tool.execution.completed", execution("completed", [change("@@ -1 +1 @@\r\n-old\r\n\\ No newline at end of file\r\n+++ new\r\n", 1, 1)])),
+    ]);
+    expect(entries.filter((entry) => entry.kind === "diff" && entry.changeType !== "file_header")).toEqual([
+      expect.objectContaining({ changeType: "hunk", text: "@@ -1 +1 @@" }),
+      expect.objectContaining({ changeType: "remove", text: "old" }),
+      expect.objectContaining({ changeType: "add", text: "++ new" }),
+    ]);
+  });
+
   it("attaches an edit's patch once when later events refine the call", () => {
     const entries = nativeRunEventsToTranscript([
       event(1, "tool.execution.started", execution("running", [change("@@ -1 +1 @@\n-a\n+b\n", 1, 1)])),

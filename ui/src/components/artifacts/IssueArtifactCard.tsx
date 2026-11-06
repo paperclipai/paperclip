@@ -73,6 +73,7 @@ export function IssueArtifactFile(props: IssueArtifactFileProps) {
   ) : null;
   const [galleryOpen, setGalleryOpen] = useState(false);
   const [csvRequested, setCsvRequested] = useState(false);
+  const [patchRequested, setPatchRequested] = useState(false);
   const image = isImageLikeOutput(props.contentType, props.filename);
   const video = isVideoLikeOutput(props.contentType, props.filename);
   const csv =
@@ -95,7 +96,7 @@ export function IssueArtifactFile(props: IssueArtifactFileProps) {
   const patchData = useQuery({
     queryKey: ["artifact-patch", props.id, props.contentPath, props.updatedAt],
     queryFn: ({ signal }) => loadAttachmentText(props.contentPath, signal),
-    enabled: patchEligible,
+    enabled: patchEligible && patchRequested,
     staleTime: Infinity,
   });
   const patchView = useQueryView(patchData);
@@ -187,6 +188,11 @@ export function IssueArtifactFile(props: IssueArtifactFileProps) {
         actions={
           <>
             {openTextAction}
+            {patchEligible && patchView.kind !== "error" ? (
+              <Button variant="outline" size="sm" disabled={patchData.isFetching} onClick={() => setPatchRequested(true)}>
+                {patchData.isFetching ? "Loading preview…" : "Preview patch"}
+              </Button>
+            ) : null}
             {localCsv && !tooLarge && dataView.kind !== "error" ? (
               <Button
                 variant="outline"

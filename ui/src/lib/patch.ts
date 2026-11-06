@@ -9,7 +9,8 @@ export type PatchLineKind = "add" | "remove" | "hunk" | "context" | "file" | "sk
 export function createUnifiedDiffClassifier(): (raw: string) => { kind: PatchLineKind; text: string } {
   let inHunk = false;
   let remaining: { old: number; next: number } | null = null;
-  return (raw) => {
+  return (source) => {
+    const raw = source.replace(/\r$/, "");
     if (raw.startsWith("diff --git ")) {
       inHunk = false;
       return { kind: "skip", text: raw };
