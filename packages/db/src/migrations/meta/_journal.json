@@ -3053,6 +3053,13 @@
       "when": 1793982073367,
       "tag": "0437_workable_oracle",
       "breakpoints": true
+    },
+    {
+      "idx": 439,
+      "version": "7",
+      "when": 1794005324555,
+      "tag": "0439_burly_guardsmen",
+      "breakpoints": true
     }
   ]
 }

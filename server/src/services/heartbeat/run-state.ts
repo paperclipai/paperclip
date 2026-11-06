@@ -79,9 +79,9 @@ const heartbeatRunListColumns = {
   outputTokens: sql<number | null>`(${heartbeatRuns.usageJson} ->> 'outputTokens')::numeric`.as("outputTokens"),
   totalTokens: sql<number | null>`(${heartbeatRuns.usageJson} ->> 'totalTokens')::numeric`.as("totalTokens"),
   costUsd: sql<number | null>`coalesce(
-    (${heartbeatRuns.resultJson} ->> 'costUsd')::numeric,
-    (${heartbeatRuns.resultJson} ->> 'cost_usd')::numeric,
-    (${heartbeatRuns.resultJson} ->> 'total_cost_usd')::numeric
+    run_result."costUsd"::numeric,
+    run_result."cost_usd"::numeric,
+    run_result."total_cost_usd"::numeric
   )`.as("costUsd"),
   startedAt: heartbeatRuns.startedAt,
   finishedAt: heartbeatRuns.finishedAt,
@@ -187,6 +187,21 @@ const heartbeatRunListResultColumns = {
   resultCostUsdCamel: sql<
     string | null
   >`${heartbeatRuns.resultJson} ->> 'costUsd'`.as("resultCostUsdCamel"),
+} as const;
+
+const heartbeatRunListResultRecord = sql`lateral jsonb_to_record(
+  jsonb_path_query_first(${heartbeatRuns.resultJson}, 'strict $ ? (@.type() == "object")')
+) as run_result("summary" text, "result" text, "message" text, "error" text,
+  "total_cost_usd" text, "cost_usd" text, "costUsd" text)`;
+
+const heartbeatRunListRecordResultColumns = {
+  resultSummary: sql<string | null>`left(run_result."summary", ${HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS})`.as("resultSummary"),
+  resultResult: sql<string | null>`left(run_result."result", ${HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS})`.as("resultResult"),
+  resultMessage: sql<string | null>`left(run_result."message", ${HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS})`.as("resultMessage"),
+  resultError: sql<string | null>`left(run_result."error", ${HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS})`.as("resultError"),
+  resultTotalCostUsd: sql<string | null>`run_result."total_cost_usd"`.as("resultTotalCostUsd"),
+  resultCostUsd: sql<string | null>`run_result."cost_usd"`.as("resultCostUsd"),
+  resultCostUsdCamel: sql<string | null>`run_result."costUsd"`.as("resultCostUsdCamel"),
 } as const;
 
 // Reserve at most 9 KiB for diagnostics in the reduced result. An oversized
@@ -1815,11 +1830,12 @@ export function createHeartbeatRunState(db: Db) {
                 : {
                     ...heartbeatRunListColumns,
                     ...heartbeatRunListContextColumns,
-                    ...heartbeatRunListResultColumns,
+                    ...heartbeatRunListRecordResultColumns,
                   },
           )
           .from(heartbeatRuns)
           .leftJoin(heartbeatRunListContextRecord, sql`true`)
+          .leftJoin(heartbeatRunListResultRecord, sql`true`)
           .where(
             agentId
               ? and(
