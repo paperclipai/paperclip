@@ -191,3 +191,67 @@ export function hermesStateDbPath(home?: string | null): string | null {
   if (!base) return null;
   return path.join(base, "state.db");
 }
+
+const DEFAULT_POLL_DELAYS_MS = [0, 1000, 2000, 3000, 5000, 8000, 10000, 10000];
+const DEFAULT_MAX_DISCOVERY_ATTEMPTS = 3;
+
+export interface CompleteLedgerRead {
+  /** The run's usage delta; null when completion could not be established. */
+  usage: UsageTotals | null;
+  ledgerPath: string | null;
+  complete: boolean;
+}
+
+/**
+ * Read a run's usage from the ledger, waiting until Hermes' background writer
+ * has finished. Hermes flushes its rows after the child exits, so the totals
+ * are polled: three equal non-zero reads are the completion evidence. A
+ * cached helper row can carry cache tokens too, so no single count can prove
+ * the final write. When the window ends without that evidence the usage is
+ * unknown — publishing partial totals would charge a fraction as if it were
+ * all. Discovery is retried while unknown (a fresh session's first row creates
+ * the entry), bounded so a missing layout does not stall the run.
+ */
+export async function readRunUsageWhenComplete(
+  sessionId: string,
+  options: {
+    before?: UsageTotals | null;
+    preferredHome?: string | null;
+    delaysMs?: number[];
+    maxDiscoveryAttempts?: number;
+    sleep?: (ms: number) => Promise<void>;
+  } = {},
+): Promise<CompleteLedgerRead> {
+  const delays = options.delaysMs ?? DEFAULT_POLL_DELAYS_MS;
+  const maxDiscovery = options.maxDiscoveryAttempts ?? DEFAULT_MAX_DISCOVERY_ATTEMPTS;
+  const sleep = options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+
+  let ledgerPath = findLedgerForSession(sessionId, options.preferredHome);
+  let runUsage: UsageTotals | null = null;
+  let previous = "";
+  let stableReads = 0;
+  let discoveryAttempts = 0;
+  let complete = false;
+
+  for (const delayMs of delays) {
+    if (delayMs > 0) await sleep(delayMs);
+    ledgerPath ??= findLedgerForSession(sessionId, options.preferredHome);
+    if (!ledgerPath) {
+      if (++discoveryAttempts >= maxDiscovery) break;
+      continue;
+    }
+    runUsage = readRunUsageDelta(sessionId, ledgerPath, options.before ?? null);
+    if (!runUsage) continue;
+    const total =
+      runUsage.inputTokens + runUsage.cachedInputTokens + runUsage.cacheWriteTokens + runUsage.outputTokens;
+    const signature = JSON.stringify(runUsage);
+    stableReads = total > 0 && signature === previous ? stableReads + 1 : 0;
+    previous = signature;
+    if (stableReads >= 2) {
+      complete = true;
+      break;
+    }
+  }
+
+  return { usage: complete ? runUsage : null, ledgerPath, complete };
+}
