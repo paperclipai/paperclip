@@ -145,10 +145,13 @@ export function isTransientWorkspacePreparationCode(code: string | null | undefi
 export const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS =
   BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS.length;
 
-export function failedRunRetryBudgetSpent(run: Parameters<typeof executionFailureRetryCount>[0] & { errorCode?: string | null }): boolean {
+const PROVIDER_QUOTA_RETRY_DELAYS_MS = [30_000, 60_000, 120_000, 60_000] as const;
+
+export function failedRunRetryBudgetSpent(run: Parameters<typeof executionFailureRetryCount>[0] & { errorCode?: string | null; resultJson?: Record<string, unknown> | null }): boolean {
   return run.errorCode === RUNNER_REVISION_MISMATCH_CODE
     ? executionRetryAttemptCount(run, RUNNER_REVISION_WAIT_RETRY_REASON) >= RUNNER_REVISION_MISMATCH_RETRY.maxAttempts
-    : executionFailureRetryCount(run) >= BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS;
+    : executionFailureRetryCount(run) >= (run.errorCode === "provider_quota" || run.resultJson?.errorFamily === "provider_quota"
+      ? PROVIDER_QUOTA_RETRY_DELAYS_MS.length : BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS);
 }
 
 const INTERACTION_CONTINUATION_INFRA_MAX_ATTEMPTS = 2;
@@ -177,7 +180,7 @@ export { WORKSPACE_BUSY_HOLDER_STALE_AFTER_MS };
 // issue's runs out of the shared project workspace, and therefore out of
 // shared-workspace serialization ("isolated" is the legacy alias
 // parseIssueExecutionWorkspaceSettings normalizes to isolated_workspace). Any
-// other value — including agent_default and an absent mode — may still resolve
+// other value â€” including agent_default and an absent mode â€” may still resolve
 // to the shared workspace and counts as a holder.
 const ISOLATED_EXECUTION_WORKSPACE_MODES = [
   "isolated_workspace",
@@ -205,7 +208,7 @@ export interface ExecutionWorkspaceHolder extends SharedWorkspaceHolder {
 
 // Pre-dispatch gate outcome: another running run currently holds the issue's
 // shared project workspace, or the shared execution workspace it reuses. Not a
-// failure — the run is parked as a bounded scheduled retry and re-attempted
+// failure â€” the run is parked as a bounded scheduled retry and re-attempted
 // once the holder finishes, so two agents never mutate the same working tree
 // concurrently.
 export class WorkspaceBusyDeferral extends Error {
@@ -455,10 +458,15 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
       (interruptedPreparation ? "interrupted_preparation" : BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON);
     const wakeReason =
       opts?.wakeReason ?? BOUNDED_TRANSIENT_HEARTBEAT_RETRY_WAKE_REASON;
+    const transientRecovery =
+      retryReason === BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON
+        ? readTransientRecoveryContractFromRun(run)
+        : null;
+    const quotaRetry = transientRecovery?.errorFamily === "provider_quota";
     const maxAttempts = Math.max(
       0,
       Math.floor(
-        opts?.maxAttempts ?? BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS,
+        opts?.maxAttempts ?? (quotaRetry ? PROVIDER_QUOTA_RETRY_DELAYS_MS.length : BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS),
       ),
     );
     const consumedAttempts = executionRetryAttemptCount(run, retryReason);
@@ -476,6 +484,13 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
               maxAttempts,
             }
           : null
+        : nextAttempt <= maxAttempts && quotaRetry
+          ? (() => {
+              const baseDelayMs = PROVIDER_QUOTA_RETRY_DELAYS_MS[nextAttempt - 1];
+              if (baseDelayMs === undefined) return null;
+              const delayMs = nextAttempt === 3 ? baseDelayMs : Math.round(baseDelayMs * (0.8 + Math.min(1, Math.max(0, (opts?.random ?? Math.random)())) * 0.4));
+              return { attempt: nextAttempt, baseDelayMs, delayMs, dueAt: new Date(now.getTime() + delayMs), maxAttempts };
+            })()
         : nextAttempt <= maxAttempts
           ? computeBoundedTransientHeartbeatRetrySchedule(
               nextAttempt,
@@ -486,10 +501,6 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
     const baseSchedule = computedBaseSchedule
       ? { ...computedBaseSchedule, maxAttempts }
       : null;
-    const transientRecovery =
-      retryReason === BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON
-        ? readTransientRecoveryContractFromRun(run)
-        : null;
     const codexTransientFallbackMode =
       agent.adapterType === "codex_local" &&
       transientRecovery?.errorFamily === "transient_upstream"
@@ -1353,7 +1364,7 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
   // Finds a running heartbeat run (other than the caller's) whose context
   // issue shares the same project workspace, i.e. the run that currently
   // "holds" the shared working tree. Runs that have been silent past
-  // WORKSPACE_BUSY_HOLDER_STALE_AFTER_MS do not count — a zombie holder must
+  // WORKSPACE_BUSY_HOLDER_STALE_AFTER_MS do not count â€” a zombie holder must
   // not park other work forever. This cutoff is independent of informational
   // silence warnings. When isolated workspaces are enabled, holders whose
   // issue explicitly opted into an isolated workspace never touch the shared
@@ -1559,7 +1570,7 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
   // workspace_busy retry, and leave the agent idle. The issue execution lock
   // transfers to the scheduled retry run inside scheduleBoundedRetryForRun, so
   // the issue keeps an active execution path and recovery leaves it alone.
-  // Deferral has no attempt ceiling — the retry keeps rescheduling while a
+  // Deferral has no attempt ceiling â€” the retry keeps rescheduling while a
   // live holder exists, and holder staleness (not a counter) is what prevents
   // waiting on a zombie. If no retry could be scheduled (agent no longer
   // invokable), the lock is released so the issue does not strand on a
@@ -1595,8 +1606,8 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
         },
       },
       // Recorded on the run (and inherited by the scheduled retry's context)
-      // so the retry promotion gate can tell a non-assignee wake — where an
-      // assignee mismatch is the expected state — from a reassignment race.
+      // so the retry promotion gate can tell a non-assignee wake â€” where an
+      // assignee mismatch is the expected state â€” from a reassignment race.
       contextSnapshot: {
         ...runContext,
         workspaceBusyDeferredWhileAssignee: deferral.wasIssueAssignee,

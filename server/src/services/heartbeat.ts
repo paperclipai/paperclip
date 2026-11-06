@@ -604,7 +604,7 @@ const failedProcessRunCancellations = new Map<
 // Background heartbeat executions are dispatched fire-and-forget (see
 // startNextQueuedRunForAgent), so the promise that resolves once a run's DB
 // writes are fully flushed is otherwise unobservable. Track those promises here
-// — shared across service instances like activeRunExecutions above — so callers
+// â€” shared across service instances like activeRunExecutions above â€” so callers
 // that must guarantee no run write is still in flight (graceful shutdown, and
 // tests tearing down a shared database) can await drainActiveRunExecutions().
 const activeRunExecutionPromises = new Set<Promise<void>>();
@@ -613,8 +613,8 @@ const activeRunExecutionPromises = new Set<Promise<void>>();
 // resolves only after it inserts the queued run and registers the run
 // execution in activeRunExecutionPromises. Before that point neither
 // activeRunExecutionPromises nor the run table shows the pending run, so a
-// caller cannot observe the wake. Track each wakeup promise here — shared
-// across service instances like the two sets above — so drainActiveRunExecutions
+// caller cannot observe the wake. Track each wakeup promise here â€” shared
+// across service instances like the two sets above â€” so drainActiveRunExecutions
 // can await a wake that is still before run registration. A caller that tears
 // down a shared database (a test afterEach) then cannot race a late wake.
 const activeWakeupPromises = new Set<Promise<unknown>>();
@@ -679,7 +679,7 @@ export function formatRuntimeWorkspaceWarningLog(warning: string) {
  * execution tracked in memory. This happens when the server restarts and the
  * execution is lost, or when the DB row outlives the in-memory run state.
  *
- * Queued runs are never zombies — they don't have processes yet.
+ * Queued runs are never zombies â€” they don't have processes yet.
  */
 export function isZombieRun(
   run: { status: string; id: string },
@@ -689,7 +689,7 @@ export function isZombieRun(
 }
 
 /**
- * Filter a coalesce target — if it's a zombie run, return null so the
+ * Filter a coalesce target â€” if it's a zombie run, return null so the
  * wakeup falls through to create a new queued run instead of coalescing
  * into the dead process (which would refresh updatedAt and make it immortal).
  *
@@ -1723,7 +1723,7 @@ export function heartbeatService(
 
   // Await every background heartbeat execution that is currently in flight. A
   // draining run can, in its finally block, promote and dispatch the next queued
-  // run for the same agent — that follow-up execution is registered in the set
+  // run for the same agent â€” that follow-up execution is registered in the set
   // before the parent promise settles, so we loop until the set is empty rather
   // than snapshotting once. Callers use this to guarantee no run is still
   // writing rows/events (graceful shutdown, deterministic test teardown).
