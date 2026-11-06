@@ -926,6 +926,9 @@ async function releaseRunnerProcessOwnership(input: {
   if (releaseFailure !== undefined) throw releaseFailure;
 }
 
+const MAX_RUNNER_SUSPEND_ATTEMPTS = 3;
+const RUNNER_SUSPEND_RETRY_DELAY_MS = 250;
+
 async function awaitRunnerSuspensionBarrier(input: {
   commands: () => readonly {
     commandId: string;
@@ -977,10 +980,11 @@ async function awaitRunnerSuspensionBarrier(input: {
     existing = undefined;
   }
   if (Date.now() >= input.deadline) return false;
-  const commandId =
+  let commandId =
     existing?.commandId ??
     `command_close_suspend_${randomUUID().replaceAll("-", "")}`;
   if (!existing) input.queueSuspend(commandId);
+  let suspendAttempts = 1;
 
   while (Date.now() < input.deadline) {
     input.pump();
@@ -992,7 +996,25 @@ async function awaitRunnerSuspensionBarrier(input: {
       command.status !== "pending" &&
       command.status !== "completed"
     ) {
-      return false;
+      // A provider can reject suspension while its just-finished turn is
+      // still settling (an ACPX sidecar reports "not at a safe suspension
+      // point"). The rejection changed nothing, so ask again with a fresh
+      // command, a bounded number of times, within the same close deadline.
+      // An exited runner cannot answer, and an exhausted budget fails closed.
+      if (
+        suspendAttempts >= MAX_RUNNER_SUSPEND_ATTEMPTS ||
+        (await input.runnerHasExited())
+      ) {
+        return false;
+      }
+      await new Promise<void>((resolveWait) =>
+        setTimeout(resolveWait, input.pollIntervalMs ?? RUNNER_SUSPEND_RETRY_DELAY_MS),
+      );
+      if (Date.now() >= input.deadline) return false;
+      suspendAttempts += 1;
+      commandId = `command_close_suspend_${randomUUID().replaceAll("-", "")}`;
+      input.queueSuspend(commandId);
+      continue;
     }
     let lifecycle: unknown;
     try {
