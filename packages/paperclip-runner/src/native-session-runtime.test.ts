@@ -1,4 +1,5 @@
 import { validatePrpStructuredRunResult } from "./protocol/replay-contract.js";
+import { createProviderFailure } from "./drivers/provider-failure.js";
 import { createHash } from "node:crypto";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -1502,19 +1503,21 @@ describe("executeNativeSession recovery", () => {
       modelRejected: false,
     },
     {
-      // OpenRouter's wording for an unknown model ID.
+      // A driver's closed category marks the rejection; no provider text is needed.
       recoverable: false,
-      message: "openrouter/unavailable-model is not a valid model ID",
+      message: "Provider turn failed",
       modelRejected: true,
+      category: "model_unavailable" as const,
     },
     {
       recoverable: true,
-      message: "openrouter/unavailable-model is not a valid model ID",
+      message: "Provider turn failed",
       modelRejected: false,
+      category: "model_unavailable" as const,
     },
-  ])(
-    "preserves structured provider failure and model retry classification ($recoverable, $modelRejected)",
-    async ({ recoverable, message, modelRejected }) => {
+  ] as Array<{ recoverable: boolean; message: string; modelRejected: boolean; category?: "model_unavailable" }>)(
+    "preserves structured provider failure and model retry classification ($recoverable, $modelRejected, $category)",
+    async ({ recoverable, message, modelRejected, category }) => {
       const capabilities = {
         resume: true,
         typedEvents: true,
@@ -1530,7 +1533,9 @@ describe("executeNativeSession recovery", () => {
         },
         async *events() {
           yield runnerEvent(1, "turn.failed", {
-            error: { code: "RUNTIME", recoverable, message },
+            error: { code: "RUNTIME", recoverable, message, ...(category ? { providerFailure: createProviderFailure({
+              provider: "openrouter", phase: "turn", message: "openrouter/unavailable-model is not a valid model ID", httpStatus: 400, category,
+            }) } : {}) },
           });
         },
         async startTurn() {

@@ -1998,8 +1998,6 @@ class OpenCodeHarnessSession implements HarnessSession {
       this.#emit(
         "turn.failed",
         { status: "failed", error: { ...bounded(providerError),
-          // Consumers read the terminal failure's top-level message.
-          message: providerMessage,
           providerFailure: openCodeProviderFailure(providerError, this.#model.split("/")[0]!,
             Object.fromEntries(this.#runtime.sensitiveValues.map((value, index) => [`TOKEN_${index}`, value]))) ?? undefined } },
         { turnId },
