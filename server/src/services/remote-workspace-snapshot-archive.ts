@@ -215,7 +215,7 @@ async function workspaceArchive(input: {
       if (await git(repo, ["ls-files", "--unmerged", "-z"])) fail("git_operation_in_progress: finish or abort the Git operation before saving the workspace");
       const mode = await readState("MERGE_MODE", 16), message = await readState("MERGE_MSG", 4 * 1024 * 1024);
       const original = await readState("ORIG_HEAD", 128), automatic = await readState("AUTO_MERGE", 128);
-      if (!original || !message || mode && !["", "no-ff"].includes(mode.text.trim())) fail("git_operation_in_progress: finish or abort the Git operation before saving the workspace");
+      if (!original || !message || mode && !["", "no-ff"].includes(mode.text.trim())) return fail("git_operation_in_progress: finish or abort the Git operation before saving the workspace");
       const objects = [...mergeHead.text.trim().split("\n").map(object => ({ object, type: "commit" })),
         { object: original.text.trim(), type: "commit" }, ...(automatic ? [{ object: automatic.text.trim(), type: "tree" }] : [])];
       for (const { object, type } of objects) {
