@@ -22,7 +22,7 @@ import { createStorageService } from "../../storage/service.js";
 import { legacyNativeControllerArchive } from "./native-controller-archive.js";
 import { restoreDurableNativeHarnessBackup } from "./native-harness-backup-storage.js";
 
-describeEmbeddedPostgres.each(["online_success", "online_owned", "online_same_source", "online_busy", "online_changed", "import", "archive", "success", "batch", "durable_failed",
+describeEmbeddedPostgres.each(["online_success", "online_owned", "online_same_source", "online_busy", "online_changed", "online_evidence", "import", "archive", "success", "batch", "durable_failed",
   "stale_confirmed", "stale_foreign", "stale_changed", "stale_queued", "stale_overlap", "stale_success", "stale_busy", "stale_durable", "stale_durable_absent",
   "stale_durable_runner", "stale_durable_session", "stale_durable_snapshot",
   "controller_confirmed", "controller_foreign", "controller_thread", "controller_runner", "controller_success", "controller_busy", "controller_invalid", "controller_durable",
@@ -92,15 +92,18 @@ describeEmbeddedPostgres.each(["online_success", "online_owned", "online_same_so
   }
   if (scenario.startsWith("online_")) it("prestages only a settled legacy controller while unrelated work continues", async () => {
     const f = await fixture();
-    const [run] = await f.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
-    const [result] = await f.db.insert(nativeRunResults).values({ companyId: f.companyId, issueId: f.issueId, runId: f.runId,
-      completionContractId: run.completionContractId!, serverFingerprint: "online-migration", schemaStatus: "accepted",
-      resultJson: {}, canonicalSha256: "online-migration" }).returning();
-    await f.db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, f.runId));
-    await f.db.update(issues).set({ executionRunId: null, checkoutRunId: null }).where(eq(issues.id, f.issueId));
-    await f.db.delete(heartbeatRuns).where(eq(heartbeatRuns.id, f.queuedId));
-    await f.db.update(nativeRunFinalizations).set({ phase: "committed", resultId: result.id, leaseOwner: null,
-      leaseExpiresAt: null, recoveryState: null }).where(eq(nativeRunFinalizations.runId, f.runId));
+    const settle = async (f: Awaited<ReturnType<typeof fixture>>) => {
+      const [run] = await f.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+      const [result] = await f.db.insert(nativeRunResults).values({ companyId: f.companyId, issueId: f.issueId, runId: f.runId,
+        completionContractId: run.completionContractId!, serverFingerprint: "online-migration", schemaStatus: "accepted",
+        resultJson: {}, canonicalSha256: "online-migration" }).returning();
+      await f.db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, f.runId));
+      await f.db.update(issues).set({ executionRunId: null, checkoutRunId: null }).where(eq(issues.id, f.issueId));
+      await f.db.delete(heartbeatRuns).where(eq(heartbeatRuns.id, f.queuedId));
+      await f.db.update(nativeRunFinalizations).set({ phase: "committed", resultId: result.id, leaseOwner: null,
+        leaseExpiresAt: null, recoveryState: null }).where(eq(nativeRunFinalizations.runId, f.runId));
+    };
+    await settle(f);
     const unrelated = await environment.seedRun(randomUUID());
     const [unrelatedBefore] = await f.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, unrelated.runId));
     if (scenario === "online_owned") await f.db.update(nativeRunFinalizations).set({
@@ -110,6 +113,19 @@ describeEmbeddedPostgres.each(["online_success", "online_owned", "online_same_so
       agentId: f.agentId, issueId: f.issueId, nativeIssueId: f.issueId, nativeSessionId: f.native.normalizedSessionId,
       status: "running", runtimeMode: "native" });
     const before = await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId));
+    if (scenario === "online_evidence") {
+      await rm(join(f.paths.root, "provider-pack-authority.json"));
+      await f.db.update(agentTaskSessions).set({ id: "00000000-0000-4000-8000-000000000001" }).where(eq(agentTaskSessions.id, f.session.id));
+      const next = await fixture();
+      await settle(next);
+      const actual = await prestageNativeControllers(f.db, { signal: AbortSignal.timeout(30_000) });
+      expect(actual).toMatchObject({ inspected: 2, imported: 1, deferred: { artifact_unproven: 1 } });
+      expect(await loadNativeRunnerCheckpoint(f.db, { companyId: f.companyId, issueId: f.issueId, runId: f.runId })).toBeNull();
+      expect(await loadNativeRunnerCheckpoint(f.db, { companyId: next.companyId, issueId: next.issueId, runId: next.runId })).not.toBeNull();
+      expect(await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId))).toEqual(before);
+      expect((await f.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, unrelated.runId)))[0]).toEqual(unrelatedBefore);
+      return;
+    }
     if (scenario === "online_changed") {
       const inode = (await stat(f.file)).ino;
       const probe = await open(f.file, "r");
@@ -125,8 +141,8 @@ describeEmbeddedPostgres.each(["online_success", "online_owned", "online_same_so
         }
         return bytes;
       });
-      await expect(prestageNativeControllers(f.db, { signal: AbortSignal.timeout(30_000) }))
-        .rejects.toThrow("native_controller_migration_source_changed");
+      expect(await prestageNativeControllers(f.db, { signal: AbortSignal.timeout(30_000) }))
+        .toMatchObject({ imported: 0, deferred: { source_changed: 1 } });
       expect(changed).toBe(true);
       expect(await loadNativeRunnerCheckpoint(f.db, { companyId: f.companyId, issueId: f.issueId, runId: f.runId })).toBeNull();
       expect(await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId))).toEqual(before);

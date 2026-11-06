@@ -255,6 +255,23 @@ export async function migrateNativeControllers(db: Db, input: { writersStopped: 
   return counts;
 }
 
+function onlineControllerSourceDeferral(error: unknown): string | null {
+  if (!(error instanceof Error)) return null;
+  const reasons: Record<string, string> = {
+    native_runner_checkpoint_artifact_unproven: "artifact_unproven",
+    native_runner_checkpoint_binding_mismatch: "checkpoint_binding",
+    native_controller_migration_source_changed: "source_changed",
+    native_controller_migration_unsafe_source: "unsafe_source",
+    native_controller_migration_artifact_binding: "artifact_binding",
+    native_controller_migration_artifact_unavailable: "artifact_unavailable",
+  };
+  if (reasons[error.message]) return reasons[error.message];
+  if (error.message.startsWith("runner_remote_provider_artifact_incompatible:")) return "artifact_incompatible";
+  if (error instanceof SyntaxError) return "invalid_source_json";
+  if (["ENOENT", "ENOTDIR", "EISDIR", "ELOOP", "EACCES", "EPERM"].includes((error as NodeJS.ErrnoException).code ?? "")) return "source_unavailable";
+  return null;
+}
+
 /** Adopt settled legacy controllers one source at a time. The task row excludes
  * new admission for that task while reading its local state. No global admission
  * hold, process stop, expired-owner takeover, or failed-source archival occurs. */
@@ -311,6 +328,9 @@ export async function prestageNativeControllers(db: Db, input: { signal: AbortSi
       input.signal.throwIfAborted();
       return result.kind;
     }).catch(error => {
+      input.signal.throwIfAborted();
+      const reason = onlineControllerSourceDeferral(error);
+      if (reason) return reason;
       if (error?.code === "55P03" || error?.cause?.code === "55P03") return "source_busy";
       throw error;
     });
