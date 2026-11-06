@@ -206,14 +206,14 @@ describe("heartbeat retry module callbacks", () => {
       expect(extracted.readLimitResetRetryAt({ error: null, resultJson: { errorMessage: "timeout" } }, now)).toBeUndefined();
     });
 
-    it("prioritizes structured retryNotBefore + 1 minute when present", () => {
+    it("prioritizes structured retryNotBefore when present", () => {
       const now = new Date("2026-11-06T14:30:00.000Z");
       const structured = new Date("2026-11-06T15:00:00.000Z");
       const run = {
         error: "You've hit your limit · resets 3pm (UTC)",
         resultJson: { retryNotBefore: structured.toISOString() },
       };
-      expect(extracted.readLimitResetRetryAt(run, now)).toEqual(new Date("2026-11-06T15:01:00.000Z"));
+      expect(extracted.readLimitResetRetryAt(run, now)).toEqual(new Date("2026-11-06T15:00:00.000Z"));
     });
 
     it("parses 12-hour UTC clock format to reset + 1 minute on same day when in future", () => {

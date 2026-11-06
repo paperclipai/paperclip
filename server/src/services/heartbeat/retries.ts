@@ -324,7 +324,7 @@ export function readLimitResetRetryAt(
 
   const structured = readTransientRetryNotBeforeFromRun(run);
   if (structured) {
-    return new Date(Math.max(now.getTime() + 1_000, structured.getTime() + 60_000));
+    return new Date(Math.max(now.getTime() + 1_000, structured.getTime()));
   }
 
   const match = /resets\s+(\d{1,2})(?::([0-5]\d))?\s*(am|pm)\s*\(UTC\)/i.exec(message);
