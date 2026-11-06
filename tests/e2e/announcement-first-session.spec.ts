@@ -91,6 +91,15 @@ test.describe("Announcement well (N-13)", () => {
     await expect(page.getByRole("button", { name: "Open account menu" })).toBeVisible();
     await page.waitForTimeout(SETTLE_WAIT_MS);
     await page.screenshot({ path: test.info().outputPath("onboarding-task.png") });
-    await expect(page.getByRole("complementary", { name: "Paperclip announcements" })).toHaveCount(0);
+    const well = page.getByRole("complementary", { name: "Paperclip announcements" });
+    await expect(well).toHaveCount(0);
+
+    // Positive control on the same page: once onboarding finishes, the same
+    // mocked announcement renders without a reload. This proves the absence
+    // above comes from the onboarding gate, not from a broken feed mock.
+    const finish = await board.patch(`${BASE_URL}/api/issues/${firstTask.id}`, { data: { status: "done" } });
+    if (!finish.ok()) throw new Error(`PATCH issue → ${finish.status()}: ${await finish.text()}`);
+    await expect(well).toBeVisible({ timeout: 20_000 });
+    await expect(well.getByRole("link", { name: "Explore connectors" })).toBeVisible();
   });
 });

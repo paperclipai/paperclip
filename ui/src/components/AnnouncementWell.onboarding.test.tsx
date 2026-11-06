@@ -28,8 +28,10 @@ describe("announcement well during onboarding", () => {
   let root: Root;
   const health = { deploymentMode: "authenticated" } as HealthStatus;
   const visible = () => Boolean(container.querySelector('[aria-label="Paperclip announcements"]'));
+  let client: QueryClient;
+  const flush = async () => { await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); }); };
   const render = async () => {
-    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     await act(async () => root.render(<QueryClientProvider client={client}><AnnouncementWell health={health} /></QueryClientProvider>));
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
   };
@@ -52,6 +54,17 @@ describe("announcement well during onboarding", () => {
     await act(async () => root.unmount()); root = createRoot(container);
     state.list.mockResolvedValue([]);
     await render();
+    expect(visible()).toBe(true);
+  });
+
+  it("shows without a reload once the open onboarding task finishes and company issues refresh", async () => {
+    state.list.mockResolvedValue([firstTask("todo")]);
+    await render();
+    expect(visible()).toBe(false);
+    state.list.mockResolvedValue([firstTask("done")]);
+    // Issue live updates invalidate the company's issue queries by this prefix.
+    await act(async () => { await client.invalidateQueries({ queryKey: ["issues", "company"] }); });
+    await flush();
     expect(visible()).toBe(true);
   });
 
