@@ -314,7 +314,7 @@ function bindSql(statement: string, params: readonly unknown[] = []): SQL {
       throw new Error(`SQL placeholder $${match[1]} has no matching parameter`);
     }
     chunks.push(sql.raw(statement.slice(cursor, match.index)));
-    chunks.push(sql`${params[index - 1]}`);
+    chunks.push(sql`${sql.param(params[index - 1])}`);
     seen.add(index);
     cursor = match.index! + match[0].length;
   }

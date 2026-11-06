@@ -614,6 +614,33 @@ describeEmbeddedPostgres("plugin database namespaces", () => {
     expect(migrations).toHaveLength(1);
   });
 
+  it("binds an array parameter as one Postgres array, past the 1664-entry ROW limit", async () => {
+    const pluginManifest = manifest();
+    const namespace = derivePluginDatabaseNamespace(pluginManifest.id);
+    const packageRoot = await createPluginPackage(
+      pluginManifest,
+      `CREATE TABLE ${namespace}.notes (id uuid PRIMARY KEY, label text NOT NULL, tags text[] NOT NULL, meta jsonb NOT NULL);`,
+    );
+    const pluginId = await installPluginRecord(pluginManifest);
+    const pluginDb = pluginDatabaseService(db);
+    await pluginDb.applyMigrations(pluginId, pluginManifest, packageRoot);
+
+    const noteId = randomUUID();
+    await pluginDb.execute(
+      pluginId,
+      `INSERT INTO ${namespace}.notes (id, label, tags, meta) VALUES ($1, $2, $3::text[], $4::jsonb)`,
+      [noteId, "alpha", ["a", "b"], JSON.stringify({ kind: "note" })],
+    );
+
+    const ids = [...Array.from({ length: 2_999 }, () => randomUUID()), noteId];
+    const rows = await pluginDb.query<{ label: string; tags: string[]; meta: unknown }>(
+      pluginId,
+      `SELECT label, tags, meta FROM ${namespace}.notes WHERE id = ANY($1::uuid[]) AND label = $2`,
+      [ids, "alpha"],
+    );
+    expect(rows).toEqual([{ label: "alpha", tags: ["a", "b"], meta: { kind: "note" } }]);
+  });
+
   it("rejects runtime writes to public core tables", async () => {
     const pluginManifest = manifest();
     const namespace = derivePluginDatabaseNamespace(pluginManifest.id);
