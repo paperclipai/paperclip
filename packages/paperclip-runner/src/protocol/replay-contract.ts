@@ -1,4 +1,4 @@
-import type { ErrorObject, ValidateFunction } from "ajv/dist/2020.js";
+import type { ErrorObject } from "ajv/dist/2020.js";
 import type { FromSchema } from "json-schema-to-ts";
 
 import {
@@ -31,6 +31,8 @@ import {
 } from "./generated/standalone-validators.js";
 import { normalizeLegacyPrpStructuredRunResult } from "./result-normalization.js";
 
+type Validator = { (value: unknown): boolean; errors?: ErrorObject[] | null };
+
 export const PRP_PROTOCOL_NAME = "paperclip.runner";
 export const PRP_PROTOCOL_MIN_VERSION = 1;
 export const PRP_PROTOCOL_VERSION = 3;
@@ -48,7 +50,7 @@ type EventV2References = [typeof sessionGoalSchema, typeof authCredentialsSchema
 type CapabilitiesV2References = [typeof sessionGoalSchema];
 export type PrpAuthCredentialsUpdated = FromSchema<typeof authCredentialsSchema>;
 export function isPrpAuthCredentialsUpdated(value: unknown): value is PrpAuthCredentialsUpdated {
-  return (standaloneAuthCredentialsValidator as ValidateFunction<PrpAuthCredentialsUpdated>)(value);
+  return (standaloneAuthCredentialsValidator as Validator)(value);
 }
 export type PrpIdentity = FromSchema<typeof identitySchema>;
 export type PrpCapabilities = FromSchema<typeof capabilitiesSchema>;
@@ -140,11 +142,11 @@ export interface ProtocolVersionRange {
 // The validators are generated from the same checked-in schemas as the types.
 // Keeping compilation out of the runtime lets strict CSP deployments retain
 // `script-src 'self'` without AJV attempting dynamic JavaScript evaluation.
-const fixtureValidator = standaloneFixtureValidator as ValidateFunction<PrpFixture>;
-const eventV1Validator = standaloneEventV1Validator as ValidateFunction<PrpEvent>;
-const eventV3Validator = standaloneEventV3Validator as ValidateFunction<PrpEvent>;
-const eventV2Validator = standaloneEventV2Validator as ValidateFunction<PrpEvent>;
-const resultValidator = standaloneResultValidator as ValidateFunction<PrpStructuredRunResult>;
+const fixtureValidator = standaloneFixtureValidator as Validator;
+const eventV1Validator = standaloneEventV1Validator as Validator;
+const eventV3Validator = standaloneEventV3Validator as Validator;
+const eventV2Validator = standaloneEventV2Validator as Validator;
+const resultValidator = standaloneResultValidator as Validator;
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return typeof value === "object" && value !== null && !Array.isArray(value)
@@ -452,9 +454,10 @@ export function validatePrpFixture(value: unknown): ProtocolValidationResult {
     };
   }
 
-  const bindings = bindingIssues(value);
+  const fixture = value as PrpFixture;
+  const bindings = bindingIssues(fixture);
   return bindings.length === 0
-    ? { ok: true, fixture: value, issues: [] }
+    ? { ok: true, fixture, issues: [] }
     : { ok: false, fixture: null, issues: bindings };
 }
 
@@ -504,7 +507,7 @@ export function validatePrpEvent(value: unknown): EventValidationResult {
       issues: (eventValidator.errors ?? []).map(ajvIssue),
     };
   }
-  return { ok: true, event: value, issues: [] };
+  return { ok: true, event: value as PrpEvent, issues: [] };
 }
 
 export type StructuredResultValidationResult =
@@ -523,7 +526,7 @@ export function validatePrpStructuredRunResult(
       issues: (resultValidator.errors ?? []).map(ajvIssue),
     };
   }
-  return { ok: true, result: normalized, issues: [] };
+  return { ok: true, result: normalized as PrpStructuredRunResult, issues: [] };
 }
 
 export function negotiateProtocolVersion(
