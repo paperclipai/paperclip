@@ -184,10 +184,10 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
   const read = (id: string) => db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, id)).then(rows => rows[0]!);
 
   it("replays saved user intent through normal Retry after a first-attempt retained runner failure", async () => {
-    for (const mode of ["unattached", "provider_started", "system_wake", "stopped", "stopped_failed", "promoted"] as const) {
+    for (const mode of ["unattached", "archive_failed", "provider_started", "system_wake", "stopped", "stopped_failed", "promoted"] as const) {
       const f = await fixture({ runtimeMode: mode === "promoted" ? "legacy" : "native" }, `CMP${randomUUID().slice(0, 6)}`);
-      const failureMessage = "runner_remote_process_identity_unavailable";
-      const retryExpected = mode === "unattached" || mode === "promoted";
+      const failureMessage = mode === "archive_failed" ? "runner_continuity_break_archive_failed" : "runner_remote_process_identity_unavailable";
+      const retryExpected = mode === "unattached" || mode === "archive_failed" || mode === "promoted";
       const [issue] = await db.insert(issues).values({ companyId: f.run.companyId, title: "Continue saved work",
         assigneeAgentId: f.agent.id, status: "in_progress" }).returning();
       const [comment] = await db.insert(issueComments).values({ companyId: f.run.companyId, issueId: issue.id,
