@@ -1891,7 +1891,31 @@ describe("automatic retained workspace recovery", () => {
               status: "running", contextSnapshot: { issueId: child.id } }).returning();
             const [saved] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, placeholder.id));
             const olderPaths = saved.metadata!.remoteWorkspaceRecoveredFiles as Array<{ operationId: string; sourceRunId: string; path: string }>;
-            await db.update(executionWorkspaces).set({ metadata: { ...saved.metadata, remoteWorkspaceRecoveredFiles:
+            const [earlierChild] = await db.insert(issues).values({ companyId: f.companyId, parentId: f.issueId,
+              title: "Earlier related recovery source", status: "done", executionWorkspaceId: placeholder.id }).returning();
+            const [related] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, issueId: earlierChild.id,
+              agentId: agent.id, status: "failed", contextSnapshot: { issueId: earlierChild.id } }).returning();
+            const [relatedAction] = await db.insert(issueRecoveryActions).values({ companyId: f.companyId, sourceIssueId: earlierChild.id,
+              kind: "active_run_watchdog", status: "resolved", ownerType: "board", cause: "native_continuation_requires_reconciliation",
+              fingerprint: related.id, nextAction: "Saved related files", evidence: { runId: related.id } }).returning();
+            const [relatedLease] = await db.insert(environmentLeases).values({ companyId: f.companyId, issueId: earlierChild.id,
+              heartbeatRunId: related.id, environmentId: f.lease.environmentId, provider: "daytona", providerLeaseId: randomUUID(),
+              status: "released", cleanupStatus: "success", releasedAt: new Date() }).returning();
+            await preserveWorkspaceSnapshot({ db, companyId: f.companyId, issueId: earlierChild.id, runId: related.id,
+              actionId: relatedAction.id, leaseId: relatedLease.id, providerLeaseId: relatedLease.providerLeaseId!,
+              target: { ...targets.get(f.lease.id)!, leaseId: relatedLease.id, remoteCwd: oldRoot }, assertHeld: async () => {} });
+            const [attachedRelated] = await attachPreservedWorkspaceSnapshots({ db, companyId: f.companyId, issueId: earlierChild.id,
+              sourceRunIds: [related.id], cwd: cold.remoteRoot });
+            olderPaths.push({ operationId: attachedRelated.operationId, sourceRunId: related.id,
+              path: `.paperclip-recovered/${attachedRelated.operationId}` });
+            const [migration] = await db.insert(workspaceOperations).values({ companyId: f.companyId, issueId: f.issueId,
+              executionWorkspaceId: placeholder.id, phase: "remote_workspace_migration", status: "succeeded",
+              metadata: { legacyRecoverySources: [{ runId: related.id, issueId: earlierChild.id }] } }).returning();
+            const marker = { schema: "paperclip.legacy-workspace-recovery-migration.v1", operationId: migration.id };
+            await db.update(heartbeatRuns).set({ runnerProfileJson: { legacyWorkspaceRecoveryMigration:
+              { ...marker, workspaceId: placeholder.id } } }).where(eq(heartbeatRuns.id, related.id));
+            await db.update(executionWorkspaces).set({ metadata: { ...saved.metadata, legacyWorkspaceRecoveryMigration: marker,
+              remoteWorkspaceRecoveredFiles:
               olderPaths.map(({ operationId, sourceRunId, path }) => ({ operationId, sourceRunId, path })) } }).where(eq(executionWorkspaces.id, saved.id));
             const shared = await reserveRemoteWorkspace({ db, storage, companyId: f.companyId, issueId: child.id,
               runId: childRun.id, agentId: agent.id, environmentId: f.lease.environmentId!, projectId: null,
@@ -1906,6 +1930,21 @@ describe("automatic retained workspace recovery", () => {
             const [withoutProof] = await db.update(executionWorkspaces).set({ metadata: { ...inherited.workspace.metadata,
               remoteWorkspaceRecoveredFiles: olderPaths.map(({ operationId, sourceRunId, path }) => ({ operationId, sourceRunId, path })) } })
               .where(eq(executionWorkspaces.id, inherited.workspace.id)).returning();
+            for (const fault of ["migration_status", "source_marker_workspace", "history_issue"]) {
+              await db.update(workspaceOperations).set({ status: fault === "migration_status" ? "failed" : "succeeded",
+                metadata: { legacyRecoverySources: [{ runId: related.id, issueId: fault === "history_issue" ? randomUUID() : earlierChild.id }] } })
+                .where(eq(workspaceOperations.id, migration.id));
+              await db.update(heartbeatRuns).set({ runnerProfileJson: { legacyWorkspaceRecoveryMigration:
+                { ...marker, workspaceId: fault === "source_marker_workspace" ? randomUUID() : placeholder.id } } })
+                .where(eq(heartbeatRuns.id, related.id));
+              await expect(prepareRemoteWorkspace({ db, storage, workspace: withoutProof, runId: childRun.id,
+                lease: childLease as EnvironmentLease, target: { ...target, leaseId: childLease.id, remoteCwd: cold.remoteRoot } }))
+                .rejects.toThrow("remote_workspace_recovery_receipt_invalid");
+            }
+            await db.update(workspaceOperations).set({ status: "succeeded", metadata: {
+              legacyRecoverySources: [{ runId: related.id, issueId: earlierChild.id }] } }).where(eq(workspaceOperations.id, migration.id));
+            await db.update(heartbeatRuns).set({ runnerProfileJson: { legacyWorkspaceRecoveryMigration:
+              { ...marker, workspaceId: placeholder.id } } }).where(eq(heartbeatRuns.id, related.id));
             await db.update(workspaceOperations).set({ status: "failed" }).where(eq(workspaceOperations.id,
               (olderPaths.find(item => item.sourceRunId === source.id))!.operationId));
             await expect(prepareRemoteWorkspace({ db, storage, workspace: withoutProof, runId: childRun.id,

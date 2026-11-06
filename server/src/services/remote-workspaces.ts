@@ -37,7 +37,7 @@ import {
 import { restoreRemoteWorkspaceArchive, readRemoteWorkspaceArchiveDirectories } from "./remote-workspace-snapshot-archive.js";
 import { removeTaskDirectoryTree } from "./isolated-task-directory-snapshot.js";
 import { attachPreservedWorkspaceSnapshots } from "./workspace-recovery-snapshot.js";
-import { attachPreservedRemoteWorkspaceSnapshots, retainedRecoveryAttachmentProvenance } from "./remote-workspace-recovery-attachments.js";
+import { attachPreservedRemoteWorkspaceSnapshots, retainRemoteRecoveryAttachments } from "./remote-workspace-recovery-attachments.js";
 import { notifyRemoteWorkspaceSnapshots } from "./remote-workspace-snapshot-retention.js";
 import { notifyTerminalWorkspaceWork } from "./terminal-workspace-work.js";
 import { preserveRemoteWorkspacePreparationFailure } from "./native-runtime/native-workspace-finalization-state.js";
@@ -479,7 +479,6 @@ export async function prepareRemoteWorkspace(input: {
       resolveGitAuth: await createRemoteWorkspaceGitAuth(input.db, input.workspace.companyId, input.runId) });
   }
   const recoveredFiles: Array<{ operationId: string; sourceRunId: string; path: string; provenance: string }> = [];
-  const retained = input.workspace.metadata?.remoteWorkspaceRecoveredFiles;
   if (!sameAllocation) {
     // Shared and inherited workspaces retain their original source task. The
     // current writer's task owns its recovery attachments, including a child's
@@ -518,28 +517,8 @@ export async function prepareRemoteWorkspace(input: {
       } finally { await rm(scratch, { recursive: true, force: true }); }
     }
   }
-  // A saved workspace can already contain edited sidecars. Publish only paths
-  // whose exact host-recorded proof is present in this actual prepared root.
-  for (const value of Array.isArray(retained) ? retained : []) {
-    const item = object(value);
-    if (typeof item.operationId !== "string" || !/^[a-f0-9-]{36}$/.test(item.operationId)
-      || typeof item.sourceRunId !== "string" || item.path !== `.paperclip-recovered/${item.operationId}`)
-      throw new Error("remote_workspace_recovered_files_invalid");
-    if (recoveredFiles.some(current => current.operationId === item.operationId)) continue;
-    let provenance = typeof item.provenance === "string" ? item.provenance : null;
-    if (!provenance) {
-      const [writer] = await input.db.select().from(heartbeatRuns).where(and(
-        eq(heartbeatRuns.companyId, input.workspace.companyId), eq(heartbeatRuns.id, input.runId)));
-      const issueId = writer?.nativeIssueId ?? writer?.issueId ?? writer?.contextSnapshot?.issueId;
-      provenance = await retainedRecoveryAttachmentProvenance({ db: input.db, companyId: input.workspace.companyId,
-        issueIds: [issueId, input.workspace.sourceIssueId].filter((id): id is string => typeof id === "string"),
-        sourceRunId: item.sourceRunId, operationId: item.operationId });
-      if (!provenance) throw new Error("remote_workspace_recovery_receipt_invalid");
-    }
-    await input.assertOwned?.();
-    if (await hasRemoteRecoveryAttachment({ target, remoteCwd: remoteRoot, operationId: item.operationId, provenance }))
-      recoveredFiles.push({ operationId: item.operationId, sourceRunId: item.sourceRunId, path: item.path, provenance });
-  }
+  await retainRemoteRecoveryAttachments({ db: input.db, workspace: input.workspace, runId: input.runId,
+    remoteRoot, target, recoveredFiles, assertOwned: input.assertOwned });
   await input.assertOwned?.();
   const prepared = await input.db.transaction(async tx => {
     await lockWorkspaceRunParents(tx, input.workspace.companyId, input.runId);

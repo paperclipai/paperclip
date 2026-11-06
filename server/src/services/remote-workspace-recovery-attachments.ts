@@ -1,7 +1,10 @@
 import { lstat, mkdir, mkdtemp, readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
+import type { AdapterSandboxExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
+import { hasRemoteRecoveryAttachment } from "./remote-workspace-transport.js";
+import { LEGACY_WORKSPACE_RECOVERY_MIGRATION } from "./legacy-workspace-recovery-migration.js";
 import { and, eq, inArray, sql } from "drizzle-orm";
-import { heartbeatRuns, workspaceOperations, type Db } from "@paperclipai/db";
+import { executionWorkspaces, heartbeatRuns, workspaceOperations, type Db } from "@paperclipai/db";
 import { remoteWorkspaceRunReferenceSchema } from "@paperclipai/shared";
 import { readSnapshot, verifiedWorkspaceSnapshotReceipt } from "./workspace-recovery-snapshot.js";
 import { recoveryRunAncestry } from "./recovery-run-ancestry.js";
@@ -97,13 +100,32 @@ export async function attachPreservedRemoteWorkspaceSnapshots(input: {
 
 /** Verify a sidecar already inside an authorized shared workspace. This only
  * reconstructs its immutable identity; it cannot import files or admit work. */
-export async function retainedRecoveryAttachmentProvenance(input: {
+async function retainedRecoveryAttachmentProvenance(input: {
   db: Db; companyId: string; issueIds: string[]; sourceRunId: string; operationId: string;
+  workspace: Pick<typeof executionWorkspaces.$inferSelect, "id" | "metadata">;
 }): Promise<string | null> {
   const [source] = await input.db.select().from(heartbeatRuns).where(and(
     eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.id, input.sourceRunId)));
   const issueId = source?.nativeIssueId ?? source?.issueId ?? source?.contextSnapshot?.issueId;
-  if (!source || typeof issueId !== "string" || !input.issueIds.includes(issueId)) return null;
+  if (!source || typeof issueId !== "string") return null;
+  if (!input.issueIds.includes(issueId)) {
+    // A committed workspace migration is the history owner for all related
+    // task attachments. Task relationships alone never authorize retention.
+    const marker = record(input.workspace.metadata?.legacyWorkspaceRecoveryMigration);
+    const sourceMarker = record(source.runnerProfileJson?.legacyWorkspaceRecoveryMigration
+      ?? source.runnerProfileJson?.finalizedWorkspaceRecoveryMigration);
+    if (marker.schema !== LEGACY_WORKSPACE_RECOVERY_MIGRATION || typeof marker.operationId !== "string"
+      || sourceMarker.schema !== marker.schema || sourceMarker.operationId !== marker.operationId
+      || sourceMarker.workspaceId !== input.workspace.id) return null;
+    const [migration] = await input.db.select().from(workspaceOperations).where(and(
+      eq(workspaceOperations.companyId, input.companyId), eq(workspaceOperations.executionWorkspaceId, input.workspace.id),
+      eq(workspaceOperations.id, marker.operationId), eq(workspaceOperations.phase, "remote_workspace_migration"),
+      eq(workspaceOperations.status, "succeeded")));
+    const history = migration?.metadata?.legacyRecoverySources;
+    if (!Array.isArray(history) || !history.some(value => {
+      const entry = record(value); return entry.runId === source.id && entry.issueId === issueId;
+    })) return null;
+  }
   const [operation] = await input.db.select().from(workspaceOperations).where(and(
     eq(workspaceOperations.companyId, input.companyId), eq(workspaceOperations.issueId, issueId),
     eq(workspaceOperations.heartbeatRunId, source.id), eq(workspaceOperations.id, input.operationId),
@@ -121,4 +143,38 @@ export async function retainedRecoveryAttachmentProvenance(input: {
   return proof?.operationId === operation.id ? JSON.stringify({ schema: "paperclip.remote-workspace-recovery-attachment.v1",
     operationId: proof.operationId, sourceRunId: source.id, workspaceId: proof.workspaceId,
     snapshotId: proof.snapshotId, sha256: proof.sha256 }) : null;
+}
+
+function record(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+/** Publish only existing sidecars with exact host-recorded or receipt-backed
+ * provenance. This checks the selected root; it never imports or replaces files. */
+export async function retainRemoteRecoveryAttachments(input: {
+  db: Db; workspace: Pick<typeof executionWorkspaces.$inferSelect, "id" | "companyId" | "sourceIssueId" | "metadata">;
+  runId: string; remoteRoot: string; target: AdapterSandboxExecutionTarget; assertOwned?: () => Promise<void>;
+  recoveredFiles: Array<{ operationId: string; sourceRunId: string; path: string; provenance: string }>;
+}) {
+  const retained = input.workspace.metadata?.remoteWorkspaceRecoveredFiles;
+  for (const value of Array.isArray(retained) ? retained : []) {
+    const item = record(value);
+    if (typeof item.operationId !== "string" || !/^[a-f0-9-]{36}$/.test(item.operationId)
+      || typeof item.sourceRunId !== "string" || item.path !== `.paperclip-recovered/${item.operationId}`)
+      throw new Error("remote_workspace_recovered_files_invalid");
+    if (input.recoveredFiles.some(current => current.operationId === item.operationId)) continue;
+    let provenance = typeof item.provenance === "string" ? item.provenance : null;
+    if (!provenance) {
+      const [writer] = await input.db.select().from(heartbeatRuns).where(and(
+        eq(heartbeatRuns.companyId, input.workspace.companyId), eq(heartbeatRuns.id, input.runId)));
+      const issueId = writer?.nativeIssueId ?? writer?.issueId ?? writer?.contextSnapshot?.issueId;
+      provenance = await retainedRecoveryAttachmentProvenance({ db: input.db, companyId: input.workspace.companyId,
+        workspace: input.workspace, issueIds: [issueId, input.workspace.sourceIssueId].filter((id): id is string => typeof id === "string"),
+        sourceRunId: item.sourceRunId, operationId: item.operationId });
+      if (!provenance) throw new Error("remote_workspace_recovery_receipt_invalid");
+    }
+    await input.assertOwned?.();
+    if (await hasRemoteRecoveryAttachment({ target: input.target, remoteCwd: input.remoteRoot, operationId: item.operationId, provenance }))
+      input.recoveredFiles.push({ operationId: item.operationId, sourceRunId: item.sourceRunId, path: item.path, provenance });
+  }
 }
