@@ -5,7 +5,7 @@ import { notifyExecutionRunWork } from "../execution-control-notifications.js";
 import { logger } from "../../middleware/logger.js";
 import { createHash, randomUUID } from "node:crypto";
 import { stat } from "node:fs/promises";
-import { and, eq, inArray, isNull, or, sql } from "drizzle-orm";
+import { and, asc, eq, gt, inArray, isNull, or, sql } from "drizzle-orm";
 import {
   agentWakeupRequests,
   environmentLeases,
@@ -185,6 +185,77 @@ export function nativeReplacementPending() {
   );
 }
 
+const REPLACEMENT_SCAN_LIMIT = 100;
+const replacementDiscovery = new WeakMap<object, { after: string | undefined; complete: boolean; generation: number; rescan: boolean }>();
+function replacementDiscoveryState(db: Db) {
+  let state = replacementDiscovery.get(db);
+  if (!state) { state = { after: undefined, complete: false, generation: 0, rescan: false }; replacementDiscovery.set(db, state); }
+  return state;
+}
+
+export function invalidateNativeReplacementDiscovery(db: Db) {
+  const state = replacementDiscoveryState(db);
+  state.complete = false; state.rescan = true; state.generation++;
+}
+
+async function replacementHistoryReady(db: Db, run: typeof heartbeatRuns.$inferSelect, issueId: string) {
+  try {
+    const continuation = await buildExecutionContinuation({ db, companyId: run.companyId, issueId,
+      agentId: run.agentId, context: record(run.contextSnapshot), summary: null, exposeLowTrustRaw: false });
+    return continuation.unresolvedInteractionIds.length === 0;
+  } catch { return null; }
+}
+
+async function discoverNativeReplacements(db: Db, after: string | undefined, limit = 25) {
+  const candidates: Array<{ run: typeof heartbeatRuns.$inferSelect; coordinator: typeof nativeRunFinalizations.$inferSelect }> = [];
+  let scanned = 0;
+  for (;;) {
+    const rows = await db.select({ run: heartbeatRuns, coordinator: nativeRunFinalizations }).from(heartbeatRuns)
+      .innerJoin(nativeRunFinalizations, eq(nativeRunFinalizations.runId, heartbeatRuns.id))
+      .where(and(nativeReplacementPending(), after ? gt(heartbeatRuns.id, after) : undefined))
+      .orderBy(asc(heartbeatRuns.id)).limit(Math.min(25, REPLACEMENT_SCAN_LIMIT - scanned));
+    if (!rows.length) return { candidates, scanned, after: undefined };
+    for (const row of rows) {
+      after = row.run.id; scanned++;
+      let ready = true;
+      if (row.coordinator.failureCode === "native_session_interrupted") {
+        ready = false;
+        if (row.run.runnerProfileJson?.remoteWorkspace != null) {
+          const leases = await db.select().from(environmentLeases).where(and(
+            eq(environmentLeases.companyId, row.run.companyId), eq(environmentLeases.heartbeatRunId, row.run.id),
+          ));
+          if (leases.every(lease => lease.releasedAt !== null)) {
+            const evidence = await remoteWorkspaceReplacementEvidence(db, row.run, row.coordinator.issueId, leases);
+            ready = Boolean(evidence?.workspacePreserved && evidence.providerStopped)
+              && await replacementHistoryReady(db, row.run, row.coordinator.issueId) === true;
+          }
+        }
+      }
+      if (ready) candidates.push(row);
+      if (candidates.length >= limit || scanned >= REPLACEMENT_SCAN_LIMIT) return { candidates, scanned, after };
+    }
+    if (rows.length < 25) return { candidates, scanned, after: undefined };
+  }
+}
+
+function settleReplacementDiscovery(state: ReturnType<typeof replacementDiscoveryState>, after: string | undefined, generation: number) {
+  const rescan = state.rescan || generation !== state.generation;
+  state.after = after; state.complete = !after && !rescan;
+  state.rescan = Boolean(after && rescan);
+}
+
+export async function hasPendingNativeReplacements(db: Db) {
+  const state = replacementDiscoveryState(db);
+  if (state.complete) return false;
+  if (state.after) return true;
+  state.rescan = false;
+  const generation = state.generation;
+  const result = await discoverNativeReplacements(db, undefined, 1);
+  if (result.candidates.length) return true;
+  settleReplacementDiscovery(state, result.after, generation);
+  return !state.complete;
+}
+
 /** Retryable outbox: terminal_failure plus a new-format failure code is the durable candidate. */
 export async function reconcileSafeNativeReplacements(
   db: Db,
@@ -198,17 +269,13 @@ export async function reconcileSafeNativeReplacements(
     failpoint?: (phase: "successor_inserted" | "lineage_committed") => void;
   } = {},
 ) {
-  const candidates = await db
-    .select({ run: heartbeatRuns, coordinator: nativeRunFinalizations })
-    .from(heartbeatRuns)
-    .innerJoin(
-      nativeRunFinalizations,
-      eq(nativeRunFinalizations.runId, heartbeatRuns.id),
-    )
-    .where(
-      nativeReplacementPending(),
-    )
-    .limit(25);
+  const discovery = replacementDiscoveryState(db);
+  if (discovery.complete) discovery.after = undefined;
+  discovery.complete = false;
+  if (!discovery.after) discovery.rescan = false;
+  const generation = discovery.generation;
+  const selection = await discoverNativeReplacements(db, discovery.after);
+  const candidates = selection.candidates;
   let scheduled = 0;
   for (const { run, coordinator } of candidates) {
     try {
@@ -327,22 +394,9 @@ export async function reconcileSafeNativeReplacements(
           ? [String(p.kind ?? p.type)]
           : [];
       });
-      let historyComplete = false;
-      try {
-        const continuation = await buildExecutionContinuation({
-          db,
-          companyId: run.companyId,
-          issueId: coordinator.issueId,
-          agentId: run.agentId,
-          context: record(run.contextSnapshot),
-          summary: null,
-          exposeLowTrustRaw: false,
-        });
-        if (continuation.unresolvedInteractionIds.length > 0) continue;
-        historyComplete = true;
-      } catch {
-        /* The named operator outcome retains incomplete context. */
-      }
+      const history = await replacementHistoryReady(db, run, coordinator.issueId);
+      if (history === false) continue;
+      const historyComplete = history === true;
       const remoteWorkspace = await remoteWorkspaceReplacementEvidence(db, run, coordinator.issueId, leases);
       if (historicalListener && (!remoteWorkspace?.workspacePreserved || !remoteWorkspace.providerStopped || invocations.length)) continue;
       const decision = decideNativeReplacement({
@@ -674,5 +728,6 @@ export async function reconcileSafeNativeReplacements(
       );
     }
   }
-  return { scanned: candidates.length, scheduled };
+  settleReplacementDiscovery(discovery, selection.after, generation);
+  return { scanned: selection.scanned, scheduled };
 }

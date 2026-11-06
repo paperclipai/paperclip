@@ -13,7 +13,7 @@ import { pathToFileURL } from "node:url";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { and, eq, sql } from "drizzle-orm";
 import { activityLog, agents, agentTaskSessions, agentWakeupRequests, applyPendingMigrations, closeRegisteredClients, companies, createDb, environmentLeases, environments,
-  executionWorkspaceRepositories, executionWorkspaces, executionWorkspaceSnapshots, heartbeatRunEvents, heartbeatRuns, issueRecoveryActions, issues, livenessDb, nativeRunFinalizations, projects, projectWorkspaces, workspaceOperations } from "@paperclipai/db";
+  subscribeDatabaseWork, executionWorkspaceRepositories, executionWorkspaces, executionWorkspaceSnapshots, heartbeatRunEvents, heartbeatRuns, issueRecoveryActions, issues, livenessDb, nativeRunFinalizations, projects, projectWorkspaces, workspaceOperations } from "@paperclipai/db";
 import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
 import type { CommandManagedRuntimeRunner } from "@paperclipai/adapter-utils/command-managed-runtime";
 import { buildProjectMentionHref, type Environment, type EnvironmentLease } from "@paperclipai/shared";
@@ -25,7 +25,7 @@ import { createSavedWorkspaceLoader, prepareRemoteWorkspace, readRemoteWorkspace
   clearRemoteWorkspaceLocationForReleasedLease, createRemoteWorkspaceGitAuth, prepareRemoteWorkspaceRepository,
   reserveRemoteWorkspace, saveRemoteWorkspace, shouldUseRemoteWorkspaces } from "./remote-workspaces.js";
 import type { createGitRemoteAuthProvider } from "./git-credentials.js";
-import { reconcileSafeNativeReplacements } from "./native-runtime/native-safe-replacement.js";
+import { invalidateNativeReplacementDiscovery, reconcileSafeNativeReplacements } from "./native-runtime/native-safe-replacement.js";
 import { remoteTerminationReceipt } from "./remote-execution-termination.js";
 import { RemoteWorkspaceRestoreError } from "./remote-workspace-transport.js";
 import { readRemoteRunnerState } from "./native-runtime/native-session-executor.js";
@@ -49,6 +49,7 @@ import { toExecutionWorkspace } from "./execution-workspaces.js";
 import { recoveryPostgresSupport, startRecoveryPostgres } from "../__tests__/helpers/recovery-postgres.js";
 import { getExecutionBlocker } from "./execution-blocker.js";
 import { executionControlSchedule } from "./execution-control-work.js";
+import { DELIVERY_QUEUES } from "./delivery-work-notifications.js";
 import { createSystemRecovery } from "./system-recovery-state.js";
 
 const exec = promisify(execFile);
@@ -85,6 +86,7 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
     await db.insert(issues).values({ id: ids.issue, companyId: ids.company, title: "Use a remote workspace", status: "in_progress", assigneeAgentId: ids.agent });
     await db.insert(heartbeatRuns).values({ id: ids.run, companyId: ids.company, agentId: ids.agent, nativeIssueId: ids.issue,
       runtimeMode: "native", status: "running" });
+    invalidateNativeReplacementDiscovery(db);
     await db.insert(environmentLeases).values({ id: ids.lease, companyId: ids.company, environmentId: ids.environment,
       heartbeatRunId: ids.run, issueId: ids.issue, provider: "daytona", providerLeaseId: `allocation-${ids.lease}`, status: "active" });
   });
@@ -1653,19 +1655,20 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
     } finally { await recovered.cleanup(); }
   }, 60_000);
 
-  it.each(["saved", "dirty", "unsaved", "foreign_snapshot", "delete_requested", "deletion_race", "controller_claim_race", "stale_epoch", "unconfirmed_stop", "unknown_action", "historical_listener_guard", "historical_listener_provider_event", "historical_listener_checkpoint", "historical_listener_resumed", "historical_listener_other_message", "historical_listener_cancelled", "historical_listener_prior_session", "historical_listener_unconfirmed_stop", "historical_listener_dirty", "historical_listener_stale_block", "historical_listener_unknown_event", "historical_listener_budget", "historical_listener_bad_preservation"] as const)(
+  it.each(["saved", "dirty", "unsaved", "foreign_snapshot", "delete_requested", "deletion_race", "controller_claim_race", "stale_epoch", "unconfirmed_stop", "unknown_action", "historical_listener_guard", "historical_listener_provider_event", "historical_listener_checkpoint", "historical_listener_resumed", "historical_listener_other_message", "historical_listener_cancelled", "historical_listener_prior_session", "historical_listener_unconfirmed_stop", "historical_listener_dirty", "historical_listener_stale_block", "historical_listener_unknown_event", "historical_listener_budget", "historical_listener_bad_preservation", "historical_listener_absent", "historical_listener_later_candidate", "historical_listener_late_proof"] as const)(
     "checks durable remote work at the native safe-replacement decision (%s)", async kind => {
       const historicalListener = kind.startsWith("historical_listener_");
       const processAcceptance = kind === "historical_listener_guard" && process.env.PAPERCLIP_TEST_HISTORICAL_LISTENER === "1";
-      const scenario = kind === "historical_listener_unconfirmed_stop" ? "unconfirmed_stop"
+      const scenario = kind === "historical_listener_late_proof" ? "dirty" : kind === "historical_listener_unconfirmed_stop" ? "unconfirmed_stop"
         : kind === "historical_listener_dirty" ? "dirty" : historicalListener ? "saved" : kind;
-      const shouldSchedule = scenario === "saved" && (!historicalListener || kind === "historical_listener_guard");
+      const shouldSchedule = scenario === "saved" && (!historicalListener || ["historical_listener_guard", "historical_listener_later_candidate"].includes(kind));
       const reserved = await reserve({ kind: "empty" }), first = await target("native-replacement-sandbox");
       const prepared = await prepareRemoteWorkspace({ db, storage, workspace: reserved, runId: ids.run,
         lease: await lease(), target: first, assertOwned: async () => undefined });
       await fs.writeFile(path.join(prepared.remoteRoot, "saved.txt"), "work survives a failed provider session\n");
       if (scenario !== "unsaved") await saveRemoteWorkspace({ db, storage, workspace: prepared.workspace,
-        runId: ids.run, lease: prepared.lease, target: first, assertOwned: async () => undefined });
+        runId: ids.run, lease: prepared.lease, target: first, assertOwned: async () => undefined,
+        boundary: kind === "historical_listener_late_proof" ? "initial" : "final" });
       const current = await workspace(reserved.id), authority = readRemoteWorkspaceAuthority(current.metadata)!;
       if (scenario === "dirty" || scenario === "stale_epoch") await db.update(executionWorkspaces).set({ metadata: {
         ...current.metadata, remoteWorkspace: { ...authority, ...(scenario === "dirty" ? { dirty: true, writerRunId: ids.run }
@@ -1680,7 +1683,7 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
         await recordHistoricalListenerFailure({ db, connectionString: databaseUrl!, runId: ids.run, cwd: prepared.remoteRoot,
           environmentId: ids.environment, leaseId: ids.lease });
       }
-      const stopped = (await db.update(environmentLeases).set({ status: "released", releasedAt: new Date(), cleanupStatus: "success",
+      const stopped = kind === "historical_listener_late_proof" ? prepared.lease : (await db.update(environmentLeases).set({ status: "released", releasedAt: new Date(), cleanupStatus: "success",
         metadata: { ...prepared.lease.metadata, ...(scenario !== "unconfirmed_stop" ? {
           remoteExecutionTermination: remoteTerminationReceipt(prepared.lease, {
             providerLeaseId: prepared.lease.providerLeaseId, state: "destroyed",
@@ -1731,6 +1734,9 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
         { companyId: ids.company, heartbeatRunId: ids.run, issueId: ids.issue, phase: "workspace_finalize", status: "succeeded", startedAt: new Date(),
           metadata: { owningService: "workspace_recovery", preservationOperationIds: [preservationId] } }]);
       }
+      if (kind === "historical_listener_absent") await db.update(heartbeatRuns).set({
+        runnerProfileJson: sql`${heartbeatRuns.runnerProfileJson} - 'remoteWorkspace'`,
+      }).where(eq(heartbeatRuns.id, ids.run));
       if (kind === "historical_listener_stale_block") await issueService(db).update(ids.issue, { status: "blocked", actorUserId: "operator" });
       if (kind === "historical_listener_unknown_event") await db.insert(heartbeatRunEvents).values({ companyId: ids.company, runId: ids.run,
         agentId: ids.agent, seq: 100, eventType: "future.provider.activity", sourceEventId: "source-provider-event" });
@@ -1751,6 +1757,30 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
       if (scenario === "unknown_action") await appendHeartbeatRunEvent(db, { companyId: ids.company, runId: ids.run,
         agentId: ids.agent, eventType: "tool.execution.started", stream: "system",
         payload: { name: "send_email", executionId: "unconfirmed-external-action", transport: "process" } });
+      if (kind === "historical_listener_later_candidate") {
+        const sourceNumber = BigInt(`0x${ids.run.replaceAll("-", "")}`);
+        const parked = Array.from({ length: 100 }, (_, index) => {
+          const hex = (sourceNumber - BigInt(index + 1)).toString(16).padStart(32, "0");
+          return { runId: `${hex.slice(0,8)}-${hex.slice(8,12)}-${hex.slice(12,16)}-${hex.slice(16,20)}-${hex.slice(20)}`,
+            issueId: randomUUID(), sessionId: randomUUID() };
+        });
+        await db.insert(issues).values(parked.map(row => ({ id: row.issueId, companyId: ids.company,
+          title: "Preserve unavailable source", status: "in_progress", assigneeAgentId: ids.agent })));
+        await db.insert(heartbeatRuns).values(parked.map(row => ({ id: row.runId, companyId: ids.company, agentId: ids.agent,
+          nativeIssueId: row.issueId, nativeSessionId: row.sessionId, runtimeMode: "native", status: "failed",
+          errorCode: "native_session_interrupted", error: "local_runtime_api_listener_unavailable", runnerProfileJson: {
+            nativeExecutionInput: { binding: { runId: row.runId, companyId: ids.company, agentId: ids.agent, issueId: row.issueId },
+              session: { normalizedSessionId: row.sessionId } },
+          } })));
+        await db.insert(nativeRunFinalizations).values(parked.map(row => ({ runId: row.runId, companyId: ids.company, issueId: row.issueId,
+          phase: "terminal_failure", attempt: 1, failureCode: "native_session_interrupted", failureDetail: {
+            message: "local_runtime_api_listener_unavailable", originalFailureCode: "native_session_interrupted", recoveryMode: "ambiguous_state",
+            providerSessionEstablished: false, providerEventsExist: false, checkpointExists: false,
+          } })));
+        expect(await reconcileSafeNativeReplacements(db)).toMatchObject({ scanned: 100, scheduled: 0 });
+        expect(await executionControlSchedule(db).replacement()).not.toBeNull();
+        invalidateNativeReplacementDiscovery(db);
+      }
       let replacement;
       if (scenario === "deletion_race" || scenario === "controller_claim_race") {
         let release!: () => void, announce!: () => void;
@@ -1787,10 +1817,47 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
       expect(successors).toHaveLength(shouldSchedule ? 1 : 0);
       if (shouldSchedule) expect(successors[0]).toMatchObject({ status: "scheduled_retry",
         contextSnapshot: { retryOfRunId: ids.run, forceFreshSession: true } });
+      if (kind === "historical_listener_later_candidate") {
+        for (let pass = 0; pass < 3 && await executionControlSchedule(db).replacement() !== null; pass++) {
+          expect(await reconcileSafeNativeReplacements(db)).toMatchObject({ scheduled: 0 });
+        }
+        expect(await executionControlSchedule(db).replacement()).toBeNull();
+      }
       if (kind === "historical_listener_guard") expect(await getExecutionBlocker(db, ids.company, ids.issue)).toBeNull();
       if (["historical_listener_provider_event", "historical_listener_checkpoint", "historical_listener_resumed", "historical_listener_other_message",
-        "historical_listener_cancelled", "historical_listener_prior_session", "historical_listener_unknown_event", "historical_listener_budget", "historical_listener_stale_block", "historical_listener_bad_preservation"].includes(kind)) {
+        "historical_listener_cancelled", "historical_listener_prior_session", "historical_listener_unknown_event", "historical_listener_budget", "historical_listener_stale_block", "historical_listener_bad_preservation", "historical_listener_dirty", "historical_listener_absent", "historical_listener_late_proof"].includes(kind)) {
         expect(await executionControlSchedule(db).replacement()).toBeNull();
+      }
+      if (kind === "historical_listener_late_proof") {
+        let wakes = 0;
+        const unsubscribe = subscribeDatabaseWork(db, DELIVERY_QUEUES.executionReplacement, event => {
+          if (event === "settled") { wakes++; invalidateNativeReplacementDiscovery(db); }
+        });
+        try {
+          const saved = await saveRemoteWorkspace({ db, storage, workspace: await workspace(reserved.id), runId: ids.run,
+            lease: await lease(), target: first, assertOwned: async () => undefined });
+          expect(wakes).toBeGreaterThan(0);
+          expect(await executionControlSchedule(db).replacement()).toBeNull();
+          const priorWakes = wakes, active = await lease(), pluginId = randomUUID();
+          await db.update(environmentLeases).set({ metadata: { ...active.metadata, driver: "sandbox", pluginId,
+            provider: "daytona", sandboxProviderPlugin: true } }).where(eq(environmentLeases.id, ids.lease));
+          const runtime = environmentRuntimeService(db, { pluginWorkerManager: {
+            isRunning: () => true, getWorker: () => ({ supportedMethods: ["environmentReleaseLease"] }),
+            call: async (_id: string, method: string) => {
+              expect(method).toBe("environmentReleaseLease");
+              return { providerLeaseId: active.providerLeaseId, state: "destroyed" };
+            },
+          } as never });
+          await runtime.releaseRunLeases(ids.run, "failed");
+          expect(wakes).toBeGreaterThan(priorWakes);
+          expect(await executionControlSchedule(db).replacement()).not.toBeNull();
+          expect(await reconcileSafeNativeReplacements(db)).toMatchObject({ scheduled: 1 });
+          expect(await reconcileSafeNativeReplacements(db)).toMatchObject({ scheduled: 0 });
+          expect(await executionControlSchedule(db).replacement()).toBeNull();
+          const restored = await createSavedWorkspaceLoader(db, storage)({ companyId: ids.company, workspaceId: reserved.id, snapshotId: saved.snapshotId });
+          try { expect(await fs.readFile(path.join(restored.root, "saved.txt"), "utf8")).toBe("work survives a failed provider session\n"); }
+          finally { await restored.cleanup(); }
+        } finally { unsubscribe(); }
       }
       if (kind === "historical_listener_bad_preservation") {
         expect(await getExecutionBlocker(db, ids.company, ids.issue)).toMatchObject({ cause: "native_continuation_requires_reconciliation" });

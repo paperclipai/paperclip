@@ -3586,6 +3586,14 @@ its bound recovery and finalization receipts prove completion. Unrelated holds,
 later task blocks, normal dispatch admission, and the three-attempt budget remain
 effective.
 
+Historical replacement discovery reads at most 100 candidates per pass and
+keeps a cursor only for the remaining scan. A work notification preserves forward
+progress and requests a final rescan, so held earlier rows cannot hide a later
+eligible run. Completed scans of held history become quiet. Final snapshot
+publication, verified lease cleanup, and completed workspace recovery notify the
+existing replacement worker in their transactions. Restart reconstructs the scan
+from the durable run and workspace records.
+
 For legacy GitHub input without a saved App ID or its own response receipt,
 Task Retry may prove the endpoint's earlier non-null App claim from a processed
 response ledger created before that input. The proof stays within the same

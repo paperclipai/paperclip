@@ -5,7 +5,7 @@ import type { createDeliveryWorkCoordinator } from "./delivery-work-coordinator.
 import { type DeliveryQueue } from "./delivery-work-notifications.js";
 import { EXECUTION_RECONCILIATION_INTERVAL_MS } from "./execution-control-deadline.js";
 import { obsoleteExecutionConversationHold, unresolvedExecutionDispositions } from "./execution-recovery-resolution.js";
-import { nativeReplacementPending } from "./native-runtime/native-safe-replacement.js";
+import { hasPendingNativeReplacements } from "./native-runtime/native-safe-replacement.js";
 import { nextAbandonedNativeOwnerReleaseAt } from "./native-runtime/native-failed-run-owner-release.js";
 import { hasPendingPauseResume } from "./issue-tree-resume.js";
 
@@ -74,10 +74,7 @@ export function executionControlSchedule(db: Db) {
       return at === null ? null : deadline([new Date(at)]);
     },
     async replacement() {
-      const rows = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns)
-        .innerJoin(nativeRunFinalizations, eq(nativeRunFinalizations.runId, heartbeatRuns.id))
-        .where(nativeReplacementPending()).limit(1);
-      return rows.length ? retry() : null;
+      return await hasPendingNativeReplacements(db) ? retry() : null;
     },
     async continuation() {
       const rows = await db.select({ id: issueRecoveryActions.id }).from(issueRecoveryActions).where(and(
