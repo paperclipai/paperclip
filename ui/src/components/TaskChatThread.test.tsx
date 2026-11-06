@@ -4849,7 +4849,12 @@ describe("TaskChatThread Paperclip Runner queue", () => {
     expect(occurrenceCount(queuedComment.body)).toBe(1);
   });
 
-  it.each(["run-1", null])("offers Interrupt for a live legacy queue and Send for a stopped queue (%s)", (targetRunId) => {
+  it.each([
+    { targetRunId: "run-1", protocol: "legacy", steeringDisposition: "unsupported" },
+    { targetRunId: null, protocol: "legacy", steeringDisposition: "unsupported" },
+    { targetRunId: "run-1", protocol: "paperclip_runner_v1", steeringDisposition: "temporarily_unavailable" },
+    { targetRunId: "run-1", protocol: "paperclip_runner_v1", steeringDisposition: "unsupported" },
+  ] as const)("offers Interrupt for a live $protocol queue with $steeringDisposition steering and Send for a stopped queue ($targetRunId)", ({ targetRunId, protocol, steeringDisposition }) => {
     const onInterruptQueued = vi.fn(async () => {});
     renderThread({
       comments: [
@@ -4864,8 +4869,8 @@ describe("TaskChatThread Paperclip Runner queue", () => {
       queuedCommentQueue: {
         ...queue,
         targetRunId,
-        protocol: "legacy",
-        steeringDisposition: "unsupported",
+        protocol,
+        steeringDisposition,
       },
       onEditQueuedComment: async () => {},
       onReorderQueuedComments: async () => {},

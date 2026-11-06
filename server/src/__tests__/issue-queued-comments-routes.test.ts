@@ -21,6 +21,7 @@ import {
   issueComments,
   issueThreadInteractions,
   issueRecoveryActions,
+  nativeRunFinalizations,
   issues,
   runIdentityContexts,
 } from "@paperclipai/db";
@@ -78,6 +79,7 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
   });
 
   afterAll(async () => {
+    await db?.$client.end();
     await tempDb?.cleanup();
   });
 
@@ -814,14 +816,12 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
     expect(await db.select().from(heartbeatRuns)).toHaveLength(3);
   });
 
-  it.each(["stale revision", "native run", "different issue"] as const)(
+  it.each(["stale revision", "different issue"] as const)(
     "rejects queued interruption for a %s without stopping the run",
     async (scenario) => {
       const seeded = await seedQueue();
-      if (scenario !== "native run") {
-        await db.update(agents).set({ adapterType: "codex_local" }).where(eq(agents.id, seeded.agentId));
-        await db.update(heartbeatRuns).set({ runtimeMode: "legacy" }).where(eq(heartbeatRuns.id, seeded.runId));
-      }
+      await db.update(agents).set({ adapterType: "codex_local" }).where(eq(agents.id, seeded.agentId));
+      await db.update(heartbeatRuns).set({ runtimeMode: "legacy" }).where(eq(heartbeatRuns.id, seeded.runId));
       const client = app(seeded.companyId);
       const queue = await request(client).get(`/api/issues/${seeded.issueId}/queued-comments`).expect(200);
       if (scenario === "different issue") {
@@ -832,6 +832,54 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
         revision: scenario === "stale revision" ? "stale" : queue.body.revision,
       }).expect(409);
       expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, seeded.runId)))[0]!.status).toBe("running");
+    },
+  );
+
+  it.each(["preparing", "native"] as const)(
+    "accepts an explicit interrupt fallback for a %s runner and preserves queued messages",
+    async (runtime) => {
+      const seeded = await seedQueue();
+      if (runtime === "preparing") {
+        await db.update(heartbeatRuns).set({ runtimeMode: "legacy", runtimeModeResolvedAt: null,
+          executionStage: "preparing",
+          runnerProfileJson: { adapterDispatch: { adapterType: "paperclip_runner" } },
+        }).where(eq(heartbeatRuns.id, seeded.runId));
+      } else {
+        await db.update(heartbeatRuns).set({ nativeIssueId: seeded.issueId })
+          .where(eq(heartbeatRuns.id, seeded.runId));
+        await db.insert(nativeRunFinalizations).values({ companyId: seeded.companyId,
+          issueId: seeded.issueId, runId: seeded.runId, phase: "observed" });
+      }
+      // Hold the successor in the ordinary queue without launching a provider.
+      await db.update(agents).set({ runtimeConfig: { heartbeat: { maxConcurrentRuns: 1 } } })
+        .where(eq(agents.id, seeded.agentId));
+      await db.insert(heartbeatRuns).values({ companyId: seeded.companyId, agentId: seeded.agentId,
+        status: "running", contextSnapshot: { issueId: randomUUID() } });
+      const client = app(seeded.companyId);
+      const queue = await request(client).get(`/api/issues/${seeded.issueId}/queued-comments`).expect(200);
+      expect(queue.body).toMatchObject({ protocol: "paperclip_runner_v1", steeringDisposition: "temporarily_unavailable" });
+      const response = await request(client).post(`/api/issues/${seeded.issueId}/queued-comments/interrupt`).send({
+        queueId: seeded.wakeId, targetRunId: seeded.runId, revision: queue.body.revision,
+      });
+      expect(response.status, JSON.stringify(response.body)).toBe(200);
+      const [waiting] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, seeded.wakeId));
+      expect(waiting.payload?.queuedCommentInterrupt).toMatchObject({ actorId: "queue-owner", targetRunId: seeded.runId });
+      expect(await db.select().from(issueComments).where(eq(issueComments.issueId, seeded.issueId))).toHaveLength(2);
+      expect(waiting.status).toBe("deferred_issue_execution");
+      // The synthetic preparation owner now confirms that its unwind finished.
+      // No provider ran; until this receipt exists, cancellation must hold input.
+      const [stopped] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, seeded.runId));
+      expect(stopped.status).toBe("cancelled");
+      await db.update(heartbeatRuns).set({ resultJson: { ...stopped.resultJson,
+        startupPreparationSettledAt: new Date().toISOString() } }).where(eq(heartbeatRuns.id, seeded.runId));
+      await heartbeatService(db).resumeQueuedCommentInterrupt(seeded.companyId, seeded.wakeId);
+      const [wake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, seeded.wakeId));
+      expect(wake.status, JSON.stringify(wake)).toBe("coalesced");
+      const [successor] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, wake.runId!));
+      expect(successor.status).toBe("queued");
+      expect(successor.contextSnapshot?.wakeCommentIds).toEqual(seeded.commentIds);
+      await heartbeatService(db).resumeQueuedCommentInterrupt(seeded.companyId, seeded.wakeId);
+      expect(await db.select().from(heartbeatRuns)).toHaveLength(3);
     },
   );
 
