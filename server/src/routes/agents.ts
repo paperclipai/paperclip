@@ -2068,6 +2068,33 @@ export function agentRoutes(
     return resolved.agent.id;
   }
 
+  /**
+   * Normalize the optional `agentId` filter for heartbeat run lists. The column
+   * is a uuid, so anything that is not a UUID must be resolved to an agent
+   * (by shortname/url key) or rejected with a 4xx before it reaches Postgres.
+   */
+  async function resolveHeartbeatRunListAgentId(
+    companyId: string,
+    rawAgentId: unknown,
+  ): Promise<string | undefined> {
+    if (rawAgentId === undefined) return undefined;
+    if (typeof rawAgentId !== "string") {
+      throw unprocessable("agentId query parameter must be a single value");
+    }
+    const raw = rawAgentId.trim();
+    if (raw.length === 0) return undefined;
+    if (isUuidLike(raw)) return raw;
+
+    const resolved = await svc.resolveByReference(companyId, raw);
+    if (resolved.ambiguous) {
+      throw conflict("Agent shortname is ambiguous in this company. Use the agent ID.");
+    }
+    if (!resolved.agent) {
+      throw unprocessable(`Invalid agentId "${raw}": expected an agent UUID or shortname`);
+    }
+    return resolved.agent.id;
+  }
+
   function parseSourceIssueIds(input: {
     sourceIssueId?: string | null;
     sourceIssueIds?: string[];
@@ -7031,7 +7058,7 @@ export function agentRoutes(
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     if (!(await assertRunTelemetryReadAllowed(req, res, companyId))) return;
-    const agentId = req.query.agentId as string | undefined;
+    const agentId = await resolveHeartbeatRunListAgentId(companyId, req.query.agentId);
     const limitParam = req.query.limit as string | undefined;
     const limit = limitParam
       ? Math.max(1, Math.min(HEARTBEAT_RUN_LIST_MAX_LIMIT, parseInt(limitParam, 10) || HEARTBEAT_RUN_LIST_DEFAULT_LIMIT))
