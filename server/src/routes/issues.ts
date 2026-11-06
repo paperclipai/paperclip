@@ -19059,13 +19059,15 @@ export function issueRoutes(
       const agent = resolved.agent;
       const existing = await svc.getConversation(companyId, agent.id, req.actor.userId);
       if (existing && !(await assertIssueReadAllowed(req, res, existing))) return;
-      if (existing || method === "get") {
+      const newChat = method === "post" && req.query.new === "true";
+      if ((existing && !newChat) || method === "get") {
         res.json(existing ? (await withConversationReadState(db, companyId, req.actor.userId, [existing]))[0] : null);
         return;
       }
       const issue = await svc.create(companyId, {
         title: `Chat with ${agent.name}`, assigneeAgentId: agent.id,
         conversationAgentId: agent.id, conversationUserId: req.actor.userId,
+        conversationDefault: !newChat,
         conversationState: "waiting", status: "in_review", createdByUserId: req.actor.userId,
       });
       await logActivity(db, { companyId, actorType: "user", actorId: req.actor.userId,

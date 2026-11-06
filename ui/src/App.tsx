@@ -330,6 +330,7 @@ function boardRoutes(streamlinedUiEnabled: boolean, combinedInboxTasksEnabled: b
       )}
       <Route path="chats" element={<AgentChats />} />
       <Route path="chats/:agentRef" element={<AgentChat />} />
+      <Route path="chats/:agentRef/:chatId" element={<AgentChat />} />
       <Route path="issues/:issueId" element={<IssueDetail />} />
       {import.meta.env.DEV ? (
         <Route path="tests/perf/long-thread" element={<IssueChatLongThreadPerf />} />

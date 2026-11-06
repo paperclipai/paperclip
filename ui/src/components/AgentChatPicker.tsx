@@ -25,7 +25,7 @@ export function AgentChatPicker({ open, onOpenChange, trigger, ...props }: Agent
       <DialogContent aria-describedby={undefined} className="gap-0 overflow-hidden p-0 sm:max-w-md">
         <div className="px-4 pt-4 pb-3">
           <DialogTitle>Chat with an agent</DialogTitle>
-          {props.existingChatAgentIds && <p className="mt-2 text-sm text-muted-foreground">One conversation per agent. Pick up where you left off.</p>}
+          {props.existingChatAgentIds && <p className="mt-2 text-sm text-muted-foreground">Choose an agent to start a conversation.</p>}
         </div>
         {/* The dialog unmounts its content on close, so each search starts empty. */}
         <AgentChatPickerResults key={String(open)} {...props} onComplete={() => onOpenChange(false)} />

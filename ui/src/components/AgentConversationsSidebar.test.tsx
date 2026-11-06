@@ -15,7 +15,7 @@ vi.mock("@/lib/router", () => ({
   Link: ({ to, children, ...props }: { to: string; children: ReactNode }) => <a href={to} {...props}>{children}</a>,
 }));
 vi.mock("@/api/agents", () => ({ agentsApi: { list: vi.fn(), get: state.getAgent } }));
-vi.mock("@/api/agentChats", () => ({ agentChatsApi: { list: vi.fn(), ensure: state.ensure } }));
+vi.mock("@/api/agentChats", () => ({ agentChatsApi: { list: vi.fn(), ensure: state.ensure, create: state.ensure } }));
 vi.mock("@/api/auth", () => ({ authApi: { getSession: () => ({ user: { id: "user-a" } }) } }));
 vi.mock("./AgentAvatar", () => ({ AgentAvatar: () => null }));
 const memberships = vi.hoisted(() => ({ agentMemberships: {} as Record<string, string> }));
@@ -48,21 +48,21 @@ beforeEach(() => {
   container = document.createElement("div"); document.body.append(container); root = createRoot(container);
 });
 afterEach(async () => { await act(async () => root.unmount()); client.clear(); container.remove(); vi.unstubAllGlobals(); });
-it("adds through the server and reopens one cached conversation without a duplicate row", async () => {
+it("creates a chat and lists it separately from the agent", async () => {
   await render();
   expect(container.querySelectorAll('nav[aria-label="Agent conversations"] a')).toHaveLength(2);
   await addChat();
-  expect([...document.querySelectorAll("[role=option]")].find(option => option.textContent?.startsWith("bob"))?.textContent).not.toContain("Open chat");
+  expect([...document.querySelectorAll("[role=option]")].find(option => option.textContent?.startsWith("bob"))?.textContent).toContain("New chat");
   await choose("bob");
   expect(state.ensure).toHaveBeenCalledWith("company-a", "bob");
-  expect(state.navigate).toHaveBeenLastCalledWith("/chats/bob");
+  expect(state.navigate).toHaveBeenLastCalledWith("/chats/bob/chat-bob");
   expect(state.closeSidebar).toHaveBeenCalledWith(false);
   await render();
-  expect(client.getQueryData(queryKeys.agentChats.detail("company-a", "user-a", "bob"))).toEqual(chat("bob"));
+  expect(container.querySelector('a[href="/chats/bob/chat-bob"]')).not.toBeNull();
   await addChat();
-  expect([...document.querySelectorAll("[role=option]")].find(option => option.textContent?.startsWith("bob"))?.textContent).toContain("Open chat");
+  expect([...document.querySelectorAll("[role=option]")].find(option => option.textContent?.startsWith("bob"))?.textContent).toContain("New chat");
   await choose("bob"); await render();
-  expect(container.querySelectorAll('a[href="/chats/bob"]')).toHaveLength(1);
+  expect(container.querySelectorAll('a[href="/chats/bob/chat-bob"]')).toHaveLength(1);
   expect(client.getQueryData(queryKeys.agentChats.list("company-a", "user-a"))).toHaveLength(2);
 });
 it("keeps failures retryable in the picker and closes it on company changes", async () => {
@@ -71,7 +71,7 @@ it("keeps failures retryable in the picker and closes it on company changes", as
   expect(document.querySelector('[role="alert"]')?.textContent).toContain("Couldn’t open chat");
   expect(state.navigate).not.toHaveBeenCalled();
   await choose("bob");
-  expect(state.navigate).toHaveBeenLastCalledWith("/chats/bob");
+  expect(state.navigate).toHaveBeenLastCalledWith("/chats/bob/chat-bob");
   await addChat();
   state.companyId = "company-b";
   client.setQueryData(queryKeys.agents.list("company-b"), []);
@@ -88,6 +88,19 @@ it("preserves recent activity order when reopening an older conversation", async
   expect(links()).toEqual(["/chats/bob", "/chats/alice"]);
   await addChat(); await choose("alice"); await render();
   expect(links()).toEqual(["/chats/bob", "/chats/alice"]);
+});
+
+it("lists and opens separate chats for the same agent", async () => {
+  client.setQueryData(queryKeys.agentChats.list("company-a", "user-a"), [
+    { ...chat("alice"), id: "first", title: "First chat", createdAt: "2026-09-01T12:00:00Z" },
+    { ...chat("alice"), id: "second", title: "Second chat", createdAt: "2026-09-02T12:00:00Z" },
+  ]);
+  await render();
+  const history = container.querySelector('nav[aria-label="Chat history"]')!;
+  expect(history.querySelector('a[href="/chats/alice/first"]')?.textContent).toContain("First chat");
+  expect(history.querySelector('a[href="/chats/alice/second"]')?.textContent).toContain("Second chat");
+  await act(async () => history.querySelector<HTMLAnchorElement>('a[href="/chats/alice/second"]')!.click());
+  expect(state.closeSidebar).toHaveBeenCalledWith(false);
 });
 
 it("shows accessible unread indicators only for the current company and human", async () => {
@@ -123,7 +136,7 @@ it("does not let a dismissed selection override a newer chat", async () => {
   await render(); await addChat(); await choose("alice");
   await act(async () => document.querySelector<HTMLButtonElement>('[data-slot="dialog-close"]')!.click());
   await addChat(); await choose("bob");
-  expect(state.navigate).toHaveBeenLastCalledWith("/chats/bob");
+  expect(state.navigate).toHaveBeenLastCalledWith("/chats/bob/chat-bob");
   await act(async () => finishAlice(chat("alice")));
   expect(state.navigate).toHaveBeenCalledTimes(1);
   expect(client.getQueryData(queryKeys.agentChats.list("company-a", "user-a"))).toHaveLength(2);

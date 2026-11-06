@@ -5072,6 +5072,7 @@ const issueListSelect = {
   externalConversationState: externalConversationStateSql(),
   conversationAgentId: issues.conversationAgentId,
   conversationUserId: issues.conversationUserId,
+  conversationDefault: issues.conversationDefault,
   conversationState: issues.conversationState,
   conversationSessionGeneration: issues.conversationSessionGeneration,
   conversationBoundaryCommentId: issues.conversationBoundaryCommentId,
@@ -10223,7 +10224,7 @@ export function issueService(db: Db) {
     )).orderBy(desc(issues.updatedAt), asc(issues.id)),
 
     getConversation: async (companyId: string, agentId: string, userId: string) => db.select().from(issues).where(and(
-      eq(issues.companyId, companyId), eq(issues.conversationAgentId, agentId), eq(issues.conversationUserId, userId),
+      eq(issues.companyId, companyId), eq(issues.conversationAgentId, agentId), eq(issues.conversationUserId, userId), eq(issues.conversationDefault, true),
     )).then((rows) => rows[0] ?? null),
 
     create: async (
@@ -10307,11 +10308,11 @@ export function issueService(db: Db) {
         issueData.parentId = parentResolution.effectiveParentId;
         await assertParentInCompany(tx, companyId, issueData.parentId);
         await assertExecutionTaskParent(tx as unknown as Db, companyId, issueData.parentId);
-        if (issueData.conversationAgentId && issueData.conversationUserId) {
+        if (issueData.conversationAgentId && issueData.conversationUserId && issueData.conversationDefault !== false) {
           const identity = `conversation:${companyId}:${issueData.conversationAgentId}:${issueData.conversationUserId}`;
           await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${identity}, 0))`);
           const [existing] = await tx.select().from(issues).where(and(eq(issues.companyId, companyId),
-            eq(issues.conversationAgentId, issueData.conversationAgentId), eq(issues.conversationUserId, issueData.conversationUserId)));
+            eq(issues.conversationAgentId, issueData.conversationAgentId), eq(issues.conversationUserId, issueData.conversationUserId), eq(issues.conversationDefault, true)));
           if (existing) {
             const [enriched] = await withIssueLabels(tx, [existing]);
             const [withRelations] = await withIssueRelationSummaries(companyId, [enriched], tx);
@@ -11311,7 +11312,7 @@ export function issueService(db: Db) {
       }
       if (existing.conversationAgentId) {
         if ((data.assigneeAgentId !== undefined && data.assigneeAgentId !== existing.conversationAgentId)
-          || data.assigneeUserId || data.conversationAgentId !== undefined || data.conversationUserId !== undefined
+          || data.assigneeUserId || data.conversationAgentId !== undefined || data.conversationUserId !== undefined || data.conversationDefault !== undefined
           || data.conversationState !== undefined || data.conversationSessionGeneration !== undefined
           || data.conversationBoundaryCommentId !== undefined || data.status === "done" || data.status === "cancelled") {
           throw unprocessable("Conversation identity is fixed; finish the reply instead of completing or reassigning the conversation");

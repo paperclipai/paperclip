@@ -1,6 +1,6 @@
 import { useId, useRef, useState } from "react";
 import { Plus, Search, Users, X } from "lucide-react";
-import type { Agent } from "@paperclipai/shared";
+import type { Agent, Issue } from "@paperclipai/shared";
 import { AgentChatPicker } from "@/components/AgentChatPicker";
 import { AgentAvatar } from "@/components/AgentAvatar";
 import { Button } from "@/components/ui/button";
@@ -10,6 +10,8 @@ import { agentRouteRef, cn } from "@/lib/utils";
 
 export interface AgentConversationSidebarProps {
   agents: Agent[];
+  chats?: { chat: Issue; agent: Agent }[];
+  onSelectHistory?: () => void;
   /** Agents with a saved conversation; defaults to every listed agent. */
   existingChatAgentIds?: readonly string[];
   availableAgents?: Agent[];
@@ -28,8 +30,8 @@ export interface AgentConversationSidebarProps {
   onRetryHistory?: () => void;
 }
 
-/** Searchable navigation for one conversation per agent. */
-export function AgentConversationSidebar({ agents, existingChatAgentIds, availableAgents = agents, activeId, previews = {}, unreadAgentIds = [], loading = false, error, onRetry, initialSearch = "", onSelect, onBrowse, onAddChat, historyLoading, historyError, onRetryHistory }: AgentConversationSidebarProps) {
+/** Searchable navigation for conversations and available agents. */
+export function AgentConversationSidebar({ agents, chats, onSelectHistory, existingChatAgentIds, availableAgents = agents, activeId, previews = {}, unreadAgentIds = [], loading = false, error, onRetry, initialSearch = "", onSelect, onBrowse, onAddChat, historyLoading, historyError, onRetryHistory }: AgentConversationSidebarProps) {
   const navigate = useNavigate();
   const [pickerOpen, setPickerOpen] = useState(false);
   const [search, setSearch] = useState(initialSearch);
@@ -58,6 +60,13 @@ export function AgentConversationSidebar({ agents, existingChatAgentIds, availab
       </div>
     </div>
     <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto px-3 pb-3 scrollbar-auto-hide">
+      {!!chats?.length && <nav aria-label="Chat history" className="flex flex-col gap-1">
+        <p className="px-2 text-xs font-medium text-muted-foreground">Conversations</p>
+        {chats.filter(({ agent, chat }) => `${agent.name} ${chat.title}`.toLocaleLowerCase().includes(query)).map(({ agent, chat }) =>
+          <Link key={chat.id} to={`/chats/${encodeURIComponent(agent.status === "terminated" ? agent.id : agentRouteRef(agent))}/${chat.id}`} onClick={onSelectHistory} className="rounded-md px-2 py-2 text-sm hover:bg-accent">
+            <span className="block truncate">{chat.title}</span><span className="text-xs text-muted-foreground">{agent.name} · {new Date(chat.createdAt).toLocaleString()}</span>
+          </Link>)}
+      </nav>}
       <p className="px-2 text-(length:--text-micro) font-medium uppercase tracking-widest text-muted-foreground">
         {query ? "Search results" : "Teammates"}
       </p>

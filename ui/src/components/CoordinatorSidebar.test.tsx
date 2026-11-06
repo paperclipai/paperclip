@@ -10,11 +10,9 @@ import { coordinatorAttentionQueryKey, coordinatorAttentionSummaryQueryKey } fro
 import { queryKeys } from "@/lib/queryKeys";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
-const fixture = vi.hoisted(() => ({ attention: vi.fn(), summary: vi.fn(), openNewIssue: vi.fn(), pathname: "/COO/issues", collapsed: false, userId: "reviewer", chats: [] as Array<{ isUnreadForMe: boolean }>,
-  recentTasks: [] as Array<Record<string, unknown>>, projects: [] as Array<Record<string, unknown>>, projectTasks: vi.fn(), enableCases: false }));
-vi.mock("@/hooks/useAgentChatNavigation", () => ({ useAgentChatNavigation: () => ({
-  companyId: "company", userId: fixture.userId, agents: { data: [] }, chats: { data: fixture.chats }, session: { isSuccess: true },
-}) }));
+const fixture = vi.hoisted(() => ({ attention: vi.fn(), summary: vi.fn(), openNewIssue: vi.fn(), openNewChat: vi.fn(), pathname: "/COO/issues", collapsed: false, userId: "reviewer", agents: [] as any[], chats: [] as any[], recentTasks: [] as Array<Record<string, unknown>>, projects: [] as Array<Record<string, unknown>>, projectTasks: vi.fn(), enableCases: false }));
+vi.mock("@/hooks/useAgentChatNavigation", () => ({ useAgentChatNavigation: () => ({ companyId: "company", userId: fixture.userId, enabled: true, agents: { data: fixture.agents }, chats: { data: fixture.chats }, session: { isSuccess: true } }), useOpenAgentChat: () => fixture.openNewChat }));
+vi.mock("./AgentChatPicker", () => ({ AgentChatPicker: ({ open, onSelect, agents }: any) => open ? <button onClick={() => onSelect(agents[0])}>Choose agent</button> : null }));
 vi.mock("@/hooks/useRecentTasks", () => ({ useRecentTasks: () => ({ entries: fixture.recentTasks }) }));
 vi.mock("@/api/issues", () => ({ issuesApi: { listCompact: fixture.projectTasks } }));
 vi.mock("@/context/DialogContext", () => ({ useDialogActions: () => ({ openNewIssue: fixture.openNewIssue }) }));
@@ -46,13 +44,23 @@ function summary(items: AttentionItem[]) {
 let root: Root, container: HTMLDivElement, client: QueryClient;
 beforeEach(() => {
   vi.clearAllMocks(); localStorage.clear(); fixture.collapsed = false; fixture.userId = "reviewer"; fixture.pathname = "/COO/issues";
-  fixture.chats = []; fixture.recentTasks = []; fixture.projects = []; fixture.enableCases = false;
+  fixture.chats = []; fixture.agents = []; fixture.recentTasks = []; fixture.projects = []; fixture.enableCases = false;
   fixture.summary.mockResolvedValue(summary([pending("question"), pending("review")]));
   container = document.createElement("div"); document.body.appendChild(container); root = createRoot(container);
   client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
 });
 
 describe("Coordinator task creation", () => {
+  it("starts a new chat and links recent conversations by their own id", async () => {
+    fixture.agents = [{ id: "agent", companyId: "company", name: "Alex", urlKey: "alex", status: "idle" }];
+    fixture.chats = [{ id: "chat-one", conversationAgentId: "agent", updatedAt: "2026-10-20T12:00:00Z" }, { id: "chat-two", conversationAgentId: "agent", updatedAt: "2026-10-21T12:00:00Z" }];
+    await renderSidebar();
+    expect(container.querySelector('a[href="/chats/alex/chat-one"]')).not.toBeNull();
+    expect(container.querySelector('a[href="/chats/alex/chat-two"]')).not.toBeNull();
+    await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="New chat"]')!.click());
+    await act(async () => [...container.querySelectorAll("button")].find(button => button.textContent === "Choose agent")!.click());
+    expect(fixture.openNewChat).toHaveBeenCalledWith(fixture.agents[0]);
+  });
   it.each([false, true])("opens global search from the organization header when collapsed is %s", async collapsed => {
     fixture.collapsed = collapsed;
     await renderSidebar();

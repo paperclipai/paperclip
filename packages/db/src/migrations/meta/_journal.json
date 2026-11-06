@@ -3039,6 +3039,13 @@
       "when": 1793937048235,
       "tag": "0435_premium_puff_adder",
       "breakpoints": true
+    },
+    {
+      "idx": 436,
+      "version": "7",
+      "when": 1793955598405,
+      "tag": "0436_hesitant_wild_pack",
+      "breakpoints": true
     }
   ]
 }

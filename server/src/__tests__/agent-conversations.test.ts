@@ -223,6 +223,13 @@ import {
       const owned = await request(app).get(listPath);
       expect(owned.status).toBe(200);
       expect(owned.body.map((chat: { id: string }) => chat.id)).toEqual([resolved[0].body.id]);
+      const fresh = await request(app).post(`${path}?new=true`);
+      expect(fresh.status).toBe(200);
+      expect(fresh.body.id).not.toBe(resolved[0].body.id);
+      const history = await request(app).get(listPath);
+      expect(history.body.map((chat: { id: string }) => chat.id)).toEqual(
+        expect.arrayContaining([resolved[0].body.id, fresh.body.id]),
+      );
       expect((await request(appFor(colleague)).get(listPath)).body).toEqual([]);
       expect((await request(appFor(randomUUID(), false)).get(listPath)).status).toBe(403);
       await instanceSettingsService(db).updateExperimental({ enableAgentChat: false });

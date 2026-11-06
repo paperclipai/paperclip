@@ -27,8 +27,8 @@ export function useAgentChatNavigation() {
   return { companyId, userId, enabled, loaded, agents, chats, session };
 }
 
-/** Explicitly adding a chat uses the existing atomic, one-per-agent resolver. */
-export function useOpenAgentChat(companyId: string | null, userId: string | null) {
+/** Opens the default conversation or explicitly creates a new one. */
+export function useOpenAgentChat(companyId: string | null, userId: string | null, createNew = false) {
   const client = useQueryClient();
   const navigate = useNavigate();
   const { isMobile, setSidebarOpen } = useSidebar();
@@ -41,14 +41,14 @@ export function useOpenAgentChat(companyId: string | null, userId: string | null
   return useCallback(async (agent: Agent, signal?: AbortSignal) => {
     if (!companyId || agent.companyId !== companyId) throw new Error("Choose an agent from this company.");
     const current = scope.current;
-    const chat = await agentChatsApi.ensure(companyId, agent.id);
-    client.setQueryData(queryKeys.agentChats.detail(companyId, userId, agent.id), chat);
+    const chat = await (createNew ? agentChatsApi.create(companyId, agent.id) : agentChatsApi.ensure(companyId, agent.id));
+    if (!createNew) client.setQueryData(queryKeys.agentChats.detail(companyId, userId, agent.id), chat);
     client.setQueryData(queryKeys.issues.detail(chat.id), chat);
     client.setQueryData<Issue[]>(queryKeys.agentChats.list(companyId, userId), previous =>
       [chat, ...(previous ?? []).filter(item => item.id !== chat.id)]
         .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime() || b.id.localeCompare(a.id)));
     if (!current.mounted || scope.current !== current || signal?.aborted) return;
-    navigate(`/chats/${encodeURIComponent(agentRouteRef(agent))}`);
+    navigate(`/chats/${encodeURIComponent(agentRouteRef(agent))}${createNew ? `/${chat.id}` : ""}`);
     if (isMobile) setSidebarOpen(false);
-  }, [client, companyId, userId, navigate, isMobile, setSidebarOpen]);
+  }, [client, companyId, userId, navigate, isMobile, setSidebarOpen, createNew]);
 }

@@ -886,6 +886,7 @@ export interface Issue {
   titleNeedsGeneration?: boolean;
   conversationAgentId?: string | null;
   conversationUserId?: string | null;
+  conversationDefault?: boolean;
   /** Server-owned Slack lifecycle projection; not writable through task updates. */
   externalConversationState?: "active" | "waiting" | null;
   conversationState?: "active" | "waiting" | null;

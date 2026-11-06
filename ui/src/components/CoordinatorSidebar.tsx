@@ -6,7 +6,8 @@ import { useCoordinatorAttentionCount } from "@/hooks/useCoordinatorAttentionCou
 import { issuesApi } from "@/api/issues";
 import { instanceSettingsApi } from "@/api/instanceSettings";
 import { projectsApi } from "@/api/projects";
-import { useAgentChatNavigation } from "@/hooks/useAgentChatNavigation";
+import { useAgentChatNavigation, useOpenAgentChat } from "@/hooks/useAgentChatNavigation";
+import { AgentChatPicker } from "./AgentChatPicker";
 import { useRecentTasks } from "@/hooks/useRecentTasks";
 import { usePinnedNavigation } from "@/hooks/usePinnedNavigation";
 import { useDialogActions } from "@/context/DialogContext";
@@ -64,7 +65,9 @@ function ProjectRecent({ project }: { project: Project }) {
 /** The navigation is a view of the existing records; it never creates a chat
  * or task just because someone visits or switches agents. */
 export function CoordinatorSidebar({ children }: { children?: ReactNode }) {
-  const { companyId, userId, agents, chats, session } = useAgentChatNavigation();
+  const { companyId, userId, enabled: agentChatEnabled, agents, chats, session } = useAgentChatNavigation();
+  const openNewChat = useOpenAgentChat(companyId, userId, true);
+  const [chatPickerOpen, setChatPickerOpen] = useState(false);
   const unreadChatCount = chats.data?.filter(chat => chat.isUnreadForMe).length ?? 0;
   const pinnedNavigation = usePinnedNavigation(userId);
   const { data: experimental } = useQuery({
@@ -119,7 +122,10 @@ export function CoordinatorSidebar({ children }: { children?: ReactNode }) {
       <div className="design-sidebar-primary">
         {rail ? <Tooltip><TooltipTrigger asChild>{newTaskButton}</TooltipTrigger><TooltipContent side="right">New task</TooltipContent></Tooltip> : newTaskButton}
         <div className="design-sidebar-primary my-2">
-          <SidebarNavItem className="design-sidebar-item" to="/chats" label="Chat" icon={MessageCircle} badge={unreadChatCount} badgeLabel="unread chats" />
+          <div className="group/coordinator-new relative">
+            <SidebarNavItem className={cn("design-sidebar-item", !rail && "pr-9")} to="/chats" label="Chat" icon={MessageCircle} badge={unreadChatCount} badgeLabel="unread chats" />
+            {!rail && agentChatEnabled && <button type="button" aria-label="New chat" title="New chat" onClick={() => setChatPickerOpen(true)} className="absolute right-3 top-1/2 -translate-y-1/2 rounded-md p-1 text-muted-foreground hover:bg-sidebar-accent focus-visible:ring-2 focus-visible:ring-ring"><Plus className="size-4" /></button>}
+          </div>
           <div className="group/coordinator-new relative">
             <SidebarNavItem to="/issues" label="Tasks" icon={CircleCheck} className={cn("design-sidebar-item", !rail && "pr-9")} />
             {!rail && <button type="button" aria-label="New task" title="New task" onClick={() => openNewIssue()}
@@ -158,11 +164,12 @@ export function CoordinatorSidebar({ children }: { children?: ReactNode }) {
         {recents.map(item => item.kind === "task"
           ? <SidebarNavItem className="design-sidebar-item" key={item.id} to={`/issues/${item.task.identifier ?? item.id}`} label={item.task.title} iconNode={<StatusIcon {...taskStatusIconProps(item.task)} />} />
           : item.kind === "chat"
-            ? <SidebarNavItem className="design-sidebar-item" key={item.id} to={`/chats/${encodeURIComponent(agentRouteRef(item.agent))}`} label={item.agent.name} icon={MessageCircle} />
+            ? <SidebarNavItem className="design-sidebar-item" key={item.id} to={`/chats/${encodeURIComponent(agentRouteRef(item.agent))}/${item.id}`} label={item.agent.name} icon={MessageCircle} />
             : <ProjectRecent key={item.id} project={item.project} />)}
         </div>
       </SidebarSection></div>}
       {children}
     </nav>
+    <AgentChatPicker open={chatPickerOpen} onOpenChange={setChatPickerOpen} agents={(agents.data ?? []).filter(agent => agent.status !== "terminated" && agent.status !== "pending_approval")} loading={agents.isPending} error={agents.error} onRetry={() => { void agents.refetch(); }} onSelect={openNewChat} />
   </aside></TruncatedTextMarqueeProvider></FlyoutAppearanceProvider>;
 }
