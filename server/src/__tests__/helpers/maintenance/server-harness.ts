@@ -61,6 +61,9 @@ export interface MaintenanceConfiguration {
   storageProvider?: "local_disk" | "s3";
 }
 export interface MaintenanceServerOptions {
+  childEntry?: URL;
+  childPreload?: URL;
+  databasePoolMax?: number;
   artifactRoot?: string; enabled?: boolean; clock?: boolean; suppressed?: boolean; githubOrigin?: string;
   connector?: { origin: string; signPrivateKey: string; sealPrivateKey: string; instanceId?: string };
   cloud?: { jwks: string; s3Origin: string; standby: boolean };
@@ -71,6 +74,9 @@ export interface MaintenanceServerOptions {
 }
 export async function startMaintenanceServer(databaseUrl: string, options: MaintenanceServerOptions = {}) {
   const configuration = options.configuration;
+  if (options.databasePoolMax !== undefined && (!Number.isInteger(options.databasePoolMax) || options.databasePoolMax < 1 || options.databasePoolMax > 4)) {
+    throw new Error('Maintenance database pool must be an integer from 1 through 4');
+  }
   if (options.captureIdleWork && options.clock) throw new Error("Passive setup diagnostics require the real clock");
   if (options.tenantActor && (!options.cloud || !configuration?.managedInstance || configuration.deploymentMode !== 'authenticated' || configuration.storageProvider !== 's3')) {
     throw new Error('Managed tenant fixture requires the supported authenticated S3 profile');
@@ -132,18 +138,22 @@ export async function startMaintenanceServer(databaseUrl: string, options: Maint
     const captureStartedAt = options.captureIdleWork ? Date.now() : undefined;
     const captureSources = options.captureIdleWork ? new Map<number, string[]>() : undefined;
     let settledDiagnosticId = 0;
-    const child = fork(fileURLToPath(new URL("./server-child.ts", import.meta.url)), [], {
+    const child = fork(fileURLToPath(options.childEntry ?? new URL("./server-child.ts", import.meta.url)), [], {
       cwd: fileURLToPath(new URL("../../../../..", import.meta.url)),
-      execArgv: [...((configuration?.announcements || options.captureIdleWork) ? ['--experimental-test-module-mocks'] : []), "--import", fileURLToPath(new URL("../../../../node_modules/tsx/dist/loader.mjs", import.meta.url))],
+      execArgv: [...(options.childPreload ? ["--require", fileURLToPath(options.childPreload)] : []), ...((configuration?.announcements || options.captureIdleWork || options.childEntry) ? ['--experimental-test-module-mocks'] : []), "--import", fileURLToPath(new URL("../../../../node_modules/tsx/dist/loader.mjs", import.meta.url))],
       env: {
         ...(captureStartedAt === undefined ? {} : {
           PAPERCLIP_MAINTENANCE_IDLE_WORK_CAPTURE: '1',
           PAPERCLIP_DB_RESPONSE_CAPTURE_WINDOW: `${new Date(captureStartedAt).toISOString()}/${new Date(captureStartedAt + 60_000).toISOString()}`,
         }),
+        ...(options.childPreload ? {
+          PAPERCLIP_SKILL_DEFAULT_CADENCE_GUARD_LOG: process.env.PAPERCLIP_SKILL_DEFAULT_CADENCE_GUARD_LOG,
+          PAPERCLIP_SKILL_DEFAULT_CADENCE_GUARD_ORIGINS: JSON.stringify([options.githubOrigin, options.cloud?.s3Origin].filter(Boolean)),
+        } : {}),
         PATH: process.env.PATH, TMPDIR: process.env.TMPDIR, NODE_ENV: "production",
         PAPERCLIP_HOME: directory, PAPERCLIP_CONFIG: configPath, PAPERCLIP_INSTANCE_ID: "maintenance-test",
         PAPERCLIP_RUNNER_STATE_DIR: path.join(directory, "durable-sessions"),
-        DATABASE_URL: proxy.url, DATABASE_POOL_MAX: configuration ? "4" : "6", DATABASE_APPLICATION_NAME: "maintenance-integration-test",
+        DATABASE_URL: proxy.url, DATABASE_POOL_MAX: options.databasePoolMax === undefined ? (configuration ? "4" : "6") : String(options.databasePoolMax), DATABASE_APPLICATION_NAME: "maintenance-integration-test",
         PAPERCLIP_AGENT_JWT_SECRET: randomUUID(), PAPERCLIP_DECISION_SIGNING_SECRET: randomUUID(),
         PAPERCLIP_TOOL_ACTION_SIGNING_SECRET: randomUUID(), BETTER_AUTH_SECRET: randomUUID(),
         CODEX_HOME: path.join(directory, "codex"), PAPERCLIP_ANNOUNCEMENTS_ENABLED: String(configuration?.announcements ?? false),
@@ -180,6 +190,7 @@ export async function startMaintenanceServer(databaseUrl: string, options: Maint
     const log = createWriteStream(path.join(directory, "server.log"));
     stopLog = () => new Promise<void>(resolve => log.end(resolve));
     let serverReady = false;
+    let childGuard: unknown;
     child.stdout?.on("data", chunk => { output += String(chunk); log.write(chunk); });
     child.stderr?.on("data", chunk => { output += String(chunk); log.write(chunk); });
     const requests = new Map<number, { resolve: (value: any) => void; reject: (error: Error) => void }>();
@@ -187,7 +198,7 @@ export async function startMaintenanceServer(databaseUrl: string, options: Maint
     const ready = new Promise<number>((resolve, reject) => { readyResolve = resolve; readyReject = reject; });
     const exited = new Promise<void>(resolve => child.once("exit", () => resolve()));
     child.on("message", (message: any) => {
-      if (message.kind === "ready") { serverReady = true; readyResolve(message.port); }
+      if (message.kind === "ready") { childGuard = message.defaultCadenceGuard; serverReady = true; readyResolve(message.port); }
       else if (message.id) {
         const request = requests.get(message.id); requests.delete(message.id);
         if (message.kind === "error") request?.reject(new Error(message.error)); else request?.resolve(message);
@@ -227,7 +238,7 @@ export async function startMaintenanceServer(databaseUrl: string, options: Maint
     };
     const port = await withDeadline(ready, 90_000, () => `Maintenance boot timed out: ${output.slice(-12_000)}`);
     return {
-      proxy, directory, retainedDirectory, port, stop,
+      proxy, directory, retainedDirectory, port, stop, pid: child.pid, get childGuard() { return childGuard; },
       async api<T>(method: string, route: string, body?: unknown, headers: Record<string, string> = {}): Promise<T> {
         if (options.clock) await request("realtime");
         try {

@@ -63,9 +63,49 @@ import type { ManagedResourceStockStatus } from "./managed-resource-drift.js";
 import { parseExecutionPolicyBootstrapEnv } from "./execution-policy-bootstrap.js";
 import { resolvePluginSandboxProviderDriverByKey } from "./plugin-environment-driver.js";
 import { pluginRegistryService } from "./plugin-registry.js";
+import { trackIdleWork } from "./task-admission.js";
 import { resolveBundledCatalogRoot, resolveBundledPluginInstalls } from "./bundled-plugins.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 import type { ManagedPluginEnvironmentReconcileAction } from "./managed-plugin-environments.js";
+
+/**
+ * Lifecycle of the recovery work `applyManagedEnvironments` leaves behind
+ * after boot (re-ensuring an archived environment when its plugin worker
+ * becomes ready).
+ */
+export interface ManagedEnvironmentRecovery {
+  /** Run one attempt as idle-tracked work, unless stopped. */
+  run(work: () => Promise<void>): void;
+  /** Register an unsubscribe function for `stop()`. Calls it at once when stopped. */
+  onStop(unsubscribe: () => void): void;
+  /** Unsubscribe every listener, refuse new attempts, and await unfinished ones. */
+  stop(): Promise<void>;
+}
+
+export function createManagedEnvironmentRecovery(): ManagedEnvironmentRecovery {
+  const inFlight = new Set<Promise<void>>();
+  const unsubscribers = new Set<() => void>();
+  let stopped = false;
+  return {
+    run(work) {
+      if (stopped) return;
+      const attempt: Promise<void> = trackIdleWork(work())
+        .catch(() => undefined)
+        .finally(() => { inFlight.delete(attempt); });
+      inFlight.add(attempt);
+    },
+    onStop(unsubscribe) {
+      if (stopped) unsubscribe();
+      else unsubscribers.add(unsubscribe);
+    },
+    async stop() {
+      stopped = true;
+      for (const unsubscribe of unsubscribers) unsubscribe();
+      unsubscribers.clear();
+      while (inFlight.size > 0) await Promise.allSettled([...inFlight]);
+    },
+  };
+}
 
 export interface ApplyManagedEnvironmentsOptions {
   env?: Record<string, string | undefined>;
@@ -90,7 +130,7 @@ export interface ApplyManagedEnvironmentsOptions {
    * Plugin entries also need `call`, to run the plugin's own config
    * validation; without it every plugin entry is treated as unavailable.
    */
-  workerManager?: Pick<PluginWorkerManager, "isRunning"> & Partial<Pick<PluginWorkerManager, "call">> & {
+  workerManager?: Pick<PluginWorkerManager, "isRunning"> & Partial<Pick<PluginWorkerManager, "call" | "onWorkerReady">> & {
     getWorker(pluginId: string):
       | {
           on(event: "ready", listener: (payload: { pluginId: string }) => void): void;
@@ -134,6 +174,13 @@ export interface ApplyManagedEnvironmentsOptions {
    * startup. When omitted, the list is resolved here the same way.
    */
   autoInstalledPluginKeys?: readonly string[];
+  /**
+   * Owns the post-boot recovery attempts and their `ready` subscriptions:
+   * each attempt counts as idle-tracked work, and `stop()` (called on
+   * shutdown before the database closes) unsubscribes and awaits unfinished
+   * attempts. Defaults to a controller nobody stops (tests).
+   */
+  recovery?: ManagedEnvironmentRecovery;
 }
 
 export interface ManagedPluginEnvironmentReconciliationOutcome {
@@ -341,27 +388,50 @@ export async function applyManagedEnvironments(
   };
 
   // Recovery path for a `ready` plugin whose worker was down at check time:
-  // that shape is usually a crash in restart-backoff, and the manager's
-  // respawn re-emits `ready` on the same handle. A one-shot listener re-runs
-  // the idempotent ensure so the recovered provider becomes selectable again
-  // without waiting for the next boot (this pass has already archived the
-  // row). The post-subscribe `isRunning` re-check closes the race where the
-  // worker recovered between the gate check and the subscription. No handle
-  // means no respawn is coming (activation never started a worker), so the
-  // degraded-until-next-boot posture stands.
-  const scheduleRecoveryReactivation = (pluginId: string, reactivateEntry: () => Promise<void>): void => {
+  // that shape is usually a crash in restart-backoff, and the manager
+  // re-emits `ready` when it respawns or replaces the worker. A one-shot
+  // listener re-runs the idempotent ensure so the recovered provider becomes
+  // selectable again without waiting for the next boot (this pass has already
+  // archived the row). The post-subscribe `isRunning` re-check closes the race
+  // where the worker recovered between the gate check and the subscription.
+  // Each attempt runs through `recovery`, so idle checks count it and shutdown
+  // awaits it.
+  const recovery = opts.recovery ?? createManagedEnvironmentRecovery();
+
+  /**
+   * Call `listener` on each `ready` of the plugin's worker. Prefers the
+   * manager-wide subscription, which survives a restart replacing the worker
+   * handle (for example a settings save that restarts the worker). Returns
+   * the unsubscribe function, or null when there is no way to hear a `ready`
+   * (no manager-wide subscription and no handle: activation never started a
+   * worker, so no respawn is coming).
+   */
+  const subscribeWorkerReady = (pluginId: string, listener: () => void): (() => void) | null => {
     const manager = opts.workerManager;
+    if (manager?.onWorkerReady) {
+      return manager.onWorkerReady((readyPluginId) => {
+        if (readyPluginId === pluginId) listener();
+      });
+    }
     const handle = manager?.getWorker(pluginId);
-    if (!handle) return;
+    if (!handle) return null;
+    handle.on("ready", listener);
+    return () => handle.off("ready", listener);
+  };
+
+  const scheduleRecoveryReactivation = (pluginId: string, reactivateEntry: () => Promise<void>): void => {
     let reactivated = false;
+    let unsubscribe: (() => void) | null = null;
     const reactivate = (): void => {
       if (reactivated) return;
       reactivated = true;
-      handle.off("ready", reactivate);
-      void reactivateEntry();
+      unsubscribe?.();
+      recovery.run(reactivateEntry);
     };
-    handle.on("ready", reactivate);
-    if (manager?.isRunning(pluginId)) reactivate();
+    unsubscribe = subscribeWorkerReady(pluginId, reactivate);
+    if (!unsubscribe) return;
+    recovery.onStop(unsubscribe);
+    if (opts.workerManager?.isRunning(pluginId)) reactivate();
   };
 
   const reactivateSandboxEntry = async (spec: ManagedInstanceConfig["environments"][number]): Promise<void> => {
@@ -525,37 +595,35 @@ export async function applyManagedEnvironments(
    * worker that crashes during an attempt (for example inside
    * `environmentValidateConfig`) leaves the listener armed, so its next
    * respawn retries. A `ready` that arrives during an attempt queues one more
-   * attempt. No handle means no respawn is coming (activation never started a
-   * worker), so the degraded-until-next-boot posture stands.
+   * attempt. The subscription survives a restart that replaces the worker
+   * handle (see `subscribeWorkerReady`).
    */
   const schedulePluginRecovery = (spec: PluginSpec, pluginId: string, workerAccess: PluginWorkerAccess): void => {
-    const manager = opts.workerManager;
-    const handle = manager?.getWorker(pluginId);
-    if (!handle) return;
     const logBase = { name: spec.name, pluginKey: spec.pluginKey, driverKey: spec.driverKey };
     let settled = false;
     let inFlight = false;
     let queued = false;
+    let unsubscribe: (() => void) | null = null;
     const settle = (): void => {
       settled = true;
-      handle.off("ready", attempt);
+      unsubscribe?.();
     };
-    function attempt(): void {
+    const attempt = (): void => {
       if (settled) return;
       if (inFlight) {
         queued = true;
         return;
       }
       inFlight = true;
-      void ensurePluginEntry(spec, workerAccess)
-        .then((result) => {
+      recovery.run(async () => {
+        try {
+          const result = await ensurePluginEntry(spec, workerAccess);
           settle();
           logger.info(
             { ...logBase, environmentId: result.environment.id, action: result.action },
             "managed plugin environment reactivated after plugin worker recovery",
           );
-        })
-        .catch((err: unknown) => {
+        } catch (err) {
           if (isPermanentConfigRejection(err)) {
             settle();
             logger.error(
@@ -568,17 +636,19 @@ export async function applyManagedEnvironments(
               "failed to reactivate managed plugin environment; retrying when the plugin worker is ready again",
             );
           }
-        })
-        .finally(() => {
+        } finally {
           inFlight = false;
           if (queued && !settled) {
             queued = false;
             attempt();
           }
-        });
-    }
-    handle.on("ready", attempt);
-    if (manager?.isRunning(pluginId)) attempt();
+        }
+      });
+    };
+    unsubscribe = subscribeWorkerReady(pluginId, attempt);
+    if (!unsubscribe) return;
+    recovery.onStop(unsubscribe);
+    if (opts.workerManager?.isRunning(pluginId)) attempt();
   };
 
   for (const spec of pluginSpecs) {

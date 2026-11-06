@@ -67,7 +67,7 @@ describe("InstructionsBundleSettings", () => {
         </QueryClientProvider>,
       ),
     );
-    await act(() => button(container, "Advanced settings").click());
+    await act(() => button(container, "Advanced management").click());
     const [rootInput, entryInput] = Array.from(container.querySelectorAll("input"));
     await act(() => setNativeValue(rootInput, rootPath));
     await act(() => setNativeValue(entryInput, entryFile));

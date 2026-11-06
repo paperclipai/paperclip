@@ -16,6 +16,7 @@ import { issueService } from "../issues.js";
 import { createDeliveryWorkCoordinator } from "../delivery-work-coordinator.js";
 import { DELIVERY_QUEUES } from "../delivery-work-notifications.js";
 import { registerScheduledWork } from "../scheduled-work.js";
+import { notifyNativeFinalizationWork } from "../native-finalization-notifications.js";
 import { idleWorkSnapshot, readTaskDrain, startTaskDrain, stopTaskDrain } from "../task-admission.js";
 import { conflict } from "../../errors.js";
 import { createHeartbeatRunPreparation } from "./run-preparation.js";
@@ -584,6 +585,36 @@ describe.skipIf(!postgres.supported)("heartbeat scheduling database boundary", (
         mode: "normal", commentRequired: true, stages: [], monitor: { nextCheckAt: at.toISOString() },
       } });
     }
+
+    it.each(["committed", "terminal_failure"] as const)("reactivates a due monitor after its last finalization hold becomes %s", async phase => {
+      const f = await fixture();
+      const [run] = await db.insert(heartbeatRuns).values({
+        companyId: f.company.id, agentId: f.agent.id, nativeIssueId: f.issue.id,
+        runtimeMode: "native", status: "succeeded", finishedAt: now,
+      }).returning();
+      await db.insert(nativeRunFinalizations).values({
+        companyId: f.company.id, issueId: f.issue.id, runId: run!.id, phase: "arbitrating",
+      });
+      await start(f);
+      await quiet();
+      expect(f.deps.enqueueWakeup).not.toHaveBeenCalled();
+      const settle = (owner: Db) => owner.transaction(async tx => {
+        await notifyNativeFinalizationWork(tx, { companyId: f.company.id, runId: run!.id, issueId: f.issue.id });
+        await tx.update(nativeRunFinalizations).set({ phase }).where(eq(nativeRunFinalizations.runId, run!.id));
+      });
+      await expect(db.transaction(async tx => {
+        await settle(tx as unknown as Db);
+        throw new Error("rollback finalization");
+      })).rejects.toThrow("rollback finalization");
+      await quiet();
+      expect(f.deps.enqueueWakeup).not.toHaveBeenCalled();
+      await settle(db);
+      await advance(31_000);
+      await vi.waitFor(async () => expect((await readIssue(f.issue.id)).monitorNextCheckAt).toBeNull());
+      expect(f.deps.enqueueWakeup).toHaveBeenCalledOnce();
+      expect(await readIssue(f.issue.id)).toMatchObject({ monitorAttemptCount: 1 });
+      await quiet();
+    });
 
     it.each(["commit", "rollback"] as const)("reconciles worktree activation only after its outer transaction %s", async outcome => {
       const f = await fixture();
