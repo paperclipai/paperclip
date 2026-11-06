@@ -1175,8 +1175,8 @@ async function startServerWithDatabaseTeardown(
     throw err;
   }
 
-  // Ensure sandbox environments declared in the managed-config document
-  // (`environments` section) before the heartbeat resumes queued runs. The
+  // Ensure the sandbox and plugin environments declared in the managed-config
+  // document (`environments` section) before the heartbeat resumes queued runs. The
   // document already parsed fail-closed above; the ensure step itself is
   // fail-safe per entry (a degraded boot beats a fleet-wide crash loop), but
   // a contradictory deployment that also forces PAPERCLIP_EXECUTION_MODE
@@ -1186,14 +1186,16 @@ async function startServerWithDatabaseTeardown(
   // additionally gates each entry on a live plugin worker (and archives the
   // row of a provider that did not come up).
   try {
-    const bundledPluginsStartup = (app as { locals?: { bundledPluginsStartup?: Promise<unknown> } })
-      .locals?.bundledPluginsStartup;
+    const appLocals = (app as {
+      locals?: { bundledPluginsStartup?: Promise<unknown>; managedBundledPluginKeys?: readonly string[] };
+    }).locals;
     const managedEnvironmentsResult = await applyManagedEnvironments(db as any, managedConfig, {
-      pluginsReady: bundledPluginsStartup,
+      pluginsReady: appLocals?.bundledPluginsStartup,
+      autoInstalledPluginKeys: appLocals?.managedBundledPluginKeys,
       workerManager: pluginWorkerManager,
     });
     if (managedEnvironmentsResult) {
-      logger.warn(managedEnvironmentsResult, "managed sandbox environments ensured from managed config");
+      logger.warn(managedEnvironmentsResult, "managed environments ensured from managed config");
     }
   } catch (err) {
     logger.error({ err }, "failed to apply managed environments from managed config");
