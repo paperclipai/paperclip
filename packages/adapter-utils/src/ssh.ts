@@ -10,6 +10,7 @@ import {
   createUnrelatedHistoryGraftCommit,
   GIT_SYNC_COMMIT_IDENTITY_ARGS,
   PROJECT_REPOSITORIES_DIR,
+  PROJECT_REPOSITORY_STAGING_PATTERN,
   readSanitizedOriginRemoteUrl,
 } from "./git-workspace-sync.js";
 import type { RunProcessResult } from "./server-utils.js";
@@ -1100,6 +1101,7 @@ export async function listLocalProjectRepositories(localDir: string): Promise<st
   }
   const repositories: string[] = [];
   for (const entry of await fs.readdir(root, { withFileTypes: true })) {
+    if (entry.isDirectory() && PROJECT_REPOSITORY_STAGING_PATTERN.test(entry.name)) continue;
     if (!entry.isDirectory() || !PROJECT_REPOSITORY_NAME_PATTERN.test(entry.name)) {
       throw new Error("Invalid project repository directory");
     }
