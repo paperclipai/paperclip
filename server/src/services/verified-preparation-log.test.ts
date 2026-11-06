@@ -31,6 +31,14 @@ describe("verified host preparation output", () => {
     expect(fixture.read.mock.calls[0][1].signal.aborted).toBe(true);
   });
 
+  it.each(["versioned", "unversioned"])("verifies mentioned skills when the saved selection also has %s configured skills", async kind => {
+    const f = source();
+    f.run.contextSnapshot!.skillVersions = { "fixture/configured-skill": kind === "versioned" ? randomUUID() : null,
+      "fixture/status-report": randomUUID() };
+    fixture.read.mockResolvedValue({ content: f.content });
+    expect(await hasVerifiedPreparationLog(f.run)).toBe(true);
+  });
+
   it.each(["missing_selection", "different_selection", "malformed_version", "foreign_log", "changed_hash",
     "truncated", "extra_record", "provider_output", "changed_timestamp", "extra_provenance", "larger_log",
     "other_stream", "changed_watermark", "missing_log"] as const)("keeps uncertain output held: %s", async state => {

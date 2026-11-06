@@ -16,7 +16,6 @@ export async function hasVerifiedPreparationLog(run: PreparationLog): Promise<bo
   const versions = run.contextSnapshot?.skillVersions;
   if (run.contextSnapshot?.skillSelectionSnapshot !== true || !versions || typeof versions !== "object"
     || Array.isArray(versions) || Object.keys(versions).length === 0
-    || Object.values(versions).some(version => typeof version !== "string" || !isUuidLike(version))
     || run.logStore !== "s3_segments" || run.logRef !== `${run.companyId}/${run.agentId}/${run.id}`
     || !Number.isSafeInteger(run.logBytes) || run.logBytes! <= 0 || run.logBytes! > MAX_BYTES
     || !run.logSha256 || !/^[a-f0-9]{64}$/.test(run.logSha256) || run.logCompressed
@@ -42,8 +41,12 @@ export async function hasVerifiedPreparationLog(run: PreparationLog): Promise<bo
     const prefix = "[paperclip] Enabled run-scoped skills from issue mentions: ";
     if (!record.chunk.startsWith(prefix) || !record.chunk.endsWith("\n")) return false;
     const keys = record.chunk.slice(prefix.length, -1).split(", ");
-    return keys.length === Object.keys(versions).length && new Set(keys).size === keys.length
-      && keys.every(key => Object.hasOwn(versions, key) && !/[\r\n]/.test(key));
+    return keys.length > 0 && new Set(keys).size === keys.length
+      && keys.every(key => {
+        const version = (versions as Record<string, unknown>)[key];
+        return key.length > 0 && Object.hasOwn(versions, key) && !/[\r\n]/.test(key)
+          && typeof version === "string" && isUuidLike(version);
+      });
   } catch { return false; }
   finally { if (timer) clearTimeout(timer); controller.abort(); }
 }

@@ -33,7 +33,7 @@ describe("saved bootstrap continuation admission", () => {
   }, 30_000);
   afterAll(async () => { await db?.$client.end(); await postgres?.cleanup(); });
 
-  async function seed(hostLog: boolean) {
+  async function seed(hostLog: boolean, configured = false) {
     const companyId = randomUUID(), issueId = randomUUID(), agentId = randomUUID();
     const sourceId = randomUUID(), childId = randomUUID(), actionId = randomUUID();
     const workspaceId = randomUUID(), leaseId = randomUUID(), snapshotId = randomUUID();
@@ -59,7 +59,8 @@ describe("saved bootstrap continuation admission", () => {
       status: "failed", runtimeMode: "legacy", errorCode: "adapter_failed", error, executionStage: "preparing",
       startedAt, finishedAt, createdAt: startedAt, controllerBootId: randomUUID(),
       sessionIdBefore: randomUUID(),
-      contextSnapshot: { issueId, skillSelectionSnapshot: true, skillVersions: { "fixture/status-report": randomUUID() } },
+      contextSnapshot: { issueId, skillSelectionSnapshot: true, skillVersions: { "fixture/status-report": randomUUID(),
+        ...(configured ? { "fixture/configured-skill": randomUUID() } : {}) } },
       runnerProfileJson: { adapterDispatch: { adapterType: "paperclip_runner" },
         remoteWorkspace: { schema: "paperclip.remote-workspace-run.v1", workspaceId, leaseId, providerLeaseId,
           remoteCwd: "/fixture/saved-work", epoch: 1, state: "saved", snapshotId } },
@@ -118,8 +119,9 @@ describe("saved bootstrap continuation admission", () => {
     return { source, child, companyId, issueId, agentId, actorId, leaseId, comment, savedQueue };
   }
 
-  it.each([false, true])("dispatches one saved-status turn after a certified bootstrap with host log=%s", async hostLog => {
-    const f = await seed(hostLog);
+  it.each([{ hostLog: false, configured: false }, { hostLog: true, configured: false }, { hostLog: true, configured: true }])(
+    "dispatches one saved-status turn after a certified bootstrap with host log=$hostLog, configured=$configured", async ({ hostLog, configured }) => {
+    const f = await seed(hostLog, configured);
     const receipt = await requestTaskRetry({ db, companyId: f.companyId, issueId: f.issueId,
       actorId: f.actorId, observedRunId: f.child.id, idempotencyKey: randomUUID(), actorSource: "local_implicit" });
     expect((await requestTaskRetry({ db, companyId: f.companyId, issueId: f.issueId, actorId: f.actorId,
