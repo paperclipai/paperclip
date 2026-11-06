@@ -1016,7 +1016,9 @@ source, transfers its files through the provider's existing bulk channel, and
 checks the received inventory and the source again before sealing a portable
 archive on the controller. It rechecks the source after sealing. No source files
 or provider caches are removed. Linked Git worktrees, alternate object stores,
-and controller-specific Git includes or worktree paths cannot use this fallback.
+Git administrative symlinks, and configuration outside the portable key contract
+cannot use this fallback. Pure file-based config reads do not follow includes;
+controller Git normalization starts only after every config passes that contract.
 They remain retained if their normal archive cannot be saved. Transfer failures
 or changed files retain the original disk-full error and do not produce a
 preservation receipt.

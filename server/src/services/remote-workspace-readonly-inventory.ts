@@ -36,11 +36,15 @@ export async function readWorkspaceInventory(root: string, controllerCopy = fals
       } else if (stat.isFile()) {
         if (controllerCopy && git >= 0 && name === "config") {
           const { execFile } = await import("node:child_process");
-          await new Promise<void>((resolve, reject) => execFile("git", ["config", "--file", file, "--no-includes", "--get-regexp",
-            "^(include\\.|includeif\\.|core\\.worktree$|extensions\\.worktreeconfig$)"], {
+          // Parse only this file, without discovering a repository or following
+          // includes. Normalization may use Git only after all configs fit the
+          // portable key contract. Path-bearing and executable settings cannot
+          // make that later Git process read or execute controller resources.
+          const portableKey = /^(?:core\.(?:repositoryformatversion|filemode|bare|logallrefupdates|ignorecase|precomposeunicode|symlinks|sparsecheckout|sparsecheckoutcone)|index\.sparse|extensions\.(?:objectformat|refstorage|partialclone)|remote\..+\.(?:url|pushurl|fetch|promisor|partialclonefilter)|branch\..+\.(?:remote|merge|rebase)|user\.(?:name|email))$/u;
+          await new Promise<void>((resolve, reject) => execFile("git", ["config", "--file", file, "--no-includes", "--null", "--name-only", "--list"], {
             timeout: 10_000, maxBuffer: 65_536,
             env: { PATH: process.env.PATH, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_COUNT: "0" },
-          }, error => error && (error as { code?: number | string }).code === 1
+          }, (error, keys) => !error && keys.split("\0").filter(Boolean).every(key => portableKey.test(key))
             ? resolve() : reject(new Error("remote_workspace_readonly_capture_unsafe"))));
         }
         const hash = crypto.createHash("sha256"); let size = 0;

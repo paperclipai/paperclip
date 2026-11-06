@@ -613,6 +613,12 @@ describe("remote workspace transport safety with real sandbox commands", () => {
     expect(await fs.readFile(outside, "utf8")).toBe("[user]\nname = outside\n");
   });
 
+  it("rejects nonportable Git config before Git can read a controller attributes file", async () => {
+    await git(workspace, "init", "--initial-branch=main");
+    await git(workspace, "config", "core.attributesFile", path.join(scratch, "outside-attributes"));
+    await expect(readWorkspaceInventory(workspace, true)).rejects.toThrow("remote_workspace_readonly_capture_unsafe");
+  });
+
   it.each(["worktree pointer", "alternate store", "config include", "core worktree"])("retains a full sandbox with a %s instead of resolving controller paths", async fault => {
     const outside = path.join(scratch, "outside"); await fs.mkdir(outside);
     await fs.writeFile(path.join(outside, "sentinel"), "must stay outside\n");
