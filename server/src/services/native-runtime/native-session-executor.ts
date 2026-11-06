@@ -1,3 +1,4 @@
+import { captureRemoteNativeProviderArtifacts } from "./native-provider-artifact-capture.js";
 import { NativeSessionDiagnostics, nativeSessionDiagnostics, type NativeDiagnosticLease } from "./native-session-diagnostics.js";
 import { recordAgentProviderRateLimits } from "../agent-provider-rate-limits.js";
 import { nativePostResultFailureCategory, type NativePostResultFailureCategory } from "./native-post-result-failure.js";
@@ -12,6 +13,9 @@ import { nativeCancellationHasUnsettledOwner, notifyNativeCancellation, waitForN
 import { readClaimedNativeStopRecovery } from "./native-cancellation-request.js";
 import { publishNativeHarnessBackup } from "./native-harness-backup-publication.js";
 import { assertNativeHarnessBackupOwner, durableNativeHarnessStorage, nativeHarnessBackupOwner, persistNativeHarnessBackup, restoreDurableNativeHarnessBackup } from "./native-harness-backup-storage.js";
+import { restoreNativeProviderArtifacts, retainNativeProviderArtifacts, retainExistingNativeProviderArtifacts,
+  type NativeProviderArtifactReceipt } from "./native-provider-artifacts.js";
+import { prepareRemoteOpenCodeArtifacts, type OpenCodeLaunchArtifacts } from "./remote-opencode-artifacts.js";
 import { rehydratePinnedSkillAssets } from "./runtime-context.js";
 import { createNativeUsageDelivery } from "./native-usage-delivery.js";
 import { createNativeRecoveryUsageDelivery } from "./native-recovery-usage-delivery.js";
@@ -126,6 +130,7 @@ import {
   opendirSync,
   readFileSync,
   readdirSync,
+  rmdirSync,
   readlinkSync,
   readSync,
   renameSync,
@@ -6046,8 +6051,22 @@ export async function restoreRemoteBootstrapCheckpointForRecovery(input: {
 }): Promise<void> {
   const target = input.runnerExecutionTarget;
   if (input.restartRecovery?.kind !== "bootstrap_incomplete" || target?.kind !== "remote"
-    || target.transport !== "sandbox" || target.runnerTask || !existsSync(input.root)
-    || readRunnerdDurableIdentity(input.root) !== null) return;
+    || target.transport !== "sandbox" || target.runnerTask || !isSafeNativeStateDirectory(input.root)) return;
+  // Preparation can create the session root before the executor opens any
+  // controller state. An empty root holds no evidence; remove it so the fresh
+  // bootstrap does not read it as an unreadable identity.
+  if (readdirSync(input.root).length === 0) {
+    try {
+      rmdirSync(input.root);
+      return;
+    } catch (error) {
+      // An entry that appeared after the read goes through the checks below.
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === "ENOENT") return;
+      if (code !== "ENOTEMPTY" && code !== "EEXIST") throw error;
+    }
+  }
+  if (readRunnerdDurableIdentity(input.root) !== null) return;
   const marker = readRunnerdDurableIdentity(input.root, true);
   if (!marker || marker.runId !== input.execution.binding.runId) return;
   await restoreNativeRunnerCheckpoint(input.db, input.execution.binding, input.root, nativeSessionKey(input.execution));
@@ -6511,6 +6530,7 @@ export interface NativeHarnessBackupManifest {
     bytes: number;
   }>;
   completedAt: string;
+  providerArtifacts?: NativeProviderArtifactReceipt;
 }
 
 export function resolveNativeHarnessPersistenceProfile(
@@ -7439,6 +7459,10 @@ export function nativeSessionFailureSourceCode(
       )
     )
       return "native_event_replay_conflict";
+    // The runner marks a non-recoverable rejection of the selected model in the
+    // terminal message; it needs a model choice, not a generic provider failure.
+    if (!error.recoverable && /^native_provider_model_rejected:/.test(error.message))
+      return "native_provider_model_rejected";
     return "native_provider_terminal_failed";
   }
   if (error instanceof NativeSessionProtocolIntegrityError)
@@ -9355,7 +9379,8 @@ async function executePaperclipNativeSessionWithinScope(
           if (!claimed) throw new Error("native_session_lease_lost");
           providerPackAdmissionSource = { runId: coordinator.runId,
             receipt: boundRun.runnerProfileJson?.nativeProviderPackAdmission,
-            state: boundRun.runnerProfileJson?.nativeProviderPackAdmissionState };
+            state: boundRun.runnerProfileJson?.nativeProviderPackAdmissionState,
+            artifacts: boundRun.runnerProfileJson?.nativeProviderArtifacts };
           controllerGeneration = nextControllerGeneration;
           claimedStopCleanup = stopRecovery;
           await tx
@@ -10687,10 +10712,12 @@ async function executePaperclipNativeSessionWithinScope(
                       agentId: input.execution.binding.agentId, issueId: input.execution.binding.issueId,
                       sessionId: nativeSessionKey(input.execution) },
                     claim: { leaseOwner, attempt, controllerGeneration, controllerBootId: controller.bootId },
+                    waitForClaim: runnerdBackend?.providerAdmissionRequired?.() === true,
                   });
                 } catch {
                   try { await input.onLog?.("stderr", "[paperclip-runner] native provider-pack admission receipt could not be saved\n"); } catch {}
                 }
+                await runnerdBackend?.providerAdmissionPersisted?.();
                 if (session.resolveRuntimeRequest) await liveQuestions.attach();
                 if (active.cancelRequested) {
                   await active.cancellationSettled;
@@ -13526,6 +13553,8 @@ type ManagedRunnerdBackend = NativeSessionBackend & {
   bindManagedSession(session: NativeSession): NativeSession;
   bindDiagnosticSession?(session: NativeSession): void;
   sessionCheckpointPersisted?(snapshot: PersistedNativeSession): void;
+  providerAdmissionPersisted?(): Promise<void>;
+  providerAdmissionRequired?(): boolean;
 };
 
 async function createRunnerdBackendWithinSessionClaim(
@@ -13950,6 +13979,22 @@ async function createRunnerdBackendWithinSessionClaim(
     remoteTarget !== null &&
     (input.execution.provider.kind === "opencode" ||
       input.execution.provider.kind === "acpx");
+  const artifactStorage = remoteTarget?.transport === "sandbox" && input.controllerPersistence
+    && input.execution.provider.kind === "opencode" ? durableNativeHarnessStorage() : null;
+  const providerArtifactsSignal = () => input.executionContext?.signal
+    ? AbortSignal.any([input.executionContext.signal, AbortSignal.timeout(300_000)]) : AbortSignal.timeout(300_000);
+  const liveProviderRecovery = input.restartRecovery?.kind === "reattach_remote_runner" || input.remoteWarmRecovery !== undefined;
+  const artifactBackup = artifactStorage ? verifyNativeHarnessBackup({ root, execution: input.execution,
+    runnerInstanceId: input.runnerInstanceId }) : null;
+  let providerArtifacts = artifactStorage ? artifactBackup?.manifest.providerArtifacts
+    ?? input.providerPackAdmissionSource?.artifacts as NativeProviderArtifactReceipt | undefined : undefined;
+  let legacyProviderContinuity = durableBinding !== null && !providerArtifacts;
+  if (providerArtifacts && artifactStorage && !liveProviderRecovery) await restoreNativeProviderArtifacts({ db: input.db, storage: artifactStorage,
+    companyId: input.execution.binding.companyId, receipt: providerArtifacts,
+    targetRoot: artifactBackup ? join(artifactBackup.root, "provider-artifacts") : join(root, "provider-artifacts"),
+    signal: providerArtifactsSignal() });
+  const restoredArtifactDirectory = artifactBackup ? join(artifactBackup.root, "provider-artifacts") : join(root, "provider-artifacts");
+  let openCodeLaunchArtifacts: OpenCodeLaunchArtifacts | undefined;
   const adoptingPersistedRemoteRunner = remoteTarget !== null
     && input.restartRecovery?.kind === "reattach_remote_runner"
     && input.controllerPersistence?.runnerArtifact !== undefined;
@@ -14031,12 +14076,13 @@ async function createRunnerdBackendWithinSessionClaim(
       runnerInstanceId: effectiveRunnerInstanceId, environmentLeaseId: effectiveEnvironmentLeaseId,
       remoteCwd: remoteTarget!.remoteCwd, providerDigest: nativeSha256(input.execution.provider) },
     reattach,
-    retainProviderPack: reattach || retainProviderPack,
+    retainProviderPack: !providerArtifacts && (reattach || retainProviderPack),
     runnerArtifact: () => readRunnerdArtifactBinding(controllerRunnerBinary),
-    current: resolveCurrentProviderPackManifest,
+    current: () => providerArtifacts?.manifest as RemoteProviderPackManifest ?? resolveCurrentProviderPackManifest(),
   }) : null;
   let providerPackAuthority = adoptingPersistedRemoteRunner ? null : selectProviderPackAuthority(reattachProviderPack);
-  let expectedProviderPackManifest = providerPackAuthority?.manifest ?? null;
+  let expectedProviderPackManifest: RemoteProviderPackManifest | null = providerPackAuthority?.manifest
+    ?? providerArtifacts?.manifest as RemoteProviderPackManifest ?? null;
   let providerPackVerified = false;
   const explicitRemoteCodex = input.runnerRemoteCodexPath?.trim() || null;
   const remoteCodexNpmSpec = input.runnerRemoteCodexNpmSpec?.trim() || null;
@@ -14186,7 +14232,7 @@ async function createRunnerdBackendWithinSessionClaim(
     return false;
   };
 
-  const prepareRemoteRunner = async (
+  const prepareRemoteRunnerAssets = async (
     requiredMode: "dial_wss" | "listen_ws",
   ) => {
     if (
@@ -14215,6 +14261,11 @@ async function createRunnerdBackendWithinSessionClaim(
       return;
     }
     await remoteNativeArtifacts?.prepare(requiredMode);
+    if (artifactStorage && providerArtifacts) {
+      providerPackVerified = true;
+      remotePrepared = true;
+      return;
+    }
     if (requiresRemoteProviderPack && await useInstalledProviderPack()) {
       remotePrepared = true;
       return;
@@ -14232,6 +14283,25 @@ async function createRunnerdBackendWithinSessionClaim(
       providerPackVerified = true;
     }
     remotePrepared = true;
+  };
+
+  const prepareRemoteRunner = async (mode: "dial_wss" | "listen_ws") => {
+    await prepareRemoteRunnerAssets(mode);
+    if (!artifactStorage || openCodeLaunchArtifacts || !remoteCommandRunner || !remoteTarget
+      || !expectedProviderPackManifest || liveProviderRecovery || legacyProviderContinuity) return;
+    if (!remoteCommandRunner.syncIn || !remoteCommandRunner.syncOut) throw new Error("native_provider_artifacts_bulk_transport_required");
+    const bootstrap = activeRemoteProviderPackRoot
+      ? { root: activeRemoteProviderPackRoot, manifest: expectedProviderPackManifest }
+      : remoteNativeArtifacts?.providerPackInventory().find(pack => pack.immutable);
+    if (!bootstrap) throw new Error("native_provider_artifacts_bootstrap_unavailable");
+    const bootstrapManifest = bootstrap.manifest as RemoteProviderPackManifest;
+    openCodeLaunchArtifacts = await prepareRemoteOpenCodeArtifacts({ runner: remoteCommandRunner,
+      bootstrapNode: posix.join(bootstrap.root, bootstrapManifest.payload.artifacts.nodeCommand.path),
+      manifest: expectedProviderPackManifest, nonce: randomUUID(),
+      ...(providerArtifacts ? { restored: { receipt: providerArtifacts, directory: restoredArtifactDirectory } }
+        : { sourceRoot: activeRemoteProviderPackRoot! }),
+      stageFile: asset => stageRemoteRunnerFile({ target: remoteTarget, runner: remoteCommandRunner, ...asset }),
+    });
   };
 
   /**
@@ -14909,6 +14979,7 @@ async function createRunnerdBackendWithinSessionClaim(
                     input.durableEnvironmentLeaseId ??
                     "unknown",
                 });
+                if (providerArtifacts) manifest.providerArtifacts = providerArtifacts;
                 backupSpanAttributes.bytesTransferred =
                   manifest.directories.reduce(
                     (total, directory) => total + directory.bytes,
@@ -15172,6 +15243,9 @@ async function createRunnerdBackendWithinSessionClaim(
     moveNativeContinuityState(root, archiveRoot);
     remotePrepared = false;
     retainProviderPack = false;
+    legacyProviderContinuity = false;
+    providerArtifacts = undefined;
+    openCodeLaunchArtifacts = undefined;
     providerPackAuthority = selectProviderPackAuthority(false);
     expectedProviderPackManifest = providerPackAuthority?.manifest ?? null;
     providerPackVerified = false;
@@ -15396,6 +15470,15 @@ async function createRunnerdBackendWithinSessionClaim(
                   .sha256,
             }
           : {}),
+        ...(openCodeLaunchArtifacts ? {
+          providerNodeCommand: openCodeLaunchArtifacts.paths.nodeCommand,
+          providerNodeCommandSha256: expectedProviderPackManifest!.payload.artifacts.nodeCommand.sha256,
+          opencodeCommand: openCodeLaunchArtifacts.paths.opencodeExecutable,
+          opencodeCommandSha256: expectedProviderPackManifest!.payload.artifacts.opencodeExecutable.sha256,
+          opencodeProxyPath: openCodeLaunchArtifacts.paths.opencodeProxy,
+          opencodeProxySha256: expectedProviderPackManifest!.payload.artifacts.opencodeProxy.sha256,
+          providerPackAuthorityDigest: expectedProviderPackManifest!.digest,
+        } : {}),
         stateDirectory: root,
         runnerBinary: controllerRunnerBinary,
         runnerArtifact: input.controllerPersistence?.runnerArtifact ?? providerPackAuthority?.runnerArtifact,
@@ -15687,6 +15770,24 @@ async function createRunnerdBackendWithinSessionClaim(
   };
   return {
     bindManagedSession: wrapManagedSession,
+    providerAdmissionRequired: () => Boolean(artifactStorage
+      && (providerArtifacts || !legacyProviderContinuity && !liveProviderRecovery)),
+    providerAdmissionPersisted: artifactStorage ? async () => {
+      const backupOwner = sessionHarnessBackupOwners.get(authorityEpoch);
+      if ((liveProviderRecovery || legacyProviderContinuity) && !providerArtifacts) return;
+      if (!backupOwner || !expectedProviderPackManifest || !remoteCommandRunner) {
+        throw new Error("native_provider_artifacts_admission_missing");
+      }
+      if (providerArtifacts) {
+        await retainExistingNativeProviderArtifacts({ db: input.db, owner: backupOwner, receipt: providerArtifacts });
+        return;
+      }
+      if (!openCodeLaunchArtifacts) throw new Error("native_provider_artifacts_admission_missing");
+      const signal = providerArtifactsSignal();
+      providerArtifacts = await captureRemoteNativeProviderArtifacts({ runner: remoteCommandRunner,
+        launch: openCodeLaunchArtifacts, manifest: expectedProviderPackManifest, signal, context: input.executionContext },
+        source => retainNativeProviderArtifacts({ db: input.db, storage: artifactStorage, owner: backupOwner, source, signal }));
+    } : undefined,
     bindDiagnosticSession: session => {
       const retained = nativeSessionDiagnostics(session);
       if (retained && retained !== diagnostics) {

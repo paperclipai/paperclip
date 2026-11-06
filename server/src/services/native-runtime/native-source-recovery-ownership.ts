@@ -1,5 +1,5 @@
-import { and, asc, eq, inArray, sql } from "drizzle-orm";
-import { environmentLeases, nativeRunFinalizations, type Db } from "@paperclipai/db";
+import { and, asc, eq, exists, inArray, sql } from "drizzle-orm";
+import { environmentLeases, nativeRunFinalizations, nativeRunnerCheckpoints, type Db } from "@paperclipai/db";
 import { inspectDurablePrpCheckpointHeader, type DurablePrpCheckpoint } from "../../vendor/paperclip-runner/index.js";
 
 type Transaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
@@ -12,7 +12,11 @@ export async function lockSourceRecoveryCoordinators(tx: Transaction, companyId:
 }
 
 export async function readNativeSourceConsumers(tx: Transaction, companyId: string, runId: string) {
-  return tx.select({ id: environmentLeases.id, metadata: environmentLeases.metadata }).from(environmentLeases).where(and(
+  const retired = exists(tx.select({ runId: nativeRunnerCheckpoints.runId }).from(nativeRunnerCheckpoints).where(and(
+    eq(nativeRunnerCheckpoints.companyId, companyId), eq(nativeRunnerCheckpoints.runId, runId),
+    eq(nativeRunnerCheckpoints.part, "header"),
+    sql`${nativeRunnerCheckpoints.material}->>'schema' like 'paperclip.native-runner-checkpoint-retirement.%'`)));
+  return tx.select({ id: environmentLeases.id, metadata: environmentLeases.metadata, retired }).from(environmentLeases).where(and(
     eq(environmentLeases.companyId, companyId), eq(environmentLeases.heartbeatRunId, runId),
     sql`${environmentLeases.metadata}->'runnerTaskSourceConsumer' is not null`));
 }
@@ -22,6 +26,7 @@ export async function assertNativeSourceCheckpointConsumer(tx: Transaction, owne
   companyId: string; runId: string; authorityRunId: string; bootId: string; generation: number;
 }, checkpoint?: DurablePrpCheckpoint) {
   const rows = await readNativeSourceConsumers(tx, owner.companyId, owner.runId);
+  if (rows.some(row => row.retired)) throw new Error("native_runner_checkpoint_retired");
   if (!rows.length) return;
   const deny = (): never => { throw new Error("native_runner_checkpoint_owner_lost"); };
   if (owner.runId === owner.authorityRunId || rows.length !== 1 || !checkpoint) return deny();
