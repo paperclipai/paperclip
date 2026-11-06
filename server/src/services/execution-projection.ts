@@ -1,6 +1,7 @@
-import { and, desc, eq, inArray, isNotNull, isNull, ne, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, ne, sql } from "drizzle-orm";
 import {
   heartbeatRuns,
+  issues,
   dotAgentBindings,
   dotRunnerAssignments,
   museAgentBindings,
@@ -16,6 +17,7 @@ import { executionFailureRetryCount } from "./execution-recovery-attempt.js";
 import { retryIdempotentDatabaseOperation } from "../database-retry.js";
 import { workspaceRecoveryDisplay } from "./workspace-recovery-receipt.js";
 import { readTaskDrain } from "./task-admission.js";
+import { hasPendingRunCleanup } from "./execution-blocker.js";
 const text = (v: unknown) => (typeof v === "string" ? v : null);
 const executionRunColumns = {
   id: heartbeatRuns.id,
@@ -177,37 +179,45 @@ export async function executionProjectionsForRuns(
       )));
     for (const row of offered) waitingByRun.set(row.runId, "openai_dot");
   }
-  // A queued turn cannot start while a controller still owns an earlier
-  // run of the same agent and task (for example a stopped run whose runner has
-  // not released yet). Name that wait instead of an unexplained "Queued".
+  // A queued turn cannot start while its predecessor's cleanup is pending
+  // (for example a stopped run whose runner has not released yet). Name that
+  // wait instead of an unexplained "Queued". The predecessors are the ones
+  // admission checks: the task's execution owner, the run this one retries,
+  // and the agent's latest settled run on the same task, whose in-process
+  // executor the claim also waits for. Pending uses admission's own predicate.
   const settlingPredecessorKeys = new Set<string>();
   const queuedRuns = runs.filter(run => run.status === "queued");
-  const queuedIssueIds = [...new Set(queuedRuns
-    .map(run => run.nativeIssueId ?? text(run.contextSnapshot?.issueId))
-    .filter((id): id is string => !!id))];
-  if (queuedIssueIds.length) {
-    const issueKey = sql<string>`coalesce(${heartbeatRuns.nativeIssueId}::text, ${heartbeatRuns.contextSnapshot}->>'issueId')`;
-    const held = await read(async () => db
-      .select({ id: heartbeatRuns.id, agentId: heartbeatRuns.agentId, issueId: issueKey })
-      .from(heartbeatRuns)
-      .innerJoin(nativeRunFinalizations, and(
-        eq(nativeRunFinalizations.runId, heartbeatRuns.id),
-        eq(nativeRunFinalizations.companyId, heartbeatRuns.companyId),
-      ))
-      .where(and(
-        eq(heartbeatRuns.companyId, companyId),
-        inArray(heartbeatRuns.agentId, [...new Set(queuedRuns.map(run => run.agentId))]),
-        inArray(issueKey, queuedIssueIds),
-        ne(heartbeatRuns.status, "queued"),
-        // Admission's cleanup check treats any owned finalization as
-        // pending, expired or not, until a controller reconciles it.
-        isNotNull(nativeRunFinalizations.leaseOwner),
-      )));
-    for (const row of held) {
-      for (const run of queuedRuns) {
-        if (row.id !== run.id && row.agentId === run.agentId
-            && row.issueId === (run.nativeIssueId ?? text(run.contextSnapshot?.issueId)))
-          settlingPredecessorKeys.add(run.id);
+  if (queuedRuns.length) {
+    const issueIdOf = (run: Run) => run.nativeIssueId ?? text(run.contextSnapshot?.issueId);
+    const queuedIssueIds = [...new Set(queuedRuns.map(issueIdOf).filter((id): id is string => !!id))];
+    const owners = queuedIssueIds.length ? await read(async () => db
+      .select({ id: issues.id, executionRunId: issues.executionRunId })
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), inArray(issues.id, queuedIssueIds)))) : [];
+    const ownerByIssue = new Map(owners.map(row => [row.id, row.executionRunId]));
+    const pendingByRun = new Map<string, Promise<boolean>>();
+    const pending = (runId: string) => {
+      if (!pendingByRun.has(runId)) pendingByRun.set(runId, read(() => hasPendingRunCleanup(db, companyId, runId)));
+      return pendingByRun.get(runId)!;
+    };
+    for (const run of queuedRuns) {
+      const issueId = issueIdOf(run);
+      if (!issueId) continue;
+      const issueKey = sql<string>`coalesce(${heartbeatRuns.nativeIssueId}::text, ${heartbeatRuns.contextSnapshot}->>'issueId')`;
+      const [latest] = await read(async () => db
+        .select({ id: heartbeatRuns.id })
+        .from(heartbeatRuns)
+        .where(and(
+          eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.agentId, run.agentId),
+          eq(issueKey, issueId), ne(heartbeatRuns.id, run.id),
+          inArray(heartbeatRuns.status, ["succeeded", "failed", "cancelled", "timed_out"]),
+        ))
+        .orderBy(desc(heartbeatRuns.createdAt))
+        .limit(1));
+      const candidates = [...new Set([ownerByIssue.get(issueId), run.retryOfRunId, latest?.id]
+        .filter((id): id is string => !!id && id !== run.id))];
+      for (const candidate of candidates) {
+        if (await pending(candidate)) { settlingPredecessorKeys.add(run.id); break; }
       }
     }
   }

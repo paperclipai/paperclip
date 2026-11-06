@@ -98,8 +98,13 @@ describe.skipIf(!support.supported)("persisted stopped-workspace projection", ()
       .where(eq(nativeRunFinalizations.runId, stoppedRunId));
     expect((await executionProjectionsForRuns(db, companyId, [successorRunId])).get(successorRunId)?.cause)
       .toBe("previous_run_settling");
-    // Once the controller releases its claim, the wait is ordinary.
+    // A released claim whose finalization is still unsettled keeps holding admission.
     await db.update(nativeRunFinalizations).set({ leaseOwner: null, leaseExpiresAt: null })
+      .where(eq(nativeRunFinalizations.runId, stoppedRunId));
+    expect((await executionProjectionsForRuns(db, companyId, [successorRunId])).get(successorRunId)?.cause)
+      .toBe("previous_run_settling");
+    // Once finalization settles, the wait is ordinary.
+    await db.update(nativeRunFinalizations).set({ phase: "terminal_failure" })
       .where(eq(nativeRunFinalizations.runId, stoppedRunId));
     expect((await executionProjectionsForRuns(db, companyId, [successorRunId])).get(successorRunId)).toMatchObject({
       phase: "queued", label: "Queued", cause: null,
