@@ -30,7 +30,7 @@ export const DAYTONA_VCPU_BUDGET = 40;
 
 export type ParsedCommand =
   | { mode: "wave"; options: WaveOptions; keep: boolean }
-  | { mode: "replay"; ref: ReplayRef; keep: boolean; overrides: Partial<Pick<WaveOptions, "pollMs" | "budgetCents">> };
+  | { mode: "replay"; ref: ReplayRef; keep: boolean; overrides: Partial<Pick<WaveOptions, "pollMs" | "budgetCents" | "masks">> };
 
 export interface ReplayRef { waveId: string; taskId: string }
 
@@ -84,6 +84,7 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
       "daytona-image": { type: "string" },
       "daytona-cpu": { type: "string" },
       keep: { type: "boolean" },
+      "rc06-masked": { type: "boolean" },
     },
   });
   const keep = values.keep === true;
@@ -94,7 +95,9 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
       if (values[key] !== undefined) throw new Error(`--replay reproduces the saved plan; do not combine it with --${key}`);
     }
     return { mode: "replay", ref: parseReplayRef(values.replay), keep,
-      overrides: { ...(values["poll-ms"] ? { pollMs } : {}), ...(values["budget-cents"] ? { budgetCents } : {}) } };
+      overrides: { ...(values["poll-ms"] ? { pollMs } : {}), ...(values["budget-cents"] ? { budgetCents } : {}),
+        // The saved plan already carries its masks; this adds the RC-06 mask to a replay of an unmasked wave.
+        ...(values["rc06-masked"] ? { masks: ["rc06"] } : {}) } };
   }
   const env = (values.env ?? "local") as EnvironmentKind;
   if (!ENVIRONMENT_KINDS.includes(env)) throw new Error(`Unknown env "${env}"; allowed: ${ENVIRONMENT_KINDS.join(", ")}`);
@@ -118,6 +121,7 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
     budgetCents,
     pollMs,
     ...(env === "daytona" ? { daytonaImage, daytonaCpu: integer(values["daytona-cpu"], "daytona-cpu", DAYTONA_DEFAULT_CPU, 1, 4) } : {}),
+    ...(values["rc06-masked"] ? { masks: ["rc06"] } : {}),
   };
   if (env !== "daytona" && values["daytona-cpu"] !== undefined) throw new Error("--daytona-cpu applies only to --env daytona");
   if (options.daytonaCpu !== undefined) {

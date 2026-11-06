@@ -522,6 +522,16 @@ pnpm build-storybook
 
 These run the `@paperclipai/ui` Storybook on port `6006` and build the static output to `ui/storybook-static/`.
 
+**Inline links** mounts the shared Markdown renderer with GitHub repository,
+pull request, and issue references, custom labels, connected status metadata,
+generic URL fallbacks, and streaming playback. Pasted GitHub resource URLs use compact labels;
+the exact destination, query, and fragment stay intact. The presentation makes
+no remote metadata requests. Run its light/dark desktop/mobile checks with:
+
+```sh
+STORYBOOK_TEST_BASE_URL=http://localhost:6006 pnpm exec playwright test inline-links.spec.ts --config=tests/storybook-visual/playwright.config.ts --project=stories
+```
+
 **Task chat → Failure notices** covers compact run errors and adjacent recovery
 notices in both presentation modes, with expanded details, fixture retry
 callbacks (including the legacy run retry when recovery retry is unavailable),
@@ -3146,8 +3156,12 @@ their existing preparation order.
 OpenCode defaults to `allow`, with explicit `ask` and `deny` options; ACPX
 defaults to `approve-all`, with explicit `approve-paperclip`, `approve-reads`,
 and `deny-all` options. Codex conversion keeps a non-empty model and
-otherwise stores the shared `gpt-5.6-sol` default. The native execution boundary
-applies the same default to older runner rows whose model is missing or blank.
+otherwise stores the shared `gpt-6.1-sol` default (half the `gpt-5.6-sol` token
+price on the reviewed OpenAI rate card in `server/src/services/codex-pricing.ts`).
+The native execution boundary applies the same default to older runner rows whose
+model is missing or blank; a stored model, including `gpt-5.6-sol`, is never
+rewritten. A remote Codex CLI older than 0.159.0 falls back to an older compatible
+Sol model (`gpt-6-sol`, then `gpt-5.6-sol`).
 
 For an Agent Chat test drive, configure two agents with Paperclip Runner: native Codex and ACPX Claude. Connect
 the Claude account through the agent's **AI connection** section (or supply an
