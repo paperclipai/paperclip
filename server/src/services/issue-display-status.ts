@@ -1,6 +1,7 @@
 import { sql, type SQL } from "drizzle-orm";
-import { issues } from "@paperclipai/db";
+import { issues, issueThreadInteractions } from "@paperclipai/db";
 import { PROVIDER_QUOTA_MONITOR_SERVICE_NAME, type IssueDisplayStatus } from "@paperclipai/shared";
+import { activeIssueInteractionCondition } from "./issue-question-context.js";
 
 /** Read-only projection shared by task reads, search, filters and counts.
  * Lifecycle status and locks remain admission/recovery inputs. Neither alone
@@ -28,12 +29,14 @@ export function issueDisplayStatusSql(): SQL<IssueDisplayStatus> {
         AND display_recovery.source_issue_id = ${issueId}
         AND display_recovery.status IN ('active', 'escalated')
     ) THEN 'blocked'
-    WHEN ${issues.executionState}->>'currentParticipant' IS NOT NULL
+    WHEN (${issues.executionState}->>'status' = 'pending'
+      AND ${issues.executionState}->>'currentParticipant' IS NOT NULL)
       OR EXISTS (
-        SELECT 1 FROM issue_thread_interactions display_interaction
-        WHERE display_interaction.company_id = ${companyId}
-          AND display_interaction.issue_id = ${issueId}
-          AND display_interaction.status = 'pending'
+        SELECT 1 FROM ${issueThreadInteractions}
+        WHERE ${issueThreadInteractions.companyId} = ${companyId}
+          AND ${issueThreadInteractions.issueId} = ${issueId}
+          AND ${issueThreadInteractions.status} = 'pending'
+          AND ${activeIssueInteractionCondition()}
       ) THEN 'in_review'
     WHEN ${issues.monitorNextCheckAt} IS NOT NULL
       AND ${issues.executionRunId} IS NULL AND ${issues.checkoutRunId} IS NULL

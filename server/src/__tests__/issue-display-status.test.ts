@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
 import { expect, it } from "vitest";
 import request from "supertest";
-import { agents, heartbeatRuns, issueRecoveryActions, issueRelations, issueThreadInteractions, issues, statusCards } from "@paperclipai/db";
+import { agents, heartbeatRuns, issueComments, issueRecoveryActions, issueRelations, issueThreadInteractions, issues, statusCards } from "@paperclipai/db";
 import { companySearchQuerySchema, createIssueSchema, defaultStatusCardRefreshPolicy, PROVIDER_QUOTA_MONITOR_SERVICE_NAME, type Issue } from "@paperclipai/shared";
 import { issueDisplayStatusSql } from "../services/issue-display-status.js";
 import { issueService } from "../services/issues.js";
@@ -65,6 +65,28 @@ describeEmbeddedPostgres("Execution-backed task presentation", () => {
     const result = await companySearchService(ctx.db).search(f.companyId, companySearchQuerySchema.parse({ q: "deployment", displayStatus: "in_review" }));
     expect(result.results[0]?.issue).toMatchObject({ id: f.issueId, displayStatus: "in_review" });
     await ctx.db.update(issueThreadInteractions).set({ status: "answered" }).where(eq(issueThreadInteractions.id, interaction!.id));
+    expect((await displayStatus(f.issueId)).displayStatus).toBe("todo");
+  });
+
+  it.each(["dismissed", "historical"])("does not turn a monitor into review for a %s request", async (kind) => {
+    const f = await fixture();
+    const createdAt = new Date(Date.now() - 60_000);
+    await ctx.db.insert(issueThreadInteractions).values({ companyId: f.companyId, issueId: f.issueId,
+      kind: kind === "dismissed" ? "request_confirmation" : "ask_user_questions", status: "pending", createdAt,
+      dismissedAt: kind === "dismissed" ? new Date() : null, effectiveResolverPolicySource: "requested",
+      payload: { version: 1, prompt: "Earlier request" } });
+    if (kind === "historical") await ctx.db.insert(issueComments).values({ companyId: f.companyId, issueId: f.issueId,
+      authorUserId: f.actor.userId, body: "Continue with the current instructions", createdAt: new Date() });
+    expect((await displayStatus(f.issueId)).displayStatus).toBe("monitoring");
+    expect(await issueService(ctx.db).count(f.companyId, { displayStatus: "in_review" })).toBe(0);
+  });
+
+  it("does not treat a retained reviewer as pending after changes are requested", async () => {
+    const f = await fixture();
+    await ctx.db.update(issues).set({ executionState: { status: "changes_requested", currentStageId: "review",
+      currentStageType: "review", currentParticipant: { type: "user", userId: "reviewer" }, lastDecisionOutcome: "changes_requested" } }).where(eq(issues.id, f.issueId));
+    expect((await displayStatus(f.issueId)).displayStatus).toBe("monitoring");
+    await ctx.db.update(issues).set({ monitorNextCheckAt: null }).where(eq(issues.id, f.issueId));
     expect((await displayStatus(f.issueId)).displayStatus).toBe("todo");
   });
 
@@ -163,7 +185,7 @@ describeEmbeddedPostgres("Execution-backed task presentation", () => {
     expect((await displayStatus(f.issueId)).displayStatus).toBe("blocked");
     await ctx.db.execute(sql`UPDATE issue_recovery_actions SET status = 'resolved' WHERE source_issue_id = ${f.issueId}`);
     expect((await displayStatus(f.issueId)).displayStatus).toBe("monitoring");
-    await ctx.db.update(issues).set({ executionState: { currentParticipant: { type: "user", userId: "reviewer" } } }).where(eq(issues.id, f.issueId));
+    await ctx.db.update(issues).set({ executionState: { status: "pending", currentStageId: "review", currentStageType: "review", currentParticipant: { type: "user", userId: "reviewer" } } }).where(eq(issues.id, f.issueId));
     expect((await displayStatus(f.issueId)).displayStatus).toBe("in_review");
   });
 });

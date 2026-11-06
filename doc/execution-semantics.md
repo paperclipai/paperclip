@@ -140,8 +140,8 @@ terminal, and provider-quota recovery states keep their own presentation.
 For agent-owned tasks whose lifecycle status is `in_progress`, the visible
 **In Progress** state requires a task-linked `queued` or `running` run. Stale
 execution/checkout locks and scheduled retries alone do not establish activity.
-Without an active run, an open recovery action displays **Blocked**, a review
-participant or pending thread interaction displays **In Review**, an ordinary
+Without an active run, an open recovery action displays **Blocked**, a pending review
+stage or active pending thread interaction displays **In Review**, an ordinary
 scheduled monitor displays **Monitoring**, and other work displays **Todo**.
 These projections do not change stored lifecycle status, locks, admission,
 continuation authority, or recovery. Human-owned tasks retain their explicit
