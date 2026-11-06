@@ -294,6 +294,9 @@ describeEmbeddedPostgres("merged Muse migration histories", () => {
       const beforeHistory = baseline === "fresh" ? [] : await historyRows(sql);
       const retainedRows = baseline === "fresh" ? null : await seedRetainedRows(sql, baseline === "muse0348");
       const beforeRows = await retainedRows?.();
+      const expectedRetainedRows = beforeRows
+        ? { ...beforeRows, run: { ...beforeRows.run, legacy_process_settlement: null } }
+        : beforeRows;
       const state = await inspectMigrations(connectionString);
       expect(state.status).toBe("needsMigrations");
       const laterMigrations = journal.entries.filter(entry => entry.idx > 353).map(entry => `${entry.tag}.sql`);
@@ -319,7 +322,7 @@ describeEmbeddedPostgres("merged Muse migration histories", () => {
         const currentHash = await migrationHash(entry.file);
         expect(afterHistory.filter(row => row.hash === currentHash)).toHaveLength(1);
       }
-      if (retainedRows) expect(await retainedRows()).toEqual(beforeRows);
+      if (retainedRows) expect(await retainedRows()).toEqual(expectedRetainedRows);
       const indexes = await sql`
         SELECT c.relname, i.indisvalid, i.indisready, pg_get_indexdef(c.oid) AS definition
         FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid JOIN pg_namespace n ON n.oid = c.relnamespace
@@ -336,7 +339,7 @@ describeEmbeddedPostgres("merged Muse migration histories", () => {
       expect((await inspectMigrations(connectionString)).status).toBe("upToDate");
       expect(await historyRows(sql)).toEqual(afterHistory);
       expect(await schemaShape(sql)).toEqual(finalShape);
-      if (retainedRows) expect(await retainedRows()).toEqual(beforeRows);
+      if (retainedRows) expect(await retainedRows()).toEqual(expectedRetainedRows);
     } finally {
       await Promise.all([sql.end(), reference.end()]);
     }

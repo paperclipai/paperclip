@@ -1,3 +1,4 @@
+import { controlledOrdinaryBootstrapProtocol, controlledOrdinaryBootstrapResult, controlledOrdinaryBootstrapScript } from "./helpers/recovery-deadline-ordinary-bootstrap.js";
 import { controlledCompanyBootstrapResult, controlledCompanyBootstrapScript } from "./helpers/recovery-deadline-bootstrap.js";
 import * as legacySettlement from "../services/heartbeat/legacy-process-settlement.js";
 import express, { type Request } from "express";
@@ -55,7 +56,8 @@ describe.skipIf(!fixtureUrl)("recovery deadline producer, proof and resumed exec
     await applyPendingMigrations(adminUrl!);
     db = createDb(fixtureUrl!, { maxConnections: 4, idleTimeoutSeconds: 0, maxLifetimeSeconds: 0 });
     registerServerAdapter({ ...processAdapter, type: "recovery_deadline_process", execute: async context => {
-      const result = controlledCompanyBootstrapResult(context.config, await processAdapter.execute(context));
+      const result = controlledOrdinaryBootstrapResult(context.config,
+        controlledCompanyBootstrapResult(context.config, await processAdapter.execute(context)));
       if (result.exitCode === 0 && !result.timedOut && !result.errorCode) {
         const [current] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, context.runId));
         if (!current) throw new Error("Controlled agent requires its admitted run");
@@ -201,20 +203,21 @@ describe.skipIf(!fixtureUrl)("recovery deadline producer, proof and resumed exec
       args: ["-e", "console.log('recovery-review-result')"], cwd: process.cwd() } }).where(eq(agents.id, reviewer.id));
     return { ...f, reviewer, stageId, reviewSource: saved, reset };
   }
-  async function actualCompanyFailure(expectReceipt = true) {
-    const f = await fixture({ companyScope: true });
+  async function actualCompanyFailure(expectReceipt = true, companyScope = true) {
+    const f = await fixture(companyScope ? { companyScope: true } : { companyScope: false, retainedSourceLock: false });
     await db.update(agents).set({ adapterConfig: { command: process.execPath,
-      args: ["-e", controlledCompanyBootstrapScript],
+      args: ["-e", companyScope ? controlledCompanyBootstrapScript : controlledOrdinaryBootstrapScript],
       cwd: process.cwd() } }).where(eq(agents.id, f.agent.id));
     await start(); await settled();
     const admitted = await heartbeat.wakeup(f.agent.id, { source: "on_demand", reason: "manual",
-      requestedByActorType: "system", contextSnapshot: {} });
+      requestedByActorType: "system", contextSnapshot: companyScope ? {} : { issueId: f.issue.id, taskId: f.issue.id } });
     if (!admitted) throw new Error("Company failure source was not admitted");
     await vi.waitFor(async () => expect((await run(admitted.id)).status).toBe("failed"), { timeout: 15_000 });
     await heartbeat.drainActiveRunExecutions();
     const failed = await run(admitted.id);
-    expect(failed).toMatchObject({ scopeKind: "company", issueId: null, status: "failed", errorCode: "adapter_failed" });
-    expect(failed.stderrExcerpt).toContain("Controlled review bootstrap unavailable");
+    expect(failed).toMatchObject({ scopeKind: companyScope ? "company" : "issue", issueId: companyScope ? null : f.issue.id,
+      status: "failed", errorCode: companyScope ? "adapter_failed" : "codex_transient_upstream" });
+    expect(failed.stderrExcerpt).toContain(companyScope ? "Controlled review bootstrap unavailable" : controlledOrdinaryBootstrapProtocol);
     expect(failed.processPid).toBeGreaterThan(1); expect(failed.processGroupId).toBeGreaterThan(1);
     expect(failed.processStartedAt).toBeInstanceOf(Date); expect(failed.controllerBootId).toEqual(expect.any(String));
     expect(failed.controllerLeaseExpiresAt).toBeNull();
@@ -398,6 +401,64 @@ describe.skipIf(!fixtureUrl)("recovery deadline producer, proof and resumed exec
     expect(starts).toHaveLength(1);
     const successors = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, f.actualSource.id));
     expect(successors).toHaveLength(1);
+    expect(await heartbeat.promoteDueScheduledRetries()).toEqual({ promoted: 0, runIds: [] });
+  }, 60_000);
+
+  it("cold-reconstructs an actual failed ordinary issue process with exact source settlement", async () => {
+    const jitter = vi.spyOn(Math, "random").mockReturnValue(0.5);
+    let f: Awaited<ReturnType<typeof actualCompanyFailure>>;
+    try { f = await actualCompanyFailure(true, false); }
+    finally { jitter.mockRestore(); }
+    const produced = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, f.actualSource.id));
+    expect(produced, JSON.stringify(produced.map(row => ({ id: row.id, status: row.status, dueAt: row.scheduledRetryAt,
+      reason: row.scheduledRetryReason })))).toHaveLength(1);
+    expect(produced[0]).toMatchObject({ status: "scheduled_retry", scopeKind: "issue", issueId: f.issue.id,
+      agentId: f.agent.id, companyId: f.companyId, scheduledRetryReason: "transient_failure", scheduledRetryAttempt: 1,
+      startedAt: null, finishedAt: null });
+    expect(produced[0].scheduledRetryAt).toBeInstanceOf(Date);
+    const scheduled = { run: produced[0], dueAt: produced[0].scheduledRetryAt! };
+    const [wake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, scheduled.run.wakeupRequestId!));
+    expect(wake).toMatchObject({ runId: scheduled.run.id, companyId: f.companyId, agentId: f.agent.id, status: "queued" });
+    const producerEvents = await db.select().from(heartbeatRunEvents).where(and(eq(heartbeatRunEvents.runId, f.actualSource.id),
+      sql`${heartbeatRunEvents.message} LIKE 'Scheduled bounded retry %'`));
+    expect(producerEvents).toHaveLength(1);
+    expect(producerEvents[0].payload).toMatchObject({ retryRunId: scheduled.run.id, retryReason: "transient_failure",
+      scheduledRetryAt: scheduled.dueAt.toISOString(), baseDelayMs: 30_000, delayMs: 30_000 });
+    expect(scheduled.dueAt.getTime()).toBeGreaterThan(Date.now());
+    await settled();
+    const observedReceipt = f.actualSource.legacyProcessSettlement;
+    expect(observedReceipt).not.toBeNull();
+    expect(f.actualSource).toMatchObject({ scopeKind: "issue", issueId: f.issue.id, nativeIssueId: null, nativeSessionId: null });
+    expect((await readIdleRetrySchedule(db, Date.now(), worker!.retries.reconciliationSnapshot)).blocked).toBe(false);
+    const report = await proof(); expect(report.backgroundWork, JSON.stringify(report.diagnostics)).toBe("none");
+    expect(report.scheduledWake?.nextWakeAt).toBe(scheduled.dueAt.toISOString());
+    for (const patch of [{ legacyProcessSettlement: null }, { legacyProcessSettlement: {} },
+      { processPid: f.actualSource.processPid! + 1 }, { processStartedAt: new Date(f.actualSource.processStartedAt!.getTime() + 1000) },
+      { controllerLeaseExpiresAt: new Date(0) }, { nativeIssueId: f.issue.id },
+      { resultJson: { ...f.actualSource.resultJson, cancellation: {} } }]) {
+      const rollback = new Error("ordinary issue source regression rollback");
+      await expect(db.transaction(async tx => {
+        await tx.update(heartbeatRuns).set(patch).where(eq(heartbeatRuns.id, f.actualSource.id));
+        expect((await readIdleRetrySchedule(tx, Date.now(), worker!.retries.reconciliationSnapshot)).blocked).toBe(true);
+        throw rollback;
+      })).rejects.toThrow(rollback.message);
+    }
+    expect((await run(f.actualSource.id)).legacyProcessSettlement).toEqual(observedReceipt);
+    await settled();
+    await worker!.stop(); await coordinator!.stop();
+    expect((await proof()).backgroundWork).not.toBe("none");
+    heartbeat = heartbeatService(db); await start(); await settled();
+    expect(coordinator!.nextWakeAt()).toBe(scheduled.dueAt.getTime());
+    await vi.waitFor(async () => expect((await run(scheduled.run.id)).status).toBe("succeeded"), { timeout: 45_000 });
+    await heartbeat.drainActiveRunExecutions();
+    expect((await run(scheduled.run.id)).stdoutExcerpt).toContain("recovery-deadline-result");
+    expect((await run(f.actualSource.id)).processPid).toBe(f.actualSource.processPid);
+    expect((await run(f.actualSource.id)).legacyProcessSettlement).toEqual(observedReceipt);
+    const starts = await db.select({ id: heartbeatRunEvents.id }).from(heartbeatRunEvents).where(and(
+      eq(heartbeatRunEvents.runId, scheduled.run.id), eq(heartbeatRunEvents.message, "run started")));
+    expect(starts).toHaveLength(1);
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, f.actualSource.id))).map(row => row.id))
+      .toEqual([scheduled.run.id]);
     expect(await heartbeat.promoteDueScheduledRetries()).toEqual({ promoted: 0, runIds: [] });
   }, 60_000);
 

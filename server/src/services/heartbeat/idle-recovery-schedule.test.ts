@@ -18,7 +18,13 @@ function tx(rows: unknown[], onRead: () => void = () => {}, receipts: unknown[] 
 }
 function retry() {
   return { run: { id: "retry", scopeKind: "issue", issueId: "issue", companyId: "company", agentId: "agent", wakeupRequestId: "wake", status: "scheduled_retry",
+    runtimeMode: "legacy", nativeIssueId: null, nativeSessionId: null, processPid: null, processGroupId: null,
+    processStartedAt: null, controllerBootId: null, controllerLeaseExpiresAt: null, hasProcessSettlement: false,
     scheduledRetryAt: new Date(now + 600_000), startedAt: null, finishedAt: null, costAccountingPending: false, resultJson: null },
+    source: { id: "source", companyId: "company", agentId: "agent", scopeKind: "issue", issueId: "issue",
+      nativeIssueId: null, nativeSessionId: null, runtimeMode: "legacy", status: "failed", settled: true,
+      hasCancellation: false, processPid: null, processGroupId: null, processStartedAt: null,
+      controllerBootId: null, controllerLeaseExpiresAt: null, legacyProcessSettlement: null, finishedAt: new Date(now - 1000) },
     wake: { id: "wake", runId: "retry", companyId: "company", agentId: "agent", status: "queued", finishedAt: null },
     agent: { id: "agent", companyId: "company", status: "idle" }, company: { status: "active" },
     issue: { id: "issue", companyId: "company", assigneeAgentId: "agent", assigneeUserId: null, status: "in_progress",
@@ -46,6 +52,69 @@ describe("owned recovery deadline inspection", () => {
     for (const patch of [{ scheduledRetryAt: null }, { scheduledRetryAt: new Date(now) }, { costAccountingPending: true },
       { resultJson: { startupCancellation: {} } }, { runtimeMode: "native" }]) {
       expect((await readIdleRetrySchedule(tx([{ ...retry(), run: { ...row.run, ...patch } }]), now, owner)).blocked).toBe(true);
+    }
+  });
+  it("requires an exact settled predecessor for an ordinary issue retry", async () => {
+    const row = retry();
+    expect((await readIdleRetrySchedule(tx([row]), now, owner)).blocked).toBe(false);
+    const sources = [
+      ["missing", null],
+      ["foreign company", { ...row.source, companyId: "foreign" }],
+      ["foreign agent", { ...row.source, agentId: "foreign" }],
+      ["foreign issue", { ...row.source, issueId: "foreign" }],
+      ["company scope", { ...row.source, scopeKind: "company" }],
+      ["unknown scope", { ...row.source, scopeKind: "unknown" }],
+      ["cancelled", { ...row.source, hasCancellation: true }],
+      ["unsettled", { ...row.source, settled: false }],
+      ["running", { ...row.source, status: "running" }],
+      ["native runtime", { ...row.source, runtimeMode: "native" }],
+      ["native issue", { ...row.source, nativeIssueId: "issue" }],
+      ["native session", { ...row.source, nativeSessionId: "session" }],
+      ["retained PID without receipt", { ...row.source, processPid: 42 }],
+      ["retained birth without receipt", { ...row.source, processStartedAt: new Date(now - 2000) }],
+    ];
+    for (const [label, source] of sources) {
+      expect((await readIdleRetrySchedule(tx([{ ...row, source }]), now, owner)).blocked, String(label)).toBe(true);
+    }
+  });
+  it("binds retained process settlement to every source identity field for an ordinary issue retry", async () => {
+    const row = retry();
+    const identity = { ...row.source, processPid: 42, processGroupId: 42,
+      processStartedAt: new Date(now - 2000), controllerBootId: "boot" };
+    const receipt = { schema: "paperclip.legacy-process-settlement.v1", runId: identity.id,
+      companyId: identity.companyId, agentId: identity.agentId, runtimeMode: "legacy", targetKind: "local",
+      controllerBootId: identity.controllerBootId, processPid: identity.processPid, processGroupId: identity.processGroupId,
+      processStartedAt: identity.processStartedAt.toISOString(), finishedAt: identity.finishedAt.toISOString(), status: identity.status };
+    const retained = { ...row, source: { ...identity, legacyProcessSettlement: receipt } };
+    expect((await readIdleRetrySchedule(tx([retained]), now, owner)).blocked).toBe(false);
+    for (const patch of [{ schema: "unknown" }, { runId: "foreign" }, { companyId: "foreign" },
+      { agentId: "foreign" }, { runtimeMode: "native" }, { targetKind: "remote" }, { controllerBootId: "foreign" },
+      { processPid: 43 }, { processGroupId: 43 }, { processStartedAt: new Date(now - 3000).toISOString() },
+      { finishedAt: new Date(now - 2000).toISOString() }, { status: "interrupted" }, { extra: true }]) {
+      expect((await readIdleRetrySchedule(tx([{ ...retained, source: { ...retained.source,
+        legacyProcessSettlement: { ...receipt, ...patch } } }]), now, owner)).blocked, JSON.stringify(patch)).toBe(true);
+    }
+    for (const proof of [null, {}, [], { ...receipt, processPid: "42" }]) {
+      expect((await readIdleRetrySchedule(tx([{ ...retained, source: { ...retained.source,
+        legacyProcessSettlement: proof } }]), now, owner)).blocked, JSON.stringify(proof)).toBe(true);
+    }
+    for (const patch of [{ processPid: 43 }, { processGroupId: 43 }, { controllerBootId: "claimed" },
+      { processStartedAt: new Date(now - 3000) }, { finishedAt: null }, { nativeIssueId: "issue" },
+      { nativeSessionId: "session" }, { controllerLeaseExpiresAt: new Date(0) },
+      { controllerLeaseExpiresAt: new Date(now + 1000) }]) {
+      expect((await readIdleRetrySchedule(tx([{ ...retained, source: { ...retained.source, ...patch } }]), now, owner)).blocked,
+        JSON.stringify(patch)).toBe(true);
+    }
+  });
+  it("rejects runtime ownership on the future target of an ordinary issue retry", async () => {
+    const row = retry();
+    for (const patch of [{ runtimeMode: "unknown" }, { runtimeMode: null }, { nativeIssueId: "issue" },
+      { nativeSessionId: "session" }, { processPid: 42 }, { processPid: 0 }, { processGroupId: 42 },
+      { processStartedAt: new Date(now - 2000) }, { controllerBootId: "boot" }, { controllerBootId: "" },
+      { controllerLeaseExpiresAt: new Date(0) }, { controllerLeaseExpiresAt: new Date(now + 1000) },
+      { hasProcessSettlement: true }]) {
+      expect((await readIdleRetrySchedule(tx([{ ...row, run: { ...row.run, ...patch } }]), now, owner)).blocked,
+        JSON.stringify(patch)).toBe(true);
     }
   });
   it("covers explicit company retries without granting incidental task context authority", async () => {

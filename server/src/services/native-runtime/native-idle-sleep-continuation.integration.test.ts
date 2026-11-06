@@ -1,3 +1,5 @@
+import { once } from "node:events";
+import { createServer } from "node:http";
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -13,6 +15,7 @@ import { nativeRestartFixture, describeEmbeddedPostgres } from "../../__tests__/
 import { resolveExternalTestDatabaseUrl } from "../../__tests__/helpers/external-test-database.js";
 import { heartbeatService } from "../heartbeat.js";
 import { instanceSettingsService } from "../instance-settings.js";
+import { flushBudgetEvaluationWork } from "../budgets.js";
 import { secretService } from "../secrets.js";
 import { issueRoutes } from "../../routes/issues.js";
 import { errorHandler } from "../../middleware/index.js";
@@ -125,6 +128,7 @@ describeEmbeddedPostgres("native idle sleep cold continuation", () => {
       await heartbeat.invoke(agentId, "on_demand", { issueId }, "manual", { actorType: "user", actorId: userId });
       await heartbeat.drainActiveRunExecutions();
       await heartbeat.reconcileCostAccounting();
+      await flushBudgetEvaluationWork(db, { companyId });
       expect(turns).toHaveLength(1);
       expect(opened).toHaveLength(1);
       const [first] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, turns[0]));
@@ -167,9 +171,13 @@ describeEmbeddedPostgres("native idle sleep cold continuation", () => {
       app.use((req, _res, next) => { req.actor = { type: "board", userId, source: "local_implicit" }; next(); });
       app.use("/api", issueRoutes(db, {} as Parameters<typeof issueRoutes>[1]));
       app.use(errorHandler);
+      const commentServer = createServer(app);
       heartbeat.startTaskDrain({ ttlMs: 60_000 });
       try {
-        await request(app).post(`/api/issues/${issueId}/comments`).send({ body: "Continue the saved work and record the continuation.", reopen: true, resume: true }).expect(201);
+        commentServer.listen(0, "127.0.0.1");
+        await once(commentServer, "listening");
+        expect(commentServer.address()).toMatchObject({ address: "127.0.0.1" });
+        await request(commentServer).post(`/api/issues/${issueId}/comments`).send({ body: "Continue the saved work and record the continuation.", reopen: true, resume: true }).expect(201);
         await vi.waitFor(async () => {
           const wakes = await db.select().from(agentWakeupRequests).where(and(eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.reason, "issue_reopened_via_comment")));
           expect(wakes).toHaveLength(1);
@@ -177,10 +185,16 @@ describeEmbeddedPostgres("native idle sleep cold continuation", () => {
           expect(heartbeat.getTaskDrainStatus().pendingWakes).toBe(0);
         });
         expect(turns).toHaveLength(1);
-      } finally { heartbeat.stopTaskDrain(); }
+      } finally {
+        heartbeat.stopTaskDrain();
+        if (commentServer.listening) await new Promise<void>((resolve, reject) => {
+          commentServer.close(error => error ? reject(error) : resolve());
+        });
+      }
       await heartbeat.resumeQueuedRuns();
       await heartbeat.drainActiveRunExecutions();
       await heartbeat.reconcileCostAccounting();
+      await flushBudgetEvaluationWork(db, { companyId });
       expect(turns).toHaveLength(2);
       expect(new Set(turns).size).toBe(2);
       expect(opened).toHaveLength(2);
