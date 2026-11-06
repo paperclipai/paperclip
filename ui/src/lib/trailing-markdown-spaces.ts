@@ -9,7 +9,9 @@ interface PositionedNode {
 /**
  * The rich editor exports a final prose space as `&#x20;`. Restore that space
  * before storing the draft so message submission can trim it normally.
- * Only touch the final text node: code, HTML, and escaped literal entities
+ * Only touch a document-final prose suffix. Entities before internal newlines or
+ * closing emphasis markers stay encoded: literal spaces there can create a
+ * hard break or invalidate emphasis. Code, HTML, and escaped literal entities
  * must keep their source. Run on the exact export, before other unescaping.
  */
 export function restoreTrailingMarkdownSpaces(markdown: string): string {
