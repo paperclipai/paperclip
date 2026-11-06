@@ -219,6 +219,11 @@ export async function reconcileAbandonedExecutionControl(
           const cause = "execution_finalization_deadline_exceeded";
           const nextAction =
             "Inspect the failed run and verify its provider has stopped. Reconcile any uncertain external action before explicitly continuing this task.";
+          // The deadline replaces the run's error code. Keep the earlier
+          // diagnosis as its root cause, as the native finalizer does.
+          const priorFailureCode = coordinator?.failureCode ?? run.errorCode;
+          const recordsOriginalFailure = Boolean(priorFailureCode) && priorFailureCode !== cause &&
+            typeof run.resultJson?.originalFailureCode !== "string";
           if (coordinator)
             await tx
               .update(nativeRunFinalizations)
@@ -256,6 +261,9 @@ export async function reconcileAbandonedExecutionControl(
               errorCode: cause,
               error: nextAction,
               nextAction,
+              ...(recordsOriginalFailure
+                ? { resultJson: { ...run.resultJson, originalFailureCode: priorFailureCode } }
+                : {}),
               updatedAt: now,
             })
             .where(eq(heartbeatRuns.id, run.id))

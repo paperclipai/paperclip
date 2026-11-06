@@ -159,8 +159,12 @@ checks under short coordinator, issue and run row locks, atomically with the
 owner claim. The task must still be open, assigned to the run or its authoritative
 review participant, and bound to that running native execution and accepted
 result. A different checkout, newer execution or queued/running legacy execution
-prevents takeover. Publication checks repeat this validation; row locks are never
-held across physical copyback I/O.
+prevents takeover. A later wake for the same assignee that has never started,
+such as the answer to the run's question, does not. Its claim waits for this
+run's execution lock, so it waits for this copyback. Counting it would block both
+runs. Another agent's run and a recovery-action wake still prevent takeover.
+Publication checks repeat this validation, so a wake that starts during copyback
+stops publication. Row locks are never held across physical copyback I/O.
 
 The harness endpoint is `POST /v1/tenant/workspace-worker-stop`. The fleet-wide
 server token authorizes a read request, never stop evidence: responses must be
@@ -306,6 +310,12 @@ extracted. No host path or link target is copied into the informational run even
 
 ## Repairing a failed workspace export without rerunning the agent
 
+The background workspace worker runs up to four copy-backs at once, one per
+task, so a slow sandbox export does not hold every other task's retry. Due work
+runs oldest first. Work without a saved retry time, such as a copy-back that a
+restart interrupted, is ordered by when it became pending; it does not go ahead
+of older retries that are already due.
+
 Transient export failures retry three times, then produce
 `native_workspace_sync_out_retry_exhausted`. The accepted result stays saved,
 and the exact sandbox is stopped and retained for export-only recovery. The
@@ -401,6 +411,10 @@ and startup cancellation. Before dispatch, the controller stores a separate
 and original plugin. The initial cleanup and restart sweep both require that
 plugin to advertise `environmentStopLease`. Missing capability or failed stop
 leaves pending cleanup; ordinary release and destroy are never fallback methods.
+A typed terminal stop failure (`PluginEnvironmentStopError` with reason
+`resource_unrecoverable` or `recovery_failed`) escalates the lease for operator
+attention on its first attempt and uses the long retry interval. The lease stays
+in pending cleanup.
 
 A matching stopped receipt clears the pending intent, leaves the lease released
 and resumable, and saves `sandboxStopAndRetainReceipt`. Its request identity,

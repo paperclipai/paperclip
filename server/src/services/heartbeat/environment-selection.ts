@@ -145,10 +145,11 @@ export async function selectHeartbeatEnvironment(db: Db, input: HeartbeatEnviron
     existingExecutionWorkspace = await executionWorkspacesSvc.getStoredById(agent.companyId, existingExecutionWorkspace.id);
   }
   const retainedDirectory = input.task.freshWorkspace?.mode === "reuse_current_workspace" ? input.task.freshWorkspace : null;
-  if (retainedDirectory && (issueRef?.executionWorkspaceId !== retainedDirectory.workspaceId ||
-      existingExecutionWorkspace?.id !== retainedDirectory.workspaceId || existingExecutionWorkspace.cwd !== retainedDirectory.cwd)) {
+  const retainedWorkspace = input.task.freshWorkspace?.mode === "resume_stopped_native_workspace" ? input.task.freshWorkspace : retainedDirectory;
+  if (retainedWorkspace && (issueRef?.executionWorkspaceId !== retainedWorkspace.workspaceId ||
+      existingExecutionWorkspace?.id !== retainedWorkspace.workspaceId || existingExecutionWorkspace.cwd !== retainedWorkspace.cwd)) {
     throw new WorkspaceValidationFailure("The saved Retry workspace binding changed.", {
-      workspaceValidation: { reason: "isolated_task_directory_binding_mismatch", issueId },
+      workspaceValidation: { reason: retainedDirectory ? "isolated_task_directory_binding_mismatch" : "stopped_native_workspace_binding_mismatch", issueId },
     });
   }
   const nativeRecoveryExecutionWorkspaceId =
@@ -159,7 +160,7 @@ export async function selectHeartbeatEnvironment(db: Db, input: HeartbeatEnviron
   const workspaceReuseRequest =
     resolveExecutionWorkspaceReuseRequestForIssue({
       issueExecutionWorkspaceId: requestedExecutionWorkspaceId,
-      issueExecutionWorkspacePreference: controllerOnly ? null : nativeRecoveryExecutionWorkspaceId
+      issueExecutionWorkspacePreference: controllerOnly ? null : nativeRecoveryExecutionWorkspaceId || retainedWorkspace
         ? "reuse_existing"
         : (issueRef?.executionWorkspacePreference ?? null),
       existingExecutionWorkspaceStatus:

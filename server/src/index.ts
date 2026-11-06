@@ -80,6 +80,7 @@ import { verifyStoppedNativeSessionForReplacement } from "./services/native-runt
 import { embeddedPostgresOwnerPort } from "./embedded-postgres-owner.js";
 import { deliverExecutionStatuses } from "./services/execution-status-delivery.js";
 import { deliverReconciledExecutions, settleUnrecoverableExecutions } from "./services/execution-recovery-resolution.js";
+import { deliverPendingPauseResumes } from "./services/issue-tree-resume.js";
 import { reconcileSafeNativeReplacements } from "./services/native-runtime/native-safe-replacement.js";
 import { reconcileAbandonedExecutionControl } from "./services/execution-control-reconciliation.js";
 import { acknowledgeNativeStartupCleanup } from "./services/native-runtime/native-startup-cleanup.js";
@@ -1226,6 +1227,24 @@ async function startServerWithDatabaseTeardown(
       await Promise.allSettled([...heartbeatSchedulerInFlight]);
     }
   };
+  // Queued turns that never executed do not depend on restart recovery of
+  // other runs. Start them as soon as providers and adapters are loaded,
+  // instead of behind every unrelated startup recovery pass. Agents with a run
+  // left `running`, or a queued retry/continuation, keep waiting for the full
+  // queued-run pass registered after native restart recovery below.
+  if (heartbeat) {
+    const startupHeartbeat = heartbeat;
+    trackHeartbeatSchedulerWork(timeStartupRecovery("fresh_queued_runs", async () => {
+      await app.locals.bundledPluginsStartup;
+      const { waitForExternalAdapters } = await import("./adapters/registry.js");
+      await waitForExternalAdapters();
+      if (heartbeatSchedulerStopped || isIdleTaskDrainActive() || isWarmStandby() || readTaskDrain(new Date()) !== null) return;
+      const result = await startupHeartbeat.resumeFreshQueuedRunsAtStartup();
+      logger.info({ ...result, processUptimeMs: Math.round(process.uptime() * 1000) }, "startup dispatch of queued runs without prior execution complete");
+    }).catch((err: unknown) => {
+      logger.error({ err }, "startup dispatch of queued runs without prior execution failed; they remain queued for the full pass");
+    }));
+  }
   const skillSourceSync = skillSourceSyncService(db as any);
   const nativeHarnessBackupExpiration = nativeHarnessBackupExpirationService(db as any, {
     duty: "backups",
@@ -1324,7 +1343,10 @@ async function startServerWithDatabaseTeardown(
     { queue: DELIVERY_QUEUES.executionDisposition, run: () => settleUnrecoverableExecutions(db), next: executionSchedule.disposition },
     ...(heartbeat ? [
       { queue: DELIVERY_QUEUES.executionReplacement, run: () => reconcileSafeNativeReplacements(db, new Date(), { verifyStoppedSession: run => verifyStoppedNativeSessionForReplacement(db, run) }), next: executionSchedule.replacement },
-      { queue: DELIVERY_QUEUES.executionContinuation, run: () => deliverReconciledExecutions(db, heartbeat.wakeup), next: executionSchedule.continuation },
+      { queue: DELIVERY_QUEUES.executionContinuation, run: async () => {
+        await deliverReconciledExecutions(db, heartbeat.wakeup);
+        await deliverPendingPauseResumes(db, heartbeat.wakeup);
+      }, next: executionSchedule.continuation },
     ] : []),
   ], () => !heartbeatSchedulerStopped);
 
@@ -1676,6 +1698,9 @@ async function startServerWithDatabaseTeardown(
       () => !isIdleTaskDrainActive() && !isWarmStandby() && !heartbeatSchedulerStopped).ready;
     if (config.heartbeatSchedulerEnabled) await heartbeat.registerRunDispatchWork(deliveryWork,
       () => !isIdleTaskDrainActive() && !isWarmStandby() && !heartbeatSchedulerStopped).ready;
+    if (config.heartbeatSchedulerEnabled) {
+      logger.info({ processUptimeMs: Math.round(process.uptime() * 1000) }, "startup queued-run dispatch pass complete");
+    }
     if (config.heartbeatSchedulerEnabled) await heartbeat.registerScheduledRetryCancellationWork(deliveryWork,
       () => !isIdleTaskDrainActive() && !heartbeatSchedulerStopped && !isWarmStandby()).ready;
 

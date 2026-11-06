@@ -227,6 +227,7 @@ export const PRP_V1_EVENT_TYPES = new Set([
   "harness.exited",
   "harness.diagnostic",
   "plan.updated",
+  "plan.proposed",
   "tool.execution.started",
   "tool.execution.progressed",
   "tool.execution.completed",
