@@ -100,6 +100,7 @@ export async function seedChaosLab(input: {
   adapters: readonly AdapterId[];
   concurrency: number;
   budgetCents: number;
+  masks?: readonly string[];
   fixtureRoot: string;
   waveId: string;
   timeline: Timeline;
@@ -120,6 +121,13 @@ export async function seedChaosLab(input: {
     budgetMonthlyCents: input.budgetCents,
   });
   timeline.add("seed_company", { companyId: company.id });
+  if (input.masks?.includes("rc06")) {
+    // Keep the amount, disable only the hard stop on this isolated company (RC-06 mask).
+    await api.post(`/api/companies/${company.id}/budgets/policies`, {
+      scopeType: "company", scopeId: company.id, amount: input.budgetCents, hardStopEnabled: false,
+    });
+    timeline.add("seed_mask_rc06", { companyId: company.id, budgetCents: input.budgetCents, hardStopEnabled: false });
+  }
 
   const secretRefs: SecretReferenceMap = {};
   const credentialKeys = [...new Set([...input.adapters.map(adapter => CREDENTIAL_FOR_ADAPTER[adapter]),
