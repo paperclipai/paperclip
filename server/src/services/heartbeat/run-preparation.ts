@@ -92,7 +92,7 @@ import {
   type MissingRuntimeBinding,
 } from "../secrets.js";
 import { createToolGatewayService } from "../tool-gateway.js";
-import { getAssignedMcpGateway } from "../native-runtime/assigned-mcp-tools.js";
+import { getRegisteredToolGateway } from "../tool-gateway-registry.js";
 import { toolAccessService } from "../tool-access.js";
 import {
   buildDocumentReviewContext,
@@ -999,7 +999,7 @@ export async function buildPaperclipRuntimeMcpServers(input: {
   const assignedTools = effective.allowedTools.filter((tool) =>
     assignedConnectionIds.has(tool.connectionId),
   );
-  const gatewayService = getAssignedMcpGateway(input.db, { required: false });
+  const gatewayService = getRegisteredToolGateway(input.db);
   const service = gatewayService ?? createToolGatewayService(input.db);
   const pluginToolNames = (await gatewayService?.listPluginToolsForAgent({
     companyId: input.agent.companyId,

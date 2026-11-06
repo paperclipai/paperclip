@@ -18,8 +18,8 @@ const serviceMocks = vi.hoisted(() => ({
   listPluginToolsForAgent: vi.fn().mockResolvedValue([]),
 }));
 
-vi.mock("./assigned-mcp-tools.js", () => ({
-  getAssignedMcpGateway: () => ({ listPluginToolsForAgent: serviceMocks.listPluginToolsForAgent }),
+vi.mock("../tool-gateway-registry.js", () => ({
+  getRegisteredToolGateway: () => ({ listPluginToolsForAgent: serviceMocks.listPluginToolsForAgent }),
 }));
 
 vi.mock("../voice/speko-agent-tools.js", () => ({ spekoToolsForSession: serviceMocks.spekoToolsForSession }));

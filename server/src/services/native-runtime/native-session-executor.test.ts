@@ -341,7 +341,7 @@ vi.mock("./paperclip-runner-tool-authority.js", () => ({
 
 vi.mock("./assigned-mcp-tools.js", () => ({
   createAssignedMcpTools: state.createAssignedMcpTools,
-  getAssignedMcpGateway: () => ({ listPluginToolsForAgent: async () => [] }),
+  getAssignedMcpGateway: () => ({}),
 }));
 
 vi.mock("./native-runner-file-handoff.js", () => ({
