@@ -1115,9 +1115,20 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
     expect(readRemoteWorkspaceAuthority((await workspace(reserved.id)).metadata)).toMatchObject({ dirty: true, writerRunId: ids.run,
       snapshotId: readRemoteWorkspaceAuthority(prepared.workspace.metadata)!.snapshotId });
     expect((await fs.readdir(path.join(prepared.remoteRoot, ".paperclip-runtime", "workspace-snapshots"))).length).toBe(1);
+    // Each settled save records where its time went: the failed upload keeps the
+    // phases it finished, and the retry of the same boundary records every phase.
+    const finalTiming = async () => (await db.select().from(workspaceOperations).where(and(
+      eq(workspaceOperations.executionWorkspaceId, reserved.id), eq(workspaceOperations.phase, "remote_workspace_snapshot"),
+      sql`${workspaceOperations.metadata}->>'boundary' = 'final'`))).map(save => save.metadata?.saveTiming);
+    const duration = expect.any(Number), archive = { byteSize: expect.any(Number), entries: expect.any(Number) };
+    expect(await finalTiming()).toEqual([{ schema: "paperclip.remote-workspace-save-timing.v1", outcome: "failed", totalMs: duration,
+      captureMs: duration, transferMs: duration, verifyMs: duration, ...archive, at: expect.any(String) }]);
     const saved = await saveRemoteWorkspace({ db, storage, workspace: await workspace(reserved.id), runId: ids.run,
       lease: prepared.lease, target: first, assertOwned: async () => undefined });
     expect(saved.generation).toBe(2);
+    expect(await finalTiming()).toEqual([{ schema: "paperclip.remote-workspace-save-timing.v1", outcome: "succeeded", totalMs: duration,
+      captureMs: duration, transferMs: duration, verifyMs: duration, uploadMs: duration, publishMs: duration, ...archive,
+      at: expect.any(String) }]);
     expect(await fs.readdir(path.join(prepared.remoteRoot, ".paperclip-runtime", "workspace-snapshots"))).toEqual([]);
   }, 60_000);
 
