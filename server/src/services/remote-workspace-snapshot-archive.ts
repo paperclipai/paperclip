@@ -130,17 +130,33 @@ async function workspaceArchive(input: {
     // directory's repository. Git would fail with a raw command error that
     // names local paths, or discover an enclosing repository and save that
     // repository's settings, refs and index as this directory's state.
-    // Only Git's rejection of the entry itself identifies it; its wording
-    // differs between Git versions. A full disk, a timeout, or a missing or
-    // failing Git program keeps its existing diagnostic.
+    // Git's error wording differs by version and locale, and a valid repository
+    // can also fail for other reasons, such as unsafe ownership or a full disk.
+    // Those keep their existing diagnostic; only a damaged entry is named here.
     const top = await git(repo, ["rev-parse", "--path-format=absolute", "--show-toplevel"])
-      .catch(async (error: { code?: unknown; message?: unknown }) => {
+      .catch(async (error: unknown) => {
         check();
-        if (typeof error.code !== "number" || /No space left on device|Disk quota exceeded/iu.test(String(error.message))
-          || !await git(os.tmpdir(), ["--version"]).then(() => true, () => false)) throw error;
-        return fail("invalid_git_repository");
+        if (await damagedGitEntry(repo)) fail("invalid_git_repository");
+        throw error;
       });
     if (await fs.realpath(top.trim()).catch(() => null) !== repo) fail("invalid_git_repository");
+  };
+  const damagedGitEntry = async (repo: string) => {
+    // Git's own test for a repository: a `gitdir:` file or a directory with
+    // HEAD, and objects and refs in its common directory.
+    const isFile = (file: string) => fs.stat(file).then(entry => entry.isFile(), () => false);
+    const isDirectory = (directory: string) => fs.stat(directory).then(entry => entry.isDirectory(), () => false);
+    const entry = path.join(repo, ".git");
+    let gitDir = entry;
+    if ((await fs.lstat(entry).catch(() => null))?.isFile()) {
+      const link = /^gitdir: (.+)$/mu.exec(await fs.readFile(entry, "utf8").catch(() => ""));
+      if (!link) return true;
+      gitDir = path.resolve(repo, link[1]!.trim());
+    }
+    if (!await isFile(path.join(gitDir, "HEAD"))) return true;
+    const common = await fs.readFile(path.join(gitDir, "commondir"), "utf8")
+      .then(value => path.resolve(gitDir, value.trim()), () => gitDir);
+    return !await isDirectory(path.join(common, "objects")) || !await isDirectory(path.join(common, "refs"));
   };
   const assertGitOperationComplete = async (repo: string) => {
     await assertRepositoryRoot(repo);
