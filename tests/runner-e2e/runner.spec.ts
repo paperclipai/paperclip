@@ -1489,11 +1489,13 @@ for (const execution of executions) {
         await pollUntil({ label: "governed waiting turn", deadlineAt, load: loadTaskState, accept: state => state.taskRuns.length === 1 && state.taskRuns.every(run => TERMINAL_RUN_STATUSES.has(run.status)) });
         await captureScreenshot("tool-review-pending", "Connection review awaiting a human", "tool-review-pending.png");
         await page.getByRole("button", { name: "Dismiss Approve tool action" }).click();
-        await page.getByRole("button", { name: "Review request", exact: true }).click();
         if (execution.task.toolReviewDecision === "restart") {
           await restartIsolatedPaperclipServer({ api, requestId: `tool-review-${nonce}`, deadlineAt });
           await page.reload();
         }
+        // Open the review card on the document that will act on it: an
+        // expanded card does not survive the post-restart reload.
+        await page.getByRole("button", { name: "Review request", exact: true }).click();
         if (execution.task.toolReviewDecision === "always") {
           await page.getByRole("button", { name: "Approval options", exact: true }).click();
           await page.getByRole("menuitem", { name: "Always allow", exact: true }).click();
