@@ -24,7 +24,7 @@ import {
   hasStopOnlyCleanup,
   settleStopOnlyCleanup,
 } from "../sandbox-stop-and-retain.js";
-import { discoverSettledNativeRunProcesses, PROCESS_IDENTITY_RECORDED, PROCESS_START_REQUESTED, recordNativeLocalProcessStop, releaseSettledNativeRunProcess, retryPendingSettledNativeRunProcesses } from "../native-local-process-stop.js";
+import { discoverSettledNativeRunProcesses, PROCESS_IDENTITY_RECORDED, PROCESS_START_REQUESTED, recordNativeLocalProcessStopInTransaction, releaseSettledNativeRunProcess, retryPendingSettledNativeRunProcesses } from "../native-local-process-stop.js";
 import { pendingCaseHandoffForRun } from "./case-handoff-lifecycle.js";
 import {
   legacyControllerBootId,
@@ -1188,11 +1188,18 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
           processPid: run.processPid,
           processStartedAt: run.processStartedAt?.toISOString() ?? null,
         });
-        await db.transaction(async tx => {
+        // An accepted result needs finalization, not a runner reattach. Its
+        // execution lease must still be released: the detached executor will
+        // not finalize, and the next controller's reconciler skips leased rows.
+        // A finalizer lease belongs to finalization already in progress here.
+        const released = await db.transaction(async tx => {
           await notifyLiveRunRecovery(tx, { companyId: run.companyId, runId: run.id });
-          await tx.update(nativeRunFinalizations).set({
-            leaseExpiresAt: now,
-            recoveryState: "awaiting_runner_reattach",
+          return tx.update(nativeRunFinalizations).set({
+            leaseExpiresAt: sql`case when ${nativeRunFinalizations.resultId} is not null
+              and ${nativeRunFinalizations.leaseOwner} like 'native-finalizer:%'
+              then ${nativeRunFinalizations.leaseExpiresAt} else ${now.toISOString()}::timestamptz end`,
+            recoveryState: sql`case when ${nativeRunFinalizations.resultId} is null
+              then 'awaiting_runner_reattach' else ${nativeRunFinalizations.recoveryState} end`,
             recoveryHistory: sql`(
               select coalesce(jsonb_agg(item order by ordinal), '[]'::jsonb)
               from jsonb_array_elements(
@@ -1214,20 +1221,26 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
               eq(nativeRunFinalizations.runId, run.id),
               owner?.bootId ? eq(nativeRunFinalizations.controllerBootId, owner.bootId)
                 : isNull(nativeRunFinalizations.controllerBootId),
-              isNull(nativeRunFinalizations.resultId),
             ),
-          );
+          )
+          .returning({ resultId: nativeRunFinalizations.resultId, leaseOwner: nativeRunFinalizations.leaseOwner });
         });
+        const resultAccepted = Boolean(released[0]?.resultId);
+        const finalizerHeld = resultAccepted && Boolean(released[0]?.leaseOwner?.startsWith("native-finalizer:"));
         await appendRunEvent(run, {
           eventType: "native.recovery.transition",
           stream: "system",
           level: "info",
-          message:
-            "Server shutdown suspended native controller ownership without cancelling provider work",
+          message: finalizerHeld
+            ? "Server shutdown kept the in-progress finalizer lease of the accepted native result"
+            : resultAccepted
+              ? "Server shutdown released the accepted native result for finalization by the next controller"
+              : "Server shutdown suspended native controller ownership without cancelling provider work",
           payload: {
             restartKind: "graceful",
             signal,
-            runnerDisposition: "awaiting_runner_reattach",
+            runnerDisposition: finalizerHeld ? "finalizer_in_progress"
+              : resultAccepted ? "awaiting_result_finalization" : "awaiting_runner_reattach",
             processPid: run.processPid,
             processGroupId: run.processGroupId,
             processStartedAt: run.processStartedAt?.toISOString() ?? null,
@@ -2149,7 +2162,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
           )
           .returning({ id: heartbeatRuns.id })
           .then((rows) => rows[0] ?? null);
-        if (cleared) await recordNativeLocalProcessStop(tx as unknown as Db, run);
+        if (cleared) await recordNativeLocalProcessStopInTransaction(tx as unknown as Db, run);
         return cleared;
       });
       if (cleared) claimableNativeRunIds.add(cleared.id);
@@ -2458,8 +2471,23 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
       const legacyLease = await liveLegacyControllerExpiresAt(db, run);
       if (legacyLease) { scope.onDeferredDeadline?.(legacyLease.getTime()); continue; }
 
+      // A legacy controller proves it is alive only by renewing its lease, and
+      // the check above found no live lease (a missing expiry also lands here;
+      // revocation below then refuses the row). When the lease belongs to a
+      // previous boot, setup never reached adapter dispatch, and no process
+      // was recorded, the owner is gone and no provider work can be running:
+      // recover now instead of waiting for the age threshold. A dispatched
+      // adapter (for example a remote HTTP request) keeps the age guard. The
+      // stage is rechecked from the state committed with the revocation below.
+      const priorBootSetupExpired =
+        run.runtimeMode === "legacy" &&
+        run.executionStage === "preparing" &&
+        !!run.controllerBootId &&
+        run.controllerBootId !== legacyControllerBootId &&
+        !run.processPid &&
+        !run.processGroupId;
       // Apply staleness threshold to avoid false positives
-      if (staleThresholdMs > 0) {
+      if (staleThresholdMs > 0 && !priorBootSetupExpired) {
         const refTime = run.updatedAt ? new Date(run.updatedAt).getTime() : 0;
         if (now.getTime() - refTime < staleThresholdMs) {
           scope.onDeferredDeadline?.(refTime + staleThresholdMs);
@@ -2530,6 +2558,15 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
         (!monitorNextCheckAt || monitorNextCheckAt.getTime() <= now.getTime());
       const revokedState = await revokeExpiredLegacyControllerWithState(db, run);
       if (!revokedState) continue;
+      // The earlier snapshot may predate a final renewal that admitted the
+      // adapter. Revocation leaves a fresh foreign lease, so a later pass
+      // applies the age guard to that dispatched run.
+      if (priorBootSetupExpired && staleThresholdMs > 0 && (revokedState.executionStage !== "preparing"
+        || revokedState.processPid || revokedState.processGroupId)) {
+        const refTime = run.updatedAt ? new Date(run.updatedAt).getTime() : 0;
+        scope.onDeferredDeadline?.(Math.max(refTime + staleThresholdMs, Date.now() + 60_000));
+        continue;
+      }
       // A legacy controller persists "dispatching" in the same lease renewal
       // that admits the adapter. An expired lease from another boot that is
       // still "preparing" proves a restart stopped setup before provider work.

@@ -3,11 +3,9 @@ import { TaskSummaryList } from "../components/TaskSummaryList";
 import { useDesignSandbox } from "../context/DesignSandboxContext";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useLocation } from "@/lib/router";
-import {
-  onboardingStepForCompany,
-  shouldRouteAgentlessCompanyToOnboarding,
-} from "../lib/onboarding-route";
-import { claimOnboardingOffer } from "../lib/onboarding-auto-open";
+import { shouldRouteAgentlessCompanyToOnboarding } from "../lib/onboarding-route";
+import { claimOnboardingOffer, dashboardOnboardingOptions } from "../lib/onboarding-auto-open";
+import { onboardingDraftStorage } from "../lib/onboarding-state";
 import { Link } from "@/lib/router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { dashboardApi } from "../api/dashboard";
@@ -138,11 +136,17 @@ export function Dashboard() {
   // start the wizard at the front door with no company, and the new-company
   // path there would create a *second* company instead of giving this one an
   // agent.
+  // A saved agent that is still in setup is unfinished onboarding after reload.
+  // Only the matching browser draft may resume it; other setup records stay put.
+  const onboardingOptions = selectedCompanyId
+    ? dashboardOnboardingOptions(selectedCompanyId, agents, onboardingDraftStorage.read())
+    : null;
+  const onboardingInitialStep = onboardingOptions?.initialStep;
   const shouldOpenOnboarding = shouldRouteAgentlessCompanyToOnboarding({
     pathname: location.pathname,
     agentsLoaded: agents !== undefined,
     agentsRefreshing,
-    agentCount: agents?.length ?? 0,
+    agentCount: onboardingOptions ? 0 : agents?.length ?? 0,
   });
   // Auto-open once per company. Every input to the effect sits behind a query,
   // so a refetch re-runs it, and the customer can also navigate away and come
@@ -150,15 +154,12 @@ export function Dashboard() {
   // wizard that was deliberately closed. `claimOnboardingOffer` holds the
   // companies already offered; see it for why that outlives this component.
   useEffect(() => {
-    if (!shouldOpenOnboarding || !selectedCompanyId) return;
+    if (!shouldOpenOnboarding || !selectedCompanyId || !onboardingInitialStep) return;
     if (!claimOnboardingOffer(selectedCompanyId)) return;
-    openOnboarding({
-      companyId: selectedCompanyId,
-      initialStep: onboardingStepForCompany(),
-    });
+    openOnboarding({ companyId: selectedCompanyId, initialStep: onboardingInitialStep });
     // No mission lookup to wait on any more: the step this opens is the same
     // whatever the goals say, so waiting only delayed the open.
-  }, [shouldOpenOnboarding, selectedCompanyId, openOnboarding]);
+  }, [shouldOpenOnboarding, selectedCompanyId, onboardingInitialStep, openOnboarding]);
 
   useEffect(() => {
     setBreadcrumbs([{ label: "Dashboard" }]);

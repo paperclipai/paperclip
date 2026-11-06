@@ -1,3 +1,4 @@
+import type { IdleDeadlineOwners } from "../services/idle-deadline-types.js";
 import { verifiedIdleCapabilities } from "../middleware/cloud-control.js";
 import { trackIdleWork } from "../services/task-admission.js";
 import { Router, type Request } from "express";
@@ -134,7 +135,7 @@ function withTaskDrainTransition<T>(run: () => Promise<T>): Promise<T> {
   return turn;
 }
 
-export function instanceSettingsRoutes(db: Db, pluginWorkers?: PluginWorkerManager, prepareIdleDatabaseBackup?: () => Promise<boolean>) {
+export function instanceSettingsRoutes(db: Db, pluginWorkers?: PluginWorkerManager, prepareIdleDatabaseBackup?: () => Promise<boolean>, deadlineOwners?: IdleDeadlineOwners) {
   const router = Router();
   const svc = instanceSettingsService(db);
   const environments = environmentService(db);
@@ -348,7 +349,7 @@ export function instanceSettingsRoutes(db: Db, pluginWorkers?: PluginWorkerManag
         diagnostic => readIdleLocalWork({ backupCheckpoint: Boolean(prepareIdleDatabaseBackup), diagnostic,
           deadlineCapability: domainDeadlines ? capabilities : undefined }),
         pluginWorkers?.inspectIdleSleep?.bind(pluginWorkers), prepareIdleDatabaseBackup, scheduledRoutines, scheduledIssueMonitors,
-        { incomingWake: capabilities, deadlineCapability: domainDeadlines ? capabilities : undefined,
+        { deadlineOwners, incomingWake: capabilities, deadlineCapability: domainDeadlines ? capabilities : undefined,
           ...(req.query.idleSleepDiagnostics === "1" ? { collectDiagnostics: true } : {}) });
       res.json({ ...heartbeat.getTaskDrainStatus(), idleSleepSafety });
       return;

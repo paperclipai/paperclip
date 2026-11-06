@@ -20,6 +20,7 @@ import {
   NativeSessionCloseUnrecoverableError,
   NativeSessionCleanupQuarantinedError,
   NativeSessionProtocolIntegrityError,
+  nativeRestartInterruptedTurnId,
 } from "./contracts/native-session-backend.js";
 import { PROVIDER_STATE_INCOMPATIBLE } from "./contracts/harness-driver.js";
 import type {
@@ -506,6 +507,71 @@ describe("executeNativeSession recovery", () => {
     expect(events.filter(event => event.eventType === "turn.failed")).toHaveLength(1);
     expect(events.filter(event => event.eventType === "run.terminal")).toHaveLength(1);
     expect(checkpoints.some(snapshot => snapshot.terminalTurns?.some(turn => turn.turnId === "turn-recovery"))).toBe(true);
+  });
+
+  it.each(["acpx_runtime", "opencode_server"] as const)("continues a restart-lost %s turn once in the same conversation", async (driverKind) => {
+    const qualified = resolveQualifiedAcpxProfile("claude", "claude-sonnet-5");
+    const acpxInput: NativeExecutionInputV1 = (driverKind === "acpx_runtime" ? {
+      ...input,
+      session: { ...input.session, driverKind },
+      provider: { kind: "acpx", agent: "claude", model: "claude-sonnet-5", permissionPolicy: "interactive", profile: {
+        driverKind: qualified.driverKind, protocolVersion: qualified.protocolVersion, acpxVersion: qualified.acpxVersion,
+        agent: qualified.agent, agentProfileVersion: qualified.agentProfileVersion,
+        agentServerPackage: qualified.agentServerPackage, agentServerVersion: qualified.agentServerVersion,
+        agentRuntimePackage: qualified.agentRuntimePackage, agentRuntimeVersion: qualified.agentRuntimeVersion,
+        commandDigest: qualified.commandDigest,
+      } },
+    } : {
+      ...input,
+      session: { ...input.session, driverKind },
+      provider: { kind: "opencode", model: "openrouter/deepseek/deepseek-v4-flash-0731" },
+    }) as NativeExecutionInputV1;
+    const failure = { code: "provider_turn_lost_on_restore", recoverable: true };
+    const checkpoint: PersistedNativeSession = {
+      backendKind: "runner", driverKind, sessionId: "record-recovery", identity,
+      providerSessionId: "provider-recovery", cursor: "0", activeTurnId: "turn-recovery",
+      terminalTurns: [], semanticResult: null, pendingRuntimeRequests: [], lineage: [],
+    };
+    const interrupted: PersistedNativeSession = {
+      ...checkpoint, activeTurnId: null,
+      terminalTurns: [{ turnId: "turn-recovery", fingerprint: JSON.stringify({ terminalState: "failed", error: failure, result: null }) }],
+    };
+    const startTurn = vi.fn<NativeSession["startTurn"]>(async () => ({ turnId: "turn-continuation" }));
+    const session: NativeSession = {
+      identity: () => identity,
+      async capabilities() { return { resume: true, typedEvents: true, steering: false, interruption: true, structuredResult: true }; },
+      async *events() {
+        yield runnerEvent(1, "turn.failed", { status: "failed", error: failure });
+        if (!startTurn.mock.calls.length) return;
+        yield { ...runnerEvent(2, "turn.completed", { status: "completed" }), turnId: "turn-continuation" };
+      },
+      startTurn,
+      async result() { return startTurn.mock.calls.length ? { result, terminal, turnId: "turn-continuation" } : null; },
+      async snapshot() { return structuredClone(interrupted); },
+      async close() {},
+    };
+    const backend: NativeSessionBackend = {
+      async descriptor() { return { kind: "runner", name: "restart", version: "1", capabilities: await session.capabilities() }; },
+      async openSession() { throw new Error("must preserve the provider session"); },
+      async recoverSession() { return { recovered: true, session }; },
+    };
+    const port: ControlPlanePort = {
+      async openRun() {},
+      async checkpointSession() {},
+      async appendEvent(event: PrpEvent) { return { cursor: event.sourceSeq, highestContiguousSourceSeq: event.sourceSeq, disposition: "committed" }; },
+      async replayEvents() { return { events: [], highestContiguousSourceSeq: 0 }; },
+      async completeRun() {},
+    };
+    await expect(executeNativeSession({
+      input: acpxInput, backend, controlPlane: port, persistedSession: checkpoint,
+      runnerInstanceId: "runner-recovery", controlPlaneInstanceId: "control-recovery",
+      resumeInterruptedTurn: true,
+    })).resolves.toMatchObject({ result, turnId: "turn-continuation" });
+    expect(startTurn).toHaveBeenCalledOnce();
+    const submitted = startTurn.mock.calls[0]![0] as Parameters<NativeSession["startTurn"]>[0];
+    expect(submitted.continuation).toBe(true);
+    expect(submitted.message.text).toContain("Reconcile any unfinished tool or command");
+    expect(nativeRestartInterruptedTurnId(interrupted)).toBe("turn-recovery");
   });
 
   it("never continues task work when a restart loses a compaction turn", async () => {
@@ -4775,6 +4841,59 @@ describe("executeNativeSession recovery", () => {
     expect(backend.openSession).toHaveBeenCalledTimes(2);
     expect(controlPlane.completeRun).not.toHaveBeenCalled();
     completeTerminatedLocalNativeSessionCleanup(binding);
+  });
+
+  it("keeps an unrecoverable close from quarantining unrelated tasks of the same backend", async () => {
+    const companyId = "unrecoverable-scope-company";
+    const capabilities = { resume: true, typedEvents: true, steering: false, interruption: false, structuredResult: true };
+    const scoped = (suffix: string, overrides: { issueId?: string; sessionId?: string } = {}) => {
+      const scopedIdentity = { ...identity, companyId, runId: `run-${suffix}`,
+        issueId: overrides.issueId ?? `issue-${suffix}`, sessionId: overrides.sessionId ?? `session-${suffix}` };
+      const close = vi.fn(async () => {});
+      const session: NativeSession = {
+        identity: () => scopedIdentity, capabilities: async () => capabilities,
+        async *events() { throw new Error(`transport ${suffix} stopped`); },
+        startTurn: async () => ({ turnId: `turn-${suffix}` }), result: async () => null,
+        async snapshot() { return { backendKind: "mock", sessionId: `driver-${suffix}`, identity: scopedIdentity,
+          providerSessionId: `provider-${suffix}`, cursor: null, activeTurnId: null, pendingRuntimeRequests: [], lineage: [] }; },
+        close,
+      };
+      const backend: NativeSessionBackend = {
+        // Every task shares the backend kind/name, as all Codex runs of a company do.
+        descriptor: async () => ({ kind: "runner", name: "shared-codex-backend", version: "1", capabilities }),
+        openSession: vi.fn(async () => session),
+      };
+      const controlPlane: ControlPlanePort = {
+        openRun: async () => {}, checkpointSession: async () => {},
+        appendEvent: async () => ({ cursor: 0, highestContiguousSourceSeq: 0, disposition: "committed" }),
+        replayEvents: async () => ({ events: [], highestContiguousSourceSeq: 0 }), completeRun: vi.fn(async () => {}),
+      };
+      const options = {
+        input: { ...input, binding: { ...input.binding, companyId, runId: scopedIdentity.runId, issueId: scopedIdentity.issueId },
+          session: { ...input.session, normalizedSessionId: scopedIdentity.sessionId } },
+        backend, controlPlane, runnerInstanceId: "shared-runner", controlPlaneInstanceId: "control",
+        requireSessionCloseBeforeReturn: true,
+      };
+      return { scopedIdentity, close, backend, options };
+    };
+    const quarantined = scoped("a");
+    quarantined.close.mockRejectedValue(new NativeSessionCloseUnrecoverableError());
+    await expect(executeNativeSession(quarantined.options)).rejects.toMatchObject({
+      message: "transport a stopped", cleanupError: expect.any(NativeSessionCloseUnrecoverableError) });
+
+    // A different task and conversation shares no resource with the retained owner.
+    const unrelated = scoped("b");
+    await expect(executeNativeSession(unrelated.options)).rejects.toThrow("transport b stopped");
+    expect(unrelated.backend.openSession).toHaveBeenCalledOnce();
+
+    // The retained owner may still write its own task and conversation: both stay gated.
+    for (const sameResource of [scoped("c", { issueId: quarantined.scopedIdentity.issueId }),
+      scoped("d", { sessionId: quarantined.scopedIdentity.sessionId })]) {
+      await expect(executeNativeSession(sameResource.options)).rejects.toBeInstanceOf(NativeSessionCleanupQuarantinedError);
+      expect(sameResource.backend.openSession).not.toHaveBeenCalled();
+    }
+    expect(completeTerminatedLocalNativeSessionCleanup({ companyId, runId: quarantined.scopedIdentity.runId,
+      runnerInstanceId: "shared-runner" })).toBe(true);
   });
 
   it("propagates an exhausted required backend checkpoint close", async () => {
