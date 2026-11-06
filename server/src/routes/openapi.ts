@@ -5774,7 +5774,7 @@ registry.registerPath({
   method: "post",
   path: "/api/approvals/{id}/resubmit",
   tags: ["approvals"],
-  summary: "Revise and resubmit an approval or proposed hire",
+  summary: "Revise and resubmit a changes-requested approval",
   description:
     "Replace the payload of an approval whose status is revision_requested, or resubmit its existing payload. " +
     "Use this operation to revise a changes-requested hire proposal, such as changing its agent configuration to a cheaper model, and send it back for board review. " +

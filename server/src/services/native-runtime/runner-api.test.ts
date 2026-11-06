@@ -164,7 +164,7 @@ describe("runner API catalog", () => {
     expect(operation.authorization.actor).toBeTruthy();
   });
 
-  it("discovers proposal revision without confusing it with approval decisions or reads", () => {
+  it("discovers proposal revision without confusing it with hiring, approval decisions, or reads", () => {
     const resubmit = "POST /api/approvals/{id}/resubmit";
     for (const query of [
       "revise changes-requested hire proposal",
@@ -173,6 +173,8 @@ describe("runner API catalog", () => {
     ]) expect(searchRunnerApi({ query }).results.map(row => row.operationId), query).toContain(resubmit);
     for (const [query, expected] of [
       ["GET /api/approvals/{id}", "GET /api/approvals/{id}"],
+      ["get approval", "GET /api/approvals/{id}"],
+      ["hire agent", "POST /api/companies/{companyId}/agent-hires"],
       ["approve approval", "POST /api/approvals/{id}/approve"],
       ["reject approval", "POST /api/approvals/{id}/reject"],
       [resubmit, resubmit],
