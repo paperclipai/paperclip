@@ -9,6 +9,14 @@ const BARE_ISSUE_IDENTIFIER_RE = /^[A-Z][A-Z0-9]*-\d+$/i;
 const ISSUE_SCHEME_RE = /^issue:\/\/:?([^?#\s]+)([?#].*)?$/i;
 const ISSUE_REFERENCE_TOKEN_RE = /issue:\/\/:?[^\s<>()]+|https?:\/\/[^\s<>()]+|\/(?:[^\s<>()/]+\/)*issues\/[A-Z][A-Z0-9]*-\d+(?=$|[\s<>)\],.;!?:])|\b[A-Z][A-Z0-9]*-\d+\b/gi;
 
+function safeDecodeURIComponent(value: string): string | null {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return null;
+  }
+}
+
 export function parseIssuePathIdFromPath(pathOrUrl: string | null | undefined): string | null {
   if (!pathOrUrl) return null;
   const value = pathOrUrl.trim();
@@ -19,7 +27,7 @@ export function parseIssuePathIdFromPath(pathOrUrl: string | null | undefined): 
   const segments = pathname.split("/").filter(Boolean);
   const issueIndex = segments.findIndex((segment) => segment === "issues");
   if (issueIndex === -1 || issueIndex === segments.length - 1) return null;
-  const issuePathId = decodeURIComponent(segments[issueIndex + 1] ?? "");
+  const issuePathId = safeDecodeURIComponent(segments[issueIndex + 1] ?? "");
   if (!issuePathId || issuePathId.startsWith(":")) return null;
   return BARE_ISSUE_IDENTIFIER_RE.test(issuePathId) ? issuePathId.toUpperCase() : issuePathId;
 }
@@ -32,7 +40,8 @@ export function parseIssueReferenceFromHref(
   const trimmed = href.trim();
   const issueSchemeMatch = trimmed.match(ISSUE_SCHEME_RE);
   if (issueSchemeMatch?.[1]) {
-    const issuePathId = decodeURIComponent(issueSchemeMatch[1]);
+    const issuePathId = safeDecodeURIComponent(issueSchemeMatch[1]);
+    if (!issuePathId) return null;
     return {
       issuePathId,
       href: `/issues/${encodeURIComponent(issuePathId)}${issueSchemeMatch[2] ?? ""}`,
