@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { unprocessable } from "../errors.js";
-import { applyManagedEnvironments } from "./managed-environments.js";
+import { applyManagedEnvironments, createManagedEnvironmentRecovery } from "./managed-environments.js";
+import { idleWorkSnapshot } from "./task-admission.js";
 import {
   PLUGIN_KEY,
   environmentsSeam,
@@ -314,6 +315,77 @@ describe("applyManagedEnvironments plugin entries", () => {
     expect(result).toMatchObject({ ensured: 0, failed: 1 });
     expect(environments.archiveManagedPluginEnvironment).not.toHaveBeenCalled();
     expect(manager.getWorker).not.toHaveBeenCalled();
+  });
+
+  it("keeps waiting through a restart that replaces the worker handle", async () => {
+    // Manager-wide `ready` subscription: the worker handle is never consulted,
+    // so a replacement handle's `ready` still reaches the listener.
+    const readyListeners = new Set<(pluginId: string) => void>();
+    const manager = {
+      isRunning: vi.fn(() => false),
+      call: vi.fn(),
+      getWorker: vi.fn(() => undefined),
+      onWorkerReady: vi.fn((listener: (pluginId: string) => void) => {
+        readyListeners.add(listener);
+        return () => { readyListeners.delete(listener); };
+      }),
+    };
+    const environments = environmentsSeam();
+    await applyManagedEnvironments(noDb, configWith([pluginEntry()]), {
+      env: {},
+      workerManager: manager,
+      environments,
+      instanceSettings: instanceSettingsSeam(),
+      resolveEnvironmentPlugin: readyPlugin(),
+      autoInstalledPluginKeys: [PLUGIN_KEY],
+    });
+    expect(manager.getWorker).not.toHaveBeenCalled();
+
+    manager.isRunning.mockReturnValue(true);
+    for (const listener of [...readyListeners]) listener("another-plugin");
+    await tick();
+    expect(environments.ensureManagedPluginEnvironment).not.toHaveBeenCalled();
+    for (const listener of [...readyListeners]) listener("remote-host-plugin");
+    await tick();
+    expect(environments.ensureManagedPluginEnvironment).toHaveBeenCalledTimes(1);
+    expect(readyListeners.size).toBe(0);
+  });
+
+  it("tracks recovery attempts as idle work and lets shutdown await and unsubscribe them", async () => {
+    const { handle, fireReady } = recoveryHandle();
+    let finishEnsure!: () => void;
+    const ensureManagedPluginEnvironment = vi.fn(() => new Promise((resolve) => {
+      finishEnsure = () => resolve({ environment: pluginEnvironmentRow(), action: "updated" });
+    }));
+    const recovery = createManagedEnvironmentRecovery();
+    const manager = workerManager(false, handle);
+    await applyManagedEnvironments(noDb, configWith([pluginEntry()]), {
+      env: {},
+      workerManager: manager,
+      environments: environmentsSeam({ ensureManagedPluginEnvironment: ensureManagedPluginEnvironment as never }),
+      instanceSettings: instanceSettingsSeam(),
+      resolveEnvironmentPlugin: readyPlugin(),
+      autoInstalledPluginKeys: [PLUGIN_KEY],
+      recovery,
+    });
+    const idleBefore = idleWorkSnapshot().active;
+    manager.isRunning.mockReturnValue(true);
+    fireReady();
+    expect(idleWorkSnapshot().active).toBe(idleBefore + 1);
+
+    let stopped = false;
+    const stopping = recovery.stop().then(() => { stopped = true; });
+    await tick();
+    expect(stopped).toBe(false);
+    expect(handle.off).toHaveBeenCalled();
+    finishEnsure();
+    await stopping;
+    expect(stopped).toBe(true);
+    expect(idleWorkSnapshot().active).toBe(idleBefore);
+
+    fireReady();
+    await tick();
+    expect(ensureManagedPluginEnvironment).toHaveBeenCalledTimes(1);
   });
 
   it("treats a missing plugin, a plugin without the driver, or a worker manager without call as unavailable", async () => {

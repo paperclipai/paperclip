@@ -686,7 +686,7 @@ so a content mismatch cannot suppress the communication evidence.
 The source thread is observed for 120 seconds. The probe retains a later
 correction even if an earlier reply already passes delivery and access. A later
 clarification does not erase an earlier accessible delivery.
-The busy cell holds a separate source reply open until the worker finishes; the multiple cell delegates two notes and requires one completion per task. The restart cell holds the source provider at a fixture reference gate, then restarts the server after durable Done but before publication and releases the gate. The gate makes the interruption boundary observable and prevents a fast successful reply from racing the restart assertion. The onboarding cell records its naturally occurring timing.
+The busy cell holds a separate source reply open until the worker finishes; the multiple cell delegates two notes and requires one completion per task. The restart cell holds the source provider at a fixture reference gate, then restarts the server after durable Done but before publication and releases the gate. The gate makes the interruption boundary observable and prevents a fast successful reply from racing the restart assertion. Reaching the gate depends on the source agent running the instructed wait: the completion reply is published inside the run finalizer's own transaction, so the isolated-server entrypoint cannot hold it without a product hook. If no completion turn is still active and the turn that received this task's Done facts has succeeded or published its reply before the gate reports `waiting`, the cell fails at once with `restart boundary not reached (agent skipped gate)` rather than a generic timeout. That failure is agent compliance (the restart was never exercised), not restart robustness. A completion turn that fails or is cancelled before the gate is not blamed on the agent, because delivery can retry it; if the wait then times out, the timeout names that turn and its status as `restart boundary not reached`. After the restart, the chat navigation retries an abort caused by the old document's reload. The onboarding cell records its naturally occurring timing.
 
 The mechanical oracle requires a run-attributed source reply after durable
 completion, plus the actual saved output or a navigable task/output link.
@@ -839,7 +839,7 @@ runner binaries:
 ```bash
 pnpm install
 pnpm exec playwright install chromium
-pnpm --filter @paperclipai/paperclip-runner build:runner-binaries
+pnpm --filter @paperclipai/paperclip-runner run build:runner-binaries
 ```
 
 List cells without loading credentials or starting Paperclip:
@@ -1184,6 +1184,13 @@ unavailable/terminated test process produce a `launcher/environment failure`
 diagnostic and exit 2. Assertion failures retain the test runner's exit status
 and output; assess installed-product failures from those assertions separately.
 
+PR CI runs `pnpm test:e2e:runner:unit` as the required "Runner support suite"
+job in `pr-trusted.yml`. It runs when server, CLI, package or UI source
+changes, and on every full CI run. The suite pins workflow security policy,
+evidence oracles, profile versions, suite hashes and dated fixtures. When a
+change to one of those is deliberate, update the pin in the same pull request
+and name the reason. Do not weaken a security check to make it pass.
+
 The OpenRouter ranking snapshot is tracked in `openrouter-models.json`; nightly
 runs never mutate it. Refresh it deliberately, review the source/capture/hash
 diff, and rerun credential-free checks:
@@ -1200,6 +1207,27 @@ workspace and package store can be removed before export. Source-provenance
 changes can repeat the dependency install; this bounds retained builder disk
 at the cost of install-cache granularity. The build reports workspace and pack
 sizes, and final runtime and CLI checks still execute in the published image.
+
+Build speed comes from three layout rules. The Rust third-party dependency
+graph compiles in its own layer, keyed only by the Cargo manifests and lock, so
+a Runner source change recompiles one crate from the default-branch registry
+cache. The revision-metadata step sits above both `COPY --from` steps, so the
+cached base and CLI layers download while the builder stages compile. Both
+copies use `--link`, so they do not wait for that download.
+
+To publish only the image for a branch, without a paid gate, dispatch with
+`image_only`. Authorization, target resolution, catalog validation and the
+signed, verified image publication run unchanged; every campaign job is
+skipped. Keep a selector that includes a Daytona cell:
+
+```bash
+gh workflow run runner-full-stack-e2e.yml \
+  --ref master \
+  -f target_branch=fix/example \
+  -f all=false \
+  -f id=core-compatibility.runner-codex.daytona.message-marker \
+  -f image_only=true
+```
 
 The ephemeral Daytona fixture requests a 60-minute wall-clock lifetime at creation.
 The provider destroys each sandbox at that expiry in any state. This bound includes
@@ -1622,6 +1650,16 @@ case. All 20 imported case IDs and full names remain stable. The lane uses the
 existing native Codex/local cells and the existing native OpenCode/local
 task-workspaces cell. It does not qualify the historical 355-result snapshot.
 
+The sibling **Reliability — staging soak** plan runs the seven staging-soak
+reliability cases through this same lane: six on native OpenCode with DeepSeek
+1017, and `queue-steer` on steering-capable native Codex.
+Bootstrap it with `-f testops_plan=reliability -f testops_case=all` (or one case);
+a TestOps launch names its plan through its case IDs. A launch never mixes the
+two plans, and each keeps its own full-plan denominator. Its TestOps identities
+come from the trusted `runner-e2e-testops-registration.yml` workflow; until they
+are committed, selection fails closed. See
+[the Reliability plan](EVERYDAY-WORKFLOWS.md#testops-reliability-plan).
+
 The protected `runner-e2e-testops-reporting` environment supplies `ALLURE_TOKEN`.
 Only default-branch selection and reporting code receives this token. The
 ordinary paid provider jobs, their authorization and their evidence paths stay
@@ -1824,9 +1862,12 @@ There are thirteen cases on `legacy-codex`, `legacy-claude`, `runner-codex`, and
 production wizard, omits the runner override, and verifies the saved native
 configuration without changing runners afterward. `runner-acpx-claude` does the
 same for Claude on its qualified default targets and inspects the saved ACPX
-Claude profile directly. Both Legacy profiles select Legacy runner in Advanced
-before authentication and creation. All four paths are labeled
-`production-wizard`; there is no post-onboarding runner switch. Persona,
+Claude profile directly. Both Legacy profiles configure the inactive setup record
+through the normal agent API before authentication, reload, and finish the saved
+setup in the wizard. They are labeled `api-configured-legacy-setup`; the native
+paths retain `production-wizard`. The UI exposes no runner dropdown, and there
+is no post-onboarding runner switch. Legacy coverage proves setup resumption,
+not the fresh-agent automatic default. Persona,
 managed instructions, skills, seeded question, and task invocation are preserved. The native path removes the legacy
 Paperclip operational skill because Runner supplies that contract through its
 protocol; other assigned skills, including `/first-task`, are retained.

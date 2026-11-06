@@ -1,4 +1,9 @@
 /** Minimal board API client for an isolated local_trusted instance. */
+export function isSocketTypeOfServiceRace(error: unknown): boolean {
+  const candidate = error as { code?: unknown; syscall?: unknown } | null;
+  return candidate?.code === "EINVAL" && candidate.syscall === "setTypeOfService";
+}
+
 export class ChaosApiError extends Error {
   constructor(readonly status: number | null, message: string) { super(message); this.name = "ChaosApiError"; }
 }
@@ -28,4 +33,8 @@ export class ChaosApi {
   post<T>(route: string, body?: unknown, timeoutMs?: number) { return this.request<T>("POST", route, body ?? {}, timeoutMs); }
   put<T>(route: string, body?: unknown) { return this.request<T>("PUT", route, body ?? {}); }
   patch<T>(route: string, body?: unknown) { return this.request<T>("PATCH", route, body ?? {}); }
+  async delete(route: string, options?: { allowNotFound?: boolean; timeout?: number }): Promise<void> {
+    try { await this.request<unknown>("DELETE", route, undefined, options?.timeout); }
+    catch (error) { if (!(options?.allowNotFound && error instanceof ChaosApiError && error.status === 404)) throw error; }
+  }
 }

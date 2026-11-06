@@ -411,6 +411,11 @@ describe("parseManagedConfigEnv environments section", () => {
         ),
       ),
     ).toThrow(/adapters\[0\].clientSecret/);
+    expect(() =>
+      parseManagedConfigEnv(
+        envWith(validDoc({ environments: [entry({ config: { pools: [[], [{ privateKey: { password: "s" } }]] } })] })),
+      ),
+    ).toThrow(/pools\[1\]\[0\].privateKey.password/);
   });
 });
 
@@ -482,6 +487,8 @@ describe("parseManagedConfigEnv plugin environment entries", () => {
       .toThrow(/"environments\[0\].driverConfig" key "apiToken" looks secret-bearing/);
     expect(() => parseManagedConfigEnv(docWith([remoteHost({ driverConfig: { auth: [{ password: "p" }] } })])))
       .toThrow(/auth\[0\].password/);
+    expect(() => parseManagedConfigEnv(docWith([remoteHost({ driverConfig: { groups: [[{ apiToken: "t" }]] } })])))
+      .toThrow(/groups\[0\]\[0\].apiToken/);
   });
 
   it("refuses unknown keys, including sandbox keys on a plugin entry and the reverse", () => {

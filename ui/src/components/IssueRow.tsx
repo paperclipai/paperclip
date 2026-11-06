@@ -381,7 +381,7 @@ export function IssueRow({
               >
                 {issue.title}{titleSuffix}
               </span>}
-              {stableLayout ? (
+              {stableLayout && recoveryIndicator ? (
                 <span data-slot="task-row-recovery">
                   <span className="hidden sm:inline">{recoveryIndicator}</span>
                   {recoveryIndicator ? (
