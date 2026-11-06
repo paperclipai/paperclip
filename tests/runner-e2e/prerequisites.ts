@@ -1,4 +1,5 @@
 import type { MatrixExecution } from "./types.js";
+import { assertCursorCloudQualificationBudgetOptIn } from "./cursor-cloud-budget.js";
 import { supportsKimiLocalProviderFault } from "./kimi-local-provider-fault.js";
 
 /** Explicit-only profiles blocked until complete identity/auth/session/billing qualification. */
@@ -24,10 +25,44 @@ export function assertRemoteNativeEvidencePrerequisites(
   if (invalid.length) throw new Error(`Native Daytona evidence requires exact image executable digests: ${invalid.join(", ")}`);
 }
 
+type RunnerE2EHost = Pick<NodeJS.Process, "platform" | "arch">;
+
+function isRunnerE2EHost(value: NodeJS.ProcessEnv | RunnerE2EHost): value is RunnerE2EHost {
+  return Object.keys(value).length === 2 && typeof value.platform === "string" && typeof value.arch === "string";
+}
+
 export function assertRunnerE2EPrerequisites(
   executions: readonly MatrixExecution[],
-  host: Pick<NodeJS.Process, "platform" | "arch"> = process,
+  environmentOrHost: NodeJS.ProcessEnv | RunnerE2EHost = process.env,
+  host: RunnerE2EHost = process,
 ): void {
+  let environment: NodeJS.ProcessEnv;
+  if (isRunnerE2EHost(environmentOrHost)) {
+    host = environmentOrHost;
+    environment = process.env;
+  } else {
+    environment = environmentOrHost;
+  }
+  if (executions.some(execution => execution.suite.id === "cursor-cloud" && execution.profile.provider === "cursor_cloud")) {
+    assertCursorCloudQualificationBudgetOptIn(environment);
+  }
+  if (executions.some(execution => execution.profile.provider === "cursor_cloud")) {
+    const required = ["PAPERCLIP_CURSOR_CLOUD_ACCEPTANCE_MODEL", "PAPERCLIP_CURSOR_CLOUD_ACCEPTANCE_REPO", "PAPERCLIP_PUBLIC_URL", "PAPERCLIP_CURSOR_CLOUD_CALLBACK_PORT"];
+    const missing = required.filter(name => !environment[name]?.trim());
+    if (missing.length) throw new Error(`Cursor Cloud acceptance setup-blocked: configure ${missing.join(", ")}. No provider credentials were loaded or sent.`);
+    let repo: URL, origin: URL;
+    try { repo = new URL(environment.PAPERCLIP_CURSOR_CLOUD_ACCEPTANCE_REPO!); origin = new URL(environment.PAPERCLIP_PUBLIC_URL!); }
+    catch { throw new Error("Cursor Cloud acceptance setup-blocked: repository and public callback origin must be valid HTTPS URLs."); }
+    const port = Number(environment.PAPERCLIP_CURSOR_CLOUD_CALLBACK_PORT);
+    if (repo.protocol !== "https:" || repo.username || repo.password || repo.search || repo.hash
+      || origin.protocol !== "https:" || origin.username || origin.password || origin.search || origin.hash || origin.pathname !== "/"
+      || !Number.isInteger(port) || port < 1024 || port > 65535) {
+      throw new Error("Cursor Cloud acceptance setup-blocked: use a credential-free HTTPS disposable repository, HTTPS callback origin, and dedicated loopback callback port (1024–65535).");
+    }
+    if (executions.some(execution => execution.profile.provider === "cursor_cloud" && (execution.environment.id !== "local" || execution.profile.model !== environment.PAPERCLIP_CURSOR_CLOUD_ACCEPTANCE_MODEL!.trim()))) {
+      throw new Error("Cursor Cloud acceptance requires the exact configured model and a local controller.");
+    }
+  }
   if (!supportsKimiLocalProviderFault(host) && executions.some(execution =>
     execution.environment.id === "local" && execution.profile.qualificationCandidate === "kimi"
     && execution.task.id === "native-write-provider-loss")) {

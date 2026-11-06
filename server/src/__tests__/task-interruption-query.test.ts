@@ -1,19 +1,145 @@
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
+import { createRunSecretRedactionRegistry } from "../services/run-secret-redaction.js";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { agents, agentWakeupRequests, companies, createDb, heartbeatRuns, issues, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS } from "@paperclipai/db";
-import { taskInterruptionPresentations } from "../services/task-interruption-presentation.js";
-import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
+import { agents, agentWakeupRequests, companies, createDb, applyPendingMigrations, heartbeatRuns, issues, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS } from "@paperclipai/db";
+import { taskInterruptionPresentation, taskInterruptionPresentations } from "../services/task-interruption-presentation.js";
+import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { captureInterruptionQuery, seedInterruptionFixture } from "./helpers/task-interruption-fixture.js";
 
+const externalDatabaseUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_TASK_INTERRUPTION_TEST_DATABASE_URL");
+const support = externalDatabaseUrl ? { supported: true } : await getEmbeddedPostgresTestSupport();
 const captureTaskInterruptionFailure = vi.hoisted(() => vi.fn());
 vi.mock("../sentry.js", () => ({ captureTaskInterruptionFailure }));
 
-describe("task interruption latest run query", () => {
+describe.skipIf(!support.supported)("task interruption latest run query", () => {
   let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
   let db: ReturnType<typeof createDb>;
-  beforeAll(async () => { database = await startEmbeddedPostgresTestDatabase("interruption-query-"); db = createDb(database.connectionString); }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
+  beforeAll(async () => {
+    if (externalDatabaseUrl) await applyPendingMigrations(externalDatabaseUrl);
+    database = externalDatabaseUrl ? { connectionString: externalDatabaseUrl, cleanup: async () => {} }
+      : await startEmbeddedPostgresTestDatabase("interruption-query-");
+    db = createDb(database.connectionString);
+  }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
   afterAll(async () => { await db?.$client.end(); await database?.cleanup(); });
+
+  it("redacts workspace preparation errors on task detail and list reads", async () => {
+    vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY", "a".repeat(64));
+    try {
+      const f = await seedInterruptionFixture(db, { selected: 1, history: 1, unrelated: 0, payloadBytes: 0 });
+      const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, f.companyId));
+      const secret = `private-workspace-value-${randomUUID()}`;
+      const error = `Could not prepare the project folder: ${secret}.`;
+      await db.update(heartbeatRuns).set({ errorCode: "workspace_validation_failed", error }).where(eq(heartbeatRuns.id, run!.id));
+      await createRunSecretRedactionRegistry(db).register(f.companyId, run!.id, secret);
+      const list = await taskInterruptionPresentations(db, f.companyId, f.input);
+      const detail = await taskInterruptionPresentation(db, f.input[0]!);
+      for (const presentation of [list.get(f.input[0]!.id), detail]) {
+        expect(presentation?.workspaceFailure?.message).toContain("Could not prepare the project folder");
+        expect(presentation?.workspaceFailure?.message).toContain("REDACTED");
+        expect(JSON.stringify(presentation)).not.toContain(secret);
+      }
+      vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY", "b".repeat(64));
+      expect(await taskInterruptionPresentation(db, f.input[0]!)).not.toHaveProperty("workspaceFailure");
+      expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run!.id)))[0]?.error).toBe(error);
+    } finally { vi.unstubAllEnvs(); }
+  });
+
+  it.each(["valid", "numeric_user", "numeric_audit"] as const)("retains bounded typed Stop evidence in the real batched projection (%s)", async variant => {
+    const companyId = randomUUID(), agentId = randomUUID(), runId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Stopped task", issuePrefix: `S${companyId.slice(0, 7)}` });
+    await db.insert(agents).values({ id: agentId, companyId, name: "Stopped agent", adapterType: "paperclip_runner" });
+    const [issue] = await db.insert(issues).values({ companyId, title: "Keep this task in progress",
+      status: "in_progress", assigneeAgentId: agentId }).returning();
+    const nativeCancellation = { schema: "paperclip.native-cancellation.v1", companyId, runId, issueId: issue.id,
+      scope: "run", reasonCode: "cancellation_run_only", dispatchState: "acknowledged", dispatched: true,
+      intentAuditId: variant === "numeric_audit" ? 123 : randomUUID(), acknowledgementAuditId: randomUUID() };
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, nativeIssueId: issue.id,
+      scopeKind: "issue", status: "cancelled", runtimeMode: "native", driverKind: "cursor_cloud_api",
+      resultJson: { cancelledByActorType: "user", cancelledByUserId: variant === "numeric_user" ? 123 : "board", nativeCancellation,
+        executionCancellation: { state: "requested" }, unrelatedPayload: "x".repeat(128_000) } });
+    const result = await taskInterruptionPresentations(db, companyId, [issue]);
+    expect(result.get(issue.id)).toMatchObject(variant === "valid"
+      ? { state: "resolved", canRetry: false } : { state: "failed", canRetry: true });
+    const query = await captureInterruptionQuery(db, taskInterruptionPresentations, companyId, [issue]);
+    const [projected] = await db.$client.unsafe(query.sql, query.params as never[]);
+    expect(projected.jsonb_build_object.nativeCancellation).toEqual({ ...nativeCancellation,
+      intentAuditId: variant === "numeric_audit" ? null : nativeCancellation.intentAuditId });
+    expect(projected.jsonb_build_object.cancelledByUserId).toBe(variant === "numeric_user" ? null : "board");
+    expect(projected).toMatchObject({ company_id: companyId, native_issue_id: issue.id, runtime_mode: "native" });
+    expect(projected.jsonb_build_object).not.toHaveProperty("unrelatedPayload");
+    expect(JSON.stringify(projected.jsonb_build_object).length).toBeLessThan(4000);
+  });
+
+  it("redacts registered run secrets from both task detail and list provider explanations", async () => {
+    vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY", "a".repeat(64));
+    try {
+      const f = await seedInterruptionFixture(db, { selected: 1, history: 1, unrelated: 0, payloadBytes: 0 });
+      const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, f.companyId));
+      const secret = `private-runtime-value-${randomUUID()}`;
+      const providerFailure = { schema: "paperclip.provider-failure.v1", provider: "anthropic", phase: "startup",
+        category: "unknown", message: `Provider rejected runtime value ${secret}.`, retryability: "unknown" };
+      await db.update(heartbeatRuns).set({ resultJson: { providerFailure } }).where(eq(heartbeatRuns.id, run!.id));
+      await createRunSecretRedactionRegistry(db).register(f.companyId, run!.id, secret);
+      const list = await taskInterruptionPresentations(db, f.companyId, f.input);
+      const detail = await taskInterruptionPresentation(db, f.input[0]!);
+      for (const presentation of [list.get(f.input[0]!.id), detail]) {
+        expect(presentation?.providerFailure?.message).toContain("Provider rejected runtime value");
+        expect(JSON.stringify(presentation)).not.toContain(secret);
+      }
+      expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run!.id)))[0]?.resultJson).toEqual({ providerFailure });
+    } finally { vi.unstubAllEnvs(); }
+  });
+
+  it("redacts a scheduled retry's predecessor provider explanation with the predecessor's registry", async () => {
+    vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY", "a".repeat(64));
+    try {
+      const f = await seedInterruptionFixture(db, { selected: 1, history: 1, unrelated: 0, payloadBytes: 0 });
+      const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, f.companyId));
+      const predecessorId = randomUUID();
+      const secret = `private-predecessor-value-${randomUUID()}`;
+      const providerFailure = { schema: "paperclip.provider-failure.v1", provider: "daytona", phase: "startup",
+        category: "overloaded", message: `Sandbox refused lease for ${secret}.`, httpStatus: 502, retryability: "transient" };
+      await db.insert(heartbeatRuns).values({ id: predecessorId, companyId: f.companyId, agentId: run!.agentId,
+        status: "failed", errorCode: "environment_provider_unavailable", resultJson: { providerFailure },
+        createdAt: new Date(run!.createdAt.getTime() - 60_000) });
+      await db.update(heartbeatRuns).set({ status: "scheduled_retry", retryOfRunId: predecessorId, resultJson: {},
+        scheduledRetryAt: new Date(Date.now() + 30_000), scheduledRetryAttempt: 1 }).where(eq(heartbeatRuns.id, run!.id));
+      await createRunSecretRedactionRegistry(db).register(f.companyId, predecessorId, secret);
+      const list = await taskInterruptionPresentations(db, f.companyId, f.input);
+      const detail = await taskInterruptionPresentation(db, f.input[0]!);
+      for (const presentation of [list.get(f.input[0]!.id), detail]) {
+        expect(presentation?.observedRunId).toBe(run!.id);
+        expect(presentation?.providerFailure).toMatchObject({ httpStatus: 502 });
+        expect(presentation?.providerFailure?.message).toContain("Sandbox refused lease");
+        expect(presentation?.providerFailure?.message).toContain("REDACTED");
+        expect(JSON.stringify(presentation)).not.toContain(secret);
+      }
+    } finally { vi.unstubAllEnvs(); }
+  });
+
+  it.each(["decryption failure", "expanded message"])("keeps task reads available after provider display %s", async scenario => {
+    vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY", "a".repeat(64));
+    try {
+      const f = await seedInterruptionFixture(db, { selected: 1, history: 1, unrelated: 0, payloadBytes: 0 });
+      const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, f.companyId));
+      const secret = "pw-short";
+      const providerFailure = { schema: "paperclip.provider-failure.v1", provider: "anthropic", phase: "startup",
+        category: "unknown", message: secret + "🚀".repeat(4000 - secret.length), retryability: "unknown" };
+      await db.update(heartbeatRuns).set({ resultJson: { providerFailure } }).where(eq(heartbeatRuns.id, run!.id));
+      await createRunSecretRedactionRegistry(db).register(f.companyId, run!.id, secret);
+      if (scenario === "decryption failure") vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY", "b".repeat(64));
+      const presentation = await taskInterruptionPresentation(db, f.input[0]!);
+      expect(presentation).toMatchObject({ state: "failed", canRetry: true });
+      if (scenario === "decryption failure") expect(presentation).not.toHaveProperty("providerFailure");
+      else {
+        expect(presentation?.providerFailure?.message).toContain("REDACTED");
+        expect([...presentation!.providerFailure!.message]).toHaveLength(4000);
+      }
+      expect(JSON.stringify(presentation)).not.toContain(secret);
+    } finally { vi.unstubAllEnvs(); }
+  });
 
   it("does not inspect unrelated company history for a small issue page", async () => {
     const f = await seedInterruptionFixture(db, { selected: 2, history: 3, unrelated: 1500, payloadBytes: 4096 });
@@ -123,4 +249,24 @@ describe("task interruption latest run query", () => {
       taskId: reassigned!.id, agentAdapter: "process",
     }));
   });
+  // N-03: ONB-1 on staging waited 16 minutes on an overdue workspace_busy
+  // retry. Nothing failed, yet the banner offered a Retry that cannot help.
+  it.each(["workspace_busy", "ai_connection_busy", "ai_connection_pool_wait", "runner_revision_wait"])(
+    "does not present an overdue %s wait as a failed attempt", async reason => {
+      const companyId = randomUUID(), agentId = randomUUID(), parentRunId = randomUUID();
+      await db.insert(companies).values({ id: companyId, name: "Waiting task", issuePrefix: `W${companyId.slice(0, 7)}` });
+      await db.insert(agents).values({ id: agentId, companyId, name: "Waiting agent", adapterType: "process" });
+      const [issue] = await db.insert(issues).values({ companyId, title: "Paperclip onboarding",
+        status: "in_progress", assigneeAgentId: agentId }).returning();
+      const now = Date.now();
+      await db.insert(heartbeatRuns).values({ id: parentRunId, companyId, agentId, issueId: issue!.id, scopeKind: "issue",
+        status: "cancelled", errorCode: reason, createdAt: new Date(now - 10 * 60_000), finishedAt: new Date(now - 9 * 60_000) });
+      await db.insert(heartbeatRuns).values({ companyId, agentId, issueId: issue!.id, scopeKind: "issue",
+        status: "scheduled_retry", retryOfRunId: parentRunId, scheduledRetryReason: reason, scheduledRetryAttempt: 2,
+        scheduledRetryAt: new Date(now - 5 * 60_000), createdAt: new Date(now - 9 * 60_000) });
+      captureTaskInterruptionFailure.mockClear();
+      const presentation = (await taskInterruptionPresentations(db, companyId, [issue!])).get(issue!.id);
+      expect(presentation).toMatchObject({ responsibility: "system", state: "working", canRetry: false });
+      expect(captureTaskInterruptionFailure).not.toHaveBeenCalled();
+    });
 });

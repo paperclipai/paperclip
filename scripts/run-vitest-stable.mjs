@@ -94,6 +94,7 @@ const chatSuite = "server/src/__tests__/chat-channels.integration.test.ts";
 const nativeRunnerSuites = [
   "server/src/services/native-runtime/plugin-runner-probe.test.ts",
   "server/src/services/native-runtime/native-codex-runner.integration.test.ts",
+  "server/src/services/native-runtime/native-ingress-bootstrap-retry.integration.test.ts",
   "server/src/__tests__/dot-runner.test.ts",
   // These process cases otherwise skip in server shards without Runner binaries.
   "server/src/services/native-runtime/native-runner-restart-recovery.integration.test.ts",
@@ -102,6 +103,8 @@ const nativeRunnerSuites = [
   "server/src/services/native-runtime/native-runner-restart-checkpoint-cost.integration.test.ts",
   "server/src/services/native-runtime/native-runner-restart-diskless.integration.test.ts",
   "server/src/services/native-runtime/native-usage-delivery.integration.test.ts",
+  "server/src/services/native-runtime/native-warm-checkpoint-ownership.integration.test.ts",
+  "server/src/services/native-runtime/plugin-runner-task-warm.integration.test.ts",
 ];
 // In the PR workflow (pr.yml, the caller of pr-trusted.yml — reusable
 // workflows inherit the caller's GITHUB_WORKFLOW), the last Verify Paperclip
@@ -264,6 +267,7 @@ function parseCliOptions(argv) {
   let shardCount = null;
   let group = null;
   let dryRun = false;
+  let serialChat = false;
 
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
@@ -309,6 +313,11 @@ function parseCliOptions(argv) {
       continue;
     }
 
+    if (arg === "--serial-chat") {
+      serialChat = true;
+      continue;
+    }
+
     if (arg === "--group") {
       group = readOptionValue(argv, index, arg);
       index += 1;
@@ -334,10 +343,12 @@ function parseCliOptions(argv) {
   const shardAllowed =
     mode === serializedModeName ||
     (mode === generalModeName &&
-      ([...generalServerGroups, generalChatGroupName, generalWorkspacesAGroupName].includes(group)));
+      ([...generalServerGroups, generalChatGroupName, generalWorkspacesAGroupName].includes(group)
+        || Boolean(process.env.PAPERCLIP_CI_TEST_SELECTION)
+          && [generalWorkspacesBGroupName, generalWorkspacesCGroupName].includes(group)));
   if (!shardAllowed && shardIndex !== null) {
     fail(
-      "--shard-index/--shard-count are only valid with serialized mode or a shardable general server/chat/workspaces-a group.",
+      "--shard-index/--shard-count require serialized mode, a shardable general server/chat/workspaces-a group, or a selected workspace group.",
     );
   }
 
@@ -347,6 +358,10 @@ function parseCliOptions(argv) {
 
   if (group !== null && !allowedGeneralGroupNames.includes(group)) {
     fail(`Unknown group "${group}". Expected one of: ${allowedGeneralGroupNames.join(", ")}.`);
+  }
+
+  if (serialChat && (mode !== generalModeName || group !== generalChatGroupName)) {
+    fail("--serial-chat is only valid with --mode general --group general-chat.");
   }
 
   if (shardIndex !== null) {
@@ -371,6 +386,7 @@ function parseCliOptions(argv) {
     shardCount,
     group,
     dryRun,
+    serialChat,
   };
 }
 
@@ -490,7 +506,7 @@ async function runProjectGroup(projects, groupName, shardIndex = null, shardCoun
 }
 
 function chatShardWorkers(index, count) {
-  const workers = count > 1 && !hasSharedTestDatabase ? 2 : 1;
+  const workers = count > 1 && !hasSharedTestDatabase && !options.serialChat ? 2 : 1;
   return Array.from({ length: workers }, (_, offset) => ({
     index: (index ?? 0) * workers + offset,
     count: (count ?? 1) * workers,
@@ -513,9 +529,9 @@ async function runGeneralGroup(routeTests, groupName, shardIndex = null, shardCo
     await runVitest(
       ["--project", "@paperclipai/server",
         // Each file owns its database, home, and processes. Keep cases serial,
-        // but overlap long real lease windows in two isolated fork workers.
+        // but overlap long real lease windows in four isolated fork workers.
         ...(hasSharedTestDatabase ? serializedServerVitestArgs
-          : ["--pool=forks", "--isolate", "--fileParallelism", "--maxWorkers=2"]),
+          : ["--pool=forks", "--isolate", "--fileParallelism", "--maxWorkers=4"]),
         ...nativeRunnerSuites],
       "native runner vertical-slice suite",
     );
@@ -543,11 +559,11 @@ async function runGeneralGroup(routeTests, groupName, shardIndex = null, shardCo
           "--project",
           "@paperclipai/server",
           // Files have separate fork processes and isolated homes/configs.
-          // Keep each file's cases serial; overlap only two independent files.
+          // Keep each file's cases serial; overlap three independent files.
           // An explicit shared test database cannot be isolated this way.
           ...(hasSharedTestDatabase
             ? serializedServerVitestArgs
-            : ["--pool=forks", "--isolate", "--fileParallelism", "--maxWorkers=2"]),
+            : ["--pool=forks", "--isolate", "--fileParallelism", "--maxWorkers=3"]),
           ...shardFiles,
         ],
         `${groupName} shard ${shardIndex + 1}/${shardCount}`,
@@ -724,7 +740,7 @@ try {
       const serverArgs = project !== "@paperclipai/server" ? []
         : options.mode === serializedModeName || hasSharedTestDatabase
           ? ["--pool=forks", "--isolate", ...serializedServerVitestArgs]
-          : ["--pool=forks", "--isolate", "--fileParallelism", "--maxWorkers=2"];
+          : ["--pool=forks", "--isolate", "--fileParallelism", "--maxWorkers=3"];
       await runVitest(["--project", project, ...serverArgs, ...files],
         `selected ${project}: ${files.length} files`, null, true);
     }

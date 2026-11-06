@@ -25,6 +25,7 @@ import {
 } from "../services/workspace-git-operation-scheduler.js";
 
 export type WorkspaceFileResourceService = {
+  resolveIssueId(rawId: string): Promise<string>;
   getIssue(issueId: string): Promise<{ companyId: string }>;
   availability(
     issueId: string,
@@ -362,6 +363,22 @@ export function fileResourceRoutes(db: Db, opts: {
   const limiter = opts.limiter ?? createFileResourceLimiter();
   const listLimiter = opts.listLimiter ?? createFileResourceListLimiter();
   const availabilityLimiter = opts.availabilityLimiter ?? createFileResourceAvailabilityLimiter();
+
+  // Resolve issue identifiers (e.g. "PAP-39") to UUIDs, matching the issues router.
+  // Only board actors can use these routes. Other actors keep the raw value so a
+  // denied request's activity row never records the UUID behind a guessed identifier.
+  router.param("issueId", async (req, _res, next, rawId) => {
+    if (req.actor.type !== "board") {
+      next();
+      return;
+    }
+    try {
+      req.params.issueId = await serviceFor(req).resolveIssueId(String(rawId));
+      next();
+    } catch (err) {
+      next(err);
+    }
+  });
 
   async function logAvailabilityAttempt(input: {
     companyId: string;

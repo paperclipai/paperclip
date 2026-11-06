@@ -2,7 +2,7 @@ import { notifyGitHubCredentialChange } from "./github-connection-notifications.
 import { notifyVoiceChange } from "./voice/voice-recovery-notifications.js";
 import { notifyToolConnectionHealth, writeToolConnectionHealthChange } from "./tool-connection-health-notifications.js";
 import { connectionHealthSchedule } from "./tool-access/catalog/health-schedule.js";
-import type { ConnectionManagementContext } from "./connection-management.js";
+import { assertAgentConnectionInstallAccess, type ConnectionManagementContext } from "./connection-management.js";
 import { connectionActorUserId } from "./tool-access/actor.js";
 import { restConnectorFor } from "./connectors/rest-registry.js";
 import { createConnectionCredentialValidation } from "./tool-access/connections/credential-validation.js";
@@ -1692,8 +1692,8 @@ export function toolAccessService(
       // application/connection rows. A fresh gallery click has no
       // applicationId, so recover that retained identity by its company-unique
       // name and source instead of inserting a duplicate application that the
-      // unique index rejects. Active applications are excluded: connecting a
-      // second account still requires its own name/application identity.
+      // unique index rejects. Archived personal identities are excluded below.
+      // Active applications also require a separate application identity.
       const requestedName =
         input.name ?? galleryEntry?.name ?? defaultLinkName(input.link ?? "");
       const recoverableApplicationStatuses = galleryEntry
@@ -1841,6 +1841,19 @@ export function toolAccessService(
       retainedConnection = undefined;
       existingApplication = null;
     }
+    // A fresh setup must not revive a personal identity found only by name.
+    // Keep its application, grants, credentials, and history archived, and let
+    // normal name allocation create a separate application/connection below.
+    // Explicit reconnects still use the fixed personal-owner check.
+    if (
+      !requestedConnectionId &&
+      !input.applicationId &&
+      retainedConnection?.status === "archived" &&
+      retainedConnection.credentialPolicy === "per_user"
+    ) {
+      existingApplication = null;
+      retainedConnection = undefined;
+    }
     let applicationName = existingApplication?.name ?? requestedName;
     let name = retainedConnection?.name ?? requestedName;
     if (!existingApplication) {
@@ -1876,8 +1889,8 @@ export function toolAccessService(
           : "organization"
       : null;
     // An explicit resume/application reconnect continues the retained identity.
-    // A fresh gallery connect may still reuse an archived row for stable history
-    // and company-unique naming, but an explicit Access choice is a new identity
+    // A fresh gallery connect may still reuse an archived non-personal row for
+    // stable history, but an explicit Access choice is a new identity
     // decision and must replace the archived policy. Without this distinction,
     // removing a dedicated-agent connection and reconnecting the default personal
     // account leaves `per_agent` behind and the OAuth callback cannot persist its
@@ -3420,13 +3433,17 @@ export function toolAccessService(
       }
 
       const profileBindings: ToolProfileBinding[] = [];
-      // These connectors expose one agent-access choice. Commit installation
-      // reach and permission bindings together, including an empty selection.
-      if (isRemoteMcpConnectorMethod(connection.config.sourceTemplateKey, connection.config.connectionMethodKey)) {
+      // Agent access is also the credential admission boundary. Save its
+      // installation and permission targets together for every tool connector.
+      if (connection.connectionPurpose === "tool") {
         const desired = new Map(bindingInputs.flatMap((binding) => binding.targetType === "company" || binding.targetType === "agent"
           ? [[`${binding.targetType}:${binding.targetId}`, { targetType: binding.targetType, targetId: binding.targetId }] as const] : []));
-        const removed = existingInstalls.filter((install) => !desired.has(`${install.targetType}:${install.targetId}`));
+        const removed = input.preserveExistingAccess ? [] : existingInstalls.filter((install) => !desired.has(`${install.targetType}:${install.targetId}`));
         const added = [...desired.values()].filter((binding) => !existingInstalls.some((install) => install.targetType === binding.targetType && install.targetId === binding.targetId));
+        if (actor?.managementContext) {
+          await assertAgentConnectionInstallAccess(tx as unknown as Db, actor.managementContext.actor, companyId,
+            [...removed, ...added].filter(target => target.targetType === "agent").map(target => target.targetId));
+        }
         if (removed.length) await tx.delete(toolConnectionInstalls).where(inArray(toolConnectionInstalls.id, removed.map((install) => install.id)));
         if (added.length) await tx.insert(toolConnectionInstalls).values(added.map((binding) => ({
           companyId, connectionId: connection.id, targetType: binding.targetType, targetId: binding.targetId,
@@ -3520,7 +3537,15 @@ export function toolAccessService(
       await notifyToolConnectionHealth(tx, connection);
       const [updatedConnection] = await tx
         .update(toolConnections)
-        .set({ status: "active", enabled: true, ...(input.agentInstructions !== undefined ? { agentInstructions: input.agentInstructions } : {}), updatedAt: new Date() })
+        .set({
+          status: "active", enabled: true,
+          ...(connection.connectionPurpose === "tool" && connection.transport === "mcp_remote" ? {
+            config: sql`${toolConnections.config} || '{"mcpAgentAccessConfigured":true}'::jsonb`,
+            transportConfig: sql`${toolConnections.transportConfig} || '{"mcpAgentAccessConfigured":true}'::jsonb`,
+          } : {}),
+          ...(input.agentInstructions !== undefined ? { agentInstructions: input.agentInstructions } : {}),
+          updatedAt: new Date(),
+        })
         .where(eq(toolConnections.id, connection.id))
         .returning();
       await tx

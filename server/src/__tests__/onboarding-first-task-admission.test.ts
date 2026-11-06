@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import Ajv2020 from "ajv/dist/2020.js";
+import { Ajv2020 } from "ajv/dist/2020.js";
 import { eq } from "drizzle-orm";
 import { agentWakeupRequests, authUsers, companyMemberships, heartbeatRuns, issueComments, issueThreadInteractions, issues } from "@paperclipai/db";
 import { createIssueThreadInteractionSchema } from "@paperclipai/shared";
@@ -16,7 +16,7 @@ import { recoveryPostgresSupport as support } from "./helpers/recovery-postgres.
 import { startRunnerApiTestServer } from "./helpers/runner-api-server.js";
 import { CAPABILITY_SEMANTIC_TOOL_CATALOG } from "../vendor/paperclip-runner/index.js";
 
-async function nativeProposalRecipe(kind: "confirmation" | "checkbox", planRevisionId = randomUUID()) {
+async function nativeProposalRecipe(kind: "confirmation" | "checkbox", planRevisionId: string = randomUUID()) {
   const skill = await readFile(new URL("../onboarding-assets/first-task/skills/first-task/SKILL.md", import.meta.url), "utf8");
   const recipes = [...skill.matchAll(/^ {0,3}```json\n([\s\S]*?)^ {0,3}```/gm)].map(match => JSON.parse(match[1]!) as Record<string, unknown>);
   const matches = recipes.filter(recipe => recipe.interactionKind === kind);
@@ -337,7 +337,7 @@ describe.skipIf(!support.supported)("onboarding first-task execution admission",
         idempotencyKey: "ordinary-parent-blocker", blockedByTaskIds: [f.issueId],
       } })).resolves.toMatchObject({ disposition: "applied" });
     } else {
-      const headers = actor === "board"
+      const headers: Record<string, string> = actor === "board"
         ? { Cookie: await server.humanSession(f.responsibleUserId!), "Content-Type": "application/json", Origin: server.apiUrl }
         : { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
       const response = await fetch(`${server.apiUrl}/api/issues/${childId}`, {
@@ -442,7 +442,7 @@ describe.skipIf(!support.supported)("onboarding first-task execution admission",
       expect(interaction.kind).toBe(kind === "confirmation" ? "request_confirmation" : "request_checkbox_confirmation");
       await expect(create(f)).rejects.toThrow(/proposal.*accept/i);
       const selectedOptionIds = kind === "checkbox" ? ((args.payload as { options: { id: string }[] }).options.map(option => option.id)) : undefined;
-      await issueThreadInteractionService(server.db).acceptInteraction({ id: f.issueId, companyId: f.companyId }, interaction.id,
+      await issueThreadInteractionService(server.db).acceptInteraction({ id: f.issueId, companyId: f.companyId, projectId: null, goalId: null }, interaction.id,
         selectedOptionIds ? { selectedOptionIds } : {}, actor === "human" ? { userId: f.responsibleUserId! } : { agentId: f.agentId, runId: f.runId });
       if (actor === "human") await expect(create(f)).resolves.toMatchObject({ task: { parentId: f.issueId } });
       else await expect(create(f)).rejects.toThrow(/proposal.*accept/i);
@@ -580,6 +580,143 @@ describe.skipIf(!support.supported)("onboarding first-task execution admission",
       body: "This saved plan requires acceptance of its exact revision.", createdByAgentId: f.agentId, createdByRunId: f.runId });
     await accept(f, p);
     await expect(create(f)).rejects.toThrow(/proposal.*accept/i);
+  });
+
+  const acceptFollowUp = async (f: Awaited<ReturnType<typeof fixture>>, p: Awaited<ReturnType<typeof proposal>>) => {
+    const card = await p.svc.create(p.issue, { kind: "request_confirmation",
+      payload: { version: 1, prompt: "Create the first read-only discovery task from the approved plan?" },
+      sourceRunId: f.runId,
+    }, { agentId: f.agentId, runId: f.runId });
+    await p.svc.acceptInteraction(p.issue, card.id, {}, { userId: f.responsibleUserId! });
+    return card;
+  };
+
+  it("retains approval of the current plan through a later accepted execution proposal", async () => {
+    const f = await fixture();
+    const p = await proposal(f, true);
+    await accept(f, p);
+    await acceptFollowUp(f, p);
+    await expect(create(f)).resolves.toMatchObject({ task: { parentId: f.issueId } });
+  });
+
+  it.each(["pending", "rejected"])("keeps a later %s execution proposal behind its human gate", async status => {
+    const f = await fixture();
+    const p = await proposal(f, true);
+    await accept(f, p);
+    const card = await p.svc.create(p.issue, { kind: "request_confirmation",
+      payload: { version: 1, prompt: "Create the next execution task?" },
+    }, { agentId: f.agentId });
+    if (status === "rejected") await p.svc.rejectInteraction(p.issue, card.id, {}, { userId: f.responsibleUserId! });
+    await expect(create(f)).rejects.toThrow(/proposal.*accept/i);
+  });
+
+  it.each(["pending", "rejected", "agent-only", "invalid-selection", "revised-plan", "foreign-source"])(
+    "a later accepted proposal cannot replace %s plan approval", async scenario => {
+      const f = await fixture();
+      const p = await proposal(f, true);
+      if (scenario === "rejected") await p.svc.rejectInteraction(p.issue, p.card.id, {}, { userId: f.responsibleUserId! });
+      else if (scenario === "agent-only") await p.svc.acceptInteraction(p.issue, p.card.id, { selectedOptionIds: ["execute"] }, { agentId: f.agentId, runId: f.runId });
+      else if (scenario !== "pending") await accept(f, p);
+      if (scenario === "invalid-selection") await server.db.update(issueThreadInteractions)
+        .set({ result: { version: 1, outcome: "accepted", selectedOptionIds: ["unapproved"] } }).where(eq(issueThreadInteractions.id, p.card.id));
+      if (scenario === "foreign-source") {
+        const other = await fixture();
+        await server.db.update(issueThreadInteractions).set({ sourceRunId: other.runId }).where(eq(issueThreadInteractions.id, p.card.id));
+      }
+      if (scenario === "revised-plan") {
+        await documentService(server.db).unlockIssueDocument(f.issueId, "plan");
+        await documentService(server.db).upsertIssueDocument({ issueId: f.issueId, key: "plan", format: "markdown",
+          baseRevisionId: p.plan!.latestRevisionId, body: "Changed scope requires a new plan decision." });
+      }
+      await acceptFollowUp(f, p);
+      const before = await f.snapshot();
+      await expect(create(f)).rejects.toThrow(/proposal.*accept/i);
+      expect((await f.snapshot()).issues).toEqual(before.issues);
+    });
+
+  it("does not revive an older plan approval after a newer rejected plan proposal", async () => {
+    const f = await fixture();
+    const p = await proposal(f, true);
+    await accept(f, p);
+    const replacement = await p.svc.create(p.issue, { kind: "request_confirmation", payload: {
+      version: 1, prompt: "Approve this plan again?", target: {
+        type: "issue_document", key: "plan", issueId: f.issueId,
+        documentId: p.plan!.id, revisionId: p.plan!.latestRevisionId!,
+      },
+    } }, { agentId: f.agentId });
+    await p.svc.rejectInteraction(p.issue, replacement.id, {}, { userId: f.responsibleUserId! });
+    await acceptFollowUp(f, p);
+    await expect(create(f)).rejects.toThrow(/proposal.*accept/i);
+  });
+
+  it("decomposes a plan accepted through the onboarding checkbox card", async () => {
+    const f = await fixture();
+    const p = await proposal(f, true);
+    await accept(f, p);
+    const token = createLocalAgentJwt(f.agentId, f.companyId, "paperclip_runner", f.runId, f.responsibleUserId)!;
+    const response = await fetch(`${server.apiUrl}/api/issues/${f.issueId}/accepted-plan-decompositions`, {
+      method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ acceptedPlanRevisionId: p.plan!.latestRevisionId,
+        children: [{ title: "First discovery task", status: "backlog", workMode: "standard", priority: "medium", assigneeAgentId: f.agentId }] }),
+    });
+    const data = await response.json();
+    expect(response.status, JSON.stringify(data)).toBe(200);
+    expect(data.childIssueIds).toHaveLength(1);
+  });
+
+  it("includes a checkbox-approved plan in the native task context", async () => {
+    const f = await fixture();
+    const p = await proposal(f, true);
+    await accept(f, p);
+    await expect(f.authority.execute({ tool: "get_task_context", callId: randomUUID(), arguments: {} }))
+      .resolves.toMatchObject({ acceptedPlan: { revisionId: p.plan!.latestRevisionId } });
+  });
+
+  it.each([false, true])("retains only the selected plan scope after a later execution approval (anchored=%s)", async anchored => {
+    const f = await fixture();
+    const [issue] = await server.db.select().from(issues).where(eq(issues.id, f.issueId));
+    const plan = (await documentService(server.db).upsertIssueDocument({ issueId: f.issueId, key: "plan",
+      format: "markdown", body: "First: read-only discovery. Later: implementation, only if approved." })).document;
+    const svc = issueThreadInteractionService(server.db);
+    const selected = { id: "discovery", label: "Read-only discovery", description: "Inspect and write the architecture document." };
+    const card = await svc.create(issue, { kind: "request_checkbox_confirmation", payload: {
+      version: 1, prompt: "Which plan steps may start?", minSelected: 1, maxSelected: 2,
+      defaultSelectedOptionIds: ["discovery", "implementation"],
+      options: [selected, { id: "implementation", label: "Change the application" }],
+      target: { type: "issue_document", key: "plan", issueId: f.issueId, documentId: plan.id, revisionId: plan.latestRevisionId! },
+    } }, { agentId: f.agentId });
+    await svc.acceptInteraction(issue, card.id, { selectedOptionIds: [selected.id] }, { userId: f.responsibleUserId! });
+    await acceptFollowUp(f, { issue, plan, svc, card });
+    if (anchored) await server.db.update(heartbeatRuns).set({ contextSnapshot: {
+      issueId: f.issueId, planReviewInteraction: { acceptedTargetRevision: { revisionId: plan.latestRevisionId } },
+    } }).where(eq(heartbeatRuns.id, f.runId));
+    const context = await f.authority.execute({ tool: "get_task_context", callId: randomUUID(), arguments: {} }) as {
+      acceptedPlan: { revisionId: string; approvedOptions?: unknown[] };
+    };
+    expect(context.acceptedPlan.revisionId).toBe(plan.latestRevisionId);
+    expect(context.acceptedPlan.approvedOptions).toEqual([selected]);
+    const [saved] = await server.db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, card.id));
+    expect(saved.result).toMatchObject({ selectedOptionIds: [selected.id] });
+  });
+
+  it.each([
+    { selectedOptionIds: [] },
+    { selectedOptionIds: ["unapproved"] },
+    { selectedOptionIds: ["execute", "execute"] },
+  ])("does not publish or decompose an invalid checkbox selection $selectedOptionIds", async ({ selectedOptionIds }) => {
+    const f = await fixture();
+    const p = await proposal(f, true);
+    await accept(f, p);
+    await server.db.update(issueThreadInteractions).set({ result: { version: 1, outcome: "accepted", selectedOptionIds } })
+      .where(eq(issueThreadInteractions.id, p.card.id));
+    await expect(f.authority.execute({ tool: "get_task_context", callId: randomUUID(), arguments: {} }))
+      .resolves.toMatchObject({ acceptedPlan: null });
+    const before = await f.snapshot();
+    await expect(issueService(server.db).decomposeAcceptedPlan(f.issueId, {
+      acceptedPlanRevisionId: p.plan!.latestRevisionId!, actorAgentId: f.agentId, actorRunId: f.runId,
+      children: [{ title: "Unapproved work", status: "backlog", workMode: "standard", priority: "medium" }],
+    })).rejects.toThrow(/accepted plan confirmation/);
+    expect((await f.snapshot()).issues).toEqual(before.issues);
   });
 
   it.each(["stale", "foreign-target", "empty-selection"])("does not execute a plan with %s approval", async kind => {

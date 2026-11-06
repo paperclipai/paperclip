@@ -42,6 +42,8 @@ import {
 import {
   ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
   LOW_TRUST_REVIEW_PRESET,
+  type IssueCommentMetadata,
+  type IssueCommentPresentation,
 } from "@paperclipai/shared";
 import {
   getEmbeddedPostgresTestSupport,
@@ -132,6 +134,14 @@ async function deleteCompanySkillsAfterLateHeartbeatWritesDrain(db: Db) {
     }
   }
   throw lastError;
+}
+
+function canaryCommentMetadata(canary: string): IssueCommentMetadata {
+  return { version: 1, sections: [{ title: canary, rows: [{ type: "key_value", label: "Output", value: canary }] }] };
+}
+
+function canaryCommentPresentation(canary: string): IssueCommentPresentation {
+  return { kind: "message", tone: "neutral", title: canary, detailsDefaultOpen: false };
 }
 
 function expectNoCanary(value: unknown, ...markers: string[]) {
@@ -1488,7 +1498,7 @@ describeEmbeddedPostgres(
 
       const standardActor = agentActor(fixture, fixture.agents.standard.id);
       const standardRes = await request(
-        createApp(db, { ...standardActor, runId: null }),
+        createApp(db, { ...standardActor, runId: undefined }),
       ).get("/api/agents/me");
       expect(standardRes.status, JSON.stringify(standardRes.body)).toBe(200);
       expect(JSON.stringify(standardRes.body)).toContain(
@@ -1966,8 +1976,8 @@ describeEmbeddedPostgres(
         await db
           .update(issueComments)
           .set({
-            metadata: { canary: fixture.canaries.raw },
-            presentation: { markdown: fixture.canaries.raw },
+            metadata: canaryCommentMetadata(fixture.canaries.raw),
+            presentation: canaryCommentPresentation(fixture.canaries.raw),
           })
           .where(eq(issueComments.id, comment.body.id));
 
@@ -2001,8 +2011,8 @@ describeEmbeddedPostgres(
             authorAgentId: fixture.agents.lowTrust.id,
             createdByRunId: fixture.runs.lowTrust.id,
             body: `malicious scoped result ${fixture.canaries.raw}`,
-            metadata: { canary: fixture.canaries.raw },
-            presentation: { markdown: fixture.canaries.raw },
+            metadata: canaryCommentMetadata(fixture.canaries.raw),
+            presentation: canaryCommentPresentation(fixture.canaries.raw),
             sourceTrust: {
               preset: LOW_TRUST_REVIEW_PRESET,
               disposition: "quarantined",

@@ -5,6 +5,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChatEndpoint, ChatProvider } from "@/api/chatEndpoints";
+import { ApiError } from "@/api/client";
 import { queryKeys } from "@/lib/queryKeys";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { ChatSetupSidebarProvider } from "@/context/ChatSetupSidebarContext";
@@ -30,6 +31,7 @@ const mocks = vi.hoisted(() => ({
   createLinkIntent: vi.fn(),
   confirmIdentityLink: vi.fn(),
   pushToast: vi.fn(),
+  navigate: vi.fn(),
   setBreadcrumbs: vi.fn(),
   search: "",
   setParams: vi.fn(),
@@ -57,7 +59,7 @@ vi.mock("@/context/SidebarContext", () => ({
   useSidebar: () => ({ isMobile: false }),
 }));
 vi.mock("@/lib/router", () => ({
-  useNavigate: () => vi.fn(),
+  useNavigate: () => mocks.navigate,
   useLocation: () => ({ state: null }),
   useParams: () => ({ endpointId: "endpoint-a", tab: mocks.tab }),
   useSearchParams: () => [new URLSearchParams(mocks.search), mocks.setParams],
@@ -191,9 +193,56 @@ describe("chat setup and identity-link clipboard actions", () => {
     client.removeQueries({ queryKey: [...queryKeys.chatEndpoints.activity("endpoint-a"), "older-cursor"] });
     mocks.listActivityPage.mockRejectedValue(new Error("Offline"));
     await click("Next");
-    expect(container.textContent).toContain("Connection activity could not be loaded");
+    expect(container.textContent).toContain("Couldn't load the connection activity");
     await click("Previous");
     expect(container.textContent).toContain("Page 1");
+  });
+
+  // The people list renders its own inline error (a span); other sections of
+  // the Access tab (personal Slack search) have unmocked reads in this suite.
+  const peopleList = () => container.querySelector('[role="list"][aria-label="People"]');
+  const peopleError = () => container.querySelector('span[data-query-view="error"]');
+
+  it("keeps the loaded people list on screen when a refetch fails transiently", async () => {
+    await render("slack", true);
+    expect(peopleList()?.textContent).toContain("Test person");
+    mocks.listPrincipals.mockRejectedValue(new ApiError("Paperclip is restarting.", 503, { error: "tenant_app_unavailable" }));
+    await client.refetchQueries({ queryKey: queryKeys.chatEndpoints.principals("endpoint-a") });
+    await settle();
+    expect(peopleList()?.textContent).toContain("Test person");
+    expect(peopleError()).toBeNull();
+    expect(container.textContent).not.toContain("Paperclip is restarting.");
+    expect(container.textContent).not.toContain("tenant_app_unavailable");
+  });
+
+  it("shows readable copy with Retry when the people list fails to load", async () => {
+    mocks.listPrincipals.mockRejectedValueOnce(new ApiError("Request failed: 500", 500, { error: "internal_error" }));
+    await render("slack", true);
+    const alert = peopleError();
+    expect(alert?.textContent).toContain("An unexpected error occurred");
+    expect(alert?.textContent).not.toContain("internal_error");
+    expect(peopleList()).toBeNull();
+    const retry = alert!.querySelector("button")!;
+    expect(retry.textContent).toContain("Retry");
+    flushSync(() => retry.click());
+    await settle();
+    expect(peopleList()?.textContent).toContain("Test person");
+    expect(peopleError()).toBeNull();
+  });
+
+  it("keeps loaded Slack channels on screen when a refetch fails transiently", async () => {
+    mocks.tab = "settings";
+    mocks.listResources.mockResolvedValue([
+      { id: "channel-general", type: "channel", label: "#general", providerResourceId: "CGENERAL", availability: "available", enabled: true },
+    ]);
+    await render("slack", true);
+    expect(container.textContent).toContain("#general");
+    mocks.listResources.mockRejectedValue(new ApiError("Paperclip is restarting.", 503, { error: "tenant_app_unavailable" }));
+    await client.refetchQueries({ queryKey: queryKeys.chatEndpoints.resources("endpoint-a") });
+    await settle();
+    expect(container.textContent).toContain("#general");
+    expect(container.querySelector('[data-query-view="error"]')).toBeNull();
+    expect(container.textContent).not.toContain("Paperclip is restarting.");
   });
 
   it.each(["slack", "microsoft-teams"] as const)(
@@ -488,6 +537,8 @@ describe("chat setup and identity-link clipboard actions", () => {
     expect(container.querySelectorAll('aside nav button')).toHaveLength(4);
     expect(container.querySelector('h1')?.textContent).toBe("Success");
     expect(container.textContent).toContain("You can now talk to Maya in Slack");
+    expect([...container.querySelectorAll("a")].find(link => link.textContent?.trim() === "Open Slack")?.getAttribute("href"))
+      .toBe("https://app.slack.com/client/workspace-a/DTEST");
     expect(container.querySelector('[aria-label="Maya avatar"]')).not.toBeNull();
     expect(container.querySelector('main')?.textContent ?? container.textContent).not.toContain("Save & exit");
     expect(container.textContent).not.toContain("Copy message");
@@ -503,11 +554,68 @@ describe("chat setup and identity-link clipboard actions", () => {
     expect(container.querySelector('aside button[aria-current="step"]')?.textContent).toBe("4Send a message");
   });
 
+  it.each(
+    (["managed", "automatic", "manual"] as const).flatMap(method =>
+      (["active", "paused"] as const).map(status => ({ method, status }))),
+  )("opens settings when Done resumes a completed $method Slack connection that is $status", async ({ method, status }) => {
+    const endpoint = await render("slack");
+    const saved: ChatEndpoint = { ...endpoint, status, providerAccountId: "workspace-a", setup: {
+      ...endpoint.setup!, step: "complete", slackSetupMethod: method,
+      slackRegistration: { status: "configured", appId: "ATEST" },
+      slackAccount: { externalUserId: "UPERSON", paperclipUserId: "owner-user", status: "linked", welcomeStatus: "sent", dmChannelId: "DTEST" },
+    } };
+    mocks.get.mockResolvedValue(saved);
+    mocks.finishSlackSetup.mockRejectedValue(new Error("This connection is not waiting for a setup test"));
+    flushSync(() => client.setQueryData(["chat-endpoint-setup-resume", endpoint.id], saved));
+    await settle();
+
+    await click("Done");
+
+    expect(mocks.finishSlackSetup).not.toHaveBeenCalled();
+    expect(mocks.navigate).toHaveBeenCalledWith("/apps/chat/endpoint-a/settings");
+    expect(mocks.pushToast).not.toHaveBeenCalled();
+  });
+
+  it.each(["managed", "automatic"] as const)("still finalizes an unfinished %s Slack setup before opening settings", async method => {
+    const endpoint = await render("slack");
+    const saved: ChatEndpoint = { ...endpoint, status: "verifying", providerAccountId: "workspace-a", setup: {
+      ...endpoint.setup!, step: "test", slackSetupMethod: method,
+      webhookVerifiedAt: "2026-01-01T00:00:00Z",
+      slackRegistration: { status: "configured", appId: "ATEST" },
+      slackAccount: { externalUserId: "UPERSON", paperclipUserId: "owner-user", status: "linked", welcomeStatus: "sent", dmChannelId: "DTEST" },
+    } };
+    mocks.get.mockResolvedValue(saved);
+    mocks.finishSlackSetup.mockResolvedValue({ ...saved, status: "active", setup: { ...saved.setup, step: "complete" } });
+    flushSync(() => client.setQueryData(["chat-endpoint-setup-resume", endpoint.id], saved));
+    await settle();
+
+    await click("Done");
+
+    expect(mocks.finishSlackSetup).toHaveBeenCalledExactlyOnceWith("endpoint-a");
+    expect(mocks.navigate).toHaveBeenCalledWith("/apps/chat/endpoint-a/settings");
+  });
+
   it("keeps settings focused on channel access and the test-message action", async () => {
     mocks.tab = "settings";
-    await render("slack", true);
+    const endpoint = await render("slack", true);
     expect(container.textContent).toContain("Send me a test message");
     expect(container.textContent).toContain("Open Slack configuration");
+    expect([...container.querySelectorAll("a")].some(link => link.textContent?.trim() === "Open Slack")).toBe(false);
+    flushSync(() => client.setQueryData(queryKeys.chatEndpoints.detail(endpoint.id), {
+      ...endpoint, status: "active", providerAccountId: "workspace-a",
+      setup: { ...endpoint.setup, step: "complete", slackAccount: { externalUserId: "UPERSON", paperclipUserId: "owner-user", status: "linked", dmChannelId: "DTEST" } },
+    }));
+    await settle();
+    expect([...container.querySelectorAll("a")].find(link => link.textContent?.trim() === "Open Slack")?.getAttribute("href"))
+      .toBe("https://app.slack.com/client/workspace-a/DTEST");
+    flushSync(() => client.setQueryData(queryKeys.auth.session, { user: { id: "other-user" } }));
+    await settle();
+    expect([...container.querySelectorAll("a")].find(link => link.textContent?.trim() === "Open Slack")?.getAttribute("href"))
+      .toBe("https://app.slack.com");
+    flushSync(() => client.setQueryData(queryKeys.auth.session, null));
+    await settle();
+    expect([...container.querySelectorAll("a")].find(link => link.textContent?.trim() === "Open Slack")?.getAttribute("href"))
+      .toBe("https://app.slack.com");
     expect(container.textContent).not.toContain("Message in a channel");
     expect(container.textContent).not.toContain("Agent avatar");
     expect(container.textContent).not.toContain("Manage action permissions");

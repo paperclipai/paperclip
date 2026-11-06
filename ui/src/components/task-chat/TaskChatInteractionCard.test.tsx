@@ -1,9 +1,14 @@
 // @vitest-environment jsdom
 
-import { act, forwardRef, useImperativeHandle, type ForwardedRef } from "react";
+import { act, forwardRef, useImperativeHandle, useState, type ForwardedRef } from "react";
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+vi.mock("@/hooks/useCoordinatorWorkspaceEnabled", () => ({
+  useCoordinatorWorkspaceEnabled: () => ({ enabled: false, loaded: true }),
+}));
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { IssueDocument } from "@paperclipai/shared";
 import type {
   IssueThreadInteraction,
@@ -13,6 +18,7 @@ import { ThemeProvider } from "@/context/ThemeContext";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import {
   expiredSecretProposalInteraction,
+  pendingToolActionLongProposalInteraction,
   pendingAskUserQuestionsInteraction,
   pendingRequestCheckboxConfirmationInteraction,
   pendingRequestItemVerdictsInteraction,
@@ -55,6 +61,8 @@ vi.mock("@/components/MarkdownEditor", () => ({
     );
   }),
 }));
+
+(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 function createRequestConfirmation(
   overrides: Partial<RequestConfirmationInteraction> = {},
@@ -116,6 +124,40 @@ describe("TaskChatInteractionCard", () => {
   afterEach(() => {
     flushSync(() => root.unmount());
     container.remove();
+  });
+
+  it("opens the real tool review and reveals the proposal tail before approval", async () => {
+    const accept = vi.fn();
+    const reject = vi.fn();
+    const interaction = structuredClone(pendingToolActionLongProposalInteraction);
+    function ReviewSurface() {
+      const [reviewing, setReviewing] = useState(false);
+      return <TaskChatInteractionCard item={interactionItem(interaction)}
+        presentation={reviewing ? "takeover" : "timeline"}
+        onReviewRequest={() => setReviewing(true)}
+        onAcceptInteraction={accept} onRejectInteraction={reject} />;
+    }
+    flushSync(() => root.render(<TooltipProvider><ThemeProvider><ReviewSurface /></ThemeProvider></TooltipProvider>));
+    expect(container.textContent).not.toContain("November 8, 2030");
+    await act(async () => {
+      Array.from(container.querySelectorAll("button")).find(button => button.textContent === "Review request")!.click();
+    });
+    const details = container.querySelector("details")!;
+    expect(details).not.toBeNull();
+    expect(details.open).toBe(false);
+    expect(container.querySelector("pre")?.textContent).toBe(interaction.payload.toolAction!.argumentsSummaryJson);
+    expect(details.textContent).toContain("November 8, 2030");
+    expect(details.textContent).toContain("[redacted]");
+    expect(details.textContent).toContain(interaction.payload.toolAction!.argumentsHash);
+    await act(async () => details.querySelector("summary")!.click());
+    expect(details.open).toBe(true);
+    expect(accept).not.toHaveBeenCalled();
+    expect(reject).not.toHaveBeenCalled();
+    await act(async () => {
+      Array.from(container.querySelectorAll("button")).find(button => button.textContent === "Approve & run")!.click();
+    });
+    expect(accept).toHaveBeenCalledExactlyOnceWith(interaction, undefined, undefined, false);
+    expect(reject).not.toHaveBeenCalled();
   });
 
   it("does not render a pending confirmation in the timeline", () => {
@@ -374,6 +416,56 @@ describe("TaskChatInteractionCard", () => {
     ).toBeNull();
   });
 
+  it.each([
+    ["confirmation", "pending"],
+    ["confirmation", "accepted"],
+    ["checkbox", "pending"],
+    ["checkbox", "accepted"],
+  ] as const)("renders Markdown in %s prompts when %s", (kind, status) => {
+    const interaction = structuredClone(kind === "confirmation"
+      ? createRequestConfirmation()
+      : pendingRequestCheckboxConfirmationInteraction);
+    interaction.status = status;
+    interaction.payload.prompt = "Review the [two screenshots](/PAP/issues/PAP-42#document-preview).\n\nSelect **Accept** to keep this design.\n\n- Check `preview.png`\n- Keep the layout\n\n![Review image](https://provider.invalid/review.png)\n\n```mermaid\nflowchart LR\n  A --> B\n```";
+    if (status === "accepted") interaction.result = { version: 1, outcome: "accepted" };
+    const accept = vi.fn();
+    const reject = vi.fn();
+
+    flushSync(() => root.render(
+      <QueryClientProvider client={new QueryClient()}><TooltipProvider><ThemeProvider>
+        <TaskChatInteractionCard item={interactionItem(interaction)}
+          presentation={status === "pending" ? "takeover" : "timeline"}
+          onAcceptInteraction={accept} onRejectInteraction={reject} />
+      </ThemeProvider></TooltipProvider></QueryClientProvider>,
+    ));
+
+    const link = container.querySelector('a[href="/issues/PAP-42#document-preview"]');
+    expect(link?.textContent).toBe("two screenshots");
+    const prompt = link?.closest(".paperclip-markdown");
+    expect(prompt?.querySelector("strong")?.textContent).toBe("Accept");
+    expect(prompt?.querySelector("code")?.textContent).toBe("preview.png");
+    expect(prompt?.querySelector("img")).toBeNull();
+    expect(prompt?.querySelectorAll("p")).toHaveLength(3);
+    expect(prompt?.querySelector("[data-markdown-image-reference]")?.textContent)
+      .toContain("Image: Review image (https://provider.invalid/review.png)");
+    expect(prompt?.querySelector("pre code.language-mermaid")?.textContent)
+      .toContain("flowchart LR");
+    expect(prompt?.querySelector(".paperclip-mermaid")).toBeNull();
+    expect(prompt?.querySelectorAll("li")).toHaveLength(2);
+    expect(prompt?.textContent).not.toContain("[two screenshots]");
+    expect(accept).not.toHaveBeenCalled();
+    expect(reject).not.toHaveBeenCalled();
+    if (kind === "checkbox" && status === "pending") {
+      const group = container.querySelector('[role="group"]');
+      const label = document.getElementById(group?.getAttribute("aria-labelledby") ?? "");
+      expect(label?.contains(prompt ?? null)).toBe(true);
+      expect(label?.textContent).toContain("two screenshots");
+      expect(label?.textContent).not.toContain("[two screenshots]");
+      expect(label?.textContent).not.toContain("**Accept**");
+      expect(group?.getAttribute("aria-label")).toBeNull();
+    }
+  });
+
   it("stacks the confirmation prompt full-width and hides unlabeled custom target keys", () => {
     const render = (target: RequestConfirmationInteraction["payload"]["target"]) =>
       flushSync(() => {
@@ -403,7 +495,7 @@ describe("TaskChatInteractionCard", () => {
       node.textContent?.startsWith("The change is open"),
     );
     expect(prompt?.className).not.toContain("flex-1");
-    expect(prompt?.className).toContain("whitespace-pre-line");
+    expect(prompt?.closest(".paperclip-markdown")?.querySelectorAll("p")).toHaveLength(2);
     expect(prompt?.parentElement?.className).not.toContain("justify-between");
 
     render({
@@ -447,7 +539,7 @@ describe("TaskChatInteractionCard", () => {
       node.textContent?.startsWith("Pick the drafts"),
     );
     expect(prompt?.className).not.toContain("flex-1");
-    expect(prompt?.className).toContain("whitespace-pre-line");
+    expect(prompt?.closest(".paperclip-markdown")?.querySelectorAll("p")).toHaveLength(2);
     expect(prompt?.parentElement?.className).not.toContain("justify-between");
 
     render({

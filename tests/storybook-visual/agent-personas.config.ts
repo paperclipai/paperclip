@@ -7,7 +7,7 @@ export default defineConfig({
   snapshotPathTemplate: "{testDir}/.snapshots/agent-personas/{arg}{ext}",
   use: {
     browserName: "chromium", baseURL: process.env.PAPERCLIP_PERSONA_STORYBOOK_URL ?? "http://localhost:6106",
-    viewport: { width: 1200, height: 900 }, deviceScaleFactor: 1, reducedMotion: "reduce",
+    viewport: { width: 1200, height: 900 }, deviceScaleFactor: 1, contextOptions: { reducedMotion: "reduce" },
     launchOptions: { args: ["--use-angle=swiftshader", "--enable-unsafe-swiftshader"] },
   },
 });

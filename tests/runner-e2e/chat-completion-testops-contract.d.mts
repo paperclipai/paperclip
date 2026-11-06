@@ -10,7 +10,7 @@ export interface PilotCase {
   executionId: string;
   fullName: string;
 }
-export type CatalogCase = Omit<PilotCase, "checks"> & { checks: number | null };
+export type CatalogCase = Omit<PilotCase, "checks"> & { checks: number | null; optionalCompanySecretBindingApproval?: true; expectedHumanMessageCount?: 2 };
 export const cases: readonly Readonly<PilotCase>[];
 export const targetSha: string;
 export const launchSha256: string;
@@ -31,4 +31,13 @@ export function evidencePolicy(selection: PilotSelection, context: PilotContext,
 };
 
 export const catalogWorkflow: string;
-export function catalogDefinition(context?: { catalog?: "full" }): { cases: readonly Readonly<CatalogCase>[]; planName: string; targetSha: string; workflow: string; bindingKey: string };
+export interface CatalogDefinition {
+  cases: readonly Readonly<CatalogCase>[];
+  planName: string;
+  targetSha: string;
+  launchSha256?: string;
+  workflow: string;
+  bindingKey: string;
+}
+export function catalogDefinition(context: { catalog: "full" }): CatalogDefinition & { launchSha256: string };
+export function catalogDefinition(context?: { catalog?: "full" }): CatalogDefinition;

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { readFileSync, readdirSync } from 'node:fs';
 import { createRequire } from 'node:module';
-import { catalogTargetSha, catalogManifestSha256, fullCatalogPlanName, fullCatalogCases, validateFullCatalogManifest } from './chat-full-catalog-testops-manifest.mjs';
+import { catalogTargetSha, catalogManifestSha256, fullCatalogPlanName, fullCatalogCases, validateFullCatalogManifest, companySecretBindingApprovalMetadata, validateCompanySecretBindingApprovalSource } from './chat-full-catalog-testops-manifest.mjs';
 
 const { parseDocument } = createRequire(import.meta.url)('yaml');
 const bytes = readFileSync(new URL('./chat-full-catalog-testops-manifest.json', import.meta.url));
@@ -22,9 +22,12 @@ test('the manifest joins all244 source YAML scenarios without importing a domain
   assert.deepEqual(fullCatalogCases.map(value => value.key).sort(), scenarios.map(value => value.id).sort());
   for (const scenario of scenarios) {
     const actual = row(scenario.id);
-    assert.equal(actual.originalQuery, scenario.query);
-    assert.equal(actual.originalContext, scenario.context);
-    assert.equal(actual.expectedOutcome, scenario.expected_outcome);
+    const override = field => manifest.source.repairMetadata.changedFields.find(change => change.key === scenario.id && change.field === field);
+    for (const [field, original] of [['originalQuery', scenario.query], ['originalContext', scenario.context], ['expectedOutcome', scenario.expected_outcome]]) {
+      const change = override(field);
+      if (change) { assert.equal(change.previous, original); assert.equal(actual[field], change.current); }
+      else assert.equal(actual[field], original);
+    }
     assert.ok(!Object.hasOwn(actual, 'status') && !Object.hasOwn(actual, 'passed'));
   }
 });
@@ -93,4 +96,350 @@ test('foreign identity, duplicated case and changed run-bound metadata are rejec
   assert.throws(() => validateFullCatalogManifest(duplicate), /identity_conflict/);
   const bounds = copy(); bounds.cases[0].minimumRuns = bounds.cases[0].maximumRuns + 1;
   assert.throws(() => validateFullCatalogManifest(bounds), /row_invalid/);
+});
+
+
+test('repair source metadata binds the corrected candidate and explicit changed definitions', () => {
+  const repair = manifest.source.repairMetadata;
+  assert.equal(repair.baseTargetSha, '3b66c3c144360ddf32714a0742fd774b8ceafb16');
+  assert.equal(repair.previousTargetSha, 'ab2019e976076ec0eb60b026844f3d9211cb0208');
+  assert.equal(manifest.targetSha, 'd68c00a3d78e5cd56b77aedb31f1e8a0f6d6f84e');
+  assert.equal(repair.definitionSourceSha, manifest.metadataSourceSha);
+  assert.equal(repair.candidateDescriptorSnapshot, 'fixtures/chat-repair-candidate-descriptors.json');
+  const descriptorBytes = readFileSync(new URL(repair.candidateDescriptorSnapshot, import.meta.url));
+  assert.equal(createHash('sha256').update(descriptorBytes).digest('hex'), repair.candidateDescriptorSha256);
+  const declarations = JSON.parse(descriptorBytes);
+  assert.equal(declarations.length, 242);
+  assert.equal(new Set(declarations.map(value => value.scenarioId)).size, 242);
+  assert.deepEqual(repair.changedFields.map(value => [value.key, value.field]), [
+  [
+    "activity.work-timeline",
+    "sourceFiles"
+  ],
+  [
+    "activity.work-timeline",
+    "oracleVersion"
+  ],
+  [
+    "activity.work-timeline",
+    "expectedOutcome"
+  ],
+  [
+    "agents.choose-primary",
+    "sourceFiles"
+  ],
+  [
+    "app-permissions.ask-before-action",
+    "sourceFiles"
+  ],
+  [
+    "app-permissions.ask-before-action",
+    "oracleVersion"
+  ],
+  [
+    "app-permissions.test-as-agent",
+    "sourceFiles"
+  ],
+  [
+    "app-permissions.test-as-agent",
+    "oracleVersion"
+  ],
+  [
+    "app-permissions.test-as-agent",
+    "originalContext"
+  ],
+  [
+    "app-permissions.test-as-agent",
+    "expectedOutcome"
+  ],
+  [
+    "cli-operations.choose-cli-context",
+    "sourceFiles"
+  ],
+  [
+    "cli-operations.choose-cli-context",
+    "oracleVersion"
+  ],
+  [
+    "companies.agent-observability",
+    "sourceFiles"
+  ],
+  [
+    "companies.configure-decision-model",
+    "sourceFiles"
+  ],
+  [
+    "companies.fast-responses",
+    "sourceFiles"
+  ],
+  [
+    "companies.fast-responses",
+    "originalQuery"
+  ],
+  [
+    "companies.prompt-injection-guard",
+    "sourceFiles"
+  ],
+  [
+    "goals.create-goal-tree",
+    "oracleVersion"
+  ],
+  [
+    "goals.create-goal-tree",
+    "expectedOutcome"
+  ],
+  [
+    "navigation-preferences.dismiss-announcement",
+    "sourceFiles"
+  ],
+  [
+    "navigation-preferences.dismiss-announcement",
+    "oracleVersion"
+  ],
+  [
+    "questions-and-approvals.duplicate-answer",
+    "oracleVersion"
+  ],
+  [
+    "questions-and-approvals.formal-hire-revision",
+    "sourceFiles"
+  ],
+  [
+    "questions-and-approvals.formal-hire-revision",
+    "oracleVersion"
+  ],
+  [
+    "questions-and-approvals.multi-part-question",
+    "oracleVersion"
+  ],
+  [
+    "questions-and-approvals.reject-and-revise",
+    "sourceFiles"
+  ],
+  [
+    "questions-and-approvals.reject-and-revise",
+    "oracleVersion"
+  ],
+  [
+    "questions-and-approvals.review-plan",
+    "sourceFiles"
+  ],
+  [
+    "questions-and-approvals.review-plan",
+    "oracleVersion"
+  ],
+  [
+    "secrets.configure-company-secret",
+    "sourceFiles"
+  ],
+  [
+    "secrets.configure-company-secret",
+    "oracleVersion"
+  ],
+  [
+    "secrets.personal-secret",
+    "sourceFiles"
+  ],
+  [
+    "secrets.personal-secret",
+    "oracleVersion"
+  ],
+  [
+    "skills.author-skill",
+    "sourceFiles"
+  ],
+  [
+    "skills.author-skill",
+    "oracleVersion"
+  ],
+  [
+    "skills.author-skill",
+    "expectedOutcome"
+  ],
+  [
+    "skills.enable-for-agent",
+    "sourceFiles"
+  ],
+  [
+    "skills.explicit-restriction",
+    "sourceFiles"
+  ],
+  [
+    "skills.find-and-install",
+    "sourceFiles"
+  ],
+  [
+    "skills.fork-read-only",
+    "sourceFiles"
+  ],
+  [
+    "skills.review-update",
+    "sourceFiles"
+  ],
+  [
+    "skills.studio-test",
+    "sourceFiles"
+  ],
+  [
+    "skills.studio-test",
+    "oracleVersion"
+  ],
+  [
+    "skills.studio-test",
+    "maximumRuns"
+  ],
+  [
+    "teams.configure-team",
+    "sourceFiles"
+  ],
+  [
+    "teams.configure-team",
+    "oracleVersion"
+  ],
+  [
+    "connection-setup.secure-api-key",
+    "oracleVersion"
+  ],
+  [
+    "secrets.least-scope-delivery",
+    "oracleVersion"
+  ],
+  [
+    "secrets.secret-proposal",
+    "oracleVersion"
+  ],
+  [
+    "secrets.vault-reference",
+    "oracleVersion"
+  ],
+  [
+    "teams.install-team",
+    "oracleVersion"
+  ],
+  [
+    "questions-and-approvals.multi-part-question",
+    "originalQuery"
+  ],
+  [
+    "secrets.configure-company-secret",
+    "maximumRuns"
+  ],
+  [
+    "secrets.configure-company-secret",
+    "optionalCompanySecretBindingApproval"
+  ],
+  [
+    "secrets.configure-company-secret",
+    "expectedHumanMessageCount"
+  ],
+  [
+    "questions-and-approvals.multi-part-question",
+    "sourceFiles"
+  ],
+  [
+    "skills.review-update",
+    "oracleVersion"
+  ],
+  [
+    "teams.install-team",
+    "sourceFiles"
+  ]
+]);
+  for (const change of repair.changedFields) {
+    assert.deepEqual(row(change.key)[change.field], change.current);
+    assert.notDeepEqual(change.current, change.previous);
+  }
+  assert.deepEqual(repair.changedFields.filter(change => change.key === 'questions-and-approvals.multi-part-question' && change.field === 'originalQuery'), [{ key: 'questions-and-approvals.multi-part-question', field: 'originalQuery', previous: "Help me choose the details for the launch page before you build it.", current: "Walk me through the launch-page question form so I can choose the audience and tone and enter my own headline before you build anything." }]);
+  assert.equal(repair.runtimeConditions.multipart53QuestionClarification.changedQueries, 1);
+  assert.equal(repair.runtimeConditions.multipart53QuestionClarification.unchangedOtherCatalogQueries, 243);
+  assert.equal(repair.runtimeConditions.multipart53QuestionClarification.previousInventoryDigest, '0cf530c11449508e91b5ce664d9375fc8e76466fa908255a1af0ff55169d0220');
+  assert.equal(repair.runtimeConditions.multipart53QuestionClarification.inventoryDigest, '814bb3633268cb0488563aed51fce2f987bd47650ddfb5a3302d0354292c2323');
+  assert.equal(repair.descriptorChanges.length, 55);
+  assert.equal(new Set(repair.descriptorChanges.map(change => change.key)).size, 33);
+  assert.deepEqual([...new Set(repair.descriptorChanges.map(change => change.field))].sort(), ['expectedRunCount', 'minimumRunCount', 'optionalCompanySecretBindingApproval', 'oracleVersion', 'setupPolicy', 'sourceFiles']);
+  for (const change of repair.descriptorChanges) {
+    assert.notDeepEqual(change.current, change.previous);
+    const declaration = declarations.find(value => value.scenarioId === change.key);
+    assert.ok(declaration);
+    assert.deepEqual(change.current, declaration[change.field]);
+    if (Object.hasOwn(row(change.key), change.field)) assert.deepEqual(row(change.key)[change.field], change.current);
+  }
+  assert.deepEqual(repair.changedDefinitionFiles.map(value => value.path), [
+    'tests/runner-e2e/chat-scenarios/companies.yaml', 'tests/runner-e2e/chat-scenarios/goals.yaml', 'tests/runner-e2e/chat-scenarios/skills.yaml', 'tests/runner-e2e/chat-scenarios/app-permissions.yaml', 'tests/runner-e2e/chat-scenarios/activity.yaml', 'tests/runner-e2e/chat-scenarios/questions-and-approvals.yaml',
+  ]);
+  assert.ok(repair.changedDefinitionFiles.every(value => /^[a-f0-9]{64}$/.test(value.sha256)));
+  for (const declaration of declarations) {
+    const value = row(declaration.scenarioId);
+    assert.deepEqual(value.sourceFiles, declaration.sourceFiles);
+    assert.equal(value.oracleVersion, declaration.oracleVersion);
+    assert.equal(value.minimumRuns, declaration.minimumRunCount ?? declaration.expectedRunCount);
+    assert.equal(value.maximumRuns, declaration.expectedRunCount);
+    const approval = companySecretBindingApprovalMetadata(declaration);
+    assert.deepEqual(Object.fromEntries(Object.keys(approval).map(key => [key, value[key]])), approval);
+    assert.equal(Object.hasOwn(value, 'optionalCompanySecretBindingApproval'), Object.hasOwn(approval, 'optionalCompanySecretBindingApproval'));
+    assert.equal(value.declaredTurnTimeoutMs, declaration.turnTimeoutMs);
+    assert.equal(value.attemptTimeoutMs, declaration.attemptTimeoutMs);
+  }
+  assert.deepEqual(repair.changedFields.filter(change => ['minimumRuns', 'maximumRuns'].includes(change.field)), [{ key: 'skills.studio-test', field: 'maximumRuns', previous: 2, current: 3 }, { key: 'secrets.configure-company-secret', field: 'maximumRuns', previous: 2, current: 3 }]);
+  assert.deepEqual(repair.runtimeConditions.studio144Accounting, { key: 'skills.studio-test', previousMinimumRuns: 2, previousMaximumRuns: 2, minimumRuns: 2, maximumRuns: 3, requiredActualAcceptedRuns: 3, originalAttemptTimeoutMs: 540000, humanMessages: 1, condition: 'Initial CEO + real Studio worker + exactly one source-bound completion delivery;2-run no-delivery positive is rejected.' });
+  assert.equal(repair.runtimeConditions.toolGuidance106.corePRUnmerged, false);
+  assert.equal(repair.runtimeConditions.sdkPublicProof.scannerAndCanaryCertificatesUnchanged, true);
+  assert.equal(repair.runtimeConditions.sdkPublicProof.sourceInputsChanged, true);
+  assert.equal(repair.runtimeConditions.sdkPublicProof.registrySha256, "efa70621e9fb42aa185f7ee616a1a726aa3eccb367e67e28817cedf26ef2ade8");
+  assert.equal(repair.runtimeConditions.sdkPublicProof.plugin558StillHeld, true);
+  assert.equal(repair.runtimeConditions.sdkPublicProof.expectedLockSha256, "54a81b2ed3f1f85eaa085c034560ac248e384db34fbc7aba8c5a3846c29b3ce8");
+  assert.equal(repair.runtimeConditions.sdkPublicProof.runtimeCompilerParserZodIdentitiesUnchanged, true);
+  assert.equal(repair.runtimeConditions.toolProposal487.corePRUnmerged, false);
+  assert.deepEqual(repair.runtimeConditions.toolProposal487.replay, {
+  "corePR": 18742,
+  "coreHead": "61996a96dd09e90a5788e8711a94fc5ae631f425",
+  "corePRUnmerged": false,
+  "condition": "A new Ask-first request only for an authenticated later same-person human intent after the prior decline; same-intent retry and derived or foreign sources remain denied. No approval/execution authority change.",
+  "acceptedDirectSources": [
+    "issue.comment",
+    "issue.comment.reopen"
+  ],
+  "actualPostAssertionPGCasesPassed": 2
+});
+});
+
+
+test('Company approval metadata is projected without executing a fixture and rejects foreign or changed bounds', () => {
+  const declaration = { scenarioId: 'secrets.configure-company-secret', optionalCompanySecretBindingApproval: true,
+    expectedRunCount: 3, minimumRunCount: 2, expectedHumanMessageCount: 2, attemptTimeoutMs: 480000,
+    setup() { throw new Error('Fixture must not execute'); } };
+  assert.deepEqual(companySecretBindingApprovalMetadata(declaration),
+    { optionalCompanySecretBindingApproval: true, expectedHumanMessageCount: 2 });
+  assert.deepEqual(companySecretBindingApprovalMetadata({ scenarioId: 'other' }), {});
+  const future = structuredClone(manifest);
+  Object.assign(future.cases.find(value => value.key === declaration.scenarioId),
+    companySecretBindingApprovalMetadata(declaration), { minimumRuns: 2, maximumRuns: 3 });
+  assert.equal(validateFullCatalogManifest(future), future);
+  for (const mutation of [
+    { scenarioId: 'secrets.personal-secret' }, { optionalCompanySecretBindingApproval: false },
+    { expectedRunCount: 2 }, { minimumRunCount: 3 }, { expectedHumanMessageCount: 3 }, { attemptTimeoutMs: 480001 },
+  ]) assert.throws(() => companySecretBindingApprovalMetadata({ ...declaration, ...mutation }), /company_approval_invalid/);
+  for (const mutation of [
+    { key: 'secrets.personal-secret' }, { optionalCompanySecretBindingApproval: false },
+    { maximumRuns: 2 }, { minimumRuns: 3 }, { expectedHumanMessageCount: 3 }, { attemptTimeoutMs: 480001 },
+  ]) {
+    const invalid = structuredClone(future);
+    Object.assign(invalid.cases.find(value => value.key === declaration.scenarioId), mutation);
+    assert.throws(() => validateFullCatalogManifest(invalid), /company_approval_invalid/);
+  }
+});
+
+
+test('source admission joins the optional Company approval and base humans to actual static task metadata', () => {
+  const row = { key: 'secrets.configure-company-secret', optionalCompanySecretBindingApproval: true,
+    minimumRuns: 2, maximumRuns: 3, expectedHumanMessageCount: 2, attemptTimeoutMs: 480000 };
+  const task = { id: row.key, optionalCompanySecretBindingApproval: true, minimumExpectedRunCount: 2,
+    expectedRunCount: 3, expectedHumanMessageCount: 2, attemptTimeoutMs: { local: 480000 } };
+  assert.doesNotThrow(() => validateCompanySecretBindingApprovalSource(row, task));
+  for (const mutation of [{ optionalCompanySecretBindingApproval: undefined }, { expectedHumanMessageCount: 3 },
+    { id: 'secrets.personal-secret' }, { expectedRunCount: 2 }, { minimumExpectedRunCount: 3 }]) {
+    assert.throws(() => validateCompanySecretBindingApprovalSource(row, { ...task, ...mutation }));
+  }
+  const unmarked = { ...row }; delete unmarked.optionalCompanySecretBindingApproval;
+  assert.throws(() => validateCompanySecretBindingApprovalSource(unmarked, task), /approval mismatch/);
 });

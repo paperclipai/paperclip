@@ -345,6 +345,50 @@ describeDatabase("remote workspace ordinary file routes", () => {
     return { ...f, storage, saved, input: { companyId: f.ids.company, workspaceId: f.ids.workspace, snapshotId: snapshot.id } };
   }
 
+  it("keeps a production saved preview available when cleanup clears its location during archive loading", async () => {
+    const f = await savedFileFixture(true);
+    const requestTemp = await fs.mkdtemp(path.join(os.tmpdir(), "saved-file-location-request-"));
+    directories.push(requestTemp);
+    const { createApp } = await import("../app.js");
+    const app = await createApp(db, { uiMode: "none", serverPort: 3100, storageService: f.storage,
+      deploymentMode: "local_trusted", deploymentExposure: "public", bindHost: "127.0.0.1",
+      allowedHostnames: ["127.0.0.1", "localhost"], authReady: false, companyDeletionEnabled: false,
+      managedPluginAutoInstall: [], decisionServiceOptions: { wakeOriginAgent: async () => null } });
+    const originalTmpdir = process.env.TMPDIR;
+    process.env.TMPDIR = requestTemp;
+    let extractedCopy: string | undefined;
+    const getObject = f.storage.getObject.bind(f.storage);
+    const retrieve = vi.spyOn(f.storage, "getObject").mockImplementation(async (...args) => {
+      const object = await getObject(...args);
+      const copies = (await fs.readdir(requestTemp)).filter(name => name.startsWith("pc-workspace-files-"));
+      expect(copies).toHaveLength(1);
+      extractedCopy = path.join(requestTemp, copies[0]!);
+      // The committed bytes and writer epoch remain unchanged. Only the
+      // allocation cleanup recorded by production has finished meanwhile.
+      await db.update(executionWorkspaces).set({ metadata: { remoteWorkspace: {
+        ...f.authority, snapshotId: f.saved.id, location: null,
+      } } }).where(eq(executionWorkspaces.id, f.ids.workspace));
+      await db.update(environmentLeases).set({ status: "expired", releasedAt: new Date() })
+        .where(eq(environmentLeases.id, f.ids.lease));
+      return object;
+    });
+    try {
+      await app.locals.bundledPluginsStartup;
+      const response = await request(app).get(`/api/issues/${f.ids.issue}/file-resources/content`)
+        .query({ workspace: "execution", path: "docs/result.md" });
+      expect({ status: response.status, code: response.body.details?.code }).toEqual({ status: 200, code: undefined });
+      expect(response.body).toMatchObject({ resource: { source: { kind: "saved", snapshotId: f.saved.id } },
+        content: { encoding: "utf8", data: "Remote useful result\n" } });
+      expect(retrieve).toHaveBeenCalledTimes(1);
+      expect(extractedCopy).toBeDefined();
+      await expect(fs.stat(extractedCopy!)).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      retrieve.mockRestore();
+      try { await app.locals.paperclipShutdown(); }
+      finally { if (originalTmpdir === undefined) delete process.env.TMPDIR; else process.env.TMPDIR = originalTmpdir; }
+    }
+  }, 60_000);
+
   it("serves committed saved bytes through ordinary routes while the live allocation is unavailable", async () => {
     const f = await savedFileFixture(true);
     f.execute.mockRejectedValue(new Error("synthetic live allocation unavailable"));
@@ -445,6 +489,64 @@ describeDatabase("remote workspace ordinary file routes", () => {
     expect(response.body.details.code).toBe("workspace_changed"); expect(response.body).not.toHaveProperty("content");
     expect(savedRoot).toBeDefined(); await expect(fs.stat(savedRoot!)).rejects.toMatchObject({ code: "ENOENT" });
     expect(f.execute).not.toHaveBeenCalled(); expect(f.syncOut).not.toHaveBeenCalled();
+  });
+
+  it.each(["epoch", "snapshot", "dirty", "writer", "source", "foreign_location"] as const)(
+    "still fences a saved read when %s changes during extraction", async changed => {
+      const f = await savedFileFixture(true), load = createSavedWorkspaceLoader(db, f.storage);
+      let savedRoot: string | undefined;
+      const loadSavedWorkspace = async (input: Parameters<typeof load>[0]) => {
+        const saved = await load(input); savedRoot = saved.root;
+        const next: RemoteWorkspaceAuthority = { ...f.authority, snapshotId: f.saved.id, location: null };
+        if (changed === "epoch") next.epoch++;
+        if (changed === "snapshot") next.snapshotId = randomUUID();
+        if (changed === "dirty") next.dirty = true;
+        if (changed === "writer") next.writerRunId = randomUUID();
+        if (changed === "source") next.source = { kind: "git", repoUrl: "https://example.test/other.git", ref: null };
+        if (changed === "foreign_location") next.location = { ...f.authority.location!, leaseId: randomUUID() };
+        await db.update(executionWorkspaces).set({ metadata: { remoteWorkspace: next } }).where(eq(executionWorkspaces.id, f.ids.workspace));
+        return saved;
+      };
+      const remoteFiles = createRemoteWorkspaceFiles(db, { loadSavedWorkspace, environmentRuntime: { execute: f.execute, syncOut: f.syncOut } });
+      const response = await request(filesApp(f.ids.company, remoteFiles)).get(`/api/issues/${f.ids.issue}/file-resources/content`)
+        .query({ workspace: "execution", path: "docs/result.md" }).expect(422);
+      expect(response.body.details.code).toBe("workspace_changed"); expect(response.body).not.toHaveProperty("content");
+      expect(savedRoot).toBeDefined(); await expect(fs.stat(savedRoot!)).rejects.toMatchObject({ code: "ENOENT" });
+      expect(f.execute).not.toHaveBeenCalled(); expect(f.syncOut).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([true, false])("rejects a location reappearing on an open saved copy (initial location=%s)", async keepLocation => {
+    const f = await savedFileFixture(keepLocation);
+    const remoteFiles = createRemoteWorkspaceFiles(db, { loadSavedWorkspace: createSavedWorkspaceLoader(db, f.storage) });
+    const access = await remoteFiles.open({ companyId: f.ids.company, workspaceId: f.ids.workspace });
+    expect(access?.source.kind).toBe("saved");
+    try {
+      await db.update(executionWorkspaces).set({ metadata: { remoteWorkspace: { ...f.authority, snapshotId: f.saved.id, location: null } } })
+        .where(eq(executionWorkspaces.id, f.ids.workspace));
+      expect((await access!.stat("docs/result.md")).kind).toBe("file");
+      await db.update(executionWorkspaces).set({ metadata: { remoteWorkspace: { ...f.authority, snapshotId: f.saved.id } } })
+        .where(eq(executionWorkspaces.id, f.ids.workspace));
+      await expect(access!.stat("docs/result.md")).rejects.toMatchObject({ status: 422, details: { code: "workspace_changed" } });
+    } finally { await access?.close(); }
+  });
+
+  it("keeps a live read fenced when its physical location is cleared", async () => {
+    const f = await savedFileFixture(true), live = { ...f.authority, snapshotId: f.saved.id, dirty: true };
+    await db.update(executionWorkspaces).set({ metadata: { remoteWorkspace: live } }).where(eq(executionWorkspaces.id, f.ids.workspace));
+    const execute = f.execute.getMockImplementation()!;
+    f.execute.mockImplementationOnce(async input => {
+      const result = await execute(input);
+      await db.update(executionWorkspaces).set({ metadata: { remoteWorkspace: { ...live, location: null } } })
+        .where(eq(executionWorkspaces.id, f.ids.workspace));
+      return result;
+    });
+    const loadSavedWorkspace = vi.fn(createSavedWorkspaceLoader(db, f.storage));
+    const remoteFiles = createRemoteWorkspaceFiles(db, { loadSavedWorkspace, environmentRuntime: { execute: f.execute, syncOut: f.syncOut } });
+    const response = await request(filesApp(f.ids.company, remoteFiles)).get(`/api/issues/${f.ids.issue}/file-resources/content`)
+      .query({ workspace: "execution", path: "docs/result.md" }).expect(422);
+    expect(response.body.details.code).toBe("workspace_changed"); expect(response.body).not.toHaveProperty("content");
+    expect(f.execute).toHaveBeenCalledTimes(1); expect(loadSavedWorkspace).not.toHaveBeenCalled();
   });
 
   it("shares fail-fast saved Files admission across loader instances until owned cleanup completes", async () => {

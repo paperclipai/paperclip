@@ -10,7 +10,9 @@ export function recoverableSandboxCreationCondition() {
     sql`coalesce(${sandboxCreationOperations.metadata}->>'creationReconciliationReason', '') <> 'company_deleted'`,
     sql`${sandboxCreationOperations.metadata}->>'runnerTaskLease' = 'true'`,
     sql`jsonb_typeof(${sandboxCreationOperations.metadata}->'runnerTaskCreationContextId') = 'string' and ${sandboxCreationOperations.metadata}->>'runnerTaskCreationContextId' <> ''`,
-    sql`jsonb_typeof(${sandboxCreationOperations.metadata}->'creationProviderLeaseId') = 'string' and ${sandboxCreationOperations.metadata}->>'creationProviderLeaseId' <> ''`,
+    or(sql`jsonb_typeof(${sandboxCreationOperations.metadata}->'creationProviderLeaseId') = 'string' and ${sandboxCreationOperations.metadata}->>'creationProviderLeaseId' <> ''`,
+      and(sql`${sandboxCreationOperations.metadata}->>'creationOperationVersion' = '1'`,
+        sql`jsonb_typeof(${sandboxCreationOperations.metadata}->'providerMetadata') = 'object'`)),
   ));
 }
 

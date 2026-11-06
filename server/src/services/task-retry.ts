@@ -4,6 +4,7 @@ import { writeExecutionControl } from "./execution-control-notifications.js";
 import { DELIVERY_QUEUES } from "./delivery-work-notifications.js";
 import { z } from "zod";
 import { randomUUID } from "node:crypto";
+import { taskRetryRunAncestry } from "./recovery-run-ancestry.js";
 import { and, desc, eq, inArray, or, sql } from "drizzle-orm";
 import { agentWakeupRequests, chatActions, chatConversations, chatEndpoints, heartbeatRuns, issues, issueComments, runIdentityContexts, issueRecoveryActions, type Db } from "@paperclipai/db";
 import { conflict, forbidden, notFound, HttpError } from "../errors.js";
@@ -13,7 +14,7 @@ import { adoptSystemRecovery, updateSystemRecovery } from "./system-recovery.js"
 import { instanceSettingsService } from "./instance-settings.js";
 import { notifyChatActionWork } from "./chat-work-notifications.js";
 import { authorizationService } from "./authorization.js";
-import { preserveNativeFailedWorkspace } from "./native-runtime/native-failed-workspace-recovery.js";
+import { preserveNativeFailedWorkspace, preserveTaskRemoteWorkspaceWriter } from "./native-runtime/native-failed-workspace-recovery.js";
 import { NativeWorkspaceFinalizationBusyError } from "./native-runtime/native-workspace-finalization-ownership.js";
 import { adapterExecutionControls } from "./adapter-execution-control.js";
 import { hasRequiredWorkspaceRecovery } from "./workspace-restore-recovery-state.js";
@@ -21,6 +22,8 @@ import { deferredChatInputPredicate, resumeDeferredChatWake } from "./durable-ch
 import { notifyDeferredExecutionWork } from "./deferred-execution-notifications.js";
 import { hasPendingRunCleanup } from "./execution-blocker.js";
 import { PersistedExecutionWaitRefusal } from "./deferred-execution-wait.js";
+import { NativeChatReviewPresentationContentionError } from "./native-runtime/native-chat-review-presentation.js";
+import { isExternalChatWaitAuthorizationContention } from "./native-runtime/chat-attachment-reuse.js";
 
 export async function taskRetryMutationAllowed(db: Db, input: {
   companyId: string; issueId: string; actorId: string; actorSource: TaskRetryIntent["actorSource"];
@@ -53,6 +56,17 @@ const taskRetryIntentSchema = z.object({
   boardMessageOrigin: z.object({ commentId: z.string().uuid(), identityContextId: z.string().uuid() }).optional(),
 });
 export type TaskRetryIntent = z.infer<typeof taskRetryIntentSchema>;
+
+/** Dispatch declines a Retry intent for this reason when its own requester,
+ * not the task's shared state, prevents it from starting; a click by a user
+ * with access replaces it. An edited saved board message
+ * (`retry_source_changed`) is terminal: only new input continues. */
+export const DECLINED_TASK_RETRY_REASONS = ["retry_authority_denied"] as const;
+export function isDeclinedTaskRetry(payload: Record<string, unknown> | null | undefined) {
+  const wait = payload?.executionWait;
+  const reason = wait && typeof wait === "object" && !Array.isArray(wait) ? (wait as Record<string, unknown>).reason : null;
+  return DECLINED_TASK_RETRY_REASONS.some(value => value === reason);
+}
 export function readTaskRetryIntent(payload: Record<string, unknown> | null | undefined): TaskRetryIntent | null {
   const result = taskRetryIntentSchema.safeParse(payload?.taskRetry);
   return result.success ? result.data : null;
@@ -206,14 +220,41 @@ export async function retireSupersededTaskRetry(db: Db, input: {
   return retired.length > 0;
 }
 
-/** Persist a deliberate click under dispatch's issue-first lock order. This
- * transaction never contacts a provider. The normal wake queue owns execution. */
-export async function requestTaskRetry(input: {
+type TaskRetryRequest = {
   db: Db; companyId: string; issueId: string; actorId: string;
   idempotencyKey: string; observedRunId: string | null; actorSource?: string;
+  /** Paperclip requests the user's Retry itself after a restart lost an unstarted turn. */
+  initiatedBy?: "restart_recovery";
   prepareChatRetry?: (tx: Db, scope: { companyId: string; issueId: string; agentId: string;
     failedRunId: string; initiatedByUserId: string; retryIntentId?: string }) => Promise<{ actionId: string }>;
-}) {
+};
+
+const TASK_RETRY_CONTENTION_ATTEMPTS = 10;
+const TASK_RETRY_CONTENTION_DELAY_MS = 100;
+
+function isTaskRetryContention(error: unknown) {
+  return error instanceof NativeChatReviewPresentationContentionError || isExternalChatWaitAuthorizationContention(error);
+}
+
+/** Persist a deliberate click under dispatch's issue-first lock order. This
+ * transaction never contacts a provider. The normal wake queue owns execution. */
+export async function requestTaskRetry(input: TaskRetryRequest) {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return await admitTaskRetry(input);
+    } catch (error) {
+      if (!isTaskRetryContention(error)) throw error;
+      // Chat authorization for the same principal is briefly locked. The whole
+      // admission rolled back, so a fresh attempt rereads every fact.
+      if (attempt >= TASK_RETRY_CONTENTION_ATTEMPTS)
+        throw conflict("Retry is busy because chat authorization is in progress. Try again.",
+          { code: "task_retry_busy", retryable: true });
+    }
+    await new Promise(resolve => setTimeout(resolve, TASK_RETRY_CONTENTION_DELAY_MS));
+  }
+}
+
+function admitTaskRetry(input: TaskRetryRequest) {
   return writeExecutionControl(input.db, DELIVERY_QUEUES.workspaceRecovery, async tx => {
     const db = tx as unknown as Db;
     const [issue] = await tx.select().from(issues).where(and(eq(issues.companyId, input.companyId),
@@ -256,27 +297,49 @@ export async function requestTaskRetry(input: {
     }
     const busy = ["queued", "running", "scheduled_retry"].includes(latest.status);
     if (!busy) {
+      await preserveTaskRemoteWorkspaceWriter(db, issue.companyId, issue.id);
       // Historical deadline failures can predate their preservation record.
       // Register the exact prepared source; this proves neither a stopped
       // executor nor permission to replay its work.
       try { await preserveNativeFailedWorkspace(db, latest); }
       catch (error) { if (!(error instanceof NativeWorkspaceFinalizationBusyError)) throw error; }
     }
+    const retrySources = !busy ? await taskRetryRunAncestry({ db, companyId: issue.companyId,
+      issueId: issue.id, agentId: issue.assigneeAgentId, sourceRunId: latest.id }) : null;
     const records = await tx.select().from(issueRecoveryActions).where(and(
       eq(issueRecoveryActions.companyId, issue.companyId), eq(issueRecoveryActions.sourceIssueId, issue.id),
-      sql`${issueRecoveryActions.evidence}->>'runId' = ${latest.id}`)).for("update");
+      inArray(sql`${issueRecoveryActions.evidence}->>'runId'`, retrySources ?? [latest.id]))).for("update");
     for (let index = 0; !busy && index < records.length; index++) {
       const action = records[index];
       if (!hasRequiredWorkspaceRecovery(action.evidence) || readSystemRecovery(action.evidence)) continue;
-      await adoptSystemRecovery(db, { companyId: issue.companyId, issueId: issue.id, runId: latest.id, actionId: action.id });
+      await adoptSystemRecovery(db, { companyId: issue.companyId, issueId: issue.id,
+        runId: String(action.evidence.runId), actionId: action.id });
       [records[index]] = await tx.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, action.id));
     }
     // An unadmitted request can outlive its exhausted repair. A new deliberate
     // click replaces that generation; a replay of the same key returned above.
-    if (active && !busy && !active.runId && records.some(action =>
-      readSystemRecovery(action.evidence)?.state === "exhausted")) {
+    if (active && !busy && !active.runId && records.some(action => {
+      const recovery = readSystemRecovery(action.evidence);
+      return recovery?.state === "exhausted" && recovery.sourceRunId === action.evidence.runId;
+    })) {
       await tx.update(agentWakeupRequests).set({ status: "failed", finishedAt: new Date(), updatedAt: new Date() })
         .where(eq(agentWakeupRequests.id, active.id));
+      active = undefined;
+    }
+    // Dispatch declined this unadmitted intent for a reason bound to the intent
+    // itself (its requester's access or saved source), so it can never start.
+    // A new deliberate click (new key) replaces it with a fresh attempt under the
+    // clicker's current authority instead of joining it. Waits on shared state
+    // (cleanup, recovery, an active run) keep coalescing: that intent starts by
+    // itself once the gate clears. The restart hook never replaces a user's click.
+    let replacedRequestId: string | undefined;
+    if (active && !busy && !active.runId && active.status === "deferred_issue_execution" &&
+        input.initiatedBy !== "restart_recovery" && activeIntent && !activeIntent.chatActionId &&
+        !activeIntent.queuedChatRequestId && isDeclinedTaskRetry(active.payload)) {
+      await tx.update(agentWakeupRequests).set({ status: "skipped", error: "task_retry_replaced",
+        finishedAt: new Date(), updatedAt: new Date() }).where(and(eq(agentWakeupRequests.id, active.id),
+        eq(agentWakeupRequests.status, "deferred_issue_execution"), sql`${agentWakeupRequests.runId} is null`));
+      replacedRequestId = active.id;
       active = undefined;
     }
     const id = randomUUID();
@@ -330,16 +393,20 @@ export async function requestTaskRetry(input: {
     if (!busy) {
       for (const action of records) {
         const previous = readSystemRecovery(action.evidence);
-        if (!previous || previous.state === "complete") continue;
-        if (previous.state === "running") {
-          await updateSystemRecovery(db, { companyId: issue.companyId, issueId: issue.id, runId: latest.id,
+        if (!previous || previous.sourceRunId !== action.evidence.runId) continue;
+        // A completed preservation still owns its snapshot evidence. Bind the
+        // new intent so sibling holds can select that same continuation, without
+        // repeating recovery or renewing its attempt budget.
+        if (previous.state === "complete" || previous.state === "running" || (previous.state === "exhausted"
+            && previous.failure?.retryClass === "use_alternative_strategy" && !previous.freshAttemptRunId)) {
+          await updateSystemRecovery(db, { companyId: issue.companyId, issueId: issue.id, runId: previous.sourceRunId,
             actionId: action.id }, previous, { ...previous, intentId: active?.id ?? id });
           continue;
         }
         // Active repair keeps its attempt and cooldown. An exhausted generation
         // gets a new budget only because this click is a new durable intent.
         const next = previous.state === "exhausted"
-          ? { ...createSystemRecovery(latest.id, id), revision: previous.revision + 1,
+          ? { ...createSystemRecovery(previous.sourceRunId, id), revision: previous.revision + 1,
             preservationOperationIds: previous.preservationOperationIds,
             providerCooldownAt: previous.providerCooldownAt, nextAttemptAt: previous.providerCooldownAt }
           : { ...previous, revision: previous.revision + 1, intentId: active?.id ?? id,
@@ -351,13 +418,17 @@ export async function requestTaskRetry(input: {
           action: "issue.recovery_generation_replaced", runId: latest.id,
           details: { recoveryActionId: action.id, previousGeneration: previous, nextGenerationId: next.generationId },
         });
-        await updateSystemRecovery(db, { companyId: issue.companyId, issueId: issue.id, runId: latest.id,
+        await updateSystemRecovery(db, { companyId: issue.companyId, issueId: issue.id, runId: previous.sourceRunId,
           actionId: action.id }, previous, next);
       }
     }
-    await persistActivity(db, { companyId: issue.companyId, actorType: "user", actorId: input.actorId,
+    const restartRecovery = input.initiatedBy === "restart_recovery";
+    await persistActivity(db, { companyId: issue.companyId, actorType: restartRecovery ? "system" : "user",
+      actorId: restartRecovery ? "restart-recovery" : input.actorId,
       action: "issue.retry_requested", entityType: "issue", entityId: issue.id, runId: latest.id,
-      details: { requestId: active?.id ?? id, sourceRunId: latest.id, attachedToExistingWork: Boolean(active || busy) } });
+      details: { requestId: active?.id ?? id, sourceRunId: latest.id, attachedToExistingWork: Boolean(active || busy),
+        ...(replacedRequestId ? { replacedRequestId } : {}),
+        ...(restartRecovery ? { initiatedBy: "restart_recovery", onBehalfOfUserId: input.actorId } : {}) } });
     return { requestId: active?.id ?? id, accepted: true, stale: false, observedRunId: latest.id,
       chatActionId: intent.chatActionId };
   }, { companyId: input.companyId });

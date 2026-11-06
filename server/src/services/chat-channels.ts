@@ -136,6 +136,7 @@ import { notifyChatDeliveryWork, notifyChatPublicationWork } from "./chat-work-n
 
 import { voiceSessionStore } from "./voice/voice-session-store.js";
 import { createChatRuntime, type ChatRuntime } from "./chat-runtime.js";
+import { registerIdleLocalWorkProbe } from "./idle-local-work.js";
 import type { ChatEndpointRuntime } from "./voice/voice-runtime.js";
 
 import { fastResponseService, fastResponseSourceCurrent } from "./fast-responses.js";
@@ -512,11 +513,17 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
   const runtimeInitializations = new Map<
     string,
     {
+      context: RuntimeContext;
       discordGatewayOwned: boolean;
       promise: Promise<ChatEndpointRuntime>;
       version: string;
     }
   >();
+  // SDK initialize() and the final authority read continue after the registry's
+  // replacement tail settles. Neither that work nor a failed retirement may
+  // disappear just because the archived endpoint is no longer returned by get().
+  const unregisterRuntimeIdleProbe = registerIdleLocalWorkProbe(() =>
+    runtimeInitializations.size > 0 || runtime.hasUnsettledLifecycle() ? "present" : "none");
   const { recordCurrentMicrosoftTeamsRoute } = createTeamsRoutes(db, { runtime, runtimeCallbackEndpoint });
   const persistence = createChatSdkStatePersistence(db);
   const fetchImpl = options.fetch ?? globalThis.fetch;
@@ -568,7 +575,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
   const discordGatewayStopTasks = new Set<Promise<void>>();
   let shuttingDown = false;
   let receiverWork: ReturnType<typeof registerChatReceiverWork> | undefined;
-  const { discordGatewayNotOwnedError, isDiscordGatewayNotOwnedError, releaseDiscordGatewayLeaseRow, stopDiscordGatewayOwnership, renewDiscordGatewayOwnershipForMessageAdmission, ensureDiscordGatewayRuntimeIsCurrent, acquireDiscordGatewayOwnership, discordGatewayRuntimeIsCurrent } = createChatReceiverOwnership(db, { runtime, runtimeVersions, runtimeCallbackEndpoint, redactError, leasedChatProvider, discordGatewayOwnerships, discordGatewayStopTasks, isShuttingDown: () => shuttingDown, onStopped: id => receiverWork?.changed(id), get discordGatewayLeaseTtlMs() { return options.discordGatewayLeaseTtlMs; }, get discordGatewayLeaseRenewalIntervalMs() { return options.discordGatewayLeaseRenewalIntervalMs; }, get discordGatewayLeaseWaitMs() { return options.discordGatewayLeaseWaitMs; }, get renewDiscordGatewayLease() { return options.renewDiscordGatewayLease; } });
+  const { discordGatewayNotOwnedError, isDiscordGatewayNotOwnedError, releaseDiscordGatewayLeaseRow, stopDiscordGatewayOwnership, renewDiscordGatewayOwnershipForMessageAdmission, ensureDiscordGatewayRuntimeIsCurrent, acquireDiscordGatewayOwnership, discordGatewayRuntimeIsCurrent } = createChatReceiverOwnership(db, { runtime, runtimeVersions, runtimeCallbackEndpoint, redactError, leasedChatProvider, discordGatewayOwnerships, discordGatewayStopTasks, isShuttingDown: () => shuttingDown, isRuntimeInitializing: (endpointId, context) => { const pending = runtimeInitializations.get(endpointId); return pending?.context === context && pending.discordGatewayOwned; }, onStopped: id => receiverWork?.changed(id), get discordGatewayLeaseTtlMs() { return options.discordGatewayLeaseTtlMs; }, get discordGatewayLeaseRenewalIntervalMs() { return options.discordGatewayLeaseRenewalIntervalMs; }, get discordGatewayLeaseWaitMs() { return options.discordGatewayLeaseWaitMs; }, get renewDiscordGatewayLease() { return options.renewDiscordGatewayLease; } });
   const { receiveSdkMessages } = createChatSdkMessageReceiver({
     endpointRecord, processMessage,
     ingressOnly: (provider) => provider === "imessage-photon"
@@ -979,10 +986,12 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       }
 
       const initialization: {
+        context: RuntimeContext;
         discordGatewayOwned: boolean;
         promise: Promise<ChatEndpointRuntime>;
         version: string;
       } = {
+        context,
         discordGatewayOwned: false,
         promise: undefined as unknown as Promise<ChatEndpointRuntime>,
         version: context.version,
@@ -1085,6 +1094,9 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           });
           context.endpointRuntime = instance;
           runtimeContexts.set(instance as object, context);
+          if (discordOwnership && !(await ensureDiscordGatewayRuntimeIsCurrent(endpoint.id, context, { renewLease: true }))) {
+            throw discordGatewayNotOwnedError();
+          }
           await instance.initialize();
           const latest = await endpointRecord(endpoint.id);
           const stillRegistered = runtime.get(endpoint.id) === instance;
@@ -3622,12 +3634,17 @@ return {
       // Stop every provider runtime before releasing leader rows. This gives a
       // standby an immediate takeover path without overlapping Gateway sockets.
       await runtime.shutdown();
+      await Promise.allSettled([...runtimeInitializations.values()].map(initialization => initialization.promise));
       await slackRegistration.close();
       await Promise.all(
         ownedDiscordGateways.map((ownership) =>
           releaseDiscordGatewayLeaseRow(ownership),
         ),
       );
+      if (runtimeInitializations.size > 0 || runtime.hasUnsettledLifecycle()) {
+        throw new Error("Chat runtime lifecycle is still unsettled after shutdown");
+      }
+      unregisterRuntimeIdleProbe();
     },
   };
 }

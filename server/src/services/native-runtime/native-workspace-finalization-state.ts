@@ -1,49 +1,9 @@
 import { environmentLeases, executionWorkspaces, heartbeatRuns, issues, nativeRunFinalizations, nativeRunResults, type Db } from "@paperclipai/db";
 import { and, eq, exists, sql } from "drizzle-orm";
-import { readRemoteWorkspaceAuthority, remoteWorkspaceRunReferenceSchema } from "@paperclipai/shared";
 import { hasRequiredWorkspaceRecovery, nativeRunHasNoWorkspaceAccess } from "../workspace-restore-recovery-state.js";
 import { recordRequiredWorkspaceRestoreFailure } from "../legacy-execution-recovery.js";
 import { readNativeWorkspaceSyncReference } from "./native-workspace-sync.js";
-
-type WorkspaceSourceLease = Pick<typeof environmentLeases.$inferSelect,
-  "id" | "companyId" | "heartbeatRunId" | "provider" | "providerLeaseId">;
-
-/** Preparation publishes file authority before native execution is selected.
- * Neither runtimeMode nor a later execution-input projection owns these files. */
-async function preparedRemoteWorkspaceSource(db: Db, lease: WorkspaceSourceLease) {
-  if (!lease.heartbeatRunId || !lease.provider || lease.provider === "local" || !lease.providerLeaseId) return null;
-  const [bound] = await db.select({ lease: environmentLeases, run: {
-    id: heartbeatRuns.id, runtimeMode: heartbeatRuns.runtimeMode,
-    controllerBootId: heartbeatRuns.controllerBootId,
-    issueId: sql<string | null>`coalesce(${heartbeatRuns.nativeIssueId}::text, ${heartbeatRuns.issueId}::text,
-      ${heartbeatRuns.contextSnapshot}->>'issueId')`,
-    reference: sql<unknown>`${heartbeatRuns.runnerProfileJson}->'remoteWorkspace'`,
-    legacyReference: sql<unknown>`${heartbeatRuns.runnerProfileJson}->'nativeWorkspaceSync'`,
-  } }).from(environmentLeases)
-    .innerJoin(heartbeatRuns, and(eq(heartbeatRuns.id, environmentLeases.heartbeatRunId),
-      eq(heartbeatRuns.companyId, environmentLeases.companyId)))
-    .where(and(eq(environmentLeases.id, lease.id), eq(environmentLeases.companyId, lease.companyId),
-      eq(environmentLeases.heartbeatRunId, lease.heartbeatRunId), eq(environmentLeases.provider, lease.provider),
-      eq(environmentLeases.providerLeaseId, lease.providerLeaseId),
-      sql`${heartbeatRuns.runnerProfileJson}->'remoteWorkspace'->>'state' = 'prepared'`)).limit(1);
-  if (!bound) return null;
-  const parsed = remoteWorkspaceRunReferenceSchema.safeParse(bound.run.reference);
-  if (!parsed.success || parsed.data.state !== "prepared" || bound.run.legacyReference != null) return null;
-  const reference = parsed.data;
-  const issueId = bound.run.issueId;
-  if (typeof issueId !== "string" || bound.lease.issueId !== issueId || reference.leaseId !== bound.lease.id
-    || reference.providerLeaseId !== bound.lease.providerLeaseId || reference.remoteCwd !== bound.lease.metadata?.remoteCwd
-    || bound.lease.executionWorkspaceId && bound.lease.executionWorkspaceId !== reference.workspaceId) return null;
-  const [workspace] = await db.select().from(executionWorkspaces).where(and(
-    eq(executionWorkspaces.companyId, lease.companyId), eq(executionWorkspaces.id, reference.workspaceId))).limit(1);
-  const authority = readRemoteWorkspaceAuthority(workspace?.metadata);
-  if (!workspace || workspace.sourceIssueId !== issueId && workspace.mode !== "shared_workspace"
-    || !authority || !authority.dirty || authority.writerRunId !== bound.run.id || authority.epoch !== reference.epoch
-    || authority.snapshotId !== reference.snapshotId || !authority.location
-    || authority.location.environmentId !== bound.lease.environmentId || authority.location.leaseId !== bound.lease.id
-    || authority.location.providerLeaseId !== bound.lease.providerLeaseId || authority.location.remoteCwd !== reference.remoteCwd) return null;
-  return { ...bound, workspace: workspace!, reference, issueId };
-}
+import { matchPreparedRemoteWorkspaceSource, preparedRemoteWorkspaceSource, type WorkspaceSourceLease } from "../remote-workspace-lifecycle.js";
 
 /** File-only recovery for setup that never reached native admission. The live
  * preparer must still own its controller; orphan repair accepts terminal runs
@@ -83,26 +43,75 @@ export async function preserveRemoteWorkspacePreparationFailure(db: Db, lease: W
   });
 }
 
-export async function nativeWorkspaceExportPendingForLease(db: Db, lease: WorkspaceSourceLease): Promise<boolean> {
-  if (!lease.heartbeatRunId || !lease.provider || lease.provider === "local" || !lease.providerLeaseId) return false;
-  if (await preparedRemoteWorkspaceSource(db, lease)) return true;
+function nativeWorkspaceRunProjection() {
   const input = sql`${heartbeatRuns.runnerProfileJson}->'nativeExecutionInput'`;
-  const [run] = await db.select({
+  return {
     id: heartbeatRuns.id, companyId: heartbeatRuns.companyId, agentId: heartbeatRuns.agentId,
     issueId: heartbeatRuns.issueId, nativeIssueId: heartbeatRuns.nativeIssueId,
     runtimeMode: heartbeatRuns.runtimeMode, driverKind: heartbeatRuns.driverKind,
     reference: sql<unknown>`${heartbeatRuns.runnerProfileJson}->'nativeWorkspaceSync'`,
+    observedRemoteWorkspace: sql<boolean>`${heartbeatRuns.status} = 'failed'
+      and ${heartbeatRuns.runnerProfileJson}->'remoteWorkspace' is not null
+      and ${heartbeatRuns.runnerProfileJson}->'remoteWorkspace' <> 'null'::jsonb
+      and exists (select 1 from ${nativeRunFinalizations}
+        where ${nativeRunFinalizations.companyId} = ${heartbeatRuns.companyId}
+          and ${nativeRunFinalizations.runId} = ${heartbeatRuns.id}
+          and ${nativeRunFinalizations.issueId} = ${heartbeatRuns.nativeIssueId}
+          and ${nativeRunFinalizations.phase} = 'observed' and ${nativeRunFinalizations.resultId} is null)`,
     executionScope: sql<Record<string, unknown>>`jsonb_build_object(
       'schema', ${input}->'schema', 'binding', ${input}->'binding', 'workspace', ${input}->'workspace',
-      'provider', jsonb_build_object('kind', ${input}#>'{provider,kind}'))`,
-  }).from(heartbeatRuns).where(and(
-    eq(heartbeatRuns.id, lease.heartbeatRunId), eq(heartbeatRuns.companyId, lease.companyId),
-    eq(heartbeatRuns.runtimeMode, "native"),
-  )).limit(1);
-  if (!run || nativeRunHasNoWorkspaceAccess({ ...run, runnerProfileJson: { nativeExecutionInput: run.executionScope } })) return false;
+      'provider', jsonb_build_object('kind', ${input}#>'{provider,kind}', 'bridgeRevision', ${input}#>'{provider,bridgeRevision}'))`,
+    controllerBootId: heartbeatRuns.controllerBootId,
+    contextIssueId: sql<string | null>`${heartbeatRuns.contextSnapshot}->>'issueId'`,
+    remoteReference: sql<unknown>`${heartbeatRuns.runnerProfileJson}->'remoteWorkspace'`,
+  };
+}
+
+function nativeWorkspaceSourcePending(run: Pick<typeof heartbeatRuns.$inferSelect,
+  "id" | "companyId" | "agentId" | "issueId" | "nativeIssueId" | "runtimeMode" | "driverKind"> & {
+    reference: unknown; executionScope: Record<string, unknown>; observedRemoteWorkspace: boolean;
+  }, lease: WorkspaceSourceLease) {
+  if (run.runtimeMode !== "native") return false;
+  if (run.observedRemoteWorkspace) return true;
+  if (nativeRunHasNoWorkspaceAccess({ ...run, runnerProfileJson: { nativeExecutionInput: run.executionScope } })) return false;
   const reference = readNativeWorkspaceSyncReference(run.reference);
   return reference?.state === "prepared" && reference.leaseId === lease.id
     && reference.providerLeaseId === lease.providerLeaseId;
+}
+
+export async function nativeWorkspaceExportPendingForLease(db: Db, lease: WorkspaceSourceLease): Promise<boolean> {
+  if (!lease.heartbeatRunId || !lease.provider || lease.provider === "local" || !lease.providerLeaseId) return false;
+  const [run] = await db.select(nativeWorkspaceRunProjection()).from(heartbeatRuns).where(and(
+    eq(heartbeatRuns.id, lease.heartbeatRunId), eq(heartbeatRuns.companyId, lease.companyId),
+    eq(heartbeatRuns.runtimeMode, "native"),
+  )).limit(1);
+  if (run?.observedRemoteWorkspace) return true;
+  if (await preparedRemoteWorkspaceSource(db, lease)) return true;
+  return Boolean(run && nativeWorkspaceSourcePending(run, lease));
+}
+
+export async function nativeWorkspaceExportPendingForResource(db: Db, lease: WorkspaceSourceLease, resumingRunId: string | null) {
+  if (!lease.provider || !lease.providerLeaseId || lease.provider === "local") return false;
+  const sources = await db.select({ lease: { id: environmentLeases.id, companyId: environmentLeases.companyId,
+    heartbeatRunId: environmentLeases.heartbeatRunId, provider: environmentLeases.provider, providerLeaseId: environmentLeases.providerLeaseId,
+    issueId: environmentLeases.issueId, executionWorkspaceId: environmentLeases.executionWorkspaceId,
+    environmentId: environmentLeases.environmentId, metadata: environmentLeases.metadata },
+    run: nativeWorkspaceRunProjection(),
+    workspace: { id: executionWorkspaces.id, companyId: executionWorkspaces.companyId, sourceIssueId: executionWorkspaces.sourceIssueId,
+      mode: executionWorkspaces.mode, metadata: executionWorkspaces.metadata },
+  }).from(environmentLeases).innerJoin(heartbeatRuns, and(eq(heartbeatRuns.companyId, environmentLeases.companyId),
+    eq(heartbeatRuns.id, environmentLeases.heartbeatRunId))).leftJoin(executionWorkspaces, and(
+      eq(executionWorkspaces.companyId, heartbeatRuns.companyId),
+      sql`${executionWorkspaces.id}::text = ${heartbeatRuns.runnerProfileJson}#>>'{remoteWorkspace,workspaceId}'`,
+    )).where(and(eq(environmentLeases.provider, lease.provider), eq(environmentLeases.providerLeaseId, lease.providerLeaseId)));
+  for (const source of sources) {
+    if (source.lease.id === lease.id && source.lease.heartbeatRunId === resumingRunId) continue;
+    const remote = matchPreparedRemoteWorkspaceSource({ lease: source.lease, run: { ...source.run,
+      issueId: source.run.nativeIssueId ?? source.run.issueId ?? source.run.contextIssueId,
+      reference: source.run.remoteReference, legacyReference: source.run.reference } }, source.workspace);
+    if (remote || nativeWorkspaceSourcePending(source.run, source.lease)) return true;
+  }
+  return false;
 }
 
 /**

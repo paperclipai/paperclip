@@ -9,6 +9,7 @@ import type {
   NativeExecutionInput,
   NativeSessionExecutionResult,
 } from "./contracts/native-execution.js";
+import { readProviderFailure } from "./contracts/provider-failure.generated.js";
 import {
   buildNativeModelEnvelope,
   parseNativeExecutionInput,
@@ -18,8 +19,9 @@ import type {
   NativeSessionBackend,
 } from "./contracts/native-session-backend.js";
 import type { PersistedNativeSession } from "./contracts/native-session-backend.js";
-import type { HarnessThreadGoal } from "./contracts/harness-driver.js";
+import { PROVIDER_STATE_INCOMPATIBLE, type HarnessThreadGoal } from "./contracts/harness-driver.js";
 import {
+  NativeProviderStateIncompatibleError,
   NativeProviderTerminalFailure,
   NativeSessionCloseUnrecoverableError,
   NativeSessionCleanupQuarantinedError,
@@ -53,6 +55,7 @@ const REUSABLE_SESSION_CANCELLATION_SETTLEMENT_GRACE_MS = 10_000;
 // (1s). Allow that bounded settlement plus transport scheduling; never treat
 // elapsed time or a cancellation acknowledgement as usage/terminal evidence.
 const GOVERNED_ACCOUNTING_DRAIN_MS = 15_000;
+const MAX_GOVERNED_ACCOUNTING_DRAIN_MS = 30_000;
 const DEFAULT_NATIVE_CHECKPOINT_TIMEOUT_MS = 30_000;
 type NativeSessionCleanupDomain = string;
 
@@ -227,6 +230,12 @@ export interface ExecuteNativeSessionOptions {
   sessionGoalControl?: NativeSessionGoalControl | null;
   /** Resume the active durable session goal after a bounded heartbeat rollover. */
   resumeSessionGoalHeartbeat?: boolean;
+  /**
+   * Compact the resumed provider session's context instead of starting an
+   * ordinary turn. The run settles with a synthesized result once the
+   * provider's compaction turn completes; it does no task work.
+   */
+  sessionCompaction?: { requestId: string; contextTokensBefore?: number } | null;
   /**
    * Wait for the backend's close contract before returning a durable result.
    * Use this only for backends whose close path is internally bounded and
@@ -898,6 +907,8 @@ async function consumeTurn(
   resumeInterruptedTurn?: (event: PrpEvent, signal: AbortSignal) => Promise<boolean>,
   checkpointGovernedWait?: (wait: NonNullable<PersistedNativeSession["governedWait"]>, signal: AbortSignal) => Promise<void>,
   initialGovernedWait?: PersistedNativeSession["governedWait"],
+  /** Settles a compaction-only turn, which reports no semantic result. */
+  compactionResult?: PrpStructuredRunResult,
 ) {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const appendAbort = new AbortController();
@@ -979,7 +990,11 @@ async function consumeTurn(
       const drainAbort = new AbortController();
       const stopDrain = () => drainAbort.abort(appendAbort.signal.reason);
       appendAbort.signal.addEventListener("abort", stopDrain, { once: true });
-      const drainMs = Math.min(GOVERNED_ACCOUNTING_DRAIN_MS, timeoutMs > 0 ? Math.max(1, Math.floor(timeoutMs / 4)) : GOVERNED_ACCOUNTING_DRAIN_MS);
+      const requestedDrainMs = cancellation.terminalDrainTimeoutMs;
+      const terminalDrainMs = typeof requestedDrainMs === "number" && Number.isSafeInteger(requestedDrainMs)
+        && requestedDrainMs > 0 && requestedDrainMs <= MAX_GOVERNED_ACCOUNTING_DRAIN_MS
+        ? requestedDrainMs : GOVERNED_ACCOUNTING_DRAIN_MS;
+      const drainMs = Math.min(terminalDrainMs, timeoutMs > 0 ? Math.max(1, Math.floor(timeoutMs / 4)) : terminalDrainMs);
       let drainTimer: ReturnType<typeof setTimeout> | undefined;
       const drained = (async () => {
         while (!drainAbort.signal.aborted) {
@@ -995,7 +1010,11 @@ async function consumeTurn(
             || (trailing.eventType === "item.completed" && trailing.payload.kind === "interrupt_acknowledgement")
             || (trailing.eventType === "run.terminal" && ["failed", "cancelled"].includes(String(trailing.payload.runTerminalState)));
           if (trailing.turnId === event.turnId && (usage || terminal || cancellation)) {
-            const receipt = await controlPlane.appendEvent(trailing, { signal: drainAbort.signal });
+            const receipt = await controlPlane.appendEvent(trailing, {
+              signal: drainAbort.signal,
+              ...(terminal && trailing.turnId && trailing.eventType !== "turn.failed" && trailing.payload.providerTerminalObserved !== false
+                ? { deferPostCommitObservers: true as const } : {}),
+            });
             if (drainAbort.signal.aborted) return;
             eventCount += receipt.disposition === "committed" ? 1 : 0;
             highestContiguousSourceSeq = Math.max(highestContiguousSourceSeq, receipt.highestContiguousSourceSeq);
@@ -1111,6 +1130,7 @@ async function consumeTurn(
           typeof failure.code === "string" ? failure.code : "provider_session_failed",
           failure.recoverable === true || payload.recoverable === true,
           typeof failure.message === "string" ? failure.message : undefined,
+          readProviderFailure(failure.providerFailure),
         );
       }
       const request =
@@ -1277,6 +1297,14 @@ async function consumeTurn(
       }
       if (isTurnTerminal(event)) {
         if (providerFailure) throw providerFailure;
+        if (compactionResult && event.eventType === "turn.completed") {
+          return {
+            event,
+            eventCount,
+            highestContiguousSourceSeq,
+            governedResult: compactionResult,
+          };
+        }
         if (semanticResultProposal === null && governedResult === null &&
             inputTimers.size === 0 && await resumeInterruptedTurn?.(event, appendAbort.signal)) continue;
         return {
@@ -1520,6 +1548,43 @@ export async function applyNativeSessionGoalControl(
       ? { tokenBudget: control.tokenBudget }
       : {}),
   });
+}
+
+/**
+ * Result for a compaction-only run. Compaction does no task work, so the
+ * result yields back to the same agent; the server's status arbiter preserves
+ * the task status and schedules nothing for a compaction run.
+ */
+export function sessionCompactionResult(
+  input: NativeExecutionInput,
+  requestId: string,
+): PrpStructuredRunResult {
+  const summary = "Context compacted on request.";
+  return {
+    schema: "paperclip.run_result.v1",
+    reportedWorkDisposition: "yielded",
+    summary,
+    completionClaim: {
+      contractRevision: input.completionContract.contract.revision,
+      objectiveSatisfied: false,
+      criteria: input.completionContract.contract.criteria.map((criterion) => ({
+        criterionId: criterion.id,
+        status: "unknown",
+        evidenceRefs: [],
+        explanation: "A context compaction run does no task work.",
+      })),
+      remainingWork: [],
+    },
+    evidence: [],
+    verification: [],
+    attentionRequests: [],
+    artifacts: [],
+    continuation: {
+      kind: "same_agent",
+      summary: "The agent's context was compacted; the task continues unchanged.",
+      idempotencyKey: `context-compaction:${input.binding.issueId}:${requestId}`,
+    },
+  };
 }
 
 function sessionGoalResult(
@@ -2157,6 +2222,9 @@ export async function executeNativeSession(
           };
     if (!recovery.recovered || !recovery.session) {
       if (!replacementAllowed) {
+        if (recovery.failureClass === PROVIDER_STATE_INCOMPATIBLE) {
+          throw new NativeProviderStateIncompatibleError(recovery.reason ?? "unknown");
+        }
         throw new Error(
           `native_session_recovery_failed: ${recovery.reason ?? "unknown"}`,
         );
@@ -2379,7 +2447,8 @@ export async function executeNativeSession(
     let restartContinuationStarted = false;
     const resumeInterruptedTurn = async (event: PrpEvent, signal: AbortSignal) => {
       if (restartContinuationStarted || !recovered || !options.resumeInterruptedTurn ||
-          input.provider.kind !== "codex" || options.sessionGoalControl || options.resumeSessionGoalHeartbeat ||
+          // A compaction-only run never continues task work after a restart.
+          input.provider.kind !== "codex" || options.sessionCompaction || options.sessionGoalControl || options.resumeSessionGoalHeartbeat ||
           recoveredSnapshot.goal || persistedSession?.semanticResult || persistedSession?.pendingRuntimeRequests?.length ||
           event.eventType !== "turn.failed" || !isNativeRestartInterruption(event.payload.error) ||
           event.turnId !== persistedSession?.activeTurnId) return false;
@@ -2556,13 +2625,19 @@ export async function executeNativeSession(
                 await checkpoint(signal);
               },
               governedWait,
+              options.sessionCompaction
+                ? sessionCompactionResult(input, options.sessionCompaction.requestId)
+                : undefined,
             )
           : Promise.resolve({
               event: recoveryTerminal,
               eventCount: 0,
               highestContiguousSourceSeq:
                 replayedDisposition === null ? 0 : recoveryTerminal.sourceSeq,
-              governedResult: null,
+              // A restarted compaction run adopts its completed compaction turn.
+              governedResult: options.sessionCompaction && recoveryTerminal.eventType === "turn.completed"
+                ? sessionCompactionResult(input, options.sessionCompaction.requestId)
+                : null,
             });
       // Event consumption must begin before startTurn so an eager provider cannot
       // outrun us. Observe its rejection immediately, though: if startTurn or
@@ -2577,7 +2652,28 @@ export async function executeNativeSession(
             !adoptedProviderTerminal &&
             !checkpointedDispositionTerminal &&
             !dispositionRecoveryStillOwned));
-        if (options.sessionGoalControl) {
+        if (options.sessionCompaction) {
+          // Compaction summarizes existing provider context. A new session or
+          // one that is still running a turn has nothing safe to compact.
+          // A restart of this same compaction run keeps waiting on (or adopts)
+          // the compaction turn it already started instead of starting another.
+          const resumingThisCompaction = recovered && !shouldStartFreshTurn &&
+            persistedSession?.identity.runId === input.binding.runId;
+          if (!recovered || (!shouldStartFreshTurn && !resumingThisCompaction)) {
+            throw new Error(
+              "native_context_compaction_unavailable: the agent has no idle resumed session to compact",
+            );
+          }
+          if (shouldStartFreshTurn) await session.startTurn({
+            message: { role: "user", text: "" },
+            continuation: true,
+            compact: true,
+            ...(options.sessionCompaction.contextTokensBefore === undefined
+              ? {}
+              : { contextTokensBefore: options.sessionCompaction.contextTokensBefore }),
+          });
+          await checkpoint();
+        } else if (options.sessionGoalControl) {
           // Explicit controls remain authoritative after controller loss. In
           // particular, pause/clear/edit must reach a recovered session even
           // while its provider turn is still active.
@@ -2645,7 +2741,11 @@ export async function executeNativeSession(
             ...(recovered && modelEnvelope.schema === "paperclip.native-continuation.v1"
               ? { continuation: true as const } : {}),
             requestedCollaborationMode:
-              "executionMode" in input ? input.executionMode : "default",
+              // Paperclip planning remains in the envelope and tool authority.
+              // Cloud's qualified harness exposes only default collaboration.
+              input.provider.kind === "cursor_cloud"
+                ? "default"
+                : "executionMode" in input ? input.executionMode : "default",
           });
           await checkpoint();
         }
@@ -2732,6 +2832,7 @@ export async function executeNativeSession(
               modelRejected
                 ? `native_provider_model_rejected: ${message}`
                 : message,
+              readProviderFailure(failure.providerFailure),
             );
           }
           if (settledCompletion === null && options.resolveMissingResult) {

@@ -9,6 +9,14 @@ Onboarding and new-agent setup retain upstream's `SavedProviderKeySelect` and
 homes. Managed default/shared accounts are additional choices in that same
 selector. Selecting “Sign in to another account” survives background refreshes;
 Claude authorization paste keeps upstream's immediate Connecting feedback.
+The onboarding sign-in link and footer use the same action. Either opens the
+provider in a new tab and disables the footer with Waiting for code…. The code
+field stays available. A Claude code entered without a paste event can be sent
+with Submit code in the footer or Enter in the field. These actions submit to
+the current login session and do not open another provider window.
+Failed or expired sign-ins show a short message and a Retry sign-in footer
+button. Retry releases the old session before starting a fresh sign-in. It keeps
+the onboarding setup and clears the old code.
 
 New-agent Connect offers three persistent tiles: the provider's subscription,
 the provider's API key, and Advanced. All three stay visible while the selected
@@ -337,8 +345,10 @@ grant's credentials. Inherited credential variables are cleared. Conflicting
 project authentication and provider-routing overrides are rejected. Managed
 failure cannot reactivate host or legacy credentials.
 
-A subscription invocation takes no lease. Two invocations of one grant, from
-the same or a different provider account, run at the same time. At cleanup,
+A subscription invocation takes no lease or account mutex. Runs and manual
+account tests using one grant can start at the same time. Ordinary credential
+reads take no company file lock or grant/secret write locks. Pending cleanup
+belongs to its original runtime and does not block another invocation. At cleanup,
 each invocation re-reads the credential stored at that moment under a row
 lock on the grant, then compares it against its own refreshed copy using the
 provider's own freshness field: Codex compares `last_refresh` and bounds it
@@ -553,15 +563,14 @@ existing account name. Connecting installs access for that agent and resumes the
 work automatically. Explicit incompatible bindings and shared-account permission
 denials still fail; hiring never expands a restricted shared account's audience.
 
-Concurrent runs of one subscription do not hold a credential lease. A fresh
-task can briefly wait when a credential rotation holds the company file lock or
-a grant/secret database row lock. Lock timeouts become `ai_connection_busy`,
-keeping the task on its automatic pre-provider scheduled retry path. It does
-not request new credentials, and it does not consume the provider-failure retry
-allowance. Each retry revalidates the account, and existing run-dispatch rules
-still suppress cancelled, reassigned, or otherwise ineligible work. An assignee
-retry must still keep execution-lock ownership at scheduling, promotion, and
-dispatch.
+Concurrent runs and manual tests do not hold an AI-connection execution lock.
+An unfinished or failed cleanup from another runtime cannot cancel a new task
+with `ai_connection_busy`. New invocations can request a bounded cleanup retry
+without waiting for it. A home-specific cleanup check only joins work for that
+same private home. Actual credential updates and durable replacement recovery
+retain their atomic storage transactions and generation checks. Historical
+scheduled retries still revalidate the account and task eligibility, including
+assignee execution-lock ownership at scheduling, promotion, and dispatch.
 
 `server/src/__tests__/agent-hire-ai-connections.test.ts` covers both creation routes,
 both providers and methods, approval gates, native provider mapping, shared access

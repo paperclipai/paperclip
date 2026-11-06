@@ -2,11 +2,13 @@ import type { SetIssueTitle } from "@paperclipai/shared";
 import { ISSUE_SUMMARIES_MAX_IDS } from "@paperclipai/shared";
 import type { IssueSummary } from "@paperclipai/shared";
 import type { ExecutionReconciliation } from "@paperclipai/shared";
+import type { IssueContextUsage } from "@paperclipai/shared";
 import type {
   AcceptedPlanDecompositionSummary,
   AskUserQuestionsAnswer,
   Approval,
   CompactIssue,
+  InboxMineSnapshot,
   CreateIssueTreeHold,
   DocumentRevision,
   FeedbackTargetType,
@@ -281,6 +283,11 @@ function issueListSearchParams(filters?: IssueListFilters) {
 }
 
 export const issuesApi = {
+  inboxMine: (companyId: string, options?: RequestOptions) => {
+    const path = `/companies/${companyId}/inbox/mine`;
+    detachInflightGet(path);
+    return api.get<InboxMineSnapshot>(path, { ...options, cache: "no-store" });
+  },
   summaries: async (companyId: string, issueIds: readonly string[], options?: RequestOptions): Promise<IssueSummary[]> => {
     if (issueIds.length > ISSUE_SUMMARIES_MAX_IDS) throw new Error("Too many issue summary IDs");
     const ids = [...new Set(issueIds.map((id) => id.trim().toLowerCase()))].sort();
@@ -364,6 +371,9 @@ export const issuesApi = {
     options
       ? api.get<Issue>(`/issues/${id}`, options)
       : api.get<Issue>(`/issues/${id}`),
+  getContextUsage: (id: string) => api.get<IssueContextUsage | null>(`/issues/${id}/context-usage`),
+  compactContext: (id: string) =>
+    api.post<{ requestId: string; runId: string }>(`/issues/${id}/context/compact`, {}),
   getRunnerGoal: (id: string, agentId?: string | null) => {
     const query = agentId ? `?agentId=${encodeURIComponent(agentId)}` : "";
     return api.get<RunnerGoalProjection>(`/issues/${id}/runner-goal${query}`);

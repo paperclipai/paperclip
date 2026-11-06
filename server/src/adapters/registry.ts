@@ -1,4 +1,4 @@
-import { probePluginRunnerEnvironment } from "../services/native-runtime/plugin-runner-probe.js";
+import { pluginRunnerAiConnectionRequiredTestResult } from "../services/plugin-runner-ai-connection.js";
 import { HttpError } from "../errors.js";
 import type { AdapterRuntimeCommandSpec, ServerAdapterModule } from "./types.js";
 import { parseAdapterModelsEnv } from "../services/adapter-models-env.js";
@@ -150,29 +150,28 @@ import {
   resolvePaperclipRunnerProviderProfile,
 } from "../services/native-runtime/provider-profile.js";
 
-/** Reuse the existing provider key check without requiring a global Claude CLI.
- * Readiness and account access are separate checks; model access is proven by a task.
- */
-async function verifyNativeClaudeApiKey(
+async function verifyNativeAcpxApiKey(
   config: Record<string, unknown>,
   result: AdapterEnvironmentTestResult,
 ): Promise<AdapterEnvironmentTestResult> {
   const env = config.env as Record<string, unknown> | undefined;
-  if (config.acpxAgent !== "claude" || !env || typeof env.ANTHROPIC_API_KEY !== "string"
-    || !env.ANTHROPIC_API_KEY || config.managedAiRouting || config.managedAiConnection
-    || ["ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY"].some(key => env[key])) return result;
+  const account = config.acpxAgent === "claude" ? { provider: "anthropic" as const, name: "Anthropic", key: "ANTHROPIC_API_KEY",
+    routing: ["ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY"] }
+    : config.acpxAgent === "grok" ? { provider: "xai" as const, name: "xAI", key: "XAI_API_KEY", routing: ["XAI_BASE_URL", "GROK_BASE_URL"] } : null;
+  if (!account || !env || typeof env[account.key] !== "string" || !env[account.key]
+    || config.managedAiRouting || config.managedAiConnection || account.routing.some(key => env[key])) return result;
   try {
-    await validateAiApiKey("anthropic", env.ANTHROPIC_API_KEY);
+    await validateAiApiKey(account.provider, env[account.key] as string);
     return { ...result, checks: [...result.checks, {
       code: "ai_connection_api_key_reverified", level: "info",
-      message: "Anthropic verified this API key. Model access is checked when the agent runs.",
+      message: `${account.name} verified this API key. Model access is checked when the agent runs.`,
     }] };
   } catch (error) {
     const details = error && typeof error === "object" && "details" in error
       ? error.details as { code?: string } | undefined : undefined;
     return { ...result, status: "fail", checks: [...result.checks, {
       code: details?.code === "ai_connection_api_key_rejected" ? details.code : "ai_connection_verification_failed",
-      level: "error", message: "Could not verify the Anthropic API key. Check the connection and try again.",
+      level: "error", message: `Could not verify the ${account.name} API key. Check the connection and try again.`,
     }] };
   }
 }
@@ -413,6 +412,7 @@ const paperclipRunnerAdapter: ServerAdapterModule = {
             ? "amazon-bedrock"
         : ctx.config.provider === "acpx"
             ? "acpx"
+            : ctx.config.provider === "cursor_cloud" ? "cursor"
             : "codex",
       summary: message,
     };
@@ -439,8 +439,40 @@ const paperclipRunnerAdapter: ServerAdapterModule = {
         }],
       };
     }
-    if (context.executionTarget?.kind === "remote" && context.executionTarget.transport === "sandbox" && context.executionTarget.runnerTask) {
-      return probePluginRunnerEnvironment(context);
+    if (profile.provider !== "cursor_cloud" && context.executionTarget?.kind === "remote" && context.executionTarget.transport === "sandbox" && context.executionTarget.runnerTask) {
+      // Managed connections probe through testManagedEnvironment. This path has
+      // none, which a plugin Runner-task environment never runs.
+      return pluginRunnerAiConnectionRequiredTestResult("paperclip_runner");
+    }
+    if (profile.provider === "cursor_cloud") {
+      const failure = (code: string, message: string) => ({ adapterType: "paperclip_runner", status: "fail" as const, testedAt: new Date().toISOString(), checks: [{ code, level: "error" as const, message }] });
+      if (context.executionTarget?.kind === "remote") return failure("cursor_cloud_local_controller_required", "Select a local Paperclip controller. Cursor hosts the execution environment.");
+      const configuredEnv = context.config.env;
+      const binding = configuredEnv && typeof configuredEnv === "object" && !Array.isArray(configuredEnv)
+        ? (configuredEnv as Record<string, unknown>).CURSOR_API_KEY : undefined;
+      const apiKey = typeof binding === "string" ? binding : binding && typeof binding === "object" && "type" in binding && binding.type === "plain" && "value" in binding && typeof binding.value === "string" ? binding.value : "";
+      if (!apiKey.trim()) return failure("cursor_cloud_api_key_missing", "Bind a Cursor Cloud API key to CURSOR_API_KEY before testing.");
+      try {
+        const { remoteMcpRelayUrl } = await import("../services/native-runtime/remote-mcp-relay.js");
+        const { resolveCursorCloudPublicOrigin } = await import("../services/native-runtime/cursor-cloud-runtime.js");
+        const url = remoteMcpRelayUrl(resolveCursorCloudPublicOrigin() ?? "", "00000000-0000-4000-8000-000000000000");
+        const response = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}", redirect: "error", signal: AbortSignal.timeout(5_000) });
+        await response.body?.cancel();
+        if (response.status !== 401) throw new Error("relay_unavailable");
+      } catch {
+        return failure("cursor_cloud_public_relay_unavailable", "Configure PAPERCLIP_PUBLIC_URL as a reachable HTTPS origin for /mcp/native-runs/. The callback must reject unauthenticated requests with HTTP 401. Expose only this callback path through the public proxy.");
+      }
+      try {
+        const { CursorCloudClient } = await import("../vendor/paperclip-runner/index.js");
+        const { items } = await new CursorCloudClient({ apiKey }).listModels();
+        const listed = items.some(item => item.id === profile.model || item.aliases?.includes(profile.model));
+        return { adapterType: "paperclip_runner", status: "warn" as const, testedAt: new Date().toISOString(), checks: [
+          { code: "cursor_cloud_account_ready", level: "info" as const, message: "The bound Cursor Cloud API key can read its model catalog. No prompt was sent." },
+          { code: listed ? "cursor_cloud_model_listed" : "cursor_cloud_model_unlisted", level: listed ? "info" as const : "warn" as const,
+            message: listed ? "The selected model appears in this account's catalog." : "The selected model is absent from the recommended catalog. Cursor will decide whether this exact model is available when it runs." },
+          { code: "cursor_cloud_model_identity_unverified", level: "warn" as const, message: "This experimental integration forwards the selected model; Cursor does not acknowledge the effective model. Cloud commands use Cursor-managed permissions." },
+        ] };
+      } catch { return failure("cursor_cloud_account_unavailable", "Cursor Cloud could not validate the bound key. Check its Cloud Agents access and retry."); }
     }
     if (profile.provider === "muse") {
       return { adapterType: "paperclip_runner", status: "warn" as const, testedAt: new Date().toISOString(),
@@ -496,7 +528,7 @@ const paperclipRunnerAdapter: ServerAdapterModule = {
           if (!((os === "Linux" && (arch === "x86_64" || (profile.acpxAgent === "claude" && ["aarch64", "arm64"].includes(arch)))) || (os === "Darwin" && (arch === "arm64" || (!["grok"].includes(profile.acpxAgent) && arch === "x86_64"))))) {
             throw new Error(`ACPX ${profile.acpxAgent} requires a qualified Linux ${profile.acpxAgent === "claude" ? "x64/ARM64" : "x64"} or macOS architecture.`);
           }
-          return verifyNativeClaudeApiKey(context.config, {
+          return verifyNativeAcpxApiKey(context.config, {
             adapterType: "paperclip_runner", status: "warn" as const, testedAt: new Date().toISOString(),
             checks: [{ code: "acpx_remote_runtime_unverified", level: "warn" as const,
               message: "The remote platform is supported. Runtime package integrity and readiness must still be verified by the remote runner before launch." }],
@@ -504,7 +536,7 @@ const paperclipRunnerAdapter: ServerAdapterModule = {
         }
         const { probeAcpxClaudeInstallation, probeAcpxGrokInstallation, probeAcpxCursorInstallation, probeAcpxPiInstallation } = await import("../vendor/paperclip-runner/live/index.js");
         await (profile.acpxAgent === "pi" ? probeAcpxPiInstallation : profile.acpxAgent === "grok" ? probeAcpxGrokInstallation : profile.acpxAgent === "cursor" ? probeAcpxCursorInstallation : probeAcpxClaudeInstallation)(profile.model);
-        return verifyNativeClaudeApiKey(context.config, {
+        return verifyNativeAcpxApiKey(context.config, {
           adapterType: "paperclip_runner", status: "pass" as const, testedAt: new Date().toISOString(),
           checks: [{ code: "acpx_runtime_ready", level: "info" as const, message: `ACPX ${profile.acpxAgent} runtime is installed and verified. Model access is checked when it runs.` }],
         });
@@ -602,6 +634,7 @@ const paperclipRunnerAdapter: ServerAdapterModule = {
   getRuntimeCommandSpec: (config) => config.provider === "claude_managed"
     || config.provider === "aws_agentcore"
     || config.provider === "acpx"
+    || config.provider === "cursor_cloud"
     ? { command: "paperclip-runnerd", detectCommand: null, installCommand: null }
     : config.provider === "opencode"
       ? buildNpmRuntimeCommandSpec(
@@ -625,6 +658,7 @@ const paperclipRunnerAdapter: ServerAdapterModule = {
           { value: "claude_managed", label: "Claude Managed" },
           { value: "aws_agentcore", label: "AWS AgentCore" },
           { value: "acpx", label: "ACP agents" },
+          { value: "cursor_cloud", label: "Cursor Cloud (experimental)" },
         ],
         hint: "Select a local provider, company-qualified managed provider, or an ACP agent.",
       },
@@ -633,6 +667,17 @@ const paperclipRunnerAdapter: ServerAdapterModule = {
         options: PAPERCLIP_RUNNER_ACPX_PROFILES.filter(profile => profile.qualified).map(profile => ({ value: profile.value, label: profile.label })),
         meta: { visibleWhen: { key: "provider", value: "acpx" } },
       },
+      ...[
+        { key: "repoUrl", label: "GitHub repository" },
+        { key: "repoRef", label: "Starting ref" },
+        { key: "prUrl", label: "Pull request URL" },
+        { key: "cloudEnvName", label: "Cursor cloud environment" },
+      ].map(field => ({ ...field, type: "text" as const, meta: { visibleWhen: { key: "provider", value: "cursor_cloud" } } })),
+      ...[
+        { key: "workOnCurrentBranch", label: "Work on current branch" },
+        { key: "autoCreatePR", label: "Auto-create pull request" },
+        { key: "skipReviewerRequest", label: "Skip reviewer request" },
+      ].map(field => ({ ...field, type: "toggle" as const, default: false, meta: { visibleWhen: { key: "provider", value: "cursor_cloud" } } })),
       {
         key: "codexPermissionMode",
         label: "Codex permission mode",

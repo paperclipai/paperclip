@@ -19,13 +19,27 @@ afterEach(async () => {
   await rm(root, { recursive: true, force: true });
 });
 
-const cells = ["everyday-workflows", "daytona-restart-continuity"].flatMap(suite =>
-  ["codex", "acpx"].map(provider => {
-    const execution = runnerMatrix.find(row => row.suite.id === suite && row.task.id === "recover-controller"
-      && row.environment.id === "daytona" && row.profile.generation === "native" && row.profile.provider === provider);
-    if (!execution) throw new Error(`Missing real ${suite}/${provider} continuity cell`);
-    return execution;
-  }));
+it.each(["rolling-web-deployment", "rolling-web-deployment-warm"])("accepts the assembled %s restart request", async suite => {
+  const execution = runnerMatrix.find(row => row.suite.id === suite && row.profile.id === "runner-codex")!;
+  const recoveryBinding = { companyId: "11111111-1111-4111-8111-111111111111",
+    issueId: "22222222-2222-4222-8222-222222222222", runId: "33333333-3333-4333-8333-333333333333" };
+  await writeFile(requestPath, JSON.stringify({ requestId: "rolling-request", rollingDeployment: true,
+    discardControllerCache: true, controllerOutage: controllerOutageForExecution(execution, {}), recoveryBinding }));
+  const request = await readRestartRequest(requestPath, [execution.id]);
+  expect(request).toMatchObject({ rollingDeployment: true, discardControllerCache: true, recoveryBinding });
+  expect(request).not.toHaveProperty("controllerOutage");
+});
+
+const cells = [
+  { suite: "everyday-workflows", provider: "codex" },
+  { suite: "everyday-workflows", provider: "acpx" },
+  { suite: "daytona-restart-continuity", provider: "codex" },
+].map(({ suite, provider }) => {
+  const execution = runnerMatrix.find(row => row.suite.id === suite && row.task.id === "recover-controller"
+    && row.environment.id === "daytona" && row.profile.generation === "native" && row.profile.provider === provider);
+  if (!execution) throw new Error(`Missing real ${suite}/${provider} continuity cell`);
+  return execution;
+});
 
 it.each(cells)("accepts the real supervisor request file for $id", async execution => {
   const outage = controllerOutageForExecution(execution, {})!;
