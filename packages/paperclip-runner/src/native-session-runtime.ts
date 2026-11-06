@@ -2860,11 +2860,15 @@ export async function executeNativeSession(
             // Retain the older consumer's permanent-model classification while
             // preserving structured provider metadata. A provider explicitly
             // permitting retry must not become permanent merely from its text.
+            // A driver's closed provider-failure category also marks a model
+            // rejection, without putting provider text in the failure message.
+            const providerFailure = readProviderFailure(failure.providerFailure);
             const modelRejected =
               !recoverable &&
-              /issue with the selected model|model_not_found|invalid model|model[^\n]*(?:does not exist|not found|not supported)/i.test(
-                message,
-              );
+              (providerFailure?.category === "model_unavailable" ||
+                /issue with the selected model|model_not_found|invalid model|model[^\n]*(?:does not exist|not found|not supported)/i.test(
+                  message,
+                ));
             throw new NativeProviderTerminalFailure(
               typeof failure.code === "string"
                 ? failure.code
@@ -2873,7 +2877,7 @@ export async function executeNativeSession(
               modelRejected
                 ? `native_provider_model_rejected: ${message}`
                 : message,
-              readProviderFailure(failure.providerFailure),
+              providerFailure,
             );
           }
           if (settledCompletion === null && options.resolveMissingResult) {
