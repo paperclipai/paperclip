@@ -225,6 +225,7 @@ export const agentApiKeyScopeSchema = z.union([
   standardAgentKeyScopeSchema,
   taskBridgeAgentKeyScopeSchema,
   skillTestAgentKeyScopeSchema,
+  z.object({ kind: z.literal("run_status_observer") }).strict(),
 ]);
 
 export type AgentApiKeyScope = z.infer<typeof agentApiKeyScopeSchema>;
@@ -238,7 +239,7 @@ export function normalizeAgentApiKeyScope(value: unknown): AgentApiKeyScope {
 
 export const createAgentKeySchema = z.object({
   name: z.string().min(1).default("default"),
-  scope: agentApiKeyScopeSchema.optional().default({ kind: "standard" }),
+  scope: z.union([standardAgentKeyScopeSchema, taskBridgeAgentKeyScopeSchema, skillTestAgentKeyScopeSchema]).optional().default({ kind: "standard" }),
 });
 
 export type CreateAgentKey = z.infer<typeof createAgentKeySchema>;

@@ -15,10 +15,19 @@ export function createDeliveryWorkCoordinator(input: {
   const scheduler = createWorkScheduler();
   const workers = new Map<DeliveryQueue, { wake: () => void; stop: () => Promise<void> }>();
   let stopped = false;
+  const activeDeadlines = new Set<string>();
 
   return {
     // Only these registered tasks are represented; not yet the whole instance.
     nextWakeAt: scheduler.nextWakeAt,
+    // Deadlines tied to an already-active runtime use the same scheduler as
+    // delivery work. Their owner cancels them when the runtime settles.
+    scheduleActiveDeadline(key: string, at: number, run: () => void) {
+      if (stopped) throw new Error("Delivery coordinator is stopped");
+      activeDeadlines.add(key);
+      scheduler.schedule(`active:${key}`, at, () => { activeDeadlines.delete(key); if (!stopped) run(); });
+    },
+    cancelActiveDeadline(key: string) { activeDeadlines.delete(key); scheduler.cancel(`active:${key}`); },
     register(queue: DeliveryQueue, task: {
       retryMs: number;
       // Bound bursts by the first notification's deadline; later notifications
@@ -136,6 +145,8 @@ export function createDeliveryWorkCoordinator(input: {
     // stop() closes the retained workers and the shared scheduler as well.
     async stop(keepQueues?: ReadonlySet<DeliveryQueue>) {
       stopped = true;
+      for (const key of activeDeadlines) scheduler.cancel(`active:${key}`);
+      activeDeadlines.clear();
       if (!keepQueues?.size) scheduler.stop();
       await Promise.all(Array.from(workers, async ([queue, worker]) => {
         if (keepQueues?.has(queue)) return;

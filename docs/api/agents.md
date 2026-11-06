@@ -154,3 +154,19 @@ POST /api/agents/{agentId}/config-revisions/{revisionId}/rollback
 ```
 
 View and roll back agent configuration changes.
+
+## Observe one active run
+
+A board actor with access to the run can issue a short-lived observer token:
+
+```
+POST /api/heartbeat-runs/{runId}/observer-token
+```
+
+The response contains `token` and `maximumLifetimeSeconds`. The token expires within 120 seconds and is not a persistent agent key. It can call only:
+
+```
+GET /api/heartbeat-runs/{runId}/observer-status
+```
+
+A successful response is `{ "active": true }`. The token is rejected for other runs, methods, and API routes, or when the run is no longer running or has a recorded stop request. Loss of a status response is not evidence that an external action did not happen. See [run observer delivery](../../doc/run-observer-delivery.md) for optional local delivery and its trust boundaries.

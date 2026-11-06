@@ -1,3 +1,4 @@
+import { createLocalAgentJwt } from "../agent-auth-jwt.js";
 import { assertProviderApiPlacementPolicy, managedCursorApiDefaultEnabled, resolveProviderApiPlacement } from "../services/native-runtime/provider-api-placement.js";
 import { readTaskPanelActivations } from "../services/plugin-task-panels.js";
 import { enqueueNativeRuntimeResponse } from "../services/native-runtime/native-runtime-response-delivery.js";
@@ -7213,6 +7214,32 @@ export function agentRoutes(
       ),
       req.actor.type === "board" ? getActorInfo(req).actorId : null,
     ));
+  });
+
+  // A short-lived capability for an external supervisor. Its signed scope is
+  // accepted only for the status route by actorMiddleware, never for writes.
+  router.post("/heartbeat-runs/:runId/observer-token", async (req, res) => {
+    assertBoard(req);
+    const runId = readHeartbeatRunId(req);
+    const run = await getAccessibleResource(req, res, heartbeat.getRun(runId), "Heartbeat run not found");
+    if (!run || !(await assertRunReadAllowed(req, res, run))) return;
+    if (run.status !== "running") { res.status(409).json({ error: "Run is not active" }); return; }
+    const token = createLocalAgentJwt(run.agentId, run.companyId, "run_observer", run.id, null, { kind: "run_status_observer" });
+    if (!token) { res.status(503).json({ error: "Run observer is unavailable" }); return; }
+    await logActivity(db, { companyId: run.companyId, actorType: "user", actorId: req.actor.userId ?? "board",
+      action: "heartbeat.observer_token_created", entityType: "heartbeat_run", entityId: run.id, runId: run.id });
+    res.setHeader("Cache-Control", "no-store");
+    res.status(201).json({ token, maximumLifetimeSeconds: 120 });
+  });
+
+  router.get("/heartbeat-runs/:runId/observer-status", async (req, res) => {
+    const runId = readHeartbeatRunId(req);
+    if (req.actor.type !== "agent" || req.actor.source !== "agent_jwt" || req.actor.keyScope?.kind !== "run_status_observer"
+      || req.actor.runId !== runId) { res.sendStatus(403); return; }
+    // The middleware checks the exact company, agent, run and cancellation
+    // state on each request; the endpoint returns no task or run details.
+    res.setHeader("Cache-Control", "no-store");
+    res.json({ active: true });
   });
 
   router.post("/heartbeat-runs/:runId/cancel", async (req, res) => {

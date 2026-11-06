@@ -1960,6 +1960,9 @@ async function startServerWithDatabaseTeardown(
     unsubscribeNativeResponsePresentation?.();
     unsubscribeNativeWorkspaceFinalization?.();
     unsubscribeRetainedNativeSessionCleanup?.();
+    // Revoke in-flight observer delivery before stopping its scheduler or
+    // draining heartbeat executions. This callback is idempotent.
+    (app.locals.stopRunObserverDelivery as (() => void) | undefined)?.();
     // B can accept Stop/answers while A still owns an execution. Preserve the
     // owner command workers and their transport until the handoff below ends.
     await deliveryWork.stop(deploymentHints ? new Set([

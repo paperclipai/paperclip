@@ -1,3 +1,8 @@
+import { registerRunObserverScheduler } from "../run-observer-delivery.js";
+import { createWorkScheduler } from "../work-scheduler.js";
+import * as nativeStopRecovery from "../native-runtime/native-cancellation-request.js";
+import { chmod, realpath } from "node:fs/promises";
+import { createServer } from "node:net";
 import { NativeControllerRecoveryWaitingError } from "../native-runtime/native-controller-recovery.js";
 
 import { createNativeUsageDelivery } from "../native-runtime/native-usage-delivery.js";
@@ -60,14 +65,18 @@ describe.skipIf(!support.supported)("heartbeat runtime execution boundary", () =
   let database: Awaited<ReturnType<typeof startRecoveryPostgres>>;
   let db: Db;
   let home: string;
+  const observerScheduler = createWorkScheduler();
+  let unregisterObserver: (() => void) | undefined;
   beforeAll(async () => {
     home = await mkdtemp(join(tmpdir(), "paperclip-runtime-execution-"));
     vi.stubEnv("PAPERCLIP_HOME", home);
     database = await startRecoveryPostgres("paperclip-runtime-execution");
     db = createDb(database.connectionString);
+    unregisterObserver = registerRunObserverScheduler(db, { scheduleActiveDeadline: observerScheduler.schedule,
+      cancelActiveDeadline: observerScheduler.cancel });
     await db.execute(sql`set client_min_messages = warning`);
   }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
-  afterAll(async () => { await db?.$client.end(); await database?.cleanup(); vi.unstubAllEnvs(); if (home) await rm(home, { recursive: true, force: true }); });
+  afterAll(async () => { unregisterObserver?.(); observerScheduler.stop(); await db?.$client.end(); await database?.cleanup(); vi.unstubAllEnvs(); if (home) await rm(home, { recursive: true, force: true }); });
   beforeEach(async () => {
     await db.execute(sql`truncate table companies restart identity cascade`);
     vi.clearAllMocks();
@@ -294,6 +303,79 @@ describe.skipIf(!support.supported)("heartbeat runtime execution boundary", () =
     expect(revokeHeartbeatRunGatewayTokens).toHaveBeenCalledWith({ db, companyId: input.agent.companyId, runId: input.run.id });
     expect(input.instructions.releaseInstructionCopy).toHaveBeenCalledOnce();
   }
+
+  it("issues the matching observer to a private sink before adapter dispatch", async () => {
+    const { input, adapter, run } = await fixture();
+    const dir = await realpath(home), socketPath = join(dir, "observer.sock");
+    const received: Array<{ runId: string; token: string }> = [];
+    const sink = createServer(socket => { let data = ""; socket.on("data", chunk => {
+      data += chunk.toString(); if (data.includes("\n")) { received.push(JSON.parse(data)); socket.end("ok\n"); }
+    }); });
+    await new Promise<void>((resolve, reject) => sink.once("error", reject).listen(socketPath, resolve));
+    await chmod(socketPath, 0o600);
+    const keys = ["PAPERCLIP_OBSERVER_SINK_SOCKET", "PAPERCLIP_OBSERVER_SINK_COMPANY_ID", "PAPERCLIP_OBSERVER_SINK_AGENT_ID", "PAPERCLIP_AGENT_JWT_SECRET"] as const;
+    const saved = keys.map(key => process.env[key]);
+    process.env.PAPERCLIP_OBSERVER_SINK_SOCKET = socketPath;
+    process.env.PAPERCLIP_OBSERVER_SINK_COMPANY_ID = run.companyId;
+    process.env.PAPERCLIP_OBSERVER_SINK_AGENT_ID = run.agentId;
+    process.env.PAPERCLIP_AGENT_JWT_SECRET = "fictional-signing-secret";
+    try {
+      adapter.execute.mockImplementationOnce(async () => {
+        expect(received).toHaveLength(1);
+        expect(received[0]?.runId).toBe(run.id);
+        const claims = JSON.parse(Buffer.from(received[0]!.token.split(".")[1]!, "base64url").toString());
+        expect(claims.key_scope).toEqual({ kind: "run_status_observer" });
+        expect(claims.run_id).toBe(run.id);
+        return { exitCode: 0, signal: null, timedOut: false };
+      });
+      expect(await executeHeartbeatRuntime(db, input)).toMatchObject({ dispatched: true });
+      expect(adapter.execute).toHaveBeenCalledOnce();
+    } finally {
+      keys.forEach((key, i) => { if (saved[i] === undefined) delete process.env[key]; else process.env[key] = saved[i]; });
+      await new Promise<void>(resolve => sink.close(() => resolve()));
+    }
+  });
+
+  it("does not dispatch the adapter when its configured observer sink is unavailable", async () => {
+    const { input, adapter, run } = await fixture();
+    const keys = ["PAPERCLIP_OBSERVER_SINK_SOCKET", "PAPERCLIP_OBSERVER_SINK_COMPANY_ID", "PAPERCLIP_OBSERVER_SINK_AGENT_ID", "PAPERCLIP_AGENT_JWT_SECRET"] as const;
+    const saved = keys.map(key => process.env[key]);
+    process.env.PAPERCLIP_OBSERVER_SINK_SOCKET = join(await realpath(home), "missing-observer.sock");
+    process.env.PAPERCLIP_OBSERVER_SINK_COMPANY_ID = run.companyId;
+    process.env.PAPERCLIP_OBSERVER_SINK_AGENT_ID = run.agentId;
+    process.env.PAPERCLIP_AGENT_JWT_SECRET = "fictional-signing-secret";
+    try {
+      await expect(executeHeartbeatRuntime(db, input)).rejects.toThrow();
+      expect(adapter.execute).not.toHaveBeenCalled();
+    } finally {
+      keys.forEach((key, i) => { if (saved[i] === undefined) delete process.env[key]; else process.env[key] = saved[i]; });
+    }
+  });
+
+  it("allows claimed remote Stop recovery when the observer sink is unavailable", async () => {
+    const { input, run } = await fixture(true);
+    const keys = ["PAPERCLIP_OBSERVER_SINK_SOCKET", "PAPERCLIP_OBSERVER_SINK_COMPANY_ID", "PAPERCLIP_OBSERVER_SINK_AGENT_ID"] as const;
+    const saved = keys.map(key => process.env[key]);
+    process.env.PAPERCLIP_OBSERVER_SINK_SOCKET = join(await realpath(home), "missing-stop-observer.sock");
+    process.env.PAPERCLIP_OBSERVER_SINK_COMPANY_ID = run.companyId;
+    process.env.PAPERCLIP_OBSERVER_SINK_AGENT_ID = run.agentId;
+    const leaseOwner = randomUUID();
+    input.runtime.runOptions.nativeLeaseOwner = leaseOwner;
+    input.runtime.runOptions.nativeRestartRecovery = { kind: "reattach_remote_runner", runId: run.id, leaseOwner,
+      controllerGeneration: 1, providerAttempt: 1, restartKind: "hard", recoveryRequestId: null,
+      remote: { providerLeaseId: "fictional", remoteCwd: "/workspace" } };
+    const claim = vi.spyOn(nativeStopRecovery, "readClaimedNativeStopRecovery").mockResolvedValue(true);
+    const backend = vi.fn(() => ({} as never));
+    input.options.nativeSessionBackendFactory = backend;
+    try {
+      await executeHeartbeatRuntime(db, input);
+      expect(backend).toHaveBeenCalledWith(expect.anything(), { recoveryPurpose: "stop_cleanup" });
+      expect(executePaperclipNativeSession).toHaveBeenCalledOnce();
+    } finally {
+      claim.mockRestore();
+      keys.forEach((key, i) => { if (saved[i] === undefined) delete process.env[key]; else process.env[key] = saved[i]; });
+    }
+  });
 
   it("passes preparation renewal ownership to native dispatch", async () => {
     const { input } = await fixture(true);

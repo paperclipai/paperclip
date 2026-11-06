@@ -401,6 +401,21 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
         companyId: claims.company_id,
         agentId: claims.sub,
       });
+      const observer = normalizeAgentApiKeyScope(claims.key_scope).kind === "run_status_observer";
+      if (observer && (req.method !== "GET" || req.path !== `/api/heartbeat-runs/${claims.run_id}/observer-status`
+        || !identityRun || identityRun.status !== "running" || agentRunWritesRevoked(identityRun))) {
+        next(forbidden("Run observer capability is not valid for this request"));
+        return;
+      }
+      if (observer) {
+        // A status poll must not capture or accept a steered identity or act
+        // on behalf of a user. Its only route needs the signed run binding.
+        req.actor = { type: "agent", agentId: claims.sub, companyId: claims.company_id,
+          keyScope: { kind: "run_status_observer" }, runId: claims.run_id,
+          source: "agent_jwt", onBehalfOfUserId: null, onBehalfOfMemberships: [] };
+        next();
+        return;
+      }
       if (agentRunWritesRevoked(identityRun)
         && !["GET", "HEAD", "OPTIONS"].includes(req.method)) {
         const conversation = identityRun?.contextSnapshot?.conversationMode === true;
@@ -468,6 +483,10 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
       return;
     }
 
+    if (normalizeAgentApiKeyScope(key.scopeConfig).kind === "run_status_observer") {
+      next(forbidden("Run observer capabilities require a run-scoped token"));
+      return;
+    }
     await db
       .update(agentApiKeys)
       .set({ lastUsedAt: new Date() })

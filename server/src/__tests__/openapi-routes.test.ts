@@ -1399,6 +1399,16 @@ describe("openapi routes", () => {
 });
 
 
+describe("run observer OpenAPI security", () => {
+  it("declares board-only issuance and an observer-only status credential", () => {
+    const { spec } = loadSpecRoutes();
+    const issue = spec.paths["/api/heartbeat-runs/{runId}/observer-token"].post;
+    const status = spec.paths["/api/heartbeat-runs/{runId}/observer-status"].get;
+    expect(issue.security).toEqual([{ BoardSessionAuth: [] }, { BoardApiKeyAuth: [] }]);
+    expect(status.security).toEqual([{ RunObserverAuth: [] }]);
+  });
+});
+
 describe("heartbeat run ID OpenAPI contract", () => {
   it("publishes the runtime UUID constraint and 400 response on all agent-router run endpoints", async () => {
     const response = await request(createApp()).get("/api/openapi.json");
@@ -1425,7 +1435,7 @@ describe("heartbeat run ID OpenAPI contract", () => {
         checked++;
       }
     }
-    expect(checked).toBe(12);
+    expect(checked).toBe(14);
   });
 });
 

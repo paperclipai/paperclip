@@ -293,6 +293,8 @@ Live latency verification remains separate from the existing access baseline.
 API: `present` — representative operation IDs:
 
 - `GET /api/heartbeat-runs/{runId}`.
+- `POST /api/heartbeat-runs/{runId}/observer-token` (board actor with run access only).
+- `GET /api/heartbeat-runs/{runId}/observer-status` (matching short-lived observer token only).
 - `GET /api/heartbeat-runs/{runId}/log` (optional `alignStartToRecord=true` extends a tail backward to its first complete record; this can exceed `limitBytes` by that record's prefix and retains the same access/redaction checks).
 - `GET /api/heartbeat-runs/{runId}/events` (optional `view=conversation` returns assistant messages and request lifecycles through the same access/redaction checks; `afterSeq` remains a sequence cursor).
 - `GET /api/heartbeat-runs/{runId}/workspace-operations`.
@@ -307,6 +309,8 @@ read-only paths through the default queue and HTTP/2 sandbox callback bridge.
 The sandbox uses its injected run credential. See
 [run diagnostics](../../skills/paperclip/references/run-diagnostics.md) and the
 [activity access contract](activity.md#runs).
+
+Policy: Observer tokens are restricted to the matching active run status route; they cannot call ordinary agent APIs and cannot be created as persistent agent keys. Expiry is at most 120 seconds, and a recorded stop request revokes status access. Local delivery and its host trust boundary are described in [run observer delivery](../../doc/run-observer-delivery.md).
 
 Policy: Same company, company-scope read authority and run/task visibility still
 apply. Task-bound history and recovery records require task read authority.
