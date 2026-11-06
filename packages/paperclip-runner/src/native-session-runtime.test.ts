@@ -33,6 +33,7 @@ import {
   PAPERCLIP_EXECUTION_PROMPT_REVISION,
   canonicalNativeRuntimeContextDigest,
   nativeRuntimePromptDigest,
+  type NativeRuntimeContextSnapshot,
 } from "./contracts/runtime-context.js";
 import {
   executeNativeSession,
@@ -129,6 +130,7 @@ const input: NativeExecutionInputV1 = {
     normalizedSessionId: identity.sessionId,
     driverKind: "codex_app_server",
     protocolVersion: 1,
+    lifecyclePolicy: { mode: "per_turn", idleTimeoutMs: null },
   },
   provider: { kind: "codex", model: null },
   completionContract: {
@@ -145,13 +147,15 @@ const input: NativeExecutionInputV1 = {
   credentialBindings: [],
 };
 
+type RuntimeContextFields = Omit<NativeRuntimeContextSnapshot, "aggregateDigest">;
+
 function preparedInput(): NativeExecutionInputV5 {
   const digest = "0".repeat(64);
   const context = {
     prompt: { revision: PAPERCLIP_EXECUTION_PROMPT_REVISION, text: PAPERCLIP_EXECUTION_PROMPT, digest: nativeRuntimePromptDigest() },
     instructions: { entryPath: "AGENTS.md", bundle: { schema: NATIVE_RUNTIME_ASSET_SCHEMA, digest, manifestDigest: digest, rootPath: "/runtime/instructions", fileCount: 1, totalBytes: 1 } },
     skills: [], mcp: { assignmentSetId: "none", digest, bindingId: null },
-  } as const;
+  } satisfies RuntimeContextFields;
   const requirement = input.completionContract.contract.criteria[0]!.requirement;
   const prompt = `${input.task.prompt}\n\n${requirement}`;
   return {
@@ -256,7 +260,7 @@ describe("executeNativeSession recovery", () => {
     const completeRun = vi.fn(async () => undefined);
     const port: ControlPlanePort = {
       async openRun() {}, async checkpointSession() {},
-      async appendEvent(event) { committed.push(structuredClone(event)); return { cursor: event.sourceSeq, highestContiguousSourceSeq: event.sourceSeq, disposition: "committed" }; },
+      async appendEvent(event: PrpEvent) { committed.push(structuredClone(event)); return { cursor: event.sourceSeq, highestContiguousSourceSeq: event.sourceSeq, disposition: "committed" }; },
       async replayEvents(query) { const events = committed.filter(event => event.sourceInstanceId === query.sourceInstanceId); return { events: events.filter(event => event.sourceSeq > query.afterSourceSeq).slice(0, query.limit), highestContiguousSourceSeq: highestContiguous(events) }; },
       completeRun,
     };
@@ -318,7 +322,7 @@ describe("executeNativeSession recovery", () => {
     const port: ControlPlanePort = {
       async openRun() {}, async checkpointSession() {},
       async loadSessionCheckpoint() { return recovered ? structuredClone(snapshot) : null; },
-      async appendEvent(event) { return { cursor: event.sourceSeq, highestContiguousSourceSeq: event.sourceSeq, disposition: "committed" }; },
+      async appendEvent(event: PrpEvent) { return { cursor: event.sourceSeq, highestContiguousSourceSeq: event.sourceSeq, disposition: "committed" }; },
       async replayEvents() { return { events: [], highestContiguousSourceSeq: 0 }; },
       async completeRun() {},
     };
@@ -390,7 +394,7 @@ describe("executeNativeSession recovery", () => {
       async openRun() {},
       async loadSessionCheckpoint() { return structuredClone(checkpoint); },
       async checkpointSession(value) { checkpoints.push(structuredClone(value)); },
-      async appendEvent(event) {
+      async appendEvent(event: PrpEvent) {
         const existing = journal.find(value => value.sourceEventId === event.sourceEventId);
         if (existing) expect(event).toEqual(existing);
         else journal.push(structuredClone(event as PrpEvent));
@@ -479,7 +483,7 @@ describe("executeNativeSession recovery", () => {
     const port: ControlPlanePort = {
       async openRun() {},
       async checkpointSession(snapshot) { checkpoints.push(structuredClone(snapshot)); },
-      async appendEvent(event) { events.push(event); return { cursor: events.length, highestContiguousSourceSeq: event.sourceSeq, disposition: "committed" }; },
+      async appendEvent(event: PrpEvent) { events.push(event); return { cursor: events.length, highestContiguousSourceSeq: event.sourceSeq, disposition: "committed" }; },
       async replayEvents() { return { events: [], highestContiguousSourceSeq: 0 }; },
       async completeRun() {},
     };
@@ -533,7 +537,7 @@ describe("executeNativeSession recovery", () => {
     const port: ControlPlanePort = {
       async openRun() {},
       async checkpointSession() {},
-      async appendEvent(event) { return { cursor: event.sourceSeq, highestContiguousSourceSeq: event.sourceSeq, disposition: "committed" }; },
+      async appendEvent(event: PrpEvent) { return { cursor: event.sourceSeq, highestContiguousSourceSeq: event.sourceSeq, disposition: "committed" }; },
       async replayEvents() { return { events: [], highestContiguousSourceSeq: 0 }; },
       async completeRun() {},
     };
@@ -555,7 +559,7 @@ describe("executeNativeSession recovery", () => {
         resume: true, typedEvents: true, steering: false,
         interruption: true, structuredResult: true,
       };
-      const cancel = vi.fn(async () => { finish(); });
+      const cancel = vi.fn(() => { finish(); return { cleanup: Promise.resolve() }; });
       const close = vi.fn(async () => { finish(); });
       const session: NativeSession = {
         identity: () => identity,
@@ -574,7 +578,7 @@ describe("executeNativeSession recovery", () => {
         },
         cancel, close,
       };
-      const appendEvent = vi.fn<ControlPlanePort["appendEvent"]>(async event => ({
+      const appendEvent = vi.fn<ControlPlanePort["appendEvent"]>(async (event: PrpEvent) => ({
         cursor: event.sourceSeq, highestContiguousSourceSeq: event.sourceSeq,
         disposition: "committed",
       }));
@@ -728,7 +732,7 @@ describe("executeNativeSession recovery", () => {
       prompt: { revision: PAPERCLIP_EXECUTION_PROMPT_REVISION, text: PAPERCLIP_EXECUTION_PROMPT, digest: nativeRuntimePromptDigest() },
       instructions: { entryPath: "AGENTS.md", bundle: { schema: NATIVE_RUNTIME_ASSET_SCHEMA, digest, manifestDigest: digest, rootPath: "/runtime/instructions", fileCount: 1, totalBytes: 1 } },
       skills: [], mcp: { assignmentSetId: "none", digest, bindingId: null },
-    } as const;
+    } satisfies RuntimeContextFields;
     const completed = await executeNativeSession({
       input: snapshotBeforeUpdate ? {
         ...input, schema: "paperclip.native-execution-input.v4", executionMode: "default", planningContext: null,
@@ -748,7 +752,7 @@ describe("executeNativeSession recovery", () => {
       controlPlane: {
         async openRun() {},
         async checkpointSession() {},
-        async appendEvent(event) {
+        async appendEvent(event: PrpEvent) {
           appended.push(event);
           return { cursor: event.sourceSeq, highestContiguousSourceSeq: event.sourceSeq, disposition: "committed" };
         },
@@ -885,7 +889,7 @@ describe("executeNativeSession recovery", () => {
     const port: ControlPlanePort = {
       async openRun() {},
       async checkpointSession() {},
-      async appendEvent(event) {
+      async appendEvent(event: PrpEvent) {
         appended.push(event);
         return {
           cursor: event.sourceSeq,
@@ -1034,7 +1038,7 @@ describe("executeNativeSession recovery", () => {
     const port: ControlPlanePort = {
       async openRun() {},
       async checkpointSession() {},
-      async appendEvent(event) {
+      async appendEvent(event: PrpEvent) {
         appended.push(event);
         return {
           cursor: event.sourceSeq,
@@ -1185,7 +1189,7 @@ describe("executeNativeSession recovery", () => {
     const port: ControlPlanePort = {
       async openRun() {},
       async checkpointSession() {},
-      async appendEvent(event) {
+      async appendEvent(event: PrpEvent) {
         return {
           cursor: event.sourceSeq,
           highestContiguousSourceSeq: event.sourceSeq,
@@ -1241,7 +1245,7 @@ describe("executeNativeSession recovery", () => {
     const port: ControlPlanePort = {
       async openRun() {},
       async checkpointSession() {},
-      async appendEvent(event) {
+      async appendEvent(event: PrpEvent) {
         return { cursor: event.sourceSeq, highestContiguousSourceSeq: event.sourceSeq, disposition: "committed" };
       },
       async replayEvents() {
@@ -1574,7 +1578,7 @@ describe("executeNativeSession recovery", () => {
         },
         controlPlane: {
           async openRun() {}, async checkpointSession() {},
-          async appendEvent(event) { appended.push(event); return {
+          async appendEvent(event: PrpEvent) { appended.push(event); return {
             cursor: event.sourceSeq, highestContiguousSourceSeq: event.sourceSeq, disposition: "committed",
           }; },
           async replayEvents() { return { events: [], highestContiguousSourceSeq: 0 }; },
@@ -2568,12 +2572,12 @@ describe("executeNativeSession recovery", () => {
       },
       skills: [],
       mcp: { assignmentSetId: "none", digest, bindingId: null },
-    } as const;
+    } satisfies RuntimeContextFields;
     const openSession = vi.fn();
     const backend: NativeSessionBackend = {
       async descriptor() {
         return {
-          kind: "future-provider",
+          kind: "mock",
           name: "future-provider",
           version: "1",
           capabilities: {
@@ -2741,6 +2745,7 @@ describe("executeNativeSession recovery", () => {
             typedEvents: true,
             steering: false,
             interruption: true,
+            structuredResult: true,
           };
         },
         async *events() {},
@@ -2854,7 +2859,7 @@ describe("executeNativeSession recovery", () => {
     const snapshot = vi.fn(async () => { throw snapshotFailure; });
     const session: NativeSession = {
       identity: () => identity,
-      async capabilities() { return { resume: false, typedEvents: true, steering: false, interruption: true }; },
+      async capabilities() { return { resume: false, typedEvents: true, steering: false, interruption: true, structuredResult: true }; },
       async *events() {},
       async startTurn() { throw new Error("unexpected turn"); },
       async result() { return null; },
@@ -2886,6 +2891,7 @@ describe("executeNativeSession recovery", () => {
           typedEvents: true,
           steering: false,
           interruption: true,
+          structuredResult: true,
         };
       },
       async *events() {},
@@ -3509,7 +3515,7 @@ describe("executeNativeSession recovery", () => {
           }
         },
       );
-      const checkpointSession = vi.fn<ControlPlanePort["checkpointSession"]>(
+      const checkpointSession = vi.fn<NonNullable<ControlPlanePort["checkpointSession"]>>(
         async () => undefined,
       );
       const port: ControlPlanePort = {
@@ -3744,8 +3750,9 @@ describe("executeNativeSession recovery", () => {
           timeoutMs: 10,
           keepSessionOpen: true,
           onSession: (current) => retainedSessions.push(current),
-          onPostCompletionEnrichmentFailure: ({ stage }) =>
-            enrichmentFailures.push(stage),
+          onPostCompletionEnrichmentFailure: ({ stage }) => {
+            enrichmentFailures.push(stage);
+          },
         });
         await enrichmentStalled;
         if (stalledSignal !== undefined)
@@ -4650,12 +4657,12 @@ describe("executeNativeSession recovery", () => {
       async *events() { throw new Error("provider failed after editing instructions"); },
       startTurn: async () => ({ turnId: "instruction-turn" }),
       result: async () => null,
-      snapshot: async () => ({ backendKind: "local", sessionId: "instruction-session", identity: scopedIdentity,
+      snapshot: async () => ({ backendKind: "runner", sessionId: "instruction-session", identity: scopedIdentity,
         providerSessionId: "instruction-provider", cursor: null, activeTurnId: null, pendingRuntimeRequests: [], lineage: [] }),
       close: async () => { order.push("closing"); await closed; order.push("stopped"); },
     };
     const backend: NativeSessionBackend = {
-      descriptor: async () => ({ kind: "local", name: "instruction-close-test", version: "1", capabilities }),
+      descriptor: async () => ({ kind: "runner", name: "instruction-close-test", version: "1", capabilities }),
       openSession: async () => session,
     };
     const controlPlane: ControlPlanePort = {
@@ -4747,7 +4754,7 @@ describe("executeNativeSession recovery", () => {
       close: vi.fn(async () => { throw failure; }),
     };
     const backend: NativeSessionBackend = {
-      descriptor: async () => ({ kind: "local", name: "local-stop-test", version: "1", capabilities }),
+      descriptor: async () => ({ kind: "runner", name: "local-stop-test", version: "1", capabilities }),
       openSession: vi.fn(async () => session),
     };
     const controlPlane: ControlPlanePort = {
@@ -4982,7 +4989,7 @@ describe("executeNativeSession recovery", () => {
       runnerInstanceId: "runner-recovery", controlPlaneInstanceId: "control-recovery", timeoutMs: 5_000,
       controlPlane: {
         async openRun() {}, async checkpointSession() {}, completeRun,
-        async appendEvent(event, options) {
+        async appendEvent(event: PrpEvent, options) {
           if (options?.deferPostCommitObservers) deferredEventTypes.push(event.eventType);
           events.push(structuredClone(event)); return {
           cursor: events.length, highestContiguousSourceSeq: event.sourceSeq, disposition: "committed",
@@ -5080,7 +5087,7 @@ describe("executeNativeSession recovery", () => {
     const port: ControlPlanePort = {
       async openRun() {},
       async checkpointSession() {},
-      async appendEvent(event) {
+      async appendEvent(event: PrpEvent) {
         events.push(structuredClone(event as PrpEvent));
         return {
           cursor: events.length,
@@ -5199,7 +5206,7 @@ describe("executeNativeSession recovery", () => {
     const port: ControlPlanePort = {
       async openRun() {},
       async checkpointSession() {},
-      async appendEvent(event) {
+      async appendEvent(event: PrpEvent) {
         events.push(structuredClone(event as PrpEvent));
         const sourceEvents = events.filter(
           (candidate) => candidate.sourceInstanceId === event.sourceInstanceId,
@@ -5417,7 +5424,7 @@ describe("executeNativeSession recovery", () => {
       const port: ControlPlanePort = {
         async openRun() {},
         async checkpointSession() {},
-        async appendEvent(event) {
+        async appendEvent(event: PrpEvent) {
           if (event.eventType === "item.completed") {
             persistingAnswer = true;
             await persistence;
@@ -5925,7 +5932,7 @@ describe("executeNativeSession recovery", () => {
       const openReplacementSession = vi.fn();
       const backend: NativeSessionBackend = {
         descriptor: async () => ({ kind: "mock", name: "incompatible", version: "1",
-          capabilities: { resume: true, typedEvents: true, steering: false, interruption: true } }),
+          capabilities: { resume: true, typedEvents: true, steering: false, interruption: true, structuredResult: true } }),
         openSession, openReplacementSession,
         recoverSession: async () => ({ recovered: false, reason: "saved launch profile changed",
           failureClass: PROVIDER_STATE_INCOMPATIBLE }),
@@ -6093,6 +6100,7 @@ describe("executeNativeSession recovery", () => {
             typedEvents: true,
             steering: false,
             interruption: true,
+            structuredResult: true,
           };
         },
         async *events() {},
@@ -6136,6 +6144,7 @@ describe("executeNativeSession recovery", () => {
               typedEvents: true,
               steering: false,
               interruption: true,
+              structuredResult: true,
             },
           };
         },
@@ -6224,6 +6233,7 @@ describe("executeNativeSession recovery", () => {
             typedEvents: true,
             steering: false,
             interruption: true,
+            structuredResult: true,
           };
         },
         async *events() {},
@@ -6268,6 +6278,7 @@ describe("executeNativeSession recovery", () => {
               typedEvents: true,
               steering: false,
               interruption: true,
+              structuredResult: true,
             },
           };
         },
@@ -6375,7 +6386,7 @@ describe("executeNativeSession recovery", () => {
       },
       async replayEvents(replay) {
         return {
-          events: replay.afterSourceSeq === 0 ? [runnerEvent(1)] : [],
+          events: replay.afterSourceSeq === 0 ? [runnerEvent(1, "turn.started")] : [],
           highestContiguousSourceSeq: 1,
         };
       },
@@ -6479,7 +6490,7 @@ describe("executeNativeSession recovery", () => {
       },
       async replayEvents(replay) {
         return {
-          events: replay.afterSourceSeq === 0 ? [runnerEvent(1)] : [],
+          events: replay.afterSourceSeq === 0 ? [runnerEvent(1, "turn.started")] : [],
           highestContiguousSourceSeq: 1,
         };
       },
@@ -6530,7 +6541,7 @@ describe("executeNativeSession recovery", () => {
       sourceEventId: "provider-recovery:1",
       sourceSeq: 1,
       sourceInstanceId: "provider-recovery",
-      sourceKind: "provider",
+      sourceKind: "runner",
       runId: identity.runId,
       normalizedSessionId: identity.sessionId,
       turnId: "turn-recovery",
@@ -6594,7 +6605,7 @@ describe("executeNativeSession recovery", () => {
         return structuredClone(checkpoint);
       },
       async checkpointSession() {},
-      async appendEvent(event) {
+      async appendEvent(event: PrpEvent) {
         const list = bySource.get(event.sourceInstanceId) ?? [];
         list.push(structuredClone(event));
         bySource.set(event.sourceInstanceId, list);
@@ -6718,7 +6729,7 @@ describe("executeNativeSession recovery", () => {
         async checkpointSession(snapshot) {
           checkpoints.push(structuredClone(snapshot));
         },
-        async appendEvent(event) {
+        async appendEvent(event: PrpEvent) {
           const target =
             event.sourceInstanceId === "runner-recovery"
               ? runnerEvents
@@ -6852,7 +6863,7 @@ describe("executeNativeSession recovery", () => {
         return structuredClone(checkpoint);
       },
       async checkpointSession() {},
-      async appendEvent(event) {
+      async appendEvent(event: PrpEvent) {
         events.push(structuredClone(event));
         return {
           cursor: events.length,
@@ -6989,8 +7000,8 @@ describe("executeNativeSession recovery", () => {
       instructions: { entryPath: "AGENTS.md", bundle: { schema: NATIVE_RUNTIME_ASSET_SCHEMA, digest, manifestDigest: digest, rootPath: "/runtime/instructions", fileCount: 1, totalBytes: 1 } },
       skills: [skill],
       mcp: { assignmentSetId: "none", digest, bindingId: null },
-    } as const;
-    const legacyContext = { ...context, skills: [] as const };
+    } satisfies RuntimeContextFields;
+    const legacyContext = { ...context, skills: [] } satisfies RuntimeContextFields;
     const prepared = preparedInput();
     const executionInput = preparedMode
       ? {
@@ -7049,7 +7060,7 @@ describe("executeNativeSession recovery", () => {
       terminal: null,
       terminalTurns: [],
     };
-    const startTurn = vi.fn(async () => ({ turnId: "turn-replacement" }));
+    const startTurn = vi.fn<NativeSession["startTurn"]>(async () => ({ turnId: "turn-replacement" }));
     const replacementSession: NativeSession = {
       identity: () => identity,
       async capabilities() {
@@ -7108,7 +7119,7 @@ describe("executeNativeSession recovery", () => {
         return structuredClone(checkpoint);
       },
       async checkpointSession() {},
-      async appendEvent(event) {
+      async appendEvent(event: PrpEvent) {
         events.push(structuredClone(event));
         return {
           cursor: events.length,
@@ -7194,7 +7205,7 @@ describe("executeNativeSession recovery", () => {
       sourceEventId: "provider-recovery:2",
       sourceSeq: 2,
       sourceInstanceId: "provider-recovery",
-      sourceKind: "provider",
+      sourceKind: "runner",
       runId: identity.runId,
       normalizedSessionId: identity.sessionId,
       turnId: "turn-continuation",
@@ -7204,7 +7215,7 @@ describe("executeNativeSession recovery", () => {
       emittedAt: "2026-08-09T00:00:01.000Z",
       payload: {},
     };
-    const startTurn = vi.fn(async () => ({ turnId: "turn-continuation" }));
+    const startTurn = vi.fn<NativeSession["startTurn"]>(async () => ({ turnId: "turn-continuation" }));
     const session: NativeSession = {
       identity: () => identity,
       async capabilities() {
@@ -7273,7 +7284,7 @@ describe("executeNativeSession recovery", () => {
         return structuredClone(checkpoint);
       },
       async checkpointSession() {},
-      async appendEvent(event) {
+      async appendEvent(event: PrpEvent) {
         const list = bySource.get(event.sourceInstanceId) ?? [];
         list.push(structuredClone(event));
         bySource.set(event.sourceInstanceId, list);
@@ -7490,7 +7501,7 @@ describe("executeNativeSession recovery", () => {
         sourceEventId: "provider-recovery:2",
         sourceSeq: 2,
         sourceInstanceId: "provider-recovery",
-        sourceKind: "provider",
+        sourceKind: "runner",
         runId: identity.runId,
         normalizedSessionId: identity.sessionId,
         turnId: "turn-disposition",
@@ -7571,7 +7582,7 @@ describe("executeNativeSession recovery", () => {
             prematureDispositionCheckpoint = true;
           durableCheckpoint = structuredClone(snapshot);
         },
-        async appendEvent(event) {
+        async appendEvent(event: PrpEvent) {
           if (event.eventType === terminalType && failNextAppend) {
             failNextAppend = false;
             throw appendFailure;
@@ -7674,7 +7685,7 @@ describe("executeNativeSession recovery", () => {
       sourceEventId: "runner-recovery:run-native:4",
       sourceSeq: 4,
       sourceInstanceId: "runner-recovery",
-      sourceKind: "provider",
+      sourceKind: "runner",
       runId: identity.runId,
       normalizedSessionId: identity.sessionId,
       turnId: "turn-disposition",
@@ -7784,7 +7795,7 @@ describe("executeNativeSession recovery", () => {
         return structuredClone(checkpoint);
       },
       async checkpointSession() {},
-      async appendEvent(event) {
+      async appendEvent(event: PrpEvent) {
         const list = bySource.get(event.sourceInstanceId) ?? [];
         list.push(structuredClone(event));
         bySource.set(event.sourceInstanceId, list);
@@ -7935,7 +7946,7 @@ describe("executeNativeSession recovery", () => {
         return structuredClone(checkpoint);
       },
       async checkpointSession() {},
-      async appendEvent(event) {
+      async appendEvent(event: PrpEvent) {
         const list = bySource.get(event.sourceInstanceId) ?? [];
         list.push(structuredClone(event));
         bySource.set(event.sourceInstanceId, list);
@@ -8085,7 +8096,7 @@ describe("executeNativeSession recovery", () => {
       pendingRuntimeRequests: [],
       lineage: [],
     };
-    const events = [
+    const events: PrpEvent[] = [
       {
         ...controlEvent(1, "run.result.accepted", { result }),
         turnId: "turn-with-result",
@@ -8223,7 +8234,7 @@ describe("executeNativeSession recovery", () => {
       backend: { async descriptor() { return { kind: "mock", name: "missing-current-completion", version: "1", capabilities }; }, async openSession() { return session; } },
       controlPlane: {
         async openRun() {}, async checkpointSession() {},
-        async appendEvent(event) { events.push(structuredClone(event as PrpEvent)); return { cursor: event.sourceSeq, highestContiguousSourceSeq: event.sourceSeq, disposition: "committed" }; },
+        async appendEvent(event: PrpEvent) { events.push(structuredClone(event as PrpEvent)); return { cursor: event.sourceSeq, highestContiguousSourceSeq: event.sourceSeq, disposition: "committed" }; },
         async replayEvents() { return { events: [], highestContiguousSourceSeq: 0 }; }, completeRun,
       }, runnerInstanceId: "runner-recovery", controlPlaneInstanceId: "control-recovery", timeoutMs: 1000,
       resolveMissingResult: async () => null,
@@ -8239,7 +8250,7 @@ describe("executeNativeSession recovery", () => {
       sourceEventId: "provider-recovery:1",
       sourceSeq: 1,
       sourceInstanceId: "provider-recovery",
-      sourceKind: "provider",
+      sourceKind: "runner",
       runId: identity.runId,
       normalizedSessionId: identity.sessionId,
       turnId: "turn-waiting",
@@ -8420,7 +8431,7 @@ describe("executeNativeSession recovery", () => {
       const port: ControlPlanePort = {
         async openRun() {}, completeRun: complete,
         async checkpointSession(value) { checkpoint = structuredClone(value); },
-        async appendEvent(event) { history.push(event); return { cursor: history.length, highestContiguousSourceSeq: event.sourceSeq, disposition: "committed" }; },
+        async appendEvent(event: PrpEvent) { history.push(event); return { cursor: history.length, highestContiguousSourceSeq: event.sourceSeq, disposition: "committed" }; },
         async replayEvents(request) { return { events: history.filter(row => row.sourceInstanceId === request.sourceInstanceId && row.sourceSeq > request.afterSourceSeq), highestContiguousSourceSeq: 0 }; },
       };
       const outcome = expect(executeNativeSession({ input, backend, controlPlane: port, timeoutMs: 1_000,
@@ -8475,7 +8486,7 @@ describe("executeNativeSession recovery", () => {
       const port: ControlPlanePort = {
         async openRun() {}, completeRun: complete,
         async checkpointSession(value) { checkpoint = structuredClone(value); },
-        async appendEvent(event) { history.push(event); return { cursor: history.length, highestContiguousSourceSeq: event.sourceSeq, disposition: "committed" }; },
+        async appendEvent(event: PrpEvent) { history.push(event); return { cursor: history.length, highestContiguousSourceSeq: event.sourceSeq, disposition: "committed" }; },
         async replayEvents(request) { return { events: history.filter(row => row.sourceInstanceId === request.sourceInstanceId && row.sourceSeq > request.afterSourceSeq), highestContiguousSourceSeq: 0 }; },
       };
       const execution = executeNativeSession({ input, backend, controlPlane: port, timeoutMs: operationMs ?? 120_000,
@@ -8523,7 +8534,7 @@ describe("executeNativeSession recovery", () => {
     const port: ControlPlanePort = {
       async openRun() {}, completeRun: complete,
       async checkpointSession(value) { checkpoint = structuredClone(value); },
-      async appendEvent(event) {
+      async appendEvent(event: PrpEvent) {
         const duplicate = history.some(row => row.sourceEventId === event.sourceEventId);
         if (!duplicate) history.push(event);
         return { cursor: history.length, highestContiguousSourceSeq: event.sourceSeq, disposition: duplicate ? "duplicate" : "committed" };
@@ -8585,7 +8596,7 @@ describe("executeNativeSession recovery", () => {
           throw new Error("controller lost after governed checkpoint");
         }
       },
-      async appendEvent(event) {
+      async appendEvent(event: PrpEvent) {
         if (!history.some(row => row.sourceEventId === event.sourceEventId)) history.push(event);
         return { cursor: history.length, highestContiguousSourceSeq: event.sourceSeq, disposition: "committed" };
       },
@@ -8673,14 +8684,14 @@ describe("executeNativeSession recovery", () => {
       }),
       sourceEventId: "provider-recovery:1",
       sourceInstanceId: "provider-recovery",
-      sourceKind: "provider",
+      sourceKind: "runner",
       turnId: "turn-waiting",
     };
     const turnInterrupted: PrpEvent = {
       ...controlEvent(3, "turn.interrupted", { reason: "governed_wait" }),
       sourceEventId: "provider-recovery:3",
       sourceInstanceId: "provider-recovery",
-      sourceKind: "provider",
+      sourceKind: "runner",
       turnId: "turn-waiting",
     };
     let releaseCancelled!: () => void;
@@ -8945,7 +8956,7 @@ describe("executeNativeSession recovery", () => {
       const port: ControlPlanePort = {
         async openRun() {},
         async checkpointSession() {},
-        async appendEvent(event) {
+        async appendEvent(event: PrpEvent) {
           events.push(structuredClone(event as PrpEvent));
           if (event.eventType === "runtime_request.created") releaseCreated();
           const sourceEvents = events.filter(
@@ -9491,7 +9502,7 @@ describe("executeNativeSession recovery", () => {
     const port: ControlPlanePort = {
       async openRun() {},
       async checkpointSession() {},
-      async appendEvent(event) {
+      async appendEvent(event: PrpEvent) {
         if (event.eventType === "runtime_request.resolved") {
           markSettlementAppendStarted();
           await settlementAppendReleased;
@@ -9521,11 +9532,11 @@ describe("executeNativeSession recovery", () => {
     };
 
     const originalSetTimeout = globalThis.setTimeout;
-    let queuedHandoffCallback: (() => void) | null = null;
+    let queuedHandoffCallback = null as (() => void) | null;
     const timeoutSpy = vi.spyOn(globalThis, "setTimeout").mockImplementation(((
-      callback,
-      delay,
-      ...args
+      callback: (...args: unknown[]) => void,
+      delay?: number,
+      ...args: unknown[]
     ) => {
       if (delay === 123_456) {
         queuedHandoffCallback = () => callback(...args);
@@ -9576,7 +9587,7 @@ it("fails preconfigured recovery without replacing a missing provider session", 
   const backend: NativeSessionBackend = {
     descriptor: async () => ({ kind: "mock", name: "preconfigured", version: "1",
       runtimeContextCapabilities: { instructions: "native", skills: "native", mcp: "native" },
-      capabilities: { resume: true, typedEvents: true, steering: false, interruption: true } }),
+      capabilities: { resume: true, typedEvents: true, steering: false, interruption: true, structuredResult: true } }),
     openSession, openReplacementSession,
     recoverSession: async () => ({ recovered: false, reason: "provider history is missing" }),
   };
@@ -9586,7 +9597,7 @@ it("fails preconfigured recovery without replacing a missing provider session", 
   };
   await expect(executeNativeSession({
     input: { ...preparedInput(), schema: "paperclip.native-execution-input.v7", homeMode: "preconfigured" },
-    backend, controlPlane: port, runnerInstanceId: "runner-preconfigured", persistedSession: checkpoint,
+    backend, controlPlane: port, runnerInstanceId: "runner-preconfigured", controlPlaneInstanceId: "control-preconfigured", persistedSession: checkpoint,
   })).rejects.toThrow("native_session_recovery_failed: provider history is missing");
   expect(openSession).not.toHaveBeenCalled();
   expect(openReplacementSession).not.toHaveBeenCalled();

@@ -2589,13 +2589,26 @@ Shutdown, process loss, and provider failure use the existing durable failure re
 If shutdown or a recorded unexpected system interruption stops Paperclip Runner
 preparation before native execution was selected, recovery verifies that no
 provider, process launch, native result or coordinator exists. The previous
-controller must have settled or lost its lease.
+controller must have settled or lost its lease. A failed `process_lost` run also
+qualifies when restart recovery committed its explicit bootstrap certificate
+that provider work did not start. The error label alone grants no replay.
 Required workspace recovery must have an exact saved-file receipt and stopped
 leases before the task can continue. Once these checks pass, the server retires
 its own unchanged bootstrap-failure block and schedules one bounded retry.
 Startup also discovers this obligation when file recovery completed before the
 restart. A pending Retry or saved message owns its continuation instead of
-starting a competing automatic attempt. Retry uses the same preparation proof
+starting a competing automatic attempt. If a replacement was already withheld
+by the workspace gate before execution, continuation retains that cancelled row
+and uses its existing predecessor claim and remaining failure budget.
+Recovery adopts that withheld row only when it is the source's sole retry child.
+Multiple-child history reuses the newest existing child, ordered by creation time
+and run ID, without scheduling another replacement.
+Clearing the file hold records a pending continuation before enqueue. Restart
+reconstructs that obligation until a successor is recorded. Known admission
+gates defer it without a polling deadline; eligibility changes wake the existing
+recovery worker. An unresolved enqueue or receipt write keeps its shared retry
+deadline. Delivery or exhaustion retires that obligation.
+Retry uses the same preparation proof
 and preserves the recovered workspace. Current task ownership, human blocks,
 pauses, approvals, budgets and the existing retry limit remain effective.
 Operator Stops retain their explicit continuation requirements. Other ambiguous
