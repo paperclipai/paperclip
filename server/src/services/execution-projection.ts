@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, desc, eq, gt, inArray, isNotNull, isNull, ne, sql } from "drizzle-orm";
 import {
   heartbeatRuns,
   dotAgentBindings,
@@ -19,6 +19,7 @@ import { readTaskDrain } from "./task-admission.js";
 const text = (v: unknown) => (typeof v === "string" ? v : null);
 const executionRunColumns = {
   id: heartbeatRuns.id,
+  agentId: heartbeatRuns.agentId,
   driverKind: heartbeatRuns.driverKind,
   errorCode: heartbeatRuns.errorCode,
   executionControlDeadlineAt: heartbeatRuns.executionControlDeadlineAt,
@@ -176,6 +177,39 @@ export async function executionProjectionsForRuns(
       )));
     for (const row of offered) waitingByRun.set(row.runId, "openai_dot");
   }
+  // A queued turn cannot start while a live controller still holds an earlier
+  // run of the same agent and task (for example a stopped run whose runner has
+  // not released yet). Name that wait instead of an unexplained "Queued".
+  const settlingPredecessorKeys = new Set<string>();
+  const queuedRuns = runs.filter(run => run.status === "queued");
+  const queuedIssueIds = [...new Set(queuedRuns
+    .map(run => run.nativeIssueId ?? text(run.contextSnapshot?.issueId))
+    .filter((id): id is string => !!id))];
+  if (queuedIssueIds.length) {
+    const issueKey = sql<string>`coalesce(${heartbeatRuns.nativeIssueId}::text, ${heartbeatRuns.contextSnapshot}->>'issueId')`;
+    const held = await read(async () => db
+      .select({ id: heartbeatRuns.id, agentId: heartbeatRuns.agentId, issueId: issueKey })
+      .from(heartbeatRuns)
+      .innerJoin(nativeRunFinalizations, and(
+        eq(nativeRunFinalizations.runId, heartbeatRuns.id),
+        eq(nativeRunFinalizations.companyId, heartbeatRuns.companyId),
+      ))
+      .where(and(
+        eq(heartbeatRuns.companyId, companyId),
+        inArray(heartbeatRuns.agentId, [...new Set(queuedRuns.map(run => run.agentId))]),
+        inArray(issueKey, queuedIssueIds),
+        ne(heartbeatRuns.status, "queued"),
+        isNotNull(nativeRunFinalizations.leaseOwner),
+        gt(nativeRunFinalizations.leaseExpiresAt, now),
+      )));
+    for (const row of held) {
+      for (const run of queuedRuns) {
+        if (row.id !== run.id && row.agentId === run.agentId
+            && row.issueId === (run.nativeIssueId ?? text(run.contextSnapshot?.issueId)))
+          settlingPredecessorKeys.add(run.id);
+      }
+    }
+  }
   const coordinatorByRun = new Map(coordinators.map((row) => [row.runId, row]));
   for (const run of runs) {
     const issueId = run.nativeIssueId ?? text(run.contextSnapshot?.issueId);
@@ -196,6 +230,7 @@ export async function executionProjectionsForRuns(
         action,
         now,
         waitingByRun.get(run.id),
+        settlingPredecessorKeys.has(run.id),
       ),
     );
   }
@@ -220,6 +255,7 @@ export function projectExecution(
   recoveryAction: Recovery | undefined,
   now = new Date(),
   waitingForProvider?: WaitingExternalProvider,
+  waitingForPredecessor = false,
 ): ExecutionProjection {
   const detail = coordinator?.failureDetail ?? {};
   const successorRunId = text(detail.successorRunId);
@@ -400,6 +436,11 @@ export function projectExecution(
     projection.cause = "task_drain";
     projection.nextAction = "This turn will start automatically when maintenance finishes.";
     return set("queued", "Waiting for maintenance");
+  }
+  if (run.status === "queued" && waitingForPredecessor) {
+    projection.cause = "previous_run_settling";
+    projection.nextAction = "The previous run on this task is still releasing its runner. This turn starts automatically when it settles.";
+    return set("queued", "Waiting for previous run to stop");
   }
   return projection;
 }

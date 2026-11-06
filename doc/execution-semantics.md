@@ -2473,6 +2473,13 @@ and fails the transport if the runner cannot be reached. Without this, such a
 run stayed "Working" indefinitely. The 90-second bound exceeds the runner's own
 60-second connection lease, which already requires it to read and renew.
 
+A stopped native run can keep its execution lease while its controller still
+waits on an unreachable runner. A queued turn of the same agent and task cannot
+start until that controller settles. The queued turn's projection names this
+wait ("Waiting for previous run to stop", cause `previous_run_settling`) while
+the predecessor's finalization lease is held and unexpired. The ingress liveness
+bound above makes that controller settle, and its cleanup starts the queued turn.
+
 A bounded transport close can return before artifact staging settles. That
 return does not prove cleanup completed or release the retained-state obligation.
 Launch attempts, authenticated runner connections, provider process entries,
