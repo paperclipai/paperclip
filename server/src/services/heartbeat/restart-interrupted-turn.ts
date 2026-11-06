@@ -45,7 +45,11 @@ type Outcome = { requested: true; requestId: string } | { requested: false; reas
  */
 export async function requestRestartInterruptedTurnRetry(db: Db, claim: NativeRestartRecoveryClaim): Promise<Outcome> {
   if (claim.kind !== "reattach_remote_runner") return { requested: false, reason: "not_reattachment" };
-  const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, claim.runId));
+  return requestInterruptedNativeTurnRetry(db, claim.runId);
+}
+
+export async function requestInterruptedNativeTurnRetry(db: Db, runId: string): Promise<Outcome> {
+  const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
   if (!run || run.runtimeMode !== "native" || run.status !== "failed" || !REATTACHMENT_LOST_ERRORS.includes(run.error ?? ""))
     return { requested: false, reason: "not_reattachment_loss" };
   const context = run.contextSnapshot ?? {};

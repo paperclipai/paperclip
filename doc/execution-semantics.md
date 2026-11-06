@@ -3349,6 +3349,17 @@ The controller persists a newly spawned runner's process identity before
 waiting for provider startup. An abrupt controller exit during session opening
 can then recover through the same exact process-identity checks as an active turn.
 
+A provider checkpoint copied from a completed run retains conversation history;
+its normalized current run ID does not prove that the current controller attached.
+Fenced remote Runner recovery requires a matching database controller checkpoint
+or a valid staged attachment for the target run before selecting exact-checkpoint
+resume. Local Runner recovery keeps its existing local controller checks.
+If the first attachment finds the retained runner gone before the new turn starts, ordinary failure settlement requests one normal Retry under the
+original user's saved wake and comment authority. Current authorization, Stop,
+provider-turn settlement, workspace preservation and cleanup gates still apply.
+The same request remains idempotent, and an automatic successor does not request
+another automatic Retry. System wakes and unsettled provider turns remain held.
+
 Both graceful and hot restarts detach the old controller from native sessions.
 A graceful shutdown can also suspend a restart-recovery claim whose execution
 has not yet reached provider dispatch. That execution has lost its authority:
