@@ -53,7 +53,7 @@ function preflight(plan: WavePlan) {
   if (missing.length) throw new Error(`Missing credentials ${missing.join(", ")}. Run: set -a; source ~/.secrets; set +a`);
   const runner = process.env.PAPERCLIP_RUNNER_BINARY
     ?? path.join(repositoryRoot, "packages/paperclip-runner/runner/target/debug/paperclip-runnerd");
-  if (!existsSync(runner)) throw new Error(`Runner binary missing at ${runner}. Run: pnpm --filter @paperclipai/paperclip-runner build:runner-binaries`);
+  if (!existsSync(runner)) throw new Error(`Runner binary missing at ${runner}. Run: pnpm --filter @paperclipai/paperclip-runner run build:runner-binaries`);
   // Same provider bundle preparation as tests/runner-e2e/verified-provider-bundles.setup.mjs.
   const build = spawnSync(process.execPath, [path.join(repositoryRoot, "packages/paperclip-runner/scripts/build-verified-provider-entrypoints.mjs")],
     { cwd: repositoryRoot, stdio: "inherit" });

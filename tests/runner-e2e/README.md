@@ -686,7 +686,7 @@ so a content mismatch cannot suppress the communication evidence.
 The source thread is observed for 120 seconds. The probe retains a later
 correction even if an earlier reply already passes delivery and access. A later
 clarification does not erase an earlier accessible delivery.
-The busy cell holds a separate source reply open until the worker finishes; the multiple cell delegates two notes and requires one completion per task. The restart cell holds the source provider at a fixture reference gate, then restarts the server after durable Done but before publication and releases the gate. The gate makes the interruption boundary observable and prevents a fast successful reply from racing the restart assertion. The onboarding cell records its naturally occurring timing.
+The busy cell holds a separate source reply open until the worker finishes; the multiple cell delegates two notes and requires one completion per task. The restart cell holds the source provider at a fixture reference gate, then restarts the server after durable Done but before publication and releases the gate. The gate makes the interruption boundary observable and prevents a fast successful reply from racing the restart assertion. Reaching the gate depends on the source agent running the instructed wait: the completion reply is published inside the run finalizer's own transaction, so the isolated-server entrypoint cannot hold it without a product hook. If no completion turn is still active and the turn that received this task's Done facts has succeeded or published its reply before the gate reports `waiting`, the cell fails at once with `restart boundary not reached (agent skipped gate)` rather than a generic timeout. That failure is agent compliance (the restart was never exercised), not restart robustness. A completion turn that fails or is cancelled before the gate is not blamed on the agent, because delivery can retry it; if the wait then times out, the timeout names that turn and its status as `restart boundary not reached`. After the restart, the chat navigation retries an abort caused by the old document's reload. The onboarding cell records its naturally occurring timing.
 
 The mechanical oracle requires a run-attributed source reply after durable
 completion, plus the actual saved output or a navigable task/output link.
@@ -839,7 +839,7 @@ runner binaries:
 ```bash
 pnpm install
 pnpm exec playwright install chromium
-pnpm --filter @paperclipai/paperclip-runner build:runner-binaries
+pnpm --filter @paperclipai/paperclip-runner run build:runner-binaries
 ```
 
 List cells without loading credentials or starting Paperclip:
@@ -1824,9 +1824,12 @@ There are thirteen cases on `legacy-codex`, `legacy-claude`, `runner-codex`, and
 production wizard, omits the runner override, and verifies the saved native
 configuration without changing runners afterward. `runner-acpx-claude` does the
 same for Claude on its qualified default targets and inspects the saved ACPX
-Claude profile directly. Both Legacy profiles select Legacy runner in Advanced
-before authentication and creation. All four paths are labeled
-`production-wizard`; there is no post-onboarding runner switch. Persona,
+Claude profile directly. Both Legacy profiles configure the inactive setup record
+through the normal agent API before authentication, reload, and finish the saved
+setup in the wizard. They are labeled `api-configured-legacy-setup`; the native
+paths retain `production-wizard`. The UI exposes no runner dropdown, and there
+is no post-onboarding runner switch. Legacy coverage proves setup resumption,
+not the fresh-agent automatic default. Persona,
 managed instructions, skills, seeded question, and task invocation are preserved. The native path removes the legacy
 Paperclip operational skill because Runner supplies that contract through its
 protocol; other assigned skills, including `/first-task`, are retained.

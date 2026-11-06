@@ -30,6 +30,23 @@ export async function assertNativeSessionPreparationAuthority(input: {
   if (!owned) throw new Error("native_session_lease_lost");
 }
 
+export async function nativeRecoveryClaimRelinquished(input: {
+  db: Db; companyId: string; runId: string; leaseOwner: string;
+}): Promise<boolean> {
+  const [row] = await input.db.select({
+    status: heartbeatRuns.status, resultId: nativeRunFinalizations.resultId,
+    leaseOwner: nativeRunFinalizations.leaseOwner, recoveryState: nativeRunFinalizations.recoveryState,
+    leaseLive: sql<boolean>`coalesce(${nativeRunFinalizations.leaseExpiresAt} > clock_timestamp(), false)`,
+    lastDisposition: sql<string | null>`${nativeRunFinalizations.recoveryHistory} -> -1 ->> 'disposition'`,
+  }).from(nativeRunFinalizations).innerJoin(heartbeatRuns, eq(heartbeatRuns.id, nativeRunFinalizations.runId))
+    .where(and(eq(nativeRunFinalizations.companyId, input.companyId), eq(nativeRunFinalizations.runId, input.runId),
+      eq(heartbeatRuns.companyId, input.companyId))).limit(1);
+  if (!row || row.status !== "running" || row.resultId) return false;
+  if (row.leaseOwner !== null && row.leaseOwner !== input.leaseOwner) return true;
+  return row.leaseOwner === input.leaseOwner && !row.leaseLive && row.recoveryState === "awaiting_runner_reattach"
+    && row.lastDisposition === "restart_suspended";
+}
+
 /**
  * Preparation failed after a fresh claim and before any provider turn. Release
  * only this exact claim, so ordinary failure settlement can retain the source

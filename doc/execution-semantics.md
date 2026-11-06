@@ -2657,7 +2657,10 @@ leases before the task can continue. Once these checks pass, the server retires
 its own unchanged bootstrap-failure block and schedules one bounded retry.
 Startup also discovers this obligation when file recovery completed before the
 restart. A pending Retry or saved message owns its continuation instead of
-starting a competing automatic attempt. If a replacement was already withheld
+starting a competing automatic attempt. Explicit admission uses the same verified
+preparation proof, including the certified failed `process_lost` form. A prior
+unstarted retry refused by the execution gate remains historical evidence; its
+host dispatch receipt must also verify before the new turn can start. If a replacement was already withheld
 by the workspace gate before execution, continuation retains that cancelled row
 and uses its existing predecessor claim and remaining failure budget.
 Recovery adopts that withheld row only when it is the source's sole retry child.
@@ -3285,6 +3288,10 @@ waiting for provider startup. An abrupt controller exit during session opening
 can then recover through the same exact process-identity checks as an active turn.
 
 Both graceful and hot restarts detach the old controller from native sessions.
+A graceful shutdown can also suspend a restart-recovery claim whose execution
+has not yet reached provider dispatch. That execution has lost its authority:
+it leaves the run running, its budget hold held and its workspace unmarked, and
+the next controller adopts the same run. It does not settle the run as failed.
 Remote Runner processes use their authenticated connection lease as the bound
 on disconnected lifetime. The controller's shorter connection-recovery budget
 limits its own attempt; it must not terminate the remote owner while another

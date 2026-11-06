@@ -31,7 +31,7 @@ export async function isFailedNativePreparationRetryAncestor(db: Db, run: Run, c
 }
 
 async function failedNativePreparation(db: Db, run: Run, coordinator: Coordinator | undefined, historicalRetryAncestor: boolean) {
-  if (run.status === "interrupted") return !historicalRetryAncestor && !coordinator && isInterruptedNativePreparation(db, run);
+  if (!historicalRetryAncestor && !coordinator && await isInterruptedNativePreparation(db, run)) return true;
   const recovery = run.resultJson?.executionRecovery as Record<string, unknown> | undefined;
   const preparationFailure = run.errorCode === "setup_failed" || historicalRetryAncestor && run.errorCode === "adapter_failed";
   if (run.status !== "failed" || !run.finishedAt || run.runtimeMode !== "legacy" || run.runtimeModeResolvedAt
