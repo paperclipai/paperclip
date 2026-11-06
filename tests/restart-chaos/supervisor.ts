@@ -266,13 +266,14 @@ export class ChaosSupervisor {
         // K1/K2/K4 keep the controller runtime cache; K11 will discard it.
         discardCache: async () => {},
         start: async () => { receipt.restartedAt = Date.now(); this.timeline.add("fault_restarting", { faultId: receipt.faultId }); return this.spawnServer(); },
-        waitForReady: async replacement => {
-          const serving = kind === "K6" ? await this.crashLoop(replacement, receipt) : replacement;
-          receipt.healthyAt = await this.waitForHealth(serving, receipt.phases);
-        },
+        waitForReady: async replacement => { receipt.healthyAt = await this.waitForHealth(replacement, receipt.phases); },
         cancelled: () => this.shuttingDown,
         record: async progress => { outage = progress; },
       });
+      if (kind === "K6") {
+        if (!this.child) throw new Error("K6 crash loop has no replacement server to kill");
+        receipt.healthyAt = await this.waitForHealth(await this.crashLoop(this.child, receipt), receipt.phases);
+      }
       receipt.readyAt = await this.waitForReadyPhase(receipt.phases);
       receipt.serverLogOffsetAtReady = this.serverLogOffset();
       this.timeline.add("fault_ready", { faultId: receipt.faultId, replacementPid: this.child?.pid ?? outage?.replacementPid,
