@@ -97,6 +97,8 @@ export type ScheduledRetryFacts = {
   issueCheckoutRunId?: string | null;
 
   isNonAssigneeWorkspaceBusyRetry: boolean;
+  /** A pending interaction addressed to the run's agent authorized this wake (or its retry). */
+  isPendingAddresseeWake?: boolean;
   reviewParticipant: ReviewParticipantFacts;
   activePauseHold: PauseHoldFacts | null;
   dependenciesBlocked: DependencyBlockFacts | null;
@@ -343,6 +345,7 @@ export function decideScheduledRetryGate(
     runAgentId: facts.runAgentId,
     issueAssigneeAgentId: facts.issueAssigneeAgentId,
     isNonAssigneeWorkspaceBusyRetry: facts.isNonAssigneeWorkspaceBusyRetry,
+    isInteractionWake: facts.isPendingAddresseeWake,
     isCurrentReviewParticipant:
       facts.reviewParticipant.isInReview &&
       facts.reviewParticipant.hasParticipant &&
@@ -433,6 +436,7 @@ export function decideScheduledRetryGate(
   const participantOutcome = decideReviewParticipant({
     ...facts.reviewParticipant,
     runAgentId: facts.runAgentId,
+    bypass: facts.isPendingAddresseeWake,
   });
   if (participantOutcome === "participant_changed") {
     return {

@@ -300,6 +300,38 @@ export function createPostgresRunDispatchAdapter(
     return withRunOwnershipLocks(input, onMissing, operation, "accounting");
   }
 
+  // interaction_pending wakes target the interaction's addressee (e.g. a
+  // reviewer), who is not necessarily the issue assignee. Honor one only while
+  // its interaction is still pending and addressed to the run's agent. A retry
+  // replaces wakeReason, so it carries interactionPendingWake instead.
+  async function isPendingAddresseeWake(
+    dbOrTx: Db,
+    input: { companyId: string; issueId: string; agentId: string; context: Record<string, unknown> },
+  ): Promise<boolean> {
+    const interactionId = readNonEmptyString(input.context.interactionId);
+    if (!interactionId) return false;
+    if (
+      readNonEmptyString(input.context.wakeReason) !== "interaction_pending" &&
+      input.context.interactionPendingWake !== true
+    ) {
+      return false;
+    }
+    const rows = await dbOrTx
+      .select({ id: issueThreadInteractions.id })
+      .from(issueThreadInteractions)
+      .where(
+        and(
+          eq(issueThreadInteractions.id, interactionId),
+          eq(issueThreadInteractions.companyId, input.companyId),
+          eq(issueThreadInteractions.issueId, input.issueId),
+          eq(issueThreadInteractions.status, "pending"),
+          eq(issueThreadInteractions.addresseeAgentId, input.agentId),
+        ),
+      )
+      .limit(1);
+    return rows.length > 0;
+  }
+
   async function loadGateFacts(
     input: LoadGateFactsInput,
     now: Date,
@@ -418,6 +450,9 @@ export function createPostgresRunDispatchAdapter(
     facts.issueAssigneeAgentId = issue.assigneeAgentId;
     facts.issueExecutionRunId = issue.executionRunId;
     facts.issueCheckoutRunId = issue.checkoutRunId;
+    facts.isPendingAddresseeWake = await isPendingAddresseeWake(dbOrTx, {
+      companyId: input.companyId, issueId, agentId: input.agentId, context: input.contextSnapshot,
+    });
     if (input.conversationContinuation || retryReason === "interrupted_preparation") {
       facts.pendingResponse = await connectionContinuationPendingResponse(dbOrTx as unknown as Db,
         issue, input.responsibleUserId, input.runId);
@@ -591,30 +626,14 @@ export function createPostgresRunDispatchAdapter(
 
     const wakeCommentId = deriveCommentId(context);
     const wakeReason = readNonEmptyString(context.wakeReason);
-    // interaction_pending wakes target the interaction's addressee (e.g. a
-    // reviewer), who is not necessarily the issue assignee. Only honor one
-    // while its interaction is still pending and addressed to the run's agent.
-    const interactionId = readNonEmptyString(context.interactionId);
-    const isPendingAddresseeWake =
-      wakeReason === "interaction_pending" && issue && interactionId
-        ? await dbOrTx
-            .select({ id: issueThreadInteractions.id })
-            .from(issueThreadInteractions)
-            .where(
-              and(
-                eq(issueThreadInteractions.id, interactionId),
-                eq(issueThreadInteractions.companyId, input.companyId),
-                eq(issueThreadInteractions.issueId, issue.id),
-                eq(issueThreadInteractions.status, "pending"),
-                eq(issueThreadInteractions.addresseeAgentId, input.agentId),
-              ),
-            )
-            .limit(1)
-            .then((rows) => rows.length > 0)
-        : false;
+    const pendingAddresseeWake = issue
+      ? await isPendingAddresseeWake(dbOrTx, {
+          companyId: input.companyId, issueId: issue.id, agentId: input.agentId, context,
+        })
+      : false;
     const isInteractionWake =
       allowsIssueInteractionWake(context, ISSUE_TREE_CONTROL_INTERACTION_WAKE_REASONS) ||
-      isPendingAddresseeWake;
+      pendingAddresseeWake;
     const resumeIntent = context.resumeIntent === true || context.followUpRequested === true;
     const retryReason =
       readNonEmptyString(context.retryReason) ?? input.scheduledRetryReason ?? null;

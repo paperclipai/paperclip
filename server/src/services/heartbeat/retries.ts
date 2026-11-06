@@ -687,6 +687,10 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
         retryOfRunId: run.id,
         wakeReason,
         retryReason,
+        // wakeReason is replaced above; keep the addressee authority for the retry gate.
+        ...(contextSnapshot.wakeReason === "interaction_pending" || contextSnapshot.interactionPendingWake === true
+          ? { interactionPendingWake: true }
+          : {}),
         ...(interactionRunnerWait ? { mutation: "interaction" } : {}),
         ...(retryReason === WORKSPACE_BUSY_RETRY_REASON
           ? {

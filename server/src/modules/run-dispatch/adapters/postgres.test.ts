@@ -1300,6 +1300,7 @@ describeEmbeddedPostgres("run-dispatch postgres adapter", () => {
         interaction?: "pending" | "resolved" | "other_addressee" | "none";
         reviewParticipant?: boolean;
         wakeReason?: string;
+        retry?: boolean;
       }) {
         const { companyId, agentId } = await seedCompanyAndAgent();
         const assigneeAgentId = randomUUID();
@@ -1346,10 +1347,19 @@ describeEmbeddedPostgres("run-dispatch postgres adapter", () => {
           contextSnapshot: {
             issueId,
             interactionId,
-            wakeReason: input.wakeReason ?? "interaction_pending",
+            // A retry replaces wakeReason and carries interactionPendingWake instead.
+            wakeReason: input.retry ? "ai_connection_busy_retry" : input.wakeReason ?? "interaction_pending",
+            ...(input.retry
+              ? { retryReason: "ai_connection_busy", aiConnectionBusyDeferredWhileAssignee: false, interactionPendingWake: true }
+              : {}),
           },
         });
-        return createPostgresRunDispatchAdapter(db).cancelStaleQueuedRun({
+        return { companyId, runId, adapter: createPostgresRunDispatchAdapter(db) };
+      }
+
+      async function cancelInteractionWake(input: Parameters<typeof seedInteractionWake>[0]) {
+        const { companyId, runId, adapter } = await seedInteractionWake(input);
+        return adapter.cancelStaleQueuedRun({
           runId,
           companyId,
           expectedStatus: "queued",
@@ -1358,25 +1368,53 @@ describeEmbeddedPostgres("run-dispatch postgres adapter", () => {
       }
 
       it("does not cancel a wake for the non-assignee addressee of a pending interaction", async () => {
-        const result = await seedInteractionWake({ interaction: "pending" });
+        const result = await cancelInteractionWake({ interaction: "pending" });
         expect(result.outcome).not.toBe("cancelled");
       });
 
       it("does not cancel it when another agent is the in-review participant", async () => {
-        const result = await seedInteractionWake({ interaction: "pending", reviewParticipant: true });
+        const result = await cancelInteractionWake({ interaction: "pending", reviewParticipant: true });
         expect(result.outcome).not.toBe("cancelled");
       });
+
+      it("does not cancel its AI-connection-busy retry when it starts", async () => {
+        const result = await cancelInteractionWake({ interaction: "pending", reviewParticipant: true, retry: true });
+        expect(result.outcome).not.toBe("cancelled");
+      });
+
+      it("lets its AI-connection-busy retry pass the scheduled-retry gate", async () => {
+        const { companyId, runId, adapter } = await seedInteractionWake({
+          interaction: "pending", reviewParticipant: true, retry: true,
+        });
+        const result = await adapter.evaluateScheduledRetryGate({
+          runId, companyId, retryReasonOverride: "ai_connection_busy", now: new Date(),
+        });
+        expect(result).toMatchObject({ allowed: true });
+      });
+
+      it.each(["resolved", "other_addressee", "none"] as const)(
+        "still blocks its retry at the gate when the interaction is %s",
+        async (interaction) => {
+          const { companyId, runId, adapter } = await seedInteractionWake({
+            interaction, reviewParticipant: true, retry: true,
+          });
+          const result = await adapter.evaluateScheduledRetryGate({
+            runId, companyId, retryReasonOverride: "ai_connection_busy", now: new Date(),
+          });
+          expect(result).toMatchObject({ allowed: false });
+        },
+      );
 
       it.each(["resolved", "other_addressee", "none"] as const)(
         "still cancels the wake when the interaction is %s",
         async (interaction) => {
-          const result = await seedInteractionWake({ interaction });
+          const result = await cancelInteractionWake({ interaction });
           expect(result).toMatchObject({ outcome: "cancelled", errorCode: "issue_assignee_changed" });
         },
       );
 
       it("still cancels a non-assignee wake with another reason", async () => {
-        const result = await seedInteractionWake({ interaction: "pending", wakeReason: "issue_assigned" });
+        const result = await cancelInteractionWake({ interaction: "pending", wakeReason: "issue_assigned" });
         expect(result).toMatchObject({ outcome: "cancelled", errorCode: "issue_assignee_changed" });
       });
     });
