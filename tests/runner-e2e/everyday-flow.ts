@@ -40,6 +40,8 @@ import {
   type StoryInteraction,
 } from "./everyday-decisions.js";
 import { LATE_REQUIREMENT, SLUGIFY_REVISION, SLUGIFY_DEPLOYMENT_SOAK, requiresEverydayArtifactOracle } from "./everyday-cases.js";
+import { everydayReliabilitySignatures, isEverydayReliabilityCase } from "./everyday-reliability-cases.js";
+import { driveReliabilityScenario, type ReliabilityOutcome } from "./everyday-reliability-flow.js";
 import {
   isActiveStoryRun,
   isStoryWorkspaceDeferral,
@@ -91,8 +93,11 @@ export interface EverydayEvidence {
   agents: Row[];
   downloads: Row[];
   allowedInterruptedRuns: string[];
+  /** Reliability scenarios: failures a later run on the same task verifiably resumed. */
+  recoveredRuns?: string[];
   remoteRestart?: RemoteRestartEvidence;
   remoteWorkspaceStorage?: RemoteWorkspaceStorageEvidence;
+  reliability?: { signature: string; observed: string; fixes: readonly string[] };
 }
 interface Input {
   page: Page;
@@ -206,6 +211,8 @@ export async function runEverydayFlow(input: Input) {
   let settledAgentReply: Row | undefined;
   let postControllerApiFollowup = false;
   let retainedFollowupCommentId: string | undefined;
+  let reliability: ReliabilityOutcome | undefined;
+  let helperAgentId: string | undefined;
   let reviewHandoffBoundary: {
     childId: string;
     assigneeAgentId: string | null | undefined;
@@ -333,6 +340,7 @@ export async function runEverydayFlow(input: Input) {
       issueId: target.id,
       commentIds: added.map((c) => c.id),
     });
+    return added.map((c) => String(c.id));
   }
   function declineInput(state: Pick<EverydayEvidence, "issues" | "runs">): ConnectionGuidanceDeclineInput | undefined {
     if (execution.suite.id !== CONNECTION_GUIDANCE_SUITE ||
@@ -378,7 +386,7 @@ export async function runEverydayFlow(input: Input) {
           )),
       reject: (state) => {
         if (state.runs.length > 12) return "bounded execution count exceeded";
-        const bad = storyUnexpectedRunFailure(state.runs, ev.allowedInterruptedRuns);
+        const bad = storyUnexpectedRunFailure(state.runs, ev.allowedInterruptedRuns, ev.recoveredRuns);
         if (bad)
           return `native execution failed ${bad.errorCode ?? ""}: ${bad.error ?? bad.status}`;
         if (
@@ -618,6 +626,9 @@ export async function runEverydayFlow(input: Input) {
       "everyday-delivery.ts",
       "everyday-observations.ts",
       "everyday-remote-restart.ts",
+      "everyday-reliability-cases.ts",
+      "everyday-reliability.ts",
+      "everyday-reliability-flow.ts",
       "retained-controller-continuation.ts",
       "controller-outage.ts",
       "controller-rolling-deployment.ts",
@@ -716,7 +727,8 @@ export async function runEverydayFlow(input: Input) {
       canCreateAgents: true,
       canAssignTasks: true,
     });
-    if (caseId === "delegate-feedback" || caseId === "agent-review-handoff") {
+    if (isEverydayReliabilityCase(caseId)) ev.reliability = everydayReliabilitySignatures[caseId];
+    if (["delegate-feedback", "agent-review-handoff", "reassign-midrun", "tree-pause-release"].includes(caseId)) {
       const config = execution.profile.buildAgent({
         environmentId: fixtures.environment.id,
         environmentFixtureId: execution.environment.id,
@@ -724,7 +736,7 @@ export async function runEverydayFlow(input: Input) {
         secretRefs: fixtures.secretRefs,
         executionId: nonce,
       });
-      await api.post(`/api/companies/${fixtures.company.id}/agents`, {
+      helperAgentId = (await api.post<Row>(`/api/companies/${fixtures.company.id}/agents`, {
         ...config,
         name: "Riley Builder",
         role: "engineer",
@@ -737,7 +749,7 @@ export async function runEverydayFlow(input: Input) {
               "You implement small software projects and verify your work. Follow task feedback and deliver usable files.",
           },
         },
-      });
+      })).id;
     }
     if (caseId.startsWith("service-"))
       review = await setupConnectionReview({
@@ -785,6 +797,14 @@ export async function runEverydayFlow(input: Input) {
     input.observe(parent!, []);
     note("task-submitted", { issueId: parent!.id });
     await openParent();
+    if (isEverydayReliabilityCase(caseId)) {
+      reliability = await driveReliabilityScenario(caseId, { page, api, execution, nonce, leadAgentId: fixtures.agent.id,
+        helperAgentId, workspacePath: input.workspacePath, deadlineAt: input.deadlineAt, parentId: parent!.id,
+        refresh, reply: message => reply(message), openParent,
+        restart: () => input.restart(), note, allowInterrupted: runId => { ev.allowedInterruptedRuns.push(runId); },
+        allowRecovered: runIds => { ev.recoveredRuns = [...runIds]; },
+        evidence: input.evidence, capture: input.capture });
+    }
     if (caseId === "agent-review-handoff") {
       const boundary = await pollUntil({
         label: "blocked parent with agent review wake",
@@ -1210,8 +1230,9 @@ export async function runEverydayFlow(input: Input) {
     }
     await settled(
       caseId === "stop-redirect" ? `Reference ${nonce}`
-        : caseId === "provider-second" ? `CONTACTS_${nonce}` : undefined,
+        : caseId === "provider-second" ? `CONTACTS_${nonce}` : reliability?.expectedReply,
     );
+    if (reliability) ev.checks.push(...await reliability.checks());
     if (caseId === "create-skill-studio") {
       const createdSkills = await api.get<Row[]>(
         `/api/companies/${fixtures.company.id}/skills`,
@@ -1620,7 +1641,8 @@ export async function runEverydayFlow(input: Input) {
         .filter(
           (r) =>
             !isStoryWorkspaceDeferral(r) &&
-            !isExpectedStoryInterruption(r, ev.allowedInterruptedRuns),
+            !isExpectedStoryInterruption(r, ev.allowedInterruptedRuns) &&
+            !(ev.recoveredRuns ?? []).includes(r.id),
         )
         .every(
           (r) =>
@@ -1667,6 +1689,8 @@ export async function runEverydayFlow(input: Input) {
         parentId: parent!.id,
         leadId: fixtures.agent.id,
         allowedInterruptedRuns: ev.allowedInterruptedRuns,
+        recoveredRuns: ev.recoveredRuns,
+        parentAgentIds: reliability?.parentAgentIds,
         requireRemoteRestart,
         remoteRestart: ev.remoteRestart,
       }),
