@@ -272,13 +272,19 @@ export class ChaosSupervisor {
     return receipt;
   }
 
-  /** Bring a server back after a crash the harness did not cause. */
-  async restartAfterUnexpectedExit(): Promise<void> {
-    if (this.child && !this.exited(this.child)) return;
-    this.timeline.add("server_restart_after_unexpected_exit", {});
-    const child = await this.spawnServer();
+  /**
+   * Bounded recovery after a failed fault or a crash the harness did not cause:
+   * wait for a live server to become ready, or start a new one. Throws when the
+   * control plane cannot be brought back, so the wave fails instead of hanging.
+   */
+  async ensureServing(): Promise<void> {
+    if (this.serverReady || this.faultInProgress) return;
+    const live = this.child && !this.exited(this.child) ? this.child : null;
+    this.timeline.add("server_recovery_attempt", { livePid: live?.pid ?? null });
+    const child = live ?? await this.spawnServer();
     await this.waitForHealth(child);
     await this.waitForReadyPhase([]);
+    this.timeline.add("server_recovered", { pid: child.pid });
   }
 
   async stop(): Promise<void> {

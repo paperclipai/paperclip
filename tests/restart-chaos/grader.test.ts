@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { crossingFaults, gradeR3, gradeR4, gradeR5, gradeTask, STALL_LIMIT_MS } from "./grader.js";
 import { isResting } from "./observer.js";
 import type { FaultReceipt, OracleArtifacts, RunSample, TaskRecord, TaskSample } from "./types.js";
-import { BENCH_EXPECTED, workloadDefinitions } from "./workloads.js";
+import { BENCH_EXPECTED, parseBenchRecord, workloadDefinitions } from "./workloads.js";
 
 const T0 = Date.parse("2026-11-06T12:00:00Z");
 const iso = (offsetMs: number) => new Date(T0 + offsetMs).toISOString();
@@ -22,7 +22,8 @@ function record(samples: TaskSample[], extra: Partial<TaskRecord> = {}): TaskRec
     plan: { taskId: "t01", index: 0, workload: "A1", adapter: "codex", fault: "K1", fireAfterMs: 20_000, holdMs: 0, followUpAfterMs: null, nonce: "abcd1234" },
     issueId: "issue-1", identifier: "CHA-1", createdAt: T0, launchError: null, samples, retry: null, restAt: T0 + 120_000,
     finalStatus: "done", deadlineAt: T0 + 600_000, timedOut: false, followUp: null, faultIds: ["f01"],
-    sweep: { activeRuns: [], runningWorkspaceOperations: [], activeRecoveryAction: false, error: null }, ...extra,
+    sweep: { activeRuns: [], runningWorkspaceOperations: [], activeRecoveryAction: false, error: null },
+    preFaultFiles: null, lostFiles: null, ...extra,
   };
 }
 
@@ -116,6 +117,13 @@ describe("R1–R6 grading on fixture timelines", () => {
     expect(gradeTask(leaky, [fault], 600_000, oracle()).rules.R6.detail).toMatch(/running_workspace_operations=op1; active_recovery_action/);
   });
 
+  it("fails R2 when files written before the fault are gone at rest", () => {
+    const done = [sample(90_000, "done", [run("r1", "succeeded", 1_000, 80_000)])];
+    const lost = record(done, { preFaultFiles: ["NOTES.md", "chaoscli/cli.py"], lostFiles: ["NOTES.md"] });
+    expect(gradeTask(lost, [fault], 600_000, oracle()).rules.R2.detail).toBe("pre_fault_files_lost: NOTES.md");
+    expect(gradeTask(record(done, { preFaultFiles: ["NOTES.md"], lostFiles: [] }), [fault], 600_000, oracle()).rules.R2.verdict).toBe("pass");
+  });
+
   it("allows outage time on top of the budget", () => {
     const k4: FaultReceipt = { ...fault, kind: "K4", holdMs: 240_000, readyAt: T0 + 290_000 };
     const late = record([sample(700_000, "done", [run("r2", "succeeded", 300_000, 690_000)])], { restAt: T0 + 700_000 });
@@ -141,10 +149,14 @@ describe("T-oracles", () => {
 
   it("grades B5 against the deterministic bench result", () => {
     const base: OracleArtifacts = { issueStatus: "done", documents: {}, agentComments: [], workspacePath: "/tmp/ws", commands: {},
-      files: { "bench-result-abcd1234.txt": `${BENCH_EXPECTED}\n` } };
+      files: { "bench-result-abcd1234.txt": `${BENCH_EXPECTED}\n`, ".bench/run-abcd1234.txt": `started=1000 finished=1241 result=${BENCH_EXPECTED}\n` } };
     expect(BENCH_EXPECTED).toBe("BENCH_RESULT=4636840");
+    expect(parseBenchRecord(base.files[".bench/run-abcd1234.txt"])).toEqual({ seconds: 241, result: BENCH_EXPECTED });
     expect(workloadDefinitions.B5.grade("abcd1234", base).verdict).toBe("pass");
-    expect(workloadDefinitions.B5.grade("abcd1234", { ...base, files: { "bench-result-abcd1234.txt": "BENCH_RESULT=1" } }).verdict).toBe("fail");
+    expect(workloadDefinitions.B5.grade("abcd1234", { ...base, files: { ...base.files, "bench-result-abcd1234.txt": "BENCH_RESULT=1" } }).verdict).toBe("fail");
+    // A computed answer without a bench.sh run, or a too-short run, does not pass.
+    expect(workloadDefinitions.B5.grade("abcd1234", { ...base, files: { "bench-result-abcd1234.txt": BENCH_EXPECTED } }).checks.find(c => c.name === "bench_actually_ran")?.ok).toBe(false);
+    expect(workloadDefinitions.B5.grade("abcd1234", { ...base, files: { ...base.files, ".bench/run-abcd1234.txt": `started=1000 finished=1010 result=${BENCH_EXPECTED}` } }).verdict).toBe("fail");
   });
 });
 

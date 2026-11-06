@@ -40,7 +40,14 @@ export interface TaskPlan {
   followUpAfterMs: number | null;
   /** Unique marker used by the deterministic T-oracle. */
   nonce: string;
+  /**
+   * Replay only: every fault that crossed this task in the source wave, with
+   * its offset from the task's launch. Replaces the single planned fault.
+   */
+  replayFaults?: ScheduledFault[];
 }
+
+export interface ScheduledFault { kind: FaultKind; holdMs: number; atMs: number }
 
 export interface WavePlan {
   schema: "paperclip.restart-chaos.wave-plan/v1";
@@ -153,6 +160,10 @@ export interface TaskRecord {
   followUp: { at: number; commentId: string | null; error: string | null } | null;
   faultIds: string[];
   sweep: RestSweep | null;
+  /** Workspace files present just before the first fault that hit this task (R2). */
+  preFaultFiles: string[] | null;
+  /** Pre-fault files missing at rest; null when not checked. */
+  lostFiles: string[] | null;
 }
 
 export interface TaskGrade {

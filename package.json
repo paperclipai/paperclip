@@ -80,8 +80,6 @@
     "test:e2e:runner:stock-harness": "node tests/runner-e2e/stock-harness-checks.mjs",
     "test:e2e:runner:typecheck": "node scripts/typecheck-test-projects.mjs tests/runner-e2e",
     "test:e2e:runner:report": "node cli/node_modules/tsx/dist/cli.mjs tests/runner-e2e/report.ts",
-    "test:restart-chaos": "node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/main.ts",
-    "test:restart-chaos:unit": "vitest run --config tests/restart-chaos/vitest.config.ts",
     "test:runner-workflow-evals": "pnpm --filter @paperclipai/paperclip-eval-kernel build && pnpm --filter @paperclipai/paperclip-runner test:runner-workflow-evals",
     "test:e2e:mcp-user-stories": "node scripts/e2e-mcp-user-stories.mjs",
     "test:e2e:connection-intents": "npx playwright test --config tests/e2e/playwright.config.ts tests/e2e/connection-intents.spec.ts",

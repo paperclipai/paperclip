@@ -25,6 +25,18 @@ const briefMarker = (nonce: string) => `CHAOS-${nonce}`;
 const followUpMarker = (nonce: string) => `FOLLOWUP-${nonce}`;
 const notesFile = (nonce: string) => `NOTES-${nonce}.md`;
 const benchFile = (nonce: string) => `bench-result-${nonce}.txt`;
+const benchRecord = (nonce: string) => `.bench/run-${nonce}.txt`;
+/** bench.sh must have actually run: at least this long between start and finish. */
+export const BENCH_MIN_SECONDS = 200;
+
+/** Parse bench.sh's own completion record: `started=<epoch> finished=<epoch> result=<line>`. */
+export function parseBenchRecord(text: string | null | undefined) {
+  const fields = Object.fromEntries((text ?? "").trim().split(/\s+/).map(part => part.split("=")).filter(pair => pair.length >= 2)
+    .map(([key, ...rest]) => [key!, rest.join("=")]));
+  const started = Number(fields.started), finished = Number(fields.finished);
+  return Number.isFinite(started) && Number.isFinite(finished) && fields.result
+    ? { seconds: finished - started, result: fields.result } : null;
+}
 
 function result(checks: OracleResult["checks"]): OracleResult {
   return { verdict: checks.every(check => check.ok) ? "pass" : "fail", checks };
@@ -126,19 +138,22 @@ export const workloadDefinitions: Record<WorkloadId, WorkloadDefinition> = {
     title: nonce => `Chaos B5 bench ${nonce}`,
     description: nonce => [
       "Work in this task's repository workspace.",
-      "Run `./bench.sh` from the repository root in the foreground and wait for it to finish.",
+      `Run \`./bench.sh ${nonce}\` from the repository root in the foreground and wait for it to finish.`,
       "It takes about four minutes; if your shell tool has a timeout, set it to at least 10 minutes. Do not background or interrupt it.",
       "It prints one line of the form `BENCH_RESULT=<number>`.",
       `Write exactly that line into a new file \`${benchFile(nonce)}\` in the repository root.`,
       "Do not compute the result yourself and do not edit bench.sh. Then mark this task done.",
     ].join("\n"),
-    collect: { documents: [], files: nonce => [benchFile(nonce)], commands: [] },
+    collect: { documents: [], files: nonce => [benchFile(nonce), benchRecord(nonce)], commands: [] },
     grade(nonce, artifacts) {
       const content = artifacts.files[benchFile(nonce)]?.trim() ?? null;
+      const record = parseBenchRecord(artifacts.files[benchRecord(nonce)]);
       return result([
         statusCheck(artifacts),
         { name: "workspace_located", ok: artifacts.workspacePath !== null },
         { name: "bench_result_file", ok: content === BENCH_EXPECTED, detail: JSON.stringify(content) },
+        { name: "bench_actually_ran", ok: record !== null && record.result === BENCH_EXPECTED && record.seconds >= BENCH_MIN_SECONDS,
+          detail: record ? `ran ${record.seconds}s, ${record.result}` : "no completion record from bench.sh" },
       ]);
     },
   },
@@ -201,8 +216,9 @@ export function fixtureRepositoryFiles(benchSeconds = 240): Record<string, { con
       "set -eu",
       `steps=${BENCH_STEPS}`,
       `seconds="\${BENCH_SECONDS:-${benchSeconds}}"`,
+      "tag=\"${1:-untagged}\"",
       "mkdir -p .bench",
-      "date -u +%Y-%m-%dT%H:%M:%SZ > .bench/started",
+      "started=$(date +%s)",
       "total=0",
       "i=1",
       "while [ \"$i\" -le \"$steps\" ]; do",
@@ -211,6 +227,7 @@ export function fixtureRepositoryFiles(benchSeconds = 240): Record<string, { con
       "  sleep \"$(awk -v s=\"$seconds\" -v n=\"$steps\" 'BEGIN { printf \"%.3f\", s / n }')\"",
       "  i=$((i + 1))",
       "done",
+      "echo \"started=$started finished=$(date +%s) result=BENCH_RESULT=$total\" > \".bench/run-$tag.txt\"",
       "echo \"BENCH_RESULT=$total\"",
       "",
     ].join("\n") },

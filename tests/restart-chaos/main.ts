@@ -2,9 +2,9 @@
  * Control-plane restart chaos harness, Phase 1 MVP.
  * See doc/plans/2026-11-06-control-plane-restart-chaos.md and ./README.md.
  *
- *   pnpm test:restart-chaos -- --env local --adapters codex,claude,opencode \
+ *   node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/main.ts --env local --adapters codex,claude,opencode \
  *     --concurrency 4 --tasks 8 --faults K1,K2,K4 --seed 42
- *   pnpm test:restart-chaos -- --replay <wave>/<task>
+ *   node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/main.ts --replay <wave>/<task>
  */
 import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
@@ -17,7 +17,7 @@ import { knownSecretValues, writeEvidenceBundle } from "./evidence.js";
 import { gradeTask } from "./grader.js";
 import { appendLedger, ledgerLine, writeSummary, type LedgerLine } from "./ledger.js";
 import { TaskObserver } from "./observer.js";
-import { planWave, replayWave } from "./scheduler.js";
+import { observedFaultSchedule, planWave, replayWave } from "./scheduler.js";
 import { seedChaosLab } from "./seed.js";
 import { ChaosSupervisor } from "./supervisor.js";
 import { Timeline } from "./timeline.js";
@@ -34,8 +34,15 @@ function git(args: string[]) {
 async function loadPlan(): Promise<{ plan: WavePlan; keep: boolean }> {
   const command = parseCommand(process.argv.slice(2));
   if (command.mode === "replay") {
-    const source = JSON.parse(await readFile(path.join(resultsRoot, command.ref.waveId, "plan.json"), "utf8")) as WavePlan;
-    return { plan: replayWave(source, command.ref, Date.now(), command.overrides), keep: command.keep };
+    const sourceDir = path.join(resultsRoot, command.ref.waveId);
+    const source = JSON.parse(await readFile(path.join(sourceDir, "plan.json"), "utf8")) as WavePlan;
+    // Replay the faults that actually crossed the task, including other tasks' faults.
+    const graded = await readFile(path.join(sourceDir, `${command.ref.taskId}.grade.json`), "utf8")
+      .then(text => JSON.parse(text) as { record: { createdAt: number | null; faultIds: string[] } }).catch(() => null);
+    const faults = await readFile(path.join(sourceDir, "faults.json"), "utf8").then(text => JSON.parse(text) as FaultReceipt[]).catch(() => []);
+    const observed = graded ? observedFaultSchedule(graded.record.createdAt, graded.record.faultIds, faults) : [];
+    if (!observed.length) console.warn("Replay: no recorded fault sequence for this task; using its planned fault only.");
+    return { plan: replayWave(source, command.ref, Date.now(), command.overrides, observed), keep: command.keep };
   }
   return { plan: planWave(waveIdFor(command.options.seed), command.options), keep: command.keep };
 }
@@ -87,9 +94,9 @@ async function main(): Promise<number> {
 
     while (!interrupted && (pending.length || active.length)) {
       const now = Date.now();
-      if (supervisor.unexpectedExits && !supervisor.faultInProgress && !supervisor.serverReady) {
-        await supervisor.restartAfterUnexpectedExit().catch(error => timeline.add("restart_after_exit_failed", { error: String(error) }));
-      }
+      // A failed fault or an unexpected exit leaves the server not ready.
+      // Recover within a bound, or fail the wave instead of waiting forever.
+      if (!supervisor.serverReady && !supervisor.faultInProgress) await supervisor.ensureServing();
       while (active.length < plan.options.concurrency && pending.length && supervisor.serverReady && !supervisor.faultInProgress) {
         const next = pending.shift()!;
         await next.launch();
@@ -100,9 +107,12 @@ async function main(): Promise<number> {
         await observer.poll(now);
       }));
       for (const observer of active) {
-        if (!observer.faultDue(Date.now())) continue;
+        const due = observer.faultDue(Date.now());
+        if (!due) continue;
+        if (observer.record.restAt !== null) { timeline.add("fault_skipped_task_resting", { taskId: observer.plan.taskId, fault: due.kind }); continue; }
         const exposed = active.filter(candidate => !candidate.done);
-        faultWork.push(supervisor.fault(observer.plan.fault, observer.plan.holdMs, observer.plan.taskId).then(receipt => {
+        await Promise.all(exposed.map(candidate => candidate.snapshotBeforeFault()));
+        faultWork.push(supervisor.fault(due.kind, due.holdMs, observer.plan.taskId).then(receipt => {
           faults.push(receipt);
           for (const candidate of exposed) { candidate.noteFault(receipt.faultId); candidate.extendDeadline((receipt.readyAt ?? Date.now()) - receipt.startedAt); }
         }, (error: Error & { receipt?: FaultReceipt }) => {
@@ -147,7 +157,11 @@ async function main(): Promise<number> {
     harnessError = error;
     timeline.add("harness_error", { error: error instanceof Error ? error.stack ?? error.message : String(error) });
   } finally {
-    try { await supervisor.stop(); } catch (error) { timeline.add("supervisor_stop_failed", { error: String(error) }); }
+    try { await supervisor.stop(); } catch (error) {
+      // Incomplete cleanup is a harness failure; keep the instance for inspection.
+      harnessError ??= error;
+      timeline.add("supervisor_stop_failed", { error: String(error) });
+    }
     if (lines.length) {
       await appendLedger(resultsRoot, lines);
       const summary = await writeSummary(resultsRoot, plan.waveId);

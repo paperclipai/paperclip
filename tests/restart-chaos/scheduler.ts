@@ -1,5 +1,5 @@
 import { workloadDefinitions } from "./workloads.js";
-import type { AdapterId, FaultKind, TaskPlan, WavePlan, WaveOptions, WorkloadId } from "./types.js";
+import type { AdapterId, FaultKind, ScheduledFault, TaskPlan, WavePlan, WaveOptions, WorkloadId } from "./types.js";
 import type { ReplayRef } from "./config.js";
 
 /** mulberry32: small, fast and fully determined by its 32-bit seed. */
@@ -62,9 +62,27 @@ export function planWave(waveId: string, options: WaveOptions, createdAt = new D
     createdAt: createdAt.toISOString(), options, tasks: planTasks(options) };
 }
 
-/** A replay keeps the saved cell, fire time, hold and nonce; it runs alone. */
+/** Faults that actually crossed a task, as offsets from its launch. */
+export function observedFaultSchedule(createdAt: number | null, faultIds: readonly string[],
+  faults: ReadonlyArray<{ faultId: string; kind: FaultKind; holdMs: number; startedAt: number }>): ScheduledFault[] {
+  if (createdAt === null) return [];
+  return faults.filter(fault => faultIds.includes(fault.faultId))
+    .map(fault => ({ kind: fault.kind, holdMs: fault.holdMs, atMs: Math.max(0, fault.startedAt - createdAt) }))
+    .sort((a, b) => a.atMs - b.atMs);
+}
+
+/** The faults a task schedules: its replayed sequence, or its one planned fault. */
+export function taskFaultSchedule(task: TaskPlan): ScheduledFault[] {
+  return task.replayFaults?.length ? task.replayFaults : [{ kind: task.fault, holdMs: task.holdMs, atMs: task.fireAfterMs }];
+}
+
+/**
+ * A replay keeps the saved cell, hold and nonce and runs alone. When the source
+ * wave recorded which faults crossed the task (including other tasks' faults),
+ * the replay fires that same sequence at the same offsets from launch.
+ */
 export function replayWave(source: WavePlan, ref: ReplayRef, now = Date.now(),
-  overrides: Partial<Pick<WaveOptions, "pollMs" | "budgetCents">> = {}): WavePlan {
+  overrides: Partial<Pick<WaveOptions, "pollMs" | "budgetCents">> = {}, observed: ScheduledFault[] = []): WavePlan {
   if (source.schema !== "paperclip.restart-chaos.wave-plan/v1") throw new Error("Unsupported wave plan schema");
   if (source.waveId !== ref.waveId) throw new Error(`Plan is for ${source.waveId}, not ${ref.waveId}`);
   const task = source.tasks.find(candidate => candidate.taskId === ref.taskId);
@@ -76,7 +94,7 @@ export function replayWave(source: WavePlan, ref: ReplayRef, now = Date.now(),
     seed: source.seed,
     createdAt: new Date(now).toISOString(),
     options: { ...source.options, ...overrides, tasks: 1, concurrency: 1 },
-    tasks: [{ ...task }],
+    tasks: [{ ...task, ...(observed.length ? { replayFaults: observed.map(fault => ({ ...fault })) } : {}) }],
     replayOf: { ...ref },
   };
 }

@@ -14,10 +14,11 @@ T-oracle.
 pnpm install --frozen-lockfile
 pnpm --filter @paperclipai/paperclip-runner build:runner-binaries   # native runner (debug)
 set -a; source ~/.secrets; set +a                                   # provider keys, process env only
-pnpm test:restart-chaos -- --env local --adapters codex,claude,opencode \
-  --concurrency 4 --tasks 8 --faults K1,K2,K4 --seed 42
-pnpm test:restart-chaos -- --replay w-20261106T101112-s42/t03
-pnpm test:restart-chaos:unit                                        # credential-free unit tests
+node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/main.ts --env local \
+  --adapters codex,claude,opencode --concurrency 4 --tasks 8 --faults K1,K2,K4 --seed 42
+node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/main.ts --replay w-20261106T101112-s42/t03
+pnpm exec vitest run --config tests/restart-chaos/vitest.config.ts  # credential-free unit tests
+node scripts/typecheck-test-projects.mjs tests/restart-chaos        # typecheck
 ```
 
 Options: `--workloads A1,B1,B5,C1`, `--budget-cents` (company hard cap,
@@ -31,7 +32,7 @@ are wired (see the TODO in `seed.ts`).
 | --- | --- |
 | `supervisor.ts` | Owns the server. Reuses `tests/runner-e2e` process code (config, ports, env isolation, wrapper-owned Postgres, process-tree stopper, `replaceController`). Faults: K1 SIGKILL + immediate restart, K2 SIGTERM + restart, K4 SIGKILL + 2–5 min hold. The controller runtime cache is kept (discarding it is K11). |
 | `seed.ts` | Chaos Lab company, encrypted provider secrets, native Codex / ACPX Claude / OpenCode agents from the runner-e2e catalog, and the `chaos-sandbox` project (git repo: python CLI, one failing test, `bench.sh` ≈ 4 min) with isolated git-worktree workspaces. |
-| `scheduler.ts` | Seeded plan: workload × adapter × fault cells and a random fire time per task. Saved to `results/<wave>/plan.json`; `--replay` reruns one task with the same choices. |
+| `scheduler.ts` | Seeded plan: workload × adapter × fault cells and a random fire time per task. Saved to `results/<wave>/plan.json`. `--replay` reruns one task alone with the same choices and fires the recorded sequence of faults that crossed it (other tasks' faults included) at the same offsets from launch. |
 | `observer.ts` | Polls each issue and its runs. When a task rests needing Retry it calls `POST /api/issues/:id/retry` once, with the body `useTaskRetry.ts` sends. Collects T-oracle artifacts and the R6 sweep. |
 | `grader.ts` | Pure R1–R6 grading over the samples. |
 | `workloads.ts` | A1 brief document, B1 python CLI with tests, B5 long bench, C1 comment while running, with their T-oracles. |
@@ -52,6 +53,8 @@ are wired (see the TODO in `seed.ts`).
 
 - A task is restart-crossing when a run overlaps a fault window or the task was
   not yet at rest when the fault started. Non-crossing tasks are still graded.
+- R2 also checks that workspace files present before the first fault still exist at rest.
+- B5 passes only when `bench.sh` wrote its own completion record showing it ran.
 - R1 allows the workload budget plus outage time. When a Retry was needed R1 is
   `n/a` and R3 decides; a task that rests unfinished with no Retry fails both.
 - Faults are serialized; each one hits every task running at that moment.

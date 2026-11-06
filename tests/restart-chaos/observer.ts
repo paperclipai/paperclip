@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import { ChaosApiError, type ChaosApi } from "./api.js";
@@ -8,9 +8,30 @@ import { ACTIVE_RUN_STATUSES } from "./grader.js";
 import type { ChaosLab } from "./seed.js";
 import type { Timeline } from "./timeline.js";
 import type {
-  InterruptionSample, OracleArtifacts, RestSweep, RetryAttempt, RunSample, TaskPlan, TaskRecord, TaskSample,
+  InterruptionSample, OracleArtifacts, RestSweep, RetryAttempt, RunSample, ScheduledFault, TaskPlan, TaskRecord, TaskSample,
 } from "./types.js";
+import { taskFaultSchedule } from "./scheduler.js";
 import { workloadDefinitions } from "./workloads.js";
+
+const IGNORED_DIRECTORIES = new Set([".git", ".bench", "__pycache__", "node_modules"]);
+const MAX_SNAPSHOT_FILES = 2_000;
+
+/** Relative paths of workspace files, excluding VCS and cache directories. */
+export async function listWorkspaceFiles(root: string): Promise<string[]> {
+  const out: string[] = [];
+  const walk = async (relative: string) => {
+    if (out.length >= MAX_SNAPSHOT_FILES) return;
+    const entries = await readdir(path.join(root, relative), { withFileTypes: true });
+    for (const entry of entries) {
+      const child = relative ? `${relative}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) { if (!IGNORED_DIRECTORIES.has(entry.name)) await walk(child); }
+      else if (entry.isFile()) out.push(child);
+      if (out.length >= MAX_SNAPSHOT_FILES) return;
+    }
+  };
+  await walk("");
+  return out.sort();
+}
 
 const execFileAsync = promisify(execFile);
 /** Rest must hold for this long before the observer acts on it. */
@@ -52,13 +73,16 @@ export class TaskObserver {
   readonly record: TaskRecord;
   issue: Json | null = null;
   private restCandidateSince: number | null = null;
-  private faultRequested = false;
+  private readonly faultSchedule: ScheduledFault[];
+  private nextFault = 0;
   done = false;
 
   constructor(readonly plan: TaskPlan, private readonly api: ChaosApi, private readonly lab: ChaosLab,
     private readonly timeline: Timeline, private readonly supervisor: { serverReady: boolean; faultInProgress: boolean }) {
     this.record = { plan, issueId: null, identifier: null, createdAt: null, launchError: null, samples: [], retry: null,
-      restAt: null, finalStatus: null, deadlineAt: null, timedOut: false, followUp: null, faultIds: [], sweep: null };
+      restAt: null, finalStatus: null, deadlineAt: null, timedOut: false, followUp: null, faultIds: [], sweep: null,
+      preFaultFiles: null, lostFiles: null };
+    this.faultSchedule = taskFaultSchedule(plan);
   }
 
   get definition() { return workloadDefinitions[this.plan.workload]; }
@@ -79,7 +103,7 @@ export class TaskObserver {
       this.record.createdAt = Date.now();
       this.record.deadlineAt = this.record.createdAt + definition.budgetMs;
       this.timeline.add("task_launched", { taskId: this.plan.taskId, issueId: issue.id, identifier: issue.identifier,
-        workload: this.plan.workload, adapter: this.plan.adapter, fault: this.plan.fault, fireAfterMs: this.plan.fireAfterMs });
+        workload: this.plan.workload, adapter: this.plan.adapter, faults: this.faultSchedule });
     } catch (error) {
       this.record.launchError = error instanceof Error ? error.message : String(error);
       this.done = true;
@@ -87,16 +111,20 @@ export class TaskObserver {
     }
   }
 
-  /** True once the planned fault is due and the task has not rested yet. */
-  faultDue(now: number): boolean {
-    if (this.faultRequested || this.done || this.record.createdAt === null) return false;
-    if (now < this.record.createdAt + this.plan.fireAfterMs) return false;
-    this.faultRequested = true;
-    if (this.record.restAt !== null) {
-      this.timeline.add("fault_skipped_task_resting", { taskId: this.plan.taskId, fault: this.plan.fault });
-      return false;
-    }
-    return true;
+  /** The next scheduled fault once it is due and the task has not rested yet. */
+  faultDue(now: number): ScheduledFault | null {
+    if (this.done || this.record.createdAt === null) return null;
+    const fault = this.faultSchedule[this.nextFault];
+    if (!fault || now < this.record.createdAt + fault.atMs) return null;
+    this.nextFault += 1;
+    return fault;
+  }
+
+  /** R2: remember which workspace files existed before the first fault hit this task. */
+  async snapshotBeforeFault(): Promise<void> {
+    if (this.record.preFaultFiles !== null || this.done) return;
+    const workspace = await this.workspacePath().catch(() => null);
+    if (workspace) this.record.preFaultFiles = await listWorkspaceFiles(workspace);
   }
 
   noteFault(faultId: string) { if (!this.record.faultIds.includes(faultId)) this.record.faultIds.push(faultId); }
@@ -108,7 +136,11 @@ export class TaskObserver {
     if (this.done || !this.record.issueId) return;
     const sample = await this.sample(now);
     this.record.samples.push(sample);
-    await this.maybeFollowUp(sample, now);
+    if (await this.maybeFollowUp(sample, now)) {
+      // The comment response is not the agent's answer: require fresh samples.
+      this.restCandidateSince = null;
+      return;
+    }
     if (!isResting(sample) || this.supervisor.faultInProgress) {
       this.restCandidateSince = null;
     } else {
@@ -144,13 +176,13 @@ export class TaskObserver {
     }
   }
 
-  private async maybeFollowUp(sample: TaskSample, now: number) {
+  private async maybeFollowUp(sample: TaskSample, now: number): Promise<boolean> {
     const definition = this.definition;
-    if (!definition.followUp || this.record.followUp || this.plan.followUpAfterMs === null || !sample.reachable) return;
-    if (now < this.record.createdAt! + this.plan.followUpAfterMs) return;
+    if (!definition.followUp || this.record.followUp || this.plan.followUpAfterMs === null || !sample.reachable) return false;
+    if (now < this.record.createdAt! + this.plan.followUpAfterMs) return false;
     // C1 targets a live run (B8); wait for one unless the task already rests.
     const running = (sample.runs ?? []).some(run => run.status === "running");
-    if (!running && !isResting(sample)) return;
+    if (!running && !isResting(sample)) return false;
     try {
       const comment = await this.api.post<Json>(`/api/issues/${this.record.issueId}/comments`, { body: definition.followUp(this.plan.nonce) });
       this.record.followUp = { at: now, commentId: comment?.id ?? null, error: null };
@@ -158,6 +190,7 @@ export class TaskObserver {
       this.record.followUp = { at: now, commentId: null, error: error instanceof Error ? error.message : String(error) };
     }
     this.timeline.add("task_follow_up", { taskId: this.plan.taskId, duringRun: running, ...this.record.followUp });
+    return true;
   }
 
   private async onRest(sample: TaskSample, now: number) {
@@ -218,6 +251,10 @@ export class TaskObserver {
     }
     const comments = await this.api.get<Json[]>(`/api/issues/${issueId}/comments`).catch(() => []);
     const workspacePath = await this.workspacePath();
+    if (workspacePath && this.record.preFaultFiles) {
+      const present = new Set(await listWorkspaceFiles(workspacePath));
+      this.record.lostFiles = this.record.preFaultFiles.filter(file => !present.has(file));
+    }
     const files: Record<string, string | null> = {};
     const commands: OracleArtifacts["commands"] = {};
     if (workspacePath) {
@@ -255,7 +292,8 @@ export class TaskObserver {
       const samples = runs.map(toRunSample);
       const operations: string[] = [];
       for (const run of samples) {
-        const rows = await this.api.get<Json[]>(`/api/heartbeat-runs/${run.id}/workspace-operations`).catch(() => []);
+        // A failed read must not look like a clean rest: let it reach sweep.error.
+        const rows = await this.api.get<Json[]>(`/api/heartbeat-runs/${run.id}/workspace-operations`);
         for (const row of rows ?? []) if (row.status === "running") operations.push(String(row.id));
       }
       return { activeRuns: samples.filter(run => ACTIVE_RUN_STATUSES.has(run.status)).map(run => run.id),

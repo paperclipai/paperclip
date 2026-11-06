@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { parseCommand, parseReplayRef, waveIdFor } from "./config.js";
-import { K4_HOLD_RANGE_MS, createRng, planTasks, planWave, replayWave } from "./scheduler.js";
+import { K4_HOLD_RANGE_MS, createRng, observedFaultSchedule, planTasks, planWave, replayWave, taskFaultSchedule } from "./scheduler.js";
 import type { WaveOptions } from "./types.js";
 import { workloadDefinitions } from "./workloads.js";
 
@@ -65,6 +65,22 @@ describe("replay", () => {
     // A replay of a replay names the original wave, and its id parses again.
     const again = replayWave(replay, parseReplayRef(`${replay.waveId}/t03`), 1_700_000_000_001);
     expect(again.waveId).toBe(`${plan.waveId}-replay-t03-1700000000001`);
+  });
+
+  it("replays the recorded fault sequence that crossed the task, other tasks' faults included", () => {
+    const createdAt = 1_000_000;
+    const faults = [
+      { faultId: "f01", kind: "K1" as const, holdMs: 0, startedAt: createdAt + 42_000 },
+      { faultId: "f02", kind: "K4" as const, holdMs: 150_000, startedAt: createdAt + 60_000 },
+      { faultId: "f03", kind: "K2" as const, holdMs: 0, startedAt: createdAt + 900_000 },
+    ];
+    const observed = observedFaultSchedule(createdAt, ["f02", "f01"], faults);
+    expect(observed).toEqual([{ kind: "K1", holdMs: 0, atMs: 42_000 }, { kind: "K4", holdMs: 150_000, atMs: 60_000 }]);
+    const replay = replayWave(plan, { waveId: plan.waveId, taskId: "t02" }, 1, {}, observed);
+    expect(taskFaultSchedule(replay.tasks[0]!)).toEqual(observed);
+    // Without a recorded sequence the replay falls back to the planned fault.
+    const planned = replayWave(plan, { waveId: plan.waveId, taskId: "t02" }, 1);
+    expect(taskFaultSchedule(planned.tasks[0]!)).toEqual([{ kind: plan.tasks[1]!.fault, holdMs: plan.tasks[1]!.holdMs, atMs: plan.tasks[1]!.fireAfterMs }]);
   });
 
   it("rejects unknown tasks and mismatched waves", () => {

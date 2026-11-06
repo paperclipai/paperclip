@@ -53,7 +53,7 @@ function integer(raw: string | undefined, name: string, fallback: number, min: n
 }
 
 export function parseCommand(argv: readonly string[], now = Date.now()): ParsedCommand {
-  // `pnpm test:restart-chaos -- --flag` forwards a literal `--`.
+  // Tolerate a forwarded literal `--` (for example from a package runner).
   const args = argv[0] === "--" ? argv.slice(1) : [...argv];
   const { values } = parseArgs({
     args,
@@ -104,5 +104,5 @@ export function waveIdFor(seed: number, at = new Date()): string {
 }
 
 export function replayCommand(waveId: string, taskId: string): string {
-  return `pnpm test:restart-chaos -- --replay ${waveId}/${taskId}`;
+  return `node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/main.ts --replay ${waveId}/${taskId}`;
 }
