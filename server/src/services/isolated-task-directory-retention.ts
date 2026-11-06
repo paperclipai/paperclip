@@ -7,7 +7,7 @@ import { environmentLeases, executionWorkspaceRestorePoints, executionWorkspaces
 import type { StoredSecretVersionMaterial } from "../secrets/types.js";
 import type { StorageService } from "../storage/types.js";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
-import { openRestorePoint, sealRestorePoint } from "./git-restore-point.js";
+import { openRestorePoint, sealRestorePoint, verifyRestorePointPayloadCandidate } from "./git-restore-point.js";
 import { notifyGitRestorePointWork } from "./git-restore-point-ledger.js";
 import { abandonGitRestorePoint, activateGitRestorePoints, readRestorePointObject, storeSealedRestorePoint } from "./git-restore-point-storage.js";
 import { allocatedBytes, describeGitExpirationFailure, expirationScope, isGitWorkspaceExpirationEligible, type GitExpirationFailure } from "./git-workspace-expiration.js";
@@ -15,6 +15,7 @@ import { IsolatedRepositorySourceBusy, withIsolatedRepositorySourceLock } from "
 import { logActivity } from "./activity-log.js";
 import {
   captureTaskDirectorySnapshot,
+  createEmptyTaskDirectorySnapshot,
   inspectTaskDirectory,
   materializeTaskDirectorySnapshot,
   newestTaskDirectoryMtime,
@@ -143,16 +144,25 @@ export async function loadTaskDirectoryRestorePoint(input: {
   storage: StorageService;
   workspace: { companyId: string; id: string };
   ref: TaskDirectoryRestorePointRef;
+  recoverMissingEmpty?: boolean;
   signal?: AbortSignal;
 }) {
   const ref = validateTaskDirectoryRestorePointRef(input.ref, input.workspace);
   if (ref.expiredAt) throw new TaskDirectoryRestoreFailure("restore_point_expired");
-  const ciphertext = await readRestorePointObject(input.storage, input.workspace.companyId, ref.objectKey, input.signal).catch(() => {
-    throw new TaskDirectoryRestoreFailure("restore_point_unavailable");
+  const identity = { companyId: input.workspace.companyId, workspaceId: input.workspace.id, restorePointId: ref.id, generation: ref.generation };
+  const ciphertext = await readRestorePointObject(input.storage, input.workspace.companyId, ref.objectKey, input.signal).catch(async () => {
+    input.signal?.throwIfAborted();
+    if (!input.recoverMissingEmpty || ref.files !== 0 || ref.excluded !== 0) throw new TaskDirectoryRestoreFailure("restore_point_unavailable");
+    const head = await input.storage.headObject(input.workspace.companyId, ref.objectKey).catch(() => null);
+    if (head?.exists !== false) throw new TaskDirectoryRestoreFailure("restore_point_unavailable");
+    const candidate = createEmptyTaskDirectorySnapshot();
+    if (candidate.digest !== ref.digest) throw new TaskDirectoryRestoreFailure("restored_contents_mismatch");
+    await verifyRestorePointPayloadCandidate({ payload: candidate.payload, key: ref.key, identity });
+    return null;
   });
+  if (ciphertext === null) return createEmptyTaskDirectorySnapshot().payload;
   if (ciphertext.length !== ref.byteSize) throw new TaskDirectoryRestoreFailure("ciphertext_size_mismatch");
-  return openRestorePoint({ ciphertext, sha256: ref.sha256, key: ref.key,
-    identity: { companyId: input.workspace.companyId, workspaceId: input.workspace.id, restorePointId: ref.id, generation: ref.generation } });
+  return openRestorePoint({ ciphertext, sha256: ref.sha256, key: ref.key, identity });
 }
 
 function skipReason(error: unknown) {
