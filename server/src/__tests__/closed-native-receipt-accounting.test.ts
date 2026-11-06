@@ -170,15 +170,44 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(await f.block()).toMatchObject({ reason: "Company cannot start work while completed runs await accounting." });
   });
 
+  it("settles a finalization-deadline failure once its local stop is verified", async () => {
+    const f = await fixture({ failureCode: "execution_finalization_deadline_exceeded" });
+    expect(await f.block()).not.toBeNull();
+    expect(await reconcileRunCosts(db)).toMatchObject({ accounted: 1 });
+    await flushBudgetEvaluationWork(db);
+    expect(await f.block()).toBeNull();
+  });
+
   it.each([
     ["no verified stop event", { stopEvidence: false }],
-    ["a finalization deadline that only asks a person to verify the stop", { failureCode: "execution_finalization_deadline_exceeded" }],
+    ["a finalization deadline without a verified stop", { failureCode: "execution_finalization_deadline_exceeded", stopEvidence: false }],
   ] as const)("keeps the debt pending with %s", async (_label, options) => {
     const f = await fixture(options);
     expect(await reconcileRunCosts(db)).toMatchObject({ accounted: 0 });
     expect(await accountRunCost(db, f.run.id)).toBe(false);
     expect((await f.readRun()).costAccountingPending).toBe(true);
     expect(await f.charges()).toHaveLength(0);
+  });
+
+  // Upgrade path: an older release paused the company for pending accounting.
+  it("releases a budget-owned pause that only pending accounting kept", async () => {
+    const f = await fixture({ stopEvidence: false });
+    await db.update(companies).set({ status: "paused", pauseReason: "budget", pausedAt: new Date() })
+      .where(eq(companies.id, f.companyId));
+    await db.insert(budgetIncidents).values({ companyId: f.companyId, policyId: f.policy.id, scopeType: "company",
+      scopeId: f.companyId, metric: "billed_cents", windowKind: "calendar_month_utc",
+      windowStart: new Date(Date.UTC(2026, 10, 1)), windowEnd: new Date(Date.UTC(2026, 11, 1)),
+      thresholdType: "hard", amountLimit: 500, amountObserved: 0 });
+    await db.delete(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.run.id));
+    await budgetService(db).evaluateAffectedScopes(f.companyId, f.agentId, null);
+    await flushBudgetEvaluationWork(db);
+    const [company] = await db.select().from(companies).where(eq(companies.id, f.companyId));
+    expect(company).toMatchObject({ status: "active", pauseReason: null });
+    expect((await db.select().from(budgetIncidents).where(eq(budgetIncidents.companyId, f.companyId)))[0].status).not.toBe("open");
+    expect(await f.block()).toMatchObject({ reason: "Company cannot start work while completed runs await accounting." });
+    const [policy] = await db.select().from(budgetPolicies).where(eq(budgetPolicies.id, f.policy.id));
+    expect((await budgetService(db).overview(f.companyId)).policies[0]?.status).not.toBe("hard_stop");
+    expect(policy.id).toBe(f.policy.id);
   });
 
   it("keeps the debt pending while native recovery can still produce a result", async () => {

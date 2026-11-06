@@ -40,10 +40,10 @@ async function readAccountingClosure(db: Db, runId: string) {
 }
 
 /** A failed native run's receipt source is closed only with positive stop
- * evidence: recovery ended in terminal failure (not a finalization deadline,
- * which only asks a person to verify the stop), the run no longer records a
+ * evidence: recovery ended in terminal failure, the run no longer records a
  * process identity, and its latest server-authored process event is the
- * verified local stop. Missing identity alone is not proof. A cancelled run
+ * verified local stop. A deadline failure whose process still runs keeps its
+ * identity and has no stop event, so it stays pending. Missing identity alone is not proof. A cancelled run
  * keeps its accounting drain: Stop recovery can still deliver the final
  * receipt through the original or a reattached recorder. Remote runs keep
  * their debt until a receipt arrives. One predicate serves the reconciler
@@ -52,8 +52,7 @@ const closedNativeReceiptSource = sql`${heartbeatRuns.runtimeMode} = 'native' an
   and ${heartbeatRuns.processPid} is null and ${heartbeatRuns.processGroupId} is null
   and exists (select 1 from ${nativeRunFinalizations} where ${nativeRunFinalizations.runId} = ${heartbeatRuns.id}
     and ${nativeRunFinalizations.companyId} = ${heartbeatRuns.companyId}
-    and ${nativeRunFinalizations.resultId} is null and ${nativeRunFinalizations.phase} = 'terminal_failure'
-    and ${nativeRunFinalizations.failureCode} is distinct from 'execution_finalization_deadline_exceeded')
+    and ${nativeRunFinalizations.resultId} is null and ${nativeRunFinalizations.phase} = 'terminal_failure')
   and (select process_event.event_type from ${heartbeatRunEvents} process_event
     where process_event.company_id = ${heartbeatRuns.companyId} and process_event.run_id = ${heartbeatRuns.id}
       and process_event.source_event_id is null
