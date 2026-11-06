@@ -31,6 +31,10 @@ describe("local runner stop proof", () => {
       { stopped: false, reason: "runner_process_identity_missing" }],
     ["no runner start time was recorded", { ...base, processStartedAt: null }, probe([], {}),
       { stopped: false, reason: "runner_process_identity_missing" }],
+    ["no runner process group was recorded", { ...base, processGroupId: null }, probe([], {}),
+      { stopped: false, reason: "runner_process_identity_missing" }],
+    ["a stop receipt proved the runner absent", { ...base, processStartedAt: null, runnerStopRecorded: true },
+      probe([], {}), { stopped: true }],
   ] as const)("decides when %s", async (_case, identity, checks, expected) => {
     await expect(proveNativeLocalRunnerStopped({ ...identity, ...checks })).resolves.toEqual(expected);
   });

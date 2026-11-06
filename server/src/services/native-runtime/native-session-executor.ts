@@ -291,6 +291,9 @@ import {
   currentNativeControllerIdentity,
   evaluateNativeControllerTakeover,
   proveNativeLocalRunnerStopped,
+  nativeProviderProcessIdentities,
+  NATIVE_PROVIDER_PROCESS_EVENT_TYPES,
+  type NativeLocalRunnerStopProof,
   isCurrentNativeControllerProcess,
   nextNativeProviderAttempt,
   type NativeControllerIdentity,
@@ -5448,17 +5451,24 @@ async function retireFinishedPerTurnRunnerdOwner(input: {
     remoteLeaseFenced: readNativeControllerRecovery(profile.nativeControllerRecovery, profile.sessionCheckpoint) !== null });
   if (!stopped.allowed) return refuse(`controller_${retirementReasonName("controllerReason", stopped.reason)}`);
   const provenFinishedHere = finishedHere();
-  const proveLocalRunnerStopped = async () => {
-    const checkpointProcess = record(record(profile.sessionCheckpoint).process);
-    const providerProcesses = [["providerPid", "providerProcessStartedAt"], ["codexPid", "codexProcessStartedAt"],
-      ["sidecarPid", "sidecarProcessStartedAt"], ["agentPid", "agentProcessStartedAt"]].flatMap(([pidField, startedField]) => {
-      const pid = checkpointProcess[pidField!];
-      if (typeof pid !== "number" || !Number.isInteger(pid) || pid <= 0) return [];
-      const startedAt = typeof checkpointProcess[startedField!] === "string" ? new Date(String(checkpointProcess[startedField!])) : null;
-      return [{ pid, processStartedAt: startedAt && !Number.isNaN(startedAt.getTime()) ? startedAt : null }];
+  const proveLocalRunnerStopped = async (): Promise<NativeLocalRunnerStopProof> => {
+    const run = prior!.run;
+    // Settlement may already have cleared the process fields after it saved a
+    // server-authored stop receipt; that receipt is the identity to check.
+    const released = run.processPid === null && run.processGroupId === null && run.processStartedAt === null;
+    const receipt = released ? await readNativeLocalProcessStop(input.db, run.companyId, run.id) : null;
+    if (released && !receipt) return { stopped: false, reason: "runner_process_identity_missing" };
+    const providerEvents = await input.db.select({ payload: heartbeatRunEvents.payload }).from(heartbeatRunEvents)
+      .where(and(eq(heartbeatRunEvents.companyId, run.companyId), eq(heartbeatRunEvents.runId, run.id),
+        inArray(heartbeatRunEvents.eventType, [...NATIVE_PROVIDER_PROCESS_EVENT_TYPES])))
+      .orderBy(desc(heartbeatRunEvents.id)).limit(100);
+    return proveNativeLocalRunnerStopped({
+      processPid: receipt?.processPid ?? run.processPid,
+      processGroupId: receipt?.processGroupId ?? run.processGroupId,
+      processStartedAt: receipt ? null : run.processStartedAt,
+      runnerStopRecorded: receipt !== null,
+      providerProcesses: nativeProviderProcessIdentities(record(profile.sessionCheckpoint), providerEvents),
     });
-    return proveNativeLocalRunnerStopped({ processPid: prior!.run.processPid, processGroupId: prior!.run.processGroupId,
-      processStartedAt: prior!.run.processStartedAt, providerProcesses });
   };
   if (localRunner) {
     const runnerStopped = await proveLocalRunnerStopped();

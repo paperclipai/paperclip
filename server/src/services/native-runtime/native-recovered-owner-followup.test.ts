@@ -491,7 +491,7 @@ describe.skipIf(!recoveryPostgresSupport.supported)("follow-up after a recovered
    * runner.suspend and the Runner's own receipt is still `ready`. */
   async function seedUnsuspendedLocalOwner(runner: { pid: number; processStartedAt: Date }) {
     const prior = await seedRecoveredPriorRun("pending-command");
-    await db.update(heartbeatRuns).set({ processPid: runner.pid, processGroupId: null, processStartedAt: runner.processStartedAt })
+    await db.update(heartbeatRuns).set({ processPid: runner.pid, processGroupId: runner.pid, processStartedAt: runner.processStartedAt })
       .where(eq(heartbeatRuns.id, prior.runId));
     const followUp = await admitFollowUp(prior);
     // Learn the scope key from a held attempt, then keep its root in place.
@@ -526,10 +526,36 @@ describe.skipIf(!recoveryPostgresSupport.supported)("follow-up after a recovered
     }
   }, 60_000);
 
-  it("keeps a finished local owner held without a recorded Runner process identity", async () => {
+  it.each(["no identity", "no process group"] as const)("keeps a finished local owner held with %s", async scenario => {
     const { prior, followUp } = await seedUnsuspendedLocalOwner(await stoppedRunnerProcess());
-    await db.update(heartbeatRuns).set({ processPid: null, processStartedAt: null }).where(eq(heartbeatRuns.id, prior.runId));
+    await db.update(heartbeatRuns).set(scenario === "no identity"
+      ? { processPid: null, processGroupId: null, processStartedAt: null } : { processGroupId: null })
+      .where(eq(heartbeatRuns.id, prior.runId));
     expect(await followUp.startLocal()).toBe(stranded("runner_process_identity_missing"));
+  }, 60_000);
+
+  it("retires a finished local owner from its saved stop receipt after settlement cleared the process fields", async () => {
+    const runner = await stoppedRunnerProcess();
+    const { prior, followUp, root } = await seedUnsuspendedLocalOwner(runner);
+    await db.insert(heartbeatRunEvents).values({ companyId, agentId, runId: prior.runId, seq: 900, eventType: "native.local_process_stopped",
+      stream: "system", payload: { processPid: runner.pid, processGroupId: runner.pid, processStartedAt: runner.processStartedAt.toISOString() } });
+    await db.update(heartbeatRuns).set({ processPid: null, processGroupId: null, processStartedAt: null })
+      .where(eq(heartbeatRuns.id, prior.runId));
+    expect(await followUp.startLocal()).toBe(ADMITTED);
+    expect(await archivedOwners(root)).toEqual([prior.runId]);
+  }, 60_000);
+
+  it("keeps a stopped local owner held while a provider process from its run events is alive", async () => {
+    const provider = await runnerProcess();
+    try {
+      const { prior, followUp } = await seedUnsuspendedLocalOwner(await stoppedRunnerProcess());
+      await db.insert(heartbeatRunEvents).values({ companyId, agentId, runId: prior.runId, seq: 901, eventType: "provider.event",
+        stream: "system", payload: { prpEvent: { payload: { processId: provider.pid,
+          processStartedAt: provider.processStartedAt.toISOString() } } } });
+      expect(await followUp.startLocal()).toBe(stranded("provider_process_alive"));
+    } finally {
+      provider.child.kill("SIGKILL");
+    }
   }, 60_000);
 
   it("keeps a stopped local owner held by an unfinished non-lifecycle command", async () => {
