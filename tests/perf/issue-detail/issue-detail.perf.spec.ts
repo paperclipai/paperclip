@@ -10,13 +10,15 @@ const PAGE_READY_TIMEOUT_MS = 90_000;
 const HEADER_MEASURE = "issue-detail:navigate→header-paint";
 const CONTENT_MEASURE = "issue-detail:navigate→content-paint";
 
-type Profile = {
-  name: "unthrottled" | "fast-4g-4x-cpu";
-  latencyMs?: number;
-  downloadBytesPerSecond?: number;
-  uploadBytesPerSecond?: number;
-  cpuSlowdownRate?: number;
-};
+type Profile =
+  | { name: "unthrottled"; latencyMs?: undefined }
+  | {
+      name: "fast-4g-4x-cpu";
+      latencyMs: number;
+      downloadBytesPerSecond: number;
+      uploadBytesPerSecond: number;
+      cpuSlowdownRate: number;
+    };
 
 type NetworkRecord = {
   requestId: string;

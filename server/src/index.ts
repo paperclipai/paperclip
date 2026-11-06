@@ -85,7 +85,8 @@ import { verifyStoppedNativeSessionForReplacement } from "./services/native-runt
 import { embeddedPostgresOwnerPort } from "./embedded-postgres-owner.js";
 import { deliverExecutionStatuses } from "./services/execution-status-delivery.js";
 import { deliverReconciledExecutions, settleUnrecoverableExecutions } from "./services/execution-recovery-resolution.js";
-import { reconcileSafeNativeReplacements } from "./services/native-runtime/native-safe-replacement.js";
+import { deliverPendingPauseResumes } from "./services/issue-tree-resume.js";
+import { invalidateNativeReplacementDiscovery, reconcileSafeNativeReplacements } from "./services/native-runtime/native-safe-replacement.js";
 import { reconcileAbandonedExecutionControl } from "./services/execution-control-reconciliation.js";
 import { acknowledgeNativeStartupCleanup } from "./services/native-runtime/native-startup-cleanup.js";
 import { executionControlSchedule, registerExecutionControlWork } from "./services/execution-control-work.js";
@@ -141,6 +142,7 @@ import { cloudActorHeaderSourceFromHeaders, resolveCloudTenantActor } from "./mi
 import {
   feedbackService,
   applyManagedEnvironments,
+  createManagedEnvironmentRecovery,
   backfillPrincipalAccessCompatibility,
   backfillLegacyToolOAuthTokens,
   bootstrapExecutionPolicyFromEnv,
@@ -1181,8 +1183,19 @@ async function startServerWithDatabaseTeardown(
     throw err;
   }
 
-  // Ensure sandbox environments declared in the managed-config document
-  // (`environments` section) before the heartbeat resumes queued runs. The
+  // Post-boot recovery of managed environments (re-ensuring a row when its
+  // plugin worker becomes ready). Shutdown stops it before the database closes,
+  // and so does the startup-failure teardown: a later startup step that throws
+  // must not leave an attempt writing through a closed database.
+  const managedEnvironmentRecovery = createManagedEnvironmentRecovery();
+  const closeDatabaseAfterStartupFailure = startupDatabase.close;
+  startupDatabase.close = async () => {
+    await managedEnvironmentRecovery.stop();
+    await closeDatabaseAfterStartupFailure?.();
+  };
+
+  // Ensure the sandbox and plugin environments declared in the managed-config
+  // document (`environments` section) before the heartbeat resumes queued runs. The
   // document already parsed fail-closed above; the ensure step itself is
   // fail-safe per entry (a degraded boot beats a fleet-wide crash loop), but
   // a contradictory deployment that also forces PAPERCLIP_EXECUTION_MODE
@@ -1192,14 +1205,17 @@ async function startServerWithDatabaseTeardown(
   // additionally gates each entry on a live plugin worker (and archives the
   // row of a provider that did not come up).
   try {
-    const bundledPluginsStartup = (app as { locals?: { bundledPluginsStartup?: Promise<unknown> } })
-      .locals?.bundledPluginsStartup;
+    const appLocals = (app as {
+      locals?: { bundledPluginsStartup?: Promise<unknown>; managedBundledPluginKeys?: readonly string[] };
+    }).locals;
     const managedEnvironmentsResult = await applyManagedEnvironments(db as any, managedConfig, {
-      pluginsReady: bundledPluginsStartup,
+      recovery: managedEnvironmentRecovery,
+      pluginsReady: appLocals?.bundledPluginsStartup,
+      autoInstalledPluginKeys: appLocals?.managedBundledPluginKeys,
       workerManager: pluginWorkerManager,
     });
     if (managedEnvironmentsResult) {
-      logger.warn(managedEnvironmentsResult, "managed sandbox environments ensured from managed config");
+      logger.warn(managedEnvironmentsResult, "managed environments ensured from managed config");
     }
   } catch (err) {
     logger.error({ err }, "failed to apply managed environments from managed config");
@@ -1233,6 +1249,24 @@ async function startServerWithDatabaseTeardown(
       await Promise.allSettled([...heartbeatSchedulerInFlight]);
     }
   };
+  // Queued turns that never executed do not depend on restart recovery of
+  // other runs. Start them as soon as providers and adapters are loaded,
+  // instead of behind every unrelated startup recovery pass. Agents with a run
+  // left `running`, or a queued retry/continuation, keep waiting for the full
+  // queued-run pass registered after native restart recovery below.
+  if (heartbeat) {
+    const startupHeartbeat = heartbeat;
+    trackHeartbeatSchedulerWork(timeStartupRecovery("fresh_queued_runs", async () => {
+      await app.locals.bundledPluginsStartup;
+      const { waitForExternalAdapters } = await import("./adapters/registry.js");
+      await waitForExternalAdapters();
+      if (heartbeatSchedulerStopped || isIdleTaskDrainActive() || isWarmStandby() || readTaskDrain(new Date()) !== null) return;
+      const result = await startupHeartbeat.resumeFreshQueuedRunsAtStartup();
+      logger.info({ ...result, processUptimeMs: Math.round(process.uptime() * 1000) }, "startup dispatch of queued runs without prior execution complete");
+    }).catch((err: unknown) => {
+      logger.error({ err }, "startup dispatch of queued runs without prior execution failed; they remain queued for the full pass");
+    }));
+  }
   const skillSourceSync = skillSourceSyncService(db as any);
   const nativeHarnessBackupExpiration = nativeHarnessBackupExpirationService(db as any, {
     duty: "backups",
@@ -1333,8 +1367,11 @@ async function startServerWithDatabaseTeardown(
     { queue: DELIVERY_QUEUES.executionStatus, run: () => deliverExecutionStatuses(db), next: executionSchedule.status },
     { queue: DELIVERY_QUEUES.executionDisposition, run: () => settleUnrecoverableExecutions(db), next: executionSchedule.disposition },
     ...(heartbeat ? [
-      { queue: DELIVERY_QUEUES.executionReplacement, run: () => reconcileSafeNativeReplacements(db, new Date(), { verifyStoppedSession: run => verifyStoppedNativeSessionForReplacement(db, run) }), next: executionSchedule.replacement },
-      { queue: DELIVERY_QUEUES.executionContinuation, run: () => deliverReconciledExecutions(db, heartbeat.wakeup), next: executionSchedule.continuation },
+      { queue: DELIVERY_QUEUES.executionReplacement, run: () => reconcileSafeNativeReplacements(db, new Date(), { verifyStoppedSession: run => verifyStoppedNativeSessionForReplacement(db, run) }), next: executionSchedule.replacement, onSettled: () => invalidateNativeReplacementDiscovery(db), settleEmptyWhilePaused: true },
+      { queue: DELIVERY_QUEUES.executionContinuation, run: async () => {
+        await deliverReconciledExecutions(db, heartbeat.wakeup);
+        await deliverPendingPauseResumes(db, heartbeat.wakeup);
+      }, next: executionSchedule.continuation },
     ] : []),
   ], () => !heartbeatSchedulerStopped);
 
@@ -1697,6 +1734,7 @@ async function startServerWithDatabaseTeardown(
       idleDeadlineOwners.retries = bindIdleDeadlineOwner(work.retries.reconciliationSnapshot, readIdleRetrySchedule,
         snapshot => ({ coverage: { kind: "scheduled_retries", runIds: snapshot.runIds, wakeIds: snapshot.wakeIds }, issueWaits: snapshot.issueWaits }));
       await work.ready;
+      logger.info({ processUptimeMs: Math.round(process.uptime() * 1000) }, "startup queued-run dispatch pass complete");
     }
     if (config.heartbeatSchedulerEnabled) await heartbeat.registerScheduledRetryCancellationWork(deliveryWork,
       () => !isIdleTaskDrainActive() && !heartbeatSchedulerStopped && !isWarmStandby()).ready;
@@ -2046,6 +2084,7 @@ async function startServerWithDatabaseTeardown(
     await runtimeResponseDelivery?.stop();
     await deploymentHints?.stop();
     await deliveryWork.stop();
+    await managedEnvironmentRecovery.stop();
 
     // Whatever the drain did not finalize (timed-out runs, the hot-restart
     // skip path) still has a local-only tail when the in-flight run-log

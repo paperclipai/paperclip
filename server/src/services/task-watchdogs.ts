@@ -1415,6 +1415,7 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
           status: "todo",
           assigneeAgentId: input.watchdog.watchdogAgentId,
           parentId: input.sourceIssue.id,
+          parentDepthPolicy: "allow_nested",
           projectId: input.sourceIssue.projectId,
           goalId: input.sourceIssue.goalId,
           billingCode: input.sourceIssue.billingCode,
@@ -1467,6 +1468,9 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
         status: "todo",
         priority: input.sourceIssue.priority,
         parentId: input.sourceIssue.id,
+        // Watchdog review issues and their serialized follow-ups are located by
+        // parent; they are system machinery, not agent-authored decomposition.
+        parentDepthPolicy: "allow_nested",
         projectId: input.sourceIssue.projectId,
         goalId: input.sourceIssue.goalId,
         assigneeAgentId: input.watchdog.watchdogAgentId,

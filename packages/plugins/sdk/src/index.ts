@@ -464,8 +464,18 @@ export { preserveEnvironmentSyncErrorDiagnostic, environmentSyncErrorData, readE
 export type { PluginEnvironmentSyncErrorDiagnostic } from "./environment-sync-error.js";
 export { PluginEnvironmentRunnerIngressError, environmentRunnerIngressErrorData, readEnvironmentRunnerIngressFailure } from "./environment-runner-ingress-error.js";
 export type { PluginEnvironmentRunnerIngressFailure } from "./environment-runner-ingress-error.js";
+export { ENVIRONMENT_TASK_ERROR_CODES, PluginEnvironmentTaskError, environmentTaskErrorCodeData, readEnvironmentTaskErrorCode } from "./environment-task-error.js";
+export type { PluginEnvironmentTaskErrorCode } from "./environment-task-error.js";
+export { WORKSPACE_OPERATION_FAILURE_REASONS, PluginWorkspaceOperationError, workspaceOperationErrorData, readWorkspaceOperationFailureReason } from "./workspace-operation-error.js";
+export type { PluginWorkspaceOperationFailureReason } from "./workspace-operation-error.js";
 export { PluginEnvironmentStopError, environmentStopErrorData, readEnvironmentStopFailure } from "./environment-stop-error.js";
 export type { PluginEnvironmentStopFailure, PluginEnvironmentStopFailureReason } from "./environment-stop-error.js";
+export { environmentResumeErrorData, readEnvironmentResumeErrorDiagnostic } from "./environment-resume-error.js";
+export type { PluginEnvironmentResumeErrorDiagnostic } from "./environment-resume-error.js";
+export { environmentAcquireErrorData, readEnvironmentAcquireErrorDiagnostic } from "./environment-acquire-error.js";
+export type { PluginEnvironmentAcquireErrorDiagnostic } from "./environment-acquire-error.js";
+export { environmentTaskErrorData, readEnvironmentTaskErrorDiagnostic } from "./environment-task-error.js";
+export type { PluginEnvironmentTaskErrorDiagnostic } from "./environment-task-error.js";
 
 export type { AiConnectionPool, AiConnectionPoolConfig, AiConnectionPoolMember, AiConnectionRouterRequest, AiConnectionRouterResult, AiConnectionRouterSelection } from "@paperclipai/shared";
 

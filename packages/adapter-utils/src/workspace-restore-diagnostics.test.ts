@@ -113,6 +113,13 @@ describe("workspace restore diagnostics", () => {
     },
   );
 
+  it("keeps an allowlisted ENAMETOOLONG code", async () => {
+    const sink = vi.fn();
+    const error = Object.assign(new Error("private"), { code: "ENAMETOOLONG" });
+    await expect(withWorkspaceRestoreDiagnostics("workspace", async () => { throw error; }, sink)).rejects.toBe(error);
+    expect(sink.mock.calls[0]?.[0]).toContain('"errorCode":"ENAMETOOLONG"');
+  });
+
   it("bounds cause traversal even when it cycles", async () => {
     const error = Object.assign(new Error("private"), { cause: null as unknown, code: "ENOENT" });
     error.cause = error;

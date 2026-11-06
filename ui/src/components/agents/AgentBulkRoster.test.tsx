@@ -55,7 +55,7 @@ describe("pending agent roster display", () => {
     return agent;
   }
 
-  const editButton = () => [...container.querySelectorAll<HTMLButtonElement>("button")].find(b => b.textContent?.includes("Edit connection & model"))!;
+  const editButton = () => [...document.querySelectorAll<HTMLButtonElement>('[aria-label="Bulk actions"] button')].find(b => b.textContent?.includes("Edit connection & model"))!;
 
   it("loads complete current agents before opening bulk edits from a restored roster", async () => {
     const display = renderEditable();
@@ -101,7 +101,7 @@ describe("pending agent roster display", () => {
       api.get.mockReturnValue(new Promise<Agent>((resolve, fail) => { finish = resolve; reject = fail; }));
       await act(async () => editButton().click());
       expect(api.get).toHaveBeenCalledTimes(1);
-      await act(async () => container.querySelector<HTMLButtonElement>(`[aria-label="${label}"]`)!.click());
+      await act(async () => document.querySelector<HTMLButtonElement>(`[aria-label="${label}"]`)!.click());
       await act(async () => {
         if (outcome === "success") finish(display);
         else reject(new TypeError("Failed to fetch"));
@@ -130,7 +130,7 @@ describe("pending agent roster display", () => {
   it("retains the pending harness label while keeping the placeholder unavailable for bulk editing", () => {
     const row = render({ setupAdapterPending: true,
       setupAdapterChoice: { adapterType: "paperclip_runner", runnerProvider: "antigravity", runner: "auto" } });
-    expect([...row.querySelectorAll("td")].slice(2).map(cell => cell.textContent)).toEqual([
+    expect([...row.querySelectorAll("td")].slice(3).map(cell => cell.textContent)).toEqual([
       "Google Antigravity", "Not configured", "Not available yet",
     ]);
     const checkbox = row.querySelector<HTMLButtonElement>('[role="checkbox"]');
@@ -141,7 +141,7 @@ describe("pending agent roster display", () => {
 
   it("preserves ordinary process display without a saved setup choice", () => {
     const row = render({ setupAdapterPending: true });
-    expect([...row.querySelectorAll("td")].slice(2).map(cell => cell.textContent)).toEqual([
+    expect([...row.querySelectorAll("td")].slice(3).map(cell => cell.textContent)).toEqual([
       "Process", "Managed externally", "Harness default",
     ]);
     const checkbox = row.querySelector<HTMLButtonElement>('[role="checkbox"]');

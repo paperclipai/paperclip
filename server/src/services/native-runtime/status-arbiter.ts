@@ -91,6 +91,34 @@ export interface NativeStatusDecision {
   effects: NativeStatusEffect[];
 }
 
+/**
+ * Completion is the current owner's decision. A run whose task was reassigned
+ * away (to another agent or to a user) keeps its accepted result as history,
+ * but its done report cannot close the new owner's task.
+ */
+export function ownsNativeTaskCompletion(
+  issue: { assigneeAgentId: string | null; assigneeUserId: string | null },
+  agentId: string,
+) {
+  return issue.assigneeAgentId === agentId && !issue.assigneeUserId;
+}
+
+export function supersedeStaleOwnerCompletion(
+  decision: NativeStatusDecision,
+  issue: { status: string; assigneeAgentId: string | null; assigneeUserId: string | null },
+  agentId: string,
+): NativeStatusDecision {
+  if (decision.statusAction !== "done" || ownsNativeTaskCompletion(issue, agentId)) return decision;
+  return {
+    policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
+    statusAction: "preserve",
+    toStatus: issue.status as NativeAuthoritativeIssueStatus,
+    reasonCode: "completion_owner_superseded",
+    unblockDescriptor: null,
+    effects: [],
+  };
+}
+
 /** Pure authority boundary: model prose is evidence, never a status command. */
 export function arbitrateNativeStatus(input: {
   assessment: NativeEvidenceAssessment;
@@ -126,6 +154,8 @@ export function arbitrateNativeStatus(input: {
   boardResponseWaitOrigin?: boolean;
   isConversation?: boolean;
   hasActivePauseHold?: boolean;
+  /** The run only compacted the agent's context; it carries no task outcome. */
+  contextCompactionRun?: boolean;
   reviewOwnerUserId?: string | null;
   /** Review decisions own task state; a reviewer's finish report cannot override them. */
   nativeReviewOutcome?: "resolved" | "pending" | "stale";
@@ -137,6 +167,16 @@ export function arbitrateNativeStatus(input: {
   agentId: string;
   priorIssueStatus: NativeAuthoritativeIssueStatus;
 }): NativeStatusDecision {
+  if (input.contextCompactionRun) {
+    return {
+      policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
+      statusAction: "preserve",
+      toStatus: input.priorIssueStatus,
+      reasonCode: "context_compaction_status_preserved",
+      unblockDescriptor: null,
+      effects: [],
+    };
+  }
   if (["done", "cancelled"].includes(input.priorIssueStatus)) {
     return {
       policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,

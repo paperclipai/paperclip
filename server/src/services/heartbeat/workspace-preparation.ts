@@ -1025,7 +1025,7 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
       persistedExecutionWorkspace = await executionWorkspacesSvc.getStoredById(agent.companyId, reserved.id);
       if (!persistedExecutionWorkspace?.cwd) throw new Error("remote_workspace_reservation_missing");
       persistedExecutionWorkspace = await executionWorkspacesSvc.update(reserved.id, {
-        metadata: { ...nextExecutionWorkspaceMetadata, ...reserved.metadata,
+        metadata: { ...reserved.metadata, ...nextExecutionWorkspaceMetadata,
           remoteWorkspace: reserved.metadata?.remoteWorkspace },
       });
       if (!persistedExecutionWorkspace?.cwd) throw new Error("remote_workspace_reservation_missing");
