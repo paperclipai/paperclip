@@ -572,8 +572,17 @@ const support = await getEmbeddedPostgresTestSupport();
       await boot();
       await new Promise((resolve) => setTimeout(resolve, 100));
       expect(await instanceDefault()).toBeNull();
-      // The row from the earlier boot was kept, not archived.
+      // The row from the earlier boot was kept, not archived, and the failed
+      // startup attempt still recorded the first evaluation.
       expect((await pluginRows())[0]!.status).toBe("active");
+      expect(await readManagedEnvironmentDefaultDecision(db)).toMatchObject({ status: "pending" });
+
+      // An agent explicitly set to another environment appears before the
+      // retry: it does not follow the default, so the default still applies.
+      const [sandbox] = await db.insert(environments).values({
+        name: "Explicit sandbox", driver: "sandbox", status: "active", config: { provider: "daytona" },
+      }).returning();
+      await agent(await company(), sandbox!.id);
 
       // The coordinator's retry of the failed attempt applies the default.
       await lastWorker.drain();

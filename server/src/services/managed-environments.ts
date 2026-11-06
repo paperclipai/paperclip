@@ -773,7 +773,8 @@ export async function applyManagedEnvironments(
  *    ensured the CURRENT declaration (driver config validated by the plugin)
  *    while the plugin passes the boot readiness rule. Otherwise the decision
  *    is recorded with the row as unavailable (`pending`, or `declined` when
- *    the instance already has agents).
+ *    the instance already has agents), including before a temporary failure
+ *    is rethrown, so the first attempt is always the first evaluation.
  * 2. An admin's explicit default write ends a decision that has not applied
  *    (`cancelPendingManagedEnvironmentDefault`, same transaction as the write).
  * 3. No agent follows the default when it commits (SHARE lock on `agents`).
@@ -875,6 +876,13 @@ export async function retryManagedPluginInstanceDefault(
       await recordUnavailable();
       return "waiting_for_plugin";
     }
+    // A temporary failure (for example a timeout with the worker running)
+    // still records the first evaluation now, with the row as unavailable, so
+    // the retry below continues a `pending` decision ("no agent follows the
+    // default by then") instead of re-reading "no agents yet" later.
+    await recordUnavailable().catch((recordErr: unknown) => {
+      logger.error({ err: recordErr, name: spec.name, marker }, "failed to record the managed plugin environment's pending instance default");
+    });
     throw err;
   }
   const outcome = await applyManagedPluginInstanceDefault(db, { environment: ensured.environment, marker });
