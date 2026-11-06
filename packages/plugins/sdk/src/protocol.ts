@@ -898,11 +898,13 @@ export interface PluginSyncOperation {
 export interface PluginEnvironmentSyncInParams extends PluginEnvironmentDriverBaseParams {
   lease: PluginEnvironmentLease;
   operations: PluginSyncOperation[];
+  minimumTimeoutMs?: number;
 }
 
 export interface PluginEnvironmentSyncOutParams extends PluginEnvironmentDriverBaseParams {
   lease: PluginEnvironmentLease;
   operations: PluginSyncOperation[];
+  minimumTimeoutMs?: number;
 }
 
 /** Per-operation transfer accounting returned by a sync hook, for observability. */

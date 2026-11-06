@@ -1147,6 +1147,7 @@ export async function performSyncIn(input: {
   operations: PluginSyncOperation[];
   remoteDir: string;
   timeoutSeconds: number;
+  commandTimeoutSeconds?: number;
 }): Promise<PluginEnvironmentSyncResult> {
   const operations: PluginEnvironmentSyncResult["operations"] = [];
   for (const operation of input.operations) {
@@ -1182,7 +1183,7 @@ export async function performSyncIn(input: {
       sandbox: input.sandbox,
       commands: operation.postUploadCommands ?? [],
       remoteDir: input.remoteDir,
-      timeoutSeconds: input.timeoutSeconds,
+      timeoutSeconds: input.commandTimeoutSeconds ?? input.timeoutSeconds,
     });
 
     operations.push({ operationId: operation.operationId, filesTransferred, bytesTransferred });

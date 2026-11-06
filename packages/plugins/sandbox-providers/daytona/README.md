@@ -40,6 +40,12 @@ Notes:
 - Directory export normally builds a sandbox archive and downloads it. If archive creation exhausts disk space, quota, or the file-size limit, export streams the archive through a raw terminal instead. The sender can send up to sixteen 40 KiB chunks before it waits for their host write acknowledgements. The host writes them in order and rejects a sender that exceeds the pending-frame limit. This bounds queued payloads to 640 KiB while avoiding one network round trip per chunk. Import still requires successful tar completion and the existing archive/path validation. The total archive cannot exceed the provider-reported sandbox disk allocation, and each host write must leave a 1 GiB free-space reserve. This fallback writes no sandbox archive or command log, preserves source files, and retains the configured transfer timeout. Terminal cleanup has a separate five-second limit and cannot hold the host archive open. It requires Bash and GNU `tar`, `dd`, and `base64` in the sandbox. It does not repair a provider session that already failed to save its state or increase the sandbox's disk allocation.
 - Single-file export normally downloads a guarded sandbox copy. If that copy exhausts disk space, quota, or the file-size limit, the provider removes partial copies and streams the source through the same bounded sandbox-user channel. The stream rechecks canonical confinement and regular-file identity, refuses a symlink at open, and publishes host files only after a successful transfer receipt. It never hands a mutable source to the privileged download API. Permission, confinement, and transport failures still fail; a failed stream leaves prior host files intact. This removes the second archive-sized copy needed to download an already captured workspace archive. Creating the workspace archive itself still needs sandbox space.
 
+Native file transfers accept an optional `minimumTimeoutMs` from the host. The
+minimum must be a positive whole number no greater than 30 minutes. File sync
+uses the larger of this minimum and the configured timeout. Sandbox start and
+command timeouts keep their configured limits. Without the field, behavior is
+unchanged.
+
 ## Local development
 
 ```bash

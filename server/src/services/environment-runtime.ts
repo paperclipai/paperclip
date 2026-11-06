@@ -37,6 +37,7 @@ import type {
 } from "@paperclipai/shared";
 import { resolveDeclaredSandboxCapabilities } from "@paperclipai/shared";
 import type { EffectiveExecutionCapabilities } from "@paperclipai/adapter-utils/execution-target";
+import { MAX_SANDBOX_SYNC_TIMEOUT_MS } from "@paperclipai/adapter-utils/sandbox-managed-runtime";
 import type { RunnerIngressEndpoint } from "@paperclipai/adapter-utils/runner-connectivity";
 import type {
   CommandManagedDuplexChannel,
@@ -606,6 +607,7 @@ export interface EnvironmentDriverExecuteInput extends EnvironmentDriverLeaseInp
 
 export interface EnvironmentDriverSyncInput extends EnvironmentDriverLeaseInput {
   operations: PluginSyncOperation[];
+  minimumTimeoutMs?: number;
 }
 
 export interface EnvironmentDriverOpenDuplexChannelInput extends EnvironmentDriverLeaseInput {
@@ -1551,6 +1553,10 @@ function createSandboxEnvironmentDriver(
     method: "environmentSyncIn" | "environmentSyncOut",
     input: EnvironmentDriverSyncInput,
   ): Promise<PluginEnvironmentSyncResult> {
+    if (input.minimumTimeoutMs !== undefined && (!Number.isSafeInteger(input.minimumTimeoutMs)
+      || input.minimumTimeoutMs <= 0 || input.minimumTimeoutMs > MAX_SANDBOX_SYNC_TIMEOUT_MS)) {
+      throw new RangeError("Invalid sandbox sync timeout");
+    }
     if (!input.lease.metadata?.sandboxProviderPlugin || !pluginWorkerManager) {
       throw new Error("Sandbox driver does not support native file sync for this lease.");
     }
@@ -1565,6 +1571,10 @@ function createSandboxEnvironmentDriver(
       provider: providerKey,
     });
     const sanitizedConfig = stripSandboxProviderEnvelope(config as SandboxEnvironmentConfig);
+    const rpcTimeoutMs = input.minimumTimeoutMs === undefined
+      ? resolvePluginSandboxRpcTimeoutMs(sanitizedConfig)
+      : Math.max(resolvePluginSandboxRpcTimeoutMs(sanitizedConfig) ?? 0,
+        resolvePluginSandboxRpcTimeoutMs({ ...sanitizedConfig, timeoutMs: input.minimumTimeoutMs }) ?? 0);
     return await pluginWorkerManager.call(pluginId, method, {
       driverKey: providerKey,
       companyId: input.lease.companyId,
@@ -1577,7 +1587,8 @@ function createSandboxEnvironmentDriver(
         expiresAt: input.lease.expiresAt?.toISOString() ?? null,
       },
       operations: input.operations,
-    }, resolvePluginSandboxRpcTimeoutMs(sanitizedConfig)).catch((error: unknown) => {
+      ...(input.minimumTimeoutMs === undefined ? {} : { minimumTimeoutMs: input.minimumTimeoutMs }),
+    }, rpcTimeoutMs).catch((error: unknown) => {
       throw method === "environmentSyncOut" ? preserveEnvironmentSyncOutErrorDiagnostic(error) : error;
     });
   }
@@ -2591,7 +2602,7 @@ function createSandboxEnvironmentDriver(
         issueId: input.lease.issueId, config, providerLeaseId: input.lease.providerLeaseId,
         leaseMetadata: input.lease.metadata ?? undefined,
         ...(input.requestedCwd !== undefined ? { requestedCwd: input.requestedCwd } : {}),
-      }, Math.min(resolvePluginSandboxRpcTimeoutMs(config) ?? 60_000, 60_000));
+      }, resolvePluginSandboxRpcTimeoutMs(config) ?? 60_000);
       if (resumed?.providerLeaseId !== input.lease.providerLeaseId) {
         throw new Error("The provider did not confirm the exact retained sandbox. No replacement was acquired.");
       }
