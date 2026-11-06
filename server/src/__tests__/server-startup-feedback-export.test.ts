@@ -1382,6 +1382,37 @@ describe("startServer feedback export wiring", () => {
     });
   });
 
+  it("rejects failed startup within five seconds when a connection prevents listener close", async () => {
+    loadConfigMock.mockReturnValue(buildTestConfig({ heartbeatSchedulerEnabled: true }));
+    const failure = new Error("native recovery unavailable");
+    heartbeatServiceMock.recoverNativeRunsAfterRestart.mockRejectedValueOnce(failure);
+    let finishClose: (() => void) | undefined;
+    fakeServer.close.mockImplementationOnce(callback => {
+      fakeServer.resetBoundState();
+      finishClose = () => callback?.();
+    });
+    const closeAllConnections = vi.fn(() => {
+      expect(fakeServer.listening).toBe(false);
+      finishClose?.();
+    });
+    Object.assign(fakeServer, { closeAllConnections });
+    try {
+      let rejected = false;
+      const starting = startServer().catch(error => {
+        rejected = true;
+        return error;
+      });
+      await vi.waitFor(() => expect(fakeServer.close).toHaveBeenCalledOnce());
+      expect(fakeServer.listening).toBe(false);
+      expect(rejected).toBe(false);
+      await vi.waitFor(() => expect(rejected).toBe(true), { timeout: 6_000 });
+      expect(await starting).toBe(failure);
+      expect(closeAllConnections).toHaveBeenCalledOnce();
+    } finally {
+      finishClose?.();
+    }
+  });
+
   it("keeps startup available when completion delivery recovery fails", async () => {
     completionSweepMock.mockRejectedValueOnce(new Error("temporary delivery failure"));
     const { startServer } = await import("../index.js");
