@@ -55,6 +55,7 @@ import {
   shapePaperclipWorkspaceEnvForExecution,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
   DEFAULT_PAPERCLIP_CONVERSATION_PROMPT_TEMPLATE,
+  DEFAULT_OUTPUT_READ_AHEAD_BYTES,
 } from "@paperclipai/adapter-utils/server-utils";
 import { buildSkillLibraryManifestMarkdown } from "@paperclipai/adapter-utils/skill-library-manifest";
 import {
@@ -989,6 +990,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         hasTerminalResult: ({ stdout }) => parseClaudeStreamJson(stdout).resultJson !== null,
       },
       localProcessSandbox,
+      outputReadAheadBytes: DEFAULT_OUTPUT_READ_AHEAD_BYTES,
     });
     await accountingLog.flush();
 
