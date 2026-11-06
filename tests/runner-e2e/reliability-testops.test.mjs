@@ -39,7 +39,7 @@ test('the plan is six DeepSeek 1017 cells plus native Codex for steering, Dayton
   assert.ok(reliabilityDefinitions.every(row => row.fullName === `paperclip.Product E2E.everyday-workflows.${row.name}`));
   // OpenCode declares steering: false, so only queue-steer uses the steering-capable native Codex cell.
   assert.deepEqual(reliabilityDefinitions.filter(row => row.profile !== reliabilityProfile || row.model !== reliabilityModel)
-    .map(row => [row.name, row.profile, row.model, row.environment]), [['queue-steer', 'runner-codex', 'gpt-5.6-sol', 'daytona']]);
+    .map(row => [row.name, row.profile, row.model, row.environment]), [['queue-steer', 'runner-codex', 'gpt-6.1-sol', 'daytona']]);
   assert.deepEqual(reliabilityDefinitions.filter(row => row.profile === reliabilityProfile && row.environment === 'daytona').map(row => row.name),
     ['three-turn-revise', 'long-silent-command', 'queued-across-restart']);
   assert.equal(testOpsPlanDetails.reliability.size, 7);

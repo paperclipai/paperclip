@@ -20,7 +20,7 @@ const selection = cases => ({ schema: 'paperclip.product-regression-testops-sele
 const result = (overrides = {}) => ({
   executionId: selected.executionId, suiteId: selected.suite, caseId: selected.name,
   profileId: selected.profile, environmentId: 'local', source: { sha: targetSha }, attempt: 1,
-  status: 'passed', cleanup: 'passed', model: 'gpt-5.6-sol', suiteDefinitionHash: 'c'.repeat(64),
+  status: 'passed', cleanup: 'passed', model: 'gpt-6.1-sol', suiteDefinitionHash: 'c'.repeat(64),
   matcherResults: [{ matcher: { kind: 'json_path', path: 'observed.outputVerified', expected: true }, passed: true }],
   ...overrides,
 });
@@ -133,7 +133,7 @@ test('the transmission projection excludes raw errors, provider IDs, narratives 
 
 test('secret-shaped and unknown metadata cannot cross the reporting boundary', () => {
   const sentinel = 'sk-proj-syntheticcredentialabcdefghijklmnop';
-  for (const mutation of [{ model: sentinel }, { model: 'gpt-6.1-sol' }, { failureClass: sentinel }, { cleanup: sentinel },
+  for (const mutation of [{ model: sentinel }, { model: 'gpt-5.6-sol' }, { failureClass: sentinel }, { cleanup: sentinel },
     { matcherResults: [{ passed: true, matcher: { kind: sentinel } }] }]) {
     assert.throws(() => projectProductResults(campaign([result(mutation)]), selection([selected]), targetSha),
       error => error.message === 'product_regression_testops_metadata_invalid');
