@@ -4744,6 +4744,102 @@ unavailable. Use a separate, disposable database whose name ends in `_test` for 
 `PAPERCLIP_SKILL_SOURCES_TEST_DATABASE_URL`. The suites apply migrations and create
 test data; the synchronization suite truncates company data between tests.
 
+#### Controlled default-cadence sleep acceptance
+
+The opt-in `domain_deadlines_v1` negotiation adds owner-bound skill deadline
+handoff coverage. Legacy callers retain the conservative blockers described above.
+The checked-in `scripts/test-skill-default-cadence.mjs` launcher checks this local
+flow with the actual app, signed tenant routes, Cloud controller and PostgreSQL
+alarm store. Git contents, S3 and physical child stop/start use controlled local
+providers. A matching service checkout with
+`src/sleep/fixtures/default-cadence-bridge.ts` and its normal compiled output is
+required for the host flow. The PG0 controls do not require that checkout or a DB.
+The launcher does not start a cluster, build artifacts, or contact live providers.
+
+Use Node **24.22.2**, pnpm **9.15.4**, and Node **22.23.4** for the matching service.
+Prepare the server dependency closure with a frozen lockfile. Build only missing
+TypeScript prerequisites explicitly; the launcher does not install or build them.
+From the app repository root:
+
+```sh
+export NODE24=/absolute/path/to/node-v24.22.2/bin/node
+export PNPM9=/absolute/path/to/pnpm-9.15.4/bin/pnpm
+export PATH="$(dirname "$NODE24"):$(dirname "$PNPM9"):$PATH"
+"$PNPM9" --filter @paperclipai/server... install --frozen-lockfile --ignore-scripts
+for package in packages/shared packages/plugins/sdk packages/paperclip-eval-kernel packages/paperclip-runner; do
+  (cd "$package" && "$NODE24" node_modules/typescript/bin/tsc -p tsconfig.json)
+done
+(cd packages/paperclip-runner && "$NODE24" node_modules/typescript/bin/tsc -p tsconfig.surfaces.json)
+export SKILL_SLEEP_RESULTS="$(mktemp -d "${TMPDIR:-/tmp}/paperclip-skill-sleep.XXXXXX")"
+export PAPERCLIP_SKILL_DEFAULT_CADENCE_GUARD_LOG="$SKILL_SLEEP_RESULTS/controls-guard.jsonl"
+"$NODE24" scripts/test-skill-default-cadence.mjs --controls
+```
+
+This PG0 lane runs 44 controls. It explicitly defers the single real-PostgreSQL
+observer case before its support probe. It requires the actual worker's preloaded
+guard marker and matching receipt. Ordinary Vitest runs keep all subprocess
+controls and defer only that launcher-specific parent assertion. An explicit
+prewire mode or guard-log setting makes the unchanged assertion mandatory; a
+missing or invalid marker fails. The launcher never installs the guard late.
+
+For host acceptance, separately create empty, owned databases on an existing local
+PostgreSQL 17 server. Use distinct names ending in `_test`. The test applies normal
+migrations and writes fixtures; it never starts an embedded cluster. Use a fresh
+pair for each attempt, including the full run after bootstrap. Prepare the matching
+service dependencies separately and compile its normal `tsconfig.build.json` with
+Node 22. The recorded local runtime used service source
+`2cb54f904031dcf69a32902cd853b43f74d6f301`. Current service publication
+`389878364b42dd129835d263f91882c5774d5123` carries that measured helper source through
+its normal upstream merge; the runtime was not repeated on that service merge.
+An arbitrary service revision is not an interchangeable prerequisite.
+
+```sh
+export PAPERCLIP_SKILL_DEFAULT_CADENCE_CLOUD_CHECKOUT=/absolute/path/to/matching-service
+export PAPERCLIP_SKILL_DEFAULT_CADENCE_CLOUD_NODE=/absolute/path/to/node-v22.23.4/bin/node
+export PAPERCLIP_SKILL_DEFAULT_CADENCE_CLOUD_SHA=389878364b42dd129835d263f91882c5774d5123
+test "$(git -C "$PAPERCLIP_SKILL_DEFAULT_CADENCE_CLOUD_CHECKOUT" rev-parse HEAD)" = "$PAPERCLIP_SKILL_DEFAULT_CADENCE_CLOUD_SHA"
+(cd "$PAPERCLIP_SKILL_DEFAULT_CADENCE_CLOUD_CHECKOUT" && "$PAPERCLIP_SKILL_DEFAULT_CADENCE_CLOUD_NODE" node_modules/typescript/bin/tsc -p tsconfig.build.json)
+export PAPERCLIP_TEST_POSTGRES_ADMIN_URL=postgres://paperclip@127.0.0.1:55448/postgres
+export PAPERCLIP_SKILL_DEFAULT_CADENCE_TEST_DATABASE_URL=postgres://paperclip@127.0.0.1:55448/skill_sleep_bootstrap_app_test
+export PAPERCLIP_SKILL_DEFAULT_CADENCE_CLOUD_TEST_DATABASE_URL=postgres://paperclip@127.0.0.1:55448/skill_sleep_bootstrap_cloud_test
+export PAPERCLIP_SKILL_DEFAULT_CADENCE_EVIDENCE="$SKILL_SLEEP_RESULTS/bootstrap"
+mkdir -p "$PAPERCLIP_SKILL_DEFAULT_CADENCE_EVIDENCE"
+unset PAPERCLIP_MAINTENANCE_PG0_CONTROLS
+export PAPERCLIP_SKILL_DEFAULT_CADENCE_STAGE=bootstrap
+export PAPERCLIP_SKILL_DEFAULT_CADENCE_GUARD_LOG="$SKILL_SLEEP_RESULTS/bootstrap-guard.jsonl"
+"$NODE24" scripts/test-skill-default-cadence.mjs
+```
+
+Bootstrap checks revision 1, the legacy refusal, the signed bounded handoff and the
+exact durable ACK before child stop. It does not check a due wake. For the complete
+run, first create a different empty pair, then run:
+
+```sh
+export PAPERCLIP_SKILL_DEFAULT_CADENCE_TEST_DATABASE_URL=postgres://paperclip@127.0.0.1:55448/skill_sleep_cycles_app_test
+export PAPERCLIP_SKILL_DEFAULT_CADENCE_CLOUD_TEST_DATABASE_URL=postgres://paperclip@127.0.0.1:55448/skill_sleep_cycles_cloud_test
+export PAPERCLIP_SKILL_DEFAULT_CADENCE_EVIDENCE="$SKILL_SLEEP_RESULTS/two-cycle"
+mkdir -p "$PAPERCLIP_SKILL_DEFAULT_CADENCE_EVIDENCE"
+export PAPERCLIP_SKILL_DEFAULT_CADENCE_STAGE=two-cycle
+export PAPERCLIP_SKILL_DEFAULT_CADENCE_GUARD_LOG="$SKILL_SLEEP_RESULTS/two-cycle-guard.jsonl"
+"$NODE24" scripts/test-skill-default-cadence.mjs
+```
+
+Use a new guard-log path for each attempt. The full mode takes about 10-14 minutes.
+It retains the original 300-second source cadence, real app/SQL clocks, D-120 alarm
+eligibility and the existing 850-second test timeout. Do not shorten the cadence,
+write deadlines, or substitute a fake clock. The launcher uses one worker and no
+file parallelism. Budget runtime pools for the app's potential 10 connections plus
+Cloud's shared 2 and one transient observer; each pool is at most 4. The recorded
+server limit was 40. Run this fixture without other heavy tests or builds.
+
+Receipts retain both original deadlines, durable alarm generations, distinct cold
+processes and persisted revisions 2 and 3. Each cold start also checks a measured
+10-second app SQL/upstream/outgoing-HTTP quiet window. Awake guards can still show
+2 PostgreSQL sockets: quiet SQL does not mean all connections are closed. This is
+controlled local acceptance, not strict 90-second host acceptance, live-provider
+qualification or proof of deployed Railway/Neon suspension. Keep failed attempts
+and audit owned sessions/processes before database cleanup.
+
 ### Public MCP and Dot event delivery
 
 Public MCP task events and Dot mailbox events use separate topics in the shared
