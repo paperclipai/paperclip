@@ -294,3 +294,12 @@ so a missing file cannot create a replacement during publication. Its database
 connections have five-second lock waits and 30-second statement and idle
 transaction limits. Cancellation closes the command's clients and has a
 ten-second process-exit fallback for a dependency that does not settle.
+
+Workspace archives preserve a resolved Git merge that still awaits its merge
+commit. The archive retains the merge heads, original head, message, mode,
+automatic merge tree and selected index, and verifies their objects and unchanged
+metadata before publication. A restored copy can continue the merge after the
+source disappears. Git still protects later unstaged edits during abort.
+Conflicted indexes, merge autostash, rerere state, unfinished rebase or sequencer
+operations, invalid metadata and concurrent changes block capture and retain the
+original workspace. Migration never commits or aborts a user's Git operation.
