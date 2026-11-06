@@ -36,7 +36,7 @@ describe("registered run instruction copies", () => {
   let home: string;
   let companyId: string, agentId: string, userId: string, root: string;
   const entryFile = "policy/INSTRUCTIONS.txt";
-  const initial = "﻿# Original\r\n☃\n";
+  const initial = "\uFEFF# Original\r\n☃\n";
   const target = () => ({ companyId, agentId });
   const board = () => ({ type: "board" as const, userId, source: "session" as const });
   async function run() {
@@ -621,7 +621,7 @@ describe("registered run instruction copies", () => {
   it("persists an atomic editor replacement, ignores repository instructions, and gives the next run exact bytes", async () => {
     const copy = await run();
     await fs.writeFile(path.join(home, "AGENTS.md"), "Repository text must not become agent instructions");
-    const edited = "﻿# Updated\r\nKeep this persistent. ☃\n";
+    const edited = "\uFEFF# Updated\r\nKeep this persistent. ☃\n";
     const replacement = path.join(copy.localRoot, "edited.tmp");
     await fs.writeFile(replacement, edited);
     await fs.rename(replacement, path.join(copy.localRoot, entryFile));
