@@ -817,9 +817,6 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
           }, commentIds),
       requestedByActorType: "user", requestedByActorId: actorId,
       ...(interrupted ? { queuedCommentInterruptId: queueId } : { queuedCommentRequestId: queueId }),
-      // Send is explicit authority for this saved input even if its previous
-      // result completed the task. Automatic queue recovery keeps its active-task
-      // guard; a cancelled task still requires a separate user decision.
       issueStateGuard: { assigneeAgentId: wake.agentId,
         statuses: ["todo", "in_progress", "in_review", "blocked", ...(interrupted ? ["done"] : [])] },
       idempotencyKey: `queued-comment-${interrupted ? "interrupt" : "delivery"}:${queueId}`,

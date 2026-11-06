@@ -2317,8 +2317,6 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
     await db.update(issues).set({ status: "done" }).where(eq(issues.id, f.issueId));
     await db.update(issueRecoveryActions).set({ status: "resolved", outcome: "recovered" })
       .where(eq(issueRecoveryActions.id, f.action.id));
-    // Input arrived while the old provider was finishing. Send is new intent
-    // after the saved result committed; its original content stays unchanged.
     await db.update(issueComments).set({ body: "Show the unread count as a number",
       createdAt: new Date("2020-01-01T09:30:00Z") }).where(eq(issueComments.id, f.commentId));
     const [waiting] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, f.requestId));
@@ -2327,8 +2325,6 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
     } }).where(eq(agentWakeupRequests.id, f.requestId));
     const [sourceBefore] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.sourceRunId));
     const [coordinatorBefore] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.sourceRunId));
-    // Existing test convention holds adapter startup with unrelated agent work;
-    // real admission still locks the task and consumes the saved queue.
     await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, status: "running" });
     const heartbeat = heartbeatService(db);
     await heartbeat.resumeQueuedCommentInterrupt(f.companyId, f.requestId);

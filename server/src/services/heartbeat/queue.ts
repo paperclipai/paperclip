@@ -4260,8 +4260,6 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
           }
 
           if (opts.queuedCommentInterruptId && issue.status === "done") {
-            // The exact saved Send receipt passed ordinary admission above.
-            // Reopen with the successor, so dispatch can consume that input.
             const reopened = await issuesSvc.updateForCompany(issue.id, issue.companyId,
               { status: "todo", executionState: null }, tx, issueActivityPublications, issuePostCommitActions);
             if (!reopened) throw conflict("The task changed before its saved message could start");
