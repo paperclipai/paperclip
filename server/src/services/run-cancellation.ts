@@ -135,6 +135,16 @@ export function canContinueCancelledRun(run: Run): boolean {
     run.resultJson?.acpToolInventoryComplete === true && run.resultJson?.acpPendingToolCount === 0;
 }
 
+/** The user's recorded Stop or interrupt on a settled run. A stopped native
+ * run whose runner was unreachable can settle as `failed` once its transport
+ * fails closed; the user's Stop request still bounds which messages are new. */
+export function recordedUserStop(run: Pick<Run, "status" | "resultJson">) {
+  if (run.status !== "cancelled" && run.status !== "failed") return null;
+  const cancellation = readRunCancellation(run.resultJson);
+  return cancellation && cancellation.initiator.type === "user" &&
+    ["operator", "queued_message"].includes(cancellation.source) ? cancellation : null;
+}
+
 /** When a user's Stop or interrupt took effect for message ordering. A native
  * run finishes only after its provider stop and workspace save settle, which
  * can take many seconds. A message written after the Stop request is a new
@@ -143,9 +153,8 @@ export function canContinueCancelledRun(run: Run): boolean {
  * `finishedAt`. */
 export function userStopBoundaryAt(run: Pick<Run, "status" | "finishedAt" | "resultJson">): Date | null {
   if (!run.finishedAt) return null;
-  const cancellation = run.status === "cancelled" ? readRunCancellation(run.resultJson) : null;
-  if (!cancellation || cancellation.initiator.type !== "user" ||
-      !["operator", "queued_message"].includes(cancellation.source)) return run.finishedAt;
+  const cancellation = recordedUserStop(run);
+  if (!cancellation) return run.finishedAt;
   const requestedAt = new Date(cancellation.recordedAt);
   return Number.isFinite(requestedAt.getTime()) && requestedAt < run.finishedAt ? requestedAt : run.finishedAt;
 }

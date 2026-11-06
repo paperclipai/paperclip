@@ -4935,7 +4935,11 @@ describe("automatic retained workspace recovery", () => {
   it.each([
     { retried: false, title: "continues a message written during Stop settlement once, without a second message, after recovery already resolved" },
     { retried: true, title: "continues a message carried by a workspace-busy retry once, without a second message, after recovery already resolved" },
-  ])("$title", async ({ retried }) => {
+    // S52: the user stopped a hung native run whose runner was unreachable.
+    // Its transport later failed closed, so the stopped run settled as failed
+    // (native_provider_terminal_failed) instead of cancelled.
+    { retried: false, failedClosed: true, title: "continues a message sent after Stop when the stopped run later failed closed" },
+  ])("$title", async ({ retried, failedClosed }) => {
     // S47: the user stops (or interrupts) a native run and sends a message.
     // The native source finishes only after its stop and workspace save
     // settle, so its finishedAt is later than the message. Recovery resolves
@@ -4947,8 +4951,13 @@ describe("automatic retained workspace recovery", () => {
     const { f, original, reset: message, wake, queued, deps, control, execution, queueDeps, queue } = t;
     queueDeps.resumeExecutionWaitComments.mockImplementation(control.resumeExecutionWaitComments);
     queueDeps.releaseIssueExecutionAndPromote.mockImplementation(control.releaseIssueExecutionAndPromote);
-    await db.update(issueComments).set({ body: "Actually, give me a 5-bullet summary instead." }).where(eq(issueComments.id, message.id));
-    // The Stop was requested before the message (fixture); settlement finished after it.
+    // The Stop was requested before the message; settlement finished after it.
+    // Pin the message after the recorded Stop: the fixture writes both within
+    // the same millisecond on a fast machine, which made this ordering flaky.
+    const stopRecordedAt = new Date(String(((await run(f.runId)).resultJson?.cancellation as { recordedAt?: string })?.recordedAt));
+    message.createdAt = new Date(stopRecordedAt.getTime() + 100);
+    await db.update(issueComments).set({ body: "Actually, give me a 5-bullet summary instead.", createdAt: message.createdAt })
+      .where(eq(issueComments.id, message.id));
     await db.update(heartbeatRuns).set({ finishedAt: new Date(message.createdAt.getTime() + 1_000) })
       .where(eq(heartbeatRuns.id, f.runId));
     let pending = queued;
@@ -5009,6 +5018,11 @@ describe("automatic retained workspace recovery", () => {
         }) ?? []);
         expect(readSystemRecovery((await action(f.actionId)).evidence)?.state).toBe("complete");
       }, { timeout: 10_000, interval: 10 });
+      if (failedClosed) {
+        await db.update(heartbeatRuns).set({ status: "failed", errorCode: "native_provider_terminal_failed",
+          error: "Notification transport failed closed: runner_process_termination_unconfirmed" })
+          .where(eq(heartbeatRuns.id, f.runId));
+      }
       expect(await queue.claimQueuedRun(await run(pending.id))).toBeNull();
       expect(await run(pending.id)).toMatchObject({ status: "cancelled", errorCode: "execution_reconciliation_required", startedAt: null });
       const [saved] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wake.id));

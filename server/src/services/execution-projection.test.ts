@@ -38,6 +38,16 @@ const project = (
 ) => projectExecution(r, c, pending, undefined, now);
 
 describe("execution truth projection", () => {
+  it("offers Stop for every live run, including a long-silent native turn", () => {
+    const silentSince = new Date(now.getTime() - 35 * 60_000);
+    const silent = run({ lastUsefulActionAt: silentSince, startedAt: silentSince });
+    expect(project(silent)).toMatchObject({ phase: "working", canStop: true });
+    expect(project(run({ runtimeMode: "legacy" }), undefined).canStop).toBe(true);
+    expect(projectExecution(run({ status: "queued", startedAt: null }), undefined, [], undefined, now).canStop).toBe(true);
+    for (const status of ["succeeded", "cancelled", "timed_out", "failed"] as const) {
+      expect(project(run({ status }), undefined).canStop).toBe(false);
+    }
+  });
   it("shows maintenance only for admission that has not started", () => {
     startTaskDrain();
     try {

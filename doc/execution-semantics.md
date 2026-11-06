@@ -2477,6 +2477,26 @@ A runner receipt that its reconnect grace expired ends that incident. The
 transport recognizes both the coded error and the runner's plain-text message.
 It must not open another recovery window after that receipt.
 
+An authenticated provider-ingress WebSocket is pinged every 20 seconds. Any
+frame or pong counts as liveness, so a runner that stays quiet through a long
+foreground tool call remains attached. When nothing arrives for 90 seconds the
+server terminates the socket. A half-open route, such as a preview proxy that
+drops the connection without a close, then follows the ordinary reconnect grace
+and fails the transport if the runner cannot be reached. Without this, such a
+run stayed "Working" indefinitely. The 90-second bound exceeds the runner's own
+60-second connection lease, which already requires it to read and renew.
+
+A stopped native run can keep its execution lease while its controller still
+waits on an unreachable runner. A queued turn of the same agent and task cannot
+start until that controller settles. The queued turn's projection names this
+wait ("Waiting for previous run to stop", cause `previous_run_settling`) while
+admission's pending-cleanup check holds a predecessor it checks. The ingress liveness
+bound above makes that controller settle, and its cleanup starts the queued turn.
+Such a stopped run can then settle as `failed` when its transport fails closed.
+Its recorded user Stop still marks later messages as new direction. When the
+dispatch gate withholds the queued turn behind saved-work recovery, it saves
+that message for the deferred-receipt worker, as it does for a cancelled source.
+
 A bounded transport close can return before artifact staging settles. That
 return does not prove cleanup completed or release the retained-state obligation.
 Launch attempts, authenticated runner connections, provider process entries,
@@ -4124,8 +4144,8 @@ and no result has been accepted. Unknown, legacy and accepted-result states
 remain ineligible. Grok failed retries keep their existing external Stop contract
 and do not gain this action; a pre-assignment failed retry is not supported by
 that endpoint. Existing Grok running/queued Stop and assignment fences stay in
-place. A false or absent hint does not remove the existing queued
-or running Cancel action. This presentation hint grants no permission; the existing
+place. Every queued or running run also projects `canStop: true`, so API
+readers see the same Stop that the run detail and task composer offer. This presentation hint grants no permission; the existing
 company, actor and locked cancellation checks remain authoritative. A changed
 retry can reject Stop, which the run detail displays without claiming cleanup.
 Failed-native Stop keeps its request identity by company, run and current board
