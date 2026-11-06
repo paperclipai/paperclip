@@ -128,6 +128,31 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 source_goal_revision += 1;
                 response["result"]["providerRevision"] = json!(source_goal_revision);
             }
+            if command == "session.goal.get"
+                && matches!(fault.as_str(), "read-diagnostic" | "read-burst")
+            {
+                let count = if fault == "read-burst" { 200 } else { 1 };
+                for _ in 0..count {
+                    write_json(
+                        &mut stdout,
+                        &json!({"protocolVersion":GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,
+                        "sequence":next_sequence,"eventType":"runtime.diagnostic","runId":source_run,"turnId":null,
+                        "payload":{"code":"ordinary_read_tail","message":"Retained before an ordinary turn."}}),
+                    )?;
+                    next_sequence += 1;
+                }
+            }
+            if command == "session.goal.get" && fault == "read-invalid-tail" {
+                write_turn_event(
+                    &mut stdout,
+                    next_sequence,
+                    "runtime.event",
+                    &source_run,
+                    "unbound-old-turn",
+                    json!({"type":"text_delta","text":"Rejected stale tail."}),
+                )?;
+                next_sequence += 1;
+            }
             if command == "session.snapshot" && fault == "goal-during-snapshot" {
                 source_goal_revision += 1;
                 let frame = json!({

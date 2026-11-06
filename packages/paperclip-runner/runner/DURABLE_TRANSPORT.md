@@ -144,6 +144,12 @@ that arrive during the final status read and keeps them queued for delivery.
 As with Codex, a prepared session can continue or be cleaned up. This handoff
 requires a completed turn. Suspended sessions use their usual recovery path.
 
+Before B attaches, Runner saves the events it already received from A's sidecar.
+The readiness snapshot stays blocked until Core acknowledges those events.
+Another turn within A also keeps its buffered events without waiting for an ACK.
+ACPX still replaces the sidecar at the next turn or run attachment. The saved
+provider identity continues through that replacement.
+
 ## Host park eligibility
 
 `CommandExecutor::host_park_ready` defaults to false. Native Codex opts in only
