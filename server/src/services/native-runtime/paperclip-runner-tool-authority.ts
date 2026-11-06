@@ -1283,7 +1283,14 @@ export class PaperclipRunnerToolAuthority {
     const charge = { model: image.model, providerRequestId: image.providerRequestId, usage: image.usage, costCents: price.costCents,
       pricingProvenance: price.pricingProvenance, projectId: current.issue.projectId ?? null, destination, ...identity,
       chargedAt: new Date().toISOString() };
-    await setReceipt({ state: "charged", charge });
+    try {
+      await setReceipt({ state: "charged", charge });
+    } catch (error) {
+      // Without the receipt, record the spend now; the call cannot be confirmed.
+      await this.#recordImageCharge(key, charge).catch(() => undefined);
+      await audit("unconfirmed", { destination, ...identity, costCents: price.costCents }).catch(() => undefined);
+      throw new SemanticToolOutcomeUnknownError("The image was generated but its receipt could not be saved. Do not retry this call.", { cause: error });
+    }
     let saveError: unknown;
     try {
       await authorize();
