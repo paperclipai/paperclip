@@ -1,0 +1,55 @@
+name: PR merge review notification
+
+on:
+  workflow_run:
+    workflows:
+      - PR
+      - Runner Windows
+      - Sentry SDK contract
+      - Docker Runner check
+      - commitperclip PR Review
+      - Storybook Visual
+      - Storybook Deploy
+      - CI work benchmark
+      - Incremental CI qualification
+      - Backup checkpoint qualification
+    types: [completed]
+  # External check providers and legacy commit statuses can finish after CI.
+  check_run:
+    types: [completed]
+  status:
+
+permissions:
+  actions: read
+  checks: read
+  contents: read
+  pull-requests: read
+
+jobs:
+  notify:
+    if: >-
+      github.repository == 'paperclipai/paperclip' &&
+      (github.event_name != 'workflow_run' ||
+        github.event.workflow_run.event == 'pull_request' ||
+        github.event.workflow_run.event == 'pull_request_target')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # Restrict this environment to master. Repository secrets would also be
+    # available to workflows changed by an in-repository PR.
+    environment: pr-merge-review
+    continue-on-error: true
+    steps:
+      # Only the trusted default-branch commit. Never use the PR SHA, caches,
+      # artifacts, dependencies, or executable files from a pull request.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+      - name: Notify the advisory review routine
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PAPERCLIP_PR_REVIEW_WEBHOOK_URL: ${{ secrets.PAPERCLIP_PR_REVIEW_WEBHOOK_URL }}
+          PAPERCLIP_PR_REVIEW_WEBHOOK_TOKEN: ${{ secrets.PAPERCLIP_PR_REVIEW_WEBHOOK_TOKEN }}
+        run: node .github/scripts/notify-pr-merge-review.mjs
