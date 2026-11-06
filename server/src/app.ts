@@ -222,6 +222,7 @@ import {
 } from "./services/plugin-host-services.js";
 import { createPluginEventBus } from "./services/plugin-event-bus.js";
 import { setPluginEventBus } from "./services/activity-log.js";
+import { setPluginEventBusLogger } from "./services/plugin-event-bus.js";
 import { createPluginDevWatcher } from "./services/plugin-dev-watcher.js";
 import { createPluginHostServiceCleanup } from "./services/plugin-host-service-cleanup.js";
 import { pluginRegistryService } from "./services/plugin-registry.js";
@@ -844,6 +845,7 @@ export async function createApp(
   }
   const pluginRegistry = pluginRegistryService(db);
   const eventBus = createPluginEventBus();
+  setPluginEventBusLogger((msg, data) => logger.warn(data, msg));
   setPluginEventBus(eventBus);
   const jobStore = pluginJobStore(db);
   const lifecycle = pluginLifecycleManager(db, { workerManager });

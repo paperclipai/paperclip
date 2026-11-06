@@ -23,6 +23,19 @@
 import type { PluginEventType } from "@paperclipai/shared";
 import type { PluginEvent, EventFilter } from "@paperclipai/plugin-sdk";
 
+// Delivery-failure logging. Handlers proxy into worker processes via IPC; a
+// stale subscription bound to a dead worker channel fails silently unless the
+// emit result errors are surfaced here. Injected lazily to avoid a logger
+// import cycle at module load; falls back to console.
+let emitFailureLogger: ((msg: string, data: Record<string, unknown>) => void) | null = null;
+
+/** Wire a structured logger for event delivery failures (called once at boot). */
+export function setPluginEventBusLogger(
+  logger: (msg: string, data: Record<string, unknown>) => void,
+): void {
+  emitFailureLogger = logger;
+}
+
 // ---------------------------------------------------------------------------
 // Internal types
 // ---------------------------------------------------------------------------
@@ -194,6 +207,18 @@ export function createPluginEventBus(): PluginEventBus {
     }
 
     await Promise.all(promises);
+    // Surface delivery failures — a subscription whose handler proxies into a
+    // restarted/dead worker fails here; without this log the failure is silent
+    // and the plugin appears subscribed while receiving nothing.
+    if (errors.length > 0 && emitFailureLogger) {
+      emitFailureLogger("plugin-event-bus: delivery failures", {
+        eventType: event.eventType,
+        failures: errors.map((e) => ({
+          pluginId: e.pluginId,
+          error: e.error instanceof Error ? e.error.message : String(e.error),
+        })),
+      });
+    }
     return { errors };
   }
 
