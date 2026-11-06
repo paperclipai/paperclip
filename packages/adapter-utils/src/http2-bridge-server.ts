@@ -1341,6 +1341,10 @@ export function createHttp2BridgeServer(options: CreateHttp2BridgeServerOptions)
   });
 
   server.on("stream", (stream, headers) => {
+    if (stream.destroyed) {
+      stream.on("error", () => undefined);
+      return;
+    }
     void handleStream(stream, headers).catch((error) => {
       // A fault inside `handleStream` itself (not a forward-handler or
       // stream-body rejection, both already caught above) is a defensive
