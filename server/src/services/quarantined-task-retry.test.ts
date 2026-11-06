@@ -3,13 +3,14 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { and, eq } from "drizzle-orm";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agents, agentWakeupRequests, companies, createDb, environmentLeases, executionWorkspaces, heartbeatRunEvents,
   heartbeatRuns, issueRecoveryActions, issues, nativeRunFinalizations, workspaceOperations,
 } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
-import { parseNativeExecutionInput } from "../vendor/paperclip-runner/index.js";
+import { executeNativeSession, nativeSessionCleanupBlock, onNativeSessionCleanupSettled, parseNativeExecutionInput } from "../vendor/paperclip-runner/index.js";
+import type { NativeSession } from "../vendor/paperclip-runner/index.js";
 import { appendHeartbeatRunEvent } from "./heartbeat-run-events.js";
 import { heartbeatService } from "./heartbeat.js";
 import { getExecutionBlocker } from "./execution-blocker.js";
@@ -236,6 +237,75 @@ describe("task Retry after inherited native cleanup quarantine", () => {
       } else expect(proof).toBeNull();
       expect(await getExecutionBlocker(db, f.companyId, f.issueId)).not.toBeNull();
     } finally {
+      if (previous === undefined) delete process.env.PAPERCLIP_RUNNER_STATE_DIR; else process.env.PAPERCLIP_RUNNER_STATE_DIR = previous;
+      await rm(base, { recursive: true, force: true });
+    }
+  });
+
+  it("holds a Retry while the task's own provider session close is still retained, then starts it", async () => {
+    const base = await mkdtemp(join(tmpdir(), "retained-close-retry-"));
+    const previous = process.env.PAPERCLIP_RUNNER_STATE_DIR;
+    process.env.PAPERCLIP_RUNNER_STATE_DIR = base;
+    let releaseClose = () => {};
+    try {
+      const f = await seed(base);
+      // The source failed for another reason; only the runner's in-process
+      // admission gate still holds this task's provider session close.
+      await db.update(heartbeatRuns).set({ errorCode: "provider_transport_failed" }).where(eq(heartbeatRuns.id, f.sourceId));
+      const settled = vi.fn();
+      const unsubscribe = onNativeSessionCleanupSettled(settled);
+      const pendingClose = new Promise<void>(resolve => { releaseClose = resolve; });
+      const identity = { runId: randomUUID(), sessionId: "retained-close-session", companyId: f.companyId, issueId: f.issueId, agentId: f.agentId };
+      const capabilities = { resume: true, typedEvents: true, steering: false, interruption: false, structuredResult: true };
+      const session: NativeSession = {
+        identity: () => identity, capabilities: async () => capabilities,
+        async *events() { throw new Error("retained close transport stopped"); },
+        startTurn: async () => ({ turnId: "retained-close-turn" }), result: async () => null,
+        async snapshot() { return { backendKind: "mock", sessionId: "retained-close-driver", identity,
+          providerSessionId: "retained-close-provider", cursor: null, activeTurnId: null, pendingRuntimeRequests: [], lineage: [] }; },
+        close: () => pendingClose,
+      };
+      await expect(executeNativeSession({
+        input: parseNativeExecutionInput({ schema: "paperclip.native-execution-input.v1", provider: { kind: "codex", model: null },
+          binding: { companyId: f.companyId, agentId: f.agentId, issueId: f.issueId, runId: identity.runId, executionWorkspaceId: f.workspaceId },
+          task: { identifier: "TEST", title: "Continue saved work", description: null, prompt: "Continue saved work", workMode: "standard" },
+          workspace: { cwd: base, repoUrl: null, repoRef: null, branchName: null },
+          session: { normalizedSessionId: identity.sessionId, driverKind: "codex_app_server", protocolVersion: 1,
+            lifecyclePolicy: { mode: "per_turn", idleTimeoutMs: null } },
+          completionContract: { id: "contract", sha256: "sha", schemaVersion: "paperclip.completion-contract.v1",
+            contract: { revision: "1", objective: "Continue saved work", criteria: [{ id: "done", requirement: "Save the result" }] } },
+          interactionResponses: [], credentialBindings: [] }),
+        backend: { descriptor: async () => ({ kind: "runner", name: "retained-close-backend", version: "1", capabilities }),
+          openSession: async () => session },
+        controlPlane: { openRun: async () => {}, checkpointSession: async () => {},
+          appendEvent: async () => ({ cursor: 0, highestContiguousSourceSeq: 0, disposition: "committed" }),
+          replayEvents: async () => ({ events: [], highestContiguousSourceSeq: 0 }), completeRun: async () => {} },
+        runnerInstanceId: f.runnerInstanceId, controlPlaneInstanceId: "control",
+      })).rejects.toThrow("retained close transport stopped");
+      expect(nativeSessionCleanupBlock({ companyId: f.companyId, issueId: f.issueId })).toBe("pending");
+      expect(nativeSessionCleanupBlock({ companyId: f.companyId, issueId: randomUUID() })).toBeNull();
+
+      await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, status: "running" });
+      const receipt = await requestTaskRetry({ db, companyId: f.companyId, issueId: f.issueId, actorId: "board",
+        actorSource: "local_implicit", observedRunId: f.sourceId, idempotencyKey: randomUUID() });
+      const heartbeat = heartbeatService(db);
+      await heartbeat.resumeTaskRetry(f.companyId, receipt.requestId!);
+      const queued = () => db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId), eq(heartbeatRuns.status, "queued")));
+      // No successor is dispatched that the runner would refuse at once.
+      expect(await queued()).toHaveLength(0);
+      const [held] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, receipt.requestId!));
+      expect(held).toMatchObject({ status: "deferred_issue_execution", runId: null });
+      expect(held.payload).toMatchObject({ executionWait: { reason: "local_cleanup" } });
+
+      // The close settles by itself; its release wakes the held Retry, which then starts.
+      releaseClose();
+      await vi.waitFor(() => expect(settled).toHaveBeenCalledWith({ companyId: f.companyId, issueIds: [f.issueId] }));
+      expect(nativeSessionCleanupBlock({ companyId: f.companyId, issueId: f.issueId })).toBeNull();
+      unsubscribe();
+      await heartbeat.resumeTaskRetry(f.companyId, receipt.requestId!);
+      expect(await queued()).toHaveLength(1);
+    } finally {
+      releaseClose();
       if (previous === undefined) delete process.env.PAPERCLIP_RUNNER_STATE_DIR; else process.env.PAPERCLIP_RUNNER_STATE_DIR = previous;
       await rm(base, { recursive: true, force: true });
     }

@@ -85,6 +85,71 @@ const failedSessionCleanupOwners = new Map<
   Promise<void>,
   NativeSessionCleanupDomain
 >();
+
+type NativeSessionCleanupSettledListener = (scope: {
+  companyId: string;
+  issueIds: string[];
+}) => void;
+const cleanupSettledListeners = new Set<NativeSessionCleanupSettledListener>();
+
+function cleanupDomainScope(domain: NativeSessionCleanupDomain): {
+  companyId: string;
+  issueIds: string[];
+} {
+  const [companyId] = JSON.parse(domain.key) as string[];
+  const issueIds = domain.resources.flatMap((resource) => {
+    const [kind, id] = JSON.parse(resource) as string[];
+    return kind === "issue" && typeof id === "string" ? [id] : [];
+  });
+  return { companyId: companyId ?? "", issueIds };
+}
+
+/** A retained cleanup owner or quarantine entry was released. Observers can
+ * re-evaluate work that waited on it; this grants no execution authority. */
+function announceCleanupSettled(domain: NativeSessionCleanupDomain): void {
+  const scope = cleanupDomainScope(domain);
+  for (const listener of cleanupSettledListeners) {
+    try {
+      listener(structuredClone(scope));
+    } catch {
+      // Observers cannot change cleanup ownership.
+    }
+  }
+}
+
+/** Subscribe to cleanup releases. Returns the unsubscribe function. */
+export function onNativeSessionCleanupSettled(
+  listener: NativeSessionCleanupSettledListener,
+): () => void {
+  cleanupSettledListeners.add(listener);
+  return () => cleanupSettledListeners.delete(listener);
+}
+
+/**
+ * Read-only view of the in-process admission gate for one task. "pending":
+ * a retained close or bounded automatic close recovery still owns the task's
+ * provider resources, and admission would be refused now. "operator_required":
+ * the close cannot settle automatically. Never grants or retires authority.
+ */
+export function nativeSessionCleanupBlock(input: {
+  companyId: string;
+  issueId: string;
+}): "operator_required" | "pending" | null {
+  const issueResource = JSON.stringify(["issue", input.issueId]);
+  const matches = (domain: NativeSessionCleanupDomain) =>
+    domain.resources.includes(issueResource) &&
+    cleanupDomainScope(domain).companyId === input.companyId;
+  let block: "operator_required" | "pending" | null = null;
+  for (const entry of quarantinedSessionCleanups) {
+    if (!matches(entry.domain)) continue;
+    if (entry.operatorRecoveryRequired) return "operator_required";
+    block = "pending";
+  }
+  for (const domain of failedSessionCleanupOwners.values()) {
+    if (matches(domain)) block = "pending";
+  }
+  return block;
+}
 const FAILED_SESSION_CLOSE_RETRY_MS = 1_000;
 const MAX_FAILED_SESSION_CLOSE_RETRIES = 3;
 const MAX_QUARANTINED_SESSION_CLOSE_RETRIES = 3;
@@ -154,7 +219,10 @@ export function completeRetainedNativeSessionCleanup(
   ) {
     throw new NativeSessionCleanupQuarantinedError();
   }
-  for (const entry of matches) quarantinedSessionCleanups.delete(entry);
+  for (const entry of matches) {
+    quarantinedSessionCleanups.delete(entry);
+    announceCleanupSettled(entry.domain);
+  }
   return matches.length;
 }
 
@@ -182,6 +250,7 @@ export function completeTerminatedRemoteNativeSessionCleanup(binding: {
     if (entry.timer) clearTimeout(entry.timer);
     entry.timer = null;
     quarantinedSessionCleanups.delete(entry);
+    announceCleanupSettled(entry.domain);
   }
   return true;
 }
@@ -205,6 +274,7 @@ export function completeTerminatedLocalNativeSessionCleanup(binding: {
   for (const entry of matches) {
     if (entry.timer) clearTimeout(entry.timer);
     quarantinedSessionCleanups.delete(entry);
+    announceCleanupSettled(entry.domain);
   }
   return true;
 }
@@ -679,7 +749,10 @@ function retainFailedSessionCleanupOwner(
 ): void {
   failedSessionCleanupOwners.set(cleanup, cleanupDomain);
   void cleanup
-    .finally(() => failedSessionCleanupOwners.delete(cleanup))
+    .finally(() => {
+      failedSessionCleanupOwners.delete(cleanup);
+      announceCleanupSettled(cleanupDomain);
+    })
     .catch(() => undefined);
 }
 
@@ -752,6 +825,7 @@ function startQuarantinedSessionCleanupRecovery(
       try {
         await attempt;
         quarantinedSessionCleanups.delete(cleanup);
+        announceCleanupSettled(cleanup.domain);
       } catch (error) {
         if (error instanceof NativeSessionCloseUnrecoverableError) {
           cleanup.operatorRecoveryRequired = true;
@@ -768,6 +842,7 @@ function startQuarantinedSessionCleanupRecovery(
   void recovery
     .finally(() => {
       failedSessionCleanupOwners.delete(recovery);
+      announceCleanupSettled(cleanup.domain);
       if (cleanup.recovery === recovery) {
         cleanup.recovery = null;
         cleanup.recoveryMaxAttempts = null;
