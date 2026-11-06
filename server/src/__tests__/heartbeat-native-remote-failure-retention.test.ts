@@ -25,13 +25,25 @@ describeEmbeddedPostgres("heartbeat native remote preparation failure retention"
 
   /** Seeds a running remote native run whose controller was lost, so restart
    * recovery claims it to reattach its original sandbox allocation. Callers
-   * restore process state by running `restore` in a `finally`. */
-  async function arrangeRemoteRestart(label: string, options: {
+   * restore process state by running `restore` in a `finally`; a setup that
+   * fails partway restores what it already changed before rethrowing. */
+  type ArrangeOptions = {
     legacyProfile?: boolean; providerHistory?: boolean;
     resumeLease: (input: EnvironmentDriverResumeInput) => Promise<EnvironmentDriverResumeInput["lease"] | null>;
     execute: () => Promise<never>;
-  }) {
+  };
+  async function arrangeRemoteRestart(label: string, options: ArrangeOptions) {
     const restore: Array<() => unknown> = [];
+    const restoreAll = async () => { for (const step of restore) { try { await step(); } catch { /* keep restoring */ } } };
+    try {
+      return { ...(await seedRemoteRestart(restore, label, options)), restore: restoreAll };
+    } catch (error) {
+      await restoreAll();
+      throw error;
+    }
+  }
+
+  async function seedRemoteRestart(restore: Array<() => unknown>, label: string, options: ArrangeOptions) {
     const f = await fixture.seedRun(label);
     const db = f.db, workspaceId = randomUUID(), environmentId = randomUUID(), leaseId = randomUUID();
     const settings = instanceSettingsService(db), previous = await settings.getExperimental();
@@ -124,9 +136,8 @@ describeEmbeddedPostgres("heartbeat native remote preparation failure retention"
     const heartbeat = heartbeatService(db, { environmentRuntime: runtime,
       nativeSessionBackendFactory: () => { throw new Error("No provider backend may be created"); } });
     restore.unshift(() => heartbeat.drainActiveRunExecutions());
-    const restoreAll = async () => { for (const step of restore) { try { await step(); } catch { /* keep restoring */ } } };
     return { f, db, heartbeat, userId, workspaceId, environmentId, leaseId, providerLeaseId, remoteCwd,
-      acquireAllocation, readyAllocation, restore: restoreAll };
+      acquireAllocation, readyAllocation };
   }
 
   it.each(["modern", "legacy", "provider_history"] as const)("preserves the allocated workspace when restart preparation fails (%s)", async mode => {
