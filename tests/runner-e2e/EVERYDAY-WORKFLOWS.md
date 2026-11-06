@@ -106,6 +106,12 @@ a new run from it. These fail: a "send a message to continue" blocker
 (`resume.no-silent-stall`), and duplicate execution. Evidence is saved to
 `reliability-observations.json`.
 
+Message delivery is attributed through each run's wake context
+(`wakeCommentIds`), not its saved prompt: the prompt carries the whole
+conversation history, so later turns legitimately repeat earlier messages. A
+message delivered by more than one successful run is duplicate execution.
+`--group slow` selects only `long-silent-command`.
+
 | Case | Soak signature | Journey | Key checks |
 |---|---|---|---|
 | `interrupt-redirect` | S47 (fixes #19370, #19355) | While a slow step loop runs, send a follow-up and click its queued **Interrupt**. Then reopen with a second slow loop, click **Stop**, and immediately send another message while the stopped run is still saving (the `workspace_busy` retry path). | Interrupted run ends `operator_interrupted`; exactly one continuation carries the message and starts within 180 s (the soak saw 13–90 s once fixed, 4 minutes or never before); no second user message; the Stop-settlement message is consumed once within 180 s; Done. |

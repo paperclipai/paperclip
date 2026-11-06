@@ -117,7 +117,6 @@ class ResumptionWatcher {
   }
 }
 
-const parentRuns = (ctx: ReliabilityFlowContext, state: StoryState) => state.runs.filter(run => runIssueId(run) === ctx.parentId);
 const allDone = (state: StoryState) => state.issues.length > 0
   && state.issues.every(issue => issue.status === "done" && (issue.queuedComments?.entries?.length ?? 0) === 0)
   && !state.runs.some(isActiveStoryRun);
@@ -226,7 +225,10 @@ async function reassignMidrun(ctx: ReliabilityFlowContext, watcher: ResumptionWa
 
 async function threeTurnRevise(ctx: ReliabilityFlowContext, watcher: ResumptionWatcher): Promise<ReliabilityOutcome> {
   const turnBound = 12 * 60_000;
-  await watcher.until("turn 1 finished", allDone, turnBound);
+  // Turn 1 is the last successful parent run before the first revision (it may follow an automatic resume).
+  const turnOne = (await watcher.until("turn 1 finished", allDone, turnBound)).runs
+    .filter(run => runIssueId(run) === ctx.parentId && run.status === "succeeded")
+    .sort((a, b) => Date.parse(a.finishedAt ?? "") - Date.parse(b.finishedAt ?? "")).at(-1);
   const commentIds: string[] = [];
   for (const [index, revision] of threeTurnRevisions(ctx.nonce).entries()) {
     const [commentId] = await ctx.reply(revision);
@@ -240,9 +242,9 @@ async function threeTurnRevise(ctx: ReliabilityFlowContext, watcher: ResumptionW
     parentAgentIds: [ctx.leadAgentId],
     checks: async () => {
       const state = await ctx.refresh();
-      const first = executedRuns(parentRuns(ctx, state)).sort((a, b) => Date.parse(a.startedAt!) - Date.parse(b.startedAt!))[0];
       return gradeThreeTurnRevise({ nonce: ctx.nonce, content: await readWorkspaceFile(ctx, "items.md"),
-        turnRuns: [first, ...commentIds.map(id => runsCarrying(state.runs, id).at(-1))] });
+        turnRuns: [turnOne, ...commentIds.map(id => runsCarrying(state.runs, id).find(run => run.status === "succeeded")
+          ?? runsCarrying(state.runs, id).at(-1))] });
     },
   };
 }
@@ -373,9 +375,11 @@ async function queuedAcrossRestart(ctx: ReliabilityFlowContext, watcher: Resumpt
   if (!commentId) throw new Error("The queued follow-up was not stored");
   // The original turn may be interrupted by shutdown; its recovery is graded by the resumption rule.
   ctx.allowInterrupted(active.id);
+  const dispatchedBeforeRestart = runsCarrying((await ctx.refresh()).runs, commentId).length > 0;
+  // A healthy replacement may dispatch before the restart handshake returns; bound from the request.
+  const restartStartedAt = Date.now();
   await ctx.restart();
-  const restartReadyAt = Date.now();
-  ctx.note("reliability-controller-restarted", { runId: active.id, commentId });
+  ctx.note("reliability-controller-restarted", { runId: active.id, commentId, dispatchedBeforeRestart, readyAfterMs: Date.now() - restartStartedAt });
   const waitObservations: Array<{ at: string; phase?: string; label?: string; cause?: string | null }> = [];
   await watcher.until("queued follow-up dispatched after restart", state => runsCarrying(state.runs, commentId).length > 0,
     RELIABILITY_BOUNDS.restartDispatchMs + 60_000, async () => {
@@ -387,7 +391,8 @@ async function queuedAcrossRestart(ctx: ReliabilityFlowContext, watcher: Resumpt
   await watcher.until("queued follow-up finished", allDone, 15 * 60_000);
   return {
     expectedReply: `Restarted ${ctx.nonce}`, parentAgentIds: [ctx.leadAgentId],
-    checks: async () => gradeQueuedAcrossRestart({ runs: (await ctx.refresh()).runs, commentId, restartReadyAt, waitObservations }),
+    checks: async () => gradeQueuedAcrossRestart({ runs: (await ctx.refresh()).runs, commentId, restartStartedAt,
+      dispatchedBeforeRestart, waitObservations }),
   };
 }
 

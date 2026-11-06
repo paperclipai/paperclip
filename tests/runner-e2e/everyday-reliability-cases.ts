@@ -99,7 +99,9 @@ export const everydayReliabilityTasks: readonly RunnerTaskFixture[] = definition
   explicitGroup: EVERYDAY_RELIABILITY_GROUP,
   workMode: "standard",
   flow: "everyday_workflow",
+  // An upper bound for cost estimates; an offered Retry or workspace deferral may add a run.
   expectedRunCount: definition.expectedRunCount,
+  minimumExpectedRunCount: 1,
   automaticRetryPolicy: "single_attempt",
   attemptTimeoutMs: { local: 20 * 60_000, daytona: definition.daytonaTimeoutMs },
   expectedTerminalState: { issue: "done", run: "succeeded" },
@@ -114,9 +116,10 @@ export const RELIABILITY_NATIVE_PROFILE_ID = "runner-codex";
 export const RELIABILITY_FACADE_PROFILE_IDS = ["runner-acpx-grok", "runner-acpx-kimi", "runner-acpx-pi"] as const;
 
 /** The deliberately small paid matrix: one native Daytona cell per case, plus facades for long-silent-command. */
-export function everydayReliabilityExecutionIds(suiteId: string): string[] {
+export function everydayReliabilityExecutionIds(suiteId: string,
+  facadeProfileIds: readonly string[] = RELIABILITY_FACADE_PROFILE_IDS): string[] {
   return [
     ...everydayReliabilityCaseIds.map(caseId => `${suiteId}.${RELIABILITY_NATIVE_PROFILE_ID}.daytona.${caseId}`),
-    ...RELIABILITY_FACADE_PROFILE_IDS.map(profileId => `${suiteId}.${profileId}.daytona.long-silent-command`),
+    ...facadeProfileIds.map(profileId => `${suiteId}.${profileId}.daytona.long-silent-command`),
   ];
 }

@@ -198,7 +198,8 @@ export function selectRunnerExecutions(
     const unfilteredList = options.list && options.groups.length + options.suites.length + options.profiles.length
       + options.environments.length + options.cases.length === 0;
     const explicitGroup = execution.task.explicitGroup;
-    if (explicitGroup && !unfilteredList && !options.groups.includes(explicitGroup)
+    // Naming any of the task's own groups (for example `slow`) also opts in.
+    if (explicitGroup && !unfilteredList && !options.groups.some(group => group === explicitGroup || execution.task.groups.includes(group))
       && !options.cases.includes(execution.task.id)) return false;
     if (
       options.all ||

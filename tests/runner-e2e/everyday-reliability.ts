@@ -29,10 +29,26 @@ export function executedRuns(runs: readonly StoryRun[]): StoryRun[] {
   return runs.filter(run => !isStoryWorkspaceDeferral(run) && Boolean(run.startedAt));
 }
 
-/** Executed runs whose input carried this message. */
-export function runsCarrying(runs: readonly StoryRun[], needle: string): StoryRun[] {
-  return executedRuns(runs).filter(run => runNativeInput(run).includes(needle));
+/**
+ * Comments this run was woken to deliver. The saved prompt also holds the whole
+ * conversation history, so it cannot attribute delivery; the wake context can.
+ */
+export function runWakeCommentIds(run: StoryRun): string[] {
+  const context = run.contextSnapshot ?? {};
+  const ids = Array.isArray(context.wakeCommentIds) ? context.wakeCommentIds : [];
+  return [...new Set([...ids, context.wakeCommentId, context.commentId].filter((id): id is string => typeof id === "string"))];
 }
+
+/** Executed runs woken to deliver this comment (a Retry of a failed delivery inherits it). */
+export function runsCarrying(runs: readonly StoryRun[], commentId: string): StoryRun[] {
+  return executedRuns(runs).filter(run => runWakeCommentIds(run).includes(commentId));
+}
+
+/** Successful deliveries of one comment; more than one is duplicate execution. */
+export const successfulDeliveries = (runs: readonly StoryRun[], commentId: string) =>
+  runsCarrying(runs, commentId).filter(run => run.status === "succeeded");
+
+const earliest = (runs: readonly StoryRun[]) => [...runs].sort((a, b) => ms(a.startedAt) - ms(b.startedAt))[0];
 
 /** Pairs of runs that executed on the same task at the same time. */
 export function concurrentExecutors(runs: readonly StoryRun[], issueId: string, now = Date.now()): Array<[string, string]> {
@@ -103,27 +119,27 @@ export function gradeInterruptRedirect(input: {
   stopSettle?: { stoppedRunId: string; commentId: string; sentAt: number };
 }): StoryCheck[] {
   const interrupted = input.runs.find(run => run.id === input.interruptedRunId);
-  const carriers = runsCarrying(input.runs, input.interruptCommentId);
-  const continuation = carriers[0];
+  const carriers = successfulDeliveries(input.runs, input.interruptCommentId);
+  const continuation = earliest(runsCarrying(input.runs, input.interruptCommentId));
   const delay = ms(continuation?.startedAt) - input.interruptedAt;
   const extra = continuation ? userCommentsBetween(input.comments, input.interruptedAt, ms(continuation.startedAt), [input.interruptCommentId]) : [];
   const checks = [
     check("interrupt.operator-interrupt", interrupted?.status === "cancelled"
       && (interrupted.errorCode === "operator_interrupted" || interrupted.resultJson?.operatorInterrupted === true),
     `The interrupted run ends as an operator interrupt (observed ${interrupted?.status ?? "missing"}/${interrupted?.errorCode ?? "none"}).`),
-    check("interrupt.exactly-one-continuation", carriers.length === 1 && continuation?.status === "succeeded",
-      `Exactly one successful continuation carries the interrupt message (observed ${carriers.length}).`),
+    check("interrupt.exactly-one-continuation", carriers.length === 1,
+      `Exactly one successful continuation delivers the interrupt message (observed ${carriers.length}).`),
     check("interrupt.continuation-bounded", Number.isFinite(delay) && delay <= RELIABILITY_BOUNDS.continuationStartMs,
       `The continuation starts within ${RELIABILITY_BOUNDS.continuationStartMs / 1000}s of the interrupt (observed ${Number.isFinite(delay) ? Math.round(delay / 1000) + "s" : "never"}).`),
     check("interrupt.no-second-message", extra.length === 0, "No second user message was needed before the continuation started."),
   ];
   if (input.stopSettle) {
     const stopped = input.runs.find(run => run.id === input.stopSettle!.stoppedRunId);
-    const settleCarriers = runsCarrying(input.runs, input.stopSettle.commentId);
-    const settleDelay = ms(settleCarriers[0]?.startedAt) - input.stopSettle.sentAt;
+    const settleCarriers = successfulDeliveries(input.runs, input.stopSettle.commentId);
+    const settleDelay = ms(earliest(runsCarrying(input.runs, input.stopSettle.commentId))?.startedAt) - input.stopSettle.sentAt;
     checks.push(
       check("stop-settle.stopped", stopped?.status === "cancelled", "The stopped run is terminal as cancelled."),
-      check("stop-settle.consumed-once", settleCarriers.length === 1 && settleCarriers[0]?.status === "succeeded",
+      check("stop-settle.consumed-once", settleCarriers.length === 1,
         `A message sent while Stop was settling is consumed by exactly one successful run (observed ${settleCarriers.length}).`),
       check("stop-settle.bounded", Number.isFinite(settleDelay) && settleDelay <= RELIABILITY_BOUNDS.continuationStartMs,
         `The workspace_busy retry dispatches within ${RELIABILITY_BOUNDS.continuationStartMs / 1000}s (observed ${Number.isFinite(settleDelay) ? Math.round(settleDelay / 1000) + "s" : "never"}).`),
@@ -142,8 +158,9 @@ export function gradeReassignMidrun(input: {
   steps: number;
 }): StoryCheck[] {
   const old = input.runs.find(run => run.id === input.oldRunId);
+  // A failed first attempt followed by a working Retry is allowed: require any success.
   const successor = executedRuns(input.runs).find(run => run.agentId === input.newAgentId && runIssueId(run) === input.issueId
-    && ms(run.startedAt) >= input.request.requestedAt);
+    && ms(run.startedAt) >= input.request.requestedAt && run.status === "succeeded");
   const overlaps = concurrentExecutors(input.runs, input.issueId);
   return [
     check("reassign.request-prompt", input.request.status >= 200 && input.request.status < 300
@@ -216,7 +233,9 @@ export function gradeTreePauseRelease(input: {
   interruptedRuns: ReadonlyArray<{ id: string; issueId: string }>;
 }): StoryCheck[] {
   const executed = executedRuns(input.runs);
-  const startedDuringHold = executed.filter(run => input.childIds.includes(runIssueId(run) ?? "")
+  // A run that started while the hold request was in flight is one the hold interrupted.
+  const interruptedIds = new Set(input.interruptedRuns.map(run => run.id));
+  const startedDuringHold = executed.filter(run => input.childIds.includes(runIssueId(run) ?? "") && !interruptedIds.has(run.id)
     && ms(run.startedAt) > input.holdCreatedAt && ms(run.startedAt) < input.releasedAt);
   const interruptedIssues = [...new Set(input.interruptedRuns.map(run => run.issueId))];
   const resumed = (issueId: string) => input.runs.filter(run => runIssueId(run) === issueId
@@ -247,7 +266,7 @@ export function gradeQueueSteer(input: {
   const anyInput = (needle: string) => executed.some(run => runNativeInput(run).includes(needle));
   const active = input.runs.find(run => run.id === input.activeRunId);
   const acks = (active?.resultJson?.queuedSteeringAcknowledgements ?? {}) as Record<string, { status?: string }>;
-  const editedCarriers = runsCarrying(input.runs, input.edited.commentId);
+  const editedCarriers = successfulDeliveries(input.runs, input.edited.commentId);
   const steerReplays = runsCarrying(input.runs, input.steered.commentId);
   const finalAttempt = input.steerAttempts.at(-1);
   const retriesValid = input.steerAttempts.slice(0, -1).every(attempt => attempt.code === "steering_temporarily_unavailable");
@@ -255,9 +274,10 @@ export function gradeQueueSteer(input: {
     check("queue.edit-used", anyInput(input.edited.editedMarker) && !anyInput(input.edited.originalMarker)
       && (input.files.edited ?? "").includes(input.edited.editedMarker),
     "The edited text reached the agent; the original text never did."),
-    check("queue.remaining-handled-once", editedCarriers.length === 1 && editedCarriers[0]?.status === "succeeded",
+    check("queue.remaining-handled-once", editedCarriers.length === 1,
       `The remaining queued message is handled by exactly one successful run (observed ${editedCarriers.length}).`),
-    check("queue.discard-never-delivered", !anyInput(input.discarded.marker) && !anyInput(input.discarded.commentId)
+    // History may retain a deleted comment's ID, but never its text or a delivery wake.
+    check("queue.discard-never-delivered", !anyInput(input.discarded.marker) && runsCarrying(input.runs, input.discarded.commentId).length === 0
       && !acks[input.discarded.commentId] && input.files.discarded === undefined,
     "The discarded message never reached the agent."),
     check("queue.steer-consumed-in-active-run", acks[input.steered.commentId]?.status === "acknowledged" && steerReplays.length === 0
@@ -271,19 +291,22 @@ export function gradeQueueSteer(input: {
 export function gradeQueuedAcrossRestart(input: {
   runs: readonly StoryRun[];
   commentId: string;
-  restartReadyAt: number;
+  /** When the controller stop was requested; the old controller cannot dispatch after it. */
+  restartStartedAt: number;
+  /** Whether a delivery already existed when the restart was requested. */
+  dispatchedBeforeRestart: boolean;
   waitObservations: ReadonlyArray<{ at: string; phase?: string; label?: string; cause?: string | null }>;
 }): StoryCheck[] {
-  const carriers = runsCarrying(input.runs, input.commentId);
-  const start = ms(carriers[0]?.startedAt);
+  const carriers = successfulDeliveries(input.runs, input.commentId);
+  const start = ms(earliest(runsCarrying(input.runs, input.commentId))?.startedAt);
   const bare = input.waitObservations.filter(observation => observation.phase === "queued"
     && (!observation.cause || observation.label === "Queued"));
   return [
-    check("restart.boundary-exercised", Number.isFinite(start) ? start >= input.restartReadyAt : true,
-      "The queued follow-up dispatched only after the controller restart."),
-    check("restart.dispatched-bounded", Number.isFinite(start) && start - input.restartReadyAt <= RELIABILITY_BOUNDS.restartDispatchMs,
-      `The follow-up dispatches automatically within ${RELIABILITY_BOUNDS.restartDispatchMs / 60_000} minutes of restart (observed ${Number.isFinite(start) ? Math.round((start - input.restartReadyAt) / 1000) + "s" : "never"}).`),
-    check("restart.exactly-once", carriers.length === 1 && carriers[0]?.status === "succeeded",
+    check("restart.boundary-exercised", !input.dispatchedBeforeRestart && (!Number.isFinite(start) || start >= input.restartStartedAt),
+      "The queued follow-up had not dispatched when the controller restart was requested."),
+    check("restart.dispatched-bounded", Number.isFinite(start) && start - input.restartStartedAt <= RELIABILITY_BOUNDS.restartDispatchMs,
+      `The follow-up dispatches automatically within ${RELIABILITY_BOUNDS.restartDispatchMs / 60_000} minutes of the restart (observed ${Number.isFinite(start) ? Math.round((start - input.restartStartedAt) / 1000) + "s" : "never"}).`),
+    check("restart.exactly-once", carriers.length === 1,
       `The follow-up is consumed by exactly one successful run (observed ${carriers.length}).`),
     check("restart.named-wait", bare.length === 0,
       bare.length ? `Bare Queued without a cause at ${bare.map(observation => observation.at).join(", ")}.`

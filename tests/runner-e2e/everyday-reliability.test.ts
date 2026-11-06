@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { buildMatrixJobs, parseRunnerSelectors, selectRunnerExecutions } from "./selectors.js";
-import { runnerMatrix } from "./catalog.js";
+import { everydayReliabilityFacadeProfileIds, runnerMatrix } from "./catalog.js";
 import { scheduledSelection } from "./scheduled-operations.js";
 import {
   EVERYDAY_RELIABILITY_GROUP, everydayReliabilityCaseIds, everydayReliabilityExecutionIds, everydayReliabilitySignatures,
@@ -19,8 +19,11 @@ const run = (id: string, overrides: Partial<StoryRun> = {}): StoryRun => ({
   id, companyId: "company", agentId: "lead", status: "succeeded", runtimeMode: "native", runnerInstanceId: "runner",
   nativeIssueId: "parent", startedAt: at(0), finishedAt: at(60), ...overrides,
 });
-const carrying = (id: string, text: string, overrides: Partial<StoryRun> = {}) =>
-  run(id, { runnerProfileJson: { nativeExecutionInput: { task: { prompt: text } } }, ...overrides });
+/** A run woken to deliver `wake`; its prompt holds `history` (the whole conversation so far). */
+const carrying = (id: string, wake: string, overrides: Partial<StoryRun> = {}, history = "") =>
+  run(id, { contextSnapshot: { issueId: "parent", wakeCommentIds: [wake] },
+    runnerProfileJson: { nativeExecutionInput: { task: { prompt: `${history} ${wake}` } } }, ...overrides });
+const reliabilityCellCount = everydayReliabilityCaseIds.length + everydayReliabilityFacadeProfileIds.length;
 const failed = (checks: StoryCheck[]) => checks.filter(check => !check.passed).map(check => check.id);
 
 describe("reliability selection stays explicit", () => {
@@ -29,7 +32,7 @@ describe("reliability selection stays explicit", () => {
   it("selects the whole reliability set only through its group", () => {
     const selected = selectRunnerExecutions(parseRunnerSelectors(["--suite", "everyday-workflows", "--group", "reliability"]));
     expect(selected.map(execution => execution.id).sort()).toEqual(everydayReliabilityExecutionIds("everyday-workflows").sort());
-    expect(selected).toHaveLength(10);
+    expect(selected).toHaveLength(reliabilityCellCount);
     expect(selected.every(execution => execution.environment.id === "daytona")).toBe(true);
   });
 
@@ -48,16 +51,18 @@ describe("reliability selection stays explicit", () => {
     expect(selectRunnerExecutions(parseRunnerSelectors(["--suite", "everyday-workflows", "--case", "long-silent-command"]))
       .map(execution => execution.profile.id).sort()).toEqual(["runner-acpx-grok", "runner-acpx-kimi", "runner-acpx-pi", "runner-codex"]);
     expect(selectRunnerExecutions(parseRunnerSelectors(["--id", "everyday-workflows.runner-codex.daytona.queue-steer"]))).toHaveLength(1);
-    expect(reliable(selectRunnerExecutions(parseRunnerSelectors(["--list"])))).toHaveLength(10);
+    expect(reliable(selectRunnerExecutions(parseRunnerSelectors(["--list"])))).toHaveLength(reliabilityCellCount);
+    expect(selectRunnerExecutions(parseRunnerSelectors(["--suite", "everyday-workflows", "--group", "slow"]))
+      .every(execution => execution.task.id === "long-silent-command")).toBe(true);
   });
 
   it("uses one native Daytona profile per case and facades only for the silent command", () => {
     const cells = runnerMatrix.filter(execution => isEverydayReliabilityCase(execution.task.id));
-    expect(cells).toHaveLength(10);
+    expect(cells).toHaveLength(reliabilityCellCount);
     for (const caseId of everydayReliabilityCaseIds) {
       const profiles = cells.filter(execution => execution.task.id === caseId).map(execution => execution.profile.id);
       expect(profiles).toContain("runner-codex");
-      expect(profiles.length).toBe(caseId === "long-silent-command" ? 4 : 1);
+      expect(profiles.length).toBe(caseId === "long-silent-command" ? 1 + everydayReliabilityFacadeProfileIds.length : 1);
     }
     expect(runnerMatrix.filter(execution => execution.suite.id === "everyday-workflows"
       && ["runner-acpx-grok", "runner-acpx-kimi", "runner-acpx-pi"].includes(execution.profile.id)
@@ -136,6 +141,9 @@ describe("scenario graders", () => {
     expect(failed(gradeInterruptRedirect(input))).toEqual([]);
     expect(failed(gradeInterruptRedirect({ ...input, runs: [...good, carrying("dup", "comment-1", { startedAt: at(300) })] })))
       .toContain("interrupt.exactly-one-continuation");
+    // Later turns keep the interrupt message in their prompt history; that is not a second delivery.
+    expect(failed(gradeInterruptRedirect({ ...input, runs: [...good, run("later", { startedAt: at(300),
+      runnerProfileJson: { nativeExecutionInput: { task: { prompt: "comment-1 comment-2 history" } } } })] }))).toEqual([]);
     expect(failed(gradeInterruptRedirect({ ...input, runs: [interrupted, carrying("late", "comment-1", { startedAt: at(250) }), ...good.slice(2)] })))
       .toEqual(["interrupt.continuation-bounded"]);
     expect(failed(gradeInterruptRedirect({ ...input, comments: [{ id: "nudge", createdAt: at(20) }] }))).toEqual(["interrupt.no-second-message"]);
@@ -145,7 +153,7 @@ describe("scenario graders", () => {
 
   it("reassign-midrun: prompt request, old run reassigned, no overlap, saved files continued", () => {
     const steps = Array.from({ length: 8 }, (_, index) => `step-${index + 1}`).join("\n");
-    const input = { issueId: "parent", oldRunId: "old", newAgentId: "riley", steps: 8, stepFile: steps,
+    const input = { issueId: "parent", oldRunId: "old", newAgentId: "riley", steps: 8, stepFile: steps as string | undefined,
       request: { status: 200, latencyMs: 800, requestedAt: T0 + 30_000 },
       runs: [run("old", { status: "cancelled", errorCode: "issue_reassigned", finishedAt: at(32) }),
         run("new", { agentId: "riley", startedAt: at(40), finishedAt: at(200) })] };
@@ -193,30 +201,32 @@ describe("scenario graders", () => {
       .toEqual(["tree.one-resume-per-interrupted"]);
     expect(failed(gradeTreePauseRelease({ ...input, runs: input.runs.slice(0, 3) }))).toEqual(["tree.one-resume-per-interrupted"]);
     expect(failed(gradeTreePauseRelease({ ...input, interruptedRuns: [] }))).toContain("tree.hold-interrupted-work");
+    // A run that started while the hold request was in flight was interrupted by it, not started during it.
+    expect(failed(gradeTreePauseRelease({ ...input, runs: input.runs.map(entry => entry.id === "ra" ? { ...entry, startedAt: at(100.5) } : entry) }))).toEqual([]);
   });
 
   it("queue-steer: edit used, discard never delivered, steer consumed once in the active turn", () => {
     const active = run("active", { resultJson: { queuedSteeringAcknowledgements: { steer: { status: "acknowledged" } } } });
-    const input = { activeRunId: "active", runs: [active, carrying("next", "edit EDITED_N1")],
+    const input = { activeRunId: "active", runs: [active, carrying("next", "edit", {}, "EDITED_N1 history: steer drop")],
       edited: { commentId: "edit", originalMarker: "ORIGINAL_N1", editedMarker: "EDITED_N1" },
       discarded: { commentId: "drop", marker: "DISCARDED_N1" }, steered: { commentId: "steer", marker: "STEERED_N1" },
       steerAttempts: [{ status: 409, code: "steering_temporarily_unavailable" }, { status: 200 }],
       files: { edited: "EDITED_N1", steered: "STEERED_N1" } };
     expect(failed(gradeQueueSteer(input))).toEqual([]);
-    expect(failed(gradeQueueSteer({ ...input, runs: [active, carrying("next", "edit EDITED_N1 drop DISCARDED_N1")] })))
+    expect(failed(gradeQueueSteer({ ...input, runs: [active, carrying("next", "edit", {}, "EDITED_N1 DISCARDED_N1")] })))
       .toEqual(["queue.discard-never-delivered"]);
-    expect(failed(gradeQueueSteer({ ...input, runs: [active, carrying("next", "edit ORIGINAL_N1")], files: { ...input.files, edited: "ORIGINAL_N1" } })))
+    expect(failed(gradeQueueSteer({ ...input, runs: [active, carrying("next", "edit", {}, "ORIGINAL_N1")], files: { ...input.files, edited: "ORIGINAL_N1" } })))
       .toEqual(["queue.edit-used"]);
-    expect(failed(gradeQueueSteer({ ...input, runs: [active, carrying("next", "edit EDITED_N1 steer")] })))
+    expect(failed(gradeQueueSteer({ ...input, runs: [...input.runs, carrying("replay", "steer", { startedAt: at(200) }, "EDITED_N1")] })))
       .toEqual(["queue.steer-consumed-in-active-run"]);
     expect(failed(gradeQueueSteer({ ...input, steerAttempts: [{ status: 409, code: "queued_comment_stale_target" }, { status: 200 }] })))
       .toEqual(["queue.steer-retry-bounded"]);
-    expect(failed(gradeQueueSteer({ ...input, runs: [...input.runs, carrying("again", "edit EDITED_N1")] })))
+    expect(failed(gradeQueueSteer({ ...input, runs: [...input.runs, carrying("again", "edit", { startedAt: at(300) }, "EDITED_N1")] })))
       .toEqual(["queue.remaining-handled-once"]);
   });
 
   it("queued-across-restart: bounded automatic dispatch with a named wait", () => {
-    const input = { commentId: "c1", restartReadyAt: T0 + 60_000,
+    const input = { commentId: "c1", restartStartedAt: T0 + 60_000, dispatchedBeforeRestart: false,
       runs: [carrying("next", "c1", { startedAt: at(120), finishedAt: at(200) })],
       waitObservations: [{ at: at(65), phase: "queued", label: "Waiting for server restart", cause: "server_restarting" }] };
     expect(failed(gradeQueuedAcrossRestart(input))).toEqual([]);
@@ -227,5 +237,6 @@ describe("scenario graders", () => {
       .toEqual(["restart.dispatched-bounded"]);
     expect(failed(gradeQueuedAcrossRestart({ ...input, runs: [carrying("early", "c1", { startedAt: at(30) })] })))
       .toEqual(["restart.boundary-exercised"]);
+    expect(failed(gradeQueuedAcrossRestart({ ...input, dispatchedBeforeRestart: true }))).toEqual(["restart.boundary-exercised"]);
   });
 });

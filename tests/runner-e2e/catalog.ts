@@ -1268,13 +1268,15 @@ const everydayFacadeProfiles = RELIABILITY_FACADE_PROFILE_IDS
     const { qualificationCandidate: _candidate, ...profile } = productionStoryProfile(original);
     return profile;
   });
+/** Released facades currently in the reliability group; a pending one drops out. */
+export const everydayReliabilityFacadeProfileIds = everydayFacadeProfiles.map(profile => profile.id);
 const everydayWorkflowProfiles = [...everydayProfiles,
   productionStoryProfile(runnerProfiles.find(profile => profile.id === "runner-opencode")!),
   ...everydayFacadeProfiles];
 
 /** Every reliability cell outside the deliberately small explicit matrix. */
 function everydayReliabilityExcludedIds(suiteId: string): string[] {
-  const allowed = new Set(everydayReliabilityExecutionIds(suiteId));
+  const allowed = new Set(everydayReliabilityExecutionIds(suiteId, everydayReliabilityFacadeProfileIds));
   return everydayWorkflowProfiles.flatMap(profile => ["local", "daytona"].flatMap(environmentId =>
     everydayReliabilityTasks.map(task => `${suiteId}.${profile.id}.${environmentId}.${task.id}`)))
     .filter(id => !allowed.has(id));
