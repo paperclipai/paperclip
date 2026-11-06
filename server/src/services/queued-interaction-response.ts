@@ -1,5 +1,5 @@
-import { and, eq, inArray, sql } from "drizzle-orm";
-import { agentWakeupRequests, issueThreadInteractions, type Db } from "@paperclipai/db";
+import { and, eq, inArray, isNotNull, sql } from "drizzle-orm";
+import { agentWakeupRequests, heartbeatRuns, issueThreadInteractions, type Db } from "@paperclipai/db";
 import type { IssueComment, IssueQueuedCommentEntry } from "@paperclipai/shared";
 
 function record(value: unknown): Record<string, unknown> {
@@ -34,6 +34,22 @@ export function queuedInteractionSummary(interaction: {
   return `${label}: ${subject}`;
 }
 
+/**
+ * A run that started with this response in its context already received it.
+ * Any other wake that still carries the same receipt (for example a recovery
+ * continuation that raced the response's own wake) is redundant: it is not
+ * pending input, so it must not hold the composer queue or the issue.
+ * A cancelled or failed start does not count; that response is still owed.
+ */
+function deliveredInteractionRunExists(companyId: string, issueId: string) {
+  return sql`EXISTS (SELECT 1 FROM heartbeat_runs delivered_run
+    WHERE delivered_run.company_id = ${companyId}
+      AND delivered_run.context_snapshot->>'issueId' = ${issueId}
+      AND delivered_run.context_snapshot->>'interactionId' = ${issueThreadInteractions.id}::text
+      AND delivered_run.started_at IS NOT NULL
+      AND delivered_run.status IN ('running', 'succeeded'))`;
+}
+
 export async function readQueuedInteractionResponse(db: Db, companyId: string, issueId: string, payload: unknown) {
   const id = queuedInteractionId(payload);
   if (!id) return null;
@@ -43,6 +59,14 @@ export async function readQueuedInteractionResponse(db: Db, companyId: string, i
     inArray(issueThreadInteractions.status, ["accepted", "answered", "rejected"]),
   ));
   if (!interaction || interaction.status !== record(payload).interactionStatus) return null;
+  const [delivered] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
+    eq(heartbeatRuns.companyId, companyId),
+    sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issueId}`,
+    sql`${heartbeatRuns.contextSnapshot}->>'interactionId' = ${interaction.id}`,
+    isNotNull(heartbeatRuns.startedAt),
+    inArray(heartbeatRuns.status, ["running", "succeeded"]),
+  )).limit(1);
+  if (delivered) return null;
   const p = record(interaction.payload);
   const result = record(interaction.result);
   const heading = queuedInteractionSummary(interaction);
@@ -80,6 +104,7 @@ export async function hasQueuedInteractionResponse(db: Db, companyId: string, is
       inArray(agentWakeupRequests.status, ["deferred_issue_execution", "queued"]),
       sql`${agentWakeupRequests.payload}->>'issueId' = ${issueId}`,
       sql`${agentWakeupRequests.payload}->>'mutation' = 'interaction'`,
+      sql`NOT ${deliveredInteractionRunExists(companyId, issueId)}`,
     )).limit(1);
   return Boolean(row);
 }

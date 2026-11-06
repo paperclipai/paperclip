@@ -7454,6 +7454,8 @@ export function issueRoutes(
         continue;
       const isReceipt = Boolean(queuedInteractionId(wake.payload));
       if (isReceipt && receipt) continue;
+      // A receipt a run already received is not pending; a later one may be.
+      if (isReceipt && !(await readQueuedInteractionResponse(executor as Db, wake.companyId, issue.id, wake.payload))) continue;
       if (wake.status === "deferred_issue_execution") {
         if (isReceipt) { receipt = { wake, state: "deferred", queueRun: null }; continue; }
         return { wake, state: "deferred", queueRun: null };
