@@ -1045,13 +1045,16 @@ async function supersedeOnboardingTaskQuestionsMovedToChat(
     postCommitIssueActions: IssuePostCommitAction[];
   },
 ) {
-  const onboardingTaskIds = tx.select({ id: issues.id }).from(issues).where(and(
+  // Lock the onboarding tasks before their questions, matching the
+  // task-then-question order of question creation on the task itself.
+  const onboardingTaskIds = (await tx.select({ id: issues.id }).from(issues).where(and(
     eq(issues.companyId, input.companyId),
     eq(issues.originKind, "onboarding_first_task"),
     isNull(issues.conversationAgentId),
     eq(issues.assigneeAgentId, input.agentId),
     eq(issues.createdByUserId, input.conversationUserId),
-  ));
+  )).orderBy(asc(issues.id)).for("update")).map(task => task.id);
+  if (onboardingTaskIds.length === 0) return [];
   const now = new Date();
   const rows = await tx
     .update(issueThreadInteractions)
@@ -1107,10 +1110,10 @@ async function completeOnboardingTaskMovedToChat(
     postCommitIssueActions: IssuePostCommitAction[];
   },
 ) {
+  // The caller already holds this task's row lock.
   const [task] = await tx.select({ id: issues.id, status: issues.status, identifier: issues.identifier })
     .from(issues)
-    .where(and(eq(issues.id, input.issueId), eq(issues.companyId, input.companyId)))
-    .for("update");
+    .where(and(eq(issues.id, input.issueId), eq(issues.companyId, input.companyId)));
   if (task?.status !== "in_review") return;
   const [stillPending] = await tx.select({ id: issueThreadInteractions.id })
     .from(issueThreadInteractions)
