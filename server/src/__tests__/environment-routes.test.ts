@@ -1020,6 +1020,75 @@ describe("environment routes", () => {
       expect(mockEnvironmentService.create).not.toHaveBeenCalled();
     });
 
+    describe("managed plugin environment rows", () => {
+      const PLUGIN_KEY = "example.remote-host-plugin";
+      const pluginRow = () => ({
+        ...createPlatformSandboxEnvironment(),
+        id: "env-plugin-1",
+        name: "Remote Host",
+        driver: "plugin",
+        config: { pluginKey: PLUGIN_KEY, driverKey: "tasks", driverConfig: {} },
+        envVars: {},
+        metadata: { managedByPaperclip: true, managedPluginEnvironment: `${PLUGIN_KEY}:tasks` },
+      });
+
+      it("refuses edits, env-var edits, and deletes, including for instance admins", async () => {
+        mockEnvironmentService.getById.mockResolvedValue(pluginRow());
+        const app = createApp(ownerAdminActor);
+
+        for (const body of [{ name: "Renamed" }, { envVars: { A: "1" } }, { status: "archived" }]) {
+          const res = await request(app).patch("/api/environments/env-plugin-1").send(body);
+          expect(res.status).toBe(403);
+          expect(res.body.details).toMatchObject({ code: "environment_platform_managed" });
+        }
+        const deleted = await request(app).delete("/api/environments/env-plugin-1");
+        expect(deleted.status).toBe(403);
+        expect(deleted.body.details).toMatchObject({ code: "environment_platform_managed" });
+        expect(mockEnvironmentService.update).not.toHaveBeenCalled();
+        expect(mockEnvironmentService.removeIfDeletable).not.toHaveBeenCalled();
+      });
+
+      it("keeps the row behind the floor on the plugin marker alone", async () => {
+        mockEnvironmentService.getById.mockResolvedValue({
+          ...pluginRow(),
+          metadata: { managedPluginEnvironment: `${PLUGIN_KEY}:tasks` },
+        });
+        const res = await request(createApp(ownerAdminActor)).patch("/api/environments/env-plugin-1").send({ name: "Renamed" });
+        expect(res.status).toBe(403);
+        expect(res.body.details).toMatchObject({ code: "environment_platform_managed" });
+      });
+
+      it("allows the marker clear while no managed-config entry can own the row", async () => {
+        // Nothing provisions marked plugin rows yet, so a marker is stale and
+        // stays recoverable. The managed-config plugin entry PR refuses this
+        // while the document declares the row's entry.
+        const row = pluginRow();
+        mockEnvironmentService.getById.mockResolvedValue(row);
+        mockEnvironmentService.update.mockResolvedValue({ ...row, metadata: {} });
+
+        const res = await request(createApp(ownerAdminActor))
+          .patch("/api/environments/env-plugin-1")
+          .send({ metadata: { managedByPaperclip: null, managedPluginEnvironment: null } });
+
+        expect(res.status).toBe(200);
+        expect(mockEnvironmentService.update).toHaveBeenCalled();
+      });
+
+      it("refuses a client that stamps the plugin marker on its own row", async () => {
+        const res = await request(createApp(ownerAdminActor))
+          .post("/api/companies/company-1/environments")
+          .send({
+            name: "Fake remote host",
+            driver: "plugin",
+            config: { pluginKey: PLUGIN_KEY, driverKey: "tasks", driverConfig: {} },
+            metadata: { managedPluginEnvironment: `${PLUGIN_KEY}:tasks` },
+          });
+        expect(res.status).toBe(422);
+        expect(res.body.details).toMatchObject({ code: "environment_platform_marker_reserved" });
+        expect(mockEnvironmentService.create).not.toHaveBeenCalled();
+      });
+    });
+
     it("rejects tenant patches that stamp platform markers so the row cannot become locked", async () => {
       const tenantEnvironment = {
         ...createPlatformSandboxEnvironment(),
