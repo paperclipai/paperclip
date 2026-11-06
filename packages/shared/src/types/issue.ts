@@ -1513,6 +1513,8 @@ export type ConnectionIntentPhase = "requested" | "authorizing" | "needs_retry";
  * authorization URLs are returned solely from addressed board endpoints.
  */
 export interface ConnectionIntentPayload {
+  /** Human-selected audience for this OAuth draft; applied only at completion. */
+  setupAccess?: { connectionId: string; access: "all_agents" | { agentIds: string[] } };
   /** Existing chat setup; the server derives the destination from these IDs. */
   savedSetup?: { endpointId: string; connectionId: string; action?: "enter_credentials" | "rotate_credentials" | "confirm_identity"; credentialRotation?: { previousId: string | null }; credentialEntry?: { previousGenerations: Record<string, string | null>; requireAll: boolean } };
   version: 1;
