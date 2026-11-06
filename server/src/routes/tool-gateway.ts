@@ -15,6 +15,7 @@ import {
 } from "@paperclipai/shared/validators/tool-access";
 import { assertBoard, assertBoardOrAgent, assertCompanyAccess, getActorInfo } from "./authz.js";
 import { ToolGatewayHttpError, type ToolGatewayService } from "../services/tool-gateway.js";
+import { buildGatewayToolCallResult } from "../services/tool-gateway-mcp-result.js";
 import { forbidden, HttpError } from "../errors.js";
 import { accessService } from "../services/index.js";
 import { listConnectionLifecycleEvents } from "../services/tool-connection-activity.js";
@@ -199,11 +200,10 @@ async function handleMcpGatewayProtocol(
       res.json({
         jsonrpc: "2.0",
         id,
-        result: {
-          content: [{ type: "text", text: contentText }],
-          structuredContent: resultRecord?.data ?? null,
-          isError: false,
-        },
+        result: buildGatewayToolCallResult({
+          text: contentText,
+          structuredContent: resultRecord?.data,
+        }),
       });
       return;
     }
