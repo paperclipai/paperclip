@@ -1,4 +1,4 @@
-import { useEffect, useState, type CSSProperties } from "react";
+import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { ONBOARDING_FIRST_TASK_ORIGIN_KIND } from "@paperclipai/shared";
 import { useAccountIdentity } from "@/api/companies-query";
@@ -45,47 +45,6 @@ function useOnboardingInProgress(companyId: string | null) {
   return query.data.some((issue) => issue.originKind === ONBOARDING_FIRST_TASK_ORIGIN_KIND && !FINISHED_ONBOARDING_STATUSES.has(issue.status));
 }
 
-const ACCOUNT_ROW_SELECTOR = "[data-sidebar-account]";
-/**
- * Distance in CSS pixels from the viewport bottom to the top of the visible
- * sidebar account row, so the desktop well can sit above the account menu
- * trigger instead of covering it. Zero when no account row is on screen.
- */
-function useAccountRowClearance(enabled: boolean) {
-  const [clearance, setClearance] = useState(0);
-  useEffect(() => {
-    if (!enabled) return;
-    let frame = 0;
-    const observed = new Set<Element>();
-    const resizeObserver = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(() => schedule());
-    function measure() {
-      let next = 0;
-      for (const row of document.querySelectorAll(ACCOUNT_ROW_SELECTOR)) {
-        if (resizeObserver && !observed.has(row)) { observed.add(row); resizeObserver.observe(row); }
-        const rect = row.getBoundingClientRect();
-        if (rect.width <= 0 || rect.height <= 0 || rect.right <= 0 || rect.left >= window.innerWidth) continue;
-        next = Math.max(next, Math.ceil(window.innerHeight - rect.top));
-      }
-      setClearance(next);
-    }
-    function schedule() {
-      cancelAnimationFrame(frame);
-      frame = requestAnimationFrame(measure);
-    }
-    measure();
-    const mutationObserver = new MutationObserver(schedule);
-    mutationObserver.observe(document.body, { childList: true, subtree: true });
-    window.addEventListener("resize", schedule);
-    return () => {
-      cancelAnimationFrame(frame);
-      mutationObserver.disconnect();
-      resizeObserver?.disconnect();
-      window.removeEventListener("resize", schedule);
-    };
-  }, [enabled]);
-  return clearance;
-}
-
 export function AnnouncementWell({ health }: { health?: HealthStatus }) {
   const { userId: accountId, settled } = useAccountIdentity();
   const { selectedCompanyId, loading } = useCompany();
@@ -104,14 +63,9 @@ export function AnnouncementWell({ health }: { health?: HealthStatus }) {
     }),
   });
   const modalOpen = useModalOpen(Boolean(announcement));
-  const accountClearance = useAccountRowClearance(Boolean(announcement));
   if (!announcement || modalOpen || (toasts?.length ?? 0) > 0) return null;
   return (
-    <aside
-      aria-label="Paperclip announcements"
-      style={{ "--announcement-account-clearance": accountClearance } as CSSProperties}
-      className="announcement-well fixed left-3 bottom-(--announcement-mobile-bottom) z-40 w-(--announcement-available-width) max-w-(--announcement-width) max-h-(--announcement-mobile-max-height) overflow-y-auto md:bottom-(--announcement-desktop-bottom) md:max-h-(--announcement-desktop-max-height)"
-    >
+    <aside aria-label="Paperclip announcements" className="announcement-well fixed left-3 bottom-(--announcement-mobile-bottom) z-40 w-(--announcement-available-width) max-w-(--announcement-width) max-h-(--announcement-mobile-max-height) overflow-y-auto md:bottom-3 md:max-h-(--announcement-max-height)">
       <AnnouncementCard key={announcement.id} announcement={announcement} onDismiss={() => dismiss(announcement.id)} />
     </aside>
   );

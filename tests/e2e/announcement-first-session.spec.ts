@@ -3,10 +3,10 @@ import { test, expect, request as pwRequest, type APIRequestContext, type Page }
 /**
  * E2E (N-13): the in-app announcement well ("Introducing Connectors" upsell)
  *
- * 1. stays hidden while a new company's onboarding first task is open, so it
- *    cannot cover the onboarding questions in the user's first session; and
- * 2. where it does render, never covers the sidebar account menu trigger or
- *    its flyout at a normal desktop size.
+ * stays hidden while a new company's onboarding first task is open, so it
+ * cannot cover the onboarding questions or the account menu in the user's
+ * first session. Placement (never covering the account menu once shown) is
+ * covered by announcement-placement.spec.ts.
  *
  * The public feed is mocked so the spec does not depend on what the live feed
  * is publishing; the card mirrors the real 2026-09-14-connectors entry.
@@ -20,11 +20,6 @@ const ONE_PIXEL_PNG = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
   "base64",
 );
-
-type Box = { x: number; y: number; width: number; height: number };
-function intersects(a: Box, b: Box) {
-  return a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height;
-}
 
 async function createCompany(board: APIRequestContext, name: string) {
   const res = await board.post(`${BASE_URL}/api/companies`, { data: { name: `${name}-${Date.now()}` } });
@@ -97,35 +92,5 @@ test.describe("Announcement well (N-13)", () => {
     await page.waitForTimeout(SETTLE_WAIT_MS);
     await page.screenshot({ path: test.info().outputPath("onboarding-task.png") });
     await expect(page.getByRole("complementary", { name: "Paperclip announcements" })).toHaveCount(0);
-  });
-
-  test("where the upsell shows, it does not cover the account menu or its flyout", async ({ page }) => {
-    const company = await createCompany(board, "E2E-N13-Established");
-    companyIds.push(company.id);
-    await createIssue(board, company.id, { title: "Ordinary task", status: "todo" });
-
-    await page.goto(`/${company.prefix}/dashboard`);
-    const well = page.getByRole("complementary", { name: "Paperclip announcements" });
-    await expect(well).toBeVisible({ timeout: 15_000 });
-    await expect(well.getByRole("link", { name: "Explore connectors" })).toBeVisible();
-    await page.waitForTimeout(300); // Let the entry animation finish before measuring.
-    await page.screenshot({ path: test.info().outputPath("established-company.png") });
-
-    const trigger = page.getByRole("button", { name: "Open account menu" });
-    const wellBox = await well.boundingBox();
-    const triggerBox = await trigger.boundingBox();
-    expect(wellBox).not.toBeNull();
-    expect(triggerBox).not.toBeNull();
-    expect(intersects(wellBox!, triggerBox!), `well ${JSON.stringify(wellBox)} covers account trigger ${JSON.stringify(triggerBox)}`).toBe(false);
-
-    // A real click lands on the trigger (Playwright fails if another element would receive it).
-    await trigger.click({ timeout: 5_000 });
-    const flyout = page.getByRole("dialog", { name: "Account" });
-    await expect(flyout).toBeVisible();
-    const flyoutBox = await flyout.boundingBox();
-    if (await well.isVisible()) {
-      const openWellBox = await well.boundingBox();
-      expect(intersects(openWellBox!, flyoutBox!), "well covers the open account flyout").toBe(false);
-    }
   });
 });
