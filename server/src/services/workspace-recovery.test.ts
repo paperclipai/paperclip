@@ -271,7 +271,7 @@ describe("automatic retained workspace recovery", () => {
   // (`native_remote_recovery_lease_mismatch`, `runner_remote_process_identity_unavailable`).
   // Saved-work recovery then recovered the files. The task must continue
   // without a second message.
-  async function restartAllocationLostSource(turn: "none" | "settled" | "in_flight",
+  async function restartAllocationLostSource(turn: "none" | "settled" | "in_flight" | "unproven",
     error = "native_remote_recovery_lease_mismatch") {
     const f = await seed("native");
     const original = await run(f.runId);
@@ -286,9 +286,11 @@ describe("automatic retained workspace recovery", () => {
       contextSnapshot: { issueId: f.issueId, wakeReason: "issue_commented", wakeCommentId: comment.id, wakeCommentIds: [comment.id] },
       resultJson: { ...original.resultJson, executionRecovery: { kind: "bootstrap", providerWorkStarted: false } },
     }).where(eq(heartbeatRuns.id, f.runId));
-    for (const eventType of turn === "none" ? [] : turn === "settled" ? ["turn.started", "turn.completed"] : ["turn.started"])
+    for (const eventType of turn === "none" ? [] : turn === "in_flight" ? ["turn.started"] : ["turn.started", turn === "settled" ? "turn.completed" : "turn.failed"])
       await appendHeartbeatRunEvent(db, { companyId: f.companyId, runId: f.runId,
-        agentId: original.agentId, eventType, stream: "system", level: "info", message: eventType });
+        agentId: original.agentId, eventType, stream: "system", level: "info", message: eventType,
+        // A driver that lost its event stream ends the turn without a provider terminal.
+        ...(turn === "unproven" && eventType === "turn.failed" ? { payload: { prpEvent: { eventType, payload: { providerTerminalObserved: false } } } } : {}) });
     const claim = { kind: "reattach_remote_runner" as const, runId: f.runId, leaseOwner: `boot:1:${randomUUID()}`,
       controllerGeneration: 1, providerAttempt: 0, restartKind: "hard" as const, recoveryRequestId: null,
       remote: { providerLeaseId: f.providerLeaseId, remoteCwd: f.remote } };
@@ -341,10 +343,11 @@ describe("automatic retained workspace recovery", () => {
 
   it.each([
     { title: "its provider turn was still in flight", change: "turn" },
+    { title: "its provider turn ended without an observed provider terminal", change: "unproven" },
     { title: "the source was a system wake", change: "system" },
     { title: "the failure was not a lost runner or allocation", change: "error" },
   ])("does not continue automatically when $title, and offers a Retry that works on first use", async ({ change }) => {
-    const f = await restartAllocationLostSource(change === "turn" ? "in_flight" : "none");
+    const f = await restartAllocationLostSource(change === "turn" ? "in_flight" : change === "unproven" ? "unproven" : "none");
     if (change === "system") await db.update(agentWakeupRequests).set({ requestedByActorType: "system", requestedByActorId: null,
       reason: "issue_children_completed" }).where(eq(agentWakeupRequests.id, f.wake.id));
     if (change === "system") await db.update(heartbeatRuns).set({ contextSnapshot: { issueId: f.issueId, wakeReason: "issue_children_completed" } })
@@ -352,7 +355,8 @@ describe("automatic retained workspace recovery", () => {
     if (change === "error") await db.update(heartbeatRuns).set({ error: "native_provider_terminal_failed" }).where(eq(heartbeatRuns.id, f.runId));
     const service = heartbeatService(db, { environmentRuntime: f.environmentRuntime });
     await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, status: "running" });
-    expect(await requestRestartInterruptedTurnRetry(db, f.claim)).toMatchObject({ requested: false });
+    expect(await requestRestartInterruptedTurnRetry(db, f.claim)).toMatchObject({ requested: false,
+      ...(change === "turn" || change === "unproven" ? { reason: "provider_turn_unsettled" } : {}) });
     await vi.waitFor(async () => {
       await Promise.all(await reconcileRetainedWorkspaces(db, f.environmentRuntime, current => service.resumeRemoteStopComments(current)) ?? []);
       expect(readSystemRecovery((await action(f.actionId)).evidence)?.state).toBe("complete");

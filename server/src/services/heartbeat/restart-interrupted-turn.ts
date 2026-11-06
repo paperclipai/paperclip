@@ -15,6 +15,20 @@ const REATTACHMENT_LOST_ERRORS = ["native_remote_recovery_lease_mismatch", "nati
 const TURN_STARTED_EVENTS = ["turn.submitted", "turn.started", "turn.accepted"];
 const TURN_SETTLED_EVENTS = ["turn.completed", "turn.failed", "turn.cancelled", "turn.interrupted"];
 
+const asRecord = (value: unknown): Record<string, unknown> =>
+  value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+
+/** A terminal event proves the turn ended only when the provider reported it.
+ * A driver that lost its event stream records `providerTerminalObserved: false`
+ * (on the event or its stored PRP source): the real outcome is unknown, and
+ * another turn could repeat work that already happened. */
+function isProvenTurnSettlement(event: { eventType: string; payload: unknown }) {
+  if (!TURN_SETTLED_EVENTS.includes(event.eventType)) return false;
+  const payload = asRecord(event.payload);
+  return payload.providerTerminalObserved !== false &&
+    asRecord(asRecord(payload.prpEvent).payload).providerTerminalObserved !== false;
+}
+
 /** Automatic continuation is requested at most once per chain of runs. */
 export const RESTART_RETRY_KEY_PREFIX = "restart-interrupted-turn:";
 
@@ -37,11 +51,12 @@ export async function requestRestartInterruptedTurnRetry(db: Db, claim: NativeRe
   const context = run.contextSnapshot ?? {};
   const issueId = run.nativeIssueId ?? run.issueId ?? (typeof context.issueId === "string" ? context.issueId : null);
   if (!issueId || !run.wakeupRequestId) return { requested: false, reason: "source_missing" };
-  const [lastTurn] = await db.select({ eventType: heartbeatRunEvents.eventType }).from(heartbeatRunEvents).where(and(
-    eq(heartbeatRunEvents.companyId, run.companyId), eq(heartbeatRunEvents.runId, run.id),
-    inArray(heartbeatRunEvents.eventType, [...TURN_STARTED_EVENTS, ...TURN_SETTLED_EVENTS]),
-  )).orderBy(desc(heartbeatRunEvents.seq)).limit(1);
-  if (lastTurn && !TURN_SETTLED_EVENTS.includes(lastTurn.eventType)) return { requested: false, reason: "provider_turn_unsettled" };
+  const [lastTurn] = await db.select({ eventType: heartbeatRunEvents.eventType, payload: heartbeatRunEvents.payload })
+    .from(heartbeatRunEvents).where(and(
+      eq(heartbeatRunEvents.companyId, run.companyId), eq(heartbeatRunEvents.runId, run.id),
+      inArray(heartbeatRunEvents.eventType, [...TURN_STARTED_EVENTS, ...TURN_SETTLED_EVENTS]),
+    )).orderBy(desc(heartbeatRunEvents.seq)).limit(1);
+  if (lastTurn && !isProvenTurnSettlement(lastTurn)) return { requested: false, reason: "provider_turn_unsettled" };
   const [wake] = await db.select().from(agentWakeupRequests).where(and(
     eq(agentWakeupRequests.companyId, run.companyId), eq(agentWakeupRequests.agentId, run.agentId),
     eq(agentWakeupRequests.id, run.wakeupRequestId), eq(agentWakeupRequests.runId, run.id)));
