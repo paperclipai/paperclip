@@ -888,7 +888,7 @@ export function secretRoutes(db: Db, deps: SecretRoutesDeps = {}) {
     const companyId = req.params.companyId as string;
     if (req.actor.type === "agent") {
       assertCompanyAccess(req, companyId);
-      throw forbidden("Company secret creation requires a human board operator. Ask the human to enter the value in Settings → Secrets for this company. Do not send secret values in chat or tool calls.");
+      throw forbidden("Company secret creation requires a human board operator. Ask the human to enter the value in Settings → Secrets for this company. Do not send secret values in chat or tool calls. You can finish the current conversation response with these secure-entry instructions without claiming that credential setup is complete. If you need a resumable wait, first create a non-governing secure-save acknowledgment with request_human_input using request_confirmation; ask only whether secure entry is complete, never ask for the secret value in that card. Wait only on the actual saved request.");
     }
     assertCompanySecretWrite(req, companyId);
     next();
