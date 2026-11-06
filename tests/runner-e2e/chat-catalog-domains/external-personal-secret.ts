@@ -163,9 +163,8 @@ export function personalSecretConfirmation(reply: string) {
       .some(
         (clause) =>
           /personal|publishing/i.test(clause) &&
-          /configured|available|saved|ready|set up|succeeded|success|checked|200/i.test(
-            clause,
-          ) &&
+          (/configured|available|saved|ready|set up|succeeded|success|checked|200/i.test(clause)
+            || /^\s*(?:your|the)\s+personal\s+(?:publishing\s+)?(?:value|key|token|credential)\s+(?:worked|works)\b/i.test(clause)) &&
           !/\b(?:not|cannot|can't|unavailable|missing|before|once|after|until|will|would|pending)\b/i.test(
             clause,
           ),
