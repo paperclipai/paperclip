@@ -834,14 +834,24 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
     const nativeIdentities = new Set([...CONNECTABLE_APP_DEFINITIONS, ...(galleryQuery.data?.apps ?? [])]
       .filter((app) => !yieldsToAggregators(appDefinitionSlug(app)))
       .flatMap((app) => [appDefinitionName(app), appDefinitionSlug(app)].map(aggregatorAppIdentity)));
-    const nativeRowCandidates = [...rowsBySlug.values()]
-      .filter((row) => !yieldsToAggregators(row.slug))
-      .map((row) => ({ row, slugIdentity: aggregatorAppIdentity(row.slug), nameIdentity: aggregatorAppIdentity(row.name) }));
+    // Index each native identity to the first row (in row order) that claims it. A catalog
+    // app then matches the earliest row among its aliases' lookups, which is the row a
+    // scan of the rows in order would find.
+    const nativeRows = [...rowsBySlug.values()].filter((row) => !yieldsToAggregators(row.slug));
+    const nativeRowIndexByIdentity = new Map<string, number>();
+    nativeRows.forEach((row, index) => {
+      for (const identity of [aggregatorAppIdentity(row.slug), aggregatorAppIdentity(row.name)]) {
+        if (!nativeRowIndexByIdentity.has(identity)) nativeRowIndexByIdentity.set(identity, index);
+      }
+    });
     for (const app of managedCatalog) {
       const snapshots = upstreamAppsBySlug.get(app.slug) ?? [];
-      const aliases = new Set([app.name, app.slug, ...app.aliases].map(aggregatorAppIdentity));
-      const nativeRow = nativeRowCandidates.find(candidate =>
-        aliases.has(candidate.slugIdentity) || aliases.has(candidate.nameIdentity))?.row;
+      let matchIndex: number | undefined;
+      for (const alias of [app.name, app.slug, ...app.aliases]) {
+        const index = nativeRowIndexByIdentity.get(aggregatorAppIdentity(alias));
+        if (index !== undefined && (matchIndex === undefined || index < matchIndex)) matchIndex = index;
+      }
+      const nativeRow = matchIndex === undefined ? undefined : nativeRows[matchIndex];
       if (nativeRow) { nativeRow.upstreamApps = [...(nativeRow.upstreamApps ?? []), ...snapshots]; nativeRow.upstreamCatalogApp = app; }
     }
     const aggregatorRows: ConnectorRowModel[] = managedCatalog.filter((app) =>

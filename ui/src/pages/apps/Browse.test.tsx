@@ -754,20 +754,40 @@ describe("Connectors landing page", () => {
   // Load the shipped catalogs (about 1,600 aggregator apps and every native connector) on
   // Cloud, where native rows check aggregator routes, and bound the identity work. A
   // nested scan of the catalog per row needs tens of millions of calls and stalls the tab.
-  it("builds the full Cloud catalog with work proportional to its size, and not again for a search", async () => {
+  it("builds the full Cloud catalog with work proportional to its size, and not again for a search or an unchanged refetch", async () => {
     const { AGGREGATOR_APP_CATALOG: shippedCatalog } = await vi.importActual<typeof import("@paperclipai/shared/aggregator-app-catalog")>("@paperclipai/shared/aggregator-app-catalog");
     aggregatorCatalogMock.push(...shippedCatalog);
     experimentalMock.mockResolvedValue({});
     listGalleryMock.mockResolvedValue({ apps: CONNECTABLE_APP_DEFINITIONS });
+    // A saved Composio gateway with one observed account, so the per-gateway query data
+    // takes part in the row build.
+    listApplicationsMock.mockResolvedValue({ applications: [application({ id: "gateway-app", name: "Composio", metadata: { sourceTemplateKey: "composio" } })] });
+    listConnectionsMock.mockResolvedValue({ connections: [connection({ applicationId: "gateway-app", name: "Composio account", transport: "mcp_remote", config: { sourceTemplateKey: "composio" } })] });
+    const snapshot = { connectionId: "conn-notion", toolkit: "fireflies", status: "connected", checkedAt: new Date(0).toISOString(), accounts: [{ id: "ca-work", alias: "Meeting notes", status: "ACTIVE", isDefault: true }] };
+    // Each call returns a new but equal object, as a real refetch does.
+    listComposioAppsMock.mockImplementation(async () => ({ apps: [structuredClone(snapshot)] }));
     const catalogNames = shippedCatalog.reduce((total, app) => total + 2 + app.aliases.length, 0);
+    const accountsKey = queryKeys.tools.aggregatorApps("conn-notion", "board-user");
 
     // Today a full load normalizes about five names per catalog name.
     aggregatorIdentityCalls.count = 0;
     aggregatorIdentityCalls.limit = catalogNames * 20;
     try {
-      await renderBrowse(true, { cloud: true });
-      expect(container.querySelectorAll("[data-app-slug]").length).toBeGreaterThan(0);
+      const client = await renderBrowse(true, { cloud: true });
+      expect(container.querySelector('[data-app-slug="fireflies"]')?.textContent).toContain("Meeting notes");
       expect(aggregatorIdentityCalls.count).toBeLessThan(catalogNames * 20);
+
+      // An unchanged refetch keeps the query data identity, so the rows are not rebuilt.
+      aggregatorIdentityCalls.count = 0;
+      await act(async () => { await client.refetchQueries({ queryKey: accountsKey, exact: true }); });
+      await flushReact();
+      expect(aggregatorIdentityCalls.count).toBeLessThan(catalogNames);
+
+      // Changed accounts still reach the page.
+      listComposioAppsMock.mockImplementation(async () => ({ apps: [{ ...snapshot, accounts: [...snapshot.accounts, { id: "ca-team", alias: "Team notes", status: "ACTIVE", isDefault: false }] }] }));
+      await act(async () => { await client.refetchQueries({ queryKey: accountsKey, exact: true }); });
+      await flushReact();
+      expect(container.querySelector('[data-app-slug="fireflies"]')?.textContent).toContain("Team notes");
 
       // Typing a search changes no connector data, so the rows are not rebuilt.
       aggregatorIdentityCalls.count = 0;
