@@ -49,7 +49,8 @@ export async function readIdleRetrySchedule(tx: Pick<Db, "select">, now: number,
     safePreparationFailure: sql<boolean>`${source.resultJson}#>>'{executionRecovery,kind}' = 'bootstrap'
       AND ${source.resultJson}#>'{executionRecovery,providerWorkStarted}' = 'false'::jsonb`,
     status: source.status, runtimeMode: source.runtimeMode, processPid: source.processPid, processGroupId: source.processGroupId,
-    processStartedAt: source.processStartedAt, finishedAt: source.finishedAt, legacyProcessSettlement: source.legacyProcessSettlement,
+    processStartedAt: source.processStartedAt, startedAt: source.startedAt, executionStage: source.executionStage,
+    finishedAt: source.finishedAt, legacyProcessSettlement: source.legacyProcessSettlement,
     controllerBootId: source.controllerBootId, controllerLeaseExpiresAt: source.controllerLeaseExpiresAt,
     settled: sql<boolean>`${sql.raw(finishedIdleRun("retry_source"))}`,
     revision: sql<string>`${source}.xmin::text`,
@@ -100,14 +101,16 @@ export async function readIdleRetrySchedule(tx: Pick<Db, "select">, now: number,
         || run.scopedContinuation || source.scopedContinuation) return blocked();
     } else if (issue?.status === "in_review") {
       const policy = issueExecutionPolicySchema.safeParse(issue.executionPolicy);
-      const stage = policy.success ? policy.data.stages.find(stage => stage.id === execution?.currentStageId) : undefined;
+      const currentStageId = execution?.currentStageId;
+      const stage = policy.success ? policy.data.stages.find(stage => stage.id === currentStageId) : undefined;
       if (run.scopeKind !== "issue" || run.runtimeMode !== "legacy" || run.nativeIssueId || run.nativeSessionId
         || run.processPid || run.processGroupId || run.controllerBootId || run.controllerLeaseExpiresAt
         || run.issueId !== issue.id || issue.companyId !== run.companyId
         || issue.assigneeUserId || issue.hiddenAt || issue.conversationAgentId
         || issue.monitorNextCheckAt || issue.monitorWakeRequestedAt || issue.executionPolicy?.monitor
         || !run.responsibleUserActive || !run.agentMemberActive
-        || !execution || execution.status !== "pending" || execution.currentStageType !== "review"
+        || !execution || typeof currentStageId !== "string" || currentStageId.length === 0
+        || execution.status !== "pending" || execution.currentStageType !== "review"
         || execution.currentParticipant?.type !== "agent" || execution.currentParticipant.agentId !== run.agentId
         || !stage || stage.type !== "review" || !policy.success
         || execution.currentStageIndex !== policy.data.stages.findIndex(candidate => candidate.id === stage.id)
@@ -121,7 +124,7 @@ export async function readIdleRetrySchedule(tx: Pick<Db, "select">, now: number,
         || (issue.executionRunId !== null && issue.executionRunId !== run.id)
         || (issue.checkoutRunId !== null && issue.checkoutRunId !== run.id)) return blocked();
       issueWaits.push({ kind: "current_review_retry", issueId: issue.id, runId: run.id,
-        reviewerAgentId: run.agentId, stageId: stage.id });
+        reviewerAgentId: run.agentId, stageId: currentStageId });
     } else if (run.scopeKind !== "issue" || run.issueId !== issue?.id
       || !source || source.companyId !== run.companyId || source.agentId !== run.agentId
       || source.scopeKind !== "issue" || source.issueId !== issue?.id

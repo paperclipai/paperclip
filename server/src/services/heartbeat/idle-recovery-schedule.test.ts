@@ -165,10 +165,13 @@ describe("owned recovery deadline inspection", () => {
       expect((await readIdleRetrySchedule(tx([{ ...review, source: { ...review.source, ...patch } }]), now, owner)).blocked).toBe(true);
     }
     for (const patch of [{ currentStageIndex: 1 }, { status: "idle" }, { currentStageId: "changed" },
+      { currentStageId: null }, { currentStageId: undefined }, { currentStageId: "" },
       { currentParticipant: { type: "user", userId: "human" } }]) {
       expect((await readIdleRetrySchedule(tx([{ ...review, issue: { ...review.issue,
         executionState: { ...review.issue.executionState, ...patch } } }]), now, owner)).blocked).toBe(true);
     }
+    expect((await readIdleRetrySchedule(tx([{ ...review, issue: { ...review.issue,
+      executionPolicy: { stages: [{ type: "review", participants: [{ type: "agent", agentId: reviewerAgentId, userId: null }] }] } } }]), now, owner)).blocked).toBe(true);
     const common = { id: "issue", status: "in_review", company_status: "active", scoped: true,
       assignee_agent_id: "implementor", assignee_user_id: null, agent_status: "idle", unsafe_dependencies: false,
       checkout_run_id: null, execution_run_id: null, conversation_agent_id: null, monitor_wake_requested_at: null,
