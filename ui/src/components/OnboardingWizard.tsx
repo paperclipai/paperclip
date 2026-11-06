@@ -1566,7 +1566,7 @@ function OnboardingWizardInner({
       : (connectPhase === "ready" || connectPhase === "waiting") && submitLoginCode
       ? { label: "Submit code", icon: "arrow", disabled: false }
       : connectPhase === "waiting"
-      ? { label: "Waiting for code…", icon: "spinner", disabled: true }
+      ? { label: adapterType === "codex_local" ? "Waiting for auth…" : "Waiting for code…", icon: "spinner", disabled: true }
       : connectPhase === "connecting"
         ? { label: "Connecting", icon: "spinner", disabled: true }
         : connectPhase === "ready"
