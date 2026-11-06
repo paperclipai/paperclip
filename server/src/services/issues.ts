@@ -5109,7 +5109,6 @@ const issueListSelect = {
   status: issues.status,
   displayStatus: issueDisplayStatusSql(),
   statusVersion: issues.statusVersion,
-  contextReferenceRevision: issues.contextReferenceRevision,
   lastStatusDecisionId: issues.lastStatusDecisionId,
   workMode: issues.workMode,
   harnessKind: issues.harnessKind,
@@ -10925,6 +10924,7 @@ export function issueService(db: Db) {
         await instanceSettings.getExperimental()
       ).enableIsolatedWorkspaces;
       await db.transaction(async (tx) => {
+        await notifyTaskProjectReferences(tx, { companyId });
         // Self-correcting counter: seed from max(issue_number) so a drifted
         // company counter cannot mint colliding identifiers, then reserve the
         // whole range in one bump instead of one-per-issue.
@@ -11129,7 +11129,10 @@ export function issueService(db: Db) {
       const censorUsernameInLogs = (await instanceSettings.getGeneral())
         .censorUsernameInLogs;
       await db.transaction(async (tx) => {
-        for (const companyId of new Set(rows.map(row => row.companyId))) await notifyStatusCardIssueChange(tx, companyId);
+        for (const companyId of new Set(rows.map(row => row.companyId))) {
+          await notifyStatusCardIssueChange(tx, companyId);
+          await notifyTaskProjectReferences(tx, { companyId });
+        }
         const commentRows = rows.map((row) => {
           const createdAt = row.createdAt ? new Date(row.createdAt) : null;
           return {

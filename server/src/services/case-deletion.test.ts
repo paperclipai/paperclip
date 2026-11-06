@@ -29,9 +29,7 @@ describe("deletion with retained case handoffs", () => {
       version: 1, fromAgentId: sourceId, toAgentId: targetId, phase: "verification", instructions: "Retain this history",
       actorType: "user", actorId: "board", wakeupRequestId: randomUUID(), idempotencyKey: randomUUID(),
       inputFingerprint: "fixture", state }).returning();
-    // Linking the case is a context source write, so re-read the task after it.
-    const [linked] = await db.select().from(issues).where(eq(issues.id, issue!.id));
-    return { companyId, sourceId, targetId, issue: linked!, record: record!, handoff: handoff! };
+    return { companyId, sourceId, targetId, issue: issue!, record: record!, handoff: handoff! };
   }
 
   it.each(["delivered", "cancelled", "pending_dispatch"] as const)("deletes the whole company with a %s handoff", async state => {
