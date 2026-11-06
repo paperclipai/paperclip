@@ -2530,6 +2530,13 @@ fn settled_opencode_session_continues_after_a_controller_proxy_rebuild() {
         .unwrap();
     acknowledge_delivered_events(&mut first);
     drop(first);
+    let state_path = directory.join("codex-provider-state.json");
+    let saved_binding = |field: &str| -> Value {
+        serde_json::from_slice::<Value>(&fs::read(&state_path).unwrap()).unwrap()[field].clone()
+    };
+    let admitted_digest = saved_binding("opencodeLaunchProfileDigest");
+    let admitted_release = saved_binding("opencodeReleaseDigest");
+    assert!(admitted_digest.is_string() && admitted_release.is_string());
 
     let rebuilt = rebuild_opencode_proxy(&directory, &config);
     let resumes_before = opencode_call_count(&directory, "thread/resume");
@@ -2556,7 +2563,12 @@ fn settled_opencode_session_continues_after_a_controller_proxy_rebuild() {
     recovered.shutdown().unwrap();
     drop(recovered);
 
-    // The re-bound digest is durable: the next recovery needs no re-bind.
+    // The re-bound digest is durable and the release binding is unchanged.
+    let rebound_digest = saved_binding("opencodeLaunchProfileDigest");
+    assert!(rebound_digest.is_string());
+    assert_ne!(rebound_digest, admitted_digest);
+    assert_eq!(saved_binding("opencodeReleaseDigest"), admitted_release);
+    // The next recovery on the rebuilt profile matches the saved digest.
     let mut again = NativeProviderCommandExecutor::with_runner_config(&directory, &rebuilt);
     again
         .execute(&command(5, "session.snapshot", json!({})))
