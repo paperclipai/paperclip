@@ -94,6 +94,7 @@ export const agentWakeupRequests = pgTable(
     // dispatcher that saves late must not repeat work a takeover already ran.
     treeHoldResumeIdempotencyUq: uniqueIndex("agent_wakeup_requests_tree_hold_resume_uq")
       .on(table.companyId, table.idempotencyKey)
+      .concurrently()
       .where(sql`${table.idempotencyKey} LIKE 'tree-hold-resume:%'`),
     chatCompletionIdempotencyUq: uniqueIndex("agent_wakeup_requests_chat_completion_uq")
       .on(table.companyId, table.idempotencyKey)
