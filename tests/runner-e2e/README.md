@@ -2139,7 +2139,10 @@ retirement.
 Launcher cancellation first signals its outer group, so Playwright and the wrapper
 own graceful server shutdown. It allows 45 seconds for that chain before bounded
 5-second forced cleanup of revalidated descendants. Normal launcher exit uses the
-same retained descendant inventory. Zombies count as stopped; an unavailable or
+same retained descendant inventory. Zombies count as stopped, including when
+macOS answers a group signal with EPERM because every remaining member is an
+unreaped zombie; EPERM stays fatal while a fresh inspection shows a running
+member. An unavailable or
 uncertain identity inspection triggers bounded direct-child-only retirement and
 still fails the tree audit. Failed cleanup preserves the temporary state. Graceful
 owners are selected from the same validated table used for delivery; ESRCH allows
