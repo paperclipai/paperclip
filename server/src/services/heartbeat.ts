@@ -294,6 +294,7 @@ import {
 } from "./ai-connection-runtime.js";
 import { aiConnectionBindingSchema, aiRuntimeConnectionBindingSchema, type AiConnectionRouterSelection } from "@paperclipai/shared";
 import { aiConnectionRouterService, AiConnectionPoolExhausted, applyAiConnectionRouterTaskSettings } from "./ai-connection-router.js";
+import { applyPluginRunConfiguration } from "./heartbeat/plugin-run-configuration.js";
 import {
   getExecutionBlocker,
 } from "./execution-blocker.js";
@@ -2545,6 +2546,12 @@ export function heartbeatService(
       const preconfiguredHome = agent.adapterType === "paperclip_runner" && config.homeMode === "preconfigured";
       const requestedAiBinding = preconfiguredHome ? undefined : persistedRouterPoolId ? { mode: "router" as const, connectionId: persistedRouterPoolId } : agent.runtimeConfig?.aiConnection ? aiRuntimeConnectionBindingSchema.parse(agent.runtimeConfig.aiConnection) : undefined;
       let aiBinding = requestedAiBinding?.mode === "router" ? undefined : requestedAiBinding;
+      if (requestedAiBinding?.mode !== "router") {
+        issueAssigneeOverrides = await applyPluginRunConfiguration(db, {
+          run, agent, config, context, issueOverrides: issueAssigneeOverrides,
+          issue: issueContext ? { id: issueContext.id, identifier: issueContext.identifier, title: issueContext.title, description: issueContext.description } : null,
+        }, { workerManager: options.pluginWorkerManager, appendRunEvent });
+      }
       const originalAiIssueOverrides = issueAssigneeOverrides;
       if (requestedAiBinding?.mode === "router") {
         try {

@@ -1,7 +1,7 @@
 import type { PluginWorkspaceParams, PluginWorkspaceResult } from "./workspace-provider.js";
 import type { PluginEnvironmentTaskParams, PluginEnvironmentTaskResult } from "./environment-tasks.js";
 import type { AgentLifecycleRequest, AgentLifecycleResult } from "@paperclipai/shared";
-import type { AiConnectionRouterRequest, AiConnectionRouterResult } from "@paperclipai/shared";
+import type { AiConnectionRouterRequest, AiConnectionRouterResult, PluginPrepareAgentRunRequest, PluginPrepareAgentRunResult } from "@paperclipai/shared";
 /**
  * `definePlugin` — the top-level helper for authoring a Paperclip plugin.
  *
@@ -376,6 +376,8 @@ export interface PluginDefinition {
 
   /** Propose a member from host-authorized candidates. Requires ai.connections.route. */
   onRouteAiConnection?(params: AiConnectionRouterRequest): Promise<AiConnectionRouterResult>;
+
+  onPrepareAgentRun?(params: PluginPrepareAgentRunRequest): Promise<PluginPrepareAgentRunResult> | PluginPrepareAgentRunResult;
 
   /**
    * Called when Paperclip needs the current normalized status for one external

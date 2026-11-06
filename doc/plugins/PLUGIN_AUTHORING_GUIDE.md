@@ -114,6 +114,32 @@ agents. The durable event inbox below is separate: acknowledging an event does
 not complete required lifecycle work. See [Agent lifecycle](../AGENT-LIFECYCLE.md)
 for phase ordering, recovery, and existing-installation limits.
 
+## Per-run model and effort
+
+Use `onPrepareAgentRun` to choose a model or reasoning effort for one run.
+Declare `agent.runs.configure`. Add `issues.read` if the plugin needs the issue
+title and description. The host calls the hook before it prepares the run, so the
+adapter uses the result on its first turn.
+
+```ts
+import { definePlugin } from "@paperclipai/plugin-sdk";
+
+export default definePlugin({
+  async setup() {},
+  async onPrepareAgentRun(request) {
+    if (request.adapterType !== "claude_local" || !request.issue) return null;
+    const short = (request.issue.description ?? "").length < 200;
+    return short ? { adapterConfig: { effort: "low" }, reason: "short task" } : null;
+  },
+});
+```
+
+Return only `model`, `effort`, `modelReasoningEffort`, `reasoningEffort` or
+`variant`. The host rejects a result with other keys. Answer within 1500 ms; a
+slow, failed or invalid answer leaves the run unchanged. Per-issue overrides that
+an operator sets keep precedence. See
+[PLUGIN_SPEC.md §13.11](./PLUGIN_SPEC.md#1311-prepareagentrun) for the full contract.
+
 ## Durable resource lifecycle delivery
 
 Declare `resourceLifecycle: ["project"]` (or `["agent", "project"]`) in the
