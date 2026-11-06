@@ -2414,6 +2414,151 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
       ...(origin === "task_retry" ? { taskRetryRequestId: requestId }
         : origin === "queued_message" ? { queuedCommentRequestId: requestId } : {}) };
   }
+  async function committedQueuedSendFixture() {
+    const f = await recoveredCopybackFixture("queued_message");
+    await db.update(nativeRunFinalizations).set({ phase: "committed", leaseOwner: null })
+      .where(eq(nativeRunFinalizations.runId, f.sourceRunId));
+    await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, f.sourceRunId));
+    await db.update(issues).set({ status: "done", completedAt: new Date("2020-01-01T10:00:00Z") }).where(eq(issues.id, f.issueId));
+    await db.update(issueRecoveryActions).set({ status: "resolved", outcome: "recovered" })
+      .where(eq(issueRecoveryActions.id, f.action.id));
+    await db.update(issueComments).set({ body: "Show the unread count as a number",
+      createdAt: new Date("2020-01-01T09:30:00Z") }).where(eq(issueComments.id, f.commentId));
+    const [waiting] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, f.requestId));
+    await db.update(agentWakeupRequests).set({ payload: { ...waiting.payload,
+      queuedCommentInterrupt: { actorId: f.actorId, requestedAt: new Date().toISOString() },
+    } }).where(eq(agentWakeupRequests.id, f.requestId));
+    return f;
+  }
+  it("sends a saved follow-up once after its native source commits and the task is done", async () => {
+    const f = await committedQueuedSendFixture();
+    const [sourceBefore] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.sourceRunId));
+    const [coordinatorBefore] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.sourceRunId));
+    await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, status: "running" });
+    const heartbeat = heartbeatService(db);
+    await heartbeat.resumeQueuedCommentInterrupt(f.companyId, f.requestId);
+    await heartbeat.resumeQueuedCommentInterrupt(f.companyId, f.requestId);
+    const [receipt] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, f.requestId));
+    expect(receipt).toMatchObject({ status: "coalesced", runId: expect.any(String) });
+    const successors = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId),
+      eq(heartbeatRuns.issueId, f.issueId), sql`${heartbeatRuns.id} <> ${f.sourceRunId}`));
+    expect(successors).toHaveLength(1);
+    expect(successors[0]).toMatchObject({ id: receipt.runId, status: "queued",
+      contextSnapshot: { wakeCommentIds: [f.commentId] } });
+    const envelope = await buildExecutionContinuation({ db, companyId: f.companyId, issueId: f.issueId,
+      agentId: f.agentId, runId: successors[0].id, context: successors[0].contextSnapshot!,
+      summary: null, exposeLowTrustRaw: false });
+    expect(envelope.messages).toEqual(expect.arrayContaining([expect.objectContaining({ id: f.commentId,
+      body: "Show the unread count as a number" })]));
+    expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0]).toMatchObject({ status: "todo" });
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.sourceRunId)))[0]).toEqual(sourceBefore);
+    expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.sourceRunId)))[0])
+      .toEqual(coordinatorBefore);
+  });
+  it.each(["failed", "cancelled"] as const)("sends a saved follow-up once after a %s native source and a task marked done", async status => {
+    const f = await committedQueuedSendFixture();
+    await db.update(heartbeatRuns).set({ status }).where(eq(heartbeatRuns.id, f.sourceRunId));
+    await db.update(nativeRunFinalizations).set({ phase: "terminal_failure" })
+      .where(eq(nativeRunFinalizations.runId, f.sourceRunId));
+    const [sourceBefore] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.sourceRunId));
+    await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, status: "running" });
+    const heartbeat = heartbeatService(db);
+    await heartbeat.resumeQueuedCommentInterrupt(f.companyId, f.requestId);
+    await heartbeat.resumeQueuedCommentInterrupt(f.companyId, f.requestId);
+    const [receipt] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, f.requestId));
+    expect(receipt).toMatchObject({ status: "coalesced", runId: expect.any(String) });
+    const successors = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId),
+      eq(heartbeatRuns.issueId, f.issueId), sql`${heartbeatRuns.id} <> ${f.sourceRunId}`));
+    expect(successors).toHaveLength(1);
+    const envelope = await buildExecutionContinuation({ db, companyId: f.companyId, issueId: f.issueId,
+      agentId: f.agentId, runId: successors[0].id, context: successors[0].contextSnapshot!,
+      summary: null, exposeLowTrustRaw: false });
+    expect(envelope.messages).toEqual(expect.arrayContaining([expect.objectContaining({ id: f.commentId,
+      body: "Show the unread count as a number" })]));
+    expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0]).toMatchObject({ status: "todo" });
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.sourceRunId)))[0]).toEqual(sourceBefore);
+  });
+  it("blocks explicit Send on a done task before dispatch when its isolated worktree has no source", async () => {
+    const f = await committedQueuedSendFixture();
+    const settings = instanceSettingsService(db), experimental = await settings.getExperimental();
+    await settings.updateExperimental({ enableIsolatedWorkspaces: true });
+    try {
+      await db.update(issues).set({ executionWorkspaceSettings: { mode: "isolated_workspace",
+        workspaceStrategy: { type: "git_worktree" } }, projectId: null, projectWorkspaceId: null,
+        executionWorkspaceId: null }).where(eq(issues.id, f.issueId));
+      await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, status: "running" });
+      await heartbeatService(db).resumeQueuedCommentInterrupt(f.companyId, f.requestId);
+      expect(await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId),
+        eq(heartbeatRuns.issueId, f.issueId), sql`${heartbeatRuns.id} <> ${f.sourceRunId}`))).toHaveLength(0);
+      expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0])
+        .toMatchObject({ status: "blocked", completedAt: null, executionState: null });
+      expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, f.requestId)))[0])
+        .toMatchObject({ status: "deferred_issue_execution", runId: null });
+      expect(await db.select().from(agentWakeupRequests).where(and(eq(agentWakeupRequests.companyId, f.companyId),
+        eq(agentWakeupRequests.reason, "workspace_worktree_requires_project"))))
+        .toEqual([expect.objectContaining({ status: "skipped" })]);
+      expect(await db.select().from(issueComments).where(eq(issueComments.issueId, f.issueId)))
+        .toEqual(expect.arrayContaining([expect.objectContaining({ body: expect.stringContaining("workspace_worktree_requires_project") })]));
+    } finally { await settings.updateExperimental(experimental); }
+  });
+
+  it.each(["pending lease", "failed lease", "workspace owner", "coordinator owner", "uncommitted result", "missing result"] as const)(
+    "keeps explicit Send on a done task pending until its committed successful predecessor settles: %s", async fault => {
+    const f = await committedQueuedSendFixture();
+    const [lease] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.lease.id));
+    const [source] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.sourceRunId));
+    const [coordinator] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.sourceRunId));
+    if (fault === "pending lease") await db.update(environmentLeases).set({ status: "pending_cleanup", releasedAt: null,
+      cleanupStatus: null, metadata: { ...lease.metadata, pendingCleanupInFlight: true } }).where(eq(environmentLeases.id, lease.id));
+    if (fault === "failed lease") await db.update(environmentLeases).set({ cleanupStatus: "failed" }).where(eq(environmentLeases.id, lease.id));
+    if (fault === "workspace owner") await db.update(heartbeatRuns).set({ runnerProfileJson: {
+      ...source.runnerProfileJson, nativeWorkspaceFinalizationOwner: { token: randomUUID() },
+    } }).where(eq(heartbeatRuns.id, source.id));
+    if (fault === "coordinator owner") await db.update(nativeRunFinalizations).set({ leaseOwner: "live-controller" })
+      .where(eq(nativeRunFinalizations.runId, f.sourceRunId));
+    if (fault === "uncommitted result") await db.update(nativeRunFinalizations).set({ phase: "result_accepted" })
+      .where(eq(nativeRunFinalizations.runId, f.sourceRunId));
+    if (fault === "missing result") await db.update(nativeRunFinalizations).set({ resultId: null })
+      .where(eq(nativeRunFinalizations.runId, f.sourceRunId));
+    await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, status: "running" });
+    const heartbeat = heartbeatService(db);
+    await heartbeat.resumeQueuedCommentInterrupt(f.companyId, f.requestId);
+    expect(await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId),
+      eq(heartbeatRuns.issueId, f.issueId), sql`${heartbeatRuns.id} <> ${f.sourceRunId}`))).toHaveLength(0);
+    expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0].status).toBe("done");
+    expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, f.requestId)))[0])
+      .toMatchObject({ status: "deferred_issue_execution", runId: null });
+    await db.update(environmentLeases).set({ status: lease.status, releasedAt: lease.releasedAt,
+      cleanupStatus: lease.cleanupStatus, metadata: lease.metadata }).where(eq(environmentLeases.id, lease.id));
+    await db.update(heartbeatRuns).set({ runnerProfileJson: source.runnerProfileJson }).where(eq(heartbeatRuns.id, source.id));
+    await db.update(nativeRunFinalizations).set({ phase: coordinator.phase, resultId: coordinator.resultId,
+      leaseOwner: coordinator.leaseOwner }).where(eq(nativeRunFinalizations.runId, f.sourceRunId));
+    await heartbeat.resumeQueuedCommentInterrupt(f.companyId, f.requestId);
+    await heartbeat.resumeQueuedCommentInterrupt(f.companyId, f.requestId);
+    expect(await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId),
+      eq(heartbeatRuns.issueId, f.issueId), sql`${heartbeatRuns.id} <> ${f.sourceRunId}`))).toHaveLength(1);
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.sourceRunId)))[0]).toEqual(source);
+    expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.sourceRunId)))[0]).toEqual(coordinator);
+  });
+
+  it.each(["approval", "question"] as const)("keeps explicit Send on a done task behind its pending %s", async gate => {
+    const f = await committedQueuedSendFixture();
+    if (gate === "question") await db.insert(issueThreadInteractions).values({ companyId: f.companyId,
+      issueId: f.issueId, kind: "ask_user_questions", status: "pending", payload: { version: 1, questions: [] } });
+    else {
+      const approvalId = randomUUID();
+      await db.insert(approvals).values({ id: approvalId, companyId: f.companyId, type: "hire_agent", status: "pending", payload: {} });
+      await db.insert(issueApprovals).values({ companyId: f.companyId, issueId: f.issueId, approvalId });
+    }
+    await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, status: "running" });
+    await heartbeatService(db).resumeQueuedCommentInterrupt(f.companyId, f.requestId);
+    expect(await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId),
+      eq(heartbeatRuns.issueId, f.issueId), sql`${heartbeatRuns.id} <> ${f.sourceRunId}`))).toHaveLength(0);
+    expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0].status).toBe("done");
+    expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, f.requestId)))[0])
+      .toMatchObject({ status: "deferred_issue_execution", runId: null });
+  });
+
   it.each(["message", "queued_message", "task_retry"] as const)("continues a terminal retained result after verified copy-back: %s", async origin => {
     const f = await recoveredCopybackFixture(origin);
     const [before] = await db.select().from(nativeRunResults).where(eq(nativeRunResults.id, f.resultId));
