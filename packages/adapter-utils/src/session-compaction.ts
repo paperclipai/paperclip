@@ -85,6 +85,11 @@ export const ADAPTER_SESSION_MANAGEMENT: Record<string, AdapterSessionManagement
     nativeContextManagement: "unknown",
     defaultSessionCompaction: DEFAULT_SESSION_COMPACTION_POLICY,
   },
+  crush_local: {
+    supportsSessionResume: true,
+    nativeContextManagement: "unknown",
+    defaultSessionCompaction: DEFAULT_SESSION_COMPACTION_POLICY,
+  },
   opencode_local: {
     supportsSessionResume: true,
     nativeContextManagement: "unknown",

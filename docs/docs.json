@@ -103,6 +103,7 @@
               "adapters/overview",
               "adapters/claude-local",
               "adapters/codex-local",
+              "adapters/crush-local",
               "adapters/process",
               "adapters/http",
               "adapters/external-adapters",
