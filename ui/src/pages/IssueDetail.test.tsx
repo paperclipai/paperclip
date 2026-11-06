@@ -86,6 +86,7 @@ const mockIssuesApi = vi.hoisted(() => ({
   steerQueuedComment: vi.fn(),
   discardQueuedComment: vi.fn(),
   markRead: vi.fn(),
+  markUnread: vi.fn(),
   update: vi.fn(),
   resolveRecoveryAction: vi.fn(),
   recoveryActions: vi.fn(),
@@ -2353,6 +2354,22 @@ describe("IssueDetail", () => {
       expect(props?.companyId).toBe(issue.companyId);
       expect(props?.linkedRuns).toEqual([expect.objectContaining(run)]);
     });
+  });
+
+  it("marks the task unread from the task menu", async () => {
+    const issue = createIssue();
+    mockIssuesApi.get.mockResolvedValue(issue);
+    mockIssuesApi.markUnread.mockResolvedValue({ id: issue.id, removed: true });
+    await act(async () => renderIssueView());
+    await waitForAssertion(() => expect(container.querySelector('button[aria-label="More task actions"]')).not.toBeNull());
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('button[aria-label="More task actions"]')!.click();
+    });
+    const markUnreadButton = Array.from(document.body.querySelectorAll<HTMLButtonElement>("button"))
+      .find((button) => button.textContent?.trim() === "Mark as unread");
+    expect(markUnreadButton).toBeTruthy();
+    await act(async () => markUnreadButton!.click());
+    await waitForAssertion(() => expect(mockIssuesApi.markUnread).toHaveBeenCalledWith(issue.id));
   });
 
   it("loads full first-run activity from the task menu without an older-message disclosure", async () => {
