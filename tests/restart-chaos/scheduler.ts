@@ -135,9 +135,52 @@ export function stormActive(storm: StormPlan, state: StormState, now: number): b
   return now < state.startedAt + storm.durationMs;
 }
 
-/** Whether a new task may launch now: always outside a storm, and only while a storm lasts. */
-export function stormMayLaunch(storm: StormPlan | undefined, state: StormState, now: number): boolean {
-  return !storm || stormActive(storm, state, now);
+/**
+ * The storm clock the wave loop consults. Every decision takes a fresh `now`,
+ * because the loop awaits slow work (server recovery, launches, pre-fault
+ * snapshots) between choosing an action and taking it.
+ */
+export class StormRun {
+  readonly state: StormState;
+  ended = false;
+
+  constructor(readonly plan: StormPlan, startedAt: number) {
+    this.state = { startedAt, fired: 0, lastSettledAt: null };
+  }
+
+  /** True once, on the transition to the drain. */
+  endIfDue(now: number): boolean {
+    if (this.ended || stormActive(this.plan, this.state, now)) return false;
+    this.ended = true;
+    return true;
+  }
+
+  /** Ask immediately before each launch. */
+  mayLaunch(now: number): boolean {
+    return !this.ended && stormActive(this.plan, this.state, now);
+  }
+
+  /** The next fault, never while the previous one is still unsettled: each gap runs from its settle. */
+  due(now: number): StormFault | null {
+    return this.ended || this.unsettled ? null : stormFaultDue(this.plan, this.state, now);
+  }
+
+  /** Claim a fault chosen before slow work. False when the storm ended meanwhile; nothing is consumed. */
+  commit(fault: StormFault, now: number): boolean {
+    if (this.due(now) !== fault) return false;
+    this.state.fired += 1;
+    this.unsettled = true;
+    return true;
+  }
+
+  settled(now: number) { this.state.lastSettledAt = now; this.unsettled = false; }
+
+  private unsettled = false;
+
+  /** The task pool ran dry with storm time left: the wave did not cover its storm. */
+  exhaustedEarly(now: number): boolean {
+    return !this.ended && stormActive(this.plan, this.state, now);
+  }
 }
 
 /**

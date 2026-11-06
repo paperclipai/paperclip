@@ -20,7 +20,7 @@ import { knownSecretValues, writeEvidenceBundle } from "./evidence.js";
 import { gradeTask } from "./grader.js";
 import { appendLedger, ledgerLine, writeSummary, type LedgerLine } from "./ledger.js";
 import { TaskObserver } from "./observer.js";
-import { observedFaultSchedule, planWave, replayWave, stormActive, stormFaultDue, stormMayLaunch, type StormState } from "./scheduler.js";
+import { StormRun, observedFaultSchedule, planWave, replayWave } from "./scheduler.js";
 import { seedChaosLab } from "./seed.js";
 import { ChaosSupervisor } from "./supervisor.js";
 import { Timeline } from "./timeline.js";
@@ -160,10 +160,8 @@ async function main(): Promise<number> {
     const lastPoll = new Map<TaskObserver, number>();
     let lastDoneAt = Date.now();
     // K13: storm faults fire on their own clock while tasks keep launching; then the storm drains.
-    const storm = plan.storm;
-    const stormState: StormState = { startedAt: Date.now(), fired: 0, lastSettledAt: null };
-    let stormEnded = false;
-    if (storm) timeline.add("storm_started", { durationMs: storm.durationMs, plannedFaults: storm.faults.length });
+    const storm = plan.storm ? new StormRun(plan.storm, Date.now()) : null;
+    if (storm) timeline.add("storm_started", { durationMs: storm.plan.durationMs, plannedFaults: storm.plan.faults.length });
     // Faults are serialized; each one hits every task in flight when it starts.
     const fireFault = (kind: FaultKind, holdMs: number, requestedBy: string, exposed: readonly TaskObserver[],
       trigger?: { trigger: TriggerId; delayMs: number }, onSettled?: () => void) => {
@@ -180,10 +178,9 @@ async function main(): Promise<number> {
 
     while (!interrupted && (pending.length || active.length)) {
       const now = Date.now();
-      if (storm && !stormEnded && !stormActive(storm, stormState, now)) {
-        stormEnded = true;
+      if (storm?.endIfDue(now)) {
         // Unlaunched pool tasks are not part of the wave; the in-flight ones drain without new faults.
-        timeline.add("storm_ended", { faultsFired: stormState.fired, inFlight: active.length, unlaunched: pending.length });
+        timeline.add("storm_ended", { faultsFired: storm.state.fired, inFlight: active.length, unlaunched: pending.length });
         pending.length = 0;
       }
       // A failed fault or an unexpected exit leaves the server not ready.
@@ -191,7 +188,7 @@ async function main(): Promise<number> {
       if (!supervisor.serverReady && !supervisor.faultInProgress) await supervisor.ensureServing();
       // Recheck the storm clock per launch: ensureServing or a slow launch can cross the storm's end.
       while (active.length < plan.options.concurrency && pending.length && supervisor.serverReady && !supervisor.faultInProgress
-        && stormMayLaunch(storm, stormState, Date.now())) {
+        && (!storm || storm.mayLaunch(Date.now()))) {
         const next = pending.shift()!;
         launched.push(next);
         await next.launch();
@@ -214,15 +211,14 @@ async function main(): Promise<number> {
         fireFault(due.kind, due.holdMs, observer.plan.taskId, exposed, trigger);
       }
       if (storm && !faultsQueued && !supervisor.faultInProgress && supervisor.serverReady) {
-        const due = stormFaultDue(storm, stormState, Date.now());
+        const due = storm.due(Date.now());
         if (due) {
           const exposed = active.filter(candidate => !candidate.done);
           await Promise.all(exposed.map(candidate => candidate.snapshotBeforeFault()));
           // The snapshots take time; a storm that ended meanwhile is draining and gets no new fault.
-          if (stormFaultDue(storm, stormState, Date.now()) === due) {
-            stormState.fired += 1;
-            timeline.add("storm_fault", { index: stormState.fired, kind: due.kind, gapMs: due.gapMs, holdMs: due.holdMs, exposed: exposed.map(candidate => candidate.plan.taskId) });
-            fireFault(due.kind, due.holdMs, "storm", exposed, undefined, () => { stormState.lastSettledAt = Date.now(); });
+          if (storm.commit(due, Date.now())) {
+            timeline.add("storm_fault", { index: storm.state.fired, kind: due.kind, gapMs: due.gapMs, holdMs: due.holdMs, exposed: exposed.map(candidate => candidate.plan.taskId) });
+            fireFault(due.kind, due.holdMs, "storm", exposed, undefined, () => storm.settled(Date.now()));
           }
         }
       }
@@ -232,6 +228,11 @@ async function main(): Promise<number> {
       await delay(1_000);
     }
     await Promise.all(faultWork);
+    // A storm whose task pool ran dry early did not cover its storm; it is not a passing wave.
+    if (storm && !interrupted && storm.exhaustedEarly(Date.now())) {
+      timeline.add("storm_pool_exhausted", { faultsFired: storm.state.fired, launched: launched.length });
+      harnessError ??= new Error(`Storm task pool (--tasks ${plan.options.tasks}) ran out before the storm ended; raise --tasks`);
+    }
     // An injected fault that did not complete invalidates the wave, even when
     // bounded recovery brought the server back and the tasks passed.
     if (faultFailures) harnessError ??= new Error(`${faultFailures} injected fault(s) failed; see fault_error in the timeline`);

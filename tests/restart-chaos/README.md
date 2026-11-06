@@ -46,7 +46,8 @@ task. Each fault is drawn from `--faults` (default K1, K2, K4, K6) and fires
 2–4 minutes after the previous one settled (server ready), so a K4 hold never
 eats the next gap. Each fault hits every task in flight. While the storm lasts
 the harness launches a new task whenever one rests, keeping `--concurrency`
-in flight; `--tasks` (default 200) is only the pool. When the storm ends no
+in flight; `--tasks` (default 200) is only the pool. A pool that runs dry
+before the storm ends fails the wave as a harness error (`storm_pool_exhausted`). When the storm ends no
 new task or fault starts, the in-flight tasks drain to rest or their deadline,
 and only launched tasks are graded. Storm tasks show fault `K13` in the ledger;
 `storm_fault`, `storm_started` and `storm_ended` are in the timeline and the
