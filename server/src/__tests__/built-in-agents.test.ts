@@ -1090,6 +1090,27 @@ describeEmbeddedPostgres("built-in agents", () => {
     });
   });
 
+  it("preserves pending agent configuration and approval during startup reconciliation", async () => {
+    const companyId = await seedCompany();
+    const svc = builtInAgentService(db);
+    const provisioned = await svc.provision(companyId, "briefs", {
+      adapterType: "process",
+      adapterConfig: { command: "echo safe" },
+    }, { requestedByUserId: "board-user" });
+    const agentId = provisioned.state.agentId!;
+    await db.update(agents).set({ capabilities: "Purpose awaiting board approval" }).where(eq(agents.id, agentId));
+    const [before] = await db.select().from(agents).where(eq(agents.id, agentId));
+    const pendingBefore = await db.select().from(approvals).where(eq(approvals.companyId, companyId));
+    expect(before.status).toBe("pending_approval");
+
+    const result = await reconcileBuiltInAgentsOnStartup(db);
+
+    expect(result.companyFailures).toBe(0);
+    const [after] = await db.select().from(agents).where(eq(agents.id, agentId));
+    expect(after).toEqual(before);
+    expect(await db.select().from(approvals).where(eq(approvals.companyId, companyId))).toEqual(pendingBefore);
+  });
+
   it("repairs display/default drift for marked rows during startup reconciliation", async () => {
     const companyId = await seedCompany();
     const agentId = randomUUID();
