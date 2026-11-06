@@ -23,7 +23,9 @@ repeating the failed step. A Retry never silently drops the agent's work:
   task, not a shared project workspace, and not under remote storage authority.
   The prior executor must be stopped, its leases released, and the recovery
   generation settled. No other lease, failed cleanup or running workspace
-  operation may hold the directory. Its Git status must still be readable from
+  operation may hold the directory. An operation that a stopped run left in
+  the running state before the current server process started is a restart
+  orphan and does not count. Its Git status must still be readable from
   that directory itself. Workspace-export failures keep their repair path.
 - Otherwise the Retry continues in a fresh isolated attempt seeded from
   committed files. The previous directory is retained unmodified. The retried

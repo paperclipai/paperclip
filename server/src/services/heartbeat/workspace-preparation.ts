@@ -852,7 +852,7 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
     // R2: never drop the previous attempt's files silently. Its directory stays
     // as it was; tell the agent where it is and what it had changed.
     const priorWorkspace = providerFresh ? null : await describeRetainedPriorWorkspace(db, { companyId: agent.companyId,
-      issueId, sourceRunId: input.task.freshWorkspace.sourceRunId, freshCwd: executionWorkspace.cwd });
+      issueId, sourceRunId: input.task.freshWorkspace.sourceRunId, successorRunId: run.id, freshCwd: executionWorkspace.cwd });
     if (priorWorkspace) context.priorWorkspace = priorWorkspace;
     const continuation = context.executionContinuation as import("@paperclipai/shared").ExecutionContinuationEnvelope | null;
     if (continuation) {

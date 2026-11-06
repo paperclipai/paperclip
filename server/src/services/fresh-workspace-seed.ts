@@ -2,38 +2,47 @@ import { execFile as execFileCallback } from "node:child_process";
 import { lstat, mkdtemp, readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
-import { and, eq, inArray, isNull, or } from "drizzle-orm";
+import { and, eq, inArray, ne } from "drizzle-orm";
 import { environmentLeases, executionWorkspaces, type Db } from "@paperclipai/db";
 import type { ExecutionContinuationEnvelope } from "@paperclipai/shared";
+import { workspaceHasOtherWriter } from "./fresh-workspace-continuation.js";
 import { materializeIsolatedTaskDirectory } from "./isolated-task-directory.js";
+import { workspaceGitOperationScheduler } from "./workspace-git-operation-scheduler.js";
 
 const execFile = promisify(execFileCallback);
 const gitOptions = { timeout: 120_000, maxBuffer: 1024 * 1024 };
 const PRIOR_WORKSPACE_FILE_LIMIT = 50;
 
 /** R2: a fresh attempt starts from committed files, so it must say where the
- * previous attempt's files are. The source directory is retained unmodified;
- * this only reads its Git status, with optional locks disabled, so it cannot
- * change the index of a directory whose owner is unresolved. */
+ * previous attempt's files are. The source directory is retained unmodified.
+ * This names only the task's own local directory with no other writer, and
+ * reads its Git status through the shared scan scheduler with optional locks
+ * disabled, so it cannot change the index of the retained directory. */
 export async function describeRetainedPriorWorkspace(db: Db, input: {
-  companyId: string; issueId: string; sourceRunId: string; freshCwd: string;
+  companyId: string; issueId: string; sourceRunId: string; successorRunId: string; freshCwd: string;
 }): Promise<NonNullable<ExecutionContinuationEnvelope["priorWorkspace"]> | null> {
-  const [prior] = await db.select({ cwd: executionWorkspaces.cwd, branchName: executionWorkspaces.branchName })
+  const [prior] = await db.select({ id: executionWorkspaces.id, cwd: executionWorkspaces.cwd, branchName: executionWorkspaces.branchName })
     .from(environmentLeases).innerJoin(executionWorkspaces, and(
       eq(executionWorkspaces.companyId, environmentLeases.companyId),
       eq(executionWorkspaces.id, environmentLeases.executionWorkspaceId),
     )).where(and(eq(environmentLeases.companyId, input.companyId), eq(environmentLeases.heartbeatRunId, input.sourceRunId),
       eq(environmentLeases.provider, "local"), inArray(executionWorkspaces.providerType, ["local_fs", "git_worktree"]),
-      or(isNull(executionWorkspaces.sourceIssueId), eq(executionWorkspaces.sourceIssueId, input.issueId))))
+      eq(executionWorkspaces.sourceIssueId, input.issueId), ne(executionWorkspaces.mode, "shared_workspace")))
     .limit(1);
   if (!prior?.cwd || path.resolve(prior.cwd) === path.resolve(input.freshCwd)) return null;
+  // A tree that another writer may still change is not a recovery source.
+  if (await workspaceHasOtherWriter(db, { companyId: input.companyId, workspaceId: prior.id,
+    successorRunId: input.successorRunId })) return null;
   const stat = await lstat(prior.cwd).catch(() => null);
   if (!stat?.isDirectory() || stat.isSymbolicLink()) return null;
-  const env = { ...process.env, LC_ALL: "C", GIT_OPTIONAL_LOCKS: "0" };
-  const status = await execFile("git", ["-C", prior.cwd, "--no-optional-locks", "status", "--porcelain=v1", "-z",
-    "--untracked-files=all"], { timeout: 15_000, maxBuffer: 4 * 1024 * 1024, env }).then(result => result.stdout, () => null);
-  const branchName = status === null ? prior.branchName : await execFile("git", ["-C", prior.cwd, "symbolic-ref", "--quiet",
-    "--short", "HEAD"], { timeout: 15_000, env }).then(result => result.stdout.trim() || prior.branchName, () => prior.branchName);
+  const priorCwd = prior.cwd;
+  const scan = (args: string[], operation: string) => workspaceGitOperationScheduler.run({
+    workspacePath: priorCwd, args, operation, cacheTtlMs: 0, bypassSingleFlight: true, timeoutMs: 15_000,
+    maxStdoutBytes: 4 * 1024 * 1024, fairnessKeys: [`company:${input.companyId}`, `workspace:${prior.id}`],
+  }).then(result => result.stdout, () => null);
+  const status = await scan(["--no-optional-locks", "status", "--porcelain=v1", "-z", "--untracked-files=all"],
+    "retry.prior_workspace_status");
+  const head = status === null ? null : await scan(["symbolic-ref", "--quiet", "--short", "HEAD"], "retry.prior_workspace_branch");
   const changed: string[] = [];
   if (status !== null) {
     const entries = status.split("\0");
@@ -45,7 +54,7 @@ export async function describeRetainedPriorWorkspace(db: Db, input: {
       if (entry[0] === "R" || entry[0] === "C") index++;
     }
   }
-  return { sourceRunId: input.sourceRunId, path: prior.cwd, branchName: branchName ?? null,
+  return { sourceRunId: input.sourceRunId, path: priorCwd, branchName: head?.trim() || prior.branchName || null,
     changedFilesKnown: status !== null, changedFileCount: changed.length,
     changedFiles: changed.slice(0, PRIOR_WORKSPACE_FILE_LIMIT) };
 }

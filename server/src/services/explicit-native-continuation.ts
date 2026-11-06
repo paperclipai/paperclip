@@ -488,10 +488,17 @@ export async function admitExplicitNativeContinuation(input: {
   if (freshCandidates.length) {
     // R2: keep the task's own workspace when its single prior writer is
     // contained and the directory is safe to reuse. Otherwise start the fresh
-    // isolated attempt and leave every source directory untouched.
-    const [only] = freshCandidates.length === 1 && !freshCandidates[0]!.remote ? freshCandidates : [];
-    const retained = only ? await retainedIssueWorkspaceForRetry(db, { companyId, issueId, agentId,
-      successorRunId: input.successorRunId, cause: only.cause, source: only.run, evidence: only.evidence }) : null;
+    // isolated attempt and leave every source directory untouched. Several
+    // holds can describe the same failed run; each hold must permit the reuse.
+    const sourceRunIds = new Set(freshCandidates.map(candidate => candidate.run.id));
+    const only = sourceRunIds.size === 1 && freshCandidates.every(candidate => !candidate.remote) ? freshCandidates[0]! : null;
+    let retained: { id: string; cwd: string } | null = null;
+    for (const candidate of only ? freshCandidates : []) {
+      const checked = await retainedIssueWorkspaceForRetry(db, { companyId, issueId, agentId,
+        successorRunId: input.successorRunId, cause: candidate.cause, source: candidate.run, evidence: candidate.evidence });
+      if (!checked || (retained && (retained.id !== checked.id || retained.cwd !== checked.cwd))) { retained = null; break; }
+      retained = checked;
+    }
     const last = freshCandidates.at(-1)!;
     readiness = retained && only ? { mode: "reuse_issue_workspace", retryIntentId: only.intent, sourceRunId: only.run.id,
       workspaceId: retained.id, cwd: retained.cwd }

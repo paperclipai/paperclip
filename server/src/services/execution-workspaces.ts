@@ -939,7 +939,7 @@ async function quarantineRestoreDirtyWorkspaceBranch(input: {
   }
 }
 
-export async function inspectGitCloseReadiness(workspace: ExecutionWorkspace): Promise<{
+async function inspectGitCloseReadiness(workspace: ExecutionWorkspace): Promise<{
   git: ExecutionWorkspaceCloseGitReadiness | null;
   warnings: string[];
   statusInspectionSucceeded: boolean;
