@@ -111,7 +111,8 @@ async function main(): Promise<number> {
         lastPoll.set(observer, now);
         await observer.poll(now);
       }));
-      for (const observer of faultsQueued || supervisor.faultInProgress || !supervisor.serverReady ? [] : active) {
+      for (const observer of active) {
+        if (faultsQueued || supervisor.faultInProgress || !supervisor.serverReady) break;
         const due = observer.faultDue(Date.now());
         if (!due) continue;
         if (observer.record.restAt !== null) { timeline.add("fault_skipped_task_resting", { taskId: observer.plan.taskId, fault: due.kind }); continue; }
