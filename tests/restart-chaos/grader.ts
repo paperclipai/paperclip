@@ -71,6 +71,9 @@ export function gradeR2(record: TaskRecord, oracle: OracleResult): RuleResult {
   if (record.preFaultSnapshotError) {
     return { verdict: "fail", detail: `pre_fault_snapshot_failed: durability not checked (${record.preFaultSnapshotError})` };
   }
+  if (record.restSnapshotError) {
+    return { verdict: "fail", detail: `rest_snapshot_failed: durability not checked (${record.restSnapshotError})` };
+  }
   if (record.lostFiles?.length) {
     return { verdict: "fail", detail: `pre_fault_files_lost: ${record.lostFiles.slice(0, 10).join(",")}` };
   }
@@ -138,11 +141,25 @@ export function isStalledSample(sample: TaskSample): boolean {
   return !namedWait(sample);
 }
 
+export function deadRunningRun(sample: TaskSample, readySince: number): { id: string; idleMs: number } | null {
+  if (!sample.reachable || !sample.serverReady || sample.at - readySince <= STALL_LIMIT_MS) return null;
+  for (const run of sample.runs ?? []) {
+    if (run.status !== "running") continue;
+    const evidence = Math.max(ms(run.lastEvidenceAt) || 0, ms(run.startedAt) || 0, readySince);
+    if (sample.at - evidence > STALL_LIMIT_MS) return { id: run.id, idleMs: sample.at - Math.max(ms(run.lastEvidenceAt) || 0, ms(run.startedAt) || 0) };
+  }
+  return null;
+}
+
 export function gradeR5(record: TaskRecord): RuleResult {
   let stallStart: number | null = null;
   let worst = 0;
+  let readySince: number | null = null;
   for (const sample of record.samples) {
-    if (!sample.reachable || !sample.serverReady) { stallStart = null; continue; }
+    if (!sample.reachable || !sample.serverReady) { stallStart = null; readySince = null; continue; }
+    readySince ??= sample.at;
+    const dead = deadRunningRun(sample, readySince);
+    if (dead) return { verdict: "fail", detail: `silent_dead_run ${dead.id} running with no event, activity or start evidence for ${Math.round(dead.idleMs / 1000)}s` };
     if (isStalledSample(sample)) {
       stallStart ??= sample.at;
       worst = Math.max(worst, sample.at - stallStart);
@@ -162,6 +179,7 @@ export function gradeR6(record: TaskRecord): RuleResult {
     ...(sweep.activeRuns.length ? [`active_runs=${sweep.activeRuns.join(",")}`] : []),
     ...(sweep.runningWorkspaceOperations.length ? [`running_workspace_operations=${sweep.runningWorkspaceOperations.join(",")}`] : []),
     ...(sweep.activeRecoveryAction ? ["active_recovery_action"] : []),
+    ...(sweep.daytonaLeaks ?? []),
   ];
   return leaks.length ? { verdict: "fail", detail: `leak: ${leaks.join("; ")}` } : { verdict: "pass", detail: "clean rest" };
 }

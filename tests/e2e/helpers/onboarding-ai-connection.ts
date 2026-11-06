@@ -11,4 +11,9 @@ export async function mockOnboardingLocalAiConnection(page: Page) {
     expect(route.request().postDataJSON()).toMatchObject({ method: "subscription", ownership: "personal" });
     await route.fulfill({ json: { connectionId, grantId } });
   });
+  await page.route("**/ai-connections/default", async (route) => {
+    expect(route.request().method()).toBe("PUT");
+    expect(route.request().postDataJSON()).toEqual({ grantId });
+    await route.fulfill({ json: { ok: true } });
+  });
 }

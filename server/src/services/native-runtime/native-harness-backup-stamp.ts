@@ -238,6 +238,7 @@ export async function verifyNativeHarnessBackupStampAsync(value: unknown, expect
               try {
                 const before = await handle.stat();
                 if (!before.isFile() || stats.ino !== before.ino || stats.dev !== before.dev || stats.size !== before.size) throw new Error("native_harness_backup_source_changed");
+                signal.throwIfAborted();
                 for await (const chunk of handle.createReadStream({ signal, autoClose: false })) {
                   bytes += chunk.length; if (bytes > directory.bytes) throw new Error("native_harness_backup_size_mismatch"); hash.update(chunk);
                 }

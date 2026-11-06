@@ -24,6 +24,8 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
   let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | undefined;
   let db: ReturnType<typeof createDb>;
   let coordinator: ReturnType<typeof createDeliveryWorkCoordinator> | undefined;
+  let cardWorker: ReturnType<typeof registerStatusCardEvaluationWork>;
+  let evaluation: ReturnType<typeof statusCardEvaluationService>;
   let draining = false;
   let companyId: string, agentId: string;
   const errors: unknown[] = [];
@@ -43,7 +45,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
 
   beforeAll(async () => {
     if (!external) temporary = await startEmbeddedPostgresTestDatabase("status-card-evaluation-");
-    db = createDb(external ?? temporary!.connectionString, { maxConnections: 6, idleTimeoutSeconds: 0, maxLifetimeSeconds: 0 });
+    db = createDb(external ?? temporary!.connectionString, { maxConnections: 4, idleTimeoutSeconds: 0, maxLifetimeSeconds: 0 });
   }, 30_000);
   beforeEach(async () => {
     companyId = randomUUID(); agentId = randomUUID(); draining = false; errors.length = 0; wakeup.mockReset();
@@ -51,7 +53,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     await db.insert(companies).values({ id: companyId, name: "Status", issuePrefix: `S${companyId.slice(0, 6)}` });
     await db.insert(agents).values({ id: agentId, companyId, name: "Summarizer", role: "general", status: "idle", adapterType: "process", adapterConfig: {} });
     await instanceSettingsService(db).updateExperimental({ enableStatusCards: true });
-    await Promise.all(Array.from({ length: 6 }, () => db.execute(sql`select pg_sleep(0.01)`)));
+    await Promise.all(Array.from({ length: 4 }, () => db.execute(sql`select pg_sleep(0.01)`)));
     vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
   });
   afterEach(async () => {
@@ -67,12 +69,17 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
   async function start(service = statusCardEvaluationService(db, { wakeup })) {
     coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => !draining, canReconcile: () => true,
       onError: error => errors.push(error) });
-    await registerStatusCardEvaluationWork(coordinator, { ...service, run: signal => {
+    evaluation = service;
+    cardWorker = registerStatusCardEvaluationWork(coordinator, { ...service, run: signal => {
       const work = service.run(signal);
       evaluations.add(work);
       void work.then(() => evaluations.delete(work), () => evaluations.delete(work));
       return work;
-    } }, () => !draining).ready;
+    } }, () => !draining);
+    await cardWorker.ready;
+  }
+  async function idleSchedule() {
+    return db.transaction(tx => evaluation.readIdleSchedule(tx, Date.now(), cardWorker.reconciliationSnapshot));
   }
   async function settled() {
     // Do not leap across PostgreSQL connect timers while real I/O is pending.
@@ -120,6 +127,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
   it("settles empty, disabled, configured manual and unchanged reactive history without recurring SQL", async () => {
     await start(); await quiet();
     await card("manual"); await card("reactive"); await quiet();
+    expect(await idleSchedule()).toMatchObject({ blocked: false, deadlines: [] });
     await instanceSettingsService(db).updateExperimental({ enableStatusCards: false }); await quiet();
     expect(errors).toEqual([]);
   });
@@ -736,12 +744,15 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     const service = statusCardEvaluationService(db, { wakeup });
     service.changed(new Set([`changes:${companyId}`]));
     try {
-      await service.run(new AbortController().signal);
+      await start(service);
+      expect(cardWorker.reconciliationSnapshot().reconciled).toBe(true);
       expect(await service.next()).toBeGreaterThan(Date.now());
       expect((await statusCardService(db).getById(created.id))!.nextEvalAt).toBeNull();
+      draining = true;
+      expect((await idleSchedule()).blocked).toBe(true);
       expect(wakeup).not.toHaveBeenCalled();
-    } finally { release.resolve(); await holder; }
-    await vi.advanceTimersByTimeAsync(30_000); await service.run(new AbortController().signal);
+    } finally { release.resolve(); await holder; draining = false; }
+    await vi.advanceTimersByTimeAsync(30_000); await settled();
     const pending = (await statusCardService(db).getById(created.id))!;
     expect(pending.pendingChangeCount).toBeGreaterThan(0);
     vi.setSystemTime(pending.nextEvalAt!); await service.run(new AbortController().signal);
@@ -886,6 +897,28 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     expect((await db.select().from(companies).where(eq(companies.id, companyId)))[0]?.status).toBe("active");
     await vi.waitFor(async () => expect((await statusCardService(db).getById(created.id))?.pendingChangeCount).toBeGreaterThan(0));
     await vi.advanceTimersByTimeAsync(60_000); await settled(); expect(wakeup).toHaveBeenCalledOnce();
+  });
+
+  it("blocks sleep for a committed source hint with a null card deadline during drain", async () => {
+    await start(); const created = await card("reactive"); await quiet();
+    expect((await statusCardService(db).getById(created.id))!.nextEvalAt).toBeNull();
+    expect((await idleSchedule()).blocked).toBe(false);
+    draining = true;
+    await issueService(db).create(companyId, { title: "New blocker during drain", status: "blocked", priority: "medium" });
+    await settled();
+    expect((await statusCardService(db).getById(created.id))!.nextEvalAt).toBeNull();
+    expect((await idleSchedule()).blocked).toBe(true);
+    expect(wakeup).not.toHaveBeenCalled();
+    draining = false; await vi.advanceTimersByTimeAsync(30_000); await settled();
+    const pending = (await statusCardService(db).getById(created.id))!;
+    expect(pending.nextEvalAt).not.toBeNull();
+    expect(await idleSchedule()).toMatchObject({ blocked: false, deadlines: [pending.nextEvalAt!.getTime()] });
+    await vi.advanceTimersByTimeAsync(pending.nextEvalAt!.getTime() - Date.now()); await settled();
+    const generating = (await statusCardService(db).getById(created.id))!;
+    expect(wakeup).toHaveBeenCalledOnce();
+    expect((await idleSchedule()).blocked).toBe(true);
+    await writeback(created.id, generating.generatingIssueId!); await quiet();
+    expect(await idleSchedule()).toMatchObject({ blocked: false, deadlines: [] });
   });
 
   it("preserves the first write during drain until resume", async () => {

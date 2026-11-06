@@ -107,7 +107,7 @@ export function registerIssueRecoveryWork(
     reconcile: owner.watchdogs, enabled: async () => !(await owner.schedulingSuppressed()),
   }, canRun);
   const workers = [assignments, orphanBlockers, recoveryActions, dependencies, locks, watchdogs];
-  return { ready: Promise.all(workers.map(worker => worker.ready)),
+  return { watchdogs, assignments, ready: Promise.all(workers.map(worker => worker.ready)),
     wake() { for (const worker of workers) worker.invalidate(); },
     async stop() { await Promise.all(workers.map(worker => worker.stop())); } };
 }
