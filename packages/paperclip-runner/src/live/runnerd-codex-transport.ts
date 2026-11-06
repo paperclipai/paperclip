@@ -6857,8 +6857,32 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
           throw new Error("runnerd exited before provider turn startup");
         await new Promise((resolveWait) => setTimeout(resolveWait, 10));
       }
-      if (!providerTurnStarted())
-        throw new Error("runnerd did not report the provider turn identity");
+      if (!providerTurnStarted()) {
+        // The durable command result already carries the provider's own
+        // acceptance and turn id. A loaded provider can start that turn after
+        // this bound, and it still runs it. Failing here would abandon a live
+        // turn that no controller owns, so its tools and close could never
+        // settle. Bind the exact accepted identity instead; its turn/started
+        // is then accepted in order, and the turn's own terminal, timeout and
+        // Stop paths own it from here. Adopt only a turn the runner still
+        // reports active: a turn that was accepted and then lost (for example
+        // across a provider restart) keeps failing so recovery can resume.
+        this.#throwIfFailed();
+        if (await this.#runnerHasExited())
+          throw new Error("runnerd exited before provider turn startup");
+        const snapshot = await this.#commandResult(
+          "session.snapshot", {}, Date.now() + 10_000,
+        ).catch(() => null);
+        if (!providerTurnStarted()) {
+          if (snapshot?.activeProviderTurnId !== expectedProviderTurnId)
+            throw new Error("runnerd did not report the provider turn identity");
+          this.#turnId = expectedProviderTurnId;
+          this.#observedTurnStartEpoch = responseEpoch;
+          this.#diagnostic(
+            "provider turn start outlived its bound; adopting the durably accepted active provider turn",
+          );
+        }
+      }
       };
       if (this.options.measureOperation) await this.options.measureOperation("runner.transport.started_event", waitForStarted);
       else await waitForStarted();

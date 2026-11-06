@@ -24,6 +24,38 @@ function fakeCodexArgs(stateDirectory: string, ...args: string[]): string[] {
   return ["--state-file", join(stateDirectory, "fake-codex-state.json"), ...args];
 }
 
+it("adopts a durably accepted turn whose start notification outlives the turn-start bound", async () => {
+  // A loaded host can accept a turn (durable command result with its provider
+  // turn id) and start it only after the turn-start bound. The provider still
+  // runs that turn, so failing the start would abandon a live turn.
+  const stateDirectory = await mkdtemp(join(tmpdir(), "runnerd-late-turn-started-"));
+  const callsPath = join(stateDirectory, "calls.log");
+  const bundle = createCapabilityRunnerdCodexTransport({
+    runnerBinary: defaultCapabilityRunnerdBinary(), codexCommand: fakeCodex,
+    codexArgs: fakeCodexArgs(stateDirectory, "--turn-started-delay-ms", "3000", "--fail-turn-immediately", "--call-log", callsPath),
+    stateDirectory, turnStartTimeoutMs: 1_000,
+  });
+  try {
+    await bundle.transport.request("thread/start", { cwd: tmpdir(), dynamicTools: [] });
+    const started = await bundle.transport.request("turn/start", { input: [{ type: "text", text: "Start late." }] });
+    expect(started).toMatchObject({ turn: { id: "provider-turn-1" } });
+    const methods: string[] = [];
+    for await (const notification of bundle.transport.notifications()) {
+      methods.push(notification.method);
+      if (notification.method === "turn/completed") {
+        expect(notification.params).toMatchObject({ turnId: "provider-turn-1" });
+        break;
+      }
+    }
+    expect(methods).toContain("turn/started");
+    const calls = (await readFile(callsPath, "utf8")).trim().split(/\r?\n/);
+    expect(calls.filter(call => call === "turn/start")).toHaveLength(1);
+  } finally {
+    await bundle.transport.close().catch(() => undefined);
+    await rm(stateDirectory, { recursive: true, force: true });
+  }
+}, 60_000);
+
 it("keeps a quiet active Codex turn in the same process across connection lease expiry", async () => {
   const stateDirectory = await mkdtemp(join(tmpdir(), "runnerd-renew-active-"));
   const callsPath = join(stateDirectory, "calls.log");
