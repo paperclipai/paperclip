@@ -135,7 +135,7 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(bindings.map(binding => binding.targetId)).toEqual([input.agentId]);
   });
 
-  async function finishAs(actor: Express.Request["actor"], companyId: string, connectionId: string, body: unknown) {
+  async function finishAs(actor: Express.Request["actor"], companyId: string, connectionId: string, body: object) {
     const app = express();
     app.use(express.json());
     app.use((req, _res, next) => { req.actor = actor; next(); });
