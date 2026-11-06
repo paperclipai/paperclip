@@ -380,8 +380,8 @@ export function InstanceExperimentalSettings() {
 
         <ExperimentalToggleCard
           title="Combined Inbox + Task List"
-          description="Fold Inbox into Tasks. One Tasks row carries the unread badge, and a Views menu reaches every inbox view (Mine, Unread, Blocked, Recent, Everything) and every task view."
-          footnote="Old Inbox links redirect to the matching view. Turning this off restores the separate Inbox; no data changes."
+          description="In the Classic workspace, fold Inbox into Tasks. One Tasks row carries the unread badge, and a Views menu reaches every personal and organization task view."
+          footnote="Coordinator always includes personal views in Tasks. For Classic, turning this off restores its separate Inbox. No data changes."
           checked={experimentalQuery.data?.enableCombinedInboxTasks ?? false}
           onCheckedChange={(checked) => toggleMutation.mutate({ enableCombinedInboxTasks: checked })}
           disabled={toggleMutation.isPending}

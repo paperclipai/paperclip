@@ -439,7 +439,7 @@ order per person and company. Old `/inbox/*` links redirect to their Tasks view.
 
 ### Combined Inbox + Task List
 
-An opt-in experimental setting (`enableCombinedInboxTasks`, off by default)
+In the Classic workspace, an opt-in setting (`enableCombinedInboxTasks`, off by default)
 folds Inbox into Tasks. The Inbox nav row goes away and its unread badge moves
 to Tasks. A Views menu on the task list covers the inbox views (Mine, Unread,
 Blocked, Recent, Everything) and the task-status views (All, Active, Backlog,
