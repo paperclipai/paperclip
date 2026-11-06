@@ -535,10 +535,13 @@ in its stopped sandbox. When the run used a reusable (warm) sandbox, the stop
 leaves that lease `released` under its reusable policy with a stop-and-retain
 receipt. Cancelled-workspace preservation admits that stopped source, as it does
 an active or ephemeral one. It records the save obligation for the exact writer
-run while the workspace is still bound to that writer. Paperclip's workspace
-recovery then saves those files, which releases the hold. It never replays the
-stopped run. While that save is in progress, its last progress counts as the
-ended writer's activity for the holder cutoff. A waiter keeps waiting instead of
+run while the workspace is still bound to that writer. A Stop during an
+accepted result's copy-back retries ends that copy-back, and no finalization
+exports those files afterwards. Preservation admits that writer as well and
+leaves the accepted result uncommitted. Other accepted results keep their own
+export repair path. Paperclip's workspace recovery then saves those files, which
+releases the hold. It never replays the stopped run. While that save is in
+progress, its last progress counts as the ended writer's activity for the holder cutoff. A waiter keeps waiting instead of
 failing setup. The save's retry budget bounds that wait. A save that exhausts
 its retries is handed to the board as a named recovery action. After that hand-off,
 the cutoff no longer advances.
