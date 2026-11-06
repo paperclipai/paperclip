@@ -11,4 +11,6 @@ export const agentChatsApi = {
       `/companies/${companyId}/chats/${encodeURIComponent(agentRef)}`,
       {},
     ),
+  create: (companyId: string, agentRef: string) =>
+    api.post<Issue>(`/companies/${companyId}/chats/${encodeURIComponent(agentRef)}?new=true`, {}),
 };

@@ -123,7 +123,7 @@ describe("Chat landing", () => {
     recordAgentChatVisit("company-a", "user-a", "retired-id");
     state.chats = [{ id: "chat-retired", conversationAgentId: "retired-id" }];
     await render();
-    expect(state.navigate).toHaveBeenCalledWith("/chats/retired-id", { replace: true });
+    expect(state.navigate).toHaveBeenCalledWith("/chats/retired-id/chat-retired", { replace: true });
   });
 
   it("waits for history before skipping a recent historical chat", async () => {
@@ -135,7 +135,7 @@ describe("Chat landing", () => {
     state.chatsFetched = true;
     state.chats = [{ id: "chat-retired", conversationAgentId: "retired-id" }];
     await render();
-    expect(state.navigate).toHaveBeenCalledWith("/chats/retired-id", { replace: true });
+    expect(state.navigate).toHaveBeenCalledWith("/chats/retired-id/chat-retired", { replace: true });
   });
 
   it("shows the chooser when no saved chat remains available", async () => {
@@ -158,7 +158,7 @@ describe("Chat landing", () => {
     state.chatsFetched = false;
     state.chatsError = new Error("History unavailable");
     await render();
-    expect(state.navigate).toHaveBeenCalledWith("/chats/alice-slug", { replace: true });
+    expect(state.navigate).toHaveBeenCalledWith("/chats/alice-slug/chat-alice", { replace: true });
   });
 
   it("reopens a visited empty chat without waiting for history", async () => {

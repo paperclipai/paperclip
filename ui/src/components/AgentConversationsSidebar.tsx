@@ -10,9 +10,9 @@ import { queryKeys } from "@/lib/queryKeys";
 import { resourceMembershipState, useResourceMemberships } from "@/hooks/useResourceMemberships";
 
 /** Account- and company-scoped data for the secondary chat navigation. */
-export function AgentConversationsSidebar() {
+export function AgentConversationsSidebar({ onConversationOpened }: { onConversationOpened?: () => void } = {}) {
   const { companyId, userId, agents, chats, session } = useAgentChatNavigation();
-  const openChat = useOpenAgentChat(companyId, userId);
+  const openChat = useOpenAgentChat(companyId, userId, true);
   const navigate = useNavigate();
   const memberships = useResourceMemberships(companyId);
   const { isMobile, setSidebarOpen } = useSidebar();
@@ -32,20 +32,23 @@ export function AgentConversationsSidebar() {
     const agent = chat.conversationAgentId ? byId.get(chat.conversationAgentId) : undefined;
     return agent ? [agent] : [];
   });
-  if (active && !conversations.some(agent => agent.id === active.id)) conversations.unshift(active);
+  const uniqueConversations = [...new Map(conversations.map(agent => [agent.id, agent])).values()];
+  if (active && !uniqueConversations.some(agent => agent.id === active.id)) uniqueConversations.unshift(active);
   // Everyone you can chat with is listed, not only agents you've already
   // talked to: conversations first by recent activity, then the rest of the
   // roster alphabetically. Same eligibility rule as the Agents nav section —
   // terminated agents and agents you've left are omitted.
-  const listedIds = new Set(conversations.map(agent => agent.id));
+  const listedIds = new Set(uniqueConversations.map(agent => agent.id));
   const teammates = roster
     .filter(agent => !listedIds.has(agent.id) && agent.status !== "terminated"
       && (!memberships.isSuccess || resourceMembershipState(memberships.data, "agent", agent.id) !== "left"))
     .sort((left, right) => left.name.localeCompare(right.name, undefined, { sensitivity: "base" }));
   const previews = Object.fromEntries((chats.data ?? []).filter(chat => chat.conversationState === "active")
     .map(chat => [chat.conversationAgentId!, "Working…"]));
-  return <AgentConversationSidebar key={`${companyId}:${userId}`} agents={[...conversations, ...teammates]} availableAgents={roster}
-    existingChatAgentIds={conversations.map(agent => agent.id)}
+  return <AgentConversationSidebar key={`${companyId}:${userId}`} agents={[...uniqueConversations, ...teammates]} availableAgents={roster}
+    chats={(chats.data ?? []).flatMap(chat => { const agent = chat.conversationAgentId ? byId.get(chat.conversationAgentId) : undefined; return agent ? [{ chat, agent }] : []; })}
+    onSelectHistory={() => { if (isMobile) setSidebarOpen(false); }}
+    existingChatAgentIds={[]}
     activeId={active?.id} previews={previews}
     unreadAgentIds={(chats.data ?? []).filter(chat => chat.isUnreadForMe).flatMap(chat => chat.conversationAgentId ? [chat.conversationAgentId] : [])}
     // Loaded chats stay listed through an outage (the banner covers it); an
@@ -56,7 +59,7 @@ export function AgentConversationsSidebar() {
     historyLoading={historyAgents.some(result => result.isPending)}
     historyError={historyAgents.find(result => queryViewKind(result) === "error")?.error}
     onRetryHistory={() => { historyAgents.filter(result => result.isError).forEach(result => { void result.refetch(); }); }}
-    onAddChat={openChat}
+    onAddChat={async (agent, signal) => { await openChat(agent, signal); if (!signal?.aborted) onConversationOpened?.(); }}
     onSelect={agent => {
       navigate(`/chats/${encodeURIComponent(agent.status === "terminated" ? agent.id : agentRouteRef(agent))}`);
       if (isMobile) setSidebarOpen(false);

@@ -40,12 +40,12 @@ function AgentChatsContent({ companyId, userId, enabled, loaded, agents, chats, 
   const recentChatPath = loaded && enabled && companyId && !blockingError && !resolvingRecent
     ? recentIds.map(id => {
       const agent = agents.data?.find(item => item.id === id);
-      const historyIssue = chats.data?.find(chat => chat.conversationAgentId === id);
       const savedIssueId = recordedAgentChatIssueId(companyId, userId, id);
+      const historyIssue = chats.data?.find(chat => savedIssueId ? chat.id === savedIssueId && chat.conversationAgentId === id : chat.conversationAgentId === id);
       // A deleted or inaccessible issue must not silently reopen as a new chat.
       if (savedIssueId && chats.isSuccess && historyIssue?.id !== savedIssueId) return null;
-      if (agent) return `/chats/${encodeURIComponent(agentRouteRef(agent))}`;
-      if (historyIssue) return `/chats/${encodeURIComponent(id)}`;
+      if (agent) return `/chats/${encodeURIComponent(agentRouteRef(agent))}${savedIssueId ? `/${savedIssueId}` : ""}`;
+      if (historyIssue) return `/chats/${encodeURIComponent(id)}/${historyIssue.id}`;
       return null;
     }).find((path): path is string => path !== null)
     : undefined;

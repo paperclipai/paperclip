@@ -9,15 +9,15 @@ import { ApiError } from "@/api/client";
 import { queryKeys } from "@/lib/queryKeys";
 import { AgentChat } from "./AgentChat";
 
-const api = vi.hoisted(() => ({ enabled: true, list: vi.fn(), get: vi.fn(), getChat: vi.fn(), ensure: vi.fn(), session: vi.fn() }));
+const api = vi.hoisted(() => ({ enabled: true, chatId: undefined as string | undefined, list: vi.fn(), get: vi.fn(), getChat: vi.fn(), listChats: vi.fn(), ensure: vi.fn(), session: vi.fn() }));
 const agentId = "18c5ad50-9d70-4e24-bd82-337e1d45a414";
 vi.mock("@/api/agents", () => ({ agentsApi: { list: api.list, get: api.get } }));
-vi.mock("@/api/agentChats", () => ({ agentChatsApi: { get: api.getChat, ensure: api.ensure } }));
+vi.mock("@/api/agentChats", () => ({ agentChatsApi: { get: api.getChat, list: api.listChats, ensure: api.ensure } }));
 vi.mock("@/api/auth", () => ({ authApi: { getSession: api.session } }));
 vi.mock("@/context/CompanyContext", () => ({ useCompany: () => ({ selectedCompanyId: "company-a" }) }));
 vi.mock("@/hooks/useAgentChatEnabled", () => ({ useAgentChatEnabled: () => ({ enabled: api.enabled, loaded: true }) }));
-vi.mock("@/lib/router", () => ({ useParams: () => ({ agentRef: "18c5ad50-9d70-4e24-bd82-337e1d45a414" }), Link: ({ to, children }: { to: string; children: React.ReactNode }) => <a href={to}>{children}</a> }));
-vi.mock("./IssueDetail", () => ({ TaskDetailSurface: ({ conversation }: { conversation: { agent: Agent } }) => <div>History for {conversation.agent.name}</div> }));
+vi.mock("@/lib/router", () => ({ useParams: () => ({ agentRef: "18c5ad50-9d70-4e24-bd82-337e1d45a414", chatId: api.chatId }), Link: ({ to, children }: { to: string; children: React.ReactNode }) => <a href={to}>{children}</a> }));
+vi.mock("./IssueDetail", () => ({ TaskDetailSurface: ({ conversation }: { conversation: { agent: Agent; issue?: { id: string } } }) => <div>History for {conversation.agent.name} {conversation.issue?.id}</div> }));
 
 let root: Root;
 let container: HTMLDivElement;
@@ -43,6 +43,7 @@ async function failRoster(status: number, cached = true) {
 beforeEach(() => {
   vi.clearAllMocks();
   api.enabled = true;
+  api.chatId = undefined;
   client = new QueryClient({ defaultOptions: { queries: { retry: false, retryOnMount: false, staleTime: Infinity, gcTime: Infinity } } });
   client.setQueryData(queryKeys.auth.session, { user: { id: "viewer-a" } });
   api.session.mockResolvedValue({ user: { id: "viewer-a" } });
@@ -51,6 +52,15 @@ beforeEach(() => {
   container = document.createElement("div"); document.body.appendChild(container); root = createRoot(container);
 });
 afterEach(() => { flushSync(() => root.unmount()); client.clear(); container.remove(); });
+
+it("opens the requested owned conversation rather than the default", async () => {
+  api.chatId = "second";
+  api.list.mockResolvedValue([{ id: agentId, companyId: "company-a", name: "Helper" }]);
+  api.listChats.mockResolvedValue([{ id: "first", conversationAgentId: agentId }, { id: "second", conversationAgentId: agentId }]);
+  render();
+  await waitFor(() => expect(container.textContent).toContain("History for Helper second"));
+  expect(api.getChat).not.toHaveBeenCalled();
+});
 
 it("explains when Agent Chat is disabled without creating a conversation", async () => {
   api.enabled = false;
@@ -109,7 +119,7 @@ it("opens a stale navigation conversation immediately while revalidating in the 
   client.setDefaultOptions({ queries: { retry: false, staleTime: 30_000, gcTime: Infinity } });
   client.setQueryData(queryKeys.agents.list("company-a"), [{ id: agentId, companyId: "company-a", name: "Helper" }]);
   client.setQueryData(queryKeys.agentChats.list("company-a", "viewer-a"), [{
-    id: "existing-chat", companyId: "company-a", conversationAgentId: agentId,
+    id: "existing-chat", companyId: "company-a", conversationAgentId: agentId, conversationDefault: true,
   } as Issue], { updatedAt: Date.now() - 60_000 });
   api.getChat.mockImplementation(() => new Promise(() => {}));
   render();

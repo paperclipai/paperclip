@@ -6,7 +6,10 @@ import { useCoordinatorAttentionCount } from "@/hooks/useCoordinatorAttentionCou
 import { issuesApi } from "@/api/issues";
 import { instanceSettingsApi } from "@/api/instanceSettings";
 import { projectsApi } from "@/api/projects";
-import { useAgentChatNavigation } from "@/hooks/useAgentChatNavigation";
+import { useAgentChatNavigation, useOpenAgentChat } from "@/hooks/useAgentChatNavigation";
+import { AgentChatPicker } from "./AgentChatPicker";
+import { AgentConversationsSidebar } from "./AgentConversationsSidebar";
+import { Dialog, DialogContent, DialogTitle } from "./ui/dialog";
 import { useRecentTasks } from "@/hooks/useRecentTasks";
 import { usePinnedNavigation } from "@/hooks/usePinnedNavigation";
 import { useDialogActions } from "@/context/DialogContext";
@@ -64,7 +67,10 @@ function ProjectRecent({ project }: { project: Project }) {
 /** The navigation is a view of the existing records; it never creates a chat
  * or task just because someone visits or switches agents. */
 export function CoordinatorSidebar({ children }: { children?: ReactNode }) {
-  const { companyId, userId, agents, chats, session } = useAgentChatNavigation();
+  const { companyId, userId, enabled: agentChatEnabled, agents, chats, session } = useAgentChatNavigation();
+  const openNewChat = useOpenAgentChat(companyId, userId, true);
+  const [chatPickerOpen, setChatPickerOpen] = useState(false);
+  const [chatHistoryOpen, setChatHistoryOpen] = useState(false);
   const unreadChatCount = chats.data?.filter(chat => chat.isUnreadForMe).length ?? 0;
   const pinnedNavigation = usePinnedNavigation(userId);
   const { data: experimental } = useQuery({
@@ -100,7 +106,7 @@ export function CoordinatorSidebar({ children }: { children?: ReactNode }) {
     const taskRows = recentTasks.map(task => ({ kind: "task" as const, id: task.id, time: task.recordedAt, task }));
     const chatRows = (chats.data ?? []).flatMap(chat => {
       const agent = chat.conversationAgentId ? roster.get(chat.conversationAgentId) : null;
-      return agent ? [{ kind: "chat" as const, id: chat.id, time: new Date(chat.updatedAt).getTime(), agent }] : [];
+      return agent ? [{ kind: "chat" as const, id: chat.id, time: new Date(chat.updatedAt).getTime(), agent, chat }] : [];
     });
     const projectRows = (projects ?? []).flatMap(project => projectVisits.scope === scope && projectVisits.entries[project.id]
       ? [{ kind: "project" as const, id: project.id, time: projectVisits.entries[project.id]!, project }] : []);
@@ -119,7 +125,13 @@ export function CoordinatorSidebar({ children }: { children?: ReactNode }) {
       <div className="design-sidebar-primary">
         {rail ? <Tooltip><TooltipTrigger asChild>{newTaskButton}</TooltipTrigger><TooltipContent side="right">New task</TooltipContent></Tooltip> : newTaskButton}
         <div className="design-sidebar-primary my-2">
-          <SidebarNavItem className="design-sidebar-item" to="/chats" label="Chat" icon={MessageCircle} badge={unreadChatCount} badgeLabel="unread chats" />
+          <div className="group/coordinator-new relative">
+            <SidebarNavItem className={cn("design-sidebar-item", !rail && "pr-16")} to="/chats" label="Chat" icon={MessageCircle} badge={unreadChatCount} badgeLabel="unread chats" />
+            {!rail && agentChatEnabled && <div className="absolute right-2 top-1/2 flex -translate-y-1/2 items-center gap-1">
+              <button type="button" aria-label="All conversations" title="All conversations" onClick={() => setChatHistoryOpen(true)} className="rounded-md p-1 text-muted-foreground hover:bg-sidebar-accent focus-visible:ring-2 focus-visible:ring-ring"><History className="size-4" /></button>
+              <button type="button" aria-label="New chat" title="New chat" onClick={() => setChatPickerOpen(true)} className="rounded-md p-1 text-muted-foreground hover:bg-sidebar-accent focus-visible:ring-2 focus-visible:ring-ring"><Plus className="size-4" /></button>
+            </div>}
+          </div>
           <div className="group/coordinator-new relative">
             <SidebarNavItem to="/issues" label="Tasks" icon={CircleCheck} className={cn("design-sidebar-item", !rail && "pr-9")} />
             {!rail && <button type="button" aria-label="New task" title="New task" onClick={() => openNewIssue()}
@@ -158,11 +170,18 @@ export function CoordinatorSidebar({ children }: { children?: ReactNode }) {
         {recents.map(item => item.kind === "task"
           ? <SidebarNavItem className="design-sidebar-item" key={item.id} to={`/issues/${item.task.identifier ?? item.id}`} label={item.task.title} iconNode={<StatusIcon {...taskStatusIconProps(item.task)} />} />
           : item.kind === "chat"
-            ? <SidebarNavItem className="design-sidebar-item" key={item.id} to={`/chats/${encodeURIComponent(agentRouteRef(item.agent))}`} label={item.agent.name} icon={MessageCircle} />
+            ? <SidebarNavItem className="design-sidebar-item" key={item.id} to={`/chats/${encodeURIComponent(agentRouteRef(item.agent))}/${item.id}`} label={`${item.chat.title} · ${item.agent.name} · ${new Date(item.chat.createdAt ?? item.chat.updatedAt).toLocaleString()}`} icon={MessageCircle} />
             : <ProjectRecent key={item.id} project={item.project} />)}
         </div>
       </SidebarSection></div>}
       {children}
     </nav>
+    <AgentChatPicker open={chatPickerOpen} onOpenChange={setChatPickerOpen} agents={(agents.data ?? []).filter(agent => agent.status !== "terminated" && agent.status !== "pending_approval")} loading={agents.isPending} error={agents.error} onRetry={() => { void agents.refetch(); }} onSelect={openNewChat} />
+    <Dialog open={chatHistoryOpen} onOpenChange={setChatHistoryOpen}>
+      <DialogContent aria-describedby={undefined} className="h-full max-h-screen overflow-hidden p-0 sm:max-w-md">
+        <DialogTitle className="sr-only">All conversations</DialogTitle>
+        <div className="min-h-0" onClickCapture={event => { if ((event.target as Element).closest("a")) setChatHistoryOpen(false); }}><AgentConversationsSidebar onConversationOpened={() => setChatHistoryOpen(false)} /></div>
+      </DialogContent>
+    </Dialog>
   </aside></TruncatedTextMarqueeProvider></FlyoutAppearanceProvider>;
 }
