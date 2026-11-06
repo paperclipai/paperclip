@@ -38,6 +38,8 @@ import {
 } from "../lib/attention";
 import { cn } from "../lib/utils";
 import { PageSkeleton } from "../components/PageSkeleton";
+import { QueryErrorState, useQueryView } from "../components/QueryView";
+import { describeError } from "../api/errors";
 import { AttentionQueueRow } from "../components/AttentionQueueRow";
 import { DecisionsToolbar } from "../components/DecisionsToolbar";
 import { Curtain, AgingItemRow } from "../components/DecisionShelf";
@@ -93,11 +95,7 @@ export function DecisionQueuePage() {
   });
   const queue = useMemo(() => queues?.find((q) => q.key === queueKey) ?? null, [queues, queueKey]);
 
-  const {
-    data: feed,
-    isLoading,
-    error,
-  } = useQuery({
+  const feedQuery = useQuery({
     queryKey: [
       ...queryKeys.attention(selectedCompanyId!),
       "queue",
@@ -109,6 +107,8 @@ export function DecisionQueuePage() {
     enabled: !!selectedCompanyId && !!queueKey,
     refetchOnWindowFocus: true,
   });
+  const { data: feed, isLoading } = feedQuery;
+  const feedView = useQueryView(feedQuery);
 
   const { data: agents } = useQuery({
     queryKey: queryKeys.agents.list(selectedCompanyId!),
@@ -208,7 +208,7 @@ export function DecisionQueuePage() {
     onError: (err) =>
       pushToast({
         title: "Could not update seeding",
-        body: err instanceof Error ? err.message : "Please try again.",
+        body: describeError(err).body,
         tone: "error",
       }),
   });
@@ -216,8 +216,21 @@ export function DecisionQueuePage() {
   if (!selectedCompanyId) {
     return <p className="text-sm text-muted-foreground">Select an organization first.</p>;
   }
-  if (isLoading) {
+  // Keep a loaded queue on screen through a failed refetch; only a real
+  // failure, or an outage before the first load, replaces the page.
+  if (isLoading || feedView.kind === "reconnecting") {
     return <PageSkeleton variant="approvals" />;
+  }
+  if (feedView.kind === "error") {
+    return (
+      <QueryErrorState
+        size="page"
+        error={feedView.error}
+        action="load this queue"
+        onRetry={feedView.retry}
+        retrying={feedView.isFetching}
+      />
+    );
   }
 
   const isEmpty = activeItems.length === 0;
@@ -263,8 +276,6 @@ export function DecisionQueuePage() {
           onToggle={() => toggleSeedRules.mutate(!queue.seedRulesEnabled)}
         />
       )}
-
-      {error && <p className="text-sm text-destructive">{(error as Error).message}</p>}
 
       {isEmpty ? (
         <div className="rounded-xl border border-dashed border-border py-14 text-center">
@@ -455,7 +466,7 @@ function QueueItemRow({
     onError: (err) =>
       pushToast({
         title: "Could not exclude",
-        body: err instanceof Error ? err.message : "Please try again.",
+        body: describeError(err).body,
         tone: "error",
       }),
   });

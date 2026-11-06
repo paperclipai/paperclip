@@ -2,10 +2,10 @@ import { randomUUID } from "node:crypto";
 import { open, statfs } from "node:fs/promises";
 import { openDaytonaDuplexChannelSession, type DaytonaPtyProcess, type DuplexChannelSession } from "./duplex-command-stream.js";
 
-// Keep encoded bursts below the provider's 64 KiB PTY message limit and wait
-// for each acknowledgement so output cannot overrun its socket queue.
 const CHUNK_BYTES = 40 * 1024;
+const CREDIT_WINDOW = 16;
 const MAX_FRAME_BYTES = Math.ceil(CHUNK_BYTES / 3) * 4 + 128;
+const MAX_BUFFER_BYTES = MAX_FRAME_BYTES * CREDIT_WINDOW;
 const HOST_FREE_RESERVE_BYTES = 1024 ** 3;
 const CLEANUP_TIMEOUT_MS = 5_000;
 const quote = (value: string) => `'${value.replace(/'/g, `'"'"'`)}'`;
@@ -22,8 +22,6 @@ async function closeArchiveSession(session: DuplexChannelSession): Promise<void>
   }
 }
 
-/** No remote archive or session log: one chunk in memory, acknowledged only
- * after its host write. The ordinary archive validator still owns import. */
 export async function streamSandboxArchive(input: {
   process: DaytonaPtyProcess;
   cwd: string;
@@ -41,13 +39,22 @@ export async function streamSandboxArchive(input: {
   const done = `${marker}:done`;
   // fd 3 retains the PTY input while tar owns the pipeline's stdin. pipefail
   // preserves tar failure even when the last encoder completes successfully.
+  const receiveAcknowledgements = [
+    'while [ "$outstanding" -gt 0 ]; do',
+    `IFS= read -r ack <&3 && [ "$ack" = ${quote(marker)} ] || exit 1;`,
+    'outstanding=$((outstanding - 1));',
+    "done",
+  ].join(" ");
   const sender = [
+    "outstanding=0;",
     "while :; do",
     `chunk=$(dd bs=${CHUNK_BYTES} count=1 iflag=fullblock status=none | base64 -w 0) || exit 1;`,
     '[ -n "$chunk" ] || break;',
     'printf "data:%s\\n" "$chunk";',
-    `IFS= read -r ack <&3 && [ "$ack" = ${quote(marker)} ] || exit 1;`,
-    "done",
+    "outstanding=$((outstanding + 1));",
+    `if [ "$outstanding" -eq ${CREDIT_WINDOW} ]; then ${receiveAcknowledgements}; fi;`,
+    "done;",
+    receiveAcknowledgements,
   ].join(" ");
   // Duplicate the original input before constructing the tar pipeline.
   const command = `exec 3<&0; printf '\\n%s\\n' ${quote(start)}; { ${input.archiveScript}; } | ( ${sender} ); `;
@@ -59,7 +66,7 @@ export async function streamSandboxArchive(input: {
   let started = false;
   let launched = false;
   let complete = false;
-  let writing = false;
+  let pendingFrames = 0;
   let buffer = "";
   let receivedBytes = 0;
   let pending = Promise.resolve();
@@ -76,7 +83,7 @@ export async function streamSandboxArchive(input: {
     session.onData(bytes => {
       if (stopped) return;
       buffer += Buffer.from(bytes).toString("utf8");
-      if (buffer.length > MAX_FRAME_BYTES) { fail("Daytona archive stream exceeded its frame limit"); return; }
+      if (buffer.length > MAX_BUFFER_BYTES) { fail("Daytona archive stream exceeded its buffer limit"); return; }
       for (let newline = buffer.indexOf("\n"); newline >= 0; newline = buffer.indexOf("\n")) {
         const line = buffer.slice(0, newline).replace(/\r$/, "");
         buffer = buffer.slice(newline + 1);
@@ -88,18 +95,19 @@ export async function streamSandboxArchive(input: {
           continue;
         }
         if (!started) { if (line === start) started = true; continue; }
-        if (line === done && !complete && !writing) {
+        if (line === done && !complete && pendingFrames === 0) {
           complete = true;
           session!.write(Buffer.from(`${done}\n`));
           continue;
         }
-        if (!line || complete || writing || !line.startsWith("data:")) { fail("Invalid Daytona archive stream frame"); return; }
+        if (!line || complete || !line.startsWith("data:")) { fail("Invalid Daytona archive stream frame"); return; }
+        if (pendingFrames >= CREDIT_WINDOW) { fail("Daytona archive stream exceeded its pending frame limit"); return; }
         const encoded = line.slice(5);
         const data = Buffer.from(encoded, "base64");
         if (!data.length || data.length > CHUNK_BYTES || data.toString("base64") !== encoded) {
           fail("Invalid Daytona archive stream payload"); return;
         }
-        writing = true;
+        pendingFrames += 1;
         pending = pending.then(async () => {
           if (stopped) return;
           if (receivedBytes + data.length > input.maxBytes) {
@@ -112,9 +120,9 @@ export async function streamSandboxArchive(input: {
           if (stopped) return;
           await file.writeFile(data);
           receivedBytes += data.length;
-          writing = false;
+          pendingFrames -= 1;
           session!.write(Buffer.from(`${marker}\n`));
-        }).catch(error => { rejectFailure(error); });
+        }).catch(error => { stopped = true; rejectFailure(error); });
       }
     });
     const exit = await session.wait();

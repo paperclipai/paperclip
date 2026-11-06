@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { and, asc, eq, gt, inArray } from "drizzle-orm";
 import { agentFileRoots, agents, fileStorageDb, heartbeatRuns, type Db } from "@paperclipai/db";
+import { offlineMigrationExecutionWhere } from "./offline-migration-execution.js";
 import type { StorageProvider, StorageService } from "../storage/types.js";
 import { adoptAgentFiles, inspectAgentDirectory } from "./agent-file-store.js";
 import { agentInstructionsBundleMode, deriveBundleState, resolveManagedInstructionsRoot } from "./agent-instructions.js";
@@ -33,7 +34,8 @@ export async function migrateAgentFiles(db: Db, input: {
       if (agentInstructionsBundleMode(agent) === "external") return "external_instructions";
       const [run] = await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
         eq(heartbeatRuns.companyId, agent.companyId), eq(heartbeatRuns.agentId, agent.id),
-        inArray(heartbeatRuns.status, ["running", "queued"]),
+        input.writersStopped && process.env.PAPERCLIP_EPHEMERAL_MIGRATION === "true"
+          ? offlineMigrationExecutionWhere() : inArray(heartbeatRuns.status, ["running", "queued"]),
       )).limit(1);
       if (run) return "active_execution";
       const [head] = await tx.select({ generation: agentFileRoots.generation }).from(agentFileRoots)

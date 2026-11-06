@@ -2,10 +2,13 @@ import { readFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import Ajv2020 from "ajv/dist/2020.js";
+import { Ajv2020 } from "ajv/dist/2020.js";
 import { describe, expect, it } from "vitest";
 import { createTaskAction } from "../protocol-actions/create-task.js";
 import { createProjectAction } from "../protocol-actions/create-project.js";
+import { readDocumentAction } from "../protocol-actions/read-document.js";
+import { writeDocumentAction } from "../protocol-actions/write-document.js";
+import { listDocumentRevisionsAction } from "../protocol-actions/list-document-revisions.js";
 import { handoffCaseAction } from "../protocol-actions/handoff-case.js";
 
 import {
@@ -21,6 +24,26 @@ const packageRoot = resolve(
 );
 
 describe("semantic action catalog", () => {
+  it.each([readDocumentAction, writeDocumentAction, listDocumentRevisionsAction])(
+    "$id uses the same normalized key contract on every tool surface",
+    (action) => {
+      const ajv = new Ajv2020({ strict: true });
+      const schemas = [
+        action.live.descriptor.inputSchema.properties.key,
+        action.scenario.descriptor.inputSchema.properties.key,
+        paperclipSemanticAction(action.id)!.inputSchema.properties!.key,
+      ];
+      for (const schema of schemas) {
+        const validate = ajv.compile(schema);
+        for (const key of ["reconciliation", "Reconciliation", "K", " ".repeat(56) + "a".repeat(64)]) {
+          expect(validate(key), key).toBe(true);
+        }
+        for (const key of ["reconciliation.md", "../document", "a".repeat(65), " ".repeat(57) + "a".repeat(64)]) {
+          expect(validate(key), key).toBe(false);
+        }
+      }
+    },
+  );
   it("compiles case handoff identity constraints in strict consumers and rejects malformed IDs", () => {
     const ajv = new Ajv2020({ allErrors: true, allowUnionTypes: true, strict: true });
     for (const schema of [handoffCaseAction.live.descriptor.inputSchema, paperclipSemanticAction("handoff_case")!.inputSchema]) {

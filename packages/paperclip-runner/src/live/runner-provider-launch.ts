@@ -100,6 +100,18 @@ export function runnerLaunchRequirementsDigest(requirements: RunnerProviderLaunc
   return `sha256:${createHash("sha256").update(canonical).digest("hex")}`;
 }
 
+function runnerLaunchPolicy(requirements: RunnerProviderLaunchRequirements): Record<string, unknown> {
+  return createRunnerProviderLaunch(requirements, {
+    options: { codexArgs: [] }, root: "/", cwd: "/", codexHome: "/",
+    providerNodeCommand: "", opencodeProxyPath: "", acpxSidecarPath: "", codexCommand: "",
+  });
+}
+
+/** Compare effective provider policy, including the factory's defaults. */
+export function runnerLaunchSettingsMatch(requirements: RunnerProviderLaunchRequirements, settings: RunnerProviderLaunchRequirements["settings"]): boolean {
+  return JSON.stringify(runnerLaunchPolicy(requirements)) === JSON.stringify(runnerLaunchPolicy({ ...requirements, settings }));
+}
+
 /** The environment may resolve paths, but it cannot change Core's selected policy. */
 export function validatePreparedRunnerLaunch(
   requirements: RunnerProviderLaunchRequirements,
@@ -138,10 +150,7 @@ export function validatePreparedRunnerLaunch(
       || descriptor.runId !== requirements.identity.runId
       || descriptor.normalizedSessionId !== requirements.identity.normalizedSessionId) reject();
   }
-  const expected = createRunnerProviderLaunch(requirements, {
-    options: { codexArgs: [] }, root: "/", cwd: "/", codexHome: "/",
-    providerNodeCommand: "", opencodeProxyPath: "", acpxSidecarPath: "", codexCommand: "",
-  });
+  const expected = runnerLaunchPolicy(requirements);
   const hostFields = new Set(["command", "args", "sidecarCommand", "sidecarArgs", "runtimeDirectory", "cwd",
     "preconfiguredHome", "externallySandboxed", "runtimeContext", "instructions"]);
   for (const [key, value] of Object.entries(expected)) {
@@ -186,6 +195,7 @@ export interface RunnerProviderLaunchEnvironment {
   codexCommand?: string;
   opencodeProxyPath: string;
   acpxSidecarPath: string;
+  cursorCloudProxyPath?: string;
 }
 
 export function createRunnerProviderLaunch(
@@ -193,6 +203,16 @@ export function createRunnerProviderLaunch(
   input: RunnerProviderLaunchEnvironment,
 ): Record<string, unknown> {
   const { identity, instructions: baseInstructions, runtimeContext, settings, provider } = requirements;
+  if (provider === "cursor_cloud") {
+    if (input.options.runnerFilesystemRoot || !requirements.model || requirements.readOnly) {
+      throw new Error("cursor_cloud_local_controller_required: experimental Cursor Cloud supports standard tasks with a local controller");
+    }
+    if (!input.cursorCloudProxyPath) throw new Error("cursor_cloud_proxy_missing");
+    return { kind: "cursor_cloud", provider: "cursor_cloud", driver: "cursor_cloud_api", providerVersion: "cursor-cloud-v1",
+      command: input.providerNodeCommand, args: [input.cursorCloudProxyPath], cwd: input.cwd,
+      model: requirements.model, instructions: baseInstructions, approvalPolicy: "never",
+      conversationMode: requirements.preparedConversation ? "prepared" : "task" };
+  }
   const acpxAgent = provider === "acpx" ? settings.acpxAgent ?? "codex" : null;
   const requestedModel = requirements.model ?? "";
   const includeCodexCollaborationInstructions = provider === "codex" &&

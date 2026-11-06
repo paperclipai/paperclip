@@ -1,4 +1,5 @@
 import type { ConnectionManagementContext } from "../../connection-management.js";
+import { createConnectionProfileConfigurationReader } from "./connection-configuration.js";
 import { connectionActorUserId } from "../actor.js";
 import { assertProfileEntryInputs } from "../../tool-profile-entry-validation.js";
 import { randomUUID } from "node:crypto";
@@ -360,6 +361,8 @@ export function createToolProfileService(db: Db, now: () => Date) {
     }
   }
   return {
+    listConnectionProfileConfiguration: createConnectionProfileConfigurationReader(db),
+
     listProfiles: async (
       companyId: string,
     ): Promise<ToolProfileWithDetails[]> => {

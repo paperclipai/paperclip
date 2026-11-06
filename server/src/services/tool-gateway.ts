@@ -1,3 +1,4 @@
+import { isNewHumanIntentAfterToolRejection } from "./tool-action-replay-intent.js";
 import { notifyChatRunMilestones } from "./chat-run-milestone-notifications.js";
 import { writeToolConnectionHealthChange } from "./tool-connection-health-notifications.js";
 import { writeApprovalChange } from "./approval-work-notifications.js";
@@ -20,6 +21,8 @@ import { nativeProviderCatalogFor } from "./native-provider-catalogs.js";
 import { composeConnectionInstructions } from "./connection-instructions.js";
 import { googleWorkspaceToolTarget, googleWorkspaceGrantedScopes, isGoogleWorkspaceToolGranted } from "@paperclipai/shared";
 import { isInsufficientConnectionScope, INSUFFICIENT_CONNECTION_SCOPE_MESSAGE } from "./connection-permission-errors.js";
+import { githubAccessError } from "./tool-access/github-access-errors.js";
+import { toolSourceTemplateKeySql } from "./tool-access/source-template-key.js";
 import { boundedMcpToolName } from "./mcp-tool-names.js";
 import { browserUseService } from "./browser-use.js";
 import { isBrowserUseConnection } from "./browser-use-client.js";
@@ -71,6 +74,7 @@ import {
   documents,
   heartbeatRuns,
   issueApprovals,
+  issueComments,
   issueDocuments,
   issueThreadInteractions,
   issues,
@@ -5014,9 +5018,13 @@ export function createToolGatewayService(
         "tool_not_found",
       );
     }
-    const [connection] = await db
-      .select()
+    const [connected] = await db
+      .select({ connection: toolConnections, sourceTemplateKey: toolSourceTemplateKeySql })
       .from(toolConnections)
+      .innerJoin(toolApplications, and(
+        eq(toolApplications.id, toolConnections.applicationId),
+        eq(toolApplications.companyId, toolConnections.companyId),
+      ))
       .where(
         and(
           eq(toolConnections.id, entry.connectionId),
@@ -5024,6 +5032,7 @@ export function createToolGatewayService(
         ),
       )
       .limit(1);
+    const connection = connected?.connection;
     if (!connection || (connection.transport !== "mcp_remote" && !isBrowserUseConnection(connection) && !nativeProviderCatalogFor(connection) && !restConnectorFor(connection))) {
       throw new ToolGatewayHttpError(
         404,
@@ -5055,7 +5064,7 @@ export function createToolGatewayService(
     if (restConnector && !restConnector.isCurrent(entry)) {
       throw new ToolGatewayHttpError(409, `${restConnector.name}'s action catalog changed. Review the updated actions in Permissions.`, "provider_catalog_changed");
     }
-    return { entry, connection };
+    return { entry, connection, sourceTemplateKey: connected?.sourceTemplateKey ?? null };
   }
 
   async function governedToolArguments(
@@ -6168,7 +6177,7 @@ export function createToolGatewayService(
         spawnedLocalProcess,
       },
       ...(record.isError === true
-        ? { error: "MCP tool returned an error result" }
+        ? { error: "MCP tool returned an error result", ...githubAccessError(sourceTemplateKey, providerContent) }
         : {}),
     };
   }
@@ -6182,7 +6191,7 @@ export function createToolGatewayService(
     callerHeaders?: ExecuteGatewayToolInput["callerHeaders"],
     useDefaultTimeout = false,
   ): Promise<RemoteHttpExecutionResult> {
-    const { entry, connection } = await resolveConnectedRemoteTool(
+    const { entry, connection, sourceTemplateKey } = await resolveConnectedRemoteTool(
       session,
       tool,
     );
@@ -6589,10 +6598,6 @@ export function createToolGatewayService(
           request: resultElicitation,
         });
       }
-      const sourceTemplateKey =
-        typeof connection.config.sourceTemplateKey === "string"
-          ? connection.config.sourceTemplateKey
-          : null;
       const result = normalizeMcpToolResult(
         payloadRecord.result,
         "mcp_http",
@@ -7660,8 +7665,9 @@ export function createToolGatewayService(
       });
       const providerResult = asRecord(resultValidation.value);
       if (providerResult?.error) {
-        throw new ToolGatewayHttpError(502, String(providerResult.content || providerResult.error),
-          "tool_error", { execution: connectedMcpExecution.execution });
+        throw new ToolGatewayHttpError(providerResult.errorCode === "github_access_denied" ? 403 : 502,
+          String(providerResult.content || providerResult.error),
+          providerResult.errorCode === "github_access_denied" ? "github_access_denied" : "tool_error", { execution: connectedMcpExecution.execution });
       }
     } catch (err) {
       const status = err instanceof ToolGatewayHttpError ? err.status : 502;
@@ -8468,9 +8474,9 @@ export function createToolGatewayService(
       const resultRecord = asRecord(result);
       if (resultRecord?.error)
         throw new ToolGatewayHttpError(
-          502,
+          resultRecord.errorCode === "github_access_denied" ? 403 : 502,
           String(resultRecord.content || resultRecord.error),
-          "tool_execution_failed",
+          resultRecord.errorCode === "github_access_denied" ? "github_access_denied" : "tool_execution_failed",
         );
       const resultValidation = await validateToolContent({
         value: result,
@@ -8596,6 +8602,35 @@ export function createToolGatewayService(
       if (!signed || canonicalToolArguments(signed.arguments) !== canonicalToolArguments(input.parameters)) return null;
     } else if (match.actionRequest.canonicalArgumentsHash !== input.argumentsHash) {
       return null;
+    }
+    // Rejection applies to that intent, not every later human request with the
+    // same arguments. A new trusted request still passes the normal policy and
+    // Ask first path below; it receives no execution or approval authority here.
+    if (match.actionRequest.status === "rejected" && input.session.runId && input.session.responsibleUserId) {
+      const [intent] = await db.select({
+        run: {
+          id: heartbeatRuns.id, companyId: heartbeatRuns.companyId, agentId: heartbeatRuns.agentId,
+          status: heartbeatRuns.status, responsibleUserId: heartbeatRuns.responsibleUserId,
+          startedAt: heartbeatRuns.startedAt, issueId: heartbeatRuns.issueId, nativeIssueId: heartbeatRuns.nativeIssueId,
+          contextSnapshot: sql<Record<string, unknown>>`jsonb_build_object(
+            'source', ${heartbeatRuns.contextSnapshot}->'source',
+            'issueId', ${heartbeatRuns.contextSnapshot}->'issueId',
+            'taskId', ${heartbeatRuns.contextSnapshot}->'taskId',
+            'commentId', ${heartbeatRuns.contextSnapshot}->'commentId')`,
+        },
+        comment: issueComments,
+      }).from(heartbeatRuns).innerJoin(issueComments, and(
+        eq(issueComments.companyId, heartbeatRuns.companyId),
+        eq(issueComments.issueId, input.session.issueId),
+        eq(issueComments.id, sql`case when ${heartbeatRuns.contextSnapshot}->>'commentId'
+          ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+          then (${heartbeatRuns.contextSnapshot}->>'commentId')::uuid end`),
+      )).where(and(
+        eq(heartbeatRuns.id, input.session.runId), eq(heartbeatRuns.companyId, input.session.companyId),
+        eq(heartbeatRuns.agentId, input.session.agentId),
+      )).limit(1);
+      if (intent && isNewHumanIntentAfterToolRejection({ session: input.session, rejection: match.actionRequest,
+        invocation: match.invocation, ...intent })) return null;
     }
     if (match.actionRequest.status === "failed" && match.invocation.errorCode !== "provider_interaction_required") return null;
     // The gateway builds an ask-first request in two steps inside one call: it
@@ -11172,9 +11207,9 @@ export function createToolGatewayService(
           : null;
         if (validatedMcpResult?.error) {
           throw new ToolGatewayHttpError(
-            502,
+            validatedMcpResult.errorCode === "github_access_denied" ? 403 : 502,
             String(validatedMcpResult.content || validatedMcpResult.error),
-            "tool_error",
+            validatedMcpResult.errorCode === "github_access_denied" ? "github_access_denied" : "tool_error",
             { execution: connectedMcpExecution?.execution },
           );
         }

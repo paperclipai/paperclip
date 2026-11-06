@@ -146,8 +146,11 @@ RUN pnpm --filter @paperclipai/plugin-sdk build
 # next RUN as an environment variable. The production stage below declares the
 # same ARG again for the runtime fallback; an ARG goes out of scope at the
 # end of its stage. Empty for local `docker build`, which then writes no stamp.
+# NODE_OPTIONS covers the Node build steps. tsc is a native binary and ignores it.
 ENV NODE_OPTIONS=--max-old-space-size=4096
-RUN pnpm --filter @paperclipai/server build
+# The image needs no declarations, and CI type-checks this source separately.
+# Emitting without either cuts the tsc step from more than 10 GiB to about 2.5 GiB.
+RUN PAPERCLIP_TSC_EMIT_ONLY=1 pnpm --filter @paperclipai/server build
 RUN test -f server/dist/index.js || (echo "ERROR: server build output missing" && exit 1)
 RUN pnpm --filter @paperclipai/server build:runtime \
   && test -f server/dist-runtime/index.mjs || (echo "ERROR: server runtime bundle missing" && exit 1)

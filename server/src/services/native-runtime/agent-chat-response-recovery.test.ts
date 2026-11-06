@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { agents, authUsers, companies, completionContracts, createDb, heartbeatRunEvents, heartbeatRuns, issueComments, issues,
-  nativeRunFinalizations, nativeRunResults, chatTaskHandoffs, chatCompletionDeliveries, agentWakeupRequests, type Db } from "@paperclipai/db";
+  nativeRunFinalizations, nativeRunResults, issueThreadInteractions, chatTaskHandoffs, chatCompletionDeliveries, agentWakeupRequests, type Db } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import { resolveExternalTestDatabaseUrl } from "../../__tests__/helpers/external-test-database.js";
 import { NativeRunCoordinatorStore } from "./native-run-coordinator-store.js";
@@ -26,7 +26,7 @@ describe.skipIf(!support.supported)("committed Agent Chat reply recovery", () =>
   }, 60_000);
   afterAll(async () => { await db?.$client.end(); await database?.cleanup(); });
 
-  async function fixture(conversation = true, options: { succeed?: boolean } = {}) {
+  async function fixture(conversation = true, options: { succeed?: boolean; disposition?: "done" | "needs_review" } = {}) {
     const companyId = randomUUID(), agentId = randomUUID(), issueId = randomUUID(), runId = randomUUID();
     const sessionId = randomUUID(), runnerId = randomUUID(), userId = `fixture-${randomUUID()}`, wakeId = randomUUID();
     await db.insert(authUsers).values({ id: userId, name: "Conversation owner", email: `${userId}@example.test`,
@@ -53,16 +53,38 @@ describe.skipIf(!support.supported)("committed Agent Chat reply recovery", () =>
     const prpEvent = { runId, normalizedSessionId: sessionId, turnId: "hire-turn", sourceEventId: "fixture-final-answer",
       payload: { kind: "agentMessage", channel: "final", providerPhase: "final", text: reply } };
     await db.insert(heartbeatRunEvents).values({ companyId, runId, agentId, seq: 170, eventType: "item.completed", payload: { prpEvent } });
-    await port.completeRun({ result: { schema: "paperclip.run_result.v1", reportedWorkDisposition: "done",
+    const disposition = options.disposition ?? "done";
+    await port.completeRun({ result: { schema: "paperclip.run_result.v1", reportedWorkDisposition: disposition,
       summary: "A completed hire, with its final message preserved separately.", completionClaim: { contractRevision: "test",
-        objectiveSatisfied: true, criteria: [], remainingWork: [] }, evidence: [], verification: [], attentionRequests: [], artifacts: [] },
-      terminal: { schema: "paperclip.prp.terminal.v1", runTerminalState: "succeeded", turnTerminalState: "completed", reportedWorkDisposition: "done" }, turnId: "hire-turn" });
+        objectiveSatisfied: true, criteria: [], remainingWork: [] }, evidence: [], verification: [],
+      attentionRequests: disposition === "needs_review" ? [{ kind: "review", ownerClass: "human", summary: "Review the completed work." }] : [], artifacts: [] },
+      terminal: { schema: "paperclip.prp.terminal.v1", runTerminalState: "succeeded", turnTerminalState: "completed", reportedWorkDisposition: disposition }, turnId: "hire-turn" });
     await finalizeNativeRun({ db, runId, workspaceFinalizeStatus: "succeeded", projectRunStatus: false });
     expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, runId)))[0].phase).toBe("committed");
     if (options.succeed !== false) await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date("2020-01-01T00:02:00Z") }).where(eq(heartbeatRuns.id, runId));
     const input = { companyId, issueId, runId };
     return { ...input, input, agentId, userId, wakeId, prpEvent, reply };
   }
+  it("settles the exact claimed wake when recovery projects a committed native run", async () => {
+    // The provider and result are already committed. Recovery owns terminal
+    // projection because the live executor will not return to completeRun.
+    const f = await fixture(false, { succeed: false });
+    const sourceWakeId = randomUUID();
+    await db.insert(agentWakeupRequests).values({ id: sourceWakeId, companyId: f.companyId,
+      agentId: f.agentId, source: "issue", reason: "issue_assigned", status: "claimed",
+      runId: f.runId, claimedAt: new Date(), payload: { issueId: f.issueId } });
+    await db.update(heartbeatRuns).set({ wakeupRequestId: sourceWakeId }).where(eq(heartbeatRuns.id, f.runId));
+
+    await finalizeNativeRun({ db, runId: f.runId, workspaceFinalizeStatus: "succeeded", projectRunStatus: true });
+
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+    const [wake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, sourceWakeId));
+    expect(run).toMatchObject({ status: "succeeded", nativePhase: "committed" });
+    expect(run.finishedAt).not.toBeNull();
+    expect(wake).toMatchObject({ status: "completed", runId: f.runId });
+    expect(wake.finishedAt).not.toBeNull();
+  });
+
   const comments = (runId: string) => db.select().from(issueComments).where(eq(issueComments.createdByRunId, runId));
   const issue = async (issueId: string) => (await db.select().from(issues).where(eq(issues.id, issueId)))[0];
 
@@ -641,6 +663,38 @@ describe.skipIf(!support.supported)("committed Agent Chat reply recovery", () =>
     expect(await comments(f.runId)).toEqual([expect.objectContaining({ body: f.reply })]);
     expect((await issue(f.issueId)).conversationAgentId).toBeNull();
   });
+  it("recovers a deferred review reply once without resolving the review or rerunning work", async () => {
+    const f = await fixture(false, { disposition: "needs_review" });
+    const before = await issue(f.issueId);
+    const reviews = await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.issueId, f.issueId));
+    expect(before.status).toBe("in_review");
+    expect(reviews).toEqual([expect.objectContaining({ status: "pending" })]);
+    expect(await comments(f.runId)).toEqual([]);
+    const work = nativeResponsePresentationWork(db), entries = await work.load(f.input);
+    expect(entries).toHaveLength(1);
+    await expect(work.check(entries[0])).resolves.toBeNull();
+    expect(await comments(f.runId)).toEqual([expect.objectContaining({ body: f.reply, createdByRunId: f.runId })]);
+    expect(await issue(f.issueId)).toEqual({ ...before, updatedAt: expect.any(Date) });
+    expect(await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.issueId, f.issueId))).toEqual(reviews);
+    expect(await work.load(f.input)).toEqual([]);
+    await expect(recoverCommittedNativeChatResponse(db, f.input)).resolves.toBe(false);
+    expect(await comments(f.runId)).toHaveLength(1);
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.nativeIssueId, f.issueId))).toHaveLength(1);
+  });
+  it.each(["missing-final", "wrong-turn", "digest", "skip-comment"])(
+    "keeps deferred review response recovery closed for %s", async fault => {
+      const f = await fixture(false, { disposition: "needs_review" });
+      if (fault === "missing-final") await db.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, f.runId));
+      if (fault === "wrong-turn") await db.update(heartbeatRunEvents).set({ payload: { prpEvent: { ...f.prpEvent, turnId: "another-turn" } } })
+        .where(and(eq(heartbeatRunEvents.runId, f.runId), eq(heartbeatRunEvents.seq, 170)));
+      if (fault === "digest") await db.update(nativeRunResults).set({ canonicalSha256: "invalid-digest" }).where(eq(nativeRunResults.runId, f.runId));
+      if (fault === "skip-comment") await db.update(heartbeatRuns).set({ contextSnapshot: { issueId: f.issueId, skipIssueComment: true } }).where(eq(heartbeatRuns.id, f.runId));
+      const before = await issue(f.issueId);
+      await expect(recoverCommittedNativeChatResponse(db, f.input)).resolves.toBe(false);
+      expect(await comments(f.runId)).toEqual([]);
+      expect(await issue(f.issueId)).toEqual(before);
+    },
+  );
   it("rolls back a partial reply write without changing the waiting state or consuming recovery", async () => {
     const f = await fixture(), abort = new Error("fixture-commit-aborted");
     const failing = new Proxy(db, { get(target, key) { return key === "transaction"

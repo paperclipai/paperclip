@@ -1,4 +1,4 @@
-import { redactDiagnosticText, REDACTED_COMMAND_TEXT_VALUE } from "../command-redaction.js";
+import { collectDiagnosticEnvironmentSecrets, redactDiagnosticText, REDACTED_COMMAND_TEXT_VALUE } from "../command-redaction.js";
 import type { AdapterExecutionResult } from "../types.js";
 
 export interface AcpxTerminalSessionFailure {
@@ -32,16 +32,6 @@ export function classifyToolDefinitionFailure(
 // Leave room under the server's 64 KiB run-log chunk limit even when every
 // retained character needs JSON escaping. The transcript stores the text once.
 const FIELD_LIMITS = { title: 4096, details: 24576 } as const;
-// Only conventional public process settings may survive by default. Provider,
-// proxy, bridge, and future launch contributions may carry secrets under any
-// name. Explicitly configured values are still redacted even for these keys.
-const PUBLIC_ENV_KEYS = new Set([
-  "PATH", "PATHEXT", "SYSTEMROOT", "WINDIR", "COMSPEC", "HOME", "USERPROFILE",
-  "HOMEDRIVE", "HOMEPATH", "USER", "USERNAME", "LOGNAME", "SHELL", "LANG",
-  "LANGUAGE", "LC_ALL", "LC_CTYPE", "TZ", "TMPDIR", "TEMP", "TMP", "NODE_ENV",
-  "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME",
-  "PAPERCLIP_AGENT_ID", "PAPERCLIP_COMPANY_ID", "PAPERCLIP_RUN_ID", "PAPERCLIP_TASK_ID",
-]);
 const PUBLIC_BOOLEAN_ENV_KEYS = new Set([
   "OPENCODE_ALLOW_ALL_MODELS", "CLAUDE_CODE_USE_BEDROCK", "GOOGLE_GENAI_USE_GCA",
   "CI", "NO_COLOR", "FORCE_COLOR",
@@ -58,22 +48,11 @@ export function sanitizeTerminalSessionFailure(
   authToken?: string,
   configuredEnv: Record<string, unknown> = {},
 ): AcpxTerminalSessionFailureDiagnostic {
-  const secrets = Object.entries(env)
-    .filter(([key, value]) => value && !PUBLIC_ENV_KEYS.has(key.toUpperCase()) && !isPublicBooleanSetting(key, value))
-    .map(([, value]) => value);
+  const secrets = collectDiagnosticEnvironmentSecrets(env);
   // Configured values can be resolved secret_refs under arbitrary names (for
   // example DATABASE_URL). Key-name heuristics cannot establish they are public.
   for (const [key, value] of Object.entries(configuredEnv)) {
     if (typeof value === "string" && value && !isPublicBooleanSetting(key, value)) secrets.push(value);
-  }
-  // A provider may echo just the password from a configured connection URL.
-  for (const value of Object.values(env)) {
-    try {
-      const url = new URL(value);
-      if (url.password) {
-        secrets.push(value, url.password, decodeURIComponent(url.password));
-      }
-    } catch { /* ordinary environment values are not URLs */ }
   }
   if (authToken) secrets.push(authToken);
   const secretForms = [...new Set(secrets.flatMap((value) => {

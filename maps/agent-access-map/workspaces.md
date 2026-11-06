@@ -71,9 +71,35 @@ until an explicit import. Stored `false` disables new enrollment unless managed
 configuration overrides it. Enrolled workspaces keep remote authority when new
 enrollment is disabled, and missing persistence prerequisites fail admission
 without a controller checkout fallback. Current authorization and responsible-user
-checks still apply;
-read-only cross-project referenced folders and explicitly concurrent shared
-writers are rejected. Managed mutable same-project repositories are supported.
+checks still apply. Authorized referenced Git repositories use writable task
+copies without changing shared source folders or upstream push permissions.
+Explicitly read-only sources and explicitly concurrent shared writers are rejected.
+Managed mutable same-project repositories are supported.
+Portable capture streams validated working files while staging self-contained
+Git metadata. The smaller temporary-space requirement grants no new agent access
+or execution authority. Changed sources still fail before a save receipt.
+Daytona can stream an already captured archive when its guarded download copy
+cannot fit. The sandbox-user read rechecks confinement and refuses symlinks at
+open; it does not grant the privileged download API access to a mutable source.
+Snapshot publication and the single-writer fence keep their existing authority.
+An inherited isolated workspace or operator branch can be reserved through the
+task's current persisted binding. The original source task remains provenance.
+Reservation checks task/run, binding, trust, and retained source visibility before
+claiming the single writer; an unbound task cannot claim that workspace.
+A live writer conflict at atomic reservation uses the existing workspace wait,
+including inherited isolated workspaces and operator branches. The retry retains
+the binding and current admission gates; Stop cancels it. Stale or stopped
+writers with unfinished saves remain fenced. The wait retains the admitted
+assignment role; reassignment during preparation cancels the old assignee's retry.
+The
+[preparation tests](../../server/src/services/heartbeat/workspace-preparation.test.ts)
+and [heartbeat tests](../../server/src/__tests__/heartbeat-remote-workspace-busy.test.ts)
+cover reservation and persisted waits with PostgreSQL; live sandbox
+provider acceptance remains separate.
+The [reservation tests](../../server/src/services/remote-workspace-reservation.test.ts)
+exercise that service boundary with real PostgreSQL, including competing children,
+private sources, foreign companies, and closed records. This is automated evidence,
+not live agent qualification.
 Importing an existing local task folder is an operator source-checkout command,
 not an agent API or tool: see the
 [dry-run/apply runbook](../../doc/DEVELOPING.md#experimental-native-remote-workspace-storage).
@@ -285,6 +311,11 @@ workspace metadata, and operation logs retain their app-data privacy.
 For enrolled remote workspaces the same board file-resource endpoints read the
 authorized live allocation or a verified committed saved version. Returned
 `source.kind` is `live` or `saved`, with `savedAt` for a saved copy. An unavailable
+clean allocation does not prevent reads of its current committed save once
+writer authority is clear; saved reads validate the exact company, workspace,
+and snapshot even while a remote location remains recorded. Cleanup may clear
+only that location during a saved read; logical-authority changes and foreign
+or reintroduced locations still reject it. Live reads retain their full fence. An unavailable
 dirty allocation cannot silently fall back to stale saved bytes. Remote paths
 never become controller filesystem authority. Confined path/symlink checks,
 bounded search/preview, download streaming, and cancellation remain enforced by
@@ -312,6 +343,11 @@ Policy: Company/project/workspace visibility and runtime authority; active run, 
 preset and task ownership where required.
 Workspace metadata reads do not perform storage inspection or certify delivery.
 The explicit close-readiness API and destructive cleanup retain live safety checks.
+Automatic GitHub delivery checks reuse explicit source-project GitHub consent,
+rechecking the stored repository, selected grant, project access and trust on each
+proof. Missing or revoked consent never falls back to another identity. The resolved destination and
+provider recovery hint cannot be supplied as an authorization override through
+workspace metadata. Ambiguous or inaccessible proof retains storage.
 
 Evidence: `source-only` —
 [implementation](../../server/src/routes/workspace-runtime-service-authz.ts#L76) at the

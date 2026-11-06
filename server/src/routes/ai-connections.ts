@@ -252,6 +252,22 @@ export function aiConnectionRoutes(db: Db, options: Parameters<typeof supportsLo
     },
   );
   router.get(
+    "/companies/:companyId/ai-connections/:connectionId/identity", managementGuard("connections:read", "GET /companies/:companyId/ai-connections/:connectionId/identity", { personal: true }),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      assertBoardOrAgent(req);
+      assertCompanyAccess(req, companyId);
+      const connectionId = z.string().uuid().safeParse(req.params.connectionId);
+      const grantId = z.string().uuid().optional().safeParse(req.query.grantId);
+      if (!connectionId.success || !grantId.success) throw unprocessable("Invalid connection or grant ID");
+      res.setHeader("Cache-Control", "no-store");
+      const actor = getActorInfo(req);
+      res.json(await service.accountIdentity(companyId, responsibleUserForAiRequest(req)!, connectionId.data, grantId.data, {
+        actorType: actor.actorType, actorId: actor.actorId, heartbeatRunId: actor.runId,
+      }));
+    },
+  );
+  router.get(
     "/companies/:companyId/ai-connections/:connectionId/active-runs", managementGuard("connections:read", "GET /companies/:companyId/ai-connections/:connectionId/active-runs", { personal: true }),
     async (req, res) => {
       const companyId = req.params.companyId as string;

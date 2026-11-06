@@ -72,6 +72,7 @@ fn checkpoints_the_sidecar_and_rebinds_consecutive_warm_runs_before_accepting_wo
             }],
         }),
         opencode_launch_profile: None,
+        cursor_cloud_launch_profile: None,
         max_outbox_bytes: 1024 * 1024,
         p0_reserve_bytes: 64 * 1024,
         max_frame_bytes: 1024 * 1024,

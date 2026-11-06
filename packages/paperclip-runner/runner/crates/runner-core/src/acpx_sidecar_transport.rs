@@ -14,6 +14,7 @@ use crate::local_runner::LocalRunnerError;
 use crate::process_supervisor::{
     BoundedLogBuffer, ProcessOutput, SupervisedProcess, VerifiedProcessLaunch,
 };
+use crate::provider_failure::validated_provider_failure;
 use crate::stable_identity::{is_stable_id, DURABLE_STABLE_ID_CHARS, SHORT_STABLE_ID_CHARS};
 
 pub const ACPX_SIDECAR_MAX_FRAME_BYTES: usize = 1024 * 1024;
@@ -85,6 +86,7 @@ pub struct AcpxSidecarTransport {
     stderr_tail: BoundedLogBuffer,
     stderr_categories: BTreeSet<&'static str>,
     poisoned: bool,
+    abandoned_observation: Option<u64>,
 }
 
 // A fresh Pi process verifies and copies its native closure before ACP admission.
@@ -386,6 +388,7 @@ impl AcpxSidecarTransport {
             stderr_tail: BoundedLogBuffer::new(32, 8 * 1024),
             stderr_categories: BTreeSet::new(),
             poisoned: false,
+            abandoned_observation: None,
         })
     }
 
@@ -399,6 +402,10 @@ impl AcpxSidecarTransport {
 
     pub fn process_id(&self) -> u32 {
         self.process.id()
+    }
+
+    pub(crate) fn buffered_events(&self) -> impl ExactSizeIterator<Item = &AcpxSidecarEvent> {
+        self.buffered_events.iter()
     }
 
     pub fn request(
@@ -449,6 +456,11 @@ impl AcpxSidecarTransport {
         result
     }
 
+    pub(crate) fn defer_polled_event(&mut self, event: AcpxSidecarEvent) {
+        // poll_event already validated its sequence and freed its FIFO slot.
+        self.buffered_events.push_front(event);
+    }
+
     pub fn shutdown(&mut self) -> Result<(), LocalRunnerError> {
         self.poisoned = true;
         self.process.terminate_group().map(|_| ())
@@ -459,6 +471,86 @@ impl AcpxSidecarTransport {
         command: GeneratedAcpxSidecarCommand,
         params: Value,
     ) -> Result<CommandOutcome, LocalRunnerError> {
+        let request_id = self.send_request(command, params)?;
+        self.receive_response(
+            command,
+            request_id,
+            Instant::now() + self.command_timeout(command),
+        )?
+        .ok_or_else(|| self.request_timeout_error(command))
+    }
+
+    /// A park observation may expire without revoking a healthy provider.
+    /// Retain one ID so its late reply cannot masquerade as an ordinary reply.
+    pub(crate) fn observe(
+        &mut self,
+        command: GeneratedAcpxSidecarCommand,
+        deadline: Instant,
+    ) -> Result<Option<Value>, LocalRunnerError> {
+        if self.poisoned {
+            return Err(LocalRunnerError::invalid(
+                "ACPX sidecar transport is unavailable",
+            ));
+        }
+        if !matches!(
+            command,
+            GeneratedAcpxSidecarCommand::SessionGoalGet
+                | GeneratedAcpxSidecarCommand::SessionSnapshot
+        ) {
+            return Err(LocalRunnerError::invalid(
+                "ACPX observation must be read-only",
+            ));
+        }
+        if self.abandoned_observation.is_some() || Instant::now() >= deadline {
+            return Ok(None);
+        }
+        let result = self
+            .send_request(command, json!({}))
+            .and_then(|request_id| {
+                let result = self.receive_response(command, request_id, deadline)?;
+                if result.is_none() {
+                    self.abandoned_observation = Some(request_id);
+                }
+                Ok(result)
+            });
+        match result {
+            Ok(Some(CommandOutcome::Success(value))) => Ok(Some(value)),
+            Ok(Some(CommandOutcome::Rejected(_))) => Ok(None),
+            Ok(None) => Ok(None),
+            Err(error) => {
+                self.poison();
+                Err(error)
+            }
+        }
+    }
+
+    pub(crate) fn observed_event_sequence(&self) -> u64 {
+        self.last_event_sequence
+    }
+
+    /// Ordinary turn admission drains an expired read before replacing its sidecar.
+    pub(crate) fn settle_observation(&mut self) -> Result<(), LocalRunnerError> {
+        let Some(request_id) = self.abandoned_observation.take() else {
+            return Ok(());
+        };
+        let command = GeneratedAcpxSidecarCommand::SessionSnapshot;
+        match self.receive_response(command, request_id, Instant::now() + self.request_timeout) {
+            Ok(Some(_)) => Ok(()),
+            result => {
+                self.poison();
+                Err(match result {
+                    Err(error) => error,
+                    _ => self.request_timeout_error(command),
+                })
+            }
+        }
+    }
+
+    fn send_request(
+        &mut self,
+        command: GeneratedAcpxSidecarCommand,
+        params: Value,
+    ) -> Result<u64, LocalRunnerError> {
         if !params.is_object() {
             return Err(LocalRunnerError::invalid(
                 "ACPX sidecar command params must be an object",
@@ -492,19 +584,30 @@ impl AcpxSidecarTransport {
         })?;
         self.next_request_id = request_id + 1;
 
-        let timeout = self.command_timeout(command);
-        let deadline = Instant::now() + timeout;
+        Ok(request_id)
+    }
+
+    fn receive_response(
+        &mut self,
+        command: GeneratedAcpxSidecarCommand,
+        request_id: u64,
+        deadline: Instant,
+    ) -> Result<Option<CommandOutcome>, LocalRunnerError> {
         loop {
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
-                return Err(self.request_timeout_error(command));
+                return Ok(None);
             }
             let Some(line) = self.receive_stdout_line(remaining, command.as_str())? else {
-                return Err(self.request_timeout_error(command));
+                return Ok(None);
             };
             match parse_frame(&line)? {
                 ParsedFrame::Event(event) => self.buffer_event(event)?,
                 ParsedFrame::Response(response) => {
+                    if self.abandoned_observation == Some(response.id) {
+                        self.abandoned_observation = None;
+                        continue;
+                    }
                     if response.id != request_id {
                         return Err(LocalRunnerError::invalid(format!(
                             "ACPX sidecar response id mismatch: expected {request_id}, received {}",
@@ -512,19 +615,20 @@ impl AcpxSidecarTransport {
                         )));
                     }
                     if response.ok {
-                        return Ok(CommandOutcome::Success(
+                        return Ok(Some(CommandOutcome::Success(
                             response.result.unwrap_or_else(|| json!({})),
-                        ));
+                        )));
                     }
                     let error = response.error.expect("failed response has validated error");
-                    return Ok(CommandOutcome::Rejected(LocalRunnerError::invalid(
+                    let provider_failure = error.provider_failure.clone();
+                    return Ok(Some(CommandOutcome::Rejected(LocalRunnerError::invalid(
                         format!(
                             "ACPX sidecar command {} was rejected (retryable={}, classification={})",
                             command.as_str(),
                             error.retryable,
                             response_error_classification(&error),
                         ),
-                    )));
+                    ).with_provider_failure(provider_failure))));
                 }
             }
         }
@@ -534,18 +638,32 @@ impl AcpxSidecarTransport {
         &mut self,
         timeout: Duration,
     ) -> Result<Option<AcpxSidecarEvent>, LocalRunnerError> {
-        let Some(line) = self.receive_stdout_line(timeout, "event.poll")? else {
-            return Ok(None);
-        };
-        match parse_frame(&line)? {
-            ParsedFrame::Event(event) => {
-                self.validate_event_sequence(event.sequence)?;
-                Ok(Some(event))
+        let deadline = Instant::now() + timeout;
+        loop {
+            let Some(line) = self.receive_stdout_line(
+                deadline.saturating_duration_since(Instant::now()),
+                "event.poll",
+            )?
+            else {
+                return Ok(None);
+            };
+            match parse_frame(&line)? {
+                ParsedFrame::Event(event) => {
+                    self.validate_event_sequence(event.sequence)?;
+                    return Ok(Some(event));
+                }
+                ParsedFrame::Response(response)
+                    if self.abandoned_observation == Some(response.id) =>
+                {
+                    self.abandoned_observation = None;
+                }
+                ParsedFrame::Response(response) => {
+                    return Err(LocalRunnerError::invalid(format!(
+                        "ACPX sidecar emitted response {} without a pending request",
+                        response.id
+                    )))
+                }
             }
-            ParsedFrame::Response(response) => Err(LocalRunnerError::invalid(format!(
-                "ACPX sidecar emitted response {} without a pending request",
-                response.id
-            ))),
         }
     }
 
@@ -724,11 +842,13 @@ struct ResponseFrame {
 }
 
 #[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ResponseError {
     code: String,
     message: String,
     retryable: bool,
+    #[serde(default)]
+    provider_failure: Option<Value>,
 }
 
 #[derive(Deserialize)]
@@ -905,6 +1025,24 @@ fn stderr_diagnostic_categories(value: &str) -> BTreeSet<&'static str> {
     categories
 }
 
+// A typed ensure rejection names its provider-failure category, so a limit at
+// session start is distinguishable from other startup failures. Only the
+// schema-validated enum crosses here, never the cause's text.
+fn typed_provider_classification(error: &ResponseError) -> Option<&'static str> {
+    let failure = validated_provider_failure(error.provider_failure.clone())?;
+    Some(match failure.get("category")?.as_str()? {
+        "rate_limit" => "provider_rate_limit",
+        "quota_exhausted" => "provider_quota_exhausted",
+        "authentication" => "provider_authentication",
+        "permission" => "provider_permission",
+        "model_unavailable" => "provider_model_unavailable",
+        "invalid_request" => "provider_invalid_request",
+        "overloaded" => "provider_overloaded",
+        "timeout" => "provider_timeout",
+        _ => return None,
+    })
+}
+
 fn response_error_classification(error: &ResponseError) -> &'static str {
     match error.code.as_str() {
         "GROK_EFFORT_ACKNOWLEDGEMENT_MISSING" => return "grok_effort_acknowledgement_missing",
@@ -952,7 +1090,9 @@ fn response_error_classification(error: &ResponseError) -> &'static str {
         "SESSION_CONFIG_OPTION_REPLAY_FAILED" => return "session_config_option_replay_failed",
         "CLAUDE_ACP_SESSION_CREATE_TIMEOUT" => return "claude_session_create_timeout",
         "ACPX_SESSION_HANDSHAKE_TIMEOUT" => return "session_handshake_timeout",
-        "ACPX_SESSION_ENSURE_FAILED" => return "session_ensure_failed",
+        "ACPX_SESSION_ENSURE_FAILED" => {
+            return typed_provider_classification(error).unwrap_or("session_ensure_failed")
+        }
         "ACPX_SESSION_ENSURE_TYPE_ERROR" => return "session_ensure_type_error",
         "ACPX_SESSION_ENSURE_NON_ERROR" => return "session_ensure_non_error",
         "ACP_SESSION_INIT_FAILED" => return "acp_session_init_failed",
@@ -1176,6 +1316,7 @@ mod tests {
                     "private-token-canary COPILOT_AUTH_REQUIRED https://user:secret@example.invalid"
                         .to_owned(),
                 retryable: false,
+                provider_failure: None,
             };
             let classification = response_error_classification(&error);
             assert_eq!(classification, expected);
@@ -1185,11 +1326,61 @@ mod tests {
     }
 
     #[test]
+    fn session_ensure_names_only_a_typed_provider_category() {
+        let ensure = |provider_failure: Option<Value>| ResponseError {
+            code: "ACPX_SESSION_ENSURE_FAILED".to_owned(),
+            message: "private-token-canary".to_owned(),
+            retryable: false,
+            provider_failure,
+        };
+        let cause = |category: &str| {
+            json!({ "schema": "paperclip.provider-failure.v1", "provider": "anthropic", "phase": "startup",
+                "category": category, "message": "private-token-canary", "retryability": "unknown" })
+        };
+        for (category, expected) in [
+            ("quota_exhausted", "provider_quota_exhausted"),
+            ("rate_limit", "provider_rate_limit"),
+            ("authentication", "provider_authentication"),
+            ("unknown", "session_ensure_failed"),
+        ] {
+            assert_eq!(
+                response_error_classification(&ensure(Some(cause(category)))),
+                expected
+            );
+        }
+        assert_eq!(
+            response_error_classification(&ensure(None)),
+            "session_ensure_failed"
+        );
+        // A cause outside the schema cannot select a classification.
+        let mut invented = cause("quota_exhausted");
+        invented["category"] = json!("private-token-canary");
+        assert_eq!(
+            response_error_classification(&ensure(Some(invented))),
+            "session_ensure_failed"
+        );
+        let mut extra = cause("quota_exhausted");
+        extra["headers"] = json!({ "authorization": "private-token-canary" });
+        assert_eq!(
+            response_error_classification(&ensure(Some(extra))),
+            "session_ensure_failed"
+        );
+        // Other closed codes keep their own classification.
+        let mut admission = ensure(Some(cause("quota_exhausted")));
+        admission.code = "ACPX_ADMISSION_CREDENTIAL".to_owned();
+        assert_eq!(
+            response_error_classification(&admission),
+            "admission_credential"
+        );
+    }
+
+    #[test]
     fn classifies_only_allowlisted_internal_sidecar_failures() {
         let error = |code: &str, message: &str| ResponseError {
             code: code.to_owned(),
             message: message.to_owned(),
             retryable: false,
+            provider_failure: None,
         };
         for (code, expected) in [
             ("ACPX_ADMISSION_SANDBOX", "admission_sandbox"),
@@ -1320,3 +1511,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(all(test, unix))]
+#[path = "tests/acpx_park_observation.rs"]
+mod park_observation_tests;

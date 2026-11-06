@@ -361,6 +361,17 @@ function PlanReviewPreview({
   );
 }
 
+/** Plan approvals read as decisions on a named plan revision, not a generic confirmation. */
+function planReviewReceiptSummary(interaction: IssueThreadInteraction, reason: string | null): string | null {
+  if (interaction.kind !== "request_confirmation") return null;
+  const target = interaction.payload.target;
+  if (target?.type !== "issue_document" || target.key !== "plan") return null;
+  const plan = target.revisionNumber == null ? "the plan" : `Plan v${target.revisionNumber}`;
+  if (interaction.status === "accepted") return `Approved ${plan}`;
+  if (interaction.status === "rejected") return reason ? `Requested changes to ${plan}: ${reason}` : `Requested changes to ${plan}`;
+  return null;
+}
+
 function receiptReason(interaction: IssueThreadInteraction): string | null {
   const result = interaction.result;
   if (!result) return null;
@@ -441,7 +452,9 @@ function ReceiptDisclosure({
       .map((option) => option.label);
     request = (
       <div>
-        <p className="text-sm text-foreground">{interaction.payload.prompt}</p>
+        <MarkdownBody className="text-sm text-foreground" externalReferences={externalReferences} mediaMode="reference">
+          {interaction.payload.prompt}
+        </MarkdownBody>
         {interaction.status === "accepted" ? (
           <p className="mt-1 text-sm font-medium text-foreground">
             Answer:{" "}
@@ -530,7 +543,9 @@ function ReceiptDisclosure({
   } else {
     request = (
       <div className="grid gap-2">
-        <p className="text-sm text-foreground">{interaction.payload.prompt}</p>
+        <MarkdownBody className="text-sm text-foreground" externalReferences={externalReferences} mediaMode="reference">
+          {interaction.payload.prompt}
+        </MarkdownBody>
         {interaction.payload.detailsMarkdown ? (
           <div className="text-sm">
             <MarkdownBody externalReferences={externalReferences}>
@@ -617,7 +632,8 @@ function ReceiptDisclosure({
       interaction.kind === "ask_user_questions" &&
       interaction.status === "answered"
         ? "Questions answered"
-        : buildIssueThreadInteractionSummary(interaction);
+        : planReviewReceiptSummary(interaction, answerReason)
+          ?? buildIssueThreadInteractionSummary(interaction);
     return (
       <details
         className="group"
@@ -875,11 +891,11 @@ function ConfirmationCard({
         />
       ) : isPlanConfirmation && rejecting ? null : (
         <div className="space-y-2">
-          <p className="whitespace-pre-line break-words text-sm leading-5 text-foreground">
+          <MarkdownBody className="text-sm leading-5 text-foreground" externalReferences={externalReferences} mediaMode="reference">
             {isPlanConfirmation
               ? "Do you accept this plan?"
               : interaction.payload.prompt}
-          </p>
+          </MarkdownBody>
           {!isPlanConfirmation ? (
             <CompactTarget interaction={interaction} />
           ) : null}
@@ -1165,15 +1181,17 @@ function CheckboxConfirmationCard({
   return (
     <div>
       <div className="space-y-2">
-        <p className="whitespace-pre-line break-words text-sm leading-5 text-foreground">
-          {interaction.payload.prompt}
-        </p>
+        <div id={`${interaction.id}-prompt`}>
+          <MarkdownBody className="text-sm leading-5 text-foreground" externalReferences={externalReferences} mediaMode="reference">
+            {interaction.payload.prompt}
+          </MarkdownBody>
+        </div>
         <CompactTarget interaction={interaction} />
       </div>
       <div
         className="mt-3 grid gap-1"
         role="group"
-        aria-label={interaction.payload.prompt}
+        aria-labelledby={`${interaction.id}-prompt`}
       >
         {interaction.payload.options.length > 10 ? (
           <label className="relative mb-1 block">

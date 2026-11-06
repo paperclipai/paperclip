@@ -300,7 +300,7 @@ for (const journey of [
               ? "Read failed"
               : "Roadmap",
         );
-      const replies = await json<Array<{ body: string; authorAgentId: string | null; createdByRunId: string | null }>>(await request.get(`/api/issues/${issue.id}/comments`));
+      const replies = await json<Array<{ id: string; body: string; authorAgentId: string | null; createdByRunId: string | null }>>(await request.get(`/api/issues/${issue.id}/comments`));
       const reply = replies.find(comment => comment.authorAgentId === agent.id)!;
       expect(reply.createdByRunId).toBeTruthy();
       expect(originatingReview.sourceRunId).toBeTruthy();
@@ -321,22 +321,23 @@ for (const journey of [
         queue.getByRole("button", { name: "Decline", exact: true }),
       ).not.toBeVisible({ timeout: 20_000 });
       await page.bringToFront();
+      expect(await page.evaluate(() => document.visibilityState)).toBe("visible");
       await page.reload();
+      const resolvedReview = page.locator(`[id=${JSON.stringify(`interaction-${originatingReview.id}`)}]`);
+      if (!["decline", "failure"].includes(journey)) {
+        await expect(resolvedReview.getByRole("button", { name: "Show result details", exact: true }).filter({ hasText: "Succeeded" })).toBeVisible();
+      } else {
+        await expect(resolvedReview.getByText(journey === "decline" ? "Declined" : "Execution failed", { exact: false })).toBeVisible();
+      }
+      await expect(resolvedReview).toContainText("List fixture pages");
+      const persistedReply = page.locator(`[id=${JSON.stringify(`comment-${reply.id}`)}]`);
+      await expect(persistedReply).toBeVisible();
+      await expect(persistedReply).toContainText(
+        journey === "decline" ? "Review declined" : journey === "failure" ? "Read failed" : "Roadmap",
+      );
       await expect(page.getByTestId("task-chat-history-content")).toBeVisible({
         timeout: 30_000,
       });
-      await expect(
-        page
-          .getByText(
-            journey === "decline"
-              ? "Declined"
-              : journey === "failure"
-                ? "Execution failed"
-                : "Succeeded",
-            { exact: false },
-          )
-          .first(),
-      ).toBeVisible();
       await page.screenshot({
         path: testInfo.outputPath("resolved-review.png"),
       });

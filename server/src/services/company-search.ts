@@ -1,3 +1,4 @@
+import { issueDisplayStatusSql } from "./issue-display-status.js";
 import { externalConversationStateSql } from "./slack-conversation-state.js";
 import { and, desc, eq, gte, inArray, isNotNull, isNull, notInArray, or, sql } from "drizzle-orm";
 import type { SQL } from "drizzle-orm";
@@ -21,6 +22,7 @@ import {
   COMPANY_ARTIFACTS_MAX_QUERY_LENGTH,
   ISSUE_PRIORITIES,
   ISSUE_STATUSES,
+  ISSUE_DISPLAY_STATUSES,
   SYSTEM_ISSUE_DOCUMENT_KEYS,
   type CompanyArtifact,
   type CompanySearchArtifactSummary,
@@ -40,6 +42,7 @@ import { companyArtifactsService } from "./company-artifacts.js";
 import { companySearchExtractService } from "./company-search-extract.js";
 import { visibleIssueCondition } from "./issue-visibility.js";
 import { parseTaskSearch, taskSearchCtes, taskSearchScore, taskSearchFieldMatch, taskSearchTermMatch } from "./task-search.js";
+import { listIssueStatusBlockerAttention } from "./issue-status-presentation.js";
 
 const SNIPPET_MAX_CHARS = 240;
 export const COMPANY_SEARCH_BRANCH_FETCH_LIMIT = COMPANY_SEARCH_MAX_OFFSET + COMPANY_SEARCH_MAX_LIMIT + 1;
@@ -50,6 +53,7 @@ type IssueSearchRow = {
   title: string;
   description: string | null;
   status: string;
+  displayStatus: string;
   priority: string;
   assigneeAgentId: string | null;
   assigneeUserId: string | null;
@@ -193,6 +197,7 @@ function emptySearchCounts(): Record<CompanySearchCountType, number> {
 function emptyFilterOptionCounts(): CompanySearchFilterOptionCounts {
   return {
     status: {},
+    displayStatus: {},
     priority: {},
     assigneeAgentId: {},
     assigneeUserId: {},
@@ -224,7 +229,7 @@ function updatedWithinStart(value: string | undefined, now = new Date()): Date |
 }
 
 function issueOnlyFiltersActive(query: CompanySearchQuery) {
-  return query.status.length > 0
+  return (query.status.length > 0 || query.displayStatus.length > 0)
     || query.priority.length > 0
     || query.assigneeAgentId !== undefined
     || Boolean(query.assigneeUserId)
@@ -236,7 +241,7 @@ function issueOnlyFiltersActive(query: CompanySearchQuery) {
 
 function activeIssueFilters(query: CompanySearchQuery): Array<{ key: CompanySearchIssueFilterKey; values: string[] }> {
   const filters: Array<{ key: CompanySearchIssueFilterKey; values: string[] }> = [];
-  if (query.status.length > 0) filters.push({ key: "status", values: query.status });
+  if (query.status.length > 0 || query.displayStatus.length > 0) filters.push({ key: "status", values: [...query.status, ...query.displayStatus] });
   if (query.assigneeAgentId !== undefined) filters.push({ key: "assigneeAgentId", values: [query.assigneeAgentId ?? "null"] });
   if (query.assigneeUserId) filters.push({ key: "assigneeUserId", values: [query.assigneeUserId] });
   if (query.projectId) filters.push({ key: "projectId", values: [query.projectId] });
@@ -251,6 +256,7 @@ function queryWithoutFilter(query: CompanySearchQuery, key: CompanySearchIssueFi
   return {
     ...query,
     status: key === "status" ? [] : query.status,
+    displayStatus: key === "status" ? [] : query.displayStatus,
     priority: key === "priority" ? [] : query.priority,
     assigneeAgentId: key === "assigneeAgentId" ? undefined : query.assigneeAgentId,
     assigneeUserId: key === "assigneeUserId" ? undefined : query.assigneeUserId,
@@ -265,6 +271,7 @@ function queryWithoutIssueFilters(query: CompanySearchQuery): CompanySearchQuery
   return {
     ...query,
     status: [],
+    displayStatus: [],
     priority: [],
     assigneeAgentId: undefined,
     assigneeUserId: undefined,
@@ -277,6 +284,7 @@ function queryWithoutIssueFilters(query: CompanySearchQuery): CompanySearchQuery
 
 function issueFilterConditions(companyId: string, query: CompanySearchQuery, omit?: CompanySearchIssueFilterKey): SQL[] {
   const conditions: SQL[] = [];
+  if (omit !== "status" && query.displayStatus.length) conditions.push(inArray(issueDisplayStatusSql(), query.displayStatus));
   if (omit !== "status" && query.status.length > 0) {
     conditions.push(query.status.length === 1 ? eq(issues.status, query.status[0]!) : inArray(issues.status, query.status));
   }
@@ -315,6 +323,7 @@ function issueFilterConditions(companyId: string, query: CompanySearchQuery, omi
 // matched-issues CTE (plain columns, no drizzle table references).
 function matchedFacetConditions(companyId: string, query: CompanySearchQuery, omit?: CompanySearchIssueFilterKey): SQL[] {
   const conditions: SQL[] = [];
+  if (omit !== "status" && query.displayStatus.length) conditions.push(sql`m.display_status = ANY(${sqlTextArray(query.displayStatus)})`);
   if (omit !== "status" && query.status.length > 0) {
     conditions.push(sql`m.status = ANY(${sqlTextArray(query.status)})`);
   }
@@ -447,6 +456,7 @@ function issueResult(row: IssueSearchRow, prefix: string, normalizedQuery: strin
     identifier: row.identifier,
     title: row.title,
     status: row.status as CompanySearchIssueSummary["status"],
+    displayStatus: row.displayStatus as CompanySearchIssueSummary["displayStatus"],
     priority: row.priority as CompanySearchIssueSummary["priority"],
     assigneeAgentId: row.assigneeAgentId,
     assigneeUserId: row.assigneeUserId,
@@ -626,7 +636,7 @@ export function companySearchService(db: Db) {
           conditions.length > 0 ? sql`WHERE ${sql.join(conditions, sql` AND `)}` : sql``;
         // Count branches must match the result branch's column list; the
         // trailing NULLs pad the issue data columns.
-        const countTail = sql`, NULL::uuid, NULL::text, NULL::text, NULL::text, NULL::text, NULL::text, NULL::uuid, NULL::text, NULL::uuid, NULL::timestamptz, NULL::timestamptz, NULL::double precision, NULL::text[]`;
+        const countTail = sql`, NULL::uuid, NULL::text, NULL::text, NULL::text, NULL::text, NULL::text, NULL::text, NULL::uuid, NULL::text, NULL::uuid, NULL::timestamptz, NULL::timestamptz, NULL::double precision, NULL::text[]`;
         const branches: SQL[] = [];
 
         const wantResultRows = scopeIncludesIssues(scope)
@@ -652,6 +662,7 @@ export function companySearchService(db: Db) {
               (SELECT issue_text.description FROM issues issue_text
                 WHERE issue_text.id = m.id AND issue_text.company_id = ${companyId}) AS description,
               m.status,
+              m.display_status AS "displayStatus",
               m.priority,
               m.assignee_agent_id AS "assigneeAgentId",
               m.assignee_user_id AS "assigneeUserId",
@@ -690,6 +701,7 @@ export function companySearchService(db: Db) {
           GROUP BY 2
         `;
         branches.push(facetBranch("facet:status", sql`m.status`, "status"));
+        branches.push(facetBranch("facet:displayStatus", sql`m.display_status`, "status"));
         branches.push(facetBranch("facet:priority", sql`m.priority`, "priority"));
         branches.push(facetBranch("facet:assigneeAgentId", sql`m.assignee_agent_id`, "assigneeAgentId", [sql`m.assignee_agent_id IS NOT NULL`]));
         branches.push(facetBranch("facet:assigneeUserId", sql`m.assignee_user_id`, "assigneeUserId", [sql`m.assignee_user_id IS NOT NULL`]));
@@ -757,6 +769,7 @@ export function companySearchService(db: Db) {
               title: row.title,
               description: row.description,
               status: row.status,
+              displayStatus: row.displayStatus,
               priority: row.priority,
               assigneeAgentId: row.assigneeAgentId,
               assigneeUserId: row.assigneeUserId,
@@ -780,6 +793,9 @@ export function companySearchService(db: Db) {
           if (row.kind === "type:issue") aggregates.typeCounts.issue = count;
           else if (row.kind === "type:comment") aggregates.typeCounts.comment = count;
           else if (row.kind === "type:document") aggregates.typeCounts.document = count;
+          else if (row.kind === "facet:displayStatus" && row.value && (ISSUE_DISPLAY_STATUSES as readonly string[]).includes(row.value)) {
+            aggregates.filterOptionCounts.displayStatus![row.value as keyof NonNullable<CompanySearchFilterOptionCounts["displayStatus"]>] = count;
+          }
           else if (row.kind === "facet:status" && row.value && (ISSUE_STATUSES as readonly string[]).includes(row.value)) {
             aggregates.filterOptionCounts.status[row.value as keyof CompanySearchFilterOptionCounts["status"]] = count;
           } else if (row.kind === "facet:priority" && row.value && (ISSUE_PRIORITIES as readonly string[]).includes(row.value)) {
@@ -1140,8 +1156,15 @@ export function companySearchService(db: Db) {
         const states = await db.select({ id: issues.id, state: externalConversationStateSql() }).from(issues)
           .where(and(eq(issues.companyId, companyId), inArray(issues.id, issueIds)));
         const byId = new Map(states.map((row) => [row.id, row.state]));
+        // Glyph-only blocker state (no blocker titles, IDs or identifiers), so a
+        // covered-blocked result shows the same "in queue" glyph as its task.
+        const blockerAttention = await listIssueStatusBlockerAttention(db, companyId,
+          paged.flatMap((result) => result.issue ? [result.issue] : []));
         for (const result of paged) {
-          if (result.issue) result.issue.externalConversationState = byId.get(result.issue.id) ?? null;
+          if (!result.issue) continue;
+          result.issue.externalConversationState = byId.get(result.issue.id) ?? null;
+          const attention = blockerAttention.get(result.issue.id);
+          if (attention) result.issue.blockerAttention = attention;
         }
       }
       return {

@@ -1,4 +1,5 @@
 import { isEvalRemoteOrigin } from "./eval-remote-gateway.js";
+import { isEverydayReliabilityCase } from "./everyday-reliability-cases.js";
 import type { AiConnectionBinding } from "../../packages/shared/src/ai-connections.js";
 import { verifyInstalledDaytonaPlugin } from "./installed-daytona-plugin.js";
 import { NATIVE_COMPLETION_BUDGET_CENTS } from "./native-completion-defaults.js";
@@ -13,6 +14,7 @@ import { codexSubscriptionAgentConfig, stageCodexSubscriptionFixture } from "./c
 import { caseReceiptTask, CASE_RECEIPT_BUDGET_CENTS, CASE_RECEIPT_RUN_TIMEOUT_MS } from "./case-receipt-cases.js";
 import { stageGrokSubscriptionFixture } from "./grok-subscription-fixture.js";
 import { pollUntil, RunnerApiHttpError, type RunnerApi } from "./api.js";
+import { assertCursorCloudQualificationBudgetOptIn, configureCursorCloudQualificationBudget, type CursorCloudQualificationBudget } from "./cursor-cloud-budget.js";
 import type {
   CredentialName,
   MatrixExecution,
@@ -66,6 +68,7 @@ export interface LiveFixtureValues {
   agent: AgentRecord;
   project?: ProjectRecord;
   aiConnection?: ManagedAccountFixture;
+  qualificationBudget?: CursorCloudQualificationBudget;
   setupProbe?: { leaseId: string; durationMs: number; defaultRunner?: string };
   setupLeases?: Array<{ leaseId: string; phase: "platform" | "adapter"; durationMs: number }>;
   setupLeaseAccountingIncomplete?: boolean;
@@ -189,6 +192,9 @@ export async function setupLiveFixtures(input: {
   onCompanyCreated?: (companyId: string) => Promise<void>;
 }): Promise<LiveFixtureValues> {
   const { api, execution } = input;
+  const cursorCloudQualification = execution.suite.id === "cursor-cloud" && execution.profile.provider === "cursor_cloud";
+  if (cursorCloudQualification) assertCursorCloudQualificationBudgetOptIn();
+  let qualificationBudget: CursorCloudQualificationBudget | undefined;
   const receiptSmoke = execution.suite.id === "case-handoffs" && execution.task.id === caseReceiptTask.id;
   const registry = new FixtureRegistry();
   let setupProbe: LiveFixtureValues["setupProbe"];
@@ -216,9 +222,10 @@ export async function setupLiveFixtures(input: {
         budgetMonthlyCents: execution.suite.id === CHAT_FEATURE_SUITE ? CHAT_FEATURE_BUDGET_CENTS
           : receiptSmoke ? CASE_RECEIPT_BUDGET_CENTS
           : ["native-completion", "native-instruction-consolidation", "native-connection-guidance"].includes(execution.suite.id)
-          || (execution.suite.id === "everyday-workflows" && ["hire-reuse", "delegate-feedback"].includes(execution.task.id)) ? NATIVE_COMPLETION_BUDGET_CENTS
+          || (execution.suite.id === "everyday-workflows" && (["hire-reuse", "delegate-feedback"].includes(execution.task.id)
+            || isEverydayReliabilityCase(execution.task.id))) ? NATIVE_COMPLETION_BUDGET_CENTS
           : execution.suite.id === "task-titles" ? TASK_TITLE_BUDGET_CENTS
-          : ["stock-harness", "task-workspaces", "case-handoffs", "feedback-persistence", "daytona-restart-continuity", "remote-workspace-storage", "rolling-web-deployment"].includes(execution.suite.id) ? 1_000 : 0,
+          : ["cursor-cloud", "stock-harness", "task-workspaces", "case-handoffs", "feedback-persistence", "daytona-restart-continuity", "remote-workspace-storage", "rolling-web-deployment"].includes(execution.suite.id) ? 1_000 : 0,
       });
       await input.onCompanyCreated?.(company.id);
       return company;
@@ -414,7 +421,8 @@ export async function setupLiveFixtures(input: {
         }
       }
       if (["stock-harness", "native-connection-guidance", "feedback-persistence", "daytona-restart-continuity", "remote-workspace-storage", "rolling-web-deployment"].includes(execution.suite.id)
-        || (execution.suite.id === "everyday-workflows" && ["hire-reuse", "delegate-feedback"].includes(execution.task.id))) {
+        || (execution.suite.id === "everyday-workflows" && (["hire-reuse", "delegate-feedback"].includes(execution.task.id)
+          || isEverydayReliabilityCase(execution.task.id)))) {
         agent.budgetMonthlyCents = 1_000;
       }
       if (receiptSmoke) {
@@ -436,10 +444,14 @@ export async function setupLiveFixtures(input: {
           aiConnection: account.binding,
         };
       }
-      return api.post<AgentRecord>(
+      const createdAgent = await api.post<AgentRecord>(
         `/api/companies/${company.id}/agents`,
         codexSubscription ? codexSubscriptionAgentConfig(agent, process.env, company.id) : agent,
       );
+      if (cursorCloudQualification) {
+        qualificationBudget = await configureCursorCloudQualificationBudget({ api, companyId: company.id, agentId: createdAgent.id });
+      }
+      return createdAgent;
     },
     async teardown() {
       // Agent state is instance-local. Daytona environment teardown below is
@@ -493,6 +505,7 @@ export async function setupLiveFixtures(input: {
     secretRefs: value<SecretReferenceMap>(setup.values, "secrets"),
     environment: value<EnvironmentRecord>(setup.values, "environment"),
     agent: value<AgentRecord>(setup.values, "agent"),
+    ...(qualificationBudget ? { qualificationBudget } : {}),
     ...(setupProbe ? { setupProbe } : {}),
     ...(setup.values.has("project")
       ? { project: value<ProjectRecord>(setup.values, "project") }

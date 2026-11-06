@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type { PluginEnvironmentDriverBaseParams, PluginEnvironmentLease } from "./protocol.js";
+import type { PluginAgentRuntimeIdentity } from "./types.js";
 
 export const MAX_ENVIRONMENT_TASK_FILE_BYTES = 10 * 1024 * 1024;
 const taskFilePath = z.string().min(1).max(2000).refine(value =>
@@ -112,12 +113,16 @@ export const environmentTaskOperationSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("credentials"), accountIdentity: z.string().min(1).max(1024) }).strict(),
   z.object({ kind: z.literal("status") }).strict(),
   z.object({ kind: z.literal("connection") }).strict(),
+  z.object({ kind: z.literal("release"), identity: durableIdentity }).strict(),
+  z.object({ kind: z.literal("resume"), identity: durableIdentity, bootstrapTicket: credentialValue }).strict(),
   z.object({ kind: z.literal("complete") }).strict(),
   z.object({ kind: z.literal("stop") }).strict(),
 ]);
 
 export const environmentTaskResultSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("accepted"), taskId: providerId }).strict(),
+  z.object({ kind: z.literal("released"), taskId: providerId }).strict(),
+  z.object({ kind: z.literal("resume"), taskId: providerId, outcome: z.enum(["resumed", "unavailable"]) }).strict(),
   z.object({ kind: z.literal("copilot_metadata"), taskId: providerId, metadata: z.record(z.string(), z.unknown()),
     executionStopped: z.literal(true) }).strict(),
   z.object({ kind: z.literal("project_auth"), taskId: providerId, configurationId: providerId.max(1024),
@@ -134,7 +139,12 @@ export const environmentTaskResultSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("description"), taskId: providerId,
     runner: z.object({ version: z.string().min(1), digest: z.string().regex(/^sha256:[a-f0-9]{64}$/) }).strict(),
     warmTaskVersion: z.literal(1).optional(),
+    releaseResumeVersion: z.literal(1).optional(),
     launchPreparationVersion: z.literal(1).optional(),
+    executionContextVersion: z.literal(1).optional(),
+    /** Each version attests stopped-source recovery for its provider independently. */
+    codexSourceRecoveryVersion: z.literal(1).optional(),
+    acpxSourceRecoveryVersion: z.literal(1).optional(),
     freshWorkspaceVersion: z.literal(1).optional(),
     projectAuthCheckVersion: z.literal(1).optional(),
     workspaceFileReadVersion: z.literal(1).optional(),
@@ -146,6 +156,7 @@ export const environmentTaskResultSchema = z.discriminatedUnion("kind", [
     exitCode: z.number().int().optional(),
     /** Provider observed the task and all descendants stopped; terminal phase alone is insufficient. */
     executionStopped: z.boolean().optional(),
+    preparationStopped: z.boolean().optional(),
     /** The provider retains this task's recoverable session state for a later launch. */
     sessionStateAvailable: z.boolean().optional(),
   }).strict(),
@@ -168,6 +179,15 @@ export type PluginEnvironmentPreparedLaunch = z.infer<typeof preparedLaunch>;
 export type PluginEnvironmentTaskOperation = z.infer<typeof environmentTaskOperationSchema>;
 export type PluginEnvironmentTaskResult = z.infer<typeof environmentTaskResultSchema>;
 
+export interface PluginEnvironmentTaskExecutionContext {
+  id: string;
+  deadlineAtMs: number;
+  transport: {
+    instanceSecrets: PluginAgentRuntimeIdentity["instanceSecrets"];
+    configuration: Record<string, unknown>;
+  };
+}
+
 export interface PluginEnvironmentTaskParams extends Omit<PluginEnvironmentDriverBaseParams, "environmentId"> {
   /** Null during cleanup after the environment is deleted. */
   environmentId: string | null;
@@ -182,12 +202,14 @@ export interface PluginEnvironmentTaskParams extends Omit<PluginEnvironmentDrive
   workspace?: import("@paperclipai/shared").WorkspaceProviderBinding;
   fresh?: import("./workspace-provider.js").PluginFreshWorkspace;
   operation: PluginEnvironmentTaskOperation;
+  executionContextSupported?: 1;
+  executionContext?: PluginEnvironmentTaskExecutionContext;
 }
 
 /** An accepted stop is not proof of process termination. */
 export function parseEnvironmentTaskResult(operation: PluginEnvironmentTaskOperation, taskId: string, value: unknown): PluginEnvironmentTaskResult {
   const result = environmentTaskResultSchema.parse(value);
-  const expected = operation.kind === "read_file" ? "file" : operation.kind === "describe" ? "description" : operation.kind === "prepare" ? "prepared" : operation.kind === "check_project_auth" ? "project_auth" : ["read_state", "archive_state"].includes(operation.kind) ? "state" : ["status", "connection", "credentials", "copilot_metadata"].includes(operation.kind) ? operation.kind : "accepted";
+  const expected = operation.kind === "release" ? "released" : operation.kind === "resume" ? "resume" : operation.kind === "read_file" ? "file" : operation.kind === "describe" ? "description" : operation.kind === "prepare" ? "prepared" : operation.kind === "check_project_auth" ? "project_auth" : ["read_state", "archive_state"].includes(operation.kind) ? "state" : ["status", "connection", "credentials", "copilot_metadata"].includes(operation.kind) ? operation.kind : "accepted";
   if (result.taskId !== taskId || result.kind !== expected) throw new Error("Invalid plugin-provided Runner execution response");
   return result;
 }

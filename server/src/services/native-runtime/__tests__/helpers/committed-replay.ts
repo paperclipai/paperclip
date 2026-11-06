@@ -1,5 +1,5 @@
 import { heartbeatRuns, type Db } from "@paperclipai/db";
-import { createDatabaseResponseCapture, installDatabaseResponseCapture } from "@paperclipai/db/response-capture";
+import { createFullDatabaseResponseCapture, installDatabaseResponseCapture } from "../../../../__tests__/helpers/full-database-response-capture.js";
 import { eq } from "drizzle-orm";
 import { expect } from "vitest";
 
@@ -21,11 +21,11 @@ export async function verifyCommittedReplayPayloadReads(
   const [before] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
   const events: Array<Record<string, unknown>> = [];
   const now = Date.now();
-  const capture = createDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
+  const capture = createFullDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
   installDatabaseResponseCapture(db, { heartbeatRuns }, capture);
   try { await replay(); }
   finally { capture.flush(); }
-  const summary = events.find(event => event.event === "paperclip.db_response_capture.summary.v1")!;
+  const summary = events.find(event => event.event === "paperclip.test_db_response_capture.summary.v1")!;
   expect(summary.completedQueries).toBeGreaterThan(0);
   expect(summary.responseValueBytes).toBeLessThan(100_000);
   const [after] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));

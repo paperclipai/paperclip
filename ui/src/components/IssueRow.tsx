@@ -26,6 +26,7 @@ import { Badge } from "@/components/ui/badge";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { TaskRowColumnCells, useTaskListColumns, type TaskRowColumnValues } from "./TaskListColumns";
 import { CellMarquee, HoveredCellContext, useCellMarqueeHover } from "./CellMarquee";
+import { taskStatusIconProps } from "@/lib/task-status-presentation";
 
 export type IssueRowUnreadState = "hidden" | "visible" | "fading";
 export type IssueRowPresentation = "legacy" | "task";
@@ -239,8 +240,8 @@ export function IssueRow({
   if (presentation === "task") {
     const isUnread = unreadState === "visible" || unreadState === "fading";
     const refreshed = appearance === "refreshed";
-    const statusLabel = getStatusIconLabel(issue.status, issue.externalConversationState, issue.blockerAttention);
-    const statusIcon = <StatusIcon status={issue.status} externalConversationState={issue.externalConversationState} blockerAttention={issue.blockerAttention} size="md" className={selectedStatusClass} />;
+    const statusLabel = getStatusIconLabel(issue.status, issue.externalConversationState, issue.blockerAttention, issue.displayStatus);
+    const statusIcon = <StatusIcon {...taskStatusIconProps(issue)} size="md" className={selectedStatusClass} />;
     const status = statusSlot ?? (refreshed ? (
       <Tooltip>
         <TooltipTrigger asChild>
@@ -487,7 +488,7 @@ export function IssueRow({
         <span className="sr-only">Open {identifier}: {issue.title}</span>
       </Link>
       <span className="flex shrink-0 items-center gap-1 pt-px sm:hidden">
-        {mobileLeading ?? <StatusIcon status={issue.status} externalConversationState={issue.externalConversationState} blockerAttention={issue.blockerAttention} size="md" className={selectedStatusClass} />}
+        {mobileLeading ?? <StatusIcon {...taskStatusIconProps(issue)} size="md" className={selectedStatusClass} />}
         {parkedBlockerIndicator}
       </span>
       <span className="flex min-w-0 flex-1 flex-col gap-1 sm:contents">
@@ -560,7 +561,7 @@ export function IssueRow({
           {desktopMetaLeading ?? (
             <>
               <span className="hidden shrink-0 items-center gap-1 sm:inline-flex">
-                <StatusIcon status={issue.status} externalConversationState={issue.externalConversationState} blockerAttention={issue.blockerAttention} size="md" className={selectedStatusClass} />
+                <StatusIcon {...taskStatusIconProps(issue)} size="md" className={selectedStatusClass} />
               </span>
               {checklistStep}
               <span className="shrink-0 font-mono text-xs text-muted-foreground">

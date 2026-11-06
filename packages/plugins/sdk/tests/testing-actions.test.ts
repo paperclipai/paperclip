@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { createTestHarness } from "../src/testing.js";
-import type { PaperclipPluginManifestV1 } from "../src/types.js";
+import type { PaperclipPluginManifestV1, PluginIssuesClient } from "../src/types.js";
 
 const manifest = {
   id: "paperclip.test-actions",
@@ -12,7 +12,7 @@ const manifest = {
   author: "Paperclip",
   categories: ["automation"],
   capabilities: [],
-  entrypoints: {},
+  entrypoints: { worker: "./worker.js" },
 } satisfies PaperclipPluginManifestV1;
 
 describe("createTestHarness action context", () => {
@@ -136,7 +136,8 @@ describe("createTestHarness issue interactions", () => {
           minSelected: 1,
           maxSelected: 2,
         },
-      },
+        // Omits the fields the schema defaults, so the assertions below cover those defaults.
+      } as Parameters<PluginIssuesClient["requestCheckboxConfirmation"]>[1],
       "company-1",
       { authorAgentId: "agent-1" },
     );

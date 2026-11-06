@@ -34,15 +34,24 @@ Use New agent from the roster or `/agents/new`.
 Submitting the name creates an inactive record before adapter selection or account setup.
 A name-only draft returns to adapter selection when reopened.
 Save & exit keeps its configuration; Finish setup on the agent returns to the
-same record. Open an unfinished agent from the roster to reach its header.
-The header shows Finish setup instead of Run or Resume, including during computer
-preparation and verification. Terminating agents cannot reopen setup. Final
-submission requests approval when required, then follows the existing preparation
-and verification lifecycle.
-The confirmation shows **Finishing agent setup** until the foreground detail
-query observes actual readiness. **Assign a Task** then hands that current
-record to the composer, so its status does not come from an older paused draft.
-Manual/import pauses and required hire approval remain blocking states.
+same record. Final submission requests approval when required, then follows the
+existing preparation and verification lifecycle.
+
+For **Cursor Cloud**, choose its card in Cloud when native Runner is enabled and
+the qualified controller is available. Its held setup draft uses the API
+controller without a Computer, before model or credential selection. Local
+operators can choose **Paperclip Runner** in Advanced. Bind a Cursor Cloud
+API key, enter the exact model and select a repository/ref or a named Cursor
+cloud environment. Cursor hosts the agent's environment; this native setup has
+no Paperclip Computer selection. Save, reopen, and run Test. Test checks the
+account catalog and callback authentication gate without a prompt; the effective-model
+warning remains visible for this experimental integration. Finish setup repeats
+that account check and reaches Ready without preparing or leasing a Computer,
+even when the instance has a default plugin Computer. The Cursor lifecycle stays
+per-turn. Assign a real task
+and verify its output, question continuation, Plan approval and Stop separately.
+Managed-sandbox-only policy stays enabled. It continues to deny local agent code.
+Kubernetes-only execution is not supported by this API controller.
 
 When the native Runner adapter is available, **Google Antigravity** appears in the ordinary
 adapter picker. Before runtime acceptance, its card says **Not available yet**.
@@ -64,16 +73,6 @@ Test verifies native account/model admission and cleanup without a model turn.
 Other companies, remote targets, expired authority and other models stay blocked.
 Verify this scoped path separately from production qualification and real task acceptance.
 
-The explicit-only [Antigravity agent journey](../../tests/runner-e2e/ANTIGRAVITY-AGENT-JOURNEY.md)
-protects the ordinary roster/picker path, saved personal Google subscription,
-native Test, actual ready handoff, Instructions-only file marker, task and
-same-task follow-up. Its fixed driver starts from the dashboard and creates the
-new agent through visible controls. The current runnable cell attaches to a
-self-hosted target with the admitted local macOS ARM64 candidate and exact low
-model. Saved-account reuse does not qualify fresh OAuth, other platforms or
-global provider release; registration and synthetic controls are separate from
-the retained exploratory and fresh fixed-driver results.
-
 Agent-owned plugin environments prepare the saved draft in the background when
 their driver declares `requiresAgent`. The draft waits in `verifying` with its
 setup hold until hiring finishes. Changing environments keeps the selected
@@ -83,6 +82,12 @@ Companies requiring hire approval save the account with pending verification;
 resource allocation waits for approval.
 
 ### `agent-configuration`
+
+On Harness / Runtime, select an installed healthy AI account or change its model
+and save. The save checks current access and compatibility without starting a
+computer or provider hello test. **Test** still verifies the runtime. Unverified
+legacy accounts, task connection adoption and Copilot model checks retain live
+validation. Verify saved configuration separately from runtime readiness.
 
 Open `/agents/:agentId` and the configuration/instruction surfaces it exposes.
 The agent nav has two sections: **Agent** (Overview, Identity at
@@ -146,9 +151,13 @@ Use the roster’s organization view; `/org` redirects to the roster in the stre
 
 ### `personal-primary-agent`
 
-Open an agent profile and choose the outlined crown beside its name (**Set as my
-primary**). Inspect the filled crown on the profile, the crown on the roster and
-its position in the Agents sidebar, then open a new task or Chat.
+Native API discovery explains this human-only profile/crown control and the
+replacement confirmation. The Chat agent picker opens a conversation; it does
+not set the person's primary preference. This guidance grants no agent write
+authority.
+
+Open an agent profile and choose **Set as my primary**. Inspect its crown on the
+profile/roster and its position in the Agents sidebar, then open a new task or Chat.
 
 ### `agent-api-keys`
 
@@ -170,9 +179,6 @@ For an agent-owned plugin environment, verify preparation before connecting,
 same-agent probes, account preservation after an environment change, failed
 selection-save retry, and switching back while the computer stops. Confirm the
 setup hold still blocks ordinary work and API key creation before finishing.
-Start through the name/adapter dialog with a managed-only or forced Kubernetes
-policy and a draft that inherits its environment. Once preparation completes,
-confirm the auth choices, Advanced gateway, and saved subscription remain usable.
 The [setup lifecycle tests](../../server/src/modules/agent-lifecycle/__tests__/setup.test.ts)
 exercise durable transitions with synthetic plugin resources; they do not prove
 live VM provisioning.
@@ -230,9 +236,7 @@ Manual: Save a harmless instruction edit, reload, and verify its revision and ef
 
 For failed setup, use an unavailable model or invalid command on a disposable agent.
 Confirm the profile names the failed verification step and gives a relevant action.
-Check that a failed configuration test explains that automatic verification is paused
-and offers **Retry now**. Repeated refreshes must not start another test. Timeouts
-and temporary test-environment failures still retry automatically. Fix the configuration,
+Check that it explains that verification is paused and offers **Retry now**. Fix the configuration,
 retry, and reload; the failure must disappear only after readiness commits.
 Provider output and credentials must not appear in the lifecycle message.
 
@@ -249,10 +253,6 @@ pending edits and an environment-variable draft. An unsaved change to a differen
 effective computer must disable the action and explain that the computer change
 must be saved first; restoring the saved target must re-enable it. Reopen the page and compare the
 saved harness, model, account bindings, instructions, and run policy. Check a
-Grok upgrade with an unset or `grok-build` model: it must use `grok-4.7`.
-Compare effective search policy before and after, including the implicit disabled
-default and explicit enabled search. Verify task model and effort changes use the
-Grok catalog and reach execution while retaining the account and search policy. Check a
 saved `maxTurnsPerRun: 1000`: upgrade must warn and remove it. Test an initially
 unqualified Daytona Paperclip Computer: click must probe, record qualification,
 refresh availability, and only then save. A failed probe or changed selection must
@@ -289,10 +289,9 @@ Manual: Inspect a manager and report, change the relationship through the offere
 
 ### `personal-primary-agent`
 
-Automated: [primary-agent context](../../ui/src/context/PrimaryAgentProvider.test.tsx),
-[the profile crown](../../ui/src/components/primary-agent/PrimaryAgentPresentation.test.tsx)
+Automated: [primary-agent context](../../ui/src/context/PrimaryAgentProvider.test.tsx)
 and [primary-agent routes](../../server/src/__tests__/primary-agent.test.ts)
-cover selection, replacement confirmation, company/user scope, and request contracts.
+cover selection, company/user scope, and request contracts.
 
 Manual: Select an available agent, reload, and inspect the retained personal choice.
 Replace it and verify confirmation is required. Leave or terminate the selected

@@ -274,9 +274,11 @@ export async function resolveEnvironmentExecutionTarget(input: {
         concurrentSyncOperations: false, duplexCommandStream: false, runnerWebSocketIngress: true },
       sandboxLeaseAcquisition:acquisition,
       ...(lease.metadata?.runnerTaskProbe ? { runnerTaskProbe: lease.metadata.runnerTaskProbe as { runId: string; sessionId: string } } : {}),
-      runnerTask: async operation => {
+      runnerTask: async (operation, context) => {
         const result = await runtime.task({ companyId: input.companyId, leaseId: lease.id,
-          operation: environmentTaskOperationSchema.parse(operation) });
+          operation: environmentTaskOperationSchema.parse(operation),
+          ...(context?.executionContext ? { executionContext: context.executionContext } : {}),
+          ...(context?.expectedTaskId !== undefined ? { expectedTaskId: context.expectedTaskId } : {}) });
         if (result.kind === "description" && result.taskId !== acquisition.providerLeaseId) {
           acquisition.outcome = "replacement";
           acquisition.providerLeaseId = result.taskId;
@@ -629,17 +631,19 @@ export async function resolveEnvironmentExecutionTarget(input: {
               lease: input.lease,
             })
               ? {
-                  syncIn: (operations) =>
+                  syncIn: (operations, options) =>
                     input.environmentRuntime!.syncIn({
                       environment: input.environment as Environment,
                       lease: input.lease!,
                       operations,
+                      ...(options?.minimumTimeoutMs === undefined ? {} : { minimumTimeoutMs: options.minimumTimeoutMs }),
                     }),
-                  syncOut: (operations) =>
+                  syncOut: (operations, options) =>
                     input.environmentRuntime!.syncOut({
                       environment: input.environment as Environment,
                       lease: input.lease!,
                       operations,
+                      ...(options?.minimumTimeoutMs === undefined ? {} : { minimumTimeoutMs: options.minimumTimeoutMs }),
                     }),
                 }
               : {}),

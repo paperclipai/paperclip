@@ -1,4 +1,5 @@
 import type { AcpxCandidateStartupAdmission } from "./candidate-admission.js";
+import type { ProviderFailure } from "../../contracts/provider-failure.generated.js";
 import type { QualifiedAcpxAgent } from "./qualified-profiles.js";
 import type { NativeRuntimeContextSnapshot } from "../../contracts/runtime-context.js";
 import type { NativeAcpxPermissionMode } from "../../contracts/native-execution.js";
@@ -27,7 +28,7 @@ export interface AcpxSidecarResponse {
   id: number;
   ok: boolean;
   result?: Record<string, unknown>;
-  error?: { code: string; message: string; retryable: boolean };
+  error?: { code: string; message: string; retryable: boolean; providerFailure?: ProviderFailure };
 }
 
 export interface AcpxSidecarEvent {

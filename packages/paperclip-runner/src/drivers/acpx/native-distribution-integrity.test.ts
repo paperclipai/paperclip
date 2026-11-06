@@ -686,7 +686,7 @@ describe("native ACPX execution closure", () => {
     const fences = await Promise.all([listen(), listen()]);
     const fds = fences.map(server => (server as Server & { _handle?: { fd?: number } })._handle!.fd!);
     const installation = await verifyNativeAcpxInstallation(declaration);
-    const owner = createAcpxCommandLeaseOwner(await installation.openCommand(), installation.openCommand);
+    const owner = createAcpxCommandLeaseOwner(await installation.openCommand(), signal => installation.openCommand({ signal }));
     const pidFile = join(declaration.distributionRoot, "native-pid");
     let port: Awaited<ReturnType<typeof openCodexAcpxRuntime>> | undefined;
     let deadline: ReturnType<typeof setTimeout> | undefined;

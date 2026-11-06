@@ -61,7 +61,8 @@ import { deploymentNotifications } from "./services/deployment-notifications.js"
 import { registerTerminalWorkspaceWork, TERMINAL_WORKSPACE_RETRY_MS } from "./services/terminal-workspace-work.js";
 import { isIdleTaskDrainActive, readTaskDrain, beginIdleTrackedWork, trackIdleWork, registerTaskDrainExpiryWork } from "./services/task-admission.js";
 import { markIdleStartupComplete, registerIdleLocalWorkProbe } from "./services/idle-local-work.js";
-import { clearIdleBackupWakeRequired, idleBackupWakeMarker, markIdleBackupWakeRequired, verifyIdleDatabaseBackup } from "./services/idle-database-backup.js";
+import { idleBackupWakeMarker } from "./services/idle-database-backup.js";
+import { createDatabaseBackupOwner } from "./services/database-backup-owner.js";
 import { cloudWarmStandbyServerOptions } from "./middleware/cloud-warm-standby.js";
 import { createCloudWarmStandby } from "./services/cloud-warm-standby.js";
 import { chatCompletionDeliveryService } from "./services/chat-completion-delivery.js";
@@ -79,8 +80,10 @@ import { verifyStoppedNativeSessionForReplacement } from "./services/native-runt
 import { embeddedPostgresOwnerPort } from "./embedded-postgres-owner.js";
 import { deliverExecutionStatuses } from "./services/execution-status-delivery.js";
 import { deliverReconciledExecutions, settleUnrecoverableExecutions } from "./services/execution-recovery-resolution.js";
+import { deliverPendingPauseResumes } from "./services/issue-tree-resume.js";
 import { reconcileSafeNativeReplacements } from "./services/native-runtime/native-safe-replacement.js";
 import { reconcileAbandonedExecutionControl } from "./services/execution-control-reconciliation.js";
+import { acknowledgeNativeStartupCleanup } from "./services/native-runtime/native-startup-cleanup.js";
 import { executionControlSchedule, registerExecutionControlWork } from "./services/execution-control-work.js";
 import { connectionIntentDeliveryService } from "./services/connection-intent-delivery.js";
 import { existsSync, readFileSync, rmSync } from "node:fs";
@@ -103,8 +106,6 @@ import {
   createEmbeddedPostgresLogBuffer,
   prepareEmbeddedPostgresNativeRuntime,
   reconcilePendingMigrationHistory,
-  formatDatabaseBackupResult,
-  runDatabaseBackup,
   authUsers,
   companies,
   companyMemberships,
@@ -177,7 +178,7 @@ import {
   reconcileAdapterAvailability,
 } from "./services/adapter-registry-bootstrap.js";
 import { createFeedbackTraceShareClientFromConfig } from "./services/feedback-share-client.js";
-import { buildRuntimeApiCandidateUrls, choosePrimaryRuntimeApiUrl } from "./runtime-api.js";
+import { buildRuntimeApiCandidateUrls, choosePrimaryRuntimeApiUrl, resolveLocalRuntimeApiUrl } from "./runtime-api.js";
 import { isLoopbackHost, rewriteLoopbackUrlPort } from "./url-utils.js";
 import { createPluginWorkerManager } from "./services/plugin-worker-manager.js";
 import { createStorageServiceFromConfig } from "./storage/index.js";
@@ -206,10 +207,6 @@ import {
   type EmbeddedPostgresSupervisor,
   type SupervisedEmbeddedPostgres,
 } from "./embedded-postgres-supervisor.js";
-import type {
-  InstanceDatabaseBackupRunResult,
-  InstanceDatabaseBackupTrigger,
-} from "./routes/instance-database-backups.js";
 
 type BetterAuthSessionUser = {
   id: string;
@@ -912,75 +909,14 @@ async function startServerWithDatabaseTeardown(
     resolve(config.databaseBackupDir, "db-backup-to-s3.failure"),
     resolve(config.databaseBackupDir, "..", "db-backup-to-s3.failure"),
   ];
-  let databaseBackupInFlight = false;
   const idleDatabaseBackupEnabled = config.databaseBackupEnabled
     && process.env.PAPERCLIP_DB_BACKUP_IDLE_CHECKPOINT_ENABLED === "1";
-  const runServerDatabaseBackup = async (
-    trigger: InstanceDatabaseBackupTrigger,
-  ): Promise<InstanceDatabaseBackupRunResult | null> => {
-    if (databaseBackupInFlight) {
-      const message = "Database backup already in progress";
-      if (trigger === "scheduled") {
-        logger.warn("Skipping scheduled database backup because a previous backup is still running");
-        return null;
-      }
-      throw conflict(message);
-    }
-
-    databaseBackupInFlight = true;
-    const finishIdleBackup = beginIdleTrackedWork();
-    const startedAt = new Date();
-    const startedAtMs = Date.now();
-    const label = trigger === "manual" ? "Manual" : trigger === "idle" ? "Pre-sleep" : "Automatic";
-    try {
-      if (trigger === "idle") await markIdleBackupWakeRequired(config.databaseBackupDir);
-      logger.info({ backupDir: config.databaseBackupDir, trigger }, `${label} database backup starting`);
-      // Read retention from Instance Settings (DB) so changes take effect without restart.
-      const generalSettings = await backupSettingsSvc.getGeneral();
-      const retention = generalSettings.backupRetention;
-      const verifyCheckpoint = trigger === "idle" || existsSync(idleBackupWakeMarker(config.databaseBackupDir));
-
-      const result = await runDatabaseBackup({
-        connectionString: activeDatabaseConnectionString,
-        backupDir: config.databaseBackupDir,
-        retention,
-        filenamePrefix: "paperclip",
-        verifyBeforePrune: verifyCheckpoint ? verifyIdleDatabaseBackup : undefined,
-      });
-      if (verifyCheckpoint) {
-        if (trigger !== "idle") await clearIdleBackupWakeRequired(config.databaseBackupDir);
-      }
-      const finishedAt = new Date();
-      const response: InstanceDatabaseBackupRunResult = {
-        ...result,
-        trigger,
-        backupDir: config.databaseBackupDir,
-        retention,
-        startedAt: startedAt.toISOString(),
-        finishedAt: finishedAt.toISOString(),
-        durationMs: Date.now() - startedAtMs,
-      };
-      logger.info(
-        {
-          backupFile: result.backupFile,
-          sizeBytes: result.sizeBytes,
-          prunedCount: result.prunedCount,
-          backupDir: config.databaseBackupDir,
-          retention,
-          trigger,
-          durationMs: response.durationMs,
-        },
-        `${label} database backup complete: ${formatDatabaseBackupResult(result)}`,
-      );
-      return response;
-    } catch (err) {
-      logger.error({ err, backupDir: config.databaseBackupDir, trigger }, `${label} database backup failed`);
-      throw err;
-    } finally {
-      databaseBackupInFlight = false;
-      finishIdleBackup();
-    }
-  };
+  const runServerDatabaseBackup = createDatabaseBackupOwner({
+    connectionString: activeDatabaseConnectionString,
+    backupDir: config.databaseBackupDir,
+    getRetention: async () => (await backupSettingsSvc.getGeneral()).backupRetention,
+    logger,
+  });
   const pluginWorkerManager = createPluginWorkerManager();
   const heartbeat = config.heartbeatSchedulerEnabled
     ? heartbeatService(db as any, { pluginWorkerManager })
@@ -1131,6 +1067,9 @@ async function startServerWithDatabaseTeardown(
     });
   });
   startupListenerBound = true;
+  // The factory publishes the verified numeric endpoint on listening. Native
+  // recovery must never fall back to a configured/public URL if it is absent.
+  resolveLocalRuntimeApiUrl();
 
   try {
     const result = await workspaceOperationService(db as any)
@@ -1288,6 +1227,24 @@ async function startServerWithDatabaseTeardown(
       await Promise.allSettled([...heartbeatSchedulerInFlight]);
     }
   };
+  // Queued turns that never executed do not depend on restart recovery of
+  // other runs. Start them as soon as providers and adapters are loaded,
+  // instead of behind every unrelated startup recovery pass. Agents with a run
+  // left `running`, or a queued retry/continuation, keep waiting for the full
+  // queued-run pass registered after native restart recovery below.
+  if (heartbeat) {
+    const startupHeartbeat = heartbeat;
+    trackHeartbeatSchedulerWork(timeStartupRecovery("fresh_queued_runs", async () => {
+      await app.locals.bundledPluginsStartup;
+      const { waitForExternalAdapters } = await import("./adapters/registry.js");
+      await waitForExternalAdapters();
+      if (heartbeatSchedulerStopped || isIdleTaskDrainActive() || isWarmStandby() || readTaskDrain(new Date()) !== null) return;
+      const result = await startupHeartbeat.resumeFreshQueuedRunsAtStartup();
+      logger.info({ ...result, processUptimeMs: Math.round(process.uptime() * 1000) }, "startup dispatch of queued runs without prior execution complete");
+    }).catch((err: unknown) => {
+      logger.error({ err }, "startup dispatch of queued runs without prior execution failed; they remain queued for the full pass");
+    }));
+  }
   const skillSourceSync = skillSourceSyncService(db as any);
   const nativeHarnessBackupExpiration = nativeHarnessBackupExpirationService(db as any, {
     duty: "backups",
@@ -1376,12 +1333,20 @@ async function startServerWithDatabaseTeardown(
   const unsubscribeLocalLoginCleanup = localLoginCleanup.subscribeCleanupReady(localLoginCleanupWork.wake);
   server.on("close", unsubscribeLocalLoginCleanup);
   registerExecutionControlWork(deliveryWork, [
-    { queue: DELIVERY_QUEUES.executionFinalization, run: () => reconcileAbandonedExecutionControl(db), next: executionSchedule.finalization },
+    { queue: DELIVERY_QUEUES.executionFinalization, run: () => reconcileAbandonedExecutionControl(db, new Date(), {
+      startupCleanup: async scope => {
+        await accountingHeartbeat.cancelRun(scope.runId, "Native startup timed out; cancelling and verifying cleanup");
+        await acknowledgeNativeStartupCleanup(db, scope);
+      },
+    }), next: executionSchedule.finalization },
     { queue: DELIVERY_QUEUES.executionStatus, run: () => deliverExecutionStatuses(db), next: executionSchedule.status },
     { queue: DELIVERY_QUEUES.executionDisposition, run: () => settleUnrecoverableExecutions(db), next: executionSchedule.disposition },
     ...(heartbeat ? [
       { queue: DELIVERY_QUEUES.executionReplacement, run: () => reconcileSafeNativeReplacements(db, new Date(), { verifyStoppedSession: run => verifyStoppedNativeSessionForReplacement(db, run) }), next: executionSchedule.replacement },
-      { queue: DELIVERY_QUEUES.executionContinuation, run: () => deliverReconciledExecutions(db, heartbeat.wakeup), next: executionSchedule.continuation },
+      { queue: DELIVERY_QUEUES.executionContinuation, run: async () => {
+        await deliverReconciledExecutions(db, heartbeat.wakeup);
+        await deliverPendingPauseResumes(db, heartbeat.wakeup);
+      }, next: executionSchedule.continuation },
     ] : []),
   ], () => !heartbeatSchedulerStopped);
 
@@ -1733,6 +1698,9 @@ async function startServerWithDatabaseTeardown(
       () => !isIdleTaskDrainActive() && !isWarmStandby() && !heartbeatSchedulerStopped).ready;
     if (config.heartbeatSchedulerEnabled) await heartbeat.registerRunDispatchWork(deliveryWork,
       () => !isIdleTaskDrainActive() && !isWarmStandby() && !heartbeatSchedulerStopped).ready;
+    if (config.heartbeatSchedulerEnabled) {
+      logger.info({ processUptimeMs: Math.round(process.uptime() * 1000) }, "startup queued-run dispatch pass complete");
+    }
     if (config.heartbeatSchedulerEnabled) await heartbeat.registerScheduledRetryCancellationWork(deliveryWork,
       () => !isIdleTaskDrainActive() && !heartbeatSchedulerStopped && !isWarmStandby()).ready;
 

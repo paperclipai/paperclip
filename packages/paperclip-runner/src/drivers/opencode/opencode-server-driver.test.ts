@@ -30,6 +30,7 @@ import {
   type NativeRuntimeContextSnapshot,
 } from "../../contracts/runtime-context.js";
 import { createCodexTaskEnvelope } from "../../contracts/codex.js";
+import { CONFIGURED_ENVIRONMENT_KEYS, configuredEnvironmentProjection } from "../../configured-environment.js";
 import { localIntegrityBoundaryGolden } from "../../../test-support/local-integrity-boundary-golden.js";
 import type { PrpEvent } from "../../protocol/replay-contract.js";
 import {
@@ -153,6 +154,142 @@ afterAll(async () => {
 });
 
 describe("OpenCodeServerDriver", () => {
+  it("forwards configured bindings to the provider shell and redacts their values", async () => {
+    const root = await mkdtemp(join(tmpdir(), "paperclip-opencode-configured-env-"));
+    roots.push(root);
+    const bindings = { PROBE_PLAIN: "fixture-plain-binding", PROBE_SECRET: 'fixture-"quoted"\\path\nmultiline-binding' };
+    const command = join(root, "probe-opencode.mjs");
+    await writeFile(command, [
+      "#!/usr/bin/env node",
+      'import { execFileSync } from "node:child_process";',
+      'import { writeFile } from "node:fs/promises";',
+      'import { join } from "node:path";',
+      'const lengths = execFileSync("/bin/sh", ["-c", \'printf "%s,%s" "${#PROBE_PLAIN}" "${#PROBE_SECRET}"\'], { encoding: "utf8" });',
+      'await writeFile(join(process.env.XDG_DATA_HOME, "shell-probe.json"), JSON.stringify({ lengths, keys: JSON.parse(process.env.PAPERCLIP_CONFIGURED_ENV_KEYS ?? "[]") }));',
+      'process.stderr.write(`plain binding: ${process.env.PROBE_PLAIN}\\nresolved binding: ${process.env.PROBE_SECRET}\\n`);',
+      `await import(${JSON.stringify(fixture)});`,
+    ].join("\n"), { mode: 0o755 });
+    const diagnostics: string[] = [];
+    const tracePath = join(root, "provider-trace.ndjson");
+    const driver = new OpenCodeServerDriver({
+      model: "openrouter/test-model", command, runtimeDirectory: root,
+      environment: {
+        PATH: process.env.PATH,
+        ...configuredEnvironmentProjection({
+          ...bindings,
+          OPENCODE_CONFIG: "/untrusted/opencode.json",
+          OPENCODE_CONFIG_CONTENT: '{"permission":{"*":"allow"}}',
+          OPENCODE_CONFIG_DIR: "/untrusted/opencode",
+          OPENCODE_PERMISSION: '{"*":"allow"}',
+          OPENCODE_DISABLE_PROJECT_CONFIG: "false",
+          XDG_CONFIG_HOME: "/untrusted/config",
+          XDG_DATA_HOME: "/untrusted/data",
+          XDG_CACHE_HOME: "/untrusted/cache",
+          XDG_STATE_HOME: "/untrusted/state",
+        }),
+        DATABASE_URL: "unbound-host-database",
+        PAPERCLIP_API_KEY: "controller-key",
+        NODE_OPTIONS: "--require=/untrusted/bootstrap.js",
+        PAPERCLIP_PROVIDER_TRACE_PATH: tracePath,
+      },
+      onDiagnostic: message => diagnostics.push(message),
+    });
+    const session = await driver.openSession({ runId: "bindings", normalizedSessionId: "bindings", workingDirectory: root });
+    let persisted = "";
+    try {
+      const probe = JSON.parse(await readFile(join(root, "bindings", "data", "shell-probe.json"), "utf8"));
+      expect(probe).toEqual({ lengths: `${bindings.PROBE_PLAIN.length},${bindings.PROBE_SECRET.length}`, keys: Object.keys(bindings).sort() });
+      const child = JSON.parse(await readFile(join(root, "bindings", "data", "fake-environment.json"), "utf8"));
+      expect(child.keys).toEqual(expect.arrayContaining(Object.keys(bindings)));
+      for (const key of ["DATABASE_URL", "PAPERCLIP_API_KEY", "NODE_OPTIONS", "OPENCODE_CONFIG",
+        "OPENCODE_CONFIG_CONTENT", "OPENCODE_CONFIG_DIR", "OPENCODE_PERMISSION", "XDG_STATE_HOME"]) {
+        expect(child.keys).not.toContain(key);
+      }
+      expect(child.projectConfigDisabled).toBe("true");
+      await session.startTurn({ message: { role: "user", text: "configured-environment-output" } });
+      const events = await collectTurnEvents(session.events());
+      expect(events.at(-1)?.eventType).toBe("turn.completed");
+      persisted = JSON.stringify(await session.snapshot())
+        + await readFile(join(root, "bindings", "config", "opencode", "opencode.json"), "utf8");
+    } finally {
+      await session.close({ reason: "test" });
+    }
+    const trace = await readFile(tracePath, "utf8");
+    const frames = trace.trim().split("\n").map(line => JSON.parse(line))
+      .filter(entry => entry.kind === "frame")
+      .map(entry => Buffer.from(entry.rawBase64, "base64").toString("utf8"));
+    expect(frames.find(frame => frame.includes("part-configured-binding-output"))).toContain('"output":"[REDACTED]"');
+    persisted += trace + frames.join("\n");
+    expect(diagnostics.join("\n")).toContain("plain binding: [REDACTED]");
+    expect(diagnostics.join("\n")).toContain("resolved binding: [REDACTED]");
+    for (const value of Object.values(bindings)) {
+      expect(diagnostics.join("\n")).not.toContain(value);
+      expect(persisted).not.toContain(value);
+      expect(persisted).not.toContain(JSON.stringify(value).slice(1, -1));
+    }
+  });
+
+  it("preserves empty arrays in traces when all configured bindings are runtime-owned", async () => {
+    await chmod(fixture, 0o755);
+    const root = await mkdtemp(join(tmpdir(), "paperclip-opencode-empty-projection-"));
+    roots.push(root);
+    const tracePath = join(root, "provider-trace.ndjson");
+    const driver = new OpenCodeServerDriver({
+      model: "openrouter/test-model", command: fixture, runtimeDirectory: root,
+      environment: { PATH: process.env.PATH, PAPERCLIP_PROVIDER_TRACE_PATH: tracePath,
+        ...configuredEnvironmentProjection({ OPENCODE_CONFIG_CONTENT: "{}" }) },
+    });
+    const session = await driver.openSession({ runId: "empty", normalizedSessionId: "empty", workingDirectory: root });
+    try {
+      expect(await session.read!()).toMatchObject({ messages: [] });
+    } finally {
+      await session.close({ reason: "test" });
+    }
+    const entries = (await readFile(tracePath, "utf8")).trim().split("\n").map(line => JSON.parse(line));
+    const frame = entries.find(entry => entry.kind === "frame" && entry.direction === "provider_to_client"
+      && entry.nativeMethod === "GET /session/ses_fake_1/message 200");
+    expect(frame).toBeDefined();
+    expect(Buffer.from(frame.rawBase64, "base64").toString("utf8")).toBe("[]");
+  });
+
+  it.each([false, true])("ignores an ambient configured-environment projection (explicit environment: %s)", async explicit => {
+    await chmod(fixture, 0o755);
+    const root = await mkdtemp(join(tmpdir(), "paperclip-opencode-ambient-env-"));
+    roots.push(root);
+    vi.stubEnv(CONFIGURED_ENVIRONMENT_KEYS, '["PROBE_SECRET"]');
+    vi.stubEnv("PROBE_SECRET", "ambient-binding-must-not-cross");
+    try {
+      const driver = new OpenCodeServerDriver({ model: "openrouter/test-model", command: fixture, runtimeDirectory: root,
+        ...(explicit ? { environment: { PATH: process.env.PATH } } : {}) });
+      const session = await driver.openSession({ runId: "ambient", normalizedSessionId: "ambient", workingDirectory: root });
+      try {
+        const child = JSON.parse(await readFile(join(root, "ambient", "data", "fake-environment.json"), "utf8"));
+        expect(child.keys).not.toContain("PROBE_SECRET");
+        expect(child.keys).not.toContain(CONFIGURED_ENVIRONMENT_KEYS);
+      } finally {
+        await session.close({ reason: "test" });
+      }
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it.each([false, true])("uses the native MCP client ceiling only for durable tool requests (%s)", async durableToolRequests => {
+    await chmod(fixture, 0o755);
+    const root = await mkdtemp(join(tmpdir(), "paperclip-opencode-tool-budget-"));
+    roots.push(root);
+    const driver = new OpenCodeServerDriver({
+      model: "openrouter/test-model", command: fixture, runtimeDirectory: root, durableToolRequests,
+    });
+    const session = await driver.openSession({ runId: "budget", normalizedSessionId: "budget", workingDirectory: root });
+    try {
+      const config = JSON.parse(await readFile(join(root, "budget", "config", "opencode", "opencode.json"), "utf8"));
+      expect(config.mcp.paperclip.timeout).toBe(durableToolRequests ? 60 * 60 * 1_000 : 30_000);
+    } finally {
+      await session.close({ reason: "test" });
+    }
+  });
+
   it("exports company traces across warm runs without giving the ingestion key to the provider", async () => {
     await chmod(fixture, 0o755);
     const bodies: Array<Record<string, any>> = [];
@@ -201,7 +338,7 @@ describe("OpenCodeServerDriver", () => {
     });
     const descriptor = await driver.descriptor();
     expect(
-      descriptor.capabilities.typedEventFamilies.find(
+      descriptor.capabilities.typedEventFamilies?.find(
         (family) => family.family === "plan",
       ),
     ).toMatchObject({ availability: "unsupported" });
@@ -614,7 +751,7 @@ describe("OpenCodeServerDriver", () => {
     // run.terminal is owned by the native-session layer above this driver.
     // Keep both absences explicit instead of synthesizing Codex-shaped input.
     expect(
-      (await driver.descriptor()).capabilities.typedEventFamilies.find(
+      (await driver.descriptor()).capabilities.typedEventFamilies?.find(
         (family) => family.family === "plan",
       ),
     ).toMatchObject({ availability: "unsupported" });
@@ -968,7 +1105,7 @@ describe("OpenCodeServerDriver", () => {
     expect(JSON.stringify(events)).not.toContain(
       "submitted prompt must not become assistant text",
     );
-    expect(await session.usage()).toMatchObject({
+    expect(await session.usage!()).toMatchObject({
       input: 3,
       output: 2,
       costUsd: 0.001,
@@ -1635,7 +1772,7 @@ describe("OpenCodeServerDriver", () => {
     // A prompt tools map replaces OpenCode's session permissions. Question is
     // enabled in config without overwriting the allow/ask/deny or path policy.
     expect(submittedPrompt).not.toHaveProperty("tools");
-    expect(JSON.stringify(submittedPrompt?.parts ?? null)).not.toContain(
+    expect(JSON.stringify((submittedPrompt as Record<string, unknown> | null)?.parts ?? null)).not.toContain(
       PAPERCLIP_EXECUTION_PROMPT,
     );
     const sessionRoot = join(root, "context");
@@ -2324,6 +2461,7 @@ describe("OpenCodeServerDriver", () => {
     const continuation = { kind, summary: "Wait for the saved task path.", idempotencyKey: "task-wait:saved" };
     const reads: string[] = [];
     const accepted: unknown[] = [];
+    const diagnostics: string[] = [];
     const driver = new OpenCodeServerDriver({
       model: "openrouter/deepseek/deepseek-v4-flash-0731", runtimeDirectory: root, command: fixture,
       environment: { PATH: process.env.PATH, OPENROUTER_API_KEY: "fixture-key" },
@@ -2333,11 +2471,13 @@ describe("OpenCodeServerDriver", () => {
           completionContinuation: eligible ? continuation : null };
       },
       completionFeedback: async result => { accepted.push(result); return "Accepted monitor wait."; },
+      onDiagnostic: message => diagnostics.push(message),
     });
     const session = await driver.openSession({ runId: "monitor-default", normalizedSessionId: "monitor-default", workingDirectory: workspace });
     try {
       await session.startTurn({ message: { role: "user", text: "monitor-default" } });
       const events = await collectTurnEvents(session.events());
+      expect(diagnostics).toContainEqual(expect.stringContaining('"schema":"paperclip.opencode.finish-input-diagnostic/v1","stage":"offered"'));
       expect(reads).toEqual(["get_task_context"]);
       if (eligible) {
         expect(accepted).toMatchObject([{ reportedWorkDisposition: "yielded", continuation }]);
@@ -2581,6 +2721,53 @@ describe("OpenCodeServerDriver", () => {
     await session.close({ reason: "test" });
   });
 
+  it("never settles a post-completion response truncated at the output limit", async () => {
+    await chmod(fixture, 0o755);
+    const root = await mkdtemp(join(tmpdir(), "paperclip-opencode-driver-"));
+    const workspace = await mkdtemp(
+      join(tmpdir(), "paperclip-opencode-workspace-"),
+    );
+    roots.push(root, workspace);
+    const driver = new OpenCodeServerDriver({
+      model: "openrouter/deepseek/deepseek-v4-flash-0731",
+      runtimeDirectory: root,
+      command: fixture,
+      environment: {
+        PATH: process.env.PATH,
+        OPENROUTER_API_KEY: "fixture-key",
+      },
+    });
+    const session = await driver.openSession({
+      runId: "run-output-limit-after-tool",
+      normalizedSessionId: "output-limit-after-tool",
+      workingDirectory: workspace,
+    });
+    await session.startTurn({
+      message: { role: "user", text: "output-limit-after-tool" },
+    });
+    const events = await collectTurnEvents(session.events());
+    // The accepted completion report's summary resolves the durable reply;
+    // the runaway text is incomplete by the provider's own finish reason.
+    expect(events.some((event) => event.eventType === "run.result.proposed")).toBe(true);
+    expect(events.at(-1)?.eventType).toBe("turn.completed");
+    expect(
+      events.filter(
+        (event) =>
+          event.eventType === "item.completed" &&
+          event.payload.kind === "agentMessage" &&
+          event.payload.channel === "final",
+      ),
+    ).toHaveLength(0);
+    expect(
+      events.some(
+        (event) =>
+          event.eventType === "harness.diagnostic" &&
+          event.payload.code === "opencode_output_limit_reached",
+      ),
+    ).toBe(true);
+    await session.close({ reason: "test" });
+  });
+
   it("uses provider structure rather than prose length to select a post-tool answer", async () => {
     await chmod(fixture, 0o755);
     const root = await mkdtemp(join(tmpdir(), "paperclip-opencode-driver-"));
@@ -2684,13 +2871,13 @@ describe("OpenCodeServerDriver", () => {
       await session.startTurn({ message: { role: "user", text: "finish" } });
       await started;
       let stopped = false;
-      const stop = session[operation]({ reason: "fixture stop" }).then(() => { stopped = true; });
+      const stop = session[operation]!({ reason: "fixture stop" }).then(() => { stopped = true; });
       await new Promise<void>(resolve => setImmediate(resolve));
       expect(stopped).toBe(false);
       releaseFeedback();
       await stop;
       expect((await session.snapshot()).semanticResult).not.toBeNull();
-      const transcript = await session.transcript();
+      const transcript = await session.transcript!();
       expect(transcript.events.filter(event => event.eventType === "run.result.proposed")).toHaveLength(1);
       expect(transcript.events.some(event => event.eventType === "item.completed" && (event.payload.item as { is_error?: boolean })?.is_error)).toBe(false);
     } finally {
@@ -2771,6 +2958,37 @@ describe("OpenCodeServerDriver", () => {
     } finally {
       await session.close({ reason: "test complete" });
     }
+  });
+
+  it("keeps the provider explanation when an API error response body exceeds the payload limit", async () => {
+    await chmod(fixture, 0o755);
+    const root = await mkdtemp(join(tmpdir(), "paperclip-opencode-large-error-"));
+    const workspace = await mkdtemp(join(tmpdir(), "paperclip-opencode-large-error-workspace-"));
+    roots.push(root, workspace);
+    let stream!: ReadableStreamDefaultController<Uint8Array>;
+    let streamOpened!: () => void;
+    const opened = new Promise<void>(resolve => { streamOpened = resolve; });
+    const driver = new OpenCodeServerDriver({
+      model: "openrouter/deepseek/deepseek-v4-flash-0731", runtimeDirectory: root, command: fixture,
+      environment: { PATH: process.env.PATH, OPENROUTER_API_KEY: "fixture-key" },
+      fetch: async (input, init) => String(input).endsWith("/event")
+        ? new Response(new ReadableStream<Uint8Array>({ start(controller) { stream = controller; streamOpened(); } }), { headers: { "Content-Type": "text/event-stream" } })
+        : fetch(input, init),
+    });
+    const session = await driver.openSession({ runId: "large-error", normalizedSessionId: "large-error", workingDirectory: workspace });
+    try {
+      const events = collectTurnEvents(session.events());
+      await session.startTurn({ message: { role: "user", text: "diagnostic check" } });
+      await opened;
+      stream.enqueue(new TextEncoder().encode(`data: ${JSON.stringify({ type: "session.error", properties: {
+        sessionID: session.ids().providerSessionId, error: { name: "APIError", data: { message: "Provider is busy.", statusCode: 503,
+          responseBody: "private-body".repeat(7000) } },
+      } })}\n\n`));
+      const observed = await events;
+      const failure = observed.find(event => event.eventType === "turn.failed");
+      expect(failure?.payload.error).toMatchObject({ providerFailure: { provider: "openrouter", category: "overloaded", message: "Provider is busy." } });
+      expect(JSON.stringify(failure)).not.toContain("private-body");
+    } finally { await session.close({ reason: "test complete" }); }
   });
 
   it("fails the running turn with the exit cause when OpenCode stops mid-turn", async () => {

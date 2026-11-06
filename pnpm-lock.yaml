@@ -16,7 +16,7 @@ overrides:
 
 patchedDependencies:
   '@agentclientprotocol/claude-agent-acp@0.73.0':
-    hash: xjlrz3rllh2ztafbdiywpfh2rq
+    hash: syoits7l7g3sthy3olttp2fv24
     path: patches/@agentclientprotocol__claude-agent-acp@0.73.0.patch
   '@agentclientprotocol/codex-acp@1.6.2':
     hash: 2iynuypg76nxmydiylgtffhr7e
@@ -43,7 +43,7 @@ patchedDependencies:
     hash: 6st5fzvttegjv64llnfegwwpca
     path: patches/acpx@0.12.0.patch
   acpx@0.13.1:
-    hash: xh3fclih3ztrbsibpfnxdcx7pe
+    hash: ujlgpkxl4mvt34bejc3uxyvthq
     path: patches/acpx@0.13.1.patch
   embedded-postgres@18.1.0-beta.16:
     hash: 55uhvnotpqyiy37rn3pqpukhei
@@ -189,10 +189,10 @@ importers:
     dependencies:
       '@agentclientprotocol/claude-agent-acp':
         specifier: ^0.73.0
-        version: 0.73.0(patch_hash=xjlrz3rllh2ztafbdiywpfh2rq)(@anthropic-ai/sdk@0.129.0(zod@4.6.5))(@modelcontextprotocol/sdk@1.31.0(zod@4.6.5))
+        version: 0.73.0(patch_hash=syoits7l7g3sthy3olttp2fv24)(@anthropic-ai/sdk@0.129.0(zod@4.6.7))(@modelcontextprotocol/sdk@1.31.0(zod@4.6.7))
       '@anthropic-ai/sdk':
         specifier: 0.129.0
-        version: 0.129.0(zod@4.6.5)
+        version: 0.129.0(zod@4.6.7)
       '@paperclipai/adapter-utils':
         specifier: workspace:*
         version: link:../../adapter-utils
@@ -426,8 +426,8 @@ importers:
         specifier: ^24.0.0
         version: 24.13.3
       drizzle-kit:
-        specifier: ^0.31.10
-        version: 0.31.10
+        specifier: ^0.31.11
+        version: 0.31.11
       tsx:
         specifier: ^4.23.15
         version: 4.23.15
@@ -442,13 +442,13 @@ importers:
     dependencies:
       '@modelcontextprotocol/sdk':
         specifier: ^1.31.0
-        version: 1.31.0(zod@4.4.3)
+        version: 1.31.0(zod@4.6.7)
       googleapis:
         specifier: ^182.0.0
         version: 182.0.0
       zod:
-        specifier: ^4.4.3
-        version: 4.4.3
+        specifier: ^4.6.6
+        version: 4.6.7
     devDependencies:
       '@types/node':
         specifier: ^24.0.0
@@ -464,10 +464,10 @@ importers:
     dependencies:
       '@modelcontextprotocol/sdk':
         specifier: ^1.31.0
-        version: 1.31.0(zod@4.4.3)
+        version: 1.31.0(zod@4.6.7)
       zod:
-        specifier: ^4.4.3
-        version: 4.4.3
+        specifier: ^4.6.6
+        version: 4.6.7
     devDependencies:
       '@types/node':
         specifier: ^24.0.0
@@ -483,13 +483,13 @@ importers:
     dependencies:
       '@modelcontextprotocol/sdk':
         specifier: ^1.31.0
-        version: 1.31.0(zod@4.4.3)
+        version: 1.31.0(zod@4.6.7)
       '@paperclipai/shared':
         specifier: workspace:*
         version: link:../shared
       zod:
-        specifier: ^4.4.3
-        version: 4.4.3
+        specifier: ^4.6.6
+        version: 4.6.7
     devDependencies:
       '@types/node':
         specifier: ^24.0.0
@@ -514,7 +514,7 @@ importers:
     dependencies:
       '@agentclientprotocol/claude-agent-acp':
         specifier: 0.73.0
-        version: 0.73.0(patch_hash=xjlrz3rllh2ztafbdiywpfh2rq)(@anthropic-ai/sdk@0.129.0(zod@4.6.5))(@modelcontextprotocol/sdk@1.31.0(zod@4.6.5))
+        version: 0.73.0(patch_hash=syoits7l7g3sthy3olttp2fv24)(@anthropic-ai/sdk@0.129.0(zod@4.6.7))(@modelcontextprotocol/sdk@1.31.0(zod@4.6.7))
       '@agentclientprotocol/codex-acp':
         specifier: 1.6.2
         version: 1.6.2(patch_hash=2iynuypg76nxmydiylgtffhr7e)
@@ -523,7 +523,7 @@ importers:
         version: 0.160.0
       acpx:
         specifier: 0.13.1
-        version: 0.13.1(patch_hash=xh3fclih3ztrbsibpfnxdcx7pe)
+        version: 0.13.1(patch_hash=ujlgpkxl4mvt34bejc3uxyvthq)
       ajv:
         specifier: ^8.20.0
         version: 8.20.0
@@ -837,8 +837,8 @@ importers:
         specifier: workspace:*
         version: link:../../shared
       zod:
-        specifier: ^4.4.3
-        version: 4.4.3
+        specifier: ^4.6.6
+        version: 4.6.7
     devDependencies:
       '@types/node':
         specifier: ^24.0.0
@@ -856,8 +856,8 @@ importers:
         specifier: 0.185.1
         version: 0.185.1
       zod:
-        specifier: ^4.4.3
-        version: 4.4.3
+        specifier: ^4.6.6
+        version: 4.6.7
     devDependencies:
       '@types/node':
         specifier: ^24.0.0
@@ -904,43 +904,43 @@ importers:
         version: 0.5.0
       '@agentclientprotocol/claude-agent-acp':
         specifier: 0.73.0
-        version: 0.73.0(patch_hash=xjlrz3rllh2ztafbdiywpfh2rq)(@anthropic-ai/sdk@0.129.0(zod@4.4.3))(@modelcontextprotocol/sdk@1.31.0(zod@4.4.3))
+        version: 0.73.0(patch_hash=syoits7l7g3sthy3olttp2fv24)(@anthropic-ai/sdk@0.129.0(zod@4.6.7))(@modelcontextprotocol/sdk@1.31.0(zod@4.6.7))
       '@agentclientprotocol/codex-acp':
         specifier: 1.6.2
         version: 1.6.2(patch_hash=2iynuypg76nxmydiylgtffhr7e)
       '@ai-sdk/amazon-bedrock':
         specifier: 5.0.113
-        version: 5.0.113(zod@4.4.3)
+        version: 5.0.113(zod@4.6.7)
       '@ai-sdk/anthropic':
         specifier: 4.0.78
-        version: 4.0.78(zod@4.4.3)
+        version: 4.0.78(zod@4.6.7)
       '@ai-sdk/google':
         specifier: 4.0.93
-        version: 4.0.93(zod@4.4.3)
+        version: 4.0.93(zod@4.6.7)
       '@ai-sdk/openai':
         specifier: 4.0.86
-        version: 4.0.86(zod@4.4.3)
+        version: 4.0.86(zod@4.6.7)
       '@ai-sdk/xai':
         specifier: 5.0.20
-        version: 5.0.20(zod@4.4.3)
+        version: 5.0.20(zod@4.6.7)
       '@aws-sdk/client-s3':
         specifier: ^3.1141.0
         version: 3.1141.0
       '@chat-adapter/discord':
         specifier: 4.39.0
-        version: 4.39.0(patch_hash=nywlhls7dd4npegrgax7jqdbxa)(ai@7.0.130(zod@4.4.3))(zod@4.4.3)
+        version: 4.39.0(patch_hash=nywlhls7dd4npegrgax7jqdbxa)(ai@7.0.130(zod@4.6.7))(zod@4.6.7)
       '@chat-adapter/github':
         specifier: 4.39.0
-        version: 4.39.0(patch_hash=x25bk7vvljpm57viwan5qoaddi)(ai@7.0.130(zod@4.4.3))(zod@4.4.3)
+        version: 4.39.0(patch_hash=x25bk7vvljpm57viwan5qoaddi)(ai@7.0.130(zod@4.6.7))(zod@4.6.7)
       '@chat-adapter/slack':
         specifier: 4.39.0
-        version: 4.39.0(patch_hash=226jj24akljccsfbw7bcxujz4u)(ai@7.0.130(zod@4.4.3))(zod@4.4.3)
+        version: 4.39.0(patch_hash=226jj24akljccsfbw7bcxujz4u)(ai@7.0.130(zod@4.6.7))(zod@4.6.7)
       '@chat-adapter/teams':
         specifier: 4.39.0
-        version: 4.39.0(patch_hash=jfm44m5wrw3jrn2jijafzk7s5a)(ai@7.0.130(zod@4.4.3))(zod@4.4.3)
+        version: 4.39.0(patch_hash=jfm44m5wrw3jrn2jijafzk7s5a)(ai@7.0.130(zod@4.6.7))(zod@4.6.7)
       '@chat-adapter/telegram':
         specifier: 4.39.0
-        version: 4.39.0(patch_hash=wl4uiwewrapxf5u6ksnm7elv44)(ai@7.0.130(zod@4.4.3))(zod@4.4.3)
+        version: 4.39.0(patch_hash=wl4uiwewrapxf5u6ksnm7elv44)(ai@7.0.130(zod@4.6.7))(zod@4.6.7)
       '@discordjs/ws':
         specifier: 1.2.3
         version: 1.2.3(patch_hash=vbylpnnxt5av2zdnuqmf6hjyjy)
@@ -949,10 +949,10 @@ importers:
         version: 1.14.5
       '@modelcontextprotocol/sdk':
         specifier: ^1.31.0
-        version: 1.31.0(zod@4.4.3)
+        version: 1.31.0(zod@4.6.7)
       '@openrouter/ai-sdk-provider':
         specifier: 3.1.0
-        version: 3.1.0(ai@7.0.130(zod@4.4.3))(zod@4.4.3)
+        version: 3.1.0(ai@7.0.130(zod@4.6.7))(zod@4.6.7)
       '@opentelemetry/api':
         specifier: ^1.9.0
         version: 1.9.1
@@ -1011,20 +1011,20 @@ importers:
         specifier: workspace:*
         version: link:../packages/skills-catalog
       '@photon-ai/advanced-imessage':
-        specifier: 2.1.0
-        version: 2.1.0(@grpc/grpc-js@1.14.5)(nice-grpc-common@2.0.4)(nice-grpc@2.1.17)
+        specifier: 2.2.0
+        version: 2.2.0(@grpc/grpc-js@1.14.5)(nice-grpc-common@2.0.4)(nice-grpc@2.1.17)
       '@vercel/connect':
         specifier: 2.3.3
-        version: 2.3.3(@chat-adapter/slack@4.39.0(patch_hash=226jj24akljccsfbw7bcxujz4u)(ai@7.0.130(zod@4.4.3))(zod@4.4.3))(@modelcontextprotocol/sdk@1.31.0(zod@4.4.3))(ai@7.0.130(zod@4.4.3))(better-auth@1.7.2(@opentelemetry/api@1.9.1)(drizzle-kit@0.31.10)(drizzle-orm@0.45.2(@opentelemetry/api@1.9.1)(kysely@0.29.5)(pg@8.18.0)(postgres@3.4.9(patch_hash=6q4cic6qawywsyeo2spgnjamda)))(pg@8.18.0)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(vitest@5.0.3(@opentelemetry/api@1.9.1)(@types/node@24.13.3)(jsdom@30.0.1(@noble/hashes@2.4.0))(vite@8.2.2(@types/node@24.13.3)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1))))
+        version: 2.3.3(@chat-adapter/slack@4.39.0(patch_hash=226jj24akljccsfbw7bcxujz4u)(ai@7.0.130(zod@4.6.7))(zod@4.6.7))(@modelcontextprotocol/sdk@1.31.0(zod@4.6.7))(ai@7.0.130(zod@4.6.7))(better-auth@1.7.2(@opentelemetry/api@1.9.1)(drizzle-kit@0.31.11)(drizzle-orm@0.45.2(@opentelemetry/api@1.9.1)(kysely@0.29.5)(pg@8.18.0)(postgres@3.4.9(patch_hash=6q4cic6qawywsyeo2spgnjamda)))(pg@8.18.0)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(vitest@5.0.3(@opentelemetry/api@1.9.1)(@types/node@24.13.3)(jsdom@30.0.1(@noble/hashes@2.4.0))(vite@8.2.2(@types/node@24.13.3)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1))))
       acorn:
         specifier: 8.18.0
         version: 8.18.0
       acpx:
         specifier: 0.13.1
-        version: 0.13.1(patch_hash=xh3fclih3ztrbsibpfnxdcx7pe)
+        version: 0.13.1(patch_hash=ujlgpkxl4mvt34bejc3uxyvthq)
       ai:
         specifier: 7.0.130
-        version: 7.0.130(zod@4.4.3)
+        version: 7.0.130(zod@4.6.7)
       ajv:
         specifier: ^8.20.0
         version: 8.20.0
@@ -1033,10 +1033,10 @@ importers:
         version: 3.0.1(ajv@8.20.0)
       better-auth:
         specifier: 1.7.2
-        version: 1.7.2(@opentelemetry/api@1.9.1)(drizzle-kit@0.31.10)(drizzle-orm@0.45.2(@opentelemetry/api@1.9.1)(kysely@0.29.5)(pg@8.18.0)(postgres@3.4.9(patch_hash=6q4cic6qawywsyeo2spgnjamda)))(pg@8.18.0)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(vitest@5.0.3(@opentelemetry/api@1.9.1)(@types/node@24.13.3)(jsdom@30.0.1(@noble/hashes@2.4.0))(vite@8.2.2(@types/node@24.13.3)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1)))
+        version: 1.7.2(@opentelemetry/api@1.9.1)(drizzle-kit@0.31.11)(drizzle-orm@0.45.2(@opentelemetry/api@1.9.1)(kysely@0.29.5)(pg@8.18.0)(postgres@3.4.9(patch_hash=6q4cic6qawywsyeo2spgnjamda)))(pg@8.18.0)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(vitest@5.0.3(@opentelemetry/api@1.9.1)(@types/node@24.13.3)(jsdom@30.0.1(@noble/hashes@2.4.0))(vite@8.2.2(@types/node@24.13.3)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1)))
       chat:
         specifier: 4.39.0
-        version: 4.39.0(ai@7.0.130(zod@4.4.3))(zod@4.4.3)
+        version: 4.39.0(ai@7.0.130(zod@4.6.7))(zod@4.6.7)
       chokidar:
         specifier: ^5.0.0
         version: 5.0.0
@@ -1113,8 +1113,8 @@ importers:
         specifier: ^8.22.0
         version: 8.22.0
       zod:
-        specifier: ^4.4.3
-        version: 4.4.3
+        specifier: ^4.6.6
+        version: 4.6.7
     optionalDependencies:
       '@github/copilot-darwin-arm64':
         specifier: 1.0.88
@@ -1191,7 +1191,7 @@ importers:
     dependencies:
       '@assistant-ui/react':
         specifier: 0.15.22
-        version: 0.15.22(@opentelemetry/api@1.9.1)(@types/react-dom@19.2.5(@types/react@19.2.18))(@types/react@19.2.18)(ai@7.0.130(zod@4.6.5))(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(use-sync-external-store@1.7.0(react@19.2.8))
+        version: 0.15.22(@opentelemetry/api@1.9.1)(@types/react-dom@19.2.5(@types/react@19.2.18))(@types/react@19.2.18)(ai@7.0.130(zod@4.6.7))(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(use-sync-external-store@1.7.0(react@19.2.8))
       '@base-ui/react':
         specifier: ^1.7.0
         version: 1.7.0(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
@@ -1216,6 +1216,9 @@ importers:
       '@dnd-kit/utilities':
         specifier: ^3.2.2
         version: 3.2.2(react@19.2.8)
+      '@lexical/clipboard':
+        specifier: 0.48.0
+        version: 0.48.0(typescript@7.0.2)
       '@lexical/link':
         specifier: 0.48.0
         version: 0.48.0(typescript@7.0.2)
@@ -1303,6 +1306,9 @@ importers:
       lucide-react:
         specifier: ^1.48.0
         version: 1.48.0(react@19.2.8)
+      mdast-util-from-markdown:
+        specifier: ^2.0.3
+        version: 2.0.3
       mermaid:
         specifier: ^12.1.0
         version: 12.1.0
@@ -1343,6 +1349,9 @@ importers:
         specifier: 13.6.32
         version: 13.6.32
     devDependencies:
+      '@lexical/rich-text':
+        specifier: 0.48.0
+        version: 0.48.0(typescript@7.0.2)
       '@paperclipai/plugin-sdk':
         specifier: workspace:*
         version: link:../packages/plugins/sdk
@@ -1887,8 +1896,8 @@ packages:
   '@bufbuild/protobuf@1.10.0':
     resolution: {integrity: sha512-QDdVFLoN93Zjg36NoQPZfsVH9tZew7wKDKyV5qRdj8ntT4wQCOradQjRaTdwMhWUYsgKsvCINKKm87FdEk96Ag==}
 
-  '@bufbuild/protobuf@2.15.0':
-    resolution: {integrity: sha512-DAheWUkVr/SJTWCc+lg9dhY0eN4SaWlf4+bG1KzHeXbnqt0AfB/NX0Z+VunGlM1ki1B4zVvye27MpKh/svySUA==}
+  '@bufbuild/protobuf@2.16.0':
+    resolution: {integrity: sha512-FWa0sPlqYGJgpTs6OxBRcL/AW4JT0OIO+W1ajerluoTVh8CV0B7XM1qsNCRgnkSCkRCgOICKHRQlY17jrsm0+Q==}
 
   '@chat-adapter/discord@4.39.0':
     resolution: {integrity: sha512-9IS4HF0Jw+Ucsm3f7XaXGCGb22Swb/r6FGaHoSDYxOEraQ88pFH5S7xc8//C+pCnqhX7p8QwLB/dYaNxDnl9pw==}
@@ -3732,8 +3741,8 @@ packages:
   '@paralleldrive/cuid2@2.3.1':
     resolution: {integrity: sha512-XO7cAxhnTZl0Yggq6jOgjiOHhbgcO4NqFqwSmQpjK3b6TEE6Uj/jfSk6wzYyemh3+I0sHirKSetjQwn5cZktFw==}
 
-  '@photon-ai/advanced-imessage@2.1.0':
-    resolution: {integrity: sha512-KT/aCBWcq667alyKe8DclqDUa/0fUuW2ZYDCxfIKuQBm08U4JcNG56fCdNUd69MFkKkzZgW35j59EYsx5DnLcQ==}
+  '@photon-ai/advanced-imessage@2.2.0':
+    resolution: {integrity: sha512-WpRU/dAfPwZo6OZAwdKJ6YTmrJZAbhAVlO2skRucMmgyGHrhpyHt3p7ZJKvlkT900Fx7bFMN1VxheuV+jNh2KQ==}
     engines: {node: '>=18.17'}
     peerDependencies:
       '@grpc/grpc-js': ^1.12.6
@@ -6667,8 +6676,8 @@ packages:
     peerDependencies:
       react: ^19.2.8
 
-  drizzle-kit@0.31.10:
-    resolution: {integrity: sha512-7OZcmQUrdGI+DUNNsKBn1aW8qSoKuTH7d0mYgSP8bAzdFzKoovxEFnoGQp2dVs82EOJeYycqRtciopszwUf8bw==}
+  drizzle-kit@0.31.11:
+    resolution: {integrity: sha512-YCYqxTLIB2OCqf6w9/Vef13baBVbwQIPcbT4Y56AfO6B9ajZhDhD8Jkveg/hJvT/iuMloKD/IYYkyMMNhr7Kqg==}
     hasBin: true
 
   drizzle-orm@0.45.2:
@@ -7066,8 +7075,8 @@ packages:
     resolution: {integrity: sha512-ts6Wi+2j3jQjqi70w5AlN8DFnkSwC+MqmxEzdEALB2qXZYV3X/b1CTfgPLGJNMeAWxdPfU8FO1ms3NUfaHCPYg==}
     engines: {node: '>=10'}
 
-  get-tsconfig@4.14.0:
-    resolution: {integrity: sha512-yTb+8DXzDREzgvYmh6s9vHsSVCHeC0G3PI5bEXNBHtmshPnO+S5O7qgLEOn0I5QvMy6kpZN8K1NKGyilLb93wA==}
+  get-tsconfig@4.14.3:
+    resolution: {integrity: sha512-++QEw4DIY7WGoukz+/+A/8dGYPT9l9yIadnmSgZ8Rjr3YVSVDipQSO9CdnJo9ePqFqUUqh+wk9uIaoiAwsiPkA==}
 
   glob@13.0.6:
     resolution: {integrity: sha512-Wjlyrolmm8uDpm/ogGyXZXb1Z+Ca2B8NbJwqBVg0axK9GbBeoS7yGV6vjXnYdGm6X53iehEuxxbyiKp8QmN4Vw==}
@@ -9361,8 +9370,8 @@ packages:
   zod@4.4.3:
     resolution: {integrity: sha512-ytENFjIJFl2UwYglde2jchW2Hwm4GJFLDiSXWdTrJQBIN9Fcyp7n4DhxJEiWNAJMV1/BqWfW/kkg71UDcHJyTQ==}
 
-  zod@4.6.5:
-    resolution: {integrity: sha512-v5l/aFXZQeai4awLbOpSoHecE9UiMrnfx75tEXLjNonXVARxQ5mOeipTjROUchszUNCqnE+hqAMujRsRHsut2Q==}
+  zod@4.6.7:
+    resolution: {integrity: sha512-g8W2D2kU6a8untc053fX1uVBKzM7yqAxW/3zwk83+6RyF2+SKOuV+c0wBDhUwzV1PaGapmZH+rmcUzPf+3CGwg==}
 
   zustand@5.0.15:
     resolution: {integrity: sha512-MpSEjRiBkA9crSYeOUH32rJC7SVqAbm0Fqcqge/bUi2PPoLcBWKOsG+C8mevmpr8TwXHBVkChbbJiyvkE+i/3A==}
@@ -9395,19 +9404,10 @@ snapshots:
 
   '@adobe/css-tools@4.5.0': {}
 
-  '@agentclientprotocol/claude-agent-acp@0.73.0(patch_hash=xjlrz3rllh2ztafbdiywpfh2rq)(@anthropic-ai/sdk@0.129.0(zod@4.4.3))(@modelcontextprotocol/sdk@1.31.0(zod@4.4.3))':
+  '@agentclientprotocol/claude-agent-acp@0.73.0(patch_hash=syoits7l7g3sthy3olttp2fv24)(@anthropic-ai/sdk@0.129.0(zod@4.6.7))(@modelcontextprotocol/sdk@1.31.0(zod@4.6.7))':
     dependencies:
       '@agentclientprotocol/sdk': 1.4.0(zod@4.4.3)
-      '@anthropic-ai/claude-agent-sdk': 0.3.286(@anthropic-ai/sdk@0.129.0(zod@4.4.3))(@modelcontextprotocol/sdk@1.31.0(zod@4.4.3))(zod@4.4.3)
-      zod: 4.4.3
-    transitivePeerDependencies:
-      - '@anthropic-ai/sdk'
-      - '@modelcontextprotocol/sdk'
-
-  '@agentclientprotocol/claude-agent-acp@0.73.0(patch_hash=xjlrz3rllh2ztafbdiywpfh2rq)(@anthropic-ai/sdk@0.129.0(zod@4.6.5))(@modelcontextprotocol/sdk@1.31.0(zod@4.6.5))':
-    dependencies:
-      '@agentclientprotocol/sdk': 1.4.0(zod@4.4.3)
-      '@anthropic-ai/claude-agent-sdk': 0.3.286(@anthropic-ai/sdk@0.129.0(zod@4.6.5))(@modelcontextprotocol/sdk@1.31.0(zod@4.6.5))(zod@4.4.3)
+      '@anthropic-ai/claude-agent-sdk': 0.3.286(@anthropic-ai/sdk@0.129.0(zod@4.6.7))(@modelcontextprotocol/sdk@1.31.0(zod@4.6.7))(zod@4.4.3)
       zod: 4.4.3
     transitivePeerDependencies:
       - '@anthropic-ai/sdk'
@@ -9430,83 +9430,69 @@ snapshots:
     dependencies:
       zod: 4.4.3
 
-  '@ai-sdk/amazon-bedrock@5.0.113(zod@4.4.3)':
+  '@agentclientprotocol/sdk@1.4.0(zod@4.6.7)':
     dependencies:
-      '@ai-sdk/anthropic': 4.0.78(zod@4.4.3)
-      '@ai-sdk/openai': 4.0.91(zod@4.4.3)
+      zod: 4.6.7
+
+  '@ai-sdk/amazon-bedrock@5.0.113(zod@4.6.7)':
+    dependencies:
+      '@ai-sdk/anthropic': 4.0.78(zod@4.6.7)
+      '@ai-sdk/openai': 4.0.91(zod@4.6.7)
       '@ai-sdk/provider': 4.0.26
-      '@ai-sdk/provider-utils': 5.0.58(zod@4.4.3)
+      '@ai-sdk/provider-utils': 5.0.58(zod@4.6.7)
       '@smithy/eventstream-codec': 4.5.2
       '@smithy/util-utf8': 4.5.2
       aws4fetch: 1.0.20
-      zod: 4.4.3
+      zod: 4.6.7
 
-  '@ai-sdk/anthropic@4.0.78(zod@4.4.3)':
+  '@ai-sdk/anthropic@4.0.78(zod@4.6.7)':
     dependencies:
       '@ai-sdk/provider': 4.0.26
-      '@ai-sdk/provider-utils': 5.0.58(zod@4.4.3)
-      zod: 4.4.3
+      '@ai-sdk/provider-utils': 5.0.58(zod@4.6.7)
+      zod: 4.6.7
 
-  '@ai-sdk/gateway@4.0.106(zod@4.4.3)':
+  '@ai-sdk/gateway@4.0.106(zod@4.6.7)':
     dependencies:
       '@ai-sdk/provider': 4.0.24
-      '@ai-sdk/provider-utils': 5.0.56(zod@4.4.3)
+      '@ai-sdk/provider-utils': 5.0.56(zod@4.6.7)
       '@vercel/oidc': 3.2.0
-      zod: 4.4.3
+      zod: 4.6.7
 
-  '@ai-sdk/gateway@4.0.106(zod@4.6.5)':
-    dependencies:
-      '@ai-sdk/provider': 4.0.24
-      '@ai-sdk/provider-utils': 5.0.56(zod@4.6.5)
-      '@vercel/oidc': 3.2.0
-      zod: 4.6.5
-    optional: true
-
-  '@ai-sdk/google@4.0.93(zod@4.4.3)':
+  '@ai-sdk/google@4.0.93(zod@4.6.7)':
     dependencies:
       '@ai-sdk/provider': 4.0.26
-      '@ai-sdk/provider-utils': 5.0.58(zod@4.4.3)
-      zod: 4.4.3
+      '@ai-sdk/provider-utils': 5.0.58(zod@4.6.7)
+      zod: 4.6.7
 
-  '@ai-sdk/openai@4.0.86(zod@4.4.3)':
+  '@ai-sdk/openai@4.0.86(zod@4.6.7)':
     dependencies:
       '@ai-sdk/provider': 4.0.24
-      '@ai-sdk/provider-utils': 5.0.56(zod@4.4.3)
-      zod: 4.4.3
+      '@ai-sdk/provider-utils': 5.0.56(zod@4.6.7)
+      zod: 4.6.7
 
-  '@ai-sdk/openai@4.0.91(zod@4.4.3)':
+  '@ai-sdk/openai@4.0.91(zod@4.6.7)':
     dependencies:
       '@ai-sdk/provider': 4.0.26
-      '@ai-sdk/provider-utils': 5.0.58(zod@4.4.3)
-      zod: 4.4.3
+      '@ai-sdk/provider-utils': 5.0.58(zod@4.6.7)
+      zod: 4.6.7
 
-  '@ai-sdk/provider-utils@5.0.56(zod@4.4.3)':
+  '@ai-sdk/provider-utils@5.0.56(zod@4.6.7)':
     dependencies:
       '@ai-sdk/provider': 4.0.24
       '@standard-schema/spec': 1.1.0
       '@workflow/serde': 4.1.0
       eventsource-parser: 3.1.1
       undici: 7.30.0
-      zod: 4.4.3
+      zod: 4.6.7
 
-  '@ai-sdk/provider-utils@5.0.56(zod@4.6.5)':
-    dependencies:
-      '@ai-sdk/provider': 4.0.24
-      '@standard-schema/spec': 1.1.0
-      '@workflow/serde': 4.1.0
-      eventsource-parser: 3.1.1
-      undici: 7.30.0
-      zod: 4.6.5
-    optional: true
-
-  '@ai-sdk/provider-utils@5.0.58(zod@4.4.3)':
+  '@ai-sdk/provider-utils@5.0.58(zod@4.6.7)':
     dependencies:
       '@ai-sdk/provider': 4.0.26
       '@standard-schema/spec': 1.1.0
       '@workflow/serde': 4.1.0
       eventsource-parser: 3.1.1
       undici: 7.30.0
-      zod: 4.4.3
+      zod: 4.6.7
 
   '@ai-sdk/provider@4.0.24':
     dependencies:
@@ -9516,11 +9502,11 @@ snapshots:
     dependencies:
       json-schema: 0.4.0
 
-  '@ai-sdk/xai@5.0.20(zod@4.4.3)':
+  '@ai-sdk/xai@5.0.20(zod@4.6.7)':
     dependencies:
       '@ai-sdk/provider': 4.0.26
-      '@ai-sdk/provider-utils': 5.0.58(zod@4.4.3)
-      zod: 4.4.3
+      '@ai-sdk/provider-utils': 5.0.58(zod@4.6.7)
+      zod: 4.6.7
 
   '@antfu/install-pkg@2.1.0':
     dependencies:
@@ -9551,10 +9537,10 @@ snapshots:
   '@anthropic-ai/claude-agent-sdk-win32-x64@0.3.286':
     optional: true
 
-  '@anthropic-ai/claude-agent-sdk@0.3.286(@anthropic-ai/sdk@0.129.0(zod@4.4.3))(@modelcontextprotocol/sdk@1.31.0(zod@4.4.3))(zod@4.4.3)':
+  '@anthropic-ai/claude-agent-sdk@0.3.286(@anthropic-ai/sdk@0.129.0(zod@4.6.7))(@modelcontextprotocol/sdk@1.31.0(zod@4.6.7))(zod@4.4.3)':
     dependencies:
-      '@anthropic-ai/sdk': 0.129.0(zod@4.4.3)
-      '@modelcontextprotocol/sdk': 1.31.0(zod@4.4.3)
+      '@anthropic-ai/sdk': 0.129.0(zod@4.6.7)
+      '@modelcontextprotocol/sdk': 1.31.0(zod@4.6.7)
       zod: 4.4.3
     optionalDependencies:
       '@anthropic-ai/claude-agent-sdk-darwin-arm64': 0.3.286
@@ -9566,34 +9552,12 @@ snapshots:
       '@anthropic-ai/claude-agent-sdk-win32-arm64': 0.3.286
       '@anthropic-ai/claude-agent-sdk-win32-x64': 0.3.286
 
-  '@anthropic-ai/claude-agent-sdk@0.3.286(@anthropic-ai/sdk@0.129.0(zod@4.6.5))(@modelcontextprotocol/sdk@1.31.0(zod@4.6.5))(zod@4.4.3)':
-    dependencies:
-      '@anthropic-ai/sdk': 0.129.0(zod@4.6.5)
-      '@modelcontextprotocol/sdk': 1.31.0(zod@4.6.5)
-      zod: 4.4.3
-    optionalDependencies:
-      '@anthropic-ai/claude-agent-sdk-darwin-arm64': 0.3.286
-      '@anthropic-ai/claude-agent-sdk-darwin-x64': 0.3.286
-      '@anthropic-ai/claude-agent-sdk-linux-arm64': 0.3.286
-      '@anthropic-ai/claude-agent-sdk-linux-arm64-musl': 0.3.286
-      '@anthropic-ai/claude-agent-sdk-linux-x64': 0.3.286
-      '@anthropic-ai/claude-agent-sdk-linux-x64-musl': 0.3.286
-      '@anthropic-ai/claude-agent-sdk-win32-arm64': 0.3.286
-      '@anthropic-ai/claude-agent-sdk-win32-x64': 0.3.286
-
-  '@anthropic-ai/sdk@0.129.0(zod@4.4.3)':
+  '@anthropic-ai/sdk@0.129.0(zod@4.6.7)':
     dependencies:
       json-schema-to-ts: 3.1.1
       standardwebhooks: 1.1.1
     optionalDependencies:
-      zod: 4.4.3
-
-  '@anthropic-ai/sdk@0.129.0(zod@4.6.5)':
-    dependencies:
-      json-schema-to-ts: 3.1.1
-      standardwebhooks: 1.1.1
-    optionalDependencies:
-      zod: 4.6.5
+      zod: 4.6.7
 
   '@asamuzakjp/css-color@6.0.7':
     dependencies:
@@ -9610,7 +9574,7 @@ snapshots:
       is-potential-custom-element-name: 1.0.1
       lru-cache: 11.5.2
 
-  '@assistant-ui/core@0.3.22(@assistant-ui/store@0.3.16(@assistant-ui/tap@0.9.20(@types/react@19.2.18)(react@19.2.8))(@types/react@19.2.18)(react@19.2.8))(@assistant-ui/tap@0.9.20(@types/react@19.2.18)(react@19.2.8))(@types/react@19.2.18)(assistant-cloud@0.2.4(@opentelemetry/api@1.9.1)(ai@7.0.130(zod@4.6.5)))(react@19.2.8)':
+  '@assistant-ui/core@0.3.22(@assistant-ui/store@0.3.16(@assistant-ui/tap@0.9.20(@types/react@19.2.18)(react@19.2.8))(@types/react@19.2.18)(react@19.2.8))(@assistant-ui/tap@0.9.20(@types/react@19.2.18)(react@19.2.8))(@types/react@19.2.18)(assistant-cloud@0.2.4(@opentelemetry/api@1.9.1)(ai@7.0.130(zod@4.6.7)))(react@19.2.8)':
     dependencies:
       '@assistant-ui/store': 0.3.16(@assistant-ui/tap@0.9.20(@types/react@19.2.18)(react@19.2.8))(@types/react@19.2.18)(react@19.2.8)
       '@assistant-ui/tap': 0.9.20(@types/react@19.2.18)(react@19.2.8)
@@ -9618,25 +9582,25 @@ snapshots:
       nanoid: 6.0.1
     optionalDependencies:
       '@types/react': 19.2.18
-      assistant-cloud: 0.2.4(@opentelemetry/api@1.9.1)(ai@7.0.130(zod@4.6.5))
+      assistant-cloud: 0.2.4(@opentelemetry/api@1.9.1)(ai@7.0.130(zod@4.6.7))
       react: 19.2.8
     transitivePeerDependencies:
       - ioredis
       - redis
 
-  '@assistant-ui/react@0.15.22(@opentelemetry/api@1.9.1)(@types/react-dom@19.2.5(@types/react@19.2.18))(@types/react@19.2.18)(ai@7.0.130(zod@4.6.5))(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(use-sync-external-store@1.7.0(react@19.2.8))':
+  '@assistant-ui/react@0.15.22(@opentelemetry/api@1.9.1)(@types/react-dom@19.2.5(@types/react@19.2.18))(@types/react@19.2.18)(ai@7.0.130(zod@4.6.7))(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(use-sync-external-store@1.7.0(react@19.2.8))':
     dependencies:
-      '@assistant-ui/core': 0.3.22(@assistant-ui/store@0.3.16(@assistant-ui/tap@0.9.20(@types/react@19.2.18)(react@19.2.8))(@types/react@19.2.18)(react@19.2.8))(@assistant-ui/tap@0.9.20(@types/react@19.2.18)(react@19.2.8))(@types/react@19.2.18)(assistant-cloud@0.2.4(@opentelemetry/api@1.9.1)(ai@7.0.130(zod@4.6.5)))(react@19.2.8)
+      '@assistant-ui/core': 0.3.22(@assistant-ui/store@0.3.16(@assistant-ui/tap@0.9.20(@types/react@19.2.18)(react@19.2.8))(@types/react@19.2.18)(react@19.2.8))(@assistant-ui/tap@0.9.20(@types/react@19.2.18)(react@19.2.8))(@types/react@19.2.18)(assistant-cloud@0.2.4(@opentelemetry/api@1.9.1)(ai@7.0.130(zod@4.6.7)))(react@19.2.8)
       '@assistant-ui/store': 0.3.16(@assistant-ui/tap@0.9.20(@types/react@19.2.18)(react@19.2.8))(@types/react@19.2.18)(react@19.2.8)
       '@assistant-ui/tap': 0.9.20(@types/react@19.2.18)(react@19.2.8)
-      assistant-cloud: 0.2.4(@opentelemetry/api@1.9.1)(ai@7.0.130(zod@4.6.5))
+      assistant-cloud: 0.2.4(@opentelemetry/api@1.9.1)(ai@7.0.130(zod@4.6.7))
       assistant-stream: 0.3.46
       radix-ui: 1.6.7(@types/react-dom@19.2.5(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
       react: 19.2.8
       react-dom: 19.2.8(react@19.2.8)
       react-textarea-autosize: 8.5.9(@types/react@19.2.18)(react@19.2.8)
       safe-content-frame: 0.0.31
-      zod: 4.6.5
+      zod: 4.6.7
       zustand: 5.0.15(@types/react@19.2.18)(react@19.2.8)(use-sync-external-store@1.7.0(react@19.2.8))
     optionalDependencies:
       '@types/react': 19.2.18
@@ -9972,52 +9936,52 @@ snapshots:
     optionalDependencies:
       '@types/react': 19.2.18
 
-  '@better-auth/core@1.7.2(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)(@opentelemetry/api@1.9.1)(better-call@1.4.0(zod@4.4.3))(jose@6.2.10)(kysely@0.29.5)(nanostores@1.5.3)':
+  '@better-auth/core@1.7.2(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)(@opentelemetry/api@1.9.1)(better-call@1.4.0(zod@4.6.7))(jose@6.2.10)(kysely@0.29.5)(nanostores@1.5.3)':
     dependencies:
       '@better-auth/utils': 0.4.2
       '@better-fetch/fetch': 1.3.1
       '@opentelemetry/semantic-conventions': 1.43.0
       '@standard-schema/spec': 1.1.0
-      better-call: 1.4.0(zod@4.4.3)
+      better-call: 1.4.0(zod@4.6.7)
       jose: 6.2.10
       kysely: 0.29.5
       nanostores: 1.5.3
-      zod: 4.4.3
+      zod: 4.6.7
     optionalDependencies:
       '@opentelemetry/api': 1.9.1
 
-  '@better-auth/drizzle-adapter@1.7.2(@better-auth/core@1.7.2(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)(@opentelemetry/api@1.9.1)(better-call@1.4.0(zod@4.4.3))(jose@6.2.10)(kysely@0.29.5)(nanostores@1.5.3))(@better-auth/utils@0.4.2)(drizzle-orm@0.45.2(@opentelemetry/api@1.9.1)(kysely@0.29.5)(pg@8.18.0)(postgres@3.4.9(patch_hash=6q4cic6qawywsyeo2spgnjamda)))':
+  '@better-auth/drizzle-adapter@1.7.2(@better-auth/core@1.7.2(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)(@opentelemetry/api@1.9.1)(better-call@1.4.0(zod@4.6.7))(jose@6.2.10)(kysely@0.29.5)(nanostores@1.5.3))(@better-auth/utils@0.4.2)(drizzle-orm@0.45.2(@opentelemetry/api@1.9.1)(kysely@0.29.5)(pg@8.18.0)(postgres@3.4.9(patch_hash=6q4cic6qawywsyeo2spgnjamda)))':
     dependencies:
-      '@better-auth/core': 1.7.2(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)(@opentelemetry/api@1.9.1)(better-call@1.4.0(zod@4.4.3))(jose@6.2.10)(kysely@0.29.5)(nanostores@1.5.3)
+      '@better-auth/core': 1.7.2(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)(@opentelemetry/api@1.9.1)(better-call@1.4.0(zod@4.6.7))(jose@6.2.10)(kysely@0.29.5)(nanostores@1.5.3)
       '@better-auth/utils': 0.4.2
     optionalDependencies:
       drizzle-orm: 0.45.2(@opentelemetry/api@1.9.1)(kysely@0.29.5)(pg@8.18.0)(postgres@3.4.9(patch_hash=6q4cic6qawywsyeo2spgnjamda))
 
-  '@better-auth/kysely-adapter@1.7.2(@better-auth/core@1.7.2(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)(@opentelemetry/api@1.9.1)(better-call@1.4.0(zod@4.4.3))(jose@6.2.10)(kysely@0.29.5)(nanostores@1.5.3))(@better-auth/utils@0.4.2)(kysely@0.29.5)':
+  '@better-auth/kysely-adapter@1.7.2(@better-auth/core@1.7.2(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)(@opentelemetry/api@1.9.1)(better-call@1.4.0(zod@4.6.7))(jose@6.2.10)(kysely@0.29.5)(nanostores@1.5.3))(@better-auth/utils@0.4.2)(kysely@0.29.5)':
     dependencies:
-      '@better-auth/core': 1.7.2(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)(@opentelemetry/api@1.9.1)(better-call@1.4.0(zod@4.4.3))(jose@6.2.10)(kysely@0.29.5)(nanostores@1.5.3)
+      '@better-auth/core': 1.7.2(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)(@opentelemetry/api@1.9.1)(better-call@1.4.0(zod@4.6.7))(jose@6.2.10)(kysely@0.29.5)(nanostores@1.5.3)
       '@better-auth/utils': 0.4.2
     optionalDependencies:
       kysely: 0.29.5
 
-  '@better-auth/memory-adapter@1.7.2(@better-auth/core@1.7.2(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)(@opentelemetry/api@1.9.1)(better-call@1.4.0(zod@4.4.3))(jose@6.2.10)(kysely@0.29.5)(nanostores@1.5.3))(@better-auth/utils@0.4.2)':
+  '@better-auth/memory-adapter@1.7.2(@better-auth/core@1.7.2(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)(@opentelemetry/api@1.9.1)(better-call@1.4.0(zod@4.6.7))(jose@6.2.10)(kysely@0.29.5)(nanostores@1.5.3))(@better-auth/utils@0.4.2)':
     dependencies:
-      '@better-auth/core': 1.7.2(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)(@opentelemetry/api@1.9.1)(better-call@1.4.0(zod@4.4.3))(jose@6.2.10)(kysely@0.29.5)(nanostores@1.5.3)
+      '@better-auth/core': 1.7.2(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)(@opentelemetry/api@1.9.1)(better-call@1.4.0(zod@4.6.7))(jose@6.2.10)(kysely@0.29.5)(nanostores@1.5.3)
       '@better-auth/utils': 0.4.2
 
-  '@better-auth/mongo-adapter@1.7.2(@better-auth/core@1.7.2(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)(@opentelemetry/api@1.9.1)(better-call@1.4.0(zod@4.4.3))(jose@6.2.10)(kysely@0.29.5)(nanostores@1.5.3))(@better-auth/utils@0.4.2)':
+  '@better-auth/mongo-adapter@1.7.2(@better-auth/core@1.7.2(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)(@opentelemetry/api@1.9.1)(better-call@1.4.0(zod@4.6.7))(jose@6.2.10)(kysely@0.29.5)(nanostores@1.5.3))(@better-auth/utils@0.4.2)':
     dependencies:
-      '@better-auth/core': 1.7.2(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)(@opentelemetry/api@1.9.1)(better-call@1.4.0(zod@4.4.3))(jose@6.2.10)(kysely@0.29.5)(nanostores@1.5.3)
+      '@better-auth/core': 1.7.2(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)(@opentelemetry/api@1.9.1)(better-call@1.4.0(zod@4.6.7))(jose@6.2.10)(kysely@0.29.5)(nanostores@1.5.3)
       '@better-auth/utils': 0.4.2
 
-  '@better-auth/prisma-adapter@1.7.2(@better-auth/core@1.7.2(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)(@opentelemetry/api@1.9.1)(better-call@1.4.0(zod@4.4.3))(jose@6.2.10)(kysely@0.29.5)(nanostores@1.5.3))(@better-auth/utils@0.4.2)':
+  '@better-auth/prisma-adapter@1.7.2(@better-auth/core@1.7.2(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)(@opentelemetry/api@1.9.1)(better-call@1.4.0(zod@4.6.7))(jose@6.2.10)(kysely@0.29.5)(nanostores@1.5.3))(@better-auth/utils@0.4.2)':
     dependencies:
-      '@better-auth/core': 1.7.2(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)(@opentelemetry/api@1.9.1)(better-call@1.4.0(zod@4.4.3))(jose@6.2.10)(kysely@0.29.5)(nanostores@1.5.3)
+      '@better-auth/core': 1.7.2(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)(@opentelemetry/api@1.9.1)(better-call@1.4.0(zod@4.6.7))(jose@6.2.10)(kysely@0.29.5)(nanostores@1.5.3)
       '@better-auth/utils': 0.4.2
 
-  '@better-auth/telemetry@1.7.2(@better-auth/core@1.7.2(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)(@opentelemetry/api@1.9.1)(better-call@1.4.0(zod@4.4.3))(jose@6.2.10)(kysely@0.29.5)(nanostores@1.5.3))(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)':
+  '@better-auth/telemetry@1.7.2(@better-auth/core@1.7.2(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)(@opentelemetry/api@1.9.1)(better-call@1.4.0(zod@4.6.7))(jose@6.2.10)(kysely@0.29.5)(nanostores@1.5.3))(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)':
     dependencies:
-      '@better-auth/core': 1.7.2(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)(@opentelemetry/api@1.9.1)(better-call@1.4.0(zod@4.4.3))(jose@6.2.10)(kysely@0.29.5)(nanostores@1.5.3)
+      '@better-auth/core': 1.7.2(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)(@opentelemetry/api@1.9.1)(better-call@1.4.0(zod@4.6.7))(jose@6.2.10)(kysely@0.29.5)(nanostores@1.5.3)
       '@better-auth/utils': 0.4.2
       '@better-fetch/fetch': 1.3.1
 
@@ -10039,12 +10003,12 @@ snapshots:
 
   '@bufbuild/protobuf@1.10.0': {}
 
-  '@bufbuild/protobuf@2.15.0': {}
+  '@bufbuild/protobuf@2.16.0': {}
 
-  '@chat-adapter/discord@4.39.0(patch_hash=nywlhls7dd4npegrgax7jqdbxa)(ai@7.0.130(zod@4.4.3))(zod@4.4.3)':
+  '@chat-adapter/discord@4.39.0(patch_hash=nywlhls7dd4npegrgax7jqdbxa)(ai@7.0.130(zod@4.6.7))(zod@4.6.7)':
     dependencies:
-      '@chat-adapter/shared': 4.39.0(ai@7.0.130(zod@4.4.3))(zod@4.4.3)
-      chat: 4.39.0(ai@7.0.130(zod@4.4.3))(zod@4.4.3)
+      '@chat-adapter/shared': 4.39.0(ai@7.0.130(zod@4.6.7))(zod@4.6.7)
+      chat: 4.39.0(ai@7.0.130(zod@4.6.7))(zod@4.6.7)
       discord-api-types: 0.37.120
       discord-interactions: 4.4.0
       discord.js: 14.27.0
@@ -10056,33 +10020,33 @@ snapshots:
       - workflow
       - zod
 
-  '@chat-adapter/github@4.39.0(patch_hash=x25bk7vvljpm57viwan5qoaddi)(ai@7.0.130(zod@4.4.3))(zod@4.4.3)':
+  '@chat-adapter/github@4.39.0(patch_hash=x25bk7vvljpm57viwan5qoaddi)(ai@7.0.130(zod@4.6.7))(zod@4.6.7)':
     dependencies:
-      '@chat-adapter/shared': 4.39.0(ai@7.0.130(zod@4.4.3))(zod@4.4.3)
+      '@chat-adapter/shared': 4.39.0(ai@7.0.130(zod@4.6.7))(zod@4.6.7)
       '@octokit/auth-app': 8.3.1
       '@octokit/rest': 22.0.1
-      chat: 4.39.0(ai@7.0.130(zod@4.4.3))(zod@4.4.3)
+      chat: 4.39.0(ai@7.0.130(zod@4.6.7))(zod@4.6.7)
     transitivePeerDependencies:
       - ai
       - supports-color
       - workflow
       - zod
 
-  '@chat-adapter/shared@4.39.0(ai@7.0.130(zod@4.4.3))(zod@4.4.3)':
+  '@chat-adapter/shared@4.39.0(ai@7.0.130(zod@4.6.7))(zod@4.6.7)':
     dependencies:
-      chat: 4.39.0(ai@7.0.130(zod@4.4.3))(zod@4.4.3)
+      chat: 4.39.0(ai@7.0.130(zod@4.6.7))(zod@4.6.7)
     transitivePeerDependencies:
       - ai
       - supports-color
       - workflow
       - zod
 
-  '@chat-adapter/slack@4.39.0(patch_hash=226jj24akljccsfbw7bcxujz4u)(ai@7.0.130(zod@4.4.3))(zod@4.4.3)':
+  '@chat-adapter/slack@4.39.0(patch_hash=226jj24akljccsfbw7bcxujz4u)(ai@7.0.130(zod@4.6.7))(zod@4.6.7)':
     dependencies:
-      '@chat-adapter/shared': 4.39.0(ai@7.0.130(zod@4.4.3))(zod@4.4.3)
+      '@chat-adapter/shared': 4.39.0(ai@7.0.130(zod@4.6.7))(zod@4.6.7)
       '@slack/socket-mode': 2.0.7
       '@slack/web-api': 7.19.0
-      chat: 4.39.0(ai@7.0.130(zod@4.4.3))(zod@4.4.3)
+      chat: 4.39.0(ai@7.0.130(zod@4.6.7))(zod@4.6.7)
     transitivePeerDependencies:
       - ai
       - bufferutil
@@ -10092,14 +10056,14 @@ snapshots:
       - workflow
       - zod
 
-  '@chat-adapter/teams@4.39.0(patch_hash=jfm44m5wrw3jrn2jijafzk7s5a)(ai@7.0.130(zod@4.4.3))(zod@4.4.3)':
+  '@chat-adapter/teams@4.39.0(patch_hash=jfm44m5wrw3jrn2jijafzk7s5a)(ai@7.0.130(zod@4.6.7))(zod@4.6.7)':
     dependencies:
-      '@chat-adapter/shared': 4.39.0(ai@7.0.130(zod@4.4.3))(zod@4.4.3)
+      '@chat-adapter/shared': 4.39.0(ai@7.0.130(zod@4.6.7))(zod@4.6.7)
       '@microsoft/teams.api': 2.0.16
       '@microsoft/teams.apps': 2.0.16
       '@microsoft/teams.cards': 2.0.16
       '@microsoft/teams.graph-endpoints': 2.0.16
-      chat: 4.39.0(ai@7.0.130(zod@4.4.3))(zod@4.4.3)
+      chat: 4.39.0(ai@7.0.130(zod@4.6.7))(zod@4.6.7)
     transitivePeerDependencies:
       - ai
       - debug
@@ -10107,10 +10071,10 @@ snapshots:
       - workflow
       - zod
 
-  '@chat-adapter/telegram@4.39.0(patch_hash=wl4uiwewrapxf5u6ksnm7elv44)(ai@7.0.130(zod@4.4.3))(zod@4.4.3)':
+  '@chat-adapter/telegram@4.39.0(patch_hash=wl4uiwewrapxf5u6ksnm7elv44)(ai@7.0.130(zod@4.6.7))(zod@4.6.7)':
     dependencies:
-      '@chat-adapter/shared': 4.39.0(ai@7.0.130(zod@4.4.3))(zod@4.4.3)
-      chat: 4.39.0(ai@7.0.130(zod@4.4.3))(zod@4.4.3)
+      '@chat-adapter/shared': 4.39.0(ai@7.0.130(zod@4.6.7))(zod@4.6.7)
+      chat: 4.39.0(ai@7.0.130(zod@4.6.7))(zod@4.6.7)
     transitivePeerDependencies:
       - ai
       - supports-color
@@ -10641,7 +10605,7 @@ snapshots:
   '@esbuild-kit/esm-loader@2.6.5':
     dependencies:
       '@esbuild-kit/core-utils': 3.3.2
-      get-tsconfig: 4.14.0
+      get-tsconfig: 4.14.3
 
   '@esbuild/aix-ppc64@0.25.12':
     optional: true
@@ -11543,7 +11507,7 @@ snapshots:
       - debug
       - supports-color
 
-  '@modelcontextprotocol/sdk@1.31.0(zod@4.4.3)':
+  '@modelcontextprotocol/sdk@1.31.0(zod@4.6.7)':
     dependencies:
       '@hono/node-server': 2.1.3(hono@4.13.13)
       ajv: 8.20.0
@@ -11560,30 +11524,8 @@ snapshots:
       json-schema-typed: 8.0.2
       pkce-challenge: 5.0.1
       raw-body: 3.0.2
-      zod: 4.4.3
-      zod-to-json-schema: 3.25.2(zod@4.4.3)
-    transitivePeerDependencies:
-      - supports-color
-
-  '@modelcontextprotocol/sdk@1.31.0(zod@4.6.5)':
-    dependencies:
-      '@hono/node-server': 2.1.3(hono@4.13.13)
-      ajv: 8.20.0
-      ajv-formats: 3.0.1(ajv@8.20.0)
-      content-type: 1.0.5
-      cors: 2.8.6
-      cross-spawn: 7.0.6
-      eventsource: 3.0.7
-      eventsource-parser: 3.1.1
-      express: 5.2.1
-      express-rate-limit: 8.7.1(express@5.2.1)
-      hono: 4.13.13
-      jose: 6.2.12
-      json-schema-typed: 8.0.2
-      pkce-challenge: 5.0.1
-      raw-body: 3.0.2
-      zod: 4.6.5
-      zod-to-json-schema: 3.25.2(zod@4.6.5)
+      zod: 4.6.7
+      zod-to-json-schema: 3.25.2(zod@4.6.7)
     transitivePeerDependencies:
       - supports-color
 
@@ -11749,10 +11691,10 @@ snapshots:
   '@openai/codex@0.160.0-win32-x64':
     optional: true
 
-  '@openrouter/ai-sdk-provider@3.1.0(ai@7.0.130(zod@4.4.3))(zod@4.4.3)':
+  '@openrouter/ai-sdk-provider@3.1.0(ai@7.0.130(zod@4.6.7))(zod@4.6.7)':
     dependencies:
-      ai: 7.0.130(zod@4.4.3)
-      zod: 4.4.3
+      ai: 7.0.130(zod@4.6.7)
+      zod: 4.6.7
 
   '@opentelemetry/api-logs@0.221.0':
     dependencies:
@@ -11941,9 +11883,9 @@ snapshots:
     dependencies:
       '@noble/hashes': 1.8.0
 
-  '@photon-ai/advanced-imessage@2.1.0(@grpc/grpc-js@1.14.5)(nice-grpc-common@2.0.4)(nice-grpc@2.1.17)':
+  '@photon-ai/advanced-imessage@2.2.0(@grpc/grpc-js@1.14.5)(nice-grpc-common@2.0.4)(nice-grpc@2.1.17)':
     dependencies:
-      '@bufbuild/protobuf': 2.15.0
+      '@bufbuild/protobuf': 2.16.0
     optionalDependencies:
       '@grpc/grpc-js': 1.14.5
       nice-grpc: 2.1.17
@@ -13859,14 +13801,14 @@ snapshots:
     dependencies:
       execa: 5.1.1
 
-  '@vercel/connect@2.3.3(@chat-adapter/slack@4.39.0(patch_hash=226jj24akljccsfbw7bcxujz4u)(ai@7.0.130(zod@4.4.3))(zod@4.4.3))(@modelcontextprotocol/sdk@1.31.0(zod@4.4.3))(ai@7.0.130(zod@4.4.3))(better-auth@1.7.2(@opentelemetry/api@1.9.1)(drizzle-kit@0.31.10)(drizzle-orm@0.45.2(@opentelemetry/api@1.9.1)(kysely@0.29.5)(pg@8.18.0)(postgres@3.4.9(patch_hash=6q4cic6qawywsyeo2spgnjamda)))(pg@8.18.0)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(vitest@5.0.3(@opentelemetry/api@1.9.1)(@types/node@24.13.3)(jsdom@30.0.1(@noble/hashes@2.4.0))(vite@8.2.2(@types/node@24.13.3)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1))))':
+  '@vercel/connect@2.3.3(@chat-adapter/slack@4.39.0(patch_hash=226jj24akljccsfbw7bcxujz4u)(ai@7.0.130(zod@4.6.7))(zod@4.6.7))(@modelcontextprotocol/sdk@1.31.0(zod@4.6.7))(ai@7.0.130(zod@4.6.7))(better-auth@1.7.2(@opentelemetry/api@1.9.1)(drizzle-kit@0.31.11)(drizzle-orm@0.45.2(@opentelemetry/api@1.9.1)(kysely@0.29.5)(pg@8.18.0)(postgres@3.4.9(patch_hash=6q4cic6qawywsyeo2spgnjamda)))(pg@8.18.0)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(vitest@5.0.3(@opentelemetry/api@1.9.1)(@types/node@24.13.3)(jsdom@30.0.1(@noble/hashes@2.4.0))(vite@8.2.2(@types/node@24.13.3)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1))))':
     dependencies:
       '@vercel/oidc': 3.8.9
     optionalDependencies:
-      '@chat-adapter/slack': 4.39.0(patch_hash=226jj24akljccsfbw7bcxujz4u)(ai@7.0.130(zod@4.4.3))(zod@4.4.3)
-      '@modelcontextprotocol/sdk': 1.31.0(zod@4.4.3)
-      ai: 7.0.130(zod@4.4.3)
-      better-auth: 1.7.2(@opentelemetry/api@1.9.1)(drizzle-kit@0.31.10)(drizzle-orm@0.45.2(@opentelemetry/api@1.9.1)(kysely@0.29.5)(pg@8.18.0)(postgres@3.4.9(patch_hash=6q4cic6qawywsyeo2spgnjamda)))(pg@8.18.0)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(vitest@5.0.3(@opentelemetry/api@1.9.1)(@types/node@24.13.3)(jsdom@30.0.1(@noble/hashes@2.4.0))(vite@8.2.2(@types/node@24.13.3)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1)))
+      '@chat-adapter/slack': 4.39.0(patch_hash=226jj24akljccsfbw7bcxujz4u)(ai@7.0.130(zod@4.6.7))(zod@4.6.7)
+      '@modelcontextprotocol/sdk': 1.31.0(zod@4.6.7)
+      ai: 7.0.130(zod@4.6.7)
+      better-auth: 1.7.2(@opentelemetry/api@1.9.1)(drizzle-kit@0.31.11)(drizzle-orm@0.45.2(@opentelemetry/api@1.9.1)(kysely@0.29.5)(pg@8.18.0)(postgres@3.4.9(patch_hash=6q4cic6qawywsyeo2spgnjamda)))(pg@8.18.0)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(vitest@5.0.3(@opentelemetry/api@1.9.1)(@types/node@24.13.3)(jsdom@30.0.1(@noble/hashes@2.4.0))(vite@8.2.2(@types/node@24.13.3)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1)))
 
   '@vercel/oidc@3.2.0': {}
 
@@ -13972,13 +13914,13 @@ snapshots:
       - bare-buffer
       - react-native-b4a
 
-  acpx@0.13.1(patch_hash=xh3fclih3ztrbsibpfnxdcx7pe):
+  acpx@0.13.1(patch_hash=ujlgpkxl4mvt34bejc3uxyvthq):
     dependencies:
-      '@agentclientprotocol/sdk': 1.4.0(zod@4.4.3)
+      '@agentclientprotocol/sdk': 1.4.0(zod@4.6.7)
       commander: 15.0.0
       skillflag: 0.2.1
       tsx: 4.23.15
-      zod: 4.4.3
+      zod: 4.6.7
     transitivePeerDependencies:
       - bare-abort-controller
       - bare-buffer
@@ -14001,20 +13943,12 @@ snapshots:
       - bufferutil
       - utf-8-validate
 
-  ai@7.0.130(zod@4.4.3):
+  ai@7.0.130(zod@4.6.7):
     dependencies:
-      '@ai-sdk/gateway': 4.0.106(zod@4.4.3)
+      '@ai-sdk/gateway': 4.0.106(zod@4.6.7)
       '@ai-sdk/provider': 4.0.24
-      '@ai-sdk/provider-utils': 5.0.56(zod@4.4.3)
-      zod: 4.4.3
-
-  ai@7.0.130(zod@4.6.5):
-    dependencies:
-      '@ai-sdk/gateway': 4.0.106(zod@4.6.5)
-      '@ai-sdk/provider': 4.0.24
-      '@ai-sdk/provider-utils': 5.0.56(zod@4.6.5)
-      zod: 4.6.5
-    optional: true
+      '@ai-sdk/provider-utils': 5.0.56(zod@4.6.7)
+      zod: 4.6.7
 
   ajv-formats@3.0.1(ajv@8.20.0):
     optionalDependencies:
@@ -14057,12 +13991,12 @@ snapshots:
 
   assertion-error@2.0.1: {}
 
-  assistant-cloud@0.2.4(@opentelemetry/api@1.9.1)(ai@7.0.130(zod@4.6.5)):
+  assistant-cloud@0.2.4(@opentelemetry/api@1.9.1)(ai@7.0.130(zod@4.6.7)):
     dependencies:
       assistant-stream: 0.3.46
     optionalDependencies:
       '@opentelemetry/api': 1.9.1
-      ai: 7.0.130(zod@4.6.5)
+      ai: 7.0.130(zod@4.6.7)
     transitivePeerDependencies:
       - ioredis
       - redis
@@ -14143,27 +14077,27 @@ snapshots:
 
   before-after-hook@4.0.0: {}
 
-  better-auth@1.7.2(@opentelemetry/api@1.9.1)(drizzle-kit@0.31.10)(drizzle-orm@0.45.2(@opentelemetry/api@1.9.1)(kysely@0.29.5)(pg@8.18.0)(postgres@3.4.9(patch_hash=6q4cic6qawywsyeo2spgnjamda)))(pg@8.18.0)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(vitest@5.0.3(@opentelemetry/api@1.9.1)(@types/node@24.13.3)(jsdom@30.0.1(@noble/hashes@2.4.0))(vite@8.2.2(@types/node@24.13.3)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1))):
+  better-auth@1.7.2(@opentelemetry/api@1.9.1)(drizzle-kit@0.31.11)(drizzle-orm@0.45.2(@opentelemetry/api@1.9.1)(kysely@0.29.5)(pg@8.18.0)(postgres@3.4.9(patch_hash=6q4cic6qawywsyeo2spgnjamda)))(pg@8.18.0)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(vitest@5.0.3(@opentelemetry/api@1.9.1)(@types/node@24.13.3)(jsdom@30.0.1(@noble/hashes@2.4.0))(vite@8.2.2(@types/node@24.13.3)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1))):
     dependencies:
-      '@better-auth/core': 1.7.2(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)(@opentelemetry/api@1.9.1)(better-call@1.4.0(zod@4.4.3))(jose@6.2.10)(kysely@0.29.5)(nanostores@1.5.3)
-      '@better-auth/drizzle-adapter': 1.7.2(@better-auth/core@1.7.2(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)(@opentelemetry/api@1.9.1)(better-call@1.4.0(zod@4.4.3))(jose@6.2.10)(kysely@0.29.5)(nanostores@1.5.3))(@better-auth/utils@0.4.2)(drizzle-orm@0.45.2(@opentelemetry/api@1.9.1)(kysely@0.29.5)(pg@8.18.0)(postgres@3.4.9(patch_hash=6q4cic6qawywsyeo2spgnjamda)))
-      '@better-auth/kysely-adapter': 1.7.2(@better-auth/core@1.7.2(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)(@opentelemetry/api@1.9.1)(better-call@1.4.0(zod@4.4.3))(jose@6.2.10)(kysely@0.29.5)(nanostores@1.5.3))(@better-auth/utils@0.4.2)(kysely@0.29.5)
-      '@better-auth/memory-adapter': 1.7.2(@better-auth/core@1.7.2(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)(@opentelemetry/api@1.9.1)(better-call@1.4.0(zod@4.4.3))(jose@6.2.10)(kysely@0.29.5)(nanostores@1.5.3))(@better-auth/utils@0.4.2)
-      '@better-auth/mongo-adapter': 1.7.2(@better-auth/core@1.7.2(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)(@opentelemetry/api@1.9.1)(better-call@1.4.0(zod@4.4.3))(jose@6.2.10)(kysely@0.29.5)(nanostores@1.5.3))(@better-auth/utils@0.4.2)
-      '@better-auth/prisma-adapter': 1.7.2(@better-auth/core@1.7.2(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)(@opentelemetry/api@1.9.1)(better-call@1.4.0(zod@4.4.3))(jose@6.2.10)(kysely@0.29.5)(nanostores@1.5.3))(@better-auth/utils@0.4.2)
-      '@better-auth/telemetry': 1.7.2(@better-auth/core@1.7.2(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)(@opentelemetry/api@1.9.1)(better-call@1.4.0(zod@4.4.3))(jose@6.2.10)(kysely@0.29.5)(nanostores@1.5.3))(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)
+      '@better-auth/core': 1.7.2(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)(@opentelemetry/api@1.9.1)(better-call@1.4.0(zod@4.6.7))(jose@6.2.10)(kysely@0.29.5)(nanostores@1.5.3)
+      '@better-auth/drizzle-adapter': 1.7.2(@better-auth/core@1.7.2(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)(@opentelemetry/api@1.9.1)(better-call@1.4.0(zod@4.6.7))(jose@6.2.10)(kysely@0.29.5)(nanostores@1.5.3))(@better-auth/utils@0.4.2)(drizzle-orm@0.45.2(@opentelemetry/api@1.9.1)(kysely@0.29.5)(pg@8.18.0)(postgres@3.4.9(patch_hash=6q4cic6qawywsyeo2spgnjamda)))
+      '@better-auth/kysely-adapter': 1.7.2(@better-auth/core@1.7.2(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)(@opentelemetry/api@1.9.1)(better-call@1.4.0(zod@4.6.7))(jose@6.2.10)(kysely@0.29.5)(nanostores@1.5.3))(@better-auth/utils@0.4.2)(kysely@0.29.5)
+      '@better-auth/memory-adapter': 1.7.2(@better-auth/core@1.7.2(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)(@opentelemetry/api@1.9.1)(better-call@1.4.0(zod@4.6.7))(jose@6.2.10)(kysely@0.29.5)(nanostores@1.5.3))(@better-auth/utils@0.4.2)
+      '@better-auth/mongo-adapter': 1.7.2(@better-auth/core@1.7.2(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)(@opentelemetry/api@1.9.1)(better-call@1.4.0(zod@4.6.7))(jose@6.2.10)(kysely@0.29.5)(nanostores@1.5.3))(@better-auth/utils@0.4.2)
+      '@better-auth/prisma-adapter': 1.7.2(@better-auth/core@1.7.2(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)(@opentelemetry/api@1.9.1)(better-call@1.4.0(zod@4.6.7))(jose@6.2.10)(kysely@0.29.5)(nanostores@1.5.3))(@better-auth/utils@0.4.2)
+      '@better-auth/telemetry': 1.7.2(@better-auth/core@1.7.2(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)(@opentelemetry/api@1.9.1)(better-call@1.4.0(zod@4.6.7))(jose@6.2.10)(kysely@0.29.5)(nanostores@1.5.3))(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)
       '@better-auth/utils': 0.4.2
       '@better-fetch/fetch': 1.3.1
       '@noble/ciphers': 2.4.0
       '@noble/hashes': 2.4.0
-      better-call: 1.4.0(zod@4.4.3)
+      better-call: 1.4.0(zod@4.6.7)
       defu: 6.1.7
       jose: 6.2.10
       kysely: 0.29.5
       nanostores: 1.5.3
-      zod: 4.4.3
+      zod: 4.6.7
     optionalDependencies:
-      drizzle-kit: 0.31.10
+      drizzle-kit: 0.31.11
       drizzle-orm: 0.45.2(@opentelemetry/api@1.9.1)(kysely@0.29.5)(pg@8.18.0)(postgres@3.4.9(patch_hash=6q4cic6qawywsyeo2spgnjamda))
       pg: 8.18.0
       react: 19.2.8
@@ -14173,14 +14107,14 @@ snapshots:
       - '@cloudflare/workers-types'
       - '@opentelemetry/api'
 
-  better-call@1.4.0(zod@4.4.3):
+  better-call@1.4.0(zod@4.6.7):
     dependencies:
       '@better-auth/utils': 0.5.0
       '@better-fetch/fetch': 1.3.1
       rou3: 0.9.2
       set-cookie-parser: 3.1.2
     optionalDependencies:
-      zod: 4.4.3
+      zod: 4.6.7
 
   bidi-js@1.0.3:
     dependencies:
@@ -14265,7 +14199,7 @@ snapshots:
 
   character-reference-invalid@2.0.1: {}
 
-  chat@4.39.0(ai@7.0.130(zod@4.4.3))(zod@4.4.3):
+  chat@4.39.0(ai@7.0.130(zod@4.6.7))(zod@4.6.7):
     dependencies:
       '@workflow/serde': 4.1.0-beta.2
       mdast-util-to-string: 4.0.0
@@ -14275,8 +14209,8 @@ snapshots:
       remend: 1.3.1
       unified: 11.0.5
     optionalDependencies:
-      ai: 7.0.130(zod@4.4.3)
-      zod: 4.4.3
+      ai: 7.0.130(zod@4.6.7)
+      zod: 4.6.7
     transitivePeerDependencies:
       - supports-color
 
@@ -14748,7 +14682,7 @@ snapshots:
       react-is: 17.0.2
       tslib: 2.8.1
 
-  drizzle-kit@0.31.10:
+  drizzle-kit@0.31.11:
     dependencies:
       '@drizzle-team/brocli': 0.10.2
       '@esbuild-kit/esm-loader': 2.6.5
@@ -15156,7 +15090,7 @@ snapshots:
 
   get-stream@6.0.1: {}
 
-  get-tsconfig@4.14.0:
+  get-tsconfig@4.14.3:
     dependencies:
       resolve-pkg-maps: 1.0.0
 
@@ -17879,13 +17813,9 @@ snapshots:
     dependencies:
       lib0: 0.2.117
 
-  zod-to-json-schema@3.25.2(zod@4.4.3):
+  zod-to-json-schema@3.25.2(zod@4.6.7):
     dependencies:
-      zod: 4.4.3
-
-  zod-to-json-schema@3.25.2(zod@4.6.5):
-    dependencies:
-      zod: 4.6.5
+      zod: 4.6.7
 
   zod@3.25.76: {}
 
@@ -17893,7 +17823,7 @@ snapshots:
 
   zod@4.4.3: {}
 
-  zod@4.6.5: {}
+  zod@4.6.7: {}
 
   zustand@5.0.15(@types/react@19.2.18)(react@19.2.8)(use-sync-external-store@1.7.0(react@19.2.8)):
     optionalDependencies:
