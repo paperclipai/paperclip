@@ -467,6 +467,16 @@ describe("portable remote workspace archives", () => {
       { env: { ...env, PATH: `${bin}${path.delimiter}${process.env.PATH ?? ""}` } }))
       .rejects.toMatchObject({ code: 1, stdout: "", stderr: "remote_workspace_archive_failed: exit=128 program=git" });
   });
+  it("recognizes a damaged Git entry whatever wording the installed Git uses", async () => {
+    const cwd = await source(); await fs.writeFile(path.join(cwd, ".git"), "gitdir: missing\n");
+    const real = path.join(await git(cwd, "--exec-path"), "git");
+    const bin = path.join(root, "reworded-bin"); await fs.mkdir(bin);
+    await fs.writeFile(path.join(bin, "git"), `#!/bin/sh\ncase " $* " in *" --show-toplevel "*) printf '%s' 'fatal: SYNTHETIC_REWORDED_REJECTION' >&2; exit 128;; esac\nexec '${real}' "$@"\n`, { mode: 0o700 });
+    const helper = path.join(root, "archive.cjs"); await fs.writeFile(helper, remoteWorkspaceArchiveScript());
+    await expect(execute(process.execPath, [helper, "capture", cwd, path.join(root, "remote.pcws")],
+      { env: { ...env, PATH: `${bin}${path.delimiter}${process.env.PATH ?? ""}` } }))
+      .rejects.toMatchObject({ code: 1, stdout: "", stderr: "remote_workspace_archive_invalid_git_repository" });
+  });
   it.each([["an empty directory", "directory"], ["a gitfile for a removed worktree", "gitfile"]])(
     "does not save an enclosing repository's state for %s",
     async (_name, kind) => {
