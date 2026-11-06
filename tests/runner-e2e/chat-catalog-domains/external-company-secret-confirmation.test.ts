@@ -1,6 +1,6 @@
 import {expect,it} from "vitest";
 import {readFile} from "node:fs/promises";
-import {canonicalCompanySecretKey,companySecretConfirmationHandoff,validCompanySecretMetadata} from "./external-company-secret-confirmation.js";
+import {canonicalCompanySecretKey,companySecretConfirmationHandoff,companySecretSaveMatches,validCompanySecretMetadata} from "./external-company-secret-confirmation.js";
 import {deploymentSecretGuidance,companyOperatorBindingRequested} from "./external-company-secret.js";
 const prompt='I cannot store the deployment key value for you: only a human board operator can enter it. In Settings > Secrets (`/RUN/company/settings/secrets`), choose New secret, name it "Deployment API Key", set key `DEPLOYMENT_API_KEY`, save the value, then accept this card. Do not paste the key here. I will bind the saved secret to Morgan\'s environment.';
 const binding={companyId:"company",issueId:"source",agentId:"ceo",userId:"person",runId:"first",canonicalCommentId:"human"};
@@ -41,4 +41,31 @@ it("admits a bound completed-entry question with native Confirm and rejects othe
  for(const prompt of ["May I bind the deployment key in Settings > Secrets to Morgan's environment?","Will you save the deployment key in Settings > Secrets so I can bind it for Morgan?","Have you saved your profile? I can bind the deployment key in Settings > Secrets for Morgan.",completed+" What is the key value?"]){
   expect(companySecretConfirmationHandoff({...card(),payload:{...card().payload,prompt}},binding,guidance),prompt).toBeUndefined();
  }
+});
+
+it("admits explicit secure-save acknowledgments across explanatory sentences and paragraphs",()=>{
+ const actual='I can\'t store credential values from chat. Please open /RUN/company/settings/secrets, choose New secret, and save the deployment key there. Suggested name: "Deployment API key"; suggested key/env var: DEPLOYMENT_API_KEY. Then confirm here that secure entry is complete so I can bind it to Morgan\'s environment. Do not paste the key in chat or in this card.';
+ const paragraph="Open Settings > Secrets (`/RUN/company/settings/secrets`) and save the deployment key there.\n\nUse the company-owned secret entry form.\n\nThen accept this card to confirm the deployment key is saved so I can bind its reference to Morgan's environment. Never paste the value here.";
+ for(const text of [actual,paragraph])expect(companySecretConfirmationHandoff({...card(),payload:{...card().payload,prompt:text}},binding,guidance),text).toBeDefined();
+ const context="Use Settings > Secrets (`/RUN/company/settings/secrets`) for the deployment key; I will bind the saved reference to Morgan's environment. ";
+ for(const text of [
+  "May I save the deployment key? Then accept this card.",
+  "Confirm this card first. Save the deployment key there.",
+  "Do not save the deployment key. Then accept this card.",
+  "Save the deployment key, then cancel the save. Then accept this card.",
+  "Save your profile. Then confirm here that secure entry is complete.",
+  "Save the other key. Then accept this card.",
+  "Earlier, save the deployment key there. Then accept this card.",
+  "Save the deployment key there. Then confirm the other card.",
+  "Save the deployment key there. Then confirm permission to bind Morgan's secret reference.",
+  "Save the deployment key there. Then accept this card and paste the key value here.",
+ ])expect(companySecretConfirmationHandoff({...card(),payload:{...card().payload,prompt:context+text}},binding,guidance),text).toBeUndefined();
+});
+
+it("keeps secure-save acknowledgment acceptance dependent on a later current-person save",()=>{
+ const handoff=companySecretConfirmationHandoff(card(),binding,guidance)!;
+ const saved={id:"secret",companyId:"company",scope:"company",status:"active",createdByUserId:"person",createdAt:"2026-11-04T13:30:00Z",name:"Deployment API Key",key:"deployment_api_key"};
+ expect(companySecretSaveMatches(saved,binding,handoff)).toBe(true);
+ for(const change of [{createdAt:"2026-11-04T13:28:00Z"},{createdByUserId:"other"},{companyId:"other"},{key:"other_key"},{name:"Other secret"}])expect(companySecretSaveMatches({...saved,...change},binding,handoff)).toBe(false);
+ expect(companySecretConfirmationHandoff({...card(),originCommentIds:["other"]},binding,guidance)).toBeUndefined();
 });

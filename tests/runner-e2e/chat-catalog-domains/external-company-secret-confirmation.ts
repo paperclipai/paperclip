@@ -12,6 +12,20 @@ export function validCompanySecretMetadata(value:unknown):value is {name?:string
  return Object.entries(metadata).every(([key,v])=>v===undefined||typeof v==="string"&&v.length>0&&v.length<=120&&v.trim()===v&&!/[\r\n=]|https?:\/\//i.test(v)&&!/(?:^|\s)(?:sk|pk|gh[pousr]|github_pat|xox[baprs])[-_]|[A-Za-z0-9]{32}/i.test(v)&&(key!=="key"||/^[a-zA-Z0-9_.-]+$/.test(v)));
 }
 export interface CompanyConfirmationBinding extends SecretQuestionBinding {canonicalCommentId:string}
+function orderedSecureSaveAcknowledgment(prompt:string){
+ const clauses=[...prompt.matchAll(/[^.!?;\n]+/g)];
+ for(const clause of clauses){
+  const save=/\b(?:save|enter|set)\s+(?:the\s+)?(?:deployment\s+(?:api\s+)?(?:key|credential|secret)|(?:secret|credential|key)\s+value|value|it)\b/i.exec(clause[0]);
+  if(!save||/\b(?:not|never|don.t|cancel|decline|skip|avoid|earlier|previously|formerly|may I|can I|will you)\b/i.test(clause[0].slice(0,save.index)))continue;
+  const after=prompt.slice(clause.index!+save.index+save[0].length);
+  for(const acknowledgment of after.matchAll(/\b(?:accept|confirm)\b[^.!?;\n]*/gi)){
+   const between=after.slice(0,acknowledgment.index),intent=acknowledgment[0];
+   if(/\b(?:cancel|decline|skip|avoid|do not|don.t|never)\b/i.test(between)||/\b(?:before|permission|authorize|another|other card)\b/i.test(intent))continue;
+   if(/^(?:accept|confirm)\s+(?:this\s+card|here\b[^.!?;\n]{0,80}\b(?:secure entry|saved|complete)|(?:that\s+)?(?:the\s+)?(?:deployment\s+(?:api\s+)?key|secure entry)\b[^.!?;\n]{0,80}\b(?:saved|complete))/i.test(intent))return true;
+  }
+ }
+ return false;
+}
 export function companySecretConfirmationHandoff(value:unknown,b:CompanyConfirmationBinding,guidance:(text:string)=>boolean,status:"pending"|"accepted"="pending"){
  const row=value as Partial<RequestConfirmationInteraction>|undefined,p=row?.payload;
  if(!row?.id||row.kind!=="request_confirmation"||row.status!==status||row.companyId!==b.companyId||row.issueId!==b.issueId||row.sourceRunId!==b.runId||row.createdByAgentId!==b.agentId||row.createdByUserId||row.addresseeAgentId||(row.addresseeUserId!=null&&row.addresseeUserId!==b.userId)||!row.originCommentIds?.includes(b.canonicalCommentId)||!chatCatalogHumanQuestionPolicies(row)||(row.continuationPolicy!=="wake_assignee"&&row.continuationPolicy!=="wake_assignee_on_accept")||row.dismissedAt||!p||!requestConfirmationPayloadSchema.safeParse(p).success||p.target||p.toolAction||p.secretProposal||p.connectionAuthorization||p.qualityReview
@@ -19,7 +33,7 @@ export function companySecretConfirmationHandoff(value:unknown,b:CompanyConfirma
  const text=[row.title,p.prompt,p.detailsMarkdown,p.acceptLabel,p.rejectLabel].filter(Boolean).join("\n");
  const completedQuestion=p.prompt.match(/\bhave\s+you\s+(?:already\s+)?(?:saved|set|entered|completed)\b[^?!\n]{0,240}\?/i)?.[0];
  const completedEntry=!!completedQuestion&&/\bdeployment\s+(?:api\s+)?(?:key|credential|secret)\b/i.test(completedQuestion);
- if(!guidance(text)||(!/\b(?:save|saved|set|entered)\b[^.!?\n]{0,100}\b(?:accept|confirm)\b/i.test(p.prompt)&&!completedEntry)||!/^(?:Confirm|Accept|Done|Saved)$/i.test(p.acceptLabel??""))return;
+ if(!guidance(text)||(!orderedSecureSaveAcknowledgment(p.prompt)&&!completedEntry)||!/^(?:Confirm|Accept|Done|Saved)$/i.test(p.acceptLabel??""))return;
  const names=[...p.prompt.matchAll(/\bname\s+(?:it|the secret)\s+["“]([^"”\n]{1,120})["”]/gi)],keys=[...p.prompt.matchAll(/\b(?:set\s+)?(?:secret\s+)?key\s+`([a-zA-Z0-9_.-]{1,120})`/gi)];
  if(names.length>1||keys.length>1||/\bname\s+(?:it|the secret)\b/i.test(p.prompt)&&names.length!==1||/\bset\s+(?:the\s+)?key\b/i.test(p.prompt)&&keys.length!==1||!validCompanySecretMetadata({name:names[0]?.[1],key:keys[0]?.[1]}))return;
  return {interactionId:row.id,continuationPolicy:row.continuationPolicy,createdAt:String(row.createdAt),payloadHash:createHash("sha256").update(JSON.stringify(p)).digest("hex"),acceptLabel:p.acceptLabel!,prompt:p.prompt,metadata:{name:names[0]?.[1],key:keys[0]?.[1]}};
