@@ -710,7 +710,7 @@ export async function releaseRetiredNativeProviderArtifacts(input: {
       eq(nativeProviderArtifactReferences.artifactId, artifact.id),
       eq(nativeProviderArtifactReferences.runId, input.runId),
       input.backupId
-        ? sql`(${nativeProviderArtifactReferences.backupId} = ${input.backupId}::uuid or ${nativeProviderArtifactReferences.backupId} is null)`
+        ? sql`${nativeProviderArtifactReferences.backupId} is not distinct from ${input.backupId}::uuid`
         : sql`${nativeProviderArtifactReferences.backupId} is null`,
     );
     const [retained] = await tx

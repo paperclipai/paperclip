@@ -33,6 +33,15 @@ files are excluded from each later harness archive. A pending upload records its
 exact encrypted object reference before upload, so an interrupted reply can be
 retired without guessing an object key.
 
+A ready company closure is reused. Concurrent first admissions may independently
+upload that closure: each admission retains its own cancellation, ownership fence,
+and pending receipt rather than depending on another controller's live transfer.
+Each capture has the 512 MiB limit and five-minute deadline; a run can retain at
+most three pending uploads. Publication selects one verified ready object under
+the closure lock. A loser pins that winner before deleting only its own object.
+This bounds each admitted run, not total simultaneous company egress. A burst can
+therefore transfer duplicate bytes; distributed upload election is not included.
+
 On cold recovery, Core restores the canonical Runner checkpoint, workspace
 snapshot, and native harness data through their normal paths. It also verifies
 and decrypts the recorded launch files. The runtime must have the same owned
@@ -55,8 +64,10 @@ effect occurred.
 
 Artifact cleanup uses the existing bounded checkpoint and backup expiration
 owners. It requires closed work, settled native ownership, and exact stopped
-remote execution receipts. A remaining backup or run reference keeps the object.
-A failed external delete keeps its receipt and reference for a later normal
+remote execution receipts. Backup retirement releases only that backup reference.
+The separate run reference lasts until fenced checkpoint expiration, including
+when an interrupted backup upload is retired while a resume handle still exists.
+A remaining backup or run reference keeps the object. A failed external delete keeps its receipt and reference for a later normal
 expiration attempt. There is no new idle scan or timer.
 
 Checkpoint expiration checks current resume handles under its existing locks.
