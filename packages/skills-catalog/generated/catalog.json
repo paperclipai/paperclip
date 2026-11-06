@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "packageName": "@paperclipai/skills-catalog",
   "packageVersion": "0.3.1",
-  "generatedAt": "2026-10-06T01:21:47.421Z",
+  "generatedAt": "2026-10-30T23:19:23.186Z",
   "skills": [
     {
       "id": "paperclipai:bundled:docs:doc-maintenance",
@@ -557,6 +557,65 @@
         }
       ],
       "contentHash": "sha256:276d85e98a4732f278204e26438aa95fde158dd2d15c1e427c4c7c7d492e769d"
+    },
+    {
+      "id": "paperclipai:optional:finance:virling",
+      "key": "paperclipai/optional/finance/virling",
+      "kind": "optional",
+      "category": "finance",
+      "slug": "virling",
+      "name": "virling",
+      "description": "Answer revenue attribution questions from a Virling server with its MCP tools. Use when the user asks which channels, referrers, campaigns, pages or countries make money, how revenue or conversion changed, which payments came from where, or what a paying visitor did before paying.",
+      "path": "catalog/optional/finance/virling",
+      "entrypoint": "SKILL.md",
+      "trustLevel": "markdown_only",
+      "compatibility": "compatible",
+      "defaultInstall": false,
+      "recommendedForRoles": [
+        "ceo",
+        "marketer",
+        "analyst"
+      ],
+      "requires": [],
+      "tags": [
+        "revenue",
+        "attribution",
+        "analytics",
+        "marketing",
+        "channels",
+        "mcp"
+      ],
+      "files": [
+        {
+          "path": "SKILL.md",
+          "kind": "skill",
+          "sizeBytes": 4574,
+          "sha256": "af2e651f2f6ea5e9aedc99d80362d4c7caff8b8d5b538ceae3c4a397d9914c01"
+        },
+        {
+          "path": "examples.md",
+          "kind": "markdown",
+          "sizeBytes": 2400,
+          "sha256": "b6b8a17a47cb7a69670a1ac2d09dab03da803eb099b00916192797f47c1aaa36"
+        },
+        {
+          "path": "setup.md",
+          "kind": "markdown",
+          "sizeBytes": 828,
+          "sha256": "4e885ccca82b289ebe25593b67303dc75e4525e4c59ddd92310a2ed5c343358f"
+        }
+      ],
+      "contentHash": "sha256:21d1f1e6e4ae10785ed6f0bda39bf316f6cf41b92d906464f4e8c5c0892b80b1",
+      "source": {
+        "type": "github",
+        "hostname": "github.com",
+        "owner": "virling",
+        "repo": "virling",
+        "ref": "v0.3.0",
+        "commit": "e7e42d2ea5647eb00be6ffea100158d252d5e8f2",
+        "path": "plugins/virling/skills/virling",
+        "url": "https://github.com/virling/virling/tree/v0.3.0/plugins/virling/skills/virling"
+      }
     },
     {
       "id": "paperclipai:optional:product:design-critique",
