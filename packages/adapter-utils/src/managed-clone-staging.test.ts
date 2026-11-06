@@ -16,7 +16,15 @@ import {
   type SandboxSyncOperation,
   type SandboxSyncResult,
 } from "./sandbox-managed-runtime.js";
-import { listLocalProjectRepositories } from "./ssh.js";
+import { prepareRemoteManagedRuntime } from "./remote-managed-runtime.js";
+import {
+  buildSshEnvLabFixtureConfig,
+  getSshEnvLabSupport,
+  listLocalProjectRepositories,
+  runSshCommand,
+  startSshEnvLabFixture,
+  stopSshEnvLabFixture,
+} from "./ssh.js";
 import { workspacePaths } from "./workspace-manifest.js";
 
 const execFile = promisify(execFileCallback);
@@ -148,4 +156,42 @@ describe("interrupted managed clone staging", () => {
     expect(await readFile(path.join(local, backend, "README.md"), "utf8")).toBe("updated backend");
     expect(await readFile(path.join(local, STAGING_PATH, "partial.txt"), "utf8")).toBe("interrupted clone");
   }, 30_000);
+
+  it("neither ships nor deletes the staging directory during an SSH round trip without completed repositories", async () => {
+    const support = await getSshEnvLabSupport();
+    if (!support.supported) return;
+    const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-clone-staging-ssh-"));
+    cleanupDirs.push(root);
+    const local = path.join(root, "local");
+    await createRepo(local, "frontend");
+    await writeFile(path.join(local, ".git/info/exclude"), ".paperclip-repositories/\n");
+    await mkdir(path.join(local, STAGING_PATH, ".git"), { recursive: true });
+    await writeFile(path.join(local, STAGING_PATH, ".git", "HEAD"), "ref: refs/heads/main\n");
+    await writeFile(path.join(local, STAGING_PATH, "partial.txt"), "interrupted clone");
+
+    const fixtureRoot = path.join(root, "fixture");
+    await mkdir(fixtureRoot, { recursive: true });
+    const fixture = await startSshEnvLabFixture({ statePath: path.join(fixtureRoot, "state.json") });
+    try {
+      const config = await buildSshEnvLabFixtureConfig(fixture);
+      const prepared = await prepareRemoteManagedRuntime({
+        spec: { ...config, remoteCwd: fixture.workspaceDir },
+        runId: "clone-staging",
+        adapterKey: "test",
+        workspaceLocalDir: local,
+      });
+      const remoteStaging = path.posix.join(prepared.workspaceRemoteDir, STAGING_PATH);
+      const listing = await runSshCommand(config, `if [ -e ${JSON.stringify(remoteStaging)} ]; then echo present; else echo absent; fi`);
+      expect(listing.stdout.trim()).toBe("absent");
+      await runSshCommand(config, `printf "updated frontend" > ${JSON.stringify(path.posix.join(prepared.workspaceRemoteDir, "README.md"))}`);
+
+      await prepared.restoreWorkspace();
+
+      expect(await readFile(path.join(local, "README.md"), "utf8")).toBe("updated frontend");
+      expect(await readFile(path.join(local, STAGING_PATH, "partial.txt"), "utf8")).toBe("interrupted clone");
+      expect(await readFile(path.join(local, STAGING_PATH, ".git", "HEAD"), "utf8")).toBe("ref: refs/heads/main\n");
+    } finally {
+      await stopSshEnvLabFixture(fixture);
+    }
+  }, 60_000);
 });
