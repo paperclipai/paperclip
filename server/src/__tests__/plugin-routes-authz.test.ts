@@ -1,6 +1,7 @@
 import express from "express";
 import request from "supertest";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { PluginWorkerUnavailableError } from "../services/plugin-worker-unavailable-error.js";
 
 const mockRegistry = vi.hoisted(() => ({
   getById: vi.fn(),
@@ -1012,6 +1013,26 @@ describe("plugin tool and bridge authz", () => {
         bridgeCode: "UNKNOWN",
       },
     });
+  });
+
+  it("reports WORKER_UNAVAILABLE when no worker is registered for the plugin", async () => {
+    readyPlugin();
+    const message = `No worker registered for plugin "${pluginId}"`;
+    const call = vi.fn().mockRejectedValue(
+      new PluginWorkerUnavailableError({ pluginId, workerStatus: null, message }),
+    );
+    const { app } = await createApp(boardActor(), {}, {
+      bridgeDeps: {
+        workerManager: { call },
+      },
+    });
+
+    const res = await request(app)
+      .post(`/api/plugins/${pluginId}/data/source-objects`)
+      .send({ companyId: companyA });
+
+    expect(res.status).toBe(502);
+    expect(res.body).toMatchObject({ code: "WORKER_UNAVAILABLE", message });
   });
 
   it("rejects manual job triggers for non-admin board users", async () => {
