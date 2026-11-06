@@ -2138,6 +2138,30 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       return { root, queryClient };
     }
 
+    // N-16: the gateway is an advanced route, not the next thing after the key.
+    // It sat directly under the API key field, inside the key card; it belongs
+    // in the step's Advanced disclosure, hidden until that is opened.
+    it.each([["Claude API", "claude_local", /Claude.*API/], ["Codex API", "codex_local", /OpenAI.*API/]] as const)("keeps Use a custom gateway in the closed Advanced disclosure on the %s key step", async (_path, adapterType, source) => {
+      const handles = await openStep4({ adapterType, runner: "paperclip", credentialMode: "api" });
+      try {
+        await pickSource(source);
+        const keyField = document.body.querySelector('input[type="password"]') as HTMLInputElement;
+        expect(keyField, "the API key field should be showing").toBeTruthy();
+        const gateway = () => [...document.body.querySelectorAll("button")].find(entry => entry.textContent?.trim() === "Use a custom gateway");
+        expect(gateway(), "the custom gateway control should still exist").toBeTruthy();
+        const advanced = gateway()!.closest("details");
+        expect(advanced, "Use a custom gateway should live inside the Advanced disclosure").toBeTruthy();
+        expect(advanced!.querySelector(":scope > summary")?.textContent?.trim()).toBe("Advanced");
+        expect(advanced!.open, "Advanced should start closed").toBe(false);
+        expect(advanced!.contains(keyField), "the key field stays outside Advanced").toBe(false);
+        await act(async () => { advanced!.open = true; });
+        await flushReact();
+        await act(async () => gateway()!.click());
+        await flushReact();
+        expect(document.querySelector('input[aria-label="Provider URL"]'), "the gateway dialog should still open from Advanced").toBeTruthy();
+      } finally { await act(async () => handles.root.unmount()); }
+    });
+
     it.each([["successful refresh", false], ["failed refresh and retry", true]] as const)("saves a custom gateway without probing, then explicitly tests and hires with its selected model: %s", async (_scenario, failRefresh) => {
       const gatewayAccounts: import("@paperclipai/shared").AiConnectionList = {
         currentUserId: "user-1", canManageConnections: true, connections: [],

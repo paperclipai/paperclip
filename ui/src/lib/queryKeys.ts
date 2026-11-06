@@ -311,6 +311,8 @@ export const queryKeys = {
     recoveryActions: (id: string, actionId: string | null, runId: string | null) =>
       ["issues", id, "recovery-actions", actionId, runId] as const,
     list: (companyId: string) => ["issues", companyId] as const,
+    onboardingFirstTask: (companyId: string) =>
+      ["issues", companyId, "onboarding-first-task"] as const,
     mentionPool: (companyId: string) =>
       ["issues", companyId, "mention-pool"] as const,
     search: (

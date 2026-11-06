@@ -11,6 +11,7 @@ import {
   LOCKED_PROVIDERS,
   PROGRAMS,
   PROVIDER_WORKSPACE,
+  RESOLVE_ARGS,
   SANDBOX_PROVIDERS,
   typecheckTestPrograms,
 } from "./typecheck-test-programs.mjs";
@@ -132,23 +133,61 @@ test("a locked provider installs frozen from its own lockfile, outside any works
   }
 });
 
-test("a stale locked-provider lockfile fails before any program runs and names the fix", () => {
+// Each directory's first frozen install fails; resolution and the second frozen install pass.
+const staleOnce = (directory, calls) => {
+  const cwd = path.join("/repo", directory);
+  let frozenAttempts = 0;
+  return (args, options) => {
+    calls.pnpm.push({ args, cwd: options.cwd });
+    if (options.cwd !== cwd || !args.includes("--frozen-lockfile")) return 0;
+    frozenAttempts += 1;
+    return frozenAttempts === 1 ? 1 : 0;
+  };
+};
+const installSteps = (calls, directory) =>
+  calls.pnpm
+    .filter(({ cwd }) => cwd === path.join("/repo", directory))
+    .map(({ args }) => (args.includes("--frozen-lockfile") ? "frozen" : args));
+
+test("a stale provider lockfile is resolved in place, then installed frozen", () => {
+  const { options, calls } = harness();
+  options.pnpm = staleOnce(PROVIDER_WORKSPACE, calls);
+  assert.equal(typecheckTestPrograms(options), 0);
+  assert.deepEqual(installSteps(calls, PROVIDER_WORKSPACE), ["frozen", RESOLVE_ARGS, "frozen"]);
+  assert.ok(RESOLVE_ARGS.includes("--resolution-only") && RESOLVE_ARGS.includes("--ignore-scripts"));
+  assert.equal(calls.tsc.length, 2);
+});
+
+test("a stale locked-provider lockfile is resolved in place, outside any workspace", () => {
+  const [provider] = LOCKED_PROVIDERS;
+  const { options, calls } = harness();
+  options.pnpm = staleOnce(provider, calls);
+  assert.equal(typecheckTestPrograms(options), 0);
+  const [, resolve] = installSteps(calls, provider);
+  assert.deepEqual(installSteps(calls, provider), ["frozen", resolve, "frozen"]);
+  for (const flag of ["--ignore-workspace", "--resolution-only", "--ignore-scripts", "--no-frozen-lockfile"]) {
+    assert.ok(resolve.includes(flag), flag);
+  }
+  assert.equal(calls.tsc.length, 2);
+});
+
+test("a locked provider install that still fails stops before any program runs", () => {
   const [provider] = LOCKED_PROVIDERS;
   const { options, calls } = harness({
     pnpm: (args, { cwd }) => (cwd === path.join("/repo", provider) ? 1 : 0),
   });
   assert.equal(typecheckTestPrograms(options), 1);
   assert.equal(calls.tsc.length, 0);
-  assert.match(calls.errors[0], new RegExp(`${provider}.*--ignore-workspace`));
+  assert.ok(calls.errors[0].includes(provider), calls.errors[0]);
 });
 
-test("a stale provider lockfile fails before any program runs and names the fix", () => {
+test("a provider install that still fails stops before any program runs", () => {
   const { options, calls } = harness({
     pnpm: (args, { cwd }) => (cwd === path.join("/repo", PROVIDER_WORKSPACE) ? 1 : 0),
   });
   assert.equal(typecheckTestPrograms(options), 1);
   assert.equal(calls.tsc.length, 0);
-  assert.match(calls.errors[0], /pnpm-lock\.yaml/);
+  assert.match(calls.errors[0], /could not install the sandbox providers/);
 });
 
 test("an uncovered test file fails the run and is named", () => {

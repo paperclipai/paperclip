@@ -132,11 +132,26 @@ Current implementation status:
 
 ## Dependency Lockfile Policy
 
-GitHub Actions owns `pnpm-lock.yaml`.
+GitHub Actions owns every managed pnpm lockfile:
 
-- Do not commit `pnpm-lock.yaml` in pull requests.
-- Pull request CI validates dependency resolution when manifests change.
-- Pushes to `master` regenerate `pnpm-lock.yaml` with `pnpm install --lockfile-only --no-frozen-lockfile`, commit it back if needed, and then run verification with `--frozen-lockfile`.
+- `pnpm-lock.yaml` at the repository root
+- `scripts/typecheck-sandbox-providers/pnpm-lock.yaml`, for the sandbox providers
+- `packages/plugins/sandbox-providers/daytona/pnpm-lock.yaml`
+
+`LOCKFILES` in `.github/scripts/lockfile-trust.mjs` lists them.
+
+- Do not commit any of them in pull requests. Only the lockfile refresh workflow
+  and verified Dependabot commits may change them.
+- Pull request CI validates dependency resolution when manifests change. A stale
+  lockfile is resolved in place for that run.
+- Pushes to `master` run `.github/workflows/refresh-lockfile.yml`. It regenerates
+  each lockfile with `pnpm install --resolution-only --ignore-scripts --no-frozen-lockfile`
+  and opens one `chore/refresh-lockfile` pull request for all of them. See
+  `doc/RELEASE-AUTOMATION-SETUP.md` for when the bot merges it.
+
+The Pi and Kimi distribution lockfiles under `packages/paperclip-runner/scripts/`
+are not on this list. They hold attested provider pins, so change them by hand
+(see `rules/acpx-profile-identity.mdc`).
 
 ## Trusted PR Workflow
 
@@ -1343,23 +1358,21 @@ To add a test directory, add it to the `include` of the package's
 Sandbox providers are outside the root workspace, so the root install has none of
 their SDKs. `scripts/typecheck-sandbox-providers` is a small workspace that lists
 them and holds one lockfile. Its install replaces any standalone `node_modules` in
-those providers. After changing a provider's `package.json`, refresh that lockfile:
+those providers. After you change a provider's `package.json`, do not refresh or
+commit that lockfile. `typecheck:test-programs` resolves a stale lockfile in place
+for the run, and the lockfile refresh workflow commits the new one after merge (see
+[Dependency Lockfile Policy](#dependency-lockfile-policy)).
 
-```sh
-pnpm -C scripts/typecheck-sandbox-providers install --ignore-scripts --lockfile-only
-```
-
-Do not commit a lockfile inside a provider.
+Do not add a lockfile inside a provider.
 `scripts/build-standalone-public-packages.mjs` uses a frozen install when one
-exists, which changes what a release resolves.
+exists, which changes what a release resolves. Daytona already has one; the
+release build resolves it in place when it is stale.
 
 Daytona is the one exception: it commits its own lockfile, so the workspace
 leaves it out and the script installs it from that lockfile (`LOCKED_PROVIDERS`).
-After changing Daytona's `package.json`, refresh that lockfile instead:
-
-```sh
-pnpm -C packages/plugins/sandbox-providers/daytona install --ignore-workspace --ignore-scripts --lockfile-only
-```
+The same rule applies to it: do not refresh or commit that lockfile. The script
+resolves a stale one in place for the run, and the lockfile refresh workflow
+commits the new one after merge.
 
 Dependabot updates the providers through this workspace (see
 `.github/dependabot.yml`), and Daytona through a second entry. Dependabot does
@@ -1933,6 +1946,37 @@ These are prerequisites for shared storage and secrets. They do not establish
 that the whole web server is disposable or that all execution and recovery paths
 survive web-server replacement. Run-log/trace storage and producer retention are
 separate changes.
+
+### Managed environments
+
+The `environments` list in `PAPERCLIP_MANAGED_CONFIG` declares instance-level
+environments that boot provisions and tenants cannot edit. It holds at most one
+sandbox entry (no `driver`, or `driver: "sandbox"`) and any number of
+`driver: "plugin"` entries. A plugin entry names a plugin by its manifest id
+(`pluginKey`) and one of its environment drivers:
+
+```json
+{
+  "name": "Remote Host",
+  "description": "Runs the agent on a remote host",
+  "driver": "plugin",
+  "pluginKey": "example.remote-host-plugin",
+  "driverKey": "tasks",
+  "driverConfig": {}
+}
+```
+
+Names and `pluginKey`–`driverKey` pairs must be unique, and `driverConfig` must
+not contain secret-like keys. Any other key refuses startup. `plugins.autoInstall`
+holds catalog keys, not manifest ids, so boot also refuses to start unless an
+auto-installed bundled or distribution catalog entry installs the entry's
+`pluginKey`.
+
+Boot validates the driver config through the plugin, marks the row
+`managedPluginEnvironment: "<pluginKey>:<driverKey>"`, and adopts an existing
+unmarked row for the same plugin and driver. While the plugin is down, the row is
+archived; it comes back when the worker is ready. Removing an entry never archives
+its row. Plugin entries do not change the instance default.
 
 ### Experimental native remote workspace storage
 

@@ -390,6 +390,7 @@ export async function recoverRetainedWorkspace(input: Source & { db: Db; environ
       const activity = await db.transaction(async tx => {
         await notifyNativeResultCommit(tx, input);
         await notifyNativeWorkspaceFinalization(tx, input);
+        await notifyDeliveryWork(tx, DELIVERY_QUEUES.executionReplacement);
         await notifyNativeStatusReassessment(tx, input);
         await tx.insert(workspaceOperations).values({ companyId: input.companyId, issueId: input.issueId,
           heartbeatRunId: input.runId, phase: "workspace_finalize", status: "succeeded", finishedAt: new Date(),
@@ -496,10 +497,16 @@ export function retainedWorkspaceCandidates(db: Db, cursor?: string, unfinishedO
     and ${agentWakeupRequests.status} = 'deferred_issue_execution' and ${agentWakeupRequests.requestedByActorType} = 'user'
     and ${agentWakeupRequests.payload}->>'issueId' = ${issueRecoveryActions.sourceIssueId}::text)`;
   const interruptedPreparation = sql`(${heartbeatRuns.runtimeMode} = 'legacy'
-    and ${heartbeatRuns.status} = 'interrupted'
+    and (${heartbeatRuns.status} = 'interrupted' or (${heartbeatRuns.status} = 'failed'
+      and ${heartbeatRuns.errorCode} = 'process_lost'
+      and ${heartbeatRuns.resultJson}#>>'{executionRecovery,kind}' = 'bootstrap'
+      and ${heartbeatRuns.resultJson}#>'{executionRecovery,providerWorkStarted}' = 'false'::jsonb))
     and ${heartbeatRuns.runtimeModeResolvedAt} is null and ${heartbeatRuns.executionStage} = 'preparing'
     and ${heartbeatRuns.runnerProfileJson}#>>'{adapterDispatch,adapterType}' = 'paperclip_runner'
-    and ${issueRecoveryActions.evidence}#>>'{automaticRecovery,replay}' = 'blocked'
+    and (${issueRecoveryActions.evidence}#>>'{automaticRecovery,replay}' = 'blocked'
+      or (${issueRecoveryActions.evidence}#>>'{automaticRecovery,replay}' = 'allowed'
+        and ${issueRecoveryActions.evidence}->>'bootstrapPreparationSettledAt' is not null
+        and coalesce(${issueRecoveryActions.evidence}->>'bootstrapPreparationContinuation', 'pending') in ('pending', 'deferred')))
     and exists (select 1 from ${issues} where ${issues.companyId} = ${heartbeatRuns.companyId}
       and ${issues.id} = ${issueRecoveryActions.sourceIssueId} and ${issues.assigneeAgentId} = ${heartbeatRuns.agentId}
       and ${issues.status} in ('todo', 'in_progress', 'in_review', 'blocked')
@@ -512,7 +519,10 @@ export function retainedWorkspaceCandidates(db: Db, cursor?: string, unfinishedO
         then (${issueRecoveryActions.evidence}->>'runId')::uuid end`)))
     .where(and(inArray(heartbeatRuns.status, terminal),
       workspaceRecoverySourceEligible(true),
-      unfinishedOnly ? sql`${issueRecoveryActions.evidence}#>>'{systemRecovery,state}' in ('scheduled', 'running', 'awaiting_evidence')` : undefined,
+      unfinishedOnly ? sql`(${issueRecoveryActions.evidence}#>>'{systemRecovery,state}' in ('scheduled', 'running', 'awaiting_evidence')
+        or (${issueRecoveryActions.evidence}#>>'{systemRecovery,state}' = 'complete'
+          and ${issueRecoveryActions.evidence}->>'bootstrapPreparationSettledAt' is not null
+          and coalesce(${issueRecoveryActions.evidence}->>'bootstrapPreparationContinuation', 'pending') = 'pending'))` : undefined,
       obligationsOnly ? sql`(${issueRecoveryActions.evidence}#>>'{systemRecovery,state}' in ('scheduled', 'running', 'awaiting_evidence')
         or (${issueRecoveryActions.evidence}#>>'{systemRecovery,state}' = 'complete' and (${cleanup} or ${interruptedPreparation})) or ${waitingInput})` : undefined,
       sql`(${issueRecoveryActions.evidence}#>>'{systemRecovery,state}' in ('scheduled', 'running', 'awaiting_evidence', 'complete', 'exhausted')

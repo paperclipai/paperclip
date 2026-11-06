@@ -179,6 +179,18 @@ validate the exact Runner identity and acknowledged sequence cut.
 
 ### Hosted park and reclaim loop
 
+On Unix builds, `paperclip-runnerd --build-metadata` reports
+`privateHostControlVersion: 1` for the existing private fd 4 protocol below.
+Other builds omit this field. A consumer must verify the selected executable's
+identity and require the exact supported version before using this channel;
+an absent or unknown version does not establish support. Recovery and warm-task
+versions do not establish it either. Ordinary artifact admission can ignore this
+optional field.
+
+This field describes protocol support only. It does not mean a provider is ready
+to park or that a host implements the public `releaseResumeVersion` contract.
+Runner readiness checks and host sleep/wake qualification are still required.
+
 A trusted Launcher may pass a connected Unix stream at fd 4 and start durable
 listener mode with `--host-control-fd 4`. The descriptor is close-on-exec before
 provider startup. The private channel accepts the `park`, `claim`, and `retire`

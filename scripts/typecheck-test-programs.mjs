@@ -66,6 +66,11 @@ const PREPARE_STEPS = [
 // Replacing a provider's standalone node_modules would otherwise ask for confirmation.
 const INSTALL_ARGS = ["install", "--frozen-lockfile", "--ignore-scripts", "--prefer-offline", "--config.confirmModulesPurge=false"];
 const LOCKED_INSTALL_ARGS = ["install", "--ignore-workspace", ...INSTALL_ARGS.slice(1)];
+// Contributors do not commit provider lockfiles: the lockfile refresh workflow regenerates them after
+// merge, as it does the root pnpm-lock.yaml. Until then a changed manifest leaves the lockfile stale,
+// so resolve it in place, like the root install in CI.
+export const RESOLVE_ARGS = ["install", "--resolution-only", "--ignore-scripts", "--no-frozen-lockfile"];
+const LOCKED_RESOLVE_ARGS = ["install", "--ignore-workspace", ...RESOLVE_ARGS.slice(1)];
 
 export function findUncheckedTests({ trackedFiles, checkedFiles, checkedElsewhere = CHECKED_ELSEWHERE }) {
   const checked = new Set(checkedFiles);
@@ -170,23 +175,25 @@ export function typecheckTestPrograms({
     const status = pnpm(args, { cwd: root, env });
     if (status !== 0) return status;
   }
-  const installed = pnpm(INSTALL_ARGS, { cwd: path.join(root, PROVIDER_WORKSPACE), env });
-  if (installed !== 0) {
-    logError(
-      `typecheck:test-programs: if a provider's package.json changed, run ` +
-        `\`pnpm install --ignore-scripts --lockfile-only\` in ${PROVIDER_WORKSPACE} and commit its pnpm-lock.yaml`,
-    );
-    return installed;
-  }
-  for (const provider of LOCKED_PROVIDERS) {
-    const status = pnpm(LOCKED_INSTALL_ARGS, { cwd: path.join(root, provider), env });
+  const install = (directory, frozenArgs, resolveArgs) => {
+    const cwd = path.join(root, directory);
+    let status = pnpm(frozenArgs, { cwd, env });
     if (status !== 0) {
-      logError(
-        `typecheck:test-programs: if ${provider}/package.json changed, run ` +
-          `\`pnpm install --ignore-workspace --ignore-scripts --lockfile-only\` in ${provider} and commit its pnpm-lock.yaml`,
+      log(
+        `typecheck:test-programs: ${directory}/pnpm-lock.yaml does not match its manifests. ` +
+          `Resolving it in place. Do not commit it: the lockfile refresh workflow updates it after merge.`,
       );
-      return status;
+      status = pnpm(resolveArgs, { cwd, env });
+      if (status === 0) status = pnpm(frozenArgs, { cwd, env });
     }
+    if (status !== 0) logError(`typecheck:test-programs: could not install the sandbox providers in ${directory}`);
+    return status;
+  };
+  const installed = install(PROVIDER_WORKSPACE, INSTALL_ARGS, RESOLVE_ARGS);
+  if (installed !== 0) return installed;
+  for (const provider of LOCKED_PROVIDERS) {
+    const status = install(provider, LOCKED_INSTALL_ARGS, LOCKED_RESOLVE_ARGS);
+    if (status !== 0) return status;
   }
   // The installs remove the SDK link from each provider's node_modules.
   linkPlugins();
