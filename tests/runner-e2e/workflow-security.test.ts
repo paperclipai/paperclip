@@ -83,9 +83,10 @@ describe("public repository paid workflow security", () => {
   });
 
   // PR #18348 added the ninth pr-trusted bootstrap, in the Vitest selection job.
+  // #19533 added the tenth, for the sandbox provider tests.
   const trustedPnpmBootstraps = {
     "runner-full-stack-e2e.yml": 8,
-    "pr-trusted.yml": 9,
+    "pr-trusted.yml": 10,
   } as const;
 
   it("keeps pnpm bootstrap registry telemetry out of trusted workflow setup", async () => {
