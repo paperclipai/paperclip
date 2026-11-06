@@ -228,9 +228,12 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     expect(Date.parse(retained.nextAttemptAt!)).toBeGreaterThan(Date.now());
     expect(cloud.calls.slice(start).filter(call => call.enrollment?.endpointId === a)).toEqual([]);
     expect(owner.nextPollAt()).not.toBeNull();
+    const dueAt = Date.parse(retained.nextAttemptAt!);
+    expect(owner.nextPollAt(), "B settlement must retain A’s persisted enrollment deadline").toBe(dueAt);
     releases.splice(0).forEach(release => release()); await Promise.all(heldLeases);
-    const delay = Math.max(0, Date.parse(retained.nextAttemptAt!) - Date.now());
-    await new Promise(resolve => setTimeout(resolve, delay));
+    for (let remaining = dueAt - Date.now(); remaining > 0; remaining = dueAt - Date.now()) {
+      await new Promise(resolve => setTimeout(resolve, remaining));
+    }
     await owner.pollOnce();
     expect((await setup(a)).slackCloudIntent).toBeUndefined();
     expect((await setup(a)).slackCloudRetiredGeneration).toBeDefined();
