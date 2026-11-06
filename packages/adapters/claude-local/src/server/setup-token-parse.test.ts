@@ -694,3 +694,7 @@ describe("parseSetupTokenCredential", () => {
     expect(fixture).toContain(SETUP_TOKEN_PREFIX);
   });
 });
+
+it("accepts the auth login URL preamble with the same URL and prompt validation", () => {
+  expect(parseSetupTokenPrompt(completeOutput(VALID_URL).replace(PREAMBLE_LINE, "If the browser didn't open, visit:"))).toEqual({ url: VALID_URL, prompt: SETUP_TOKEN_PROMPT });
+});
