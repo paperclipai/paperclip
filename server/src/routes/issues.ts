@@ -546,6 +546,7 @@ function applyCreateIssueStatusDefault(
 
 function noopTaskWatchdogService(): TaskWatchdogService {
   return {
+    readIdleSchedule: async () => ({ blocked: true, state: "unavailable", deadlines: [] }),
     getActiveForIssue: async () => null,
     listActiveSummariesForIssues: async () => new Map(),
     upsertForIssue: async () => {
