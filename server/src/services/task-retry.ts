@@ -212,6 +212,8 @@ export async function retireSupersededTaskRetry(db: Db, input: {
 type TaskRetryRequest = {
   db: Db; companyId: string; issueId: string; actorId: string;
   idempotencyKey: string; observedRunId: string | null; actorSource?: string;
+  /** Paperclip requests the user's Retry itself after a restart lost an unstarted turn. */
+  initiatedBy?: "restart_recovery";
   prepareChatRetry?: (tx: Db, scope: { companyId: string; issueId: string; agentId: string;
     failedRunId: string; initiatedByUserId: string; retryIntentId?: string }) => Promise<{ actionId: string }>;
 };
@@ -393,9 +395,12 @@ function admitTaskRetry(input: TaskRetryRequest) {
           actionId: action.id }, previous, next);
       }
     }
-    await persistActivity(db, { companyId: issue.companyId, actorType: "user", actorId: input.actorId,
+    const restartRecovery = input.initiatedBy === "restart_recovery";
+    await persistActivity(db, { companyId: issue.companyId, actorType: restartRecovery ? "system" : "user",
+      actorId: restartRecovery ? "restart-recovery" : input.actorId,
       action: "issue.retry_requested", entityType: "issue", entityId: issue.id, runId: latest.id,
-      details: { requestId: active?.id ?? id, sourceRunId: latest.id, attachedToExistingWork: Boolean(active || busy) } });
+      details: { requestId: active?.id ?? id, sourceRunId: latest.id, attachedToExistingWork: Boolean(active || busy),
+        ...(restartRecovery ? { initiatedBy: "restart_recovery", onBehalfOfUserId: input.actorId } : {}) } });
     return { requestId: active?.id ?? id, accepted: true, stale: false, observedRunId: latest.id,
       chatActionId: intent.chatActionId };
   }, { companyId: input.companyId });

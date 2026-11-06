@@ -881,6 +881,41 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     return { pluginId, companyId, agentId, environment, runId, executionWorkspaceId, reusableLease };
   }
 
+  it.each((["syncIn", "syncOut"] as const).flatMap(method =>
+    [1234, 1_200_000].map(timeoutMs => ({ method, timeoutMs }))))("uses a per-call $method deadline (configured $timeoutMs) for the provider and its RPC without changing settings", async ({ method, timeoutMs }) => {
+    const seeded = await seedReusablePluginSandboxLease(null, { timeoutMs });
+    const call = vi.fn(async (..._args: unknown[]) => ({ operations: [] }));
+    const workerManager = {
+      isRunning: vi.fn(() => true), call,
+      getWorker: vi.fn(() => ({ supportedMethods: ["environmentSyncIn", "environmentSyncOut"] })),
+    } as unknown as PluginWorkerManager;
+    const runtime = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
+    const input = { environment: seeded.environment, lease: seeded.reusableLease, operations: [] };
+    await runtime[method]({ ...input, minimumTimeoutMs: 900_000 });
+    expect(call.mock.calls[0]?.[1]).toBe(method === "syncIn" ? "environmentSyncIn" : "environmentSyncOut");
+    expect(call.mock.calls[0]?.[2]).toMatchObject({ config: { timeoutMs }, minimumTimeoutMs: 900_000 });
+    expect(call.mock.calls[0]?.[3]).toBeGreaterThan(Math.max(900_000, timeoutMs));
+    await runtime[method](input);
+    expect(call.mock.calls[1]?.[2]).toMatchObject({ config: { timeoutMs } });
+    expect(call.mock.calls[1]?.[2]).not.toHaveProperty("minimumTimeoutMs");
+    expect(seeded.environment.config.timeoutMs).toBe(timeoutMs);
+    expect((await environmentService(db).getById(seeded.environment.id))?.config.timeoutMs).toBe(timeoutMs);
+  });
+
+  it.each(["syncIn", "syncOut"] as const)("rejects invalid %s deadlines before a provider call", async method => {
+    const seeded = await seedReusablePluginSandboxLease();
+    const call = vi.fn();
+    const runtime = environmentRuntimeService(db, { pluginWorkerManager: {
+      isRunning: vi.fn(() => true), call,
+      getWorker: vi.fn(() => ({ supportedMethods: ["environmentSyncIn", "environmentSyncOut"] })),
+    } as unknown as PluginWorkerManager });
+    for (const timeoutMs of [0, -1, Number.NaN, Number.POSITIVE_INFINITY, 30 * 60_000 + 1]) {
+      await expect(runtime[method]({ environment: seeded.environment, lease: seeded.reusableLease,
+        operations: [], minimumTimeoutMs: timeoutMs })).rejects.toThrow("Invalid sandbox sync timeout");
+    }
+    expect(call).not.toHaveBeenCalled();
+  });
+
   it.each(["active", "released"] as const)("does not select an ephemeral allocation for warm reuse (%s)", async status => {
     const seeded = await seedReusablePluginSandboxLease("paperclip_runner");
     await db.update(environmentLeases).set({ leasePolicy: "ephemeral", status,
@@ -3897,8 +3932,12 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     });
   });
 
-  it("resumes only the exact stopped sandbox lifecycle without acquiring or reseeding", async () => {
-    const seeded = await seedReusablePluginSandboxLease("paperclip_runner");
+  it.each([
+    { timeoutMs: 300_000, rpcTimeoutMs: 330_000 },
+    { timeoutMs: 1234, rpcTimeoutMs: 31_234 },
+    { timeoutMs: null, rpcTimeoutMs: 60_000 },
+  ])("resumes only the exact stopped sandbox lifecycle within its recorded budget ($timeoutMs)", async ({ timeoutMs, rpcTimeoutMs }) => {
+    const seeded = await seedReusablePluginSandboxLease("paperclip_runner", { timeoutMs });
     await environmentService(db).releaseLease(seeded.reusableLease.id, "released", { cleanupStatus: "success" });
     const lease = (await environmentService(db).getLeaseById(seeded.reusableLease.id))!;
     const call = vi.fn(async (_id: string, method: string, _input?: unknown) => {
@@ -3914,7 +3953,7 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     expect(call).toHaveBeenCalledWith(seeded.pluginId, "environmentResumeLease", expect.objectContaining({
       companyId: seeded.companyId, environmentId: seeded.environment.id, providerLeaseId: lease.providerLeaseId,
       leaseMetadata: lease.metadata,
-    }), expect.any(Number));
+    }), rpcTimeoutMs);
     expect(call.mock.calls[0]?.[2]).not.toHaveProperty("requestedCwd");
     expect((await environmentService(db).getLeaseById(lease.id))?.status).toBe("released");
     expect(await db.select().from(environmentLeases)).toHaveLength(1);

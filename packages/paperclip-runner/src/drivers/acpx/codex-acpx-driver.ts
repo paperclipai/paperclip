@@ -53,6 +53,7 @@ import type {
 import { validatePrpStructuredRunResult } from "../../protocol/replay-contract.js";
 import {
   canonicalProviderEventsFromAcpxRuntimeEvent,
+  claudePlanProposalEvent,
   createAcpxToolEventNormalizer,
   createGrokMessageNormalizer,
 } from "../../provider-events.js";
@@ -84,6 +85,7 @@ import {
 import {
   ACPX_TURN_CANCELLATION_SHUTDOWN_BOUND_MS,
   AcpxRuntimeHost,
+  type AcpxPlanProposal,
   type AcpxRetainedCleanupFailure,
   type AcpxRuntimeTurn,
   type OpenAcpxRuntimeHostOptions,
@@ -95,6 +97,7 @@ import {
 
 import { workspaceRootsFor } from "../../tool-file-changes.js";
 import { AcpxTurnControlLedger, parseAcpxTurnControl, type AcpxTurnControlMode } from "./turn-controls.js";
+import { claudeRateLimitSnapshot, rateLimitNoticeEvent, rateLimitSnapshotChanged, type ProviderRateLimitSnapshot } from "../provider-rate-limits.js";
 import { acpxUsageEstimateNotice, persistedAcpxTurnUsage, persistedCursorUsageNotice } from "./usage-accounting.js";
 
 const MAX_BUFFERED_EVENTS = 512;
@@ -783,6 +786,8 @@ class CodexAcpxSession implements HarnessSession {
     turnId: string;
   } | null = null;
   #usage: Record<string, unknown> | null = null;
+  #rateLimits: ProviderRateLimitSnapshot | null = null;
+  #rateLimitNoticeSequence = 0;
   #assistantText = "";
   /** Claude compaction banners in this session; pairs start and end notices. */
   #compactionCount = 0;
@@ -880,6 +885,17 @@ class CodexAcpxSession implements HarnessSession {
     return { steering: capability.steering, queuedFollowUp: capability.queuedFollowUp === true };
   }
 
+  readonly #planProposalTurns = new Set<string>();
+
+  #recordPlanProposal(turnId: string, proposal: AcpxPlanProposal): void {
+    if (this.#activeTurnId !== turnId) return;
+    const event = claudePlanProposalEvent(proposal);
+    validateAcpxRichEvent(event);
+    if (this.#emit(event.eventType, event.payload, { turnId, itemId: event.itemId })) {
+      this.#planProposalTurns.add(turnId);
+    }
+  }
+
   async startTurn(input: {
     message: NativeUserMessage;
   }): Promise<{ turnId: string }> {
@@ -944,6 +960,7 @@ class CodexAcpxSession implements HarnessSession {
         requestId: `${safeId(this.#input.runId, "run")}:${turnId}`,
         onExtensionRequest: extensions.onExtensionRequest,
         onExtensionNotification: extensions.onExtensionNotification,
+        onPlanProposal: (proposal) => this.#recordPlanProposal(turnId, proposal),
         onPermissionRequest: (request, context) =>
           this.#handlePermission(turnId, request, context, toolEvidence),
         onElicitation: (request, context) =>
@@ -1541,6 +1558,15 @@ class CodexAcpxSession implements HarnessSession {
           "turn.completed",
           { status: "completed", stopReason: result.stopReason ?? null },
         );
+      } else if (result.status === "cancelled" && this.#planProposalTurns.has(turnId)) {
+        // Declining Claude's native plan approval interrupts its turn. The
+        // proposal is this turn's deliverable, so it completes normally.
+        this.#publishTerminal(
+          turnId,
+          canonicalJson({ status: "completed", semanticResult: null }),
+          "turn.completed",
+          { status: "completed", stopReason: "end_turn" },
+        );
       } else if (result.status === "cancelled") {
         const reaffirmedSemanticResult =
           this.#pendingSemanticTransfer?.turnId === turnId
@@ -1774,6 +1800,7 @@ class CodexAcpxSession implements HarnessSession {
         cumulative: event.breakdown,
         cost: event.cost,
       });
+      this.#observeRateLimits(event as { _meta?: unknown }, turnId);
     }
     this.#workspaceRoots ??= workspaceRootsFor(this.#input.workingDirectory);
     for (const canonical of canonicalProviderEventsFromAcpxRuntimeEvent(
@@ -1787,6 +1814,18 @@ class CodexAcpxSession implements HarnessSession {
         itemId: canonical.itemId,
       });
     }
+  }
+
+  /** Claude reports `rate_limit_event` as `usage_update._meta["_claude/rateLimit"]`. */
+  #observeRateLimits(event: { _meta?: unknown }, turnId: string): void {
+    const next = claudeRateLimitSnapshot(event._meta, this.#rateLimits, this.#now().toISOString());
+    if (!next) return;
+    if (rateLimitSnapshotChanged(this.#rateLimits, next)) {
+      const itemId = `${turnId}:rate-limits:${++this.#rateLimitNoticeSequence}`;
+      const notice = rateLimitNoticeEvent(next, itemId);
+      this.#emit(notice.eventType, notice.payload, { turnId, itemId });
+    }
+    this.#rateLimits = next;
   }
 
   async #handleExtensionInput(

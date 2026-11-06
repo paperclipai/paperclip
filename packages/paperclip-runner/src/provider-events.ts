@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { redactCodexDiagnostic } from "./drivers/codex/diagnostic-redaction.js";
+import { claudeHookCanonicalEvent, codexHookPayload, codexSafetyReviewPayload } from "./governance-events.js";
 import type { AcpxSubagentAnnotations, AcpxSubagentIdentity } from "./claude-subagent-lineage.js";
 import {
   toolFileChangesFromAcpContent,
@@ -63,9 +64,10 @@ export const CODEX_THREAD_ITEM_CLASSIFICATION = {
   userMessage: "existing_transcript",
   hookPrompt: "hook",
   agentMessage: "existing_transcript",
-  // Codex's `plan` ThreadItem is proposed-plan document text. The live
-  // execution checklist is a separate `turn/plan/updated` notification.
-  plan: "existing_transcript",
+  // Codex's `plan` ThreadItem is proposed-plan document text (canonical
+  // `plan.proposed`). The live execution checklist is a separate
+  // `turn/plan/updated` notification (canonical `plan.updated`).
+  plan: "plan",
   reasoning: "existing_reasoning",
   commandExecution: "tool_execution",
   fileChange: "existing_workspace_change",
@@ -93,6 +95,7 @@ export const CANONICAL_PROVIDER_EVENT_TYPES = [
   "auth.credentials.updated",
   "harness.diagnostic",
   "plan.updated",
+  "plan.proposed",
   "tool.execution.started",
   "tool.execution.progressed",
   "tool.execution.completed",
@@ -225,6 +228,8 @@ interface AcpxToolLifecycleIdentity {
   kind?: string;
   locations?: unknown[];
   progress?: string;
+  detail?: AcpxToolDetail;
+  startedAt?: number;
 }
 
 const MAX_ACPX_TOOL_LIFECYCLES = 512;
@@ -356,6 +361,117 @@ export function boundedAcpMeta(
   return bounded && Object.keys(bounded).length > 0 ? bounded : undefined;
 }
 
+/**
+ * Provider-neutral facts about one ACP tool call, read from the raw update.
+ * `subject` is the non-path argument a person needs to recognize the call
+ * (a shell command, search pattern, URL or query); file paths travel as an
+ * attested location instead. Every field is optional and bounded.
+ */
+export interface AcpxToolDetail {
+  toolName?: string;
+  subject?: string;
+  description?: string;
+  exitCode?: number;
+  durationMs?: number;
+  blockedReason?: string;
+}
+
+const ACPX_TOOL_DETAIL_KEYS = ["toolName", "subject", "description", "exitCode", "durationMs", "blockedReason"] as const;
+const ACPX_TOOL_PATH_KEYS = ["file_path", "path", "notebook_path"] as const;
+
+function boundedDetailText(value: unknown, maxBytes: number): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, "").trim();
+  return trimmed ? boundedAcpxLifecycleText(trimmed, maxBytes) : undefined;
+}
+
+function acpxToolContentText(event: AcpRuntimeEventShape): string {
+  const parts: string[] = [];
+  if (typeof event.rawOutput === "string") parts.push(event.rawOutput);
+  for (const entry of Array.isArray(event.content) ? event.content.slice(0, 16) : []) {
+    const inner = record(record(entry).content);
+    if (typeof inner.text === "string") parts.push(inner.text);
+  }
+  return parts.join("\n").slice(0, 8_000);
+}
+
+/** The first file path argument of a raw tool input, if any. */
+export function acpxToolInputPath(event: AcpRuntimeEventShape): string | undefined {
+  const input = record(event.rawInput);
+  for (const key of ACPX_TOOL_PATH_KEYS) {
+    const value = boundedDetailText(input[key], MAX_ACPX_TOOL_METADATA_BYTES);
+    if (value) return value;
+  }
+  return undefined;
+}
+
+/**
+ * Read tool facts from an unbounded ACP tool update. Claude supplies the
+ * native tool name in `_meta.claudeCode.toolName`, the command and its
+ * description in `rawInput`, `terminal_exit` when the client advertises
+ * terminal output, and a "Permission denied: <reason>" content block when a
+ * rule or policy refused the call.
+ */
+export function acpxToolDetailFromRuntimeEvent(event: AcpRuntimeEventShape): AcpxToolDetail {
+  if (event.type !== "tool_call") return {};
+  const meta = record(event._meta);
+  const claude = record(meta.claudeCode);
+  const input = record(event.rawInput);
+  const detail: AcpxToolDetail = {};
+  const toolName = boundedDetailText(claude.toolName, 240);
+  if (toolName) detail.toolName = toolName;
+  const command = boundedDetailText(input.command, MAX_ACPX_TOOL_METADATA_BYTES);
+  const pattern = boundedDetailText(input.pattern, 1_000);
+  const subject = command
+    ?? (pattern ? `"${pattern}"` : undefined)
+    ?? boundedDetailText(input.url, 2_000)
+    ?? boundedDetailText(input.query, 1_000)
+    ?? boundedDetailText(input.skill, 240);
+  if (subject) detail.subject = subject;
+  const description = boundedDetailText(input.description, 1_000) ?? boundedDetailText(claude.title, 1_000);
+  if (description && description !== subject) detail.description = description;
+  const status = canonicalStatus(event.status, "running");
+  const response = record(claude.toolResponse);
+  const output = status === "running" ? "" : acpxToolContentText(event);
+  const denied = /^Permission denied:\s*([\s\S]*)$/.exec(output.trim());
+  const reason = boundedDetailText(response.decisionReason, 1_000)
+    ?? boundedDetailText(response.message, 1_000)
+    ?? (denied ? boundedDetailText(denied[1], 1_000) : undefined);
+  if (status === "failed" && (denied || response.decisionReasonType !== undefined)) {
+    detail.blockedReason = reason ?? "Permission denied";
+    return detail;
+  }
+  const exit = integer(record(meta.terminal_exit).exit_code);
+  // Claude Code reports a non-zero Bash exit as a failed tool result and
+  // prefixes its text with "Exit code N", so its status implies the exit.
+  // Other ACP agents may complete a failing command; claim nothing for them
+  // unless they send terminal_exit.
+  const shell = toolName === "Bash";
+  if (exit !== null) detail.exitCode = exit;
+  else if (shell && status === "completed") detail.exitCode = 0;
+  else if (shell && status === "failed") {
+    const code = /(?:^|\n)Exit code (-?\d+)\b/.exec(output);
+    if (code) detail.exitCode = Number(code[1]);
+  }
+  return detail;
+}
+
+function boundedToolDetail(value: unknown): AcpxToolDetail | undefined {
+  const input = record(value);
+  const detail: AcpxToolDetail = {};
+  for (const key of ACPX_TOOL_DETAIL_KEYS) {
+    const item = input[key];
+    if (key === "exitCode" || key === "durationMs") {
+      const number = integer(item);
+      if (number !== null && (key === "exitCode" || number >= 0)) detail[key] = number;
+    } else {
+      const bounded = boundedDetailText(item, key === "toolName" ? 240 : key === "subject" ? MAX_ACPX_TOOL_METADATA_BYTES : 1_000);
+      if (bounded) detail[key] = bounded;
+    }
+  }
+  return Object.keys(detail).length > 0 ? detail : undefined;
+}
+
 /** Bound any forwarded `_meta` on a runtime event, whatever its type. */
 function withBoundedAcpMeta<T extends AcpRuntimeEventShape>(event: T): T {
   if (!Object.prototype.hasOwnProperty.call(event, "_meta")) return event;
@@ -389,7 +505,8 @@ export function createGrokMessageNormalizer<T extends AcpRuntimeEventShape>(): (
 
 export function createAcpxToolEventNormalizer<
   T extends AcpRuntimeEventShape,
->(): (event: T) => T {
+>(options: { now?: () => number } = {}): (event: T) => T {
+  const now = options.now ?? Date.now;
   const lifecycle = new Map<string, AcpxToolLifecycleIdentity>();
   return (input) => {
     const event = withBoundedAcpMeta(input);
@@ -414,7 +531,10 @@ export function createAcpxToolEventNormalizer<
     const incomingTitle = isGenericAcpToolName(boundedTitle)
       ? undefined
       : boundedTitle?.trim();
-    const title = previous.title ?? incomingTitle;
+    // ACP titles are refined as input streams in: Claude first says
+    // "Terminal" or "Preparing file…", then the command or path. Keep the
+    // latest concrete title, not the first placeholder.
+    const title = incomingTitle ?? previous.title;
     const kind =
       previous.kind && previous.kind !== "other"
         ? previous.kind
@@ -431,6 +551,16 @@ export function createAcpxToolEventNormalizer<
       ? eventText
       : previous.progress;
     const status = canonicalStatus(boundedStatus, "running");
+    const startedAt = previous.startedAt ?? now();
+    // A sidecar computes the detail before rawInput is dropped; an in-process
+    // driver hands over the raw event. Later updates refine earlier facts.
+    const incomingDetail = boundedToolDetail(
+      event.paperclipToolDetail ?? acpxToolDetailFromRuntimeEvent(event),
+    );
+    const detail: AcpxToolDetail = { ...previous.detail, ...incomingDetail };
+    if (status !== "running") {
+      detail.durationMs = detail.durationMs ?? Math.max(0, Math.round(now() - startedAt));
+    }
     const normalized = {
       ...event,
       toolCallId,
@@ -440,6 +570,7 @@ export function createAcpxToolEventNormalizer<
       status: boundedStatus,
       tag: boundedTag,
       text: progress && status === "running" ? progress : boundedText,
+      ...(Object.keys(detail).length > 0 ? { paperclipToolDetail: detail } : {}),
     } as T;
     if (status === "running") {
       if (
@@ -449,7 +580,7 @@ export function createAcpxToolEventNormalizer<
         const oldest = lifecycle.keys().next().value;
         if (oldest !== undefined) lifecycle.delete(oldest);
       }
-      lifecycle.set(toolCallId, { title, kind, locations, progress });
+      lifecycle.set(toolCallId, { title, kind, locations, progress, detail, startedAt });
     } else {
       lifecycle.delete(toolCallId);
     }
@@ -694,6 +825,91 @@ function turnPlanPayload(
   };
 }
 
+// Matches the provider-event schema; keeps the event under the 256 KiB payload cap.
+/** Same registered Symbol as `RUNNERD_CANONICAL_ITEM` in the Codex driver values. */
+const RUNNERD_CANONICAL_ITEM_KEY = Symbol.for("paperclip.runnerd.canonical-item");
+
+const PLAN_PROPOSAL_MAX_MARKDOWN = 60_000;
+
+/**
+ * A provider-authored proposed plan document. Unlike the `plan.updated`
+ * checklist, a completed proposal is the candidate text for the issue's
+ * durable Plan document and its approval gate.
+ */
+export function planProposalPayload(
+  proposalId: string,
+  status: "streaming" | "completed",
+  markdown: string,
+  source: "codex_plan_item" | "claude_exit_plan_mode",
+): Record<string, unknown> {
+  return {
+    schema: "paperclip.plan.proposed.v1",
+    proposalId,
+    status,
+    markdown: unwrapProposedPlan(markdown).slice(0, PLAN_PROPOSAL_MAX_MARKDOWN),
+    source,
+  };
+}
+
+/**
+ * Splits a message around one `<proposed_plan>` block. The tags must sit on
+ * their own lines outside fenced code, so quoting or documenting the tag never
+ * creates a proposal.
+ */
+export function splitProposedPlanBlock(value: string): { plan: string | null; rest: string; unclosedStart: number | null } {
+  const lines = value.split("\n");
+  let fence: string | null = null;
+  let start = -1;
+  for (let index = 0; index < lines.length; index += 1) {
+    const trimmed = lines[index]!.trim();
+    // Fences are tracked inside the block too, so a fenced example tag in
+    // the plan never opens or closes it.
+    const marker = /^(`{3,}|~{3,})/.exec(trimmed)?.[1];
+    if (marker) {
+      fence = fence === null ? marker[0]! : (trimmed.startsWith(fence) ? null : fence);
+      continue;
+    }
+    if (fence !== null) continue;
+    if (start < 0 && /^<proposed_plan>$/i.test(trimmed)) start = index;
+    else if (start >= 0 && /^<\/proposed_plan>$/i.test(trimmed)) {
+      return {
+        plan: lines.slice(start + 1, index).join("\n").trim(),
+        rest: [...lines.slice(0, start), ...lines.slice(index + 1)].join("\n").trim(),
+        unclosedStart: null,
+      };
+    }
+  }
+  // An opening tag outside fences that never closes: a cut-off preview.
+  return {
+    plan: null,
+    rest: value,
+    unclosedStart: start < 0 ? null : lines.slice(0, start).join("\n").length,
+  };
+}
+
+/** Claude Code's ExitPlanMode plan, captured at its permission request. */
+export function claudePlanProposalEvent(proposal: {
+  toolCallId: string;
+  markdown: string;
+}): CanonicalProviderEvent {
+  const itemId = safeId(proposal.toolCallId, "claude-plan-proposal");
+  return {
+    eventType: "plan.proposed",
+    itemId,
+    payload: planProposalPayload(itemId, "completed", proposal.markdown, "claude_exit_plan_mode"),
+  };
+}
+
+/** Codex wraps plan-mode output in `<proposed_plan>` tags; keep only the document. */
+function unwrapProposedPlan(markdown: string): string {
+  // Only a wrapper around the whole document is removed. Literal tags inside
+  // the plan (an inline or fenced example) stay part of its text.
+  const trimmed = markdown.trim();
+  const open = /^<proposed_plan>[ \t]*(?:\n|$)/i.exec(trimmed);
+  if (!open) return trimmed;
+  return trimmed.slice(open[0].length).replace(/(?:^|\n)[ \t]*<\/proposed_plan>[ \t]*$/i, "").trim();
+}
+
 function researchSources(
   item: Record<string, unknown>,
   researchId: string,
@@ -796,6 +1012,32 @@ export function canonicalProviderEventsFromCodex(
         eventType: "plan.updated",
         payload: turnPlanPayload(params),
         itemId: turnPlanId,
+      },
+    ];
+  }
+  // Codex plan mode turns a `<proposed_plan>` block into its own plan item;
+  // agents can also write the block in an ordinary message to ask for plan
+  // approval, so read it there as well.
+  // On the runnerd path Rust already emitted the proposal from the full item;
+  // its forwarded item text is a short display preview and must not repeat it.
+  const runnerdCanonical = (item as Record<PropertyKey, unknown>)[RUNNERD_CANONICAL_ITEM_KEY] === true;
+  if (!runnerdCanonical && completed && type === "agentMessage" && (!text(item.phase) || text(item.phase) === "final_answer")) {
+    const { plan } = splitProposedPlanBlock(text(item.text));
+    if (plan) {
+      return [{ eventType: "plan.proposed", payload: planProposalPayload(itemId, "completed", plan, "codex_plan_item"), itemId }];
+    }
+  }
+  if (!runnerdCanonical && (method === "item/started" || completed) && type === "plan") {
+    return [
+      {
+        eventType: "plan.proposed",
+        payload: planProposalPayload(
+          itemId,
+          completed ? "completed" : "streaming",
+          completed ? text(item.text) : "",
+          "codex_plan_item",
+        ),
+        itemId,
       },
     ];
   }
@@ -951,10 +1193,11 @@ export function canonicalProviderEventsFromCodex(
       },
     ];
   }
+  // A compaction item starts before the summary exists; only its completion
+  // (or the legacy thread/compacted notification) marks the compaction.
   if (
     method === "thread/compacted" ||
-    ((method === "item/completed" || method === "item/started") &&
-      type === "contextCompaction")
+    (method === "item/completed" && type === "contextCompaction")
   ) {
     return [
       {
@@ -1033,25 +1276,13 @@ export function canonicalProviderEventsFromCodex(
     ];
   }
   if (method === "hook/started" || method === "hook/completed") {
-    const run = record(params.run);
+    const payload = codexHookPayload(method, params.run, text(params.turnId));
     return [
       {
         eventType:
           method === "hook/started" ? "hook.started" : "hook.completed",
-        payload: {
-          schema: "paperclip.hook.v1",
-          hookId: safeId(text(run.id), "hook"),
-          event: text(run.eventName, "unknown"),
-          scope: text(run.scope, "provider"),
-          status:
-            method === "hook/started"
-              ? "running"
-              : text(run.status, "completed"),
-          blocking: run.executionMode === "blocking",
-          durationMs: integer(run.durationMs),
-          summary: text(run.statusMessage) || null,
-        },
-        itemId: safeId(text(run.id), "hook"),
+        payload,
+        itemId: String(payload.hookId),
       },
     ];
   }
@@ -1080,20 +1311,14 @@ export function canonicalProviderEventsFromCodex(
     method === "item/autoApprovalReview/started" ||
     method === "item/autoApprovalReview/completed"
   ) {
+    const payload = codexSafetyReviewPayload(method, params);
     return [
       {
         eventType: method.endsWith("started")
           ? "safety.review.started"
           : "safety.review.completed",
-        payload: {
-          schema: "paperclip.safety.review.v1",
-          reviewId: safeId(text(params.reviewId), "safety-review"),
-          targetExecutionId: text(params.targetItemId) || null,
-          status: method.endsWith("started") ? "running" : "completed",
-          decision: method.endsWith("started") ? "pending" : "unknown",
-          summary: null,
-        },
-        itemId: safeId(text(params.reviewId), "safety-review"),
+        payload,
+        itemId: String(payload.reviewId),
       },
     ];
   }
@@ -1445,12 +1670,17 @@ export function canonicalProviderEventsFromAcpxRuntimeEvent(
         : event.rawOutput === undefined
           ? ""
           : JSON.stringify(event.rawOutput);
+    const detail = boundedToolDetail(event.paperclipToolDetail) ?? {};
     const title = isGenericAcpToolName(event.title)
       ? ""
       : text(event.title).trim();
-    const mcp = acpxMcpToolIdentity(title);
-    const name = mcp?.name ?? title;
+    // The native tool name ("Bash", "Write", "mcp__server__tool") beats the
+    // display title, which is free text such as "Terminal" or a command line.
+    const nativeName = detail.toolName ?? title;
+    const mcp = acpxMcpToolIdentity(nativeName);
+    const name = mcp?.name ?? nativeName;
     const operation = acpxToolOperation(event.kind, name);
+    const inputPath = acpxToolInputPath(event);
     // ACP `diff` content: Claude Edit/Write send old/new text at tool_use time
     // and a hunk-exact replacement after the edit lands.
     const fileChanges = toolFileChangesFromAcpContent(
@@ -1464,7 +1694,10 @@ export function canonicalProviderEventsFromAcpxRuntimeEvent(
       transport: mcp ? "mcp" : "builtin",
       operation,
       name: name || null,
-      target: safeAcpLocation(event.locations?.[0]) ?? fileChanges?.[0]?.path ?? null,
+      target:
+        safeAcpLocation(event.locations?.[0]) ??
+        fileChanges?.[0]?.path ??
+        (inputPath ? safeAcpLocation({ path: inputPath }) : null),
       namespace: mcp?.namespace ?? null,
       readOnly: ["read", "search", "list"].includes(operation),
       ...(Object.prototype.hasOwnProperty.call(event, "rawInput")
@@ -1473,10 +1706,13 @@ export function canonicalProviderEventsFromAcpxRuntimeEvent(
           ? { inputUpdated: event.inputUpdated }
           : {}),
       status,
-      durationMs: null,
-      exitCode: null,
+      durationMs: status === "running" ? null : (detail.durationMs ?? null),
+      exitCode: status === "running" ? null : (detail.exitCode ?? null),
       progress:
         status === "running" ? text(event.text).slice(0, 4000) || null : null,
+      ...(detail.subject ? { subject: detail.subject } : {}),
+      ...(detail.description ? { description: detail.description } : {}),
+      ...(detail.blockedReason ? { blockedReason: detail.blockedReason } : {}),
       ...boundedOutput(output),
       ...(parentToolCallId
         ? { parentItemId: safeId(parentToolCallId, "acpx-item") }
@@ -1496,6 +1732,8 @@ export function canonicalProviderEventsFromAcpxRuntimeEvent(
       },
     ];
   }
+  const claudeHook = claudeHookCanonicalEvent(event);
+  if (claudeHook) return [claudeHook];
   if (event.type === "status" && event.tag === "current_mode_update") {
     const statusText = text(event.text);
     const state = /review|plan/i.test(statusText) ? "entered" : "exited";

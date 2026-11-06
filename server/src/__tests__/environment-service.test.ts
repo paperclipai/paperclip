@@ -26,6 +26,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { environmentService } from "../services/environments.ts";
+import { attachPaperclipSessionMetadataToSessionParams, buildEffectiveRunSessionConfigMetadata, resolveTaskSessionConfigFreshness } from "../services/heartbeat/workspaces.js";
 
 const externalTestDatabaseUrl = process.env.PAPERCLIP_TEST_DATABASE_URL;
 if (externalTestDatabaseUrl && !new URL(externalTestDatabaseUrl).pathname.endsWith("_test")) {
@@ -1288,6 +1289,42 @@ describeEmbeddedPostgres("environmentService leases", () => {
     expect(savedLease).toEqual(lease);
     expect(await db.select().from(environments)).toHaveLength(1);
     expect((await svc.ensureManagedSandboxEnvironment({ ...input, name: "Paperclip Sandbox" })).action).toBe("unchanged");
+  });
+
+  it("preserves task sessions across cosmetic managed sandbox reconciliation", async () => {
+    const companyId = await seedCompany();
+    const input = { companyId, name: "Managed computer", description: "Original description", provider: "daytona",
+      config: { snapshot: "snapshot-a" }, platformFullyManaged: true };
+    const created = (await svc.ensureManagedSandboxEnvironment(input)).environment;
+    const revision = new Date("2026-01-01T00:00:00.000Z");
+    await db.update(environments).set({ updatedAt: revision }).where(eq(environments.id, created.id));
+    const metadata = (environment: typeof created) => buildEffectiveRunSessionConfigMetadata({
+      adapterType: "paperclip_runner", effectiveAdapterConfig: { model: "model-a" },
+      agentRuntimeConfig: {}, issueOverrides: null, workspaceConfig: null,
+      environment: { selectedEnvironmentId: environment.id, selectedEnvironment: {
+        id: environment.id, driver: environment.driver, config: environment.config,
+        configRevisionAt: new Date(environment.updatedAt).toISOString(),
+      } },
+      environmentEnv: environment.envVars, projectEnv: null, routineEnv: null, runtimeSkills: [],
+    });
+    const before = await metadata({ ...created, updatedAt: revision });
+    const taskSessionParams = attachPaperclipSessionMetadataToSessionParams({ sessionId: "saved-session" }, "model-a", before);
+    const reconciled = await svc.ensureManagedSandboxEnvironment({ ...input, name: "Managed sandbox",
+      description: "New description", extraMetadata: { platformLabel: "new label" } });
+    expect(reconciled.action).toBe("updated");
+    const freshness = resolveTaskSessionConfigFreshness({ hasTaskSession: true, configuredModel: "model-a",
+      taskSessionParams, configMetadata: await metadata(reconciled.environment) });
+    expect(freshness).toMatchObject({ reset: false, changedCategories: [] });
+    expect(reconciled.environment.updatedAt).toEqual(revision);
+    expect(await db.select().from(activityLog).where(and(eq(activityLog.companyId, companyId),
+      eq(activityLog.action, "environment.managed_stock_updated")))).toHaveLength(1);
+    const changed = await svc.ensureManagedSandboxEnvironment({ ...input, name: "Managed sandbox",
+      description: "New description", extraMetadata: { platformLabel: "new label" }, config: { snapshot: "snapshot-b" } });
+    expect(resolveTaskSessionConfigFreshness({ hasTaskSession: true, configuredModel: "model-a",
+      taskSessionParams, configMetadata: await metadata(changed.environment) })).toMatchObject({
+      reset: true, changedCategories: ["environment"],
+    });
+    expect(new Date(changed.environment.updatedAt).getTime()).toBeGreaterThan(revision.getTime());
   });
 
   it("ensures and refreshes a managed sandbox environment for an arbitrary provider", async () => {

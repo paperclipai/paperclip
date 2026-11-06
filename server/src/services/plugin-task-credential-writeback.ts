@@ -24,7 +24,7 @@ const handoffSchema = z.object({
   state: z.enum(["pending", "complete"]),
 }).strict();
 const key = "runnerTaskCredentialHandoff";
-type Scope = { companyId: string; leaseId: string };
+type Scope = { companyId: string; leaseId: string; expectedTaskId?: string };
 
 /** Save authority, never credential bytes or a controller-local temporary path. */
 export async function registerPluginTaskCredentialHandoff(
@@ -126,13 +126,15 @@ export async function settlePluginTaskCredentialHandoff(
       metadata: sql`coalesce(${environmentLeases.metadata}, '{}'::jsonb) || ${JSON.stringify({ [key]: { ...handoff, state: "complete" } })}::jsonb`,
     }).where(and(
       eq(environmentLeases.companyId, scope.companyId), eq(environmentLeases.id, scope.leaseId),
+      scope.expectedTaskId === undefined ? undefined : eq(environmentLeases.providerLeaseId, scope.expectedTaskId),
       sql`${environmentLeases.metadata}->${key} = ${JSON.stringify(handoff)}::jsonb`,
     )).returning({ id: environmentLeases.id });
     if (completed.length !== 1) {
-      const [current] = await db.select({ metadata: environmentLeases.metadata }).from(environmentLeases).where(and(
+      const [current] = await db.select({ metadata: environmentLeases.metadata, taskId: environmentLeases.providerLeaseId }).from(environmentLeases).where(and(
         eq(environmentLeases.companyId, scope.companyId), eq(environmentLeases.id, scope.leaseId),
       ));
-      if (!isDeepStrictEqual(handoffSchema.safeParse(current?.metadata?.[key]).data, { ...handoff, state: "complete" })) {
+      if (scope.expectedTaskId !== undefined && current?.taskId !== scope.expectedTaskId ||
+          !isDeepStrictEqual(handoffSchema.safeParse(current?.metadata?.[key]).data, { ...handoff, state: "complete" })) {
         throw new Error("Plugin task credential handoff changed");
       }
     }

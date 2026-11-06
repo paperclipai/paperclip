@@ -1,4 +1,5 @@
 import { type CodexUsageBaseline, codexRunUsage } from "./codex-usage-baseline.js";
+import type { ProviderRateLimitSnapshot } from "../provider-rate-limits.js";
 import { workspaceRootsFor } from "../../tool-file-changes.js";
 import type {
   HarnessRuntimeRequest,
@@ -118,6 +119,17 @@ export class CodexSessionState {
   activeTurnId: string | null;
   usageSnapshot: Record<string, unknown> | null = null;
   codexUsageBaseline: CodexUsageBaseline | null = null;
+  /** Latest provider-reported context occupancy, outside a compaction. */
+  lastContextUsedTokens: number | null = null;
+  /**
+   * Context sizes around an in-progress provider compaction. Codex reports the
+   * compacted size while its compaction item is still open, so the divider's
+   * "before → after" is captured here rather than from neighbouring events.
+   */
+  compactionContext: { preTokens: number | null; postTokens: number | null } | null = null;
+  /** Latest account rate-limit snapshot, merged across sparse updates. */
+  rateLimits: ProviderRateLimitSnapshot | null = null;
+  rateLimitNoticeSequence = 0;
   result: PrpStructuredRunResult | null = null;
   resultFingerprint: string | null = null;
   readonly normalizeReplayPayload?: HarnessSessionRecoveryOptions["normalizeReplayPayload"];

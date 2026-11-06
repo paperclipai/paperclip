@@ -7,7 +7,12 @@ import { fileURLToPath } from 'node:url';
 import { expect, it } from 'vitest';
 import { prepareReportLock } from '../../tests/runner-e2e/prepare-report-lock.mjs';
 
-it('admits the committed controller lock through the reviewed reporting policy before paid execution', async () => {
+// A Dependabot lockfile is not in the proof yet. The pr-trusted policy job verifies that it comes from
+// a verified Dependabot commit, and the lockfile refresh renews the proof after it merges.
+// See .github/scripts/lockfile-trust.mjs.
+const pendingDependabotLock = process.env.PAPERCLIP_CI_PR_AUTHOR === 'dependabot[bot]';
+
+it.skipIf(pendingDependabotLock)('admits the committed controller lock through the reviewed reporting policy before paid execution', async () => {
   const repository = fileURLToPath(new URL('../../', import.meta.url));
   const root = await mkdtemp(path.join(tmpdir(), 'controller-report-policy-'));
   const relative = 'tests/runner-e2e';

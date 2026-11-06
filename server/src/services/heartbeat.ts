@@ -1,4 +1,5 @@
 import { resolveProviderApiPlacement } from "./native-runtime/provider-api-placement.js";
+import { isContextCompactionRun } from "./context-compaction.js";
 import { registerDeferredReceiptWork } from "./heartbeat/deferred-receipt-work.js";
 import { reconcileTaskChatRetryReceipts } from "./task-retry.js";
 import { registerIssueRecoveryWork } from "./recovery/work.js";
@@ -98,7 +99,7 @@ import {
   createHeartbeatRecovery,
 } from "./heartbeat/recovery.js";
 import {
-  BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS,
+  failedRunRetryBudgetSpent,
   isWorkspaceBusyDeferral,
   createHeartbeatRetries,
 } from "./heartbeat/retries.js";
@@ -147,6 +148,7 @@ export {
 
 import {
   ConfigurationIncompleteFailure,
+  classifyManagedProjectAuthFailure,
   deriveTaskKey,
   type WakeupOptions,
   mergeCoalescedContextSnapshot,
@@ -289,7 +291,6 @@ import { retryChatControlAdmission } from "./chat-control-admission-retry.js";
 import {
   prepareManagedAiRuntime,
   assertManagedAiProjectAuth,
-  isAiConnectionIncompatible,
 } from "./ai-connection-runtime.js";
 import { aiConnectionBindingSchema, aiRuntimeConnectionBindingSchema, type AiConnectionRouterSelection } from "@paperclipai/shared";
 import { aiConnectionRouterService, AiConnectionPoolExhausted, applyAiConnectionRouterTaskSettings } from "./ai-connection-router.js";
@@ -302,12 +303,13 @@ import {
 
 import {
   settleInterruptedNativeBootstrap,
+  settleCancelledLegacyPreparation,
 } from "./legacy-execution-recovery.js";
+import { resumePauseInterruptedWork } from "./issue-tree-resume.js";
 import {
   adapterExecutionControls,
   createAdapterExecutionControl,
 } from "./adapter-execution-control.js";
-import { executionFailureRetryCount } from "./execution-recovery-attempt.js";
 import { buildHeartbeatRunStatusLiveEventPayload } from "./heartbeat-run-status-payload.js";
 export { buildHeartbeatRunStatusLiveEventPayload } from "./heartbeat-run-status-payload.js";
 import { StaleExecutionContinuationError } from "./execution-continuation.js";
@@ -722,6 +724,8 @@ export function shouldAutoCheckoutIssueForWake(input: {
     return false;
   }
 
+  // A compaction run does no task work, so it never claims a parked task.
+  if (isContextCompactionRun(input.contextSnapshot)) return false;
   const wakeReason = readNonEmptyString(input.contextSnapshot?.wakeReason);
   if (!wakeReason) return false;
   if (wakeReason === "issue_comment_mentioned") return false;
@@ -1002,9 +1006,7 @@ export function heartbeatService(
     // Mirrors scheduleBoundedRetryForRun's transient budget check: a failed
     // or interrupted run that has already consumed every bounded transient
     // attempt cannot be retried again through this lane.
-    transientRetryBudgetSpent: (run) =>
-      executionFailureRetryCount(run) >=
-      BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS,
+    transientRetryBudgetSpent: failedRunRetryBudgetSpent,
   });
   const runDispatch = createRunDispatch(db);
   const {
@@ -2825,11 +2827,7 @@ export function heartbeatService(
       });
       if (managedAiRuntime && aiBinding) {
         try { await assertManagedAiProjectAuth({ ...resolvedConfig, cwd: executionWorkspace.cwd }, aiBinding.provider, executionTarget); }
-        catch (error) {
-          // Only a found conflict is the board's to fix; an unfinished check stays an ordinary failure.
-          if (!isAiConnectionIncompatible(error)) throw error;
-          throw new ConfigurationIncompleteFailure(error.message, { configurationIncomplete: { reason: "ai_connection_incompatible", actionUrl: `/agents/${agent.id}/runtime` } });
-        }
+        catch (error) { throw classifyManagedProjectAuthFailure(error, agent.id); }
       }
       const remoteExecution = realizationResult.remoteExecution;
       if (nativeChatWorkspaceScope && materializeNativeChatWorktree) {
@@ -3294,6 +3292,10 @@ export function heartbeatService(
         const durableGoalControlRun =
           readNonEmptyString(context.goalControlRequestId) !== null ||
           context.resumeSessionGoalHeartbeat === true;
+        // Compaction resumes a runner session; a direct adapter would run it as a prompt.
+        if (isContextCompactionRun(context) && agent.adapterType !== "paperclip_runner") {
+          throw new Error("context_compaction_requires_paperclip_runner");
+        }
         // Goals must use the selected durable runner, never silently convert a
         // direct adapter or let an old goal-control wake become a normal prompt.
         if (durableGoalControlRun && agent.adapterType !== "paperclip_runner") {
@@ -3961,6 +3963,19 @@ export function heartbeatService(
           latestRun = await settleInterruptedNativeBootstrap(db, { run: latestRun,
             providerDispatchStarted: legacyAdapterEntered || nativeDispatchStarted || nativeOwnershipHeld,
           }) ?? latestRun;
+        }
+        if (latestRun?.status === "cancelled" && latestRun.runtimeMode === "legacy") {
+          const settled = await settleCancelledLegacyPreparation(db, { run: latestRun,
+            providerDispatchStarted: legacyAdapterEntered || nativeDispatchStarted || nativeOwnershipHeld,
+          });
+          latestRun = settled ?? latestRun;
+          // A pause may already have been released while this Stop unwound.
+          const settledIssueId = settled?.issueId ?? settled?.contextSnapshot?.issueId;
+          if (typeof settledIssueId === "string") {
+            await resumePauseInterruptedWork(db, { companyId: settled!.companyId, issueIds: [settledIssueId],
+              actor: { actorType: "system", actorId: "system" }, wakeup: enqueueWakeup,
+            }).catch(error => logger.warn({ err: error, runId: run.id }, "Could not resume work after a released pause"));
+          }
         }
         if (latestRun?.status === "cancelled" && !nativeDispatchStarted && !nativeOwnershipHeld &&
             (latestRun.runtimeMode === "native" ||

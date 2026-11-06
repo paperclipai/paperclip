@@ -4,6 +4,7 @@
   "title": "Provider-neutral runner activity payload",
   "oneOf": [
     { "$ref": "#/$defs/plan" },
+    { "$ref": "#/$defs/planProposal" },
     { "$ref": "#/$defs/toolExecution" },
     { "$ref": "#/$defs/research" },
     { "$ref": "#/$defs/delegation" },
@@ -42,6 +43,19 @@
       },
       "additionalProperties": false
     },
+    "planProposal": {
+      "type": "object",
+      "description": "A provider-authored proposed plan document awaiting human approval (Codex plan item, Claude ExitPlanMode). Paperclip may synchronize a completed proposal into the issue's durable Plan document; it is distinct from the within-turn plan.updated checklist.",
+      "required": ["schema", "proposalId", "status", "markdown", "source"],
+      "properties": {
+        "schema": { "const": "paperclip.plan.proposed.v1" },
+        "proposalId": { "$ref": "#/$defs/id" },
+        "status": { "enum": ["streaming", "completed"] },
+        "markdown": { "type": "string", "maxLength": 60000 },
+        "source": { "enum": ["codex_plan_item", "claude_exit_plan_mode"] }
+      },
+      "additionalProperties": false
+    },
     "toolExecution": {
       "type": "object",
       "required": ["schema", "executionId", "transport", "operation", "status", "output", "outputBytes", "outputTruncated", "outputDigest"],
@@ -59,6 +73,9 @@
         "durationMs": { "type": ["integer", "null"], "minimum": 0 },
         "exitCode": { "type": ["integer", "null"] },
         "progress": { "$ref": "#/$defs/nullableShortText" },
+        "subject": { "$ref": "#/$defs/nullableShortText" },
+        "description": { "$ref": "#/$defs/nullableShortText" },
+        "blockedReason": { "$ref": "#/$defs/nullableShortText" },
         "output": { "type": ["string", "null"], "maxLength": 65536 },
         "outputBytes": { "type": "integer", "minimum": 0 },
         "outputTruncated": { "type": "boolean" },
@@ -152,7 +169,7 @@
     "hook": {
       "type": "object",
       "required": ["schema", "hookId", "event", "scope", "status", "blocking", "durationMs", "summary"],
-      "properties": { "schema": { "const": "paperclip.hook.v1" }, "hookId": { "$ref": "#/$defs/id" }, "event": { "type": "string", "minLength": 1, "maxLength": 160 }, "scope": { "type": "string", "minLength": 1, "maxLength": 160 }, "status": { "enum": ["running", "completed", "failed", "cancelled"] }, "blocking": { "type": "boolean" }, "durationMs": { "type": ["integer", "null"], "minimum": 0 }, "summary": { "$ref": "#/$defs/nullableShortText" } },
+      "properties": { "schema": { "const": "paperclip.hook.v1" }, "hookId": { "$ref": "#/$defs/id" }, "event": { "type": "string", "minLength": 1, "maxLength": 160 }, "scope": { "type": "string", "minLength": 1, "maxLength": 160 }, "status": { "enum": ["running", "completed", "failed", "cancelled", "blocked", "stopped"] }, "blocking": { "type": "boolean" }, "durationMs": { "type": ["integer", "null"], "minimum": 0 }, "summary": { "$ref": "#/$defs/nullableShortText" }, "outcome": { "enum": ["running", "passed", "context", "feedback", "blocked", "stopped", "failed"] }, "message": { "$ref": "#/$defs/nullableShortText" }, "source": { "type": ["string", "null"], "maxLength": 160 }, "toolName": { "type": ["string", "null"], "maxLength": 160 } },
       "additionalProperties": false
     },
     "memoryCitation": {
@@ -164,7 +181,7 @@
     "safetyReview": {
       "type": "object",
       "required": ["schema", "reviewId", "targetExecutionId", "status", "decision", "summary"],
-      "properties": { "schema": { "const": "paperclip.safety.review.v1" }, "reviewId": { "$ref": "#/$defs/id" }, "targetExecutionId": { "anyOf": [{ "$ref": "#/$defs/id" }, { "type": "null" }] }, "status": { "enum": ["running", "completed", "failed"] }, "decision": { "enum": ["pending", "allowed", "denied", "user_required", "unknown"] }, "summary": { "$ref": "#/$defs/nullableShortText" } },
+      "properties": { "schema": { "const": "paperclip.safety.review.v1" }, "reviewId": { "$ref": "#/$defs/id" }, "targetExecutionId": { "anyOf": [{ "$ref": "#/$defs/id" }, { "type": "null" }] }, "status": { "enum": ["running", "completed", "failed"] }, "decision": { "enum": ["pending", "allowed", "denied", "user_required", "timed_out", "aborted", "unknown"] }, "summary": { "$ref": "#/$defs/nullableShortText" }, "actionKind": { "enum": ["command", "execve", "writeStdin", "applyPatch", "networkAccess", "mcpToolCall", "requestPermissions", "unknown"] }, "action": { "type": ["string", "null"], "maxLength": 1000 }, "riskLevel": { "enum": ["low", "medium", "high", "critical", null] }, "userConsent": { "enum": ["unknown", "low", "medium", "high", null] }, "rationale": { "$ref": "#/$defs/nullableShortText" }, "decidedBy": { "type": ["string", "null"], "maxLength": 160 } },
       "additionalProperties": false
     },
     "terminalInput": {

@@ -100,20 +100,18 @@ Successful omissions remove unavailable entries; failed reads preserve history.
 Verify rename, inbox archive, pause/restart, reload, cross-tab updates and account
 switches. Inbox archive does not remove the task from recent history.
 
-### Personal Coordinator workspace
+### Personal workspace choice
 
-Settings → Experimental → Coordinator workspace opts the current person into the
-experimental shell; off restores classic. The server saves the choice by user across
-companies, separate from instance feature flags. The local-trusted identity is shared
-Local Board, not evidence of multi-user isolation.
-Agent Chat remains an independent instance prerequisite. When it is off, the
-personal card explains the dependency and links eligible instance administrators
-to the existing Agent Chat control. Hidden or Cloud-managed controls are not
-presented as editable. Disabled Chat routes link back to Experimental settings.
-Enabling the personal workspace never changes the instance capability.
+Coordinator is the standard workspace. Settings → Experimental → Classic workspace
+opts the current person into the previous workspace; it defaults off. Historical
+Coordinator experiment values do not enable Classic. The server saves the choice
+by user across companies, separate from instance feature flags. The local-trusted
+identity is shared Local Board, not evidence of multi-user isolation.
+Agent Chat is available to everyone independently of this personal workspace
+choice. Its retired instance flag and historical managed off values are ignored.
 
 Automated: [preference hook](../../ui/src/hooks/useCoordinatorWorkspaceEnabled.test.tsx),
-[prerequisite settings card](../../ui/src/components/CoordinatorWorkspaceSetting.test.tsx),
+[Classic settings card](../../ui/src/components/ClassicWorkspaceSetting.test.tsx),
 [authorization](../../server/src/__tests__/workspace-preferences-routes.test.ts), and
 [database persistence](../../server/src/__tests__/workspace-preferences.test.ts).
 Manual: toggle on/off, reload, switch companies/accounts, and simulate failed reads

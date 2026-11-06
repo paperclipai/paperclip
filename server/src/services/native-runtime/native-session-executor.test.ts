@@ -2,6 +2,7 @@ import { activeNativeExecutionRunIds } from "./native-active-runs.js";
 import { onRetainedNativeSessionCleanupRelease } from "../retained-native-session-cleanup-notifications.js";
 import { readIdleLocalWork, markIdleStartupComplete, markIdleIngressTracked } from "../idle-local-work.js";
 import * as runnerCheckpoint from "./native-runner-checkpoint.js";
+import * as harnessStorage from "./native-harness-backup-storage.js";
 import * as stagedAttachmentRecovery from "./native-staged-attachment-recovery.js";
 import * as controllerRecovery from "./native-controller-recovery.js";
 import { isSettledRemoteWarmControlState } from "./remote-warm-session-recovery.js";
@@ -164,6 +165,7 @@ type BackendFactoryOptions = {
 };
 
 type RunnerTransportOptions = {
+  authorityRunId?: string;
   onAccountingEvent?: (event: PrpEvent) => Promise<void>;
   onRecoveryAccountingEvent?: unknown;
   environment?: NodeJS.ProcessEnv;
@@ -5971,15 +5973,20 @@ describe("stopped native conversation physical cleanup", () => {
       ...(mode === "startup_intent" ? { startupAttempt: { phase: "intent" } } : {}),
       ...(mode === "pending_identity" ? { pendingEvents: [{ eventType: "session.started" }] } : {}),
     };
-    const normalizedEvent = mode === "normalized_session_receipt" ? { ...event, turnId: undefined, itemId: undefined } : event;
+    const normalizedEvent = { ...event, sourceEventId: `${identity.runnerInstanceId}:${identity.runId}:1`,
+      ...(mode === "normalized_session_receipt" ? { turnId: undefined, itemId: undefined } : {}) };
     const receipt = { sourceEventId: `${identity.runnerInstanceId}:${identity.runId}:1`,
+      sourceSeq: 1, sourceInstanceId: identity.runnerInstanceId, eventType: normalizedEvent.eventType,
       sourcePayloadSha256: mode === "wrong_receipt" ? "wrong" : hash(normalizedEvent), payload: { prpEvent: normalizedEvent } };
+    const normalizedReplacement = { ...replacement, sourceEventId: `${identity.runnerInstanceId}:${identity.runId}:2` };
     const stop = { eventType: mode === "new_launch" ? "native.process_start_requested" : "native.local_process_stopped",
       payload: { processPid: mode === "worker_alive" ? process.pid : 99_999_999, processGroupId: mode === "worker_alive" ? process.pid : 99_999_999 } };
     let queryIndex = 0;
     const db = { select() { const rows = [
       [{ provider: mode === "remote" ? "daytona" : "local", releasedAt: mode === "unreleased" ? null : new Date() }],
-      [stop], mode === "missing_receipt" ? [] : [receipt, ...(mode.startsWith("replacement") ? [{ ...receipt, sourceEventId: `${identity.runnerInstanceId}:${identity.runId}:2`, sourcePayloadSha256: hash(replacement), payload: { prpEvent: replacement } }] : [])],
+      [stop], mode === "missing_receipt" ? [] : [receipt, ...(mode.startsWith("replacement") ? [{ ...receipt,
+        sourceEventId: normalizedReplacement.sourceEventId, sourceSeq: 2, eventType: normalizedReplacement.eventType,
+        sourcePayloadSha256: hash(normalizedReplacement), payload: { prpEvent: normalizedReplacement } }] : [])],
     ][queryIndex++] ?? [];
       const q: any = { from: () => q, where: () => q, orderBy: () => q, limit: () => q,
         then: Promise.resolve(rows).then.bind(Promise.resolve(rows)) }; return q;
@@ -7924,7 +7931,8 @@ describe("native terminal-turn accounting", () => {
       binding: { ...execution.binding, runId: "plugin-usage-run", executionWorkspaceId: "plugin-usage-workspace" },
       session: { ...execution.session, normalizedSessionId: "plugin-usage-session" } } as NativeExecutionInput;
     const launcher = vi.fn(), registration = vi.fn();
-    const driver = { prepareLaunch: vi.fn(), runnerProcessLauncher: launcher, controlPlaneRegistration: registration };
+    let authorityRunId = current.binding.runId;
+    const driver = { get authorityRunId() { return authorityRunId; }, prepareLaunch: vi.fn(), runnerProcessLauncher: launcher, controlPlaneRegistration: registration };
     const owner = vi.spyOn(pluginTaskRuntime, "createPluginRunnerTaskOwner").mockReturnValue(
       { launcher, registration, driver, readWorkspaceFile: vi.fn(), isRetired: () => false, rebind: vi.fn() } as never);
     const task = vi.fn(async (operation: unknown) => {
@@ -7944,6 +7952,9 @@ describe("native terminal-turn accounting", () => {
       await options.onAccountingEvent!(report);
       expect(capture).toHaveBeenCalledExactlyOnceWith(report);
       expect(options.onRecoveryAccountingEvent).toEqual(expect.any(Function));
+      expect(options.authorityRunId).toBe(current.binding.runId);
+      authorityRunId = "next-plugin-owner";
+      expect(options.authorityRunId).toBe("next-plugin-owner");
     } finally {
       owner.mockRestore();
       if (previous === undefined) delete process.env.PAPERCLIP_RUNNER_STATE_DIR; else process.env.PAPERCLIP_RUNNER_STATE_DIR = previous;
@@ -13430,6 +13441,33 @@ describe("runnerd provider runtime wiring", () => {
     return state.createTransport.mock.calls[0]![0].stateDirectory!;
   }
 
+  it("keeps physical task cleanup binding after the startup context finishes", async () => {
+    const current = scopedNativeExecution("physical-task-cleanup");
+    const context = new NativeExecutionContext(current, 1_000);
+    const owner = vi.spyOn(pluginTaskRuntime, "createPluginRunnerTaskOwner");
+    const db = leaseDb(current), update = db.update.bind(db);
+    db.update = ((table: unknown) => table === environmentLeases
+      ? { set: () => ({ where: () => ({ returning: async () => [] }) }) }
+      : update(table as never)) as typeof db.update;
+    db.transaction = (async callback => callback(db as never)) as typeof db.transaction;
+    const task = vi.fn(async (_operation: unknown, _options?: { executionContext?: unknown; expectedTaskId?: string }) => ({
+      kind: "description", taskId: "physical-task", launchPreparationVersion: 1, projectAuthCheckVersion: 1,
+      runner: { version: "fixture", digest: `sha256:${"a".repeat(64)}` },
+    }));
+    try {
+      await createRunnerdBackend({ db, execution: current, runnerInstanceId: "physical-task-runner",
+        executionContext: context, runnerIngressAuthorized: true, runnerExecutionTarget: {
+          kind: "remote", transport: "sandbox", remoteCwd: ".", leaseId: "lease", runnerTask: task,
+        } });
+      const input = owner.mock.calls.at(-1)![0];
+      expect(input.taskId).toBe("physical-task");
+      context.finish();
+      await input.task({ kind: "stop" }, { expectedTaskId: "physical-task" });
+      expect(task).toHaveBeenLastCalledWith({ kind: "stop" }, { expectedTaskId: "physical-task" });
+      await expect(input.onSessionRetained!({})).rejects.toThrow("physical task changed");
+    } finally { context.finish(); owner.mockRestore(); }
+  });
+
   it("rejects a late backend factory after its startup context has finished", async () => {
     const current = scopedNativeExecution("late-context-factory");
     state.createBackend.mockClear();
@@ -17391,6 +17429,64 @@ describe("runnerd provider runtime wiring", () => {
     for (const key of Object.keys(paths)) expect(environment[key]).toBeUndefined();
     expect(configuredEnvironment(environment)).toEqual({ TASK_FLAG: "kept", PAPERCLIP_CONFIGURED_ENV_KEYS: '["TASK_FLAG"]' });
     expect(runnerEnvironment).toMatchObject(paths);
+  });
+
+  it("keeps the provider backup fence while its accepted result is saving the workspace", async () => {
+    const current = { ...execution, binding: { ...execution.binding, runId: randomUUID(), issueId: randomUUID(),
+      executionWorkspaceId: randomUUID() }, session: { ...execution.session, normalizedSessionId: randomUUID() } };
+    const coordinator = { phase: "observed", resultId: null as string | null, leaseOwner: "provider-owner" as string | null,
+      controllerGeneration: 1, controllerBootId: "backup-boot" };
+    const db = leaseDb(current), select = db.select.bind(db);
+    db.select = ((fields?: Record<string, unknown>) => ({ from: (table: unknown) => {
+      if (table !== nativeRunFinalizations) return select(fields as never).from(table as never);
+      const promise = Promise.resolve([coordinator]);
+      const query = { then: promise.then.bind(promise), where: () => query, limit: () => query, for: () => query };
+      return query;
+    } })) as unknown as Db["select"];
+    const storage = vi.spyOn(harnessStorage, "durableNativeHarnessStorage").mockReturnValue({ provider: "s3" } as never);
+    const validateOwner = vi.spyOn(harnessStorage, "assertNativeHarnessBackupOwner").mockResolvedValue(undefined);
+    const checkpointRegistration = vi.spyOn(runnerCheckpoint, "nativeRunnerCheckpointRegistration")
+      .mockReturnValue(async () => undefined);
+    onTestFinished(() => { storage.mockRestore(); validateOwner.mockRestore(); checkpointRegistration.mockRestore(); });
+    let savingWorkspace = false;
+    const remoteExecute = vi.fn(async (command: { args?: string[] }) => {
+      if (savingWorkspace && command.args?.[1]?.includes("base64 <")) throw new Error("stopped-provider-inspection-reached");
+      return { exitCode: command.args?.[1]?.includes("base64") ? 1 : 0, timedOut: false, stderr: "", stdout:
+        command.args?.[0] === "--build-metadata" ? JSON.stringify({
+          schema: "paperclip-runner/runnerd-build-metadata/v1", binaryName: "paperclip-runnerd", packageName: "@paperclipai/paperclip-runner",
+          binaryContractVersion: 2, durableSessionCapabilities: ["unlimited_runtime", "connection_lease_renewal"], prpTransportModes: ["listen_ws"],
+        }) : command.args?.[0] === "--version" ? "codex-cli 0.160.0" : "" };
+    });
+    const controllerArtifact = join(isolatedStateDirectory, "backup-fixture-runnerd");
+    await writeFile(controllerArtifact, "fixture bootstrap artifact");
+    await createRunnerdBackend({ db, execution: current, runnerInstanceId: "backup-fence-runner",
+      runnerRemoteBinaryPath: controllerArtifact, runnerRemoteCodexPath: controllerArtifact,
+      controllerPersistence: { bootId: "backup-boot" }, runnerIngressAuthorized: true, runnerExecutionTarget: {
+        kind: "remote", transport: "sandbox", remoteCwd: "/workspace", environmentId: "environment", leaseId: "backup-fence-lease",
+        providerKey: "daytona", sandboxLeaseAcquisition: { outcome: "created", providerLeaseId: "backup-fence-sandbox" },
+        effectiveCapabilities: { runnerWebSocketIngress: true }, runner: { execute: remoteExecute, syncIn: vi.fn(async () => undefined) },
+        getRunnerIngressEndpoint: async () => ({ kind: "authenticated_websocket", websocketUrl: "wss://sandbox.invalid/runner",
+          secretHeaders: [{ name: "Authorization", value: "fixture-ingress" }], generation: "1", refresh: vi.fn(), close: vi.fn(async () => undefined) }),
+      } as never });
+    state.createBackend.mock.calls.at(-1)![1].codexTransportFactory!();
+    const options = state.createTransport.mock.calls.at(-1)![0] as RunnerTransportOptions & {
+      controlPlaneRegistration: NonNullable<import("../../vendor/paperclip-runner/index.js").RunnerExecutionDriver["controlPlaneRegistration"]>;
+    };
+    const controller = new DurablePrpControlPlane({ stateDirectory: join(options.stateDirectory!, "control-plane"),
+      identity: options.prpIdentity! as ConstructorParameters<typeof DurablePrpControlPlane>[0]["identity"],
+      expectedRunnerVersion: "backup-fixture", expectedRunnerDigest: `sha256:${"a".repeat(64)}` });
+    controller.queueCommand("run.prepare", {});
+    controller.queueCommand("session.open", { reuse: "same_session" });
+    let registration: Awaited<ReturnType<typeof options.controlPlaneRegistration>> | undefined;
+    onTestFinished(async () => { await registration?.release(); await controller.stop(); });
+    registration = await options.controlPlaneRegistration(controller);
+    coordinator.phase = "workspace_finalizing";
+    coordinator.resultId = "accepted-result";
+    coordinator.leaseOwner = null;
+    savingWorkspace = true;
+    await expect(registration.checkpoint!("settled")).rejects.toThrow("stopped-provider-inspection-reached");
+    expect(validateOwner).toHaveBeenCalledWith(db, expect.objectContaining({ runId: current.binding.runId,
+      leaseOwner: "provider-owner", bootId: "backup-boot", generation: 1 }));
   });
 
   it.each([true, false])("restores a migrated warm backup into a created lease only for its exact session (matching: %s)", async matching => {

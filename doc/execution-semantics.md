@@ -84,6 +84,12 @@ transaction's task and run locks. Read and comment access follows normal policy.
 
 Board-initiated reassignments, agent API keys, native executions, and handoffs to
 another agent still require the outgoing execution to stop before ownership changes.
+A native Stop can take longer than the request. When its durable Stop fence is
+committed, the reassignment applies at once and the new assignee's wake waits
+behind the stopping run. When that run releases the task, its Stop still does not
+promote the stopped agent's own queued work, but it does promote the current
+assignee's waiting wake. A run that finished on its own before the Stop needs no
+stop. The request refuses the reassignment only when no Stop was recorded.
 
 ## 3. Status Semantics
 
@@ -438,6 +444,14 @@ timestamp. Admission preserves the old run and any unknown action outcomes. It
 does not replay the cancelled turn or reset recovery limits.
 
 ### Known execution waits at admission
+
+A queued wake cancelled by the dependency gate is an expected admission wait,
+not a failed provider attempt. Task views use the queue's saved dependency
+receipt to keep the existing dependency state without a failure banner or Retry
+action. This includes the heartbeat queue receipt and the dispatcher's stale-queue
+receipt for unstarted legacy or native runs. Actual provider failures, pending
+recovery, and current approval or pause gates retain their existing presentation
+and execution checks.
 
 A known execution hold is a waiting condition, not a new execution attempt. Every issue wake must read the current effective reconciliation hold under the issue admission lock before creating a run. Resolved recovery bookkeeping can still carry a no-replay hold; only clearing the effective hold makes admission eligible again. The final dispatch gate remains required for changes after admission.
 
@@ -888,6 +902,11 @@ remote configuration. An unchanged follow-up reuses that configuration without
 reporting strategy drift. Real strategy, source, mode and environment changes
 retain their existing replacement checks.
 
+Managed sandbox reconciliation preserves the environment revision used by session
+and workspace freshness checks when only its name, description, or managed metadata
+changes. It still records the update in the activity log. Configuration or
+availability changes advance that revision and retain normal replacement checks.
+
 Older remote Git workspaces can retain the temporary `project_primary`
 fingerprint. That fingerprint alone cannot distinguish the old preparation bug
 from a genuinely configured `project_primary` strategy; the remote workspace row
@@ -1086,6 +1105,19 @@ replacement. The run records the refusal by closed labels only (cause label, HTT
 status, errno-style code), never by provider text. On exhaustion, the task gets a
 specific recovery notice, and generic recovery does not grant another budget.
 
+An environment provider that refuses a new lease with a transient status (HTTP
+408, 425, 429, 500, 502, 503 or 504, or a closed connection errno) before provider
+dispatch uses the same bounded bootstrap budget (`environment_provider_unavailable`).
+The status comes only from structured fields: the worker's validated acquisition
+envelope or the in-process error's status; message text is never parsed, and
+other statuses stay `setup_failed`. Each retry is a new creation attempt with its
+own durable creation record and provider name. A provisional allocation whose
+cleanup could not be confirmed stays owned by its own record, which the creation
+reconciler settles; a retry neither reuses nor abandons it. The task shows the
+provider failure as the reason, retries automatically, and on exhaustion becomes
+`blocked` with a specific recovery notice and a Retry. Because no provider work
+started, no execution-reconciliation hold is created.
+
 A saved workspace that cannot be restored into a new allocation before provider
 dispatch fails with `remote_workspace_restore_failed`. The run error names the
 server step (`snapshot_lookup`, `snapshot_download`, or `sandbox_restore`) and,
@@ -1207,6 +1239,54 @@ explain its wait without a page reload or idle polling.
 Newer saved input keeps its own receipt while the existing Retry explanation stays
 visible. Terminal waits direct the user to send new input and hide the Retry action
 that cannot continue that attempt.
+
+A remote native run can lose its original runner or sandbox before reattachment.
+This happens after a server restart, and for a same-run retry after a turn ends
+without a semantic result. The reattachment then fails with
+`native_remote_recovery_lease_mismatch`, `native_plugin_recovery_lease_mismatch`
+or `runner_remote_process_identity_unavailable`. The server requests the task
+Retry itself, once per run, under the authority of the user who sent the message,
+assigned the task, or clicked Retry. It does this only when the run recorded no
+provider turn or its last provider turn is settled. Activity records the request
+as `restart-recovery` on behalf of that user. Admission keeps every gate: saved-work
+recovery, stop proof, approvals, pauses, budget and ownership. A Retry that the
+server requested gets no second automatic attempt. System wakes and runs with an
+in-flight provider turn do not continue automatically. For these failed runs, a
+recovered workspace hold offers Retry (`canRetry`) and says "Retry or send a
+message to continue." An intentional Stop keeps "send a message" as its only
+continuation.
+
+When a native attempt fails before launch because its predecessor's session is
+quarantined, explicit task Retry verifies the retained journal's actual owner.
+That owner must belong to the same company, task, agent, workspace, native session,
+and runner instance. Its controller must have settled, its local leases must be
+released, and its recorded worker, provider, and tool processes must be absent.
+A host-bound launch receipt with the exact process birth can establish the stop
+when an older server did not write a stop receipt. A later launch invalidates it.
+The failed attempt must have no launch evidence and must retain that same process
+identity. Missing or conflicting evidence keeps Retry deferred.
+
+This proof retires cleanup ownership only. It preserves the old journal, saved
+result, and uncertain action outcomes. The admitted turn uses a fresh native
+session under current authority. The old tool-contract fingerprint therefore
+does not gate physical cleanup; existing compatibility checks still govern
+session reuse and automatic replacement.
+Raw runner journal events and normalized run-log events have independent sequence
+numbers. Cleanup validates each normalized receipt's own sequence, event ID, and
+digest, then matches the ordered provider lifecycle identities across the two
+streams. It does not compare their sequence numbers to one another.
+
+The committed stop proof also names its successor, canonical Retry receipt, and
+local execution workspace. Workspace preparation uses `resume_stopped_native_workspace`
+only for that exact admitted successor and unchanged active task binding. It
+rechecks the directory and refuses pending workspace operations or another live
+lease. Environment selection pins that workspace again before preparation. This
+keeps saved files in place while the provider session starts fresh. An unrelated
+Retry or changed binding cannot borrow the proof or silently replace the files
+with an empty attempt directory.
+Projectless runs use their run ID as a transient workspace placeholder. That
+placeholder cannot authorize managed workspace reuse; those successors keep the
+existing fresh-workspace preparation path while retaining the old directory.
 
 A continuation cancelled by the queued-run gate while waiting for review did not start a provider. Its matching dispatch-gate receipt and unclaimed execution fields keep this deliberate wait out of unknown-action reconciliation. Pending review and decision gates still apply. If an older server already created a recovery hold for this exact state, Retry or a new user message can request one fresh turn after the server verifies there is no provider, coordinator, or unfinished cleanup. Saved user input is reconsidered through the same admission path; the cancelled turn is not replayed.
 
@@ -1828,6 +1908,30 @@ interrupt. A verified native stop must not become an unexplained failure simply
 because it came from a subtree action. The explicit pause hold still prevents
 future execution until Resume, and missing stop proof still blocks continuation.
 
+A run interrupted by a pause is an operator hold, not a failure. The pause's member
+snapshot names each interrupted run, and that work is owed one re-dispatch once no
+pause covers the task. The obligation belongs to the run, so overlapping pauses keep
+it until the last covering release. Releasing or resuming a hold re-dispatches owed
+work (`issue_tree_resumed`, with `holdId` and `interruptedRunId` in the wake
+context), even without `wakeAgents`. The interrupted run must still be the task's
+latest run, assigned to the same agent, and executable; normal admission gates still
+apply. A compare-and-set claim on the interrupted run makes the resume happen at most
+once. The claim is saved as `pending` and arms the execution-continuation queue in
+the same commit; the wake uses the stable idempotency key `tree-hold-resume:<runId>`.
+If the process stops before that wake is saved, the queue's sweep finds the stale
+claim, rechecks current state, and dispatches it once. A task that still needs execution reconciliation is not replayed: the release
+records `issue.tree_resume_wake_skipped`, the blocker stays visible, and the
+obligation stays unclaimed.
+
+A legacy run stopped before its gated dispatch entered the adapter has no provider
+actions to reconcile. Once its executor confirms no process, session, run-owned lease
+or execution event, it records bootstrap evidence and resolves that run's
+reconciliation hold as a false positive, including an automatic no-replay
+disposition. It restores a `blocked` status only when that disposition made the
+change (`legacyCancellationBlock` receipt). The executor then re-dispatches owed work
+if the pause was already released. The automatic disposition waits while a legacy
+executor still holds its controller lease. A hold can be released only once.
+
 ### Late provider usage
 
 Each run measures its usage from the total the previous run accounted for, whether
@@ -2021,6 +2125,16 @@ holds a retry for more than one day. Limit evidence only delays a retry; it does
 not grant retry authority or change the budget. When the budget is exhausted,
 the task is blocked and its recovery action states that provider startup failed
 before any provider work began.
+
+A failed bootstrap retry cannot take back an issue lock that moved off its run.
+When a newer run exists for the task, restart recovery settles the old retry at
+once. When the lock was released and no newer run exists, recovery uses the
+bounded admission backoff and then settles the retry. In both cases the
+coordinator reaches `terminal_failure`, the board receives a reconciliation
+action, and the orphaned-lease sweep can preserve the workspace and release the
+sandbox lease. Before this rule, the retry re-checked the lock without a
+deadline and never settled, so its sandbox lease stayed active and every later
+run for the task was cancelled as `workspace_busy`.
 
 The same limit evidence also holds new work for the agent. Before any workspace
 or provider work, a queued run for an agent with an active provider limit is
@@ -2465,6 +2579,20 @@ when Stop found no live controller. The worker retains the exact prepared source
 and obtains independent provider-stop evidence through normal recovery. It does
 not convert the no-op acknowledgement into a dispatched interrupt receipt or
 permission to continue the cancelled turn.
+Terminal release of a warm (`keep_running`) run that is not successful stops and
+retains its reusable sandbox. This release can finish before the preservation
+worker sees a terminal coordinator. A released reusable lease with a confirmed
+stop-and-retain receipt for the same run, lease and allocation therefore
+remains a preservation source. The worker records it as file recovery work and
+keeps its release status, policy and receipts. It dispatches no second stop and
+grants no execute right on the reusable sandbox. A released reusable lease
+stays ineligible without that valid receipt and the exact remote-workspace binding.
+Native-sync descriptors have no such binding proof, so they also stay ineligible.
+Ineligible sources cause no run writes or notifications. Recovery still rejects
+the source while a task writer is live or a later lease shares the allocation.
+Until this recovery saves the files, the
+task's remote workspace keeps the ended writer's hold. Successor runs wait for that
+recovery instead of overwriting unsaved files.
 A reusable lease can also owe native copyback: the export-repair action must
 select its exact immutable descriptor and the finalizer's accepted successful
 result under the same company, task, run and completion contract. Lease reuse
@@ -3135,6 +3263,14 @@ match. A successor must pass the existing same-controller preparation or native
 ownership checks. The backup transaction checks this authority again after
 upload, and a late predecessor cannot replace a newer conversation backup.
 This grants no new lease or permission to start provider work.
+
+The remote backend captures its backup fence while its run still owns the
+controller lease. A suspended provider can then publish its backup while an
+accepted result is still saving the workspace, before finalization commits.
+Warm attachments replace that captured fence with the current run's authority;
+an older backend's close callback uses the current attachment's fence. Publication
+still revalidates the boot, generation, accepted result, and successor authority
+before and after upload. A released, uncommitted run cannot acquire a new fence.
 
 Local durable control-plane state is bounded at 256 MiB in the server,
 runnerd recovery, and durable control-plane readers. These paths synchronously

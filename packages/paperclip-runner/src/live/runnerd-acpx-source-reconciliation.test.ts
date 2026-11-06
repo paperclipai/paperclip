@@ -56,7 +56,7 @@ async function fixture(agent: "codex" | "claude" = "codex", nativeSource = false
   let recovering = false;
   const options: CapabilityRunnerdCodexTransportOptions = {
     provider: "acpx", acpxAgent: agent, runnerBinary: binary, stateDirectory: root, prpIdentity: identity,
-    runnerArtifact: readRunnerdArtifactBinding(binary), sourceRecoveryVersion: 1, acpxSourceRecoveryVersion: 1,
+    runnerArtifact: readRunnerdArtifactBinding(binary), codexSourceRecoveryVersion: 1, acpxSourceRecoveryVersion: 1,
     lifecyclePolicy: { mode: "warm", idleTimeoutMs: 60_000 }, runnerProcessReconnectGraceMs: null, runnerReconnectGraceMs: 3_000,
     controlPlaneRegistration: async next => {
       const generation = ++registrationGeneration; authority = next;
@@ -268,5 +268,29 @@ it.skipIf(process.platform === "win32")("preserves ordinary same-run active goal
     const sameRun = f.recover({ authorityRunId: f.identity.runId });
     expect((await sameRun.transport.request("thread/read", {})).thread).toMatchObject(f.thread);
     expect(await f.count("processStart")).toBe(2); expect(await f.count("turn.start")).toBe(1);
+  } finally { await f.cleanup(); }
+}, 30_000);
+
+it.skipIf(process.platform === "win32")("settles an ACPX read tail through ordinary transport quiescence before attaching B", async () => {
+  const f = await fixture("claude");
+  const delivered: PrpEvent[] = [];
+  try {
+    const source = f.recover({ onRecoveryAccountingEvent: async event => { delivered.push(event); } });
+    expect((await source.transport.request("thread/read", {})).thread).toMatchObject(f.thread);
+    await f.settle();
+    await writeFile(f.fault, "read-diagnostic");
+    await source.transport.request("thread/goal/get", {});
+    await writeFile(f.fault, "");
+    const pid = source.evidence().runnerPid;
+    await source.transport.attachRun!({ runId: "run-target", turnId: "turn-target", itemId: "item-target" });
+    await f.settle();
+    expect(source.evidence().runnerPid).toBe(pid);
+    const tail = delivered.filter(event => event.eventType === "harness.diagnostic" && event.payload.code === "ordinary_read_tail");
+    expect(tail).toHaveLength(1);
+    expect(tail[0]!.runId).toBe(f.identity.runId);
+    await f.complete(source); await f.settle();
+    expect((await read(f.providerFile)).identity).toEqual(f.providerIdentity);
+    expect(await f.count("turn.start")).toBe(2);
+    expect(await f.count("processStart")).toBe(3);
   } finally { await f.cleanup(); }
 }, 30_000);

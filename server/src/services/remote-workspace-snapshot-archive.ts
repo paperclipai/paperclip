@@ -53,7 +53,7 @@ async function workspaceArchive(input: {
     if (stdin !== undefined) command.stdin?.end(stdin);
   });
   const portableRemoteUrl = (value: string) => {
-    if (!value || /[\u0000-\u0020\u007f\\]/u.test(value)) return false;
+    if (!value || /[\u0000-\x20\u007f\\]/u.test(value)) return false;
     if (/^[a-z][a-z0-9+.-]*:\/\//iu.test(value)) {
       let url: URL; try { url = new URL(value); } catch { return false; }
       if (!["http:", "https:", "ssh:", "git:"].includes(url.protocol)) return false;
@@ -77,7 +77,7 @@ async function workspaceArchive(input: {
       : /^(false|no|off|0)$/iu.test(value) ? "false" : fail("unsupported_git_setting");
     const rows = raw.split("\0").filter(Boolean).map(row => {
       const split = row.indexOf("\n"), key = row.slice(0, split), value = row.slice(split + 1);
-      if (split < 1 || /[\u0000-\u0020\u007f\\]/u.test(key) || /[\u0000-\u001f\u007f\\]/u.test(value)) fail("unsupported_git_setting");
+      if (split < 1 || /[\u0000-\x20\u007f\\]/u.test(key) || /[\u0000-\u001f\u007f\\]/u.test(value)) fail("unsupported_git_setting");
       return { key, value, remote: /^remote\.(.+)\.(url|pushurl|fetch|promisor|partialclonefilter)$/.exec(key),
         branch: /^branch\.(.+)\.(remote|merge|rebase)$/.exec(key), identity: /^user\.(name|email)$/.test(key),
         sparse: /^(core\.(sparsecheckout|sparsecheckoutcone)|index\.sparse)$/.test(key) };
@@ -125,7 +125,56 @@ async function workspaceArchive(input: {
     }
     return retained;
   };
+  const assertRepositoryRoot = async (repo: string) => {
+    // A damaged `.git` entry, such as a partly removed worktree, is not this
+    // directory's repository. Git would fail with a raw command error that
+    // names local paths, or discover an enclosing repository and save that
+    // repository's settings, refs and index as this directory's state.
+    // Git's error wording differs by version and locale, and a valid repository
+    // can also fail for other reasons, such as unsafe ownership or a full disk.
+    // Those keep their existing diagnostic; only a damaged entry is named here.
+    const top = await git(repo, ["rev-parse", "--path-format=absolute", "--show-toplevel"])
+      .catch(async (error: unknown) => {
+        check();
+        if (await damagedGitEntry(repo)) fail("invalid_git_repository");
+        throw error;
+      });
+    if (await fs.realpath(top.trim()).catch(() => null) !== repo) fail("invalid_git_repository");
+  };
+  const damagedGitEntry = async (repo: string) => {
+    // Git's own test for a repository: a `gitdir:` file or a directory with a
+    // valid HEAD, and objects and refs in its common directory.
+    const isDirectory = (directory: string) => fs.stat(directory).then(entry => entry.isDirectory(), () => false);
+    // A non-blocking open never waits on a named pipe; only a regular file is read.
+    const readSmall = async (file: string) => {
+      check();
+      const handle = await fs.open(file, fs.constants.O_RDONLY | fs.constants.O_NONBLOCK).catch(() => null);
+      if (!handle) return null;
+      try {
+        if (!(await handle.stat()).isFile()) return null;
+        const bytes = Buffer.alloc(4096), { bytesRead } = await handle.read(bytes, 0, bytes.length, 0);
+        return bytes.subarray(0, bytesRead).toString("utf8");
+      } finally { await handle.close(); }
+    };
+    const entry = path.join(repo, ".git");
+    let gitDir = entry;
+    if ((await fs.lstat(entry).catch(() => null))?.isFile()) {
+      const link = /^gitdir: (.+)$/mu.exec(await readSmall(entry) ?? "");
+      if (!link) return true;
+      gitDir = path.resolve(repo, link[1]!.trim());
+    }
+    const head = await readSmall(path.join(gitDir, "HEAD"));
+    if (!/^(ref: refs\/\S+|[0-9a-f]{40}|[0-9a-f]{64})\s*$/u.test(head ?? "")) return true;
+    let common = gitDir;
+    if (await fs.lstat(path.join(gitDir, "commondir")).then(() => true, () => false)) {
+      const value = await readSmall(path.join(gitDir, "commondir"));
+      if (!value?.trim()) return true;
+      common = path.resolve(gitDir, value.trim());
+    }
+    return !await isDirectory(path.join(common, "objects")) || !await isDirectory(path.join(common, "refs"));
+  };
   const assertGitOperationComplete = async (repo: string) => {
+    await assertRepositoryRoot(repo);
     const gitDir = (await git(repo, ["rev-parse", "--absolute-git-dir"])).trim();
     // A mirror plus the selected index is not a portable continuation of an
     // unfinished Git operation. Never acknowledge a copy that drops its todo,
@@ -219,6 +268,8 @@ async function workspaceArchive(input: {
   };
   const directories: string[] = [];
   const excludedPaths = new Set<string>();
+  const excluded = (next: string) => input.exclude?.some(item => next === item || next.startsWith(`${item}/`))
+    || next === ".paperclip-runtime" || next.startsWith(".paperclip-runtime/");
   const walk = async (root: string, skipGit = false) => {
     const entries: Entry[] = [];
     const visit = async (relative: string, parentIsRepository = false) => {
@@ -227,11 +278,17 @@ async function workspaceArchive(input: {
       if (!directoryStat.isDirectory() || directoryStat.isSymbolicLink() || await fs.realpath(directory) !== directory) fail("changed");
       const names = (await fs.readdir(directory)).sort();
       const inRepository = parentIsRepository || names.includes(".git");
+      if (skipGit && names.includes(".git") && !excluded(relative ? `${relative}/.git` : ".git")) {
+        // Validate the repository before any Git read below, including the
+        // tracked check for node_modules, can use a damaged entry.
+        if ((await fs.lstat(path.join(directory, ".git"))).isSymbolicLink()) fail("unsafe_git_link");
+        await assertRepositoryRoot(directory);
+      }
       for (const name of names) {
         check();
         const next = relative ? `${relative}/${name}` : name;
         if (!safeRelative(next)) fail("unsupported_filename");
-        if (input.exclude?.some(excluded => next === excluded || next.startsWith(`${excluded}/`)) || next === ".paperclip-runtime" || next.startsWith(".paperclip-runtime/")) {
+        if (excluded(next)) {
           excludedPaths.add(next); continue;
         }
         const source = path.join(root, next);
@@ -471,7 +528,8 @@ export function remoteWorkspaceCaptureFailureMessage(error: unknown): string | n
   const diskFull = "remote_workspace_sandbox_disk_full: the sandbox disk is full; free space in the sandbox before saving the workspace";
   const validation = [
     "remote_workspace_archive_changed", "remote_workspace_archive_unsupported_filename",
-    "remote_workspace_archive_unsafe_git_link", "remote_workspace_archive_unsafe_symlink",
+    "remote_workspace_archive_unsafe_git_link", "remote_workspace_archive_invalid_git_repository",
+    "remote_workspace_archive_unsafe_symlink",
     "remote_workspace_archive_unsupported_entry", "remote_workspace_archive_source_missing",
     "remote_workspace_archive_source_invalid", "remote_workspace_archive_credential_in_git_remote",
     "remote_workspace_archive_unsupported_git_setting", "remote_workspace_archive_manifest_too_large",

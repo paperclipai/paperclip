@@ -3,7 +3,7 @@ use sha2::{Digest, Sha256};
 
 use crate::acpx_event_payload::{AcpxRuntimeEventKind, AcpxTurnStatus};
 use crate::acpx_provider_state::{is_reserved_terminal_operation, AcpxProviderStateEvent};
-use crate::durable::{redact_text, sanitize_value, EventPriority};
+use crate::durable::{redact_sensitive_text_values, redact_text, sanitize_value, EventPriority};
 use crate::local_runner::LocalRunnerError;
 use crate::provider_bridge::{semantic_value_digest, ToolResult};
 use crate::stable_identity::{
@@ -551,6 +551,71 @@ fn require_projected_turn(
     Ok(())
 }
 
+/// Matches the `plan.proposed` schema bound: a proposed-plan document stays
+/// complete through this boundary so the TypeScript mapper can save it.
+const MAX_PLAN_PROPOSAL_CHARS: usize = 60_000;
+
+/// Splits one `<proposed_plan>` block out of a message. The tags must sit on
+/// their own lines outside fenced code, so quoting or documenting the tag
+/// never creates a proposal. Mirrors `splitProposedPlanBlock` in TypeScript.
+fn proposed_plan_block(value: &str) -> Option<String> {
+    let lines: Vec<&str> = value.split('\n').collect();
+    let mut fence: Option<char> = None;
+    let mut start: Option<usize> = None;
+    for (index, line) in lines.iter().enumerate() {
+        let trimmed = line.trim();
+        let marker = trimmed.chars().next().filter(|first| {
+            (*first == '`' || *first == '~') && trimmed.starts_with(&first.to_string().repeat(3))
+        });
+        // Fences are tracked inside the block too, so a fenced example tag in
+        // the plan never opens or closes it.
+        if let Some(marker) = marker {
+            fence = match fence {
+                None => Some(marker),
+                Some(open) if open == marker => None,
+                Some(open) => Some(open),
+            };
+            continue;
+        }
+        if fence.is_some() {
+            continue;
+        }
+        if start.is_none() && trimmed.eq_ignore_ascii_case("<proposed_plan>") {
+            start = Some(index);
+        } else if let Some(open) = start {
+            if trimmed.eq_ignore_ascii_case("</proposed_plan>") {
+                return Some(lines[open + 1..index].join("\n").trim().to_owned());
+            }
+        }
+    }
+    None
+}
+
+/// A proposed-plan document, redacted and bounded by the `plan.proposed`
+/// schema rather than the short display bound, which would cut it.
+fn plan_proposal_markdown(value: &str) -> String {
+    // Only a wrapper around the whole document is removed. Literal tags inside
+    // the plan (an inline or fenced example) stay part of its text.
+    let trimmed = value.trim();
+    let mut lines: Vec<&str> = trimmed.split('\n').collect();
+    if lines
+        .first()
+        .is_some_and(|line| line.trim().eq_ignore_ascii_case("<proposed_plan>"))
+    {
+        lines.remove(0);
+        if lines
+            .last()
+            .is_some_and(|line| line.trim().eq_ignore_ascii_case("</proposed_plan>"))
+        {
+            lines.pop();
+        }
+    }
+    redact_sensitive_text_values(lines.join("\n").trim())
+        .chars()
+        .take(MAX_PLAN_PROPOSAL_CHARS)
+        .collect()
+}
+
 fn bounded_text(value: &str, max_chars: usize) -> String {
     let redacted = redact_text(value);
     if redacted.chars().count() <= max_chars {
@@ -767,6 +832,44 @@ fn measurement(value: &Value) -> Value {
     })
 }
 
+/// Context-window occupancy from a Codex `thread/tokenUsage/updated` payload.
+/// Codex sizes the live context by the most recent request's total tokens.
+pub(crate) fn codex_context_usage(params: &Value) -> Option<Value> {
+    let usage = params.get("tokenUsage").unwrap_or(params);
+    let window = usage
+        .get("modelContextWindow")
+        .and_then(Value::as_u64)
+        .filter(|value| *value > 0)?;
+    let last = usage.get("last")?;
+    let used = last
+        .get("totalTokens")
+        .and_then(Value::as_u64)
+        .or_else(|| {
+            let input = last.get("inputTokens").and_then(Value::as_u64)?;
+            Some(
+                input.saturating_add(
+                    last.get("outputTokens")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(0),
+                ),
+            )
+        })?;
+    Some(json!({"usedTokens": used, "windowTokens": window}))
+}
+
+/// Context-window occupancy from an ACP `usage_update` (`used` of `size`).
+fn acpx_context_usage(payload: &Value) -> Option<Value> {
+    let window = payload
+        .get("size")
+        .and_then(Value::as_f64)
+        .filter(|value| value.is_finite() && *value >= 1.0)?;
+    let used = payload
+        .get("used")
+        .and_then(Value::as_f64)
+        .filter(|value| value.is_finite() && *value >= 0.0)?;
+    Some(json!({"usedTokens": used.round() as u64, "windowTokens": window.round() as u64}))
+}
+
 /// Converts Codex app-server notifications into provider-neutral PRP events.
 /// Provider-native envelopes are consumed here and never cross the PRP boundary.
 fn provider_performance_spans(params: &Value) -> Vec<Value> {
@@ -905,7 +1008,11 @@ pub fn normalize_codex_notification_in(
             EventPriority::P1,
             json!({
                 "schema": "paperclip.context.compacted.v1",
-                "compactionId": stable_id(string(params.get("threadId")), "codex-compaction"),
+                // One thread compacts many times; its turn names each compaction.
+                "compactionId": stable_id(
+                    &format!("{}:{}", string(params.get("threadId")), string(params.get("turnId"))),
+                    "codex-compaction",
+                ),
                 "reason": "provider",
                 "preTokens": Value::Null,
                 "postTokens": Value::Null,
@@ -1148,6 +1255,26 @@ pub fn normalize_codex_notification_in(
                 ),
             }),
         ),
+        "hook/started" | "hook/completed" => push(
+            &mut events,
+            if method == "hook/started" {
+                "hook.started"
+            } else {
+                "hook.completed"
+            },
+            EventPriority::P2,
+            crate::governance_events::codex_hook_payload(method, params),
+        ),
+        "item/autoApprovalReview/started" | "item/autoApprovalReview/completed" => push(
+            &mut events,
+            if method.ends_with("started") {
+                "safety.review.started"
+            } else {
+                "safety.review.completed"
+            },
+            EventPriority::P1,
+            crate::governance_events::codex_safety_review_payload(method, params),
+        ),
         "item/agentMessage/delta" => push(
             &mut events,
             "item.delta",
@@ -1197,6 +1324,41 @@ pub fn normalize_codex_notification_in(
             let item_type = string(provider_item.get("type"));
             let provider_phase = string(provider_item.get("phase"));
             let completed = method == "item/completed";
+            // A proposed plan travels as a schema-bounded rich event, so the
+            // durable display bound never cuts the document.
+            let proposal = match (item_type, method) {
+                ("plan", "item/started") => Some((false, String::new())),
+                ("plan", "item/completed") => Some((
+                    true,
+                    plan_proposal_markdown(string(provider_item.get("text"))),
+                )),
+                ("agentMessage", "item/completed")
+                    if provider_phase.is_empty() || provider_phase == "final_answer" =>
+                {
+                    proposed_plan_block(string(provider_item.get("text")))
+                        .map(|block| (true, plan_proposal_markdown(&block)))
+                        .filter(|(_, markdown)| !markdown.is_empty())
+                }
+                _ => None,
+            };
+            if let Some((proposal_completed, markdown)) = proposal {
+                push(
+                    &mut events,
+                    "plan.proposed",
+                    if proposal_completed {
+                        EventPriority::P1
+                    } else {
+                        EventPriority::P2
+                    },
+                    json!({
+                        "schema": "paperclip.plan.proposed.v1",
+                        "proposalId": item_id,
+                        "status": if proposal_completed { "completed" } else { "streaming" },
+                        "markdown": markdown,
+                        "source": "codex_plan_item",
+                    }),
+                );
+            }
             if item_type == "fileChange" {
                 let file_changes =
                     crate::tool_file_changes::codex_file_changes(provider_item.get("changes"), cwd);
@@ -1249,9 +1411,9 @@ pub fn normalize_codex_notification_in(
                     "schema": "paperclip.tool.execution.v1",
                     "executionId": item_id,
                     "transport": match item_type { "mcpToolCall" => "mcp", "dynamicToolCall" => "dynamic", "builtinToolCall" => "builtin", _ => "process" },
-                    "operation": if item_type == "commandExecution" { "execute" } else { "unknown" },
+                    "operation": if item_type == "commandExecution" { codex_command_operation(provider_item) } else { "unknown" },
                     "name": provider_item.get("tool").or_else(|| provider_item.get("command")).and_then(Value::as_str).map(|value| bounded_text(value, 240)),
-                    "target": Value::Null,
+                    "target": if item_type == "commandExecution" { codex_command_target(provider_item, cwd) } else { Value::Null },
                     "namespace": provider_item.get("server").and_then(Value::as_str).map(|value| bounded_text(value, 240)),
                     "readOnly": provider_item.get("readOnlyHint").and_then(Value::as_bool),
                     "status": provider_status(string(provider_item.get("status")), completed),
@@ -1268,6 +1430,11 @@ pub fn normalize_codex_notification_in(
                     )),
                 ) {
                     object.extend(output);
+                }
+                if item_type == "commandExecution" {
+                    if let Some(subject) = codex_command_subject(provider_item, cwd) {
+                        payload["subject"] = Value::String(subject);
+                    }
                 }
                 push(
                     &mut events,
@@ -1383,7 +1550,10 @@ pub fn normalize_acpx_runtime_event(
         AcpxRuntimeEventKind::Plan => stable_id(turn_id, fallback_item_id),
         _ => stable_id(string(payload.get("messageId")), fallback_item_id),
     };
-    match kind {
+    let compaction = matches!(kind, AcpxRuntimeEventKind::ProviderNotice)
+        .then(|| acpx_compaction_notice_completed(payload, turn_id))
+        .flatten();
+    let mut events = match kind {
         AcpxRuntimeEventKind::TextDelta => vec![NormalizedProviderEvent {
             event_type: "item.delta".to_owned(),
             priority: EventPriority::P2,
@@ -1458,6 +1628,48 @@ pub fn normalize_acpx_runtime_event(
             true,
         )],
         AcpxRuntimeEventKind::SemanticResult | AcpxRuntimeEventKind::Done => Vec::new(),
+    };
+    events.extend(compaction);
+    events
+}
+
+/// A completed `context_compaction` notice (the sidecar's form of Claude's
+/// compaction banner) also marks a context compaction.
+fn acpx_compaction_notice_completed(
+    payload: &Value,
+    turn_id: &str,
+) -> Option<NormalizedProviderEvent> {
+    if string(payload.get("category")) != "context_compaction" {
+        return None;
+    }
+    let completed = payload
+        .get("details")
+        .and_then(Value::as_array)?
+        .iter()
+        .any(|detail| {
+            string(detail.get("name")) == "Phase" && string(detail.get("value")) == "completed"
+        });
+    if !completed {
+        return None;
+    }
+    Some(acpx_context_compacted(&stable_id(
+        &format!("{turn_id}:{}", string(payload.get("noticeKey"))),
+        "acpx-compaction",
+    )))
+}
+
+fn acpx_context_compacted(compaction_id: &str) -> NormalizedProviderEvent {
+    NormalizedProviderEvent {
+        event_type: "context.compacted".to_owned(),
+        priority: EventPriority::P1,
+        payload: json!({
+            "schema": "paperclip.context.compacted.v1",
+            "compactionId": compaction_id,
+            "reason": "provider",
+            "preTokens": Value::Null,
+            "postTokens": Value::Null,
+            "sameSession": true,
+        }),
     }
 }
 
@@ -1608,7 +1820,7 @@ fn normalize_acpx_status(
             "requests": 1,
             "providerCostUsd": if turn_cost { provider_cost } else { 0.0 },
         });
-        return vec![NormalizedProviderEvent {
+        let mut usage = NormalizedProviderEvent {
             event_type: "usage.reported".to_owned(),
             priority: EventPriority::P0,
             payload: json!({
@@ -1623,7 +1835,28 @@ fn normalize_acpx_status(
                 "runDeltaAvailable": run_delta_available,
                 "runDelta": run_delta,
             }),
-        }];
+        };
+        if let Some(context) = acpx_context_usage(payload) {
+            usage.payload["context"] = context;
+        }
+        // Claude forwards its SDK rate_limit_event on usage_update; the
+        // sidecar passes only the sanitized `rateLimit` fields.
+        let rate_limits = payload.get("rateLimit").and_then(|info| {
+            crate::provider_rate_limits::claude_rate_limit_snapshot(
+                info,
+                &crate::provider_rate_limits::now_iso(),
+            )
+        });
+        return match rate_limits {
+            Some(snapshot) => vec![
+                usage,
+                crate::provider_rate_limits::rate_limit_notice(
+                    &snapshot,
+                    &stable_id(&format!("{item_id}:rate-limits"), "acpx-rate-limits"),
+                ),
+            ],
+            None => vec![usage],
+        };
     }
     if tag == "current_mode_update" {
         let status = string(payload.get("text"));
@@ -1705,7 +1938,17 @@ fn normalize_acpx_tool_call(
     let native_status = string(payload.get("status"));
     let status = provider_status(native_status, native_status == "completed");
     let terminal = status != "running";
-    let raw_title = string(payload.get("title")).trim();
+    let detail = payload.get("toolDetail").filter(|value| value.is_object());
+    let detail_text = |key: &str| {
+        detail
+            .and_then(|detail| detail.get(key))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+    };
+    // The native tool name ("Bash", "Write", "mcp__server__tool") beats the
+    // free-text display title ("Terminal", a command line, "Preparing file…").
+    let raw_title = detail_text("toolName").unwrap_or_else(|| string(payload.get("title")).trim());
     let mcp = acpx_mcp_tool_identity(raw_title);
     let name = bounded_text(mcp.map_or(raw_title, |(_, name)| name), 240);
     let output = match payload.get("rawOutput").or_else(|| payload.get("output")) {
@@ -1723,8 +1966,16 @@ fn normalize_acpx_tool_call(
         "namespace": mcp.map(|(namespace, _)| bounded_text(namespace, 240)),
         "readOnly": matches!(operation, "read" | "search" | "list"),
         "status": status,
-        "durationMs": Value::Null,
-        "exitCode": Value::Null,
+        "durationMs": if terminal {
+            detail.and_then(|detail| detail.get("durationMs")).and_then(Value::as_u64).map_or(Value::Null, Value::from)
+        } else {
+            Value::Null
+        },
+        "exitCode": if terminal {
+            detail.and_then(|detail| detail.get("exitCode")).and_then(Value::as_i64).map_or(Value::Null, Value::from)
+        } else {
+            Value::Null
+        },
         "progress": if terminal {
             Value::Null
         } else {
@@ -1738,6 +1989,11 @@ fn normalize_acpx_tool_call(
     });
     if let Some(input_updated) = payload.get("inputUpdated").and_then(Value::as_bool) {
         normalized["inputUpdated"] = Value::Bool(input_updated);
+    }
+    for key in ["subject", "description", "blockedReason"] {
+        if let Some(value) = detail_text(key) {
+            normalized[key] = Value::String(bounded_text(value, MAX_TEXT_CHARS));
+        }
     }
     let parent = string(payload.get("parentToolCallId"));
     if !parent.is_empty() {
@@ -1810,6 +2066,236 @@ fn acpx_notice(
             },
         }),
     }
+}
+
+fn codex_command_actions(item: &Value) -> &[Value] {
+    item.get("commandActions")
+        .and_then(Value::as_array)
+        .map_or(&[], Vec::as_slice)
+}
+
+/// Codex parses each shell command into read, search, list and unknown
+/// actions. A command made only of reads is a read, and so on; anything
+/// mixed or unparsed stays an execution.
+fn codex_command_operation(item: &Value) -> &'static str {
+    let actions = codex_command_actions(item);
+    let kind = |action: &Value| match string(action.get("type")).to_ascii_lowercase().as_str() {
+        "read" => "read",
+        "search" => "search",
+        "listfiles" | "list_files" => "list",
+        _ => "execute",
+    };
+    match actions.first().map(kind) {
+        Some(first) if actions.iter().all(|action| kind(action) == first) => first,
+        _ => "execute",
+    }
+}
+
+/// The single file a read-only command touched, relative to the command's cwd.
+fn codex_command_target(item: &Value, workspace_root: Option<&str>) -> Value {
+    let actions = codex_command_actions(item);
+    if actions.len() != 1 {
+        return Value::Null;
+    }
+    // One parsed action can still name several files (`sed -n 1,20p a b c`);
+    // naming only the first would misstate what was read.
+    if string(actions[0].get("type")).eq_ignore_ascii_case("read")
+        && codex_command_operands(string(actions[0].get("command"))) > 1
+    {
+        return Value::Null;
+    }
+    codex_workspace_relative_path(item, string(actions[0].get("path")), workspace_root)
+        .map_or(Value::Null, Value::String)
+}
+
+/// A Codex action path relative to the session workspace root. A relative
+/// path is resolved against the command's own cwd first, so `cat server.ts`
+/// run in `<root>/src` becomes `src/server.ts`. Returns None without a known
+/// root, or for a path outside it: host paths never reach a persisted event.
+fn codex_workspace_relative_path(
+    item: &Value,
+    path: &str,
+    workspace_root: Option<&str>,
+) -> Option<String> {
+    let root = workspace_root?.trim().trim_end_matches('/');
+    let path = path.trim();
+    if root.is_empty() || !root.starts_with('/') || path.is_empty() || path.contains('\0') {
+        return None;
+    }
+    let command_cwd = string(item.get("cwd")).trim();
+    let base = if command_cwd.starts_with('/') {
+        command_cwd
+    } else {
+        root
+    };
+    let absolute = if path.starts_with('/') {
+        path.to_owned()
+    } else {
+        format!("{base}/{path}")
+    };
+    let mut segments: Vec<&str> = Vec::new();
+    for segment in absolute.split('/') {
+        match segment {
+            "" | "." => {}
+            ".." => {
+                segments.pop()?;
+            }
+            other => segments.push(other),
+        }
+    }
+    let root_segments: Vec<&str> = root
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .collect();
+    if segments.len() < root_segments.len() || segments[..root_segments.len()] != root_segments[..]
+    {
+        return None;
+    }
+    let relative = segments[root_segments.len()..].join("/");
+    Some(if relative.is_empty() {
+        ".".to_owned()
+    } else {
+        bounded_text(&relative, 4_000)
+    })
+}
+
+/// Non-flag operands after the program name, ignoring `sed` line ranges.
+fn codex_command_operands(command: &str) -> usize {
+    let words = shell_words(command);
+    let program = words
+        .first()
+        .map(|word| word.rsplit('/').next().unwrap_or(word).to_owned())
+        .unwrap_or_default();
+    // `sed -n 1,20p FILE`: the script is not a file. `head -n 20 FILE`: the
+    // flag's value is not a file. Every other non-flag word is an operand,
+    // including numeric filenames.
+    let is_sed_script = |word: &str| {
+        word.trim_end_matches('p')
+            .split(',')
+            .all(|part| !part.is_empty() && part.chars().all(|c| c.is_ascii_digit() || c == '$'))
+    };
+    let mut count = 0;
+    let mut skip_next = false;
+    for word in words.iter().skip(1) {
+        if skip_next {
+            skip_next = false;
+            continue;
+        }
+        if word.is_empty() {
+            continue;
+        }
+        if word.starts_with('-') {
+            skip_next = matches!(program.as_str(), "head" | "tail")
+                && matches!(word.as_str(), "-n" | "-c")
+                || program == "sed" && word == "-e";
+            continue;
+        }
+        if program == "sed" && is_sed_script(word) {
+            continue;
+        }
+        count += 1;
+    }
+    count
+}
+
+/// Split a command into words the way a POSIX shell groups them: single and
+/// double quotes and backslash escapes keep spaces inside one word.
+fn shell_words(command: &str) -> Vec<String> {
+    let mut words = Vec::new();
+    let mut current = String::new();
+    let mut in_word = false;
+    let mut quote: Option<char> = None;
+    let mut characters = command.chars();
+    while let Some(character) = characters.next() {
+        match (quote, character) {
+            (Some(open), close) if close == open => quote = None,
+            (Some('"'), '\\') | (None, '\\') => {
+                if let Some(escaped) = characters.next() {
+                    current.push(escaped);
+                }
+                in_word = true;
+            }
+            (Some(_), other) => current.push(other),
+            (None, '\'' | '"') => {
+                quote = Some(character);
+                in_word = true;
+            }
+            (None, other) if other.is_whitespace() => {
+                if in_word {
+                    words.push(std::mem::take(&mut current));
+                    in_word = false;
+                }
+            }
+            (None, other) => {
+                current.push(other);
+                in_word = true;
+            }
+        }
+    }
+    if in_word {
+        words.push(current);
+    }
+    words
+}
+
+/// The command a person typed, without the `/bin/zsh -lc '…'` wrapper. Codex
+/// already parsed each action's own command, so prefer those. A single search
+/// reads as its query: `"TODO" in src`.
+fn codex_command_subject(item: &Value, workspace_root: Option<&str>) -> Option<String> {
+    let actions = codex_command_actions(item);
+    if let [action] = actions {
+        let query = string(action.get("query")).trim();
+        if string(action.get("type")).eq_ignore_ascii_case("search") && !query.is_empty() {
+            let scope = match codex_workspace_relative_path(
+                item,
+                string(action.get("path")),
+                workspace_root,
+            ) {
+                Some(path) if path != "." => format!(" in {path}"),
+                _ => String::new(),
+            };
+            return Some(bounded_text(&format!("\"{query}\"{scope}"), MAX_TEXT_CHARS));
+        }
+    }
+    let parsed: Vec<&str> = codex_command_actions(item)
+        .iter()
+        .map(|action| string(action.get("command")).trim())
+        .collect();
+    let joined = if !parsed.is_empty() && parsed.iter().all(|command| !command.is_empty()) {
+        parsed.join(" && ")
+    } else {
+        unwrap_shell_command(string(item.get("command")).trim()).to_owned()
+    };
+    (!joined.is_empty()).then(|| bounded_text(&joined, MAX_TEXT_CHARS))
+}
+
+fn unwrap_shell_command(command: &str) -> &str {
+    for shell in [
+        "/bin/zsh",
+        "/bin/bash",
+        "/bin/sh",
+        "zsh",
+        "bash",
+        "sh",
+        "/usr/bin/env bash",
+        "/usr/bin/env zsh",
+    ] {
+        for flag in [" -lc ", " -c "] {
+            if let Some(rest) = command
+                .strip_prefix(shell)
+                .and_then(|rest| rest.strip_prefix(flag))
+            {
+                let rest = rest.trim();
+                for quote in ['\'', '"'] {
+                    if rest.len() >= 2 && rest.starts_with(quote) && rest.ends_with(quote) {
+                        return &rest[1..rest.len() - 1];
+                    }
+                }
+                return rest;
+            }
+        }
+    }
+    command
 }
 
 fn nonnegative_u64(value: Option<&Value>) -> u64 {
@@ -1900,6 +2386,86 @@ mod tests {
             0.001
         );
         assert_eq!(cumulative[0].payload["runDelta"]["providerCostUsd"], 0.0);
+    }
+
+    #[test]
+    fn acpx_usage_carries_context_window_occupancy() {
+        let usage = normalize_acpx_status(
+            &json!({"tag": "usage_update", "used": 34076, "size": 200000}),
+            "item",
+            "turn-1",
+            1,
+        );
+        assert_eq!(
+            usage[0].payload["context"],
+            json!({"usedTokens": 34076, "windowTokens": 200000})
+        );
+        for missing in [
+            json!({"tag": "usage_update", "used": 10}),
+            json!({"tag": "usage_update", "used": 10, "size": 0}),
+        ] {
+            let usage = normalize_acpx_status(&missing, "item", "turn-1", 1);
+            assert!(usage[0].payload.get("context").is_none());
+        }
+    }
+
+    #[test]
+    fn codex_context_usage_reads_last_request_and_model_window() {
+        assert_eq!(
+            codex_context_usage(&json!({"tokenUsage": {
+                "total": {"inputTokens": 76682, "outputTokens": 1089},
+                "last": {"inputTokens": 26000, "outputTokens": 672, "totalTokens": 26672},
+                "modelContextWindow": 258400,
+            }})),
+            Some(json!({"usedTokens": 26672, "windowTokens": 258400}))
+        );
+        assert_eq!(
+            codex_context_usage(&json!({"tokenUsage": {
+                "last": {"inputTokens": 100, "outputTokens": 20}, "modelContextWindow": 1000,
+            }})),
+            Some(json!({"usedTokens": 120, "windowTokens": 1000}))
+        );
+        assert_eq!(
+            codex_context_usage(&json!({"tokenUsage": {"last": {"totalTokens": 5}}})),
+            None
+        );
+    }
+
+    #[test]
+    fn compaction_banner_text_alone_is_not_a_compaction() {
+        // The sidecar turns Claude's banner into a `context_compaction`
+        // notice; only that notice marks the compaction, so it is counted once.
+        let events = normalize_acpx_runtime_event(
+            AcpxRuntimeEventKind::TextDelta,
+            &json!({"text": "\n\nCompacting completed."}),
+            None,
+            "fallback",
+            "turn-1",
+            0,
+        );
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event_type, "item.delta");
+    }
+
+    #[test]
+    fn completed_compaction_notice_emits_context_compacted() {
+        let notice = |phase: &str| {
+            normalize_acpx_runtime_event(
+                AcpxRuntimeEventKind::ProviderNotice,
+                &json!({"severity": "info", "category": "context_compaction",
+                    "summary": "Compacting context", "noticeKey": "compaction-1",
+                    "details": [{"name": "Phase", "value": phase}]}),
+                None,
+                "fallback",
+                "turn-1",
+                0,
+            )
+        };
+        assert_eq!(notice("running").len(), 1);
+        let completed = notice("completed");
+        assert_eq!(completed.len(), 2);
+        assert_eq!(completed[1].event_type, "context.compacted");
+        assert_eq!(completed[1].payload["compactionId"], "turn-1:compaction-1");
     }
 
     #[test]
@@ -2367,6 +2933,93 @@ mod tests {
     }
 
     #[test]
+    fn emits_complete_long_plan_proposals_as_rich_events() {
+        let body = format!("# Plan\n{}", "- step\n".repeat(1_000).trim_end());
+        let message = format!("Ready for review.\n<proposed_plan>\n{body}\n</proposed_plan>");
+        assert!(message.chars().count() > MAX_TEXT_CHARS);
+        // A message carries prose around the block; a plan item is the
+        // wrapped document itself.
+        let plan_item = format!("<proposed_plan>\n{body}\n</proposed_plan>");
+        for (kind, text) in [("agentMessage", &message), ("plan", &plan_item)] {
+            let events = normalize_codex_notification(
+                "item/completed",
+                &json!({"item": {"id": "item-1", "type": kind, "phase": "final_answer", "text": text}}),
+            );
+            let proposal = events
+                .iter()
+                .find(|event| event.event_type == "plan.proposed")
+                .unwrap_or_else(|| panic!("{kind} emits a proposal"));
+            assert_eq!(
+                proposal.payload["markdown"].as_str(),
+                Some(body.as_str()),
+                "{kind}"
+            );
+            assert_eq!(proposal.payload["proposalId"], "item-1");
+            assert_eq!(proposal.payload["status"], "completed");
+        }
+        let started = normalize_codex_notification(
+            "item/started",
+            &json!({"item": {"id": "plan-1", "type": "plan", "text": ""}}),
+        );
+        assert_eq!(started[0].event_type, "plan.proposed");
+        assert_eq!(started[0].payload["status"], "streaming");
+        // Quoted, fenced or non-final mentions never become proposals.
+        for (phase, text) in [
+            (
+                "final_answer",
+                "Use:\n```\n<proposed_plan>\n# P\n</proposed_plan>\n```",
+            ),
+            (
+                "final_answer",
+                "Inline <proposed_plan>x</proposed_plan> mention.",
+            ),
+            ("commentary", "<proposed_plan>\n# P\n</proposed_plan>"),
+        ] {
+            let events = normalize_codex_notification(
+                "item/completed",
+                &json!({"item": {"id": "m", "type": "agentMessage", "phase": phase, "text": text}}),
+            );
+            assert!(
+                events
+                    .iter()
+                    .all(|event| event.event_type != "plan.proposed"),
+                "{text}"
+            );
+        }
+    }
+
+    #[test]
+    fn keeps_a_plan_whole_when_it_contains_a_fenced_closing_tag_example() {
+        let body =
+            "# Plan\n\n1. Document:\n```\n<proposed_plan>\nexample\n</proposed_plan>\n```\n2. Ship";
+        let events = normalize_codex_notification(
+            "item/completed",
+            &json!({"item": {"id": "msg-9", "type": "agentMessage", "phase": "final_answer",
+                "text": format!("Ready.\n<proposed_plan>\n{body}\n</proposed_plan>")}}),
+        );
+        let proposal = events
+            .iter()
+            .find(|event| event.event_type == "plan.proposed")
+            .unwrap();
+        assert_eq!(proposal.payload["markdown"].as_str(), Some(body));
+    }
+
+    #[test]
+    fn keeps_literal_proposed_plan_tags_inside_a_plan_body() {
+        let body = "# Plan\n\n1. Format: `<proposed_plan>x</proposed_plan>`\n\n```\n<proposed_plan>\nsample\n</proposed_plan>\n```";
+        let events = normalize_codex_notification(
+            "item/completed",
+            &json!({"item": {"id": "plan-2", "type": "plan", "text": format!("<proposed_plan>\n{body}\n</proposed_plan>")}}),
+        );
+        assert_eq!(events[0].payload["markdown"].as_str(), Some(body));
+        let bare = normalize_codex_notification(
+            "item/completed",
+            &json!({"item": {"id": "plan-3", "type": "plan", "text": body}}),
+        );
+        assert_eq!(bare[0].payload["markdown"].as_str(), Some(body));
+    }
+
+    #[test]
     fn maps_codex_plan_without_retaining_native_envelope() {
         let events = normalize_codex_notification(
             "turn/plan/updated",
@@ -2380,6 +3033,202 @@ mod tests {
         assert_eq!(events[0].event_type, "plan.updated");
         assert_eq!(events[0].payload["steps"][0]["status"], "in_progress");
         assert!(!events[0].payload.to_string().contains("secret-value"));
+    }
+
+    #[test]
+    fn codex_commands_carry_their_parsed_subject_operation_and_target() {
+        let read = normalize_codex_notification_in(
+            "item/completed",
+            &json!({"item": {
+                "id": "exec-read", "type": "commandExecution", "status": "completed",
+                "command": "/bin/zsh -lc 'sed -n 1,120p src/server.ts'",
+                "cwd": "/work/repo", "exitCode": 0, "durationMs": 31,
+                "commandActions": [{"type": "read", "command": "sed -n 1,120p src/server.ts", "name": "server.ts", "path": "/work/repo/src/server.ts"}],
+            }}),
+            Some("/work/repo"),
+        );
+        assert_eq!(read[0].payload["operation"], "read");
+        assert_eq!(read[0].payload["target"], "src/server.ts");
+        assert_eq!(read[0].payload["subject"], "sed -n 1,120p src/server.ts");
+        assert_eq!(read[0].payload["exitCode"], 0);
+        assert_eq!(read[0].payload["durationMs"], 31);
+
+        let run = normalize_codex_notification_in(
+            "item/completed",
+            &json!({"item": {
+                "id": "exec-run", "type": "commandExecution", "status": "failed",
+                "command": "/bin/bash -lc \"node --test\"", "cwd": "/work/repo", "exitCode": 1,
+                "commandActions": [{"type": "unknown"}],
+            }}),
+            Some("/work/repo"),
+        );
+        assert_eq!(run[0].payload["operation"], "execute");
+        assert_eq!(run[0].payload["target"], Value::Null);
+        assert_eq!(run[0].payload["subject"], "node --test");
+        assert_eq!(run[0].payload["exitCode"], 1);
+
+        let escape = normalize_codex_notification_in(
+            "item/completed",
+            &json!({"item": {
+                "id": "exec-escape", "type": "commandExecution", "status": "completed",
+                "command": "cat ../secret", "cwd": "/work/repo",
+                "commandActions": [{"type": "read", "command": "cat ../secret", "path": "../secret"}],
+            }}),
+            Some("/work/repo"),
+        );
+        assert_eq!(escape[0].payload["target"], Value::Null);
+
+        let several = normalize_codex_notification_in(
+            "item/completed",
+            &json!({"item": {
+                "id": "exec-several", "type": "commandExecution", "status": "completed",
+                "command": "/bin/zsh -lc \"sed -n '1,20p' notes/a.md notes/b.md\"", "cwd": "/work/repo",
+                "commandActions": [{"type": "read", "command": "sed -n '1,20p' notes/a.md notes/b.md", "path": "notes/a.md"}],
+            }}),
+            Some("/work/repo"),
+        );
+        assert_eq!(several[0].payload["operation"], "read");
+        assert_eq!(several[0].payload["target"], Value::Null);
+
+        let quoted = normalize_codex_notification_in(
+            "item/completed",
+            &json!({"item": {
+                "id": "exec-quoted", "type": "commandExecution", "status": "completed",
+                "command": "cat \"docs/setup guide.md\"", "cwd": "/work/repo",
+                "commandActions": [{"type": "read", "command": "cat \"docs/setup guide.md\"", "path": "docs/setup guide.md"}],
+            }}),
+            Some("/work/repo"),
+        );
+        assert_eq!(quoted[0].payload["target"], "docs/setup guide.md");
+        assert_eq!(codex_command_operands("cat 2025 2026"), 2);
+        assert_eq!(codex_command_operands("head -n 20 src/a.ts"), 1);
+        assert_eq!(codex_command_operands("sed -n '1,20p' src/a.ts"), 1);
+        assert_eq!(codex_command_operands("sed -n '$p' a.md b.md"), 2);
+        assert_eq!(
+            shell_words(r#"sed -n '1,20p' a\ b.md "c d.md""#),
+            ["sed", "-n", "1,20p", "a b.md", "c d.md"]
+        );
+
+        let search = normalize_codex_notification_in(
+            "item/completed",
+            &json!({"item": {
+                "id": "exec-search", "type": "commandExecution", "status": "completed",
+                "command": "/bin/zsh -lc \"rg -n TODO src\"", "cwd": "/work/repo",
+                "commandActions": [{"type": "search", "command": "rg -n TODO src", "query": "TODO", "path": "src"}],
+            }}),
+            Some("/work/repo"),
+        );
+        assert_eq!(search[0].payload["operation"], "search");
+        assert_eq!(search[0].payload["subject"], "\"TODO\" in src");
+
+        for (path, expected) in [
+            ("/work/repo/src", "\"TODO\" in src"),
+            ("/work/repo", "\"TODO\""),
+            ("/etc", "\"TODO\""),
+            ("../outside", "\"TODO\""),
+        ] {
+            let scoped = normalize_codex_notification_in(
+                "item/completed",
+                &json!({"item": {
+                    "id": "exec-search-abs", "type": "commandExecution", "status": "completed",
+                    "command": "rg TODO", "cwd": "/work/repo",
+                    "commandActions": [{"type": "search", "command": "rg TODO", "query": "TODO", "path": path}],
+                }}),
+                Some("/work/repo"),
+            );
+            assert_eq!(scoped[0].payload["subject"], expected, "path {path}");
+        }
+
+        let nested = normalize_codex_notification_in(
+            "item/completed",
+            &json!({"item": {
+                "id": "exec-nested", "type": "commandExecution", "status": "completed",
+                "command": "cat server.ts", "cwd": "/work/repo/src",
+                "commandActions": [{"type": "read", "command": "cat server.ts", "path": "server.ts"}],
+            }}),
+            Some("/work/repo"),
+        );
+        assert_eq!(nested[0].payload["target"], "src/server.ts");
+        let rootless = normalize_codex_notification(
+            "item/completed",
+            &json!({"item": {
+                "id": "exec-rootless", "type": "commandExecution", "status": "completed",
+                "command": "cat src/server.ts", "cwd": "/work/repo",
+                "commandActions": [{"type": "read", "command": "cat src/server.ts", "path": "/work/repo/src/server.ts"}],
+            }}),
+        );
+        assert_eq!(rootless[0].payload["target"], Value::Null);
+    }
+
+    #[test]
+    fn acpx_tool_detail_supplies_native_name_outcome_and_refusal() {
+        let completed = normalize_acpx_runtime_event(
+            AcpxRuntimeEventKind::ToolCall,
+            &json!({
+                "type": "tool_call", "toolCallId": "toolu_1", "status": "completed", "title": "Terminal",
+                "toolDetail": {"toolName": "Bash", "subject": "node --test", "description": "Run the tests", "exitCode": 0, "durationMs": 1840},
+            }),
+            Some("execute"),
+            "fallback",
+            "turn-1",
+            0,
+        );
+        let payload = &completed[0].payload;
+        assert_eq!(payload["name"], "Bash");
+        assert_eq!(payload["subject"], "node --test");
+        assert_eq!(payload["description"], "Run the tests");
+        assert_eq!(payload["exitCode"], 0);
+        assert_eq!(payload["durationMs"], 1840);
+
+        let running = normalize_acpx_runtime_event(
+            AcpxRuntimeEventKind::ToolCall,
+            &json!({"type": "tool_call", "toolCallId": "toolu_2", "status": "in_progress", "title": "Terminal",
+                "toolDetail": {"toolName": "Bash", "exitCode": 1, "durationMs": 5}}),
+            Some("execute"),
+            "fallback",
+            "turn-1",
+            0,
+        );
+        assert_eq!(running[0].payload["exitCode"], Value::Null);
+        assert_eq!(running[0].payload["durationMs"], Value::Null);
+
+        let blocked = normalize_acpx_runtime_event(
+            AcpxRuntimeEventKind::ToolCall,
+            &json!({"type": "tool_call", "toolCallId": "toolu_3", "status": "failed", "title": "rm -rf build",
+                "toolDetail": {"toolName": "mcp__paperclip__delete", "blockedReason": "Denied by rule"}}),
+            Some("unknown"),
+            "fallback",
+            "turn-1",
+            0,
+        );
+        assert_eq!(blocked[0].payload["name"], "delete");
+        assert_eq!(blocked[0].payload["namespace"], "paperclip");
+        assert_eq!(blocked[0].payload["transport"], "mcp");
+        assert_eq!(blocked[0].payload["blockedReason"], "Denied by rule");
+
+        let secret = normalize_acpx_runtime_event(
+            AcpxRuntimeEventKind::ToolCall,
+            &json!({"type": "tool_call", "toolCallId": "toolu_4", "status": "failed", "title": "curl",
+            "toolDetail": {
+                "toolName": "Bash",
+                "subject": "curl -H 'Authorization: Bearer top-secret-value' https://example.test?token=top-secret-value",
+                "description": "Call with password=top-secret-value",
+                "blockedReason": "Denied: api_key=top-secret-value",
+            }}),
+            Some("execute"),
+            "fallback",
+            "turn-1",
+            0,
+        );
+        assert!(!secret[0].payload.to_string().contains("top-secret-value"));
+        let codex = normalize_codex_notification(
+            "item/completed",
+            &json!({"item": {
+                "id": "exec-secret", "type": "commandExecution", "status": "completed",
+                "command": "/bin/zsh -lc 'curl https://example.test?token=top-secret-value'", "cwd": "/work/repo",
+            }}),
+        );
+        assert!(!codex[0].payload.to_string().contains("top-secret-value"));
     }
 
     #[test]

@@ -5,8 +5,10 @@
  * thinking → tool → diff → responding while a run is in flight, rather than
  * only showing a response after the turn settles.
  */
+import { foldApprovedAutoReviews } from "./fold-auto-reviews";
 import { isFatalProviderError, isStatusNotice, isStatusNoticePayload, statusNoticeCategory } from "./status-notice-presentation";
 import type { TranscriptEntry } from "@/adapters";
+import { formatContextTokens } from "@/lib/context-tokens";
 import { turnChangesFromEditRows } from "./turn-file-changes";
 import type {
   TaskChatDiff,
@@ -23,6 +25,7 @@ import type {
   TaskChatMessageItem,
   TaskChatPlanDocumentItem,
   TaskChatRuntimeRequestItem,
+  TaskChatMarkerItem,
   TaskChatSubagent,
   TaskChatSubagentGroupItem,
 } from "./task-chat-model";
@@ -130,6 +133,30 @@ export function flattenSelfTalk(text: string): string {
     .replace(/__/g, "")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+/** "Context compacted · 230k → 38k tokens" divider for a provider compaction. */
+export function contextCompactedMarker(
+  entry: Extract<TranscriptEntry, { kind: "provider_activity" }>,
+  id: string,
+): TaskChatMarkerItem {
+  const count = (value: unknown) =>
+    typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
+  const pre = count(entry.payload.preTokens);
+  const post = count(entry.payload.postTokens);
+  const detail = pre !== null && post !== null
+    ? `${formatContextTokens(pre)} → ${formatContextTokens(post)} tokens`
+    : pre !== null
+      ? `from ${formatContextTokens(pre)} tokens`
+      : undefined;
+  return {
+    id,
+    kind: "marker",
+    variant: "context_compacted",
+    label: "Context compacted",
+    ...(detail ? { detail } : {}),
+    createdAtIso: entry.ts,
+  };
 }
 
 function diffKind(changeType: string): "add" | "remove" | "context" | "hunk" {
@@ -281,6 +308,7 @@ const PROVIDER_DETAIL_KEYS: Record<
   readonly string[]
 > = {
   plan: ["revision", "syncStatus", "documentRevision", "complete"],
+  plan_proposal: ["status", "source"],
   tool_execution: [
     "transport",
     "operation",
@@ -317,9 +345,17 @@ const PROVIDER_DETAIL_KEYS: Record<
     "failure",
   ],
   review: ["state", "scope"],
-  hook: ["event", "scope", "status", "blocking", "durationMs", "summary"],
+  hook: ["event", "toolName", "outcome", "status", "source", "durationMs", "blocking", "scope"],
   memory: ["label", "available", "reference"],
-  safety: ["status", "decision", "targetExecutionId", "summary"],
+  safety: [
+    "decision",
+    "actionKind",
+    "action",
+    "riskLevel",
+    "userConsent",
+    "decidedBy",
+    "targetExecutionId",
+  ],
   terminal: ["origin", "inputClass", "byteCount"],
   wait: ["reason", "status", "plannedDurationMs", "elapsedDurationMs"],
   verification: ["status", "detail", "reasonCode"],
@@ -338,6 +374,7 @@ function providerActivityKey(
 ): string {
   const idKeys = [
     "planId",
+    "proposalId",
     "executionId",
     "researchId",
     "delegationId",
@@ -386,7 +423,8 @@ function providerActivityItem(
         (entry.family === "provider_notice" && (key === "summary" || key === "message")) ||
           (entry.family === "verification" && key === "detail")
           ? 4000
-          : key === "message" || key === "summary" || key === "reason" ? 320 : 160,
+          : key === "message" || key === "summary" || key === "reason" ? 320
+            : entry.family === "safety" && key === "action" ? 1000 : 160,
       ),
       mono: /(?:id|model|target|reference|url|code|bytes)$/i.test(key),
     });
@@ -468,10 +506,12 @@ function providerActivityItem(
   const rawOutput =
     entry.family === "tool_execution"
       ? stringValue(entry.payload.output)
-      : undefined;
+      : entry.family === "plan_proposal"
+        ? stringValue(entry.payload.markdown)
+        : undefined;
   const outputTruncated =
     entry.payload.outputTruncated === true ||
-    Boolean(rawOutput && rawOutput.length > PROTOCOL_OUTPUT_MAX);
+    Boolean(rawOutput && entry.family !== "plan_proposal" && rawOutput.length > PROTOCOL_OUTPUT_MAX);
   const summary =
     entry.summary && entry.summary !== entry.eventType
       ? entry.summary
@@ -493,7 +533,10 @@ function providerActivityItem(
     steps,
     links,
     children,
-    output: rawOutput ? rawOutput.slice(0, PROTOCOL_OUTPUT_MAX) : undefined,
+    // A proposed plan is a document, bounded by its own 60k event schema.
+    output: rawOutput
+      ? rawOutput.slice(0, entry.family === "plan_proposal" ? 60_000 : PROTOCOL_OUTPUT_MAX)
+      : undefined,
     outputTruncated,
     transcriptIndex: index,
     startedAt: entry.ts,
@@ -658,6 +701,24 @@ export function reconcileSegmentRuntimeRequests(
  * assistant deltas and threading tool_result/diff onto their tool_call. Mirrors
  * buildAssistantPartsFromTranscript's grouping, emitting our presentation model.
  */
+/**
+ * Apply canonical tool facts from the runner. The subject (command, pattern,
+ * URL) or the workspace-relative path becomes the row target; the generic
+ * "operation: …" input summary is never shown when canonical data exists.
+ */
+function applyToolDetail(tool: TaskChatToolItem, detail: NonNullable<Extract<TranscriptEntry, { kind: "tool_call" }>["detail"]>) {
+  if (detail.operation) tool.operation = detail.operation;
+  const subject = detail.operation === "read" || detail.operation === "list" || detail.operation === "edit"
+    ? detail.target ?? detail.subject
+    : detail.subject ?? detail.target;
+  // Older runs carry no subject; keep the input summary they already had.
+  if (subject) tool.target = clip(subject, 400);
+  if (detail.description) tool.description = detail.description;
+  if (detail.exitCode !== undefined) tool.exitCode = detail.exitCode;
+  if (detail.durationMs !== undefined) tool.durationMs = detail.durationMs;
+  if (detail.blockedReason) tool.blockedReason = detail.blockedReason;
+}
+
 export function transcriptToTaskChatItems(
   entries: readonly TranscriptEntry[],
   { runId, agentName, running }: TranscriptAdapterOptions,
@@ -808,7 +869,11 @@ export function transcriptToTaskChatItems(
           // generic name must never displace the initial call's real one. ACP
           // also retitles a call to its invocation once known ("Terminal" →
           // "ls -la"); that is detail for the target slot, not a new identity.
-          if (!isGenericToolName(entry.name)) {
+          if (entry.detail && !isGenericToolName(entry.name)) {
+            // Canonical runner data: the latest native name is authoritative.
+            existing.name = toolDisplayName(entry.name);
+            existing.rawName = entry.name ?? undefined;
+          } else if (!isGenericToolName(entry.name)) {
             if (isGenericToolName(existing.rawName)) {
               existing.name = toolDisplayName(entry.name);
               existing.rawName = entry.name ?? undefined;
@@ -816,9 +881,10 @@ export function transcriptToTaskChatItems(
               existing.target = clip(entry.name!, TARGET_MAX);
             }
           }
+          if (entry.detail) applyToolDetail(existing, entry.detail);
           lastToolIndex = existingIndex!;
         } else {
-          items.push({
+          const tool: TaskChatToolItem = {
             id: `${runId}:tool:${toolCallId}`,
             kind: "tool",
             name: toolDisplayName(entry.name),
@@ -826,7 +892,9 @@ export function transcriptToTaskChatItems(
             target: summarizeToolInput(entry.input),
             status: "in_progress",
             ...(entry.parentToolUseId ? { parentToolUseId: entry.parentToolUseId } : {}),
-          });
+          };
+          if (entry.detail) applyToolDetail(tool, entry.detail);
+          items.push(tool);
           toolIndexById.set(toolCallId, items.length - 1);
           lastToolIndex = items.length - 1;
         }
@@ -937,6 +1005,12 @@ export function transcriptToTaskChatItems(
         break;
       }
       case "provider_activity": {
+        if (entry.eventType === "context.compacted") {
+          // One entry per compaction; producers may reuse a thread-scoped id.
+          items.push(contextCompactedMarker(entry, `${runId}:compaction:${String(entry.payload.compactionId ?? "")}:${i}`));
+          resetInline();
+          break;
+        }
         // Use producer classification, including the legacy generic Codex
         // categories, never message-text matching. The run transcript still
         // retains these diagnostics.
@@ -951,7 +1025,16 @@ export function transcriptToTaskChatItems(
           : `provider:${providerActivityKey(entry)}`;
         const item = providerActivityItem(entry, runId, i);
         const existingIndex = protocolIndexByKey.get(key);
-        if (existingIndex == null) {
+        const previous = existingIndex == null ? undefined : items[existingIndex];
+        // A harness can reuse one hook id for two calls (for example two
+        // calls in the same second). Once a hook row has finished, a later
+        // record with that id is a new call: keep both rows, so a later pass
+        // can never hide an earlier block reason.
+        const newHookCall = entry.family === "hook"
+          && previous?.kind === "protocol"
+          && previous.surface === "provider_activity"
+          && previous.status !== "running";
+        if (existingIndex == null || newHookCall) {
           items.push(item);
           protocolIndexByKey.set(key, items.length - 1);
         } else {
@@ -1178,17 +1261,18 @@ export function transcriptToTaskChatItems(
   // Every turn that edited files ends with its changed files, just before its
   // final answer. A harness that reports only per-edit patches gets the card
   // assembled from its edit rows.
-  const changeIndex = items.findIndex((item) => item.kind === "protocol" && item.surface === "workspace_change");
+  const folded = foldApprovedAutoReviews(items, runId);
+  const changeIndex = folded.findIndex((item) => item.kind === "protocol" && item.surface === "workspace_change");
   const changes = changeIndex >= 0
-    ? items.splice(changeIndex, 1)[0]
-    : turnChangesFromEditRows(items, runId ?? "run", !running);
+    ? folded.splice(changeIndex, 1)[0]
+    : turnChangesFromEditRows(folded, runId ?? "run", !running);
   if (changes) {
-    const last = items.at(-1);
+    const last = folded.at(-1);
     const beforeFinal = last?.kind === "message" && last.channel === "final";
-    items.splice(beforeFinal ? items.length - 1 : items.length, 0, changes);
+    folded.splice(beforeFinal ? folded.length - 1 : folded.length, 0, changes);
   }
 
-  return items;
+  return folded;
 }
 
 /**
@@ -1200,7 +1284,26 @@ export function transcriptToTaskChatItems(
 export function settledRunChildren(
   parsed: readonly TaskChatItem[],
 ): TaskChatTurnChildItem[] {
-  return buildTurnTimelineRows(parsed, false);
+  // A finished run's compactions render as thread dividers (see
+  // settledCompactionMarkers), not inside its collapsed turn.
+  return buildTurnTimelineRows(parsed, false).filter((item) => !isCompactionDivider(item));
+}
+
+/**
+ * Compaction dividers of a finished run. A compaction divides the whole
+ * conversation, so the thread places them between messages rather than
+ * inside the run's collapsed activity, where they would stay hidden.
+ */
+export function settledCompactionMarkers(
+  entries: readonly TranscriptEntry[],
+  runId: string,
+): TaskChatMarkerItem[] {
+  const markers: TaskChatMarkerItem[] = [];
+  entries.forEach((entry, index) => {
+    if (entry.kind !== "provider_activity" || entry.eventType !== "context.compacted") return;
+    markers.push(contextCompactedMarker(entry, `${runId}:compaction:${String(entry.payload.compactionId ?? "")}:${index}`));
+  });
+  return markers;
 }
 
 /**
@@ -1317,7 +1420,7 @@ export function paperclipRunnerActivityItems(
         return normalizedName !== "paperclip_finish";
       }
       case "marker":
-        return item.variant === "interrupted";
+        return item.variant === "interrupted" || item.variant === "context_compacted";
       case "protocol":
         // Completion is already represented by task state and the final answer.
         // Keep its event in the inspector, but omit it from feed rows and counts.
@@ -1422,6 +1525,24 @@ export function paperclipRunnerAcceptedResponseWake(
   ) ? result : undefined;
 }
 
+function normalizedWaitText(value: string) {
+  return value.replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+/**
+ * A yielded turn's control-plane wait label ("Waiting for <card>.") that some
+ * providers echo as final prose. It duplicates the card, so it is not a reply.
+ */
+export function isYieldedWaitStub(
+  text: string,
+  waitSummaries: readonly (string | null | undefined)[] = [],
+): boolean {
+  const normalized = normalizedWaitText(text);
+  if (!normalized) return true;
+  if (waitSummaries.some((summary) => summary && normalizedWaitText(summary) === normalized)) return true;
+  return !text.trim().includes("\n") && /^waiting for\b/.test(normalized);
+}
+
 /** Resolve a terminal reply without presenting ordinary yielded waits as answers. */
 export function paperclipRunnerFinalResponse(
   parsed: readonly TaskChatItem[],
@@ -1431,32 +1552,53 @@ export function paperclipRunnerFinalResponse(
     fallbackSummary?: string | null;
     /** Structured summaries are terminal fallbacks, never live partial replies. */
     allowFallback?: boolean;
+    /** Run metadata established a yielded wait even if the transcript lacks its result. */
+    yielded?: boolean;
+    /** The yielded result's wait summary, when known outside the transcript. */
+    waitSummary?: string | null;
   },
 ): TaskChatMessageItem | undefined {
   // A yielded result is a control-plane wait boundary, not an assistant reply.
   // Some providers historically labeled their "waiting for input" prose as a
   // final message, so disposition must take precedence over message channel.
-  const yielded = parsed.some(
-    (item) =>
+  const yieldedResults = parsed.filter(
+    (item): item is TaskChatRunResultItem =>
       item.kind === "protocol" &&
       item.surface === "run_result" &&
       item.disposition === "yielded",
   );
-  if (yielded) {
+  if (yieldedResults.length > 0 || options?.yielded) {
     const accepted =
       options?.allowFallback === false
         ? undefined
         : paperclipRunnerAcceptedResponseWake(parsed, options?.runId);
-    if (!accepted) return undefined;
-    return {
-      id: `${accepted.id}:final-response`,
-      kind: "message",
-      author: "agent",
-      authorName: options?.agentName,
-      text: accepted.summary.trim(),
-      channel: "final",
-      streaming: false,
-    };
+    if (accepted) {
+      return {
+        id: `${accepted.id}:final-response`,
+        kind: "message",
+        author: "agent",
+        authorName: options?.agentName,
+        text: accepted.summary.trim(),
+        channel: "final",
+        streaming: false,
+      };
+    }
+    // The wait itself is not an answer, but prose the agent wrote for the user
+    // before yielding (e.g. explaining the question card it just posted) is.
+    // It streamed into view while the turn was live; dropping it on settle
+    // makes the conversation flash and lose that reply. Wait stubs are
+    // skipped, not terminal: a provider may echo one after its reply.
+    const waitSummaries = [
+      options?.waitSummary,
+      ...yieldedResults.map((result) => result.summary),
+    ];
+    for (let index = parsed.length - 1; index >= 0; index -= 1) {
+      const item = parsed[index];
+      if (item.kind !== "message" || item.channel !== "final") continue;
+      if (isYieldedWaitStub(item.text, waitSummaries)) continue;
+      return item;
+    }
+    return undefined;
   }
   for (let index = parsed.length - 1; index >= 0; index -= 1) {
     const item = parsed[index];
@@ -1968,6 +2110,19 @@ export function buildTurnTimelineRows(
       current = null;
       rows.push(item);
     } else if (item.kind === "plan_document") {
+      current = null;
+      rows.push(item);
+    } else if (item.kind === "marker" && item.variant === "context_compacted") {
+      // A compaction divides the turn, so it closes the current phase.
+      current = null;
+      rows.push(item);
+    } else if (
+      item.kind === "protocol" &&
+      item.surface === "provider_activity" &&
+      item.family === "plan_proposal"
+    ) {
+      // A proposed plan is a deliverable, so it gets its own row instead of
+      // folding into the collapsed activity phase.
       current = null;
       rows.push(item);
     } else if (

@@ -35,6 +35,7 @@ export type { PaperclipQuestionResponse, PaperclipQuestionSet };
 
 export type TaskChatProviderActivityFamily =
   | "plan"
+  | "plan_proposal"
   | "tool_execution"
   | "research"
   | "delegation"
@@ -208,6 +209,14 @@ export interface TaskChatThinkingItem {
   transcriptIndex?: number;
 }
 
+/** An automatic approval review folded onto the tool row it approved. */
+export interface TaskChatAutoReview {
+  decision: "allowed";
+  riskLevel?: string;
+  userConsent?: string;
+  rationale?: string;
+}
+
 /** A tool invocation row (ACP tool_call / tool_call_update). */
 export interface TaskChatToolItem {
   id: string;
@@ -227,6 +236,18 @@ export interface TaskChatToolItem {
   diff?: TaskChatDiff;
   /** Resolved permission decision badge, when one applied. */
   decision?: "allowed" | "rejected";
+  /** Automatic approval review that let this call run. */
+  autoReview?: TaskChatAutoReview;
+  /** Canonical operation (read, search, list, execute, edit) when known. */
+  operation?: string;
+  /** Provider's short description of the call, such as Claude's Bash description. */
+  description?: string;
+  /** Process exit code, when the harness reported one. */
+  exitCode?: number | null;
+  /** Wall-clock tool duration in milliseconds, when known. */
+  durationMs?: number | null;
+  /** Why the harness or a policy refused to run the tool. */
+  blockedReason?: string;
   /** Execution id of the delegation (subagent) that made this call. */
   parentToolUseId?: string;
 }
@@ -273,7 +294,7 @@ export interface TaskChatStatusItem {
 export interface TaskChatMarkerItem {
   id: string;
   kind: "marker";
-  variant: "session_start" | "interrupted" | "turn_boundary";
+  variant: "session_start" | "interrupted" | "turn_boundary" | "context_compacted";
   label: string;
   detail?: string;
   /** False when the recorded run cannot be retried, even after the chat continues. */
@@ -418,6 +439,8 @@ export interface TaskChatProviderActivityItem {
   resolved?: boolean;
   /** When the provider first reported this activity (ISO timestamp). */
   startedAt?: string;
+  /** Automatic approval review that let this tool execution run. */
+  autoReview?: TaskChatAutoReview;
 }
 
 export type TaskChatSubagentStatus = "running" | "completed" | "failed" | "cancelled";
@@ -631,7 +654,7 @@ export interface TaskChatTurnItem {
 export interface TaskChatTaskCreatedItem {
   id: string;
   kind: "task_created";
-  task: Pick<Issue, "id" | "identifier" | "title" | "status">;
+  task: Pick<Issue, "id" | "identifier" | "title" | "status" | "displayStatus" | "externalConversationState" | "blockerAttention">;
   isSubtask: boolean;
   timestamp: string;
 }

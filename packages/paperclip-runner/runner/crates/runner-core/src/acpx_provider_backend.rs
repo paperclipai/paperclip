@@ -1144,7 +1144,7 @@ impl AcpxCommandExecutor {
                     "status": "failed",
                     "turnTerminalState": "failed",
                     "runTerminalState": "failed",
-                    "reportedWorkDisposition": "unknown",
+                    "reportedWorkDisposition": "needs_review",
                     "provider": "acpx",
                 }),
             })?;
@@ -1439,6 +1439,7 @@ impl AcpxCommandExecutor {
             None
         };
         let tool_set = authorized_tool_set(payload)?;
+        self.retain_buffered_provider_events()?;
         let state = self
             .state
             .as_ref()
@@ -1657,7 +1658,7 @@ impl AcpxCommandExecutor {
                 ));
             }
         }
-        let mut projection = self
+        let projection = self
             .session
             .as_mut()
             .ok_or_else(|| {
@@ -1667,6 +1668,15 @@ impl AcpxCommandExecutor {
             .map_err(|error| {
                 DurableRunnerError::invalid(format!("ACPX goal control failed: {error}"))
             })?;
+        self.accept_goal_projection(command, payload, projection)
+    }
+
+    fn accept_goal_projection(
+        &mut self,
+        command: &str,
+        payload: &Value,
+        mut projection: Value,
+    ) -> Result<CommandExecution, DurableRunnerError> {
         if projection.get("schema").and_then(Value::as_str)
             != Some("paperclip.session_goal.snapshot.v1")
         {
@@ -1719,6 +1729,14 @@ impl AcpxCommandExecutor {
             return Err(DurableRunnerError::invalid(
                 "turn.start payload.turnId is invalid",
             ));
+        }
+        // Retain the old sidecar's read tail before its MCP receipt epoch changes.
+        if self
+            .session
+            .as_ref()
+            .is_some_and(|session| session.state().has_settled_turns())
+        {
+            self.retain_buffered_provider_events()?;
         }
         if self.session.is_none() {
             return Err(DurableRunnerError::invalid("ACPX session is not open"));
@@ -2276,8 +2294,7 @@ impl AcpxCommandExecutor {
         Ok(CommandExecution::result(json!({"status": "completed"})))
     }
 
-    fn poll_provider(&mut self) -> Result<(), DurableRunnerError> {
-        self.restore()?;
+    fn poll_provider(&mut self, disconnected: bool) -> Result<(), DurableRunnerError> {
         if self
             .state
             .as_ref()
@@ -2286,12 +2303,44 @@ impl AcpxCommandExecutor {
         {
             return Ok(());
         }
-        for _ in 0..MAX_EVENTS_PER_POLL {
+        self.poll_provider_events(MAX_EVENTS_PER_POLL, disconnected)
+    }
+
+    fn retain_buffered_provider_events(&mut self) -> Result<(), DurableRunnerError> {
+        if let Some(session) = self.session.as_mut() {
+            session.settle_park_observation().map_err(|error| {
+                DurableRunnerError::invalid(format!("ACPX observation settlement failed: {error}"))
+            })?;
+        }
+        loop {
+            let count = self
+                .session
+                .as_ref()
+                .map_or(0, AcpxProviderSession::buffered_event_count);
+            if count == 0 {
+                return Ok(());
+            }
+            self.poll_provider_events(count.min(MAX_EVENTS_PER_POLL), false)?;
+        }
+    }
+
+    fn poll_provider_events(
+        &mut self,
+        count: usize,
+        disconnected: bool,
+    ) -> Result<(), DurableRunnerError> {
+        for _ in 0..count {
             let events = self
                 .session
                 .as_mut()
                 .expect("ACPX session remains available while polling")
-                .poll_event(Duration::from_millis(1));
+                .poll_output(
+                    Duration::from_millis(1),
+                    disconnected,
+                    self.state
+                        .as_ref()
+                        .and_then(|state| state.goal_source_revision),
+                );
             let events = match events {
                 Ok(events) => events,
                 Err(error) => {
@@ -2310,7 +2359,7 @@ impl AcpxCommandExecutor {
                                 "code":"acpx_provider_transport_failed","message":message,
                                 "error":{"code":"acpx_provider_transport_failed","message":message,"recoverable":false}}) })?;
                         state.push(NormalizedProviderEvent { event_type: "run.terminal".to_owned(), priority: EventPriority::P0,
-                            payload: json!({"schema":"paperclip.prp.terminal.v1","status":"failed","turnTerminalState":"failed","runTerminalState":"failed","reportedWorkDisposition":"unknown","provider":"acpx"}) })?;
+                            payload: json!({"schema":"paperclip.prp.terminal.v1","status":"failed","turnTerminalState":"failed","runTerminalState":"failed","reportedWorkDisposition":"needs_review","provider":"acpx"}) })?;
                     }
                     self.context.provider_turn_id = None;
                     // A failed transport cannot attest escaped provider cleanup.
@@ -2320,7 +2369,9 @@ impl AcpxCommandExecutor {
                     return Ok(());
                 }
             };
-            let Some(events) = events else { break };
+            let Some((events, mut terminal_goal)) = events else {
+                break;
+            };
             let mut provider_turn_settled = false;
             for event in events {
                 let provider_process_lost = matches!(
@@ -2342,7 +2393,12 @@ impl AcpxCommandExecutor {
                 // terminal receipt must remain publishable without another
                 // protocol request, and must revoke future warm admission.
                 if terminal.is_some() && !provider_process_lost {
-                    let snapshot = self.goal_control("session.goal.get", &json!({}))?;
+                    let snapshot = match terminal_goal.take() {
+                        Some(goal) => {
+                            self.accept_goal_projection("session.goal.get", &Value::Null, goal)?
+                        }
+                        None => self.goal_control("session.goal.get", &json!({}))?,
+                    };
                     let state = self.state.as_mut().expect("ACPX session has durable state");
                     for (event_type, priority, payload) in snapshot.events {
                         state.push(NormalizedProviderEvent {
@@ -2465,6 +2521,59 @@ fn goal_terminal_disposition<'a>(
 }
 
 impl CommandExecutor for AcpxCommandExecutor {
+    fn host_park_ready(&mut self) -> Result<bool, DurableRunnerError> {
+        self.ensure_persistence_healthy()?;
+        let Some(state) = self.state.as_ref() else {
+            return Ok(false);
+        };
+        if !matches!(state.descriptor.agent.as_str(), "codex" | "claude")
+            || self.session.is_none()
+            || state.lifecycle != "session_open"
+            || state.provider_exit_unconfirmed
+            || state.descriptor.run_id != self.context.run_id
+            || state.identity.is_none()
+            || state.active_turn_id.is_some()
+            || !state.pending_events.is_empty()
+            || !state.pending_runtime_requests.is_empty()
+            || (!state.goal_projection.is_null() && !goal_is_dormant(&state.goal_projection))
+            || !state.descriptor.names_qualified_release()
+            || self.candidate_admission().is_some()
+            || !acpx_release_profile(&state.descriptor.agent)
+                .is_some_and(|profile| !profile.qualification_pending)
+        {
+            return Ok(false);
+        }
+        state.validate(&self.context, &self.launch_profile_digest()?)?;
+        let session = self
+            .session
+            .as_mut()
+            .expect("checked surviving ACPX session");
+        if state.identity.as_ref() != Some(session.identity()) {
+            return Ok(false);
+        }
+        let event_sequence = session.observed_event_sequence();
+        let ready = session
+            .host_park_ready(std::time::Instant::now() + Duration::from_millis(100))
+            .map_err(|error| {
+                DurableRunnerError::invalid(format!("ACPX parking observation failed: {error}"))
+            })?;
+        // Commit new provider observations through the ordinary event path.
+        // A retained prefix must be delivered and ACKed before a later park.
+        self.poll_provider(false)?;
+        Ok(ready
+            && self
+                .session
+                .as_ref()
+                .is_some_and(|session| session.observed_event_sequence() == event_sequence)
+            && self.state.as_ref().is_some_and(|state| {
+                state.pending_events.is_empty()
+                    && state.lifecycle == "session_open"
+                    && state.active_turn_id.is_none()
+                    && !state.provider_exit_unconfirmed
+                    && (state.goal_projection.is_null() || goal_is_dormant(&state.goal_projection))
+            }))
+    }
+
     fn execute(&mut self, command: &Command) -> Result<CommandExecution, DurableRunnerError> {
         self.restore()?;
         if self
@@ -2522,7 +2631,12 @@ impl CommandExecutor for AcpxCommandExecutor {
             {
                 self.snapshot_live_requests()
             }
-            "session.snapshot" => self.snapshot(),
+            "session.snapshot" => {
+                if command.payload.get("quiesceForWarmAttach") == Some(&Value::Bool(true)) {
+                    self.retain_buffered_provider_events()?;
+                }
+                self.snapshot()
+            }
             "session.close" | "session.destroy" => self.close_session(&command.command_type),
             "runner.suspend" => self.suspend(),
             "runner.shutdown" => {
@@ -2563,7 +2677,21 @@ impl CommandExecutor for AcpxCommandExecutor {
         {
             return Ok(Vec::new());
         }
-        self.poll_provider()?;
+        self.poll_provider(false)?;
+        self.retained_events()
+    }
+
+    fn poll_disconnected_events(&mut self) -> Result<Vec<PolledEvent>, DurableRunnerError> {
+        self.ensure_persistence_healthy()?;
+        if self.session.is_none()
+            || self
+                .state
+                .as_ref()
+                .is_none_or(|state| state.descriptor.run_id != self.context.run_id)
+        {
+            return Ok(Vec::new());
+        }
+        self.poll_provider(true)?;
         self.retained_events()
     }
 
@@ -4895,6 +5023,7 @@ mod tests {
         assert_eq!(events[2].event_type, "run.terminal");
         assert_eq!(events[2].payload["schema"], "paperclip.prp.terminal.v1");
         assert_eq!(events[2].payload["turnTerminalState"], "failed");
+        assert_eq!(events[2].payload["reportedWorkDisposition"], "needs_review");
         assert_eq!(recovered.poll_events().unwrap(), events);
         let cleanup_error = recovered
             .shutdown()

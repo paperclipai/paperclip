@@ -221,7 +221,16 @@ If `@cryppadotta` is not the right reviewer identity in the public repo, change 
 
 ## 8.1. Let the Lockfile Bot Merge Lockfile Refreshes
 
-`.github/workflows/refresh-lockfile.yml` regenerates `pnpm-lock.yaml` from the manifests on `master` and merges the result without CI or review. Contributors never commit the lockfile, so the bot is the only path for lockfile changes.
+`.github/workflows/refresh-lockfile.yml` regenerates `pnpm-lock.yaml` from the manifests on `master` and merges the result without CI or review. Only trusted environments write lock content, and contributors never commit it. Two writers can change `pnpm-lock.yaml`:
+
+- this workflow, on its `chore/refresh-lockfile` branch
+- Dependabot, but only when the lockfile in its pull request matches a verified Dependabot commit
+
+The reporting-lock proof (`tests/runner-e2e/report-lock.json` and `report-lock.patch`) controls the lock that paid evaluation jobs install, so it counts as lock content too. Only this workflow writes it.
+
+`.github/scripts/lockfile-trust.mjs` enforces these rules in the `pr-trusted.yml` policy job. The job runs the copy of the script from the base commit, so a pull request cannot change the check that judges it. To update a Dependabot pull request that is behind `master`, comment `@dependabot recreate`. Do not merge `master` into its branch, because a merged lockfile no longer matches Dependabot's commit.
+
+After a Dependabot lockfile merges, this workflow renews the proof. It first confirms three things: GitHub signed the merge commit, Dependabot opened the pull request, and the lockfile at the pull request head matches a verified Dependabot commit. It then records the merged lockfile in the proof and merges the refresh like any other. Paid evaluation jobs refuse the new lockfile until that refresh merges.
 
 Resolution keeps locked versions, but it picks the newest matching version for an added or widened dependency. A release-age gate (`.github/scripts/check-lockfile-release-age.mjs`) therefore checks every package version that the refresh adds. The bot merges only when each one has been on npm for at least 3 days. If any version is newer, or the gate cannot verify it, the bot leaves a comment on the PR and does not merge. A maintainer can review and merge it, or the daily scheduled refresh merges it after the versions are old enough. A held run saves its lockfile, and the hash of the `master` lockfile it started from, as an artifact. The next run resolves from that lockfile only while `master` still has the same lockfile. Held versions therefore stay put while their manifests are unchanged, even when newer releases appear, and a lockfile change on `master` replaces them. The gate also holds any added entry whose resolution is not a plain npm registry tarball. Change the age with `--min-age-days` in the workflow.
 

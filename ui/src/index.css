@@ -545,6 +545,8 @@
   --artifact-play-scrim: rgba(0, 0, 0, 0.55);
   --artifact-hover-ease: 300ms cubic-bezier(0.3, 0, 0.1, 1);
   --tc-interaction-card-max-h: 50dvh;
+  /* About 3.5 queued rows, and less on short windows so the conversation stays visible. */
+  --tc-queued-list-max-h: min(calc(var(--spacing) * 40), 28dvh);
   --shadow-task-composer: 0 2px 8px -2px color-mix(in oklab, var(--foreground) 7%, transparent),
     0 12px 32px -8px color-mix(in oklab, var(--foreground) 12%, transparent);
   --profile-popover-width: 248px;

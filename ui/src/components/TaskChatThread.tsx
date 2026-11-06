@@ -66,6 +66,7 @@ import {
   paperclipRunnerAcceptedResponseWake,
   paperclipRunnerTimelineItems,
   prependIssueBrief,
+  settledCompactionMarkers,
   settledRunChildren,
   splitTranscriptAtAnchors,
   transcriptToTaskChatItems,
@@ -1710,20 +1711,27 @@ export function TaskChatThread(props: TaskChatThreadProps) {
         continue;
       }
       previousExecutionWaitKey = null;
+      const compactionMarkers = settledCompactionMarkers(entries, source.id);
+      for (const marker of compactionMarkers) {
+        entriesWithFailures.push({ id: marker.id, ms: toMs(marker.createdAtIso), order: 3, item: marker });
+      }
       const acceptedSummary = acceptedSemanticResultSummary(meta?.resultJson);
       const parsedSource = transcriptToTaskChatItems(entries, {
         runId: source.id,
         agentName: meta?.agentName,
         running: false,
       });
-      const sourceHasPendingAttention = (interactions ?? []).some(
+      // A run that posted a card yielded to that card. Its wake summary
+      // describes the wait, not an answer, so it never becomes the turn's
+      // reply, even after the card is answered.
+      const sourceHasAttentionCard = (interactions ?? []).some(
         (interaction) =>
           interaction.sourceRunId === source.id &&
-          interaction.status === "pending",
+          !isSuppressedThreadInteraction(interaction),
       );
       const sourceAcceptedResponseWake =
         source.status === "succeeded" &&
-        !sourceHasPendingAttention &&
+        !sourceHasAttentionCard &&
         paperclipRunnerAcceptedResponseWake(parsedSource, source.id);
       const sourceYielded =
         (acceptedSemanticResultDisposition(meta?.resultJson) === "yielded" ||
@@ -1763,10 +1771,23 @@ export function TaskChatThread(props: TaskChatThreadProps) {
             (comment) => comment.id === sourcePresentationCommentId,
           )?.body ?? null)
         : null;
+      // A yielded wait is not an answer, but prose the agent wrote before it
+      // yielded (explaining the question card it posted, say) is. It streamed
+      // into view live, so the settled turn keeps it in place.
+      const sourceYieldedResponse =
+        sourceIsPaperclipRunner && sourceYielded && !sourceHasPresentationComment
+          ? paperclipRunnerFinalResponse(parsedSource, {
+              runId: source.id,
+              agentName: meta?.agentName,
+              allowFallback: false,
+              yielded: true,
+              waitSummary: acceptedSummary,
+            })
+          : undefined;
       const sourceHasNativeResponse =
         sourceIsPaperclipRunner &&
-        !sourceYielded &&
-        (sourceHasPresentationComment ||
+        (Boolean(sourceYieldedResponse) || !sourceYielded) &&
+        (sourceHasPresentationComment || Boolean(sourceYieldedResponse) ||
           Boolean(acceptedSummary) ||
           entries.some(
             (entry) =>
@@ -2068,7 +2089,9 @@ export function TaskChatThread(props: TaskChatThreadProps) {
         };
       });
       const sourceResponseText =
-        sourceIsPaperclipRunner && !sourceYielded
+        sourceIsPaperclipRunner && sourceYielded
+          ? sourceYieldedResponse?.text
+          : sourceIsPaperclipRunner
           ? (sourcePresentationText ??
             paperclipRunnerFinalResponse(parsedSource, {
               runId: source.id,
@@ -2090,39 +2113,63 @@ export function TaskChatThread(props: TaskChatThreadProps) {
           break;
         }
       }
+      // A yielded turn's authored reply renders once, in the segment that
+      // contains it: the last segment with an authored final, which is where
+      // the whole-run scan found it. A steering anchor can split the turn, so
+      // the last populated segment is not always the right one.
+      const yieldedOptions = {
+        runId: source.id,
+        agentName: meta?.agentName,
+        allowFallback: false,
+        yielded: true,
+        waitSummary: acceptedSummary,
+      };
+      const yieldedResponseSegmentIndex = sourceYieldedResponse
+        ? projectedSegments.findLastIndex(({ parsed }) =>
+            Boolean(paperclipRunnerFinalResponse(parsed, yieldedOptions)))
+        : -1;
+      const settledSegmentFinalResponse = (
+        segmentIndex: number,
+        parsed: readonly TaskChatItem[],
+      ): TaskChatMessageItem | undefined => {
+        if (!sourceIsPaperclipRunner) return undefined;
+        const lastSegment = segmentIndex === lastPopulatedSegmentIndex;
+        if (sourceYielded) {
+          if (!sourceYieldedResponse) return undefined;
+          if (yieldedResponseSegmentIndex === -1) return lastSegment ? sourceYieldedResponse : undefined;
+          return segmentIndex === yieldedResponseSegmentIndex
+            ? paperclipRunnerFinalResponse(parsed, yieldedOptions)
+            : undefined;
+        }
+        if (sourceHasPresentationComment) return undefined;
+        // A steering anchor may split acceptance from its terminal. Keep the
+        // whole-run proof and render its answer exactly once.
+        if (sourceAcceptedResponseWake) {
+          return lastSegment
+            ? paperclipRunnerFinalResponse(parsedSource, { runId: source.id, agentName: meta?.agentName })
+            : undefined;
+        }
+        return paperclipRunnerFinalResponse(parsed, {
+          runId: source.id,
+          agentName: meta?.agentName,
+          fallbackSummary: lastSegment ? acceptedSummary : undefined,
+          allowFallback: sourceAllowSummaryFallback,
+        });
+      };
       for (const [segmentIndex, projected] of projectedSegments.entries()) {
         const { segment, parsed } = projected;
         if (segment.entries.length === 0) continue;
-        const finalResponse =
-          sourceIsPaperclipRunner &&
-          !sourceYielded &&
-          !sourceHasPresentationComment
-            ? sourceAcceptedResponseWake
-              ? // A steering anchor may split acceptance from its terminal.
-                // Keep the whole-run proof and render its answer exactly once.
-                segmentIndex === lastPopulatedSegmentIndex
-                ? paperclipRunnerFinalResponse(parsedSource, {
-                    runId: source.id,
-                    agentName: meta?.agentName,
-                  })
-                : undefined
-              : paperclipRunnerFinalResponse(parsed, {
-                  runId: source.id,
-                  agentName: meta?.agentName,
-                  fallbackSummary:
-                    segmentIndex === lastPopulatedSegmentIndex
-                      ? acceptedSummary
-                      : undefined,
-                  allowFallback: sourceAllowSummaryFallback,
-                })
-            : undefined;
+        const finalResponse = settledSegmentFinalResponse(segmentIndex, parsed);
         const runHealth = {
           failures: projectedSegments[segmentIndex]?.mcpStartupFailures ?? [],
           rest: partitionRunHealthItems(timelineItemsBySegment[segmentIndex] ?? []).rest,
         };
         const children = settledRunChildren(runHealth.rest);
-        if (children.length === 0 && !finalResponse && !sourceIsPaperclipRunner)
+        // A compaction-only run is fully shown by its divider.
+        if (children.length === 0 && !finalResponse && (!sourceIsPaperclipRunner || compactionMarkers.length > 0)) {
+          if (compactionMarkers.length > 0) settledRunIds.add(source.id);
           continue;
+        }
         settledRunIds.add(source.id);
         if (finalResponse) settledReplyRunIds.add(source.id);
         const segmented = timelineAnchors.length > 0;
@@ -2430,7 +2477,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     ? runs.find((run) => run.id === tailRunId)
     : undefined;
   const paperclipRunnerTail = isNativePaperclipRunnerRun(tailRunSource);
-  const suppressPaperclipRunnerTailFinal = Boolean(
+  const paperclipRunnerTailAwaitingContinuation = Boolean(
     paperclipRunnerTail &&
     (acceptedSemanticResultDisposition(
       tailRunId ? linkedRunMetaById.get(tailRunId)?.resultJson : null,
@@ -3380,9 +3427,12 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                                       startedAtMs={tailStartedAtMs}
                                       finishedAtMs={tailFinishedAtMs}
                                       activityUnavailable={tailActivityUnavailable}
-                                      suppressFinal={
-                                        suppressPaperclipRunnerTailFinal
+                                      awaitingContinuation={
+                                        paperclipRunnerTailAwaitingContinuation
                                       }
+                                      waitSummary={acceptedSemanticResultSummary(
+                                        tailRunId ? linkedRunMetaById.get(tailRunId)?.resultJson : null,
+                                      )}
                                       continuedAfterSteering={
                                         paperclipRunnerTail &&
                                         tailTimelineAnchors.length > 0
