@@ -1199,29 +1199,33 @@ async function startServerWithDatabaseTeardown(
   // activates before its provider driver is registered; the worker manager
   // additionally gates each entry on a live plugin worker (and archives the
   // row of a provider that did not come up).
-  // A failed one-time `instanceDefault` decision is retried by this worker
-  // until it is recorded, from the decision row (durable state), never by a
-  // standing timer: once decided, the queue is idle.
-  const managedEnvironmentDefaultWorker = managedConfig?.pluginEnvironments.some((spec) => spec.instanceDefault)
-    ? deliveryWork.register(DELIVERY_QUEUES.managedEnvironmentDefault, {
-        retryMs: 60_000,
-        run: () => retryManagedPluginInstanceDefault(db as any, managedConfig),
-        hasPending: () => managedPluginInstanceDefaultPending(db as any, managedConfig),
-      })
-    : null;
+  // A failed one-time `instanceDefault` decision is retried by a delivery
+  // worker until it is recorded, from the decision row (durable state), never
+  // by a standing timer: once decided, the queue is idle. The worker is
+  // registered only after the boot pass below has reconciled the rows (and
+  // waited for the plugins), and it applies the same plugin readiness rule.
+  let managedEnvironmentDefaultWorker: { wake(): void } | null = null;
   try {
     const appLocals = (app as {
       locals?: { bundledPluginsStartup?: Promise<unknown>; managedBundledPluginKeys?: readonly string[] };
     }).locals;
     const managedEnvironmentsResult = await applyManagedEnvironments(db as any, managedConfig, {
       recovery: managedEnvironmentRecovery,
-      requestInstanceDefaultRetry: managedEnvironmentDefaultWorker ? () => managedEnvironmentDefaultWorker.wake() : undefined,
+      // Before the worker exists, its registration run (below) covers the retry.
+      requestInstanceDefaultRetry: () => managedEnvironmentDefaultWorker?.wake(),
       pluginsReady: appLocals?.bundledPluginsStartup,
       autoInstalledPluginKeys: appLocals?.managedBundledPluginKeys,
       workerManager: pluginWorkerManager,
     });
     if (managedEnvironmentsResult) {
       logger.warn(managedEnvironmentsResult, "managed environments ensured from managed config");
+    }
+    if (managedConfig?.pluginEnvironments.some((spec) => spec.instanceDefault)) {
+      managedEnvironmentDefaultWorker = deliveryWork.register(DELIVERY_QUEUES.managedEnvironmentDefault, {
+        retryMs: 60_000,
+        run: () => retryManagedPluginInstanceDefault(db as any, managedConfig, pluginWorkerManager),
+        hasPending: () => managedPluginInstanceDefaultPending(db as any, managedConfig, pluginWorkerManager),
+      });
     }
   } catch (err) {
     logger.error({ err }, "failed to apply managed environments from managed config");

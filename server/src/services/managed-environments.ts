@@ -836,44 +836,76 @@ function instanceDefaultSpec(managedConfig: ManagedInstanceConfig | null) {
 }
 
 /**
+ * The same readiness rule the boot ensure applies: the plugin is installed and
+ * `ready`, declares the entry's environment driver, and has a running worker.
+ */
+async function isPluginEntryAvailable(
+  db: Db,
+  spec: ManagedInstanceConfig["pluginEnvironments"][number],
+  workerManager: Pick<PluginWorkerManager, "isRunning"> | undefined,
+): Promise<boolean> {
+  if (!workerManager) return false;
+  const resolved = await resolveEnvironmentPluginByKey({ db, pluginKey: spec.pluginKey, driverKey: spec.driverKey });
+  return resolved != null
+    && resolved.plugin.status === "ready"
+    && resolved.declaresDriver
+    && workerManager.isRunning(resolved.plugin.id);
+}
+
+/**
+ * The entry's row as the decision may see it: active only when the row is
+ * active AND its plugin passes the boot readiness rule. A stale active row
+ * whose plugin is down counts as unavailable.
+ */
+async function instanceDefaultEnvironmentForRetry(
+  db: Db,
+  spec: ManagedInstanceConfig["pluginEnvironments"][number],
+  workerManager: Pick<PluginWorkerManager, "isRunning"> | undefined,
+): Promise<{ id: string; status: string } | null> {
+  const row = await environmentService(db).findManagedPluginEnvironment({
+    pluginKey: spec.pluginKey,
+    driverKey: spec.driverKey,
+  });
+  if (!row) return null;
+  const active = row.status === "active" && await isPluginEntryAvailable(db, spec, workerManager);
+  return { id: row.id, status: active ? "active" : "unavailable" };
+}
+
+/**
  * Whether the `instanceDefault` decision still has work to do, read from
  * durable state: the document declares one, and the decision was never
- * recorded, or it is pending while the entry's row is already active. A
- * decision pending on an inactive row waits for that row's recovery instead.
+ * recorded, or it is pending while the entry's row is active and its plugin
+ * is available. A decision pending on an unavailable row waits for that
+ * row's recovery (a worker `ready`) instead.
  */
 export async function managedPluginInstanceDefaultPending(
   db: Db,
   managedConfig: ManagedInstanceConfig | null,
+  workerManager?: Pick<PluginWorkerManager, "isRunning">,
 ): Promise<boolean> {
   const spec = instanceDefaultSpec(managedConfig);
   if (!spec) return false;
   const decision = await readManagedEnvironmentDefaultDecision(db);
   if (!decision) return true;
   if (decision.status !== "pending") return false;
-  const row = await environmentService(db).findManagedPluginEnvironment({
-    pluginKey: spec.pluginKey,
-    driverKey: spec.driverKey,
-  });
-  return row?.status === "active";
+  return (await instanceDefaultEnvironmentForRetry(db, spec, workerManager))?.status === "active";
 }
 
 /**
- * Re-run the `instanceDefault` decision from durable state: the entry's row
- * as it stands (an archived or missing row counts as not active). Used by
- * the retry worker after an inline decision failed.
+ * Re-run the `instanceDefault` decision from durable state, after boot
+ * reconciliation (the caller registers the retry worker only once
+ * `applyManagedEnvironments` has finished). The row counts as active only
+ * while its plugin passes the boot readiness rule.
  */
 export async function retryManagedPluginInstanceDefault(
   db: Db,
   managedConfig: ManagedInstanceConfig | null,
+  workerManager?: Pick<PluginWorkerManager, "isRunning">,
 ): Promise<void> {
   const spec = instanceDefaultSpec(managedConfig);
   if (!spec) return;
-  const row = await environmentService(db).findManagedPluginEnvironment({
-    pluginKey: spec.pluginKey,
-    driverKey: spec.driverKey,
-  });
   const outcome = await applyManagedPluginInstanceDefault(db, {
-    environment: row ? { id: row.id, status: row.status === "active" ? "active" : "unavailable" } : null,
+    environment: await instanceDefaultEnvironmentForRetry(db, spec, workerManager),
     marker: managedPluginEnvironmentMarker(spec),
   });
   if (outcome.status !== "already_decided") {

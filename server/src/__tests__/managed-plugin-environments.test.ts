@@ -483,15 +483,39 @@ const support = await getEmbeddedPostgresTestSupport();
 
     it("lets the retry worker finish a decision from durable state", async () => {
       const config = managedConfig([defaultEntry]);
-      expect(await managedPluginInstanceDefaultPending(db, config)).toBe(true);
+      expect(await managedPluginInstanceDefaultPending(db, config, workerManager)).toBe(true);
       await boot([remoteHostEntry]);
-      expect(await managedPluginInstanceDefaultPending(db, config)).toBe(true);
+      expect(await managedPluginInstanceDefaultPending(db, config, workerManager)).toBe(true);
 
-      await retryManagedPluginInstanceDefault(db, config);
+      await retryManagedPluginInstanceDefault(db, config, workerManager);
       const [row] = await pluginRows();
       expect(await instanceDefault()).toBe(row!.id);
+      expect(await managedPluginInstanceDefaultPending(db, config, workerManager)).toBe(false);
+      expect(await managedPluginInstanceDefaultPending(db, managedConfig([remoteHostEntry]), workerManager)).toBe(false);
+    });
+
+    it("never applies the default from a stale active row whose plugin is down", async () => {
+      const config = managedConfig([defaultEntry]);
+      // An earlier boot left the row active; the decision is still pending.
+      await boot([remoteHostEntry]);
+      await db.insert(instanceSettings).values({
+        singletonKey: "managed-environment-default:v1",
+        general: {
+          version: 1, status: "pending", reason: "environment_not_active", environmentMarker: MARKER,
+          environmentId: null, previousDefaultEnvironmentId: null, decidedAt: new Date().toISOString(),
+        },
+      });
+      expect((await pluginRows())[0]!.status).toBe("active");
+      running = false;
+
+      // While the plugin is down there is nothing for the retry worker to do...
+      expect(await managedPluginInstanceDefaultPending(db, config, workerManager)).toBe(false);
+      // ...and a run anyway treats the row as unavailable.
+      await retryManagedPluginInstanceDefault(db, config, workerManager);
+      expect(await instanceDefault()).toBeNull();
+      expect(await readManagedEnvironmentDefaultDecision(db)).toMatchObject({ status: "pending" });
+      // Without a worker manager nothing counts as available.
       expect(await managedPluginInstanceDefaultPending(db, config)).toBe(false);
-      expect(await managedPluginInstanceDefaultPending(db, managedConfig([remoteHostEntry]))).toBe(false);
     });
 
     it("prepares a new agent that follows the default with the plugin, and one set to the sandbox without it", async () => {
