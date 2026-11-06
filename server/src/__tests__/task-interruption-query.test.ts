@@ -39,6 +39,23 @@ describe.skipIf(!support.supported)("task interruption latest run query", () => 
       await taskInterruptionPresentation(db, issue)]) {
       expect(presentation).toMatchObject({ state: "retry_scheduled", canRetry: false, nextRetryAt: resumeAt.toISOString() });
     }
+    // The coordinator also pushes nextAttemptAt while it defers an ineligible
+    // candidate. Those deferrals, or one far past the failure, never hide Retry.
+    const otherAgentId = randomUUID();
+    await db.insert(agents).values({ id: otherAgentId, companyId, name: "Other agent", adapterType: "paperclip_runner" });
+    for (const [change, restore] of [
+      [{ assigneeAgentId: otherAgentId }, { assigneeAgentId: agentId }],
+      [{ status: "blocked" }, { status: "in_progress" }],
+    ] as const) {
+      await db.update(issues).set(change).where(eq(issues.id, issue.id));
+      expect((await taskInterruptionPresentations(db, companyId, [issue])).get(issue.id))
+        .toMatchObject({ state: "failed", canRetry: true });
+      await db.update(issues).set(restore).where(eq(issues.id, issue.id));
+    }
+    await db.update(nativeRunFinalizations).set({ nextAttemptAt: new Date(Date.now() + 10 * 60_000) })
+      .where(eq(nativeRunFinalizations.runId, runId));
+    expect((await taskInterruptionPresentations(db, companyId, [issue])).get(issue.id))
+      .toMatchObject({ state: "failed", canRetry: true });
     // Exhausted recovery is terminal: exactly one Retry returns.
     await db.update(nativeRunFinalizations).set({ phase: "terminal_failure", nextAttemptAt: null })
       .where(eq(nativeRunFinalizations.runId, runId));
