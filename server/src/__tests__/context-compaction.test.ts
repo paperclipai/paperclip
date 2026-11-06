@@ -58,6 +58,8 @@ suite("context compaction availability", () => {
       reason: "context_compaction",
       requestedByActorType: "user",
       requestedByActorId: "board-user",
+      allowRunCoalescing: false,
+      manualUserWake: true,
       contextSnapshot: expect.objectContaining({
         issueId: issue.id,
         contextCompactionRequestId: accepted.requestId,

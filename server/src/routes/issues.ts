@@ -9236,6 +9236,12 @@ export function issueRoutes(
     if (!issue) return;
     const decision = await decideIssueAccess(req, issue, "issue:mutate");
     if (!decision.allowed) throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
+    // An Agent Chat run starts only for the conversation's owner.
+    if (issue.conversationAgentId) {
+      if (!(await instanceSettings.getExperimental()).enableAgentChat) throw notFound("Agent Chat is disabled");
+      if (req.actor.userId !== issue.conversationUserId)
+        throw forbidden("Only the conversation owner can compact a chat agent's context");
+    }
     try {
       const reading = await issueContextUsage(db, issue.companyId, issue);
       const accepted = await contextCompaction.request({

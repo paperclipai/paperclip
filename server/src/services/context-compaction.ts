@@ -84,6 +84,7 @@ type WakeupFn = (
     requestedByActorId: string;
     contextSnapshot: Record<string, unknown>;
     allowRunCoalescing: false;
+    manualUserWake: true;
   },
 ) => Promise<{ id: string } | null>;
 
@@ -174,6 +175,8 @@ export function contextCompactionService(db: Db, deps: { wakeup?: WakeupFn } = {
       requestedByActorId: input.userId,
       // A compaction never joins, or absorbs, another run's work.
       allowRunCoalescing: false,
+      // An explicit board click; admission and dispatch recheck its owner.
+      manualUserWake: true,
       contextSnapshot: {
         issueId: input.issue.id,
         taskKey: input.issue.id,
