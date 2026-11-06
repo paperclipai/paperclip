@@ -268,7 +268,7 @@ describe("durable task Retry admission", () => {
     expect((await db.select().from(issues).where(eq(issues.id, input.issueId)))[0])
       .toMatchObject({ status: "blocked", assigneeAgentId: issue.assigneeAgentId, executionRunId: null, checkoutRunId: null });
   });
-  it("requires current Agent Chat ownership and enablement even when replaying a retry receipt", async () => {
+  it("requires current Chat ownership and ignores retired off values when replaying a retry receipt", async () => {
     const input = await seed();
     const settings = instanceSettingsService(db);
     await settings.updateExperimental({ enableAgentChat: true });
@@ -280,7 +280,7 @@ describe("durable task Retry admission", () => {
       const accepted = await requestTaskRetry(input);
       expect(accepted.accepted).toBe(true);
       await settings.updateExperimental({ enableAgentChat: false });
-      await expect(requestTaskRetry(input)).rejects.toMatchObject({ status: 404 });
+      expect((await requestTaskRetry(input)).requestId).toBe(accepted.requestId);
       await settings.updateExperimental({ enableAgentChat: true });
       await db.update(issues).set({ conversationUserId: "new-owner" }).where(eq(issues.id, input.issueId));
       await expect(requestTaskRetry(input)).rejects.toMatchObject({ status: 403 });
@@ -290,7 +290,7 @@ describe("durable task Retry admission", () => {
       expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, accepted.requestId!)))[0].status).toBe("failed");
     } finally { await settings.updateExperimental({ enableAgentChat: false }); }
   });
-  it.each(["owner", "feature"] as const)("rechecks Agent Chat $0 at dispatch after waiting for the issue lock", async gate => {
+  it.each(["owner", "feature"] as const)("rechecks Chat ownership and ignores retired $0 values after waiting for the issue lock", async gate => {
     const input = { ...await seed(), actorId: "local-board", actorSource: "local_implicit" };
     const settings = instanceSettingsService(db);
     await settings.updateExperimental({ enableAgentChat: true, enableNativeRunner: true });
@@ -320,9 +320,10 @@ describe("durable task Retry admission", () => {
         select 1 from pg_stat_activity where datname = current_database()
           and ${holderPid} = any(pg_blocking_pids(pid))) as waiting`))[0].waiting, { timeout: 5_000 }).toBe(true);
       release(); await holder;
-      expect(await dispatch).toMatchObject({ status: gate === "owner" ? 403 : 404 });
+      if (gate === "owner") expect(await dispatch).toMatchObject({ status: 403 });
+      else await dispatch;
       expect(await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, input.companyId),
-        eq(heartbeatRuns.status, "queued")))).toHaveLength(0);
+        eq(heartbeatRuns.status, "queued")))).toHaveLength(gate === "owner" ? 0 : 1);
       // Restore current authority; the same saved receipt can then admit one run.
       await settings.updateExperimental({ enableAgentChat: true });
       await db.update(issues).set({ conversationUserId: input.actorId }).where(eq(issues.id, issue.id));

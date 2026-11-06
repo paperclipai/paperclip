@@ -3018,6 +3018,13 @@
       "when": 1793916406980,
       "tag": "0432_strong_mole_man",
       "breakpoints": true
+    },
+    {
+      "idx": 433,
+      "version": "7",
+      "when": 1793920110905,
+      "tag": "0433_workspace_defaults",
+      "breakpoints": true
     }
   ]
 }

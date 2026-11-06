@@ -236,6 +236,9 @@ test.describe("Board send delivery refresh", () => {
           }),
           "create linked task in another organization",
         );
+        await page.route("**/api/workspace-preferences/me", route => fulfill(route, {
+          userId: "local-board", coordinatorWorkspaceEnabled: !classic, updatedAt: null,
+        }));
         await page.route("**/api/instance/settings/experimental", (route) =>
           fulfill(route, {
             enableChatConnectors: true,
@@ -1409,6 +1412,10 @@ test.describe("Failed chat task and exact run retry", () => {
         await page.route("**/api/**", async (route) => {
           const url = new URL(route.request().url());
           const pathname = url.pathname;
+          if (pathname === "/api/workspace-preferences/me") {
+            await fulfill(route, { userId: "local-board", coordinatorWorkspaceEnabled: surface !== "Legacy Inbox", updatedAt: null });
+            return;
+          }
           if (pathname === "/api/instance/settings/experimental") {
             await fulfill(route, {
               enableChatConnectors: true,

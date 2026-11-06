@@ -143,7 +143,7 @@ import {
   shouldTrackIssueActiveRun,
 } from "../lib/issueActiveRun";
 import { prefetchIssueThread } from "../lib/issue-thread-queries";
-import { getIssueDetailQueryOptions, seedIssueDetailProjections } from "../lib/issueDetailCache";
+import { getIssueCoreQueryOptions, getIssueDetailQueryOptions } from "../lib/issueDetailCache";
 import {
   beginIssueDetailNavigation,
   recordIssueDetailReadiness,
@@ -3336,12 +3336,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
   );
 
   const coreIssueQuery = useQuery({
-    queryKey: [...queryKeys.issues.detail(issueId!), "core"],
-    queryFn: async ({ signal }) => {
-      const core = await issuesApi.getCore(issueId!, { signal });
-      seedIssueDetailProjections(queryClient, core, issueId);
-      return core;
-    },
+    ...getIssueCoreQueryOptions(queryClient, issueId!),
     enabled: !!issueId,
   });
   const { historyExpanded, expandHistory, recent: recentComments, retainComment, acknowledgedComments } = useIssueHistoryWindow(
