@@ -132,7 +132,7 @@ jobs:
       packages: write
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@v7.0.1
         with:
           # Full history and tags so `git describe` below can compute the
           # release version to stamp into the image.

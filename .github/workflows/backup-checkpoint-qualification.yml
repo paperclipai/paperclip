@@ -38,7 +38,7 @@ jobs:
       PAPERCLIP_BACKUP_CHECKPOINT_RESTORE_TEST_DATABASE_URL: postgres://paperclip:backup-qualification-fixture@127.0.0.1:5432/backup_restore_test
       PAPERCLIP_BACKUP_QUALIFICATION_RECEIPT: ${{ github.workspace }}/backup-checkpoint-evidence/qualification.json
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86
         with:
           version: 9.15.4
