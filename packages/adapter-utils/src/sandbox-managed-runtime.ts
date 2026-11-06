@@ -797,6 +797,7 @@ export function parseSandboxRemoteExecutionSpec(value: unknown): SandboxRemoteEx
   const sandboxId = asString(parsed.sandboxId).trim();
   const remoteCwd = asString(parsed.remoteCwd).trim();
   const timeoutMs = asNumber(parsed.timeoutMs);
+
   if (
     transport !== "sandbox" ||
     provider.length === 0 ||
