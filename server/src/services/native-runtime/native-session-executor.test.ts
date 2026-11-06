@@ -116,6 +116,7 @@ import { acknowledgedNativeStopExecutionHasStopped, isAcknowledgedNativeStop } f
 import { admittedNativeProviderPack, nativeProviderPackAdmissionPending, rememberAdmittedNativeProviderPack } from "./native-provider-pack-admission.js";
 import { canonicalProviderPackJson } from "./remote-provider-pack-verification.js";
 import * as providerPackAdmission from "./native-provider-pack-admission.js";
+import * as nativeExecutionDriver from "./native-runner-execution-driver.js";
 
 vi.mock("node:fs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs")>();
@@ -1878,7 +1879,7 @@ describe("remote provider pack manifest", () => {
     return JSON.stringify(value);
   };
 
-  it.each(["opencode", "opencode-continuation", "opencode-continuation-missing", "opencode-dirty", "opencode-diagnostics", "opencode-diagnostics-stale", "cursor", "claude-x64", "claude-arm64"] as const)("uses the bundled Linux image authority for remote %s without controller overrides", async provider => {
+  it.each(["opencode", "opencode-continuation", "opencode-continuation-missing", "opencode-continuation-no-receipt", "opencode-continuation-replacement", "opencode-dirty", "opencode-diagnostics", "opencode-diagnostics-stale", "cursor", "claude-x64", "claude-arm64"] as const)("uses the bundled Linux image authority for remote %s without controller overrides", async provider => {
     const architecture = provider === "claude-arm64" ? "arm64" : "x64";
     const claude = provider.startsWith("claude-");
     const opencode = provider.startsWith("opencode");
@@ -1957,6 +1958,7 @@ describe("remote provider pack manifest", () => {
       const transport = state.createTransport.mock.calls.at(-1)![0] as RunnerTransportOptions & {
         controlPlaneRegistration: (authority: unknown) => Promise<unknown>;
         environment?: NodeJS.ProcessEnv;
+        runnerArtifact?: { version: string; digest: string };
       };
       expect(transport.runnerBinary).toBe(state.bundledRunnerBinary);
       if (opencode) {
@@ -2015,11 +2017,15 @@ describe("remote provider pack manifest", () => {
           .update(next.payload.artifacts.opencodeProxy.sha256 + "\n" + digest + "\n" + next.payload.distDigest).digest("hex");
         next.digest = "sha256:" + createHash("sha256").update(canonical(next.payload)).digest("hex");
         await writeFile(state.bundledPackManifestPath!, JSON.stringify(next));
+        const currentDaemon = Buffer.concat([daemon, Buffer.from("newly qualified daemon bytes")]);
+        await writeFile(state.bundledRunnerBinary!, currentDaemon);
         // A normal next turn restores this provider session; it is not a live
         // daemon reattachment. Enabling diagnostics must not replace the
         // already admitted proxy behind that retained provider state.
         const receiptPath = join(transport.stateDirectory!, "provider-pack-authority.json");
         const receiptBefore = await readFile(receiptPath, "utf8");
+        if (provider === "opencode-continuation-no-receipt") await rm(receiptPath);
+        const prepareRemote = vi.spyOn(nativeExecutionDriver, "prepareNativeRemoteRunner");
         const backendsBefore = state.createBackend.mock.calls.length;
         const selectedExecute = provider === "opencode-continuation-missing"
           ? async (command: { command: string; args?: string[] }) => command.args?.[0] === "--build-metadata"
@@ -2032,23 +2038,40 @@ describe("remote provider pack manifest", () => {
           : execute;
         const continuation = createRunnerdBackend({ db: leaseDb(remoteExecution), execution: remoteExecution,
           runnerInstanceId: identity.runnerInstanceId, runnerIngressAuthorized: true,
-          runnerEnvironment: configuredEnvironmentProjection({ PAPERCLIP_OPENCODE_PERFORMANCE_DIAGNOSTICS: "1" }),
+          runnerEnvironment: configuredEnvironmentProjection(provider === "opencode-continuation-replacement" ? {} : { PAPERCLIP_OPENCODE_PERFORMANCE_DIAGNOSTICS: "1" }),
           runnerExecutionTarget: { kind: "remote", transport: "sandbox", remoteCwd: "/workspace",
             environmentId: "environment", leaseId: "lease", providerKey: "daytona",
             effectiveCapabilities: { runnerWebSocketIngress: true }, runner: { execute: selectedExecute, syncIn } } as never });
-        if (provider === "opencode-continuation-missing") {
+        if (provider === "opencode-continuation-missing" || provider === "opencode-continuation-no-receipt") {
           await expect(continuation).rejects.toThrow("image provider pack did not match the bundled release identity");
           expect(state.createBackend).toHaveBeenCalledTimes(backendsBefore);
-          expect(await readFile(receiptPath, "utf8")).toBe(receiptBefore);
+          if (provider === "opencode-continuation-missing") expect(await readFile(receiptPath, "utf8")).toBe(receiptBefore);
+          else expect(existsSync(receiptPath)).toBe(false);
           return;
         }
-        await continuation;
+        const continued = await continuation;
         state.createBackend.mock.calls.at(-1)![1].codexTransportFactory!();
         expect(state.createTransport.mock.calls.at(-1)![0]).toMatchObject({
           providerPackAuthorityDigest: installed.digest,
           opencodeProxySha256: installed.payload.artifacts.opencodeProxy.sha256,
           opencodeProxyPath: "/opt/paperclip-runner/provider-pack/dist/cli/opencode-app-server-proxy.cjs",
+          runnerArtifact: { version: transport.runnerArtifact!.version, digest: "sha256:" + createHash("sha256").update(currentDaemon).digest("hex") },
         });
+        if (provider === "opencode-continuation-replacement") {
+          const preparation = prepareRemote.mock.calls.at(-1)![0];
+          const backend = state.createBackend.mock.results.at(-1)!.value;
+          Object.assign(backend, { openSession: async () => {
+            await nativeExecutionDriver.prepareNativeRemoteRunner(preparation);
+            return { identity: () => ({ ...remoteExecution.binding, sessionId: remoteExecution.session.normalizedSessionId! }) };
+          } });
+          const priorIdentity = { ...remoteExecution.binding, sessionId: remoteExecution.session.normalizedSessionId! };
+          await continued.openReplacementSession!({ identity: priorIdentity }, {
+            backendKind: "runner", identity: priorIdentity, sessionId: priorIdentity.sessionId,
+            providerSessionId: "prior-provider-session", activeTurnId: null, terminal: null,
+          });
+          state.createBackend.mock.calls.at(-1)![1].codexTransportFactory!();
+          expect(state.createTransport.mock.calls.at(-1)![0]).toMatchObject({ providerPackAuthorityDigest: installed.digest });
+        }
       }
       if (provider === "claude-x64" || provider === "opencode") {
         const admitted = opencode ? installed : manifest;

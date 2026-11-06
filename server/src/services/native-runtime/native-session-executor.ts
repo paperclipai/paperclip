@@ -13908,9 +13908,9 @@ async function createRunnerdBackendWithinSessionClaim(
   // Ordinary per-turn OpenCode continuation restores the same durable provider
   // state even when no daemon survived. Its launch profile binds the admitted
   // artifact bytes and paths just as a live reattachment does.
-  const reattachProviderPack = input.restartRecovery?.kind === "reattach_remote_runner" || input.remoteWarmRecovery !== undefined
-    || input.execution.provider.kind === "opencode" && durableBinding !== null;
-  if (requiresRemoteProviderPack && !reattachProviderPack) resolveCurrentProviderPackManifest();
+  const reattachProviderPack = input.restartRecovery?.kind === "reattach_remote_runner" || input.remoteWarmRecovery !== undefined;
+  let retainProviderPack = reattachProviderPack || input.execution.provider.kind === "opencode" && durableBinding !== null;
+  if (requiresRemoteProviderPack && !retainProviderPack) resolveCurrentProviderPackManifest();
   // The transport hashes runnerBinary on the controller before an external
   // launcher starts runnerd. Keep that artifact identity in the controller's
   // filesystem; the remote launcher separately owns the sandbox command path.
@@ -13933,6 +13933,7 @@ async function createRunnerdBackendWithinSessionClaim(
       runnerInstanceId: effectiveRunnerInstanceId, environmentLeaseId: effectiveEnvironmentLeaseId,
       remoteCwd: remoteTarget!.remoteCwd, providerDigest: nativeSha256(input.execution.provider) },
     reattach,
+    retainProviderPack: reattach || retainProviderPack,
     runnerArtifact: () => readRunnerdArtifactBinding(controllerRunnerBinary),
     current: resolveCurrentProviderPackManifest,
   }) : null;
@@ -14067,11 +14068,11 @@ async function createRunnerdBackendWithinSessionClaim(
           runner: remoteCommandRunner, cwd: remoteTarget.remoteCwd, packRoot: installation.root,
           manifest: expected, installation,
           provider: input.execution.provider as { kind: "opencode" } | { kind: "acpx"; agent: string },
-          requireExactIdentity: reattachProviderPack || explicitProviderPackSelection,
-          requireCurrentOpenCodeProxy: !reattachProviderPack
+          requireExactIdentity: retainProviderPack || explicitProviderPackSelection,
+          requireCurrentOpenCodeProxy: !retainProviderPack
             && runnerEnvironment?.PAPERCLIP_OPENCODE_PERFORMANCE_DIAGNOSTICS === "1",
         }));
-        if (!reattachProviderPack) providerPackAuthority!.select(manifest);
+        if (!retainProviderPack) providerPackAuthority!.select(manifest);
         expectedProviderPackManifest = manifest;
         activeRemoteProviderPackRoot = installation.root;
         providerPackVerified = true;
@@ -15048,6 +15049,7 @@ async function createRunnerdBackendWithinSessionClaim(
       }
     }
     remotePrepared = false;
+    retainProviderPack = false;
     providerPackAuthority = selectProviderPackAuthority(false);
     expectedProviderPackManifest = providerPackAuthority?.manifest ?? null;
     providerPackVerified = false;
