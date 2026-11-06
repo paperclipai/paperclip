@@ -727,11 +727,14 @@ export async function saveRemoteWorkspace(input: {
       if (!committed) throw new Error("remote_workspace_snapshot_publication_changed");
       await notifyRemoteWorkspaceSnapshots(tx, `workspace:${workspace.id}`);
       if (boundary === "final") await notifyTerminalWorkspaceWork(tx, `workspace:${workspace.id}`);
+      const receipt = object(workspace.metadata?.remoteWorkspaceSnapshotRepositories);
+      const priorRepositories = receipt.snapshotId === current.snapshotId && Array.isArray(receipt.repositories)
+        ? remoteWorkspaceSourceSchema.parse({ kind: "empty", repositories: receipt.repositories }).repositories ?? [] : [];
+      const repositories = [...new Map([
+        ...priorRepositories, ...(expected.source.repositories ?? []), ...(input.repositories ?? []),
+      ].map(repository => [repository.id, repository])).values()];
       await tx.update(executionWorkspaces).set({ metadata: { ...workspace.metadata, remoteWorkspace: authority,
-        remoteWorkspaceSnapshotRepositories: { snapshotId: saved.id, repositories: input.repositories
-          ?? (object(workspace.metadata?.remoteWorkspaceSnapshotRepositories).snapshotId === current.snapshotId
-            ? object(workspace.metadata?.remoteWorkspaceSnapshotRepositories).repositories
-            : expected.source.repositories) ?? [] },
+        remoteWorkspaceSnapshotRepositories: { snapshotId: saved.id, repositories },
       }, updatedAt: at }).where(eq(executionWorkspaces.id, workspace.id));
       await tx.update(workspaceOperations).set({ status: "succeeded", finishedAt: at, updatedAt: at,
         metadata: sql`coalesce(${workspaceOperations.metadata}, '{}'::jsonb) || ${JSON.stringify({ snapshotId: saved.id, sha256: saved.sha256 })}::jsonb` })
