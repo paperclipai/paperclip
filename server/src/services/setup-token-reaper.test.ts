@@ -111,6 +111,46 @@ describe("setup-token reaper", () => {
     expect(store.rows.size).toBe(0);
   });
 
+  it("backs off thrown sweeps and resets after the store recovers", async () => {
+    let unavailable = true;
+    const error = new Error("database unavailable");
+    const reaper = createSetupTokenReaper({
+      store: {
+        listReapable: async () => { if (unavailable) throw error; return []; },
+        remove: async () => {},
+      },
+      leases: createFakeLeases(),
+    });
+
+    for (const delay of [30_000, 60_000]) {
+      await expect(reaper.sweep()).rejects.toBe(error);
+      expect(reaper.retryDelayMs()).toBe(delay);
+    }
+    unavailable = false;
+    expect(await reaper.sweep()).toEqual({ released: 0, failed: 0 });
+    expect(reaper.retryDelayMs()).toBe(0);
+  });
+
+  it("redacts credentials and bounds cleanup failure logs to one line", async () => {
+    const store = createMemoryStore();
+    store.seed({ sessionId: "log-safety", leaseId: "lease-log" });
+    const credential = "test-sensitive-credential-123456789";
+    const logs: string[] = [];
+    const leases = createFakeLeases({ releaseImpl: async () => {
+      throw new Error(`Authorization: Bearer ${credential}\nprovider down\t${"x".repeat(1_000)}`);
+    } });
+    const reaper = createSetupTokenReaper({ store, leases, log: line => logs.push(line) });
+
+    expect((await reaper.sweep()).failed).toBe(1);
+    expect(logs).toHaveLength(1);
+    expect(logs[0]).not.toContain(credential);
+    expect(logs[0]).not.toMatch(/[\u0000-\u001f\u007f]/);
+    const cause = logs[0]!.split("it stays retryable: ")[1]!;
+    expect(cause).toContain("provider down");
+    expect(cause).toHaveLength(500);
+    expect(store.rows.has("log-safety")).toBe(true);
+  });
+
   it("holds a live, unexpired, unconsumed record and never releases its lease", async () => {
     const store = createMemoryStore();
     store.seed({

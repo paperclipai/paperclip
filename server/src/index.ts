@@ -1589,7 +1589,7 @@ async function startServerWithDatabaseTeardown(
       result: Awaited<ReturnType<typeof setupTokenReaper.sweep>>,
     ) => {
       if (result.released > 0 || result.failed > 0) {
-        logger.info(result, "setup-token login reaper released leases");
+        logger.info(result, "setup-token login reaper cleared records");
       }
     };
 

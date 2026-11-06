@@ -312,7 +312,7 @@ export interface SetupTokenCleanupStore {
 
 /** The counts one reaper sweep produced over the durable cleanup store. */
 export interface SetupTokenReapResult {
-  /** The reapable records whose lease released and whose row cleared. */
+  /** The reapable records cleared after releasing any lease they held. */
   released: number;
   /** The reapable records whose lease release failed. The row stays for a retry. */
   failed: number;
