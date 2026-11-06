@@ -633,14 +633,25 @@ export async function applyManagedEnvironments(
     } catch (err) {
       failed += 1;
       if (recoverable && !isPermanentConfigRejection(err)) {
-        // The worker failed after the readiness check (for example it crashed
-        // inside `environmentValidateConfig`): treat it like a plugin that is
-        // down, so the row is not left active and the next `ready` retries.
-        const archived = await archivePluginEntry(spec);
-        logger.error(
-          { err, ...logBase, archivedEnvironmentId: archived?.id ?? null },
-          "failed to ensure managed plugin environment; archived any previously provisioned row and retrying when the plugin worker is ready again (degraded: environment unavailable)",
-        );
+        if (!recoverable.workerAccess.isRunning(recoverable.pluginId)) {
+          // The worker died after the readiness check (for example inside
+          // `environmentValidateConfig`): treat it like a plugin that is
+          // down, so the row is not left active, and retry on its `ready`.
+          const archived = await archivePluginEntry(spec);
+          logger.error(
+            { err, ...logBase, archivedEnvironmentId: archived?.id ?? null },
+            "managed plugin environment's worker stopped during ensure; archived any previously provisioned row and retrying when the plugin worker is ready again (degraded: environment unavailable)",
+          );
+        } else {
+          // The worker is still running (for example the call timed out).
+          // Keep any previously provisioned row as it is, so agents keep a
+          // working environment; retry once now and on the worker's next
+          // `ready`, and otherwise at the next boot.
+          logger.error(
+            { err, ...logBase },
+            "failed to ensure managed plugin environment while its worker is running; keeping any previously provisioned row and retrying (degraded: declaration not applied)",
+          );
+        }
         schedulePluginRecovery(spec, recoverable.pluginId, recoverable.workerAccess);
       } else {
         logger.error(
