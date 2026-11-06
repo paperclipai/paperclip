@@ -28,6 +28,7 @@ import { relativeTime, cn, agentRouteRef, agentUrl } from "../lib/utils";
 import { AgentsToolbar } from "../components/AgentsToolbar";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { Tooltip as TooltipPrimitive } from "radix-ui";
 import { AlertTriangle, Bot, MessagesSquare } from "lucide-react";
 import { AGENT_ROLE_LABELS, type Agent, type Environment, type EnvironmentCapabilities } from "@paperclipai/shared";
 import { usePublishSharedQueryData, useSharedPollingQuery } from "../hooks/useSharedPolling";
@@ -448,14 +449,23 @@ export function Agents({ initialView = "list" }: { initialView?: AgentsView } = 
           agents={agents.filter(agent => !HIDDEN_AGENT_STATUSES.has(agent.status))}
           visibleAgents={filtered} renderAgent={renderAgentRow} renderStatus={renderAgentStatus}
           renderChat={agentChat.enabled ? agent => (
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button variant="ghost" size="icon-sm" aria-label={`Chat with ${agent.name}`} onClick={() => navigate(`/chats/${agentRouteRef(agent)}`)}>
-                  <MessagesSquare className="size-4 text-foreground" aria-hidden />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>chat with this agent</TooltipContent>
-            </Tooltip>
+            // Use Radix's standard hover delay, isolated from the app's instant provider.
+            <TooltipPrimitive.Provider skipDelayDuration={0}>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button
+                    type="button"
+                    className="inline-flex shrink-0 items-center gap-1.5 rounded-md px-2 py-1 text-xs font-medium text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground group-hover/agent-row:opacity-100 focus-visible:opacity-100"
+                    aria-label={`Chat with ${agent.name}`}
+                    onClick={() => navigate(`/chats/${agentRouteRef(agent)}`)}
+                  >
+                    <MessagesSquare className="size-3.5" aria-hidden />
+                    Chat
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent>chat with this agent</TooltipContent>
+              </Tooltip>
+            </TooltipPrimitive.Provider>
           ) : undefined} />
       )}
 

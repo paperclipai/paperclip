@@ -2312,6 +2312,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
         expect(keyField, "the API key field should be showing").toBeTruthy();
         const gateway = () => [...document.body.querySelectorAll("button")].find(entry => entry.textContent?.trim() === "Use a custom gateway");
         expect(gateway(), "the custom gateway control should still exist").toBeTruthy();
+        expect(document.body.querySelector('[aria-label="Runner"]')).toBeNull();
         const advanced = gateway()!.closest("details");
         expect(advanced, "Use a custom gateway should live inside the Advanced disclosure").toBeTruthy();
         expect(advanced!.querySelector(":scope > summary")?.textContent?.trim()).toBe("Advanced");
@@ -4318,6 +4319,8 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
           }));
           await pickSource(source);
           await settle();
+          expect(document.body.querySelector('[aria-label="Runner"]')).toBeNull();
+          expect([...document.body.querySelectorAll("summary")].some(summary => summary.textContent === "Advanced")).toBe(false);
           expect(button("Connect").disabled).toBe(true);
           await act(async () => button("Connect").dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", metaKey: true, bubbles: true })));
           await settle();

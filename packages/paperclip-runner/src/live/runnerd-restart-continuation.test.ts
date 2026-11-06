@@ -123,3 +123,88 @@ it.each(["none", "before-start", "after-start"] as const)("completes after the r
     await rm(root, { recursive: true, force: true });
   }
 }, 30_000);
+
+it("starts a new turn when the restored runner reports a lost turn the checkpoint never bound", async () => {
+  // The controller died right after the provider accepted its turn, before the
+  // accepted turn reached the checkpoint. The restored runner then reports that
+  // unbound turn as lost while the recovery's new turn start is pending.
+  const root = await mkdtemp(join(tmpdir(), "runner-restart-unbound-"));
+  const identity = { runId: "run-unbound", sessionId: "session-unbound", companyId: "company-unbound", issueId: "issue-unbound", agentId: "agent-unbound" };
+  const execution: NativeExecutionInputV1 = {
+    schema: "paperclip.native-execution-input.v1",
+    binding: { runId: identity.runId, companyId: identity.companyId, issueId: identity.issueId, agentId: identity.agentId, executionWorkspaceId: "workspace-unbound" },
+    session: { normalizedSessionId: identity.sessionId, driverKind: "codex_app_server", protocolVersion: 1, lifecyclePolicy: { mode: "per_turn", idleTimeoutMs: null } },
+    task: { identifier: "TEST-2", title: "Finish checks", description: null, prompt: "Watch the already running checks and finish the request.", workMode: "standard" },
+    workspace: { cwd: root, repoUrl: null, repoRef: null, branchName: null },
+    provider: { kind: "codex", model: null },
+    completionContract: { id: "contract-unbound", sha256: "digest", schemaVersion: "paperclip.completion-contract.v1", contract: {
+      revision: "1", objective: "Finish checks", criteria: [{ id: "checks", requirement: "Check the outcome" }],
+    } },
+    interactionResponses: [], credentialBindings: [],
+  };
+  const options = {
+    runnerBinary: defaultCapabilityRunnerdBinary(),
+    codexCommand: resolve(import.meta.dirname, "../../runner/target/debug/fake-codex-app-server"),
+    codexArgs: ["--state-file", join(root, "fake-state.json"), "--call-log", join(root, "calls.log"), "--durable-turn-ids", "--hold-first-durable-turn"],
+    stateDirectory: root,
+    turnStartTimeoutMs: 8_000,
+    prpIdentity: { runnerInstanceId: "runner-unbound", environmentLeaseId: "lease-unbound", runId: identity.runId, normalizedSessionId: identity.sessionId, turnId: "turn-unbound", itemId: "item-unbound" },
+  };
+  const first = createRunnerdCodexTransport(options);
+  let restored: ReturnType<typeof createRunnerdCodexTransport> | undefined;
+  const alive = (pid: number | null) => {
+    if (!pid) return false;
+    try { process.kill(pid, 0); return true; } catch { return false; }
+  };
+  const kill = (pid: number | null) => {
+    if (!pid) return;
+    try { process.kill(pid, "SIGKILL"); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error; }
+  };
+  try {
+    const backend = createRunnerdNativeSessionBackend(execution, { runnerInstanceId: "runner-unbound", transportFactory: () => first.transport });
+    const session = await backend.openSession({ identity, workingDirectory: root });
+    // The last checkpoint the controller persisted: no active turn yet.
+    const checkpoint = await session.snapshot();
+    expect(checkpoint.activeTurnId ?? null).toBeNull();
+    await session.startTurn({ message: { role: "user", text: execution.task.prompt } });
+    const owner = first.evidence();
+    await first.detachControllerForRestart();
+    kill(owner.runnerPid);
+    kill(owner.providerPid);
+    await vi.waitFor(() => { expect(alive(owner.runnerPid)).toBe(false); expect(alive(owner.providerPid)).toBe(false); });
+    const providerState = JSON.parse(await readFile(join(root, "fake-state.json"), "utf8"));
+    providerState.activeTurnId = null;
+    await writeFile(join(root, "fake-state.json"), JSON.stringify(providerState));
+    restored = createRunnerdCodexTransport({ ...options, resumeDynamicTools: [], resumeActiveTurnId: null });
+    const recovering = createRunnerdNativeSessionBackend(execution, { runnerInstanceId: "runner-unbound", transportFactory: () => restored!.transport });
+    const events: PrpEvent[] = [];
+    const completion = await executeNativeSession({
+      input: execution, backend: recovering, persistedSession: checkpoint, resumeInterruptedTurn: true,
+      runnerInstanceId: "runner-unbound", controlPlaneInstanceId: "controller-unbound", timeoutMs: 15_000,
+      controlPlane: {
+        async openRun() {},
+        async checkpointSession() {},
+        async appendEvent(event) { if (!("sourceSeq" in event)) throw new Error("Expected a durable PRP event"); events.push(event); return { cursor: events.length, highestContiguousSourceSeq: event.sourceSeq, disposition: "committed" }; },
+        async replayEvents(request) {
+          const source = events.filter(event => event.sourceInstanceId === request.sourceInstanceId);
+          return { events: source.filter(event => event.sourceSeq > request.afterSourceSeq), highestContiguousSourceSeq: source.at(-1)?.sourceSeq ?? 0 };
+        },
+        async completeRun() {},
+      },
+    });
+    expect(completion).toMatchObject({ providerSessionId: checkpoint.providerSessionId, turnId: "provider-turn-2", terminal: { runTerminalState: "succeeded" } });
+    expect(events.find(event => event.eventType === "session.failed")).toBeUndefined();
+    // The unbound lost turn is not this execution's turn: it is not reported as its failure.
+    expect(events.filter(event => event.eventType === "turn.failed")).toHaveLength(0);
+    expect((await readFile(join(root, "calls.log"), "utf8")).match(/^turn\/start$/gm)).toHaveLength(2);
+  } finally {
+    await restored?.transport.close().catch(() => undefined);
+    for (const bundle of [first, restored]) {
+      if (!bundle) continue;
+      const evidence = bundle.evidence();
+      kill(evidence.runnerPid);
+      kill(evidence.providerPid);
+    }
+    await rm(root, { recursive: true, force: true });
+  }
+}, 40_000);
