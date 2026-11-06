@@ -142,20 +142,35 @@ async function workspaceArchive(input: {
     if (await fs.realpath(top.trim()).catch(() => null) !== repo) fail("invalid_git_repository");
   };
   const damagedGitEntry = async (repo: string) => {
-    // Git's own test for a repository: a `gitdir:` file or a directory with
-    // HEAD, and objects and refs in its common directory.
-    const isFile = (file: string) => fs.stat(file).then(entry => entry.isFile(), () => false);
+    // Git's own test for a repository: a `gitdir:` file or a directory with a
+    // valid HEAD, and objects and refs in its common directory.
     const isDirectory = (directory: string) => fs.stat(directory).then(entry => entry.isDirectory(), () => false);
+    // A non-blocking open never waits on a named pipe; only a regular file is read.
+    const readSmall = async (file: string) => {
+      check();
+      const handle = await fs.open(file, fs.constants.O_RDONLY | fs.constants.O_NONBLOCK).catch(() => null);
+      if (!handle) return null;
+      try {
+        if (!(await handle.stat()).isFile()) return null;
+        const bytes = Buffer.alloc(4096), { bytesRead } = await handle.read(bytes, 0, bytes.length, 0);
+        return bytes.subarray(0, bytesRead).toString("utf8");
+      } finally { await handle.close(); }
+    };
     const entry = path.join(repo, ".git");
     let gitDir = entry;
     if ((await fs.lstat(entry).catch(() => null))?.isFile()) {
-      const link = /^gitdir: (.+)$/mu.exec(await fs.readFile(entry, "utf8").catch(() => ""));
+      const link = /^gitdir: (.+)$/mu.exec(await readSmall(entry) ?? "");
       if (!link) return true;
       gitDir = path.resolve(repo, link[1]!.trim());
     }
-    if (!await isFile(path.join(gitDir, "HEAD"))) return true;
-    const common = await fs.readFile(path.join(gitDir, "commondir"), "utf8")
-      .then(value => path.resolve(gitDir, value.trim()), () => gitDir);
+    const head = await readSmall(path.join(gitDir, "HEAD"));
+    if (!/^(ref: refs\/\S+|[0-9a-f]{40}|[0-9a-f]{64})\s*$/u.test(head ?? "")) return true;
+    let common = gitDir;
+    if (await fs.lstat(path.join(gitDir, "commondir")).then(() => true, () => false)) {
+      const value = await readSmall(path.join(gitDir, "commondir"));
+      if (!value?.trim()) return true;
+      common = path.resolve(gitDir, value.trim());
+    }
     return !await isDirectory(path.join(common, "objects")) || !await isDirectory(path.join(common, "refs"));
   };
   const assertGitOperationComplete = async (repo: string) => {
