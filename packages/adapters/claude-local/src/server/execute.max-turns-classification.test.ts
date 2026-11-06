@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { RunProcessResult } from "@paperclipai/adapter-utils/server-utils";
 
 const { runAdapterExecutionTargetProcess } = vi.hoisted(() => ({
   runAdapterExecutionTargetProcess: vi.fn(),
@@ -29,7 +30,7 @@ import { execute } from "./execute.js";
 const POISONED_TOOL_OUTPUT =
   'execute.ts:1199: : failed && isClaudeModelNotFoundError({ ... ? "model_not_found"';
 
-function buildProcResult(resultEvent: Record<string, unknown>, extraStdout = "") {
+function buildProcResult(resultEvent: Record<string, unknown>, extraStdout = ""): RunProcessResult {
   return {
     exitCode: 1,
     signal: null,
@@ -53,7 +54,7 @@ function buildProcResult(resultEvent: Record<string, unknown>, extraStdout = "")
   };
 }
 
-function mockExecutionResult(result: ReturnType<typeof buildProcResult>) {
+function mockExecutionResult(result: RunProcessResult) {
   runAdapterExecutionTargetProcess.mockImplementation(async (_runId: string, _target: unknown, _command: string, args: string[]) =>
     args.includes("--version")
       ? { ...result, exitCode: 0, stdout: "2.1.284 (Claude Code)" }
@@ -101,5 +102,99 @@ describe("claude_local failure classification precedence", () => {
     const result = await execute(buildContext() as never);
 
     expect(result.errorCode).toBe("model_not_found");
+  });
+
+  it.each([
+    "The page says login required for guests.",
+    "Login test: authentication failed, the bearer token is invalid as expected.",
+  ])("keeps a max-turns stop when its summary quotes auth prose: %s", async (summary) => {
+    mockExecutionResult(buildProcResult({ subtype: "error_max_turns", is_error: true, result: summary }));
+    const result = await execute(buildContext() as never);
+    expect(result.errorCode).toBe("max_turns_exhausted");
+    expect(result.resultJson).toMatchObject({ stopReason: "max_turns_exhausted", result: summary });
+    expect(result.clearSession).toBe(true);
+  });
+
+  it.each([
+    { api_error_status: 401 },
+    { error: "authentication_failed" },
+    { errors: ["Invalid bearer token"] },
+  ])("keeps genuine provider auth evidence ahead of a max-turns stop: %j", async (evidence) => {
+    mockExecutionResult(buildProcResult({ subtype: "error_max_turns", is_error: true, ...evidence }));
+    const result = await execute(buildContext() as never);
+    expect(result.errorCode).toBe("claude_auth_required");
+  });
+
+  it("keeps a plain CLI login diagnostic ahead of a max-turns stop", async () => {
+    mockExecutionResult({
+      ...buildProcResult({ subtype: "error_max_turns", is_error: true }),
+      stderr: "Invalid API key · Please run /login",
+    });
+    const result = await execute(buildContext() as never);
+    expect(result.errorCode).toBe("claude_auth_required");
+  });
+
+  const cleanup: NonNullable<RunProcessResult["terminalResultCleanup"]> = {
+    kind: "terminal_result_cleanup",
+    stopped: true,
+    stopReason: "unmanaged_background_task_stopped",
+    reason: "unmanaged background task stopped; no durable live path",
+    terminalResultSeen: true,
+    signal: "SIGTERM",
+    forceKilled: false,
+  };
+
+  it.each([
+    { exitCode: 143, signal: null, forceKilled: false },
+    { exitCode: null, signal: "SIGTERM", forceKilled: false },
+    { exitCode: null, signal: "SIGKILL", forceKilled: true },
+  ] as const)("does not turn transcript auth prose into an auth error during cleanup: %j", async (stop) => {
+    const terminalResultCleanup = { ...cleanup, signal: stop.signal ?? "SIGTERM", forceKilled: stop.forceKilled };
+    mockExecutionResult({
+      ...buildProcResult({ subtype: "success", is_error: false, result: "Snapshot refresh is still running." },
+        "PhoneAuth rejects (unauthorized, reason identity_mismatch) an unexpected OTP identity."),
+      exitCode: stop.exitCode,
+      signal: stop.signal,
+      terminalResultCleanup,
+    });
+
+    const result = await execute(buildContext() as never);
+
+    expect(result).toMatchObject({
+      exitCode: stop.exitCode,
+      signal: stop.signal,
+      errorCode: null,
+      resultJson: { unmanagedBackgroundTask: terminalResultCleanup },
+    });
+    expect(result.resultJson).not.toHaveProperty("stopReason", cleanup.stopReason);
+  });
+
+  it("does not infer cleanup from exit 143 without cleanup evidence", async () => {
+    mockExecutionResult({ ...buildProcResult({ subtype: "success", is_error: false }), exitCode: 143 });
+    const result = await execute(buildContext() as never);
+    expect(result.exitCode).toBe(143);
+    expect(result.errorCode).toBeNull();
+    expect(result.resultJson).not.toHaveProperty("stopReason");
+  });
+
+  it("preserves genuine provider authentication failure over background cleanup", async () => {
+    mockExecutionResult({
+      ...buildProcResult({ subtype: "success", is_error: true, api_error_status: 401, result: "Invalid bearer token" }),
+      terminalResultCleanup: cleanup,
+    });
+    const result = await execute(buildContext() as never);
+    expect(result.errorCode).toBe("claude_auth_required");
+    expect(result.resultJson).not.toHaveProperty("stopReason", cleanup.stopReason);
+  });
+
+  it("does not replace an unclassified provider failure with cleanup", async () => {
+    mockExecutionResult({
+      ...buildProcResult({ subtype: "error", is_error: true, result: "Unknown provider failure" }),
+      terminalResultCleanup: cleanup,
+    });
+    const result = await execute(buildContext() as never);
+    expect(result.errorCode).toBeNull();
+    expect(result.errorMessage).toContain("Unknown provider failure");
+    expect(result.resultJson).not.toHaveProperty("stopReason", cleanup.stopReason);
   });
 });
