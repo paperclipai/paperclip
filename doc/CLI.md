@@ -320,11 +320,24 @@ paperclipai service logs [-f]
 ```
 
 Every service verb supports `--instance <id>` and `--json`. Linux and WSL2 use
-a systemd user unit when available; macOS uses a LaunchAgent. Unsupported
+a systemd user unit when available; macOS normally uses a LaunchAgent. Unsupported
 environments receive foreground `paperclipai run` guidance.
 
+On macOS, an operator-managed system LaunchDaemon takes precedence over the
+per-user LaunchAgent for the same Paperclip instance. The CLI refuses to install
+or uninstall a competing GUI agent while that system service is configured or
+loaded. System start, stop, and restart use noninteractive `sudo -n launchctl`
+when authorization is available; the CLI does not prompt for a password,
+overwrite the system plist, or silently fall back to a competing GUI job.
+Starting an unloaded system service bootstraps its standard plist from
+`/Library/LaunchDaemons`. Stopping a loaded system job without a known source
+plist is refused so it cannot become impossible to restart through the CLI.
+Administrators must manage any nonstandard system plist directly.
+
 `paperclipai doctor` includes managed-install and service-health diagnostics in
-addition to configuration, storage, database, logging, and port checks.
+addition to configuration, storage, database, logging, and port checks. It
+recognizes operator-owned LaunchDaemons without comparing their definitions to
+generated per-user LaunchAgent plists.
 
 ## Deployment Modes
 
