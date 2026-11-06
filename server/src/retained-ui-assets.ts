@@ -6,6 +6,7 @@ import { pipeline } from "node:stream/promises";
 import type { Readable } from "node:stream";
 import type { RequestHandler } from "express";
 import type { StorageProvider } from "./storage/types.js";
+import { logger } from "./middleware/logger.js";
 
 const prefix = "ui-assets/v1/";
 function assetPath(value: string): string | null {
@@ -17,6 +18,43 @@ async function digest(stream: Readable) {
   const hash = createHash("sha256");
   for await (const chunk of stream) hash.update(chunk);
   return hash.digest("hex");
+}
+
+const VERIFY_READ_ATTEMPTS = 3;
+const VERIFY_READ_BACKOFF_MS = [250, 1_000];
+const TRANSIENT_READ_CODES = new Set(["ECONNRESET", "EPIPE", "ETIMEDOUT", "ECONNABORTED", "ERR_STREAM_PREMATURE_CLOSE"]);
+
+/** A body cut off mid-download (socket reset after HTTP 200) says nothing
+ * about the stored bytes; reading the object again is safe. */
+function isTransientRead(error: unknown, signal: AbortSignal): boolean {
+  if (signal.aborted || !error || typeof error !== "object") return false;
+  const { code, message } = error as { code?: unknown; message?: unknown };
+  return (typeof code === "string" && TRANSIENT_READ_CODES.has(code)) || message === "aborted";
+}
+
+function delay(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => { signal.removeEventListener("abort", onAbort); resolve(); }, ms);
+    const onAbort = () => { clearTimeout(timer); reject(signal.reason); };
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+/** Digest of the already-published object. A missing/unreadable object keeps
+ * reporting the publication error; a body cut off mid-download is re-read. */
+async function publishedDigest(provider: StorageProvider, objectKey: string, signal: AbortSignal, publishError: unknown): Promise<string> {
+  for (let attempt = 1; ; attempt++) {
+    const existing = await provider.getObject({ objectKey, signal }).catch(() => { throw publishError; });
+    try {
+      return await digest(existing.stream);
+    } catch (error) {
+      existing.stream.destroy();
+      if (attempt >= VERIFY_READ_ATTEMPTS || !isTransientRead(error, signal)) throw error;
+      logger.warn({ err: error, objectKey, attempt, maxAttempts: VERIFY_READ_ATTEMPTS },
+        "Published UI asset download was cut off; reading it again");
+      await delay(VERIFY_READ_BACKOFF_MS[attempt - 1] ?? 1_000, signal);
+    }
+  }
 }
 
 /** Public, immutable build assets only. Publishing before readiness lets an
@@ -43,8 +81,7 @@ export function retainedUiAssets(provider: StorageProvider): { publish(directory
         } catch (error) {
           // An existing key or uncertain upload may be accepted only if its
           // complete bytes match. Never overwrite a colliding build asset.
-          const existing = await provider.getObject({ objectKey, signal }).catch(() => { throw error; });
-          if (await digest(existing.stream) !== expected) throw new Error("Static build asset name collides with different published bytes");
+          if (await publishedDigest(provider, objectKey, signal, error) !== expected) throw new Error("Static build asset name collides with different published bytes");
         } finally { body.destroy(); }
       }
     }
