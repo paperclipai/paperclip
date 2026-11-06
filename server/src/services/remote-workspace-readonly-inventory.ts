@@ -59,7 +59,7 @@ export async function readWorkspaceInventory(root: string, controllerCopy = fals
           .includes(foldedAdministrationPath))) fail();
       if (stat.isSocket()) { exclude.push(next); continue; }
       if (stat.isDirectory()) {
-        if (!controllerCopy && !inGit) {
+        if (!controllerCopy && !inGit && name !== ".git") {
           const marker = await fs.lstat(name === "node_modules" ? path.join(directory, "package.json")
             : path.join(file, "pyvenv.cfg")).catch(() => null);
           if (marker?.isFile() && !marker.isSymbolicLink()

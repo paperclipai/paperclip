@@ -634,6 +634,30 @@ describe("remote workspace transport safety with real sandbox commands", () => {
     } finally { await saved.cleanup(); }
   });
 
+  it("never excludes Git history because its metadata contains a virtualenv marker", async () => {
+    await git(workspace, "init", "--initial-branch=main");
+    await fs.writeFile(path.join(workspace, "saved.txt"), "retained work\n");
+    await git(workspace, "add", "saved.txt"); await git(workspace, "commit", "-m", "Saved work");
+    const commit = (await git(workspace, "rev-parse", "HEAD")).stdout;
+    await fs.writeFile(path.join(workspace, ".git", "pyvenv.cfg"), "home = /usr/bin\n");
+    const { remote, execute } = target();
+    execute.mockResolvedValueOnce({ exitCode: 1, stdout: "", stderr: "remote_workspace_sandbox_disk_full: the sandbox disk is full; free space in the sandbox before saving the workspace",
+      timedOut: false, signal: null, pid: process.pid, startedAt: new Date().toISOString() });
+    remote.runner!.syncOut = async operations => {
+      const mapping = operations[0]!.files[0]!;
+      expect(mapping.exclude).not.toContain(".git");
+      await fs.cp(mapping.sourcePath, mapping.targetPath, { recursive: true, verbatimSymlinks: true });
+      return { operations: [] };
+    };
+    const saved = await captureRemoteWorkspaceArchive({ target: remote, remoteCwd: workspace, operationId: randomUUID() });
+    try {
+      const restored = path.join(scratch, "restored");
+      await restoreRemoteWorkspaceArchive({ archivePath: saved.archivePath, targetDir: restored, expectedManifestDigest: saved.manifestDigest });
+      expect((await git(restored, "rev-parse", "HEAD")).stdout).toBe(commit);
+      expect(await fs.readFile(path.join(restored, "saved.txt"), "utf8")).toBe("retained work\n");
+    } finally { await saved.cleanup(); }
+  });
+
   it("rejects excessive Git roots before parsing controller configuration", async () => {
     for (let index = 0; index < 65; index++) {
       const directory = path.join(workspace, `repo-${index}`, ".git"); await fs.mkdir(directory, { recursive: true });
