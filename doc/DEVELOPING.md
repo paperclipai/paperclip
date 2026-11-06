@@ -2083,6 +2083,39 @@ operation privacy metadata protect app-record disclosure; they do not grant or d
 filesystem execution or task-bound file browsing. Current trust and sandbox policy,
 publication receipts, binding checks, and lifecycle locks remain authoritative.
 
+### Extra Codex sandbox roots (`PAPERCLIP_RUNNER_EXTRA_ROOTS`)
+
+Use this setting to give Codex runs in the Paperclip Runner access to more
+directories than the assigned workspace.
+
+- Set `PAPERCLIP_RUNNER_EXTRA_ROOTS` in the environment of the Paperclip server
+  process. Restart the server after you change it. Agent environment bindings
+  cannot set or replace this value.
+- Use a JSON array, for example `["/Users/me/Projects/shared"]`, or a list of
+  paths with the OS path delimiter (`:` on macOS and Linux).
+- Use absolute paths. The paths refer to the machine where the Paperclip
+  Runner starts Codex.
+- Execution turns get write access to each root. Planning turns get read
+  access only.
+- The runner resolves symlinks before it checks a root. It ignores a root if
+  the root:
+  - is a relative path;
+  - is the host home directory, the run `HOME`, or a parent of one of them
+    (for example `/` or `/Users`);
+  - is `CODEX_HOME` or a protected runner path, is in one of them, or is a
+    parent of one of them.
+- Directories in the host home directory, for example `~/Projects/shared`,
+  are accepted. Do not add credential directories such as `~/.ssh`, `~/.aws`,
+  or `~/.codex`. The runner does not reject them.
+- If a root does not exist when the run starts, the runner checks only the
+  path text.
+- If the value starts with `[` but is not valid JSON, the runner ignores the
+  setting and writes a warning. The warning does not include the paths.
+
+Every Codex run on the instance gets these roots. All agents can read and
+change their files. Add only directories that do not contain secrets and that
+all agents can change safely.
+
 ## Project Repository Checkouts
 
 Tasks use every distinct repository attached to their project, including repository-only sources with no local folder. Paperclip creates a managed checkout when no local folder is configured. The selected repository remains at the task workspace root. Other project repositories have editable Git checkouts under `.paperclip-repositories/<name>-<key>`. Workspace hints expose each checkout path to the agent. A repository without a configured local folder is checked out as a Git worktree of one shared managed clone per project and repository URL, on its own `paperclip/<id>/<branch>` branch tracking `origin/<branch>`, so its objects are stored once; see [Recoverable disk cleanup](recoverable-disk-cleanup.md#nested-project-repository-worktrees). Existing standalone checkouts keep working.

@@ -1793,6 +1793,7 @@ printf '\0PAPERCLIP_GIT_CONTEXT_END\0'
     ...(input.hostCredentials ? { PAPERCLIP_GITHUB_HOST_HOME: discovered.PAPERCLIP_GITHUB_HOST_HOME } : {}),
     PAPERCLIP_GIT_METADATA_ROOTS: discovered.PAPERCLIP_GIT_METADATA_ROOTS ?? "[]",
     PAPERCLIP_RUNNER_NETWORK_ROOTS: discovered.PAPERCLIP_RUNNER_NETWORK_ROOTS ?? "[]",
+    PAPERCLIP_RUNNER_EXTRA_ROOTS: process.env.PAPERCLIP_RUNNER_EXTRA_ROOTS ?? "[]",
     PAPERCLIP_GITHUB_AUTH_MODE: input.hostCredentials ? "host" : "managed",
     PAPERCLIP_RUNNER_NETWORK_ACCESS: input.networkAccess ? "enabled" : "disabled",
   };

@@ -1,9 +1,11 @@
 import { createRequire } from "node:module";
 import { execFileSync } from "node:child_process";
-import { dirname, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { resolvePinnedCodexCommand } from "./codex-command.js";
 import { evalProviderTransportOptions } from "../../cli/eval-provider-runtime.js";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   CODEX_UPDATE_PLAN_TOOL_CONFIG,
@@ -499,5 +501,75 @@ describe("Codex security configuration", () => {
     expect(createIsolatedCodexAppServerArgs({})).not.toContain(
       "--dangerously-bypass-approvals-and-sandbox",
     );
+  });
+  it("projects operator-approved extra roots as writable for execution and read-only for planning", () => {
+    const source = { HOME: "/host/home", PAPERCLIP_RUNNER_EXTRA_ROOTS: JSON.stringify(["/host/home/Projects", "/host/home", "/", "relative", 7]) };
+    const args = createIsolatedCodexAppServerArgs(source);
+    const execution = args.find((arg) => arg.startsWith("permissions.paperclip-runner-workspace-only.filesystem="))!;
+    const planning = args.find((arg) => arg.startsWith("permissions.paperclip-runner-workspace-read-only.filesystem="))!;
+    expect(execution).toContain('"/host/home/Projects"="write"');
+    expect(planning).toContain('"/host/home/Projects"="read"');
+    expect(execution).not.toContain('"/host/home"="write"');
+    expect(execution).not.toContain('"/"="write"');
+    expect(execution).not.toContain('"relative"');
+    const plain = createIsolatedCodexAppServerArgs({ HOME: "/host/home", PAPERCLIP_RUNNER_EXTRA_ROOTS: "/host/home/Projects:/host/home/Other" }).join("\n");
+    expect(plain).toContain('"/host/home/Projects"="write"');
+    expect(plain).toContain('"/host/home/Other"="write"');
+  });
+  it("drops extra roots that equal or contain the host home, Codex home, or protected paths", () => {
+    const realHome = homedir();
+    const source = {
+      HOME: "/isolated/codex-home",
+      CODEX_HOME: "/isolated/codex-home",
+      PAPERCLIP_RUNNER_EXTRA_ROOTS: JSON.stringify([realHome, dirname(realHome), "/isolated", "/srv", join(realHome, "Projects"), "/srv/..data"]),
+    };
+    const args = createIsolatedCodexAppServerArgs(source, [], undefined, ["/srv/secret"]).join("\n");
+    expect(args).not.toContain(`${JSON.stringify(realHome)}="write"`);
+    expect(args).not.toContain(`${JSON.stringify(dirname(realHome))}="write"`);
+    expect(args).not.toContain('"/isolated"="write"');
+    expect(args).not.toContain('"/srv"="write"');
+    expect(args).toContain(`${JSON.stringify(join(realHome, "Projects"))}="write"`);
+    expect(args).toContain('"/srv/..data"="write"');
+  });
+  it("resolves symlinked extra roots before the protected-path check", () => {
+    const base = realpathSync(mkdtempSync(join(tmpdir(), "extra-roots-")));
+    try {
+      const protectedDir = join(base, "protected");
+      const shared = join(base, "shared");
+      mkdirSync(protectedDir);
+      mkdirSync(shared);
+      symlinkSync(protectedDir, join(base, "link-to-protected"));
+      symlinkSync(shared, join(base, "link-to-shared"));
+      const source = { HOME: "/isolated/home", PAPERCLIP_RUNNER_EXTRA_ROOTS: JSON.stringify([join(base, "link-to-protected"), join(base, "link-to-shared")]) };
+      const args = createIsolatedCodexAppServerArgs(source, [], undefined, [protectedDir]).join("\n");
+      expect(args).not.toContain(`${JSON.stringify(join(base, "link-to-protected"))}="write"`);
+      expect(args).not.toContain(`${JSON.stringify(protectedDir)}="write"`);
+      expect(args).toContain(`${JSON.stringify(shared)}="write"`);
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+  it("ignores malformed extra roots", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      const args = createIsolatedCodexAppServerArgs({ HOME: "/isolated/home", PAPERCLIP_RUNNER_EXTRA_ROOTS: "[\"/srv/data\"" }).join("\n");
+      expect(args).not.toContain('"/srv/data"');
+      expect(warn).toHaveBeenCalledWith(expect.not.stringContaining("/srv/data"));
+    } finally {
+      warn.mockRestore();
+    }
+  });
+  it("drops extra roots that equal or sit inside Codex home or protected paths", () => {
+    const source = {
+      HOME: "/host/home",
+      CODEX_HOME: "/host/home/.codex",
+      PAPERCLIP_RUNNER_EXTRA_ROOTS: JSON.stringify(["/host/home/.codex", "/host/home/.codex/sessions", "/srv/secret/sub", "/srv/secretive", "/host/home/Projects"]),
+    };
+    const args = createIsolatedCodexAppServerArgs(source, [], undefined, ["/srv/secret"]).join("\n");
+    expect(args).not.toContain('"/host/home/.codex"="write"');
+    expect(args).not.toContain('"/host/home/.codex/sessions"');
+    expect(args).not.toContain('"/srv/secret/sub"');
+    expect(args).toContain('"/srv/secretive"="write"');
+    expect(args).toContain('"/host/home/Projects"="write"');
   });
 });
