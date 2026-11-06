@@ -3220,6 +3220,14 @@ must agree with the absence of a native result, coordinator, environment lease,
 controller, process or provider output. A previous session display hint does
 not establish that the failed attempt started a provider.
 
+A recovered historical bootstrap ancestor may contain the host's run-scoped
+skill announcement before dispatch. Admission verifies the complete small log
+against its stored digest, byte count, output watermark and recorded skill
+selection. Missing, slow, changed or additional output remains a hold. This
+exception still requires the host's no-provider bootstrap certificate, exact
+settlement events, stopped leases and verified saved files; it cannot certify
+provider output or authorize replay of an earlier session.
+
 That intent pins the saved comment and accepted identity. Queue admission
 rechecks the source; dispatch rechecks the coalesced intent and its exact claimed
 successor receipt before inheriting the accepted identity. Current permissions,
