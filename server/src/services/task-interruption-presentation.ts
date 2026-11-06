@@ -19,6 +19,7 @@ import { chatActionDeadline } from "./chat-action-work.js";
 import { isQueuedDependencyWait } from "./run-cancellation.js";
 import { AI_CONNECTION_BUSY_RETRY_REASON, AI_CONNECTION_POOL_WAIT_RETRY_REASON, RUNNER_REVISION_WAIT_RETRY_REASON,
   WORKSPACE_BUSY_RETRY_REASON } from "../modules/run-dispatch/index.js";
+import { NATIVE_SESSION_RESUMPTION_ISSUE_STATUSES } from "./native-runtime/native-session-resumption-statuses.js";
 
 // These scheduled runs wait for a shared resource; none records a failed
 // attempt. Their dispatcher re-checks the resource, so the run can stay
@@ -28,8 +29,6 @@ const resourceWaitRetryReasons = new Set<string>([WORKSPACE_BUSY_RETRY_REASON, A
 
 // A due same-run resume dispatches within seconds; past this, offer Retry.
 const NATIVE_RESUME_DISPATCH_GRACE_MS = 2 * 60_000;
-// Three resume attempts 30 s apart fit well inside this window after the failure.
-const NATIVE_RESUME_ADVERTISE_WINDOW_MS = 5 * 60_000;
 
 type ProjectionIssue = Pick<typeof issues.$inferSelect, "id" | "companyId" | "status" | "assigneeAgentId" | "projectId">;
 type ProjectionRun = Pick<typeof heartbeatRuns.$inferSelect,
@@ -218,22 +217,23 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
       errorCode: heartbeatRuns.errorCode, livenessState: heartbeatRuns.livenessState, scheduledRetryAt: heartbeatRuns.scheduledRetryAt,
       scheduledRetryReason: heartbeatRuns.scheduledRetryReason,
       // The coordinator also pushes nextAttemptAt forward while it defers an
-      // ineligible candidate. Advertise a resume only for a candidate the
-      // scheduler can claim, and only for a bounded time after the failure,
-      // so a deferred resume never hides Retry for good.
+      // ineligible candidate. Advertise a resume only while the scheduler's
+      // synchronous admission checks (readNativeSessionResumptionAgent) pass,
+      // so a deferred resume never hides Retry for good. Remaining deferrals
+      // (pause holds, dependencies, a competing run) also gate a manual Retry.
       nativeResumeAt: sql<Date | null>`(select ${nativeRunFinalizations.nextAttemptAt} from ${nativeRunFinalizations}
         where ${nativeRunFinalizations.companyId} = ${heartbeatRuns.companyId} and ${nativeRunFinalizations.runId} = ${heartbeatRuns.id}
           and ${heartbeatRuns.runtimeMode} = 'native' and ${heartbeatRuns.status} = 'failed'
           and ${nativeRunFinalizations.resultId} is null and ${nativeRunFinalizations.phase} = 'retryable_failure'
           and ${heartbeatRuns.contextSnapshot}->'nativeQuestionCancellation' is null
-          and ${nativeRunFinalizations.nextAttemptAt} <= coalesce(${heartbeatRuns.finishedAt}, ${heartbeatRuns.updatedAt})
-            + make_interval(secs => ${NATIVE_RESUME_ADVERTISE_WINDOW_MS / 1000})
           and exists (select 1 from ${issues} resume_issue where resume_issue.company_id = ${heartbeatRuns.companyId}
             and resume_issue.id = ${heartbeatRuns.nativeIssueId}
-            and resume_issue.status in ('todo', 'in_progress', 'in_review')
+            and resume_issue.status in (${sql.join(NATIVE_SESSION_RESUMPTION_ISSUE_STATUSES.map(status => sql`${status}`), sql`, `)})
             and resume_issue.assignee_agent_id = ${heartbeatRuns.agentId}
             and (resume_issue.execution_run_id is null or resume_issue.execution_run_id = ${heartbeatRuns.id})
-            and (resume_issue.checkout_run_id is null or resume_issue.checkout_run_id = ${heartbeatRuns.id})))`.mapWith(value => value == null ? null : new Date(value)),
+            and (resume_issue.checkout_run_id is null or resume_issue.checkout_run_id = ${heartbeatRuns.id}))
+          and exists (select 1 from ${agents} resume_agent where resume_agent.company_id = ${heartbeatRuns.companyId}
+            and resume_agent.id = ${heartbeatRuns.agentId} and resume_agent.status not in ('paused', 'terminated', 'pending_approval')))`.mapWith(value => value == null ? null : new Date(value)),
       // The run whose resultJson supplied providerFailure. A scheduled retry
       // shows its predecessor's reason, so redaction must use that run's registry.
       providerFailureRunId: sql<string>`case when ${heartbeatRuns.resultJson}->'providerFailure' is null

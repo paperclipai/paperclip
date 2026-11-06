@@ -4,6 +4,7 @@ import { createRunSecretRedactionRegistry } from "../services/run-secret-redacti
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { agents, agentWakeupRequests, companies, createDb, applyPendingMigrations, heartbeatRuns, issues, nativeRunFinalizations, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS } from "@paperclipai/db";
 import { taskInterruptionPresentation, taskInterruptionPresentations } from "../services/task-interruption-presentation.js";
+import { readNativeSessionResumptionAgent } from "../services/native-runtime/native-session-resumption-admission.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { captureInterruptionQuery, seedInterruptionFixture } from "./helpers/task-interruption-fixture.js";
@@ -43,19 +44,33 @@ describe.skipIf(!support.supported)("task interruption latest run query", () => 
     // candidate. Those deferrals, or one far past the failure, never hide Retry.
     const otherAgentId = randomUUID();
     await db.insert(agents).values({ id: otherAgentId, companyId, name: "Other agent", adapterType: "paperclip_runner" });
-    for (const [change, restore] of [
-      [{ assigneeAgentId: otherAgentId }, { assigneeAgentId: agentId }],
-      [{ status: "blocked" }, { status: "in_progress" }],
+    const admission = async () => {
+      const [currentIssue] = await db.select().from(issues).where(eq(issues.id, issue.id));
+      const [currentRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+      const [coordinator] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, runId));
+      return readNativeSessionResumptionAgent(db, { issue: currentIssue!, run: currentRun!, coordinator: coordinator! });
+    };
+    expect(await admission()).not.toBeNull();
+    for (const [table, change, restore] of [
+      ["issue", { assigneeAgentId: otherAgentId }, { assigneeAgentId: agentId }],
+      ["issue", { status: "blocked" }, { status: "in_progress" }],
+      ["agent", { status: "paused" }, { status: "idle" }],
     ] as const) {
-      await db.update(issues).set(change).where(eq(issues.id, issue.id));
-      expect((await taskInterruptionPresentations(db, companyId, [issue])).get(issue.id))
-        .toMatchObject({ state: "failed", canRetry: true });
-      await db.update(issues).set(restore).where(eq(issues.id, issue.id));
+      if (table === "issue") await db.update(issues).set(change).where(eq(issues.id, issue.id));
+      else await db.update(agents).set(change).where(eq(agents.id, agentId));
+      // The scheduler would defer this candidate, so the task never claims to
+      // be resuming: it offers Retry, or a paused agent asks to be resumed.
+      expect(await admission()).toBeNull();
+      expect((await taskInterruptionPresentations(db, companyId, [issue])).get(issue.id)).toMatchObject(table === "agent"
+        ? { state: "waiting_for_user", userAction: "resume" } : { state: "failed", canRetry: true });
+      if (table === "issue") await db.update(issues).set(restore).where(eq(issues.id, issue.id));
+      else await db.update(agents).set(restore).where(eq(agents.id, agentId));
     }
-    await db.update(nativeRunFinalizations).set({ nextAttemptAt: new Date(Date.now() + 10 * 60_000) })
-      .where(eq(nativeRunFinalizations.runId, runId));
+    // A provider cooldown can schedule the resume an hour out; it stays visible.
+    const cooldown = new Date(Date.now() + 60 * 60_000);
+    await db.update(nativeRunFinalizations).set({ nextAttemptAt: cooldown }).where(eq(nativeRunFinalizations.runId, runId));
     expect((await taskInterruptionPresentations(db, companyId, [issue])).get(issue.id))
-      .toMatchObject({ state: "failed", canRetry: true });
+      .toMatchObject({ state: "retry_scheduled", canRetry: false, nextRetryAt: cooldown.toISOString() });
     // Exhausted recovery is terminal: exactly one Retry returns.
     await db.update(nativeRunFinalizations).set({ phase: "terminal_failure", nextAttemptAt: null })
       .where(eq(nativeRunFinalizations.runId, runId));
