@@ -80,6 +80,12 @@ export function planTasks(options: Pick<WaveOptions, "seed" | "tasks" | "workloa
   return tasks;
 }
 
+/** A replay keeps the source wave's masks and may add more; it never drops one. */
+function replayMasks(source: readonly string[] | undefined, added: readonly string[] | undefined) {
+  const masks = [...new Set([...(source ?? []), ...(added ?? [])])];
+  return masks.length ? { masks } : {};
+}
+
 export function planWave(waveId: string, options: WaveOptions, createdAt = new Date()): WavePlan {
   return { schema: "paperclip.restart-chaos.wave-plan/v1", waveId, seed: options.seed,
     createdAt: createdAt.toISOString(), options, tasks: planTasks(options) };
@@ -114,7 +120,7 @@ export function taskFaultSchedule(task: TaskPlan): ScheduledFault[] {
  * the replay fires that same sequence at the same offsets from launch.
  */
 export function replayWave(source: WavePlan, ref: ReplayRef, now = Date.now(),
-  overrides: Partial<Pick<WaveOptions, "pollMs" | "budgetCents">> = {}, observed: ScheduledFault[] = []): WavePlan {
+  overrides: Partial<Pick<WaveOptions, "pollMs" | "budgetCents" | "masks">> = {}, observed: ScheduledFault[] = []): WavePlan {
   if (source.schema !== "paperclip.restart-chaos.wave-plan/v1") throw new Error("Unsupported wave plan schema");
   if (source.waveId !== ref.waveId) throw new Error(`Plan is for ${source.waveId}, not ${ref.waveId}`);
   const task = source.tasks.find(candidate => candidate.taskId === ref.taskId);
@@ -125,7 +131,7 @@ export function replayWave(source: WavePlan, ref: ReplayRef, now = Date.now(),
     waveId: `${base}-replay-${task.taskId}-${now}`,
     seed: source.seed,
     createdAt: new Date(now).toISOString(),
-    options: { ...source.options, ...overrides, tasks: 1, concurrency: 1 },
+    options: { ...source.options, ...overrides, tasks: 1, concurrency: 1, ...replayMasks(source.options.masks, overrides.masks) },
     tasks: [{ ...task, ...(observed.length ? { replayFaults: observed.map(fault => ({ ...fault })) } : {}) }],
     replayOf: { ...ref },
   };
