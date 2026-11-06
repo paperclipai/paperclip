@@ -188,6 +188,8 @@ export async function authorizeInstructionCommit(
       actorAgentId: bound.agentId,
       actorRunId: bound.runId,
       targetKeys: [agentInstructionsChangeTargetKey(target.id)],
+      expectedValueDigest: null,
+      requiresHumanResolver: false,
     });
     decision = await access.decide({
       ...input,
