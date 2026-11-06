@@ -36,9 +36,10 @@ When adding another PR verification workflow, add its name to `workflow_run`.
 
 The notifier reads the current PR's status rollup and branch rules. Both
 `ci / verify` and `ci / e2e`, plus any additional required checks, must succeed.
-Other checks must succeed or be explicitly skipped. A neutral result is not a
-pass. Skipped optional routing lanes do not imply that their tests ran. The
-advisory routine evaluates actual coverage and reviews before recommending merge.
+Other checks must succeed or finish as skipped or neutral. Optional skipped or
+neutral checks permit an assessment; they do not prove successful verification.
+For example, a neutral scanner can mean coverage is unavailable. The advisory
+routine evaluates these evidence gaps and reviews before recommending merge.
 The notification workflow itself and the optional CI profile exporter are
 excluded from verification checks to avoid feedback loops.
 

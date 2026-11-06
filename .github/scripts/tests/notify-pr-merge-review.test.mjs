@@ -66,6 +66,8 @@ test("waits for pending checks and statuses, permits skipped optional routing la
   }
   assert.equal(green(candidate({ statusCheckRollup: [...candidate().statusCheckRollup,
     check("not selected", "SKIPPED"), { __typename: "StatusContext", context: "security", state: "SUCCESS" }] })), true);
+  assert.equal(green(candidate({ statusCheckRollup: [...candidate().statusCheckRollup,
+    check("optional scanner coverage", "NEUTRAL")] })), true);
 });
 
 test("excludes its own notification and profiling exporter, but not other workflows", () => {

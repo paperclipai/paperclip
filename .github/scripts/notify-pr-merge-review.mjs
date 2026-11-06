@@ -68,9 +68,10 @@ export function green(pr, requiredNames = minimumChecks) {
   const passed = (check) => check.__typename === "StatusContext"
     ? check.state === "SUCCESS"
     : check.__typename === "CheckRun" && check.status === "COMPLETED" && check.conclusion === "SUCCESS";
-  // A skipped routing lane is normal. A skipped required aggregate is not a pass.
+  // Optional skipped/neutral checks can mean no work or unavailable coverage.
+  // They permit assessment, not approval. Required checks must really succeed.
   return relevant.every((check) => passed(check) || (check.__typename === "CheckRun" &&
-      check.status === "COMPLETED" && check.conclusion === "SKIPPED")) &&
+      check.status === "COMPLETED" && ["SKIPPED", "NEUTRAL"].includes(check.conclusion))) &&
     [...new Set([...minimumChecks, ...requiredNames])].every((name) =>
       relevant.some((check) => (check.name ?? check.context) === name && passed(check)));
 }
