@@ -4468,6 +4468,120 @@ fn durable_backend_settles_pending_tools_when_recovery_finds_the_turn_ended() {
     fs::remove_dir_all(directory).expect("remove Codex integration-test directory");
 }
 
+fn drain_completed_turn(executor: &mut CodexCommandExecutor, label: &str) {
+    let mut turn_completed = false;
+    let deadline = event_deadline();
+    while std::time::Instant::now() < deadline {
+        let events = poll_and_ack(executor).expect(label);
+        turn_completed |= events
+            .iter()
+            .any(|event| event.event_type == "turn.completed");
+        if turn_completed && events.is_empty() {
+            return;
+        }
+        if events.is_empty() {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+    }
+    panic!("{label}: the turn did not complete before the deadline");
+}
+
+#[test]
+fn saved_codex_thread_attaches_after_a_release_changes_its_feature_toggles() {
+    // A thread saved by an earlier release keeps that release's feature
+    // toggles. The next run's controller sends the current policy, which no
+    // longer disables image generation. Attachment must adopt the current
+    // toggles and restart the provider on the same thread.
+    let directory = temporary_directory("feature-policy-attach");
+    let mut config = provider_config(
+        &directory,
+        &["--durable-turn-ids", "--record-process-start"],
+    );
+    let current_args = config.args.clone();
+    config
+        .args
+        .extend(["--disable".to_owned(), "image_generation".to_owned()]);
+    let runner_config = durable_config(&directory);
+    let mut executor = CodexCommandExecutor::with_runner_config(&directory, &runner_config);
+    executor
+        .execute(&command(
+            "prepare",
+            1,
+            "run.prepare",
+            json!({"provider": config, "authorizedTools": task_context_tool_set()}),
+        ))
+        .expect("prepare the thread with the earlier release's toggles");
+    executor
+        .execute(&command("open", 2, "session.open", json!({})))
+        .expect("open the thread");
+    executor
+        .execute(&command(
+            "first-turn",
+            3,
+            "turn.start",
+            json!({"text": "Work under the earlier release."}),
+        ))
+        .expect("start the first turn");
+    drain_completed_turn(&mut executor, "drain the first turn");
+
+    let mut protected = current_args.clone();
+    protected.push("--dangerously-bypass-approvals-and-sandbox".to_owned());
+    let error = executor
+        .execute(&command(
+            "protected-attach",
+            4,
+            "run.attach",
+            json!({
+                "authorizedTools": task_context_tool_set(),
+                "runtimeLaunchArgs": protected,
+            }),
+        ))
+        .expect_err("a sandbox change stays protected");
+    assert!(
+        error.to_string().contains("protected launch arguments"),
+        "unexpected attach error: {error}"
+    );
+
+    let attached = executor
+        .execute(&command(
+            "attach",
+            5,
+            "run.attach",
+            json!({
+                "authorizedTools": task_context_tool_set(),
+                "runtimeLaunchArgs": current_args,
+            }),
+        ))
+        .expect("the saved thread adopts the current feature toggles");
+    assert!(attached
+        .events
+        .iter()
+        .any(|(event_type, _, _)| event_type == "run.attached"));
+
+    executor
+        .execute(&command(
+            "second-turn",
+            6,
+            "turn.start",
+            json!({"text": "Continue under the current release."}),
+        ))
+        .expect("start a turn on the same thread after attachment");
+    drain_completed_turn(&mut executor, "drain the second turn");
+
+    let calls = fs::read_to_string(directory.join("calls.log")).expect("read the call log");
+    assert_eq!(
+        calls
+            .lines()
+            .filter(|line| *line == "process-start")
+            .count(),
+        2,
+        "the provider restarts once to apply the current toggles: {calls}"
+    );
+
+    executor.shutdown().expect("stop the provider");
+    fs::remove_dir_all(directory).expect("remove Codex integration-test directory");
+}
+
 #[test]
 fn durable_backend_rotates_tool_authority_for_fresh_run_attach() {
     let directory = temporary_directory("durable-tool-attach-rotation");
