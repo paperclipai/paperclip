@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { readdir } from "node:fs/promises";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { Request } from "express";
 import { describe, expect, it } from "vitest";
 import {
   assertBoardOrgAccess,
@@ -41,7 +42,10 @@ function makeReq(input: {
   method?: string;
   actor: Express.Request["actor"];
 }) {
-  return { method: input.method ?? "GET", actor: input.actor } as Express.Request;
+  // `Express.Request` is the augmentation interface, so it is a base of the
+  // express `Request` these helpers take, not a substitute for it. Widen
+  // through `unknown`, the way the sibling authz tests and `makeRes` below do.
+  return { method: input.method ?? "GET", actor: input.actor } as unknown as Request;
 }
 
 function boardActor(memberships: Membership[], extra: Record<string, unknown> = {}) {
