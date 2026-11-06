@@ -111,6 +111,31 @@ describe("durable agent file authority", () => {
     } })).toEqual({ entryFile: "missing.md", contentHash: null });
   });
 
+  it("keeps recorded file dates through restore without treating projection times as edits", async () => {
+    await materializeInstructionBytes(root, "AGENTS.md", Buffer.from("Historical instructions"));
+    await db.update(agents).set({ adapterConfig: { instructionsBundleMode: "managed", instructionsRootPath: root,
+      instructionsEntryFile: "AGENTS.md" } }).where(eq(agents.id, agentId));
+    const [agent] = await db.select().from(agents).where(eq(agents.id, agentId));
+    await store().read(companyId, agentId, "AGENTS.md", actor());
+    await store().write({ companyId, agentId, path: "NOTES.md", bytes: Buffer.from("Recorded creation"), baseHash: null }, actor());
+    const instructions = agentInstructionsService(db);
+    const created = await instructions.readFile(agent, "NOTES.md");
+    expect(Number.isFinite(Date.parse(created.createdAt!))).toBe(true);
+    await replaceFilesystem();
+    vi.stubEnv("PAPERCLIP_DURABLE_AGENT_FILES", "false");
+    const restored = await instructions.readFile(agent, "AGENTS.md");
+    expect(restored.content).toBe("Historical instructions");
+    expect(restored.createdAt).toBeUndefined();
+    expect(restored.updatedAt).toBeUndefined();
+    const summary = (await instructions.getBundle(agent)).files.find(file => file.path === "AGENTS.md");
+    expect(summary).toBeDefined();
+    expect(summary?.createdAt).toBeUndefined();
+    expect(summary?.updatedAt).toBeUndefined();
+    const recorded = await instructions.readFile(agent, "NOTES.md");
+    expect(recorded.createdAt).toBe(created.createdAt);
+    expect(recorded.updatedAt).toBeUndefined();
+  });
+
   it("imports legacy bytes, modes and empty entries, then restores without any old filesystem", async () => {
     const binary = Buffer.alloc(2 * 1024 * 1024, 0x81);
     await materializeInstructionBytes(root, "AGENTS.md", Buffer.from("Original"));

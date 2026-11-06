@@ -239,8 +239,8 @@ semantic tokens.
 
 Review **Design proposals → Foundations → Typography → Type specification**
 (`design-foundations-typography--type-specification`). The proposal and the
-opt-in design sandbox use Inter Variable for interface text and bundled Paper
-Mono for all monospace text, including IDs, code and run diagnostics.
+opt-in design sandbox use Inter Variable for interface text. All product
+monospace text uses bundled Paper Mono, including IDs, code and run diagnostics.
 
 **Conversation styles** (`design-foundations-typography--conversation-styles`)
 shows the same composition as the sandbox task detail page by mounting
@@ -1052,3 +1052,39 @@ a visible Reload page action. Keep the character inline and embed the marked
 `offline-recovery` section from `ui/src/index.css` at build time so the page needs
 no network requests or cached assets. Preserve the supplied character palette
 through the offline tokens.
+
+### Agent overview and Identity editing
+
+Agent headers lead with the 24px custom title and crown on one line, followed by “harness • name.” The harness logo and label link to the agent’s Harness / Runtime subtab with hover and keyboard-focus feedback. The logo has a 4px gap before its label; Chat and New task share the default 40px button height. Header spacing is reduced by 4px at each vertical edge.
+The character renders in a 102px square (20% smaller than 128px, rounded to a whole pixel) with an 8px gap before the title, without CSS transform scaling. Reporting relationships live in Profile; its creation date shares the
+header metadata position with the Skills count. Empty Direct reports sections
+are hidden. The overview character tracks the page cursor, including paused
+agents, while respecting reduced-motion and custom-avatar fallbacks. Chat sits
+beside the text-only New task action. Recent tasks applies its raised surface to
+the table, leaving the section heading on the page background.
+
+Identity panels share 24px insets and gutters from the token layer. Advanced
+management contains the external-profile controls. New files accept a portable
+basename (letters, numbers, hyphens and underscores) with a fixed `.md` suffix.
+Clicking file content enters editing without creating a dirty draft. The Identity
+save footer slides from the viewport bottom only for unsaved changes or a save
+in progress; undoing or discarding changes hides it. Successful saves swap the
+orange-dot unsaved label for a rising green-dot saved label, hold it for two
+seconds after arrival, then dismiss the footer. Copy feedback appears beside
+the edit action for five seconds and then fades. File rows use monospaced,
+single-line truncated names, 4px row spacing, a filled ROOT chip, and borderless
+size labels. Hover uses the shared menu-option radius and muted highlight fill
+with foreground text. The preview title uses 18px Paper Mono at medium (500) weight. Creation dates come from
+recorded new-file saves; existing files without creation metadata show their
+last modification date. Disclosure panels animate height and opacity and respect
+reduced motion.
+
+Agent roster rows reveal a muted MessagesSquare icon and “Chat” action on row
+hover, using the task-list inline action treatment. Keyboard focus also reveals
+the action; its reserved cell prevents layout movement. Its tooltip waits for
+Radix’s standard 700ms hover delay on each entry, without the instant-tooltip
+provider or warm-up shortcut; keyboard focus retains immediate accessible help.
+
+Task-list titles use the remaining row width before truncating. Empty recovery,
+external-status, and metadata slots do not reserve space; populated details and
+trailing actions retain their existing layout.
