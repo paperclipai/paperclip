@@ -132,3 +132,16 @@ filtering could hide a foreign symlink alias. Foreign rows do not consume the
 company cohort bound. An inaccessible path or scan limit leaves the managed
 source explicitly unproven. It cannot fall back to a weaker singleton import.
 No foreign metadata is returned.
+
+Runtime service exclusion also uses the physical working directory. An active
+project service can have a different project-workspace ID and no execution
+workspace ID. The company-scoped service scan checks up to 1,000 unsettled
+rows; local path uncertainty blocks the import. Both runtime startup owners
+hold the workspace, base and configured service source keys before provision
+or persistence. The final rendered service CWD must already be fenced before
+workspace link updates or spawn. Runs with no services retain their previous
+filesystem-free path.
+
+A read-only source observation at `2026-11-06T23:20:49.282Z` found 254 pending
+legacy records and zero unsettled local-process services. No service handoff was
+required by that observation. This is not a coherent or locked migration proof.

@@ -313,7 +313,7 @@ export async function inventoryRemoteWorkspaceMigration(db: Db, input: { company
   const onlineSource = workspace && !readRemoteWorkspaceAuthority(workspace.metadata)
     ? await inspectOnlineOrdinarySource(db, workspace) ?? undefined : undefined;
   const result = await inspect(db, { ...input, onlineSource, onlineSourceUnproven: Boolean(workspace && !onlineSource
-    && !readRemoteWorkspaceAuthority(workspace.metadata) && requiresOnlineOrdinarySource(workspace)) });
+    && !readRemoteWorkspaceAuthority(workspace.metadata) && await requiresOnlineOrdinarySource(workspace)) });
   return { companyId: input.companyId, workspaceId: input.workspaceId, eligible: result.reasons.length === 0,
     alreadyMigrated: Boolean(result.authority), reasons: result.reasons, localPath: result.workspace.cwd ?? result.workspace.providerRef,
     source: result.source, operationId: typeof result.marker.operationId === "string" ? result.marker.operationId : null,
@@ -331,7 +331,7 @@ export async function migrateRemoteWorkspace(input: {
   const onlineSource = sourceWorkspace && !readRemoteWorkspaceAuthority(sourceWorkspace.metadata)
     ? await inspectOnlineOrdinarySource(input.db, sourceWorkspace) ?? undefined : undefined;
   if (sourceWorkspace && !onlineSource && !readRemoteWorkspaceAuthority(sourceWorkspace.metadata)
-    && requiresOnlineOrdinarySource(sourceWorkspace)) {
+    && await requiresOnlineOrdinarySource(sourceWorkspace)) {
     throw new Error("remote_workspace_migration_blocked:online_workspace_source_scope_unproven");
   }
   let committedPublication: Parameters<typeof publishActivity>[0] | undefined;

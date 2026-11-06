@@ -53,13 +53,18 @@ export type OnlineOrdinarySource = {
   root: string; projectId: string | null; issueIds: string[]; workspaceIds: string[]; device: number; inode: number;
 };
 
-export function requiresOnlineOrdinarySource(workspace: Workspace): boolean {
+export async function requiresOnlineOrdinarySource(workspace: Workspace): Promise<boolean> {
   if (!workspace.cwd || workspace.providerType !== "local_fs" || workspace.repoUrl || workspace.branchName) return false;
   const parts = path.relative(resolvePaperclipInstanceRoot(), workspace.cwd).split(path.sep);
-  return parts[1] === workspace.companyId && Boolean(workspace.sourceIssueId) && (
+  const managed = parts[1] === workspace.companyId && Boolean(workspace.sourceIssueId) && (
     parts[0] === "projects" && parts.length === 4 && /^[a-f0-9-]{36}$/.test(parts[2])
     || parts[2] === workspace.sourceIssueId && (parts[0] === "isolated-workspaces" && parts.length === 3
       || parts[0] === "isolated-workspace-attempts" && parts.length === 4));
+  if (!managed) return false;
+  const entry = await fs.lstat(workspace.cwd).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return null; throw error;
+  });
+  return Boolean(entry?.isDirectory() && !entry.isSymbolicLink());
 }
 
 export async function inspectOnlineOrdinarySource(db: ReadDb, workspace: Workspace): Promise<OnlineOrdinarySource | null> {
@@ -163,14 +168,25 @@ export async function onlineOrdinarySourceBlockers(db: Pick<Db, "execute">, comp
           and r.runner_profile_json#>>'{nativeWorkspaceSync,workspaceId}'<>${workspace.id})) and a.status in ('active','escalated'))
     union all select 'repository_preparation_unresolved' where exists (select 1 from execution_workspace_repositories r where r.company_id=${companyId}::uuid
       and r.execution_workspace_id in (${workspaceIds}) and r.state<>'ready')`);
+  const services = await db.execute<{ cwd: string | null; provider: string }>(sql`
+    select cwd, provider from workspace_runtime_services where company_id=${companyId}::uuid and status<>'stopped' limit 1001`);
+  const reasons = rows.map(row => row.reason);
+  if (services.length > 1000) reasons.push("workspace_runtime_service_unsettled");
+  else for (const service of services) {
+    try {
+      if (service.cwd ? overlaps(source.root, await physicalPath(service.cwd)) : service.provider !== "adapter_managed") {
+        reasons.push("workspace_runtime_service_unsettled"); break;
+      }
+    } catch { reasons.push("workspace_runtime_service_unsettled"); break; }
+  }
   const controlled = [...adapterExecutionControls.keys()];
   if (controlled.length) {
     const active = await db.execute(sql`select id from heartbeat_runs where company_id=${companyId}::uuid
       and id in (${sql.join(controlled.map(id => sql`${id}::uuid`), sql`, `)})
       and runner_profile_json#>>'{nativeWorkspaceSync,workspaceId}' in (${sql.join(source.workspaceIds.map(id => sql`${id}`), sql`, `)}) limit 1`);
-    if (active.length) return [...rows.map(row => row.reason), "active_execution"];
+    if (active.length) return [...reasons, "active_execution"];
   }
-  return rows.map(row => row.reason);
+  return reasons;
 }
 
 /** Only the maintenance entry point can acknowledge that every old deployment

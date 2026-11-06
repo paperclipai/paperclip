@@ -20,7 +20,7 @@ import { IsolatedRepositorySourceBusy, withIsolatedRepositorySourceLock, withWor
 import { tryLockNativeWorkspaceFinalization } from "./native-runtime/native-workspace-finalization-ownership.js";
 import { recordNativeFinalizationFailure } from "./native-runtime/native-run-finalizer.js";
 import { withWorkspaceMoveLocks } from "./isolated-repository-rehome.js";
-import { startRuntimeServicesForWorkspaceControl, stopRuntimeServicesForExecutionWorkspace } from "./workspace-runtime.js";
+import { ensureRuntimeServicesForRun, startRuntimeServicesForWorkspaceControl, stopRuntimeServicesForExecutionWorkspace } from "./workspace-runtime.js";
 
 const support = await getEmbeddedPostgresTestSupport();
 describe.skipIf(!support.supported)("online ordinary physical source fence", () => {
@@ -180,23 +180,39 @@ describe.skipIf(!support.supported)("online ordinary physical source fence", () 
     } finally { release(); await owner; await movement; }
     expect(moved).toBe(true);
   });
-  it("fences project command provisioning without an execution workspace ID", async () => {
+  it("keeps runs without runtime services free of source filesystem admission", async () => {
+    const f = await fixture(), realpath = fs.realpath.bind(fs);
+    vi.spyOn(fs, "realpath").mockImplementation(async target => {
+      if (String(target).startsWith(home)) throw new Error("runtime sources must stay unused");
+      return realpath(target);
+    });
+    expect(await ensureRuntimeServicesForRun({ db, runId: randomUUID(), executionWorkspaceId: f.workspaceId,
+      agent: { id: null, name: "No service owner", companyId: f.companyId }, issue: null, adapterEnv: {}, config: {}, skipHostProvision: true,
+      workspace: { cwd: f.cwd, baseCwd: f.cwd, source: "project_primary", projectId: f.projectId, workspaceId: null,
+        repoUrl: null, repoRef: null, strategy: "project_primary", branchName: null, branchCreatedByRuntime: false,
+        worktreePath: null, warnings: [], created: false } })).toEqual([]);
+  });
+  it.each(["workspace", "configured"] as const)("fences project command provisioning and its running %s CWD without an execution workspace ID", async location => {
     const f = await fixture();
+    const startProjectId = location === "configured" ? randomUUID() : f.projectId;
+    if (startProjectId !== f.projectId) await db.insert(projects).values({ id: startProjectId, companyId: f.companyId, name: "Service owner" });
+    const startCwd = resolveManagedProjectWorkspaceDir({ companyId: f.companyId, projectId: startProjectId });
+    await fs.mkdir(startCwd, { recursive: true });
     const [agent] = await db.insert(agents).values({ companyId: f.companyId, name: "Project command owner" }).returning();
-    const [projectWorkspace] = await db.insert(projectWorkspaces).values({ companyId: f.companyId, projectId: f.projectId,
-      name: "Project source", cwd: f.cwd }).returning();
+    const [projectWorkspace] = await db.insert(projectWorkspaces).values({ companyId: f.companyId, projectId: startProjectId,
+      name: "Project source", cwd: startCwd }).returning();
     let entered!: () => void, release!: () => void;
     const started = new Promise<void>(resolve => { entered = resolve; });
     const pending = new Promise<void>(resolve => { release = resolve; });
     const owner = withWorkspaceSourceLocks(db, { companyId: f.companyId, projectIds: [f.projectId] }, async () => { entered(); await pending; });
     await started;
-    const node = JSON.stringify(process.execPath), marker = path.join(f.cwd, "runtime-source-marker");
+    const node = JSON.stringify(process.execPath), marker = path.join(startCwd, "runtime-source-marker");
     const services = startRuntimeServicesForWorkspaceControl({ db, actor: agent, issue: null, adapterEnv: {},
-      workspace: { cwd: f.cwd, baseCwd: f.cwd, source: "project_primary", projectId: f.projectId, workspaceId: projectWorkspace.id,
+      workspace: { cwd: startCwd, baseCwd: startCwd, source: "project_primary", projectId: startProjectId, workspaceId: projectWorkspace.id,
         repoUrl: null, repoRef: null, strategy: "project_primary", branchName: null, branchCreatedByRuntime: false,
         worktreePath: null, warnings: [], created: false },
       config: { runtimeProvisionCommand: `${node} -e ${JSON.stringify("require('node:fs').writeFileSync('runtime-source-marker', 'provisioned')")}`,
-        workspaceRuntime: { services: [{ name: "source-fence-proof", command: `${node} -e ${JSON.stringify("setInterval(() => {}, 1000)")}`,
+        workspaceRuntime: { services: [{ name: "source-fence-proof", cwd: f.cwd, command: `${node} -e ${JSON.stringify("setInterval(() => {}, 1000)")}`,
           lifecycle: "shared", reuseScope: "project_workspace", stopPolicy: { type: "manual" } }] } },
     });
     try {
@@ -208,10 +224,18 @@ describe.skipIf(!support.supported)("online ordinary physical source fence", () 
     } finally {
       release(); await owner;
       const refs = await services;
-      for (const ref of refs) await stopRuntimeServicesForExecutionWorkspace({ db, executionWorkspaceId: f.workspaceId,
-        runtimeServiceId: ref.id });
+      try {
+        expect(refs).toHaveLength(1);
+        expect(await inventoryRemoteWorkspaceMigration(db, f)).toMatchObject({ eligible: false,
+          reasons: expect.arrayContaining(["workspace_runtime_service_unsettled"]) });
+        await expect(migrateRemoteWorkspace({ db, storage, ...f, apply: true })).rejects.toThrow("workspace_runtime_service_unsettled");
+        expect(readRemoteWorkspaceAuthority((await stored(f.workspaceId)).metadata)).toBeNull();
+      } finally {
+        for (const ref of refs) await stopRuntimeServicesForExecutionWorkspace({ db, executionWorkspaceId: f.workspaceId, runtimeServiceId: ref.id });
+      }
     }
     expect(await fs.readFile(marker, "utf8")).toBe("provisioned");
+    expect(await inventoryRemoteWorkspaceMigration(db, f)).toMatchObject({ eligible: true, reasons: [] });
   });
   it("fences a configured alias of an existing isolated task directory using its original issue key", async () => {
     const f = await fixture(), sourceIssueId = f.aliases[0].issue.id;

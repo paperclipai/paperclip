@@ -8,7 +8,7 @@ import { getStorageService } from "../storage/index.js";
 import type { StorageService } from "../storage/types.js";
 import { sanitizeRuntimeServiceBaseEnv } from "./runtime-service-env.js";
 import { verifiedRecordedIsolatedRemoteSource } from "./isolated-remote-workspace-source.js";
-import { isolatedTaskSourceIdentity, managedProjectSourceIdentity, withWorkspaceSourceLocks } from "./workspace-source-lock.js";
+import { assertCurrentWorkspaceSourceHeld, isolatedTaskSourceIdentity, managedProjectSourceIdentity, withWorkspaceSourceLocks } from "./workspace-source-lock.js";
 export { sanitizeRuntimeServiceBaseEnv } from "./runtime-service-env.js";
 import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync } from "node:fs";
@@ -6676,6 +6676,7 @@ async function spawnLocalRuntimeService(input: StartLocalRuntimeServiceInput): P
   }
 
   try {
+    if (input.db) await assertCurrentWorkspaceSourceHeld(serviceCwd);
     await ensureServerWorkspaceLinksCurrent(serviceCwd, {
       onLog: input.onLog,
     });
@@ -7797,6 +7798,23 @@ async function withRuntimeStartMutexes<T>(
   return await acquire(0);
 }
 
+async function withRuntimeServiceSourceLocks<T>(input: {
+  db?: Db; workspace: RealizedExecutionWorkspace; agent: ExecutionWorkspaceAgentRef;
+  issue: ExecutionWorkspaceIssueRef | null; adapterEnv: Record<string, string>; services: Record<string, unknown>[];
+}, action: () => Promise<T>): Promise<T> {
+  if (!input.db || input.services.length === 0) return action();
+  const paths = [input.workspace.cwd, input.workspace.baseCwd, ...input.services.map(service =>
+    resolveRuntimeServiceReuseIdentity({ ...input, service, scopeType: "project_workspace", scopeId: input.workspace.workspaceId }).serviceCwd)];
+  const projectIds: string[] = [], issueIds: string[] = [];
+  for (const cwd of new Set(paths)) {
+    const projectId = await managedProjectSourceIdentity(input.agent.companyId, cwd);
+    const issueId = await isolatedTaskSourceIdentity(input.agent.companyId, cwd);
+    if (projectId) projectIds.push(projectId);
+    if (issueId) issueIds.push(issueId);
+  }
+  return withWorkspaceSourceLocks(input.db, { companyId: input.agent.companyId, projectIds, issueIds }, action);
+}
+
 export async function ensureRuntimeServicesForRun(
   input: EnsureRuntimeServicesForRunInput,
 ): Promise<RuntimeServiceRef[]> {
@@ -7818,7 +7836,7 @@ export async function ensureRuntimeServicesForRun(
   try {
     return await withRuntimeStartMutexes(
       mutexPlan.ownerKeys,
-      () => ensureRuntimeServicesForRunInvocation(input),
+      () => withRuntimeServiceSourceLocks({ ...input, services }, () => ensureRuntimeServicesForRunInvocation(input)),
     );
   } finally {
     releaseRuntimeReplacementClaims(mutexPlan.replacementReuseKeys);
@@ -8267,17 +8285,8 @@ export async function startRuntimeServicesForWorkspaceControl(
   try {
     return await withRuntimeStartMutexes(
       mutexPlan.ownerKeys,
-      async () => {
-        if (!input.db) {
-          return startRuntimeServicesForWorkspaceControlInvocation(input);
-        }
-        if (!input.executionWorkspaceId) {
-          const projectId = await managedProjectSourceIdentity(input.actor.companyId, input.workspace.cwd);
-          const issueId = await isolatedTaskSourceIdentity(input.actor.companyId, input.workspace.cwd);
-          return projectId || issueId ? withWorkspaceSourceLocks(input.db, { companyId: input.actor.companyId,
-            projectIds: projectId ? [projectId] : [], issueIds: issueId ? [issueId] : [],
-          }, () => startRuntimeServicesForWorkspaceControlInvocation(input)) : startRuntimeServicesForWorkspaceControlInvocation(input);
-        }
+      () => withRuntimeServiceSourceLocks({ ...input, agent: input.actor, services }, async () => {
+        if (!input.db || !input.executionWorkspaceId) return startRuntimeServicesForWorkspaceControlInvocation(input);
         // Startup and direct callers can bypass the HTTP operation recorder.
         // Keep migration fenced through provision/bind/persistence, including the
         // HTTPS path which intentionally commits its reservation before binding.
@@ -8299,7 +8308,7 @@ export async function startRuntimeServicesForWorkspaceControl(
           }
           return startRuntimeServicesForWorkspaceControlInvocation(input);
         });
-      },
+      }),
     );
   } finally {
     releaseRuntimeReplacementClaims(mutexPlan.replacementReuseKeys);

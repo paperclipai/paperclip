@@ -94,3 +94,14 @@ export async function retainCurrentWorkspaceSource(cwd: string): Promise<void> {
   if (!companyId || !projectId || !/^[a-f0-9-]{36}$/.test(companyId) || !/^[a-f0-9-]{36}$/.test(projectId)) return;
   await retainManagedProjectSource(scope.db, companyId, cwd);
 }
+
+export async function assertCurrentWorkspaceSourceHeld(cwd: string): Promise<void> {
+  const scope = sourceLocks.getStore();
+  if (!scope) throw new Error("workspace_source_admission_scope_required");
+  const projectId = await managedProjectSourceIdentity(scope.companyId, cwd);
+  const issueId = await isolatedTaskSourceIdentity(scope.companyId, cwd);
+  if (projectId && !scope.keys.has(`managed_project_source:${scope.companyId}:${projectId}`)
+    || issueId && !scope.keys.has(`isolated_repository_source:${scope.companyId}:${issueId}`)) {
+    throw new IsolatedRepositorySourceBusy("workspace_source_busy");
+  }
+}
