@@ -919,6 +919,74 @@ describe("claude_local ACP lane", () => {
     expect((await fs.stat(toolShellPrefix)).mode & 0o777).toBe(0o700);
   });
 
+  it.each([
+    { permissionMode: undefined, hostSettings: true, defaultMode: "bypassPermissions", isSandbox: "1" },
+    { permissionMode: "approve-all", hostSettings: false, defaultMode: "bypassPermissions", isSandbox: "1" },
+    { permissionMode: "default", hostSettings: true, defaultMode: "bypassPermissions", isSandbox: "1" },
+    { permissionMode: "approve-reads", hostSettings: true, defaultMode: "default", isSandbox: undefined },
+    { permissionMode: "deny-all", hostSettings: true, defaultMode: "default", isSandbox: undefined },
+  ])(
+    "starts sandbox Claude in $defaultMode mode when the ACPX permission mode is $permissionMode",
+    async ({ permissionMode, hostSettings, defaultMode, isSandbox }) => {
+      const root = await makeTempRoot("paperclip-claude-acp-permission-mode-");
+      const localCwd = path.join(root, "worktree");
+      const remoteCwd = path.join(root, "remote-workspace");
+      const sharedClaudeConfig = path.join(root, "shared-claude-config");
+      await fs.mkdir(localCwd, { recursive: true });
+      await fs.mkdir(remoteCwd, { recursive: true });
+      await fs.mkdir(sharedClaudeConfig, { recursive: true });
+      if (hostSettings) {
+        await fs.writeFile(
+          path.join(sharedClaudeConfig, "settings.json"),
+          JSON.stringify({ theme: "dark", permissions: { defaultMode: "acceptEdits", allow: ["Bash(*)"] } }),
+          "utf8",
+        );
+      }
+      process.env.PAPERCLIP_HOME = path.join(root, "paperclip-home");
+      process.env.PAPERCLIP_INSTANCE_ID = "test";
+      process.env.CLAUDE_CONFIG_DIR = sharedClaudeConfig;
+
+      const meta: AdapterInvocationMeta[] = [];
+      const execute = createClaudeAcpExecutor({
+        createRuntime: (options: FakeRuntimeOptions) => new FakeRuntime(options) as never,
+      });
+      const result = await execute(
+        buildContext(localCwd, {
+          config: {
+            engine: "acp",
+            cwd: localCwd,
+            agentCommand: "node ./fake-acp.js",
+            stateDir: path.join(root, "state"),
+            promptTemplate: "Do the assigned work.",
+            ...(permissionMode ? { permissionMode } : {}),
+          },
+          context: {
+            issueId: "issue-1",
+            paperclipWorkspace: { cwd: localCwd, source: "project_workspace", workspaceId: "workspace-1" },
+          },
+          executionTarget: {
+            kind: "remote",
+            transport: "sandbox",
+            providerKey: "fake-plugin",
+            remoteCwd,
+            runner: createLocalSandboxRunner(),
+          } as never,
+          authToken: "real-run-jwt",
+          onMeta: async (payload: AdapterInvocationMeta) => {
+            meta.push(payload);
+          },
+        }),
+      );
+
+      expect(result.exitCode).toBe(0);
+      const remoteConfigDir = String(meta[0]?.env?.CLAUDE_CONFIG_DIR ?? "");
+      const remoteSettings = JSON.parse(await fs.readFile(path.join(remoteConfigDir, "settings.json"), "utf8"));
+      expect(remoteSettings.permissions).toEqual({ defaultMode });
+      expect(remoteSettings.theme).toBe(hostSettings ? "dark" : undefined);
+      expect(meta[0]?.env?.IS_SANDBOX).toBe(isSandbox);
+    },
+  );
+
   it("keeps an operator CLAUDE_CODE_SHELL_PREFIX and installs no tool shell prefix", async () => {
     const root = await makeTempRoot("paperclip-claude-acp-operator-prefix-");
     const localCwd = path.join(root, "worktree");
