@@ -111,7 +111,12 @@ Every PR must include a **Model Used** section specifying which AI model produce
 
 ### Tests Must Pass
 
-All tests must pass before a PR can be merged. Run them locally first and verify CI is green after pushing.
+All required checks must pass before a PR can be merged. Run relevant local checks
+with `pnpm verify`, then require applicable typecheck, build, and test CI checks on
+the final tested revision. Fresh CI can supply broad coverage. Run a full local
+suite when it resolves a remaining local/platform-specific gap or is explicitly
+required for qualification. See `AGENTS.md` and `doc/DEVELOPING.md` for result reuse
+and coverage requirements.
 
 ### Telemetry Changes
 

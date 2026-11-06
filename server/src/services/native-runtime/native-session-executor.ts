@@ -5952,32 +5952,94 @@ function localProcessDefinitelyGone(value: unknown, group = false): boolean {
   }
 }
 
-function runnerdStateIsIncompleteBootstrap(state: Record<string, unknown>): boolean {
+const RUNNERD_BOOTSTRAP_COMMAND_TYPES = new Set(["run.prepare", "session.open"]);
+
+/** The runner never connected, so every bootstrap command is still undelivered. */
+function runnerdStateIsUnconnectedBootstrap(state: Record<string, unknown>): boolean {
   const commands = Array.isArray(state.commands) ? state.commands.map(record) : [];
   const committedEvents = Array.isArray(state.committedEvents) ? state.committedEvents : [];
   return RUNNERD_CONTROL_PLANE_STATE_SCHEMAS.has(String(state.schema)) &&
     state.connectionCount === 0 && committedEvents.length === 0 &&
     commands.every(command => command.status === "pending" &&
-      (command.type === "run.prepare" || command.type === "session.open"));
+      RUNNERD_BOOTSTRAP_COMMAND_TYPES.has(String(command.type)));
+}
+
+/**
+ * A provider turn can start only after session.open completes and the
+ * controller issues a turn command. A root whose controller journal stops
+ * before that point (run.prepare may be acknowledged, session.open never is,
+ * no event was committed or acknowledged) and whose runner journal emitted no
+ * event either holds no provider work, so restart recovery may quarantine it
+ * and bootstrap again. Any other shape stays fail-closed.
+ */
+function runnerdStateIsIncompleteBootstrap(
+  state: Record<string, unknown>,
+  runnerJournal?: Record<string, unknown> | null,
+): boolean {
+  if (runnerdStateIsUnconnectedBootstrap(state)) return true;
+  if (!RUNNERD_CONTROL_PLANE_STATE_SCHEMAS.has(String(state.schema))) return false;
+  if (typeof state.connectionCount !== "number" || !Number.isSafeInteger(state.connectionCount) ||
+      state.connectionCount < 0) return false;
+  if (!Array.isArray(state.committedEvents) || state.committedEvents.length !== 0) return false;
+  if (state.ackedSourceSeq !== 0) return false;
+  if (state.warmTransition != null || state.completedWarmTransition != null ||
+      state.stagedRunAttachment != null) return false;
+  if (record(state.bootstrapHistory).adopted === true) return false;
+  if (!Array.isArray(state.commands)) return false;
+  const commands = state.commands.map(record);
+  if (!commands.every(command => RUNNERD_BOOTSTRAP_COMMAND_TYPES.has(String(command.type)) &&
+      (command.status === "pending" ||
+        (command.type === "run.prepare" && command.status === "completed")))) return false;
+  // The controller cannot see runner events that were emitted but never
+  // committed. When the runner journal exists it must agree that none were.
+  if (runnerJournal === undefined) return true;
+  if (runnerJournal === null) return false;
+  const processed = Object.values(record(runnerJournal.processedCommands)).map(record);
+  return Array.isArray(runnerJournal.outbox) && runnerJournal.outbox.length === 0 &&
+    runnerJournal.nextSourceSeq === 1 && runnerJournal.ackedSourceSeq === 0 &&
+    processed.every(command => RUNNERD_BOOTSTRAP_COMMAND_TYPES.has(String(command.commandType)) &&
+      (command.commandType === "run.prepare" || command.status !== "completed"));
+}
+
+/** `undefined` when the runner never journaled, `null` when unreadable. */
+function readRunnerdBootstrapJournal(root: string): Record<string, unknown> | null | undefined {
+  const runnerRoot = resolve(root, "runner");
+  if (!existsSync(runnerRoot)) return undefined;
+  if (!isSafeNativeStateDirectory(runnerRoot)) return null;
+  const statePath = resolve(runnerRoot, "runner-state.json");
+  if (!existsSync(statePath)) return undefined;
+  try {
+    const state = record(JSON.parse(readBoundedNativeFile(statePath, NATIVE_RUNNER_STATE_MAX_BYTES,
+      "runner_state_too_large").toString("utf8")));
+    return state.schema === "paperclip.runner.durable.state.v1" ? state : null;
+  } catch {
+    return null;
+  }
+}
+
+function readRunnerdControlPlaneState(root: string): Record<string, unknown> {
+  return record(
+    JSON.parse(
+      readBoundedNativeFile(
+        resolve(root, "control-plane", "control-plane-state.json"),
+        NATIVE_CONTROL_PLANE_STATE_MAX_BYTES,
+        "runner_durable_identity_too_large",
+      ).toString("utf8"),
+    ),
+  );
 }
 
 export function runnerdStateProvesIncompleteBootstrap(root: string): boolean {
   try {
-    const statePath = resolve(
-      root,
-      "control-plane",
-      "control-plane-state.json",
-    );
-    const state = record(
-      JSON.parse(
-        readBoundedNativeFile(
-          statePath,
-          NATIVE_CONTROL_PLANE_STATE_MAX_BYTES,
-          "runner_durable_identity_too_large",
-        ).toString("utf8"),
-      ),
-    );
-    return runnerdStateIsIncompleteBootstrap(state);
+    return runnerdStateIsIncompleteBootstrap(readRunnerdControlPlaneState(root), readRunnerdBootstrapJournal(root));
+  } catch {
+    return false;
+  }
+}
+
+function runnerdStateProvesUnconnectedBootstrap(root: string): boolean {
+  try {
+    return runnerdStateIsUnconnectedBootstrap(readRunnerdControlPlaneState(root));
   } catch {
     return false;
   }
@@ -7310,6 +7372,7 @@ export function nativeSessionFailureSourceCode(
   | "provider_session_open_rejected"
   | "runner_ingress_access_rejected"
   | "runner_ingress_acquisition_failed"
+  | "local_runtime_api_listener_unavailable"
   | "native_session_interrupted" {
   if (error instanceof NativePermissionDeclinedError) return "native_permission_declined";
   if (error instanceof NativeProviderStateIncompatibleError) return NATIVE_PROVIDER_STATE_INCOMPATIBLE;
@@ -7410,6 +7473,12 @@ export function nativeSessionFailureSourceCode(
     }
     return "provider_session_open_rejected";
   }
+  // This process has no HTTP listener (graceful shutdown closes it first), so
+  // the control plane cannot hand a runner its callback origin. The lookup runs
+  // before any runner or provider process is created.
+  if (/\blocal_runtime_api_listener_unavailable\b/.test(message)) {
+    return "local_runtime_api_listener_unavailable";
+  }
   return "native_session_interrupted";
 }
 
@@ -7505,6 +7574,7 @@ export async function nativeProviderRecoveryEvidence(input: {
     "provider_request_protocol_error",
     "native_runner_process_exited",
     "provider_session_open_rejected",
+    "local_runtime_api_listener_unavailable",
   ]).has(input.sourceFailureCode);
   if (!checkpointExists && !providerEventsExist && (definitelyPreSession
     || unclaimedBootstrap && input.bootstrap?.transientIngressFailure)) {
@@ -11179,6 +11249,31 @@ async function executePaperclipNativeSessionWithinScope(
         // Emit after rollback so the diagnostic sink cannot deadlock on the
         // coordinator transaction. Reporting failure cannot change fencing.
         if (failure instanceof NativePostResultFailureError) {
+          // The rejected write proved this exact, unexpired owner holds an
+          // accepted result. Provider work is over and renewal is stopping, so
+          // hand the lease to finalization now, as the success path does. A
+          // retained lease would make the finalizer wait out its whole TTL.
+          await stoppedLeaseRenewal;
+          await boundedExecutionCleanup(async () => {
+            await input.db.transaction(async tx => {
+              await notifyNativeFinalizationWork(tx, input.execution.binding);
+              await tx.update(nativeRunFinalizations)
+                .set({ leaseOwner: null, leaseExpiresAt: null, recoveryState: null, recoveryRequestId: null, updatedAt: new Date() })
+                .where(and(
+                  eq(nativeRunFinalizations.runId, input.execution.binding.runId),
+                  eq(nativeRunFinalizations.companyId, input.execution.binding.companyId),
+                  eq(nativeRunFinalizations.issueId, input.execution.binding.issueId),
+                  eq(nativeRunFinalizations.leaseOwner, leaseOwner),
+                  eq(nativeRunFinalizations.attempt, attempt),
+                  eq(nativeRunFinalizations.controllerGeneration, controllerGeneration),
+                  eq(nativeRunFinalizations.controllerBootId, controller.bootId),
+                  eq(nativeRunFinalizations.controllerPid, controller.pid),
+                  eq(nativeRunFinalizations.controllerProcessStartedAt, controller.processStartedAt),
+                  gt(nativeRunFinalizations.leaseExpiresAt, sql`clock_timestamp()`),
+                  isNotNull(nativeRunFinalizations.resultId),
+                ));
+            });
+          });
           await boundedExecutionCleanup(async () => {
             await input.onEvent?.({ eventType: "native.post_result_failure", level: "warn",
               message: "Native execution failed after its result was accepted.",
@@ -14151,7 +14246,7 @@ async function createRunnerdBackendWithinSessionClaim(
     if (!durableIdentityMatchesExecution(identity, input.execution) ||
         identity?.runnerInstanceId !== effectiveRunnerInstanceId ||
         identity?.environmentLeaseId !== effectiveEnvironmentLeaseId ||
-        !(controllerState ? runnerdStateIsIncompleteBootstrap(record(controllerState)) : runnerdStateProvesIncompleteBootstrap(root))) return false;
+        !(controllerState ? runnerdStateIsUnconnectedBootstrap(record(controllerState)) : runnerdStateProvesUnconnectedBootstrap(root))) return false;
     // Workspace reuse or replacement can acquire a lease for a new session.
     // Claim this exact new session atomically under readable real directories.
     // Missing files inside an existing session never authorize a fresh start.

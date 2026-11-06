@@ -66,7 +66,7 @@ const support = externalDatabaseUrl ? { supported: true } : await getEmbeddedPos
       request: { repository: { kind: "catalog", id: "123" }, requestKey: "remote-repository" } });
     const pin = "a".repeat(40);
     const prepare = vi.spyOn(remoteWorkspaces, "prepareRemoteWorkspaceRepository").mockResolvedValue({
-      cwd: `${remoteCwd}/${intent.repository.relativePath}`, pinnedCommit: pin, branchName: "main" });
+      cwd: `${remoteCwd}/${intent.repository.relativePath}`, pinnedCommit: pin, branchName: "main", requiresSave: false });
     try {
       const prepared = await prepareForAdmission({ companyId, issueId: taskId, workspaceId: remoteWorkspaceId,
         cwd: remoteCwd, agentId, runId, responsibleUserId: "local-board",

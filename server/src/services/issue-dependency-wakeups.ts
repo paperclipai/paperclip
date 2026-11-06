@@ -1,9 +1,18 @@
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import { createHash } from "node:crypto";
 import type { Db } from "@paperclipai/db";
 import { agentWakeupRequests } from "@paperclipai/db";
 
 export const ISSUE_BLOCKERS_RESOLVED_WAKE_REASON = "issue_blockers_resolved";
+
+export const issueBlockersResolvedWakePayloadSql =
+  sql`${agentWakeupRequests.payload}#>>'{_paperclipWakeContext,wakeReason}' = ${ISSUE_BLOCKERS_RESOLVED_WAKE_REASON}`;
+
+export function isIssueBlockersResolvedWakePayload(payload: Record<string, unknown> | null | undefined): boolean {
+  const context = payload?._paperclipWakeContext;
+  return context !== null && typeof context === "object" && !Array.isArray(context)
+    && (context as Record<string, unknown>).wakeReason === ISSUE_BLOCKERS_RESOLVED_WAKE_REASON;
+}
 
 /**
  * Whether moving an issue into `blocked` should immediately wake its assignee

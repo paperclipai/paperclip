@@ -675,8 +675,10 @@ before execution.
 
 The idle chat cell asks the agent to delegate one welcome note to a named worker and
 report its result without another user message. A bounded local file read in
-the managed project workspace delays completion until the source chat is positively
-observed idle, with a three-minute handoff setup budget and a four-minute worker
+the worker task's own isolated task directory delays completion until the source
+chat is positively observed idle. The wait command names only cwd-relative files,
+because native providers cannot read agent homes or unconfigured project roots. The
+setup uses a three-minute handoff setup budget and a four-minute worker
 wait limit. The brief is then released, the worker must save the output and
 reach Done. Its output must include the start time supplied only in that brief, allowing
 ordinary numeric and written forms. That check runs after completion observation
@@ -684,7 +686,7 @@ so a content mismatch cannot suppress the communication evidence.
 The source thread is observed for 120 seconds. The probe retains a later
 correction even if an earlier reply already passes delivery and access. A later
 clarification does not erase an earlier accessible delivery.
-The busy cell holds a separate source reply open until the worker finishes; the multiple cell delegates two notes and requires one completion per task. The restart cell holds the source provider at a fixture reference gate, then restarts the server after durable Done but before publication and releases the gate. The gate makes the interruption boundary observable and prevents a fast successful reply from racing the restart assertion. The onboarding cell records its naturally occurring timing.
+The busy cell holds a separate source reply open until the worker finishes; the multiple cell delegates two notes and requires one completion per task. The restart cell holds the source provider at a fixture reference gate, then restarts the server after durable Done but before publication and releases the gate. The gate makes the interruption boundary observable and prevents a fast successful reply from racing the restart assertion. Reaching the gate depends on the source agent running the instructed wait: the completion reply is published inside the run finalizer's own transaction, so the isolated-server entrypoint cannot hold it without a product hook. If no completion turn is still active and the turn that received this task's Done facts has succeeded or published its reply before the gate reports `waiting`, the cell fails at once with `restart boundary not reached (agent skipped gate)` rather than a generic timeout. That failure is agent compliance (the restart was never exercised), not restart robustness. A completion turn that fails or is cancelled before the gate is not blamed on the agent, because delivery can retry it; if the wait then times out, the timeout names that turn and its status as `restart boundary not reached`. After the restart, the chat navigation retries an abort caused by the old document's reload. The onboarding cell records its naturally occurring timing.
 
 The mechanical oracle requires a run-attributed source reply after durable
 completion, plus the actual saved output or a navigable task/output link.
@@ -837,7 +839,7 @@ runner binaries:
 ```bash
 pnpm install
 pnpm exec playwright install chromium
-pnpm --filter @paperclipai/paperclip-runner build:runner-binaries
+pnpm --filter @paperclipai/paperclip-runner run build:runner-binaries
 ```
 
 List cells without loading credentials or starting Paperclip:
@@ -1213,12 +1215,14 @@ or publish the current source locally:
 ```bash
 content_id="$(pnpm --silent test:e2e:runner:image-id)"
 source_revision="$(git rev-parse HEAD)"
+lock_sha="$(shasum -a 256 pnpm-lock.yaml | cut -d ' ' -f 1)"
 image="ghcr.io/paperclipai/paperclip-daytona-runner:e2e-content-${content_id}"
 if ! docker buildx imagetools inspect "$image" >/dev/null 2>&1; then
   docker buildx build \
     --platform linux/amd64 \
     --build-arg "PAPERCLIP_RUNNER_CONTENT_ID=${content_id}" \
     --build-arg "PAPERCLIP_RUNNER_SOURCE_REVISION=${source_revision}" \
+    --build-arg "PAPERCLIP_RUNNER_LOCK_SHA256=${lock_sha}" \
     --file docker/daytona-runner/Dockerfile \
     --tag "$image" \
     --push \
@@ -1226,6 +1230,11 @@ if ! docker buildx imagetools inspect "$image" >/dev/null 2>&1; then
 fi
 docker buildx imagetools inspect "$image"
 ```
+
+The Dockerfile has no lockfile digest default: every build passes the SHA-256
+of the `pnpm-lock.yaml` in its build context, and a missing or malformed value
+fails before installation. Build from a clean checkout of the source revision
+so the content ID, provenance, and lockfile digest describe the same tree.
 
 The content ID hashes the audited image inputs, including the Dockerfile,
 platform, root package/lock/build configuration, dependency patches,
@@ -1815,9 +1824,12 @@ There are thirteen cases on `legacy-codex`, `legacy-claude`, `runner-codex`, and
 production wizard, omits the runner override, and verifies the saved native
 configuration without changing runners afterward. `runner-acpx-claude` does the
 same for Claude on its qualified default targets and inspects the saved ACPX
-Claude profile directly. Both Legacy profiles select Legacy runner in Advanced
-before authentication and creation. All four paths are labeled
-`production-wizard`; there is no post-onboarding runner switch. Persona,
+Claude profile directly. Both Legacy profiles configure the inactive setup record
+through the normal agent API before authentication, reload, and finish the saved
+setup in the wizard. They are labeled `api-configured-legacy-setup`; the native
+paths retain `production-wizard`. The UI exposes no runner dropdown, and there
+is no post-onboarding runner switch. Legacy coverage proves setup resumption,
+not the fresh-agent automatic default. Persona,
 managed instructions, skills, seeded question, and task invocation are preserved. The native path removes the legacy
 Paperclip operational skill because Runner supplies that contract through its
 protocol; other assigned skills, including `/first-task`, are retained.
@@ -2130,7 +2142,10 @@ retirement.
 Launcher cancellation first signals its outer group, so Playwright and the wrapper
 own graceful server shutdown. It allows 45 seconds for that chain before bounded
 5-second forced cleanup of revalidated descendants. Normal launcher exit uses the
-same retained descendant inventory. Zombies count as stopped; an unavailable or
+same retained descendant inventory. Zombies count as stopped, including when
+macOS answers a group signal with EPERM because every remaining member is an
+unreaped zombie; EPERM stays fatal while a fresh inspection shows a running
+member. An unavailable or
 uncertain identity inspection triggers bounded direct-child-only retirement and
 still fails the tree audit. Failed cleanup preserves the temporary state. Graceful
 owners are selected from the same validated table used for delivery; ESRCH allows

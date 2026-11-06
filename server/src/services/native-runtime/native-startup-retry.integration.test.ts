@@ -40,6 +40,7 @@ import { environmentRunnerIngressErrorData, JsonRpcCallError, PluginEnvironmentR
 import { accountRunCost } from "../run-cost-accounting.js";
 import { settleUnrecoverableExecutions } from "../execution-recovery-resolution.js";
 import { agentProviderLimitCooldown } from "./native-startup-retry.js";
+import { resolveLocalRuntimeApiUrl, runtimeApiInternals } from "../../runtime-api.js";
 
 type SessionOpenStatus = "failed" | "rejected" | "indeterminate";
 
@@ -477,6 +478,82 @@ describe("native provider startup retry", () => {
     expect(state.coordinator.nextAttemptAt!.getTime()).toBeGreaterThanOrEqual(secondLow);
     expect(state.coordinator.nextAttemptAt!.getTime()).toBeLessThanOrEqual(secondHigh + 5_000);
     expect(state.issue.status).toBe("in_progress");
+  });
+
+  it("retries startup that a draining server interrupted before any provider session", async () => {
+    const seeded = await seedRun(await createAgent());
+    // A graceful shutdown closes the HTTP listener first; startup that reaches
+    // the runtime API lookup afterwards fails before a runner or provider exists.
+    runtimeApiInternals.resetForTests();
+    provider.execute.mockReset().mockImplementation(async () => {
+      resolveLocalRuntimeApiUrl();
+      throw new Error("expected the closed listener to stop startup");
+    });
+    const failedAt = new Date();
+    await expect(executePaperclipNativeSession({
+      db,
+      execution: seeded.execution,
+      runnerInstanceId: seeded.runnerInstanceId,
+      backend: {
+        descriptor: async () => { throw new Error("Unexpected provider descriptor call"); },
+        openSession: async () => { throw new Error("Unexpected provider session call"); },
+      },
+    })).rejects.toThrow("local_runtime_api_listener_unavailable");
+
+    const state = await read(seeded);
+    expect(state.coordinator).toMatchObject({
+      phase: "retryable_failure",
+      recoveryState: "resuming_session",
+      attempt: 1,
+      leaseOwner: null,
+      failureDetail: expect.objectContaining({
+        originalFailureCode: "local_runtime_api_listener_unavailable",
+        recoveryMode: "bootstrap_retry",
+        providerSessionEstablished: false,
+        providerEventsExist: false,
+        checkpointExists: false,
+      }),
+    });
+    const [low, high] = backoffWindow(failedAt, 1);
+    expect(state.coordinator.nextAttemptAt!.getTime()).toBeGreaterThanOrEqual(low);
+    expect(state.coordinator.nextAttemptAt!.getTime()).toBeLessThanOrEqual(high + 5_000);
+    expect(state.issue.status).toBe("in_progress");
+    expect(state.action).toMatchObject({
+      ownerType: "agent",
+      ownerAgentId: seeded.agentId,
+      wakePolicy: { kind: "resume_native_run", runId: seeded.runId },
+    });
+    // The next server process claims the same run; no replacement run is created.
+    await claimRetry(seeded);
+  });
+
+  it("keeps a closed-listener failure operator-owned once provider work is durable", async () => {
+    const seeded = await seedRun(await createAgent());
+    runtimeApiInternals.resetForTests();
+    provider.execute.mockReset().mockImplementation(async () => {
+      await db.insert(heartbeatRunEvents).values({
+        companyId, runId: seeded.runId, agentId: seeded.agentId, seq: 900,
+        eventType: "turn.started", stream: "system",
+      });
+      resolveLocalRuntimeApiUrl();
+    });
+    await expect(executePaperclipNativeSession({
+      db,
+      execution: seeded.execution,
+      runnerInstanceId: seeded.runnerInstanceId,
+      backend: {
+        descriptor: async () => { throw new Error("Unexpected provider descriptor call"); },
+        openSession: async () => { throw new Error("Unexpected provider session call"); },
+      },
+    })).rejects.toThrow("local_runtime_api_listener_unavailable");
+
+    const state = await read(seeded);
+    expect(state.coordinator).toMatchObject({
+      phase: "terminal_failure",
+      nextAttemptAt: null,
+      failureDetail: expect.objectContaining({ recoveryMode: "ambiguous_state", providerSessionEstablished: true }),
+    });
+    expect(state.issue.status).toBe("blocked");
   });
 
   it.each(["grok_model_mismatch", "requested_model_unsupported"])(

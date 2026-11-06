@@ -359,7 +359,7 @@ async function captureTerminalRunFailure(
       errorCode: run.errorCode ?? null,
       diagnostics: collectRunFailureDiagnostics(run, options),
     }, [...new Set([
-      ...collectRunFailureSecretValues(process.env, [], true),
+      ...collectRunFailureSecretValues(process.env),
       ...(options.secretValues ?? []),
     ])].sort((a, b) => b.length - a.length));
     const agent = await db

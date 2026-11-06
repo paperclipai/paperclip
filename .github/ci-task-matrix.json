@@ -140,6 +140,11 @@
       "task": "ci:docker"
     }
   ],
+  "sandbox_provider_tests": [
+    {
+      "task": "ci:sandbox-providers"
+    }
+  ],
   "verify_paperclip_runner": [
     {
       "lane_label": "static checks",

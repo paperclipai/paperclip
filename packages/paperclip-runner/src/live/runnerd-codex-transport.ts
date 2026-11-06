@@ -709,6 +709,36 @@ function turnStartResponseReady(input: {
   );
 }
 
+/** The provider turn a durable terminal names, when it names one explicitly. */
+function runnerdTerminalProviderTurnId(eventType: string, payload: unknown): string | null {
+  const named = (value: unknown) => typeof value === "string" && value.length > 0 ? value : null;
+  if (eventType !== "provider.event") return named(record(payload).providerTurnId);
+  const terminal = unwrapRunnerdProviderNotifications(payload).find(
+    (notification) => notification.method === "turn/completed",
+  );
+  const params = record(terminal?.params);
+  return named(record(params.turn).id) ?? named(params.turnId);
+}
+
+/**
+ * A terminal held while turn/start is pending keeps it behind the new turn's
+ * accepted response. Once the durable command result names the new provider
+ * turn, a terminal that explicitly names another turn (for example, a turn the
+ * restored runner reports as lost on restore) cannot be the new turn's
+ * terminal. Holding it would also hold the turn/started event behind it, so
+ * the turn start could never be bound.
+ */
+function terminalMayBelongToPendingTurnStart(input: {
+  expectedProviderTurnId: string | null;
+  terminalProviderTurnId: string | null;
+}): boolean {
+  return (
+    input.expectedProviderTurnId === null ||
+    input.terminalProviderTurnId === null ||
+    input.terminalProviderTurnId === input.expectedProviderTurnId
+  );
+}
+
 function turnStartNotificationDisposition(input: {
   responsePending: boolean;
   expectedProviderTurnId: string | null;
@@ -2104,7 +2134,8 @@ export function readRunnerdArtifactBinding(runnerBinaryPath: string): {
 export interface RetainedRunnerdCleanupProof {
   readonly binding: Readonly<NativeRunIdentity>;
   readonly identity: Readonly<DurableRecoveryIdentity>;
-  readonly backend: Readonly<{ kind: string; name: string }>;
+  /** Must match the quarantine domain, which every production backend builds with kind "runner". */
+  readonly backend: Readonly<{ kind: "runner"; name: string }>;
   readonly providerSessionId: string;
   readonly activationDirectory: string;
   readonly sourceFingerprint: string;
@@ -2400,7 +2431,7 @@ export interface RetainedRunnerdMaintenanceInput {
   requestId: string;
   binding: NativeRunIdentity;
   identity: DurableRecoveryIdentity;
-  backend: { kind: string; name: string };
+  backend: { kind: "runner"; name: string };
   stateDirectory: string;
   activationDirectory: string;
   sourceFingerprint: string;
@@ -7052,7 +7083,11 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
           (event.eventType === "provider.event" &&
             unwrapRunnerdProviderNotifications(eventPayload).some(
               (notification) => notification.method === "turn/completed",
-            )));
+            ))) &&
+        terminalMayBelongToPendingTurnStart({
+          expectedProviderTurnId: this.#expectedProviderTurnId,
+          terminalProviderTurnId: runnerdTerminalProviderTurnId(event.eventType, eventPayload),
+        });
       if (terminalWhileTurnStartPending) {
         if (!fromDeferredQueue) {
           this.#eventSourceSeq = event.sourceSeq;
@@ -8250,6 +8285,8 @@ export const runnerdRecoveryInternals = Object.freeze({
   runnerCloseGraceMs,
   rotatedRunAttachPayload,
   rotateExternalAuthorityEpoch,
+  runnerdTerminalProviderTurnId,
+  terminalMayBelongToPendingTurnStart,
   turnStartCommandResultValid,
   turnStartNotificationDisposition,
   turnStartResponseReady,
@@ -8288,7 +8325,8 @@ export function resolveRunnerdCodexSkillInputs(
 
 /** Controller admission budget; ordinary command and turn deadlines are independent. */
 export function coldAdmissionTimeoutMs(provider: string | undefined, agent: string | undefined, coldProcess: boolean): number {
-  return coldProcess && provider === "acpx" && agent === "pi" ? 60_000 : 30_000;
+  if (!coldProcess) return 30_000;
+  return (provider === "acpx" && agent === "pi") || provider === "opencode" ? 60_000 : 30_000;
 }
 
 export interface RunnerCommandFailure extends Error {
