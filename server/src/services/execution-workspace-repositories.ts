@@ -1,5 +1,5 @@
 import { measureRunTransaction } from "./execution-transaction-timing.js";
-import { prepareRemoteWorkspaceRepository, readRemoteWorkspaceAuthority } from "./remote-workspaces.js";
+import { prepareRemoteWorkspaceRepository, saveRemoteWorkspace, readRemoteWorkspaceAuthority } from "./remote-workspaces.js";
 import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
 import type { EnvironmentLease } from "@paperclipai/shared";
 import { beginRunPhase, measureRunPhase } from "./execution-preparation-timing.js";
@@ -366,6 +366,8 @@ export function executionWorkspaceRepositoryService(db: Db) {
       const resolveAuth = createGitRemoteAuthProvider(db, input.companyId, { issueId: input.issueId, heartbeatRunId: input.runId,
         agentId: input.agentId, responsibleUserId: input.responsibleUserId });
       const prepared: Array<{ id: string; cwd: string; repoUrl: string; relativePath: string; pinnedCommit: string; branchName: string | null }> = [];
+      let requiresSave = false;
+      const verifications: Array<() => Promise<void>> = [];
       for (const row of rows) {
         assertAcquisitionReceipt(row, acquisitionRestricted);
         const source = resolveAcquisitionSource(row.catalogRepositoryId ? { kind: "catalog", id: row.catalogRepositoryId }
@@ -392,19 +394,31 @@ export function executionWorkspaceRepositoryService(db: Db) {
             repository: { id: row.id, relativePath: row.relativePath, repoUrl: row.repoUrl,
               ref: row.requestedRef === "HEAD" ? null : row.requestedRef,
               ...(row.pinnedCommit ? { pinnedCommit: row.pinnedCommit } : {}) },
-            assertOwned: verify, verifyOnly: acquisitionRestricted,
+            assertOwned: verify, verifyOnly: acquisitionRestricted, deferSave: true,
             resolveGitAuth: source.catalogRepositoryId ? resolveAuth : async () => anonymous,
           });
           await verify();
-          await db.update(executionWorkspaceRepositories).set({ state: "ready", pinnedCommit: result.pinnedCommit,
-            branchName: result.branchName, failureCode: null, updatedAt: new Date() })
-            .where(and(eq(executionWorkspaceRepositories.id, row.id), eq(executionWorkspaceRepositories.companyId, input.companyId)));
+          requiresSave ||= result.requiresSave;
+          verifications.push(verify);
           prepared.push({ ...result, id: row.id, repoUrl: row.repoUrl, relativePath: row.relativePath });
         } catch (error) {
           await db.update(executionWorkspaceRepositories).set({ state: "needs_repair", failureCode: "repository_preparation_failed", updatedAt: new Date() })
             .where(and(eq(executionWorkspaceRepositories.id, row.id), eq(executionWorkspaceRepositories.companyId, input.companyId)));
           throw error;
         }
+      }
+      for (const verify of verifications) await verify();
+      if (requiresSave) {
+        await saveRemoteWorkspace({ db, workspace, runId: input.runId, lease: input.remoteLease,
+          target: input.remoteTarget, boundary: `repositories:${prepared.map(row => `${row.id}:${row.pinnedCommit}`).sort().join(",")}`,
+          repositories: prepared.map(row => ({ id: row.id, relativePath: row.relativePath, repoUrl: row.repoUrl,
+            ref: rows.find(source => source.id === row.id)!.requestedRef, pinnedCommit: row.pinnedCommit })),
+          assertOwned: async () => { for (const verify of verifications) await verify(); } });
+      }
+      for (const result of prepared) {
+        await db.update(executionWorkspaceRepositories).set({ state: "ready", pinnedCommit: result.pinnedCommit,
+          branchName: result.branchName, failureCode: null, updatedAt: new Date() })
+          .where(and(eq(executionWorkspaceRepositories.id, result.id), eq(executionWorkspaceRepositories.companyId, input.companyId)));
       }
       return prepared;
     }

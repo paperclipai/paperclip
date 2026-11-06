@@ -734,24 +734,41 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
         const raw = input.args?.at(-1);
         if (typeof raw === "string" && raw.startsWith("{")) {
           const payload = JSON.parse(raw) as { repoUrl?: string; authArgs?: string[] };
-          if (payload.repoUrl === repoUrl && Array.isArray(payload.authArgs)) input = { ...input,
+          if (payload.repoUrl?.startsWith(repoUrl) && Array.isArray(payload.authArgs)) input = { ...input,
             args: [...input.args!.slice(0, -1), JSON.stringify({ ...payload,
-              authArgs: [...payload.authArgs, "-c", `url.${fixtureOrigin}.insteadOf=${repoUrl}`] })] };
+              authArgs: [...payload.authArgs, "-c", `url.${fixtureOrigin}.insteadOf=${payload.repoUrl}`] })] };
         }
         return execute(input);
       };
       const restored = await prepareRemoteWorkspace({ db, storage, workspace: reserved, runId: nextRun,
         lease: allocated as EnvironmentLease, target: remote });
       expect(await fs.readFile(path.join(restored.remoteRoot, "saved.txt"), "utf8")).toBe("saved before repository request\n");
+      const secondUrl = `${repoUrl}-two`;
+      const secondPath = taskRepositoryRelativePath(secondUrl);
+      await db.insert(executionWorkspaceRepositories).values({ companyId: ids.company,
+        executionWorkspaceId: local.id, requestedByIssueId: ids.issue, repoUrl: secondUrl, repositoryIdentity: secondUrl,
+        relativePath: secondPath, requestedRef: "HEAD", requestKey: "second-request", requestKeys: ["second-request"] });
+      const admission = { companyId: ids.company, issueId: ids.issue, workspaceId: local.id, cwd: restored.remoteRoot,
+        agentId: ids.agent, runId: nextRun, responsibleUserId: "local-board", remoteTarget: remote, remoteLease: restored.lease };
+      const beforeAdmission = await db.select().from(workspaceOperations).where(and(
+        eq(workspaceOperations.executionWorkspaceId, local.id), eq(workspaceOperations.phase, "remote_workspace_snapshot")));
       const prepared = await executionWorkspaceRepositoryService(db).prepareForAdmission({ companyId: ids.company,
         issueId: ids.issue, workspaceId: local.id, cwd: restored.remoteRoot, agentId: ids.agent, runId: nextRun,
         responsibleUserId: "local-board", remoteTarget: remote, remoteLease: restored.lease });
-      expect(prepared).toMatchObject([{ id: repository.id, relativePath,
-        pinnedCommit: (await git(origin, "rev-parse", "HEAD")).stdout.trim() }]);
+      expect(prepared).toHaveLength(2);
+      expect(prepared).toEqual(expect.arrayContaining([expect.objectContaining({ id: repository.id, relativePath,
+        pinnedCommit: (await git(origin, "rev-parse", "HEAD")).stdout.trim() })]));
+      expect(await fs.readFile(path.join(restored.remoteRoot, secondPath, "code.txt"), "utf8")).toBe("acquired on next admission\n");
+      const afterAdmission = await db.select().from(workspaceOperations).where(and(
+        eq(workspaceOperations.executionWorkspaceId, local.id), eq(workspaceOperations.phase, "remote_workspace_snapshot")));
+      expect(afterAdmission).toHaveLength(beforeAdmission.length + 1);
+      const savedId = readRemoteWorkspaceAuthority((await workspace(local.id)).metadata)!.snapshotId;
+      await executionWorkspaceRepositoryService(db).prepareForAdmission(admission);
+      expect(readRemoteWorkspaceAuthority((await workspace(local.id)).metadata)!.snapshotId).toBe(savedId);
       expect(await fs.readFile(path.join(restored.remoteRoot, relativePath, "code.txt"), "utf8")).toBe("acquired on next admission\n");
       expect(await db.select().from(executionWorkspaceRepositories).where(eq(executionWorkspaceRepositories.id, repository.id)))
-        .toMatchObject([{ ...repository, state: "ready", pinnedCommit: prepared[0]!.pinnedCommit,
-          branchName: prepared[0]!.branchName, updatedAt: expect.any(Date) }]);
+        .toMatchObject([{ ...repository, state: "ready", pinnedCommit: prepared.find(row => row.id === repository.id)!.pinnedCommit,
+          branchName: prepared.find(row => row.id === repository.id)!.branchName, updatedAt: expect.any(Date) }]);
     } finally { await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())); }
   }, 60_000);
 
@@ -809,6 +826,7 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
     // Registered admission encodes the stored default HEAD as null. It must
     // verify the same saved descriptor without changing the source identity.
     await expect(prepareRemoteWorkspaceRepository(admission)).resolves.toMatchObject({ cwd: secondary, pinnedCommit });
+    expect(readRemoteWorkspaceAuthority((await workspace(local.id)).metadata)!.snapshotId).toBe(imported.snapshotId);
     const beforeChanged = readRemoteWorkspaceAuthority((await workspace(local.id)).metadata)!;
     await expect(prepareRemoteWorkspaceRepository({ ...admission,
       workspace: await workspace(local.id), repository: { ...repository, ref: null, repoUrl: newOrigin } }))
@@ -816,8 +834,16 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
     expect(readRemoteWorkspaceAuthority((await workspace(local.id)).metadata)).toEqual(beforeChanged);
     expect(resolveGitAuth).not.toHaveBeenCalled();
     const newRepository = { ...added, id: randomUUID(), relativePath: "wrapper-new", ref: null };
+    const failingStorage: StorageService = { ...storage, putFile: async () => { throw new Error("repository upload failed"); } };
+    await expect(prepareRemoteWorkspaceRepository({ ...admission, workspace: await workspace(local.id),
+      repository: newRepository, storage: failingStorage })).rejects.toThrow("repository upload failed");
     await expect(prepareRemoteWorkspaceRepository({ ...admission, workspace: await workspace(local.id), repository: newRepository }))
       .resolves.toMatchObject({ cwd: path.join(restored.remoteRoot, "wrapper-new") });
+    const durable = await workspace(local.id);
+    const durableId = readRemoteWorkspaceAuthority(durable.metadata)!.snapshotId;
+    await prepareRemoteWorkspaceRepository({ ...admission, workspace: durable,
+      repository: { ...newRepository, pinnedCommit: (await git(newOrigin, "rev-parse", "HEAD")).stdout.trim() } });
+    expect(readRemoteWorkspaceAuthority((await workspace(local.id)).metadata)!.snapshotId).toBe(durableId);
     expect(resolveGitAuth).toHaveBeenCalledOnce();
     expect(await fs.readFile(path.join(restored.remoteRoot, "wrapper-new", "new.txt"), "utf8")).toBe("newly acquired work\n");
     expect(readRemoteWorkspaceAuthority((await workspace(local.id)).metadata)!.source).toEqual(source);

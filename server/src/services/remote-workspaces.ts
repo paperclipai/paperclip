@@ -642,6 +642,7 @@ async function settleSaveInvocation(input: { db: Db; workspace: Workspace; runId
 export async function saveRemoteWorkspace(input: {
   db: Db; workspace: Workspace; runId: string; lease: EnvironmentLease; target: AdapterExecutionTarget | null;
   assertOwned: () => Promise<void>; storage?: StorageService; boundary?: string;
+  repositories?: NonNullable<RemoteWorkspaceSource["repositories"]>;
 }) {
   const target = requireRemoteWorkspaceTarget(input.target), boundary = input.boundary ?? "final";
   const expected = readRemoteWorkspaceAuthority(input.workspace.metadata);
@@ -727,7 +728,10 @@ export async function saveRemoteWorkspace(input: {
       await notifyRemoteWorkspaceSnapshots(tx, `workspace:${workspace.id}`);
       if (boundary === "final") await notifyTerminalWorkspaceWork(tx, `workspace:${workspace.id}`);
       await tx.update(executionWorkspaces).set({ metadata: { ...workspace.metadata, remoteWorkspace: authority,
-        remoteWorkspaceSnapshotRepositories: { snapshotId: saved.id, repositories: expected.source.repositories ?? [] },
+        remoteWorkspaceSnapshotRepositories: { snapshotId: saved.id, repositories: input.repositories
+          ?? (object(workspace.metadata?.remoteWorkspaceSnapshotRepositories).snapshotId === current.snapshotId
+            ? object(workspace.metadata?.remoteWorkspaceSnapshotRepositories).repositories
+            : expected.source.repositories) ?? [] },
       }, updatedAt: at }).where(eq(executionWorkspaces.id, workspace.id));
       await tx.update(workspaceOperations).set({ status: "succeeded", finishedAt: at, updatedAt: at,
         metadata: sql`coalesce(${workspaceOperations.metadata}, '{}'::jsonb) || ${JSON.stringify({ snapshotId: saved.id, sha256: saved.sha256 })}::jsonb` })
@@ -762,8 +766,9 @@ export async function saveRemoteWorkspace(input: {
 export async function prepareRemoteWorkspaceRepository(input: {
   db: Db; workspace: Workspace; runId: string; lease: EnvironmentLease; target: AdapterExecutionTarget | null;
   repository: { id: string; relativePath: string; repoUrl: string; ref: string | null; pinnedCommit?: string; readOnly?: boolean };
-  assertOwned?: () => Promise<void>; resolveGitAuth?: ReturnType<typeof createGitRemoteAuthProvider>; verifyOnly?: boolean; storage?: StorageService;
+  assertOwned?: () => Promise<void>; resolveGitAuth?: ReturnType<typeof createGitRemoteAuthProvider>; verifyOnly?: boolean; storage?: StorageService; deferSave?: boolean;
 }) {
+  input = { ...input, workspace: await input.db.transaction(tx => currentWorkspace(tx, input.workspace.companyId, input.workspace.id)) };
   const authority = readRemoteWorkspaceAuthority(input.workspace.metadata);
   if (!authority?.location || authority.writerRunId !== input.runId || authority.location.leaseId !== input.lease.id
     || authority.location.providerLeaseId !== input.lease.providerLeaseId) throw new Error("remote_workspace_repository_binding_mismatch");
@@ -773,9 +778,18 @@ export async function prepareRemoteWorkspaceRepository(input: {
     ...input.repository, verifyOnly: input.verifyOnly, savedArchive: isSavedWorkspaceRepository(input.workspace, authority, input.repository),
     resolveGitAuth: input.resolveGitAuth ?? await createRemoteWorkspaceGitAuth(input.db, input.workspace.companyId, input.runId) });
   await input.assertOwned?.();
-  await saveRemoteWorkspace({ ...input, target, boundary: `repository:${input.repository.id}:${result.pinnedCommit}`,
-    assertOwned: input.assertOwned ?? (async () => undefined) });
-  return result;
+  const descriptor = { ...input.repository, pinnedCommit: result.pinnedCommit };
+  const requiresSave = !isSavedWorkspaceRepository(input.workspace, authority, descriptor);
+  if (requiresSave && !input.deferSave) {
+    const receipt = object(input.workspace.metadata?.remoteWorkspaceSnapshotRepositories);
+    const prior = receipt.snapshotId === authority.snapshotId && Array.isArray(receipt.repositories)
+      ? remoteWorkspaceSourceSchema.parse({ kind: "empty", repositories: receipt.repositories }).repositories ?? []
+      : authority.source.repositories ?? [];
+    await saveRemoteWorkspace({ ...input, target, boundary: `repository:${input.repository.id}:${result.pinnedCommit}`,
+      repositories: [...prior.filter(repository => repository.id !== descriptor.id), descriptor],
+      assertOwned: input.assertOwned ?? (async () => undefined) });
+  }
+  return { ...result, requiresSave };
 }
 
 type SavedWorkspaceFileLimits = {

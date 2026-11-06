@@ -4622,3 +4622,13 @@ and background revalidation still apply. Recent-window catch-up retains messages
 observed before navigation. Agent Chat can render from the current person's
 company-scoped navigation list, carrying its original fetch timestamp so stale
 conversations refresh in the background. No conversation is created by a read.
+
+### Remote repository admission saves
+
+Remote admission validates each registered repository against its current sandbox,
+origin, and pinned commit. A matching descriptor in the committed snapshot receipt
+allows admission without another archive upload. New repositories and legacy
+repositories without that receipt require one workspace snapshot for the admission
+batch. Repository ready receipts publish after the snapshot commits. An upload
+failure remains retryable even when the clone directory already exists. Later
+workspace saves retain the repository coverage receipt for the new snapshot.
