@@ -7,7 +7,9 @@ import path from "node:path";
 const MAX_FILE = 256 * 1024 * 1024;
 const MAX_BYTES = 2 * 1024 * 1024 * 1024;
 const MAX_ENTRIES = 100_000;
+const RACY_WINDOW_MS = 2_000;
 const stamp = s => [s.dev, s.ino, s.size, s.mode, s.mtimeNs, s.ctimeNs].map(String).join(":");
+const newestChangeMs = s => Number((s.mtimeNs > s.ctimeNs ? s.mtimeNs : s.ctimeNs) / 1_000_000n);
 const sameContent = (a, b) => a?.kind === b?.kind && (a?.kind === "dir" || a?.hash === b?.hash && a?.mode === b?.mode);
 const fail = (code) => { throw Object.assign(new Error(code), { code }); };
 
@@ -64,7 +66,8 @@ export async function captureAgentFiles(root, previous = { entries: [] }, output
         total += size;
         if (enforceLimits && (size > MAX_FILE || total > MAX_BYTES)) fail("AGENT_FILES_LIMIT_EXCEEDED");
         const old = cache.get(relative);
-        let hash = old?.kind === "file" && old.stamp === fingerprint ? old.hash : null;
+        let hash = old?.kind === "file" && old.stamp === fingerprint && !old.racy ? old.hash : null;
+        let racy = false;
         if (!hash) {
           const h = createHash("sha256");
           const f = await fs.open(filename, constants.O_RDONLY | constants.O_NOFOLLOW);
@@ -78,9 +81,10 @@ export async function captureAgentFiles(root, previous = { entries: [] }, output
             }
             if (stamp(await f.stat({ bigint: true })) !== fingerprint) fail("AGENT_FILES_CHANGED_DURING_CHECKPOINT");
             hash = h.digest("hex");
+            racy = Date.now() - newestChangeMs(s) < RACY_WINDOW_MS;
           } finally { await f.close(); }
         }
-        const entry = { kind: "file", size, mode, hash, stamp: fingerprint };
+        const entry = { kind: "file", size, mode, hash, stamp: fingerprint, ...(racy ? { racy: true } : {}) };
         if (output && !sameContent(old, entry)) {
           const target = path.join(output, "files", relative);
           await fs.mkdir(path.dirname(target), { recursive: true, mode: 0o700 });
