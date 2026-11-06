@@ -164,6 +164,17 @@ describe("runner API catalog", () => {
     expect(operation.authorization.actor).toBeTruthy();
   });
 
+  it("keeps natural-language function words from hiding the requested API resource", () => {
+    expect(searchRunnerApi({ query: "list comments for an issue" }).results[0]?.operationId)
+      .toBe("GET /api/issues/{id}/comments");
+    for (const [query, operation] of [
+      ["queued comments for an issue", "GET /api/issues/{id}/queued-comments"],
+      ["activity for an issue", "GET /api/issues/{id}/activity"],
+      ["runs for an issue", "GET /api/issues/{id}/runs"],
+    ]) expect(searchRunnerApi({ query }).results.map(row => row.operationId)).toContain(operation);
+    expect(searchRunnerApi({ query: "for an the" }).results).toEqual([]);
+  });
+
   it("ranks natural language, explains dedicated alternatives, and supports exact lookup", () => {
     expect(
       searchRunnerApi({ query: "create project" }).results.map(
