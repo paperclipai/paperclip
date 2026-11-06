@@ -25,6 +25,20 @@ import { remarkLinkCaseReferences } from "../lib/case-reference";
 
 const CASE_HREF_RE = /^\/cases\/([A-Z][A-Z0-9]*-C\d+)$/i;
 
+function toAppRelativeHref(href: string | undefined): string | null {
+  if (!href || href.startsWith("//")) return null;
+  if (href.startsWith("/")) return href;
+  if (typeof window === "undefined") return null;
+
+  try {
+    const url = new URL(href);
+    if (url.origin !== window.location.origin) return null;
+    return `${url.pathname}${url.search}${url.hash}`;
+  } catch {
+    return null;
+  }
+}
+
 /** Recover the case identifier from a `/cases/PAP-C7` href produced by the plugin. */
 function caseIdentifierFromHref(href: string | undefined): string | null {
   if (!href) return null;
@@ -1008,6 +1022,19 @@ function MarkdownBodyImpl({
             {linkChildren}
           </Link>
         ) : <>{linkChildren}</>;
+      }
+      const appRelativeHref = toAppRelativeHref(href);
+      if (appRelativeHref) {
+        return (
+          <Link
+            to={appRelativeHref}
+            {...anchorProps}
+            rel="noreferrer"
+            style={mergeWrapStyle(linkStyle as React.CSSProperties | undefined)}
+          >
+            {linkChildren}
+          </Link>
+        );
       }
       const isGitHubLink = isGitHubUrl(href);
       const isExternal = isExternalHttpUrl(href);
