@@ -1188,11 +1188,18 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
           processPid: run.processPid,
           processStartedAt: run.processStartedAt?.toISOString() ?? null,
         });
-        await db.transaction(async tx => {
+        // An accepted result needs finalization, not a runner reattach. Its
+        // execution lease must still be released: the detached executor will
+        // not finalize, and the next controller's reconciler skips leased rows.
+        // A finalizer lease belongs to finalization already in progress here.
+        const released = await db.transaction(async tx => {
           await notifyLiveRunRecovery(tx, { companyId: run.companyId, runId: run.id });
-          await tx.update(nativeRunFinalizations).set({
-            leaseExpiresAt: now,
-            recoveryState: "awaiting_runner_reattach",
+          return tx.update(nativeRunFinalizations).set({
+            leaseExpiresAt: sql`case when ${nativeRunFinalizations.resultId} is not null
+              and ${nativeRunFinalizations.leaseOwner} like 'native-finalizer:%'
+              then ${nativeRunFinalizations.leaseExpiresAt} else ${now.toISOString()}::timestamptz end`,
+            recoveryState: sql`case when ${nativeRunFinalizations.resultId} is null
+              then 'awaiting_runner_reattach' else ${nativeRunFinalizations.recoveryState} end`,
             recoveryHistory: sql`(
               select coalesce(jsonb_agg(item order by ordinal), '[]'::jsonb)
               from jsonb_array_elements(
@@ -1214,20 +1221,22 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
               eq(nativeRunFinalizations.runId, run.id),
               owner?.bootId ? eq(nativeRunFinalizations.controllerBootId, owner.bootId)
                 : isNull(nativeRunFinalizations.controllerBootId),
-              isNull(nativeRunFinalizations.resultId),
             ),
-          );
+          )
+          .returning({ resultId: nativeRunFinalizations.resultId });
         });
+        const resultAccepted = Boolean(released[0]?.resultId);
         await appendRunEvent(run, {
           eventType: "native.recovery.transition",
           stream: "system",
           level: "info",
-          message:
-            "Server shutdown suspended native controller ownership without cancelling provider work",
+          message: resultAccepted
+            ? "Server shutdown released the accepted native result for finalization by the next controller"
+            : "Server shutdown suspended native controller ownership without cancelling provider work",
           payload: {
             restartKind: "graceful",
             signal,
-            runnerDisposition: "awaiting_runner_reattach",
+            runnerDisposition: resultAccepted ? "awaiting_result_finalization" : "awaiting_runner_reattach",
             processPid: run.processPid,
             processGroupId: run.processGroupId,
             processStartedAt: run.processStartedAt?.toISOString() ?? null,
