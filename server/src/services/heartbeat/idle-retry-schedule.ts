@@ -32,6 +32,8 @@ export async function readIdleRetrySchedule(tx: Pick<Db, "select">, now: number,
     agentMemberActive: sql<boolean>`EXISTS (SELECT 1 FROM company_memberships m WHERE m.company_id = ${heartbeatRuns.companyId}
       AND m.principal_type = 'agent' AND m.principal_id = ${heartbeatRuns.agentId}::text AND m.status = 'active')`,
     processPid: heartbeatRuns.processPid, processGroupId: heartbeatRuns.processGroupId,
+    processStartedAt: heartbeatRuns.processStartedAt,
+    hasProcessSettlement: sql<boolean>`${heartbeatRuns.legacyProcessSettlement} IS NOT NULL`,
     controllerBootId: heartbeatRuns.controllerBootId, controllerLeaseExpiresAt: heartbeatRuns.controllerLeaseExpiresAt,
     wakeupRequestId: heartbeatRuns.wakeupRequestId, status: heartbeatRuns.status, scheduledRetryAt: heartbeatRuns.scheduledRetryAt,
     runtimeMode: heartbeatRuns.runtimeMode, startedAt: heartbeatRuns.startedAt, finishedAt: heartbeatRuns.finishedAt,
@@ -78,7 +80,10 @@ export async function readIdleRetrySchedule(tx: Pick<Db, "select">, now: number,
     const at = run.scheduledRetryAt?.getTime() ?? NaN;
     const execution = parseIssueExecutionState(issue?.executionState);
     if (!isFutureIdleDeadline(at, now) || run.startedAt || run.finishedAt || run.costAccountingPending
-      || run.runtimeMode === "native" || run.resultJson?.startupCancellation || run.resultJson?.cancellation
+      || run.runtimeMode !== "legacy" || run.nativeIssueId !== null || run.nativeSessionId !== null
+      || run.processPid !== null || run.processGroupId !== null || run.processStartedAt !== null
+      || run.controllerBootId !== null || run.controllerLeaseExpiresAt !== null || run.hasProcessSettlement !== false
+      || run.resultJson?.startupCancellation || run.resultJson?.cancellation
       || !agent || agent.companyId !== run.companyId || !["idle", "active", "error"].includes(agent.status)
       || !company || company.status !== "active"
       || !wake || wake.companyId !== run.companyId || wake.agentId !== run.agentId || wake.runId !== run.id
@@ -118,6 +123,10 @@ export async function readIdleRetrySchedule(tx: Pick<Db, "select">, now: number,
       issueWaits.push({ kind: "current_review_retry", issueId: issue.id, runId: run.id,
         reviewerAgentId: run.agentId, stageId: stage.id });
     } else if (run.scopeKind !== "issue" || run.issueId !== issue?.id
+      || !source || source.companyId !== run.companyId || source.agentId !== run.agentId
+      || source.scopeKind !== "issue" || source.issueId !== issue?.id
+      || source.nativeIssueId !== null || source.nativeSessionId !== null || source.runtimeMode !== "legacy"
+      || source.settled !== true || source.hasCancellation !== false || !legacySourceProcessSettled(source)
       || !issue || issue.companyId !== run.companyId || issue.assigneeAgentId !== run.agentId || issue.assigneeUserId
       || !["todo", "in_progress"].includes(issue.status) || issue.hiddenAt
       || issue.conversationAgentId || issue.monitorNextCheckAt || issue.monitorWakeRequestedAt || issue.executionPolicy?.monitor

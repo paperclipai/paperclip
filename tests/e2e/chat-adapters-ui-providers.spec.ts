@@ -386,6 +386,7 @@ test.describe.serial("native chat adapter UI", () => {
     await expect(page).toHaveURL(rootUrl);
     await retryConsentWindow.getByRole("link", { name: "Approve installation" }).click();
     await expect.poll(() => callbackRequests).toBe(2);
+    await expect(retryConsentWindow).toHaveURL(rootUrl);
     await retryConsentWindow.close();
     await page.bringToFront();
     await expect(page.getByRole("heading", { name: "Send a message to your agent", exact: true })).toBeVisible();
