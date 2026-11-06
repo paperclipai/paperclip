@@ -521,6 +521,16 @@ async function pathExists(value: string | null | undefined) {
   }
 }
 
+async function hasGitMarkerInPathOrAncestors(start: string) {
+  let current = path.resolve(start);
+  while (true) {
+    if (await pathExists(path.join(current, ".git"))) return true;
+    const parent = path.dirname(current);
+    if (parent === current) return false;
+    current = parent;
+  }
+}
+
 async function runGit(args: string[], cwd: string) {
   return await execFileAsync("git", ["-C", cwd, ...args], { cwd });
 }
@@ -963,6 +973,12 @@ async function inspectGitCloseReadiness(workspace: ExecutionWorkspace): Promise<
   try {
     repoRoot = (await runGit(["rev-parse", "--show-toplevel"], workspacePath)).stdout.trim() || null;
   } catch (error) {
+    // A plain directory (e.g. a local_fs shared workspace) has no git state to
+    // lose. Only treat it that way when no `.git` exists on the path, so a
+    // broken or unreadable repository still fails closed.
+    if (workspace.providerType !== "git_worktree" && !(await hasGitMarkerInPathOrAncestors(workspacePath))) {
+      return { git: null, warnings, statusInspectionSucceeded: true };
+    }
     warnings.push(
       `Could not inspect git status for "${workspacePath}": ${error instanceof Error ? error.message : String(error)}`,
     );

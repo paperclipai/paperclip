@@ -2419,6 +2419,80 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     ]));
   });
 
+  async function seedSharedLocalWorkspace(cwd: string) {
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const projectWorkspaceId = randomUUID();
+    const executionWorkspaceId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: "PAP",
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Workspaces",
+      status: "in_progress",
+      executionWorkspacePolicy: { enabled: true },
+    });
+    await db.insert(projectWorkspaces).values({
+      id: projectWorkspaceId,
+      companyId,
+      projectId,
+      name: "Primary",
+      sourceType: "local_path",
+      isPrimary: true,
+      cwd,
+    });
+    await db.insert(executionWorkspaces).values({
+      id: executionWorkspaceId,
+      companyId,
+      projectId,
+      projectWorkspaceId,
+      mode: "shared_workspace",
+      strategyType: "project_primary",
+      name: "Shared workspace",
+      status: "active",
+      providerType: "local_fs",
+      cwd,
+    });
+    return { executionWorkspaceId };
+  }
+
+  it("treats an existing workspace directory that is not a git repository as ready", async () => {
+    const workspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-non-git-workspace-"));
+    tempDirs.add(workspaceDir);
+    await fs.writeFile(path.join(workspaceDir, "notes.txt"), "plain files\n", "utf8");
+    const { executionWorkspaceId } = await seedSharedLocalWorkspace(workspaceDir);
+
+    const readiness = await svc.getCloseReadiness(executionWorkspaceId);
+
+    expect(readiness).toMatchObject({
+      state: "ready_with_warnings",
+      isDestructiveCloseAllowed: true,
+      git: null,
+    });
+    expect(readiness?.blockingReasons).toEqual([]);
+    expect(readiness?.warnings.some((warning) => warning.startsWith("Could not inspect git status"))).toBe(false);
+  });
+
+  it("still blocks close when a workspace git repository cannot be inspected", async () => {
+    const workspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-broken-git-workspace-"));
+    tempDirs.add(workspaceDir);
+    // A worktree-style .git pointer whose git dir is missing: git refuses to read it.
+    await fs.writeFile(path.join(workspaceDir, ".git"), `gitdir: ${path.join(workspaceDir, "missing-git-dir")}\n`, "utf8");
+    const { executionWorkspaceId } = await seedSharedLocalWorkspace(workspaceDir);
+
+    const readiness = await svc.getCloseReadiness(executionWorkspaceId);
+
+    expect(readiness).toMatchObject({ state: "blocked", isDestructiveCloseAllowed: false });
+    expect(readiness?.blockingReasons).toContain(
+      "Paperclip could not verify the workspace git status. Retry before destructive cleanup.",
+    );
+  });
+
   it("clears matching environment selections transactionally without touching other workspaces", async () => {
     const companyId = randomUUID();
     const projectId = randomUUID();
