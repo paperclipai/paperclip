@@ -239,6 +239,63 @@ describe("remote workspace transport safety with real sandbox commands", () => {
     } finally { await captured.cleanup(); }
   });
 
+  it.each(["once", "interrupted"] as const)("replaces a retired root that the sandbox's overlay cannot rename (%s)", async scenario => {
+    await fs.writeFile(path.join(workspace, "saved.txt"), "newer saved work\n");
+    const lower = path.join(scratch, "lower-layer.json"), preload = path.join(scratch, "overlay-lower-layer.cjs");
+    await fs.writeFile(preload, `const fs=require('node:fs'),lower=new Set(JSON.parse(fs.readFileSync(${JSON.stringify(lower)},'utf8')));
+const rename=fs.promises.rename;fs.promises.rename=async(from,to)=>{const s=await fs.promises.lstat(from).catch(()=>null);
+if(s?.isDirectory()&&lower.has(String(s.ino)))throw Object.assign(new Error('EXDEV: cross-device link not permitted, rename'),{code:'EXDEV',errno:-18,syscall:'rename'});
+return rename.call(fs.promises,from,to)};`);
+    const { remote, execute } = target();
+    const captured = await captureRemoteWorkspaceArchive({ target: remote, remoteCwd: workspace, operationId: randomUUID() });
+    try {
+      const root = path.join(scratch, "retired"), runtime = path.join(root, ".paperclip-runtime");
+      const session = path.join(runtime, "paperclip-runner", "sessions", "parent", "runner");
+      await fs.mkdir(session, { recursive: true });
+      await fs.writeFile(path.join(session, "runner-state.json"), "{\"lifecycle\":\"suspended\"}");
+      await fs.writeFile(path.join(runtime, "workspace-ready.json"), JSON.stringify({ preparationIdentity: "f".repeat(64) }));
+      await fs.mkdir(path.join(runtime, "workspace-snapshots", "old-export"), { recursive: true });
+      await fs.writeFile(path.join(root, "stale.md"), "old\n");
+      await fs.mkdir(path.join(root, "locked", "inner"), { recursive: true });
+      await fs.writeFile(path.join(root, "locked", "inner", "file.txt"), "old\n");
+      await fs.chmod(path.join(root, "locked", "inner"), 0o555); await fs.chmod(path.join(root, "locked"), 0o555);
+      const directories: string[] = [];
+      const walk = async (directory: string): Promise<void> => {
+        directories.push(String((await fs.lstat(directory)).ino));
+        for (const entry of await fs.readdir(directory, { withFileTypes: true })) if (entry.isDirectory()) await walk(path.join(directory, entry.name));
+      };
+      await walk(root);
+      await fs.writeFile(lower, JSON.stringify(directories));
+      const input = { target: remote, remoteCwd: root, archivePath: captured.archivePath, manifestDigest: captured.manifestDigest,
+        restorationIdentity: "9".repeat(64), replaceRetiredRoot: true };
+      const run = execute.getMockImplementation()!; let interrupt = scenario === "interrupted";
+      execute.mockImplementation(async command => {
+        if (!command.args?.[1]?.includes("remote_workspace_restore_failed")) return run(command);
+        const args = interrupt ? command.args.map((arg, index) => index === 1
+          ? arg.replace("await fs.rename(path.join(staged,'.paperclip-runtime','workspace-restored.json')", "throw Error('interrupted');await fs.rename(path.join(staged,'.paperclip-runtime','workspace-restored.json')") : arg) : command.args;
+        interrupt = false;
+        return run({ ...command, args: ["--require", preload, ...args] });
+      });
+      if (scenario === "interrupted") {
+        await expect(restoreRemoteWorkspaceDirectory(input)).rejects.toThrow(/stage=replace_in_place reason=interrupted$/);
+        expect(JSON.parse(await fs.readFile(path.join(runtime, "workspace-ready.json"), "utf8"))).toEqual({ preparationIdentity: "f".repeat(64) });
+        expect(await fs.lstat(path.join(runtime, "workspace-restored.json")).catch(() => null)).toBeNull();
+      }
+      await restoreRemoteWorkspaceDirectory(input);
+      expect(await fs.readFile(path.join(root, "saved.txt"), "utf8")).toBe("newer saved work\n");
+      expect(await fs.lstat(path.join(root, "stale.md")).catch(() => null)).toBeNull();
+      expect(await fs.lstat(path.join(root, "locked")).catch(() => null)).toBeNull();
+      expect(await fs.readFile(path.join(session, "runner-state.json"), "utf8")).toBe("{\"lifecycle\":\"suspended\"}");
+      expect(await fs.readdir(runtime)).toEqual(expect.arrayContaining(["paperclip-runner", "workspace-restored.json"]));
+      expect(await fs.lstat(path.join(runtime, "workspace-ready.json")).catch(() => null)).toBeNull();
+      expect(await fs.lstat(path.join(runtime, "workspace-snapshots")).catch(() => null)).toBeNull();
+      expect((await fs.readdir(scratch)).filter(name => name.startsWith("retired"))).toEqual(["retired"]);
+    } finally {
+      await captured.cleanup();
+      await exec("chmod", ["-R", "u+w", scratch]).catch(() => undefined);
+    }
+  });
+
   it("keeps a completed restore available when the staging cleanup reply is lost", async () => {
     await fs.writeFile(path.join(workspace, "saved.txt"), "durable synthetic files\n");
     const { remote, execute } = target();

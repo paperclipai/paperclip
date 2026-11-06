@@ -641,15 +641,23 @@ export async function restoreRemoteWorkspaceDirectory(input: {
    // of the same restore finishes an interrupted carry without a new proof.
    // Saved directory modes can be read-only. Make the parked tree's own directories
    // owner-writable without following symlinks, then remove it.
+   const open=async d=>{const s=await fs.lstat(d);if(!s.isDirectory()||s.isSymbolicLink())return;
+    await fs.chmod(d,(s.mode&0o7777)|0o700);for(const name of await fs.readdir(d))await open(path.join(d,name));};
    const removeRetired=async()=>{if(!await stat(retired))return;
     stage='carry_runtime';const from=path.join(retired,'.paperclip-runtime'),to=path.join(root,'.paperclip-runtime');
     if(await stat(from)){await directory(from);await directory(to);
      for(const name of await fs.readdir(from)){
       if(['workspace-ready.json','workspace-restored.json','workspace-snapshots'].includes(name)||await stat(path.join(to,name)))continue;
       await fs.rename(path.join(from,name),path.join(to,name));}}
-    stage='cleanup_parked';const open=async d=>{const s=await fs.lstat(d);if(!s.isDirectory()||s.isSymbolicLink())return;
-     await fs.chmod(d,(s.mode&0o7777)|0o700);for(const name of await fs.readdir(d))await open(path.join(d,name));};
-    await open(retired);await fs.rm(retired,{recursive:true,force:true});};
+    stage='cleanup_parked';await open(retired);await fs.rm(retired,{recursive:true,force:true});};
+   const replaceInPlace=async staged=>{stage='replace_in_place';const runtime=path.join(root,'.paperclip-runtime');
+    const s=await fs.lstat(root);await fs.chmod(root,(s.mode&0o7777)|0o700);
+    for(const name of await fs.readdir(root))if(name!=='.paperclip-runtime'){await open(path.join(root,name));await fs.rm(path.join(root,name),{recursive:true,force:true});}
+    if(await stat(path.join(runtime,'workspace-snapshots'))){await open(path.join(runtime,'workspace-snapshots'));
+     await fs.rm(path.join(runtime,'workspace-snapshots'),{recursive:true,force:true});}
+    for(const name of await fs.readdir(staged))if(name!=='.paperclip-runtime')await fs.rename(path.join(staged,name),path.join(root,name));
+    await fs.rename(path.join(staged,'.paperclip-runtime','workspace-restored.json'),path.join(runtime,'workspace-restored.json'));
+    await fs.rm(path.join(runtime,'workspace-ready.json'),{force:true});await fs.chmod(root,(await fs.lstat(staged)).mode&0o7777);};
    stage='allocation';if(await stat(parked)){if(allowEmpty!=='true')throw Error('unexpected_allocation');await allocation(parked);if(!await stat(root))await fs.rename(parked,root);}
    stage='inspect_root';const prior=await stat(root);if(prior)await directory(root);
    const marker=path.join(root,'.paperclip-runtime','workspace-restored.json');
@@ -678,7 +686,8 @@ export async function restoreRemoteWorkspaceDirectory(input: {
     stage='publish';if(await fs.realpath(path.dirname(root))!==path.dirname(root))throw Error('unsafe_root');
     const holding=retire?retired:parked;
     if(prior){if(retire){if(!await ownReceipt(root))throw Error('occupied_root');}else await allocation(root);
-     if(await stat(holding))throw Error('occupied_parking');await fs.rename(root,holding);}
+     if(await stat(holding))throw Error('occupied_parking');
+     try{await fs.rename(root,holding);}catch(e){if(!retire||e?.code!=='EXDEV')throw e;await replaceInPlace(staged);return;}}
     try{await fs.rename(staged,root);}catch(e){if(prior&&!await stat(root))await fs.rename(holding,root);throw e;}
     stage='cleanup_parked';if(prior&&!retire){await allocation(parked);await fs.rm(parked,{recursive:true});}
     await removeRetired();

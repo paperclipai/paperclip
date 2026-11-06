@@ -1222,6 +1222,15 @@ a snapshot and belongs to the sandbox, so it moves into the restored root. Only 
 old preparation or restore receipt and export staging are dropped. A retained
 native continuation then reads its runner state at the same path.
 
+A sandbox resumed from its provider's saved image keeps earlier folders in a
+lower overlay layer. Without the overlay `redirect_dir` feature, the kernel
+refuses to rename such a directory with `EXDEV`, so the retired root cannot move
+aside. The restore then replaces the root in place: it removes the old saved
+files and export staging, moves the restored files in, and leaves the runtime
+state where it is without a copy. The new restore receipt replaces the old
+receipt last. An interrupted in-place replace still carries the old receipt, so
+a repeat of the same restore finishes it.
+
 The provider's own idle auto-stop must not coincide with the warm runner idle
 window. The host forwards the run's effective warm idle window (environment
 `runnerIdleTimeoutMs`, else the agent's `idleTimeoutMs`) to the sandbox provider
