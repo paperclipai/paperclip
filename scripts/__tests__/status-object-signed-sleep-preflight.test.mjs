@@ -20,10 +20,17 @@ require('node:net').Socket.prototype.connect = function() {
 };
 require('node:child_process').spawn = function(command, args, options) {
   assert.equal(command, process.execPath);
-  assert(args.includes('server/src/__tests__/status-object-signed-sleep-acceptance.test.ts'));
-  assert(args.includes('--maxWorkers=1'));
-  assert(args.includes('--no-file-parallelism'));
-  assert.equal(options.cwd, process.env.PREFLIGHT_EXPECTED_ROOT);
+  const path = require('node:path');
+  const expectedRoot = process.env.PREFLIGHT_EXPECTED_ROOT;
+  const guard = path.join(expectedRoot, 'scripts/fixtures/skill-default-cadence-network-guard.cjs');
+  const vitest = path.join(path.dirname(require.resolve('vitest/package.json', {
+    paths: [path.join(expectedRoot, 'server')],
+  })), 'vitest.mjs');
+  assert.deepEqual(args, ['--require', guard, vitest, 'run',
+    'server/src/__tests__/status-object-signed-sleep-acceptance.test.ts',
+    '--maxWorkers=1', '--no-file-parallelism', '--execArgv=--require=' + guard]);
+  assert.equal(options.cwd, expectedRoot);
+  assert.equal(options.env.NODE_OPTIONS, '--require=' + guard);
   appendFileSync(process.env.PREFLIGHT_SPAWN_RECEIPT, 'vitest-boundary\\n');
   const child = new EventEmitter();
   child.kill = () => false;
