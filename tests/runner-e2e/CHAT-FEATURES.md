@@ -261,11 +261,17 @@ Initial setup uses the existing reporting environment:
    evaluation after an uncertain request. Initial route verification uses a small
    selection and does not qualify all 244 cases.
 
-Each worker executes one case. Selections of up to three cases allow two cases
-at once. Larger selections allow eight independent cases and one external-input
-case at once. External-input cases remain serial because they can share QA
-resources. A full run can take hours. Its elapsed time depends on setup and fleet
-capacity; the declared case clocks are not a completion-time guarantee.
+Each worker executes one case. Native cases allow two workers at once for any
+selection size. Selections of up to three cases that include external input keep
+the native lane at one worker. The separate external-input lane remains serial
+because those cases can share QA resources. A larger mixed selection can therefore
+run two native cases and one external-input case at once.
+
+This lower-load configuration changes scheduling, not case clocks, model settings
+or zero automatic retries. It does not qualify eight-way native execution or
+establish a cause for earlier noncompletion. A full run can take hours. Its elapsed
+time depends on setup and fleet capacity; declared case clocks are not a
+completion-time guarantee.
 
 Each finished worker starts its own protected reader and safe exporter. A
 separate reporting job uploads that case and verifies its result and two JSON
