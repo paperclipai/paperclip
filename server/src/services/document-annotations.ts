@@ -24,6 +24,7 @@ import {
   UpdateDocumentAnnotationThread,
 } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
+import { notifyTaskProjectReferences } from "./task-project-references.js";
 
 type ActorInput = {
   actorType: "agent" | "user";
@@ -477,6 +478,7 @@ export function documentAnnotationService(db: Db) {
         })
         .returning(threadSelect);
 
+      await notifyTaskProjectReferences(tx, { companyId: doc.companyId, issueId });
       const [comment] = await tx
         .insert(documentAnnotationComments)
         .values({
@@ -689,6 +691,7 @@ export function documentAnnotationService(db: Db) {
         operation: "comment", issueId, texts: [input.body], lock: true });
       const now = new Date();
       const linkedIssueComment = await assertLinkedIssueComment(issueId, input.issueCommentId, tx);
+      await notifyTaskProjectReferences(tx, { companyId: thread.companyId, issueId: thread.issueId });
       const [comment] = await tx
         .insert(documentAnnotationComments)
         .values({

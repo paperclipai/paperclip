@@ -5284,7 +5284,6 @@ const issueListSelect = {
   status: issues.status,
   displayStatus: issueDisplayStatusSql(),
   statusVersion: issues.statusVersion,
-  contextReferenceRevision: issues.contextReferenceRevision,
   lastStatusDecisionId: issues.lastStatusDecisionId,
   workMode: issues.workMode,
   harnessKind: issues.harnessKind,
@@ -11274,6 +11273,7 @@ export function issueService(db: Db) {
           parentIssueId: row.parentId && !newIssueIds.has(row.parentId) ? row.parentId : undefined,
           texts: [row.title, row.description ?? "", row.monitorNotes ?? ""], lock: true,
         });
+        await notifyTaskProjectReferences(tx, { companyId });
         // Self-correcting counter: seed from max(issue_number) so a drifted
         // company counter cannot mint colliding identifiers, then reserve the
         // whole range in one bump instead of one-per-issue.
@@ -11482,7 +11482,10 @@ export function issueService(db: Db) {
       await db.transaction(async (tx) => {
         for (const row of rows) await assertAgentInteraction(tx, { companyId: row.companyId, actorAgentId, actorCompanyId: actorCompanyId ?? undefined,
           operation: "mention", issueId: row.issueId, texts: [row.body], lock: true });
-        for (const companyId of new Set(rows.map(row => row.companyId))) await notifyStatusCardIssueChange(tx, companyId);
+        for (const companyId of new Set(rows.map(row => row.companyId))) {
+          await notifyStatusCardIssueChange(tx, companyId);
+          await notifyTaskProjectReferences(tx, { companyId });
+        }
         const commentRows = rows.map((row) => {
           const createdAt = row.createdAt ? new Date(row.createdAt) : null;
           return {
