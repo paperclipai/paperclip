@@ -65,6 +65,9 @@ const support = await getEmbeddedPostgresTestSupport();
   const call = vi.fn(async (_id: string, method: string, input: { config: Record<string, unknown> }) =>
     method === "environmentValidateConfig" ? { ok: true, normalizedConfig: { ...input.config, normalized: true } } : null);
   let readyListeners: ReadyListener[] = [];
+  // Manager-wide `ready` subscriptions (`onWorkerReady`), which the boot pass
+  // and the default retry worker both prefer over the handle's.
+  const managerReadyListeners = new Set<(pluginId: string) => void>();
   const workerManager = {
     isRunning: vi.fn(() => running),
     call,
@@ -74,6 +77,15 @@ const support = await getEmbeddedPostgresTestSupport();
         readyListeners = readyListeners.filter((candidate) => candidate !== listener);
       },
     })),
+    onWorkerReady: (listener: (pluginId: string) => void) => {
+      managerReadyListeners.add(listener);
+      return () => { managerReadyListeners.delete(listener); };
+    },
+  };
+  /** The plugin's worker reports `ready` (first start, respawn or replacement). */
+  const fireReady = () => {
+    for (const listener of [...readyListeners]) listener({ pluginId });
+    for (const listener of [...managerReadyListeners]) listener(pluginId);
   };
 
   beforeAll(async () => {
@@ -84,6 +96,7 @@ const support = await getEmbeddedPostgresTestSupport();
   beforeEach(async () => {
     running = true;
     readyListeners = [];
+    managerReadyListeners.clear();
     call.mockClear();
     await db.delete(activityLog);
     await db.delete(agents);
@@ -256,7 +269,7 @@ const support = await getEmbeddedPostgresTestSupport();
       expect((await pluginRows())[0]!.status).toBe("archived");
 
       running = true;
-      for (const listener of [...readyListeners]) listener({ pluginId });
+      fireReady();
       await vi.waitFor(async () => expect((await pluginRows())[0]?.status).toBe("active"));
     });
 
@@ -267,10 +280,66 @@ const support = await getEmbeddedPostgresTestSupport();
     });
   });
 
+  /*
+   * Coverage of the decision lifecycle (entry point x condition). The retry
+   * worker is the only decider; the boot pass never decides.
+   *
+   * | Entry point                  | Conditions covered                                              |
+   * | ---------------------------- | --------------------------------------------------------------- |
+   * | worker startup attempt       | no agents, agents, tenant default, plugin down, config rejected |
+   * | worker `ready`               | follower appeared, no follower, admin chose meanwhile, rejected |
+   * | coordinator retry            | every attempt timed out with the worker up                      |
+   * | direct decision              | stamped sandbox default, concurrent agent insert (both ways)    |
+   * | retry function               | stale active row, rejected config, already decided              |
+   * | later boots                  | admin change survives, removing the flag changes nothing        |
+   */
   describe("instanceDefault (one-time decision)", () => {
     const defaultEntry = { ...remoteHostEntry, instanceDefault: true };
-    const boot = (entries: unknown[] = [defaultEntry]) =>
-      applyManagedEnvironments(db, managedConfig(entries), { env: {}, workerManager, autoInstalledPluginKeys: [PLUGIN_KEY] });
+    let workerAttempts: Promise<unknown>[] = [];
+    /**
+     * Start the retry worker the way `index.ts` does after the boot pass, on a
+     * coordinator stand-in that runs pending attempts when woken. A throwing
+     * attempt stops the drain (the real coordinator retries it 60 s later).
+     */
+    const startDefaultWorker = async (config: ReturnType<typeof managedConfig>) => {
+      let task: { run: () => Promise<unknown>; hasPending: () => Promise<boolean> } | null = null;
+      const drain = async () => {
+        if (!task) return;
+        try {
+          while (await task.hasPending()) await task.run();
+        } catch {
+          // Left pending for the coordinator's retry.
+        }
+      };
+      registerManagedPluginInstanceDefaultRetry({
+        db,
+        managedConfig: config,
+        deliveryWork: {
+          register: (_queue: string, registered: NonNullable<typeof task>) => {
+            task = registered;
+            return { wake: () => { workerAttempts.push(drain()); } };
+          },
+        } as never,
+        workerManager,
+        recovery: createManagedEnvironmentRecovery(),
+      });
+      await drain();
+      return { drain: () => drain() };
+    };
+    /** One server start: the boot pass, then the default retry worker. */
+    const boot = async (entries: unknown[] = [defaultEntry]) => {
+      // A new process: the previous one's subscriptions are gone.
+      managerReadyListeners.clear();
+      readyListeners = [];
+      const config = managedConfig(entries);
+      const result = await applyManagedEnvironments(db, config, { env: {}, workerManager, autoInstalledPluginKeys: [PLUGIN_KEY] });
+      lastWorker = await startDefaultWorker(config);
+      return result;
+    };
+    let lastWorker: { drain: () => Promise<void> } = { drain: async () => {} };
+    const settleWorker = async () => {
+      while (workerAttempts.length > 0) await Promise.all(workerAttempts.splice(0));
+    };
     const instanceDefault = async () =>
       (await db.select().from(instanceSettings).where(eq(instanceSettings.singletonKey, "default")))[0]?.defaultEnvironmentId ?? null;
     const setInstanceDefault = async (environmentId: string | null) => {
@@ -283,11 +352,12 @@ const support = await getEmbeddedPostgresTestSupport();
       await db.insert(agents).values({ id, companyId, name: `Agent ${id}`, adapterType: "process", defaultEnvironmentId });
       return id;
     };
+    /** The plugin comes back: the row recovers and the worker gets its attempt. */
     const recover = async () => {
       running = true;
-      for (const listener of [...readyListeners]) listener({ pluginId });
+      fireReady();
       await vi.waitFor(async () => expect((await pluginRows())[0]?.status).toBe("active"));
-      await vi.waitFor(async () => expect((await readManagedEnvironmentDefaultDecision(db))?.status).not.toBe("pending"));
+      await settleWorker();
     };
 
     it("sets the default on an instance with no agents", async () => {
@@ -395,10 +465,7 @@ const support = await getEmbeddedPostgresTestSupport();
         await setInstanceDefault(null);
         expect(await cancelPendingManagedEnvironmentDefault(tx as unknown as Db, { instanceDefaultDeclared: true })).toBe(true);
       });
-      running = true;
-      for (const listener of [...readyListeners]) listener({ pluginId });
-      await vi.waitFor(async () => expect((await pluginRows())[0]?.status).toBe("active"));
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      await recover();
 
       expect(await instanceDefault()).toBeNull();
       expect(await readManagedEnvironmentDefaultDecision(db)).toMatchObject({ status: "declined", reason: "admin_changed_default" });
@@ -495,28 +562,43 @@ const support = await getEmbeddedPostgresTestSupport();
       expect(await retryManagedPluginInstanceDefault(db, managedConfig([remoteHostEntry]), workerManager)).toBe("nothing_to_do");
     });
 
-    it("retries at startup a decision boot left pending while the worker kept running", async () => {
-      // Boot ensure and its immediate retry both time out; the worker stays up.
+    it("keeps retrying when every attempt times out while the worker keeps running", async () => {
       await boot([remoteHostEntry]);
+      // The boot ensure, its immediate recovery attempt, and the worker's
+      // startup attempt all time out; the worker stays up throughout.
+      call.mockRejectedValueOnce(new Error("environmentValidateConfig timed out"));
       call.mockRejectedValueOnce(new Error("environmentValidateConfig timed out"));
       call.mockRejectedValueOnce(new Error("environmentValidateConfig timed out"));
       await boot();
       await new Promise((resolve) => setTimeout(resolve, 100));
-      expect(await readManagedEnvironmentDefaultDecision(db)).toMatchObject({ status: "pending" });
       expect(await instanceDefault()).toBeNull();
+      // The row from the earlier boot was kept, not archived.
+      expect((await pluginRows())[0]!.status).toBe("active");
 
-      // The retry worker's startup attempt rebuilds the obligation from the row.
-      let task!: { run: () => Promise<unknown>; hasPending: () => Promise<boolean> };
-      const deliveryWork = { register: (_queue: string, registered: typeof task) => { task = registered; return { wake: () => {} }; } };
-      registerManagedPluginInstanceDefaultRetry({
-        db, managedConfig: managedConfig([defaultEntry]), deliveryWork: deliveryWork as never,
-        workerManager, recovery: createManagedEnvironmentRecovery(),
-      });
-      expect(await task.hasPending()).toBe(true);
-      await task.run();
+      // The coordinator's retry of the failed attempt applies the default.
+      await lastWorker.drain();
       const [row] = await pluginRows();
       expect(await instanceDefault()).toBe(row!.id);
-      expect(await task.hasPending()).toBe(false);
+      expect(await readManagedEnvironmentDefaultDecision(db)).toMatchObject({ status: "applied" });
+    });
+
+    it("waits while the plugin rejects the declared config, across a worker restart", async () => {
+      // Every validation of the declared config is refused.
+      call.mockImplementation(async (_id: string, method: string) =>
+        (method === "environmentValidateConfig" ? { ok: false, errors: ["region is not supported"] } : null) as never);
+      try {
+        await boot([{ ...defaultEntry, driverConfig: { region: "nowhere" } }]);
+        expect(await pluginRows()).toHaveLength(0);
+        expect(await readManagedEnvironmentDefaultDecision(db)).toMatchObject({ status: "pending", environmentId: null });
+
+        fireReady();
+        await settleWorker();
+        expect(await instanceDefault()).toBeNull();
+        expect(await readManagedEnvironmentDefaultDecision(db)).toMatchObject({ status: "pending" });
+      } finally {
+        call.mockImplementation(async (_id: string, method: string, input: { config: Record<string, unknown> }) =>
+          (method === "environmentValidateConfig" ? { ok: true, normalizedConfig: { ...input.config, normalized: true } } : null) as never);
+      }
     });
 
     it("never applies the default from a stale active row whose plugin is down", async () => {

@@ -48,12 +48,12 @@
  * entry: await `pluginsReady`, require the plugin `ready`, declaring the
  * entry's driver, and running a worker; else archive the entry's row and
  * re-ensure it on the worker's `ready`. Each entry owns one row (see
- * `managed-plugin-environments.ts`). One plugin entry may carry
- * `instanceDefault`, which is decided once per instance
- * (`applyManagedPluginInstanceDefault` in `managed-environment-default.ts`).
- * The sandbox stamp below only fills an unset or local default and only
- * reverts its own stamped default, so it never replaces or reverts a plugin
- * default.
+ * `managed-plugin-environments.ts`). This pass never decides the instance
+ * default: one plugin entry may carry `instanceDefault`, and the retry
+ * worker (`registerManagedPluginInstanceDefaultRetry`, registered after this
+ * pass) is the only owner of that one-time decision. The sandbox stamp below
+ * only fills an unset or local default and only reverts its own stamped
+ * default, so it never replaces or reverts a plugin default.
  */
 
 import type { Db } from "@paperclipai/db";
@@ -74,7 +74,6 @@ import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 import {
   applyManagedPluginInstanceDefault,
   readManagedEnvironmentDefaultDecision,
-  type ManagedEnvironmentDefaultOutcome,
 } from "./managed-environment-default.js";
 import {
   managedPluginEnvironmentMarker,
@@ -195,17 +194,6 @@ export interface ApplyManagedEnvironmentsOptions {
    * attempts. Defaults to a controller nobody stops (tests).
    */
   recovery?: ManagedEnvironmentRecovery;
-  /**
-   * Asks the owning retry worker (the `managed-environment-default` delivery
-   * queue, see `registerManagedPluginInstanceDefaultRetry`) to re-run a failed
-   * `instanceDefault` decision.
-   */
-  requestInstanceDefaultRetry?: () => void;
-  /** Test seam: overrides the one-time instance default decision. */
-  applyPluginInstanceDefault?: (input: {
-    environment: { id: string; status: string } | null;
-    marker: string;
-  }) => Promise<ManagedEnvironmentDefaultOutcome>;
 }
 
 export interface ManagedPluginEnvironmentReconciliationOutcome {
@@ -584,69 +572,17 @@ export async function applyManagedEnvironments(
       );
     }
   }
-  // Plugin entries run after the sandbox entry, so an `instanceDefault` entry
-  // sees (and may replace) a default the sandbox stamp just set.
+  // Plugin entries never decide the instance default here: the retry worker
+  // registered after this pass is its only owner (see
+  // `registerManagedPluginInstanceDefaultRetry`).
   const resolvePlugin = opts.resolveEnvironmentPlugin ?? resolveEnvironmentPluginByKey;
-  const decideInstanceDefault = opts.applyPluginInstanceDefault
-    ?? ((input: { environment: { id: string; status: string } | null; marker: string }) =>
-      applyManagedPluginInstanceDefault(db, input));
   const pluginOutcomes: ManagedPluginEnvironmentReconciliationOutcome[] = [];
 
-  /** Best-effort: a failure leaves the decision unrecorded, so the next pass retries it. */
-  const reconcileInstanceDefault = async (
-    spec: ManagedInstanceConfig["pluginEnvironments"][number],
-    environment: { id: string; status: string } | null,
-  ): Promise<void> => {
-    if (!spec.instanceDefault) return;
-    const marker = managedPluginEnvironmentMarker(spec);
-    try {
-      const outcome = await decideInstanceDefault({ environment, marker });
-      if (outcome.status === "already_decided") return;
-      const context = {
-        environmentId: environment?.id ?? null,
-        name: spec.name,
-        marker,
-        decision: outcome.status,
-        reason: outcome.reason,
-        previousDefaultEnvironmentId: outcome.previousDefaultEnvironmentId,
-      };
-      if (outcome.status === "applied") {
-        logger.info(context, "instance default environment set to the managed plugin environment");
-      } else if (outcome.status === "declined") {
-        logger.warn(context, "kept the existing instance default environment; the managed plugin environment's instanceDefault will not apply on this instance");
-      } else {
-        logger.warn(context, "managed plugin environment is not active yet; its instanceDefault waits until it is");
-      }
-    } catch (err) {
-      logger.error(
-        { err, name: spec.name, marker },
-        "failed to evaluate the managed plugin environment's instance default; retrying",
-      );
-      opts.requestInstanceDefaultRetry?.();
-    }
-  };
-
-  /**
-   * When an entry could not be ensured, the first pass that sees its
-   * `instanceDefault` still records a decision, with the row never treated as
-   * active, so a later pass never re-reads "no agents yet" after agents were
-   * created in the meantime.
-   */
-  const reconcileInstanceDefaultWhileUnavailable = async (
-    spec: ManagedInstanceConfig["pluginEnvironments"][number],
-  ): Promise<void> => {
-    if (!spec.instanceDefault) return;
-    const existing = await environments
-      .findManagedPluginEnvironment({ pluginKey: spec.pluginKey, driverKey: spec.driverKey })
-      .catch(() => null);
-    await reconcileInstanceDefault(spec, existing ? { id: existing.id, status: "unavailable" } : null);
-  };
-
-  const ensurePluginEntry = async (
+  const ensurePluginEntry = (
     spec: ManagedInstanceConfig["pluginEnvironments"][number],
     workerManager: Pick<PluginWorkerManager, "isRunning" | "call">,
-  ) => {
-    const result = await environments.ensureManagedPluginEnvironment({
+  ) =>
+    environments.ensureManagedPluginEnvironment({
       name: spec.name,
       description: spec.description,
       pluginKey: spec.pluginKey,
@@ -654,9 +590,6 @@ export async function applyManagedEnvironments(
       driverConfig: { ...spec.driverConfig },
       workerManager,
     });
-    await reconcileInstanceDefault(spec, result.environment);
-    return result;
-  };
 
   type PluginSpec = ManagedInstanceConfig["pluginEnvironments"][number];
   type PluginWorkerAccess = Pick<PluginWorkerManager, "isRunning" | "call">;
@@ -764,7 +697,6 @@ export async function applyManagedEnvironments(
           },
           "managed plugin environment's plugin is not installed, ready, declaring its driver, and running; skipping ensure and archiving any previously provisioned row (degraded: environment unavailable)",
         );
-        await reconcileInstanceDefaultWhileUnavailable(spec);
         if (recoverable) schedulePluginRecovery(spec, recoverable.pluginId, recoverable.workerAccess);
         continue;
       }
@@ -786,7 +718,6 @@ export async function applyManagedEnvironments(
       );
     } catch (err) {
       failed += 1;
-      await reconcileInstanceDefaultWhileUnavailable(spec);
       if (recoverable && !isPermanentConfigRejection(err)) {
         if (!recoverable.workerAccess.isRunning(recoverable.pluginId)) {
           // The worker died after the readiness check (for example inside
@@ -830,6 +761,33 @@ export async function applyManagedEnvironments(
     pluginOutcomes,
   };
 }
+
+/*
+ * One-time `instanceDefault` decision: lifecycle
+ *
+ * `retryManagedPluginInstanceDefault` is the ONLY caller of
+ * `applyManagedPluginInstanceDefault`, and the retry worker below is its only
+ * caller. Each attempt enforces:
+ *
+ * 1. The entry's row can become the default only right after this attempt
+ *    ensured the CURRENT declaration (driver config validated by the plugin)
+ *    while the plugin passes the boot readiness rule. Otherwise the decision
+ *    is recorded with the row as unavailable (`pending`, or `declined` when
+ *    the instance already has agents).
+ * 2. An admin's explicit default write ends a decision that has not applied
+ *    (`cancelPendingManagedEnvironmentDefault`, same transaction as the write).
+ * 3. No agent follows the default when it commits (SHARE lock on `agents`).
+ *
+ * Every non-final state has a way out, and none of them polls:
+ *
+ * | State                        | Next attempt comes from                    |
+ * | ---------------------------- | ------------------------------------------ |
+ * | final (applied / declined)   | nothing; attempts exit after one read      |
+ * | server just started          | the worker's startup attempt               |
+ * | waiting for the plugin       | a worker `ready` (`onWorkerReady`)         |
+ * | config rejected by plugin    | a new boot (the document must change)      |
+ * | attempt threw (timeout, db)  | the delivery coordinator's retry (60 s)    |
+ */
 
 /** The plugin entry that declares `instanceDefault`, if any (at most one). */
 function instanceDefaultSpec(managedConfig: ManagedInstanceConfig | null) {
@@ -882,10 +840,16 @@ export async function retryManagedPluginInstanceDefault(
   const environmentsSvc = environmentService(db);
   const recordUnavailable = async () => {
     const existing = await environmentsSvc.findManagedPluginEnvironment({ pluginKey: spec.pluginKey, driverKey: spec.driverKey });
-    await applyManagedPluginInstanceDefault(db, {
+    const outcome = await applyManagedPluginInstanceDefault(db, {
       environment: existing ? { id: existing.id, status: "unavailable" } : null,
       marker,
     });
+    if (outcome.status !== "already_decided") {
+      logger.warn(
+        { name: spec.name, marker, decision: outcome.status, reason: outcome.reason },
+        "managed plugin environment is not available; its instanceDefault waits until it is",
+      );
+    }
   };
   const call = workerManager?.call;
   if (!workerManager || !call || !(await isPluginEntryAvailable(db, spec, workerManager))) {
@@ -914,11 +878,18 @@ export async function retryManagedPluginInstanceDefault(
     throw err;
   }
   const outcome = await applyManagedPluginInstanceDefault(db, { environment: ensured.environment, marker });
-  if (outcome.status !== "already_decided") {
-    logger.info(
-      { name: spec.name, decision: outcome.status, reason: outcome.reason },
-      "managed plugin environment instance default evaluated by the retry worker",
-    );
+  const context = {
+    environmentId: ensured.environment.id,
+    name: spec.name,
+    marker,
+    decision: outcome.status,
+    reason: outcome.reason,
+    previousDefaultEnvironmentId: outcome.previousDefaultEnvironmentId,
+  };
+  if (outcome.status === "applied") {
+    logger.info(context, "instance default environment set to the managed plugin environment");
+  } else if (outcome.status === "declined") {
+    logger.warn(context, "kept the existing instance default environment; the managed plugin environment's instanceDefault will not apply on this instance");
   }
   return "evaluated";
 }

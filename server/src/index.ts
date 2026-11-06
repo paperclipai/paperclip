@@ -1198,20 +1198,16 @@ async function startServerWithDatabaseTeardown(
   // activates before its provider driver is registered; the worker manager
   // additionally gates each entry on a live plugin worker (and archives the
   // row of a provider that did not come up).
-  // A failed one-time `instanceDefault` decision is retried by a delivery
-  // worker until it is recorded, from the decision row (durable state), never
-  // by a standing timer: once decided, the queue is idle. The worker is
-  // registered only after the boot pass below has reconciled the rows (and
-  // waited for the plugins), and it applies the same plugin readiness rule.
-  let managedEnvironmentDefaultWorker: { requestRetry(): void } | null = null;
+  // The one-time `instanceDefault` decision is owned by a delivery worker,
+  // registered right after this boot pass (so after row reconciliation and
+  // `pluginsReady`). Its startup attempt makes the decision; a worker `ready`
+  // and failed attempts drive any later one. Once decided, the queue is idle.
   try {
     const appLocals = (app as {
       locals?: { bundledPluginsStartup?: Promise<unknown>; managedBundledPluginKeys?: readonly string[] };
     }).locals;
     const managedEnvironmentsResult = await applyManagedEnvironments(db as any, managedConfig, {
       recovery: managedEnvironmentRecovery,
-      // Before the worker exists, its startup attempt (from saved state) covers it.
-      requestInstanceDefaultRetry: () => managedEnvironmentDefaultWorker?.requestRetry(),
       pluginsReady: appLocals?.bundledPluginsStartup,
       autoInstalledPluginKeys: appLocals?.managedBundledPluginKeys,
       workerManager: pluginWorkerManager,
@@ -1219,7 +1215,7 @@ async function startServerWithDatabaseTeardown(
     if (managedEnvironmentsResult) {
       logger.warn(managedEnvironmentsResult, "managed environments ensured from managed config");
     }
-    managedEnvironmentDefaultWorker = registerManagedPluginInstanceDefaultRetry({
+    registerManagedPluginInstanceDefaultRetry({
       db: db as any,
       managedConfig,
       deliveryWork,
