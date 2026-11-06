@@ -17,7 +17,7 @@
  *   --yolo             bypass dangerous-command approval prompts (agents have no TTY)
  *   --source           session source tag for filtering
  */
-import { findLedgerForSession, readRunUsageDelta, readSessionUsage } from "./ledger-usage.js";
+import { findLedgerForSession, readRunUsageWhenComplete, readSessionUsage } from "./ledger-usage.js";
 import type { UsageTotals } from "./ledger-usage.js";
 
 import fs from "node:fs/promises";
@@ -701,45 +701,14 @@ export async function execute(
   // cache into the input count. When the session id or the ledger is missing we
   // report no usage rather than a wrong or zeroed number.
   if (parsed.sessionId && !usageBaselineMissing) {
-    // Hermes writes its ledger rows through a background writer, so they can
-    // arrive after the child exits. Poll until the totals stop moving: three
-    // equal non-zero reads are the completion evidence, not the presence of a
-    // cached token count (an auxiliary row can carry cache too). Discovery is
-    // retried while no ledger is known, because a fresh session's first row
-    // creates the entry the search looks for.
-    let ledgerPath = findLedgerForSession(parsed.sessionId, childHermesHome);
-    let runUsage: UsageTotals | null = null;
-    let previous = "";
-    let stableReads = 0;
-    let complete = false;
-    let discoveryAttempts = 0;
-    for (const delayMs of [0, 1000, 2000, 3000, 5000, 8000, 10000, 10000]) {
-      if (delayMs > 0) await new Promise((resolve) => setTimeout(resolve, delayMs));
-      ledgerPath ??= findLedgerForSession(parsed.sessionId, childHermesHome);
-      if (!ledgerPath) {
-        // A fresh session's first row lands quickly; do not wait out the whole
-        // window for a ledger that will never exist (unknown profile layout).
-        if (++discoveryAttempts >= 3) break;
-        continue;
-      }
-      runUsage = readRunUsageDelta(parsed.sessionId, ledgerPath, usageBefore);
-      if (!runUsage) continue;
-      const total =
-        runUsage.inputTokens + runUsage.cachedInputTokens + runUsage.cacheWriteTokens + runUsage.outputTokens;
-      const signature = JSON.stringify(runUsage);
-      stableReads = total > 0 && signature === previous ? stableReads + 1 : 0;
-      previous = signature;
-      if (stableReads >= 2) {
-        complete = true;
-        break;
-      }
-    }
-    // An unfinished or never-written ledger leaves usage unknown. Publishing
-    // partial totals would charge a fraction of the run as if it were all.
-    if (!complete) runUsage = null;
+    const ledger = await readRunUsageWhenComplete(parsed.sessionId, {
+      before: usageBefore,
+      preferredHome: childHermesHome,
+    });
+    const runUsage = ledger.usage;
     await ctx.onLog(
       "stdout",
-      `[hermes] Ledger ${ledgerPath ?? "not found"}: ${runUsage ? `input ${runUsage.inputTokens}, cached ${runUsage.cachedInputTokens}, output ${runUsage.outputTokens}` : "unavailable"}\n`,
+      `[hermes] Ledger ${ledger.ledgerPath ?? "not found"}: ${runUsage ? `input ${runUsage.inputTokens}, cached ${runUsage.cachedInputTokens}, output ${runUsage.outputTokens}` : "unavailable"}\n`,
     );
     if (runUsage) {
       // Paperclip's UsageSummary contract: inputTokens is uncached input plus

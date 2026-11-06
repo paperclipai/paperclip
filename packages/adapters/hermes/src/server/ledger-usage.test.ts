@@ -3,7 +3,13 @@ import os from "node:os";
 import path from "node:path";
 import { createRequire } from "node:module";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { findLedgerForSession, hermesStateDbPath, readRunUsageDelta, readSessionUsage } from "./ledger-usage.js";
+import {
+  findLedgerForSession,
+  hermesStateDbPath,
+  readRunUsageDelta,
+  readRunUsageWhenComplete,
+  readSessionUsage,
+} from "./ledger-usage.js";
 
 const require = createRequire(import.meta.url);
 const { DatabaseSync } = require("node:sqlite") as typeof import("node:sqlite");
@@ -167,6 +173,86 @@ describe("findLedgerForSession", () => {
     createLedger(fullDb);
     insertUsage(fullDb, "local-a", { input: 100, output: 10, cacheRead: 50 });
     expect(findLedgerForSession("local-a")).toBe(fullDb);
+  });
+});
+
+describe("readRunUsageWhenComplete", () => {
+  // Hermes flushes its ledger rows through a background writer after the
+  // child exits. These tests drive that timing with real databases: the sleep
+  // hook performs the next write, so each poll sees a controlled ledger.
+  const noWait = () => Promise.resolve();
+
+  it("completes when the first row arrives after the first poll", async () => {
+    process.env.HERMES_HOME = root;
+    const dbPath = path.join(root, "state.db");
+    let writes = 0;
+    const result = await readRunUsageWhenComplete("local-a", {
+      delaysMs: [0, 1, 1, 1, 1],
+      sleep: async () => {
+        // The first write lands between the first and the second poll.
+        if (++writes === 1) {
+          createLedger(dbPath);
+          insertUsage(dbPath, "local-a", { input: 100, output: 10, cacheRead: 50 });
+        }
+      },
+    });
+    expect(result.complete).toBe(true);
+    expect(result.ledgerPath).toBe(dbPath);
+    expect(result.usage).toEqual({
+      inputTokens: 100,
+      cachedInputTokens: 50,
+      cacheWriteTokens: 0,
+      outputTokens: 10,
+    });
+  });
+
+  it("waits out paused writes and reports the final totals", async () => {
+    process.env.HERMES_HOME = root;
+    const dbPath = path.join(root, "state.db");
+    createLedger(dbPath);
+    insertUsage(dbPath, "local-a", { input: 100, output: 10, cacheRead: 50 });
+    let writes = 0;
+    const result = await readRunUsageWhenComplete("local-a", {
+      delaysMs: [0, 1, 1, 1, 1, 1],
+      sleep: async () => {
+        // One late row after the first poll: the totals move once, then settle.
+        if (++writes === 1) insertUsage(dbPath, "local-a", { input: 5, output: 1, cacheRead: 2 });
+      },
+    });
+    expect(result.complete).toBe(true);
+    expect(result.usage).toEqual({
+      inputTokens: 105,
+      cachedInputTokens: 52,
+      cacheWriteTokens: 0,
+      outputTokens: 11,
+    });
+  });
+
+  it("leaves usage unknown while writes never settle", async () => {
+    process.env.HERMES_HOME = root;
+    const dbPath = path.join(root, "state.db");
+    createLedger(dbPath);
+    insertUsage(dbPath, "local-a", { input: 100, output: 10, cacheRead: 50 });
+    const result = await readRunUsageWhenComplete("local-a", {
+      delaysMs: [0, 1, 1, 1, 1, 1, 1],
+      sleep: async () => {
+        // A writer that never finishes must not pass as a completed run.
+        insertUsage(dbPath, "local-a", { input: 1, output: 1 });
+      },
+    });
+    expect(result.complete).toBe(false);
+    expect(result.usage).toBeNull();
+  });
+
+  it("gives up discovery when no ledger exists", async () => {
+    process.env.HERMES_HOME = root;
+    const result = await readRunUsageWhenComplete("local-a", {
+      delaysMs: [0, 1, 1, 1, 1],
+      sleep: noWait,
+    });
+    expect(result.complete).toBe(false);
+    expect(result.usage).toBeNull();
+    expect(result.ledgerPath).toBeNull();
   });
 });
 
