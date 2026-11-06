@@ -1,6 +1,6 @@
 {
-  "id": "70c573c7-efa1-4b7f-9fca-05487e328fac",
-  "prevId": "9fcf29d1-a9a6-4ead-8d43-7e087a2b2b24",
+  "id": "10b23b32-3586-4a30-a993-618e7d3ca893",
+  "prevId": "a87278a8-15b3-4187-94a9-f4bb79d8640d",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -34186,6 +34186,50 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
+        },
+        "heartbeat_run_events_usage_item_run_idx": {
+          "name": "heartbeat_run_events_usage_item_run_idx",
+          "columns": [
+            {
+              "expression": "run_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"heartbeat_run_events\".\"event_type\" = 'item.completed' and (\"heartbeat_run_events\".\"payload\" -> 'prpEvent' -> 'payload' ->> 'kind') = 'usage'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "heartbeat_run_events_compaction_session_idx": {
+          "name": "heartbeat_run_events_compaction_session_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "(\"payload\" -> 'prpEvent' ->> 'normalizedSessionId')",
+              "asc": true,
+              "isExpression": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"heartbeat_run_events\".\"event_type\" = 'context.compacted'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         }
       },
       "foreignKeys": {
@@ -35133,33 +35177,6 @@
               "isExpression": false,
               "asc": true,
               "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "heartbeat_runs_company_agent_created_idx": {
-          "name": "heartbeat_runs_company_agent_created_idx",
-          "columns": [
-            {
-              "expression": "company_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "agent_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "created_at",
-              "isExpression": false,
-              "asc": false,
-              "nulls": "first"
             }
           ],
           "isUnique": false,
@@ -61864,6 +61881,13 @@
         },
         "coordinator_workspace_enabled": {
           "name": "coordinator_workspace_enabled",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": true
+        },
+        "classic_workspace_enabled": {
+          "name": "classic_workspace_enabled",
           "type": "boolean",
           "primaryKey": false,
           "notNull": true,

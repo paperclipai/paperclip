@@ -23,7 +23,7 @@ import { applyAgentPolicyHoldsInTransaction } from "../modules/agent-lifecycle/i
 import { trackIdleWork } from "./task-admission.js";
 import { environmentService } from "./environments.js";
 import { instanceSettingsService } from "./instance-settings.js";
-import { pluginEnvironmentRequiresAgent } from "./plugin-environment-driver.js";
+import { pluginEnvironmentRequiresAgent, pluginForAgentEnvironment } from "./plugin-environment-driver.js";
 import { isProviderApiSetupDraft } from "./native-runtime/provider-api-placement.js";
 
 export { scheduleAgentLifecycle, processAgentLifecycle } from "../modules/agent-lifecycle/index.js";
@@ -41,6 +41,12 @@ export function createAgentLifecycleEffects(_hooks: BudgetServiceHooks = {}): li
       const bound = await environmentService(db).listBoundCompanyIds(environment.id);
       if (bound.length && !bound.includes(companyId)) throw new lifecycle.AgentLifecycleConflict("The environment belongs to another company");
       return true;
+    },
+    async environmentRequiresNewPlugin(db, environmentId, selectedPluginIds) {
+      const id = environmentId ?? (await instanceSettingsService(db).get()).defaultEnvironmentId;
+      const environment = id ? await environmentService(db).getById(id) : null;
+      const plugin = environment ? await pluginForAgentEnvironment(db, environment) : null;
+      return plugin !== null && !selectedPluginIds?.includes(plugin.id);
     },
     notifyWork: tx => notifyDeliveryWork(tx, DELIVERY_QUEUES.agentLifecycle),
     async beforeStatusChange(tx, companyId, agentId, before, after) {

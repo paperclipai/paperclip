@@ -8,11 +8,13 @@ import { agentEnvironmentTestService } from "./agent-environment-test.js";
 import { aiConnectionRouterService } from "./ai-connection-router.js";
 import { aiConnectionService } from "./ai-connections.js";
 import { withManagedAiProbe, stripAiAuthBindings } from "./ai-connection-runtime.js";
+import { PLUGIN_RUNNER_AI_CONNECTION_REQUIRED, pluginEnvironmentRunnerTaskDriver, pluginRunnerAiConnectionRequiredFailure } from "./plugin-runner-ai-connection.js";
 import { environmentService } from "./environments.js";
 import { secretService } from "./secrets.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { assertProviderApiPlacementPolicy, resolveProviderApiPlacement } from "./native-runtime/provider-api-placement.js";
 import { museRunnerBroker } from "./muse-runner-broker.js";
+import { RUNNER_REVISION_MISMATCH_CODE } from "./runner-revision-mismatch.js";
 import { dotRunnerBroker } from "./dot-runner-broker.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 import type { LifecycleAgent } from "../modules/agent-lifecycle/index.js";
@@ -26,7 +28,9 @@ export function assertHarnessTestPassed(result: AdapterEnvironmentTestResult) {
   const incomplete = !verified && (result.status === "warn" || result.checks.some(check => check.code.includes("hello_probe")));
   if (result.status === "fail" || authenticationFailed || incomplete) {
     const has = (suffix: string) => result.checks.some(check => check.code.endsWith(suffix));
-    const code = result.checks.some(check => check.level === "error" && check.retryable === true) ? "test_environment_unavailable"
+    const code = result.checks.some(check => check.code === PLUGIN_RUNNER_AI_CONNECTION_REQUIRED) ? PLUGIN_RUNNER_AI_CONNECTION_REQUIRED
+      : result.checks.some(check => check.code === RUNNER_REVISION_MISMATCH_CODE) ? RUNNER_REVISION_MISMATCH_CODE
+      : result.checks.some(check => check.level === "error" && check.retryable === true) ? "test_environment_unavailable"
       : authenticationFailed ? "harness_auth_failed"
       : has("_hello_probe_model_unavailable") || has("_model_invalid") ? "harness_model_unavailable"
       : has("_command_unresolvable") ? "harness_command_unavailable"
@@ -74,6 +78,10 @@ export function agentHarnessVerificationService(db: Db, manager: PluginWorkerMan
     if (environmentId) {
       await tests.assertAdapterTestEnvironmentForCompany(agent.companyId, environmentId, agent.adapterType);
       const environment = await environments.getById(environmentId);
+      // Run admission refuses these agents before any lease, so verification must too.
+      const preconfiguredHome = agent.adapterType === "paperclip_runner" && config.homeMode === "preconfigured";
+      if (agent.adapterType === "paperclip_runner" && environment && (preconfiguredHome || !binding)
+        && await pluginEnvironmentRunnerTaskDriver(db, environment)) throw pluginRunnerAiConnectionRequiredFailure(preconfiguredHome);
       const env = Object.fromEntries(Object.entries(binding ? stripAiAuthBindings(environment?.envVars) : parseObject(environment?.envVars))
         .filter(([key]) => !isForbiddenConfigEnvKey(key)));
       const resolved = await secrets.resolveEnvBindings(agent.companyId, env,

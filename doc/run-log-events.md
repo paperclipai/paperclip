@@ -127,6 +127,19 @@ native run. Metadata adds an exit only when it is an integer. Conflicting suppli
 legacy exits stay unknown. Existing numeric `state.exit` values remain supported;
 metadata on other tools cannot add process-exit proof.
 
+An edit tool call can carry `fileChanges` on its `tool.execution.*` payload.
+Each entry names one workspace-relative `path`, its `operation` (`create`,
+`modify`, `delete` or `rename`), `previousPath`, `additions`, `deletions`, a
+unified `diff` and `diffTruncated`. The runner drops paths outside the working
+directory, redacts secrets in each patch, and bounds a patch to 32 KiB and one
+call to 32 files. Counts cover the whole patch even when the patch is shortened.
+Codex `fileChange` items produce these rows. Claude Edit and Write calls produce
+them from the ACP `diff` content. Codex `turn/diff/updated` also records the
+whole-turn diff as `workspace.change.updated` (`paperclip.workspace.diff.v1`).
+The task chat shows each patch under its edit row. It ends the turn with the
+change set, or with one built from the edit rows when the harness reports no
+whole-turn diff.
+
 `auth.credentials.updated` is a runner-produced PRP event for a change to a
 supported credential store, including account identity changes and later token
 refreshes on the new account. The bundled transport awaits a host commit callback
@@ -358,6 +371,16 @@ server-authored event among these three types; provider
 source events cannot supply stop authority. These records stay in the local run
 log and do not add Telemetry or OpenTelemetry data.
 
+Explicit continuation writes `native.stopped_conversation_verified` after it
+verifies the retained worker and provider processes stopped. Its payload binds
+the requesting `runId`, retained `ownerRunId`, native session, runner instance,
+process IDs, retained-state fingerprint, successor run, Retry receipt, and local
+workspace identity. The owner can be a preceding terminal
+run when the requesting attempt failed before launch with the same process
+identity. The server checks host-bound process birth and independent provider
+receipts before retiring cleanup ownership. The event does not settle uncertain
+actions or authorize replay of the old session.
+
 ## Verified Local Codex Replacement Evidence
 
 The server writes `native.stopped_text_turn_verified` in the same transaction
@@ -578,6 +601,32 @@ changes, and unrelated thread information do not create a provider notice in
 chat. Chat also omits the matching notice stored by older runners. Real provider
 warnings and errors remain visible.
 
+Provider rate-limit windows use `provider.notice.recorded` with category
+`provider.rate_limits` and scope `account`. Codex sends them as
+`account/rateLimits/updated`. Claude sends them as `usage_update` metadata
+(`_claude/rateLimit`) when it uses a subscription sign-in. The runner merges
+sparse Codex updates and records a notice only when the windows change. The
+notice has one `rateLimits` detail: a JSON snapshot with schema
+`paperclip.provider.rate_limits.v1` (windows with used percent and reset time,
+credits, and the reached window). Chat does not show the notice. The server
+keeps the latest snapshot in the agent's runtime state under
+`providerRateLimits`, and the task properties pane shows it as the assignee's
+**Usage limit**. The snapshot is display data. It does not hold or start work;
+the provider-limit wait reads typed run failures.
+
+Harness status notices use `provider.notice.recorded` with a status category.
+Codex `error` notifications read `error.message`. A notification with
+`willRetry: true` becomes a recoverable `provider_retry` notice. A final error
+keeps category `error`. The `CodexErrorInfo` kind, the HTTP status, and the
+reconnect attempt count become notice details. Claude compaction, model
+fallback, and SDK informational banners arrive as ACP message text without a
+message identity. The ACPX layer records them as `context_compaction`,
+`model_fallback`, or `provider_informational` notices instead of answer text.
+Compaction start and end share one notice identity and carry a `Phase` detail.
+The task chat shows these notices as inline status chips. A retry chip fades
+after later provider work. A final provider error shows the real provider
+message. Generic warnings stay out of chat as before.
+
 Recovery lifecycle events retain the original structured failure code, retry attempt, next retry time, and predecessor/successor identifiers. Durable status delivery uses an idempotency marker; delivery grants no provider authority. Failed publication is retried without repeating provider work. These records are not first-party Telemetry.
 
 An unstarted legacy conversation retry waiting for execution cleanup retains
@@ -751,6 +800,17 @@ telemetry-read authorization. Ordinary PRP reads/live delivery retain run-secret
 and current-user redaction. The task page uses one history read on mount/reconnect
 and the existing live transcript stream, then makes a bounded plugin readiness
 check. No panel discovery timer scans runs or provider state while connected.
+
+## Post-result failure diagnostics
+
+`native.post_result_failure` records `stage: post_result_execution`, a closed
+`category` (`io_not_found`, `io_permission_denied`, `io_failure`, or
+`execution_failure`), and `resultAlreadyAccepted: true`. It requires an accepted
+selected result and exact current, unexpired controller authority. A busy diagnostic
+row lock is skipped. Reporting is best effort under the existing 60-second control
+bound; the sink can finish later and emit a late event. The `native_session_lease_lost`
+control classification stays unchanged. The labels grant no recovery, result,
+Stop, provider-work or payment authority and do not establish a hosted failure cause.
 
 ## Payload storage
 

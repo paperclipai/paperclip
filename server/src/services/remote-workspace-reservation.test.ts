@@ -7,7 +7,7 @@ import request from "supertest";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import { agents, companies, companyMemberships, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, environments,
-  executionWorkspaces, heartbeatRuns, issues, projects, projectWorkspaces } from "@paperclipai/db";
+  environmentLeases, executionWorkspaces, heartbeatRuns, issues, projects, projectWorkspaces } from "@paperclipai/db";
 import { readRemoteWorkspaceAuthority } from "@paperclipai/shared";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
 import { createLocalDiskStorageProvider } from "../storage/local-disk-provider.js";
@@ -15,6 +15,7 @@ import { createStorageService } from "../storage/service.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { issueService } from "./issues.js";
 import { reserveRemoteWorkspace } from "./remote-workspaces.js";
+import { remoteTerminationReceipt } from "./remote-execution-termination.js";
 import { executionWorkspaceService } from "./execution-workspaces.js";
 import { accessService } from "./access.js";
 import { taskWorkspaceRoutes } from "../routes/task-workspaces.js";
@@ -150,6 +151,31 @@ describe.skipIf(!support.supported)("remote workspace reservation authority", ()
     expect(readRemoteWorkspaceAuthority((await current(f.workspace.id)).metadata)).toEqual(held);
     await db.update(executionWorkspaces).set({ metadata: { remoteWorkspace: f.authority } }).where(eq(executionWorkspaces.id, f.workspace.id));
     await expect(reserveRemoteWorkspace(f.input)).resolves.toMatchObject({ id: f.workspace.id });
+  });
+
+  it.each(["verified-stop", "no-stop-receipt", "foreign-receipt"] as const)
+  ("hands over from an ended writer whose recovered sandbox awaits destroy (%s)", async kind => {
+    const f = await fixture();
+    const [writer] = await db.insert(heartbeatRuns).values({ companyId: f.company.id, agentId: f.agent.id,
+      issueId: f.parent.id, status: "cancelled", finishedAt: new Date() }).returning();
+    const providerLeaseId = randomUUID();
+    const [lease] = await db.insert(environmentLeases).values({ companyId: f.company.id, environmentId: f.input.environmentId,
+      heartbeatRunId: writer.id, issueId: f.parent.id, provider: "daytona", providerLeaseId,
+      status: "pending_cleanup", cleanupStatus: "failed", leasePolicy: "ephemeral", releasedAt: new Date() }).returning();
+    const receipt = remoteTerminationReceipt(lease, { providerLeaseId, state: "stopped" })!;
+    const stopReceipt = kind === "verified-stop" ? receipt : kind === "foreign-receipt" ? { ...receipt, runId: randomUUID() } : undefined;
+    await db.update(environmentLeases).set({ metadata: { workspaceRecoveryCleanup: { runId: writer.id, stopReceipt } } })
+      .where(eq(environmentLeases.id, lease.id));
+    // Recovery saved the files, so the writer is clean but not yet destroyed.
+    const ended = { ...f.authority, writerRunId: writer.id, dirty: false };
+    await db.update(executionWorkspaces).set({ metadata: { remoteWorkspace: ended } }).where(eq(executionWorkspaces.id, f.workspace.id));
+    if (kind === "verified-stop") {
+      await expect(reserveRemoteWorkspace(f.input)).resolves.toMatchObject({ id: f.workspace.id });
+      expect(readRemoteWorkspaceAuthority((await current(f.workspace.id)).metadata)).toMatchObject({ writerRunId: f.run.id, epoch: 4 });
+    } else {
+      await expect(reserveRemoteWorkspace(f.input)).rejects.toThrow();
+      expect(readRemoteWorkspaceAuthority((await current(f.workspace.id)).metadata)).toEqual(ended);
+    }
   });
 
   it("grants only one writer when two bound children reserve concurrently", async () => {

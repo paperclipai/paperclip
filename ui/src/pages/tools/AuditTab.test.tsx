@@ -5,6 +5,7 @@ import type { ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ApiError } from "@/api/client";
 import { AuditTab } from "./AuditTab";
 
 const listActivityMock = vi.hoisted(() => vi.fn());
@@ -115,6 +116,7 @@ describe("AuditTab", () => {
       );
     });
     await flushReact();
+    return client;
   }
 
   function clickButton(text: string) {
@@ -268,6 +270,40 @@ describe("AuditTab", () => {
     expect(container.textContent).toContain("Nothing here yet");
     // No active filters yet → no Clear filters button.
     expect(Array.from(container.querySelectorAll("button")).some((b) => b.textContent?.trim() === "Clear filters")).toBe(false);
+  });
+
+  it("keeps loaded activity visible when a refetch fails transiently", async () => {
+    const client = await render();
+    expect(container.textContent).toContain("Send Email");
+
+    listActivityMock.mockRejectedValue(
+      new ApiError("Paperclip is restarting.", 503, { error: "tenant_app_unavailable" }),
+    );
+    await act(async () => {
+      await client.invalidateQueries();
+    });
+    await flushReact();
+
+    expect(container.textContent).toContain("Send Email");
+    expect(container.querySelector('[data-query-view="error"]')).toBeNull();
+    expect(container.textContent).not.toContain("Paperclip is restarting.");
+  });
+
+  it("shows readable copy and a Retry button for a real error", async () => {
+    listActivityMock
+      .mockRejectedValueOnce(new ApiError("Boom", 500, { error: "Boom" }))
+      .mockResolvedValue({ events: [event()], nextCursor: null });
+    await render();
+
+    expect(container.querySelector('[data-query-view="error"]')).not.toBeNull();
+    expect(container.textContent).toContain("Couldn't load activity");
+    expect(container.textContent).not.toContain("Send Email");
+
+    await clickButton("Retry");
+    await flushReact();
+
+    expect(container.querySelector('[data-query-view="error"]')).toBeNull();
+    expect(container.textContent).toContain("Send Email");
   });
 
   it("loads more when a cursor is returned", async () => {

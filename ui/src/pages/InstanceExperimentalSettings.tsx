@@ -10,6 +10,7 @@ import type {
 } from "@paperclipai/shared";
 import { experimentalSettingKey } from "@paperclipai/shared";
 import { instanceSettingsApi } from "@/api/instanceSettings";
+import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { useHiddenSettings } from "@/hooks/useHiddenSettings";
 import { getWorktreeInstanceId, isWorktreeRuntime } from "../lib/worktree-branding";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
@@ -19,7 +20,8 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Link } from "@/lib/router";
-import { CoordinatorWorkspaceSetting } from "@/components/CoordinatorWorkspaceSetting";
+import { ClassicWorkspaceSetting } from "@/components/ClassicWorkspaceSetting";
+import { describeError } from "@/api/errors";
 
 type WorktreeRunExecutionDisplayState =
   | { kind: "off" }
@@ -137,6 +139,7 @@ export function InstanceExperimentalSettings() {
     queryKey: queryKeys.instance.experimentalSettings,
     queryFn: () => instanceSettingsApi.getExperimental(),
   });
+  const experimentalView = useQueryView(experimentalQuery);
 
   const toggleMutation = useMutation<
     InstanceExperimentalSettingsWithManaged,
@@ -174,29 +177,29 @@ export function InstanceExperimentalSettings() {
       if (context?.previousSettings) {
         queryClient.setQueryData(queryKeys.instance.experimentalSettings, context.previousSettings);
       }
-      setActionError(error instanceof Error ? error.message : "Failed to update experimental settings.");
+      setActionError(describeError(error).body);
     },
   });
 
-  if (experimentalQuery.isLoading) {
+  if (experimentalQuery.isLoading || experimentalView.kind === "reconnecting") {
     return (
       <div className="max-w-6xl space-y-6">
-        <CoordinatorWorkspaceSetting key="personal-workspace" />
+        <ClassicWorkspaceSetting key="personal-workspace" />
         <div className="text-sm text-muted-foreground">Loading experimental settings...</div>
       </div>
     );
   }
 
-  if (experimentalQuery.error) {
+  if (experimentalView.kind === "error") {
     return (
-      <div className="max-w-6xl space-y-6">
-        <CoordinatorWorkspaceSetting key="personal-workspace" />
-        <div className="text-sm text-destructive">
-          {experimentalQuery.error instanceof Error
-            ? experimentalQuery.error.message
-            : "Failed to load experimental settings."}
-        </div>
-      </div>
+<div className="max-w-6xl space-y-6"><ClassicWorkspaceSetting key="personal-workspace" />      <QueryErrorState
+        size="page"
+        error={experimentalQuery.error}
+        action="load experimental settings"
+        onRetry={experimentalView.retry}
+        retrying={experimentalView.isFetching}
+      />
+</div>
     );
   }
 
@@ -271,7 +274,7 @@ export function InstanceExperimentalSettings() {
         </p>
       </div>
 
-      <CoordinatorWorkspaceSetting key="personal-workspace" />
+      <ClassicWorkspaceSetting key="personal-workspace" />
 
       <div
         role="alert"
@@ -304,30 +307,6 @@ export function InstanceExperimentalSettings() {
             Optional product features that are still being evaluated.
           </p>
         </div>
-
-        <ExperimentalToggleCard
-          title="Agent Chat"
-          description="Talk to each agent in one ongoing conversation. Clarify goals and create tasks for execution. Chat leads the Work group and opens an agent rail beside the nav, and each chat's side panel shows the agent's tasks and artifacts as cards."
-          footnote="Turning this off preserves conversations and lets active runs finish, but prevents new messages."
-          checked={experimentalQuery.data?.enableAgentChat ?? false}
-          onCheckedChange={(checked) => toggleMutation.mutate({ enableAgentChat: checked })}
-          disabled={toggleMutation.isPending}
-          settingKey="enableAgentChat"
-          managed={managedKeys.enableAgentChat}
-          ariaLabel="Toggle agent chat experimental setting"
-        />
-
-        <ExperimentalToggleCard
-          title="Artifacts V1"
-          description="Show artifacts the way the artifact directions lab settled: paper stacks and tiles on the Artifacts page, compact rows in the panel's Artifacts tab, and grouped rows in the task thread."
-          footnote="Presentation only. Turning this off restores the current cards; no data changes."
-          checked={experimentalQuery.data?.enableArtifactsV1 ?? false}
-          onCheckedChange={(checked) => toggleMutation.mutate({ enableArtifactsV1: checked })}
-          disabled={toggleMutation.isPending}
-          settingKey="enableArtifactsV1"
-          managed={managedKeys.enableArtifactsV1}
-          ariaLabel="Toggle artifacts V1 experimental setting"
-        />
 
         <ExperimentalToggleCard
           title="Assistant connections (MCP)"
@@ -389,8 +368,8 @@ export function InstanceExperimentalSettings() {
 
         <ExperimentalToggleCard
           title="Combined Inbox + Task List"
-          description="Fold Inbox into Tasks. One Tasks row carries the unread badge, and a Views menu reaches every inbox view (Mine, Unread, Blocked, Recent, Everything) and every task view."
-          footnote="Old Inbox links redirect to the matching view. Turning this off restores the separate Inbox; no data changes."
+          description="In the Classic workspace, fold Inbox into Tasks. One Tasks row carries the unread badge, and a Views menu reaches every personal and organization task view."
+          footnote="Coordinator always includes personal views in Tasks. For Classic, turning this off restores its separate Inbox. No data changes."
           checked={experimentalQuery.data?.enableCombinedInboxTasks ?? false}
           onCheckedChange={(checked) => toggleMutation.mutate({ enableCombinedInboxTasks: checked })}
           disabled={toggleMutation.isPending}
@@ -411,6 +390,18 @@ export function InstanceExperimentalSettings() {
             ariaLabel="Toggle conference room chat experimental setting"
           />
         ) : null}
+
+        <ExperimentalToggleCard
+          title="Command/Ctrl+Enter to Submit"
+          description="Restore the previous keyboard shortcut for task replies and new tasks: Command/Ctrl+Enter submits, and Enter adds a new line."
+          footnote="Off by default: Enter submits, and Shift+Enter adds a new line."
+          checked={experimentalQuery.data?.enableLegacyComposerSubmit === true}
+          onCheckedChange={(checked) => toggleMutation.mutate({ enableLegacyComposerSubmit: checked })}
+          disabled={toggleMutation.isPending}
+          settingKey="enableLegacyComposerSubmit"
+          managed={managedKeys.enableLegacyComposerSubmit}
+          ariaLabel="Toggle Command/Ctrl+Enter to submit"
+        />
 
         <ExperimentalToggleCard
           title="Decisions"
@@ -501,6 +492,18 @@ export function InstanceExperimentalSettings() {
           settingKey="enableGitHubReviewBots"
           managed={managedKeys.enableGitHubReviewBots}
           ariaLabel="Toggle GitHub review bots experimental setting"
+        />
+
+        <ExperimentalToggleCard
+          title="Google Workspace connector (Paperclip)"
+          description="Show the built-in Google Workspace connector for Gmail, Drive, and Calendar while Google verification is pending."
+          footnote="Off by default. While off, Google apps are offered through Composio and Arcade instead, and the built-in connector cannot be set up or run."
+          checked={experimentalQuery.data?.enableGoogleWorkspaceConnector === true}
+          onCheckedChange={(checked) => toggleMutation.mutate({ enableGoogleWorkspaceConnector: checked })}
+          disabled={toggleMutation.isPending}
+          settingKey="enableGoogleWorkspaceConnector"
+          managed={managedKeys.enableGoogleWorkspaceConnector}
+          ariaLabel="Toggle Paperclip Google Workspace connector experimental setting"
         />
 
         <ExperimentalToggleCard

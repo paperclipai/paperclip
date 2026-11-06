@@ -402,6 +402,10 @@ impl AcpxSidecarTransport {
         self.process.id()
     }
 
+    pub(crate) fn buffered_events(&self) -> impl ExactSizeIterator<Item = &AcpxSidecarEvent> {
+        self.buffered_events.iter()
+    }
+
     pub fn request(
         &mut self,
         command: GeneratedAcpxSidecarCommand,
@@ -448,6 +452,11 @@ impl AcpxSidecarTransport {
             self.poison();
         }
         result
+    }
+
+    pub(crate) fn defer_polled_event(&mut self, event: AcpxSidecarEvent) {
+        // poll_event already validated its sequence and freed its FIFO slot.
+        self.buffered_events.push_front(event);
     }
 
     pub fn shutdown(&mut self) -> Result<(), LocalRunnerError> {

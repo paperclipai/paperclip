@@ -16,6 +16,7 @@ import {
   reconcileExecutionWorkspaceBranchSchema,
   updateExecutionWorkspaceSchema,
   workspaceOverviewQuerySchema,
+  executionWorkspaceSummaryPageQuerySchema,
   workspaceRuntimeControlTargetSchema,
 } from "@paperclipai/shared";
 import type { WorkspaceRuntimeDesiredState, WorkspaceRuntimeServiceStateMap } from "@paperclipai/shared";
@@ -142,6 +143,15 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
       reuseEligible: req.query.reuseEligible === "true",
       selectableForTask: req.query.selectableForTask === "true",
     };
+    if (req.query.summary === "true" && (req.query.limit !== undefined || req.query.cursor !== undefined)) {
+      const pagination = executionWorkspaceSummaryPageQuerySchema.safeParse({ limit: req.query.limit, cursor: req.query.cursor });
+      if (!pagination.success) {
+        res.status(422).json({ error: "Invalid workspace summary pagination", details: pagination.error.flatten() });
+        return;
+      }
+      res.json(await svc.listSummaries(companyId, filters, pagination.data));
+      return;
+    }
     const workspaces = req.query.summary === "true"
       ? await svc.listSummaries(companyId, filters)
       : await svc.list(companyId, filters);

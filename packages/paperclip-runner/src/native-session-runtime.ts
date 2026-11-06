@@ -1002,7 +1002,11 @@ async function consumeTurn(
             || (trailing.eventType === "item.completed" && trailing.payload.kind === "interrupt_acknowledgement")
             || (trailing.eventType === "run.terminal" && ["failed", "cancelled"].includes(String(trailing.payload.runTerminalState)));
           if (trailing.turnId === event.turnId && (usage || terminal || cancellation)) {
-            const receipt = await controlPlane.appendEvent(trailing, { signal: drainAbort.signal });
+            const receipt = await controlPlane.appendEvent(trailing, {
+              signal: drainAbort.signal,
+              ...(terminal && trailing.turnId && trailing.eventType !== "turn.failed" && trailing.payload.providerTerminalObserved !== false
+                ? { deferPostCommitObservers: true as const } : {}),
+            });
             if (drainAbort.signal.aborted) return;
             eventCount += receipt.disposition === "committed" ? 1 : 0;
             highestContiguousSourceSeq = Math.max(highestContiguousSourceSeq, receipt.highestContiguousSourceSeq);

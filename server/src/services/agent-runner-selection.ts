@@ -18,6 +18,7 @@ import { normalizeClaudeRunnerOptions, type AgentConfigurationWarning } from "@p
 import { usesManagedCloudSandboxImage } from "./sandbox-snapshot-qualification.js";
 import { environmentCustomImageTemplateMatchesBaseConfig } from "./environment-custom-image-runtime.js";
 import type { ExecutionPolicy } from "./execution-allowlist.js";
+import { pluginEnvironmentRunnerTaskDriver } from "./plugin-runner-ai-connection.js";
 
 export type RunnerTarget = {
   driver: string; platform?: string; architecture?: string; libc?: "glibc" | "musl" | "unknown"; glibcVersion?: string;
@@ -479,7 +480,7 @@ async function resolveAgentEnvironmentForCompany(db: Db, companyId: string, defa
   let environment = environmentId ? await envs.getById(environmentId) : null;
   if (settings.experimental?.enableManagedSandboxOnly && (!environment || environment.driver === "local")) {
     environment = await envs.findManagedSandboxEnvironment(companyId);
-    if (!environment) throw unprocessable("The managed sandbox is unavailable. Restore Paperclip Computer and retry.", {
+    if (!environment) throw unprocessable("The managed sandbox is unavailable. Restore Paperclip Sandbox and retry.", {
       code: "managed_sandbox_unavailable", ...(executionMode ? { executionMode } : {}),
     });
   }
@@ -496,20 +497,3 @@ async function resolveAgentEnvironmentForCompany(db: Db, companyId: string, defa
   return { environment, driver: environment?.driver ?? "local", executionMode };
 }
 
-// The plugin's manifest declaration decides whether its environment runs
-// Runner tasks. Run admission separately verifies a ready plugin and a live
-// worker, so a plugin that is down still selects the Runner and fails its run.
-async function pluginEnvironmentRunnerTaskDriver(db: Db, environment: Parameters<typeof parseEnvironmentDriverConfig>[0]) {
-  let config: { pluginKey: string; driverKey: string };
-  try {
-    const parsed = parseEnvironmentDriverConfig(environment);
-    if (parsed.driver !== "plugin") return undefined;
-    config = parsed.config;
-  } catch {
-    return undefined;
-  }
-  const { pluginRegistryService } = await import("./plugin-registry.js");
-  const plugin = await pluginRegistryService(db).getByKey(config.pluginKey);
-  return plugin?.manifestJson.capabilities.includes("environment.drivers.register")
-    ? plugin.manifestJson.environmentDrivers?.find(driver => driver.driverKey === config.driverKey && driver.supportsTasks === true) : undefined;
-}

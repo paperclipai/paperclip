@@ -8,7 +8,11 @@ import { getTelemetryClient } from "../telemetry.js";
 import { captureException } from "../sentry.js";
 import { COMPANY_IMPORT_API_PATH } from "../routes/company-import-paths.js";
 import { logger } from "./logger.js";
-import { isSecretSensitiveHttpRequest } from "./http-log-policy.js";
+import {
+  isSecretSensitiveHttpRequest,
+  secretSensitiveRouteFamily,
+} from "./http-log-policy.js";
+import { SecretSensitiveRequestError } from "./secret-sensitive-request-error.js";
 import {
   collectSensitiveStringValues,
   redactSensitiveValueOccurrences,
@@ -16,6 +20,7 @@ import {
 import { recordResponsibleUserDenialOnActiveRun } from "../services/responsible-user-denial-run-outcomes.js";
 import { isExpectedMcpConnectionFailure } from "../services/mcp-connection-failure.js";
 import { isEndedDbPoolError } from "../database-retry.js";
+import { ToolGatewayHttpError } from "../services/tool-gateway.js";
 
 export interface ErrorContext {
   error: {
@@ -68,12 +73,13 @@ function attachErrorContext(
 }
 
 function sanitizeSecretSensitiveError(req: Request, error: Error): Error {
-  if (!isSecretSensitiveHttpRequest(req.method, req.originalUrl)) return error;
-  const sanitized = new Error("Secret-sensitive request failed");
-  // Both `name` and `message` are attacker/provider-controlled properties on
-  // JavaScript errors. Do not preserve either on a credential-bearing route.
-  sanitized.name = "Error";
-  return sanitized;
+  const routeFamily = secretSensitiveRouteFamily(req.method, req.originalUrl);
+  if (!routeFamily) return error;
+  return new SecretSensitiveRequestError(error, {
+    routeFamily,
+    method: req.method,
+    routePath: (req.route as { path?: unknown } | undefined)?.path,
+  });
 }
 
 function sanitizeSecretSensitiveResponse(
@@ -135,12 +141,27 @@ function recordResponsibleUserDenialFromHttpError(
   });
 }
 
+/**
+ * The tool gateway rejects requests with its own error type. A route that lets
+ * one reach this handler (such as approving a tool review from a task card)
+ * would otherwise turn an expected rejection, for example a 409 asking for a
+ * new review, into a 500 crash report. Gateway server failures stay on the
+ * crash path so their provider text is not exposed.
+ */
+function clientToolGatewayErrorAsHttpError(err: unknown): unknown {
+  if (!(err instanceof ToolGatewayHttpError) || err.status < 400 || err.status >= 500) return err;
+  const mapped = new HttpError(err.status, err.message, { ...err.details, code: err.reasonCode });
+  mapped.stack = err.stack;
+  return mapped;
+}
+
 export function errorHandler(
-  err: unknown,
+  thrown: unknown,
   req: Request,
   res: Response,
   _next: NextFunction,
 ) {
+  const err = clientToolGatewayErrorAsHttpError(thrown);
   if (err instanceof AgentLifecycleConflict) { res.status(409).json({ error: err.message }); return; }
   if (err instanceof HttpError) {
     const details =
