@@ -76,29 +76,34 @@ describe("portable remote workspace archives", () => {
     }
     return fs.realpath(cwd);
   }
-  it("bounds stable reads across directories and preserves bytes after out-of-order completion", async () => {
-    const cwd = await parallelSource(), blocked: Array<ReturnType<typeof deferred>> = [];
+  it.each(["normal", "reordered"])("bounds stable reads with %s opens and preserves out-of-order bytes", async opening => {
+    const cwd = await parallelSource(), blocked = new Map<string, ReturnType<typeof deferred>>();
+    const admitFirst = deferred();
+    archiveIo.beforeOpen = async target => {
+      if (opening === "reordered" && target === path.join(cwd, "a", "file")) await admitFirst.promise;
+    };
     let gating = true, active = 0, maximum = 0;
     const closed: string[] = [];
     archiveIo.afterOpen = async target => {
       if (!target.startsWith(`${cwd}${path.sep}`)) return;
       maximum = Math.max(maximum, ++active);
-      if (gating) { const gate = deferred(); blocked.push(gate); await gate.promise; }
+      if (gating) { const gate = deferred(); blocked.set(target, gate); if (blocked.size === 3) admitFirst.resolve(); await gate.promise; }
     };
     archiveIo.afterClose = target => {
       if (target.startsWith(`${cwd}${path.sep}`)) { active--; closed.push(target); }
     };
     const capturing = capture(cwd);
     try {
-      await expect.poll(() => blocked.length).toBe(4);
+      await expect.poll(() => blocked.size).toBe(4);
       expect(active).toBe(4);
-      blocked[3]!.resolve();
-      await expect.poll(() => blocked.length).toBe(5);
+      blocked.get(path.join(cwd, "d", "file"))!.resolve();
+      await expect.poll(() => blocked.size).toBe(5);
       expect(closed[0]).toBe(path.join(cwd, "d", "file"));
       expect(maximum).toBe(4);
     } finally {
       gating = false;
-      for (const gate of blocked) gate.resolve();
+      admitFirst.resolve();
+      for (const gate of blocked.values()) gate.resolve();
       await capturing;
     }
     const snapshot = await capturing;
@@ -110,31 +115,45 @@ describe("portable remote workspace archives", () => {
     expect(serialized).toMatchObject({ manifestDigest: snapshot.manifestDigest, sha256: snapshot.sha256 });
     expect(await fs.readFile(archivePath)).toEqual(await fs.readFile(snapshot.archivePath));
   });
-  it.each(["cancel", "replace"])("drains every parallel stable read after %s", async kind => {
-    const cwd = await parallelSource(), blocked: Array<ReturnType<typeof deferred>> = [];
+  it.each([
+    { kind: "cancel", opening: "normal" }, { kind: "replace", opening: "normal" },
+    { kind: "cancel", opening: "reordered" }, { kind: "replace", opening: "reordered" },
+  ])("drains every parallel stable read after $kind with $opening opens", async ({ kind, opening }) => {
+    const cwd = await parallelSource(), blocked = new Map<string, ReturnType<typeof deferred>>();
+    const admitFirst = deferred(), firstClosed = deferred(), first = path.join(cwd, "a", "file");
+    archiveIo.beforeOpen = async target => {
+      if (opening === "reordered" && target === first) await admitFirst.promise;
+    };
     const controller = new AbortController(), reason = new Error("capture cancelled");
     let gating = true, active = 0, settled = false;
     archiveIo.afterOpen = async target => {
       if (!target.startsWith(`${cwd}${path.sep}`)) return;
       active++;
-      if (gating) { const gate = deferred(); blocked.push(gate); await gate.promise; }
+      if (gating) { const gate = deferred(); blocked.set(target, gate); if (blocked.size === 3) admitFirst.resolve(); await gate.promise; }
     };
-    archiveIo.afterClose = target => { if (target.startsWith(`${cwd}${path.sep}`)) active--; };
+    archiveIo.afterClose = target => {
+      if (target.startsWith(`${cwd}${path.sep}`)) active--;
+      if (target === first) firstClosed.resolve();
+    };
     const capturing = captureRemoteWorkspaceDirectory({ cwd, archivePath: path.join(root, "snapshot.pcws"), signal: controller.signal })
       .then(() => { settled = true; return null; }, error => { settled = true; return error as Error; });
     try {
-      await expect.poll(() => blocked.length).toBe(4);
+      await expect.poll(() => blocked.size).toBe(4);
       if (kind === "cancel") controller.abort(reason);
       else {
         await fs.unlink(path.join(cwd, "a", "file"));
         await fs.writeFile(path.join(cwd, "a", "file"), "replacement");
       }
-      for (const gate of blocked.slice(0, 3)) gate.resolve();
+      blocked.get(first)!.resolve();
+      await firstClosed.promise;
+      await new Promise<void>(resolve => setImmediate(resolve));
+      for (const name of ["b", "c"]) blocked.get(path.join(cwd, name, "file"))!.resolve();
       await expect.poll(() => active).toBe(1);
       expect(settled).toBe(false);
     } finally {
       gating = false;
-      for (const gate of blocked) gate.resolve();
+      admitFirst.resolve();
+      for (const gate of blocked.values()) gate.resolve();
       await capturing;
     }
     const error = await capturing;

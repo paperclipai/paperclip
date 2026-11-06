@@ -81,7 +81,7 @@ test('reported pass requires real assertions, successful cleanup and exact curre
 test('missing results remain explicit broken cases and cannot improve the denominator', () => {
   const projected = projectProductResults(undefined, selection(productRegressionCases), targetSha);
   const { cases, ...counts } = projected.summary;
-  assert.deepEqual(counts, { selected: 20, passed: 0, failed: 0, broken: 20, fullPlan: true });
+  assert.deepEqual(counts, { selected: 20, passed: 0, failed: 0, broken: 20, plan: 'product-regression', fullPlan: true });
   assert.equal(cases.length, 20);
   assert.equal(cases.every(row => row.status === 'broken'), true);
   assert.equal(projected.records.filter(row => row.file.endsWith('-result.json')).length, 20);

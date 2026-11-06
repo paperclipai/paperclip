@@ -11,14 +11,15 @@ import { notifyCancelledWorkspacePreservation } from "../cancelled-workspace-pre
 import { notifyInstructionCollection } from "../instruction-collection-notifications.js";
 import { notifyExecutionRunWork } from "../execution-control-notifications.js";
 import { preserveNativeFailedWorkspace } from "./native-failed-workspace-recovery.js";
-import { hasNativeRunnerCheckpoint, loadNativeRunnerCheckpointHeader } from "./native-runner-checkpoint.js";
+import { hasNativeRunnerCheckpoint, loadNativeRunnerCheckpointHeader,
+  nativeRunnerCheckpointProvesIncompleteBootstrap } from "./native-runner-checkpoint.js";
 import { resolveNativeStagedAttachmentRecovery, type NativeStagedAttachmentRecovery } from "./native-staged-attachment-recovery.js";
 import { readNativeWorkspaceSyncReference } from "./native-workspace-sync.js";
 import { activeNativeExecutionRunIds, NATIVE_PREPARATION_FENCING_VERSION } from "./native-active-runs.js";
 import {
   PROCESS_IDENTITY_RECORDED,
   PROCESS_START_REQUESTED,
-  recordNativeLocalProcessStop,
+  recordNativeLocalProcessStopInTransaction,
 } from "../native-local-process-stop.js";
 import { randomUUID } from "node:crypto";
 import { and, desc, eq, gt, inArray, isNotNull, isNull, lte, ne, or, sql } from "drizzle-orm";
@@ -452,6 +453,8 @@ export function classifyNativeRunnerRecoveryEvidence(input: {
   runnerGroupAlive: boolean;
   remoteSandbox?: boolean;
   unclaimedBootstrap?: boolean;
+  /** The durable controller checkpoint of a claimed remote bootstrap proves no provider work. */
+  remoteBootstrapProvenIncomplete?: boolean;
   processStartMatches: boolean;
   knownProviderProcessAlive?: boolean;
   knownProviderProcessIdentityAmbiguous?: boolean;
@@ -479,6 +482,12 @@ export function classifyNativeRunnerRecoveryEvidence(input: {
     }
     if (input.unclaimedBootstrap === true && !input.hasCheckpoint && !input.hasProviderEvidence) {
       return { claimKind: "bootstrap_incomplete", reason: "remote_execution_never_claimed" };
+    }
+    if (input.remoteBootstrapProvenIncomplete === true && !input.hasCheckpoint && !input.hasProviderEvidence) {
+      // Each same-run bootstrap is another provider attempt; keep restarts bounded.
+      if ((input.providerAttempt ?? 0) >= 3)
+        return { claimKind: null, reason: "execution_recovery_budget_exhausted" };
+      return { claimKind: "bootstrap_incomplete", reason: "remote_bootstrap_proven_incomplete" };
     }
     return input.hasCheckpoint &&
       input.checkpointIdentityMatches === true &&
@@ -1062,9 +1071,23 @@ export async function claimNativeRestartRecoveries(input: {
         unclaimedBootstrap = !executionEvent;
       }
 
+      // A claimed remote bootstrap (runner launched, perhaps connected) has no
+      // provider evidence when its controller dies before session.open
+      // completes. The owner's lease has expired above, and the controller
+      // writes every command to Postgres before sending it, so that checkpoint
+      // is the complete record of what reached the sandbox runner. When it
+      // proves no provider work, bootstrap again instead of holding the task.
+      const remoteBootstrapProvenIncomplete = !unclaimedBootstrap && remoteWorkspace !== null && !pluginTask
+        && Boolean(durableAuthority) && stagedAttachment === null && !hasCheckpoint && !hasProviderEvidence
+        && Boolean(row.run.runnerInstanceId && row.run.nativeSessionId)
+        && await nativeRunnerCheckpointProvesIncompleteBootstrap(tx, {
+          companyId: row.run.companyId, issueId: row.coordinator.issueId, runId: row.run.id,
+        }, { runnerInstanceId: row.run.runnerInstanceId!, normalizedSessionId: row.run.nativeSessionId! });
+
       const classification = classifyNativeRunnerRecoveryEvidence({
         remoteSandbox: remoteSandbox || Boolean(pluginTask && durableAuthority),
         unclaimedBootstrap,
+        remoteBootstrapProvenIncomplete,
         runnerPidAlive,
         runnerGroupAlive,
         processStartMatches: exactRunnerIdentity,
@@ -1309,7 +1332,7 @@ export async function claimNativeRestartRecoveries(input: {
         claimKind !== "reattach_existing_runner" &&
         claimKind !== "reattach_remote_runner"
       ) {
-        await recordNativeLocalProcessStop(tx as unknown as Db, row.run);
+        await recordNativeLocalProcessStopInTransaction(tx as unknown as Db, row.run);
       }
 
       await tx
