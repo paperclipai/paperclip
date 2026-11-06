@@ -229,6 +229,35 @@ function assertRealDirectory(path: string): void {
   }
 }
 
+/** True only when both directories hold the same regular files, byte for byte. */
+function sameControlPlaneSnapshot(active: string, archived: string): boolean {
+  assertRealDirectory(active);
+  assertRealDirectory(archived);
+  const entries = (directory: string) =>
+    readdirSync(directory, { withFileTypes: true }).sort((left, right) =>
+      left.name.localeCompare(right.name),
+    );
+  const activeEntries = entries(active);
+  const archivedEntries = entries(archived);
+  if (
+    activeEntries.length === 0 ||
+    activeEntries.length !== archivedEntries.length
+  ) {
+    return false;
+  }
+  return activeEntries.every((entry, index) => {
+    const peer = archivedEntries[index]!;
+    return (
+      entry.name === peer.name &&
+      entry.isFile() &&
+      peer.isFile() &&
+      readFileSync(resolve(active, entry.name)).equals(
+        readFileSync(resolve(archived, peer.name)),
+      )
+    );
+  });
+}
+
 function quarantineLocalRuntimeState(root: string, reason: unknown): never {
   assertRealDirectory(root);
   const quarantine = resolve(
@@ -402,7 +431,14 @@ async function rotateExternalAuthorityEpoch(
     // idempotent archive instead of starting a new external runner.
     assertRealDirectory(archivedControlPlane);
     if (existsSync(activeControlPlane)) {
-      throw new Error("native_runner_authority_archive_conflict");
+      // Retry preparation can restore the prior run's controller checkpoint
+      // after this archive was written. An exact copy of the archived epoch is
+      // that restore, not a second authority, so drop it and resume. Any other
+      // active state still fails closed.
+      if (!sameControlPlaneSnapshot(activeControlPlane, archivedControlPlane)) {
+        throw new Error("native_runner_authority_archive_conflict");
+      }
+      rmSync(activeControlPlane, { recursive: true });
     }
     const archivedIdentity = controlPlaneIdentity(
       readControlPlaneState(archivedControlPlane),

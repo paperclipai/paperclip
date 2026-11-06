@@ -1602,6 +1602,108 @@ it.each(["before", "after"] as const)(
   },
 );
 
+it.each(["identical", "different"] as const)(
+  "resumes external authority rotation when the prior controller state is restored as an %s copy",
+  async (restoredCopy) => {
+    const root = await mkdtemp(join(tmpdir(), "runner-external-rotation-restore-"));
+    const priorIdentity = {
+      runnerInstanceId: "runner-external-restore",
+      environmentLeaseId: "lease-external-restore",
+      runId: "run-external-restore-prior",
+      normalizedSessionId: "session-external-restore",
+      turnId: "turn-external-restore-prior",
+      itemId: "item-external-restore-prior",
+    };
+    const desiredIdentity = {
+      ...priorIdentity,
+      runId: "run-external-restore-next",
+      turnId: "turn-external-restore-next",
+      itemId: "item-external-restore-next",
+    };
+    const controlPlaneState = {
+      schema: "paperclip.runner.durable.control-plane-state.v1",
+      identity: priorIdentity,
+    };
+    const controlPlaneBytes = JSON.stringify(controlPlaneState);
+    let activeRunnerState: Record<string, unknown> | null = {
+      schema: "paperclip.runner.durable.state.v1",
+      ...priorIdentity,
+      lifecycle: "suspended",
+    };
+    let archivedRunnerState: Record<string, unknown> | null = null;
+    let readCount = 0;
+    const readRunnerState = async () => {
+      readCount += 1;
+      if (activeRunnerState === null) throw new Error("runner state moved");
+      return activeRunnerState;
+    };
+    // The remote archive is idempotent: a retry returns the saved snapshot.
+    const archiveRunnerState = async () => {
+      if (activeRunnerState !== null) {
+        archivedRunnerState = activeRunnerState;
+        activeRunnerState = null;
+      }
+      if (archivedRunnerState === null) {
+        throw new Error("archived runner state unavailable");
+      }
+      return archivedRunnerState;
+    };
+    const activeStatePath = join(root, "control-plane", "control-plane-state.json");
+    try {
+      await mkdir(join(root, "control-plane"), { recursive: true });
+      await writeFile(activeStatePath, controlPlaneBytes);
+      // The first attempt completes both archives, then fails after rotation.
+      await expect(
+        runnerdRecoveryInternals.rotateExternalAuthorityEpoch(
+          root,
+          controlPlaneState,
+          desiredIdentity,
+          readRunnerState,
+          archiveRunnerState,
+        ),
+      ).resolves.toEqual(controlPlaneState);
+      await expect(stat(join(root, "control-plane"))).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+
+      // Before the retry, the server restores the prior run's controller
+      // checkpoint into the root. The archived epoch still exists.
+      await mkdir(join(root, "control-plane"), { recursive: true });
+      await writeFile(
+        activeStatePath,
+        restoredCopy === "identical"
+          ? controlPlaneBytes
+          : JSON.stringify({ ...controlPlaneState, revision: 2 }),
+      );
+      const retry = runnerdRecoveryInternals.rotateExternalAuthorityEpoch(
+        root,
+        controlPlaneState,
+        desiredIdentity,
+        readRunnerState,
+        archiveRunnerState,
+      );
+      if (restoredCopy === "different") {
+        await expect(retry).rejects.toThrow(
+          "native_runner_authority_archive_conflict",
+        );
+        // A contradictory copy is left in place for operator recovery.
+        await expect(stat(activeStatePath)).resolves.toBeDefined();
+        return;
+      }
+      await expect(retry).resolves.toEqual(controlPlaneState);
+      await expect(stat(join(root, "control-plane"))).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+      expect(readCount).toBe(1);
+      expect(archivedRunnerState).toEqual(
+        expect.objectContaining(priorIdentity),
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  },
+);
+
 it("quiesces the control route before checkpoint and containment regardless of process completion", async () => {
   const settledSteps: string[] = [];
   await runnerdRecoveryInternals.releaseRunnerProcessOwnership({
