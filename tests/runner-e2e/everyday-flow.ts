@@ -22,7 +22,7 @@ import type { MatrixExecution } from "./types.js";
 import { submitTaskReply } from "./user-actions.js";
 import { createTaskFromPromptThroughUi } from "./plan-task-ui.js";
 import { waitForTaskChatRendered, waitForTaskIdentity } from "./continuation-screenshot.js";
-import { hasPersistedSource, isSavedSourceCheckpoint } from "./everyday-interruption.js";
+import { hasPersistedSource, isSavedSourceCheckpoint, readWorkspaceSource } from "./everyday-interruption.js";
 import { collectRunEvents } from "./run-observations.js";
 import { gradeRemoteRestart, observeRemoteRestartBoundary, projectRemoteRestartEvents, projectRemoteRestartRun, waitForRemoteRestartBoundary, type RemoteRestartEvidence } from "./everyday-remote-restart.js";
 import { controllerOutageForExecution } from "./controller-outage.js";
@@ -222,16 +222,22 @@ export async function runEverydayFlow(input: Input) {
     parentBlockedObserved: boolean;
   } | undefined;
   async function workspaceFiles() {
-    const workspaceRoot = input.workspacePath;
+    // Include project folders so a stop check still sees edits when the agent
+    // saved the project below the workspace root (see readWorkspaceSource).
     const files: Record<string, string> = {};
-    for (const entry of await readdir(workspaceRoot, {
-      withFileTypes: true,
-    })) {
-      if (entry.isFile() && /\.(py|md|zip)$/.test(entry.name))
-        files[entry.name] = createHash("sha256")
-          .update(await readFile(path.join(workspaceRoot, entry.name)))
-          .digest("hex");
-    }
+    const visit = async (relative: string, depth: number) => {
+      for (const entry of await readdir(path.join(input.workspacePath, relative), { withFileTypes: true })) {
+        const name = path.join(relative, entry.name);
+        if (entry.isFile() && /\.(py|md|zip)$/.test(entry.name))
+          files[name] = createHash("sha256")
+            .update(await readFile(path.join(input.workspacePath, name)))
+            .digest("hex");
+        else if (entry.isDirectory() && depth < 2 && !entry.name.startsWith(".")
+          && !["node_modules", "__pycache__", "venv"].includes(entry.name))
+          await visit(name, depth + 1);
+      }
+    };
+    await visit("", 0);
     return files;
   }
   async function runnerStopped(run: StoryRun) {
@@ -529,14 +535,13 @@ export async function runEverydayFlow(input: Input) {
     requireActive = false,
     maxWaitMs = 180_000,
   ) {
-    const filePath = path.join(input.workspacePath, "slugify.py");
     const bytes = await pollUntil({
       label: requireActive ? "active run with saved source" : "saved source after interruption",
       deadlineAt: Math.min(input.deadlineAt, Date.now() + maxWaitMs),
       intervalMs: 500,
       load: async () => {
         await refresh();
-        const source = await readFile(filePath).catch(() => undefined);
+        const source = await readWorkspaceSource(input.workspacePath);
         return { active: ev.runs.some(isActiveStoryRun), source };
       },
       accept: ({ active, source }) =>
@@ -1763,11 +1768,10 @@ export async function runEverydayFlow(input: Input) {
           .map((r) => ({ runId: r.id, code: r.errorCode })),
       });
       if (execution.environment.id === "local") {
+        const saved = await readWorkspaceSource(input.workspacePath);
         try {
-          const source = await readFile(
-            path.join(input.workspacePath, "slugify.py"),
-            "utf8",
-          );
+          if (!saved) throw new Error("No saved slugify.py in the workspace");
+          const source = saved.toString("utf8");
           await input.evidence("source-after-interruption.json", {
             body: source,
             sha256: createHash("sha256").update(source).digest("hex"),
