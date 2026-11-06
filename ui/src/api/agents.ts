@@ -271,10 +271,12 @@ export const agentsApi = {
       testCredentials?: Record<string, string>;
       environmentId?: string | null;
     },
+    options?: RequestOptions,
   ) =>
     api.post<AdapterEnvironmentTestResult>(
       `/companies/${companyId}/adapters/${type}/test-environment`,
       data,
+      options,
     ),
   getAdapterAuthSignal: (companyId: string, type: string, environmentId?: string | null) => {
     const query = environmentId ? `?environmentId=${encodeURIComponent(environmentId)}` : "";

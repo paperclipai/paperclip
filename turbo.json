@@ -196,6 +196,15 @@
       "outputs": [],
       "cache": false
     },
+    "//#ci:sandbox-providers": {
+      "inputs": [
+        "packages/plugins/sandbox-providers/**",
+        "packages/plugins/sdk/**",
+        "packages/shared/**"
+      ],
+      "outputs": [],
+      "cache": false
+    },
     "//#ci:docker": {
       "inputs": [
         "server/**",
