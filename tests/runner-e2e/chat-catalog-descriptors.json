@@ -259,7 +259,7 @@
       "../../server/src/services/work-timeline.ts",
       "../../server/src/services/native-runtime/runner-api-catalog.ts"
     ],
-    "oracleVersion": "paperclip.chat-catalog.work-timeline.v11",
+    "oracleVersion": "paperclip.chat-catalog.work-timeline.v12",
     "coverageGaps": [],
     "expectedRunCount": 3,
     "minimumRunCount": 3,
