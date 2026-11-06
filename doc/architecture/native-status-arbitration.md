@@ -364,6 +364,11 @@ the acting run is running, holds the execution lock, and names this exact card
 and decision. Another run for the same agent cannot resolve the card. An old or
 reassigned review does not grant access to newer work.
 
+For an agent, the accept and reject routes require a signed agent JWT for the
+review run. An agent API key with a run ID header is not a signed run credential.
+The server also enforces the existing company, audience, run, and reviewer checks.
+Board users and other interaction types retain their existing authorization.
+
 The final required acceptance completes the child through the existing review
 resolution path and makes its blocked dependents eligible to run. Rejection
 returns the requested changes to the worker. A reviewer must record that decision
