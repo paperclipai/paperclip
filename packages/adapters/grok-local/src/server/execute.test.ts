@@ -1235,7 +1235,12 @@ describe("grok_local execute", () => {
       const root = await makeTempRoot();
       const fixture = createPromptContextFixture();
       const prompts: string[] = [];
+      const promptPaths: string[] = [];
       runProcessMock.mockImplementation(async (_runId, _target, _command, args) => {
+        for (const previous of promptPaths) expect(await pathExists(path.dirname(previous))).toBe(false);
+        const promptPath = args[args.indexOf("--prompt-file") + 1];
+        expect(promptPaths).not.toContain(promptPath);
+        promptPaths.push(promptPath);
         prompts.push(await readDeliveredPrompt(args));
         if (prompts.length === 1) {
           return { exitCode: 1, signal: null, timedOut: false, stdout: "", stderr: "unknown session sess-stale" };
@@ -1255,6 +1260,7 @@ describe("grok_local execute", () => {
 
       expect(result.exitCode).toBe(0);
       expect(prompts).toHaveLength(2);
+      for (const promptPath of promptPaths) expect(await pathExists(path.dirname(promptPath))).toBe(false);
       expect(prompts[0]).toContain(fixture.paperclipTaskMarkdownAssignmentCompact);
       expect(prompts[1]).toContain(fixture.paperclipTaskMarkdownAssignment);
       expect(prompts[1]).toContain("comment-first");
