@@ -86,6 +86,20 @@ describe("describeIssueWriteDenial", () => {
     expect(copy.sanctionedPath).toContain("PAPERCLIP_RUN_ID");
   });
 
+  it("stops asking for the run id header when the run id was received", () => {
+    const copy = describeIssueWriteDenial("cross_issue_influence_run_context_required", {
+      actorLabel: "Fable",
+      assigneeLabel: "Dotta",
+      issueIdentifier: "PAP-12",
+      runIdPresent: true,
+      runId: "11111111-1111-4111-8111-111111111111",
+    });
+    expect(copy.description).toContain("11111111-1111-4111-8111-111111111111");
+    expect(copy.description).toContain("PAP-12");
+    expect(copy.sanctionedPath).not.toContain("Send the");
+    expect(copy.sanctionedPath).toContain("already present");
+  });
+
   it("tells a spoof attempt that the write itself was fine", () => {
     const copy = describeIssueWriteDenial("issue_write_attribution_spoof_rejected", {
       actorLabel: "Fable",
