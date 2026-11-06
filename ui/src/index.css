@@ -3560,11 +3560,15 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
   --announcement-image-height: 8.5rem;
   --announcement-image-mobile-height: 6rem;
   --announcement-mobile-bottom: calc(var(--spacing) * 19 + env(safe-area-inset-bottom, 0px));
-  --announcement-max-height: calc(100dvh - var(--spacing) * 6);
   --announcement-mobile-max-height: calc(100dvh - var(--announcement-mobile-bottom) - var(--spacing) * 3);
 }
 
 .announcement-well {
+  /* On desktop the well sits above the sidebar account row (measured by
+     AnnouncementWell as a unitless pixel count) so it never covers the
+     account menu trigger or its flyout. */
+  --announcement-desktop-bottom: calc(var(--announcement-account-clearance, 0) * 1px + var(--spacing) * 3);
+  --announcement-desktop-max-height: calc(100dvh - var(--announcement-desktop-bottom) - var(--spacing) * 3);
   animation: announcement-enter var(--motion-duration-fast) var(--motion-ease-standard) both;
 }
 @keyframes announcement-enter {
