@@ -44,13 +44,17 @@ function substantiveDiff(reply: string) {
   const clutter = clauses.some(line => /clutter|overus|redundan|crowd|overload|breath|spacing/i.test(line) && /layout|pattern|control|design|interface|element/i.test(line));
   return [recurring, forms, clutter].filter(Boolean).length >= 2;
 }
+function claimsAppliedUpdate(reply: string) {
+  return [...reply.matchAll(/\b(?:I (?:have )?(?:updated|applied|installed)|update (?:is |has been )?(?:applied|installed|complete))\b/gi)]
+    .some(match => !/^update /i.test(match[0]) || !/\bno\s+$/i.test(reply.slice(0, match.index)));
+}
 function previewCorrect(o: UpdateObservation) {
   const before = o.state.upstream as CompanySkillDetail;
   return o.upstream.currentVersionId === before.currentVersionId && o.upstream.sourceRef === accessibilityUpdatePins.oldCommit && hash(o.upstream.markdown) === accessibilityUpdatePins.oldSha256
     && o.source.lastScanCommit === accessibilityUpdatePins.oldCommit && o.source.trackingRef === accessibilityUpdatePins.newCommit && o.source.automaticUpdates === false
     && o.updateStatus.supported && o.updateStatus.hasUpdate && o.updateStatus.currentRef === accessibilityUpdatePins.oldCommit && o.updateStatus.latestRef === accessibilityUpdatePins.newCommit
     && (o.reply.includes(accessibilityUpdatePins.oldCommit.slice(0, 7)) || /(?:installed|current|currently)[^\n]{0,80}\b0\.4\b|\b0\.4\b[^\n]{0,80}(?:installed|current)/i.test(o.reply))
-    && substantiveDiff(o.reply) && !/\b(?:I (?:have )?(?:updated|applied|installed)|update (?:is |has been )?(?:applied|installed|complete))\b/i.test(o.reply);
+    && substantiveDiff(o.reply) && !claimsAppliedUpdate(o.reply);
 }
 export function gradeIntegratorSkillUpdate(value: unknown) {
   const c = checks(); const o = updateObservation(value); c.add("real-tracked-source-and-saved-versions", !!o, "Requires actual public GitHub source tracking, installed snapshot versions and preserved editable fork."); if (!o) return c.result();
@@ -93,7 +97,7 @@ export const integratorSkillUpdateCases = [integratorDefinition("skills", "skill
   const selected = await saveSkillConversationContext(ctx, { description: `Selected upstream accessibility skill: ${upstream.name} (${upstream.id}), tracked source ${source.id}. Installed source revision ${upstream.sourceRef}; tracking reference ${source.trackingRef}. Separate editable local copy: ${localFork.name} (${localFork.id}).` });
   return { upstream, localFork, source, factualContextAttachment: selected.factualContextAttachment, localVersions: await readSkillVersionHistory(ctx.input.api, ctx.input.fixtures.company.id, localFork.id, localFork.currentVersionId) };
 }, observeUpdate, gradeIntegratorSkillUpdate, async (ctx, state) => { const skill = state.upstream as CompanySkillDetail; await inspectResult(ctx, `/${ctx.input.fixtures.company.issuePrefix}/skills/studio/${skill.id}`, skill.name); },
-{ authentication: "human-session", queryAttachments: factualContextQueryAttachment("skill-context.md"), expectedRunCount: 2, expectedHumanMessageCount: 2, attemptTimeoutMs: 540_000,
+{ oracleVersion: "paperclip.chat-catalog.integrator.v2", authentication: "human-session", queryAttachments: factualContextQueryAttachment("skill-context.md"), expectedRunCount: 2, expectedHumanMessageCount: 2, attemptTimeoutMs: 540_000,
   sourceFiles: ["chat-catalog-domains/identity-support.ts", "chat-catalog-domains/integrator-skill-versions.ts", "chat-catalog-domains/integrator-skill-update.ts", "chat-catalog-domains/integrator-skill-source.ts", "chat-catalog-domains/integrator-support.ts", "chat-catalog-domains/internal-support.ts", "chat-scenarios/skills.yaml"],
   async act(ctx, state) {
     updateReceipts.delete(ctx);

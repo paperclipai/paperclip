@@ -33,6 +33,19 @@ describe("genuine immutable public skill update qualification", () => {
     expect(gradeIntegratorSkillUpdate(valid(bytes.old, bytes.next)).passed).toBe(true); expect(gradeIntegratorSkillUpdate(undefined).passed).toBe(false);
     const natural = valid(bytes.old, bytes.next); natural.reply = `${natural.state.reviewCheckpoint.reply}\nThe accessibility skill is now on revision 0.5; our local fork is preserved.`; expect(gradeIntegratorSkillUpdate(natural).passed).toBe(true);
   });
+  it("accepts a truthful not-applied review but rejects a later positive claim or changed saved version", () => {
+    const truthful = valid(bytes.old, bytes.next);
+    truthful.state.reviewCheckpoint.reply = truthful.state.reviewCheckpoint.reply.replace("I have not applied it.", "No update applied yet.");
+    truthful.reply = `${truthful.state.reviewCheckpoint.reply}\nI updated the accessibility skill to the reviewed source version. The local copy is unchanged.`;
+    expect(gradeIntegratorSkillUpdate(truthful).passed).toBe(true);
+    const contradictory = structuredClone(truthful);
+    contradictory.state.reviewCheckpoint.reply += " The update is applied.";
+    expect(gradeIntegratorSkillUpdate(contradictory).checks.find(check => check.id === "review-diff-before-update")?.passed).toBe(false);
+    const changed = structuredClone(truthful);
+    changed.state.reviewCheckpoint.upstream.currentVersionId = "premature";
+    expect(gradeIntegratorSkillUpdate(changed).checks.find(check => check.id === "review-diff-before-update")?.passed).toBe(false);
+  });
+
   it("rejects premature apply, listing-only review, stale installation and overwritten local work", () => {
     const early = valid(bytes.old, bytes.next); early.state.reviewCheckpoint.upstream.currentVersionId = "new"; expect(gradeIntegratorSkillUpdate(early).passed).toBe(false);
     const listing = valid(bytes.old, bytes.next); listing.state.reviewCheckpoint.reply = "Current installed 0.4. Latest 0.5 is available."; expect(gradeIntegratorSkillUpdate(listing).passed).toBe(false);
