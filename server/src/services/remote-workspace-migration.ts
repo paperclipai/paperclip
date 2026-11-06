@@ -65,6 +65,16 @@ async function isUnmaterializedRepositoryRequest(workspace: Workspace,
     throw error;
   });
   if (!root?.isDirectory() || root.isSymbolicLink()) return false;
+  let parent = workspace.cwd;
+  for (const part of relative.split("/").slice(0, -1)) {
+    parent = path.join(parent, part);
+    const entry = await fs.lstat(parent).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") return null;
+      throw error;
+    });
+    if (!entry) return true;
+    if (!entry.isDirectory() || entry.isSymbolicLink()) return false;
+  }
   return !await fs.lstat(path.join(workspace.cwd, relative)).catch((error: NodeJS.ErrnoException) => {
     if (error.code === "ENOENT") return null;
     throw error;

@@ -111,7 +111,7 @@ describe.skipIf(!support.supported)("remote workspace migration", () => {
     expect(readRemoteWorkspaceAuthority((await workspace(f.workspaceId)).metadata)).toBeNull();
     expect(await fs.readFile(path.join(f.cwd, "saved.txt"), "utf8")).toBe("original saved work\n");
   });
-  it.each(["online", "preparing", "needs_repair", "pinned", "branched", "failure", "directory", "symlink", "escaping_path"] as const)(
+  it.each(["online", "preparing", "needs_repair", "pinned", "branched", "failure", "directory", "symlink", "parent_symlink", "parent_file", "escaping_path"] as const)(
     "keeps an unresolved repository request blocked when %s", async state => {
       const f = await seed(), repository = await pendingRepository(f);
       vi.stubEnv("PAPERCLIP_EPHEMERAL_MIGRATION", "true");
@@ -125,6 +125,8 @@ describe.skipIf(!support.supported)("remote workspace migration", () => {
         .where(eq(executionWorkspaceRepositories.id, repository.id));
       if (state === "escaping_path") await db.update(executionWorkspaceRepositories).set({ relativePath: "../absent" })
         .where(eq(executionWorkspaceRepositories.id, repository.id));
+      if (state === "parent_symlink") await fs.symlink("missing-parent", path.dirname(path.join(f.cwd, repository.relativePath)));
+      if (state === "parent_file") await fs.writeFile(path.dirname(path.join(f.cwd, repository.relativePath)), "preserve parent file\n");
       if (state === "directory" || state === "symlink") {
         const target = path.join(f.cwd, repository.relativePath); await fs.mkdir(path.dirname(target), { recursive: true });
         if (state === "directory") { await fs.mkdir(target); await fs.writeFile(path.join(target, "partial.txt"), "keep partial work\n"); }

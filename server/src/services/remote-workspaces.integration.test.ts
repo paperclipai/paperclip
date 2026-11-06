@@ -39,6 +39,7 @@ import { terminalizeLegacyExecution } from "./legacy-execution-recovery.js";
 import { environmentRuntimeService } from "./environment-runtime.js";
 import { legacyControllerClaim, renewLegacyControllerLease } from "./legacy-controller-lease.js";
 import { migrateRemoteWorkspace } from "./remote-workspace-migration.js";
+import { executionWorkspaceRepositoryService, taskRepositoryRelativePath } from "./execution-workspace-repositories.js";
 import { registerRemoteWorkspaceSnapshotRetentionWork, remoteWorkspaceSnapshotRetentionService } from "./remote-workspace-snapshot-retention.js";
 import { createDeliveryWorkCoordinator } from "./delivery-work-coordinator.js";
 import { issueService } from "./issues.js";
@@ -684,7 +685,7 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
     expect(await fs.readFile(path.join(current, "runner", "state.json"), "utf8")).toBe("unchanged opaque provider state");
   }, 60_000);
 
-  it("cold restores a workspace while keeping a pending repository eligible for sandbox preparation", async () => {
+  it("cold restores a workspace and prepares its preserved pending repository through normal admission", async () => {
     const original = path.join(root, "pending-original"), origin = path.join(root, "pending-origin.git");
     await fs.mkdir(original); await fs.mkdir(origin);
     await fs.writeFile(path.join(original, "saved.txt"), "saved before repository request\n");
@@ -702,7 +703,8 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
     await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
     try {
       const address = server.address(); if (!address || typeof address === "string") throw new Error("test server not bound");
-      const repoUrl = `http://127.0.0.1:${address.port}/pending-origin.git/.git`, relativePath = ".paperclip-repositories/pending";
+      const repoUrl = "https://github.com/paperclip-fixtures/pending";
+      const fixtureOrigin = `http://127.0.0.1:${address.port}/pending-origin.git/.git`, relativePath = taskRepositoryRelativePath(repoUrl);
       await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, ids.run));
       const [local] = await db.insert(executionWorkspaces).values({ companyId: ids.company, sourceIssueId: ids.issue,
         mode: "isolated_workspace", strategyType: "project_primary", providerType: "local_fs", name: "Pending request",
@@ -727,17 +729,29 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
         agentId: ids.agent, environmentId: ids.environment, projectId: null, projectWorkspaceId: null,
         existingWorkspaceId: local.id, source: { kind: "empty" } });
       const remote = await target("pending-restored-sandbox");
+      const execute = remote.runner!.execute;
+      remote.runner!.execute = async input => {
+        const raw = input.args?.at(-1);
+        if (typeof raw === "string" && raw.startsWith("{")) {
+          const payload = JSON.parse(raw) as { repoUrl?: string; authArgs?: string[] };
+          if (payload.repoUrl === repoUrl && Array.isArray(payload.authArgs)) input = { ...input,
+            args: [...input.args!.slice(0, -1), JSON.stringify({ ...payload,
+              authArgs: [...payload.authArgs, "-c", `url.${fixtureOrigin}.insteadOf=${repoUrl}`] })] };
+        }
+        return execute(input);
+      };
       const restored = await prepareRemoteWorkspace({ db, storage, workspace: reserved, runId: nextRun,
         lease: allocated as EnvironmentLease, target: remote });
       expect(await fs.readFile(path.join(restored.remoteRoot, "saved.txt"), "utf8")).toBe("saved before repository request\n");
-      const prepared = await prepareRemoteWorkspaceRepository({ db, storage, workspace: restored.workspace,
-        runId: nextRun, lease: restored.lease, target: remote,
-        repository: { id: repository.id, repoUrl, relativePath, ref: null }, resolveGitAuth: async () => null });
-      expect(prepared).toMatchObject({ cwd: path.join(restored.remoteRoot, relativePath),
-        pinnedCommit: (await git(origin, "rev-parse", "HEAD")).stdout.trim() });
+      const prepared = await executionWorkspaceRepositoryService(db).prepareForAdmission({ companyId: ids.company,
+        issueId: ids.issue, workspaceId: local.id, cwd: restored.remoteRoot, agentId: ids.agent, runId: nextRun,
+        responsibleUserId: "local-board", remoteTarget: remote, remoteLease: restored.lease });
+      expect(prepared).toMatchObject([{ id: repository.id, relativePath,
+        pinnedCommit: (await git(origin, "rev-parse", "HEAD")).stdout.trim() }]);
       expect(await fs.readFile(path.join(restored.remoteRoot, relativePath, "code.txt"), "utf8")).toBe("acquired on next admission\n");
       expect(await db.select().from(executionWorkspaceRepositories).where(eq(executionWorkspaceRepositories.id, repository.id)))
-        .toEqual([repository]);
+        .toMatchObject([{ ...repository, state: "ready", pinnedCommit: prepared[0]!.pinnedCommit,
+          branchName: prepared[0]!.branchName, updatedAt: expect.any(Date) }]);
     } finally { await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())); }
   }, 60_000);
 
