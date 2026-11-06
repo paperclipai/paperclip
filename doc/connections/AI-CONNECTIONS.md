@@ -113,7 +113,8 @@ A temporary provider failure keeps a still-valid access token. Once the token
 expires, a temporary failure defers execution; a refused refresh requests sign-in.
 Save retries retain the successful exchange in memory and never exchange the
 same refresh token again. If all save attempts fail, the server keeps the pair
-in memory for the next credential use. A reconnect discards that pending pair.
+in memory for the next credential use. Recovery first saves that pair, then
+renews it if it expired or is near expiry. A reconnect discards the pending pair.
 As with the server-side Codex quota exchange, a process
 loss after the provider exchange and before the vault commit can require sign-in.
 
