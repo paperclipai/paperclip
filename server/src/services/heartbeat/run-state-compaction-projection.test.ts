@@ -4,7 +4,7 @@ import { heartbeatRuns } from "@paperclipai/db";
 import {
   isInvalidEncodingByteSequenceError,
   selectSessionCompactionRunColumns,
-} from "../services/heartbeat/run-state.js";
+} from "./run-state.js";
 
 function renderCompactionSelectSql(unsafeTextProjection: boolean): string {
   const qb = new QueryBuilder();
