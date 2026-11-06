@@ -193,6 +193,9 @@ async function main(): Promise<number> {
     // R6: let finalizers settle, then sweep for anything still pending.
     const quietFor = Date.now() - lastDoneAt;
     if (quietFor < QUIET_BEFORE_SWEEP_MS) await delay(QUIET_BEFORE_SWEEP_MS - quietFor);
+    const spend = await api.get<Record<string, unknown>>(`/api/companies/${lab.companyId}/costs/summary`).catch(error => ({ error: String(error) }));
+    timeline.add("wave_spend", { spend });
+    console.info(`Wave spend: ${JSON.stringify(spend)}`);
     timeline.add("wave_sweep", {});
     if (sweeper) {
       sandboxSweep = await (sweeper as DaytonaWaveSweeper).sweep();
