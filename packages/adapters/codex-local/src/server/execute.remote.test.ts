@@ -88,6 +88,72 @@ describe("codex remote execution", () => {
     }
   });
 
+  it.each(["absent-auth", "SSH-setup-ENOENT"] as const)("preserves the managed API-key restore outcome for %s", async (scenario) => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-codex-ssh-no-auth-"));
+    cleanupDirs.push(root);
+    const workspace = path.join(root, "workspace");
+    const home = path.join(root, "provider-home");
+    await mkdir(workspace);
+    await mkdir(home);
+    const logs: string[] = [];
+    runChildProcess.mockResolvedValueOnce({
+      exitCode: 0, signal: null, timedOut: false, stderr: "", pid: 123,
+      startedAt: new Date().toISOString(),
+      stdout: [
+        JSON.stringify({ type: "thread.started", thread_id: "fixture-thread" }),
+        JSON.stringify({ type: "turn.completed", usage: { input_tokens: 1, output_tokens: 1 } }),
+      ].join("\n"),
+    });
+    const missing = Object.assign(new Error("fixture read failure"), { code: scenario === "absent-auth" ? 2 : "ENOENT" });
+    const defaultSsh = runSshCommand.getMockImplementation()!;
+    let authReads = 0;
+    let absenceProbes = 0;
+    runSshCommand.mockImplementation(async (...args: unknown[]) => {
+      const command = args[1] as string;
+      if (command.startsWith("base64 < ") && command.includes("/auth.json'")) {
+        authReads += 1;
+        throw missing;
+      }
+      if (command.startsWith("if [ -d ") && command.includes("/auth.json'") && command.includes("printf 'missing'")) {
+        absenceProbes += 1;
+        return { stdout: "missing", stderr: "" };
+      }
+      throw new Error("Unexpected SSH operation in auth restore fixture");
+    });
+    const execution = execute({
+      runId: "run-ssh-no-auth",
+      agent: { id: "agent-1", companyId: "company-1", name: "CodexCoder", adapterType: "codex_local", adapterConfig: {} },
+      runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+      config: { engine: "cli", command: "codex", managedAiConnection: { method: "api_key" },
+        env: { CODEX_HOME: home, OPENAI_API_KEY: "", CODEX_API_KEY: "", PAPERCLIP_AI_PROVIDER_KEY: "fixture-key" } },
+      context: { paperclipWorkspace: { cwd: workspace, source: "project_primary" } },
+      executionTransport: { remoteExecution: {
+        host: "127.0.0.1", port: 2222, username: "fixture", remoteWorkspacePath: "/app", remoteCwd: "/app",
+        privateKey: "PRIVATE KEY", knownHosts: "KNOWN HOSTS", strictHostKeyChecking: true,
+      } },
+      onLog: async (_stream, line) => { logs.push(line); },
+    });
+    try {
+      if (scenario === "SSH-setup-ENOENT") {
+        await expect(execution).rejects.toMatchObject({ code: "ERR_SSH_READ_SETUP", cause: missing });
+        expect(absenceProbes).toBe(0);
+        expect(logs.join("")).not.toContain("no sandbox credential to copy back");
+      } else {
+        const result = await execution;
+        expect(result.exitCode).toBe(0);
+        expect(result.errorMessage).toBeFalsy();
+        expect(absenceProbes).toBe(1);
+        expect(logs.join("")).toContain("no sandbox credential to copy back");
+        expect(logs.join("")).not.toContain("Failed to restore workspace");
+      }
+      expect(authReads).toBe(1);
+      expect(restoreWorkspaceFromSshExecution).toHaveBeenCalledTimes(1);
+      await expect(readdir(home)).resolves.not.toContain("auth.json");
+    } finally {
+      runSshCommand.mockImplementation(defaultSsh);
+    }
+  });
+
   it("prepares the workspace, syncs CODEX_HOME, and restores workspace changes for remote SSH execution", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-codex-remote-"));
     cleanupDirs.push(rootDir);

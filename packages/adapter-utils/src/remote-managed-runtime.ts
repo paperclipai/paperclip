@@ -75,9 +75,43 @@ function shellQuote(value: string): string {
 }
 
 async function readRemoteFile(spec: SshRemoteExecutionSpec, remotePath: string): Promise<Buffer> {
-  const result = await runSshCommand(spec, `base64 < ${shellQuote(remotePath)}`, {
-    maxBuffer: 1024 * 1024,
-  });
+  let result;
+  try {
+    result = await runSshCommand(spec, `base64 < ${shellQuote(remotePath)}`, {
+      maxBuffer: 1024 * 1024,
+    });
+  } catch (error) {
+    const failure = error as { code?: unknown; signal?: unknown; killed?: unknown } | null;
+    // ENOENT before a remote command runs describes local SSH setup (e.g. a
+    // missing executable/key file), not the remote asset. Optional-file callers
+    // must not mistake it for the confirmed remote absence emitted below.
+    if (failure?.code === "ENOENT") {
+      throw Object.assign(new Error("SSH asset read setup failed", { cause: error }), { code: "ERR_SSH_READ_SETUP" });
+    }
+    // A remote shell reports a failed redirection with exit 1 (bash) or 2
+    // (POSIX sh), not fs's ENOENT. SSH transport/auth failures (255), local
+    // spawn errors, signals and timeouts must retain their original meaning.
+    // Trailing separators request a directory and can hide a final symlink
+    // from -L (e.g. loop/); their read errors are never optional-file absence.
+    if ((failure?.code === 1 || failure?.code === 2) && !failure.signal && !failure.killed && !remotePath.endsWith("/")) {
+      const parent = shellQuote(path.posix.dirname(remotePath));
+      // Match the command-managed read contract: absence is optional only when
+      // its immediate parent exists and is searchable. An unresolved symlink
+      // could hide EACCES/ELOOP, so it is inconclusive. Read no file contents
+      // during this single bounded probe; inconclusive/probe errors fail loud.
+      const missing = await runSshCommand(
+        spec,
+        `if [ -d ${parent} ] && [ -x ${parent} ] && [ ! -e ${shellQuote(remotePath)} ] ` +
+          `&& [ ! -L ${shellQuote(remotePath)} ]; ` +
+          `then printf 'missing'; fi`,
+        { maxBuffer: 1024 },
+      ).catch(() => null);
+      if (missing?.stdout === "missing") {
+        throw Object.assign(new Error(`No such file: ${remotePath}`), { code: "ENOENT", path: remotePath });
+      }
+    }
+    throw error;
+  }
   return Buffer.from(result.stdout.replace(/\s+/g, ""), "base64");
 }
 
