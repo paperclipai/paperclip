@@ -212,7 +212,7 @@ function GitHubPassingScore({
           : "Paperclip passes the check when a complete review of the latest commit meets this score. Lower scores fail. This does not approve the PR."}
       </p>
       <p className="text-xs text-muted-foreground">
-        To block merging, require the <strong>Paperclip Review</strong> check from this App in your GitHub branch rules.{" "}
+        To block merging, require the check named after this App in your GitHub branch rules.{" "}
         <a className="underline hover:text-foreground"
           href="https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/creating-rulesets-for-a-repository"
           target="_blank" rel="noreferrer">Configure on GitHub</a>

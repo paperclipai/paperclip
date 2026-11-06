@@ -20,6 +20,7 @@ import {
   githubBotRepositoryToken,
   githubBotRequest,
 } from "./chat-github-client.js";
+import { findGitHubReviewCheck, githubReviewCheckName } from "./chat-channels/github/review-check-name.js";
 
 /** Check status follows the ordinary chat delivery/task/run. This outbox never
  * schedules an agent. Assessments are published by the governed review tool. */
@@ -184,33 +185,32 @@ export function githubReviewCheckService(db: Db, fetchImpl = fetch) {
               ? `${origin}/${encodeURIComponent(source.companyPrefix)}/${detailsPath}`
               : null;
             const externalId = `${action.endpointId}:${event.pullNumber}:${event.headSha}`;
-            const checks = await request<{
-              check_runs: Array<{
-                id: number;
-                status?: string;
-                external_id?: string;
-                app?: { id?: number };
-              }>;
-            }>(
-              `/commits/${event.headSha}/check-runs?check_name=Paperclip%20Review&per_page=100`,
-            );
-            const check = checks.check_runs.find(
-              (check) =>
-                check.external_id === externalId &&
-                String(check.app?.id) === source.endpoint.botExternalId,
-            );
+            const checkName = githubReviewCheckName(source.endpoint);
+            const check = await findGitHubReviewCheck(request, {
+              headSha: event.headSha,
+              externalId,
+              appId: source.endpoint.botExternalId,
+              name: checkName,
+            });
             // GitHub retains a completed check's conclusion when PATCHed back to
             // queued/in_progress. A fresh attempt needs a new check run with the
             // same stable name; otherwise a prior success still looks passing.
+            // A completed run under an earlier name is renamed first, so no
+            // stale success remains visible under that name.
             const updateCheck =
               check &&
               !(check.status === "completed" && status !== "completed");
+            if (check && !updateCheck && check.name !== checkName)
+              await request(`/check-runs/${check.id}`, {
+                method: "PATCH",
+                body: { name: checkName },
+              });
             const posted = await request<{ id: number; html_url: string }>(
               updateCheck ? `/check-runs/${check.id}` : "/check-runs",
               {
                 method: updateCheck ? "PATCH" : "POST",
                 body: {
-                  name: "Paperclip Review",
+                  name: checkName,
                   head_sha: event.headSha,
                   external_id: externalId,
                   ...(detailsUrl ? { details_url: detailsUrl } : {}),

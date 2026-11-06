@@ -8072,7 +8072,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       >();
       for (const comment of f.responseComments.values()) comments.set(comment.id, comment);
       let head = "b".repeat(40);
-      let check = { id: 99, status: "completed", external_id: `${f.endpoint.id}:91:${head}`, app: { id: Number(f.endpoint.botExternalId) } };
+      let check = { id: 99, name: "Paperclip Review", status: "completed", external_id: `${f.endpoint.id}:91:${head}`, app: { id: Number(f.endpoint.botExternalId) } };
       // Other bots can publish the same named check on this PR. Neither another
       // App nor a different endpoint's review may be selected for our updates.
       const peerCheck = { ...check, id: 9901, app: { id: Number(f.endpoint.botExternalId) + 1 } };
@@ -8104,7 +8104,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
             id,
             html_url: `https://github.com/test/receipt/${mutations.length}`,
           };
-          if (url.includes("/check-runs")) check = { ...check, id, status: String(body.status) };
+          if (url.includes("/check-runs")) check = { ...check, id, name: String(body.name), status: String(body.status ?? check.status) };
           if (
             url.endsWith("/issues/91/comments") ||
             url.includes("/issues/comments/")
@@ -8161,9 +8161,16 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       await service.execute(session, "begin_review", { reviewedCommit: head });
       expect(await readChatGitHubReviewsByEndpointId(f.endpoint.id)).toHaveLength(1);
       await githubReviewCheckService(db, f.providerFetch).processPending();
+      // The completed legacy-named run is renamed before the fresh attempt, so a
+      // branch rule that still requires the legacy name no longer sees a pass.
+      expect(mutations.at(-2)).toEqual({
+        url: "https://api.github.com/repos/paperclipai/paperclip/check-runs/99",
+        body: { name: f.endpoint.botLabel },
+      });
       expect(mutations.at(-1)).toMatchObject({
         url: "https://api.github.com/repos/paperclipai/paperclip/check-runs",
         body: {
+          name: f.endpoint.botLabel,
           status: "in_progress", external_id: `${f.endpoint.id}:91:${head}`,
           details_url: `https://current-vanity.example/${company.issuePrefix}/issues/${conversation.issueId}`,
         },
@@ -8230,7 +8237,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       expect(
         mutations.find((m) => m.body.conclusion === "failure")?.body,
       ).toMatchObject({
-        name: "Paperclip Review",
+        name: f.endpoint.botLabel,
         head_sha: head,
         conclusion: "failure",
         details_url: `https://current-vanity.example/${company.issuePrefix}/issues/${conversation.issueId}`,

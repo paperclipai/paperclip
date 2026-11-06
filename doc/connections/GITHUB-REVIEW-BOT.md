@@ -197,7 +197,7 @@ The execution records the configuration revision and event context used.
 
 The agent reads through task-bound bot tools, explicitly begins an assessment,
 and submits the reviewed commit, findings, rationale, and coverage. Paperclip
-validates the result and computes the **Paperclip Review** check. The default
+validates the result and computes the check named after the GitHub App. The default
 threshold is 5/5; choose 1–5 or report-only as needed.
 
 Finding categories come from the repository's review policy. Both manual and
@@ -251,8 +251,8 @@ these off leaves scores, comments, and checks available while making formal
 review decisions opt-in. The controls include contextual tooltips.
 
 To enforce the rating at merge time, configure GitHub branch protection or a
-ruleset to require **Paperclip Review**, selecting this bot App as the source
-where supported. Paperclip does not change repository rules. GitHub account and
+ruleset to require the check named after this bot App, selecting the App as the
+source where supported. Paperclip does not change repository rules. GitHub account and
 repository plan restrictions may limit required-check enforcement. If automatic
 execution is disallowed, a gated head requests an authorized manual review.
 
