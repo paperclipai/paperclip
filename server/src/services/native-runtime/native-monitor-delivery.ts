@@ -94,7 +94,7 @@ export async function readNativeSupersededMonitorWait(db: Db, binding: MonitorBi
       or(and(isNull(agentWakeupRequests.runId), inArray(agentWakeupRequests.status, ["queued", "deferred_issue_execution"])),
         isNotNull(successor.id)),
     )).orderBy(desc(issueComments.createdAt), desc(issueComments.id)).limit(1);
-  const [request] = await (lockProof ? query.for("share", { of: [agentWakeupRequests, issueComments] }) : query);
+  const [request] = await (lockProof ? query.for("share", { of: [agentWakeupRequests, issueComments], noWait: true }) : query);
   return request ? { ...request, agentId: binding.agentId, resultId: source.resultId } : null;
 }
 

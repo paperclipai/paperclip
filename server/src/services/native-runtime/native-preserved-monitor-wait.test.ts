@@ -375,6 +375,39 @@ describe.skipIf(!support.supported)("released native monitor results", () => {
         eq(statusDecisions.reasonCode, "scheduled_monitor_superseded")))).toEqual([]);
     });
 
+  it.each(["comment", "wake"] as const)("defers superseded monitor settlement during child-row contention (%s)", async state => {
+    const { f, comment, wake } = await newerUserRequest("queued");
+    const before = await f.readIssue();
+    let release!: () => void, locked!: () => void;
+    const released = new Promise<void>(resolve => { release = resolve; });
+    const acquired = new Promise<void>(resolve => { locked = resolve; });
+    const owner = db.transaction(async tx => {
+      if (state === "comment") await tx.select().from(issueComments).where(eq(issueComments.id, comment.id)).for("update");
+      else await tx.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wake.id)).for("update");
+      locked();
+      await released;
+    });
+    await acquired;
+    const original = monitorDelivery.readNativeSupersededMonitorWait;
+    const bounded = vi.spyOn(monitorDelivery, "readNativeSupersededMonitorWait").mockImplementation(async (...args) => {
+      if (args[3]) await args[0].execute(sql`set local lock_timeout = '100ms'`);
+      return original(...args);
+    });
+    try {
+      await f.finalize();
+      expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId)))[0])
+        .toMatchObject({ phase: "retryable_failure", failureCode: "status_cas_exhausted" });
+      expect(await f.readIssue()).toMatchObject({ status: before.status, statusVersion: before.statusVersion,
+        executionPolicy: before.executionPolicy, monitorNextCheckAt: before.monitorNextCheckAt });
+      expect(await db.select().from(statusDecisions).where(and(eq(statusDecisions.runId, f.runId),
+        eq(statusDecisions.reasonCode, "scheduled_monitor_superseded")))).toEqual([]);
+    } finally { bounded.mockRestore(); release(); await owner; }
+    await f.finalize();
+    expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId)))[0].phase).toBe("committed");
+    expect(await db.select().from(issueComments).where(eq(issueComments.id, comment.id))).toEqual([comment]);
+    expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wake.id))).toEqual([wake]);
+  });
+
   it.each(["comment", "wake", "lineage", "source_stop"])("rechecks newer user-request proof under the task lock (%s)", async state => {
     const { f, comment, wake, successorId } = await newerUserRequest("consumed");
     const original = monitorDelivery.readNativeSupersededMonitorWait;

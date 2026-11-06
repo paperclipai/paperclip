@@ -1853,9 +1853,15 @@ export async function commitNativeStatusDecision(input: {
     }
     if (reasonCode === "scheduled_monitor_superseded") {
       const expected = input.requireSupersededMonitorWait;
-      const actual = expected ? await readNativeSupersededMonitorWait(tx as unknown as Db, {
-        companyId: input.companyId, issueId: input.issueId, runId: input.runId, agentId: expected.agentId,
-      }, issue, true) : null;
+      let actual: Awaited<ReturnType<typeof readNativeSupersededMonitorWait>> = null;
+      try {
+        actual = expected ? await readNativeSupersededMonitorWait(tx as unknown as Db, {
+          companyId: input.companyId, issueId: input.issueId, runId: input.runId, agentId: expected.agentId,
+        }, issue, true) : null;
+      } catch (error) {
+        if (record(error).code === "55P03" || record(record(error).cause).code === "55P03") throw new NativeStatusRaceError();
+        throw error;
+      }
       if (!expected || !actual || actual.resultId !== expected.resultId || actual.wakeId !== expected.wakeId ||
           actual.commentId !== expected.commentId || actual.successorRunId !== expected.successorRunId ||
           input.decision.statusAction !== "preserve" || input.decision.toStatus !== issue.status ||
