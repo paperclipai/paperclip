@@ -143,7 +143,6 @@ import {
   feedbackService,
   applyManagedEnvironments,
   createManagedEnvironmentRecovery,
-  startManagedPluginInstanceDefault,
   backfillPrincipalAccessCompatibility,
   backfillLegacyToolOAuthTokens,
   bootstrapExecutionPolicyFromEnv,
@@ -1205,12 +1204,6 @@ async function startServerWithDatabaseTeardown(
   // activates before its provider driver is registered; the worker manager
   // additionally gates each entry on a live plugin worker (and archives the
   // row of a provider that did not come up).
-  // The one-time `instanceDefault` decision runs right after this boot pass
-  // (so after row reconciliation and `pluginsReady`): its first attempt is
-  // awaited here, before the server reports ready, so no request (a warm
-  // standby claim, then agent creation) can precede it. A delivery worker
-  // owns any later attempt (worker `ready`, failed attempts). Once decided,
-  // the queue is idle.
   try {
     const appLocals = (app as {
       locals?: { bundledPluginsStartup?: Promise<unknown>; managedBundledPluginKeys?: readonly string[] };
@@ -1224,13 +1217,6 @@ async function startServerWithDatabaseTeardown(
     if (managedEnvironmentsResult) {
       logger.warn(managedEnvironmentsResult, "managed environments ensured from managed config");
     }
-    await startManagedPluginInstanceDefault({
-      db: db as any,
-      managedConfig,
-      deliveryWork,
-      workerManager: pluginWorkerManager,
-      recovery: managedEnvironmentRecovery,
-    });
   } catch (err) {
     logger.error({ err }, "failed to apply managed environments from managed config");
     throw err;

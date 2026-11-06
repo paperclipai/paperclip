@@ -35,7 +35,6 @@ const mockCompanyService = vi.hoisted(() => ({
 const mockLogActivity = vi.hoisted(() => vi.fn());
 const mockPublishActivity = vi.hoisted(() => vi.fn());
 const mockReadIdleSleepSafety = vi.hoisted(() => vi.fn());
-const mockCancelPendingManagedEnvironmentDefault = vi.hoisted(() => vi.fn(async () => false));
 
 function registerModuleMocks() {
   vi.doMock("../services/idle-sleep-safety.js", () => ({ readIdleSleepSafety: mockReadIdleSleepSafety }));
@@ -48,9 +47,6 @@ function registerModuleMocks() {
   }));
   vi.doMock("../services/environments.js", () => ({
     environmentService: () => mockEnvironmentService,
-  }));
-  vi.doMock("../services/managed-environment-default.js", () => ({
-    cancelPendingManagedEnvironmentDefault: mockCancelPendingManagedEnvironmentDefault,
   }));
   vi.doMock("../services/plugin-environment-driver.js", async (importOriginal) => ({
     ...await importOriginal<typeof import("../services/plugin-environment-driver.js")>(),
@@ -361,10 +357,9 @@ describe("instance settings routes", () => {
       .send({ defaultEnvironmentId: "11111111-1111-4111-8111-111111111111" });
 
     expect(patchRes.status).toBe(200);
-    expect(mockInstanceSettingsService.update).toHaveBeenCalledWith(
-      { defaultEnvironmentId: "11111111-1111-4111-8111-111111111111" },
-      { db: TX_SENTINEL },
-    );
+    expect(mockInstanceSettingsService.update).toHaveBeenCalledWith({
+      defaultEnvironmentId: "11111111-1111-4111-8111-111111111111",
+    });
     expect(mockLogActivity).toHaveBeenCalledTimes(2);
   });
 
@@ -380,19 +375,9 @@ describe("instance settings routes", () => {
     expect(mockInstanceSettingsService.update).not.toHaveBeenCalled();
   });
 
-  it("clears the managed-default stamp marker on an explicit tenant default write", async () => {
-    // A tenant write of defaultEnvironmentId reclassifies the default as
-    // tenant-chosen: the reconciliation stamp marker on the managed
-    // sandbox row must not survive, or a later managed-sandbox-only
-    // mode-off pass would mistake the tenant's choice for a stamp.
-    mockEnvironmentService.findManagedSandboxEnvironment.mockResolvedValue({
-      id: "managed-env-1",
-      driver: "sandbox",
-      status: "active",
-      config: {},
-      envVars: {},
-      metadata: { managedByPaperclip: true, managedDefaultStamped: true },
-    });
+  it("writes an explicit default as a plain set value, touching no environment row", async () => {
+    // Boot only fills an unset, local or dangling default, so an admin's
+    // choice needs no marker and no sibling write to stay theirs.
     const app = await createApp(localAdminActor());
 
     const patchRes = await request(app)
@@ -400,90 +385,10 @@ describe("instance settings routes", () => {
       .send({ defaultEnvironmentId: "11111111-1111-4111-8111-111111111111" });
 
     expect(patchRes.status).toBe(200);
-    expect(mockEnvironmentService.update).toHaveBeenCalledWith(
-      "managed-env-1",
-      { metadata: { managedByPaperclip: true } },
-      { db: TX_SENTINEL },
-    );
-    // Both writes commit in ONE transaction — each receives the SAME tx —
-    // so no partial failure can desync the stamp marker from the default
-    // (neither a stale stamp on a tenant choice, nor a reconciliation
-    // default that lost its marker and can never revert).
-    expect(mockInstanceSettingsService.update).toHaveBeenCalledWith(
-      { defaultEnvironmentId: "11111111-1111-4111-8111-111111111111" },
-      { db: TX_SENTINEL },
-    );
-  });
-
-  it("aborts the whole request (no committed settings) when the stamp-marker clear fails inside the transaction", async () => {
-    // The marker clear and the settings write share a transaction, so a
-    // failure in either rolls the whole thing back — a real DB would
-    // discard both; here the settings write is never even reached.
-    mockEnvironmentService.findManagedSandboxEnvironment.mockResolvedValue({
-      id: "managed-env-1",
-      driver: "sandbox",
-      status: "active",
-      config: {},
-      envVars: {},
-      metadata: { managedByPaperclip: true, managedDefaultStamped: true },
+    expect(mockInstanceSettingsService.update).toHaveBeenCalledWith({
+      defaultEnvironmentId: "11111111-1111-4111-8111-111111111111",
     });
-    mockEnvironmentService.update.mockRejectedValue(new Error("metadata write failed"));
-    const app = await createApp(localAdminActor());
-
-    const patchRes = await request(app)
-      .patch("/api/instance/settings")
-      .send({ defaultEnvironmentId: "11111111-1111-4111-8111-111111111111" });
-
-    // The writes share ONE transaction, so a real database discards the
-    // settings write too when the marker clear fails.
-    expect(patchRes.status).toBeGreaterThanOrEqual(500);
-    expect(mockInstanceSettingsService.update).toHaveBeenCalledWith(
-      { defaultEnvironmentId: "11111111-1111-4111-8111-111111111111" },
-      { db: TX_SENTINEL },
-    );
-  });
-
-  it("ends a pending managed instance-default decision in the same transaction, after the default write", async () => {
-    const order: string[] = [];
-    mockInstanceSettingsService.update.mockImplementationOnce(async () => {
-      order.push("default");
-      return { id: "settings-1", defaultEnvironmentId: "11111111-1111-4111-8111-111111111111" };
-    });
-    mockCancelPendingManagedEnvironmentDefault.mockImplementationOnce(async () => {
-      order.push("decision");
-      return true;
-    });
-    mockEnvironmentService.findManagedSandboxEnvironment.mockResolvedValue({
-      id: "managed-env-1",
-      driver: "sandbox",
-      status: "active",
-      config: {},
-      envVars: {},
-      metadata: { managedByPaperclip: true, managedDefaultStamped: true },
-    });
-    mockEnvironmentService.update.mockImplementationOnce(async () => {
-      order.push("environment");
-      return null;
-    });
-    const app = await createApp(localAdminActor());
-
-    const patchRes = await request(app)
-      .patch("/api/instance/settings")
-      .send({ defaultEnvironmentId: "11111111-1111-4111-8111-111111111111" });
-
-    expect(patchRes.status).toBe(200);
-    expect(mockCancelPendingManagedEnvironmentDefault).toHaveBeenCalledWith(TX_SENTINEL, { instanceDefaultDeclared: false });
-    // Lock order shared with the decision: default row, decision, environment.
-    expect(order).toEqual(["default", "decision", "environment"]);
-  });
-
-  it("leaves the managed instance-default decision alone when the default is not written", async () => {
-    mockCancelPendingManagedEnvironmentDefault.mockClear();
-    const app = await createApp(localAdminActor());
-    await request(app).patch("/api/instance/settings").send({}).expect((res) => {
-      expect(res.status).toBeLessThan(500);
-    });
-    expect(mockCancelPendingManagedEnvironmentDefault).not.toHaveBeenCalled();
+    expect(mockEnvironmentService.update).not.toHaveBeenCalled();
   });
 
   it("rejects unknown defaultEnvironmentId values with 422", async () => {

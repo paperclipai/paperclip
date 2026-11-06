@@ -492,7 +492,6 @@ vi.mock("../services/index.js", () => ({
   bootstrapExecutionPolicyFromEnv: vi.fn(async () => null),
   applyManagedEnvironments: managedEnvironmentMocks.apply,
   createManagedEnvironmentRecovery: managedEnvironmentMocks.factory,
-  startManagedPluginInstanceDefault: vi.fn(async () => null),
   environmentCustomImageService: environmentCustomImagesServiceFactoryMock,
   executionWorkspaceService: executionWorkspaceServiceFactoryMock,
   externalObjectService: externalObjectsServiceFactoryMock,

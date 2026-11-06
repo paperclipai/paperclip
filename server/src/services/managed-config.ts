@@ -92,7 +92,7 @@ export const MANAGED_ENVIRONMENT_DRIVERS = ["sandbox", "plugin"] as const;
  * is listed here, so the two cannot drift.
  *
  * - `pluginEnvironments`: `driver: "plugin"` entries in `environments`,
- *   including their one-time `instanceDefault`.
+ *   including `instanceDefault`.
  */
 export const MANAGED_CONFIG_CAPABILITIES_SCHEMA_VERSION = 1;
 export const MANAGED_CONFIG_CAPABILITIES = ["pluginEnvironments"] as const;
@@ -127,9 +127,10 @@ export interface ManagedPluginEnvironmentSpec {
   /** Driver config, validated by the plugin at ensure time; never carries secrets. */
   driverConfig: Readonly<Record<string, unknown>>;
   /**
-   * Make this environment the instance default once per instance, at the
-   * first boot that sees the flag, and only while the instance has no agents
-   * (see `applyManagedPluginInstanceDefault`).
+   * Fill the instance default with this environment when the default is
+   * unset (or names the local environment or a deleted one), before the
+   * managed sandbox fills it. A set default is never changed. See
+   * `fillUnsetInstanceDefault`.
    */
   instanceDefault: boolean;
 }

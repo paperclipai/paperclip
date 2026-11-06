@@ -1,16 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 import { unprocessable } from "../errors.js";
-import {
-  applyManagedEnvironments,
-  createManagedEnvironmentRecovery,
-  registerManagedPluginInstanceDefaultRetry,
-} from "./managed-environments.js";
+import { applyManagedEnvironments, createManagedEnvironmentRecovery } from "./managed-environments.js";
 import { idleWorkSnapshot } from "./task-admission.js";
 import {
-  environmentRow,
   PLUGIN_KEY,
   environmentsSeam,
-  instanceSettingsSeam,
   noDb,
   parsedConfig,
   pluginEnvironmentRow,
@@ -18,7 +12,6 @@ import {
   reconciliationResult,
   recoveryHandle,
   tick,
-  type InstanceSettingsSeam,
   type RecoveryHandle,
 } from "./managed-environments.test-support.js";
 
@@ -53,7 +46,6 @@ describe("applyManagedEnvironments plugin entries", () => {
       env: {},
       workerManager: workerManager(),
       environments,
-      instanceSettings: instanceSettingsSeam(),
       resolveEnvironmentPlugin: readyPlugin(),
       autoInstalledPluginKeys: [PLUGIN_KEY],
     });
@@ -93,7 +85,6 @@ describe("applyManagedEnvironments plugin entries", () => {
       env: {},
       workerManager: workerManager(),
       environments,
-      instanceSettings: instanceSettingsSeam(),
       resolveSandboxProviderDriver: readyDriverResolver(),
       resolveEnvironmentPlugin: readyPlugin(),
       autoInstalledPluginKeys: [PLUGIN_KEY],
@@ -107,7 +98,6 @@ describe("applyManagedEnvironments plugin entries", () => {
       env: {},
       workerManager: workerManager(),
       environments,
-      instanceSettings: instanceSettingsSeam(),
       resolveEnvironmentPlugin: readyPlugin(),
       autoInstalledPluginKeys: ["paperclip.daytona-sandbox-provider"],
     })).rejects.toThrow(/uses plugin "example.remote-host-plugin", which no "plugins.autoInstall" catalog entry installs/);
@@ -121,7 +111,6 @@ describe("applyManagedEnvironments plugin entries", () => {
       env: { PAPERCLIP_BUNDLED_PLUGIN_ROOT: "/nonexistent-paperclip-catalog" },
       workerManager: workerManager(),
       environments: environmentsSeam(),
-      instanceSettings: instanceSettingsSeam(),
     })).rejects.toThrow(/auto-install key "remote-host" is not in the bundled catalog/);
   });
 
@@ -130,7 +119,6 @@ describe("applyManagedEnvironments plugin entries", () => {
       env: { PAPERCLIP_EXECUTION_MODE: "kubernetes" },
       workerManager: workerManager(),
       environments: environmentsSeam(),
-      instanceSettings: instanceSettingsSeam(),
       resolveEnvironmentPlugin: readyPlugin(),
       autoInstalledPluginKeys: [PLUGIN_KEY],
     })).resolves.toMatchObject({ ensured: 1 });
@@ -146,7 +134,6 @@ describe("applyManagedEnvironments plugin entries", () => {
       env: {},
       workerManager: manager,
       environments,
-      instanceSettings: instanceSettingsSeam(),
       resolveEnvironmentPlugin: readyPlugin(),
       autoInstalledPluginKeys: [PLUGIN_KEY],
     });
@@ -175,7 +162,6 @@ describe("applyManagedEnvironments plugin entries", () => {
       env: {},
       workerManager: manager,
       environments,
-      instanceSettings: instanceSettingsSeam(),
       resolveEnvironmentPlugin: readyPlugin(),
       autoInstalledPluginKeys: [PLUGIN_KEY],
     });
@@ -207,7 +193,6 @@ describe("applyManagedEnvironments plugin entries", () => {
       env: {},
       workerManager: manager,
       environments: environmentsSeam({ ensureManagedPluginEnvironment }),
-      instanceSettings: instanceSettingsSeam(),
       resolveEnvironmentPlugin: readyPlugin(),
       autoInstalledPluginKeys: [PLUGIN_KEY],
     });
@@ -231,7 +216,6 @@ describe("applyManagedEnvironments plugin entries", () => {
       env: {},
       workerManager: manager,
       environments: environmentsSeam({ ensureManagedPluginEnvironment }),
-      instanceSettings: instanceSettingsSeam(),
       resolveEnvironmentPlugin: readyPlugin(),
       autoInstalledPluginKeys: [PLUGIN_KEY],
     });
@@ -259,7 +243,6 @@ describe("applyManagedEnvironments plugin entries", () => {
       env: {},
       workerManager: manager,
       environments,
-      instanceSettings: instanceSettingsSeam(),
       resolveEnvironmentPlugin: readyPlugin(),
       autoInstalledPluginKeys: [PLUGIN_KEY],
     });
@@ -287,7 +270,6 @@ describe("applyManagedEnvironments plugin entries", () => {
       env: {},
       workerManager: workerManager(true, handle),
       environments,
-      instanceSettings: instanceSettingsSeam(),
       resolveEnvironmentPlugin: readyPlugin(),
       autoInstalledPluginKeys: [PLUGIN_KEY],
     });
@@ -313,7 +295,6 @@ describe("applyManagedEnvironments plugin entries", () => {
       env: {},
       workerManager: manager,
       environments,
-      instanceSettings: instanceSettingsSeam(),
       resolveEnvironmentPlugin: readyPlugin(),
       autoInstalledPluginKeys: [PLUGIN_KEY],
     });
@@ -340,7 +321,6 @@ describe("applyManagedEnvironments plugin entries", () => {
       env: {},
       workerManager: manager,
       environments,
-      instanceSettings: instanceSettingsSeam(),
       resolveEnvironmentPlugin: readyPlugin(),
       autoInstalledPluginKeys: [PLUGIN_KEY],
     });
@@ -368,7 +348,6 @@ describe("applyManagedEnvironments plugin entries", () => {
       env: {},
       workerManager: manager,
       environments: environmentsSeam({ ensureManagedPluginEnvironment: ensureManagedPluginEnvironment as never }),
-      instanceSettings: instanceSettingsSeam(),
       resolveEnvironmentPlugin: readyPlugin(),
       autoInstalledPluginKeys: [PLUGIN_KEY],
       recovery,
@@ -405,8 +384,7 @@ describe("applyManagedEnvironments plugin entries", () => {
         env: {},
         workerManager: manager,
         environments,
-        instanceSettings: instanceSettingsSeam(),
-        resolveEnvironmentPlugin,
+          resolveEnvironmentPlugin,
         autoInstalledPluginKeys: [PLUGIN_KEY],
       });
       expect(result).toMatchObject({ ensured: 0, failed: 1 });
@@ -422,125 +400,103 @@ describe("applyManagedEnvironments plugin entries", () => {
       env: {},
       workerManager: workerManager(),
       environments,
-      instanceSettings: instanceSettingsSeam(),
     })).toBeNull();
     expect(environments.archiveManagedPluginEnvironment).not.toHaveBeenCalled();
   });
 
-  it("never changes the instance default, and the sandbox stamp never replaces a plugin default", async () => {
-    const settings = instanceSettingsSeam({
-      get: vi.fn().mockResolvedValue({ defaultEnvironmentId: "plugin-env" }) as InstanceSettingsSeam["get"],
-    });
+  it("never fills the instance default with a plugin entry that does not declare instanceDefault", async () => {
+    // Without the flag, only the managed sandbox fills an unset default.
+    const fillInstanceDefault = vi.fn(async () => ({ filled: false, previousDefaultEnvironmentId: "plugin-env" }));
     await applyManagedEnvironments(noDb, configWith(
       [{ name: "Daytona", provider: "daytona" }, pluginEntry()],
       { enableManagedSandboxOnly: true },
     ), {
       env: {},
       workerManager: workerManager(),
-      instanceSettings: settings,
-      environments: environmentsSeam({ getById: vi.fn().mockResolvedValue(pluginEnvironmentRow()) }),
+      fillInstanceDefault,
+      environments: environmentsSeam(),
       resolveSandboxProviderDriver: readyDriverResolver(),
       resolveEnvironmentPlugin: readyPlugin(),
       autoInstalledPluginKeys: [PLUGIN_KEY],
     });
-    expect(settings.update).not.toHaveBeenCalled();
+    expect(fillInstanceDefault).toHaveBeenCalledTimes(1);
+    expect(fillInstanceDefault).toHaveBeenCalledWith("env-1");
   });
 
   describe("instanceDefault", () => {
-    it("is never decided by the boot pass", async () => {
-      // `noDb` is null: any decision attempt from the boot pass would throw.
-      const settings = instanceSettingsSeam();
-      const result = await applyManagedEnvironments(noDb, configWith([pluginEntry({ instanceDefault: true })]), {
-        env: {},
-        workerManager: workerManager(),
-        environments: environmentsSeam(),
-        instanceSettings: settings,
-        resolveEnvironmentPlugin: readyPlugin(),
-        autoInstalledPluginKeys: [PLUGIN_KEY],
-      });
-      expect(result).toMatchObject({ ensured: 1, failed: 0 });
-      expect(settings.update).not.toHaveBeenCalled();
-    });
+    const sandboxAndComputer = () => configWith(
+      [{ name: "Daytona", provider: "daytona" }, pluginEntry({ instanceDefault: true })],
+      { enableManagedSandboxOnly: true },
+    );
 
-    it("never lets the sandbox stamp or its revert path replace a plugin default", async () => {
-      const settings = instanceSettingsSeam({
-        get: vi.fn().mockResolvedValue({ defaultEnvironmentId: "plugin-env" }) as InstanceSettingsSeam["get"],
-      });
-      const getById = vi.fn().mockResolvedValue(pluginEnvironmentRow());
-      await applyManagedEnvironments(noDb, configWith(
-        [{ name: "Daytona", provider: "daytona" }, pluginEntry({ instanceDefault: true })],
-        { enableManagedSandboxOnly: true },
-      ), {
+    it("fills an unset default with the plugin row first, then lets the sandbox fill", async () => {
+      // The locked fill decides; here it reports a fill each time it is asked.
+      const fillInstanceDefault = vi.fn(async () => ({ filled: true, previousDefaultEnvironmentId: null }));
+      await applyManagedEnvironments(noDb, sandboxAndComputer(), {
         env: {},
         workerManager: workerManager(),
-        instanceSettings: settings,
-        environments: environmentsSeam({ getById }),
+        fillInstanceDefault,
+        environments: environmentsSeam(),
         resolveSandboxProviderDriver: readyDriverResolver(),
         resolveEnvironmentPlugin: readyPlugin(),
         autoInstalledPluginKeys: [PLUGIN_KEY],
       });
+      // The plugin row goes first, even though the sandbox entry is ensured
+      // first; on a new instance the plugin fill wins and the sandbox fill
+      // then finds the default set.
+      expect(fillInstanceDefault.mock.calls.map(([environmentId]) => environmentId)).toEqual(["plugin-env", "env-1"]);
+    });
+
+    it("does not fill with the plugin row when its plugin is down, and recovery never fills", async () => {
+      const { handle, fireReady } = recoveryHandle();
+      const fillInstanceDefault = vi.fn(async () => ({ filled: true, previousDefaultEnvironmentId: null }));
+      const environments = environmentsSeam();
+      const manager = workerManager(false, handle);
       await applyManagedEnvironments(noDb, configWith([pluginEntry({ instanceDefault: true })]), {
         env: {},
-        workerManager: workerManager(),
-        instanceSettings: settings,
-        environments: environmentsSeam({
-          getById,
-          findManagedSandboxEnvironment: vi.fn().mockResolvedValue(
-            environmentRow({ metadata: { managedByPaperclip: true, managedDefaultStamped: true } }),
-          ),
-        }),
+        workerManager: manager,
+        fillInstanceDefault,
+        environments,
         resolveEnvironmentPlugin: readyPlugin(),
         autoInstalledPluginKeys: [PLUGIN_KEY],
       });
-      expect(settings.update).not.toHaveBeenCalled();
+      expect(fillInstanceDefault).not.toHaveBeenCalled();
+
+      manager.isRunning.mockReturnValue(true);
+      fireReady();
+      await tick();
+      expect(environments.ensureManagedPluginEnvironment).toHaveBeenCalledTimes(1);
+      expect(fillInstanceDefault).not.toHaveBeenCalled();
     });
 
-    it("registers the retry worker only for an instanceDefault entry, with a query-free pending check", async () => {
-      const readyListeners = new Set<(pluginId: string) => void>();
-      const manager = {
-        isRunning: vi.fn(() => true),
-        call: vi.fn(),
-        onWorkerReady: vi.fn((listener: (pluginId: string) => void) => {
-          readyListeners.add(listener);
-          return () => { readyListeners.delete(listener); };
+    it("does not fill with the plugin row when its ensure fails", async () => {
+      const fillInstanceDefault = vi.fn(async () => ({ filled: true, previousDefaultEnvironmentId: null }));
+      await applyManagedEnvironments(noDb, sandboxAndComputer(), {
+        env: {},
+        workerManager: workerManager(),
+        fillInstanceDefault,
+        environments: environmentsSeam({
+          ensureManagedPluginEnvironment: vi.fn().mockRejectedValue(unprocessable("driverConfig.region is not supported")),
         }),
-      };
-      const wake = vi.fn();
-      let task!: { retryMs: number; run: () => Promise<unknown>; hasPending: () => Promise<boolean> };
-      const deliveryWork = { register: vi.fn((_queue: string, registered: typeof task) => { task = registered; return { wake }; }) };
-      const recovery = createManagedEnvironmentRecovery();
-
-      expect(registerManagedPluginInstanceDefaultRetry({
-        db: noDb, managedConfig: configWith([pluginEntry()]), deliveryWork, workerManager: manager, recovery,
-      })).toBeNull();
-      expect(deliveryWork.register).not.toHaveBeenCalled();
-
-      const worker = registerManagedPluginInstanceDefaultRetry({
-        db: noDb,
-        managedConfig: configWith([pluginEntry({ instanceDefault: true })]),
-        deliveryWork,
-        workerManager: manager,
-        recovery,
+        resolveSandboxProviderDriver: readyDriverResolver(),
+        resolveEnvironmentPlugin: readyPlugin(),
+        autoInstalledPluginKeys: [PLUGIN_KEY],
       });
-      expect(deliveryWork.register).toHaveBeenCalledWith("managed-environment-default", expect.objectContaining({ retryMs: 60_000 }));
-      // One startup attempt from saved state is requested, answered without SQL.
-      expect(await task.hasPending()).toBe(true);
-
-      // A worker start asks for an attempt; so does a failed inline decision.
-      for (const listener of [...readyListeners]) listener("remote-host-plugin");
-      expect(wake).toHaveBeenCalledTimes(1);
-      expect(await task.hasPending()).toBe(true);
-      worker!.requestRetry();
-      expect(wake).toHaveBeenCalledTimes(2);
-
-      // A throwing attempt keeps the request, so the coordinator retries it.
-      await expect(task.run()).rejects.toThrow();
-      expect(await task.hasPending()).toBe(true);
-
-      await recovery.stop();
-      expect(readyListeners.size).toBe(0);
+      // Only the sandbox fill runs.
+      expect(fillInstanceDefault.mock.calls).toEqual([["env-1"]]);
     });
 
+    it("keeps the plugin ensure counted when its fill fails", async () => {
+      const result = await applyManagedEnvironments(noDb, configWith([pluginEntry({ instanceDefault: true })]), {
+        env: {},
+        workerManager: workerManager(),
+        fillInstanceDefault: vi.fn().mockRejectedValue(new Error("db exploded")),
+        environments: environmentsSeam(),
+        resolveEnvironmentPlugin: readyPlugin(),
+        autoInstalledPluginKeys: [PLUGIN_KEY],
+      });
+      expect(result).toMatchObject({ ensured: 1, failed: 0 });
+    });
   });
 
   it("is fail-safe: an ensure failure is logged and counted, not thrown", async () => {
@@ -550,7 +506,6 @@ describe("applyManagedEnvironments plugin entries", () => {
       environments: environmentsSeam({
         ensureManagedPluginEnvironment: vi.fn().mockRejectedValue(new Error("validator refused")),
       }),
-      instanceSettings: instanceSettingsSeam(),
       resolveEnvironmentPlugin: readyPlugin(),
       autoInstalledPluginKeys: [PLUGIN_KEY],
     });

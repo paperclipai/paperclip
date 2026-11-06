@@ -14,19 +14,8 @@ import {
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { environmentService } from "../services/environments.js";
 import { MANAGED_CONFIG_ENV_KEY, parseManagedConfigEnv } from "../services/managed-config.js";
-import {
-  applyManagedEnvironments,
-  createManagedEnvironmentRecovery,
-  registerManagedPluginInstanceDefaultRetry,
-  retryManagedPluginInstanceDefault,
-  startManagedPluginInstanceDefault,
-} from "../services/managed-environments.js";
-import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
-import {
-  applyManagedPluginInstanceDefault,
-  cancelPendingManagedEnvironmentDefault,
-  readManagedEnvironmentDefaultDecision,
-} from "../services/managed-environment-default.js";
+import { applyManagedEnvironments } from "../services/managed-environments.js";
+import { fillUnsetInstanceDefault } from "../services/managed-instance-default.js";
 import { createLifecycleDriver } from "../services/agent-lifecycle-driver.js";
 import { createAgentLifecycleEffects } from "../services/agent-lifecycle.js";
 import { createLifecycleStore } from "../modules/agent-lifecycle/adapters/postgres.js";
@@ -67,9 +56,6 @@ const support = await getEmbeddedPostgresTestSupport();
   const call = vi.fn(async (_id: string, method: string, input: { config: Record<string, unknown> }) =>
     method === "environmentValidateConfig" ? { ok: true, normalizedConfig: { ...input.config, normalized: true } } : null);
   let readyListeners: ReadyListener[] = [];
-  // Manager-wide `ready` subscriptions (`onWorkerReady`), which the boot pass
-  // and the default retry worker both prefer over the handle's.
-  const managerReadyListeners = new Set<(pluginId: string) => void>();
   const workerManager = {
     isRunning: vi.fn(() => running),
     call,
@@ -79,15 +65,6 @@ const support = await getEmbeddedPostgresTestSupport();
         readyListeners = readyListeners.filter((candidate) => candidate !== listener);
       },
     })),
-    onWorkerReady: (listener: (pluginId: string) => void) => {
-      managerReadyListeners.add(listener);
-      return () => { managerReadyListeners.delete(listener); };
-    },
-  };
-  /** The plugin's worker reports `ready` (first start, respawn or replacement). */
-  const fireReady = () => {
-    for (const listener of [...readyListeners]) listener({ pluginId });
-    for (const listener of [...managerReadyListeners]) listener(pluginId);
   };
 
   beforeAll(async () => {
@@ -98,7 +75,6 @@ const support = await getEmbeddedPostgresTestSupport();
   beforeEach(async () => {
     running = true;
     readyListeners = [];
-    managerReadyListeners.clear();
     call.mockClear();
     await db.delete(activityLog);
     await db.delete(agents);
@@ -271,7 +247,7 @@ const support = await getEmbeddedPostgresTestSupport();
       expect((await pluginRows())[0]!.status).toBe("archived");
 
       running = true;
-      fireReady();
+      for (const listener of [...readyListeners]) listener({ pluginId });
       await vi.waitFor(async () => expect((await pluginRows())[0]?.status).toBe("active"));
     });
 
@@ -282,67 +258,10 @@ const support = await getEmbeddedPostgresTestSupport();
     });
   });
 
-  /*
-   * Coverage of the decision lifecycle (entry point x condition). The retry
-   * worker is the only decider; the boot pass never decides.
-   *
-   * | Entry point                  | Conditions covered                                              |
-   * | ---------------------------- | --------------------------------------------------------------- |
-   * | worker startup attempt       | no agents, agents, tenant default, plugin down, config rejected |
-   * | worker `ready`               | follower appeared, no follower, admin chose meanwhile, rejected |
-   * | coordinator retry            | every attempt timed out with the worker up                      |
-   * | direct decision              | stamped sandbox default, concurrent agent insert (both ways)    |
-   * | retry function               | stale active row, rejected config, already decided              |
-   * | later boots                  | admin change survives, removing the flag changes nothing        |
-   */
-  describe("instanceDefault (one-time decision)", () => {
+  describe("instanceDefault (fill only an unset default)", () => {
     const defaultEntry = { ...remoteHostEntry, instanceDefault: true };
-    let workerAttempts: Promise<unknown>[] = [];
-    /**
-     * Start the retry worker the way `index.ts` does after the boot pass, on a
-     * coordinator stand-in that runs pending attempts when woken. A throwing
-     * attempt stops the drain (the real coordinator retries it 60 s later).
-     */
-    const startDefaultWorker = async (config: ReturnType<typeof managedConfig>) => {
-      let task: { run: () => Promise<unknown>; hasPending: () => Promise<boolean> } | null = null;
-      const drain = async () => {
-        if (!task) return;
-        try {
-          while (await task.hasPending()) await task.run();
-        } catch {
-          // Left pending for the coordinator's retry.
-        }
-      };
-      // The same entry point `index.ts` awaits after the boot pass.
-      await startManagedPluginInstanceDefault({
-        db,
-        managedConfig: config,
-        deliveryWork: {
-          register: (_queue: string, registered: NonNullable<typeof task>) => {
-            task = registered;
-            return { wake: () => { workerAttempts.push(drain()); } };
-          },
-        } as never,
-        workerManager,
-        recovery: createManagedEnvironmentRecovery(),
-      });
-      await drain();
-      return { drain: () => drain() };
-    };
-    /** One server start: the boot pass, then the default retry worker. */
-    const boot = async (entries: unknown[] = [defaultEntry]) => {
-      // A new process: the previous one's subscriptions are gone.
-      managerReadyListeners.clear();
-      readyListeners = [];
-      const config = managedConfig(entries);
-      const result = await applyManagedEnvironments(db, config, { env: {}, workerManager, autoInstalledPluginKeys: [PLUGIN_KEY] });
-      lastWorker = await startDefaultWorker(config);
-      return result;
-    };
-    let lastWorker: { drain: () => Promise<void> } = { drain: async () => {} };
-    const settleWorker = async () => {
-      while (workerAttempts.length > 0) await Promise.all(workerAttempts.splice(0));
-    };
+    const boot = (entries: unknown[] = [defaultEntry]) =>
+      applyManagedEnvironments(db, managedConfig(entries), { env: {}, workerManager, autoInstalledPluginKeys: [PLUGIN_KEY] });
     const instanceDefault = async () =>
       (await db.select().from(instanceSettings).where(eq(instanceSettings.singletonKey, "default")))[0]?.defaultEnvironmentId ?? null;
     const setInstanceDefault = async (environmentId: string | null) => {
@@ -350,360 +269,71 @@ const support = await getEmbeddedPostgresTestSupport();
       if (row) await db.update(instanceSettings).set({ defaultEnvironmentId: environmentId }).where(eq(instanceSettings.id, row.id));
       else await db.insert(instanceSettings).values({ singletonKey: "default", defaultEnvironmentId: environmentId });
     };
+    const sandboxRow = async () => {
+      const [row] = await db.insert(environments).values({
+        name: "Managed Sandbox", driver: "sandbox", status: "active", config: { provider: "daytona" },
+        metadata: { managedByPaperclip: true, managedSandboxProvider: "daytona" },
+      }).returning();
+      return row!.id;
+    };
     const agent = async (companyId: string, defaultEnvironmentId: string | null) => {
       const id = randomUUID();
       await db.insert(agents).values({ id, companyId, name: `Agent ${id}`, adapterType: "process", defaultEnvironmentId });
       return id;
     };
-    /** The plugin comes back: the row recovers and the worker gets its attempt. */
-    const recover = async () => {
-      running = true;
-      fireReady();
-      await vi.waitFor(async () => expect((await pluginRows())[0]?.status).toBe("active"));
-      await settleWorker();
-    };
 
-    it("sets the default on an instance with no agents", async () => {
+    it("makes the plugin row the default on a new instance (unset default)", async () => {
       await boot();
       const [row] = await pluginRows();
       expect(await instanceDefault()).toBe(row!.id);
-      expect(await readManagedEnvironmentDefaultDecision(db)).toMatchObject({
-        status: "applied",
-        reason: "no_agents",
-        environmentMarker: MARKER,
-        environmentId: row!.id,
-        previousDefaultEnvironmentId: null,
-      });
     });
 
-    it("replaces a default the managed sandbox stamped, and clears the stamp", async () => {
-      const [sandbox] = await db.insert(environments).values({
-        name: "Managed Sandbox",
-        driver: "sandbox",
-        status: "active",
-        config: { provider: "daytona" },
-        metadata: { managedByPaperclip: true, managedSandboxProvider: "daytona", managedDefaultStamped: true },
-      }).returning();
-      // A stamped sandbox default only exists under managed-sandbox-only, where
-      // the boot pass stamps it just before plugin entries run. Without that
-      // feature the boot pass reverts the stamp first, so evaluate the decision
-      // directly on the row an earlier boot created.
-      await boot([remoteHostEntry]);
-      const [row] = await pluginRows();
-      await setInstanceDefault(sandbox!.id);
-      await applyManagedPluginInstanceDefault(db, { environment: row!, marker: MARKER });
-      expect(await instanceDefault()).toBe(row!.id);
-      const [cleared] = await db.select().from(environments).where(eq(environments.id, sandbox!.id));
-      expect(cleared!.metadata).not.toHaveProperty("managedDefaultStamped");
-      expect(await readManagedEnvironmentDefaultDecision(db)).toMatchObject({
-        status: "applied",
-        previousDefaultEnvironmentId: sandbox!.id,
-      });
+    it("keeps an existing instance's default, which the managed sandbox already filled", async () => {
+      const sandboxId = await sandboxRow();
+      await setInstanceDefault(sandboxId);
+      await agent(await company(), null);
+      await boot();
+      await boot();
+      expect(await instanceDefault()).toBe(sandboxId);
     });
 
-    it("never replaces a tenant-chosen default", async () => {
-      const [chosen] = await db.insert(environments).values({
-        name: "Tenant sandbox", driver: "sandbox", status: "active", config: { provider: "daytona" }, metadata: null,
-      }).returning();
+    it("keeps an admin's choice", async () => {
+      const [chosen] = await db.insert(environments).values({ name: "Admin choice", driver: "ssh", status: "active", config: {} }).returning();
       await setInstanceDefault(chosen!.id);
       await boot();
       expect(await instanceDefault()).toBe(chosen!.id);
-      expect(await readManagedEnvironmentDefaultDecision(db)).toMatchObject({ status: "declined", reason: "tenant_default" });
     });
 
-    it("leaves the default alone on an instance that already has agents", async () => {
-      await agent(await company(), null);
-      await boot();
-      expect(await instanceDefault()).toBeNull();
-      expect(await readManagedEnvironmentDefaultDecision(db)).toMatchObject({ status: "declined", reason: "instance_has_agents" });
-    });
-
-    it("applies once: an admin's later change survives reboots, and removing the flag changes nothing", async () => {
-      await boot();
-      const [row] = await pluginRows();
-      expect(await instanceDefault()).toBe(row!.id);
-
-      await setInstanceDefault(null);
-      await boot();
-      expect(await instanceDefault()).toBeNull();
-
-      await boot([remoteHostEntry]);
-      expect(await instanceDefault()).toBeNull();
-      expect(await readManagedEnvironmentDefaultDecision(db)).toMatchObject({ status: "applied" });
-    });
-
-    it("waits for the row, then keeps the default if an agent follows it by then", async () => {
+    it("never takes over later when the plugin was down at the first boot and the sandbox filled", async () => {
       running = false;
       await boot();
-      expect(await readManagedEnvironmentDefaultDecision(db)).toMatchObject({ status: "pending", environmentId: null });
-
-      await agent(await company(), null);
-      await recover();
       expect(await instanceDefault()).toBeNull();
-      expect(await readManagedEnvironmentDefaultDecision(db)).toMatchObject({ status: "declined", reason: "agents_follow_default" });
-    });
+      // The same boot's managed sandbox fill (under managed-sandbox-only).
+      const sandboxId = await sandboxRow();
+      await fillUnsetInstanceDefault(db, sandboxId);
 
-    it("waits for the row, then sets the default when no agent follows it", async () => {
-      running = false;
-      await boot();
-      const [sandbox] = await db.insert(environments).values({
-        name: "Explicit sandbox", driver: "sandbox", status: "active", config: { provider: "daytona" },
-      }).returning();
-      await agent(await company(), sandbox!.id);
-
-      await recover();
-      const [row] = await pluginRows();
-      expect(await instanceDefault()).toBe(row!.id);
-      expect(await readManagedEnvironmentDefaultDecision(db)).toMatchObject({ status: "applied", reason: "no_agents_follow_default" });
-    });
-
-    it("never replaces an admin's explicit choice made while the decision is pending", async () => {
-      running = false;
-      await boot();
-      expect(await readManagedEnvironmentDefaultDecision(db)).toMatchObject({ status: "pending" });
-
-      // The admin explicitly clears the default (the route writes it, then
-      // cancels the pending decision, in one transaction).
-      await db.transaction(async (tx) => {
-        await setInstanceDefault(null);
-        expect(await cancelPendingManagedEnvironmentDefault(tx as unknown as Db, { instanceDefaultDeclared: true })).toBe(true);
-      });
-      await recover();
-
-      expect(await instanceDefault()).toBeNull();
-      expect(await readManagedEnvironmentDefaultDecision(db)).toMatchObject({ status: "declined", reason: "admin_changed_default" });
-    });
-
-    it("waits for an in-flight agent insert, then sees that agent (controlled overlap)", async () => {
-      running = false;
-      await boot();
+      // The plugin recovers mid-process, then on a later boot: no fill either way.
       running = true;
-      // Make the row active without going through recovery, so only the
-      // decision runs below.
-      const row = (await environmentService(db).ensureManagedPluginEnvironment({
-        name: "Remote Host", description: "Runs the agent on a remote host",
-        pluginKey: PLUGIN_KEY, driverKey: "tasks", driverConfig: {}, workerManager,
-      })).environment;
-      const companyId = await company();
-
-      let releaseInsert!: () => void;
-      const insertHeld = new Promise<void>((resolve) => { releaseInsert = resolve; });
-      let inserted!: () => void;
-      const insertDone = new Promise<void>((resolve) => { inserted = resolve; });
-      const agentWrite = db.transaction(async (tx) => {
-        await tx.insert(agents).values({ id: randomUUID(), companyId, name: "Racing agent", adapterType: "process", defaultEnvironmentId: null });
-        inserted();
-        await insertHeld;
-      });
-      await insertDone;
-
-      let settled = false;
-      const decision = applyManagedPluginInstanceDefault(db, { environment: row, marker: MARKER })
-        .then((outcome) => { settled = true; return outcome; });
-      await new Promise((resolve) => setTimeout(resolve, 200));
-      // The decision waits on the SHARE lock behind the uncommitted insert.
-      expect(settled).toBe(false);
-
-      releaseInsert();
-      await agentWrite;
-      expect(await decision).toMatchObject({ status: "declined", reason: "agents_follow_default" });
-      expect(await instanceDefault()).toBeNull();
-    });
-
-    it("holds new agent writes until the decision commits", async () => {
-      running = false;
+      for (const listener of [...readyListeners]) listener({ pluginId });
+      await vi.waitFor(async () => expect((await pluginRows())[0]?.status).toBe("active"));
       await boot();
-      running = true;
-      const row = (await environmentService(db).ensureManagedPluginEnvironment({
-        name: "Remote Host", description: "Runs the agent on a remote host",
-        pluginKey: PLUGIN_KEY, driverKey: "tasks", driverConfig: {}, workerManager,
-      })).environment;
-      const companyId = await company();
-
-      // Hold the decision's locks open by holding the instance default row
-      // in another transaction until the agent insert has been attempted.
-      let releaseDefault!: () => void;
-      const defaultHeld = new Promise<void>((resolve) => { releaseDefault = resolve; });
-      let defaultLocked!: () => void;
-      const defaultLockTaken = new Promise<void>((resolve) => { defaultLocked = resolve; });
-      const blocker = db.transaction(async (tx) => {
-        await tx.select().from(instanceSettings).where(eq(instanceSettings.singletonKey, "default")).for("update");
-        defaultLocked();
-        await defaultHeld;
-      });
-      await defaultLockTaken;
-      // The decision takes SHARE on agents, then waits for the default row.
-      const decision = applyManagedPluginInstanceDefault(db, { environment: row, marker: MARKER });
-      await new Promise((resolve) => setTimeout(resolve, 200));
-
-      let agentInserted = false;
-      const agentWrite = db.insert(agents)
-        .values({ id: randomUUID(), companyId, name: "Late agent", adapterType: "process", defaultEnvironmentId: null })
-        .then(() => { agentInserted = true; });
-      await new Promise((resolve) => setTimeout(resolve, 200));
-      expect(agentInserted).toBe(false);
-
-      releaseDefault();
-      await blocker;
-      expect(await decision).toMatchObject({ status: "applied" });
-      await agentWrite;
-      expect(agentInserted).toBe(true);
-      // The agent inserted after the commit follows the new default.
-      expect(await instanceDefault()).toBe(row.id);
+      expect(await instanceDefault()).toBe(sandboxId);
     });
 
-    it("lets the retry worker finish a decision after ensuring the current entry", async () => {
-      const config = managedConfig([defaultEntry]);
+    it("does nothing without the flag", async () => {
       await boot([remoteHostEntry]);
-      call.mockClear();
-      expect(await retryManagedPluginInstanceDefault(db, config, workerManager)).toBe("evaluated");
-      // The current declaration was validated again before the default applied.
-      expect(call).toHaveBeenCalledWith(pluginId, "environmentValidateConfig", { driverKey: "tasks", config: {} });
-      const [row] = await pluginRows();
-      expect(await instanceDefault()).toBe(row!.id);
-      expect(await retryManagedPluginInstanceDefault(db, config, workerManager)).toBe("nothing_to_do");
-      expect(await retryManagedPluginInstanceDefault(db, managedConfig([remoteHostEntry]), workerManager)).toBe("nothing_to_do");
-    });
-
-    it("decides at boot even while the real delivery coordinator is paused (warm standby)", async () => {
-      // Warm standby: the coordinator neither runs nor reconciles until a claim.
-      let claimed = false;
-      const coordinator = createDeliveryWorkCoordinator({
-        owner: db,
-        canRun: () => claimed,
-        canReconcile: () => claimed,
-        onError: () => {},
-      });
-      try {
-        const config = managedConfig([defaultEntry]);
-        await applyManagedEnvironments(db, config, { env: {}, workerManager, autoInstalledPluginKeys: [PLUGIN_KEY] });
-        await startManagedPluginInstanceDefault({
-          db, managedConfig: config, deliveryWork: coordinator, workerManager, recovery: createManagedEnvironmentRecovery(),
-        });
-        // Before any claim (and so before any agent can be created), the
-        // empty instance already has its default.
-        const [row] = await pluginRows();
-        expect(await instanceDefault()).toBe(row!.id);
-        expect(await readManagedEnvironmentDefaultDecision(db)).toMatchObject({ status: "applied", reason: "no_agents" });
-
-        // An agent created right after the claim cannot change that.
-        claimed = true;
-        await agent(await company(), null);
-        expect(await readManagedEnvironmentDefaultDecision(db)).toMatchObject({ status: "applied" });
-      } finally {
-        await coordinator.stop();
-      }
-    });
-
-    it("keeps a worker ready that arrives while the boot attempt records pending", async () => {
-      const config = managedConfig([defaultEntry]);
-      running = false;
-      await applyManagedEnvironments(db, config, { env: {}, workerManager, autoInstalledPluginKeys: [PLUGIN_KEY] });
-      // The boot attempt finds the plugin down, and the worker reports `ready`
-      // while that attempt is still running (before the retry worker exists).
-      workerManager.isRunning.mockImplementationOnce(() => {
-        running = true;
-        for (const listener of [...managerReadyListeners]) listener(pluginId);
-        return false;
-      });
-      let task!: { run: () => Promise<unknown>; hasPending: () => Promise<boolean> };
-      await startManagedPluginInstanceDefault({
-        db,
-        managedConfig: config,
-        deliveryWork: { register: (_queue: string, registered: typeof task) => { task = registered; return { wake: () => {} }; } } as never,
-        workerManager,
-        recovery: createManagedEnvironmentRecovery(),
-      });
-      expect(await readManagedEnvironmentDefaultDecision(db)).toMatchObject({ status: "pending" });
-      // The ready event became a request for the worker.
-      expect(await task.hasPending()).toBe(true);
-      await task.run();
-      const [row] = await pluginRows();
-      expect(await instanceDefault()).toBe(row!.id);
-    });
-
-    it("keeps retrying when every attempt times out while the worker keeps running", async () => {
-      await boot([remoteHostEntry]);
-      // The boot ensure, its immediate recovery attempt, the inline boot
-      // decision attempt, and the worker's first run after registration all
-      // time out; the worker stays up throughout.
-      call.mockRejectedValueOnce(new Error("environmentValidateConfig timed out"));
-      call.mockRejectedValueOnce(new Error("environmentValidateConfig timed out"));
-      call.mockRejectedValueOnce(new Error("environmentValidateConfig timed out"));
-      call.mockRejectedValueOnce(new Error("environmentValidateConfig timed out"));
-      await boot();
-      await new Promise((resolve) => setTimeout(resolve, 100));
       expect(await instanceDefault()).toBeNull();
-      // The row from the earlier boot was kept, not archived, and the failed
-      // startup attempt still recorded the first evaluation.
-      expect((await pluginRows())[0]!.status).toBe("active");
-      expect(await readManagedEnvironmentDefaultDecision(db)).toMatchObject({ status: "pending" });
-
-      // An agent explicitly set to another environment appears before the
-      // retry: it does not follow the default, so the default still applies.
-      const [sandbox] = await db.insert(environments).values({
-        name: "Explicit sandbox", driver: "sandbox", status: "active", config: { provider: "daytona" },
-      }).returning();
-      await agent(await company(), sandbox!.id);
-
-      // The coordinator's retry of the failed attempt applies the default.
-      await lastWorker.drain();
-      const [row] = await pluginRows();
-      expect(await instanceDefault()).toBe(row!.id);
-      expect(await readManagedEnvironmentDefaultDecision(db)).toMatchObject({ status: "applied" });
-    });
-
-    it("waits while the plugin rejects the declared config, across a worker restart", async () => {
-      // Every validation of the declared config is refused.
-      call.mockImplementation(async (_id: string, method: string) =>
-        (method === "environmentValidateConfig" ? { ok: false, errors: ["region is not supported"] } : null) as never);
-      try {
-        await boot([{ ...defaultEntry, driverConfig: { region: "nowhere" } }]);
-        expect(await pluginRows()).toHaveLength(0);
-        expect(await readManagedEnvironmentDefaultDecision(db)).toMatchObject({ status: "pending", environmentId: null });
-
-        fireReady();
-        await settleWorker();
-        expect(await instanceDefault()).toBeNull();
-        expect(await readManagedEnvironmentDefaultDecision(db)).toMatchObject({ status: "pending" });
-      } finally {
-        call.mockImplementation(async (_id: string, method: string, input: { config: Record<string, unknown> }) =>
-          (method === "environmentValidateConfig" ? { ok: true, normalizedConfig: { ...input.config, normalized: true } } : null) as never);
-      }
-    });
-
-    it("never applies the default from a stale active row whose plugin is down", async () => {
-      const config = managedConfig([defaultEntry]);
-      await boot([remoteHostEntry]);
-      expect((await pluginRows())[0]!.status).toBe("active");
-      running = false;
-      expect(await retryManagedPluginInstanceDefault(db, config, workerManager)).toBe("waiting_for_plugin");
-      expect(await instanceDefault()).toBeNull();
-      expect(await readManagedEnvironmentDefaultDecision(db)).toMatchObject({ status: "pending" });
-    });
-
-    it("never applies the default from an older row when the plugin rejects the declared config", async () => {
-      const config = managedConfig([{ ...defaultEntry, driverConfig: { region: "nowhere" } }]);
-      await boot([remoteHostEntry]);
-      expect((await pluginRows())[0]!.status).toBe("active");
-      call.mockImplementationOnce(async () => ({ ok: false, errors: ["region is not supported"] }) as never);
-      expect(await retryManagedPluginInstanceDefault(db, config, workerManager)).toBe("config_rejected");
-      expect(await instanceDefault()).toBeNull();
-      expect(await readManagedEnvironmentDefaultDecision(db)).toMatchObject({ status: "pending" });
     });
 
     it("prepares a new agent that follows the default with the plugin, and one set to the sandbox without it", async () => {
       await boot();
-      const [sandbox] = await db.insert(environments).values({
-        name: "Managed Sandbox", driver: "sandbox", status: "active", config: { provider: "daytona" },
-      }).returning();
+      const sandboxId = await sandboxRow();
       const companyId = await company();
       const selection = async (id: string) =>
         createLifecycleDriver(db, { call } as never)
           .requiredPluginIds((await createLifecycleStore(db, createAgentLifecycleEffects()).get(id))!);
-
       expect(await selection(await agent(companyId, null))).toEqual([pluginId]);
-      expect(await selection(await agent(companyId, sandbox!.id))).toEqual([]);
+      expect(await selection(await agent(companyId, sandboxId))).toEqual([]);
     });
   });
 });

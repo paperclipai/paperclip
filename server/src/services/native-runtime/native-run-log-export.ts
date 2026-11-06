@@ -309,7 +309,7 @@ export async function nativeRunLogPrefixCursor(input: {
   while (offset < bytes) {
     input.signal?.throwIfAborted();
     const page = await input.store.read(input.handle, {
-      offset, limitBytes: Math.min(256_000, bytes - offset), signal: input.signal,
+      offset, limitBytes: Math.min(256_000, bytes - offset), signal: input.signal, priority: "background",
     });
     const content = Buffer.from(page.content);
     if (!content.length || offset + content.length > bytes) throw unproven();

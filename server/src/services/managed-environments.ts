@@ -48,12 +48,14 @@
  * entry: await `pluginsReady`, require the plugin `ready`, declaring the
  * entry's driver, and running a worker; else archive the entry's row and
  * re-ensure it on the worker's `ready`. Each entry owns one row (see
- * `managed-plugin-environments.ts`). This pass never decides the instance
- * default: one plugin entry may carry `instanceDefault`, and the retry
- * worker (`registerManagedPluginInstanceDefaultRetry`, registered after this
- * pass) is the only owner of that one-time decision. The sandbox stamp below
- * only fills an unset or local default and only reverts its own stamped
- * default, so it never replaces or reverts a plugin default.
+ * `managed-plugin-environments.ts`).
+ *
+ * Instance default: boot fills an unset, local or deleted default once, under
+ * a lock (`fillUnsetInstanceDefault`), and never changes a set one. A plugin
+ * entry with `instanceDefault` fills first, right after its ensure; the
+ * managed sandbox (under `enableManagedSandboxOnly`) fills after all plugin
+ * entries. So a new instance gets the plugin environment, and an existing
+ * instance, whose default is already set, keeps its default.
  */
 
 import type { Db } from "@paperclipai/db";
@@ -61,24 +63,16 @@ import { HttpError } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { environmentService } from "./environments.js";
 import type { ManagedSandboxEnvironmentReconcileAction } from "./environments.js";
-import { instanceSettingsService } from "./instance-settings.js";
+import { fillUnsetInstanceDefault, type FillInstanceDefaultResult } from "./managed-instance-default.js";
 import type { ManagedInstanceConfig } from "./managed-config.js";
 import type { ManagedResourceStockStatus } from "./managed-resource-drift.js";
 import { parseExecutionPolicyBootstrapEnv } from "./execution-policy-bootstrap.js";
 import { resolvePluginSandboxProviderDriverByKey } from "./plugin-environment-driver.js";
 import { pluginRegistryService } from "./plugin-registry.js";
 import { trackIdleWork } from "./task-admission.js";
-import { DELIVERY_QUEUES } from "./delivery-work-notifications.js";
 import { resolveBundledCatalogRoot, resolveBundledPluginInstalls } from "./bundled-plugins.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
-import {
-  applyManagedPluginInstanceDefault,
-  readManagedEnvironmentDefaultDecision,
-} from "./managed-environment-default.js";
-import {
-  managedPluginEnvironmentMarker,
-  type ManagedPluginEnvironmentReconcileAction,
-} from "./managed-plugin-environments.js";
+import type { ManagedPluginEnvironmentReconcileAction } from "./managed-plugin-environments.js";
 
 /**
  * Lifecycle of the recovery work `applyManagedEnvironments` leaves behind
@@ -155,15 +149,11 @@ export interface ApplyManagedEnvironmentsOptions {
     ReturnType<typeof environmentService>,
     | "ensureManagedSandboxEnvironment"
     | "archiveManagedSandboxEnvironment"
-    | "getById"
-    | "update"
-    | "findManagedSandboxEnvironment"
     | "ensureManagedPluginEnvironment"
     | "archiveManagedPluginEnvironment"
-    | "findManagedPluginEnvironment"
   >;
-  /** Test seam: overrides the instance-settings service built from `db`. */
-  instanceSettings?: Pick<ReturnType<typeof instanceSettingsService>, "get" | "update">;
+  /** Test seam: overrides the locked fill of an unset instance default (`fillUnsetInstanceDefault`). */
+  fillInstanceDefault?: (environmentId: string) => Promise<FillInstanceDefaultResult>;
   /** Test seam: overrides the sandbox-provider plugin driver lookup. */
   resolveSandboxProviderDriver?: (input: {
     db: Db;
@@ -262,43 +252,10 @@ export async function applyManagedEnvironments(
 ): Promise<ApplyManagedEnvironmentsResult | null> {
   if (!managedConfig) return null;
 
-  const settings = opts.instanceSettings ?? instanceSettingsService(db);
+  const fillInstanceDefault = opts.fillInstanceDefault
+    ?? ((environmentId: string) => fillUnsetInstanceDefault(db, environmentId));
   const environments = opts.environments ?? environmentService(db);
   const managedSandboxOnlyDeclared = managedConfig.features.enableManagedSandboxOnly === true;
-
-  // Mode-off default cleanup runs BEFORE any ensure, and regardless of
-  // whether the document still declares environments or the provider is
-  // available: a reconciliation-stamped default must not outlive the mode
-  // through the paths that skip per-entry reconciliation entirely — the
-  // declaration was removed, the provider is down, or the row was
-  // archived. Only a default that points at the managed row AND carries
-  // the `managedDefaultStamped` marker reverts; tenant-chosen defaults
-  // (no marker) are untouched.
-  if (!managedSandboxOnlyDeclared) {
-    try {
-      const managedRow = await environments.findManagedSandboxEnvironment(undefined, {
-        includeArchived: true,
-      });
-      if (
-        managedRow &&
-        managedRow.metadata?.managedDefaultStamped === true &&
-        ((await settings.get()).defaultEnvironmentId ?? null) === managedRow.id
-      ) {
-        await settings.update({ defaultEnvironmentId: null });
-        const { managedDefaultStamped: _cleared, ...remainingMetadata } = managedRow.metadata ?? {};
-        await environments.update(managedRow.id, { metadata: remainingMetadata });
-        logger.info(
-          { environmentId: managedRow.id },
-          "instance default environment reverted from the managed sandbox environment (managed-sandbox-only is not declared)",
-        );
-      }
-    } catch (err) {
-      logger.error(
-        { err },
-        "failed to revert the stamped managed sandbox instance default (degraded: stale default until the next boot)",
-      );
-    }
-  }
 
   const pluginSpecs = managedConfig.pluginEnvironments;
   if (managedConfig.environments.length === 0 && pluginSpecs.length === 0) return null;
@@ -343,59 +300,62 @@ export async function applyManagedEnvironments(
   const resolveDriver = opts.resolveSandboxProviderDriver ?? resolvePluginSandboxProviderDriverByKey;
 
   /**
-   * Point the instance default at the managed sandbox row when no
-   * deliberate choice stands in the way: an unset default, a default on
-   * the (hidden-under-this-mode) local row, or a dangling reference all
-   * move to the managed environment, so pickers and run selection agree
-   * that "the default" is the platform sandbox. A tenant-chosen custom
-   * environment (ssh, their own sandbox) is never overridden.
+   * Under `enableManagedSandboxOnly`, point the instance default at the
+   * managed sandbox row when nothing deliberate is set: an unset default, the
+   * (hidden-under-this-mode) local row, or a dangling reference. A set default
+   * (any other environment, whoever chose it) is never changed, and nothing
+   * reverts the filled default later: it is an ordinary set value from then
+   * on. The write is one locked transaction (`fillUnsetInstanceDefault`), so
+   * overlapping boots and admin writes cannot overwrite each other.
    *
-   * Gated symmetrically on the document declaring
-   * `enableManagedSandboxOnly`:
+   * Runs once, after the plugin entries: a plugin entry with
+   * `instanceDefault` fills an unset default first (see
+   * `fillPluginInstanceDefault`), so on a new instance it wins, and on an
+   * existing one (whose default is already set) neither fill changes it.
    *
-   * - Declared: stamp the managed row as the default, so pickers and run
-   *   selection agree the platform sandbox is "the default". The stamp is
-   *   recorded as `managedDefaultStamped` in the row's platform-owned
-   *   metadata (which boot reconciliation preserves and the client write
-   *   floor protects), so a stamped default is distinguishable from one
-   *   the tenant chose deliberately.
-   * - Not declared: local execution is a legitimate default again, so a
-   *   default THIS reconciliation stamped earlier (points at the managed
-   *   row AND carries the stamp marker) reverts to unset — otherwise
-   *   turning the mode off would keep routing default-following runs
-   *   into the sandbox off a stale stamp. A default the tenant selected
-   *   themselves — the managed row without the marker, or any custom
-   *   environment — is untouched in both directions.
-   *
-   * Idempotent and best-effort — a failure degrades to the run-time
-   * policy, which refuses local under managed-sandbox-only regardless.
+   * Best-effort: a failure degrades to the run-time policy, which refuses
+   * local under managed-sandbox-only regardless.
    */
-  const ensureManagedInstanceDefault = async (managedEnvironment: {
-    id: string;
-    metadata: Record<string, unknown> | null;
-  }): Promise<void> => {
+  const ensureManagedInstanceDefault = async (managedEnvironment: { id: string }): Promise<void> => {
     if (!managedSandboxOnlyDeclared) return;
     try {
-      const current = (await settings.get()).defaultEnvironmentId ?? null;
-      if (current === managedEnvironment.id) return;
-      if (current !== null) {
-        const currentEnvironment = await environments.getById(current);
-        if (currentEnvironment && currentEnvironment.driver !== "local") return;
-      }
-      // Marker first: a crash between the two writes must never leave a
-      // stamped default that the revert path cannot attribute.
-      await environments.update(managedEnvironment.id, {
-        metadata: { ...(managedEnvironment.metadata ?? {}), managedDefaultStamped: true },
-      });
-      await settings.update({ defaultEnvironmentId: managedEnvironment.id });
+      const { filled, previousDefaultEnvironmentId } = await fillInstanceDefault(managedEnvironment.id);
+      if (!filled) return;
       logger.info(
-        { environmentId: managedEnvironment.id, previousDefaultEnvironmentId: current },
+        { environmentId: managedEnvironment.id, previousDefaultEnvironmentId },
         "instance default environment set to the managed sandbox environment",
       );
     } catch (err) {
       logger.error(
         { err, environmentId: managedEnvironment.id },
         "failed to reconcile the instance default environment with the managed sandbox environment",
+      );
+    }
+  };
+
+  /**
+   * A plugin entry with `instanceDefault` fills the instance default with its
+   * row right after a successful boot ensure, through the same locked fill:
+   * only an unset, local or deleted default is replaced, and a set default
+   * (an existing instance's managed sandbox, an admin's choice) never is.
+   * Recovery after boot never fills. Best-effort, like the sandbox fill.
+   */
+  const fillPluginInstanceDefault = async (
+    spec: ManagedInstanceConfig["pluginEnvironments"][number],
+    environmentId: string,
+  ): Promise<void> => {
+    if (!spec.instanceDefault) return;
+    try {
+      const { filled, previousDefaultEnvironmentId } = await fillInstanceDefault(environmentId);
+      if (!filled) return;
+      logger.info(
+        { environmentId, name: spec.name, previousDefaultEnvironmentId },
+        "instance default environment set to the managed plugin environment",
+      );
+    } catch (err) {
+      logger.error(
+        { err, environmentId, name: spec.name },
+        "failed to fill the instance default with the managed plugin environment",
       );
     }
   };
@@ -483,6 +443,7 @@ export async function applyManagedEnvironments(
   let unchanged = 0;
   let skipped = 0;
   const outcomes: ManagedEnvironmentReconciliationOutcome[] = [];
+  let sandboxDefaultCandidate: string | null = null;
   for (const spec of managedConfig.environments) {
     try {
       const resolved = await resolveDriver({ db, driverKey: spec.provider });
@@ -547,7 +508,8 @@ export async function applyManagedEnvironments(
         stockStatus: reconciliation.stockStatus,
         updateAvailable: reconciliation.updateAvailable,
       });
-      await ensureManagedInstanceDefault(reconciliation.environment);
+      // Filled after the plugin entries (see `ensureManagedInstanceDefault`).
+      sandboxDefaultCandidate = reconciliation.environment.id;
       const logContext = {
         environmentId: reconciliation.environment.id,
         name: reconciliation.environment.name,
@@ -572,9 +534,6 @@ export async function applyManagedEnvironments(
       );
     }
   }
-  // Plugin entries never decide the instance default here: the retry worker
-  // registered after this pass is its only owner (see
-  // `registerManagedPluginInstanceDefaultRetry`).
   const resolvePlugin = opts.resolveEnvironmentPlugin ?? resolveEnvironmentPluginByKey;
   const pluginOutcomes: ManagedPluginEnvironmentReconciliationOutcome[] = [];
 
@@ -716,6 +675,7 @@ export async function applyManagedEnvironments(
         { ...logBase, environmentId: result.environment.id, action: result.action },
         "managed plugin environment reconciled",
       );
+      await fillPluginInstanceDefault(spec, result.environment.id);
     } catch (err) {
       failed += 1;
       if (recoverable && !isPermanentConfigRejection(err)) {
@@ -748,6 +708,9 @@ export async function applyManagedEnvironments(
     }
   }
 
+
+  if (sandboxDefaultCandidate) await ensureManagedInstanceDefault({ id: sandboxDefaultCandidate });
+
   return {
     ensured,
     failed,
@@ -760,237 +723,4 @@ export async function applyManagedEnvironments(
     outcomes,
     pluginOutcomes,
   };
-}
-
-/*
- * One-time `instanceDefault` decision: lifecycle
- *
- * `retryManagedPluginInstanceDefault` is the ONLY caller of
- * `applyManagedPluginInstanceDefault`, and the retry worker below is its only
- * caller. Each attempt enforces:
- *
- * 1. The entry's row can become the default only right after this attempt
- *    ensured the CURRENT declaration (driver config validated by the plugin)
- *    while the plugin passes the boot readiness rule. Otherwise the decision
- *    is recorded with the row as unavailable (`pending`, or `declined` when
- *    the instance already has agents), including before a temporary failure
- *    is rethrown, so the first attempt is always the first evaluation.
- * 2. An admin's explicit default write ends a decision that has not applied
- *    (`cancelPendingManagedEnvironmentDefault`, same transaction as the write).
- * 3. No agent follows the default when it commits (SHARE lock on `agents`).
- *
- * Every non-final state has a way out, and none of them polls:
- *
- * | State                        | Next attempt comes from                    |
- * | ---------------------------- | ------------------------------------------ |
- * | final (applied / declined)   | nothing; attempts exit after one read      |
- * | server just started          | the boot attempt (inline, before `ready`)  |
- * | waiting for the plugin       | a worker `ready` (`onWorkerReady`)         |
- * | config rejected by plugin    | a new boot (the document must change)      |
- * | attempt threw (timeout, db)  | the delivery coordinator's retry (60 s)    |
- */
-
-/** The plugin entry that declares `instanceDefault`, if any (at most one). */
-function instanceDefaultSpec(managedConfig: ManagedInstanceConfig | null) {
-  return managedConfig?.pluginEnvironments.find((spec) => spec.instanceDefault) ?? null;
-}
-
-/**
- * The same readiness rule the boot ensure applies: the plugin is installed and
- * `ready`, declares the entry's environment driver, and has a running worker.
- */
-async function isPluginEntryAvailable(
-  db: Db,
-  spec: ManagedInstanceConfig["pluginEnvironments"][number],
-  workerManager: Pick<PluginWorkerManager, "isRunning"> | undefined,
-): Promise<boolean> {
-  if (!workerManager) return false;
-  const resolved = await resolveEnvironmentPluginByKey({ db, pluginKey: spec.pluginKey, driverKey: spec.driverKey });
-  return resolved != null
-    && resolved.plugin.status === "ready"
-    && resolved.declaresDriver
-    && workerManager.isRunning(resolved.plugin.id);
-}
-
-export type ManagedPluginInstanceDefaultRetryOutcome =
-  | "nothing_to_do"
-  | "evaluated"
-  | "waiting_for_plugin"
-  | "config_rejected";
-
-/**
- * Re-run the `instanceDefault` decision for the retry worker. The entry's row
- * counts as active only after a successful ensure of the CURRENT declaration
- * (its driver config validated by the plugin again), never because an older
- * row is still active. Returns without retrying when the decision is final,
- * when the plugin is not available (recorded with the row as unavailable; a
- * worker `ready` asks again), or when the plugin rejects the declared config
- * (recorded the same way; nothing changes until the document does). Throws on
- * any other failure, so the caller retries.
- */
-export async function retryManagedPluginInstanceDefault(
-  db: Db,
-  managedConfig: ManagedInstanceConfig | null,
-  workerManager?: Pick<PluginWorkerManager, "isRunning" | "call">,
-): Promise<ManagedPluginInstanceDefaultRetryOutcome> {
-  const spec = instanceDefaultSpec(managedConfig);
-  if (!spec) return "nothing_to_do";
-  const decision = await readManagedEnvironmentDefaultDecision(db);
-  if (decision && decision.status !== "pending") return "nothing_to_do";
-  const marker = managedPluginEnvironmentMarker(spec);
-  const environmentsSvc = environmentService(db);
-  const recordUnavailable = async () => {
-    const existing = await environmentsSvc.findManagedPluginEnvironment({ pluginKey: spec.pluginKey, driverKey: spec.driverKey });
-    const outcome = await applyManagedPluginInstanceDefault(db, {
-      environment: existing ? { id: existing.id, status: "unavailable" } : null,
-      marker,
-    });
-    if (outcome.status !== "already_decided") {
-      logger.warn(
-        { name: spec.name, marker, decision: outcome.status, reason: outcome.reason },
-        "managed plugin environment is not available; its instanceDefault waits until it is",
-      );
-    }
-  };
-  const call = workerManager?.call;
-  if (!workerManager || !call || !(await isPluginEntryAvailable(db, spec, workerManager))) {
-    await recordUnavailable();
-    return "waiting_for_plugin";
-  }
-  let ensured: Awaited<ReturnType<typeof environmentsSvc.ensureManagedPluginEnvironment>>;
-  try {
-    ensured = await environmentsSvc.ensureManagedPluginEnvironment({
-      name: spec.name,
-      description: spec.description,
-      pluginKey: spec.pluginKey,
-      driverKey: spec.driverKey,
-      driverConfig: { ...spec.driverConfig },
-      workerManager: { isRunning: workerManager.isRunning.bind(workerManager), call: call.bind(workerManager) },
-    });
-  } catch (err) {
-    if (isPermanentConfigRejection(err)) {
-      await recordUnavailable();
-      return "config_rejected";
-    }
-    if (!(await isPluginEntryAvailable(db, spec, workerManager))) {
-      await recordUnavailable();
-      return "waiting_for_plugin";
-    }
-    // A temporary failure (for example a timeout with the worker running)
-    // still records the first evaluation now, with the row as unavailable, so
-    // the retry below continues a `pending` decision ("no agent follows the
-    // default by then") instead of re-reading "no agents yet" later.
-    await recordUnavailable().catch((recordErr: unknown) => {
-      logger.error({ err: recordErr, name: spec.name, marker }, "failed to record the managed plugin environment's pending instance default");
-    });
-    throw err;
-  }
-  const outcome = await applyManagedPluginInstanceDefault(db, { environment: ensured.environment, marker });
-  const context = {
-    environmentId: ensured.environment.id,
-    name: spec.name,
-    marker,
-    decision: outcome.status,
-    reason: outcome.reason,
-    previousDefaultEnvironmentId: outcome.previousDefaultEnvironmentId,
-  };
-  if (outcome.status === "applied") {
-    logger.info(context, "instance default environment set to the managed plugin environment");
-  } else if (outcome.status === "declined") {
-    logger.warn(context, "kept the existing instance default environment; the managed plugin environment's instanceDefault will not apply on this instance");
-  }
-  return "evaluated";
-}
-
-/**
- * Register the retry worker for the one-time `instanceDefault` decision, once
- * `applyManagedEnvironments` has finished (returns null when the document
- * declares no `instanceDefault` entry).
- *
- * The worker starts with one requested attempt, which rebuilds the obligation
- * from saved state: it reads the decision row once and stops if the decision
- * is final, and otherwise retries a decision that boot left `pending` (for
- * example after the boot ensure timed out while the worker kept running).
- * After that the obligation is in memory: `requestRetry()` (a failed inline
- * decision) and every worker `ready` ask for one more attempt, and the
- * queue's `hasPending` answers from that request alone, without SQL, so a
- * paused or idle queue never queries. An attempt that throws keeps the
- * request, so the coordinator retries it. `recovery.stop()` removes the
- * `ready` subscription on shutdown.
- */
-export function registerManagedPluginInstanceDefaultRetry(input: {
-  db: Db;
-  managedConfig: ManagedInstanceConfig | null;
-  deliveryWork: {
-    register(
-      queue: typeof DELIVERY_QUEUES.managedEnvironmentDefault,
-      task: { retryMs: number; run: () => Promise<unknown>; hasPending: () => Promise<boolean> },
-    ): { wake(): void };
-  };
-  workerManager?: Pick<PluginWorkerManager, "isRunning" | "call" | "onWorkerReady">;
-  recovery: ManagedEnvironmentRecovery;
-  /**
-   * Start with one requested attempt (default). `startManagedPluginInstanceDefault`
-   * passes false after its inline boot attempt succeeded.
-   */
-  requested?: boolean;
-  retryMs?: number;
-}): { requestRetry(): void } | null {
-  if (!instanceDefaultSpec(input.managedConfig)) return null;
-  // One attempt from saved state at startup (see above), unless boot made it.
-  let requestedGeneration = input.requested === false ? 0 : 1;
-  let handledGeneration = 0;
-  const worker = input.deliveryWork.register(DELIVERY_QUEUES.managedEnvironmentDefault, {
-    retryMs: input.retryMs ?? 60_000,
-    run: async () => {
-      const target = requestedGeneration;
-      if (target === handledGeneration) return;
-      await retryManagedPluginInstanceDefault(input.db, input.managedConfig, input.workerManager);
-      handledGeneration = target;
-    },
-    hasPending: async () => requestedGeneration !== handledGeneration,
-  });
-  const requestRetry = (): void => {
-    requestedGeneration += 1;
-    worker.wake();
-  };
-  const unsubscribe = input.workerManager?.onWorkerReady?.(() => requestRetry());
-  if (unsubscribe) input.recovery.onStop(unsubscribe);
-  return { requestRetry };
-}
-
-/**
- * Boot entry point for the one-time `instanceDefault` decision, awaited in
- * `index.ts` right after `applyManagedEnvironments` and before the server
- * reports ready. The first attempt runs inline, through the same
- * `retryManagedPluginInstanceDefault`, so it completes before any request is
- * admitted, including a warm-standby claim and the agent creation that
- * follows it, and whether the delivery coordinator is running does not
- * matter. Then the retry worker is registered for later attempts; it starts
- * with a pending request when the boot attempt threw, or when a worker
- * `ready` arrived while it ran.
- */
-export async function startManagedPluginInstanceDefault(
-  input: Omit<Parameters<typeof registerManagedPluginInstanceDefaultRetry>[0], "requested">,
-): Promise<{ requestRetry(): void } | null> {
-  if (!instanceDefaultSpec(input.managedConfig)) return null;
-  // Listen before the inline attempt: a worker `ready` that arrives while it
-  // runs (for example the plugin recovering while it records `pending`) must
-  // reach the worker as a request. The worker subscribes in `register`, which
-  // runs synchronously before this listener is removed, so no event falls in
-  // between.
-  let readyDuringAttempt = false;
-  const stopListening = input.workerManager?.onWorkerReady?.(() => { readyDuringAttempt = true; });
-  let bootAttemptFailed = false;
-  try {
-    await retryManagedPluginInstanceDefault(input.db, input.managedConfig, input.workerManager);
-  } catch (err) {
-    bootAttemptFailed = true;
-    logger.error({ err }, "managed plugin environment instance default failed at boot; retrying in the background");
-  }
-  try {
-    return registerManagedPluginInstanceDefaultRetry({ ...input, requested: bootAttemptFailed || readyDuringAttempt });
-  } finally {
-    stopListening?.();
-  }
 }

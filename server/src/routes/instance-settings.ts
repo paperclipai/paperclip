@@ -31,18 +31,6 @@ import {
   type ActivityPublication,
 } from "../services/index.js";
 import { environmentService } from "../services/environments.js";
-import { getManagedInstanceConfig } from "../services/managed-config.js";
-import { cancelPendingManagedEnvironmentDefault } from "../services/managed-environment-default.js";
-
-/** Whether the managed config declares a plugin entry with `instanceDefault`. */
-function managedInstanceDefaultDeclared(): boolean {
-  try {
-    return getManagedInstanceConfig()?.pluginEnvironments.some((spec) => spec.instanceDefault) ?? false;
-  } catch {
-    // A malformed document refuses startup, so a running server never gets here.
-    return false;
-  }
-}
 import { assertEnvironmentSelectionForCompany } from "./environment-selection.js";
 import { assertBoardOrgAccess, getActorInfo } from "./authz.js";
 
@@ -174,37 +162,10 @@ export function instanceSettingsRoutes(db: Db, pluginWorkers?: PluginWorkerManag
         await assertAgentsReadyForEnvironmentChange(db, await environmentById(previousId), await environmentById(req.body.defaultEnvironmentId),
           { inheritsDefault: true });
       }
-      // An explicit tenant write of the instance default reclassifies its
-      // attribution: whatever the default becomes — including a deliberate
-      // re-selection of the managed sandbox row — it is tenant-chosen, so
-      // the reconciliation stamp marker must not survive to let a later
-      // managed-sandbox-only mode-off pass mistake the tenant's choice for a
-      // stamp and revert it. The marker clear and the settings write commit
-      // in ONE transaction, so no partial failure can desync attribution
-      // from the default (neither a stale stamp on a tenant choice, nor a
-      // reconciliation default that lost its marker and can never revert).
-      const writesDefault = Object.prototype.hasOwnProperty.call(req.body, "defaultEnvironmentId");
-      const managedSandbox = writesDefault
-        ? await environments.findManagedSandboxEnvironment(undefined, { includeArchived: true })
-        : null;
-      const updated = await db.transaction(async (tx) => {
-        // Lock order shared with `applyManagedPluginInstanceDefault`: the
-        // instance default row (this write), then the managed default
-        // decision, then any environment row.
-        const written = await svc.update(req.body, { db: tx });
-        if (writesDefault) {
-          // An explicit choice ends a managed `instanceDefault` decision that
-          // has not applied yet, so recovery never replaces it later.
-          await cancelPendingManagedEnvironmentDefault(tx as unknown as Db, {
-            instanceDefaultDeclared: managedInstanceDefaultDeclared(),
-          });
-        }
-        if (managedSandbox?.metadata?.managedDefaultStamped === true) {
-          const { managedDefaultStamped: _cleared, ...remainingMetadata } = managedSandbox.metadata;
-          await environments.update(managedSandbox.id, { metadata: remainingMetadata }, { db: tx });
-        }
-        return written;
-      });
+      // An explicit default write is an ordinary set value: boot only fills an
+      // unset, local or dangling default (`fillUnsetInstanceDefault`), and the
+      // lock it takes on this row means it never overwrites a concurrent write.
+      const updated = await svc.update(req.body);
       const actor = getActorInfo(req);
       const companyIds = await svc.listCompanyIds();
       await Promise.all(

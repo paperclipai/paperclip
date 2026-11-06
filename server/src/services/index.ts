@@ -145,13 +145,7 @@ export {
   type ManagedInstanceConfig,
 } from "./managed-config.js";
 export { bootstrapExecutionPolicyFromEnv } from "./execution-policy-bootstrap.js";
-export {
-  applyManagedEnvironments,
-  createManagedEnvironmentRecovery,
-  registerManagedPluginInstanceDefaultRetry,
-  startManagedPluginInstanceDefault,
-  retryManagedPluginInstanceDefault,
-} from "./managed-environments.js";
+export { applyManagedEnvironments, createManagedEnvironmentRecovery } from "./managed-environments.js";
 export { buildExportFidelityReport, collectExportFidelityCounts } from "./export-fidelity.js";
 export { companyPortabilityService } from "./company-portability.js";
 export { teamsCatalogService } from "./teams-catalog.js";
