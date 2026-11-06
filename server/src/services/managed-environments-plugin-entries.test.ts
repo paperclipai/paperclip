@@ -563,17 +563,19 @@ describe("applyManagedEnvironments plugin entries", () => {
       expect(settings.update).not.toHaveBeenCalled();
     });
 
-    it("registers the retry worker only for an instanceDefault entry, and wakes it on every worker ready until shutdown", async () => {
+    it("registers the retry worker only for an instanceDefault entry, with a query-free pending check", async () => {
       const readyListeners = new Set<(pluginId: string) => void>();
       const manager = {
         isRunning: vi.fn(() => true),
+        call: vi.fn(),
         onWorkerReady: vi.fn((listener: (pluginId: string) => void) => {
           readyListeners.add(listener);
           return () => { readyListeners.delete(listener); };
         }),
       };
       const wake = vi.fn();
-      const deliveryWork = { register: vi.fn(() => ({ wake })) };
+      let task!: { retryMs: number; run: () => Promise<unknown>; hasPending: () => Promise<boolean> };
+      const deliveryWork = { register: vi.fn((_queue: string, registered: typeof task) => { task = registered; return { wake }; }) };
       const recovery = createManagedEnvironmentRecovery();
 
       expect(registerManagedPluginInstanceDefaultRetry({
@@ -588,16 +590,37 @@ describe("applyManagedEnvironments plugin entries", () => {
         workerManager: manager,
         recovery,
       });
-      expect(worker).not.toBeNull();
       expect(deliveryWork.register).toHaveBeenCalledWith("managed-environment-default", expect.objectContaining({ retryMs: 60_000 }));
+      // Nothing requested: idle, and `run` touches nothing (the db is null here).
+      expect(await task.hasPending()).toBe(false);
+      await task.run();
 
-      // A plugin worker that comes back wakes the queue, which then sees the
-      // pending decision as actionable again.
+      // A worker start asks for an attempt; so does a failed inline decision.
       for (const listener of [...readyListeners]) listener("remote-host-plugin");
       expect(wake).toHaveBeenCalledTimes(1);
+      expect(await task.hasPending()).toBe(true);
+      worker!.requestRetry();
+      expect(wake).toHaveBeenCalledTimes(2);
+
+      // A throwing attempt keeps the request, so the coordinator retries it.
+      await expect(task.run()).rejects.toThrow();
+      expect(await task.hasPending()).toBe(true);
 
       await recovery.stop();
       expect(readyListeners.size).toBe(0);
+    });
+
+    it("hands a retry requested before registration to the new worker", async () => {
+      let task!: { hasPending: () => Promise<boolean> };
+      const deliveryWork = { register: vi.fn((_queue: string, registered: typeof task) => { task = registered; return { wake: vi.fn() }; }) };
+      registerManagedPluginInstanceDefaultRetry({
+        db: noDb,
+        managedConfig: configWith([pluginEntry({ instanceDefault: true })]),
+        deliveryWork: deliveryWork as never,
+        recovery: createManagedEnvironmentRecovery(),
+        requested: true,
+      });
+      expect(await task.hasPending()).toBe(true);
     });
 
     it("keeps an ensure counted and asks the retry worker for a failed default decision", async () => {

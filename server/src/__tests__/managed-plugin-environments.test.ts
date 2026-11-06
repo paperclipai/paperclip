@@ -16,7 +16,6 @@ import { environmentService } from "../services/environments.js";
 import { MANAGED_CONFIG_ENV_KEY, parseManagedConfigEnv } from "../services/managed-config.js";
 import {
   applyManagedEnvironments,
-  managedPluginInstanceDefaultPending,
   retryManagedPluginInstanceDefault,
 } from "../services/managed-environments.js";
 import {
@@ -481,41 +480,37 @@ const support = await getEmbeddedPostgresTestSupport();
       expect(await instanceDefault()).toBe(row.id);
     });
 
-    it("lets the retry worker finish a decision from durable state", async () => {
+    it("lets the retry worker finish a decision after ensuring the current entry", async () => {
       const config = managedConfig([defaultEntry]);
-      expect(await managedPluginInstanceDefaultPending(db, config, workerManager)).toBe(true);
       await boot([remoteHostEntry]);
-      expect(await managedPluginInstanceDefaultPending(db, config, workerManager)).toBe(true);
-
-      await retryManagedPluginInstanceDefault(db, config, workerManager);
+      call.mockClear();
+      expect(await retryManagedPluginInstanceDefault(db, config, workerManager)).toBe("evaluated");
+      // The current declaration was validated again before the default applied.
+      expect(call).toHaveBeenCalledWith(pluginId, "environmentValidateConfig", { driverKey: "tasks", config: {} });
       const [row] = await pluginRows();
       expect(await instanceDefault()).toBe(row!.id);
-      expect(await managedPluginInstanceDefaultPending(db, config, workerManager)).toBe(false);
-      expect(await managedPluginInstanceDefaultPending(db, managedConfig([remoteHostEntry]), workerManager)).toBe(false);
+      expect(await retryManagedPluginInstanceDefault(db, config, workerManager)).toBe("nothing_to_do");
+      expect(await retryManagedPluginInstanceDefault(db, managedConfig([remoteHostEntry]), workerManager)).toBe("nothing_to_do");
     });
 
     it("never applies the default from a stale active row whose plugin is down", async () => {
       const config = managedConfig([defaultEntry]);
-      // An earlier boot left the row active; the decision is still pending.
       await boot([remoteHostEntry]);
-      await db.insert(instanceSettings).values({
-        singletonKey: "managed-environment-default:v1",
-        general: {
-          version: 1, status: "pending", reason: "environment_not_active", environmentMarker: MARKER,
-          environmentId: null, previousDefaultEnvironmentId: null, decidedAt: new Date().toISOString(),
-        },
-      });
       expect((await pluginRows())[0]!.status).toBe("active");
       running = false;
-
-      // While the plugin is down there is nothing for the retry worker to do...
-      expect(await managedPluginInstanceDefaultPending(db, config, workerManager)).toBe(false);
-      // ...and a run anyway treats the row as unavailable.
-      await retryManagedPluginInstanceDefault(db, config, workerManager);
+      expect(await retryManagedPluginInstanceDefault(db, config, workerManager)).toBe("waiting_for_plugin");
       expect(await instanceDefault()).toBeNull();
       expect(await readManagedEnvironmentDefaultDecision(db)).toMatchObject({ status: "pending" });
-      // Without a worker manager nothing counts as available.
-      expect(await managedPluginInstanceDefaultPending(db, config)).toBe(false);
+    });
+
+    it("never applies the default from an older row when the plugin rejects the declared config", async () => {
+      const config = managedConfig([{ ...defaultEntry, driverConfig: { region: "nowhere" } }]);
+      await boot([remoteHostEntry]);
+      expect((await pluginRows())[0]!.status).toBe("active");
+      call.mockImplementationOnce(async () => ({ ok: false, errors: ["region is not supported"] }) as never);
+      expect(await retryManagedPluginInstanceDefault(db, config, workerManager)).toBe("config_rejected");
+      expect(await instanceDefault()).toBeNull();
+      expect(await readManagedEnvironmentDefaultDecision(db)).toMatchObject({ status: "pending" });
     });
 
     it("prepares a new agent that follows the default with the plugin, and one set to the sandbox without it", async () => {

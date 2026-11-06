@@ -148,7 +148,6 @@ export { bootstrapExecutionPolicyFromEnv } from "./execution-policy-bootstrap.js
 export {
   applyManagedEnvironments,
   createManagedEnvironmentRecovery,
-  managedPluginInstanceDefaultPending,
   registerManagedPluginInstanceDefaultRetry,
   retryManagedPluginInstanceDefault,
 } from "./managed-environments.js";

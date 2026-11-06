@@ -1203,15 +1203,19 @@ async function startServerWithDatabaseTeardown(
   // by a standing timer: once decided, the queue is idle. The worker is
   // registered only after the boot pass below has reconciled the rows (and
   // waited for the plugins), and it applies the same plugin readiness rule.
-  let managedEnvironmentDefaultWorker: { wake(): void } | null = null;
+  let managedEnvironmentDefaultWorker: { requestRetry(): void } | null = null;
+  let managedEnvironmentDefaultRetryRequested = false;
   try {
     const appLocals = (app as {
       locals?: { bundledPluginsStartup?: Promise<unknown>; managedBundledPluginKeys?: readonly string[] };
     }).locals;
     const managedEnvironmentsResult = await applyManagedEnvironments(db as any, managedConfig, {
       recovery: managedEnvironmentRecovery,
-      // Before the worker exists, its registration run (below) covers the retry.
-      requestInstanceDefaultRetry: () => managedEnvironmentDefaultWorker?.wake(),
+      // Before the worker exists, the request is handed to it at registration.
+      requestInstanceDefaultRetry: () => {
+        if (managedEnvironmentDefaultWorker) managedEnvironmentDefaultWorker.requestRetry();
+        else managedEnvironmentDefaultRetryRequested = true;
+      },
       pluginsReady: appLocals?.bundledPluginsStartup,
       autoInstalledPluginKeys: appLocals?.managedBundledPluginKeys,
       workerManager: pluginWorkerManager,
@@ -1225,6 +1229,7 @@ async function startServerWithDatabaseTeardown(
       deliveryWork,
       workerManager: pluginWorkerManager,
       recovery: managedEnvironmentRecovery,
+      requested: managedEnvironmentDefaultRetryRequested,
     });
   } catch (err) {
     logger.error({ err }, "failed to apply managed environments from managed config");

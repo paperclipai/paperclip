@@ -197,8 +197,8 @@ export interface ApplyManagedEnvironmentsOptions {
   recovery?: ManagedEnvironmentRecovery;
   /**
    * Asks the owning retry worker (the `managed-environment-default` delivery
-   * queue in `index.ts`) to re-run a failed `instanceDefault` decision. That
-   * worker keeps retrying while `managedPluginInstanceDefaultPending` holds.
+   * queue, see `registerManagedPluginInstanceDefaultRetry`) to re-run a failed
+   * `instanceDefault` decision.
    */
   requestInstanceDefaultRetry?: () => void;
   /** Test seam: overrides the one-time instance default decision. */
@@ -853,78 +853,87 @@ async function isPluginEntryAvailable(
     && workerManager.isRunning(resolved.plugin.id);
 }
 
-/**
- * The entry's row as the decision may see it: active only when the row is
- * active AND its plugin passes the boot readiness rule. A stale active row
- * whose plugin is down counts as unavailable.
- */
-async function instanceDefaultEnvironmentForRetry(
-  db: Db,
-  spec: ManagedInstanceConfig["pluginEnvironments"][number],
-  workerManager: Pick<PluginWorkerManager, "isRunning"> | undefined,
-): Promise<{ id: string; status: string } | null> {
-  const row = await environmentService(db).findManagedPluginEnvironment({
-    pluginKey: spec.pluginKey,
-    driverKey: spec.driverKey,
-  });
-  if (!row) return null;
-  const active = row.status === "active" && await isPluginEntryAvailable(db, spec, workerManager);
-  return { id: row.id, status: active ? "active" : "unavailable" };
-}
+export type ManagedPluginInstanceDefaultRetryOutcome =
+  | "nothing_to_do"
+  | "evaluated"
+  | "waiting_for_plugin"
+  | "config_rejected";
 
 /**
- * Whether the `instanceDefault` decision still has work to do, read from
- * durable state: the document declares one, and the decision was never
- * recorded, or it is pending while the entry's row is active and its plugin
- * is available. A decision pending on an unavailable row waits for that
- * row's recovery (a worker `ready`) instead.
- */
-export async function managedPluginInstanceDefaultPending(
-  db: Db,
-  managedConfig: ManagedInstanceConfig | null,
-  workerManager?: Pick<PluginWorkerManager, "isRunning">,
-): Promise<boolean> {
-  const spec = instanceDefaultSpec(managedConfig);
-  if (!spec) return false;
-  const decision = await readManagedEnvironmentDefaultDecision(db);
-  if (!decision) return true;
-  if (decision.status !== "pending") return false;
-  return (await instanceDefaultEnvironmentForRetry(db, spec, workerManager))?.status === "active";
-}
-
-/**
- * Re-run the `instanceDefault` decision from durable state, after boot
- * reconciliation (the caller registers the retry worker only once
- * `applyManagedEnvironments` has finished). The row counts as active only
- * while its plugin passes the boot readiness rule.
+ * Re-run the `instanceDefault` decision for the retry worker. The entry's row
+ * counts as active only after a successful ensure of the CURRENT declaration
+ * (its driver config validated by the plugin again), never because an older
+ * row is still active. Returns without retrying when the decision is final,
+ * when the plugin is not available (recorded with the row as unavailable; a
+ * worker `ready` asks again), or when the plugin rejects the declared config
+ * (recorded the same way; nothing changes until the document does). Throws on
+ * any other failure, so the caller retries.
  */
 export async function retryManagedPluginInstanceDefault(
   db: Db,
   managedConfig: ManagedInstanceConfig | null,
-  workerManager?: Pick<PluginWorkerManager, "isRunning">,
-): Promise<void> {
+  workerManager?: Pick<PluginWorkerManager, "isRunning" | "call">,
+): Promise<ManagedPluginInstanceDefaultRetryOutcome> {
   const spec = instanceDefaultSpec(managedConfig);
-  if (!spec) return;
-  const outcome = await applyManagedPluginInstanceDefault(db, {
-    environment: await instanceDefaultEnvironmentForRetry(db, spec, workerManager),
-    marker: managedPluginEnvironmentMarker(spec),
-  });
+  if (!spec) return "nothing_to_do";
+  const decision = await readManagedEnvironmentDefaultDecision(db);
+  if (decision && decision.status !== "pending") return "nothing_to_do";
+  const marker = managedPluginEnvironmentMarker(spec);
+  const environmentsSvc = environmentService(db);
+  const recordUnavailable = async () => {
+    const existing = await environmentsSvc.findManagedPluginEnvironment({ pluginKey: spec.pluginKey, driverKey: spec.driverKey });
+    await applyManagedPluginInstanceDefault(db, {
+      environment: existing ? { id: existing.id, status: "unavailable" } : null,
+      marker,
+    });
+  };
+  const call = workerManager?.call;
+  if (!workerManager || !call || !(await isPluginEntryAvailable(db, spec, workerManager))) {
+    await recordUnavailable();
+    return "waiting_for_plugin";
+  }
+  let ensured: Awaited<ReturnType<typeof environmentsSvc.ensureManagedPluginEnvironment>>;
+  try {
+    ensured = await environmentsSvc.ensureManagedPluginEnvironment({
+      name: spec.name,
+      description: spec.description,
+      pluginKey: spec.pluginKey,
+      driverKey: spec.driverKey,
+      driverConfig: { ...spec.driverConfig },
+      workerManager: { isRunning: workerManager.isRunning.bind(workerManager), call: call.bind(workerManager) },
+    });
+  } catch (err) {
+    if (isPermanentConfigRejection(err)) {
+      await recordUnavailable();
+      return "config_rejected";
+    }
+    if (!(await isPluginEntryAvailable(db, spec, workerManager))) {
+      await recordUnavailable();
+      return "waiting_for_plugin";
+    }
+    throw err;
+  }
+  const outcome = await applyManagedPluginInstanceDefault(db, { environment: ensured.environment, marker });
   if (outcome.status !== "already_decided") {
     logger.info(
       { name: spec.name, decision: outcome.status, reason: outcome.reason },
       "managed plugin environment instance default evaluated by the retry worker",
     );
   }
+  return "evaluated";
 }
 
 /**
  * Register the retry worker for the one-time `instanceDefault` decision, once
  * `applyManagedEnvironments` has finished (returns null when the document
- * declares no `instanceDefault` entry). The queue's pending state comes from
- * the decision row and plugin readiness, so it goes idle while the plugin is
- * down; a worker `ready` wakes it again, so a decision left pending by a
- * failed attempt is retried as soon as the plugin is back. `recovery.stop()`
- * removes that subscription on shutdown.
+ * declares no `instanceDefault` entry).
+ *
+ * The obligation is in memory: `requestRetry()` (a failed inline decision)
+ * and every worker `ready` ask for one more attempt, and the queue's
+ * `hasPending` answers from that request alone, without SQL, so a paused or
+ * idle queue never queries. An attempt that throws keeps the request, so the
+ * coordinator retries it; boot re-evaluates after a restart. `recovery.stop()`
+ * removes the `ready` subscription on shutdown.
  */
 export function registerManagedPluginInstanceDefaultRetry(input: {
   db: Db;
@@ -935,17 +944,30 @@ export function registerManagedPluginInstanceDefaultRetry(input: {
       task: { retryMs: number; run: () => Promise<unknown>; hasPending: () => Promise<boolean> },
     ): { wake(): void };
   };
-  workerManager?: Pick<PluginWorkerManager, "isRunning" | "onWorkerReady">;
+  workerManager?: Pick<PluginWorkerManager, "isRunning" | "call" | "onWorkerReady">;
   recovery: ManagedEnvironmentRecovery;
+  /** A retry was already requested before the worker existed. */
+  requested?: boolean;
   retryMs?: number;
-}): { wake(): void } | null {
+}): { requestRetry(): void } | null {
   if (!instanceDefaultSpec(input.managedConfig)) return null;
+  let requestedGeneration = input.requested ? 1 : 0;
+  let handledGeneration = 0;
   const worker = input.deliveryWork.register(DELIVERY_QUEUES.managedEnvironmentDefault, {
     retryMs: input.retryMs ?? 60_000,
-    run: () => retryManagedPluginInstanceDefault(input.db, input.managedConfig, input.workerManager),
-    hasPending: () => managedPluginInstanceDefaultPending(input.db, input.managedConfig, input.workerManager),
+    run: async () => {
+      const target = requestedGeneration;
+      if (target === handledGeneration) return;
+      await retryManagedPluginInstanceDefault(input.db, input.managedConfig, input.workerManager);
+      handledGeneration = target;
+    },
+    hasPending: async () => requestedGeneration !== handledGeneration,
   });
-  const unsubscribe = input.workerManager?.onWorkerReady?.(() => worker.wake());
+  const requestRetry = (): void => {
+    requestedGeneration += 1;
+    worker.wake();
+  };
+  const unsubscribe = input.workerManager?.onWorkerReady?.(() => requestRetry());
   if (unsubscribe) input.recovery.onStop(unsubscribe);
-  return worker;
+  return { requestRetry };
 }
