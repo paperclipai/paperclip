@@ -18,6 +18,7 @@ import { retryIdempotentDatabaseOperation } from "../database-retry.js";
 import { workspaceRecoveryDisplay } from "./workspace-recovery-receipt.js";
 import { readTaskDrain } from "./task-admission.js";
 import { hasPendingRunCleanup } from "./execution-blocker.js";
+const MAX_PREDECESSOR_CLEANUP_CHECKS = 16;
 const text = (v: unknown) => (typeof v === "string" ? v : null);
 const executionRunColumns = {
   id: heartbeatRuns.id,
@@ -187,38 +188,44 @@ export async function executionProjectionsForRuns(
   // executor the claim also waits for. Pending uses admission's own predicate.
   const settlingPredecessorKeys = new Set<string>();
   const queuedRuns = runs.filter(run => run.status === "queued");
-  if (queuedRuns.length) {
-    const issueIdOf = (run: Run) => run.nativeIssueId ?? text(run.contextSnapshot?.issueId);
-    const queuedIssueIds = [...new Set(queuedRuns.map(issueIdOf).filter((id): id is string => !!id))];
-    const owners = queuedIssueIds.length ? await read(async () => db
-      .select({ id: issues.id, executionRunId: issues.executionRunId })
-      .from(issues)
-      .where(and(eq(issues.companyId, companyId), inArray(issues.id, queuedIssueIds)))) : [];
+  const issueIdOf = (run: Run) => run.nativeIssueId ?? text(run.contextSnapshot?.issueId);
+  const queuedIssueIds = [...new Set(queuedRuns.map(issueIdOf).filter((id): id is string => !!id))];
+  if (queuedIssueIds.length) {
+    const issueKey = sql<string>`coalesce(${heartbeatRuns.nativeIssueId}::text, ${heartbeatRuns.contextSnapshot}->>'issueId')`;
+    // Two set-based reads for the whole batch, then one bounded, parallel
+    // admission check per distinct predecessor.
+    const [owners, latestSettled] = await Promise.all([
+      read(async () => db
+        .select({ id: issues.id, executionRunId: issues.executionRunId })
+        .from(issues)
+        .where(and(eq(issues.companyId, companyId), inArray(issues.id, queuedIssueIds)))),
+      read(async () => db
+        .selectDistinctOn([heartbeatRuns.agentId, issueKey], { id: heartbeatRuns.id, agentId: heartbeatRuns.agentId, issueId: issueKey })
+        .from(heartbeatRuns)
+        .where(and(
+          eq(heartbeatRuns.companyId, companyId),
+          inArray(heartbeatRuns.agentId, [...new Set(queuedRuns.map(run => run.agentId))]),
+          inArray(issueKey, queuedIssueIds),
+          inArray(heartbeatRuns.status, ["succeeded", "failed", "cancelled", "timed_out"]),
+        ))
+        .orderBy(heartbeatRuns.agentId, issueKey, desc(heartbeatRuns.createdAt))),
+    ]);
     const ownerByIssue = new Map(owners.map(row => [row.id, row.executionRunId]));
-    const pendingByRun = new Map<string, Promise<boolean>>();
-    const pending = (runId: string) => {
-      if (!pendingByRun.has(runId)) pendingByRun.set(runId, read(() => hasPendingRunCleanup(db, companyId, runId)));
-      return pendingByRun.get(runId)!;
-    };
+    const latestByAgentIssue = new Map(latestSettled.map(row => [`${row.agentId}:${row.issueId}`, row.id]));
+    const candidatesByRun = new Map<string, string[]>();
     for (const run of queuedRuns) {
       const issueId = issueIdOf(run);
       if (!issueId) continue;
-      const issueKey = sql<string>`coalesce(${heartbeatRuns.nativeIssueId}::text, ${heartbeatRuns.contextSnapshot}->>'issueId')`;
-      const [latest] = await read(async () => db
-        .select({ id: heartbeatRuns.id })
-        .from(heartbeatRuns)
-        .where(and(
-          eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.agentId, run.agentId),
-          eq(issueKey, issueId), ne(heartbeatRuns.id, run.id),
-          inArray(heartbeatRuns.status, ["succeeded", "failed", "cancelled", "timed_out"]),
-        ))
-        .orderBy(desc(heartbeatRuns.createdAt))
-        .limit(1));
-      const candidates = [...new Set([ownerByIssue.get(issueId), run.retryOfRunId, latest?.id]
-        .filter((id): id is string => !!id && id !== run.id))];
-      for (const candidate of candidates) {
-        if (await pending(candidate)) { settlingPredecessorKeys.add(run.id); break; }
-      }
+      candidatesByRun.set(run.id, [...new Set([ownerByIssue.get(issueId), run.retryOfRunId,
+        latestByAgentIssue.get(`${run.agentId}:${issueId}`)].filter((id): id is string => !!id && id !== run.id))]);
+    }
+    const distinct = [...new Set([...candidatesByRun.values()].flat())];
+    // A label is not worth an unbounded fan-out on large list reads.
+    if (distinct.length <= MAX_PREDECESSOR_CLEANUP_CHECKS) {
+      const pendingIds = new Set((await Promise.all(distinct.map(async id =>
+        (await read(() => hasPendingRunCleanup(db, companyId, id))) ? id : null))).filter((id): id is string => !!id));
+      for (const [runId, candidates] of candidatesByRun)
+        if (candidates.some(id => pendingIds.has(id))) settlingPredecessorKeys.add(runId);
     }
   }
   const coordinatorByRun = new Map(coordinators.map((row) => [row.runId, row]));
