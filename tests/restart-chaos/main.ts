@@ -41,7 +41,7 @@ async function loadPlan(): Promise<{ plan: WavePlan; keep: boolean }> {
     const graded = await readFile(path.join(sourceDir, `${command.ref.taskId}.grade.json`), "utf8")
       .then(text => JSON.parse(text) as { record: { createdAt: number | null; faultIds: string[] } }).catch(() => null);
     const faults = await readFile(path.join(sourceDir, "faults.json"), "utf8").then(text => JSON.parse(text) as FaultReceipt[]).catch(() => []);
-    const observed = graded ? observedFaultSchedule(graded.record.createdAt, graded.record.faultIds, faults) : [];
+    const observed = graded ? observedFaultSchedule(graded.record.createdAt, graded.record.faultIds, faults, command.ref.taskId) : [];
     if (!observed.length) console.warn("Replay: no recorded fault sequence for this task; using its planned fault only.");
     return { plan: replayWave(source, command.ref, Date.now(), command.overrides, observed), keep: command.keep };
   }
@@ -69,7 +69,7 @@ async function main(): Promise<number> {
   const gitSha = git(["rev-parse", "HEAD"]);
   const gitDirty = git(["status", "--porcelain"]).length > 0;
   timeline.add("wave_planned", { waveId: plan.waveId, seed: plan.seed, gitSha, gitDirty, replayOf: plan.replayOf ?? null,
-    tasks: plan.tasks.map(task => `${task.taskId}:${task.adapter}/${task.workload}/${task.fault}@${task.fireAfterMs}ms${task.holdMs ? ` hold ${task.holdMs}ms` : ""}`) });
+    tasks: plan.tasks.map(task => `${task.taskId}:${task.adapter}/${task.workload}/${task.fault}${task.trigger ? `^${task.trigger}+${task.triggerDelayMs ?? 0}ms` : ""}@${task.fireAfterMs}ms${task.holdMs ? ` hold ${task.holdMs}ms` : ""}`) });
   preflight(plan);
 
   const supervisor = await ChaosSupervisor.create({ repositoryRoot, waveDir, timeline });
@@ -116,7 +116,9 @@ async function main(): Promise<number> {
         if (observer.record.restAt !== null) { timeline.add("fault_skipped_task_resting", { taskId: observer.plan.taskId, fault: due.kind }); continue; }
         const exposed = active.filter(candidate => !candidate.done);
         await Promise.all(exposed.map(candidate => candidate.snapshotBeforeFault()));
-        faultWork.push(supervisor.fault(due.kind, due.holdMs, observer.plan.taskId).then(receipt => {
+        const trigger = due.trigger && due.trigger !== "time" ? { trigger: due.trigger, delayMs: due.delayMs ?? 0 } : undefined;
+        if (trigger) timeline.add("trigger_fired", { taskId: observer.plan.taskId, kind: due.kind, ...trigger });
+        faultWork.push(supervisor.fault(due.kind, due.holdMs, observer.plan.taskId, trigger).then(receipt => {
           faults.push(receipt);
           for (const candidate of exposed) { candidate.noteFault(receipt.faultId); candidate.extendDeadline((receipt.readyAt ?? Date.now()) - receipt.startedAt); }
         }, (error: Error & { receipt?: FaultReceipt }) => {

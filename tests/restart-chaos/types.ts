@@ -1,6 +1,6 @@
 /** Shared types for the control-plane restart chaos harness (plan §5). */
 
-export const FAULT_KINDS = ["K1", "K2", "K4"] as const;
+export const FAULT_KINDS = ["K1", "K2", "K4", "K6"] as const;
 export type FaultKind = (typeof FAULT_KINDS)[number];
 
 export const WORKLOAD_IDS = ["A1", "B1", "B5", "C1"] as const;
@@ -8,6 +8,16 @@ export type WorkloadId = (typeof WORKLOAD_IDS)[number];
 
 export const ADAPTER_IDS = ["codex", "claude", "opencode"] as const;
 export type AdapterId = (typeof ADAPTER_IDS)[number];
+
+/**
+ * When a task's fault fires, relative to a user action or run state:
+ * time = seeded random offset; comment = 0–5 s after the C1 follow-up reaches a
+ * live run (B8); retry = right after an accepted Retry click (K8), as an extra
+ * K1; queued = while the first run is queued and not started (B1); tool =
+ * while bench.sh is mid-run (B6, B5 workload).
+ */
+export const TRIGGER_IDS = ["time", "comment", "retry", "queued", "tool"] as const;
+export type TriggerId = (typeof TRIGGER_IDS)[number];
 
 export const ENVIRONMENT_KINDS = ["local", "daytona"] as const;
 export type EnvironmentKind = (typeof ENVIRONMENT_KINDS)[number];
@@ -17,6 +27,8 @@ export interface WaveOptions {
   adapters: AdapterId[];
   workloads: WorkloadId[];
   faults: FaultKind[];
+  /** Fault timing triggers sampled per task; absent means ["time"]. */
+  triggers?: TriggerId[];
   concurrency: number;
   tasks: number;
   seed: number;
@@ -36,6 +48,10 @@ export interface TaskPlan {
   fireAfterMs: number;
   /** Outage hold between stop and restart. 0 for K1/K2. */
   holdMs: number;
+  /** Timing trigger; absent means "time". */
+  trigger?: TriggerId;
+  /** Non-time triggers: wait this long after the trigger condition holds. */
+  triggerDelayMs?: number;
   /** C1 only: post the follow-up comment this long after creation. */
   followUpAfterMs: number | null;
   /** Unique marker used by the deterministic T-oracle. */
@@ -47,7 +63,13 @@ export interface TaskPlan {
   replayFaults?: ScheduledFault[];
 }
 
-export interface ScheduledFault { kind: FaultKind; holdMs: number; atMs: number }
+export interface ScheduledFault {
+  kind: FaultKind; holdMs: number;
+  /** time trigger: offset from launch. Other triggers ignore it. */
+  atMs: number;
+  trigger?: TriggerId;
+  delayMs?: number;
+}
 
 export interface WavePlan {
   schema: "paperclip.restart-chaos.wave-plan/v1";
@@ -122,6 +144,11 @@ export interface FaultReceipt {
   healthyAt: number | null;
   readyAt: number | null;
   phases: Array<{ phase: string; at: number }>;
+  /** What fired the fault (absent for time). */
+  trigger?: TriggerId;
+  triggerDelayMs?: number;
+  /** K6: the extra kills and the phase each one hit. */
+  crashLoop?: Array<{ pid: number | null; target: string; phase: string; at: number }>;
   serverLogOffsetAtStart: number;
   serverLogOffsetAtReady: number | null;
   error: string | null;
@@ -159,7 +186,7 @@ export interface TaskRecord {
   finalStatus: string | null;
   deadlineAt: number | null;
   timedOut: boolean;
-  followUp: { at: number; commentId: string | null; error: string | null } | null;
+  followUp: { at: number; commentId: string | null; error: string | null; duringRun?: boolean } | null;
   faultIds: string[];
   sweep: RestSweep | null;
   /** Workspace files present just before the first fault that hit this task (R2). */
@@ -170,6 +197,10 @@ export interface TaskRecord {
   lostFiles: string[] | null;
   /** B5: distinct bench progress values the observer read during polling. */
   benchProgressSeen?: string[];
+  /** When the observer first saw bench.sh progress (tool trigger). */
+  benchFirstSeenAt?: number | null;
+  /** Triggered faults whose condition was never met (the task did not cross them). */
+  triggerMissed?: TriggerId[];
 }
 
 export interface TaskGrade {

@@ -33,6 +33,9 @@ export async function listWorkspaceFiles(root: string): Promise<string[]> {
   return out.sort();
 }
 
+/** queued trigger: give up when this many reachable polls show no run at all. */
+export const QUEUED_TRIGGER_MAX_EMPTY_SAMPLES = 3;
+
 /** Rest must hold for this long before the observer acts on it. */
 export const REST_CONFIRM_MS = 12_000;
 /** Extra time granted after a Retry click before R3 is graded as timed out. */
@@ -123,9 +126,59 @@ export class TaskObserver {
   faultDue(now: number): ScheduledFault | null {
     if (this.done || this.record.createdAt === null) return null;
     const fault = this.faultSchedule[this.nextFault];
-    if (!fault || now < this.record.createdAt + fault.atMs) return null;
+    if (!fault) return null;
+    const armedAt = this.triggerArmedAt(fault);
+    if (armedAt === "missed") {
+      this.nextFault += 1;
+      this.noteTriggerMissed(fault);
+      return null;
+    }
+    if (armedAt === null || now < armedAt + (fault.delayMs ?? 0)) return null;
     this.nextFault += 1;
     return fault;
+  }
+
+  private noteTriggerMissed(fault: ScheduledFault) {
+    const trigger = fault.trigger ?? "time";
+    (this.record.triggerMissed ??= []).push(trigger);
+    this.timeline.add("trigger_missed", { taskId: this.plan.taskId, trigger, kind: fault.kind });
+  }
+
+  /**
+   * When the fault's trigger condition first held. null while still waiting;
+   * "missed" once it can no longer hold for this task.
+   */
+  private triggerArmedAt(fault: ScheduledFault): number | null | "missed" {
+    const createdAt = this.record.createdAt!;
+    switch (fault.trigger ?? "time") {
+      case "time": return createdAt + fault.atMs;
+      case "comment": {
+        // C1 + K1: the follow-up must have reached a live run.
+        const followUp = this.record.followUp;
+        if (!followUp) return null;
+        return followUp.commentId && followUp.duringRun ? followUp.at : "missed";
+      }
+      case "retry": {
+        const retry = this.record.retry;
+        if (!retry) return null;
+        return retry.accepted ? retry.at : "missed";
+      }
+      case "queued": {
+        // B1: the first run seen must still be queued with no start time.
+        const first = this.record.samples.find(sample => sample.reachable && (sample.runs ?? []).length > 0);
+        if (!first) return this.record.samples.filter(sample => sample.reachable).length >= QUEUED_TRIGGER_MAX_EMPTY_SAMPLES ? "missed" : null;
+        const queued = (first.runs ?? []).some(run => run.status === "queued" && !run.startedAt);
+        const started = (first.runs ?? []).some(run => run.startedAt || run.status === "running");
+        return queued && !started ? first.at : "missed";
+      }
+      case "tool": return this.record.benchFirstSeenAt ?? null;
+    }
+  }
+
+  /** At sweep, triggered faults that never fired count as missed (the task did not cross them). */
+  private closeUnfiredTriggers() {
+    for (const fault of this.faultSchedule.slice(this.nextFault)) if (fault.trigger && fault.trigger !== "time") this.noteTriggerMissed(fault);
+    this.nextFault = this.faultSchedule.length;
   }
 
   /**
@@ -140,6 +193,7 @@ export class TaskObserver {
     if (!value) return;
     const seen = this.record.benchProgressSeen ??= [];
     if (!seen.includes(value)) seen.push(value);
+    this.record.benchFirstSeenAt ??= Date.now();
   }
 
   /** R2: remember which workspace files existed before the first fault hit this task. */
@@ -222,11 +276,11 @@ export class TaskObserver {
     if (!running && !isResting(sample)) return false;
     try {
       const comment = await this.api.post<Json>(`/api/issues/${this.record.issueId}/comments`, { body: definition.followUp(this.plan.nonce) });
-      this.record.followUp = { at: now, commentId: comment?.id ?? null, error: null };
+      this.record.followUp = { at: now, commentId: comment?.id ?? null, error: null, duringRun: running };
     } catch (error) {
-      this.record.followUp = { at: now, commentId: null, error: error instanceof Error ? error.message : String(error) };
+      this.record.followUp = { at: now, commentId: null, error: error instanceof Error ? error.message : String(error), duringRun: running };
     }
-    this.timeline.add("task_follow_up", { taskId: this.plan.taskId, duringRun: running, ...this.record.followUp });
+    this.timeline.add("task_follow_up", { taskId: this.plan.taskId, ...this.record.followUp });
     return true;
   }
 
@@ -312,6 +366,7 @@ export class TaskObserver {
 
   /** R6 sweep: nothing still pending once the wave is quiet. */
   async sweep(): Promise<RestSweep> {
+    this.closeUnfiredTriggers();
     if (!this.record.issueId) return { activeRuns: [], runningWorkspaceOperations: [], activeRecoveryAction: false, error: null };
     try {
       const [issue, runs] = await Promise.all([
