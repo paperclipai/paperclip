@@ -78,7 +78,7 @@ export function unsafeCredentialTransfer(text:string):boolean {
    if(/\bonly\s+(?:an?\s+)?human\s+(?:board\s+)?operator\s+(?:can|may)\s*$/i.test(prefix.trim())&&!destination.trim())continue;
    if(/^\s+(?:name|alias|identifier|label)\b/i.test(destination)&&!/\bvalue\b/i.test(destination))continue;
    if(/^\s+reference\b/i.test(destination)&&!/\b(?:value|key|credential|token|secret|password)\b/i.test(destination))continue;
-   if(secureDestination.test(destination)||secureBefore(partStart+request.index)&&/^\s+(?:only\s+)?(?:there|on that page)\s*$/i.test(destination))continue;
+   if(secureDestination.test(destination)||secureBefore(partStart+request.index)&&/^\s+(?:only\s+)?(?:there|on that page)(?:\s+and\s+save)?\s*$/i.test(destination))continue;
    return true;
   }
  }

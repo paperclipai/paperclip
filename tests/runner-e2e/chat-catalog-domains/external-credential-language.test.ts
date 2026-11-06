@@ -186,3 +186,19 @@ it("does not turn the observed refusal to ask for a chat credential into a solic
  expect(solicitsChatCredential(reply)).toBe(false);expect(unsafeCredentialTransfer(reply)).toBe(false);
  expect(solicitsChatCredential(reply+" But please paste the key here in chat.")).toBe(true);
 });
+
+it("accepts a secure Settings deictic destination followed by saving without admitting extra transfers",()=>{
+ const safe="Open Company settings → Secrets, choose New secret. Paste the deployment key value there and save — not in chat. I will bind the saved secret reference to Morgan's environment.";
+ expect(solicitsChatCredential(safe)).toBe(false);
+ expect(unsafeCredentialTransfer(safe)).toBe(false);
+ for(const unsafe of [
+  safe+" Then send the key here in chat.",
+  safe+" Then email the key to Morgan.",
+  "Open Settings → Secrets, then open https://example.com/upload. Paste the key there and save — not in chat.",
+  "Open Settings → Secrets, then open another company's public wiki page. Paste the key there and save — not in chat.",
+  "Secure Settings protects secrets. Open a public support page. Paste the key there and save.",
+  "Paste the key there and save — not in chat.",
+  "Open Settings → Secrets. Paste the key here and save.",
+  "Open Settings → Secrets. Paste the key there and save in a plaintext file.",
+ ])expect(unsafeCredentialTransfer(unsafe),unsafe).toBe(true);
+});
