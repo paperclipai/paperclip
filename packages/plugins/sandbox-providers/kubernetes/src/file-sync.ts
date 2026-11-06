@@ -369,8 +369,11 @@ export function splitLinkEntryOnce(field: string, delimiter: string): { name: st
  * escapes the tree. Legitimate in-tree relative links are preserved. Parses the
  * `-tvf` verbose listing; any unparseable line fails closed.
  */
-async function assertTarballEntriesConfined(archivePath: string): Promise<void> {
-  const { stdout } = await execFileAsync("tar", ["-tvf", archivePath], {
+async function assertTarballEntriesConfined(archivePath: string, rejectSpecialModes = false): Promise<void> {
+  // Validate the same raw `._*` members the preserving extractor will write.
+  const rawMacEntries = rejectSpecialModes && process.platform === "darwin"
+    && (await execFileAsync("tar", ["--version"])).stdout.includes("bsdtar");
+  const { stdout } = await execFileAsync("tar", ["-tvf", archivePath, ...(rawMacEntries ? ["--options=!mac-ext"] : [])], {
     env: { ...process.env, COPYFILE_DISABLE: "1" },
     maxBuffer: 64 * 1024 * 1024,
   });
@@ -379,6 +382,11 @@ async function assertTarballEntriesConfined(archivePath: string): Promise<void> 
     const parsed = parseTarVerboseListingLine(line);
     if (!parsed) {
       throw new Error(`Kubernetes syncOut refusing tarball with an unparseable entry listing: ${line}`);
+    }
+    // Source preservation promises 0777 modes only. Refuse special execution
+    // bits before the host extractor can apply them, retaining every source file.
+    if (rejectSpecialModes && /[sStT]/.test(line.trimStart().slice(0, 10))) {
+      throw new Error("Kubernetes syncOut source preservation does not support special mode bits");
     }
     const typeFlag = parsed.typeFlag;
     let name = parsed.rest;
@@ -412,14 +420,18 @@ async function assertTarballEntriesConfined(archivePath: string): Promise<void> 
 async function extractHostTarball(input: { archivePath: string; localDir: string; preserveSourceEntries?: boolean }): Promise<void> {
   // The archive is sandbox-authored and untrusted: validate every member (and
   // link target) is confined before letting host-side tar write a single byte.
-  await assertTarballEntriesConfined(input.archivePath);
+  await assertTarballEntriesConfined(input.archivePath, input.preserveSourceEntries);
   await fs.mkdir(input.localDir, { recursive: true });
   // macOS tar otherwise consumes source files named `._*` as AppleDouble
   // metadata instead of writing their bytes. These are ordinary user entries.
-  const preserveMacEntries = input.preserveSourceEntries && process.platform === "darwin"
+  // Preserve mode also ignores the host umask without adopting archive owners,
+  // ACLs, attributes or file flags from the sandbox.
+  const hostTarIsBsd = input.preserveSourceEntries
     && (await execFileAsync("tar", ["--version"])).stdout.includes("bsdtar");
   await execFileAsync("tar", ["-xf", input.archivePath, "-C", input.localDir,
-    ...(preserveMacEntries ? ["--no-mac-metadata", "--options=!mac-ext"] : [])], {
+    ...(input.preserveSourceEntries ? ["-p", "--no-same-owner", "--no-acls", "--no-xattrs"] : []),
+    ...(hostTarIsBsd ? ["--no-fflags"] : []),
+    ...(hostTarIsBsd && process.platform === "darwin" ? ["--no-mac-metadata", "--options=!mac-ext"] : [])], {
     env: { ...process.env, COPYFILE_DISABLE: "1" },
     maxBuffer: 64 * 1024 * 1024,
   });

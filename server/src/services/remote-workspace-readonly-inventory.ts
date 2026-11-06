@@ -1,7 +1,6 @@
 /** Runs unchanged in the sandbox and on its transferred, private controller copy. */
 export async function readWorkspaceInventory(root: string, controllerCopy = false, signal?: AbortSignal) {
   const fs = await import("node:fs/promises"), path = await import("node:path"), crypto = await import("node:crypto");
-  const { createReadStream } = await import("node:fs");
   const fail = (): never => { throw new Error("remote_workspace_readonly_capture_unsafe"); };
   const budget = (): never => { throw new Error("remote_workspace_readonly_capture_budget"); };
   const check = () => signal?.throwIfAborted();
@@ -51,8 +50,13 @@ export async function readWorkspaceInventory(root: string, controllerCopy = fals
       // Git follows configuration and administrative links itself. A link
       // inside this tree must not bypass the controller config-file check.
       if (git >= 0 && stat.isSymbolicLink()) fail();
-      if (git >= 0 && ["commondir", "config.worktree", "objects/info/alternates", "objects/info/http-alternates"]
-        .includes(parts.slice(git + 1).join("/"))) fail();
+      const administrationPath = parts.slice(git + 1).join("/");
+      const foldedAdministrationPath = administrationPath.toLowerCase();
+      // A case-sensitive sandbox may be copied onto a case-insensitive host.
+      // Reject aliases before Git can interpret them as controller metadata.
+      if (git >= 0 && ((foldedAdministrationPath === "config" && administrationPath !== "config")
+        || ["commondir", "config.worktree", "objects/info/alternates", "objects/info/http-alternates"]
+          .includes(foldedAdministrationPath))) fail();
       if (stat.isSocket()) { exclude.push(next); continue; }
       if (stat.isDirectory()) {
         if (!controllerCopy && !inGit) {
@@ -75,11 +79,20 @@ export async function readWorkspaceInventory(root: string, controllerCopy = fals
           configs.push(file); configBytes += stat.size;
           if (stat.size > 65_536 || configBytes > 1024 * 1024) budget();
         }
+        const original = await fs.lstat(file, { bigint: true });
+        const handle = await fs.open(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
         const hash = crypto.createHash("sha256"); let size = 0;
-        for await (const bytes of createReadStream(file, { signal })) { check(); size += bytes.length; hash.update(bytes); }
-        const after = await fs.lstat(file);
-        if (!after.isFile() || stat.dev !== after.dev || stat.ino !== after.ino || stat.size !== after.size
-          || stat.mtimeMs !== after.mtimeMs || stat.ctimeMs !== after.ctimeMs || size !== stat.size) fail();
+        try {
+          const before = await handle.stat({ bigint: true });
+          const fields = ["dev", "ino", "size", "mode", "mtimeNs", "ctimeNs"] as const;
+          if (!before.isFile() || !original.isFile() || Number(before.dev) !== stat.dev || Number(before.ino) !== stat.ino
+            || Number(before.size) !== stat.size || Number(before.mode) !== stat.mode
+            || fields.some(key => original[key] !== before[key]) || await fs.realpath(file) !== file) fail();
+          for await (const bytes of handle.createReadStream({ autoClose: false, signal })) { check(); size += bytes.length; hash.update(bytes); }
+          const after = await handle.stat({ bigint: true }), current = await fs.lstat(file, { bigint: true });
+          if (!current.isFile() || size !== Number(before.size) || await fs.realpath(file) !== file
+            || fields.some(key => before[key] !== after[key] || after[key] !== current[key])) fail();
+        } finally { await handle.close(); }
         byteSize += size;
         if (!Number.isSafeInteger(byteSize)) fail();
         digest.update(JSON.stringify([next, "file", stat.mode & 0o777, size, hash.digest("hex")])); entries++;

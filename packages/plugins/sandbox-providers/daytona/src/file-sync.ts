@@ -254,11 +254,16 @@ export function splitLinkEntryOnce(field: string, delimiter: string): { name: st
  */
 class UnsafeOutboundArchiveError extends Error {}
 
-function assertTarListingLineConfined(line: string): void {
+function assertTarListingLineConfined(line: string, rejectSpecialModes = false): void {
   if (line.trim().length === 0) return;
   const parsed = parseTarVerboseListingLine(line);
   if (!parsed) {
     throw new UnsafeOutboundArchiveError(`Daytona syncOut refusing tarball with an unparseable entry listing: ${line}`);
+  }
+  // Source preservation promises ordinary 0777 permissions, not host special
+  // execution bits. Refuse before extraction; this must not trigger link repair.
+  if (rejectSpecialModes && /[sStT]/.test(line.trimStart().slice(0, 10))) {
+    throw new Error("Daytona syncOut source preservation does not support special mode bits");
   }
   const typeFlag = parsed.typeFlag;
   let name = parsed.rest;
@@ -302,12 +307,17 @@ const TAR_LISTING_TIMEOUT_MS = 120_000;
 export async function assertTarballEntriesConfined(
   archivePath: string,
   timeoutMs = TAR_LISTING_TIMEOUT_MS,
+  rejectSpecialModes = false,
 ): Promise<void> {
   // A valid large workspace can exceed execFile's buffer. Stream within both
   // aggregate admission quotas and per-entry/diagnostic memory bounds, checking
   // every entry before extraction. Keep bytes until a full line to preserve
   // UTF-8 characters split across pipe chunks.
-  const child = spawn("tar", ["-tvf", archivePath], {
+  // AppleDouble interpretation must also be disabled while validating, or
+  // libarchive hides `._*` members that the preserving extractor will write.
+  const rawMacEntries = rejectSpecialModes && process.platform === "darwin"
+    && (await execFileAsync("tar", ["--version"])).stdout.includes("bsdtar");
+  const child = spawn("tar", ["-tvf", archivePath, ...(rawMacEntries ? ["--options=!mac-ext"] : [])], {
     env: { ...process.env, COPYFILE_DISABLE: "1" },
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -322,7 +332,7 @@ export async function assertTarballEntriesConfined(
     if (++entries > TAR_LISTING_MAX_ENTRIES) {
       throw recordEnvironmentSyncError(new Error("Daytona syncOut tar listing entry limit exceeded (250000)"), { transferFailureKind: "listing_entry_limit" });
     }
-    try { assertTarListingLineConfined(line.toString("utf8")); }
+    try { assertTarListingLineConfined(line.toString("utf8"), rejectSpecialModes); }
     catch (error) {
       if (error instanceof UnsafeOutboundArchiveError) recordEnvironmentSyncError(error, { transferFailureKind: "unsafe_archive" });
       throw error;
@@ -389,15 +399,19 @@ export async function assertTarballEntriesConfined(
 async function extractHostTarball(input: { archivePath: string; localDir: string; preserveSourceEntries?: boolean }): Promise<void> {
   // The archive is sandbox-authored and untrusted: validate every member (and
   // link target) is confined before letting host-side tar write a single byte.
-  await withEnvironmentSyncTransferStep("archive_validate", () => assertTarballEntriesConfined(input.archivePath));
+  await withEnvironmentSyncTransferStep("archive_validate", () => assertTarballEntriesConfined(input.archivePath, TAR_LISTING_TIMEOUT_MS, input.preserveSourceEntries));
   await withEnvironmentSyncTransferStep("archive_extract", async () => {
     await fs.mkdir(input.localDir, { recursive: true });
     // macOS tar otherwise consumes source files named `._*` as AppleDouble
     // metadata instead of writing their bytes. These are ordinary user entries.
-    const preserveMacEntries = input.preserveSourceEntries && process.platform === "darwin"
+    // Preserve mode also ignores the host umask without adopting archive owners,
+    // ACLs, attributes or file flags from the sandbox.
+    const hostTarIsBsd = input.preserveSourceEntries
       && (await execFileAsync("tar", ["--version"])).stdout.includes("bsdtar");
     await execFileAsync("tar", ["-xf", input.archivePath, "-C", input.localDir,
-      ...(preserveMacEntries ? ["--no-mac-metadata", "--options=!mac-ext"] : [])], {
+      ...(input.preserveSourceEntries ? ["-p", "--no-same-owner", "--no-acls", "--no-xattrs"] : []),
+      ...(hostTarIsBsd ? ["--no-fflags"] : []),
+      ...(hostTarIsBsd && process.platform === "darwin" ? ["--no-mac-metadata", "--options=!mac-ext"] : [])], {
       env: { ...process.env, COPYFILE_DISABLE: "1" },
       maxBuffer: 32 * 1024 * 1024,
     });

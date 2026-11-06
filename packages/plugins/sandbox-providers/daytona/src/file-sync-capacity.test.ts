@@ -49,7 +49,7 @@ while True:
             data = data[os.write(dst, data):]
 `;
 
-it.skipIf(Object.values(requiredTools).some(tool => !tool)).each(["success", "producer failure", "sparse archive over budget", "preserve source entries", "preserve entries direct archive", "preserve entries GNU host archive"])("preserves source bytes under archive capacity failure: %s", async scenario => {
+it.skipIf(Object.values(requiredTools).some(tool => !tool)).each(["success", "producer failure", "sparse archive over budget", "preserve source entries", "preserve entries direct archive", "preserve entries GNU host archive", "preserve modes native host", "preserve modes GNU host", "preserve special file native host", "preserve special directory GNU host"])("preserves source bytes under archive capacity failure: %s", async scenario => {
   const preserveSourceEntries = scenario.startsWith("preserve");
   const directArchive = scenario === "preserve entries direct archive";
   const producerFails = scenario === "producer failure";
@@ -65,10 +65,18 @@ it.skipIf(Object.values(requiredTools).some(tool => !tool)).each(["success", "pr
     await fs.symlink(requiredTools[name]!, path.join(bin, name));
   }
   const tar = requiredTools.tar!;
+  const specialMode = scenario.startsWith("preserve special");
+  const modeRegression = scenario.startsWith("preserve modes") || specialMode;
   if (producerFails) {
     await fs.writeFile(path.join(bin, "tar"), `#!/bin/sh\n'${tar}' "$@"\nstatus=$?\ncase " $* " in *" -f - "*) exit 23 ;; esac\nexit "$status"\n`, { mode: 0o755 });
+  } else if (modeRegression) {
+    await fs.writeFile(path.join(bin, "tar"), `#!/bin/sh\nexec '${tar}' --owner=12345 --group=12345 "$@"\n`, { mode: 0o755 });
   } else {
     await fs.symlink(tar, path.join(bin, "tar"));
+  }
+  if (specialMode) {
+    await fs.mkdir(output);
+    await fs.writeFile(path.join(output, "retained.txt"), "existing host work");
   }
   if (producerFails || sparseOverBudget) {
     await fs.mkdir(output);
@@ -76,6 +84,13 @@ it.skipIf(Object.values(requiredTools).some(tool => !tool)).each(["success", "pr
   }
   const env = { ...process.env, PATH: `${bin}:${process.env.PATH}` };
   if (scenario === "preserve entries GNU host archive") vi.stubEnv("PATH", env.PATH);
+  if (modeRegression) {
+    const hostBin = path.join(root, "host-bin");
+    await fs.mkdir(hostBin);
+    const hostTar = scenario.endsWith("GNU host") ? tar : executable(["tar"], "bsdtar") ?? tar;
+    await fs.writeFile(path.join(hostBin, "tar"), `#!/bin/sh\numask 077\nexec '${hostTar}' "$@"\n`, { mode: 0o755 });
+    vi.stubEnv("PATH", `${hostBin}:${process.env.PATH}`);
+  }
   const bytes = Buffer.alloc(5 * 1024 * 1024, sparseOverBudget ? 0 : "saved work\n");
   await fs.writeFile(path.join(remote, "result.bin"), sparseOverBudget ? "" : bytes, { mode: 0o600 });
   if (sparseOverBudget) await fs.truncate(path.join(remote, "result.bin"), bytes.length);
@@ -84,9 +99,17 @@ it.skipIf(Object.values(requiredTools).some(tool => !tool)).each(["success", "pr
   if (preserveSourceEntries) {
     await fs.writeFile(path.join(remote, "excluded.txt"), "excluded by caller");
     await fs.mkdir(path.join(remote, "nested"));
+    if (modeRegression) await fs.chmod(path.join(remote, "nested"), 0o775);
     for (const name of ["._result.txt", ".paperclip-upload-result", "nested/._result.txt", "nested/.paperclip-upload-result"]) {
       await fs.writeFile(path.join(remote, name), `user work: ${name}`);
+      if (modeRegression) await fs.chmod(path.join(remote, name), 0o664);
     }
+  }
+  if (specialMode) {
+    const specialPath = path.join(remote, scenario.includes("directory") ? "nested" : "._result.txt");
+    const specialBits = scenario.includes("directory") ? 0o1775 : 0o1664;
+    await fs.chmod(specialPath, specialBits);
+    expect((await fs.stat(specialPath)).mode & 0o7777).toBe(specialBits);
   }
   const failures: string[] = [];
   const sandbox = {
@@ -124,6 +147,15 @@ it.skipIf(Object.values(requiredTools).some(tool => !tool)).each(["success", "pr
   const sync = performSyncOut({ sandbox: sandbox as never, remoteDir: directArchive ? root : remote, timeoutSeconds: 30,
     operations: [{ operationId: "export", files: [{ sourcePath: remote, targetPath: output, kind: "directory", preserveSourceEntries, exclude: preserveSourceEntries && !directArchive ? ["excluded.txt"] : undefined }] }],
   });
+  if (specialMode) {
+    await expect(sync).rejects.toThrow("special mode bits");
+    expect(await fs.readdir(output)).toEqual(["retained.txt"]);
+    expect(await fs.readFile(path.join(output, "retained.txt"), "utf8")).toBe("existing host work");
+    expect((await fs.stat(path.join(remote, scenario.includes("directory") ? "nested" : "._result.txt"))).mode & 0o7777)
+      .toBe(scenario.includes("directory") ? 0o1775 : 0o1664);
+    expect((await fs.readFile(path.join(remote, "result.bin"))).equals(bytes)).toBe(true);
+    return;
+  }
   if (producerFails || sparseOverBudget) {
     await expect(sync).rejects.toThrow(sparseOverBudget ? "sandbox disk budget" : "without a successful archive receipt");
     expect(await fs.readFile(path.join(output, "result.bin"), "utf8")).toBe("newer host work");
@@ -146,8 +178,14 @@ it.skipIf(Object.values(requiredTools).some(tool => !tool)).each(["success", "pr
     for (const name of ["._result.txt", ".paperclip-upload-result", "nested/._result.txt", "nested/.paperclip-upload-result"]) {
       expect(await fs.readFile(path.join(output, name), "utf8")).toBe(`user work: ${name}`);
       expect(await fs.readFile(path.join(remote, name), "utf8")).toBe(`user work: ${name}`);
+      if (modeRegression) {
+        const restored = await fs.stat(path.join(output, name));
+        expect(restored.mode & 0o777).toBe(0o664);
+        expect(restored.uid).toBe(process.getuid!());
+      }
     }
   }
+  if (modeRegression) expect((await fs.stat(path.join(output, "nested"))).mode & 0o777).toBe(0o775);
   expect((await fs.readdir(remote)).filter(name => name.startsWith(".paperclip-upload"))).toEqual(preserveSourceEntries ? [".paperclip-upload-result"] : []);
 }, 40_000);
 

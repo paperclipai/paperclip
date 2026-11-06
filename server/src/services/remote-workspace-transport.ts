@@ -7,6 +7,7 @@ import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/executio
 import type { RemoteWorkspaceSource } from "@paperclipai/shared";
 import { captureRemoteWorkspaceDirectory, remoteWorkspaceArchiveScript, remoteWorkspaceCaptureFailureMessage, remoteWorkspaceFailureDetail } from "./remote-workspace-snapshot-archive.js";
 import { readWorkspaceInventory, readonlyWorkspaceInventoryScript } from "./remote-workspace-readonly-inventory.js";
+import { removeTaskDirectoryTree } from "./isolated-task-directory-snapshot.js";
 import type { GitRemoteAuthProvider } from "./git-credentials.js";
 import { classifyWorkspaceRestoreFailure } from "@paperclipai/adapter-utils/workspace-restore-merge";
 import { MAX_SANDBOX_SYNC_TIMEOUT_MS, type SandboxSyncOperation } from "@paperclipai/adapter-utils/sandbox-managed-runtime";
@@ -453,11 +454,11 @@ async function captureReadOnlyWorkspaceArchive(input: {
     if (!same(await inspect(remaining()))) throw new Error("remote_workspace_readonly_capture_changed");
     verificationSignal.throwIfAborted();
     // Only the sealed portable archive remains a candidate for durable upload.
-    await rm(copy, { recursive: true, force: true });
+    await removeTaskDirectoryTree(copy);
     const savedRoot = root;
-    return { ...receipt, archivePath, cleanup: () => rm(savedRoot, { recursive: true, force: true }) };
+    return { ...receipt, archivePath, cleanup: () => removeTaskDirectoryTree(savedRoot) };
   } catch (error) {
-    if (root) await rm(root, { recursive: true, force: true });
+    if (root) await removeTaskDirectoryTree(root);
     const reason = error instanceof Error && error.message === "remote_workspace_readonly_capture_unsafe" ? "unsafe_source"
       : error instanceof Error && error.message === "remote_workspace_readonly_capture_changed" ? "source_changed"
         : error instanceof Error && error.message === "remote_workspace_readonly_capture_budget" ? "budget_exceeded" : "operation_failed";

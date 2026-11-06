@@ -1015,7 +1015,7 @@ failure invokes one read-only export fallback. It fingerprints a standalone
 source, transfers its files through the provider's existing bulk channel, and
 checks the received inventory and the source again before sealing a portable
 archive on the controller. It rechecks the source after sealing. No source files
-or provider caches are removed. Linked Git worktrees, alternate object stores,
+or provider caches are removed. Linked Git worktrees, initialized submodules, alternate object stores,
 Git administrative symlinks, and configuration outside the portable key contract
 cannot use this fallback. Pure file-based config reads do not follow includes;
 controller Git normalization starts only after every config passes that contract.
