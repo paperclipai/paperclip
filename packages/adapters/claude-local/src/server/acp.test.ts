@@ -947,8 +947,28 @@ describe("claude_local ACP lane", () => {
       process.env.CLAUDE_CONFIG_DIR = sharedClaudeConfig;
 
       const meta: AdapterInvocationMeta[] = [];
+      let effectiveDefaultMode: unknown;
+      const runtime = new FakeRuntime({});
+      const startTurn = runtime.startTurn.bind(runtime);
+      runtime.startTurn = (turnInput) => {
+        const turn = startTurn(turnInput);
+        return {
+          ...turn,
+          result: (async () => {
+            const readSettings = async (file: string) =>
+              JSON.parse(await fs.readFile(file, "utf8").catch(() => "{}"));
+            const local = await readSettings(path.join(turnInput.handle.cwd ?? remoteCwd, ".claude", "settings.local.json"));
+            const user = await readSettings(path.join(String(meta[0]?.env?.CLAUDE_CONFIG_DIR ?? ""), "settings.json"));
+            effectiveDefaultMode = local.permissions?.defaultMode ?? user.permissions?.defaultMode;
+            return await turn.result;
+          })(),
+        };
+      };
       const execute = createClaudeAcpExecutor({
-        createRuntime: (options: FakeRuntimeOptions) => new FakeRuntime(options) as never,
+        createRuntime: (options: FakeRuntimeOptions) => {
+          Object.assign(runtime.options, options);
+          return runtime as never;
+        },
       });
       const result = await execute(
         buildContext(localCwd, {
@@ -984,6 +1004,9 @@ describe("claude_local ACP lane", () => {
       expect(remoteSettings.permissions).toEqual({ defaultMode });
       expect(remoteSettings.theme).toBe(hostSettings ? "dark" : undefined);
       expect(meta[0]?.env?.IS_SANDBOX).toBe(isSandbox);
+      expect(effectiveDefaultMode).toBe(defaultMode);
+      const hostLocalSettings = JSON.parse(await fs.readFile(path.join(localCwd, ".claude", "settings.local.json"), "utf8"));
+      expect(hostLocalSettings.permissions.defaultMode).toBe("default");
     },
   );
 
