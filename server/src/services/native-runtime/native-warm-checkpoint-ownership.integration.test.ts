@@ -198,7 +198,7 @@ describeEmbeddedPostgres("managed warm checkpoint ownership", () => {
         expect(result.errorCode).toBe("native_provider_overloaded");
       }
       expect(state.checkpoint).toBeTypeOf("function");
-      if (invalidated) expect(closeFailures).toEqual(["Error: native_harness_storage_owner_missing"]);
+      if (invalidated || renewalLoss) expect(closeFailures).toEqual(["Error: native_runner_checkpoint_owner_lost"]);
       else expect(closeFailures).toEqual([]);
       expect(ownersAtClose).toHaveLength(1);
       expect(ownersAtClose[0].leaseOwner).not.toBeNull();
