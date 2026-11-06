@@ -61,7 +61,7 @@ async function sourceFixture(registration?: CapabilityRunnerdCodexTransportOptio
       runId: identity.runId, executionWorkspaceId: "workspace" },
     task: { identifier: "TASK-1", title: "Complete fake work", description: null, prompt: "Complete fake work", workMode: "standard" },
     workspace: { cwd: root, repoUrl: null, repoRef: null, branchName: null },
-    session: { normalizedSessionId: identity.normalizedSessionId, driverKind: "codex_app_server", protocolVersion: 1 },
+    session: { normalizedSessionId: identity.normalizedSessionId, driverKind: "codex_app_server", protocolVersion: 1, lifecyclePolicy: { mode: "per_turn", idleTimeoutMs: null } },
     provider: { kind: "codex", model: null, approvalPolicy: "never" },
     completionContract: { id: "contract", sha256: `sha256:${"a".repeat(64)}`, schemaVersion: "paperclip.completion-contract.v1",
       contract: { revision: "1", objective: "Complete fake work", criteria: [{ id: "objective", requirement: "Complete fake work" }] } }, interactionResponses: [], credentialBindings: [] };
@@ -231,7 +231,7 @@ it.each([["launch", "default"], ["adopt", "default"], ["adopt-denied", "default"
     expect((await read(fixture.coreFile)).preparedLaunchConfigurations).toEqual(before.preparedLaunchConfigurations);
     await expect(readFile(join(fixture.root, "launch-preparation.json"))).rejects.toHaveProperty("code", "ENOENT");
     if (mode !== "launch") {
-      const evidence = resumed.evidence(), startedAt = resumed.transport.processInfo().startedAt;
+      const evidence = resumed.evidence(), startedAt = resumed.transport.processInfo!().startedAt;
       await resumed.detachControllerForRestart();
       prepare.mockClear();
       if (mode === "adopt-denied") prepare.mockRejectedValueOnce(new Error("source preparation authorization revoked"));

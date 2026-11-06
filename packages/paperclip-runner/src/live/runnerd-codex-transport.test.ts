@@ -283,7 +283,7 @@ it.each(["resolved", "rejected"] as const)(
       expect(error).toMatchObject({ message: expect.stringContaining("runner_process_termination_unconfirmed") });
       if (outcome === "rejected") expect(error).toHaveProperty("cause", probeError);
       expect(children).toHaveLength(1);
-      expect(bundle.transport.processInfo()).toMatchObject({ exited: false });
+      expect(bundle.transport.processInfo!()).toMatchObject({ exited: false });
       expect(() => process.kill(children[0]!.pid!, 0)).not.toThrow();
     } finally {
       const providerPid = bundle.evidence().codexPid;
@@ -358,7 +358,7 @@ it("preserves the cause when a replacement runner's health cannot be verified", 
     if (child) return {
       child: { pid: 42, exitCode: null, kill: () => false },
       completion: Promise.reject(probeError),
-      isExitConfirmed: () => false,
+      isExitConfirmed: (): boolean => false,
     };
     child = spawn(spec.command, [...spec.args], { cwd: spec.cwd, env: spec.environment, stdio: "ignore" });
     const ownedChild = child;
@@ -390,7 +390,7 @@ it("preserves the cause when a replacement runner's health cannot be verified", 
     });
     expect(error).toHaveProperty("message", expect.stringContaining("probe_timeout"));
     expect(launch).toHaveBeenCalledTimes(2);
-    expect(bundle.transport.processInfo()).toMatchObject({ exited: false });
+    expect(bundle.transport.processInfo!()).toMatchObject({ exited: false });
   } finally {
     const providerPid = bundle.evidence().codexPid;
     if (providerPid) {
@@ -415,7 +415,7 @@ it("retries a replacement whose staging failed before any process launched", asy
     if (launch.mock.calls.length === 2) return {
       child: { pid: undefined, exitCode: null, kill: () => false },
       completion: Promise.reject(stagingError),
-      isExitConfirmed: () => true,
+      isExitConfirmed: (): boolean => true,
     };
     const child = spawn(spec.command, [...spec.args], { cwd: spec.cwd, env: spec.environment, stdio: "ignore" });
     children.push(child);
@@ -2659,7 +2659,7 @@ it.each(["reuse", "large-instructions", "rotated-recovery", "removed-context", "
   resolved.skills[0]!.bundle.rootPath = "/guest/.agents/skills/assigned";
   const materialize = vi.spyOn(runtimeMaterializer, "prepareIsolatedCodexHome").mockRejectedValue(new Error("unexpected Core materialization"));
   const discover = vi.spyOn(codexCommandRuntime, "resolveCodexCommand").mockImplementation(() => { throw new Error("unexpected Core discovery"); });
-  let configuration: Record<string, unknown> | undefined;
+  let configuration: Record<string, unknown> | null | undefined;
   let recovered = false;
   let requestedRun = "";
   let requestedInstructions = "";
@@ -3574,7 +3574,7 @@ it.each(["stuck", "late-release", "late-release-error", "stuck-release", "cooper
     let template: Record<string, unknown> | null = null;
     let registrationStarted!: () => void;
     const started = new Promise<void>(resolve => { registrationStarted = resolve; });
-    let returnRegistration!: (registration: { connection: { mode: "listen"; listenAddress: string; listenPort: number; listenPath: string }; release: () => Promise<void> }) => void;
+    let returnRegistration!: (registration: { connection: { mode: "listen"; listenAddress: "0.0.0.0"; listenPort: number; listenPath: string }; release: () => Promise<void> }) => void;
     const registration = new Promise<Parameters<typeof returnRegistration>[0]>(resolve => { returnRegistration = resolve; });
     let finishRelease!: () => void;
     const releasing = new Promise<void>(resolve => { finishRelease = resolve; });
@@ -3585,7 +3585,7 @@ it.each(["stuck", "late-release", "late-release-error", "stuck-release", "cooper
       if (releaseFails) throw releaseError;
     });
     const registered = {
-      connection: { mode: "listen" as const, listenAddress: "127.0.0.1", listenPort: 43127, listenPath: "/setup-probe" },
+      connection: { mode: "listen" as const, listenAddress: "0.0.0.0" as const, listenPort: 43127, listenPath: "/setup-probe" },
       release,
     };
     let registrationSignal: AbortSignal | undefined;
@@ -4037,7 +4037,7 @@ it("runs the lab provider boundary through authenticated durable PRP", async () 
     }
     expect(methods).toContain("turn/completed");
     expect(terminalParams).toMatchObject({
-      threadId: opened.thread.id,
+      threadId: (opened.thread as { id: string }).id,
       turnId: "provider-turn-1",
     });
     expect(bundle.evidence().diagnostics).toContain(
@@ -4081,7 +4081,7 @@ it("controls a Codex session goal end to end through durable PRP v2", async () =
         },
       ],
     });
-    const threadId = opened.thread.id;
+    const threadId = (opened.thread as { id: string }).id;
 
     await expect(
       bundle.transport.request("thread/goal/set", {
@@ -4236,7 +4236,7 @@ it.each([false, true])("binds goal turns through the full Codex harness (autonom
     });
     expect(observed.some((event) => event.eventType === "session.failed")).toBe(false);
   } finally {
-    await session?.close();
+    await session?.close({ reason: "test complete" });
     await bundle.transport.close();
     await rm(stateDirectory, { recursive: true, force: true });
   }
@@ -4882,7 +4882,7 @@ it("binds an immediately failed durable turn before exposing its terminal", asyn
       ],
     });
   } finally {
-    await session.close();
+    await session.close({ reason: "test complete" });
     await rm(stateDirectory, {
       recursive: true,
       force: true,
@@ -5089,9 +5089,10 @@ it("captures exact provider frames and correlates Rust and TypeScript interpreta
       if (event.eventType === "turn.completed") break;
     }
   } finally {
-    await session.close();
+    await session.close({ reason: "test complete" });
   }
   const snapshot = await session.snapshot();
+  if (snapshot.lastSourceSequence === undefined) throw new Error("Expected a source sequence in the session snapshot");
   for (
     let sourceSeq = 1;
     sourceSeq <= snapshot.lastSourceSequence;
@@ -5791,7 +5792,7 @@ it.each([
       expect(outcomes[1].result).toMatchObject({ content: [{ text: expect.stringContaining(feedback) }] });
       if (adoptAfterTurn) {
         const snapshot = await session.snapshot();
-        const runnerStartedAt = bundle.transport.processInfo().startedAt;
+        const runnerStartedAt = bundle.transport.processInfo!().startedAt;
         survivingPid = bundle.evidence().runnerPid;
         expect(survivingPid).toEqual(expect.any(Number));
         const artifact = readRunnerdArtifactBinding(defaultCapabilityRunnerdBinary());
@@ -5833,7 +5834,7 @@ it.each([
         expect(recovery.session).toBeDefined();
         session = recovery.session!;
         expect(adopted.evidence().runnerPid).toBe(survivingPid);
-        expect(adopted.transport.processInfo().startedAt).toBe(runnerStartedAt);
+        expect(adopted.transport.processInfo!().startedAt).toBe(runnerStartedAt);
         expect((await session.snapshot()).providerSessionId).toBe(snapshot.providerSessionId);
         expect(duplicateLauncher).not.toHaveBeenCalled();
       }
@@ -5843,7 +5844,7 @@ it.each([
       expect(allRequests.map(request => request.variant)).toEqual(supportsReasoning
         ? ["paperclip-no-reasoning", "paperclip-default"] : [undefined, undefined]);
     },
-    closeSession: async () => { await session?.close(); },
+    closeSession: async () => { await session?.close({ reason: "test complete" }); },
     closeTransport: async () => {
       try { await adopted?.transport.close(); }
       finally {
@@ -5889,12 +5890,16 @@ describe("cold process admission budget", () => {
   it("bounds Pi cold startup and recovery at 60 seconds", () => {
     expect(coldAdmissionTimeoutMs("acpx", "pi", true)).toBe(60_000);
   });
+  it("bounds a cold OpenCode restore at 60 seconds", () => {
+    expect(coldAdmissionTimeoutMs("opencode", undefined, true)).toBe(60_000);
+  });
   it("preserves live adoption and every other provider at 30 seconds", () => {
     expect(coldAdmissionTimeoutMs("acpx", "pi", false)).toBe(30_000);
+    expect(coldAdmissionTimeoutMs("opencode", undefined, false)).toBe(30_000);
     for (const agent of ["codex", "claude", "cursor", "copilot", "grok", undefined]) {
       expect(coldAdmissionTimeoutMs("acpx", agent, true)).toBe(30_000);
     }
-    for (const provider of ["codex", "opencode", undefined]) {
+    for (const provider of ["codex", "cursor_cloud", undefined]) {
       expect(coldAdmissionTimeoutMs(provider, "pi", true)).toBe(30_000);
     }
   });

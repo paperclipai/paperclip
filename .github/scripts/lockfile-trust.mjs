@@ -11,8 +11,8 @@
  * workflow writes it. After a verified Dependabot lockfile merges, the refresh workflow renews
  * the proof for it.
  *
- * Keep this file free of imports outside node:*. The PR policy job runs the copy from the base
- * commit, so a pull request cannot rewrite the check that judges it.
+ * Keep this file free of imports outside node:*. The PR policy job runs the copy from the current
+ * base-branch tip, so a pull request cannot rewrite the check that judges it.
  *
  * Usage:
  *   node .github/scripts/lockfile-trust.mjs pr      # PR policy job
@@ -20,7 +20,7 @@
  */
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { appendFileSync } from 'node:fs';
+import { appendFileSync, realpathSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -211,7 +211,8 @@ function checkMerged() {
   writeOutputs({ trusted_lock_sha256: lockSha256, dependabot_pr: String(pull.number) });
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+// Compare real paths: the runner's temporary directory can sit behind a symlink.
+if (process.argv[1] && realpathSync(path.resolve(process.argv[1])) === realpathSync(fileURLToPath(import.meta.url))) {
   const mode = process.argv[2];
   if (mode === 'pr') checkPullRequest();
   else if (mode === 'merged') checkMerged();

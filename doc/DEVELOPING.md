@@ -1319,6 +1319,40 @@ that file, and it fails when a referenced config does not exist yet. The
 program. That program peaks at about 15 GiB at default settings and about 8 GiB on
 one thread.
 
+#### Typecheck test files outside the build
+
+Most package tsconfigs exclude tests, and Vitest strips types, so a type error in
+one of those tests fails nothing. `scripts/typecheck-test-programs.mjs` reads them
+through separate programs, usually a `tsconfig.test.json` beside the package's
+`tsconfig.json`:
+
+```sh
+node scripts/typecheck-test-programs.mjs --low-memory
+node scripts/typecheck-test-programs.mjs packages/paperclip-runner/tsconfig.test.json
+```
+
+The first form runs in the required `Typecheck + Release Registry` job. It checks
+one program at a time and the largest peaks below 2 GiB. It then fails if a tracked
+`*.test.ts(x)` or `*.spec.ts(x)` file is in no program. The compiler's file list
+decides that, because `include` silently drops `foo.test.tsx` when `foo.test.ts`
+exists.
+
+To add a test directory, add it to the `include` of the package's
+`tsconfig.test.json`. To add a package, add a program to `PROGRAMS` in the script.
+
+Sandbox providers are outside the root workspace, so the root install has none of
+their SDKs. `scripts/typecheck-sandbox-providers` is a small workspace that lists
+them and holds one lockfile. Its install replaces any standalone `node_modules` in
+those providers. After changing a provider's `package.json`, refresh that lockfile:
+
+```sh
+pnpm -C scripts/typecheck-sandbox-providers install --ignore-scripts --lockfile-only
+```
+
+Do not commit a lockfile inside a provider.
+`scripts/build-standalone-public-packages.mjs` uses a frozen install when one
+exists, which changes what a release resolves.
+
 #### Reused Runner build in the server build
 
 The server build vendors `packages/paperclip-runner/dist`, so its
@@ -1996,6 +2030,13 @@ publication. Saved nested sources must still belong to the same company and
 project with the same repository URL; publication locks and rechecks those source
 rows. Imports from mutable local folders still recapture and compare the
 current files; a saved upload does not permit later local edits to be discarded.
+
+If every recorded snapshot upload is definitively absent, an unpublished
+archived Git import can recapture the same validated logical source. Private Git
+administrative bytes can differ between reconstructions. The original journal
+and every upload attempt remain recorded; available prior uploads and concurrent
+publication winners are reused. Unknown or corrupt objects block recapture.
+The source recipe and ownership checks still gate authority publication.
 
 When the verified Git source still exists, reconstruction also copies its local
 `info/exclude` rules into the private repository before applying a saved restore
