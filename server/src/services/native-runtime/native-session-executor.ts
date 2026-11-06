@@ -7437,6 +7437,10 @@ export function nativeSessionFailureSourceCode(
       )
     )
       return "native_event_replay_conflict";
+    // The runner marks a non-recoverable rejection of the selected model in the
+    // terminal message; it needs a model choice, not a generic provider failure.
+    if (!error.recoverable && /^native_provider_model_rejected:/.test(error.message))
+      return "native_provider_model_rejected";
     return "native_provider_terminal_failed";
   }
   if (error instanceof NativeSessionProtocolIntegrityError)

@@ -186,6 +186,19 @@ Authorized test jobs and the final `verify` and `e2e` aggregates use the selecte
 AWS fleet. A stale admission roster can allocate only the short metadata gate;
 the fresh CODEOWNERS check still denies PR execution for a removed owner.
 
+AWS runners are sometimes lost mid-job. `ci-runner-loss-rerun.yml` re-runs the
+failed jobs of a PR's first CI attempt once when every failed job lost its
+runner. A lost runner is recognized by the check-run annotation "lost
+communication with the server" or "received a shutdown signal". When the only
+annotation is "The operation was canceled.", the job log is checked for the
+same messages. The `verify` and `e2e` aggregates are not counted. Any other
+failure, a failed routing gate, or a PR whose head has moved prevents the
+automatic re-run. The workflow job summary lists each failed job and its
+evidence. Like a maintainer's "Re-run failed jobs", the re-run reuses the
+gate's successful outputs, including its AWS admission. Attempt 2's
+triggering actor is `github-actions[bot]`, so `profile-ci` does not export
+that attempt. Later attempts are never re-run automatically.
+
 The routing workflow also selects the CI scope. Middle PRs in a stack and PRs
 whose diff changes only release notes (`releases/v*.md` or
 `releases/beta/v*.md`) skip the build, test, and e2e lanes. The `policy` job
@@ -580,6 +593,13 @@ one sidebar entry, and choosing them again reopens the same conversation. The
 **Add and reopen** component story exercises that constraint. Agent selection
 and sending use local fixtures. The live `/chats` and `/chats/:agentRef` routes
 use the same sidebar, picker, landing page, and existing chat surface for everyone.
+The **Switch agents · Unread chats** page stories cover per-agent unread badges
+in the chat header picker in dark, light, and mobile views. The header and Add
+chat pickers show numeric unread message counts from the shared account-scoped
+chat-list cache, with indexed lookups and no per-agent read-state requests.
+Chat endpoints return `unreadMessageCount` alongside `isUnreadForMe`; the count
+uses the same batched query and excludes human messages, deleted messages, system
+notices, and fast responses. Opening or selecting a chat does not mark unseen messages read.
 
 Use **Chat & Comments → Issue Thread Interactions → Composer Questions Auto Advance**
 to try the paged composer form. A single selection shows a brief checked-state animation before advancing to the
@@ -2053,6 +2073,14 @@ Boot validates the driver config through the plugin, marks the row
 unmarked row for the same plugin and driver. While the plugin is down, the row is
 archived; it comes back when the worker is ready. Removing an entry never archives
 its row. Plugin entries do not change the instance default.
+
+Under `enableManagedSandboxOnly`, boot fills the instance default with the
+managed sandbox only when the default is unset, names the local environment, or
+names a deleted one. The fill locks the default row and rechecks it, so a
+concurrent boot or admin write is never overwritten. A filled default is an
+ordinary set value: nothing reverts it when the mode is later turned off, and an
+admin can change it in instance settings.
+
 
 ### Experimental native remote workspace storage
 
