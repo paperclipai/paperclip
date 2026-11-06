@@ -9,6 +9,7 @@ import {
 } from "@aws-sdk/client-s3";
 import { putS3Multipart } from "./s3-multipart.js";
 import { recordS3BodyFailure, withS3FailureDiagnostics } from "./s3-failure.js";
+import { resumableS3Body } from "./s3-resumable-body.js";
 import { addAbortSignal, Readable } from "node:stream";
 import type { StorageProvider, GetObjectResult, HeadObjectResult } from "./types.js";
 import { notFound, unprocessable } from "../errors.js";
@@ -156,21 +157,34 @@ export function createS3StorageProvider(config: S3ProviderConfig): StorageProvid
 
     async getObject(input): Promise<GetObjectResult> {
       const key = buildKey(prefix, input.objectKey);
-      try {
+      const read = async (range: { start: number; end: number } | undefined, ifMatch?: string) => {
         const output = await withS3FailureDiagnostics("get_object", () => client.send(
           new GetObjectCommand({
             Bucket: bucket,
             Key: key,
-            Range: input.range ? `bytes=${input.range.start}-${input.range.end}` : undefined,
+            Range: range ? `bytes=${range.start}-${range.end}` : undefined,
+            IfMatch: ifMatch,
           }),
           { abortSignal: input.signal },
         ));
-
-        const stream = await toReadableStream(output.Body);
+        return { output, stream: await toReadableStream(output.Body) };
+      };
+      try {
+        const { output, stream: first } = await read(input.range);
+        const { stream, state } = resumableS3Body({
+          first: { stream: first, response: output, contentLength: output.ContentLength, etag: output.ETag },
+          start: input.range?.start ?? 0,
+          signal: input.signal,
+          reopen: async (range, etag) => {
+            const resumed = await read(range, etag);
+            return { stream: resumed.stream, response: resumed.output,
+              contentLength: resumed.output.ContentLength, etag: resumed.output.ETag };
+          },
+        });
         // Observe, do not handle: a consumer without an error listener still
         // sees the failure exactly as it would without this one.
         stream.on("error", function recordBodyFailure(error) {
-          recordS3BodyFailure(error, output);
+          recordS3BodyFailure(error, state.response, state.reads);
           if (stream.listenerCount("error") === 1) throw error;
         });
         if (input.signal) addAbortSignal(input.signal, stream);
