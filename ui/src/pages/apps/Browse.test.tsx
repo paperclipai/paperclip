@@ -9,6 +9,7 @@ import { ApiError } from "@/api/client";
 import { aiConnectionRouterAppDefinition, getAppStoreDefinition } from "@paperclipai/shared";
 import { queryKeys } from "@/lib/queryKeys";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import type { AiManagedConnectionSummary } from "@paperclipai/shared";
 import type { AggregatorAppCatalogEntry } from "@paperclipai/shared/aggregator-app-catalog";
 
 const aggregatorCatalogMock = vi.hoisted(() => [] as AggregatorAppCatalogEntry[]);
@@ -46,6 +47,9 @@ vi.mock("@/api/publicMcp", () => ({ publicMcpApi: { connections: assistantConnec
 const listGalleryMock = vi.hoisted(() => vi.fn());
 const listApplicationsMock = vi.hoisted(() => vi.fn());
 const listConnectionsMock = vi.hoisted(() => vi.fn());
+const listAiConnectionsMock = vi.hoisted(() => vi.fn());
+const setAiDefaultMock = vi.hoisted(() => vi.fn());
+vi.mock("@/api/ai-connections", () => ({ aiConnectionsApi: { list: listAiConnectionsMock, setDefault: setAiDefaultMock } }));
 const listUserDirectoryMock = vi.hoisted(() => vi.fn());
 const archiveConnectionMock = vi.hoisted(() => vi.fn());
 const pushToastMock = vi.hoisted(() => vi.fn());
@@ -106,6 +110,7 @@ vi.mock("@/context/BreadcrumbContext", () => ({
 
 vi.mock("@/context/ToastContext", () => ({
   useToast: () => ({ pushToast: pushToastMock }),
+  useOptionalToastActions: () => ({ pushToast: pushToastMock }),
 }));
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -219,6 +224,8 @@ describe("Connectors landing page", () => {
     });
     listApplicationsMock.mockResolvedValue({ applications: [] });
     listConnectionsMock.mockResolvedValue({ connections: [] });
+    listAiConnectionsMock.mockReset().mockResolvedValue({ currentUserId: "board-user", canManageConnections: true, connections: [] });
+    setAiDefaultMock.mockReset().mockResolvedValue({ ok: true });
     listUserDirectoryMock.mockResolvedValue({ users: [] });
     archiveConnectionMock.mockResolvedValue(connection({ status: "archived" }));
     container = document.createElement("div");
@@ -1661,6 +1668,120 @@ describe("Connectors landing page", () => {
     expect(rows.map((row) => row.dataset.appSlug)).toEqual(["jira"]);
     expect(container.textContent).not.toContain("Popular");
     expect(container.textContent).not.toContain("All apps");
+  });
+
+  function aiFixture(overrides: Partial<AiManagedConnectionSummary>[] = []) {
+    let accounts: AiManagedConnectionSummary[] = [
+      { id: "openai-sub", grantId: "grant-sub", companyId: "company-1", provider: "openai", method: "subscription", name: "My ChatGPT subscription", ownership: "personal", ownerUserId: "board-user", isDefault: true, canSetDefault: true, status: "connected" },
+      { id: "openai-key", grantId: "grant-key", companyId: "company-1", provider: "openai", method: "api_key", name: "My OpenAI API key", ownership: "personal", ownerUserId: "board-user", isDefault: false, canSetDefault: true, status: "connected" },
+      { id: "claude-key", grantId: "grant-claude", companyId: "company-1", provider: "anthropic", method: "api_key", name: "My Claude API key", ownership: "personal", ownerUserId: "board-user", isDefault: true, canSetDefault: true, status: "connected" },
+    ].map((account, index) => ({ ...account, ...overrides[index] })) as AiManagedConnectionSummary[];
+    listGalleryMock.mockResolvedValue({ apps: [getAppStoreDefinition("openai"), getAppStoreDefinition("anthropic")] });
+    listApplicationsMock.mockResolvedValue({ applications: ["openai", "anthropic"].map(provider => application({ id: `app-${provider}`, name: provider, applicationKey: `app-gallery:${provider}:one`, metadata: { sourceTemplateKey: provider } })) });
+    listConnectionsMock.mockResolvedValue({ connections: accounts.map(account => connection({ id: account.id, companyId: account.companyId, applicationId: `app-${account.provider}`, connectionPurpose: "ai", credentialPolicy: account.ownership === "personal" ? "per_user" : "shared", name: account.name,
+      config: { sourceTemplateKey: account.provider, ai: { provider: account.provider, method: account.method } } })) });
+    listAiConnectionsMock.mockImplementation(async () => ({ currentUserId: "board-user", canManageConnections: true, connections: accounts }));
+    const save = async (_companyId: string, grantId: string) => {
+      const target = accounts.find(account => account.grantId === grantId)!;
+      accounts = accounts.map(account => account.provider === target.provider && account.ownerUserId === target.ownerUserId
+        ? { ...account, isDefault: account.grantId === grantId } : account);
+      return { ok: true };
+    };
+    setAiDefaultMock.mockImplementation(save);
+    return { save, replace: (next: AiManagedConnectionSummary[]) => { accounts = next; }, accounts: () => accounts };
+  }
+
+  async function aiMenu(name = "My OpenAI API key") {
+    const row = container.querySelector('[data-app-slug="openai"]')!;
+    if (!row.querySelector(`[aria-label="Manage ${name} connection"]`)) await clickButton("2 connections", row);
+    await act(() => { row.querySelector(`[aria-label="Manage ${name} connection"]`)!.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true })); });
+    await flushReact();
+    return Array.from(document.querySelectorAll<HTMLElement>('[role="menuitem"]')).find(item => item.textContent?.includes("default for OpenAI") || item.textContent === "Default for OpenAI");
+  }
+
+  it("sets a provider default by grant, keeps the old crown pending, and refetches the saved choice", async () => {
+    const fixture = aiFixture();
+    let release!: () => void;
+    setAiDefaultMock.mockImplementation((company, grant) => new Promise<void>(resolve => { release = () => { void fixture.save(company, grant); resolve(); }; }));
+    const client = await renderBrowse();
+    await flushReact();
+    const item = await aiMenu();
+    const oldCrown = container.querySelector('[aria-label="Your default for OpenAI"]')!;
+    expect(oldCrown.parentElement?.textContent).toContain("My ChatGPT subscription");
+    expect(item?.textContent).toBe("Set as default for OpenAI");
+    await act(() => item!.click());
+    await flushReact();
+    expect(setAiDefaultMock).toHaveBeenCalledExactlyOnceWith("company-1", "grant-key");
+    expect(container.querySelector('[aria-label="Your default for OpenAI"]')?.parentElement?.textContent).toContain("My ChatGPT subscription");
+    expect((await aiMenu())?.getAttribute("aria-disabled")).toBe("true");
+    await act(() => release());
+    await flushReact();
+    expect(container.querySelector('[aria-label="Your default for OpenAI"]')?.parentElement?.textContent).toContain("My OpenAI API key");
+    expect(container.querySelector('[aria-label="Your default for Claude"]')?.parentElement?.textContent).toContain("My Claude API key");
+    expect(pushToastMock).toHaveBeenCalledWith(expect.objectContaining({ tone: "success", title: "My OpenAI API key is now your OpenAI default" }));
+    await act(async () => { await client.invalidateQueries({ queryKey: ["ai-connections", "company-1"] }); });
+    await flushReact();
+    expect(container.querySelector('[aria-label="Your default for OpenAI"]')?.parentElement?.textContent).toContain("My OpenAI API key");
+  });
+
+  it("retains a failed selection and rechecks the same grant before an explicit retry", async () => {
+    const fixture = aiFixture();
+    setAiDefaultMock.mockRejectedValueOnce(new Error("Save failed"));
+    await renderBrowse();
+    const item = await aiMenu();
+    await act(() => item!.click());
+    await flushReact();
+    expect(container.textContent).toContain("Couldn’t change your OpenAI default");
+    expect(container.querySelector('[aria-label="Your default for OpenAI"]')?.parentElement?.textContent).toContain("My ChatGPT subscription");
+    const before = listAiConnectionsMock.mock.calls.length;
+    fixture.replace(fixture.accounts().map(account => account.grantId === "grant-key" ? { ...account, status: "revoked" } : account));
+    await clickButton("Retry", container);
+    expect(listAiConnectionsMock.mock.calls.length).toBeGreaterThan(before);
+    expect(setAiDefaultMock).toHaveBeenCalledTimes(1);
+    fixture.replace(fixture.accounts().map(account => ({ ...account, status: "connected" })));
+    await clickButton("Retry", container);
+    expect(setAiDefaultMock).toHaveBeenCalledTimes(2);
+    expect(setAiDefaultMock).toHaveBeenLastCalledWith("company-1", "grant-key");
+  });
+
+  it.each([
+    { ownership: "shared", ownerUserId: undefined },
+    { ownerUserId: "another-person" },
+    { canSetDefault: false },
+    { routing: { kind: "openrouter", auth: "bearer", models: [] } },
+  ] as Partial<AiManagedConnectionSummary>[])("does not offer personal-default actions for an ineligible account: %j", async override => {
+    aiFixture([{}, override]);
+    await renderBrowse();
+    expect(await aiMenu()).toBeUndefined();
+    expect(setAiDefaultMock).not.toHaveBeenCalled();
+  });
+
+  it("keeps an unavailable default crowned and disables selection of an unavailable replacement", async () => {
+    aiFixture([{ status: "needs_attention" }, { status: "expired" }]);
+    await renderBrowse();
+    const item = await aiMenu();
+    expect(container.querySelector('[aria-label="Your default for OpenAI"]')?.parentElement?.textContent).toContain("My ChatGPT subscription");
+    expect(container.textContent).toContain("Default unavailable");
+    expect(item?.getAttribute("aria-disabled")).toBe("true");
+    expect(item?.textContent).toContain("Reconnect this account");
+  });
+
+  it("refetches cross-tab changes on focus and drops the previous user's crowns on an identity change", async () => {
+    const fixture = aiFixture();
+    const client = await renderBrowse();
+    await aiMenu();
+    await act(() => { document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); });
+    await fixture.save("company-1", "grant-key");
+    await act(() => { focusManager.setFocused(false); focusManager.setFocused(true); });
+    await flushReact();
+    expect(container.querySelector('[aria-label="Your default for OpenAI"]')?.parentElement?.textContent).toContain("My OpenAI API key");
+    accountIdentity.userId = "another-person";
+    listAiConnectionsMock.mockImplementation(() => new Promise(() => {}));
+    await act(() => { root.render(<QueryClientProvider client={client}><TooltipProvider><Browse /></TooltipProvider></QueryClientProvider>); });
+    await flushReact();
+    expect(container.querySelector('[aria-label="Your default for OpenAI"]')).toBeNull();
+    expect(container.querySelector('[aria-label="Your default for Claude"]')).toBeNull();
+    focusManager.setFocused(undefined);
   });
 
   it("shows existing accounts and an actionable warning when the gallery request fails", async () => {

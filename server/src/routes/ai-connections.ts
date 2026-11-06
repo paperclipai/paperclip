@@ -227,15 +227,29 @@ export function aiConnectionRoutes(db: Db, options: Parameters<typeof supportsLo
     const agentId = req.query.agentId;
     if (agentId !== undefined && !z.string().uuid().safeParse(agentId).success)
       throw unprocessable("Invalid agent ID");
+    const accounts = await filterConnectionManagementRows(db, req, "connections:read", await service.list(
+      companyId, currentUserId, agentId as string | undefined,
+    ), account => ({ connectionId: account.id }));
+    const viewer = (req.actor.type === "agent" ? req.actor.onBehalfOfMemberships : req.actor.memberships)
+      ?.some(m => m.companyId === companyId && m.membershipRole === "viewer");
+    const management = connectionManagementService(db);
+    const context = connectionRequestContext(req);
+    // Probe the existing write policy only for the caller's personal accounts.
+    // Reuse the captured request identity across the account capability probes.
+    const connections = await Promise.all(accounts.map(async account => ({
+      ...account,
+      canSetDefault: !viewer && account.ownership === "personal" && account.ownerUserId === currentUserId && !account.routing
+        ? (await management.capability(req.actor, "connections:configure", {
+          type: "connection_management", companyId, purpose: "ai", connectionId: account.id,
+          operation: "PUT /companies/:companyId/ai-connections/default", readOnly: false,
+        }, { mutation: false, readContext: context })).allowed
+        : false,
+    })));
     res.json({
       currentUserId,
       pools: await filterConnectionManagementRows(db, req, "connections:read", await pools.selectable(companyId, currentUserId), pool => ({ connectionId: pool.id })),
       canManageConnections: await canManageAiConnections(db, req, companyId),
-      connections: await filterConnectionManagementRows(db, req, "connections:read", await service.list(
-        companyId,
-        currentUserId,
-        agentId as string | undefined,
-      ), account => ({ connectionId: account.id })),
+      connections,
     } satisfies AiConnectionList);
   });
   router.get(

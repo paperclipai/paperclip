@@ -13,6 +13,10 @@ import type { ToolConnection, AiConnectionMetadata } from "@paperclipai/shared";
 import { aiMethodLabel } from "./model";
 import { queryKeys } from "@/lib/queryKeys";
 import { retryTransientOnly } from "@/lib/query-client";
+import { useAccountIdentity } from "@/api/companies-query";
+import { useAiConnectionDefaults } from "./useAiConnectionDefaults";
+import { AiDefaultError } from "./AiConnectionDefault";
+import { AI_PROVIDERS } from "./model";
 
 export function ManagedAiConnectionRow({
   connection,
@@ -42,11 +46,8 @@ export function ManagedAiConnectionDetails({
     queryFn: () =>
       aiConnectionsApi.activeRuns(connection.companyId, connection.id),
   });
-  const accounts = useQuery({
-    queryKey: ["ai-connections", connection.companyId],
-    queryFn: ({ signal }) => aiConnectionsApi.list(connection.companyId, undefined, { signal }),
-    retry: retryTransientOnly(1),
-  });
+  const defaults = useAiConnectionDefaults(connection.companyId, useAccountIdentity());
+  const accounts = defaults.accounts;
   const grants = useQuery({
     queryKey: queryKeys.tools.connectionGrants(connection.id),
     queryFn: ({ signal }) => toolsApi.listConnectionGrants(connection.id, { signal }),
@@ -56,11 +57,6 @@ export function ManagedAiConnectionDetails({
   const accountsView = useQueryView(accounts);
   const grantsView = useQueryView(grants);
   const refresh = () => client.invalidateQueries();
-  const makeDefault = useMutation({
-    mutationFn: (id: string) =>
-      aiConnectionsApi.setDefault(connection.companyId, id),
-    onSuccess: refresh,
-  });
   const revoke = useMutation({
     mutationFn: (id: string) =>
       toolsApi.revokeConnectionGrant(connection.id, id),
@@ -70,12 +66,11 @@ export function ManagedAiConnectionDetails({
     mutationFn: (id: string) => heartbeatsApi.cancel(id),
     onSuccess: refresh,
   });
-  const account = accounts.data?.connections.find(
-    (a) => a.id === connection.id,
-  );
+  const candidates = defaults.data?.connections.filter(a => a.id === connection.id) ?? [];
+  const account = candidates.length === 1 ? candidates[0] : candidates.find(a => a.ownerUserId === defaults.data?.currentUserId && a.isDefault);
   const grant = grants.data?.grants.find((g) => g.id === account?.grantId);
   const loadError = [accountsView, grantsView].find((view) => view.kind === "error")?.error;
-  const error = makeDefault.error ?? stop.error;
+  const error = stop.error;
   const loadFailure = loadError ? (
     <div role="alert" className="space-y-2">
       <p className="text-sm text-destructive">{describeError(loadError).body}</p>
@@ -105,13 +100,16 @@ export function ManagedAiConnectionDetails({
     <div className="space-y-4">
       {loadFailure}
       {error && <p role="alert" className="text-sm text-destructive">{describeError(error).body}</p>}
+      {defaults.error && defaults.failedProvider && <AiDefaultError provider={AI_PROVIDERS[defaults.failedProvider].name}
+        pending={defaults.pending(defaults.failedProvider)} onRetry={defaults.retry} />}
       <AiConnectionAccountDetails account={account} grant={grant} />
       {account.routing && <details className="rounded-lg border border-border p-4"><summary className="cursor-pointer text-sm font-medium">Provider settings</summary><dl className="mt-4 grid grid-cols-2 gap-3 text-sm"><dt className="text-muted-foreground">Destination</dt><dd className="break-all">{account.routing.baseUrl ?? (account.routing.kind === "bedrock" ? account.routing.region : "OpenRouter")}</dd><dt className="text-muted-foreground">API format</dt><dd>{account.routing.kind === "openrouter" ? "Selected by harness" : account.routing.protocol}</dd><dt className="text-muted-foreground">Authentication</dt><dd>{account.routing.auth}</dd><dt className="text-muted-foreground">Models</dt><dd>{account.routing.models.map(m => m.label ?? m.id).join(", ") || "Enter a model ID on the agent"}</dd></dl></details>}
       <AiConnectionAccountControls
         account={account}
         grant={grant}
         currentUserId={accounts.data!.currentUserId}
-        onMakeDefault={() => makeDefault.mutate(grant.id)}
+        defaultPending={defaults.pending(account.provider)}
+        onMakeDefault={() => defaults.choose(account)}
         onRevoke={() => revoke.mutateAsync(grant.id).then(() => undefined)}
         revocationDetails={
           <div className="space-y-2">

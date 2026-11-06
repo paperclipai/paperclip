@@ -2408,6 +2408,15 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
     app.use((error: { status?: number; message: string }, _req: express.Request, res: express.Response, _next: express.NextFunction) => { res.status(error.status ?? 500).json({ error: error.message }); });
     const personal = await service.select({ ...input, userId: "alice" });
     const base = `/api/companies/${companyId}/ai-connections`;
+    const ownerList = await request(app).get(base);
+    expect(ownerList.status).toBe(200);
+    expect(ownerList.body.connections.find((account: { grantId: string }) => account.grantId === personal.grant.id)?.canSetDefault).toBe(true);
+    const viewerList = await request(app).get(base).set("x-test-role", "viewer");
+    expect(viewerList.status).toBe(200);
+    expect(viewerList.body.connections.every((account: { canSetDefault: boolean }) => account.canSetDefault === false)).toBe(true);
+    const otherUserList = await request(app).get(base).set("x-test-user", "bob");
+    expect(otherUserList.status).toBe(200);
+    expect(otherUserList.body.connections.some((account: { grantId: string; canSetDefault: boolean }) => account.grantId === personal.grant.id && account.canSetDefault)).toBe(false);
     expect((await request(app).get(`/api/companies/${otherCompanyId}/ai-connections`)).status).toBe(403);
     expect((await request(app).put(`${base}/default`).set("x-test-user", "bob").send({ grantId: personal.grant.id })).status).toBe(403);
     expect((await request(app).put(`${base}/default`).set("x-test-role", "viewer").send({ grantId: personal.grant.id })).status).toBe(403);

@@ -13,6 +13,9 @@ import {
 } from "@paperclipai/shared";
 import { AssistantConnectionCard, useAssistantConnections } from "./AssistantConnection";
 import { ManagedAiConnectionRow } from "@/components/ai-connections/ManagedAiConnectionDetails";
+import { aiAccountForConnection, useAiConnectionDefaults } from "@/components/ai-connections/useAiConnectionDefaults";
+import { AiDefaultCrown, AiDefaultError, AiDefaultMenuItem } from "@/components/ai-connections/AiConnectionDefault";
+import { AI_PROVIDERS } from "@/components/ai-connections/model";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -418,6 +421,8 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
     queryFn: () => toolsApi.listConnections(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
+  const aiDefaults = useAiConnectionDefaults(selectedCompanyId, { userId: viewingUserId, settled: identitySettled },
+    connectionsQuery.data?.connections.some(connection => connection.connectionPurpose === "ai" && !aiConnectionRouterPluginKey(connection)) ?? false);
   const chatEndpointsQuery = useQuery({
     queryKey: queryKeys.chatEndpoints.list(selectedCompanyId ?? "__none__"),
     queryFn: () => chatEndpointsApi.list(selectedCompanyId!),
@@ -936,6 +941,10 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
       ) : null}
 
       {refreshAggregator.error ? <p role="alert" className="text-sm text-destructive">Couldn’t refresh the gateway. Last known accounts are shown.</p> : null}
+      {aiDefaults.accounts.isError && <QueryErrorState size="inline" error={aiDefaults.accounts.error} action="load AI account defaults"
+        onRetry={() => void aiDefaults.accounts.refetch()} retrying={aiDefaults.accounts.isFetching} />}
+      {aiDefaults.error && aiDefaults.failedProvider && <AiDefaultError provider={AI_PROVIDERS[aiDefaults.failedProvider].name}
+        pending={aiDefaults.pending(aiDefaults.failedProvider)} onRetry={aiDefaults.retry} />}
 
       {loading ? (
         <div className="space-y-3" aria-label="Loading connectors">
@@ -954,6 +963,7 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
           {paginatedRows.map((row) => (
             <ConnectorCard
               renderAccountDetails={renderAccountDetails}
+              aiDefaults={aiDefaults}
               key={row.key}
               row={row}
               userProfileById={userProfileById}
@@ -1057,6 +1067,7 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
 
 export function ConnectorCard({
   renderAccountDetails,
+  aiDefaults,
   row,
   userProfileById,
   chatAgentById,
@@ -1080,6 +1091,7 @@ export function ConnectorCard({
   searchQuery = "",
 }: {
   renderAccountDetails?: (connection: ToolConnection) => ReactNode;
+  aiDefaults?: ReturnType<typeof useAiConnectionDefaults>;
   row: ConnectorRowModel;
   userProfileById: ReadonlyMap<string, ConnectionOwnerProfile>;
   chatAgentById?: ReadonlyMap<string, AvatarAgent>;
@@ -1209,6 +1221,7 @@ export function ConnectorCard({
               {row.connections.map((connection) => (
                 <ConnectionAccountRow
                   details={renderAccountDetails?.(connection)}
+                  aiDefaults={aiDefaults}
                   key={connection.id}
                   row={row}
                   setupEnabled={setupEnabled}
@@ -1351,6 +1364,7 @@ export function ConnectorCard({
 
 function ConnectionAccountRow({
   details,
+  aiDefaults,
   row,
   connection,
   owner,
@@ -1364,6 +1378,7 @@ function ConnectionAccountRow({
   setupEnabled = true,
 }: {
   details?: ReactNode;
+  aiDefaults?: ReturnType<typeof useAiConnectionDefaults>;
   row: ConnectorRowModel;
   connection: ToolConnection;
   owner: ConnectionOwnerProfile | null;
@@ -1383,9 +1398,12 @@ function ConnectionAccountRow({
     row.name,
     owner,
   );
+  const account = aiDefaults?.data && aiAccountForConnection(connection, aiDefaults.data.connections, aiDefaults.data.currentUserId);
 
   return (
-    <ConnectionAccountRowLayout state={state} accountName={accountName} owner={owner} details={<>{details}{discovery?.discovery.message || discovery?.sync.status === "error" ? <p className="text-xs text-muted-foreground" role="status">{discovery.discovery.message ?? discovery.sync.error}</p> : null}</>}
+    <ConnectionAccountRowLayout state={state} accountName={accountName} owner={owner}
+      afterName={account?.isDefault ? <AiDefaultCrown account={account} /> : undefined}
+      details={<>{details}{account?.isDefault && account.status !== "connected" && <p className="text-xs text-destructive">Default unavailable</p>}{discovery?.discovery.message || discovery?.sync.status === "error" ? <p className="text-xs text-muted-foreground" role="status">{discovery.discovery.message ?? discovery.sync.error}</p> : null}</>}
       openLabel={`Open ${accountName} permissions`} onOpen={() => onNavigate(`/apps/${connection.id}/permissions`)}>
         {setupEnabled && (state.kind === "attention" || state.kind === "draft") ? (
           <Button
@@ -1413,6 +1431,8 @@ function ConnectionAccountRow({
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
+            {account?.canSetDefault && aiDefaults && !aiDefaults.accounts.isError && <AiDefaultMenuItem account={account}
+              pending={aiDefaults.pending(account.provider)} onSelect={() => aiDefaults.choose(account)} />}
             <DropdownMenuItem
               onSelect={() => onNavigate(`/apps/${connection.id}/permissions`)}
             >
@@ -1436,8 +1456,9 @@ function ConnectionAccountRow({
 }
 
 /** Shared presentation for native and aggregator-backed accounts. */
-function ConnectionAccountRowLayout({ state, accountName, owner, source, details, openLabel, onOpen, children }: {
+function ConnectionAccountRowLayout({ state, accountName, afterName, owner, source, details, openLabel, onOpen, children }: {
   state: ConnectionState; accountName: string; owner?: ConnectionOwnerProfile | null; source?: ReactNode; details?: ReactNode;
+  afterName?: ReactNode;
   openLabel: string; onOpen: () => void; children: ReactNode;
 }) {
   return (
@@ -1445,14 +1466,14 @@ function ConnectionAccountRowLayout({ state, accountName, owner, source, details
       <div className="flex min-w-0 flex-1 items-start gap-2.5">
         <ConnectionStatusIcon state={state} />
         <div className="min-w-0">
-          <button
+          <div className="flex min-w-0 items-center gap-2"><button
             type="button"
             className="block max-w-full cursor-pointer truncate text-left text-sm font-medium text-foreground hover:underline focus-visible:underline"
             aria-label={openLabel}
             onClick={onOpen}
           >
             {accountName}
-          </button>
+          </button>{afterName}</div>
           {details}
           {state.message ? (
             <div

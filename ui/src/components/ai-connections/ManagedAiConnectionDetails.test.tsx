@@ -8,6 +8,7 @@ import { queryKeys } from "@/lib/queryKeys";
 import { ManagedAiConnectionDetails } from "./ManagedAiConnectionDetails";
 
 vi.mock("@/lib/router", () => ({ useNavigate: () => vi.fn() }));
+vi.mock("@/api/companies-query", () => ({ useAccountIdentity: () => ({ userId: "user", settled: true }) }));
 vi.mock("./AiConnectionAccountControls", () => ({
   AiConnectionAccountControls: ({ account }: { account: AiManagedConnectionSummary }) => (
     <section aria-label="AI account settings">{account.name}</section>

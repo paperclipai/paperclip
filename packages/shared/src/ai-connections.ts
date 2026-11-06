@@ -186,6 +186,8 @@ export interface AiManagedConnectionSummary {
   ownerUserId?: string;
   ownerName?: string;
   isDefault: boolean;
+  /** Current caller's configure authority, projected by the list route. */
+  canSetDefault?: boolean;
   status: "connected" | "needs_attention" | "expired" | "revoked";
   unavailableReason?: string;
   usageProbeSupported?: boolean;
