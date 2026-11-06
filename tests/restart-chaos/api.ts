@@ -1,4 +1,9 @@
 /** Minimal board API client for an isolated local_trusted instance. */
+export function isSocketTypeOfServiceRace(error: unknown): boolean {
+  const candidate = error as { code?: unknown; syscall?: unknown } | null;
+  return candidate?.code === "EINVAL" && candidate.syscall === "setTypeOfService";
+}
+
 export class ChaosApiError extends Error {
   constructor(readonly status: number | null, message: string) { super(message); this.name = "ChaosApiError"; }
 }

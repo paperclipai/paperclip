@@ -12,7 +12,7 @@ import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { ChaosApi } from "./api.js";
+import { ChaosApi, isSocketTypeOfServiceRace } from "./api.js";
 import { CREDENTIAL_FOR_ADAPTER, parseCommand, replayCommand, waveIdFor } from "./config.js";
 import { knownSecretValues, writeEvidenceBundle } from "./evidence.js";
 import { gradeTask } from "./grader.js";
@@ -41,7 +41,7 @@ async function loadPlan(): Promise<{ plan: WavePlan; keep: boolean }> {
     const graded = await readFile(path.join(sourceDir, `${command.ref.taskId}.grade.json`), "utf8")
       .then(text => JSON.parse(text) as { record: { createdAt: number | null; faultIds: string[] } }).catch(() => null);
     const faults = await readFile(path.join(sourceDir, "faults.json"), "utf8").then(text => JSON.parse(text) as FaultReceipt[]).catch(() => []);
-    const observed = graded ? observedFaultSchedule(graded.record.createdAt, graded.record.faultIds, faults) : [];
+    const observed = graded ? observedFaultSchedule(graded.record.createdAt, graded.record.faultIds, faults, command.ref.taskId) : [];
     if (!observed.length) console.warn("Replay: no recorded fault sequence for this task; using its planned fault only.");
     return { plan: replayWave(source, command.ref, Date.now(), command.overrides, observed), keep: command.keep };
   }
@@ -53,7 +53,7 @@ function preflight(plan: WavePlan) {
   if (missing.length) throw new Error(`Missing credentials ${missing.join(", ")}. Run: set -a; source ~/.secrets; set +a`);
   const runner = process.env.PAPERCLIP_RUNNER_BINARY
     ?? path.join(repositoryRoot, "packages/paperclip-runner/runner/target/debug/paperclip-runnerd");
-  if (!existsSync(runner)) throw new Error(`Runner binary missing at ${runner}. Run: pnpm --filter @paperclipai/paperclip-runner build:runner-binaries`);
+  if (!existsSync(runner)) throw new Error(`Runner binary missing at ${runner}. Run: pnpm --filter @paperclipai/paperclip-runner run build:runner-binaries`);
   // Same provider bundle preparation as tests/runner-e2e/verified-provider-bundles.setup.mjs.
   const build = spawnSync(process.execPath, [path.join(repositoryRoot, "packages/paperclip-runner/scripts/build-verified-provider-entrypoints.mjs")],
     { cwd: repositoryRoot, stdio: "inherit" });
@@ -69,7 +69,7 @@ async function main(): Promise<number> {
   const gitSha = git(["rev-parse", "HEAD"]);
   const gitDirty = git(["status", "--porcelain"]).length > 0;
   timeline.add("wave_planned", { waveId: plan.waveId, seed: plan.seed, gitSha, gitDirty, replayOf: plan.replayOf ?? null,
-    tasks: plan.tasks.map(task => `${task.taskId}:${task.adapter}/${task.workload}/${task.fault}@${task.fireAfterMs}ms${task.holdMs ? ` hold ${task.holdMs}ms` : ""}`) });
+    tasks: plan.tasks.map(task => `${task.taskId}:${task.adapter}/${task.workload}/${task.fault}${task.trigger ? `^${task.trigger}+${task.triggerDelayMs ?? 0}ms` : ""}@${task.fireAfterMs}ms${task.holdMs ? ` hold ${task.holdMs}ms` : ""}`) });
   preflight(plan);
 
   const supervisor = await ChaosSupervisor.create({ repositoryRoot, waveDir, timeline });
@@ -81,7 +81,14 @@ async function main(): Promise<number> {
   const lines: LedgerLine[] = [];
   let anyFailure = false;
   let harnessError: unknown;
+  process.on("uncaughtException", error => {
+    if (isSocketTypeOfServiceRace(error)) { timeline.add("harness_socket_race_ignored", { error: String(error) }); return; }
+    timeline.add("harness_uncaught_exception", { error: error.stack ?? String(error) });
+    harnessError ??= error;
+    interrupted = true;
+  });
   let faultFailures = 0;
+  let faultsQueued = 0;
   try {
     await supervisor.start();
     const api = new ChaosApi(supervisor.baseUrl);
@@ -111,14 +118,19 @@ async function main(): Promise<number> {
         await observer.poll(now);
       }));
       for (const observer of active) {
+        if (faultsQueued || supervisor.faultInProgress || !supervisor.serverReady) break;
         const due = observer.faultDue(Date.now());
         if (!due) continue;
         if (observer.record.restAt !== null) { timeline.add("fault_skipped_task_resting", { taskId: observer.plan.taskId, fault: due.kind }); continue; }
         const exposed = active.filter(candidate => !candidate.done);
         await Promise.all(exposed.map(candidate => candidate.snapshotBeforeFault()));
-        faultWork.push(supervisor.fault(due.kind, due.holdMs, observer.plan.taskId).then(receipt => {
+        if (!(await observer.confirmTrigger(due, Date.now()))) continue;
+        const trigger = due.trigger && due.trigger !== "time" ? { trigger: due.trigger, delayMs: due.delayMs ?? 0 } : undefined;
+        if (trigger) timeline.add("trigger_fired", { taskId: observer.plan.taskId, fault: due.kind, ...trigger });
+        faultsQueued += 1;
+        faultWork.push(supervisor.fault(due.kind, due.holdMs, observer.plan.taskId, trigger).finally(() => { faultsQueued -= 1; }).then(receipt => {
           faults.push(receipt);
-          for (const candidate of exposed) { candidate.noteFault(receipt.faultId); candidate.extendDeadline((receipt.readyAt ?? Date.now()) - receipt.startedAt); }
+          for (const candidate of exposed) { candidate.noteFault(receipt.faultId, receipt.startedAt); candidate.extendDeadline((receipt.readyAt ?? Date.now()) - receipt.startedAt); }
         }, (error: Error & { receipt?: FaultReceipt }) => {
           if (error.receipt) faults.push(error.receipt);
           faultFailures += 1;
@@ -156,7 +168,7 @@ async function main(): Promise<number> {
           gitSha, gitDirty, issue: observer.issue, secrets }).catch(error => { timeline.add("evidence_failed", { taskId: observer.plan.taskId, error: String(error) }); return null; });
       }
       await writeFile(path.join(waveDir, `${observer.plan.taskId}.grade.json`), `${JSON.stringify({ record: observer.record, grade }, null, 2)}\n`, { mode: 0o600 });
-      lines.push(ledgerLine(plan, observer.record, grade, gitSha, evidence));
+      lines.push(ledgerLine(plan, observer.record, grade, gitSha, evidence, faults));
       timeline.add("task_graded", { taskId: observer.plan.taskId, pass: grade.pass, crossed: grade.crossed, signature: grade.signature,
         rules: Object.fromEntries(Object.entries(grade.rules).map(([id, rule]) => [id, rule.verdict])), T: grade.T.verdict });
     }

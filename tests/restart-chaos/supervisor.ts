@@ -18,6 +18,7 @@ import { randomBytes } from "node:crypto";
 import { createWriteStream, statSync, type WriteStream } from "node:fs";
 import { mkdir, readFile, symlink } from "node:fs/promises";
 import { createRequire } from "node:module";
+import os from "node:os";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { prepareControllerDatabase } from "../runner-e2e/controller-database.js";
@@ -33,13 +34,21 @@ import { prepareSourceServerDependencies } from "../runner-e2e/source-startup.js
 import { runnerE2ETypeScriptProcessArgs } from "../runner-e2e/web-server-command.js";
 import type { MatrixExecution } from "../runner-e2e/types.js";
 import type { Timeline } from "./timeline.js";
-import type { FaultKind, FaultReceipt } from "./types.js";
+import type { FaultKind, FaultReceipt, TriggerId } from "./types.js";
 
 const HEALTH_TIMEOUT_MS = 180_000;
 const READY_TIMEOUT_MS = 300_000;
 const STOP_TIMEOUT_MS = 30_000;
 
-export const FAULT_SIGNAL: Record<FaultKind, "SIGKILL" | "SIGTERM"> = { K1: "SIGKILL", K2: "SIGTERM", K4: "SIGKILL" };
+export const FAULT_SIGNAL: Record<FaultKind, "SIGKILL" | "SIGTERM"> = { K1: "SIGKILL", K2: "SIGTERM", K4: "SIGKILL", K6: "SIGKILL" };
+
+export const CRASH_LOOP_TARGETS = ["recovering", "ready"] as const;
+const PHASE_POLL_MS = 50;
+
+export function crashLoopShouldFire(target: (typeof CRASH_LOOP_TARGETS)[number], phase: string): boolean {
+  if (target === "recovering") return phase === "recovering" || phase === "ready";
+  return phase === "ready";
+}
 
 export interface SupervisorPaths { temporaryRoot: string; home: string; configPath: string; serverLogPath: string }
 
@@ -219,24 +228,27 @@ export class ChaosSupervisor {
   }
 
   /** Faults are serialized: one control plane, one outage at a time. */
-  fault(kind: FaultKind, holdMs: number, requestedBy: string): Promise<FaultReceipt> {
+  fault(kind: FaultKind, holdMs: number, requestedBy: string, trigger?: { trigger: TriggerId; delayMs: number }): Promise<FaultReceipt> {
     const requestedAt = Date.now();
-    const run = this.faultChain.then(() => this.executeFault(kind, holdMs, requestedBy, requestedAt));
+    const run = this.faultChain.then(() => this.executeFault(kind, holdMs, requestedBy, requestedAt, trigger));
     this.faultChain = run.catch(() => undefined);
     return run;
   }
 
-  private async executeFault(kind: FaultKind, holdMs: number, requestedBy: string, requestedAt: number): Promise<FaultReceipt> {
+  private async executeFault(kind: FaultKind, holdMs: number, requestedBy: string, requestedAt: number,
+    trigger?: { trigger: TriggerId; delayMs: number }): Promise<FaultReceipt> {
     const previous = this.child;
     this.faultCount += 1;
     const receipt: FaultReceipt = {
       faultId: `f${String(this.faultCount).padStart(2, "0")}`, kind, requestedBy, signal: FAULT_SIGNAL[kind], holdMs,
+      ...(trigger ? { trigger: trigger.trigger, triggerDelayMs: trigger.delayMs } : {}),
+      loadAvg1m: Math.round(os.loadavg()[0]! * 100) / 100,
       requestedAt, startedAt: Date.now(), stoppedAt: null, restartedAt: null, healthyAt: null, readyAt: null,
       phases: [], serverLogOffsetAtStart: this.serverLogOffset(), serverLogOffsetAtReady: null, error: null,
     };
     this.faultInProgress = true;
     this.serverReady = false;
-    this.timeline.add("fault_started", { faultId: receipt.faultId, kind, signal: receipt.signal, holdMs, requestedBy, previousPid: previous?.pid });
+    this.timeline.add("fault_started", { faultId: receipt.faultId, fault: kind, signal: receipt.signal, loadAvg1m: receipt.loadAvg1m, holdMs, requestedBy, previousPid: previous?.pid });
     this.log.write(`\n[restart-chaos] ${receipt.faultId} ${kind} ${receipt.signal} hold=${holdMs}ms requestedBy=${requestedBy} at ${new Date().toISOString()}\n`);
     try {
       if (!previous?.pid || this.exited(previous)) throw new Error("No live Paperclip server to fault");
@@ -258,9 +270,13 @@ export class ChaosSupervisor {
         cancelled: () => this.shuttingDown,
         record: async progress => { outage = progress; },
       });
+      if (kind === "K6") {
+        if (!this.child) throw new Error("K6 crash loop has no replacement server to kill");
+        receipt.healthyAt = await this.waitForHealth(await this.crashLoop(this.child, receipt), receipt.phases);
+      }
       receipt.readyAt = await this.waitForReadyPhase(receipt.phases);
       receipt.serverLogOffsetAtReady = this.serverLogOffset();
-      this.timeline.add("fault_ready", { faultId: receipt.faultId, replacementPid: outage?.replacementPid,
+      this.timeline.add("fault_ready", { faultId: receipt.faultId, replacementPid: this.child?.pid ?? outage?.replacementPid,
         downMs: (receipt.restartedAt ?? 0) - (receipt.stoppedAt ?? 0), readyAfterMs: receipt.readyAt - receipt.startedAt, phases: receipt.phases });
     } catch (error) {
       receipt.error = error instanceof Error ? error.message : String(error);
@@ -270,6 +286,36 @@ export class ChaosSupervisor {
       this.faultInProgress = false;
     }
     return receipt;
+  }
+
+  private async waitForCrashLoopPhase(child: ChildProcess, target: (typeof CRASH_LOOP_TARGETS)[number],
+    phases: FaultReceipt["phases"]): Promise<string> {
+    const deadline = Date.now() + READY_TIMEOUT_MS;
+    while (Date.now() < deadline) {
+      if (this.shuttingDown) throw new Error("Harness shutdown interrupted the crash loop");
+      if (this.exited(child)) throw new Error(`Paperclip server exited during the crash loop (code=${child.exitCode} signal=${child.signalCode})`);
+      const phase = await this.readPhase();
+      if (phase !== phases[phases.length - 1]?.phase) phases.push({ phase, at: Date.now() });
+      if (crashLoopShouldFire(target, phase)) return phase;
+      await delay(PHASE_POLL_MS);
+    }
+    throw new Error(`Crash loop: phase ${target} not reached within ${READY_TIMEOUT_MS}ms`);
+  }
+
+  private async crashLoop(first: ChildProcess, receipt: FaultReceipt): Promise<ChildProcess> {
+    let current = first;
+    receipt.crashLoop = [];
+    for (const target of CRASH_LOOP_TARGETS) {
+      const phase = await this.waitForCrashLoopPhase(current, target, receipt.phases);
+      receipt.crashLoop.push({ pid: current.pid ?? null, target, phase, at: Date.now() });
+      this.timeline.add("fault_crash_loop_kill", { faultId: receipt.faultId, pid: current.pid, target, phase });
+      this.log.write(`\n[restart-chaos] ${receipt.faultId} K6 crash-loop SIGKILL pid=${current.pid} target=${target} phase=${phase}\n`);
+      await this.stopper.crashForRestart(current);
+      if (this.child === current) this.child = null;
+      await this.waitForHealthToStop();
+      current = await this.spawnServer();
+    }
+    return current;
   }
 
   /**

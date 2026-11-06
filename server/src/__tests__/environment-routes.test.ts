@@ -577,6 +577,23 @@ describe("environment routes", () => {
       expect(JSON.stringify(res.body)).not.toContain("config-credential-must-never-echo");
     });
 
+    it("redacts credential-shaped keys inside arrays nested in arrays", async () => {
+      mockEnvironmentService.getById.mockResolvedValue({
+        ...createPlatformSandboxEnvironment(),
+        config: {
+          provider: "daytona",
+          groups: [[{ name: "a", apiToken: "nested-credential-must-never-echo" }], ["plain"]],
+        },
+      });
+      const app = createApp(ownerAdminActor);
+
+      const res = await request(app).get("/api/environments/env-managed-1");
+
+      expect(res.status).toBe(200);
+      expect(res.body.config).toEqual({ provider: "daytona", groups: [[{ name: "a" }], ["plain"]] });
+      expect(JSON.stringify(res.body)).not.toContain("nested-credential-must-never-echo");
+    });
+
     it("keeps blanking env vars on legacy kubernetes-marker rows", async () => {
       // Pre-generalization builds may have written platform values into
       // these rows' env vars, so the legacy floor stays absolute there.
