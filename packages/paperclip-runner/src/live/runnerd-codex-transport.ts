@@ -229,6 +229,100 @@ function assertRealDirectory(path: string): void {
   }
 }
 
+/**
+ * Read the archived controller state of a rotation that already started.
+ *
+ * The archive directory is the durable rotation marker for exactly
+ * `priorIdentity`. Retry preparation can restore that run's controller
+ * checkpoint into the root after the archive was written. A restored copy
+ * with the same schema and the exact archived identity belongs to authority
+ * that this rotation already retired, so it is removed and the rotation
+ * resumes from the archived snapshot. The restore can serialize the state
+ * differently, so this compares identity, not bytes. Any other active state
+ * fails closed.
+ */
+function resumeArchivedControlPlane(
+  activeControlPlane: string,
+  archivedControlPlane: string,
+  priorIdentity: DurableRecoveryIdentity,
+): Record<string, unknown> {
+  assertRealDirectory(archivedControlPlane);
+  const archivedState = readControlPlaneState(archivedControlPlane);
+  if (!recoveryIdentityMatches(controlPlaneIdentity(archivedState), priorIdentity)) {
+    throw new Error("native_runner_authority_archive_conflict");
+  }
+  if (existsSync(activeControlPlane)) {
+    assertRealDirectory(activeControlPlane);
+    if (!existsSync(resolve(activeControlPlane, "control-plane-state.json"))) {
+      throw new Error("native_runner_authority_archive_conflict");
+    }
+    const activeState = readControlPlaneState(activeControlPlane);
+    if (
+      activeState.schema !== archivedState.schema ||
+      !recoveryIdentityMatches(controlPlaneIdentity(activeState), priorIdentity)
+    ) {
+      throw new Error("native_runner_authority_archive_conflict");
+    }
+    rmSync(activeControlPlane, { recursive: true });
+  }
+  return archivedState;
+}
+
+/**
+ * Recognize a rotation that an earlier attempt already committed.
+ *
+ * The epoch archive for the active control plane's exact identity means a
+ * rotation away from that authority already started. A retry can restore the
+ * prior run's controller checkpoint into the root after that, which makes the
+ * root look as if the rotation never happened while its Runner state is
+ * already archived. Returns the archived snapshot (and removes the restored
+ * copy) so every caller continues from the same archive-only state, or null
+ * when no rotation was committed. A copy that still holds an unfinished warm
+ * transition, staged attachment, or pending attachment is not a plain restore
+ * and fails closed.
+ */
+function takeCommittedRotation(
+  root: string,
+  activeState: Record<string, unknown>,
+): Record<string, unknown> | null {
+  const identity = controlPlaneIdentity(activeState);
+  const archivedControlPlane = resolve(
+    authorityArchiveDirectory(root, identity),
+    "control-plane",
+  );
+  if (!existsSync(archivedControlPlane)) return null;
+  const pendingAttachment =
+    Array.isArray(activeState.commands) &&
+    activeState.commands.some((entry) => {
+      const command = record(entry);
+      return command.type === "run.attach" && command.status === "pending";
+    });
+  if (
+    activeState.warmTransition !== undefined ||
+    activeState.stagedRunAttachment !== undefined ||
+    pendingAttachment
+  ) {
+    throw new Error("native_runner_authority_archive_conflict");
+  }
+  return resumeArchivedControlPlane(
+    resolve(root, "control-plane"),
+    archivedControlPlane,
+    identity,
+  );
+}
+
+/** True only for two regular files with the same bytes. */
+function sameRegularFile(left: string, right: string): boolean {
+  const leftMetadata = lstatSync(left);
+  const rightMetadata = lstatSync(right);
+  return (
+    leftMetadata.isFile() &&
+    rightMetadata.isFile() &&
+    leftMetadata.size === rightMetadata.size &&
+    readFileSync(left).equals(readFileSync(right))
+  );
+}
+
 function quarantineLocalRuntimeState(root: string, reason: unknown): never {
   assertRealDirectory(root);
   const quarantine = resolve(
@@ -288,87 +382,74 @@ function latestArchivedControlPlaneState(
   return null;
 }
 
-function rotateLocalAuthorityEpoch(
-  root: string,
-  controlPlaneState: Record<string, unknown>,
-  desired: DurableRecoveryIdentity,
-): Record<string, unknown> {
-  const priorIdentity = controlPlaneIdentity(controlPlaneState);
-  if (
-    priorIdentity.runnerInstanceId !== desired.runnerInstanceId ||
-    priorIdentity.environmentLeaseId !== desired.environmentLeaseId ||
-    priorIdentity.normalizedSessionId !== desired.normalizedSessionId ||
-    priorIdentity.runId === desired.runId
-  ) {
-    throw new Error(
-      "PRP recovery identity does not match the durable session binding",
-    );
-  }
-  const runnerDirectory = resolve(root, "runner");
-  const runnerStatePath = resolve(runnerDirectory, "runner-state.json");
-  const archive = authorityArchiveDirectory(root, priorIdentity);
-  const archivedControlPlane = resolve(archive, "control-plane");
-  const archivedRunnerState = resolve(archive, "runner-state.json");
-  const runnerStateSource = existsSync(runnerStatePath)
-    ? runnerStatePath
-    : archivedRunnerState;
-  if (!existsSync(runnerStateSource)) {
-    throw new Error("native_runner_authority_rotation_state_unavailable");
-  }
-  assertRealDirectory(runnerDirectory);
-  const runnerState = readRunnerState(runnerStateSource);
-  if (
-    runnerState.runnerInstanceId !== priorIdentity.runnerInstanceId ||
-    runnerState.environmentLeaseId !== priorIdentity.environmentLeaseId ||
-    runnerState.runId !== priorIdentity.runId ||
-    runnerState.normalizedSessionId !== priorIdentity.normalizedSessionId ||
-    runnerState.turnId !== priorIdentity.turnId ||
-    runnerState.itemId !== priorIdentity.itemId ||
-    runnerState.lifecycle !== "suspended"
-  ) {
-    throw new Error("native_runner_authority_rotation_requires_settled_state");
-  }
-  const archivesRoot = resolve(root, "authority-epochs");
-  if (existsSync(archivesRoot)) {
-    assertRealDirectory(archivesRoot);
-  } else {
-    mkdirSync(archivesRoot, { mode: 0o700 });
-  }
-  if (existsSync(archive)) {
-    assertRealDirectory(archive);
-  } else {
-    mkdirSync(archive, { mode: 0o700 });
-  }
-  assertRealDirectory(archive);
-  const activeControlPlane = resolve(root, "control-plane");
-  if (existsSync(activeControlPlane)) {
-    assertRealDirectory(activeControlPlane);
-    if (existsSync(archivedControlPlane)) {
-      throw new Error("native_runner_authority_archive_conflict");
-    }
-    renameSync(activeControlPlane, archivedControlPlane);
-  }
-  if (existsSync(runnerStatePath)) {
-    if (existsSync(archivedRunnerState)) {
-      throw new Error("native_runner_authority_archive_conflict");
-    }
-    renameSync(runnerStatePath, archivedRunnerState);
-  }
-  if (!existsSync(archivedControlPlane) || !existsSync(archivedRunnerState)) {
-    throw new Error("native_runner_authority_archive_incomplete");
-  }
-  return controlPlaneState;
-}
-
-async function rotateExternalAuthorityEpoch(
-  root: string,
-  controlPlaneState: Record<string, unknown>,
-  desired: DurableRecoveryIdentity,
-  readRunnerState: () => Promise<Record<string, unknown>>,
-  archiveRunnerState: (input: {
+/**
+ * Where an authority rotation reads and archives the prior run's Runner
+ * state. Local and external Runners differ only here, so every provider and
+ * placement shares one rotation path.
+ */
+interface RunnerStateArchive {
+  /** Read the live Runner state before its control plane is archived. */
+  read: () => Promise<Record<string, unknown>>;
+  /**
+   * Move the live Runner state into the epoch archive and return the archived
+   * snapshot. A retry must succeed when the state is already archived, and
+   * when a byte-identical live copy sits beside the archive.
+   */
+  archive: (input: {
     archiveKey: string;
     priorIdentity: DurableRecoveryIdentity;
-  }) => Promise<Record<string, unknown>>,
+  }) => Promise<Record<string, unknown>>;
+}
+
+/** Runner state that this controller owns under `<root>/runner`. */
+function localRunnerStateArchive(root: string): RunnerStateArchive {
+  const runnerDirectory = resolve(root, "runner");
+  const live = resolve(runnerDirectory, "runner-state.json");
+  const readLive = () => {
+    if (!existsSync(live)) {
+      throw new Error("native_runner_authority_rotation_state_unavailable");
+    }
+    assertRealDirectory(runnerDirectory);
+    return readRunnerState(live);
+  };
+  return {
+    read: async () => readLive(),
+    archive: async ({ archiveKey, priorIdentity }) => {
+      const archived = resolve(
+        root,
+        "authority-epochs",
+        `epoch-${archiveKey}`,
+        "runner-state.json",
+      );
+      if (existsSync(live)) {
+        assertSuspendedRunnerState(readLive(), priorIdentity);
+        if (!existsSync(archived)) {
+          renameSync(live, archived);
+        } else if (sameRegularFile(live, archived)) {
+          rmSync(live);
+        } else {
+          throw new Error("native_runner_authority_archive_conflict");
+        }
+      }
+      if (!existsSync(archived)) {
+        throw new Error("native_runner_authority_archive_incomplete");
+      }
+      return readRunnerState(archived);
+    },
+  };
+}
+
+/**
+ * Retire the prior run's PRP authority so a new run can attach to the same
+ * durable session. The epoch archive directory is the durable transaction
+ * marker: once it holds the control plane, every retry resumes the same
+ * idempotent archive instead of reading live state again.
+ */
+async function rotateAuthorityEpoch(
+  root: string,
+  controlPlaneState: Record<string, unknown>,
+  desired: DurableRecoveryIdentity,
+  runnerState: RunnerStateArchive,
 ): Promise<Record<string, unknown>> {
   const priorIdentity = controlPlaneIdentity(controlPlaneState);
   if (
@@ -396,32 +477,30 @@ async function rotateExternalAuthorityEpoch(
     mkdirSync(archive, { mode: 0o700 });
   }
   assertRealDirectory(archive);
+  let resumedState: Record<string, unknown> | null = null;
   if (existsSync(archivedControlPlane)) {
-    // This directory is the durable transaction marker. A prior controller
-    // may have stopped before or after the remote move, so resume the same
-    // idempotent archive instead of starting a new external runner.
-    assertRealDirectory(archivedControlPlane);
-    if (existsSync(activeControlPlane)) {
-      throw new Error("native_runner_authority_archive_conflict");
-    }
-    const archivedIdentity = controlPlaneIdentity(
-      readControlPlaneState(archivedControlPlane),
+    // A prior attempt may have stopped before or after the Runner state
+    // moved. Resume from the archived snapshot, and drop a restored copy of
+    // the same retired authority (see resumeArchivedControlPlane).
+    resumedState = resumeArchivedControlPlane(
+      activeControlPlane,
+      archivedControlPlane,
+      priorIdentity,
     );
-    if (!recoveryIdentityMatches(archivedIdentity, priorIdentity)) {
-      throw new Error("native_runner_authority_archive_conflict");
-    }
   } else {
-    const runnerState = await readRunnerState();
-    assertSuspendedRunnerState(runnerState, priorIdentity);
+    assertSuspendedRunnerState(await runnerState.read(), priorIdentity);
+    if (!existsSync(activeControlPlane)) {
+      throw new Error("native_runner_authority_archive_incomplete");
+    }
     assertRealDirectory(activeControlPlane);
     renameSync(activeControlPlane, archivedControlPlane);
   }
-  const archivedRunnerState = await archiveRunnerState({
+  const archivedRunnerState = await runnerState.archive({
     archiveKey: basename(archive).replace(/^epoch-/, ""),
     priorIdentity,
   });
   assertSuspendedRunnerState(archivedRunnerState, priorIdentity);
-  return controlPlaneState;
+  return resumedState ?? controlPlaneState;
 }
 
 function projectCopilotRunGrant(
@@ -706,6 +785,36 @@ function turnStartResponseReady(input: {
     input.responseEpoch === input.observedEpoch &&
     input.expectedProviderTurnId.length > 0 &&
     input.boundTurnId === input.expectedProviderTurnId
+  );
+}
+
+/** The provider turn a durable terminal names, when it names one explicitly. */
+function runnerdTerminalProviderTurnId(eventType: string, payload: unknown): string | null {
+  const named = (value: unknown) => typeof value === "string" && value.length > 0 ? value : null;
+  if (eventType !== "provider.event") return named(record(payload).providerTurnId);
+  const terminal = unwrapRunnerdProviderNotifications(payload).find(
+    (notification) => notification.method === "turn/completed",
+  );
+  const params = record(terminal?.params);
+  return named(record(params.turn).id) ?? named(params.turnId);
+}
+
+/**
+ * A terminal held while turn/start is pending keeps it behind the new turn's
+ * accepted response. Once the durable command result names the new provider
+ * turn, a terminal that explicitly names another turn (for example, a turn the
+ * restored runner reports as lost on restore) cannot be the new turn's
+ * terminal. Holding it would also hold the turn/started event behind it, so
+ * the turn start could never be bound.
+ */
+function terminalMayBelongToPendingTurnStart(input: {
+  expectedProviderTurnId: string | null;
+  terminalProviderTurnId: string | null;
+}): boolean {
+  return (
+    input.expectedProviderTurnId === null ||
+    input.terminalProviderTurnId === null ||
+    input.terminalProviderTurnId === input.expectedProviderTurnId
   );
 }
 
@@ -1646,6 +1755,20 @@ class NotificationQueue implements AsyncIterable<CodexRpcNotification> {
   }
 }
 
+/** Internal marker: a thread/compact/start mapped onto the turn.start path. */
+const COMPACTION_TURN = "paperclipCompactionTurn";
+
+/**
+ * Compaction runs as a provider turn so it keeps the normal turn binding.
+ * Codex compacts through app-server `thread/compact/start`; Claude's ACP agent
+ * compacts when prompted with its `/compact` command.
+ */
+export function runnerdCompactionTurnPayload(provider: string): Record<string, unknown> {
+  if (provider === "codex") return { compact: true };
+  if (provider === "acpx") return { text: "/compact" };
+  throw new Error(`Context compaction is not supported by the ${provider} provider`);
+}
+
 function record(value: unknown): Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -2090,7 +2213,8 @@ export function readRunnerdArtifactBinding(runnerBinaryPath: string): {
 export interface RetainedRunnerdCleanupProof {
   readonly binding: Readonly<NativeRunIdentity>;
   readonly identity: Readonly<DurableRecoveryIdentity>;
-  readonly backend: Readonly<{ kind: string; name: string }>;
+  /** Must match the quarantine domain, which every production backend builds with kind "runner". */
+  readonly backend: Readonly<{ kind: "runner"; name: string }>;
   readonly providerSessionId: string;
   readonly activationDirectory: string;
   readonly sourceFingerprint: string;
@@ -2386,7 +2510,7 @@ export interface RetainedRunnerdMaintenanceInput {
   requestId: string;
   binding: NativeRunIdentity;
   identity: DurableRecoveryIdentity;
-  backend: { kind: string; name: string };
+  backend: { kind: "runner"; name: string };
   stateDirectory: string;
   activationDirectory: string;
   sourceFingerprint: string;
@@ -3900,6 +4024,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         : { data: [] };
     }
     if (method === "turn/start") return this.#startTurn(params);
+    if (method === "thread/compact/start") return this.#startTurn({ threadId: params.threadId, [COMPACTION_TURN]: true });
     if (method === "turn/steer") {
       const input = Array.isArray(params.input) ? params.input.map(record) : [];
       const text = input
@@ -5375,6 +5500,23 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     return this.options.measureOperation ? this.options.measureOperation("runner.transport.cold_start", () => this.#startWork(params)) : this.#startWork(params);
   }
 
+  /** Runner state held by an external Runner host (a plugin task or a sandbox). */
+  #externalRunnerStateArchive(): RunnerStateArchive {
+    const { readRunnerState, prepareExternalRunnerState, archiveExternalRunnerState } = this.options;
+    if (readRunnerState === undefined || archiveExternalRunnerState === undefined) {
+      throw new Error("native_runner_prp_run_rotation_unavailable");
+    }
+    return {
+      // Prepare the host only to read live state. A resumed rotation finds
+      // that state already archived, and preparing again could re-stage it.
+      read: async () => {
+        await prepareExternalRunnerState?.();
+        return readRunnerState();
+      },
+      archive: archiveExternalRunnerState,
+    };
+  }
+
   async #startWork(
     params: Record<string, unknown>,
   ): Promise<Record<string, unknown>> {
@@ -5600,10 +5742,19 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       candidateRunnerState?.schema ===
         "paperclip.runner.durable.state.warm-transition.v1";
     let controlPlaneState: Record<string, unknown> | null;
+    // Set when the active control plane was a restored copy of authority that
+    // an earlier attempt already rotated away from (see takeCommittedRotation).
+    let committedRotationSource: Record<string, unknown> | null = null;
     try {
       controlPlaneState = existsSync(controlPlaneStatePath)
         ? readControlPlaneState(controlPlaneDirectory)
         : null;
+      // Normalize before any check trusts the active copy. Every later lane
+      // then sees the same archive-only state that the rotation committed.
+      if (controlPlaneState && supportsColdRotation) {
+        committedRotationSource = takeCommittedRotation(this.#root, controlPlaneState);
+        if (committedRotationSource) controlPlaneState = null;
+      }
     } catch (error) {
       if (supportsColdRotation && localStateOwner && !hasRunnerWarmBoundary) {
         quarantineLocalRuntimeState(this.#root, error);
@@ -5781,77 +5932,26 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       identity.turnId === desiredIdentity.turnId &&
       identity.itemId === desiredIdentity.itemId;
     let rotatedAuthority = false;
+    // One rotation path serves every provider and Runner placement. Only the
+    // Runner state store differs between a local and an external Runner.
+    let rotationSource: Record<string, unknown> | null = null;
     if (controlPlaneState === null) {
       if (!supportsColdRotation) {
         throw new Error("PRP provider resume state is unavailable");
       }
-      const archivedState = latestArchivedControlPlaneState(
+      // An interrupted rotation leaves only its archive marker.
+      rotationSource = committedRotationSource ?? latestArchivedControlPlaneState(
         this.#root,
         desiredIdentity,
       );
-      if (!archivedState) {
+      if (!rotationSource) {
         throw new Error("PRP provider resume state is unavailable");
       }
-      if (localStateOwner) {
-        try {
-          controlPlaneState = rotateLocalAuthorityEpoch(
-            this.#root,
-            archivedState,
-            desiredIdentity,
-          );
-        } catch (error) {
-          quarantineLocalRuntimeState(this.#root, error);
-        }
-      } else {
-        if (
-          this.options.readRunnerState === undefined ||
-          this.options.archiveExternalRunnerState === undefined
-        ) {
-          throw new Error("native_runner_prp_run_rotation_unavailable");
-        }
-        controlPlaneState = await rotateExternalAuthorityEpoch(
-          this.#root,
-          archivedState,
-          desiredIdentity,
-          this.options.readRunnerState,
-          this.options.archiveExternalRunnerState,
-        );
-      }
-      identity = desiredIdentity;
-      rotatedAuthority = true;
     } else if (!exactAuthority && warmRecovery === null) {
-      if (!supportsColdRotation || controlPlaneState === null) {
+      if (!supportsColdRotation) {
         throw new Error("native_runner_prp_run_rotation_unavailable");
       }
-      if (localStateOwner) {
-        try {
-          controlPlaneState = rotateLocalAuthorityEpoch(
-            this.#root,
-            controlPlaneState,
-            desiredIdentity,
-          );
-        } catch (error) {
-          quarantineLocalRuntimeState(this.#root, error);
-        }
-      } else {
-        if (
-          this.options.readRunnerState === undefined ||
-          this.options.prepareExternalRunnerState === undefined ||
-          this.options.archiveExternalRunnerState === undefined
-        ) {
-          throw new Error("native_runner_prp_run_rotation_unavailable");
-        }
-        await this.options.prepareExternalRunnerState();
-        controlPlaneState = await rotateExternalAuthorityEpoch(
-          this.#root,
-          controlPlaneState,
-          desiredIdentity,
-          this.options.readRunnerState,
-          this.options.archiveExternalRunnerState,
-        );
-      }
-      identity = desiredIdentity;
-      rotatedAuthority = true;
+      rotationSource = controlPlaneState;
     } else if (
       localStateOwner &&
       !existsSync(resolve(this.#root, "runner", "runner-state.json"))
@@ -5860,6 +5960,26 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         this.#root,
         new Error("PRP provider resume state is unavailable"),
       );
+    }
+    if (rotationSource) {
+      try {
+        controlPlaneState = await rotateAuthorityEpoch(
+          this.#root,
+          rotationSource,
+          desiredIdentity,
+          localStateOwner ? localRunnerStateArchive(this.#root) : this.#externalRunnerStateArchive(),
+        );
+      } catch (error) {
+        // Locally owned state is preserved aside for operator recovery.
+        if (localStateOwner) quarantineLocalRuntimeState(this.#root, error);
+        throw error;
+      }
+      identity = desiredIdentity;
+      rotatedAuthority = true;
+    }
+    // A missing control plane either rotated from its archive above or threw.
+    if (controlPlaneState === null) {
+      throw new Error("PRP provider resume state is unavailable");
     }
     const runnerBinaryPath =
       this.options.runnerBinary ?? (this.options.prepareLaunch ? "paperclip-runnerd" : defaultCapabilityRunnerdBinary());
@@ -6627,6 +6747,8 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       throw new Error("turnStartTimeoutMs must be a positive safe integer");
     }
     const commandDeadline = Date.now() + turnStartTimeoutMs;
+    const compactionTurn = params[COMPACTION_TURN] === true;
+    const compactionPayload = compactionTurn ? runnerdCompactionTurnPayload(this.options.provider ?? "codex") : null;
     const input = Array.isArray(params.input) ? params.input.map(record) : [];
     const message = input
       .filter((item) => item.type !== "skill")
@@ -6673,7 +6795,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       const startResult = await this.#commandResult(
         "turn.start",
         {
-          text: message,
+          ...(compactionPayload ?? { text: message }),
           ...(this.options.recordTimingReceipt ? {performance:true} : {}),
           ...((this.options.provider ?? "codex") === "codex" && params.effort !== undefined ? { effort: params.effort } : {}),
           ...(reasoningMode === undefined ? {} : { reasoningMode }),
@@ -7035,7 +7157,11 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
           (event.eventType === "provider.event" &&
             unwrapRunnerdProviderNotifications(eventPayload).some(
               (notification) => notification.method === "turn/completed",
-            )));
+            ))) &&
+        terminalMayBelongToPendingTurnStart({
+          expectedProviderTurnId: this.#expectedProviderTurnId,
+          terminalProviderTurnId: runnerdTerminalProviderTurnId(event.eventType, eventPayload),
+        });
       if (terminalWhileTurnStartPending) {
         if (!fromDeferredQueue) {
           this.#eventSourceSeq = event.sourceSeq;
@@ -8232,7 +8358,10 @@ export const runnerdRecoveryInternals = Object.freeze({
   runnerCloseDeadlines,
   runnerCloseGraceMs,
   rotatedRunAttachPayload,
-  rotateExternalAuthorityEpoch,
+  localRunnerStateArchive,
+  rotateAuthorityEpoch,
+  runnerdTerminalProviderTurnId,
+  terminalMayBelongToPendingTurnStart,
   turnStartCommandResultValid,
   turnStartNotificationDisposition,
   turnStartResponseReady,
@@ -8271,7 +8400,8 @@ export function resolveRunnerdCodexSkillInputs(
 
 /** Controller admission budget; ordinary command and turn deadlines are independent. */
 export function coldAdmissionTimeoutMs(provider: string | undefined, agent: string | undefined, coldProcess: boolean): number {
-  return coldProcess && provider === "acpx" && agent === "pi" ? 60_000 : 30_000;
+  if (!coldProcess) return 30_000;
+  return (provider === "acpx" && agent === "pi") || provider === "opencode" ? 60_000 : 30_000;
 }
 
 export interface RunnerCommandFailure extends Error {

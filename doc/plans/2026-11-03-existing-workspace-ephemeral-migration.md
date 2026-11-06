@@ -24,6 +24,16 @@ branch-deletion receipts. PostgreSQL and real-file tests prove cold restoration
 of saved bytes, index state, and unpushed commits, including after pruning the
 old Git object store. Invalid or unavailable retained data still blocks import.
 
+Administrative migration can recover a missing empty task-directory payload only
+when storage confirms that its object is absent. The existing encrypted key
+envelope must authenticate the exact empty payload hash and length, company,
+workspace, restore-point ID, and generation. Metadata counters alone never
+establish emptiness. This path leaves the original reference and missing object
+unchanged and publishes the recovered bytes through the normal verified remote
+snapshot owner. Ordinary restoration remains unchanged. Expired checkpoints,
+nonempty or forged payloads, unreadable objects, and unknown object absence still
+block migration.
+
 An archived isolated checkout can be gone while its recorded deleted commit
 survives in the company/project Git cache. After validating the exact successful
 branch-deletion receipt, the importer can read immutable objects from that
@@ -31,6 +41,17 @@ namespace- and origin-checked cache. It reconstructs only the recorded commit,
 never today's working tree. Ordinary private-checkout and restore-point
 validation stays strict. Missing/revoked receipts, foreign caches and changed
 origins still block publication.
+Archived reconstruction of a saved nested linked checkout uses a private
+standalone repository at the new path. It reads only the saved commit and
+bundle prerequisites from the verified shared cache, and imports authenticated
+restore-point history into private refs. Other tasks' branch refs and unrelated
+objects do not enter the archive. Missing prerequisites use the approved remote
+or block restoration. Root and nested private copies retain all saved extra
+commits after portable capture and garbage collection. Ordinary linked recovery
+keeps its path-owned branch check and its existing worktree history owner.
+Verified local ignore rules preserve the saved classification of recovery files;
+unsafe or changed exclude files block import without changing the source cache.
+
 The next slice adds leaf-first offline migration of overlapping folders, verified
 nested snapshot dependencies, interruption recovery, and dependency retention.
 Recovery-obligation reconciliation remains a separate gap; these slices do not
@@ -124,6 +145,14 @@ intact, rejects stale copyback even if the old folder exists, and preserves
 recovery source validation and company boundaries.
 
 ## Queued turns during offline enrollment
+
+Offline workspace import preserves a pending repository request when preparation
+has never published a target directory, commit, branch or failure. The request
+stays pending in the database. It is excluded from the saved snapshot's materialized
+repository descriptors, so the next authorized sandbox admission can acquire it
+normally. Existing targets, preparation in progress, repair states, unreadable
+paths and live imports remain blocked. Publication rechecks the request and
+materialized source before transferring file authority.
 
 The task drain stops new executions. It does not consume queued turns. After
 Cloud has stopped every application deployment, offline maintenance preserves
@@ -273,3 +302,12 @@ so a missing file cannot create a replacement during publication. Its database
 connections have five-second lock waits and 30-second statement and idle
 transaction limits. Cancellation closes the command's clients and has a
 ten-second process-exit fallback for a dependency that does not settle.
+
+Workspace archives preserve a resolved Git merge that still awaits its merge
+commit. The archive retains the merge heads, original head, message, mode,
+automatic merge tree and selected index, and verifies their objects and unchanged
+metadata before publication. A restored copy can continue the merge after the
+source disappears. Git still protects later unstaged edits during abort.
+Conflicted indexes, merge autostash, rerere state, unfinished rebase or sequencer
+operations, invalid metadata and concurrent changes block capture and retain the
+original workspace. Migration never commits or aborts a user's Git operation.

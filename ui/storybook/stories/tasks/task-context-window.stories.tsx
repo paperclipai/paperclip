@@ -4,7 +4,7 @@ import type { Meta, StoryObj } from "@storybook/react-vite";
 import { TaskChatThreadView } from "@/components/task-chat/TaskChatThreadView";
 import { TaskChatMarker } from "@/components/task-chat/TaskChatMarker";
 import { TaskChatPresentationProvider } from "@/components/task-chat/presentation-mode";
-import { ContextUsageMeter, type ContextUsage } from "@/components/ContextUsageMeter";
+import { ContextUsageCard, ContextUsageMeter, type ContextCompactState, type ContextUsage } from "@/components/ContextUsageMeter";
 import { IssueProperties } from "@/components/IssueProperties";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { queryKeys } from "@/lib/queryKeys";
@@ -165,7 +165,41 @@ function StorybookData({ children }: { children: ReactNode }) {
   return ready ? children : null;
 }
 
-function PropertiesPane({ usage, defaultOpen }: { usage: ContextUsage; defaultOpen?: boolean }) {
+const COMPACT_AVAILABLE: ContextCompactState = { status: "available", onCompact: () => {} };
+const COMPACT_PENDING: ContextCompactState = { status: "pending" };
+const COMPACT_MID_RUN: ContextCompactState = {
+  status: "unavailable",
+  reason: "Available when the agent finishes its current run.",
+};
+const COMPACT_UNSUPPORTED: ContextCompactState = {
+  status: "unavailable",
+  reason: "This agent's harness can't compact on request.",
+};
+
+/** Compact now flips to pending, then the usage drops and a compaction is counted. */
+function useCompactDemo(initial: ContextUsage) {
+  const [usage, setUsage] = useState(initial);
+  const [pending, setPending] = useState(false);
+  const compact: ContextCompactState = pending
+    ? COMPACT_PENDING
+    : {
+        status: "available",
+        onCompact: () => {
+          setPending(true);
+          setTimeout(() => {
+            setPending(false);
+            setUsage((current) => ({
+              ...current,
+              usedTokens: Math.round(current.usedTokens * 0.17),
+              compactions: (current.compactions ?? 0) + 1,
+            }));
+          }, 1800);
+        },
+      };
+  return { usage, compact };
+}
+
+function PropertiesPane({ usage, compact, defaultOpen }: { usage: ContextUsage; compact?: ContextCompactState | null; defaultOpen?: boolean }) {
   return (
     <StorybookData>
       <div className="flex h-(--sz-640px) w-80 flex-col overflow-hidden border border-border bg-card">
@@ -176,7 +210,7 @@ function PropertiesPane({ usage, defaultOpen }: { usage: ContextUsage; defaultOp
               issue={issue}
               childIssues={[]}
               onUpdate={() => undefined}
-              contextUsage={<ContextUsageMeter usage={usage} defaultOpen={defaultOpen} />}
+              contextUsage={<ContextUsageMeter usage={usage} compact={compact} defaultOpen={defaultOpen} />}
             />
           </div>
         </ScrollArea>
@@ -206,16 +240,26 @@ function StateCard({ title, rule, children }: { title: string; rule: string; chi
 }
 
 /** A Properties-style row without the full panel, for comparing states. */
-function MeterRow({ usage }: { usage: ContextUsage }) {
+function MeterRow({ usage, compact }: { usage: ContextUsage; compact?: ContextCompactState | null }) {
   return (
     <div className="flex w-80 items-center gap-3 rounded-md border border-border bg-card px-4 py-2">
       <span className="w-24 shrink-0 text-xs text-muted-foreground">Context</span>
-      <ContextUsageMeter usage={usage} />
+      <ContextUsageMeter usage={usage} compact={compact} />
+    </div>
+  );
+}
+
+/** The hover card as it renders in the popover, laid out inline for comparison. */
+function HoverCard({ usage, compact }: { usage: ContextUsage; compact: ContextCompactState }) {
+  return (
+    <div className="w-64 rounded-md border border-border bg-popover p-3 text-xs text-popover-foreground shadow-md">
+      <ContextUsageCard usage={usage} compact={compact} />
     </div>
   );
 }
 
 function TaskPage() {
+  const { usage, compact } = useCompactDemo(USAGE.nearCompaction);
   return (
     <div className="flex min-h-screen gap-6 bg-background p-6 text-foreground">
       <div className="min-w-0 flex-1">
@@ -225,7 +269,7 @@ function TaskPage() {
         </TaskChatPresentationProvider>
       </div>
       <div className="pl-72">
-        <PropertiesPane usage={USAGE.afterCompaction} />
+        <PropertiesPane usage={usage} compact={compact} />
       </div>
     </div>
   );
@@ -239,22 +283,34 @@ function AllStates() {
           <h2 className="text-lg font-semibold">Context window</h2>
           <p className="text-sm text-muted-foreground">
             A Context row in the task&apos;s Properties shows how full the assigned agent&apos;s context window is. Hover
-            or tap it for the token breakdown. Codex reports usage through{" "}
+            or tap it for the token breakdown and Compact now. Codex reports usage through{" "}
             <code className="font-mono text-xs">thread/tokenUsage/updated</code>, Claude through ACP{" "}
             <code className="font-mono text-xs">usage_update</code>.
           </p>
         </header>
         <StateCard title="Fresh session" rule="Neutral bar, percentage and window size.">
-          <MeterRow usage={USAGE.fresh} />
+          <MeterRow usage={USAGE.fresh} compact={COMPACT_AVAILABLE} />
         </StateCard>
         <StateCard title="Working" rule="Bar fills as the conversation grows. Still neutral.">
-          <MeterRow usage={USAGE.working} />
+          <MeterRow usage={USAGE.working} compact={COMPACT_AVAILABLE} />
         </StateCard>
         <StateCard title="Near auto-compaction" rule="Amber within 10 points of the harness's auto-compaction threshold.">
-          <MeterRow usage={USAGE.nearCompaction} />
+          <MeterRow usage={USAGE.nearCompaction} compact={COMPACT_AVAILABLE} />
         </StateCard>
         <StateCard title="Nearly full (Claude)" rule="Red at 95% or more.">
-          <MeterRow usage={USAGE.claudeNearlyFull} />
+          <MeterRow usage={USAGE.claudeNearlyFull} compact={COMPACT_AVAILABLE} />
+        </StateCard>
+        <StateCard title="Compact now" rule="In the hover card. Outline while the context is roomy, filled once it is amber or red.">
+          <HoverCard usage={USAGE.nearCompaction} compact={COMPACT_AVAILABLE} />
+        </StateCard>
+        <StateCard title="Compacting" rule="After a click the button shows Compacting… until the transcript records the compaction and the meter drops.">
+          <HoverCard usage={USAGE.nearCompaction} compact={COMPACT_PENDING} />
+        </StateCard>
+        <StateCard title="Unavailable mid-run" rule="Compacting interrupts a turn, so the button waits for the agent's current run to end.">
+          <HoverCard usage={USAGE.working} compact={COMPACT_MID_RUN} />
+        </StateCard>
+        <StateCard title="Unsupported harness" rule="Harnesses without an on-demand compaction command show the reason instead.">
+          <HoverCard usage={USAGE.windowOnly} compact={COMPACT_UNSUPPORTED} />
         </StateCard>
         <StateCard title="Hidden" rule="No Context row until the agent's harness has reported a context window for this task's session.">
           <p className="text-xs text-muted-foreground">(no row)</p>
@@ -271,25 +327,30 @@ function AllStates() {
   );
 }
 
-function Breakdown({ usage }: { usage: ContextUsage }) {
+function Breakdown({ usage, compact }: { usage: ContextUsage; compact?: ContextCompactState | null }) {
   return (
     <div className="flex min-h-screen justify-end bg-background p-6 text-foreground">
-      <PropertiesPane usage={usage} defaultOpen />
+      <PropertiesPane usage={usage} compact={compact} defaultOpen />
     </div>
   );
+}
+
+function InteractiveBreakdown() {
+  const { usage, compact } = useCompactDemo(USAGE.nearCompaction);
+  return <Breakdown usage={usage} compact={compact} />;
 }
 
 const meta = {
   id: "product-task-context-window",
   title: "Tasks and conversations/Task creation and lifecycle/Product/Task chat/Context window",
   component: ContextUsageMeter,
-  args: { usage: USAGE.working },
+  args: { usage: USAGE.working, compact: COMPACT_AVAILABLE },
   parameters: {
     layout: "fullscreen",
     docs: {
       description: {
         component:
-          "Context row in the task Properties panel with a hover breakdown, plus the transcript divider recorded when the agent's context is compacted.",
+          "Context row in the task Properties panel with a hover breakdown and Compact now, plus the transcript divider recorded when the agent's context is compacted.",
       },
     },
     paperclip: {
@@ -299,7 +360,7 @@ const meta = {
       ],
       "implementation": "production",
       "boundary": "fixtures",
-      "notes": "Renders the context meter inside the production Issue Properties panel and the compaction divider in the production thread view, from fixture usage snapshots."
+      "notes": "Renders the context meter inside the production Issue Properties panel and the compaction divider in the production thread view, from fixture usage snapshots. Compact now is simulated locally; no agent session is contacted."
     },
   },
   render: (args) => (
@@ -313,6 +374,8 @@ type Story = StoryObj<typeof meta>;
 
 export const InTask: Story = { render: () => <TaskPage /> };
 export const AllStatesGallery: Story = { render: () => <AllStates /> };
-export const BreakdownNearCompaction: Story = { render: () => <Breakdown usage={USAGE.nearCompaction} /> };
-export const BreakdownWorking: Story = { render: () => <Breakdown usage={USAGE.working} /> };
-export const BreakdownClaudeWithCost: Story = { render: () => <Breakdown usage={USAGE.claudeWithCost} /> };
+export const BreakdownNearCompaction: Story = { render: () => <InteractiveBreakdown /> };
+export const BreakdownCompacting: Story = { render: () => <Breakdown usage={USAGE.nearCompaction} compact={COMPACT_PENDING} /> };
+export const BreakdownMidRun: Story = { render: () => <Breakdown usage={USAGE.working} compact={COMPACT_MID_RUN} /> };
+export const BreakdownWorking: Story = { render: () => <Breakdown usage={USAGE.working} compact={COMPACT_AVAILABLE} /> };
+export const BreakdownClaudeWithCost: Story = { render: () => <Breakdown usage={USAGE.claudeWithCost} compact={COMPACT_AVAILABLE} /> };

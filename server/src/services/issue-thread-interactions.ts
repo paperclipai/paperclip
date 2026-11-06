@@ -1,3 +1,4 @@
+import { resolveNewTaskParent } from "./issue-hierarchy.js";
 import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
 import { notifyMergeConfirmationWork, type MergeConfirmationScope } from "./merged-pr-confirmation-notifications.js";
 import { notifyNativeStatusReassessment } from "./native-status-reassessment-notifications.js";
@@ -1025,6 +1026,62 @@ function buildSupersededByNewerInteractionResult(
     supersededByInteractionId: replacementInteractionId,
     summaryMarkdown: null,
   } as const;
+}
+
+// Scope matches the chat's direct-task projection (conversation-decision-receipts):
+// the onboarding task this chat's user created and assigned to this agent.
+async function supersedeOnboardingTaskQuestionsMovedToChat(
+  tx: Db,
+  input: {
+    companyId: string;
+    agentId: string;
+    conversationUserId: string;
+    replacementInteractionId: string;
+    actor: InteractionActor;
+  },
+) {
+  const onboardingTaskIds = tx.select({ id: issues.id }).from(issues).where(and(
+    eq(issues.companyId, input.companyId),
+    eq(issues.originKind, "onboarding_first_task"),
+    isNull(issues.conversationAgentId),
+    eq(issues.assigneeAgentId, input.agentId),
+    eq(issues.createdByUserId, input.conversationUserId),
+  ));
+  const now = new Date();
+  const rows = await tx
+    .update(issueThreadInteractions)
+    .set({
+      status: "expired",
+      result: buildSupersededByNewerInteractionResult(input.replacementInteractionId),
+      resolvedByAgentId: input.agentId,
+      resolvedByUserId: input.actor.userId ?? null,
+      resolvedAt: now,
+      updatedAt: now,
+    })
+    .where(and(
+      eq(issueThreadInteractions.companyId, input.companyId),
+      inArray(issueThreadInteractions.issueId, onboardingTaskIds),
+      eq(issueThreadInteractions.kind, "ask_user_questions"),
+      eq(issueThreadInteractions.createdByAgentId, input.agentId),
+      eq(issueThreadInteractions.status, "pending"),
+      // Only cards the chat owner sees mirrored in this chat; a question for
+      // another person or agent is not replaced by this chat's card.
+      isNull(issueThreadInteractions.addresseeAgentId),
+      or(isNull(issueThreadInteractions.addresseeUserId),
+        eq(issueThreadInteractions.addresseeUserId, input.conversationUserId)),
+    ))
+    .returning();
+  for (const issueId of new Set(rows.map(row => row.issueId))) {
+    await cancelPendingIssueInteractionChatPublications(tx, {
+      companyId: input.companyId,
+      issueId,
+      interactionIds: rows.filter(row => row.issueId === issueId).map(row => row.id),
+    });
+  }
+  for (const row of rows) {
+    await enqueueTerminalIssueInteractionChatPublications(tx, hydrateInteraction(row));
+  }
+  return rows;
 }
 
 function buildAdministrativeOutcomeResult(
@@ -4007,11 +4064,32 @@ export function issueThreadInteractionService(
               data.payload.qualityReview === undefined) ||
               (data.kind === "ask_user_questions" && (!issueRow.conversationAgentId || !issueRow.conversationUserId)));
           if (!actor.agentId || !canSupersedeSiblingCards) {
+            // The user's chat with this agent already mirrors the agent's
+            // pending onboarding-task questions. A question the agent asks in
+            // that chat means onboarding moved there, so the onboarding task's
+            // pending questions are replaced instead of showing two answerable
+            // interview cards. Other direct-task questions are untouched.
+            // Not gated on supersedePendingSiblingInteractions: that flag keeps
+            // same-issue provider requests side by side, while this is a
+            // cross-issue move that native provider questions must also make.
+            const movedOnboardingRows =
+              data.kind === "ask_user_questions" &&
+              actor.agentId &&
+              issueRow.conversationAgentId === actor.agentId &&
+              issueRow.conversationUserId
+                ? await supersedeOnboardingTaskQuestionsMovedToChat(tx as unknown as Db, {
+                    companyId: issue.companyId,
+                    agentId: actor.agentId,
+                    conversationUserId: issueRow.conversationUserId,
+                    replacementInteractionId: row.id,
+                    actor,
+                  })
+                : [];
             await enqueueIssueInteractionChatPublications(
               tx as unknown as Db,
               hydrateInteraction(row),
             );
-            return { row, supersededRows: [] };
+            return { row, supersededRows: movedOnboardingRows };
           }
 
           const now = new Date();
@@ -4371,8 +4449,18 @@ export function issueThreadInteractionService(
             } } : {}),
           } satisfies Parameters<ReturnType<typeof issueService>["createChild"]>[1];
           const service = issueService(tx as unknown as Db);
+          // A nested suggestion may be placed beside its suggested parent, under
+          // that parent's own requested parent. The accept scope authorized that
+          // parent, so confirm the placement only when it lands exactly there.
+          const nestedUnder = task.parentClientKey ? createdByClientKey.get(task.parentClientKey) : undefined;
+          const placement = parentIssueId && nestedUnder
+            ? await resolveNewTaskParent(tx as unknown as Db, issue.companyId, parentIssueId, "flatten")
+            : null;
+          const confirmedParent = placement && placement.effectiveParentId === nestedUnder?.parentIssueId
+            ? { expectedParentId: placement.effectiveParentId }
+            : {};
           const createdIssue = parentIssueId
-            ? (await service.createChild(parentIssueId, createInput)).issue
+            ? (await service.createChild(parentIssueId, { ...createInput, ...confirmedParent })).issue
             : await service.create(issue.companyId, createInput);
 
           const parentIdentifier =

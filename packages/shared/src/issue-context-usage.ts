@@ -20,4 +20,16 @@ export interface IssueContextUsage {
   costUsd: number | null;
   /** Compactions recorded for this session. */
   compactions: number;
+  /** Whether the board can ask the agent to compact now. */
+  compaction?: IssueContextCompaction;
+}
+
+/** "Compact now" state for the task's assignee session. */
+export interface IssueContextCompaction {
+  status: "available" | "pending" | "unavailable";
+  reasonCode: "no_assignee" | "task_closed" | "unsupported" | "agent_busy" | null;
+  /** Why compaction is unavailable, in words the board can act on. */
+  reason: string | null;
+  /** The queued or running compaction run while pending. */
+  runId?: string;
 }

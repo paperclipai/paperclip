@@ -1,6 +1,6 @@
 {
-  "id": "10f20dca-06c1-4030-ab17-2ded15fbdd2f",
-  "prevId": "10b23b32-3586-4a30-a993-618e7d3ca893",
+  "id": "dedfce21-7ff9-4079-b5da-4a74a856a251",
+  "prevId": "5b40e9ac-12aa-4757-aac7-36218c7500a8",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -4055,6 +4055,28 @@
           "isUnique": true,
           "where": "\"agent_wakeup_requests\".\"idempotency_key\" LIKE 'tool-action-response:%' AND \"agent_wakeup_requests\".\"status\" NOT IN ('skipped', 'failed', 'cancelled')",
           "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "agent_wakeup_requests_tree_hold_resume_uq": {
+          "name": "agent_wakeup_requests_tree_hold_resume_uq",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "idempotency_key",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"agent_wakeup_requests\".\"idempotency_key\" LIKE 'tree-hold-resume:%' AND \"agent_wakeup_requests\".\"status\" <> 'skipped'",
+          "concurrently": true,
           "method": "btree",
           "with": {}
         },
@@ -35184,33 +35206,6 @@
           "method": "btree",
           "with": {}
         },
-        "heartbeat_runs_company_agent_created_idx": {
-          "name": "heartbeat_runs_company_agent_created_idx",
-          "columns": [
-            {
-              "expression": "company_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "agent_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "created_at",
-              "isExpression": false,
-              "asc": false,
-              "nulls": "first"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
         "heartbeat_runs_company_issue_created_idx": {
           "name": "heartbeat_runs_company_issue_created_idx",
           "columns": [
@@ -42519,6 +42514,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "origin_issue_id": {
+          "name": "origin_issue_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
         "origin_identity_context_id": {
           "name": "origin_identity_context_id",
           "type": "uuid",
@@ -42952,6 +42953,27 @@
             },
             {
               "expression": "origin_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "issues_company_origin_issue_idx": {
+          "name": "issues_company_origin_issue_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "origin_issue_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -43559,6 +43581,19 @@
             "id"
           ],
           "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "issues_origin_issue_id_issues_id_fk": {
+          "name": "issues_origin_issue_id_issues_id_fk",
+          "tableFrom": "issues",
+          "tableTo": "issues",
+          "columnsFrom": [
+            "origin_issue_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
           "onUpdate": "no action"
         },
         "issues_execution_workspace_id_execution_workspaces_id_fk": {

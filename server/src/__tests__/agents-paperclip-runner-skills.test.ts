@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { PAPERCLIP_RUNNER_DEFAULT_MODELS } from "@paperclipai/adapter-utils/paperclip-runner-permissions";
 import {
   normalizePaperclipOperationalSkillPreference,
   normalizePaperclipRunnerAdapterConfig,
@@ -16,7 +17,7 @@ describe("paperclip_runner operational skill normalization", () => {
   it("applies full-auto native runner defaults at persistence boundaries", () => {
     expect(normalizePaperclipRunnerAdapterConfig("paperclip_runner", {})).toEqual({
       provider: "codex",
-      model: "gpt-5.6-sol",
+      model: PAPERCLIP_RUNNER_DEFAULT_MODELS.codex,
       codexPermissionMode: "never",
       lifecycleMode: "per_turn",
     });
@@ -24,7 +25,7 @@ describe("paperclip_runner operational skill normalization", () => {
 
   it("repairs an existing blank model without replacing an explicit model", () => {
     expect(normalizePaperclipRunnerAdapterConfig("paperclip_runner", { model: "" }))
-      .toMatchObject({ model: "gpt-5.6-sol" });
+      .toMatchObject({ model: PAPERCLIP_RUNNER_DEFAULT_MODELS.codex });
     expect(normalizePaperclipRunnerAdapterConfig("paperclip_runner", { model: "gpt-5.5" }))
       .toMatchObject({ model: "gpt-5.5" });
   });

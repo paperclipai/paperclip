@@ -79,6 +79,7 @@ import { invalidateInboxIssueQueries } from "../../lib/inboxArchiveCache";
 import { Button } from "@/components/ui/button";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { Separator } from "@/components/ui/separator";
+import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
@@ -436,7 +437,7 @@ export function IssueProperties({
     enabled: !!companyId,
   });
   const assigneeRuntimeAgentId = issue.assigneeAgentId ?? null;
-  const { data: assigneeRuntimeState } = useQuery({
+  const { data: assigneeRuntimeState, isLoading: assigneeRuntimeStateLoading } = useQuery({
     queryKey: queryKeys.agents.runtimeState(assigneeRuntimeAgentId ?? ""),
     queryFn: () => agentsApi.runtimeState(assigneeRuntimeAgentId!, companyId ?? undefined),
     // Optional detail: a 403 for board users without agent management access
@@ -2420,12 +2421,16 @@ export function IssueProperties({
           </PropertyPicker>
         ) : null}
 
-        {assigneeRateLimits && summarizeProviderRateLimits(assigneeRateLimits, Date.now()) ? (
+        {assigneeRuntimeStateLoading || (assigneeRateLimits && summarizeProviderRateLimits(assigneeRateLimits, Date.now())) ? (
           <PropertyRow label="Usage limit">
-            <AgentRateLimitPropertyValue
-              snapshot={assigneeRateLimits}
-              detailsHref={assigneeRateLimitAgent ? agentUrl(assigneeRateLimitAgent) : undefined}
-            />
+            {assigneeRuntimeStateLoading ? (
+              <Skeleton className="h-4 w-32" role="status" aria-label="Loading usage limit" />
+            ) : (
+              <AgentRateLimitPropertyValue
+                snapshot={assigneeRateLimits}
+                detailsHref={assigneeRateLimitAgent ? agentUrl(assigneeRateLimitAgent) : undefined}
+              />
+            )}
           </PropertyRow>
         ) : null}
 
@@ -2769,7 +2774,7 @@ export function IssueProperties({
 
         {contextUsage !== undefined
           ? contextUsage ? <PropertyRow label="Context">{contextUsage}</PropertyRow> : null
-          : <IssueContextUsageRow issueId={issue.id} assigneeAgentId={issue.assigneeAgentId ?? null} hasActiveRun={hasActiveRun} />}
+          : <IssueContextUsageRow issueId={issue.id} assigneeAgentId={issue.assigneeAgentId ?? null} issueStatus={issue.status} hasActiveRun={hasActiveRun} />}
       </PropertySection>
 
       {workspacePickerEligible || hasWorkspaceRuntimeControls || issue.currentExecutionWorkspace?.branchName || issue.currentExecutionWorkspace?.cwd || issue.executionWorkspaceId ? (

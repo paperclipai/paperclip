@@ -86,6 +86,7 @@ pub struct AcpxSidecarTransport {
     stderr_tail: BoundedLogBuffer,
     stderr_categories: BTreeSet<&'static str>,
     poisoned: bool,
+    abandoned_observation: Option<u64>,
 }
 
 // A fresh Pi process verifies and copies its native closure before ACP admission.
@@ -387,6 +388,7 @@ impl AcpxSidecarTransport {
             stderr_tail: BoundedLogBuffer::new(32, 8 * 1024),
             stderr_categories: BTreeSet::new(),
             poisoned: false,
+            abandoned_observation: None,
         })
     }
 
@@ -469,6 +471,86 @@ impl AcpxSidecarTransport {
         command: GeneratedAcpxSidecarCommand,
         params: Value,
     ) -> Result<CommandOutcome, LocalRunnerError> {
+        let request_id = self.send_request(command, params)?;
+        self.receive_response(
+            command,
+            request_id,
+            Instant::now() + self.command_timeout(command),
+        )?
+        .ok_or_else(|| self.request_timeout_error(command))
+    }
+
+    /// A park observation may expire without revoking a healthy provider.
+    /// Retain one ID so its late reply cannot masquerade as an ordinary reply.
+    pub(crate) fn observe(
+        &mut self,
+        command: GeneratedAcpxSidecarCommand,
+        deadline: Instant,
+    ) -> Result<Option<Value>, LocalRunnerError> {
+        if self.poisoned {
+            return Err(LocalRunnerError::invalid(
+                "ACPX sidecar transport is unavailable",
+            ));
+        }
+        if !matches!(
+            command,
+            GeneratedAcpxSidecarCommand::SessionGoalGet
+                | GeneratedAcpxSidecarCommand::SessionSnapshot
+        ) {
+            return Err(LocalRunnerError::invalid(
+                "ACPX observation must be read-only",
+            ));
+        }
+        if self.abandoned_observation.is_some() || Instant::now() >= deadline {
+            return Ok(None);
+        }
+        let result = self
+            .send_request(command, json!({}))
+            .and_then(|request_id| {
+                let result = self.receive_response(command, request_id, deadline)?;
+                if result.is_none() {
+                    self.abandoned_observation = Some(request_id);
+                }
+                Ok(result)
+            });
+        match result {
+            Ok(Some(CommandOutcome::Success(value))) => Ok(Some(value)),
+            Ok(Some(CommandOutcome::Rejected(_))) => Ok(None),
+            Ok(None) => Ok(None),
+            Err(error) => {
+                self.poison();
+                Err(error)
+            }
+        }
+    }
+
+    pub(crate) fn observed_event_sequence(&self) -> u64 {
+        self.last_event_sequence
+    }
+
+    /// Ordinary turn admission drains an expired read before replacing its sidecar.
+    pub(crate) fn settle_observation(&mut self) -> Result<(), LocalRunnerError> {
+        let Some(request_id) = self.abandoned_observation.take() else {
+            return Ok(());
+        };
+        let command = GeneratedAcpxSidecarCommand::SessionSnapshot;
+        match self.receive_response(command, request_id, Instant::now() + self.request_timeout) {
+            Ok(Some(_)) => Ok(()),
+            result => {
+                self.poison();
+                Err(match result {
+                    Err(error) => error,
+                    _ => self.request_timeout_error(command),
+                })
+            }
+        }
+    }
+
+    fn send_request(
+        &mut self,
+        command: GeneratedAcpxSidecarCommand,
+        params: Value,
+    ) -> Result<u64, LocalRunnerError> {
         if !params.is_object() {
             return Err(LocalRunnerError::invalid(
                 "ACPX sidecar command params must be an object",
@@ -502,19 +584,30 @@ impl AcpxSidecarTransport {
         })?;
         self.next_request_id = request_id + 1;
 
-        let timeout = self.command_timeout(command);
-        let deadline = Instant::now() + timeout;
+        Ok(request_id)
+    }
+
+    fn receive_response(
+        &mut self,
+        command: GeneratedAcpxSidecarCommand,
+        request_id: u64,
+        deadline: Instant,
+    ) -> Result<Option<CommandOutcome>, LocalRunnerError> {
         loop {
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
-                return Err(self.request_timeout_error(command));
+                return Ok(None);
             }
             let Some(line) = self.receive_stdout_line(remaining, command.as_str())? else {
-                return Err(self.request_timeout_error(command));
+                return Ok(None);
             };
             match parse_frame(&line)? {
                 ParsedFrame::Event(event) => self.buffer_event(event)?,
                 ParsedFrame::Response(response) => {
+                    if self.abandoned_observation == Some(response.id) {
+                        self.abandoned_observation = None;
+                        continue;
+                    }
                     if response.id != request_id {
                         return Err(LocalRunnerError::invalid(format!(
                             "ACPX sidecar response id mismatch: expected {request_id}, received {}",
@@ -522,20 +615,20 @@ impl AcpxSidecarTransport {
                         )));
                     }
                     if response.ok {
-                        return Ok(CommandOutcome::Success(
+                        return Ok(Some(CommandOutcome::Success(
                             response.result.unwrap_or_else(|| json!({})),
-                        ));
+                        )));
                     }
                     let error = response.error.expect("failed response has validated error");
                     let provider_failure = error.provider_failure.clone();
-                    return Ok(CommandOutcome::Rejected(LocalRunnerError::invalid(
+                    return Ok(Some(CommandOutcome::Rejected(LocalRunnerError::invalid(
                         format!(
                             "ACPX sidecar command {} was rejected (retryable={}, classification={})",
                             command.as_str(),
                             error.retryable,
                             response_error_classification(&error),
                         ),
-                    ).with_provider_failure(provider_failure)));
+                    ).with_provider_failure(provider_failure))));
                 }
             }
         }
@@ -545,18 +638,32 @@ impl AcpxSidecarTransport {
         &mut self,
         timeout: Duration,
     ) -> Result<Option<AcpxSidecarEvent>, LocalRunnerError> {
-        let Some(line) = self.receive_stdout_line(timeout, "event.poll")? else {
-            return Ok(None);
-        };
-        match parse_frame(&line)? {
-            ParsedFrame::Event(event) => {
-                self.validate_event_sequence(event.sequence)?;
-                Ok(Some(event))
+        let deadline = Instant::now() + timeout;
+        loop {
+            let Some(line) = self.receive_stdout_line(
+                deadline.saturating_duration_since(Instant::now()),
+                "event.poll",
+            )?
+            else {
+                return Ok(None);
+            };
+            match parse_frame(&line)? {
+                ParsedFrame::Event(event) => {
+                    self.validate_event_sequence(event.sequence)?;
+                    return Ok(Some(event));
+                }
+                ParsedFrame::Response(response)
+                    if self.abandoned_observation == Some(response.id) =>
+                {
+                    self.abandoned_observation = None;
+                }
+                ParsedFrame::Response(response) => {
+                    return Err(LocalRunnerError::invalid(format!(
+                        "ACPX sidecar emitted response {} without a pending request",
+                        response.id
+                    )))
+                }
             }
-            ParsedFrame::Response(response) => Err(LocalRunnerError::invalid(format!(
-                "ACPX sidecar emitted response {} without a pending request",
-                response.id
-            ))),
         }
     }
 
@@ -1404,3 +1511,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(all(test, unix))]
+#[path = "tests/acpx_park_observation.rs"]
+mod park_observation_tests;

@@ -332,6 +332,7 @@ impl CommandExecutor for NativeProviderCommandExecutor {
         }
         match self.selected.as_mut() {
             Some(SelectedExecutor::LocalFacade(executor)) => executor.host_park_ready(),
+            Some(SelectedExecutor::Acpx(executor)) => executor.host_park_ready(),
             _ => Ok(false),
         }
     }

@@ -4,7 +4,7 @@ import { classifyCodexNotification } from "./codex-notification-identity.js";
 import { paperclipWorkspaceFileReferencesFromText } from "../../live/workspace-file-reference.js";
 import { canonicalProviderEventsFromCodex, isCanonicalProviderEventType } from "../../provider-events.js";
 import { harnessRuntimeRequestOutcome } from "../../contracts/harness-driver.js";
-import { NativeSessionProtocolIntegrityError } from "../../contracts/native-session-backend.js";
+import { isNativeRestartInterruption, NativeSessionProtocolIntegrityError } from "../../contracts/native-session-backend.js";
 import { isPrpAuthCredentialsUpdated, validatePrpStructuredRunResult } from "../../protocol/replay-contract.js";
 import type { CodexRpcNotification, CodexTraceInterpretation } from "./app-server-transport.js";
 import { redactCodexDiagnostic } from "./app-server-transport.js";
@@ -277,12 +277,18 @@ async function mapNotificationBody(state: CodexSessionState, notification: Codex
         state.activeTurnId === null ||
         turnId === state.activeTurnId)
     ) {
+      if (notification.method === "item/started" && record(params.item).type === "contextCompaction") {
+        state.compactionContext = { preTokens: state.lastContextUsedTokens, postTokens: null };
+      }
       for (const canonical of canonicalProviderEventsFromCodex(
         notification.method,
         params,
         { workingDirectory: state.workspaceRoots },
       )) {
-        state.emit(canonical.eventType, canonical.payload, {
+        const payload = canonical.eventType === "context.compacted"
+          ? withCompactionSizes(state, canonical.payload)
+          : canonical.payload;
+        state.emit(canonical.eventType, payload, {
           turnId: turnId || undefined,
           itemId: canonical.itemId,
         });
@@ -537,6 +543,7 @@ async function mapNotificationBody(state: CodexSessionState, notification: Codex
         mapTerminalTurn(state, turn, turnId);
         return;
       }
+      if (ignoreUnboundRestoredTurnLoss(state, turn, turnId)) return;
       if (!state.notificationNamesActiveTurn(turnId, "turn terminal")) return;
       mapTerminalTurn(state, turn, turnId);
       return;
@@ -631,6 +638,11 @@ async function mapNotificationBody(state: CodexSessionState, notification: Codex
     }
     if (notification.method === "thread/tokenUsage/updated") {
       state.usageSnapshot = boundedPayload(record(params.tokenUsage));
+      const contextUsedTokens = record(record(params.tokenUsage).context).usedTokens;
+      if (typeof contextUsedTokens === "number" && Number.isSafeInteger(contextUsedTokens) && contextUsedTokens >= 0) {
+        if (state.compactionContext) state.compactionContext.postTokens = contextUsedTokens;
+        else state.lastContextUsedTokens = contextUsedTokens;
+      }
       if (state.driverKind === "codex_app_server") {
         const reported = record(record(params.tokenUsage).total);
         const validCount = (value: unknown) => typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
@@ -665,6 +677,56 @@ async function mapNotificationBody(state: CodexSessionState, notification: Codex
 // Resume can re-deliver committed history for a turn the checkpoint already
 // settled. Between turns the identity classifier sees no active turn, so the
 // replay would otherwise reach the live-turn guards and fail the session.
+/** Fills a compaction's missing sizes from the readings around it. */
+function withCompactionSizes(
+  state: CodexSessionState,
+  payload: Record<string, unknown>,
+): Record<string, unknown> {
+  const count = (value: unknown) =>
+    typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : null;
+  const observed = state.compactionContext;
+  state.compactionContext = null;
+  const preTokens = count(payload.preTokens) ?? observed?.preTokens ?? null;
+  const postTokens = count(payload.postTokens) ?? observed?.postTokens ?? null;
+  if (postTokens !== null) state.lastContextUsedTokens = postTokens;
+  return { ...payload, preTokens, postTokens };
+}
+
+/**
+ * A controller can die after the provider accepted a turn but before that
+ * turn reached its checkpoint. The restored runner then reports the turn as
+ * lost on restore, while this session never bound it. The runner emits that
+ * cause only after it proved the old provider process ended and restored the
+ * same conversation, so the turn can produce no further work or result. It is
+ * not this session's turn: record it as restored history and keep the session
+ * usable for its own (continuation) turn instead of failing the protocol.
+ */
+function ignoreUnboundRestoredTurnLoss(
+  state: CodexSessionState,
+  turn: Record<string, unknown>,
+  turnId: string,
+): boolean {
+  if (
+    turnId.length === 0 ||
+    state.protocolFailed ||
+    turnId === state.activeTurnId ||
+    state.terminalTurns.has(turnId) ||
+    text(turn.status) !== "failed" ||
+    !isNativeRestartInterruption(turn.error)
+  ) {
+    return false;
+  }
+  state.restoredTerminalTurns.add(turnId);
+  state.emit("harness.diagnostic", {
+    code: "provider_notification_identity",
+    method: "turn/completed",
+    classification: "unbound_restored_turn_lost",
+    expectedTurnId: state.activeTurnId,
+    receivedTurnId: turnId.slice(0, 256),
+  });
+  return true;
+}
+
 function ignoreRestoredTerminalReplay(
   state: CodexSessionState,
   method: string,
