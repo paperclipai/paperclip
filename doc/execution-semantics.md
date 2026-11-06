@@ -479,6 +479,12 @@ never started. Recovery must not create another unknown-outcome incident for
 that admission denial. Historical incidents with the same verified evidence are
 nonblocking without deleting their audit records. The original hold and any
 workspace repair obligation remain effective until their own recovery completes.
+A completed failed-preparation repair can retain the host's same-run worker-stop
+receipt as audit evidence. Its original expiry controls ownership acquisition;
+it does not expire the saved repair. Retry still requires settled preparation,
+no live workspace owner or provider activity, stopped leases, verified saved
+files, and current execution authority. The audit receipt grants none of these.
+
 Once all current gates clear, startup and periodic queue recovery reconsider the
 saved input through normal admission. The cancelled admission is not replayed,
 and the user need not certify infrastructure state in a reconciliation form.

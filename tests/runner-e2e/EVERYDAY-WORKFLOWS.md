@@ -138,7 +138,7 @@ native Codex Daytona cell.
 | `three-turn-revise` | `runner-opencode-deepseek-1017.daytona` (per-turn lease) | S49 hit turn 3 on an ephemeral Daytona lease. |
 | `long-silent-command` | `runner-opencode-deepseek-1017.daytona` (warm lease) | S52/S52b hung on remote runners during a silent command. |
 | `tree-pause-release` | `runner-opencode-deepseek-1017.local` | S50/S50b is tree-hold and parked-retry scheduling. |
-| `queue-steer` | `runner-codex.daytona` (warm lease) | H2 needs a steering-capable driver; OpenCode has no steering. |
+| `queue-steer` | `runner-codex.daytona` (warm lease, `gpt-6.1-sol`) | H2 needs a steering-capable driver; OpenCode has no steering. |
 | `queued-across-restart` | `runner-opencode-deepseek-1017.daytona` (warm lease) | S55/U9 happened across a restart with a remote lease. |
 
 The local plan cells cannot reproduce Daytona-only signatures: the remote
@@ -150,7 +150,7 @@ S47, S48 and S50.
 
 The extras are outside the TestOps plan. Every case except `queue-steer` (whose
 Codex cell is the plan cell) also runs once on native Codex (`runner-codex`,
-`gpt-5.6-sol`) on Daytona: the warm environment, except `three-turn-revise` on
+`gpt-6.1-sol`) on Daytona: the warm environment, except `three-turn-revise` on
 the per-turn lease. `long-silent-command` also runs on
 the released ACPX facades Grok (`runner-acpx-grok`), Kimi (`runner-acpx-kimi`)
 and OpenRouter/Pi (`runner-acpx-pi`), which hung 3/3 before the fix. They run
@@ -221,7 +221,7 @@ cause" contract is checked only if a loss happens naturally.
 
 ## Matrix and running
 
-The local matrix has fourteen cases on native Codex `gpt-5.6-sol`, native ACPX Claude
+The local matrix has fourteen cases on native Codex `gpt-6.1-sol`, native ACPX Claude
 `claude-sonnet-5`, and native Codex `gpt-5.4-mini`: 42 cells. The two core profiles
 also declare build/revise, delegation, controller-restart, and skill-creation cases
 on Daytona: eight cells. OpenCode adds only local hiring/reuse and delegation,
