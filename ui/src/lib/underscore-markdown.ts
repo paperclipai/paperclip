@@ -1,3 +1,5 @@
+import { fromMarkdown } from "mdast-util-from-markdown";
+
 /**
  * MDXEditor (via `mdast-util-to-markdown`) exports every literal `_` as `\_`,
  * including underscores inside a word such as `snake_case` or `E2E_ASK_12`.
@@ -7,27 +9,18 @@
  *
  * This helper removes the escape only from a run of escaped underscores that
  * sits between two letters or digits (`snake\_case`, `foo\_\_bar`), which cannot
- * change how the markdown renders. It leaves word-boundary escapes unchanged
- * (`\_emphasis\_`, `\_\_init\_\_`, which would otherwise render as emphasis),
- * as well as escaped backslashes (`\\_`), inline code spans and fenced code
- * blocks, including fences nested in blockquotes or lists.
+ * change how the markdown renders. It parses the markdown so that code spans and
+ * fenced or indented code blocks, at any container depth, stay byte-identical.
+ * Word-boundary escapes (`\_emphasis\_`, `\_\_init\_\_`, which would otherwise
+ * render as emphasis) and escaped backslashes (`\\_`) are left unchanged.
  */
 
-const BLOCKQUOTE_MARKER_RE = /^ {0,3}> ?/;
-const LIST_MARKER_RE = /^ {0,3}(?:[-+*]|\d{1,9}[.)]) +/;
-const FENCE_OPEN_RE = /^ {0,3}(`{3,}|~{3,})/;
-const FENCE_CLOSE_RE = /^ *(`{3,}|~{3,})[ \t]*$/;
 const INTRAWORD_ESCAPED_RUN_RE = /(?<=[\p{L}\p{N}])((?:\\_)+)(?=[\p{L}\p{N}])/gu;
 
-/** Strip blockquote markers; return their count and the remaining text. */
-function stripBlockquotes(line: string): { depth: number; rest: string } {
-  let depth = 0;
-  let rest = line;
-  for (let marker = BLOCKQUOTE_MARKER_RE.exec(rest); marker; marker = BLOCKQUOTE_MARKER_RE.exec(rest)) {
-    depth += 1;
-    rest = rest.slice(marker[0].length);
-  }
-  return { depth, rest };
+interface PositionedNode {
+  type: string;
+  position?: { start: { offset?: number }; end: { offset?: number } };
+  children?: PositionedNode[];
 }
 
 /** True when the character at `index` is escaped by an odd number of backslashes. */
@@ -43,58 +36,32 @@ function unescapeProse(text: string): string {
     isEscaped(whole, offset) ? run : "_".repeat(run.length / 2));
 }
 
-/** Unescape prose outside matched, unescaped inline code spans. */
-function unescapeOutsideCodeSpans(line: string): string {
-  let result = "";
-  let index = 0;
-  let scan = 0;
-  while (scan < line.length) {
-    const opener = /`+/g;
-    opener.lastIndex = scan;
-    const start = opener.exec(line);
-    if (!start) break;
-    if (isEscaped(line, start.index)) {
-      // `\`` is a literal backtick; one escaped backtick also shortens the run.
-      scan = start.index + 1;
-      continue;
-    }
-    const closer = new RegExp(String.raw`(?<!\`)${start[0]}(?!\`)`, "g");
-    closer.lastIndex = start.index + start[0].length;
-    const end = closer.exec(line);
-    if (!end) {
-      // An unmatched run is literal text; keep scanning after it.
-      scan = start.index + start[0].length;
-      continue;
-    }
-    result += unescapeProse(line.slice(index, start.index)) + line.slice(start.index, end.index + end[0].length);
-    index = end.index + end[0].length;
-    scan = index;
+/** Source ranges of code spans and code blocks, in document order. */
+function codeRanges(node: PositionedNode, ranges: Array<[number, number]>): Array<[number, number]> {
+  if (node.type === "code" || node.type === "inlineCode") {
+    const start = node.position?.start.offset, end = node.position?.end.offset;
+    if (typeof start === "number" && typeof end === "number") ranges.push([start, end]);
+    return ranges;
   }
-  return result + unescapeProse(line.slice(index));
+  for (const child of node.children ?? []) codeRanges(child, ranges);
+  return ranges;
 }
 
 export function unescapeIntrawordUnderscores(markdown: string): string {
   if (!markdown.includes("\\_")) return markdown;
-  let fence: { run: string; depth: number } | null = null;
-  return markdown.split("\n").map((line) => {
-    const { depth, rest } = stripBlockquotes(line);
-    if (fence !== null) {
-      // A fence ends at a matching closing fence in the same container, or when
-      // its enclosing blockquote ends. Deeper quote markers are code content.
-      if (depth === fence.depth) {
-        const close = FENCE_CLOSE_RE.exec(rest)?.[1];
-        if (close && close[0] === fence.run[0] && close.length >= fence.run.length) fence = null;
-        return line;
-      }
-      if (depth > fence.depth) return line;
-      fence = null;
-    }
-    const content = rest.replace(LIST_MARKER_RE, "");
-    const open = FENCE_OPEN_RE.exec(content)?.[1];
-    if (open) {
-      fence = { run: open, depth };
-      return line;
-    }
-    return unescapeOutsideCodeSpans(line);
-  }).join("\n");
+  let ranges: Array<[number, number]>;
+  try {
+    ranges = codeRanges(fromMarkdown(markdown) as PositionedNode, []);
+  } catch {
+    // Never rewrite text the parser could not place.
+    return markdown;
+  }
+  let result = "";
+  let cursor = 0;
+  for (const [start, end] of ranges) {
+    if (start < cursor) continue;
+    result += unescapeProse(markdown.slice(cursor, start)) + markdown.slice(start, end);
+    cursor = end;
+  }
+  return result + unescapeProse(markdown.slice(cursor));
 }

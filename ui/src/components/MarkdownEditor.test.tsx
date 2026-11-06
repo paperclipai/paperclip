@@ -1004,6 +1004,27 @@ describe("MarkdownEditor", () => {
     });
   });
 
+  it("round-trips code with its backslashes while storing prose underscores as typed", async () => {
+    const stored = "Run snake_case:\n\n```py\nprint('a\\_b')\n```\n\nThen `keep\\_this` and \\_\\_init\\_\\_.";
+    // The exporter escapes the prose underscore; code and the boundary run are as typed.
+    mdxEditorMockState.emitMountChange =
+      "Run snake\\_case:\n\n```py\nprint('a\\_b')\n```\n\nThen `keep\\_this` and \\_\\_init\\_\\_.";
+    const handleChange = vi.fn();
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(<MarkdownEditor value={stored} onChange={handleChange} placeholder="Markdown body" />);
+    });
+
+    await flush();
+
+    expect(handleChange).toHaveBeenCalledWith(stored);
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
   it("does not notify the parent when a prop sync echoes escaped markdown back", async () => {
     const handleChange = vi.fn();
     const root = createRoot(container);
