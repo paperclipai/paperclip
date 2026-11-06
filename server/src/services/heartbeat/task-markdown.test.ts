@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { buildPaperclipTaskMarkdown } from "./task-markdown.js";
 
@@ -164,5 +165,39 @@ describe("heartbeat task markdown rendering", () => {
     expect(markdown).toContain("````text\nRevise the scope.");
     expect(markdown).not.toContain("Implement the accepted plan");
     expect(markdown).not.toContain("old-approved-revision");
+  });
+
+  it("delivers only registered company-scoped entity link contracts to chat and its continuation", () => {
+    const app = readFileSync(new URL("../../../../ui/src/App.tsx", import.meta.url), "utf8");
+    const start = app.indexOf("function boardRoutes(");
+    const end = app.indexOf("function AppsConnectEntryRoute(");
+    expect(start).toBeGreaterThanOrEqual(0);
+    expect(end).toBeGreaterThan(start);
+    const board = app.slice(start, end);
+    const registered = new Set([...board.matchAll(/<Route\s+path="([^"]+)"/g)].map((match) => match[1]));
+    expect(app).toMatch(/<Route path=":companyPrefix"[^>]*>[\s\S]*?\{boardRoutes\(/);
+
+    for (const acceptedPlanContinuation of [false, true]) {
+      for (const workMode of ["standard", "ask", "planning"]) {
+        const markdown = buildPaperclipTaskMarkdown({
+          issue: { ...issue, workMode, conversationAgentId: "agent" },
+          acceptedPlanContinuation,
+          interaction: acceptedPlanContinuation ? { kind: "request_confirmation", status: "accepted" } : undefined,
+          acceptedPlan: { revisionId: "accepted-revision" },
+        })!;
+        expect(markdown.includes("Accepted chat plan directive:")).toBe(acceptedPlanContinuation && workMode !== "ask");
+        const templates = [...markdown.matchAll(/\/<prefix>\/(projects|goals)\/<([^>]+)>/g)];
+        expect(templates.map((match) => match[1]).sort()).toEqual(["goals", "projects"]);
+        for (const [, entity, input] of templates) {
+          const parameter = entity === "projects" ? "projectId" : "goalId";
+          expect(registered.has(`${entity}/:${parameter}`)).toBe(true);
+          const returned = markdown.match(new RegExp(`returned ${entity === "projects" ? "project" : "goal"} ([^.]+)`));
+          expect(returned?.[1].split(" or ")).toEqual(entity === "projects" ? ["urlKey", "id"] : ["id"]);
+          expect(input?.split("-or-")).toEqual(entity === "projects" ? ["urlKey", "id"] : ["id"]);
+        }
+      }
+    }
+    const ordinary = buildPaperclipTaskMarkdown({ issue })!;
+    expect([...ordinary.matchAll(/\/<prefix>\/(projects|goals)\/<([^>]+)>/g)]).toEqual([]);
   });
 });
