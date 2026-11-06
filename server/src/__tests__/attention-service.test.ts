@@ -41,6 +41,7 @@ import {
 import { errorHandler } from "../middleware/index.js";
 import { attentionRoutes } from "../routes/attention.js";
 import { attentionService } from "../services/attention.js";
+import { issueThreadInteractionService } from "../services/issue-thread-interactions.js";
 import { decisionHistoryService } from "../services/decision-history.js";
 import { listAttentionExhaustedRuns } from "../services/attention-exhausted-runs.js";
 import { agentService } from "../services/agents.js";
@@ -1538,6 +1539,89 @@ describeEmbeddedPostgres("attention service", () => {
     expect(interactionIds).toContain(newerConfirmationId);
     expect(interactionIds).toContain(checkboxId);
     expect(interactionIds).not.toContain(olderConfirmationId);
+  });
+
+  it.each([
+    ["approved from chat", "accept"],
+    ["expired", "expire"],
+  ] as const)("does not resurface an older confirmation once the newest one is %s", async (_label, outcome) => {
+    const { companyId, workerId } = await seedCompany(outcome === "accept" ? "ATR" : "ATX");
+    const issueId = await insertIssue({
+      companyId,
+      identifier: outcome === "accept" ? "ATR-1" : "ATX-1",
+      title: "Re-asked sign-off",
+      status: "in_review",
+      assigneeAgentId: workerId,
+    });
+    const olderConfirmationId = randomUUID();
+    const newerConfirmationId = randomUUID();
+    await db.insert(issueThreadInteractions).values([
+      {
+        id: olderConfirmationId,
+        companyId,
+        issueId,
+        kind: "request_confirmation",
+        status: "pending",
+        continuationPolicy: "none",
+        createdByAgentId: workerId,
+        title: "Approve the plan",
+        payload: { version: 1, prompt: "Approve the plan?" },
+        createdAt: new Date("2026-11-05T12:00:00.000Z"),
+        updatedAt: new Date("2026-11-05T12:00:00.000Z"),
+      },
+      {
+        id: newerConfirmationId,
+        companyId,
+        issueId,
+        kind: "request_confirmation",
+        status: "pending",
+        continuationPolicy: "none",
+        createdByAgentId: workerId,
+        title: "Approve the plan (again)",
+        payload: { version: 1, prompt: "Approve the plan?" },
+        createdAt: new Date("2026-11-05T12:05:00.000Z"),
+        updatedAt: new Date("2026-11-05T12:05:00.000Z"),
+      },
+    ]);
+
+    const pendingIds = async () => (await attentionService(db).list(companyId, { userId: "board-user" })).items
+      .filter((item) => item.sourceKind === "issue_thread_interaction")
+      .map((item) => item.subject.id);
+    expect(await pendingIds()).toEqual([newerConfirmationId]);
+
+    if (outcome === "accept") {
+      // The chat card resolves the same canonical record through the same service.
+      await issueThreadInteractionService(db).acceptInteraction(
+        { id: issueId, companyId, projectId: null, goalId: null, status: "in_review" },
+        newerConfirmationId,
+        {},
+        { userId: "board-user" },
+      );
+    } else {
+      await db.update(issueThreadInteractions).set({
+        status: "expired",
+        result: { version: 1, outcome: "stale_target" },
+        resolvedAt: new Date("2026-11-05T12:10:00.000Z"),
+        updatedAt: new Date("2026-11-05T12:10:00.000Z"),
+      }).where(eq(issueThreadInteractions.id, newerConfirmationId));
+    }
+
+    expect(await pendingIds()).toEqual([]);
+  });
+
+  it("keeps a pending tool-action approval visible after a newer tool action is settled", async () => {
+    const { companyId, workerId } = await seedCompany("ATT");
+    const issueId = await insertIssue({ companyId, identifier: "ATT-1", title: "Two tool calls", status: "in_progress", assigneeAgentId: workerId });
+    const olderId = randomUUID();
+    const base = { companyId, issueId, kind: "request_confirmation" as const, continuationPolicy: "none" as const, createdByAgentId: workerId, title: "Approve tool action" };
+    await db.insert(issueThreadInteractions).values([
+      { ...base, id: olderId, status: "pending", payload: { version: 1, prompt: "Run A?", toolAction: { actionRequestId: randomUUID() } },
+        createdAt: new Date("2026-11-05T12:00:00.000Z"), updatedAt: new Date("2026-11-05T12:00:00.000Z") },
+      { ...base, id: randomUUID(), status: "accepted", payload: { version: 1, prompt: "Run B?", toolAction: { actionRequestId: randomUUID() } },
+        createdAt: new Date("2026-11-05T12:05:00.000Z"), updatedAt: new Date("2026-11-05T12:06:00.000Z"), resolvedAt: new Date("2026-11-05T12:06:00.000Z") },
+    ]);
+    const feed = await attentionService(db).list(companyId, { userId: "board-user" });
+    expect(feed.items.filter((item) => item.sourceKind === "issue_thread_interaction").map((item) => item.subject.id)).toEqual([olderId]);
   });
 
   it("retains every independently bound quality approval alongside the newest ordinary confirmation", async () => {
