@@ -1501,6 +1501,17 @@ describe("executeNativeSession recovery", () => {
       message: "The model service failed while processing output.",
       modelRejected: false,
     },
+    {
+      // OpenRouter's wording for an unknown model ID.
+      recoverable: false,
+      message: "openrouter/unavailable-model is not a valid model ID",
+      modelRejected: true,
+    },
+    {
+      recoverable: true,
+      message: "openrouter/unavailable-model is not a valid model ID",
+      modelRejected: false,
+    },
   ])(
     "preserves structured provider failure and model retry classification ($recoverable, $modelRejected)",
     async ({ recoverable, message, modelRejected }) => {

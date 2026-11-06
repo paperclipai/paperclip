@@ -3084,6 +3084,9 @@ describe("OpenCodeServerDriver", () => {
       const observed = await events;
       const failure = observed.find(event => event.eventType === "turn.failed");
       expect(failure?.payload.error).toMatchObject({ providerFailure: { provider: "openrouter", category: "overloaded", message: "Provider is busy." } });
+      // The provider's message under `data` also becomes the failure's own message and the notice summary.
+      expect(failure?.payload.error).toMatchObject({ message: "Provider is busy." });
+      expect(observed.find(event => event.eventType === "provider.notice.recorded")?.payload.summary).toBe("Provider is busy.");
       expect(JSON.stringify(failure)).not.toContain("private-body");
     } finally { await session.close({ reason: "test complete" }); }
   });

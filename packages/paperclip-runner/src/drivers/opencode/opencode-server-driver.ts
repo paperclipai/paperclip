@@ -1972,6 +1972,11 @@ class OpenCodeHarnessSession implements HarnessSession {
         this.#activeTurnId = null;
         return;
       }
+      // OpenCode's provider errors (`APIError`) carry the message under `data`.
+      const providerMessage = redact(
+        text(providerError.message, text(providerErrorData.message, "OpenCode session failed.")),
+        this.#runtime.sensitiveValues,
+      ).slice(0, 4000);
       this.#emit(
         "provider.notice.recorded",
         {
@@ -1982,10 +1987,7 @@ class OpenCodeHarnessSession implements HarnessSession {
           scope: "turn",
           recoverable: false,
           userActionable: true,
-          summary: redact(
-            text(record(properties.error).message, "OpenCode session failed."),
-            this.#runtime.sensitiveValues,
-          ).slice(0, 4000),
+          summary: providerMessage,
         },
         { turnId, itemId: `${turnId}:session-error` },
       );
@@ -1996,6 +1998,8 @@ class OpenCodeHarnessSession implements HarnessSession {
       this.#emit(
         "turn.failed",
         { status: "failed", error: { ...bounded(providerError),
+          // Consumers read the terminal failure's top-level message.
+          message: providerMessage,
           providerFailure: openCodeProviderFailure(providerError, this.#model.split("/")[0]!,
             Object.fromEntries(this.#runtime.sensitiveValues.map((value, index) => [`TOKEN_${index}`, value]))) ?? undefined } },
         { turnId },

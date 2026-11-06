@@ -2823,7 +2823,7 @@ export async function executeNativeSession(
             // permitting retry must not become permanent merely from its text.
             const modelRejected =
               !recoverable &&
-              /issue with the selected model|model_not_found|invalid model|model[^\n]*(?:does not exist|not found|not supported)/i.test(
+              /issue with the selected model|model_not_found|invalid model|not a valid model|model[^\n]*(?:does not exist|not found|not supported)/i.test(
                 message,
               );
             throw new NativeProviderTerminalFailure(
