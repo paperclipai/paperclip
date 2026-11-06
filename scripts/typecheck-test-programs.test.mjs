@@ -10,6 +10,7 @@ import {
   findUncheckedTests,
   PROGRAMS,
   PROVIDER_WORKSPACE,
+  RESOLVE_ARGS,
   SANDBOX_PROVIDERS,
   typecheckTestPrograms,
 } from "./typecheck-test-programs.mjs";
@@ -104,13 +105,33 @@ test("providers install frozen without scripts, then relink the SDK", () => {
   assert.equal(calls.linked, 1);
 });
 
-test("a stale provider lockfile fails before any program runs and names the fix", () => {
+test("a stale provider lockfile is resolved in place, then installed frozen", () => {
+  const workspace = path.join("/repo", PROVIDER_WORKSPACE);
+  let frozenAttempts = 0;
+  const { options, calls } = harness({
+    pnpm: (args, { cwd }) => {
+      calls.pnpm.push({ args, cwd });
+      if (cwd !== workspace || !args.includes("--frozen-lockfile")) return 0;
+      frozenAttempts += 1;
+      return frozenAttempts === 1 ? 1 : 0;
+    },
+  });
+  assert.equal(typecheckTestPrograms(options), 0);
+  assert.deepEqual(
+    calls.pnpm.filter(({ cwd }) => cwd === workspace).map(({ args }) => args.includes("--frozen-lockfile") ? "frozen" : args),
+    ["frozen", RESOLVE_ARGS, "frozen"],
+  );
+  assert.ok(RESOLVE_ARGS.includes("--resolution-only") && RESOLVE_ARGS.includes("--ignore-scripts"));
+  assert.equal(calls.tsc.length, 2);
+});
+
+test("a provider install that still fails stops before any program runs", () => {
   const { options, calls } = harness({
     pnpm: (args, { cwd }) => (cwd === path.join("/repo", PROVIDER_WORKSPACE) ? 1 : 0),
   });
   assert.equal(typecheckTestPrograms(options), 1);
   assert.equal(calls.tsc.length, 0);
-  assert.match(calls.errors[0], /pnpm-lock\.yaml/);
+  assert.match(calls.errors[0], /could not install the sandbox providers/);
 });
 
 test("an uncovered test file fails the run and is named", () => {
