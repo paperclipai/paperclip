@@ -488,7 +488,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     graceSec,
     extraArgs,
   } = runtimeConfig;
-  env.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS = "1";
   Object.assign(env, claudeSandboxPermissionEnv({ dangerouslySkipPermissions, targetIsSandbox: executionTargetIsSandbox }));
   if (ctx.observability) applyObservabilityEnvironment(env, ctx.observability);
   let loggedEnv = buildInvocationEnvForLogs(env, {
@@ -951,6 +950,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         `Using ${runtimeMcpServers.length} Paperclip-managed MCP server(s) from strict config ${effectiveMcpConfigPath}.`,
       );
     }
+    env.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS = "1";
+    loggedEnv.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS = "1";
     if (onMeta) {
       await onMeta({
         adapterType: "claude_local",
