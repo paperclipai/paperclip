@@ -327,17 +327,47 @@ export function readTransientRecoveryContractFromRun(
     : null;
 }
 
+function isTemporaryCapacityFailure(run: {
+  error?: string | null;
+  resultJson?: unknown;
+}) {
+  const result = parseObject(run.resultJson);
+  const terminalFailure = parseObject(result.terminalSessionFailure);
+  const text = [
+    run.error,
+    result.errorMessage,
+    result.message,
+    result.error,
+    terminalFailure.title,
+    terminalFailure.details,
+    terminalFailure.message,
+  ]
+    .filter((value): value is string => typeof value === "string")
+    .join(" ");
+  return /(?:model (?:is )?at capacity|at capacity for this model|capacity limit|\bat capacity\b|server\s*overloaded)/i.test(
+    text,
+  );
+}
+
 export function readLimitResetRetryAt(
-  run: Pick<typeof heartbeatRuns.$inferSelect, "errorCode" | "resultJson">,
+  run: Pick<typeof heartbeatRuns.$inferSelect, "errorCode" | "resultJson"> & {
+    error?: string | null;
+  },
   now: Date,
 ): Date | null | undefined {
   const transient = readTransientRecoveryContractFromRun(run);
   if (transient?.errorFamily !== "provider_quota") return undefined;
 
   const retryNotBefore = transient.retryNotBefore;
-  if (!retryNotBefore) return null;
+  if (retryNotBefore) {
+    return new Date(Math.max(now.getTime() + 1_000, retryNotBefore.getTime()));
+  }
 
-  return new Date(Math.max(now.getTime() + 1_000, retryNotBefore.getTime()));
+  if (isTemporaryCapacityFailure(run)) {
+    return undefined;
+  }
+
+  return null;
 }
 
 function isSpawnLikeFailureMessage(value: unknown) {

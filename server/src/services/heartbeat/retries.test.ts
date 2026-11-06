@@ -212,6 +212,47 @@ describe("heartbeat retry module callbacks", () => {
       expect(extracted.readLimitResetRetryAt({ errorCode: null, resultJson: { errorFamily: "provider_quota" } }, now)).toBeNull();
     });
 
+    it("returns undefined for temporary model capacity failures without retryNotBefore", () => {
+      const now = new Date("2026-11-06T14:00:00.000Z");
+      expect(
+        extracted.readLimitResetRetryAt(
+          {
+            errorCode: "provider_quota",
+            resultJson: {
+              errorFamily: "provider_quota",
+              errorMessage:
+                "The requested model is at capacity. Please try again later.",
+            },
+          },
+          now,
+        ),
+      ).toBeUndefined();
+      expect(
+        extracted.readLimitResetRetryAt(
+          {
+            errorCode: "provider_quota",
+            error: "Selected model is at capacity. Please try a different model.",
+            resultJson: { errorFamily: "provider_quota" },
+          },
+          now,
+        ),
+      ).toBeUndefined();
+      expect(
+        extracted.readLimitResetRetryAt(
+          {
+            errorCode: "provider_quota",
+            resultJson: {
+              errorFamily: "provider_quota",
+              terminalSessionFailure: {
+                title: "We're at capacity for this model. Try again soon.",
+              },
+            },
+          },
+          now,
+        ),
+      ).toBeUndefined();
+    });
+
     it("returns retryNotBefore Date when present", () => {
       const now = new Date("2026-11-06T14:30:00.000Z");
       const structured = new Date("2026-11-06T15:00:00.000Z");
@@ -245,6 +286,39 @@ describe("heartbeat retry module callbacks", () => {
       reason: "Limit reset time is ambiguous; automatic fast retry suppressed.",
       issueId: "issue",
     });
+    expect(database.access).not.toHaveBeenCalled();
+  });
+
+  it("preserves bounded retries for temporary capacity failures", async () => {
+    const database = guardedDatabase();
+    const deps = callbacks();
+    deps.getAgentInvokability = vi.fn<HeartbeatRetryDependencies["getAgentInvokability"]>(async () => ({
+      invokable: false,
+      reason: "paused",
+      message: "agent is paused",
+      details: {},
+      invalidOrgChain: false,
+    }));
+    const run = {
+      ...unitRun(),
+      errorCode: "provider_quota",
+      resultJson: {
+        errorFamily: "provider_quota",
+        errorMessage: "The requested model is at capacity. Please try again later.",
+      },
+    };
+    const retry = await extracted.createHeartbeatRetries(database.db, deps).scheduleBoundedRetryForRun(
+      run, { adapterType: "codex_local" } as Agent,
+    );
+    expect(retry).toEqual({
+      outcome: "not_scheduled",
+      reason: "Scheduled retry suppressed because the agent is not invokable",
+      errorCode: "agent_not_invokable",
+      issueId: "issue",
+    });
+    expect(deps.appendRunEvent).toHaveBeenCalledWith(run, expect.objectContaining({
+      payload: expect.objectContaining({ scheduledRetryAttempt: 1, maxAttempts: 2 }),
+    }));
     expect(database.access).not.toHaveBeenCalled();
   });
 
@@ -570,5 +644,28 @@ describePostgres("heartbeat retry module database wiring", () => {
       scheduledRetryAt: new Date("2026-10-08T15:00:00.000Z"),
     });
     expect((successor?.contextSnapshot as Record<string, unknown> | null)?.providerQuotaRetryAttempt).toBe(1);
+  });
+
+  it("schedules standard bounded retry for temporary model capacity failure", async () => {
+    const { run, agent } = await fixture();
+    const testNow = new Date("2026-10-08T14:00:00Z");
+    const [failed] = await db.update(heartbeatRuns).set({
+      status: "failed",
+      errorCode: "provider_quota",
+      resultJson: {
+        executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+        errorFamily: "provider_quota",
+        errorMessage: "The requested model is at capacity. Please try again later.",
+      },
+    }).where(eq(heartbeatRuns.id, run.id)).returning();
+    const result = await boundRetries().retries.scheduleBoundedRetryForRun(failed!, agent, { now: testNow, random: () => 0 });
+    expect(result.outcome).toBe("scheduled");
+    const [successor] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, run.id));
+    expect(successor).toMatchObject({
+      status: "scheduled_retry",
+      scheduledRetryReason: "transient_failure",
+      scheduledRetryAttempt: 1,
+      scheduledRetryAt: new Date(testNow.getTime() + 24_000),
+    });
   });
 });
