@@ -221,12 +221,12 @@ async function listFilesRecursive(
   return output.sort((left, right) => left.localeCompare(right));
 }
 
-async function readFileSummary(rootPath: string, relativePath: string, entryFile: string): Promise<AgentInstructionsFileSummary> {
+async function readFileSummary(rootPath: string, relativePath: string, entryFile: string, includeFilesystemDate: boolean): Promise<AgentInstructionsFileSummary> {
   const absolutePath = resolvePathWithinRoot(rootPath, relativePath);
   const stat = await fs.stat(absolutePath);
   // External bundles may contain large assets; listing must not read them.
   const file = stat.size > MAX_AGENT_FILE_BYTES ? null : await inspectAgentFile(rootPath, relativePath);
-  return { ...summarizeFile(relativePath, entryFile, file?.size ?? stat.size, file?.bytes ?? null, file?.hash), updatedAt: stat.mtime.toISOString() };
+  return { ...summarizeFile(relativePath, entryFile, file?.size ?? stat.size, file?.bytes ?? null, file?.hash), ...(includeFilesystemDate ? { updatedAt: stat.mtime.toISOString() } : {}) };
 }
 
 function summarizeFile(relativePath: string, entryFile: string, size: number, bytes: Buffer | null, hash?: string): AgentInstructionsFileSummary {
@@ -535,7 +535,7 @@ export function agentInstructionsService(db?: Db) {
         .orderBy(desc(activityLog.createdAt)).limit(1);
       if (saved) return saved.details?.created === true ? { createdAt: saved.date.toISOString() } : { updatedAt: saved.date.toISOString() };
     }
-    // Filesystem birth times reset on atomic replacement/restoration. Only expose mtime.
+    if (db && state.mode !== "external") return {};
     const stat = await statIfExists(filename);
     return stat?.isFile() ? { updatedAt: stat.mtime.toISOString() } : {};
   }
@@ -577,7 +577,7 @@ export function agentInstructionsService(db?: Db) {
     const summaries: AgentInstructionsFileSummary[] = [];
     // Bound open descriptors and text buffers even for a large personal folder.
     for (let index = 0; index < files.length; index += 8) {
-      summaries.push(...await Promise.all(files.slice(index, index + 8).map(relativePath => readFileSummary(state.rootPath!, relativePath, state.entryFile))));
+      summaries.push(...await Promise.all(files.slice(index, index + 8).map(relativePath => readFileSummary(state.rootPath!, relativePath, state.entryFile, !db || state.mode === "external"))));
     }
     return toBundle(agent, state, summaries);
   }
@@ -746,12 +746,14 @@ export function agentInstructionsService(db?: Db) {
     await fs.mkdir(path.dirname(absolutePath), { recursive: true });
     const existed = Boolean(await statIfExists(absolutePath));
     await fs.writeFile(absolutePath, content, "utf8");
+    const writtenAt = new Date().toISOString();
     const nextAgent = { ...agent, adapterConfig: prepared.adapterConfig };
     const [bundle, file] = await Promise.all([
       getBundle(nextAgent),
       readFile(nextAgent, relativePath),
     ]);
-    if (!existed && file.updatedAt) { file.createdAt = file.updatedAt; delete file.updatedAt; }
+    if (existed) file.updatedAt = writtenAt;
+    else { file.createdAt = writtenAt; delete file.updatedAt; }
     return { bundle, file, adapterConfig: prepared.adapterConfig };
   }
 
