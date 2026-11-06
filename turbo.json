@@ -225,6 +225,16 @@
       ],
       "outputs": [],
       "cache": false
+    },
+    "//#ci:runner-e2e-support": {
+      "inputs": [
+        "server/**",
+        "cli/**",
+        "packages/**",
+        "ui/**"
+      ],
+      "outputs": [],
+      "cache": false
     }
   }
 }
