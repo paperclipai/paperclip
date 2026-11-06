@@ -1164,7 +1164,7 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
     // A runner that could not prove suspension after an accepted result left a
     // local workspace untouched: there is nothing to copy back. Settle the
     // accepted result instead of failing the run over runner bookkeeping.
-    const settleAcceptedResult = nativeRuntimeResolution.kind === "native"
+    let settleAcceptedResult = nativeRuntimeResolution.kind === "native"
       && postResultFailure?.category === "runner_settlement_incomplete"
       && !nativeWorkspaceSync && !remoteWorkspaceAuthority;
     try {
@@ -1187,6 +1187,9 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
         "failed to record workspace_finalize=failed operation; dependents may remain gated",
       );
     }
+    // Settle only when the workspace finalization record itself succeeded. A
+    // failed branch or plugin workspace check keeps the failure path.
+    if (adapterFinalizeOutcome !== "succeeded") settleAcceptedResult = false;
     if (nativeRuntimeResolution.kind === "native") {
       const proposedResult = await db
         .select({ resultId: nativeRunFinalizations.resultId })

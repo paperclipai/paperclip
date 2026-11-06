@@ -288,7 +288,7 @@ describe.skipIf(!support.supported)("heartbeat runtime execution boundary", () =
     },
   );
 
-  it("settles an accepted local result when runner close cannot prove suspension", async () => {
+  it.each(["settled", "workspace-check-failed"] as const)("settles an accepted local result when runner close cannot prove suspension (%s)", async scenario => {
     const { input } = await fixture(true);
     const issue = input.task.issueRef!;
     const [run] = await db.update(heartbeatRuns).set({ nativeIssueId: issue.id, contextSnapshot: { issueId: issue.id }, costAccountingPending: true }).where(eq(heartbeatRuns.id, input.run.id)).returning();
@@ -318,6 +318,19 @@ describe.skipIf(!support.supported)("heartbeat runtime execution boundary", () =
     vi.mocked(executePaperclipNativeSession).mockImplementationOnce(async options => actual.executePaperclipNativeSession({ ...options, useRunnerd: false,
       backend: { descriptor: async () => { throw new Error("Unexpected provider call"); }, openSession: async () => { throw new Error("Unexpected provider call"); } } }));
 
+    if (scenario === "workspace-check-failed") {
+      // A failed workspace finalization check keeps the existing failure path.
+      const recorder = input.workspace.workspaceOperationRecorder;
+      const record = recorder.recordOperation.bind(recorder);
+      vi.spyOn(recorder, "recordOperation").mockImplementation(async operation => {
+        if (operation.phase === "workspace_finalize") throw new Error("workspace check failed");
+        return record(operation);
+      });
+      await expect(executeHeartbeatRuntime(db, input)).rejects.toMatchObject({ message: "native_session_lease_lost", diagnostic: { category: "runner_settlement_incomplete" } });
+      const [after] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, run.id));
+      expect(after).toMatchObject({ phase: "retryable_failure", leaseOwner: null, failureCode: "workspace_finalization_failed" });
+      return;
+    }
     // Runner bookkeeping after an accepted result is not an adapter failure:
     // the result returns to ordinary completion like any successful turn.
     const execution = await executeHeartbeatRuntime(db, input);
