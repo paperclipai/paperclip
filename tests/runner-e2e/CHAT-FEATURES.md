@@ -498,3 +498,10 @@ unresolved" to the already supported "remains blocked" and passed the owning gra
 This is an assertion correction, with no new native pass or runtime-migration credit.
 The derived runtime fixture, protected local skill, actor/phase/resource/link checks,
 original query, two native/human turns and 480000ms attempt are unchanged.
+
+Company secret v15 admits a bound question asking whether deployment-key secure
+entry has been completed, as well as the existing save-then-confirm instruction.
+This is an acknowledgment of an actual prior current-person secure save, not
+permission to execute a binding. The separate saved-value, payload, actor,
+continuation and governed-approval proofs remain mandatory. Original failures
+remain unchanged; v15 has not run natively. Counts, queries and clocks are unchanged.

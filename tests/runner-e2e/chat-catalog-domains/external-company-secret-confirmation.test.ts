@@ -34,3 +34,11 @@ it("preserves either supported accept-response policy and rejects no continuatio
  for(const continuationPolicy of ["wake_assignee","wake_assignee_on_accept"])expect(companySecretConfirmationHandoff({...card(),continuationPolicy},binding,guidance)?.continuationPolicy).toBe(continuationPolicy);
  expect(companySecretConfirmationHandoff({...card(),continuationPolicy:"none"},binding,guidance)).toBeUndefined();
 });
+
+it("admits a bound completed-entry question with native Confirm and rejects other purposes",()=>{
+ const completed="Have you saved the deployment API key in Settings > Secrets (`/RUN/company/settings/secrets`) so I can bind its reference to Morgan's environment?";
+ expect(companySecretConfirmationHandoff({...card(),payload:{...card().payload,prompt:completed}},binding,guidance)).toBeDefined();
+ for(const prompt of ["May I bind the deployment key in Settings > Secrets to Morgan's environment?","Will you save the deployment key in Settings > Secrets so I can bind it for Morgan?","Have you saved your profile? I can bind the deployment key in Settings > Secrets for Morgan.",completed+" What is the key value?"]){
+  expect(companySecretConfirmationHandoff({...card(),payload:{...card().payload,prompt}},binding,guidance),prompt).toBeUndefined();
+ }
+});

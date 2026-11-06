@@ -408,3 +408,13 @@ it("retains either supported ACK continuation policy and rejects a changed or ab
  expect(verifyChatCatalogHumanQuestionAnswer({expected,companyId:"company",issueId:"source",agentId:"ceo",canonicalComment:{id:"initial-human",authorUserId:"person"},interactions:o.interactions as never,activity:o.activity,companySecrets:o.secrets as never,runs:o.runs})).toBeUndefined();
  Object.assign(o.interactions[0]!,{continuationPolicy:"none"});expect(companySecretExternalCases[0]!.grade(o).passed).toBe(false);
 });
+
+it("retains actual save, actor, payload and continuation proof for a completed-entry question",()=>{
+ const o=confirmationOutcome(),card=o.interactions[0]! as unknown as RequestConfirmationInteraction;
+ card.payload.prompt='In Settings > Secrets (`/RUN/company/settings/secrets`), name it "Deployment API Key", set key `DEPLOYMENT_API_KEY`. Have you saved the deployment API key so I can bind its reference to Morgan\'s environment?';
+ o.state.initialConfirmationPayloadHash=createHash("sha256").update(JSON.stringify(card.payload)).digest("hex");
+ expect(companySecretExternalCases[0]!.grade(o).passed).toBe(true);
+ expect(companySecretExternalCases[0]!.expectedHumanQuestionAnswer!(o)?.companySecretConfirmation).toBeDefined();
+ Object.assign(o.secrets[0]!,{createdAt:"2026-11-04T13:28:00Z"});
+ expect(companySecretExternalCases[0]!.grade(o).passed).toBe(false);
+});

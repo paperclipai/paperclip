@@ -4923,7 +4923,7 @@
       "chat-flow.ts",
       "chat-scenarios/secrets.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.company-secret-controller-baseline.v14",
+    "oracleVersion": "paperclip.chat-catalog.company-secret-controller-baseline.v15",
     "expectedRunCount": 3,
     "minimumRunCount": 2,
     "expectedHumanMessageCount": 2,
