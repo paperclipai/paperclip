@@ -2950,6 +2950,7 @@ export function issueThreadInteractionService(
       interactionId: string,
       phase: ConnectionIntentInteraction["payload"]["phase"],
       actor: InteractionActor,
+      setupAccess?: ConnectionIntentInteraction["payload"]["setupAccess"],
     ) => {
       const current = await getPendingInteractionForResolution({
         issue,
@@ -2961,10 +2962,10 @@ export function issueThreadInteractionService(
         );
       }
       assertInteractionResolutionAllowed(current, actor);
-      const payload = connectionIntentPayloadSchema.parse(current.payload);
+      connectionIntentPayloadSchema.parse(current.payload);
       const [updated] = await db
         .update(issueThreadInteractions)
-        .set({ payload: { ...payload, phase }, updatedAt: now() })
+        .set({ payload: sql`${issueThreadInteractions.payload} || ${JSON.stringify({ phase, ...(setupAccess ? { setupAccess } : {}) })}::jsonb`, updatedAt: now() })
         .where(
           and(
             eq(issueThreadInteractions.id, interactionId),

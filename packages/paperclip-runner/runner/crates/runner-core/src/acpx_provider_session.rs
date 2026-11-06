@@ -742,6 +742,17 @@ impl AcpxProviderSession {
         &mut self,
         timeout: Duration,
     ) -> Result<Option<Vec<AcpxProviderStateEvent>>, LocalRunnerError> {
+        Ok(self
+            .poll_output(timeout, false, None)?
+            .map(|(events, _)| events))
+    }
+
+    pub(crate) fn poll_output(
+        &mut self,
+        timeout: Duration,
+        disconnected: bool,
+        last_goal_revision: Option<u64>,
+    ) -> Result<Option<(Vec<AcpxProviderStateEvent>, Option<Value>)>, LocalRunnerError> {
         self.ensure_open()?;
         let event = match self.transport.poll_event(timeout) {
             Ok(event) => event,
@@ -750,6 +761,34 @@ impl AcpxProviderSession {
         let Some(mut event) = event else {
             return Ok(None);
         };
+        let mut terminal_goal = None;
+        if disconnected
+            && event.event_type == GeneratedAcpxSidecarEventType::RuntimeTurnTerminal
+            && event.payload.pointer("/error/code").and_then(Value::as_str)
+                != Some("ACPX_PROVIDER_PROCESS_LOST")
+        {
+            let snapshot = event.payload.get("goalAtTerminal").filter(|snapshot| {
+                snapshot["schema"] == "paperclip.session_goal.snapshot.v1"
+                    && snapshot["workingNow"] == false
+                    && snapshot["providerRevision"]
+                        .as_u64()
+                        .is_some_and(|revision| revision > last_goal_revision.unwrap_or(0))
+                    && snapshot["sessionGoals"]["availability"]
+                        .as_str()
+                        .is_some_and(|availability| {
+                            matches!(availability, "available" | "unsupported")
+                        })
+                    && (goal_is_dormant(snapshot)
+                        || snapshot.pointer("/goal/status").and_then(Value::as_str)
+                            == Some("active"))
+            });
+            let Some(snapshot) = snapshot else {
+                // Older sidecars need a connected goal read before settling this turn.
+                self.transport.defer_polled_event(event);
+                return Ok(None);
+            };
+            terminal_goal = Some(snapshot.clone());
+        }
         if event.event_type == GeneratedAcpxSidecarEventType::RuntimePermissionRequested {
             // Authority comes from this admitted connection's profile. A sidecar
             // claim cannot relabel another provider; old frames may omit origin.
@@ -916,7 +955,7 @@ impl AcpxProviderSession {
         self.state = next_state;
         self.tool_bridge = next_bridge;
         self.reserved_tool_bridge = next_reserved_bridge;
-        Ok(Some(reconciled_events))
+        Ok(Some((reconciled_events, terminal_goal)))
     }
 
     pub fn deliver_tool_result(&mut self, result: &ToolResult) -> Result<(), LocalRunnerError> {

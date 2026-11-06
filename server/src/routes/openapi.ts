@@ -309,6 +309,7 @@ import {
   toolPolicyTestRequestSchema,
   createToolMcpGatewaySchema,
   completeConnectionIntentSchema,
+  connectionIntentPayloadSchema,
   connectionRequestInputSchema,
   connectionsSearchInputSchema,
   declineConnectionIntentSchema,
@@ -11271,6 +11272,7 @@ registerCurrentRoute({
   body: z
     .object({
       phase: z.enum(["requested", "authorizing", "needs_retry"]),
+      setupAccess: connectionIntentPayloadSchema.shape.setupAccess,
     })
     .strict(),
   responses: {
