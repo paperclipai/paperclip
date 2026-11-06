@@ -172,6 +172,7 @@ describe("OpenCodeServerDriver", () => {
       expect(receipt.result.isError).toBe(true);
       expect(receipt.result.content[0].text.length).toBeGreaterThan(8_192);
       expect(handler).not.toHaveBeenCalled();
+      if (!session.transcript) throw new Error("OpenCode session must expose its transcript");
       for (const recorded of [events, (await session.transcript()).events]) {
         const errors = recorded.filter(event => event.eventType === "item.completed")
           .map(event => event.payload.item as { is_error?: boolean; error?: string }).filter(item => item?.is_error);
