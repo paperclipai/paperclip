@@ -380,6 +380,37 @@ describeEmbeddedPostgres("subtree pause and release of an in-flight child run", 
     expect(wakes).toHaveLength(1);
   });
 
+  it("keeps a resume owed when a new pause lands before its wake is admitted", async () => {
+    const fixture = await seedTree();
+    const { holdId } = await pauseWhilePreparing(fixture);
+    preparationGate.release?.();
+    await drainHeartbeatRunsToQuiescence(db, heartbeat);
+    await db.update(issueTreeHolds).set({ status: "released", releasedAt: new Date() }).where(eq(issueTreeHolds.id, holdId));
+
+    // A second pause lands between the eligibility check and queue admission.
+    const { resumePauseInterruptedWork, deliverPendingPauseResumes } = await import("../services/issue-tree-resume.js");
+    let secondHoldId = "";
+    expect(await resumePauseInterruptedWork(db, {
+      companyId: fixture.companyId, issueIds: [fixture.childId], actor: { actorType: "system", actorId: "system" },
+      wakeup: async (agentId, opts) => {
+        const pause = await request(app).post(`/api/issues/${fixture.parentId}/tree-holds`).send({ mode: "pause" });
+        expect(pause.status).toBe(201);
+        secondHoldId = pause.body.hold.id;
+        return heartbeat.wakeup(agentId, opts);
+      },
+    })).toEqual([]);
+    await drainHeartbeatRunsToQuiescence(db, heartbeat);
+    expect(await childRuns(fixture.childId)).toHaveLength(1);
+
+    const release = await request(app).post(`/api/issues/${fixture.parentId}/tree-holds/${secondHoldId}/release`).send({});
+    expect(release.status).toBe(200);
+    await deliverPendingPauseResumes(db, (agentId, opts) => heartbeat.wakeup(agentId, opts), new Date(Date.now() + 5 * 60_000));
+    await drainHeartbeatRunsToQuiescence(db, heartbeat);
+    const runs = await childRuns(fixture.childId);
+    expect(runs.map((run) => run.contextSnapshot?.wakeReason)).toEqual(["issue_assigned", "issue_tree_resumed"]);
+    expect(runs[1]).toMatchObject({ status: "succeeded" });
+  });
+
   it("visits every stale resume claim even when the first page is still paused", async () => {
     const fixture = await seedTree();
     const { interruptedRunId, holdId } = await pauseWhilePreparing(fixture);

@@ -1,4 +1,4 @@
-import { and, asc, eq, gt, sql } from "drizzle-orm";
+import { and, asc, eq, gt, ne, sql } from "drizzle-orm";
 import { agentWakeupRequests, heartbeatRuns, issues, type Db } from "@paperclipai/db";
 import { isUniqueViolation } from "../db-errors.js";
 import { logActivity } from "./activity-log.js";
@@ -67,6 +67,15 @@ async function setResumeState(db: Db, input: {
   });
 }
 
+/** A saved, admitted resume wake (queued, deferred, coalesced, or run) for the interrupted run. */
+async function findPauseResumeReceipt(db: Db, companyId: string, agentId: string, runId: string) {
+  const [receipt] = await db.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests).where(and(
+    eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.agentId, agentId),
+    eq(agentWakeupRequests.idempotencyKey, pauseResumeWakeKey(runId)),
+    ne(agentWakeupRequests.status, "skipped"))).limit(1);
+  return Boolean(receipt);
+}
+
 async function dispatch(db: Db, input: {
   companyId: string; issueId: string; agentId: string; runId: string; holdId: string;
   claimedAt: string; rootIssueId: string | null; actor: ResumeActor; wakeup: Wakeup;
@@ -89,12 +98,16 @@ async function dispatch(db: Db, input: {
       holdId: input.holdId,
       interruptedRunId: input.runId,
     },
-  }).then(() => true, (error: unknown) => {
+  }).then((run) => run ? "saved" as const : "not_admitted" as const, (error: unknown) => {
     // Another dispatcher already saved this run's resume wake; it owns the work.
-    if (isUniqueViolation(error, PAUSE_RESUME_WAKE_INDEX)) return false;
+    if (isUniqueViolation(error, PAUSE_RESUME_WAKE_INDEX)) return "duplicate" as const;
     throw error;
   });
-  if (!saved) return;
+  if (saved === "duplicate") return;
+  // Admission can skip the wake, for example when a new pause landed after the
+  // eligibility check. A skipped request is no receipt, so the claim stays
+  // pending and the sweep retries once the task is runnable again.
+  if (saved === "not_admitted" && !await findPauseResumeReceipt(db, input.companyId, input.agentId, input.runId)) return;
   await setResumeState(db, { companyId: input.companyId, runId: input.runId, expectedClaimedAt: input.claimedAt,
     next: { holdId: input.holdId, state: "delivered", claimedAt: input.claimedAt, deliveredAt: new Date().toISOString() } });
 }
@@ -195,10 +208,7 @@ async function deliverPendingPage(db: Db, wakeup: Wakeup, now: Date, rows: Pendi
       next: { holdId: claim.holdId, state, claimedAt: claim.claimedAt, settledAt: now.toISOString(), ...(reason ? { reason } : {}) },
     });
     try {
-      const [receipt] = await db.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests).where(and(
-        eq(agentWakeupRequests.companyId, run.companyId), eq(agentWakeupRequests.agentId, run.agentId),
-        eq(agentWakeupRequests.idempotencyKey, pauseResumeWakeKey(run.id)))).limit(1);
-      if (receipt) { await finish("delivered"); continue; }
+      if (await findPauseResumeReceipt(db, run.companyId, run.agentId, run.id)) { await finish("delivered"); continue; }
       const [issue] = await db.select({ status: issues.status, assigneeAgentId: issues.assigneeAgentId,
         assigneeUserId: issues.assigneeUserId }).from(issues)
         .where(and(eq(issues.companyId, run.companyId), eq(issues.id, run.issueId)));

@@ -95,7 +95,7 @@ export const agentWakeupRequests = pgTable(
     treeHoldResumeIdempotencyUq: uniqueIndex("agent_wakeup_requests_tree_hold_resume_uq")
       .on(table.companyId, table.idempotencyKey)
       .concurrently()
-      .where(sql`${table.idempotencyKey} LIKE 'tree-hold-resume:%'`),
+      .where(sql`${table.idempotencyKey} LIKE 'tree-hold-resume:%' AND ${table.status} <> 'skipped'`),
     chatCompletionIdempotencyUq: uniqueIndex("agent_wakeup_requests_chat_completion_uq")
       .on(table.companyId, table.idempotencyKey)
       .where(sql`${table.idempotencyKey} LIKE 'chat-completion:%'`),

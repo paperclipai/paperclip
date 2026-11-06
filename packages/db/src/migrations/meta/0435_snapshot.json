@@ -1,5 +1,5 @@
 {
-  "id": "b2e351bb-1810-4483-983d-ddddfc38b944",
+  "id": "dedfce21-7ff9-4079-b5da-4a74a856a251",
   "prevId": "5b40e9ac-12aa-4757-aac7-36218c7500a8",
   "version": "7",
   "dialect": "postgresql",
@@ -4075,7 +4075,7 @@
             }
           ],
           "isUnique": true,
-          "where": "\"agent_wakeup_requests\".\"idempotency_key\" LIKE 'tree-hold-resume:%'",
+          "where": "\"agent_wakeup_requests\".\"idempotency_key\" LIKE 'tree-hold-resume:%' AND \"agent_wakeup_requests\".\"status\" <> 'skipped'",
           "concurrently": true,
           "method": "btree",
           "with": {}
