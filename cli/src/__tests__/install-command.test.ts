@@ -86,6 +86,44 @@ describe("managed install commands", () => {
     ]);
   });
 
+  it.each([
+    ["", "fallback-token", "fallback-token"],
+    ["  ", " fallback-token ", "fallback-token"],
+    [" primary-token ", "fallback-token", "primary-token"],
+    [undefined, "fallback-token", "fallback-token"],
+    ["", "  ", undefined],
+    [undefined, undefined, undefined],
+  ])("selects the first non-blank GitHub token (%j, %j)", async (ghToken, githubToken, expected) => {
+    if (ghToken === undefined) delete process.env.GH_TOKEN;
+    else process.env.GH_TOKEN = ghToken;
+    if (githubToken === undefined) delete process.env.GITHUB_TOKEN;
+    else process.env.GITHUB_TOKEN = githubToken;
+    let configFile: string | undefined;
+    const runCommand: CommandRunner = async (command, args) => {
+      expect(command).toBe("curl");
+      if (expected) {
+        expect(args[0]).toBe("--config");
+        configFile = args[1];
+        expect(fs.readFileSync(configFile, "utf8")).toBe(`header = "Authorization: Bearer ${expected}"\n`);
+        expect(fs.statSync(configFile).mode & 0o777).toBe(0o600);
+        expect(args.join(" ")).not.toContain(expected);
+      } else {
+        expect(args).not.toContain("--config");
+      }
+      return { stdout: JSON.stringify({ sha: "a".repeat(40) }), stderr: "" };
+    };
+    await expect(resolveGitHubRef("owner/private-repo", "main", runCommand)).resolves.toBe("a".repeat(40));
+    if (configFile) expect(fs.existsSync(configFile)).toBe(false);
+  });
+
+  it("explains anonymous GitHub failures", async () => {
+    delete process.env.GH_TOKEN;
+    delete process.env.GITHUB_TOKEN;
+    const runCommand: CommandRunner = async () => { throw new Error("curl: (22) HTTP 404"); };
+    await expect(resolveGitHubRef("owner/private-repo", "main", runCommand))
+      .rejects.toThrow("GitHub request failed without authentication. Set GH_TOKEN or GITHUB_TOKEN");
+  });
+
   it("supports fork overrides and classifies SHA refs as pinned", () => {
     expect(resolveGitInstallRequest({ ref: "feature/test", repo: "HenkDz/paperclip" })).toEqual({ repo: "HenkDz/paperclip", ref: "feature/test", pinned: false });
     expect(resolveGitInstallRequest({ ref: "abcdef1" })).toEqual({ repo: "paperclipai/paperclip", ref: "abcdef1", pinned: true });

@@ -290,6 +290,10 @@ paperclipai upgrade
 paperclipai uninstall
 ```
 
+Git-ref installs use the first non-blank value of `GH_TOKEN`, then
+`GITHUB_TOKEN`, after trimming surrounding whitespace. Without either token,
+GitHub requests are anonymous; private repositories require a token with access.
+
 `upgrade` aliases `update`. `uninstall` removes managed code and the shim but
 preserves instance data under `~/.paperclip/instances/`. See
 `doc/INSTALLING.md` for installation methods, security notes, PATH setup, and
