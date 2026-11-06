@@ -83,9 +83,11 @@ describe("tool rows never show raw task UUIDs", () => {
         <TaskChatToolCard item={tool} />
       </QueryClientProvider>,
     ));
-    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
     const card = container.querySelector('[data-testid="task-chat-tool-card"]');
-    expect(card?.textContent).toContain("PIX-3");
+    await vi.waitFor(async () => {
+      await act(async () => { await Promise.resolve(); });
+      expect(card?.textContent).toContain("PIX-3");
+    });
     expect(card?.textContent).not.toContain(TASK_UUID);
     expect(issuesApi.getCore).toHaveBeenCalledTimes(1);
     expect(issuesApi.get).not.toHaveBeenCalled();
@@ -94,7 +96,10 @@ describe("tool rows never show raw task UUIDs", () => {
   it("falls back to a plain word while the task cannot be resolved", async () => {
     issuesApi.getCore.mockRejectedValue(new Error("not found"));
     const row = renderRow(taskLookupRow());
-    await act(async () => { await Promise.resolve(); });
+    await vi.waitFor(async () => {
+      await act(async () => { await Promise.resolve(); });
+      expect(issuesApi.getCore).toHaveBeenCalled();
+    });
     expect(row?.textContent).not.toContain(TASK_UUID);
     expect(row?.textContent).toContain("task");
   });
