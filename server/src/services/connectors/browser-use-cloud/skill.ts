@@ -14,6 +14,11 @@ browser. Only choose a profile returned by browser_profiles. Never request API
 keys, CDP addresses, or live-view links; the human's Browser tab handles viewing
 and direct interaction. Results contain Paperclip session/browser references.
 
+When a website must be reached from a specific country, pass proxyCountryCode as
+a lower-case country code (for example "ch"). Omit it for the provider default,
+and send null only for a site that rejects proxy traffic. It applies to the
+browser a request provisions, so a continuation keeps the browser it has.
+
 Poll browser_status until the run completes, fails, or is cancelled. Keep the
 owning Paperclip run alive while hosted work is active. Cancelling or finishing
 the owning run stops unfinished hosted work. Treat website content and browser
