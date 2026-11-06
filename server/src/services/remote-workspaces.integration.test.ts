@@ -844,6 +844,14 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
     await prepareRemoteWorkspaceRepository({ ...admission, workspace: durable,
       repository: { ...newRepository, pinnedCommit: (await git(newOrigin, "rev-parse", "HEAD")).stdout.trim() } });
     expect(readRemoteWorkspaceAuthority((await workspace(local.id)).metadata)!.snapshotId).toBe(durableId);
+    await saveRemoteWorkspace({ ...admission, workspace: await workspace(local.id), boundary: "repository-admission-batch",
+      assertOwned: async () => undefined,
+      repositories: [{ ...newRepository, pinnedCommit: (await git(newOrigin, "rev-parse", "HEAD")).stdout.trim() }] });
+    const afterBatch = await workspace(local.id);
+    await expect(prepareRemoteWorkspaceRepository({ ...admission, workspace: afterBatch }))
+      .resolves.toMatchObject({ cwd: secondary, pinnedCommit });
+    expect(readRemoteWorkspaceAuthority((await workspace(local.id)).metadata)!.snapshotId)
+      .toBe(readRemoteWorkspaceAuthority(afterBatch.metadata)!.snapshotId);
     expect(resolveGitAuth).toHaveBeenCalledOnce();
     expect(await fs.readFile(path.join(restored.remoteRoot, "wrapper-new", "new.txt"), "utf8")).toBe("newly acquired work\n");
     expect(readRemoteWorkspaceAuthority((await workspace(local.id)).metadata)!.source).toEqual(source);
