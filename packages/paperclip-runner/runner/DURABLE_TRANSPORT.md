@@ -42,9 +42,11 @@ atomically from durable state. After disconnect, every remaining event is sent
 again with the same identity and source sequence.
 
 After disconnect, runnerd tries Core when reconnect is due. Between attempts,
-live Codex processes can drain local output into the outbox. Work that
+live Codex and ACPX processes can drain local output into the outbox. Work that
 needs a provider request waits for Core, including managed-provider history
-reads and unanswered tools or approvals. Runnerd suspends
+reads and unanswered tools or approvals. An ACPX sidecar can include a fresh
+`goalAtTerminal` snapshot in `runtime.turn_terminal` to settle the turn offline.
+A missing or stale snapshot waits for a connected goal read. Runnerd suspends
 intake during terminal delivery or an authority transition.
 
 If Codex hits its tool-receipt limit during reconnect, runnerd stops its local
@@ -85,7 +87,10 @@ P0 reserve is an explicit unrecoverable condition.
 While disconnected, soft-limit backpressure retains the rejected event and its
 suffix at the provider owner until replay ACKs free outbox space. Oversized
 events or exhausted hard limits stop the owned provider and preserve the
-accepted durable prefix.
+accepted durable prefix. The ACPX sidecar separately caps queued stdout at
+4 MiB; exceeding that bound requests owned provider shutdown and records a
+failure rather than allowing unbounded process memory while the Runner cannot
+read.
 
 ## Recovering Codex between turns
 
