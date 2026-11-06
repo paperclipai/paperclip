@@ -23,6 +23,38 @@ export const completionReviewRubric = [
   "Does it avoid repeated completion announcements or redundant acknowledgements, while allowing corrections and updates about different tasks?",
 ] as const;
 
+export const COMPLETION_RESTART_GATE_SKIPPED = "restart boundary not reached (agent skipped gate)";
+
+/**
+ * The restart cell's boundary is the source provider waiting at its reference
+ * gate. The completion reply is published inside the run finalizer's own
+ * transaction, which an isolated-server fixture cannot hold without a product
+ * hook, so reaching the boundary depends on the agent running the wait. Once a
+ * completion turn ends, or an agent reply lands after Done, without the gate
+ * ever reporting "waiting", the boundary can no longer be reached: report it
+ * by name instead of waiting for a generic timeout.
+ */
+export function completionRestartGateSkipped(state: {
+  sourceId: string; ready: string; workerCompletedAt?: string | null; runs: Row[]; comments: Row[];
+}): string | undefined {
+  if (state.ready === "waiting") return undefined;
+  const turns = state.runs.filter(r => r.contextSnapshot?.issueId === state.sourceId &&
+    r.contextSnapshot?.wakeReason === "chat_task_completed");
+  const ended = turns.find(r => !["queued", "running"].includes(String(r.status)));
+  const completedAt = state.workerCompletedAt ? Date.parse(state.workerCompletedAt) : Number.NaN;
+  const reply = Number.isFinite(completedAt)
+    ? state.comments.find(c => c.authorAgentId && Date.parse(c.createdAt) >= completedAt)
+    : undefined;
+  if (!ended && !reply) return undefined;
+  // A turn that failed or was cancelled before the gate is not evidence that
+  // the agent skipped it; keep that distinct from a skipped gate.
+  if (ended && ended.status !== "succeeded" && !reply) {
+    return `restart boundary not reached: completion turn ${ended.id} ended ${ended.status} before the reference gate reported waiting`;
+  }
+  const detail = reply ? `agent reply ${reply.id} was published` : `completion turn ${ended!.id} ended ${ended!.status}`;
+  return `${COMPLETION_RESTART_GATE_SKIPPED}: ${detail} without the reference gate reporting waiting`;
+}
+
 /** The start time exists only in the brief released after the source is idle. */
 export function completionOutputUsesReleasedBrief(body: string): boolean {
   return /\b(?:10\s*[:.h]\s*30|ten[-\s]+thirty|half[\s-]+past[\s-]+(?:ten|10))\b/i.test(body);

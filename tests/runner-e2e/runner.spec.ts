@@ -64,7 +64,7 @@ import { armResponseTiming } from "./response-timing.js";
 
 import { projectFirstTaskResult, runFirstTaskFlow, setupFirstTaskFixtures } from "./first-task-flow.js";
 import { runChatFlow } from "./chat-flow.js";
-import { restartChatServer } from "./chat-restart.js";
+import { gotoAfterServerRestart, restartChatServer } from "./chat-restart.js";
 import { matchesRunCount, minimumRunCount } from "./run-count.js";
 import { createHash, randomBytes } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
@@ -1602,20 +1602,16 @@ for (const execution of executions) {
             (key) => Reflect.set(window, key, true),
             documentSentinel,
           );
-          try {
-            await page.goto(
-              `/${encodeURIComponent(issuePrefix)}/issues/${encodeURIComponent(issue.identifier ?? issue.id)}`,
-              // The replacement Vite server can commit and render a fresh
-              // document while its navigation lifecycle remains unsettled.
-              // The sentinel and explicit assertions below prove the new
-              // document and durable state even when Playwright times out.
-              { waitUntil: "commit" },
-            );
-          } catch (error) {
-            if (!(error instanceof Error) || error.name !== "TimeoutError") {
-              throw error;
-            }
-          }
+          // The replacement Vite server can commit and render a fresh document
+          // while its navigation lifecycle remains unsettled, and the old
+          // document's Vite client can reload and abort this navigation. The
+          // sentinel and explicit assertions below prove the new document and
+          // durable state either way.
+          await gotoAfterServerRestart(
+            page,
+            `/${encodeURIComponent(issuePrefix)}/issues/${encodeURIComponent(issue.identifier ?? issue.id)}`,
+            { deadlineAt },
+          );
           await expect(
             page
               .getByRole("radio", {

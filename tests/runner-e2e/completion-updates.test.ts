@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { completionDelivery, completionOutputUsesReleasedBrief, type CompletionObservation } from "./completion-updates.js";
+import { COMPLETION_RESTART_GATE_SKIPPED, completionDelivery, completionOutputUsesReleasedBrief, completionRestartGateSkipped, type CompletionObservation } from "./completion-updates.js";
 import { runnerMatrix } from "./catalog.js";
 
 const output = "Welcome to our free Friday garden meetup for beginners. Join us at 10:30; reference GARDEN123.";
@@ -80,5 +80,40 @@ describe("completion-update delivery oracle", () => {
       expect(cell.profile.generation).toBe("native");
       expect(cell.environment.id).toBe("local");
     }
+  });
+});
+
+describe("completion restart gate", () => {
+  const turn = (status: string) => ({ id: "turn", status, contextSnapshot: { issueId: "source", wakeReason: "chat_task_completed" } });
+  const base = { sourceId: "source", workerCompletedAt: "2026-11-06T10:00:00Z", runs: [] as Record<string, any>[], comments: [] as Record<string, any>[] };
+  it("keeps waiting while the completion turn is pending or running at the gate", () => {
+    expect(completionRestartGateSkipped({ ...base, ready: "" })).toBeUndefined();
+    expect(completionRestartGateSkipped({ ...base, ready: "", runs: [turn("queued")] })).toBeUndefined();
+    expect(completionRestartGateSkipped({ ...base, ready: "", runs: [turn("running")] })).toBeUndefined();
+    expect(completionRestartGateSkipped({ ...base, ready: "waiting", runs: [turn("succeeded")] })).toBeUndefined();
+  });
+  it("names a completion turn that ended without reaching the gate", () => {
+    expect(completionRestartGateSkipped({ ...base, ready: "", runs: [turn("succeeded")] }))
+      .toBe(`${COMPLETION_RESTART_GATE_SKIPPED}: completion turn turn ended succeeded without the reference gate reporting waiting`);
+  });
+  it("does not blame the agent for a turn that failed before the gate", () => {
+    const failed = completionRestartGateSkipped({ ...base, ready: "", runs: [turn("failed")] });
+    expect(failed).toBe("restart boundary not reached: completion turn turn ended failed before the reference gate reported waiting");
+    expect(failed).not.toContain("agent skipped gate");
+  });
+  it("names an agent reply published after Done while the turn is still finalizing", () => {
+    const comments = [
+      { id: "handoff", authorAgentId: "lead", createdAt: "2026-11-06T09:00:00Z" },
+      { id: "user", authorUserId: "board", createdAt: "2026-11-06T10:01:00Z" },
+    ];
+    expect(completionRestartGateSkipped({ ...base, ready: "", runs: [turn("running")], comments })).toBeUndefined();
+    expect(completionRestartGateSkipped({ ...base, ready: "", runs: [turn("running")],
+      comments: [...comments, { id: "reply", authorAgentId: "lead", createdAt: "2026-11-06T10:02:00Z" }] }))
+      .toContain(`${COMPLETION_RESTART_GATE_SKIPPED}: agent reply reply was published`);
+  });
+  it("ignores other conversations and ordinary chat turns", () => {
+    const other = { id: "o", status: "succeeded", contextSnapshot: { issueId: "other", wakeReason: "chat_task_completed" } };
+    const ordinary = { id: "u", status: "succeeded", contextSnapshot: { issueId: "source", wakeReason: "chat_message" } };
+    expect(completionRestartGateSkipped({ ...base, ready: "", runs: [other, ordinary] })).toBeUndefined();
   });
 });

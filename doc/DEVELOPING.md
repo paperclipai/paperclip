@@ -3388,7 +3388,7 @@ successful warm-session retention or admit another provider turn.
 Run the credential-free real-process restart suite with:
 
 ```sh
-pnpm --filter @paperclipai/paperclip-runner build:runner-binaries
+pnpm --filter @paperclipai/paperclip-runner run build:runner-binaries
 pnpm exec vitest run server/src/services/native-runtime/native-runner-restart-recovery.integration.test.ts
 pnpm --filter @paperclipai/paperclip-runner exec vitest run src/live/runnerd-codex-transport-adoption.test.ts -t 'adopts a live runner'
 ```
