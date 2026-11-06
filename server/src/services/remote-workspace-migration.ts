@@ -376,7 +376,12 @@ export async function migrateRemoteWorkspace(input: {
       const exclude = nested.map(child => child.relativePath);
       const captured = recovered ?? await captureRemoteWorkspaceDirectory({ cwd: sourceRoot!, archivePath, exclude, signal: input.signal });
       const ref = await uploadWorkspaceSnapshot({ db: input.db, storage: input.storage, snapshotId: snapshot.id,
-        companyId: input.companyId, workspaceId: input.workspaceId, archivePath, manifestDigest: captured.manifestDigest, signal: input.signal });
+        companyId: input.companyId, workspaceId: input.workspaceId, archivePath, manifestDigest: captured.manifestDigest, signal: input.signal,
+        // Private Git reconstruction can change administrative bytes between
+        // attempts. Its journaled logical recipe is checked at reservation and
+        // again under source locks before authority publication below.
+        ...(reserved.archivedGitSource ? { unpublishedRecapture: { sourceOperationId: operation.id } } : {}),
+      });
       const restoredArchive = path.join(scratch, "verified.pcws"), restored = path.join(scratch, "restored");
       await loadWorkspaceSnapshotArchive({ storage: input.storage, reference: ref, targetPath: restoredArchive, signal: input.signal });
       await restoreRemoteWorkspaceArchive({ archivePath: restoredArchive, targetDir: restored, expectedManifestDigest: ref.manifestDigest, signal: input.signal });

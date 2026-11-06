@@ -1997,6 +1997,13 @@ project with the same repository URL; publication locks and rechecks those sourc
 rows. Imports from mutable local folders still recapture and compare the
 current files; a saved upload does not permit later local edits to be discarded.
 
+If every recorded snapshot upload is definitively absent, an unpublished
+archived Git import can recapture the same validated logical source. Private Git
+administrative bytes can differ between reconstructions. The original journal
+and every upload attempt remain recorded; available prior uploads and concurrent
+publication winners are reused. Unknown or corrupt objects block recapture.
+The source recipe and ownership checks still gate authority publication.
+
 When the verified Git source still exists, reconstruction also copies its local
 `info/exclude` rules into the private repository before applying a saved restore
 point. This keeps saved ignored files, including recovery receipts and bundles,
