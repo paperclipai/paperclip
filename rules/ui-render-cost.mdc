@@ -1,0 +1,58 @@
+---
+description: Keep UI render work proportional to collection size, keep memo inputs stable, and test changed catalog paths at shipped scale.
+globs: "ui/src/**"
+alwaysApply: false
+---
+
+# UI render work must stay proportional to its data
+
+Applies to `ui/src/**` code that iterates over a large or unbounded collection
+during render, in a `useMemo`, or in a selector. The shipped catalogs are the
+main case: `AGGREGATOR_APP_CATALOG` (about 1,600 entries), the composio and
+arcade catalogs, and `APP_DEFINITIONS` / `CONNECTABLE_APP_DEFINITIONS`. Lists
+loaded from the API that grow with a company's data, such as tasks, runs,
+agents, connections and activity, count too.
+
+## Why
+
+On Paperclip Cloud, `/apps` pegged the CPU after a helper that scanned the whole
+aggregator catalog was called once per native row, for every catalog app. That
+is about 1,600 × 110 × 1,600 name comparisons, roughly 200 s of main-thread work
+per render. The memo also re-ran on every render because one of its
+dependencies was a `Map` rebuilt in the component body. The tests passed
+because they replaced the catalog with one or two entries, and the slow branch
+only ran on Cloud.
+
+## Requirements
+
+- Do not call a function that scans a collection from inside a loop over
+  another large collection. Build a `Set` or `Map` index once, outside the loop,
+  and look items up in it.
+- Normalize keys (identity, slug, lowercase name) once per item, not inside
+  comparison callbacks.
+- Every `useMemo` dependency must keep its identity between renders that change
+  no data. Do not pass objects, arrays or `Map`s rebuilt in the component body.
+  Memoize them, or derive them from query `data`, which TanStack Query keeps
+  structurally shared. `useQueries` returns a new array on every render.
+- When a change adds or reorders work over a shipped catalog, at least one test
+  must run that path with the real catalog. Load it with `vi.importActual`, and
+  use Cloud mode when the code branches on `useCloudInstance()`. Bound the work
+  with a deterministic counter, not wall-clock time. A counter that throws
+  above its limit makes a runaway render fail at once instead of stalling the
+  test worker. See the "full Cloud catalog" test in
+  `ui/src/pages/apps/Browse.test.tsx`.
+
+## Exceptions
+
+- Small fixed lists (status options, tabs, a handful of providers) need none of
+  this.
+- A nested scan is fine when both sides are bounded and small, for example one
+  task's comments matched against its attachments.
+
+## Review criteria
+
+- Flag nested iteration where both collections can be large, especially when
+  the inner call hides a scan (`some`, `find`, `filter`, `includes` on an array).
+- Flag `useMemo` or `useCallback` dependencies that are rebuilt every render.
+- Flag branches gated on Cloud, experimental settings or feature flags whose
+  only tests use toy-sized fixtures when the branch iterates a shipped catalog.

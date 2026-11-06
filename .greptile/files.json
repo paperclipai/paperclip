@@ -94,6 +94,13 @@
         "packages/paperclip-runner/src/providers/**",
         "packages/paperclip-runner/protocol/**"
       ]
+    },
+    {
+      "path": "rules/ui-render-cost.mdc",
+      "description": "Render cost of UI code over large collections: no nested catalog scans, stable memo dependencies, and shipped-scale tests for changed catalog paths.",
+      "scope": [
+        "ui/src/**"
+      ]
     }
   ]
 }
