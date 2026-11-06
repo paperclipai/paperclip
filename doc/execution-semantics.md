@@ -556,6 +556,15 @@ identity, budgets, pauses, ownership, and concurrency. A restarted server restor
 queued work through startup recovery. A failed admission request leaves its
 durable rows available for existing recovery.
 
+A restarted server does not hold new turns behind recovery of other runs. Once
+plugin workers and adapters are loaded, it starts queued runs that never executed,
+on agents with no run left `running` by the previous process and no queued retry
+or continuation. The ordinary claim and dispatch checks still apply, and an active
+drain still holds them. Runs that depend on restart recovery wait for the full
+queued-run pass after native restart recovery. While the server is starting,
+recovering, or shutting down, queued runs display **Waiting for server restart**
+(cause `server_restarting`) instead of an unexplained "Queued".
+
 The legacy remote ACP process-session relay runs on the control-plane host. Its
 launch command uses the host's absolute Node executable even when the adapter's
 launch environment is sanitized for a remote sandbox; the sandbox PATH remains

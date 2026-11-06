@@ -1876,6 +1876,39 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     }
   }
 
+  // Startup fast path: start queued turns that never executed, on agents with
+  // no run left `running` by the previous process and no queued retry or
+  // continuation. Those agents' runs depend on restart recovery and wait for
+  // the full queued-run pass. Every run still passes the ordinary per-agent
+  // claim and dispatch gates, exactly as a new wakeup during startup would.
+  async function resumeFreshQueuedRunsAtStartup() {
+    if ((await getSchedulingSuppression()).suppressed) return { agents: 0 };
+    const cutoff = await getWorktreeExecutionCutoff();
+    const rows = await db
+      .selectDistinct({ agentId: heartbeatRuns.agentId })
+      .from(heartbeatRuns)
+      .innerJoin(companies, eq(companies.id, heartbeatRuns.companyId))
+      .where(
+        and(
+          eq(heartbeatRuns.status, "queued"),
+          eq(companies.status, "active"),
+          cutoff ? gte(heartbeatRuns.createdAt, cutoff) : undefined,
+          sql`not exists (
+            select 1 from heartbeat_runs prior
+            where prior.agent_id = ${heartbeatRuns.agentId}
+              and (prior.status = 'running' or (prior.status = 'queued' and (
+                prior.started_at is not null or prior.retry_of_run_id is not null
+                or coalesce(prior.process_loss_retry_count, 0) > 0
+                or coalesce(prior.continuation_attempt, 0) > 0)))
+          )`,
+        ),
+      );
+    for (const { agentId } of rows) {
+      await startNextQueuedRunForAgent(agentId);
+    }
+    return { agents: rows.length };
+  }
+
   // A 403 from claimQueuedRun comes from the run's own persisted identity
   // (an unverifiable interrupt receipt, a manual wake with no user). Those rows
   // do not change, so the claim fails the same way on every pass and restart.
@@ -5001,6 +5034,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     resumeQueuedRuns,
     resumeDeferredExecutionReceipts,
     resumeQueuedRunsAfterDrain,
+    resumeFreshQueuedRunsAtStartup,
     parseHeartbeatPolicy,
     nextTimerHeartbeatAt,
     claimDueTimerHeartbeat,
