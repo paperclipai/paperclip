@@ -333,13 +333,13 @@ describe("claude remote execution", () => {
         sessionId: "12345678-1234-4abc-9def-123456789012",
         sessionParams: {
           sessionId: "12345678-1234-4abc-9def-123456789012",
-          cwd: managedRemoteWorkspace,
+          cwd: "/remote/workspace/.paperclip-runtime/runs/run-ssh-resume-previous/workspace",
           remoteExecution: {
             transport: "ssh",
             host: "127.0.0.1",
             port: 2222,
             username: "fixture",
-            remoteCwd: managedRemoteWorkspace,
+            remoteCwd: "/remote/workspace",
           },
         },
         sessionDisplayId: "12345678-1234-4abc-9def-123456789012",
