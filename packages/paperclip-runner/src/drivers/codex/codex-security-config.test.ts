@@ -391,6 +391,14 @@ describe("Codex security configuration", () => {
     expect(serialized).not.toContain("agent-provider-key");
   });
 
+  it("N-12: grants generated images in preconfigured mode only when CODEX_HOME is outside HOME", () => {
+    const inside = createIsolatedCodexAppServerArgs({ HOME: "/users/executor", CODEX_HOME: "/users/executor/.codex", PAPERCLIP_RUNNER_HOME_MODE: "preconfigured" }).join("\n");
+    expect(inside).not.toContain("generated_images");
+    const outside = createIsolatedCodexAppServerArgs({ HOME: "/users/executor", CODEX_HOME: "/var/lib/codex-home", PAPERCLIP_RUNNER_HOME_MODE: "preconfigured" }).join("\n");
+    expect(outside.match(/"\/var\/lib\/codex-home\/generated_images"="read"/g)).toHaveLength(2);
+    expect(outside).not.toContain('"/var/lib/codex-home"=');
+  });
+
   it("N-12: the pinned Codex binary keeps built-in image generation enabled under the isolated launch", () => {
     const codexHome = mkdtempSync(join(tmpdir(), "paperclip-n12-codex-home-"));
     try {

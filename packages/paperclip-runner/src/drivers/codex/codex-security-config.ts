@@ -293,9 +293,14 @@ export function createIsolatedCodexAppServerArgs(
   ];
   // Codex saves built-in image results under CODEX_HOME/generated_images and
   // tells the agent to copy them into the workspace. Expose only that folder.
-  const generatedImageRoots = usesPreconfiguredHome(source) || typeof source.CODEX_HOME !== "string" || !source.CODEX_HOME.trim()
-    ? []
-    : [join(resolve(source.CODEX_HOME), "generated_images")];
+  // A preconfigured HOME is already granted, so add the rule only when the
+  // Codex home sits outside it (never narrow an existing HOME write grant).
+  const generatedImagesRoot = typeof source.CODEX_HOME === "string" && source.CODEX_HOME.trim()
+    ? join(resolve(source.CODEX_HOME), "generated_images") : undefined;
+  const preconfiguredHome = usesPreconfiguredHome(source) && source.HOME ? resolve(source.HOME) : undefined;
+  const generatedImageRoots = generatedImagesRoot
+    && !(preconfiguredHome && codexPathInside(preconfiguredHome, generatedImagesRoot))
+    ? [generatedImagesRoot] : [];
   const filesystemRules = [
     `":root"="none"`,
     `":minimal"="read"`,
