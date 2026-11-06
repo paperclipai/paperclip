@@ -2908,7 +2908,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       ["claude_local", /Claude/, "claude.ai", "button"],
       ["codex_local", /OpenAI/, "auth.openai.com", "link"],
       ["codex_local", /OpenAI/, "auth.openai.com", "button"],
-    ] as const)("waits for the code after the %s %s %s %s opens sign-in", async (adapterType, source, host, control) => {
+    ] as const)("shows the provider waiting state after the %s %s %s %s opens sign-in", async (adapterType, source, host, control) => {
       mockAgentsApi.getAdapterAuthSignal.mockResolvedValue({ status: "absent" });
       const { root } = await openStep4({ adapterType });
       await pickSource(source);
@@ -2922,14 +2922,14 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
         });
         expect(open).toHaveBeenCalledExactlyOnceWith(link.href, "_blank", "noreferrer,noopener");
         const primary = [...document.body.querySelectorAll("button")].at(-1)!;
-        expect(primary.textContent?.trim()).toBe("Waiting for code…");
+        expect(primary.textContent?.trim()).toBe(adapterType === "codex_local" ? "Waiting for auth…" : "Waiting for code…");
         expect(primary.disabled).toBe(true);
         await act(async () => primary.click());
         await act(async () => document.querySelector('[data-testid="onboarding-wizard"]')!.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", metaKey: true, bubbles: true, cancelable: true })));
         expect(open).toHaveBeenCalledTimes(1);
         await act(async () => link.click());
         expect(open).toHaveBeenNthCalledWith(2, link.href, "_blank", "noreferrer,noopener");
-        expect(primary.textContent?.trim()).toBe("Waiting for code…");
+        expect(primary.textContent?.trim()).toBe(adapterType === "codex_local" ? "Waiting for auth…" : "Waiting for code…");
         expect(primary.disabled).toBe(true);
         if (adapterType === "claude_local") expect((document.querySelector('input[aria-label="Authorization code"]') as HTMLInputElement).disabled).toBe(false);
         expect(mockAgentsApi.hire).not.toHaveBeenCalled();
