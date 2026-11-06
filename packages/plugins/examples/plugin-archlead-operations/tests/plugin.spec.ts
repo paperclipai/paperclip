@@ -256,6 +256,24 @@ describe("ArchLead Operations plugin", () => {
     const created = createdResponse as {
       body: { issueId: string; interactionId: string };
     };
+    const pendingRead = await plugin.definition.onApiRequest?.({
+      ...apiInput("get-qualification-task", {}, { externalLeadId: "sandbox:lead-001" }),
+      method: "GET",
+      query: { companyId: COMPANY_ID },
+    });
+    expect(pendingRead).toMatchObject({
+      status: 200,
+      body: {
+        externalLeadId: "sandbox:lead-001",
+        issueId: created.body.issueId,
+        interactionId: created.body.interactionId,
+        qualificationStatus: "pending_review",
+        approvalStatus: "required",
+        outreachStatus: "blocked",
+        interactionStatus: "pending",
+        synthetic: true,
+      },
+    });
     const issue = await harness.ctx.issues.get(created.body.issueId, COMPANY_ID);
     expect(issue).toMatchObject({
       title: "[SANDBOX] Review lead: Synthetic Contact",
