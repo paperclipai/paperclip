@@ -294,18 +294,6 @@ export function errorHandler(
     return;
   }
 
-  // Saturated object storage sheds retryable reads (run logs, provider
-  // traces). That is load, not a server fault: ask the client to retry.
-  if (isObjectJournalBusyError(rootError)) {
-    if (!res.headersSent) {
-      res.set("Retry-After", "2");
-      res.status(503).json({ error: rootError.message, code: rootError.code });
-    } else {
-      res.end();
-    }
-    return;
-  }
-
   // Shutdown drains the HTTP listener before it ends the pool, but a handler
   // whose client already disconnected (or whose socket the drain timeout
   // closed) keeps running. Its next query then fails with CONNECTION_ENDED
@@ -315,6 +303,18 @@ export function errorHandler(
   if (isDatabaseClosing(req) && isEndedDbPoolError(rootError)) {
     if (!res.headersSent) {
       res.status(503).json({ error: "Server is shutting down" });
+    } else {
+      res.end();
+    }
+    return;
+  }
+
+  // Saturated object storage sheds retryable reads (run logs, provider
+  // traces). That is load, not a server fault: ask the client to retry.
+  if (isObjectJournalBusyError(rootError)) {
+    if (!res.headersSent) {
+      res.set("Retry-After", "2");
+      res.status(503).json({ error: rootError.message, code: rootError.code });
     } else {
       res.end();
     }
