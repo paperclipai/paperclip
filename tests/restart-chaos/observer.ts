@@ -34,6 +34,10 @@ export async function listWorkspaceFiles(root: string): Promise<string[]> {
 }
 
 export const QUEUED_TRIGGER_MAX_EMPTY_SAMPLES = 3;
+
+function stillQueued(runs: readonly RunSample[]): boolean {
+  return runs.some(run => run.status === "queued" && !run.startedAt) && !runs.some(run => run.startedAt || run.status === "running");
+}
 export const TRIGGER_LATE_MS = 10_000;
 
 /** Rest must hold for this long before the observer acts on it. */
@@ -50,8 +54,20 @@ export function toRunSample(run: Json): RunSample {
     id: String(run.runId ?? run.id), status: String(run.status), createdAt: run.createdAt ?? null, startedAt: run.startedAt ?? null,
     finishedAt: run.finishedAt ?? null, errorCode: run.errorCode ?? null, retryOfRunId: run.retryOfRunId ?? null,
     wakeCommentIds: [...wake], livenessState: run.livenessState ?? null,
+    lastEvidenceAt: latestIso([run.startedAt, run.lastUsefulActionAt, run.execution?.lastConfirmedActivityAt]),
   };
 }
+
+export function latestIso(values: ReadonlyArray<unknown>): string | null {
+  let best: number | null = null;
+  for (const value of values) {
+    const at = typeof value === "string" ? Date.parse(value) : NaN;
+    if (Number.isFinite(at) && (best === null || at > best)) best = at;
+  }
+  return best === null ? null : new Date(best).toISOString();
+}
+
+export const RUN_EVENT_PAGE = 500;
 
 export function toInterruption(value: Json | null | undefined): InterruptionSample | null {
   if (!value) return null;
@@ -146,8 +162,20 @@ export class TaskObserver {
     if (now - dueAt > TRIGGER_LATE_MS) return false;
     if (fault.trigger !== "queued") return true;
     const latest = [...this.record.samples].reverse().find(sample => sample.reachable);
-    return (latest?.runs ?? []).some(run => run.status === "queued" && !run.startedAt)
-      && !(latest?.runs ?? []).some(run => run.startedAt || run.status === "running");
+    return stillQueued(latest?.runs ?? []);
+  }
+
+  async confirmTrigger(fault: ScheduledFault, now: number): Promise<boolean> {
+    if (!fault.trigger || fault.trigger === "time") return true;
+    const armedAt = this.triggerArmedAt(fault);
+    let open = typeof armedAt === "number" && now - (armedAt + (fault.delayMs ?? 0)) <= TRIGGER_LATE_MS;
+    if (open && fault.trigger === "queued") {
+      const runs = await this.api.get<Json[]>(`/api/issues/${this.record.issueId}/runs`, 5_000)
+        .then(rows => (rows ?? []).map(toRunSample)).catch(() => null);
+      open = runs !== null && stillQueued(runs);
+    }
+    if (!open) this.noteTriggerMissed(fault);
+    return open;
   }
 
   private noteTriggerMissed(fault: ScheduledFault) {
@@ -256,6 +284,24 @@ export class TaskObserver {
     }
   }
 
+  private readonly runEventCursors = new Map<string, { seq: number; lastAt: string | null }>();
+
+  private async runEvidence(run: RunSample): Promise<RunSample> {
+    if (run.status !== "running") return run;
+    const cursor = this.runEventCursors.get(run.id) ?? { seq: 0, lastAt: null };
+    for (let page = 0; page < 3; page += 1) {
+      const events = await this.api.get<Json[]>(`/api/heartbeat-runs/${run.id}/events?afterSeq=${cursor.seq}&limit=${RUN_EVENT_PAGE}`, 5_000).catch(() => null);
+      if (!events?.length) break;
+      for (const event of events) {
+        if (typeof event.seq === "number" && event.seq > cursor.seq) cursor.seq = event.seq;
+        cursor.lastAt = latestIso([cursor.lastAt, event.createdAt]);
+      }
+      if (events.length < RUN_EVENT_PAGE) break;
+    }
+    this.runEventCursors.set(run.id, cursor);
+    return { ...run, lastEvidenceAt: latestIso([run.lastEvidenceAt, cursor.lastAt]) };
+  }
+
   private async sample(now: number): Promise<TaskSample> {
     const serverReady = this.supervisor.serverReady && !this.supervisor.faultInProgress;
     try {
@@ -268,7 +314,7 @@ export class TaskObserver {
         interruption: toInterruption(issue.interruption), activeRecoveryAction: Boolean(issue.activeRecoveryAction),
         recoveryOwner: issue.activeRecoveryAction?.ownerType ?? null,
         executionBlocker: Boolean(issue.executionBlocker), scheduledRetry: Boolean(issue.scheduledRetry),
-        runs: (runs ?? []).map(toRunSample) };
+        runs: await Promise.all((runs ?? []).map(toRunSample).map(run => this.runEvidence(run))) };
     } catch {
       return { at: now, reachable: false, serverReady: false };
     }
@@ -355,8 +401,12 @@ export class TaskObserver {
     const snapshotPath = this.record.preFaultWorkspacePath ?? workspacePath;
     if (snapshotPath && this.record.preFaultFiles) {
       if (workspacePath && snapshotPath !== workspacePath) this.record.workspaceMovedTo = workspacePath;
-      const present = new Set(await listWorkspaceFiles(snapshotPath).catch(() => []));
-      this.record.lostFiles = this.record.preFaultFiles.filter(file => !present.has(file));
+      try {
+        const present = new Set(await listWorkspaceFiles(snapshotPath));
+        this.record.lostFiles = this.record.preFaultFiles.filter(file => !present.has(file));
+      } catch (error) {
+        this.record.restSnapshotError = error instanceof Error ? error.message : String(error);
+      }
     }
     const files: Record<string, string | null> = {};
     const commands: OracleArtifacts["commands"] = {};

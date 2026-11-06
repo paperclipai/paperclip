@@ -1,16 +1,18 @@
+import { readFileSync } from "node:fs";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { isSocketTypeOfServiceRace, type ChaosApi } from "./api.js";
 import { parseCommand } from "./config.js";
-import { QUEUED_TRIGGER_MAX_EMPTY_SAMPLES, TaskObserver, TRIGGER_LATE_MS } from "./observer.js";
+import { gradeR5 } from "./grader.js";
+import { latestIso, QUEUED_TRIGGER_MAX_EMPTY_SAMPLES, TaskObserver, TRIGGER_LATE_MS } from "./observer.js";
 import { observedFaultSchedule, planTasks, taskFaultSchedule, TRIGGER_DELAY_RANGE_MS } from "./scheduler.js";
 import type { ChaosLab } from "./seed.js";
 import { crashLoopShouldFire } from "./supervisor.js";
 import { Timeline } from "./timeline.js";
 import { ledgerLine } from "./ledger.js";
-import type { TaskGrade, TaskPlan, TaskRecord, WaveOptions, WavePlan } from "./types.js";
+import type { TaskGrade, TaskPlan, TaskRecord, TaskSample, WaveOptions, WavePlan } from "./types.js";
 
 process.env.RESTART_CHAOS_QUIET = "1";
 const lab: ChaosLab = { companyId: "c1", environmentId: "e1", projectId: "p1", fixtureRepositoryPath: "/tmp/none",
@@ -263,6 +265,66 @@ describe("pre-fault files", () => {
       await rm(before, { recursive: true, force: true });
       await rm(after, { recursive: true, force: true });
     }
+  });
+});
+
+describe("dispatch checks", () => {
+  it("confirmTrigger rechecks a queued run right before the kill", async () => {
+    const state = { runs: [{ runId: "r1", status: "queued" }] as Json[], issue: { id: "i1", status: "todo" } };
+    const observer = new TaskObserver({ ...base, trigger: "queued", triggerDelayMs: 0 }, scriptedApi(state), lab, new Timeline(null), ready);
+    await observer.launch();
+    const start = observer.record.createdAt!;
+    await observer.poll(start + 10);
+    const due = observer.faultDue(start + 10)!;
+    expect(await observer.confirmTrigger(due, start + 20)).toBe(true);
+    state.runs = [{ runId: "r1", status: "running", startedAt: new Date().toISOString() }];
+    expect(await observer.confirmTrigger(due, start + 30)).toBe(false);
+    expect(observer.record.triggerMissed).toEqual(["queued"]);
+    expect(await observer.confirmTrigger({ kind: "K1", holdMs: 0, atMs: 0 }, start)).toBe(true);
+  });
+
+  it("records an unreadable pre-fault workspace at rest instead of reporting every file lost", async () => {
+    const before = await mkdtemp(path.join(os.tmpdir(), "restart-chaos-gone-"));
+    await writeFile(path.join(before, "a.txt"), "x");
+    const state = { runs: [] as Json[], issue: { id: "i1", status: "in_progress", currentExecutionWorkspace: { cwd: before } } as Json };
+    const observer = new TaskObserver({ ...base, workload: "B5" }, scriptedApi(state), lab, new Timeline(null), ready);
+    await observer.launch();
+    await observer.poll(observer.record.createdAt! + 10);
+    await observer.snapshotBeforeFault();
+    await rm(before, { recursive: true, force: true });
+    state.issue = { id: "i1", status: "done" };
+    await observer.collectArtifacts();
+    expect(observer.record.lostFiles).toBeNull();
+    expect(observer.record.restSnapshotError).toMatch(/ENOENT/);
+  });
+});
+
+describe("R5 live evidence", () => {
+  const fixture = JSON.parse(readFileSync(path.join(import.meta.dirname, "fixtures/rc30-terminal-then-k2.json"), "utf8")) as { samples: TaskSample[] };
+  const record = (samples: TaskSample[]) => ({ samples } as unknown as TaskRecord);
+
+  it("fails a run that stays running with no event evidence after the server is ready (RC-30, w-20261106T190257-s707/t05)", () => {
+    expect(gradeR5(record(fixture.samples))).toMatchObject({ verdict: "fail", detail: expect.stringMatching(/^silent_dead_run b57890ae/) });
+  });
+
+  it("passes the same timeline while the run keeps producing events", () => {
+    const live = fixture.samples.map(sample => ({ ...sample,
+      runs: sample.runs?.map(run => ({ ...run, lastEvidenceAt: new Date(sample.at - 30_000).toISOString() })) }));
+    expect(gradeR5(record(live)).verdict).toBe("pass");
+  });
+
+  it("counts only time since the server became ready", () => {
+    const start = Date.parse("2026-11-06T10:00:00Z");
+    const run = { id: "r1", status: "running", createdAt: null, startedAt: new Date(start - 600_000).toISOString(), finishedAt: null,
+      errorCode: null, retryOfRunId: null, wakeCommentIds: [], livenessState: null, lastEvidenceAt: null };
+    const sample = (at: number, ready = true): TaskSample => ({ at, reachable: ready, serverReady: ready, issueStatus: "in_progress", runs: [run] });
+    expect(gradeR5(record([sample(start, false), sample(start + 1_000), sample(start + 120_000)])).verdict).toBe("pass");
+    expect(gradeR5(record([sample(start, false), sample(start + 1_000), sample(start + 200_000)])).verdict).toBe("fail");
+  });
+
+  it("keeps the latest evidence timestamp", () => {
+    expect(latestIso([null, "2026-11-06T10:00:00Z", "2026-11-06T09:00:00Z", "bad"])).toBe("2026-11-06T10:00:00.000Z");
+    expect(latestIso([undefined])).toBeNull();
   });
 });
 

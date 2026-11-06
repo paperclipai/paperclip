@@ -85,6 +85,7 @@ export interface RunSample {
   retryOfRunId: string | null;
   wakeCommentIds: string[];
   livenessState: string | null;
+  lastEvidenceAt?: string | null;
 }
 
 export interface InterruptionSample {
@@ -182,6 +183,7 @@ export interface TaskRecord {
   preFaultFiles: string[] | null;
   preFaultWorkspacePath?: string;
   lastFaultAt?: number;
+  restSnapshotError?: string;
   priorRetries?: RetryAttempt[];
   workspaceMovedTo?: string;
   /** Set when the pre-fault snapshot could not read the workspace; R2 then fails visibly. */
