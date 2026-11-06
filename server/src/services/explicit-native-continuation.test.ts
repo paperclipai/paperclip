@@ -562,7 +562,8 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
       payload: { issueId: f.issueId,
         ...(kind === "comment" ? { commentId: f.commentId } : {
           mutation: "interaction", interactionId: interaction!.id, interactionStatus: "accepted" }),
-        _paperclipWakeContext: { forceFreshSession: kind !== "ordinary_response" },
+        _paperclipWakeContext: kind === "comment" ? { wakeCommentIds: [f.commentId] }
+          : { forceFreshSession: kind !== "ordinary_response" },
         queuedCommentInterrupt: { actorId: "board", requestedAt: "2026-09-11T09:30:00Z",
           targetRunId: kind === "wrong_target" ? randomUUID() : f.sourceRunId },
       },
