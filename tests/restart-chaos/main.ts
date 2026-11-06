@@ -125,6 +125,18 @@ async function main(): Promise<number> {
     harnessError ??= error;
     interrupted = true;
   });
+  // Spend is read once per wave: after the tasks, or during cleanup when the wave stopped early.
+  let spendTarget: { api: ChaosApi; companyId: string } | null = null;
+  let spendRecorded = false;
+  const recordWaveSpend = async () => {
+    if (!spendTarget || spendRecorded) return;
+    spendRecorded = true;
+    // Each wave owns its company, so all-time spend is exactly this wave, even across a month boundary.
+    const spend = await spendTarget.api.get<Record<string, unknown>>(`/api/companies/${spendTarget.companyId}/costs/summary?period=all`)
+      .catch(error => ({ error: String(error) }));
+    timeline.add("wave_spend", { spend });
+    console.info(`Wave spend: ${JSON.stringify(spend)}`);
+  };
   let faultFailures = 0;
   let faultsQueued = 0;
   try {
@@ -132,11 +144,12 @@ async function main(): Promise<number> {
     const api = new ChaosApi(supervisor.baseUrl);
     const lab = await seedChaosLab({ api, env: plan.options.env, daytonaImage: plan.options.daytonaImage, daytonaCpu: plan.options.daytonaCpu,
       adapters: [...new Set(plan.tasks.map(task => task.adapter))],
-      concurrency: plan.options.concurrency, budgetCents: plan.options.budgetCents,
+      concurrency: plan.options.concurrency, budgetCents: plan.options.budgetCents, masks: plan.options.masks,
       fixtureRoot: path.join(supervisor.paths.temporaryRoot, "fixtures"), waveId: plan.waveId, timeline,
       onEnvironment: owned => {
         sweeper = new DaytonaWaveSweeper({ apiKey: process.env.DAYTONA_API_KEY!, companyId: owned.companyId, environmentId: owned.environmentId, api });
       } });
+    spendTarget = { api, companyId: lab.companyId };
     // The instance root holds the secrets master key and the database: oracle code may not read it.
     const protectedRoots = [os.homedir(), supervisor.paths.temporaryRoot, resultsRoot];
     const observers = plan.tasks.map(task => new TaskObserver(task, api, lab, timeline, supervisor, protectedRoots));
@@ -193,6 +206,7 @@ async function main(): Promise<number> {
     // R6: let finalizers settle, then sweep for anything still pending.
     const quietFor = Date.now() - lastDoneAt;
     if (quietFor < QUIET_BEFORE_SWEEP_MS) await delay(QUIET_BEFORE_SWEEP_MS - quietFor);
+    await recordWaveSpend();
     timeline.add("wave_sweep", {});
     if (sweeper) {
       sandboxSweep = await (sweeper as DaytonaWaveSweeper).sweep();
@@ -238,6 +252,8 @@ async function main(): Promise<number> {
     harnessError = error;
     timeline.add("harness_error", { error: error instanceof Error ? error.stack ?? error.message : String(error) });
   } finally {
+    // Best effort for an interrupted or failed wave; the server may already be down.
+    if (supervisor.serverReady) await recordWaveSpend().catch(() => undefined);
     // A failure here (for example writing the report) must not skip stopping the controller and Postgres.
     try { if (sweeper) try {
       const owned = sweeper as DaytonaWaveSweeper;

@@ -1,3 +1,4 @@
+import { isRetainedWorkspaceWorkerStopProof } from "./native-runtime/native-workspace-platform-proof.js";
 import { isPreDispatchReviewWait } from "./pre-dispatch-review-wait.js";
 import { createHash } from "node:crypto";
 import { and, eq, inArray, isNotNull, isNull, lte, or, sql } from "drizzle-orm";
@@ -88,8 +89,9 @@ async function hasSettledFailedPreparationEvidence(db: Db, run: Run, historicalR
       "lastOutputAt", "lastOutputStream", "lastOutputBytes"].includes(key)) &&
     !(emptyLog && ["logStore", "logRef", "logBytes", "logSha256", "stdoutExcerpt", "stderrExcerpt"].includes(key)) && value !== null)
     || !hasOnlyPreparationAccountingContext(source.usageJson, run.issueId ?? run.contextSnapshot?.issueId)
-    || Object.keys(run.runnerProfileJson ?? {}).some(key => !["adapterDispatch", "remoteWorkspace",
-      "chatControlRecoveryAdmission"].includes(key))
+    || Object.entries(run.runnerProfileJson ?? {}).some(([key, value]) => !["adapterDispatch", "remoteWorkspace",
+      "chatControlRecoveryAdmission"].includes(key) && !(key === "nativeWorkspaceOwnerStopProof"
+        && isRetainedWorkspaceWorkerStopProof(value, run.id)))
     || run.resultJson?.stopReason !== "adapter_failed"
     || Object.keys(run.resultJson).some(key => !["stopReason", "timeoutFired", "timeoutSource", "executionRecovery",
       "timeoutConfigured", "effectiveTimeoutSec", "systemRecoveryAdoption", "workspaceRestoreFailure",

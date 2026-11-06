@@ -17,7 +17,7 @@ import { mkdtemp, realpath, rm, access, readFile, writeFile, stat } from "node:f
 import os from "node:os";
 import path from "node:path";
 import { and, eq, sql } from "drizzle-orm";
-import { createDb, companies, agents, agentTaskSessions, heartbeatRuns, companyMemberships, connectionGrants, toolApplications, connectionGrantDelegations, connectionGrantMembers, toolConnections, toolConnectionInstalls, aiConnectionDefaults, aiProviderDefaults, adapterAuthSessions, environments, plugins, issues, issueThreadInteractions, issueRecoveryActions, connectionIntentDeliveries, agentWakeupRequests, companySecrets, companySecretVersions, userSecretDefinitions, principalPermissionGrants } from "@paperclipai/db";
+import { createDb, type Db, companies, agents, agentTaskSessions, heartbeatRuns, companyMemberships, connectionGrants, toolApplications, connectionGrantDelegations, connectionGrantMembers, toolConnections, toolConnectionInstalls, aiConnectionDefaults, aiProviderDefaults, adapterAuthSessions, environments, plugins, issues, issueThreadInteractions, issueRecoveryActions, connectionIntentDeliveries, agentWakeupRequests, companySecrets, companySecretVersions, userSecretDefinitions, principalPermissionGrants } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "@paperclipai/db/test-embedded-postgres";
 import { fetchCompanyQuotaWindows } from "../services/quota-windows.js";
 import { quotaCredentialRecoveryPath, quotaCredentialRecovery, quotaCredentialHash } from "../services/quota-credential-recovery.js";
@@ -2212,6 +2212,33 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
     expect(grant.credentialSecretRefs[0].secretId).toBe(secret.id);
     const [agent] = await db.select().from(agents).where(eq(agents.id, agentId));
     expect(agent.runtimeConfig.aiConnection).toBeUndefined();
+  });
+  it("keeps account summaries ordered across sequential scans and repeat migration", async () => {
+    const orderedCompanyId = randomUUID(), userId = "stable-list-owner";
+    await db.insert(companies).values({ id: orderedCompanyId, name: "Stable account list", issuePrefix: `O${orderedCompanyId.slice(0, 5)}` });
+    await db.insert(companyMemberships).values({ companyId: orderedCompanyId, principalId: userId, principalType: "user", status: "active", membershipRole: "member" });
+    const accounts = [];
+    for (const name of ["First account", "Second account", "Third account"]) {
+      accounts.push(await service.save(orderedCompanyId, userId, { provider: "anthropic", method: "api_key", ownership: "personal", name, apiKey: "fixture-stable-list", agentIds: [], allAgents: false }, "fixture-stable-list"));
+    }
+    const expected = accounts.map(({ connectionId: id, grantId }) => ({ id, grantId }))
+      .sort((a, b) => a.id.localeCompare(b.id) || a.grantId.localeCompare(b.grantId));
+    await db.transaction(async tx => {
+      await tx.execute(sql`SET LOCAL enable_indexscan = off`);
+      await tx.execute(sql`SET LOCAL enable_bitmapscan = off`);
+      await tx.execute(sql`SET LOCAL enable_hashjoin = off`);
+      await tx.execute(sql`SET LOCAL enable_mergejoin = off`);
+      for (const account of [...expected].reverse()) {
+        await tx.update(toolConnections).set({ name: sql`${toolConnections.name}` }).where(eq(toolConnections.id, account.id));
+        await tx.update(connectionGrants).set({ status: sql`${connectionGrants.status}` }).where(eq(connectionGrants.id, account.grantId));
+      }
+      const transactionalService = aiConnectionService(tx as unknown as Db);
+      const before = await transactionalService.list(orderedCompanyId, userId);
+      expect(before.map(({ id, grantId }) => ({ id, grantId }))).toEqual(expected);
+      const migration = await readFile(new URL("../../../packages/db/src/migrations/0276_hard_mandroid.sql", import.meta.url), "utf8");
+      for (const statement of migration.split("--> statement-breakpoint").filter(value => value.trim())) await tx.execute(sql.raw(statement));
+      expect(await transactionalService.list(orderedCompanyId, userId)).toEqual(before);
+    });
   });
   it("runs two Claude subscription executions for the same grant at the same time", async () => {
     // Claude writes no auth file back to the grant, so two runs share no
