@@ -2086,8 +2086,14 @@ function createAuthorizationService(db: Db | DbTransaction, readSnapshot?: ReadA
         if (input.resource.readOnly || input.action === "connections:read") {
           return allow({ action: input.action, reason: "allow_company_member", explanation: "Management metadata is visible to active company members, subject to resource visibility." });
         }
+        // Removing a connection revokes access. Company administrators retain
+        // this authority even when configuration grants cover selected accounts.
+        if (input.action === "connections:remove" && ["owner", "admin"].includes(membership.membershipRole ?? "")) {
+          return allow({ action: input.action, reason: "allow_role_default",
+            explanation: "Company owners and administrators can remove any connection in their company." });
+        }
         if (input.resource.selfServiceUserId === input.actor.userId &&
-            ["connections:read", "connections:configure", "connections:profiles"].includes(input.action)) {
+            ["connections:read", "connections:configure", "connections:remove", "connections:profiles"].includes(input.action)) {
           return allow({ action: input.action, reason: "allow_self", explanation: "Allowed by personal account or connection creator authority." });
         }
         if (input.action === "connections:profiles" && input.resource.selfServiceAgentInstalls) {

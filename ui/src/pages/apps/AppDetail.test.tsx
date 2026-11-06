@@ -583,6 +583,17 @@ describe("AppDetail", () => {
     expect(container.querySelector('ul[aria-label="Connected Composio apps"]')?.textContent).toBe(`Notion${label}`);
   });
 
+  it.each([true, false])("uses removal authority independently of configuration access (canRemove=%s)", async (canRemove) => {
+    listConnectionGrantsMock.mockResolvedValue({ grants: [], capabilities: fullCapabilities({ canConfigure: false, canRemove }), currentUserId: "user-1", members: [] });
+    await renderAppDetail();
+    expect(container.textContent?.includes("Danger zone")).toBe(canRemove);
+    if (canRemove) {
+      const danger = Array.from(container.querySelectorAll("button")).find(button => button.textContent?.includes("Danger zone"))!;
+      await act(async () => danger.click());
+      expect(container.textContent).toContain("Remove app");
+    }
+  });
+
   it("does not request manager-only account inventory without configuration access", async () => {
     useComposioConnection();
     listConnectionGrantsMock.mockResolvedValue({ grants: [], capabilities: fullCapabilities({ canConfigure: false }), currentUserId: "user-1", members: [] });
@@ -976,7 +987,7 @@ describe("AppDetail", () => {
     expect(container.textContent).toContain("Anyone in your company can use this connection");
     expect(container.textContent).not.toContain("workspace authorization");
     expect(findButton("Reconnect")).toBeUndefined();
-    expect(findButton("Danger zone")).toBeUndefined();
+    expect(findButton("Danger zone")).toBeDefined();
   });
 
   it("renders searchable action groups with three-way permission toggles", async () => {

@@ -217,6 +217,16 @@ Inbox discovery searches and Blocked hide unrelated automatic tasks unless the
 checkbox is checked. The checkbox does not subscribe a person to automatic work.
 Source feeds and project task lists retain their existing access rules.
 
+### Connection removal
+
+Company owners and admins can remove any connection in their company, including
+another person's personal account. Removal has its own server capability, separate
+from configuration and reconnect access. Scoped configuration grants do not prevent
+an admin from revoking a connection. Removal does not authorize sign-in as the account
+owner, and it preserves company boundaries and the existing credential cleanup and
+audit trail. Other members need creator authority or a connection-management grant;
+viewers cannot remove connections.
+
 ### Company Skills and Policy
 
 Company skills are shared operating capabilities, not privileged objects by default. Every authenticated agent in a company can create, import, install, edit, update, test, reset, and remove that company's skills unless the company has configured an explicit restriction.

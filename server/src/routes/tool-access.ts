@@ -695,6 +695,7 @@ function connectorEnrollmentPrincipal(req: Request): string {
     }
     return {
       canConfigure,
+      canRemove: (await management.capability(req.actor, "connections:remove", { ...resource, operation: "remove" }, { readContext: connectionRequestContext(req) })).allowed,
       management: manage,
       usage,
       canCreateOrganizationGrant: canConfigure,
@@ -2210,10 +2211,9 @@ function connectorEnrollmentPrincipal(req: Request): string {
     res.json(connection);
   });
 
-  router.delete("/tool-connections/:connectionId", managementGuard("connections:configure", "DELETE /tool-connections/:connectionId", { personal: true }), async (req, res) => {
+  router.delete("/tool-connections/:connectionId", managementGuard("connections:remove", "DELETE /tool-connections/:connectionId", { personal: true }), async (req, res) => {
     const existing = await getAccessibleResource(req, res, svc.getConnection(req.params.connectionId as string), "Tool connection not found");
     if (!existing) return;
-    await assertToolConnectionConfigureAccess(req, existing);
     if (aiConnectionRouterPluginKey(existing)) throw badRequest("Remove this connection pool through its revision-checked pool settings.");
     const applicationBefore = await svc.getApplication(existing.applicationId);
     const { connection, removal } = await svc.archiveConnection(

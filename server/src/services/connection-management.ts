@@ -199,7 +199,8 @@ export function connectionManagementService(db: Db) {
         const [pool] = await db.select().from(aiConnectionPools).where(eq(aiConnectionPools.id, connection.id));
         for (const member of pool?.config.members ?? []) referencedConnections.push(member.binding.connectionId);
       }
-      if (responsibleUserId && (connection.credentialPolicy === "per_user" || resource.selfServiceAgentInstalls || resource.operation.includes("/grants/"))) {
+      // Consent to use a personal identity does not authorize removal of the connection.
+      if (action !== "connections:remove" && responsibleUserId && (connection.credentialPolicy === "per_user" || resource.selfServiceAgentInstalls || resource.operation.includes("/grants/"))) {
         const [ownGrant] = await db.select({ id: connectionGrants.id }).from(connectionGrants).where(and(
           eq(connectionGrants.connectionId, connection.id), eq(connectionGrants.status, "active"),
           eq(connectionGrants.kind, "user"), eq(connectionGrants.subjectUserId, responsibleUserId),
