@@ -1,6 +1,7 @@
 import { useQueryView } from "@/components/QueryView";
 import type { AgentRunner, AgentRunnerChoice } from "@paperclipai/shared";
 import { needsClaudeSetupQualification, qualifyClaudeSetup } from "../lib/qualify-claude-setup";
+import { runOnboardingConnectionTest } from "../lib/onboarding-connection-test";
 import { agentHarnessType } from "@paperclipai/shared";
 import { adaptersApi, type AdapterInfo } from "../api/adapters";
 import { healthApi } from "@/api/health";
@@ -105,7 +106,7 @@ import { useAdapterCapabilities } from "../adapters/use-adapter-capabilities";
 import { getAdapterDisplay } from "../adapters/adapter-display-registry";
 import { buildFixedClaudeOAuthBinding, CLAUDE_OAUTH_TOKEN_ENV_KEY } from "./environment-variables-editor/model";
 import { defaultCreateValues } from "./agent-config-defaults";
-import { restoreOnboardingState } from "../lib/onboarding-state";
+import { onboardingDraftStorage, restoreOnboardingState } from "../lib/onboarding-state";
 import {
   buildOnboardingIssuePayload,
   buildOnboardingProjectPayload,
@@ -276,50 +277,8 @@ function ModelSourceMark({
   return <img src={brand} alt="" className="size-full" />;
 }
 
-// Exported so tests write/read the exact key the component uses, instead of
-// duplicating the literal and silently drifting from it if it's ever renamed.
-export const ONBOARDING_STORAGE_KEY = "paperclip-onboarding-state";
+export { ONBOARDING_STORAGE_KEY } from "../lib/onboarding-state";
 const DEFAULT_TASK_TITLE = "Paperclip onboarding";
-/**
- * The onboarding draft in `localStorage`, via a browser that is allowed to say
- * no.
- *
- * Storage access throws outright where a browser denies it — Safari's private
- * mode, a blocked third-party context — and every call site here sits in a
- * render, an effect, or a close handler, so an escaping exception takes down
- * something the customer was using. Losing the ability to resume onboarding is
- * a far smaller failure than the wizard tearing down mid-answer, or refusing
- * to close.
- *
- * Routed through one object on purpose. Guarding these one at a time is how
- * three of the four call sites ended up unguarded while the fourth looked
- * fixed: the read, the stale-blob cleanup, the persist effect, and `reset()`
- * all have the same failure and want the same answer.
- */
-const onboardingDraftStorage = {
-  read(): string | null {
-    try {
-      return window.localStorage.getItem(ONBOARDING_STORAGE_KEY);
-    } catch {
-      return null;
-    }
-  },
-  write(value: string): void {
-    try {
-      window.localStorage.setItem(ONBOARDING_STORAGE_KEY, value);
-    } catch {
-      // Storage unavailable: the draft is simply not resumable this session.
-    }
-  },
-  clear(): void {
-    try {
-      window.localStorage.removeItem(ONBOARDING_STORAGE_KEY);
-    } catch {
-      // Nothing to do. A draft that cannot be cleared is re-rejected on the
-      // next load by the same ownership check that rejected it here.
-    }
-  },
-};
 
 const INCOMPLETE_ONBOARDING_STATE_MESSAGE =
   "Onboarding state is incomplete. Please restart onboarding and try again.";
@@ -1565,7 +1524,7 @@ function OnboardingWizardInner({
       : (connectPhase === "ready" || connectPhase === "waiting") && submitLoginCode
       ? { label: "Submit code", icon: "arrow", disabled: false }
       : connectPhase === "waiting"
-      ? { label: "Waiting for code…", icon: "spinner", disabled: true }
+      ? { label: adapterType === "codex_local" ? "Waiting for auth…" : "Waiting for code…", icon: "spinner", disabled: true }
       : connectPhase === "connecting"
         ? { label: "Connecting", icon: "spinner", disabled: true }
         : connectPhase === "ready"
@@ -2165,128 +2124,132 @@ function OnboardingWizardInner({
       return null;
     }
     const selection = adapterSetupSelectionRef.current;
-    const testIsCurrent = () => isCurrent() && adapterSetupSelectionRef.current === selection;
+    const selectionIsCurrent = () => isCurrent() && adapterSetupSelectionRef.current === selection;
     adapterEnvErrorSelectionRef.current = null;
     setAdapterEnvLoading(true);
     setAdapterEnvError(null);
     try {
-      let environmentList: Environment[];
-      let settings: InstanceSettings;
-      let managedSandboxOnly: boolean;
-      try {
-        const [list, generalSettings, experimentalSettings] = await Promise.all([
-          queryClient.ensureQueryData({
-            queryKey: queryKeys.environments.list(createdCompanyId),
-            queryFn: () => environmentsApi.list(createdCompanyId),
-          }),
-          queryClient.ensureQueryData({
-            queryKey: queryKeys.instance.settings,
-            queryFn: () => instanceSettingsApi.get(),
-          }),
-          queryClient.ensureQueryData({
-            queryKey: queryKeys.instance.experimentalSettings,
-            queryFn: () => instanceSettingsApi.getExperimental(),
-          }),
-        ]);
-        environmentList = list;
-        settings = generalSettings;
-        managedSandboxOnly = experimentalSettings?.enableManagedSandboxOnly === true;
-      } catch {
+      return await runOnboardingConnectionTest(async signal => {
+        const testIsCurrent = () => selectionIsCurrent() && !signal.aborted;
+        let environmentList: Environment[];
+        let settings: InstanceSettings;
+        let managedSandboxOnly: boolean;
+        try {
+          const [list, generalSettings, experimentalSettings] = await Promise.all([
+            queryClient.ensureQueryData({
+              queryKey: queryKeys.environments.list(createdCompanyId),
+              queryFn: () => environmentsApi.list(createdCompanyId),
+            }),
+            queryClient.ensureQueryData({
+              queryKey: queryKeys.instance.settings,
+              queryFn: () => instanceSettingsApi.get(),
+            }),
+            queryClient.ensureQueryData({
+              queryKey: queryKeys.instance.experimentalSettings,
+              queryFn: () => instanceSettingsApi.getExperimental(),
+            }),
+          ]);
+          environmentList = list;
+          settings = generalSettings;
+          managedSandboxOnly = experimentalSettings?.enableManagedSandboxOnly === true;
+        } catch {
+          if (!testIsCurrent()) return null;
+          setAdapterEnvError(
+            "Could not load environment settings to determine which environment to test in. Retry the test.",
+          );
+          return null;
+        }
+        // Mirror the server run-time resolution, including the managed-sandbox-only
+        // redirect: when the resolution lands on the local environment and the
+        // policy is on, probe the managed sandbox the real run uses instead. The
+        // resolver throws when no managed sandbox is available, which the outer
+        // catch surfaces as a fail-closed error rather than a local host probe.
+        const environmentId = resolveAdapterTestEnvironmentId({
+          agentDefaultEnvironmentId: restoredSetup?.companyId === createdCompanyId ? restoredSetup.defaultEnvironmentId : null,
+          instanceDefaultEnvironmentId: settings?.defaultEnvironmentId ?? null,
+          localDefaultEnvironmentId: resolveLocalDefaultEnvironmentId(environmentList),
+          managedSandboxOnly,
+          managedSandboxEnvironmentId: resolveManagedSandboxEnvironmentId(environmentList),
+          // The policy hides the local environment, so an instance default that
+          // still points at the hidden local row names no visible environment.
+          // Pass the visible ids so the resolver redirects that stale local
+          // default to the managed sandbox instead of sending the hidden local id.
+          visibleEnvironmentIds: environmentList.map((environment) => environment.id),
+        });
         if (!testIsCurrent()) return null;
-        setAdapterEnvError(
-          "Could not load environment settings to determine which environment to test in. Retry the test.",
+        const selectedEnvironment = environmentList.find(environment => environment.id === environmentId);
+        const selectedConfig = selectedEnvironment?.config;
+        if (!createdAgentId && adapterType === "codex_local" && runner === "auto"
+          && selectedEnvironment?.driver === "sandbox" && typeof selectedConfig?.image === "string"
+          && /^[^\s@]+@sha256:[a-f0-9]{64}$/.test(selectedConfig.image)
+          && !selectedConfig.snapshot && !selectedConfig.template && !selectedConfig.templateRef) {
+          const availabilityKey = queryKeys.adapters.availability(createdCompanyId, environmentId);
+          const adapters = await queryClient.fetchQuery({ queryKey: availabilityKey, staleTime: 0,
+            queryFn: () => adaptersApi.list({ companyId: createdCompanyId, environmentId }, { signal }) });
+          if (!testIsCurrent()) return null;
+          const codex = adapters.find(adapter => adapter.type === "codex_local");
+          const native = adapters.find(adapter => adapter.type === "paperclip_runner");
+          if (!codex || (codex.defaultRunner !== "paperclip" && codex.defaultRunner !== "legacy")
+            || !codex.supportedRunners?.includes(codex.defaultRunner)) {
+            throw new Error("Could not confirm Codex runner availability for this environment. Retry setup.");
+          }
+          if (codex.defaultRunner !== "paperclip" && !codex?.disabled && !codex?.overriddenBuiltin
+            && !native?.disabled && !native?.overriddenBuiltin) {
+            const probe = await environmentsApi.probe(environmentId!, createdCompanyId, { signal });
+            if (!testIsCurrent()) return null;
+            if (probe.ok !== true || probe.details?.platformQualificationRecorded !== true
+              || typeof probe.details.leaseId !== "string" || !probe.details.leaseId) {
+              throw new Error(typeof probe.details?.platformQualificationDiagnostic === "string"
+                ? probe.details.platformQualificationDiagnostic
+                : probe.summary || "The environment's platform qualification could not be confirmed. Retry the connection probe.");
+            }
+            const refreshed = await queryClient.fetchQuery({ queryKey: availabilityKey, staleTime: 0,
+              queryFn: () => adaptersApi.list({ companyId: createdCompanyId, environmentId }, { signal }) });
+            if (!testIsCurrent()) return null;
+            const refreshedCodex = refreshed.find(adapter => adapter.type === "codex_local");
+            const defaultRunner = refreshedCodex?.defaultRunner;
+            if ((defaultRunner !== "paperclip" && defaultRunner !== "legacy")
+              || !refreshedCodex?.supportedRunners?.includes(defaultRunner)) {
+              throw new Error("Could not confirm the environment's default runner. Retry setup.");
+            }
+          }
+        }
+        if (!testIsCurrent()) return null;
+        const selection = { adapterType, runner, savedAgentId: createdAgentId,
+          environment: environmentList.find(environment => environment.id === environmentId) };
+        const qualified = await qualifyClaudeSetup({ ...selection,
+          readAdapters: () => adaptersApi.list({ companyId: createdCompanyId, environmentId }, { signal }),
+          probeEnvironment: () => environmentsApi.probe(environmentId!, createdCompanyId, { signal }),
+          isCurrent: testIsCurrent,
+        });
+        if (!testIsCurrent() || (needsClaudeSetupQualification(selection) && !qualified)) return null;
+        let testedConfig = adapterConfigOverride ?? buildAdapterConfig();
+        if (qualified) {
+          testedConfig = buildAdapterConfig(true, qualified.runner);
+          if (appliedStoredClaudeLoginBinding) testedConfig.env = {
+            ...(isEnvRecord(testedConfig.env) ? testedConfig.env : {}), ...buildFixedClaudeOAuthBinding(),
+          };
+          onQualifiedConfig?.(testedConfig, qualified.adapters, environmentId);
+        }
+        const result = await agentsApi.testEnvironment(
+          createdCompanyId,
+          adapterType,
+          {
+            adapterConfig: testedConfig,
+            ...(restoredSetup?.companyId === createdCompanyId ? { agentId: restoredSetup.id } : {}),
+            ...(["codex_local", "claude_local", "opencode_local", "pi_local"].includes(adapterType) && runner !== "auto" ? { runner } : {}),
+            ...(managedBindingForStep() ? { aiConnection: managedBindingForStep() } : {}),
+            environmentId,
+          },
+          { signal },
         );
-        return null;
-      }
-      // Mirror the server run-time resolution, including the managed-sandbox-only
-      // redirect: when the resolution lands on the local environment and the
-      // policy is on, probe the managed sandbox the real run uses instead. The
-      // resolver throws when no managed sandbox is available, which the outer
-      // catch surfaces as a fail-closed error rather than a local host probe.
-      const environmentId = resolveAdapterTestEnvironmentId({
-        agentDefaultEnvironmentId: restoredSetup?.companyId === createdCompanyId ? restoredSetup.defaultEnvironmentId : null,
-        instanceDefaultEnvironmentId: settings?.defaultEnvironmentId ?? null,
-        localDefaultEnvironmentId: resolveLocalDefaultEnvironmentId(environmentList),
-        managedSandboxOnly,
-        managedSandboxEnvironmentId: resolveManagedSandboxEnvironmentId(environmentList),
-        // The policy hides the local environment, so an instance default that
-        // still points at the hidden local row names no visible environment.
-        // Pass the visible ids so the resolver redirects that stale local
-        // default to the managed sandbox instead of sending the hidden local id.
-        visibleEnvironmentIds: environmentList.map((environment) => environment.id),
-      });
-      if (!testIsCurrent()) return null;
-      const selectedEnvironment = environmentList.find(environment => environment.id === environmentId);
-      const selectedConfig = selectedEnvironment?.config;
-      if (!createdAgentId && adapterType === "codex_local" && runner === "auto"
-        && selectedEnvironment?.driver === "sandbox" && typeof selectedConfig?.image === "string"
-        && /^[^\s@]+@sha256:[a-f0-9]{64}$/.test(selectedConfig.image)
-        && !selectedConfig.snapshot && !selectedConfig.template && !selectedConfig.templateRef) {
-        const availabilityKey = queryKeys.adapters.availability(createdCompanyId, environmentId);
-        const adapters = await queryClient.fetchQuery({ queryKey: availabilityKey, staleTime: 0,
-          queryFn: () => adaptersApi.list({ companyId: createdCompanyId, environmentId }) });
         if (!testIsCurrent()) return null;
-        const codex = adapters.find(adapter => adapter.type === "codex_local");
-        const native = adapters.find(adapter => adapter.type === "paperclip_runner");
-        if (!codex || (codex.defaultRunner !== "paperclip" && codex.defaultRunner !== "legacy")
-          || !codex.supportedRunners?.includes(codex.defaultRunner)) {
-          throw new Error("Could not confirm Codex runner availability for this environment. Retry setup.");
-        }
-        if (codex.defaultRunner !== "paperclip" && !codex?.disabled && !codex?.overriddenBuiltin
-          && !native?.disabled && !native?.overriddenBuiltin) {
-          const probe = await environmentsApi.probe(environmentId!, createdCompanyId);
-          if (!testIsCurrent()) return null;
-          if (probe.ok !== true || probe.details?.platformQualificationRecorded !== true
-            || typeof probe.details.leaseId !== "string" || !probe.details.leaseId) {
-            throw new Error(typeof probe.details?.platformQualificationDiagnostic === "string"
-              ? probe.details.platformQualificationDiagnostic
-              : probe.summary || "The environment's platform qualification could not be confirmed. Retry the connection probe.");
-          }
-          const refreshed = await queryClient.fetchQuery({ queryKey: availabilityKey, staleTime: 0,
-            queryFn: () => adaptersApi.list({ companyId: createdCompanyId, environmentId }) });
-          if (!testIsCurrent()) return null;
-          const refreshedCodex = refreshed.find(adapter => adapter.type === "codex_local");
-          const defaultRunner = refreshedCodex?.defaultRunner;
-          if ((defaultRunner !== "paperclip" && defaultRunner !== "legacy")
-            || !refreshedCodex?.supportedRunners?.includes(defaultRunner)) {
-            throw new Error("Could not confirm the environment's default runner. Retry setup.");
-          }
-        }
-      }
-      if (!testIsCurrent()) return null;
-      const selection = { adapterType, runner, savedAgentId: createdAgentId,
-        environment: environmentList.find(environment => environment.id === environmentId) };
-      const qualified = await qualifyClaudeSetup({ ...selection,
-        readAdapters: () => adaptersApi.list({ companyId: createdCompanyId, environmentId }),
-        probeEnvironment: () => environmentsApi.probe(environmentId!, createdCompanyId),
-        isCurrent: testIsCurrent,
+        setAdapterEnvResult(result);
+        adapterEnvResultAppliedStoredLoginRef.current = appliedStoredClaudeLoginBinding;
+        return result;
       });
-      if (!testIsCurrent() || (needsClaudeSetupQualification(selection) && !qualified)) return null;
-      let testedConfig = adapterConfigOverride ?? buildAdapterConfig();
-      if (qualified) {
-        testedConfig = buildAdapterConfig(true, qualified.runner);
-        if (appliedStoredClaudeLoginBinding) testedConfig.env = {
-          ...(isEnvRecord(testedConfig.env) ? testedConfig.env : {}), ...buildFixedClaudeOAuthBinding(),
-        };
-        onQualifiedConfig?.(testedConfig, qualified.adapters, environmentId);
-      }
-      const result = await agentsApi.testEnvironment(
-        createdCompanyId,
-        adapterType,
-        {
-          adapterConfig: testedConfig,
-          ...(restoredSetup?.companyId === createdCompanyId ? { agentId: restoredSetup.id } : {}),
-          ...(["codex_local", "claude_local", "opencode_local", "pi_local"].includes(adapterType) && runner !== "auto" ? { runner } : {}),
-          ...(managedBindingForStep() ? { aiConnection: managedBindingForStep() } : {}),
-          environmentId,
-        }
-      );
-      if (!testIsCurrent()) return null;
-      setAdapterEnvResult(result);
-      adapterEnvResultAppliedStoredLoginRef.current = appliedStoredClaudeLoginBinding;
-      return result;
     } catch (err) {
-      if (!testIsCurrent()) return null;
+      if (!selectionIsCurrent()) return null;
       adapterEnvErrorSelectionRef.current = selection || null;
       setAdapterEnvError(
         err instanceof Error ? err.message : "Adapter environment test failed"
