@@ -1,5 +1,6 @@
 import pc from "picocolors";
 import type { Command } from "commander";
+import { readApiKeyFile } from "../../client/api-key-file.js";
 import { getStoredBoardCredential, loginBoardCli } from "../../client/board-auth.js";
 import { buildCliCommandLabel } from "../../client/command-label.js";
 import { readConfig } from "../../config/store.js";
@@ -24,7 +25,7 @@ export interface ResolvedClientContext {
   profileName: string;
   profile: ClientContextProfile;
   json: boolean;
-  authSource: "explicit" | "env" | "profile_env" | "stored_board" | "none";
+  authSource: "explicit" | "file" | "env" | "profile_env" | "stored_board" | "none";
 }
 
 export function addCommonClientOptions(command: Command, opts?: { includeCompany?: boolean }): Command {
@@ -167,9 +168,12 @@ export function inferContentTypeFromPath(filePath: string): string | undefined {
 function resolveApiKey(
   options: Pick<BaseClientOptions, "apiKey">,
   profile: ClientContextProfile,
-): { value: string | undefined; source: "explicit" | "env" | "profile_env" | "none" } {
+): { value: string | undefined; source: "explicit" | "file" | "env" | "profile_env" | "none" } {
   const optionValue = options.apiKey?.trim();
   if (optionValue) return { value: optionValue, source: "explicit" };
+
+  const credentialFile = process.env.PAPERCLIP_API_KEY_FILE;
+  if (credentialFile !== undefined) return { value: readApiKeyFile(credentialFile), source: "file" };
 
   const envValue = process.env.PAPERCLIP_API_KEY?.trim();
   if (envValue) return { value: envValue, source: "env" };
