@@ -24,6 +24,12 @@ it does not create another agent. A new API account selected in onboarding becom
 the user's provider default, so a previous subscription does not override that
 choice. A failed default selection can retry the saved account without creating
 another connection. Failed verification or saving keeps the user on Connect.
+Switching back to subscription explicitly selects the completed subscription
+account again. Browser sign-in uses its saved session result; local sign-in uses
+its saved account result. Reusing the entered API key selects that account again.
+An agent that already uses a connected account cannot switch to a legacy secret
+binding. Selecting one stays on Connect and directs the user to choose a connected
+API account or connect a new key. Unmanaged setup can still reuse saved secrets.
 
 New-agent Connect offers three persistent tiles: the provider's subscription,
 the provider's API key, and Advanced. All three stay visible while the selected

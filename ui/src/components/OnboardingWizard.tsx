@@ -738,7 +738,8 @@ function OnboardingWizardInner({
    * another copy of the same credential.
    */
   const apiKeySecretRef = useRef<{ key: string; companyId: string; envKey: string; grantId?: string; binding?: Awaited<ReturnType<typeof storeProviderApiKey>>["binding"]; aiConnection?: AiConnectionBinding } | null>(null);
-  const managedSubscriptionRef = useRef<{ companyId: string; binding: AiConnectionBinding } | null>(null);
+  const managedSubscriptionRef = useRef<{ companyId: string; binding: AiConnectionBinding; grantId?: string; sessionId?: string } | null>(null);
+  const selectedDefaultRef = useRef<{ companyId: string; provider: string; grantId: string } | null>(null);
   const managedProvider = aiProviderForAdapter(adapterType);
   const managedSubscriptionProvider = managedProvider === "anthropic" || managedProvider === "openai" || managedProvider === "xai" ? managedProvider : undefined;
   function managedBindingForStep(): AiConnectionBinding | undefined {
@@ -1985,16 +1986,17 @@ function OnboardingWizardInner({
     const envKey = apiKeyEnvKeyFor(adapterType);
     const stored = apiKeySecretRef.current?.key === key && apiKeySecretRef.current.companyId === companyId && apiKeySecretRef.current.envKey === envKey
       ? apiKeySecretRef.current : null;
-    if (stored?.binding || stored?.aiConnection) return true;
+    if (stored?.binding) return true;
     try {
       if (managedProvider) {
         const grantId = stored?.grantId ?? (await aiConnectionsApi.create(companyId, { provider: managedProvider, method: "api_key", name: `My ${CONNECT_SOURCE_NAMES[adapterType] ?? managedProvider} API`, ownership: "personal", apiKey: key, agentIds: [], allAgents: true })).grantId;
         apiKeySecretRef.current = { key, companyId, envKey, grantId };
         if (!isCurrent()) return false;
         await aiConnectionsApi.setDefault(companyId, grantId);
+        selectedDefaultRef.current = { companyId, provider: managedProvider, grantId };
+        void queryClient.invalidateQueries({ queryKey: ["ai-connections", companyId] });
         if (!isCurrent()) return false;
         apiKeySecretRef.current = { key, companyId, envKey, grantId, aiConnection: { provider: managedProvider, method: "api_key", mode: "responsible_user" } };
-        void queryClient.invalidateQueries({ queryKey: ["ai-connections", companyId] });
         return true;
       }
       const legacyStored = await storeProviderApiKey(companyId, envKey, key);
@@ -2008,6 +2010,35 @@ function OnboardingWizardInner({
       );
       return false;
     }
+  }
+
+  async function selectManagedSubscription(companyId: string, isCurrent: () => boolean) {
+    const binding = managedBindingForStep();
+    if (binding?.mode !== "responsible_user") return;
+    const cached = managedSubscriptionRef.current?.companyId === companyId
+      && managedSubscriptionRef.current.binding.provider === binding.provider ? managedSubscriptionRef.current : null;
+    let grantId = cached?.grantId;
+    if (!grantId && cached?.sessionId) grantId = (await aiConnectionsApi.loginResult(companyId, cached.sessionId)).grantId;
+    const visibleDefault = savedSubscription?.aiConnection?.mode === "responsible_user" && savedSubscription.id.startsWith("ai:")
+      ? savedSubscription.id.slice(3) : undefined;
+    grantId ??= visibleDefault;
+    if (!grantId) {
+      const accounts = await aiConnectionsApi.list(companyId);
+      if (!isCurrent()) return;
+      const subscriptions = accounts.connections.filter(account => account.provider === binding.provider && account.method === "subscription"
+        && account.ownership === "personal" && account.ownerUserId === accounts.currentUserId && account.status === "connected");
+      const selected = subscriptions.find(account => account.isDefault) ?? (subscriptions.length === 1 ? subscriptions[0] : undefined);
+      grantId = selected?.grantId;
+    }
+    if (!isCurrent()) return;
+    if (!grantId) throw new Error("Choose a subscription account in Connections, then retry setup.");
+    managedSubscriptionRef.current = { companyId, binding, grantId };
+    const lastDefault = selectedDefaultRef.current;
+    if (visibleDefault === grantId && (!lastDefault || lastDefault.companyId !== companyId
+      || lastDefault.provider !== binding.provider || lastDefault.grantId === grantId)) return;
+    await aiConnectionsApi.setDefault(companyId, grantId);
+    selectedDefaultRef.current = { companyId, provider: binding.provider, grantId };
+    void queryClient.invalidateQueries({ queryKey: ["ai-connections", companyId] });
   }
 
   function buildAdapterConfig(bindApiKey = false, setupRunner?: AgentRunner, existingAgent?: Agent): Record<string, unknown> {
@@ -2409,13 +2440,18 @@ function OnboardingWizardInner({
         if (!apiKeyStored || !isCurrent()) return;
       }
       if (credentialMode !== "api" && canUseLocalLogin && managedProvider && !managedBindingForStep() && !savedSubscription && !savedKeys.storedLogin.data) {
-        await localLogin.connect();
+        const account = await localLogin.connect();
         if (!isCurrent()) return;
-        managedSubscriptionRef.current = { companyId: createdCompanyId, binding: { provider: managedProvider, method: "subscription", mode: "responsible_user" } };
+        managedSubscriptionRef.current = { companyId: createdCompanyId, binding: { provider: managedProvider, method: "subscription", mode: "responsible_user" }, grantId: account.grantId };
       }
+      if (credentialMode === "subscription") await selectManagedSubscription(createdCompanyId, isCurrent);
+      if (!isCurrent()) return;
       const managedBinding = managedBindingForStep();
       const existingAgent = createdAgentId ? await agentsApi.get(createdAgentId, createdCompanyId) : undefined;
       if (!isCurrent()) return;
+      if (existingAgent?.runtimeConfig.aiConnection && credentialMode === "api" && selectedApiKey?.binding && !managedBinding) {
+        throw new Error("Choose a connected API account or Enter a new API key to replace this agent’s connected account.");
+      }
       const existingRunner = existingAgent && runner === "auto" && agentHarnessType(existingAgent.adapterType, existingAgent.adapterConfig) === adapterType
         ? agentRunner(existingAgent.adapterType) : undefined;
       const baseAdapterConfig = buildAdapterConfig(apiKeyStored, existingRunner, existingAgent);
@@ -3230,8 +3266,8 @@ function OnboardingWizardInner({
                             phaseBeforeSubmitRef.current === "ready" ? "ready" : "waiting",
                           );
                         }}
-                        onConnected={() => {
-                          if (managedSubscriptionProvider) managedSubscriptionRef.current = { companyId: createdCompanyId, binding: { provider: managedSubscriptionProvider, method: "subscription", mode: "responsible_user" } };
+                        onConnected={(sessionId) => {
+                          if (managedSubscriptionProvider) managedSubscriptionRef.current = { companyId: createdCompanyId, binding: { provider: managedSubscriptionProvider, method: "subscription", mode: "responsible_user" }, sessionId };
                           setConnectAuthUrl(null);
                           // Not into a card the customer has left. The panel is
                           // still mounted through Back's exit, and a login that

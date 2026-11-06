@@ -36,7 +36,8 @@ const managedApi = vi.hoisted(() => ({
   cancelLocalLogin: vi.fn(async () => ({})),
   connectLocal: vi.fn(async () => ({ connectionId: "local-connection", grantId: "local-grant" })),
   create: vi.fn(async () => ({ connectionId: "managed-connection", grantId: "managed-grant" })),
-  setDefault: vi.fn(async () => ({})),
+  setDefault: vi.fn(async (_companyId: string, _grantId: string) => ({})),
+  loginResult: vi.fn(async () => ({ connectionId: "subscription-account", grantId: "subscription-grant" })),
 }));
 vi.mock("@/api/ai-connections", () => ({ aiConnectionsApi: managedApi }));
 vi.mock("../api/auth", async (importOriginal) => {
@@ -356,6 +357,8 @@ function isArcPrimary(text: string): boolean {
 
 describe("OnboardingWizard restore-gate (stale localStorage across accounts)", () => {
   beforeEach(() => {
+    managedApi.list.mockReset().mockResolvedValue({ currentUserId: "user-1", connections: [] });
+    managedApi.create.mockReset().mockResolvedValue({ connectionId: "managed-connection", grantId: "managed-grant" });
     mockAdaptersApi.list.mockReset().mockResolvedValue([]);
     mockEnvironmentsApi.probe.mockReset().mockResolvedValue({ ok: true, driver: "sandbox", summary: "Measured image", details: { platformQualificationRecorded: true, leaseId: "platform-lease" } });
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableManagedSandboxOnly: false });
@@ -426,6 +429,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
     mockAgentsApi.hire.mockReset();
     mockAgentsApi.get.mockReset();
     managedApi.setDefault.mockReset().mockResolvedValue({});
+    managedApi.loginResult.mockReset().mockResolvedValue({ connectionId: "subscription-account", grantId: "subscription-grant" });
     mockAgentsApi.list.mockReset().mockResolvedValue([]);
     mockAgentsApi.create.mockReset().mockImplementation(async (_company, input) => ({ ...input, id: input.setupId, pauseReason: "setup" }));
     mockAgentsApi.hire.mockResolvedValue({ agent: { id: "agent-1" }, approval: null });
@@ -1106,7 +1110,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
 
         expect(managedApi.create).toHaveBeenCalledTimes(1);
         expect(managedApi.create).toHaveBeenCalledWith("company-new", expect.objectContaining({ provider: "anthropic", method: "api_key", ownership: "personal", apiKey: KEY }));
-        expect(managedApi.setDefault).toHaveBeenCalledExactlyOnceWith("company-new", "managed-grant");
+        expect(managedApi.setDefault).toHaveBeenLastCalledWith("company-new", "managed-grant");
         const hireBody = (mockAgentsApi.hire.mock.calls.at(-1) as unknown[])[1] as { runtimeConfig: { aiConnection: unknown }; adapterConfig: { env?: Record<string, unknown> } };
         expect(hireBody.runtimeConfig.aiConnection).toEqual({ provider: "anthropic", method: "api_key", mode: "responsible_user" });
         expect(hireBody.adapterConfig.env?.ANTHROPIC_API_KEY).toBeUndefined();
@@ -2183,7 +2187,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
         await act(async () => setControlledValue(document.querySelector('input[aria-label="API key"]')!, "example-api-key"));
         await pressArcPrimary();
         expect(managedApi.create).toHaveBeenCalledWith("company-new", expect.objectContaining({ provider: "openai", method: "api_key", apiKey: "example-api-key" }));
-        expect(managedApi.setDefault).toHaveBeenCalledExactlyOnceWith("company-new", "managed-grant");
+        expect(managedApi.setDefault).toHaveBeenLastCalledWith("company-new", "managed-grant");
         expect(mockAgentsApi.testEnvironment).toHaveBeenLastCalledWith("company-new", "codex_local", expect.objectContaining({ agentId: "agent-1", environmentId: "saved-environment", runner: native ? "paperclip" : "legacy" }), expect.anything());
         expect(mockAgentsApi.hire).toHaveBeenCalledTimes(1);
         const update = mockAgentsApi.update.mock.calls.find(([id, body]) => id === "agent-1" && (body.runtimeConfig as Record<string, unknown>)?.aiConnection);
@@ -2197,6 +2201,103 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
         expect((update![1].adapterConfig as { env?: Record<string, unknown> }).env).not.toHaveProperty("CODEX_HOME");
         expect(JSON.stringify(update![1])).not.toContain("example-api-key");
         expect(document.body.textContent).toContain(outcome === "failed save" ? "Connect a model" : "Let's get started...");
+      } finally { await act(async () => root.unmount()); }
+    });
+
+    it.each([false, true])("selects the subscription again after a subscription to API to subscription round trip (Back during API save: %s)", async interrupted => {
+      const accounts: import("@paperclipai/shared").AiConnectionList = { currentUserId: "user-1", canManageConnections: true, connections: [{
+        id: "subscription-account", grantId: "subscription-grant", companyId: "company-new", provider: "openai", method: "subscription",
+        ownership: "personal", ownerUserId: "user-1", isDefault: true, status: "connected", name: "My subscription",
+      }] };
+      managedApi.list.mockImplementation(async () => structuredClone(accounts) as never);
+      managedApi.create.mockImplementationOnce(async () => {
+        accounts.connections.push({ ...accounts.connections[0]!, id: "managed-connection", grantId: "managed-grant", method: "api_key", isDefault: false, name: "My API key" });
+        return { connectionId: "managed-connection", grantId: "managed-grant" };
+      });
+      let finishApiDefault!: () => void;
+      let held = false;
+      managedApi.setDefault.mockImplementation(async (_companyId, grantId) => {
+        const apply = () => { for (const account of accounts.connections) account.isDefault = account.grantId === grantId; };
+        if (interrupted && grantId === "managed-grant" && !held) {
+          held = true;
+          return new Promise<Record<string, never>>(resolve => { finishApiDefault = () => { apply(); resolve({}); }; });
+        }
+        apply();
+        return {};
+      });
+      mockAgentsApi.get.mockResolvedValue({ id: "agent-1", companyId: "company-new", adapterType: "codex_local", adapterConfig: {}, runtimeConfig: {} });
+      const { root } = await openStep4({ adapterType: "codex_local" });
+      const goBack = async () => {
+        await act(async () => [...document.querySelectorAll("button")].find(button => button.textContent?.trim().startsWith("Back"))!.click());
+        for (let i = 0; i < 10; i++) await flushReact();
+      };
+      try {
+        await pickSource(/OpenAI/);
+        await goBack();
+        await act(async () => (document.querySelector('[aria-label="Use API key instead"]') as HTMLButtonElement).click());
+        await pickSource(/OpenAI.*API/);
+        await act(async () => setControlledValue(document.querySelector('input[aria-label="API key"]')!, "example-api-key"));
+        await pressArcPrimary();
+        if (!interrupted) expect(accounts.connections.find(account => account.isDefault)?.method).toBe("api_key");
+        await goBack();
+        if (interrupted) await act(async () => finishApiDefault());
+        await act(async () => (document.querySelector('[aria-label="Use subscription instead"]') as HTMLButtonElement).click());
+        await pickSource(/OpenAI/);
+        expect(accounts.connections.find(account => account.isDefault)?.grantId).toBe("subscription-grant");
+        expect(document.body.textContent).toContain("Let's get started...");
+        await goBack();
+        await act(async () => (document.querySelector('[aria-label="Use API key instead"]') as HTMLButtonElement).click());
+        await pickSource(/OpenAI.*API/);
+        await pressArcPrimary();
+        expect(accounts.connections.find(account => account.isDefault)?.grantId).toBe("managed-grant");
+        expect(managedApi.create).toHaveBeenCalledTimes(1);
+        expect(mockAgentsApi.hire).toHaveBeenCalledTimes(1);
+      } finally { await act(async () => root.unmount()); }
+    });
+
+    it("selects the exact newly signed-in subscription when an API account was the default", async () => {
+      managedApi.list.mockResolvedValue({ currentUserId: "user-1", connections: [{
+        id: "api-account", grantId: "api-grant", companyId: "company-new", provider: "openai", method: "api_key",
+        ownership: "personal", ownerUserId: "user-1", isDefault: true, status: "connected", name: "My API key",
+      }] } as never);
+      mockAgentsApi.getAdapterAuthSignal.mockResolvedValue({ status: "absent" });
+      mockAgentsApi.getAdapterAuthLoginStatus.mockResolvedValue({ sessionId: "codex-session-1", status: "authenticated", prompt: { url: "https://auth.openai.com/codex/device", code: "TEST-CODE" } });
+      managedApi.loginResult.mockResolvedValue({ connectionId: "new-subscription", grantId: "new-subscription-grant" });
+      const { root } = await openStep4({ adapterType: "codex_local", credentialModeChoice: "subscription" });
+      try {
+        await pickSource(/OpenAI/);
+        await vi.waitFor(() => expect(managedApi.loginResult).toHaveBeenCalledWith("company-new", "codex-session-1"), { timeout: CONNECTED_HOLD_MS + 1500 });
+        expect(managedApi.setDefault).toHaveBeenLastCalledWith("company-new", "new-subscription-grant");
+        await vi.waitFor(() => expect(mockAgentsApi.hire).toHaveBeenCalledTimes(1));
+      } finally { await act(async () => root.unmount()); }
+    });
+
+    it.each(["company", "user"])("keeps a managed agent on Connect when a saved %s key needs a connected API account", async scope => {
+      managedApi.list.mockResolvedValue({ currentUserId: "user-1", connections: [{
+        id: "subscription-account", grantId: "subscription-grant", companyId: "company-new", provider: "openai", method: "subscription",
+        ownership: "personal", ownerUserId: "user-1", isDefault: true, status: "connected", name: "My subscription",
+      }] } as never);
+      if (scope === "company") mockSecretsApi.list.mockResolvedValue([{ id: "saved-key", companyId: "company-new", name: "Saved API key", key: "OPENAI_API_KEY", scope: "company", status: "active" }] as never);
+      else mockSecretsApi.listMyUserSecrets.mockResolvedValue([{ definition: { id: "saved-key", companyId: "company-new", name: "Saved API key", key: "OPENAI_API_KEY", status: "active" }, secret: { companyId: "company-new", status: "active" } }] as never);
+      mockAgentsApi.get.mockResolvedValue({ id: "agent-1", companyId: "company-new", adapterType: "codex_local", adapterConfig: {}, runtimeConfig: { aiConnection: { provider: "openai", method: "subscription", mode: "responsible_user" } } });
+      const { root } = await openStep4({ adapterType: "codex_local" });
+      try {
+        await pickSource(/OpenAI/);
+        await act(async () => [...document.querySelectorAll("button")].find(button => button.textContent?.trim().startsWith("Back"))!.click());
+        for (let i = 0; i < 10; i++) await flushReact();
+        await act(async () => (document.querySelector('[aria-label="Use API key instead"]') as HTMLButtonElement).click());
+        await pickSource(/OpenAI.*API/);
+        await pressArcPrimary();
+        expect(document.body.textContent).toContain("Connect a model");
+        expect(document.body.textContent).toContain("Enter a new API key");
+        expect(mockAgentsApi.update.mock.calls.filter(([id]) => id === "agent-1")).toHaveLength(0);
+        const select = document.querySelector('select[aria-label="Saved API key"]') as HTMLSelectElement;
+        await act(async () => { select.value = ""; select.dispatchEvent(new Event("change", { bubbles: true })); });
+        await act(async () => setControlledValue(document.querySelector('input[aria-label="API key"]')!, "example-api-key"));
+        await pressArcPrimary();
+        expect(document.body.textContent).toContain("Let's get started...");
+        expect(mockAgentsApi.hire).toHaveBeenCalledTimes(1);
+        expect(managedApi.create).toHaveBeenCalledTimes(1);
       } finally { await act(async () => root.unmount()); }
     });
 
@@ -2444,6 +2545,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       ["claude_local", "anthropic", /Claude/, "claude-session-1", "claude-setup-token-status"],
       ["codex_local", "openai", /OpenAI/, "codex-session-1", "adapter-login-status"],
     ] as const)("finishes %s sign-in when its connection becomes visible before the completion poll", async (adapterType, provider, label, sessionId, statusKey) => {
+      managedApi.loginResult.mockResolvedValue({ connectionId: "managed-connection", grantId: "managed-grant" });
       mockAgentsApi.getAdapterAuthSignal.mockResolvedValue({ status: "absent" });
       mockAgentsApi.hire.mockRejectedValueOnce(new Error("Temporary hire failure"));
       const { root, queryClient } = await openStep4({ adapterType });
