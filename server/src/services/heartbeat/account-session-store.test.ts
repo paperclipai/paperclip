@@ -77,6 +77,42 @@ describePostgres("account session store", () => {
     expect((await db.select().from(agentTaskSessions).where(eq(agentTaskSessions.id, parent!.id)))[0]).toMatchObject({ goalJson: { goal: "keep" }, sessionDisplayId: null, sessionParamsJson: null });
   });
 
+  it("clears a selected legacy-compatible parent without clearing other accounts or companies", async () => {
+    const agentId = randomUUID();
+    const grantId = randomUUID();
+    const secretId = randomUUID();
+    const legacy = `${grantId}:shared:legacy-fingerprint`;
+    const current = `${grantId}:shared:${secretId}:0`;
+    await db.insert(agents).values({ id: agentId, companyId, name: "Legacy agent", adapterType: "test", status: "idle" });
+    const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId, invocationSource: "assignment", status: "succeeded", contextSnapshot: { aiConnection: { identity: legacy, sessionIdentity: current } } }).returning();
+    const [parent] = await db.insert(agentTaskSessions).values({ companyId, agentId, adapterType: "test", taskKey: "legacy", sessionDisplayId: "poisoned", sessionParamsJson: { paperclipAiCredentialIdentity: legacy }, goalJson: { goal: "keep" } }).returning();
+    const store = accountSessionStore(db);
+    await store.upsert({ companyId, sessionId: parent!.id, sessionIdentity: "another-account" }, { sessionParamsJson: { sessionId: "safe" }, sessionDisplayId: "safe", lastRunId: null, lastError: null });
+    const state = createHeartbeatRunState(db);
+    await state.clearTaskSessions(otherCompanyId, agentId, { taskKey: "legacy", expectedRunId: run!.id, sessionIdentity: current });
+    expect((await db.select().from(agentTaskSessions).where(eq(agentTaskSessions.id, parent!.id)))[0]?.sessionDisplayId).toBe("poisoned");
+    expect(await state.clearTaskSessions(companyId, agentId, { taskKey: "legacy", expectedRunId: run!.id, sessionIdentity: current })).toBe(1);
+    expect((await db.select().from(agentTaskSessions).where(eq(agentTaskSessions.id, parent!.id)))[0]).toMatchObject({ sessionParamsJson: null, sessionDisplayId: null, goalJson: { goal: "keep" } });
+    expect(await store.get({ companyId, sessionId: parent!.id, sessionIdentity: "another-account" })).toMatchObject({ sessionDisplayId: "safe" });
+  });
+
+  it("does not clear a different legacy parent or a legacy parent after credential replacement", async () => {
+    const agentId = randomUUID();
+    const grantId = randomUUID();
+    const secretId = randomUUID();
+    const legacy = `${grantId}:shared:legacy-fingerprint`;
+    const current = `${grantId}:shared:${secretId}:0`;
+    await db.insert(agents).values({ id: agentId, companyId, name: "Other legacy agent", adapterType: "test", status: "idle" });
+    const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId, invocationSource: "assignment", status: "succeeded", contextSnapshot: { aiConnection: { identity: legacy, sessionIdentity: current } } }).returning();
+    const [parent] = await db.insert(agentTaskSessions).values({ companyId, agentId, adapterType: "test", taskKey: "other-legacy", sessionDisplayId: "preserve", sessionParamsJson: { paperclipAiCredentialIdentity: `${randomUUID()}:shared:legacy-fingerprint` } }).returning();
+    const state = createHeartbeatRunState(db);
+    await state.clearTaskSessions(companyId, agentId, { taskKey: "other-legacy", expectedRunId: run!.id, sessionIdentity: current });
+    expect((await db.select().from(agentTaskSessions).where(eq(agentTaskSessions.id, parent!.id)))[0]?.sessionDisplayId).toBe("preserve");
+    await db.update(agentTaskSessions).set({ sessionParamsJson: { paperclipAiCredentialIdentity: legacy } }).where(eq(agentTaskSessions.id, parent!.id));
+    await state.clearTaskSessions(companyId, agentId, { taskKey: "other-legacy", expectedRunId: run!.id, sessionIdentity: `${grantId}:shared:${secretId}:1` });
+    expect((await db.select().from(agentTaskSessions).where(eq(agentTaskSessions.id, parent!.id)))[0]?.sessionDisplayId).toBe("preserve");
+  });
+
   it("does not clear an account for a cancelled conversation run", async () => {
     const agentId = randomUUID(), issueId = randomUUID();
     await db.insert(agents).values({ id: agentId, companyId, name: "Conversation agent", adapterType: "test", status: "idle" });

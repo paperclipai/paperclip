@@ -5,6 +5,7 @@ import { conversationEventCondition, conversationEventColumns } from "./conversa
 import { deriveTaskKey } from "./run-preparation.js";
 import { retryIdempotentDatabaseOperation } from "../../database-retry.js";
 import { isConversation } from "../agent-conversations.js";
+import { managedAiSessionIdentityCompatible } from "../ai-connection-session.js";
 import fs from "node:fs/promises";
 import {
   and,
@@ -1749,6 +1750,14 @@ export function createHeartbeatRunState(db: Db) {
         }
       }
       if (opts?.sessionIdentity !== undefined) {
+        let legacyCredentialIdentity: string | undefined;
+        if (opts.expectedRunId && opts.sessionIdentity.endsWith(":0")) {
+          const [run] = await tx.select({ contextSnapshot: heartbeatRuns.contextSnapshot }).from(heartbeatRuns).where(and(
+            eq(heartbeatRuns.id, opts.expectedRunId), eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.agentId, agentId),
+          ));
+          const account = parseObject(run?.contextSnapshot?.aiConnection);
+          if (account.sessionIdentity === opts.sessionIdentity && typeof account.identity === "string") legacyCredentialIdentity = account.identity;
+        }
         const parents = await tx.select().from(agentTaskSessions).where(and(...conditions)).for("update");
         let cleared = 0;
         for (const parent of parents) {
@@ -1758,8 +1767,11 @@ export function createHeartbeatRunState(db: Db) {
             eq(agentAccountSessions.sessionIdentity, opts.sessionIdentity),
           )).returning({ id: agentAccountSessions.id });
           cleared += deleted.length;
-          if (parent.sessionParamsJson?.paperclipAiCredentialIdentity === opts.sessionIdentity) {
+          const parentIdentity = parent.sessionParamsJson?.paperclipAiCredentialIdentity;
+          if (parentIdentity === opts.sessionIdentity || (legacyCredentialIdentity !== undefined &&
+              managedAiSessionIdentityCompatible(parentIdentity, opts.sessionIdentity, legacyCredentialIdentity))) {
             await tx.update(agentTaskSessions).set({ sessionParamsJson: null, sessionDisplayId: null, lastRunId: null, lastError: null, updatedAt: new Date() }).where(eq(agentTaskSessions.id, parent.id));
+            if (deleted.length === 0) cleared++;
           }
         }
         return cleared;

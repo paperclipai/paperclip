@@ -163,6 +163,7 @@ function PoolConnector({ companyId, pluginKey, connection }: { companyId: string
         </NativeSelect>
       </label>}
       <p className="text-xs text-muted-foreground">{draft.mode === "failover" ? "Use the first available connection in this order, then fall back to the next." : draft.mode === "usage_aware" ? "Rotate connections, skipping those near their usage limit." : "Rotate new tasks through connections in this order."}</p>
+      {pluginKey === BUILTIN_AI_FAILOVER_ROUTER_KEY && <p className="text-xs text-muted-foreground">Available to Paperclip Runner and Claude local agents. Claude local agents can use only Claude accounts and can switch accounts only before a run starts. An interrupted Claude local run cannot automatically continue on a backup.</p>}
       {draft.mode === "failover" && <p className="text-xs text-muted-foreground">Backup accounts may have their own usage limits and charges.</p>}
       {draft.mode === "usage_aware" && <label className="flex items-center gap-3 text-sm">Skip at<Input className="w-20" aria-label="Usage threshold" type="number" min={1} max={100} step={1} value={draft.thresholdPercent} onChange={event => setDraft({ ...draft, thresholdPercent: Number(event.target.value) })} />% usage</label>}
       {connection && <>
