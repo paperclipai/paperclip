@@ -19,6 +19,7 @@ export const MAX_TURN_CONTINUATION_RETRY_REASON = "max_turns_continuation";
 export const WORKSPACE_BUSY_RETRY_REASON = "workspace_busy";
 export const AI_CONNECTION_POOL_WAIT_RETRY_REASON = "ai_connection_pool_wait";
 export const AI_CONNECTION_BUSY_RETRY_REASON = "ai_connection_busy";
+export const RUNNER_REVISION_WAIT_RETRY_REASON = "runner_revision_wait";
 export const INTERACTION_CONTINUATION_INFRA_RETRY_REASON = "interaction_continuation_infra_retry";
 export const INTERACTION_CONTINUATION_INFRA_WAKE_REASON = "interaction_continuation_infra_retry";
 export const WAKE_COMMENT_IDS_KEY = "wakeCommentIds";
@@ -36,6 +37,13 @@ export const WORKSPACE_BUSY_HOLDER_STALE_AFTER_MS = 60 * 60 * 1000;
 // Fallback re-check for a parked workspace wait. The holder ending wakes the
 // waiter directly; this only bounds a missed wake.
 export const WORKSPACE_BUSY_PARKED_RECHECK_MS = 5 * 60 * 1000;
+// Re-check for a wait behind an ended remote writer whose save or sandbox
+// release has not settled. Settling has no single completion point to wake
+// from, so the parked run re-checks on this cadence. Each check creates no run.
+// It reads the workspace, the writer run, its task, and the writer's leases
+// (one row per sandbox lease of that run, so a small set) in the promotion
+// transaction. The checks last only while the wait exists, up to the cutoff.
+export const WORKSPACE_BUSY_SETTLING_RECHECK_MS = 60 * 1000;
 export const WORKSPACE_BUSY_WAIT_KEY = "workspaceBusyWait";
 
 /** What a workspace-busy retry is waiting behind, recorded at deferral. */
@@ -175,6 +183,7 @@ export function isResolvedInteractionContinuationWakeContext(contextSnapshot: un
   const retryReason = readNonEmptyString(context.retryReason);
   return (
     (mutation === "interaction" && wakeReason === "issue_commented") ||
+    (mutation === "interaction" && retryReason === RUNNER_REVISION_WAIT_RETRY_REASON) ||
     wakeReason === INTERACTION_CONTINUATION_INFRA_WAKE_REASON ||
     retryReason === INTERACTION_CONTINUATION_INFRA_RETRY_REASON
   );

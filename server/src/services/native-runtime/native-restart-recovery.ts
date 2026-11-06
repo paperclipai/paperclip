@@ -658,6 +658,11 @@ export async function claimNativeRestartRecoveries(input: {
       )).orderBy(desc(environmentLeases.createdAt)).limit(1);
       const failedRemoteRetry = row.run.status === "failed" && row.coordinator.phase === "retryable_failure"
         && row.coordinator.failureDetail?.recoveryMode === "exact_checkpoint_resume" && (remoteWorkspace !== null || pluginTask !== undefined);
+      // A same-run bootstrap retry cannot take back an issue lock that moved
+      // off it. Without a bounded admission it would re-check forever, never
+      // settle, and keep its sandbox lease from the orphan-lease sweep.
+      const lockLostBootstrapRetry = row.run.status === "failed" && row.coordinator.phase === "retryable_failure"
+        && row.coordinator.failureDetail?.recoveryMode === "bootstrap_retry" && row.issueExecutionRunId !== row.run.id;
       const releasedRemoteRetry = failedRemoteRetry && row.issueExecutionRunId === null;
       const exhaustedRemoteRetry = failedRemoteRetry && row.coordinator.attempt >= 3;
       const needsResumptionAdmission = releasedRemoteRetry || exhaustedRemoteRetry ||
@@ -706,7 +711,7 @@ export async function claimNativeRestartRecoveries(input: {
         if (!updated.length) throw new Error("native_retry_deferral_claim_changed");
         return { kind: "blocked", runId: row.run.id, reason, retryAt, transitionUnchanged } as const;
       };
-      if (failedRemoteRetry) {
+      if (failedRemoteRetry || lockLostBootstrapRetry) {
         const source = alias(heartbeatRuns, "native_retry_source");
         const [newer] = await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns)
           .innerJoin(source, and(eq(source.companyId, row.run.companyId), eq(source.id, row.run.id)))
@@ -728,6 +733,10 @@ export async function claimNativeRestartRecoveries(input: {
         : null;
       if (needsResumptionAdmission && !resumptionAgent && !admission.exhausted) {
         const deferred = await deferRemoteRetry("native_retry_admission_ineligible", ["done", "cancelled"].includes(issue.status));
+        if (deferred) return deferred;
+      }
+      if (lockLostBootstrapRetry && !admission.exhausted) {
+        const deferred = await deferRemoteRetry("issue_execution_lock_changed");
         if (deferred) return deferred;
       }
       if (row.issueExecutionRunId !== row.run.id && !(stopCleanup && row.issueExecutionRunId === null) && !releasedRemoteRetry && !admission.exhausted) {

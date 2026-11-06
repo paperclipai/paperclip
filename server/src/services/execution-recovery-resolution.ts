@@ -600,6 +600,9 @@ export async function settleUnrecoverableExecutions(
           });
           return;
         }
+        // A legacy executor still holding its controller lease may be unwinding
+        // a Stop and can prove that no adapter started. Let it settle first.
+        if (run.runtimeMode === "legacy" && run.controllerLeaseExpiresAt && run.controllerLeaseExpiresAt > now) return;
         // Adoption transfers maintenance to the retained-workspace owner.
         // This compatibility resolver must not close its hold or relabel it
         // as a user repair merely because old return-owner metadata is absent.
@@ -631,6 +634,7 @@ export async function settleUnrecoverableExecutions(
         await notifyUnsafeWorkspaceExportRecovery(tx, { companyId: task.companyId, issueId: task.id });
         let nativeFailureBlock = action.evidence.nativeFailureBlock;
         let nativeBootstrapFailureBlock = action.evidence.nativeBootstrapFailureBlock;
+        let legacyCancellationBlock = action.evidence.legacyCancellationBlock;
         if (current) {
           await notifyNativeStatusReassessment(tx, { companyId: task.companyId, issueId: task.id });
           if (task.status !== "blocked") await notifyChatResponseAvailability(tx, { companyId: task.companyId, issueId: task.id });
@@ -651,6 +655,9 @@ export async function settleUnrecoverableExecutions(
           if (task.status !== "blocked" && run.runtimeMode === "native") {
             nativeFailureBlock = { runId: run.id, statusVersion: projected!.statusVersion };
           }
+          if (task.status !== "blocked" && run.runtimeMode === "legacy" && run.status === "cancelled") {
+            legacyCancellationBlock = { runId: run.id, statusVersion: projected!.statusVersion, previousStatus: task.status };
+          }
           if (task.status !== "blocked" && isInterruptedNativePreparationCandidate(run)) {
             nativeBootstrapFailureBlock = { runId: run.id, statusVersion: projected!.statusVersion, previousStatus: task.status };
           }
@@ -670,6 +677,7 @@ export async function settleUnrecoverableExecutions(
               ...action.evidence,
               ...(nativeFailureBlock ? { nativeFailureBlock } : {}),
               ...(nativeBootstrapFailureBlock ? { nativeBootstrapFailureBlock } : {}),
+              ...(legacyCancellationBlock ? { legacyCancellationBlock } : {}),
               automaticRecovery: {
                 policy: "preserve_without_replay_v1",
                 runId: run.id,

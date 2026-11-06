@@ -1,6 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 
 const workflow = readFileSync(new URL("../../workflows/refresh-lockfile.yml", import.meta.url), "utf8");
 const stepNames = [...workflow.matchAll(/^      - name: (.+)$/gm)].map((match) => match[1]);
@@ -65,4 +68,30 @@ test("the bot merges only the commit this job pushed", () => {
   assert.match(merge, /HEAD_SHA: \$\{\{ steps\.upsert-pr\.outputs\.head_sha \}\}/);
   assert.match(merge, /GH_TOKEN: \$\{\{ steps\.bot-token\.outputs\.token \}\}/);
   assert.match(merge, /gh pr merge "\$PR_URL" .*--match-head-commit "\$HEAD_SHA"/);
+});
+
+test("a refresh that renews only the reporting-lock proof still opens a pull request", () => {
+  const upsert = step("Create or update pull request");
+  const check = upsert.match(/^          if (git diff --quiet -- [^;]+); then$/m)?.[1];
+  assert.ok(check, "the PR step must check for changes with git diff --quiet");
+  const added = upsert.match(/^          git add (.+)$/m)?.[1].split(" ");
+  assert.deepEqual(check.replace("git diff --quiet -- ", "").split(" "), added, "the change check must cover every file the PR step commits");
+
+  const root = mkdtempSync(path.join(tmpdir(), "refresh-proof-only-"));
+  try {
+    const git = (...args) => execFileSync("git", args, { cwd: root });
+    execFileSync("mkdir", ["-p", path.join(root, "tests/runner-e2e")]);
+    const files = { "pnpm-lock.yaml": "lock\n", "tests/runner-e2e/report-lock.json": "{}\n", "tests/runner-e2e/report-lock.patch": "old\n" };
+    for (const [file, contents] of Object.entries(files)) writeFileSync(path.join(root, file), contents);
+    git("init", "-q");
+    git("add", ".");
+    git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "fixture");
+    const unchanged = () => spawnSync("bash", ["-c", check], { cwd: root }).status === 0;
+    assert.equal(unchanged(), true);
+    writeFileSync(path.join(root, "tests/runner-e2e/report-lock.json"), '{"outputSha256":"new"}\n');
+    writeFileSync(path.join(root, "tests/runner-e2e/report-lock.patch"), "");
+    assert.equal(unchanged(), false, "a proof-only change must not exit as unchanged");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
