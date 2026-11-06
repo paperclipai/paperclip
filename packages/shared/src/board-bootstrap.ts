@@ -10,7 +10,6 @@ import type { BoardBootstrap } from "./types/board-bootstrap.js";
 import type { Company } from "./types/company.js";
 import type { IssueExecutionPolicy } from "./types/issue.js";
 
-/** Stored policies always have ids assigned; the input schema leaves them optional for creation. */
 const storedIssueExecutionPolicySchema: z.ZodType<IssueExecutionPolicy> = issueExecutionPolicySchema.extend({
   stages: z.array(
     issueExecutionStageSchema.extend({

@@ -3559,10 +3559,17 @@ describe("agent issue mutation checkout ownership", () => {
         commentRequired: true,
         stages: [
           {
-            id: "default-stage-id",
+            id: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
             type: "approval" as const,
             approvalsNeeded: 1 as const,
-            participants: [{ id: "default-participant-id", type: "user" as const, userId: "default-reviewer", agentId: null }],
+            participants: [
+              {
+                id: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+                type: "user" as const,
+                userId: "default-reviewer",
+                agentId: null,
+              },
+            ],
           },
         ],
       };
