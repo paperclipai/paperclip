@@ -4393,10 +4393,7 @@ export function agentRoutes(
     if (!agent) return;
     await assertBoardCanManageAgentsForCompany(req, agent.companyId);
 
-    const taskKey =
-      typeof req.body.taskKey === "string" && req.body.taskKey.trim().length > 0
-        ? req.body.taskKey.trim()
-        : null;
+    const taskKey: string | null = req.body.taskKey ?? null;
     const state = await heartbeat.resetRuntimeSession(id, { taskKey });
 
     await logActivity(db, {
