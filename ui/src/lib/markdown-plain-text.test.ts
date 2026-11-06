@@ -23,6 +23,16 @@ describe("markdownToPlainText", () => {
       .toBe("Set max_retries in my_config_file, not 2 * 3 or this. old");
   });
 
+  it("keeps autolinked URLs and email addresses", () => {
+    expect(markdownToPlainText("Review <https://example.com/brief_v2> before approving, or ask <team@example.com>. <b>Bold</b>"))
+      .toBe("Review https://example.com/brief_v2 before approving, or ask team@example.com. Bold");
+  });
+
+  it("keeps code verbatim, including dunder identifiers and markers inside fences", () => {
+    expect(markdownToPlainText("Edit `__init__` and `*args`.\n\n```py\ndef f(__x__):\n    return **kw\n```\nDone."))
+      .toBe("Edit __init__ and *args. def f(__x__): return **kw Done.");
+  });
+
   it("returns plain text unchanged", () => {
     expect(markdownToPlainText("Approve the saved plan for a printable menu?"))
       .toBe("Approve the saved plan for a printable menu?");
