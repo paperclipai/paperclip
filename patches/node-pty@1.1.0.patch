@@ -162,7 +162,7 @@ index 181ccabbbe9c4948a9725fb1db907a68e9de01fc..192358700de9fd1940fb7198c0be6a1e
 --- a/src/conpty_console_list_agent.ts
 +++ b/src/conpty_console_list_agent.ts
 @@ -10,6 +10,13 @@ import { loadNativeModule } from './utils';
- 
+
  const getConsoleProcessList = loadNativeModule('conpty_console_list').module.getConsoleProcessList;
  const shellPid = parseInt(process.argv[2], 10);
 -const consoleProcessList = getConsoleProcessList(shellPid);
