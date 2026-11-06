@@ -167,7 +167,9 @@ in-flight admission, and an incomplete census prevent a positive report. It
 returns aggregate counts only. The request does not stop admission, detach a
 runner, or authorize new work. Ordinary drain reads do not perform this SQL.
 The explicit probe uses read-only transactions, a two-second statement timeout,
-and at most 1,001 run rows. Header reads are capped at 256 KiB each and 8 MiB total;
+and at most 1,001 run rows. Post-result inspections share a two-second scheduling
+budget; after it expires, unchecked candidates remain blocking. An in-flight
+inspection retains its SQL statement timeout. Header reads are capped at 256 KiB each and 8 MiB total;
 oversized, malformed, legacy-format or local evidence falls back to the ordinary drain.
 This bounded header probe does not validate every journal record or prove a live sandbox. This is an observation; the existing shutdown and
 startup owners still perform the actual handoff and enforce Stop and fencing.

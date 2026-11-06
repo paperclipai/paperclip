@@ -3,7 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { eq, inArray } from "drizzle-orm";
+import { eq, inArray, sql } from "drizzle-orm";
 import { agents, companies, completionContracts, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, environmentLeases, environments, executionWorkspaces,
   heartbeatRuns, issues, nativeRunFinalizations, nativeRunResults, statusDecisions, workAssessments, workspaceOperations } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
@@ -156,6 +156,28 @@ describe("post-result upgrade readiness", () => {
     expect(await readUpgradeReadiness(db, { activeRunIds: new Set([first.runId, second.runId]),
       counters: () => ({ activeRuns: 2, pendingWakes: 0, draining: false }) })).toMatchObject({ ready: true, recoverableRuns: 2 });
   });
+
+  it("bounds saved-result inspection across several locked candidates", async () => {
+    const fixtures = [await seed(), await seed(), await seed()];
+    const probeDb = createDb(database.connectionString, { maxConnections: 1 });
+    const lock = await db.$client.reserve();
+    try {
+      await lock.unsafe("begin");
+      await lock.unsafe("lock table workspace_operations in access exclusive mode");
+      const started = performance.now();
+      const report = readUpgradeReadiness(probeDb, { activeRunIds: new Set(fixtures.map(f => f.runId)),
+        counters: () => ({ activeRuns: 3, pendingWakes: 0, draining: false }) });
+      expect(await db.execute(sql`select 1 as value`)).toMatchObject([{ value: 1 }]);
+      expect(await report).toMatchObject({ ready: false, activeRuns: 3, recoverableRuns: 0, blockingRuns: 3 });
+      expect(performance.now() - started).toBeLessThan(5_000);
+      expect(await probeDb.execute(sql`show statement_timeout`)).toMatchObject([{ statement_timeout: "0" }]);
+    } finally {
+      await lock.unsafe("rollback"); lock.release(); await probeDb.$client.end();
+    }
+    expect(await readUpgradeReadiness(db, { activeRunIds: new Set(fixtures.map(f => f.runId)),
+      counters: () => ({ activeRuns: 3, pendingWakes: 0, draining: false }) }))
+      .toMatchObject({ ready: true, recoverableRuns: 3, blockingRuns: 0 });
+  }, 15_000);
 
   it("requires the applied decision and saved workspace before certifying committed projection", async () => {
     const f = await seed(), assessmentId = randomUUID(), decisionId = randomUUID();

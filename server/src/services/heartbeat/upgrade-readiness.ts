@@ -10,6 +10,7 @@ import { readNativeControllerRecoveryInventory } from "../native-runtime/native-
 import { readNativeFinalizationUpgradeReadiness } from "../native-runtime/native-finalization-upgrade-readiness.js";
 
 const MAX_UPGRADE_RUNS = 1_000;
+const POST_RESULT_INSPECTION_BUDGET_MS = 2_000;
 type Counters = { activeRuns: number; pendingWakes: number; draining: boolean };
 type Candidate = { id: string; recoverable: boolean };
 
@@ -21,6 +22,7 @@ export async function readUpgradeReadiness(db: Db, input: {
   activeRunIds: ReadonlySet<string>;
   counters: () => Counters;
 }) {
+  const inspectionDeadline = performance.now() + POST_RESULT_INSPECTION_BUDGET_MS;
   const before = input.counters();
   const beforeIds = [...input.activeRunIds];
   const owner = await currentNativeControllerIdentity();
@@ -74,6 +76,7 @@ export async function readUpgradeReadiness(db: Db, input: {
       && identity.runnerInstanceId === row.runnerId && identity.normalizedSessionId === row.sessionId
       && identity.environmentLeaseId === workspaceId);
     const finalization = bound && row.hasResult && remote.success && !row.pluginLeaseId
+      && performance.now() < inspectionDeadline
       ? await readNativeFinalizationUpgradeReadiness(db, { companyId: row.companyId, runId: row.id,
         controller: owner, supportedOutageMs: 300_000 }).catch(() => false) : false;
     candidates.push({ id: row.id, recoverable: bound && (row.recoverable || finalization) });
