@@ -99,6 +99,13 @@ after a failed resume, it opens a fresh provider session as before. Otherwise th
 run fails with `native_provider_state_incompatible` and is not retried. A board
 Retry then continues the task in a fresh provider session in the same workspace.
 
+Saved OpenCode and Cursor Cloud provider state binds the digest of its own
+qualified launch profile (command, proxy script and, for OpenCode, the
+executable, each by path and SHA-256). These providers do not re-bind. A changed
+profile fails restore with the same `provider_state_incompatible`
+classification and follows the same disposition, so the controller does not
+retry the restore or try to reattach a runner that already rejected it.
+
 ## Profile identity
 
 Every ACPX provider's `commandDigest` attests only its own upstream release.
@@ -598,6 +605,14 @@ immutable launcher restarts it. Replacing a legacy binary or an adopted owner
 requires separate artifact and ownership admission; this path does not qualify
 that migration. Pending warm-transition receipts
 require their separate exact recovery admission, not an ordinary bootstrap.
+
+A hosted external route keeps the source connection until an independent
+physical-state read proves the target authority through the existing warm
+transition inspector. Recovery first activates the proven source registration
+so the Runner can consume its old receipt acknowledgement. It then activates
+the target registration. Ordinary attachment uses the same bounded barrier.
+External receipt recovery requires exact staged adoption and a physical reader;
+connect routes keep their existing activation order.
 
 ## Backpressure and bounded storage
 

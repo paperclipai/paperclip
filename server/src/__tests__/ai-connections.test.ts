@@ -32,7 +32,7 @@ import * as executionTarget from "@paperclipai/adapter-utils/execution-target";
 import * as runnerProbe from "../vendor/paperclip-runner/index.js";
 import * as nativeCodexRunner from "../services/native-runtime/native-codex-runner.js";
 import { testNativeRunnerAuthentication } from "../services/native-runtime/setup-readiness.js";
-import { prepareManagedAiRuntime, withManagedAiProbe, assertManagedAiProjectAuth, isAiConnectionBusy, managedAiSessionFingerprintConfig } from "../services/ai-connection-runtime.js";
+import { prepareManagedAiRuntime, withManagedAiProbe, assertManagedAiProjectAuth, isAiConnectionBusy, isAiConnectionIncompatible, managedAiSessionFingerprintConfig } from "../services/ai-connection-runtime.js";
 import { execute as executeGemini, testEnvironment as testGeminiEnvironment } from "@paperclipai/adapter-gemini-local/server";
 import { toolAccessService } from "../services/tool-access.js";
 import { secretService } from "../services/secrets.js";
@@ -1947,6 +1947,26 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
       execute.mockResolvedValue({ exitCode: 0, stdout: "", stderr: "", signal: null, timedOut: false } as Awaited<ReturnType<typeof executionTarget.runAdapterExecutionTargetProcess>>);
       await expect(assertManagedAiProjectAuth({}, "openai", target)).resolves.toBeUndefined();
       await expect(assertManagedAiProjectAuth({ args: ["--api-key=override"] }, "xai", target)).rejects.toThrow("overrides");
+    } finally { execute.mockRestore(); }
+  });
+  it("reports only a found conflict as configuration, naming the files to fix", async () => {
+    const execute = vi.spyOn(executionTarget, "runAdapterExecutionTargetProcess");
+    const target = { kind: "remote", transport: "sandbox", remoteCwd: "/workspace/project" } as Parameters<typeof assertManagedAiProjectAuth>[2];
+    const outcome = (exitCode: number | null, timedOut = false) =>
+      ({ exitCode, stdout: "", stderr: "", signal: null, timedOut }) as Awaited<ReturnType<typeof executionTarget.runAdapterExecutionTargetProcess>>;
+    try {
+      execute.mockResolvedValue(outcome(42));
+      const conflict = await assertManagedAiProjectAuth({}, "anthropic", target).catch((error: unknown) => error);
+      expect(isAiConnectionIncompatible(conflict)).toBe(true);
+      expect(String((conflict as Error).message)).toContain(".claude/settings.json");
+      // A check that could not complete is not proof of a configuration conflict.
+      for (const failed of [outcome(43), outcome(null, true), outcome(127)]) {
+        execute.mockResolvedValue(failed);
+        const unavailable = await assertManagedAiProjectAuth({}, "anthropic", target).catch((error: unknown) => error);
+        expect(unavailable).toBeInstanceOf(Error);
+        expect(isAiConnectionIncompatible(unavailable)).toBe(false);
+      }
+      expect(isAiConnectionIncompatible(await assertManagedAiProjectAuth({ args: ["--settings=x"] }, "anthropic", target).catch((error: unknown) => error))).toBe(true);
     } finally { execute.mockRestore(); }
   });
   it("requires a typed project authentication capability for task-only environments", async () => {

@@ -1,9 +1,12 @@
 import { Plus } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
+import type { ReactNode } from "react";
 import { Button } from "@/components/ui/button";
 
 interface EmptyStateProps {
   icon: LucideIcon;
+  /** Large decorative artwork; shares hover/focus with the action below. */
+  graphic?: ReactNode;
   /** Optional bold heading rendered above the message. */
   title?: string;
   message: string;
@@ -17,6 +20,7 @@ interface EmptyStateProps {
 
 export function EmptyState({
   icon: Icon,
+  graphic,
   title,
   message,
   description,
@@ -25,10 +29,10 @@ export function EmptyState({
   hideActionIcon = false,
 }: EmptyStateProps) {
   return (
-    <div className="flex flex-col items-center justify-center py-16 text-center">
-      <div className="bg-muted/50 p-4 mb-4">
+    <div className={graphic ? "empty-state-artwork flex flex-col items-center justify-center gap-5 py-16 text-center" : "flex flex-col items-center justify-center py-16 text-center"}>
+      {graphic ? <div className="empty-state-graphic" aria-hidden="true">{graphic}</div> : <div className="bg-muted/50 p-4 mb-4">
         <Icon className="h-10 w-10 text-muted-foreground/50" />
-      </div>
+      </div>}
       {title ? (
         <>
           <p className="text-base font-semibold text-foreground mb-1.5">{title}</p>

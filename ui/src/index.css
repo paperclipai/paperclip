@@ -375,6 +375,13 @@
   --status-task-icon-blocked: var(--status-task-blocked);         /* #dc2626 both modes */
   --status-task-icon-cancelled: #52585d;
   --status-task-icon-in_queue: var(--status-task-icon-in_progress); /* blocked shape, same mode-aware blue */
+  /* Inline edit diffs (task chat edit rows and the turn changes card). Line
+     tints derive from the status icon hues so both modes stay in step. */
+  --diff-add-fg: var(--status-task-icon-done);
+  --diff-remove-fg: var(--status-task-icon-blocked);
+  --diff-add-bg: color-mix(in oklab, var(--status-task-icon-done) 12%, transparent);
+  --diff-remove-bg: color-mix(in oklab, var(--status-task-icon-blocked) 12%, transparent);
+  --sz-edit-diff-max-h: calc(var(--spacing) * 100);
 
   --folder-color-indigo: #6366f1;
   --folder-color-violet: #8b5cf6;
@@ -440,6 +447,8 @@
   --motion-diff-reveal: var(--motion-duration-base);
   --motion-status-enter: var(--motion-duration-fast);
   --motion-status-exit: var(--motion-duration-fast);
+  /* Harness status chip fading to a receipt once a retry recovers. */
+  --motion-status-notice-fade: var(--motion-duration-deliberate);
   --motion-approval-pulse: 1.6s;
   --motion-plan-entry-stagger: 40ms;
   --motion-plan-check: var(--motion-duration-fast);
@@ -536,6 +545,8 @@
   --artifact-play-scrim: rgba(0, 0, 0, 0.55);
   --artifact-hover-ease: 300ms cubic-bezier(0.3, 0, 0.1, 1);
   --tc-interaction-card-max-h: 50dvh;
+  /* About 3.5 queued rows, and less on short windows so the conversation stays visible. */
+  --tc-queued-list-max-h: min(calc(var(--spacing) * 40), 28dvh);
   --shadow-task-composer: 0 2px 8px -2px color-mix(in oklab, var(--foreground) 7%, transparent),
     0 12px 32px -8px color-mix(in oklab, var(--foreground) 12%, transparent);
   --profile-popover-width: 248px;
@@ -562,6 +573,12 @@
   --tc-mode-plan: var(--status-task-todo);
   --tc-mode-ask: #3b82f6;
 
+  /* Harness status chips (retry, model fallback, provider warnings) in the
+     task-chat timeline: a quiet amber outline on the page surface. */
+  --tc-status-notice-warning-fg: var(--status-task-icon-todo);
+  --tc-status-notice-warning-border: color-mix(in oklch, var(--status-task-todo) 40%, transparent);
+  --tc-status-notice-warning-bg: color-mix(in oklch, var(--status-task-todo) 8%, transparent);
+
   /* Agent-comment comparison fill used by TaskChatLab. The chosen production
      treatment sits directly on the page surface; this token keeps the darker
      card available as an explicit lab alternative. */
@@ -580,9 +597,11 @@
   --tc-shell-max-w: 60rem;
   --sz-66px: 66px;
 
-  /* Active-turn status island and its checklist overlay. */
+  /* Active-turn status island and its docked plan checklist. */
   --sz-turn-status-island: min(100%, 42rem);
-  --sz-turn-status-popover: min(32rem, calc(100vw - 2rem));
+  --sz-turn-plan-list-max-h: min(40dvh, 22rem);
+  /* A subagent result scrolls inside its card instead of taking over the thread. */
+  --sz-subagent-result-max-h: min(40dvh, 22rem);
 
   /* Mobile pinned-composer bottom offset (PAP-495). The visible-nav offset
      leaves 6px below the dock; its pb-1 adds 4px for a 10px card-to-nav gap.
@@ -608,6 +627,8 @@
   --agent-detail-tile: color-mix(in oklab, var(--foreground) 4%, var(--background));
   --agent-detail-tile-hover: color-mix(in oklab, var(--foreground) 7%, var(--background));
   --agent-detail-tile-chip: color-mix(in oklab, var(--foreground) 8%, transparent);
+  --agent-identity-chip-bg: var(--muted);
+  --agent-identity-chip-hover: color-mix(in oklab, var(--foreground) 14%, var(--background));
   --agent-detail-tile-input: color-mix(in oklab, var(--foreground) 5%, var(--agent-detail-tile));
   --agent-detail-table-head: color-mix(in oklab, var(--foreground) 3%, transparent);
   --agent-detail-control-border: color-mix(in oklab, var(--foreground) 20%, transparent);
@@ -1757,7 +1778,13 @@ html:has(.paperclip-app-shell[data-mobile="true"] [data-task-chat-shell]) #root 
   );
 }
 
+/* Reasoning section prose is supporting text under its provider headline. */
+.paperclip-markdown.task-chat-reasoning-section-body {
+  color: inherit;
+}
+
 .task-chat-expanded-line-wrap,
+.task-chat-reasoning-headline,
 .paperclip-markdown.task-chat-reasoning-markdown,
 .paperclip-markdown.task-chat-reasoning-markdown :is(p, strong, em, a, code) {
   overflow-wrap: anywhere;
@@ -4774,7 +4801,7 @@ html:has(.design-proposal-theme) .design-navigation-group-label {
 .task-filter-empty { padding: var(--task-filter-row-padding) var(--task-filter-row-padding-inline); color: var(--flyout-item-foreground); font-size: var(--flyout-type-size); line-height: var(--flyout-type-leading); }
 .task-list-group-heading { margin-block: var(--design-page-toolbar-gap) var(--design-page-control-gap); }
 
-/* Canonical collection toolbars: shared geometry, opt-in proposal styling.
+/* Canonical collection toolbars: shared Tasks geometry on every surface.
    Search uses ToolbarSearch; only Tasks puts its view/heading before search. */
 :root {
   --collection-toolbar-height: var(--design-page-control-height);
@@ -4783,7 +4810,7 @@ html:has(.design-proposal-theme) .design-navigation-group-label {
   --collection-toolbar-border: var(--design-page-control-border);
   --collection-toolbar-padding: var(--design-page-control-padding);
 }
-html:has(.design-proposal-theme) [data-canonical-toolbar] {
+[data-canonical-toolbar] {
   display: flex;
   flex-direction: row;
   flex-wrap: wrap;
@@ -4793,12 +4820,12 @@ html:has(.design-proposal-theme) [data-canonical-toolbar] {
   row-gap: var(--design-page-toolbar-gap);
   min-width: 0;
 }
-html:has(.design-proposal-theme) [data-canonical-toolbar] :is(.design-toolbar-controls, .design-toolbar-actions, [role="tablist"]:not([data-canonical-tabs])) {
+[data-canonical-toolbar] :is(.design-toolbar-controls, .design-toolbar-actions, [role="tablist"]:not([data-canonical-tabs])) {
   display: flex;
   flex-wrap: wrap;
   gap: var(--collection-toolbar-gap);
 }
-html:has(.design-proposal-theme) [data-canonical-toolbar] :is(button:not([data-toolbar-clear], .canonical-tab), [data-toolbar-control]) {
+[data-canonical-toolbar] :is(button:not([data-toolbar-clear], .canonical-tab), a[data-slot="button"], select, [data-toolbar-control]) {
   height: var(--collection-toolbar-height);
   border: var(--task-row-rule-width) solid var(--collection-toolbar-border);
   border-radius: var(--collection-toolbar-radius);
@@ -4810,51 +4837,51 @@ html:has(.design-proposal-theme) [data-canonical-toolbar] :is(button:not([data-t
   background: var(--design-page-control-surface);
   color: var(--muted-foreground);
 }
-html:has(.design-proposal-theme) [data-canonical-toolbar] button:is([data-size="icon"], [data-size="icon-sm"], .design-toolbar-icon) {
+[data-canonical-toolbar] button:not([data-toolbar-clear]):is([data-size="icon"], [data-size="icon-sm"], [data-size="icon-xs"], .design-toolbar-icon) {
   width: var(--collection-toolbar-height);
   padding-inline: 0;
 }
-html:has(.design-proposal-theme) [data-canonical-toolbar] :is(button:not([data-toolbar-clear], .canonical-tab), [data-toolbar-control]):is(:hover, [aria-pressed="true"], [aria-selected="true"], [data-active="true"], [data-state="open"]) {
+[data-canonical-toolbar] :is(button:not([data-toolbar-clear], .canonical-tab), a[data-slot="button"], select, [data-toolbar-control]):is(:hover, [aria-pressed="true"], [aria-selected="true"], [data-active="true"], [data-state="open"]) {
   color: var(--foreground);
   background: var(--muted-highlight);
 }
-html:has(.design-proposal-theme) [data-canonical-toolbar] button:is([data-toolbar-primary], .design-new-task) {
+[data-canonical-toolbar] button:is([data-toolbar-primary], .design-new-task) {
   margin-inline-start: 0;
   background: var(--foreground);
   color: var(--background);
   font-weight: var(--font-weight-semibold);
 }
-html:has(.design-proposal-theme) [data-canonical-toolbar] button:is([data-toolbar-primary], .design-new-task):hover {
+[data-canonical-toolbar] button:is([data-toolbar-primary], .design-new-task):hover {
   background: color-mix(in oklab, var(--foreground) 90%, var(--task-list-surface));
   color: var(--background);
 }
-html:has(.design-proposal-theme) [data-canonical-toolbar] button > svg {
+[data-canonical-toolbar] :is(button:not([data-toolbar-clear]), a[data-slot="button"]) > svg {
   width: var(--design-page-icon-size);
   height: var(--design-page-icon-size);
   margin-inline: 0;
 }
-html:has(.design-proposal-theme) [data-canonical-toolbar] .design-view-toggle {
+[data-canonical-toolbar] .design-view-toggle {
   height: var(--collection-toolbar-height);
   overflow: visible;
 }
-html:has(.design-proposal-theme) [data-canonical-toolbar] .design-view-toggle button {
+[data-canonical-toolbar] .design-view-toggle button {
   height: calc(var(--collection-toolbar-height) - var(--task-row-rule-width) * 2);
   border: 0;
   border-radius: 0;
 }
-html:has(.design-proposal-theme) [data-canonical-toolbar] .design-view-toggle button:first-child {
+[data-canonical-toolbar] .design-view-toggle button:first-child {
   border-start-start-radius: var(--collection-toolbar-radius);
   border-end-start-radius: var(--collection-toolbar-radius);
 }
-html:has(.design-proposal-theme) [data-canonical-toolbar] .design-view-toggle button:last-child {
+[data-canonical-toolbar] .design-view-toggle button:last-child {
   border-start-end-radius: var(--collection-toolbar-radius);
   border-end-end-radius: var(--collection-toolbar-radius);
 }
-html:has(.design-proposal-theme) [data-canonical-toolbar] [data-toolbar-search] {
+[data-canonical-toolbar] [data-toolbar-search] {
   flex-shrink: 1;
   max-width: 100%;
 }
-html:has(.design-proposal-theme) [data-canonical-toolbar] [data-toolbar-search] input {
+[data-canonical-toolbar] [data-toolbar-search] input {
   background: transparent;
 }
 
@@ -4925,7 +4952,7 @@ html:has(.design-proposal-theme) [data-canonical-toolbar] [data-toolbar-search] 
   box-shadow: var(--focus-ring-shadow);
 }
 [data-canonical-tabs] .canonical-tab:disabled { opacity: var(--canonical-tab-disabled-opacity); pointer-events: none; }
-html:has(.design-proposal-theme) [data-canonical-toolbar] .collection-toolbar-tabs select {
+[data-canonical-toolbar] .collection-toolbar-tabs select {
   height: var(--collection-toolbar-height);
   border-radius: var(--collection-toolbar-radius);
   border-color: var(--collection-toolbar-border);
@@ -4970,16 +4997,16 @@ html:has(.design-proposal-theme) [data-canonical-toolbar] .collection-toolbar-ta
   transform: rotate(var(--artifact-base, 0deg));
 }
 @media (prefers-reduced-motion: no-preference) {
-  .artifact-tile :is([data-artifact-rotate][data-artifact-spread], [data-artifact-front]) {
+  :is(.artifact-tile, .empty-state-artwork) :is([data-artifact-rotate][data-artifact-spread], [data-artifact-front]) {
     transition: transform var(--artifact-hover-ease);
   }
-  .artifact-tile:hover [data-artifact-front] {
+  :is(.artifact-tile:hover, .artifact-tile:focus-visible, .empty-state-artwork:has(button:hover, button:focus-visible), .empty-state-artwork:has(.empty-state-graphic:hover)) [data-artifact-front] {
     transform: translateY(-6px);
   }
-  .artifact-tile:hover [data-artifact-spread="left"] {
+  :is(.artifact-tile:hover, .artifact-tile:focus-visible, .empty-state-artwork:has(button:hover, button:focus-visible), .empty-state-artwork:has(.empty-state-graphic:hover)) [data-artifact-spread="left"] {
     transform: rotate(calc(var(--artifact-base, 0deg) + 5deg));
   }
-  .artifact-tile:hover [data-artifact-spread="right"] {
+  :is(.artifact-tile:hover, .artifact-tile:focus-visible, .empty-state-artwork:has(button:hover, button:focus-visible), .empty-state-artwork:has(.empty-state-graphic:hover)) [data-artifact-spread="right"] {
     transform: rotate(calc(var(--artifact-base, 0deg) - 5deg));
   }
 }
@@ -5225,4 +5252,68 @@ html:not(.dark) .coordinator-sidebar {
 .agent-config-panels h3,
 .agent-config-panels + h3 {
   font-weight: 600;
+}
+
+/* Large collection empty states share the artifact fan, with 20px rhythm. */
+.empty-state-artwork > p { margin-block: 0; }
+.empty-state-graphic { display: flex; align-items: flex-end; justify-content: center; max-width: 100%; }
+[data-canonical-toolbar] input:not([type="checkbox"], [type="radio"]) {
+  height: var(--collection-toolbar-height);
+  border-radius: var(--collection-toolbar-radius);
+  font-size: var(--design-page-type-size);
+}
+[data-canonical-toolbar] .design-task-search input { height: 100%; }
+[data-canonical-toolbar] .design-view-toggle { align-items: center; }
+[data-canonical-toolbar] .design-view-toggle [role="tablist"] { height: 100%; padding: 0; gap: 0; background: transparent; }
+[data-canonical-toolbar="collection"] { display: block; }
+[data-canonical-toolbar="collection"] [data-slot="collection-toolbar-controls"],
+[data-canonical-toolbar="collection"] [data-slot="collection-toolbar-actions"] { gap: var(--collection-toolbar-gap); }
+@media (pointer: coarse) {
+  [data-canonical-toolbar] input:not([type="checkbox"], [type="radio"]) { font-size: var(--text-base); }
+}
+
+:root {
+  --selection-bar-bottom: calc(var(--spacing) * 12);
+  --selection-bar-travel: calc(var(--spacing) * 4);
+  --selection-bar-enter: var(--motion-duration-base);
+  --selection-bar-exit: var(--motion-duration-fast);
+  --selection-bar-ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --selection-bar-ease-in: cubic-bezier(0.755, 0.05, 0.855, 0.06);
+  --selection-bar-shadow: 0 8px 32px rgb(0 0 0 / 18%);
+}
+.agent-selection-bar {
+  position: fixed;
+  z-index: var(--z-40);
+  bottom: calc(var(--selection-bar-bottom) + env(safe-area-inset-bottom));
+  left: 50%;
+  width: max-content;
+  max-width: calc(100% - var(--spacing) * 8);
+  border-color: var(--border);
+  box-shadow: var(--selection-bar-shadow);
+  opacity: 0;
+  visibility: hidden;
+  transform: translate(-50%, var(--selection-bar-travel));
+  transition: opacity var(--selection-bar-exit) var(--selection-bar-ease-in), transform var(--selection-bar-exit) var(--selection-bar-ease-in), visibility 0s var(--selection-bar-exit);
+}
+.agent-selection-bar[data-state="open"] {
+  opacity: 1;
+  visibility: visible;
+  transform: translate(-50%, 0);
+  transition: opacity var(--selection-bar-enter) var(--selection-bar-ease-out), transform var(--selection-bar-enter) var(--selection-bar-ease-out), visibility 0s;
+}
+.agent-identity-chip { background: var(--agent-identity-chip-bg); color: var(--foreground); }
+/* Raised modules use the Skills chip surface to keep agent chips distinct from their tile. */
+[data-agent-tile] .agent-identity-chip { --agent-identity-chip-bg: var(--agent-detail-tile-chip); }
+:is(a, button).agent-identity-chip { transition: background-color var(--motion-duration-fast); }
+:is(a, button).agent-identity-chip:hover:not(:disabled) { background: var(--agent-identity-chip-hover); }
+:is(a, button).agent-identity-chip:focus-visible { outline: var(--sz-2px) solid var(--ring); outline-offset: var(--sz-2px); }
+.inline-editor-fit { display: inline-grid; min-width: 0; max-width: 100%; }
+.inline-editor-fit > * { grid-area: 1 / 1; min-width: 0; }
+.inline-editor-fit > textarea { width: 0; min-width: calc(100% + var(--spacing) * 2); }
+.agent-roster .agent-roster-identity { padding-inline: 0; background: transparent; border: 0; }
+.agent-roster [scope="col"] { vertical-align: middle; }
+[data-canonical-toolbar="agent-filters"], [data-canonical-toolbar="gateways"] { justify-content: space-between; }
+[data-canonical-toolbar="audit-activity"], [data-canonical-toolbar="audit-runs"] { align-items: flex-end; }
+@media (prefers-reduced-motion: reduce) {
+  .agent-selection-bar { transition: none; transform: translate(-50%, 0); }
 }

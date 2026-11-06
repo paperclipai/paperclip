@@ -223,6 +223,13 @@ export type IssueWorkMode = (typeof ISSUE_WORK_MODES)[number];
 export const ISSUE_HARNESS_KINDS = ["skill_test"] as const;
 export type IssueHarnessKind = (typeof ISSUE_HARNESS_KINDS)[number];
 export const MAX_ISSUE_REQUEST_DEPTH = 1024;
+/**
+ * Deepest task tree an agent (or automation acting for one) may create: a root
+ * task plus one level of children. A deeper request is not rejected; the new
+ * task is parented at this depth instead, as a sibling of the requester. Board
+ * users are not limited, and existing deeper trees stay valid.
+ */
+export const MAX_AGENT_TASK_HIERARCHY_DEPTH = 2;
 
 export const SUMMARY_SLOT_SCOPE_KINDS = [
   "project",
@@ -954,6 +961,7 @@ export const LIVE_EVENT_TYPES = [
   "heartbeat.run.activity",
   "agent.session.goal.changed",
   "agent.status",
+  "agent.runtime_state.updated",
   "activity.logged",
   "external_object.updated",
   "plugin.ui.updated",

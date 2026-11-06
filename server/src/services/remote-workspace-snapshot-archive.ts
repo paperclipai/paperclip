@@ -132,13 +132,31 @@ async function workspaceArchive(input: {
     // scripts, autostash, or operation-only object references. Inspect the
     // selected worktree's administration directory without following links.
     for (const name of ["rebase-merge", "rebase-apply", "sequencer", "MERGE_HEAD", "CHERRY_PICK_HEAD",
-      "REVERT_HEAD", "REBASE_HEAD", "MERGE_AUTOSTASH", "BISECT_START"]) {
+      "REVERT_HEAD", "MERGE_AUTOSTASH", "BISECT_START"]) {
       const state = await fs.lstat(path.join(gitDir, name)).catch((error: NodeJS.ErrnoException) => {
         if (error.code !== "ENOENT") throw error;
         return null;
       });
       if (state) fail("git_operation_in_progress: finish or abort the Git operation before saving the workspace");
     }
+    const bookmark = path.join(gitDir, "REBASE_HEAD");
+    const state = await fs.lstat(bookmark).catch((error: NodeJS.ErrnoException) => {
+      if (error.code !== "ENOENT") throw error;
+      return null;
+    });
+    if (!state) return null;
+    if (!state.isFile() || state.isSymbolicLink() || state.size > 128) fail("git_operation_in_progress: finish or abort the Git operation before saving the workspace");
+    const bytes: Buffer[] = []; let size = 0;
+    const entry = await readStableFile(bookmark, async chunk => {
+      size += chunk.length;
+      if (size > 128) fail("git_operation_in_progress: finish or abort the Git operation before saving the workspace");
+      bytes.push(chunk);
+    });
+    const object = Buffer.concat(bytes).toString("utf8").trim();
+    if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/u.test(object)
+      || await git(repo, ["rev-parse", "--verify", "REBASE_HEAD^{commit}"]).then(value => value.trim()).catch(() => null) !== object
+      || await git(repo, ["ls-files", "--unmerged", "-z"])) fail("git_operation_in_progress: finish or abort the Git operation before saving the workspace");
+    return { object, sha256: entry.sha256 };
   };
   const readStableFile = async (source: string, consume?: (bytes: Buffer) => Promise<void>) => {
     check();
@@ -219,13 +237,22 @@ async function workspaceArchive(input: {
         const source = path.join(root, next);
         const stat = await fs.lstat(source);
         if (skipGit && name === ".git") { if (stat.isSymbolicLink()) fail("unsafe_git_link"); directories.push(relative); continue; }
-        if (stat.isDirectory() && name === "node_modules") {
-          const packageManifest = await fs.lstat(path.join(directory, "package.json")).catch(() => null);
-          if (packageManifest?.isFile() && !packageManifest.isSymbolicLink()) {
+        if (stat.isDirectory()) {
+          // Reinstallable dependency trees: npm packages beside package.json, and
+          // a Python virtual environment, which links its interpreter by absolute
+          // path and has a PEP 405 pyvenv.cfg at its root.
+          const marker = await fs.lstat(name === "node_modules" ? path.join(directory, "package.json")
+            : path.join(source, "pyvenv.cfg")).catch(() => null);
+          if (marker?.isFile() && !marker.isSymbolicLink()) {
             // A failing Git read cannot establish that data is untracked.
             const tracked = inRepository ? await git(directory, ["ls-files", "-z", "--", name]) : "";
             if (!tracked) { excludedPaths.add(next); continue; }
           }
+        }
+        if (stat.isSocket()) {
+          // Runtime IPC endpoints have no portable file contents. Record the
+          // exclusion without removing the endpoint or dropping adjacent work.
+          excludedPaths.add(next); continue;
         }
         if (stat.isDirectory()) {
           entries.push({ path: next, type: "directory", mode: stat.mode & 0o777 });
@@ -257,13 +284,13 @@ async function workspaceArchive(input: {
       const repositories = [...new Set(directories)];
       const gitSignatures = new Map<string, string>();
       const signature = async (repo: string, settings?: Awaited<ReturnType<typeof portableGitSettings>>) => {
-        await assertGitOperationComplete(repo);
+        const rebaseBookmark = await assertGitOperationComplete(repo);
         const index = (await git(repo, ["rev-parse", "--path-format=absolute", "--git-path", "index"])).trim();
         const indexHash = await hashFile(index).catch((error: NodeJS.ErrnoException) => error.code === "ENOENT" ? null : Promise.reject(error));
         const config = settings ?? await portableGitSettings(repo), shallow = await gitStateHash(repo, "shallow");
         const partial = config.some(setting => /^remote\..*\.promisor$/u.test(setting.key) && setting.value === "true");
         return JSON.stringify([await git(repo, ["status", "--porcelain=v2", "-z", "--untracked-files=no"]), await git(repo, ["for-each-ref", "--format=%(objectname) %(refname)"]), await git(repo, ["symbolic-ref", "-q", "HEAD"]).catch(() => git(repo, ["rev-parse", "HEAD"])), indexHash, config,
-          shallow, await gitStateHash(repo, "info/sparse-checkout"), shallow || partial ? (await gitObjectFiles(repo)).files : null]);
+          shallow, await gitStateHash(repo, "info/sparse-checkout"), shallow || partial ? (await gitObjectFiles(repo)).files : null, rebaseBookmark]);
       };
       for (let index = 0; index < repositories.length; index++) {
         const relative = repositories[index]!, repo = path.join(root, relative), normalized = path.join(scratch, `repo-${index}.git`);
@@ -293,6 +320,7 @@ async function workspaceArchive(input: {
         for (const name of ["HEAD", "index", "ORIG_HEAD", "MERGE_HEAD", "MERGE_MSG", "CHERRY_PICK_HEAD", "REVERT_HEAD"]) {
           await fs.copyFile(path.join(sourceGit, name), path.join(destination, name)).catch((error: NodeJS.ErrnoException) => { if (error.code !== "ENOENT") throw error; });
         }
+        await copyGitFile(path.join(sourceGit, "REBASE_HEAD"), path.join(destination, "REBASE_HEAD"));
         for (const directory of new Set([sourceGit, sourceCommon])) {
           for (const name of await fs.readdir(directory)) if (/^sharedindex\.[a-f0-9]+$/.test(name)) await fs.copyFile(path.join(directory, name), path.join(destination, name));
         }
@@ -314,6 +342,13 @@ async function workspaceArchive(input: {
           const [object, ref] = row.split(" "); return `update ${ref} ${object}\n`;
         }).join("");
         if (updates) await git(restoredRepo, ["update-ref", "--stdin"], updates);
+        const rebaseBookmark = await assertGitOperationComplete(repo);
+        if (rebaseBookmark) {
+          const present = await git(restoredRepo, ["cat-file", "-e", `${rebaseBookmark.object}^{commit}`]).then(() => true).catch(() => false);
+          if (!present && !offline) await git(restoredRepo, ["-c", "protocol.file.allow=always", "fetch", "--no-tags", "--no-recurse-submodules",
+            "--no-write-fetch-head", "--no-auto-maintenance", "--", repo, rebaseBookmark.object]);
+          await git(restoredRepo, ["cat-file", "-e", `${rebaseBookmark.object}^{commit}`]);
+        }
         await fs.rm(path.join(destination, "objects", "info", "alternates"), { force: true });
         await git(restoredRepo, ["fsck", "--full", "--no-dangling"]);
         if (await signature(repo) !== gitSignatures.get(relative)) fail("changed");
@@ -454,8 +489,34 @@ export function remoteWorkspaceCaptureFailureMessage(error: unknown): string | n
   return null;
 }
 
+/**
+ * A bounded cause for an unclassified sandbox failure. It runs in the sandbox,
+ * so it is self-contained. Each field has a fixed key and a value of at most 64
+ * `[A-Za-z0-9_]` characters taken from structured error properties; it never
+ * includes error text, command lines, or paths.
+ */
+export function remoteWorkspaceFailureDetail(error: unknown): string {
+  if (!error || typeof error !== "object") return "";
+  const failure = error as { code?: unknown; signal?: unknown; syscall?: unknown; killed?: unknown; cmd?: unknown; name?: unknown; message?: unknown };
+  const fields: string[] = [];
+  if (typeof failure.code === "string" && /^(E[A-Z0-9]{1,20}|ERR_[A-Z0-9_]{1,56})$/.test(failure.code)) fields.push(`code=${failure.code}`);
+  if (typeof failure.code === "number" && Number.isSafeInteger(failure.code) && failure.code >= 0 && failure.code <= 255) fields.push(`exit=${failure.code}`);
+  if (typeof failure.signal === "string" && /^SIG[A-Z0-9]{1,12}$/.test(failure.signal)) fields.push(`signal=${failure.signal}`);
+  if (typeof failure.syscall === "string" && /^[a-z_]{1,24}$/.test(failure.syscall)) fields.push(`syscall=${failure.syscall}`);
+  if (failure.killed === true) fields.push("killed=true");
+  if (typeof failure.cmd === "string" && failure.cmd.startsWith("git ")) fields.push("program=git");
+  if (typeof failure.name === "string" && ["TypeError", "RangeError", "SyntaxError", "ReferenceError", "AbortError"].includes(failure.name)) {
+    fields.push(`name=${failure.name}`);
+  }
+  const reason = typeof failure.message === "string" ? /^(?:remote_workspace_archive_)?([a-z_]{1,48})$/.exec(failure.message)?.[1] : undefined;
+  if (reason && (failure.message !== reason || ["unsafe", "unsafe_capture", "invalid_capture", "capture_missing"].includes(reason))) {
+    fields.push(`reason=${reason}`);
+  }
+  return fields.join(" ");
+}
+
 export function remoteWorkspaceArchiveScript(): string {
   // tsx's function-name preservation helper may appear in Function#toString.
   const source = workspaceArchive.toString().replaceAll("__vite_ssr_dynamic_import__", "import");
-  return `const __name = (value) => value;\nconst captureFailure = ${remoteWorkspaceCaptureFailureMessage.toString()};\nconst archive = ${source};\nconst [kind, first, second, digest] = process.argv.slice(2);\narchive(kind === 'capture' ? {kind,cwd:first,archivePath:second} : {kind,archivePath:first,targetDir:second,expectedManifestDigest:digest}).then(value=>process.stdout.write(JSON.stringify(value))).catch(error=>{process.stderr.write(kind === 'capture' ? captureFailure(error) ?? 'remote_workspace_archive_failed' : error.message);process.exitCode=1;});\n`;
+  return `const __name = (value) => value;\nconst captureFailure = ${remoteWorkspaceCaptureFailureMessage.toString()};\nconst failureDetail = ${remoteWorkspaceFailureDetail.toString()};\nconst archive = ${source};\nconst [kind, first, second, digest] = process.argv.slice(2);\narchive(kind === 'capture' ? {kind,cwd:first,archivePath:second} : {kind,archivePath:first,targetDir:second,expectedManifestDigest:digest}).then(value=>process.stdout.write(JSON.stringify(value))).catch(error=>{const detail = failureDetail(error);process.stderr.write(kind === 'capture' ? captureFailure(error) ?? ('remote_workspace_archive_failed' + (detail ? ': ' + detail : '')) : error.message);process.exitCode=1;});\n`;
 }

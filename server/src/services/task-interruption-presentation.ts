@@ -16,11 +16,21 @@ import { redactCurrentUserText } from "../log-redaction.js";
 import { logger } from "../middleware/logger.js";
 import { canonicalExecutionUuid } from "./execution-identity.js";
 import { chatActionDeadline } from "./chat-action-work.js";
+import { isQueuedDependencyWait } from "./run-cancellation.js";
+import { AI_CONNECTION_BUSY_RETRY_REASON, AI_CONNECTION_POOL_WAIT_RETRY_REASON, RUNNER_REVISION_WAIT_RETRY_REASON,
+  WORKSPACE_BUSY_RETRY_REASON } from "../modules/run-dispatch/index.js";
+
+// These scheduled runs wait for a shared resource; none records a failed
+// attempt. Their dispatcher re-checks the resource, so the run can stay
+// scheduled past its retry time. Retry cannot free the resource either.
+const resourceWaitRetryReasons = new Set<string>([WORKSPACE_BUSY_RETRY_REASON, AI_CONNECTION_BUSY_RETRY_REASON,
+  AI_CONNECTION_POOL_WAIT_RETRY_REASON, RUNNER_REVISION_WAIT_RETRY_REASON]);
 
 type ProjectionIssue = Pick<typeof issues.$inferSelect, "id" | "companyId" | "status" | "assigneeAgentId" | "projectId">;
 type ProjectionRun = Pick<typeof heartbeatRuns.$inferSelect,
   "id" | "status" | "scheduledRetryAt" | "errorCode" | "livenessState" | "resultJson"> &
-  Partial<Pick<typeof heartbeatRuns.$inferSelect, "agentId" | "error" | "companyId" | "nativeIssueId" | "runtimeMode">>;
+  Partial<Pick<typeof heartbeatRuns.$inferSelect, "agentId" | "error" | "companyId" | "nativeIssueId" | "runtimeMode" | "startedAt"
+    | "scheduledRetryReason">>;
 type ProjectionWait = { id: string; requestedAt: Date; sourceRunId?: string | null; executionWaitReason?: string | null;
   preparationStatus?: string | null; preparationRetryAt?: number | string | null };
 type ProjectionState = {
@@ -92,6 +102,9 @@ export function projectTaskInterruption(issue: ProjectionIssue, input: Projectio
       : [agent?.pauseReason, project?.pauseReason, company?.pauseReason].some(reason => reason === "budget" || reason === "budget_exceeded")
         ? "budget" : input.paused || project?.pausedAt || agent?.status === "paused" || company?.status === "paused" ? "resume" : null;
   if (userAction) return { ...base, responsibility: "user", state: "waiting_for_user", userAction };
+  // The task's existing dependency UI owns this wait. Keep actual recovery and
+  // Retry preparation failures authoritative; this does not change admission.
+  if (!action && !retryWait?.preparationStatus && isQueuedDependencyWait(run)) return base;
   // Intentional Stop is not an unsuccessful attempt. This is presentation only;
   // physical containment and pending cleanup keep their execution-side gates.
   if (!wait && run.runtimeMode === "native" && run.companyId === issue.companyId && run.nativeIssueId === issue.id
@@ -108,18 +121,33 @@ export function projectTaskInterruption(issue: ProjectionIssue, input: Projectio
     if (!ready) return { ...base, responsibility: "user", state: "waiting_for_user",
       userAction: "project_access", projectAccess };
   }
+  const recoveryStep: TaskInterruptionPresentation["recoveryStep"] = !system ? undefined
+    : system.phase === "verify_execution" ? "checking_previous_run"
+      : system.phase === "preserve_files" ? "saving_previous_files" : "finishing_recovery";
+  const activeObservation = action?.evidence.systemRecoveryActiveAt;
+  const recoveryRunning = system?.state === "running" && typeof activeObservation === "number"
+    && activeObservation > now - 45_000;
+  const recoveryScheduled = Boolean(system?.nextAttemptAt && system.nextAttemptAt > now);
+  const preparationDeadline = retryWait?.preparationRetryAt == null ? NaN : Number(retryWait.preparationRetryAt);
+  // A pending Retry preparation is already a Retry; never offer another one.
+  const preparationPending = retryWait?.sourceRunId === run.id && Boolean(retryWait.preparationStatus)
+    && ["issued", "processing"].includes(retryWait.preparationStatus!) && Number.isFinite(preparationDeadline);
   if (retryWait?.sourceRunId === run.id && retryWait.preparationStatus) {
-    const deadline = retryWait.preparationRetryAt == null ? NaN : Number(retryWait.preparationRetryAt);
-    if (["issued", "processing"].includes(retryWait.preparationStatus) && Number.isFinite(deadline))
+    const deadline = preparationDeadline;
+    const pending = preparationPending;
+    // Saved-work recovery gates a pending preparation, so it names the wait.
+    // Failed or cancelled preparation stays authoritative.
+    if (pending && !recoveryRunning && !recoveryScheduled)
       return { ...base, state: "retry_scheduled", nextRetryAt: new Date(deadline).toISOString() };
-    return { ...base, state: "failed", canRetry: retryWait.preparationStatus !== "cancelled" };
+    if (!pending) return { ...base, state: "failed", canRetry: retryWait.preparationStatus !== "cancelled" };
   }
+  if (run.status === "scheduled_retry" && resourceWaitRetryReasons.has(run.scheduledRetryReason ?? "") && !system)
+    return { ...base, state: "working" };
   const retryAt = system?.nextAttemptAt ?? run.scheduledRetryAt?.getTime();
   if (retryAt && retryAt > now) return { ...base, state: "retry_scheduled",
-    nextRetryAt: new Date(retryAt).toISOString(), canRetry: true };
-  const activeObservation = action?.evidence.systemRecoveryActiveAt;
-  if (system?.state === "running" && typeof activeObservation === "number" &&
-      activeObservation > now - 45_000) return { ...base, state: "working" };
+    nextRetryAt: new Date(retryAt).toISOString(), canRetry: !preparationPending,
+    ...(system?.nextAttemptAt && recoveryStep ? { recoveryStep } : {}) };
+  if (recoveryRunning) return { ...base, state: "working", ...(recoveryStep ? { recoveryStep } : {}) };
   if (retryWait?.sourceRunId === run.id && retryWait.executionWaitReason) {
     const reason = Object.hasOwn(retryWaitMessages, retryWait.executionWaitReason) ? retryWait.executionWaitReason : "execution_recovery";
     // Keep the latest input receipt so message submission can settle independently.
@@ -161,13 +189,17 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
   const [runs, waits, agentRows, projectRows, pauseRows, approvalRows, companyRows] = await Promise.all([
     db.select({ issueId: requestedIssueId, id: heartbeatRuns.id, status: heartbeatRuns.status,
       agentId: heartbeatRuns.agentId, companyId: heartbeatRuns.companyId,
-      nativeIssueId: heartbeatRuns.nativeIssueId, runtimeMode: heartbeatRuns.runtimeMode,
+      nativeIssueId: heartbeatRuns.nativeIssueId, runtimeMode: heartbeatRuns.runtimeMode, startedAt: heartbeatRuns.startedAt,
       agentAdapter: agents.adapterType,
       error: sql<string | null>`case when ${heartbeatRuns.errorCode} = 'setup_failed'
         and ${heartbeatRuns.error} = 'Project is outside this low-trust boundary.'
         or ${heartbeatRuns.errorCode} = 'workspace_validation_failed' then ${heartbeatRuns.error} else null end`,
       errorCode: heartbeatRuns.errorCode, livenessState: heartbeatRuns.livenessState, scheduledRetryAt: heartbeatRuns.scheduledRetryAt,
+      scheduledRetryReason: heartbeatRuns.scheduledRetryReason,
       resultJson: sql<Record<string, unknown>>`jsonb_build_object('configurationIncomplete', ${heartbeatRuns.resultJson}->'configurationIncomplete',
+        'stopReason', ${boundedJsonString(sql`${heartbeatRuns.resultJson}->'stopReason'`, 80)},
+        'timeoutSource', ${boundedJsonString(sql`${heartbeatRuns.resultJson}->'timeoutSource'`, 80)},
+        'timeoutFired', coalesce(${heartbeatRuns.resultJson}->'timeoutFired' = 'true'::jsonb, false),
         'projectAccessDenied', ${heartbeatRuns.resultJson}->'projectAccessDenied',
         'cancelledByActorType', ${boundedJsonString(sql`${heartbeatRuns.resultJson}->'cancelledByActorType'`, 32)},
         'cancelledByUserId', ${boundedJsonString(sql`${heartbeatRuns.resultJson}->'cancelledByUserId'`, 160)},

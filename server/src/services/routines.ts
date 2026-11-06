@@ -154,7 +154,12 @@ async function resolveRoutineResponsibleUserId(db: Db, companyId: string, actorU
   return resolveCompanyDefaultResponsibleUserId(db, companyId);
 }
 
-type Actor = { agentId?: string | null; userId?: string | null; runId?: string | null };
+type Actor = {
+  agentId?: string | null;
+  userId?: string | null;
+  actorResponsibleUserId?: string | null;
+  runId?: string | null;
+};
 type RoutineRow = typeof routines.$inferSelect;
 type RoutineTriggerRow = typeof routineTriggers.$inferSelect;
 
@@ -1906,6 +1911,9 @@ export function routineService(
             projectWorkspaceId,
             goalId: input.routine.goalId,
             parentId: input.routine.parentIssueId,
+            // A routine's parent is configured, not chosen per run. Human-configured
+            // routines keep any depth; agent-authored ones follow the agent limit.
+            parentDepthPolicy: input.routine.createdByAgentId ? "flatten" : "allow_nested",
             title,
             description,
             status: "todo",
@@ -2217,7 +2225,12 @@ export function routineService(
       );
       assertRoutineVariableDefinitions(variables);
       const status = normalizeDraftRoutineStatus(input.status, input.assigneeAgentId);
-      const responsibleUserId = await resolveRoutineResponsibleUserId(db, companyId, actor.userId, input.parentIssueId ?? null);
+      const responsibleUserId = await resolveRoutineResponsibleUserId(
+        db,
+        companyId,
+        actor.userId ?? actor.actorResponsibleUserId,
+        input.parentIssueId ?? null,
+      );
       if (!responsibleUserId) {
         throw unprocessable("Routine requires a responsible user");
       }

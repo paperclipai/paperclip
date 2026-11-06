@@ -1,4 +1,5 @@
 import { useCurrentAccountGuard } from "@/hooks/useAccountBoundMutation";
+import { ComposerFileDropTarget } from "./ComposerFileDropTarget";
 import { AgentAvatar } from "../AgentAvatar";
 import {
   useEffect,
@@ -12,6 +13,7 @@ import {
 import { cn } from "@/lib/utils";
 import { taskChatComposerSurfaceClasses } from "./composer-surface";
 import { useComposerStop } from "@/hooks/useComposerStop";
+import { useComposerSubmitKey } from "@/hooks/useComposerSubmitKey";
 import { useStreamlinedTaskChatPresentation } from "./presentation-mode";
 import {
   DRAFT_DEBOUNCE_MS,
@@ -425,6 +427,7 @@ export function TaskChatComposer({
   onRunnerGoalReassign,
 }: TaskChatComposerProps) {
   const streamlined = useStreamlinedTaskChatPresentation();
+  const submitKey = useComposerSubmitKey();
   const stopControl = useComposerStop(onStop, stopPending, confirmedStoppedRunIds);
   const [localBody, setBody] = useState(() => (draftKey ? loadDraft(draftKey) : ""));
   const body = creation ? creation.value : localBody;
@@ -1243,6 +1246,14 @@ export function TaskChatComposer({
 
   return (
     <div className={cn("flex min-w-0 flex-col", creation?.contextBar ? "gap-0" : "gap-2")}>
+      <ComposerFileDropTarget
+        enabled={canAcceptFiles && !disabled && !submitting && !creation?.readOnly}
+        newTask={Boolean(creation)}
+        onFiles={(files) => {
+          if (creation) creation.onSelectFiles(files);
+          else for (const file of files) void attachPickedFile(file);
+        }}
+      />
       {takeoverVisible && takeover ? (
         <section
           className={cn(
@@ -1335,17 +1346,6 @@ export function TaskChatComposer({
         }
       }}
         onPasteCapture={handlePasteCapture}
-        onDragOver={(event) => {
-          if (canAcceptFiles && !disabled && !creation && event.dataTransfer.types.includes("Files")) event.preventDefault();
-        }}
-        onDropCapture={(event) => {
-          if (!canAcceptFiles || disabled || creation) return;
-          const files = Array.from(event.dataTransfer.files);
-          if (!files.length) return;
-          event.preventDefault();
-          event.stopPropagation();
-          for (const file of files) void attachPickedFile(file);
-        }}
       >
         {creation?.header}
         {uncertainSubmission ? (
@@ -1411,6 +1411,7 @@ export function TaskChatComposer({
                 disabled,
               }] : [goalCommandOption]}
               onSubmit={() => void submit()}
+              submitKey={submitKey}
               fileDropTarget="parent"
               bordered={false}
               className={cn(disabled && "opacity-60")}
@@ -1650,7 +1651,7 @@ export function TaskChatComposer({
                       ? "Waiting for upload to finish"
                       : uploadFailed
                         ? "Remove the failed attachment to send"
-                        : creation ? `${creation.submitLabel} (⌘+Enter)` : "Send (⌘+Enter)"
+                        : `${creation?.submitLabel ?? "Send"} (${submitKey === "mod-enter" ? "⌘/Ctrl+Enter" : "Enter"})`
               }
               aria-label={
                 showStop
