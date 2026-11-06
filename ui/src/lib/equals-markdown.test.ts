@@ -19,6 +19,11 @@ describe("unescapeEqualsSigns", () => {
       "a\\=\\=b",
       // `!==` before a letter can open a highlight, so it stays escaped.
       "x!\\=\\=y",
+      // A line of `=` under text is a heading underline.
+      "Title\n\\=\\=\\=",
+      "Title\n\\=",
+      "> Title\n> \\=\\=",
+      "- item\n  \\=",
       "say \\=\\=this",
       "that\\=\\= now",
       "a\\\\=b",
@@ -34,6 +39,8 @@ describe("unescapeEqualsSigns", () => {
       "<span title=\"a\\=b\">x</span>",
     ]) unchanged(value);
     expect(unescapeEqualsSigns("prose a\\=b and `code a\\=b`")).toBe("prose a=b and `code a\\=b`");
+    // Pairs cut off by a code span do not see whitespace at the chunk edge.
+    unchanged("x \\=\\=`code`\\=\\= y");
   });
 
   it("leaves text without escaped equals untouched", () => {
