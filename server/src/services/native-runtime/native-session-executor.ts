@@ -11249,6 +11249,31 @@ async function executePaperclipNativeSessionWithinScope(
         // Emit after rollback so the diagnostic sink cannot deadlock on the
         // coordinator transaction. Reporting failure cannot change fencing.
         if (failure instanceof NativePostResultFailureError) {
+          // The rejected write proved this exact, unexpired owner holds an
+          // accepted result. Provider work is over and renewal is stopping, so
+          // hand the lease to finalization now, as the success path does. A
+          // retained lease would make the finalizer wait out its whole TTL.
+          await stoppedLeaseRenewal;
+          await boundedExecutionCleanup(async () => {
+            await input.db.transaction(async tx => {
+              await notifyNativeFinalizationWork(tx, input.execution.binding);
+              await tx.update(nativeRunFinalizations)
+                .set({ leaseOwner: null, leaseExpiresAt: null, recoveryState: null, recoveryRequestId: null, updatedAt: new Date() })
+                .where(and(
+                  eq(nativeRunFinalizations.runId, input.execution.binding.runId),
+                  eq(nativeRunFinalizations.companyId, input.execution.binding.companyId),
+                  eq(nativeRunFinalizations.issueId, input.execution.binding.issueId),
+                  eq(nativeRunFinalizations.leaseOwner, leaseOwner),
+                  eq(nativeRunFinalizations.attempt, attempt),
+                  eq(nativeRunFinalizations.controllerGeneration, controllerGeneration),
+                  eq(nativeRunFinalizations.controllerBootId, controller.bootId),
+                  eq(nativeRunFinalizations.controllerPid, controller.pid),
+                  eq(nativeRunFinalizations.controllerProcessStartedAt, controller.processStartedAt),
+                  gt(nativeRunFinalizations.leaseExpiresAt, sql`clock_timestamp()`),
+                  isNotNull(nativeRunFinalizations.resultId),
+                ));
+            });
+          });
           await boundedExecutionCleanup(async () => {
             await input.onEvent?.({ eventType: "native.post_result_failure", level: "warn",
               message: "Native execution failed after its result was accepted.",
