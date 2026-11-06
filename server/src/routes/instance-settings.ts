@@ -1,3 +1,4 @@
+import type { IdleDeadlineOwners } from "../services/idle-deadline-types.js";
 import { verifiedIdleCapabilities } from "../middleware/cloud-control.js";
 import { trackIdleWork } from "../services/task-admission.js";
 import { Router, type Request } from "express";
@@ -9,6 +10,7 @@ import {
   startTaskDrainRequestSchema,
 } from "@paperclipai/shared";
 import { conflict, forbidden } from "../errors.js";
+import { assertAgentsReadyForEnvironmentChange } from "../services/plugin-environment-driver.js";
 import {
   cloudTenantPrimaryCompanyId,
   getCloudStackContext,
@@ -133,7 +135,7 @@ function withTaskDrainTransition<T>(run: () => Promise<T>): Promise<T> {
   return turn;
 }
 
-export function instanceSettingsRoutes(db: Db, pluginWorkers?: PluginWorkerManager, prepareIdleDatabaseBackup?: () => Promise<boolean>) {
+export function instanceSettingsRoutes(db: Db, pluginWorkers?: PluginWorkerManager, prepareIdleDatabaseBackup?: () => Promise<boolean>, deadlineOwners?: IdleDeadlineOwners) {
   const router = Router();
   const svc = instanceSettingsService(db);
   const environments = environmentService(db);
@@ -155,6 +157,10 @@ export function instanceSettingsRoutes(db: Db, pluginWorkers?: PluginWorkerManag
           "instance",
           typeof req.body.defaultEnvironmentId === "string" ? req.body.defaultEnvironmentId : null,
         );
+        const previousId = (await svc.get()).defaultEnvironmentId;
+        const environmentById = async (id: unknown) => typeof id === "string" ? environments.getById(id) : null;
+        await assertAgentsReadyForEnvironmentChange(db, await environmentById(previousId), await environmentById(req.body.defaultEnvironmentId),
+          { inheritsDefault: true });
       }
       // An explicit tenant write of the instance default reclassifies its
       // attribution: whatever the default becomes — including a deliberate
@@ -343,7 +349,7 @@ export function instanceSettingsRoutes(db: Db, pluginWorkers?: PluginWorkerManag
         diagnostic => readIdleLocalWork({ backupCheckpoint: Boolean(prepareIdleDatabaseBackup), diagnostic,
           deadlineCapability: domainDeadlines ? capabilities : undefined }),
         pluginWorkers?.inspectIdleSleep?.bind(pluginWorkers), prepareIdleDatabaseBackup, scheduledRoutines, scheduledIssueMonitors,
-        { incomingWake: capabilities, deadlineCapability: domainDeadlines ? capabilities : undefined,
+        { deadlineOwners, incomingWake: capabilities, deadlineCapability: domainDeadlines ? capabilities : undefined,
           prepareLocalWork: async ({ canPrepare }) => {
             const result = await heartbeat.prepareIdleWarmNativeSessionsForSleep({ canRetire: canPrepare });
             return result.busy || result.failed ? "present" : "none";

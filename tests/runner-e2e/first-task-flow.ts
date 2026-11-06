@@ -6,6 +6,8 @@ import { firstTaskRejectionReplyRecorded, isFirstTaskRejectionCancellation } fro
 import { answerableRuntimeRunIds } from "./runtime-question-readiness.js";
 import { captureFirstTaskAttachments } from "./first-task-attachments.js";
 import { waitForFirstTaskReply } from "./first-task-replies.js";
+import { APPROVAL_HISTORY_CASE, readApprovalHistoryRevision } from "./first-task-approval-history.js";
+import { runApprovalHistoryDecisions } from "./first-task-approval-history-flow.js";
 import { observeCompletionUpdate } from "./completion-update-flow.js";
 import {
   provisionFirstTaskFixtures,
@@ -75,16 +77,19 @@ export function projectFirstTaskResult(result: RunnerE2EResult): RunnerE2EResult
     const answerRows: Row[] = Array.isArray(answers) ? rows(answers) : answers && typeof answers === "object"
       ? Object.entries(answers).map(([questionId, answer]) => ({ ...answer as Row, questionId })) : [];
     return {
-      ...pick(row, ["id", "issueId", "kind", "status", "createdAt", "resolvedAt", "resolvedByAgentId"]),
+      ...pick(row, ["id", "issueId", "kind", "status", "createdAt", "resolvedAt", "resolvedByAgentId", "resolvedByRunId", "sourceRunId"]),
       ...(row.resolvedByUserId ? { resolvedByUserId: "fixture-board" } : {}),
       payload: {
         ...pick(payload, ["version", "title", "prompt", "detailsMarkdown", "acceptLabel", "rejectLabel", "rejectRequiresReason", "rejectReasonLabel", "submitLabel"]),
         ...(payload?.questions ? questionSet(payload) : {}),
         ...(payload?.questionSet ? { questionSet: questionSet(payload.questionSet) } : {}),
-        ...(payload?.target ? { target: pick(payload.target, ["type", "key", "label", "revisionNumber"]) } : {}),
+        ...(payload?.target ? { target: pick(payload.target, ["type", "key", "label", "revisionNumber", "issueId", "documentId", "revisionId"]) } : {}),
+        ...(payload?.options ? { options: rows(payload.options).map(option => pick(option, ["id", "label", "description"])) } : {}),
+        ...(payload?.defaultSelectedOptionIds ? { defaultSelectedOptionIds: strings(payload.defaultSelectedOptionIds) } : {}),
       },
       ...(row.result ? { result: {
         ...pick(row.result, ["outcome", "reason", "commentId"]),
+        ...(row.result.selectedOptionIds ? { selectedOptionIds: strings(row.result.selectedOptionIds) } : {}),
         answers: answerRows.map(answer => ({
           ...pick(answer, ["id", "questionId", "text", "otherText", "customText"]),
           optionIds: strings(answer.optionIds ?? answer.selectedOptionIds),
@@ -112,14 +117,17 @@ export function projectFirstTaskResult(result: RunnerE2EResult): RunnerE2EResult
     checkpoints: e.checkpoints.map(c => ({
       id: c.id, at: c.at, phase: c.phase, issueId: c.issueId,
       tasks: c.tasks.map(t => pick(t, ["id", "identifier", "title", "description", "status", "parentId", "assigneeAgentId", "createdAt", "completedAt"])),
-      agents: c.agents.map(a => ({ ...pick(a, ["id", "name", "adapterType"]),
+      agents: c.agents.map(a => ({ ...pick(a, ["id", "name", "adapterType", "createdAt"]),
         adapterConfig: pick(a.adapterConfig, ["provider", "model", "modelReasoningEffort", "lifecycleMode", "codexPermissionMode"]) })),
       comments: c.comments.map(comment => ({ ...pick(comment, ["id", "issueId", "body", "authorAgentId", "createdAt"]),
         ...(comment.authorUserId ? { authorUserId: "fixture-board" } : {}) })),
       interactions: c.interactions.map(interaction),
-      documents: c.documents.map(d => pick(d, ["id", "issueId", "key", "title", "body", "format", "latestRevisionId", "latestRevisionNumber", "createdAt", "updatedAt"])),
+      documents: c.documents.map(d => ({ ...pick(d, ["id", "issueId", "key", "title", "body", "format", "latestRevisionId", "latestRevisionNumber", "createdAt", "updatedAt"]),
+        ...(d.savedRevision ? { savedRevision: { ...pick(d.savedRevision, ["id", "documentId", "issueId", "key", "body", "createdByAgentId", "createdByRunId"]),
+          ...(d.savedRevision.createdByUserId ? { createdByUserId: "fixture-board" } : {}) } } : {}),
+      })),
       attachments: (c.attachments ?? []).map(a => pick(a, ["id", "issueId", "title", "originalFilename", "filename", "body", "contentVerified", "contentSha256", "byteSize", "createdAt"])),
-      runs: c.runs.map(run => ({ ...pick(run, ["id", "issueId", "status", "startedAt", "finishedAt", "runtimeMode", "driverKind"]),
+      runs: c.runs.map(run => ({ ...pick(run, ["id", "issueId", "nativeIssueId", "agentId", "status", "startedAt", "finishedAt", "runtimeMode", "driverKind"]),
         ...pick({ model: run.resultJson?.model ?? run.usageJson?.model }, ["model"]) })),
     })),
     checks: e.checks.map(check => ({
@@ -279,6 +287,7 @@ export async function setupFirstTaskFixtures(input: {
   onCompanyCreated?: (companyId: string) => Promise<void>;
 }): Promise<FirstTaskFixtureValues> {
   const { page, api, execution, nonce } = input;
+  const legacySetup = ["legacy-codex", "legacy-claude"].includes(execution.profile.id);
   await api.patch("/api/instance/settings/experimental", {
     enableClassicTaskInterface: false,
   });
@@ -325,16 +334,27 @@ export async function setupFirstTaskFixtures(input: {
           : /^Claude/,
     })
     .click();
+  if (legacySetup) {
+    const agents = await pollUntil({
+      label: "first-task agent setup configuration",
+      deadlineAt: Date.now() + 30_000,
+      load: () => api.get<Row[]>(`/api/companies/${company.id}/agents`),
+      accept: rows => rows.some(agent => agent.name === fixtures.agent.name
+        && agent.pauseReason === "setup" && agent.metadata?.setupAdapterPending === false),
+    });
+    const agent = agents.find(agent => agent.name === fixtures.agent.name && agent.pauseReason === "setup")!;
+    await api.patch(`/api/agents/${agent.id}`, { runner: "legacy" });
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await page.getByRole("radio", {
+      name: execution.profile.credential === "OPENAI_API_KEY" ? /^OpenAI/ : /^Claude/,
+    }).click();
+  }
+  await expect(page.getByRole("button", { name: "Runner", exact: true })).toHaveCount(0);
   const useKey = page.getByRole("button", {
     name: "Use API key instead",
     exact: true,
   });
   const savedKey = page.getByRole("combobox", { name: "Saved API key" });
-  if (["legacy-codex", "legacy-claude"].includes(execution.profile.id)) {
-    await page.getByText("Advanced", { exact: true }).click();
-    await page.getByRole("button", { name: "Runner", exact: true }).click();
-    await page.getByRole("option", { name: "Legacy runner", exact: true }).click();
-  }
   // Credential mode depends on the selected provider and its asynchronous key lookup.
   await expect(savedKey.or(useKey).first()).toBeVisible();
   if (await useKey.isVisible()) await useKey.click();
@@ -366,7 +386,7 @@ export async function setupFirstTaskFixtures(input: {
     expect(agents[0].adapterConfig?.provider).toBe("codex");
   }
   fixtures.onboardingRuntime = {
-    mode: "production-wizard",
+    mode: legacySetup ? "api-configured-legacy-setup" : "production-wizard",
     originalAdapterType: wizardAdapter,
     testedAdapterType: wizardAdapter,
     originalModel: agents[0].adapterConfig?.model ?? null,
@@ -469,13 +489,15 @@ export async function runFirstTaskFlow(input: {
             `/api/issues/${t.id}/documents`,
           );
           return Promise.all(
-            summaries.map(async (d) => ({
-              ...(await api.get<Row>(
+            summaries.map(async (d) => {
+              const document = { ...(await api.get<Row>(
                 `/api/issues/${t.id}/documents/${encodeURIComponent(d.key)}`,
               )),
               key: d.key,
               issueId: t.id,
-            })),
+              };
+              return scenario.id === APPROVAL_HISTORY_CASE ? readApprovalHistoryRevision(api, document) : document;
+            }),
           );
         }),
       )
@@ -728,7 +750,7 @@ export async function runFirstTaskFlow(input: {
     if (!scenario.firstResponseOnly) {
       if (["interview", "ambiguous"].includes(scenario.opening)) {
         const facts =
-          scenario.id === "interview-plan-accept"
+          ["interview-plan-accept", APPROVAL_HISTORY_CASE].includes(scenario.id)
             ? `${scenario.facts} Please write a plan for me to review, before doing the work.`
             : scenario.facts;
         const pending = (
@@ -785,7 +807,10 @@ export async function runFirstTaskFlow(input: {
       if (scenario.id === "revise-accept")
         await turn(scenario.revision, "revised");
       assertBeforeAcceptance();
-      if (scenario.id === "reject-no-execution")
+      if (scenario.id === APPROVAL_HISTORY_CASE) {
+        await runApprovalHistoryDecisions({ page, api, issueId: issue.id, marker: scenario.marker, deadlineAt,
+          allRuns, snapshot, settle, capture: input.capture });
+      } else if (scenario.id === "reject-no-execution")
         await turn(scenario.rejection, "rejected");
       else if (["task-card-accept", "accept-while-running"].includes(scenario.id)) {
         const pending = (

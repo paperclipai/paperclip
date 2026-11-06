@@ -58,8 +58,21 @@ jobs:
           else
             echo 'enabled=false' >> "$GITHUB_OUTPUT"
           fi
-      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86
+      # Same trusted bootstrap as every other pnpm setup in this workflow:
+      # Node immediately first, and no npm audit, fund or update-notifier calls.
+      - name: Setup Node.js for pnpm bootstrap
         if: steps.eligible.outputs.enabled == 'true'
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - name: Setup pnpm
+        if: steps.eligible.outputs.enabled == 'true'
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+        env:
+          NPM_CONFIG_AUDIT: "false"
+          NPM_CONFIG_FUND: "false"
+          NPM_CONFIG_UPDATE_NOTIFIER: "false"
         with:
           version: 9.15.4
       - name: Restore dependencies for graph analysis
@@ -131,14 +144,45 @@ jobs:
             echo 'CI_NODE_TEST=--test' >> "$GITHUB_ENV"
           fi
 
-      - name: Block manual lockfile edits
-        if: >-
-          github.head_ref != 'chore/refresh-lockfile' &&
-          github.event.pull_request.user.login != 'dependabot[bot]'
+      # Only trusted environments write lock content: the lockfile refresh
+      # workflow, and Dependabot when the lockfile bytes come from a verified
+      # Dependabot commit. Run the policy from the current base-branch tip so a
+      # pull request cannot rewrite the check that judges it.
+      - name: Block untrusted lockfile edits
+        id: lockfile_writer
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          HEAD_REF: ${{ github.head_ref }}
         run: |
-          # Diff the PR branch against its merge base so recent base-branch commits
-          # do not masquerade as changes made by the PR itself.
-          changed="$(git diff --name-only "${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }}")"
+          # GitHub does not move pull_request.base.sha forward on every push, so
+          # it can name an old base-branch commit. The checkout is GitHub's merge
+          # commit: its first parent is the current base-branch tip, and its
+          # second parent is the PR head. Load the policy from that tip.
+          trusted_base="$BASE_SHA"
+          if [ "$(git rev-parse --verify --quiet "$GITHUB_SHA^2")" = "$HEAD_SHA" ]; then
+            trusted_base="$(git rev-parse "$GITHUB_SHA^1")"
+          fi
+          policy="$RUNNER_TEMP/lockfile-trust.mjs"
+          if git show "$trusted_base:.github/scripts/lockfile-trust.mjs" > "$policy" 2>/dev/null; then
+            BASE_SHA="$trusted_base" node "$policy" pr
+            # Fail closed if the policy did not run.
+            if ! grep -q '^writer=' "$GITHUB_OUTPUT"; then
+              echo "::error title=Lockfile policy::lockfile-trust.mjs did not report a lockfile writer."
+              exit 1
+            fi
+            exit 0
+          fi
+          # The base predates lockfile-trust.mjs: keep the earlier rule.
+          echo "writer=none" >> "$GITHUB_OUTPUT"
+          if [ "$HEAD_REF" = 'chore/refresh-lockfile' ] || [ "$PR_AUTHOR" = 'dependabot[bot]' ]; then
+            exit 0
+          fi
+          changed="$(git diff --name-only "$trusted_base...$HEAD_SHA")"
           if printf '%s\n' "$changed" | grep -qx 'pnpm-lock.yaml'; then
             echo "Do not commit pnpm-lock.yaml in pull requests. CI owns lockfile updates."
             exit 1
@@ -415,6 +459,9 @@ jobs:
       - name: Typecheck workspaces whose build scripts skip TypeScript
         run: pnpm run typecheck:build-gaps
 
+      - name: Typecheck test files that no build reads
+        run: node scripts/typecheck-test-programs.mjs --low-memory
+
       - name: Typecheck the server in low-memory layers
         env:
           PAPERCLIP_TYPECHECK_LOW_MEMORY: "1"
@@ -455,6 +502,9 @@ jobs:
       PAPERCLIP_CI_SELECTION_HASH: ${{ matrix.selection && fromJSON(needs.test_selection.outputs.plan).testSelection.hash || '' }}
       PAPERCLIP_CI_PROFILE: ${{ needs.gate.outputs.profile_ci }}
       PAPERCLIP_CI_PROFILE_JOB: General tests (${{ matrix.group_label }})
+      # The reporting-lock policy test skips a Dependabot lockfile, which the
+      # policy job verifies and the lockfile refresh admits after merge.
+      PAPERCLIP_CI_PR_AUTHOR: ${{ github.event.pull_request.user.login }}
 
     steps:
       - name: Checkout repository
@@ -611,10 +661,137 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
+  # Sandbox providers are outside the root workspace, so no other lane runs their
+  # tests. The `//#ci:sandbox-providers` inputs in turbo.json select this job: the
+  # providers, the plugin SDK, and the shared package the SDK depends on.
+  sandbox_provider_tests:
+    name: Sandbox provider tests
+    needs: [gate]
+    if: ${{ needs.gate.outputs.full_ci == 'true' && (needs.gate.outputs.plan == '' || fromJSON(needs.gate.outputs.plan).jobs.sandbox_provider_tests.run) }}
+    runs-on: ${{ needs.gate.outputs.runner }}
+    timeout-minutes: 15
+
+    env:
+      PAPERCLIP_CI_PROFILE: ${{ needs.gate.outputs.profile_ci }}
+      PAPERCLIP_CI_PROFILE_JOB: Sandbox provider tests
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Initialize CI profile
+        continue-on-error: true
+        if: env.PAPERCLIP_CI_PROFILE == 'true'
+        run: node scripts/ci-profile/initialize.mjs
+
+      - name: Setup Node.js for pnpm bootstrap
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+        env:
+          NPM_CONFIG_AUDIT: "false"
+          NPM_CONFIG_FUND: "false"
+          NPM_CONFIG_UPDATE_NOTIFIER: "false"
+        with:
+          version: 9.15.4
+
+      # Share the checked-in lockfile key with master. PR merge refs must not
+      # save full copies of the store or evict the post-merge build caches.
+      - name: Restore materialized dependencies and shared builds
+        uses: ./.github/actions/setup-ci-dependencies
+
+      # The script installs the providers from their own lockfiles, links the
+      # in-repo plugin SDK, and runs every provider suite. Daytona's capacity
+      # tests kill a process at a file-size limit inside the exported
+      # directory. On a runner that allows core dumps, its core file joins the
+      # export and changes the transferred file count, so turn core dumps off.
+      - name: Run sandbox provider tests
+        run: |
+          ulimit -c 0
+          node scripts/test-sandbox-providers.mjs
+
+      - name: Upload CI profile timings
+        continue-on-error: true
+        if: always() && env.PAPERCLIP_CI_PROFILE == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ci-profile-${{ github.run_attempt }}-${{ github.job }}-${{ strategy.job-index || 0 }}
+          path: .ci-profile/*.ndjson
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 14
+
+  verify_runner_e2e_support:
+    name: Runner support suite
+    needs: [gate]
+    if: ${{ needs.gate.outputs.full_ci == 'true' && (needs.gate.outputs.plan == '' || fromJSON(needs.gate.outputs.plan).jobs.verify_runner_e2e_support.run) }}
+    runs-on: ${{ needs.gate.outputs.runner }}
+    timeout-minutes: 20
+
+    env:
+      PAPERCLIP_CI_PROFILE: ${{ needs.gate.outputs.profile_ci }}
+      PAPERCLIP_CI_PROFILE_JOB: Runner support suite
+
+    # The paid Runner workflows depend on this suite: workflow security
+    # policy, evidence oracles, cost receipts and controller recovery. It
+    # used to run only in a manual Docker Runner check, so master changes
+    # broke it unseen (#19527, #19529). It needs no provider credentials.
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Initialize CI profile
+        continue-on-error: true
+        if: env.PAPERCLIP_CI_PROFILE == 'true'
+        run: node scripts/ci-profile/initialize.mjs
+
+      - name: Setup Node.js for pnpm bootstrap
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+        env:
+          NPM_CONFIG_AUDIT: "false"
+          NPM_CONFIG_FUND: "false"
+          NPM_CONFIG_UPDATE_NOTIFIER: "false"
+        with:
+          version: 9.15.4
+
+      # Share the checked-in lockfile key with master. PR merge refs must not
+      # save full copies of the store or evict the post-merge build caches.
+      - name: Restore materialized dependencies and shared builds
+        uses: ./.github/actions/setup-ci-dependencies
+
+      # Builds the plugin SDK first, then runs Vitest and the node:test files.
+      - name: Run the Runner support suite
+        run: pnpm test:e2e:runner:unit
+
+      - name: Upload CI profile timings
+        continue-on-error: true
+        if: always() && env.PAPERCLIP_CI_PROFILE == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ci-profile-${{ github.run_attempt }}-${{ github.job }}-${{ strategy.job-index || 0 }}
+          path: .ci-profile/*.ndjson
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 14
+
   verify:
     name: verify
     if: ${{ always() }}
-    needs: [gate, test_selection, policy, typecheck_release_registry, general_tests, verify_paperclip_runner, build, docker_context_integrity, verify_serialized_server, canary_dry_run]
+    needs: [gate, test_selection, policy, typecheck_release_registry, general_tests, verify_paperclip_runner, build, docker_context_integrity, sandbox_provider_tests, verify_serialized_server, canary_dry_run, verify_runner_e2e_support]
     runs-on: ${{ needs.gate.outputs.runner }}
     timeout-minutes: 5
     steps:
@@ -633,7 +810,7 @@ jobs:
           const plan = process.env.CI_PLAN ? JSON.parse(process.env.CI_PLAN) : null;
           if (plan) assert.equal(plan.version, 1, 'Supported task plan required');
           if (plan?.testSelection) assert.equal(results.test_selection.result, 'success', 'Published selection must succeed');
-          for (const job of ["typecheck_release_registry","general_tests","verify_paperclip_runner","build","docker_context_integrity","verify_serialized_server","canary_dry_run"]) {
+          for (const job of ["typecheck_release_registry","general_tests","verify_paperclip_runner","build","docker_context_integrity","sandbox_provider_tests","verify_serialized_server","canary_dry_run","verify_runner_e2e_support"]) {
             if (plan) assert.equal(typeof plan.jobs[job]?.run, 'boolean', 'Missing suite decision: ' + job);
             const selected = process.env.FULL_CI === 'true' && (!plan || plan.jobs[job].run);
             assert.equal(results[job].result, selected ? 'success' : 'skipped', job);

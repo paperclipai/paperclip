@@ -1134,10 +1134,12 @@ untyped capacity text, and Codex CLI transient upstream failures remain reportab
 The run keeps its failed state and its terminal diagnostic.
 
 A native Codex model capacity failure stays local only while its automatic
-retry owns recovery. The run must carry `native_provider_overloaded`, the closed
-`codex`/`server_overloaded` diagnostic, and a committed finalization whose
-reason is `native_provider_overloaded`. The report also requires the
-`native_provider_overloaded` retry run that the same status transaction created.
+retry owns recovery. The run must carry `native_provider_overloaded`. The proof
+of the retry is the `native_provider_overloaded` successor run for the same
+task, which only the committed capacity status decision creates, and only for
+the typed `codex`/`server_overloaded` diagnostic. The run's own `resultJson` is
+not required: the live heartbeat's failed-status write replaces it with the
+adapter's copy, which lacks the finalizer's diagnostic and finalization fields.
 Exhausted or held capacity failures, other retry lanes, setup failures, signals,
 and unreadable retry evidence remain reportable. A failed retry reports its own
 outcome.
@@ -1546,9 +1548,14 @@ without one, the report has no synthetic reporting stack.
 
 Credential patterns, the current user's home path, registered run-secret values,
 and known host/runtime environment credentials are removed before truncation.
-Declared environment secret bindings are included even when their key has no
-credential-like name. Runtime values are used only for redaction and are never
-copied into an event. Stack fields are limited to 8,192 characters,
+Environment values stay private unless their names and values identify an ordinary
+process setting. Flags and counts require both a setting-name match and a boolean
+or numeric value. Mode labels use a closed value list. Paths, regions, and key
+selectors such as `SORT_KEY` use explicit ordinary-setting names. Unknown opaque
+values remain private, including credentials under arbitrary names. Declared
+secret bindings and recognizable credential contents override ordinary-setting
+exemptions, including short values. Runtime values are used only for redaction
+and are never copied into an event. Stack fields are limited to 8,192 characters,
 exception messages to 2,048, provider titles to 4,096, and provider details to
 12,288. Other diagnostic strings are limited to 200 characters (adapter cause
 messages: 2,048). Truncation is marked in the text and in
@@ -2212,7 +2219,7 @@ expired and cross-invocation context cannot select another call's parent.
 | --- | --- | --- | --- |
 | Dispatch / receipt / return | `execution.plugin_dispatch` → `plugin.worker` | Host invocation; worker monotonic durations anchored to its epoch start | Outer minus worker time is an unattributed dispatch/scheduling remainder. It is not network latency. |
 | Repeated host reads | `plugin.host.identity.read`, `config.read`, `progress.read`, `progress.write` | Worker invocation, one span per awaited call, bounded by receipt budget | Round trip and host service together. Span count is call count; overlapping reads are not additive. |
-| Plugin coordination | `plugin.storage.queue`, `storage.execute`, `runtime.queue`, `runtime.prepare`, `runtime.reconcile`, `runtime.verify`, `workspace.prepare` | Invoking plugin, monotonic durations | The plugin keeps its locking and authorization owners. `plugin.reused` is boolean. |
+| Plugin coordination | `plugin.storage.queue`, `storage.execute`, `runtime.queue`, `runtime.prepare`, `runtime.reconcile`, `runtime.verify`, `workspace.prepare`, `workspace.failure` | Invoking plugin, monotonic durations | The plugin keeps its locking and authorization owners. `plugin.reused` is boolean. `plugin.failure_reason` on `workspace.failure` is a closed workspace operation failure reason or `unknown`. |
 | Completed remote lifecycle | `plugin.remote.lifecycle`, linked to the host-owned observer | Bounded prior monotonic durations, up to ten minutes old | Independent lifecycle trace; never a child of a later polling request. The worker cannot supply link IDs. |
 | Remote operation receipt | `plugin.remote.request` → `plugin.remote.operation` | Remote monotonic offsets, checked against local round trip and parent bounds | Closed operation classes cover mount refresh, guest setup, process execution, scripts and cleanup. No remote wall-clock subtraction. |
 | Retained/cold transport | `runner.transport.attach`, `resume`, `cold_start`, `prepare`, `registration`, `provider_identity` | Controller process, current active context on every operation | A retained transport must not capture the preceding run's trace. These parents overlap their children. |

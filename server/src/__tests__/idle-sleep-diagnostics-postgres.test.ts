@@ -4,6 +4,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { agentApiKeys, agents, budgetPolicies, chatDeliveries, chatEndpoints, companies,
   companyTransferRuns, connectionEventDeliveries, createDb, heartbeatRuns, issues,
   routineTriggers, routines, toolApplications, toolConnections, type Db } from "@paperclipai/db";
+import { queueBudgetEvaluation } from "../services/budget-evaluation-work.js";
 import { readIdleSleepSafety } from "../services/idle-sleep-safety.js";
 import { EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
@@ -23,6 +24,7 @@ if (!support.supported) console.warn(`Skipping idle sleep diagnostics Postgres t
   beforeAll(async () => {
     if (!externalDatabaseUrl) temporary = await startEmbeddedPostgresTestDatabase("idle-sleep-diagnostics-");
     db = createDb(externalDatabaseUrl ?? temporary!.connectionString, { maxConnections: 4 });
+    await db.execute(sql`TRUNCATE companies, plugins, environments CASCADE`);
   }, 60_000);
   afterEach(async () => { await db.execute(sql`TRUNCATE companies, plugins, environments CASCADE`); });
   afterAll(async () => { await db?.$client.end({ timeout: 1 }); await temporary?.cleanup(); }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
@@ -59,10 +61,15 @@ if (!support.supported) console.warn(`Skipping idle sleep diagnostics Postgres t
     expect(report.backgroundWork).toBe("none");
     expect(report.diagnostics?.complete).toBe(true);
     expect(blockers(report)).toEqual([]);
+    expect(report.diagnostics?.checks).toContainEqual({ reason: "budget_evaluation_work", state: "none" });
     expect(report.diagnostics?.checks.filter(check => !check.reason.includes(".") ||
       ["agents.execution_or_timer", "agents.lifecycle", "agents.company_hold", "heartbeat_runs.budget_cancellation"].includes(check.reason)))
-      .toHaveLength(72);
+      .toHaveLength(73);
     expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId))).toHaveLength(1);
+    await db.transaction(tx => queueBudgetEvaluation(tx as unknown as Db, { companyId: f.companyId, agentId: f.agentId }));
+    const pending = await read();
+    expect(pending.backgroundWork).toBe("present");
+    expect(blockers(pending)).toEqual(["budget_evaluation_work"]);
   });
 
   it("reports history, credentials, debt, running work and future configuration simultaneously", async () => {

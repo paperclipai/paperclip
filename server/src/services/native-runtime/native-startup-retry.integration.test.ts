@@ -38,6 +38,9 @@ import { currentNativeControllerIdentity } from "./native-restart-recovery.js";
 import { loadNativeRunnerCheckpoint } from "./native-runner-checkpoint.js";
 import { environmentRunnerIngressErrorData, JsonRpcCallError, PluginEnvironmentRunnerIngressError } from "@paperclipai/plugin-sdk";
 import { accountRunCost } from "../run-cost-accounting.js";
+import { settleUnrecoverableExecutions } from "../execution-recovery-resolution.js";
+import { agentProviderLimitCooldown } from "./native-startup-retry.js";
+import { resolveLocalRuntimeApiUrl, runtimeApiInternals } from "../../runtime-api.js";
 
 type SessionOpenStatus = "failed" | "rejected" | "indeterminate";
 
@@ -45,6 +48,7 @@ type SessionOpenStatus = "failed" | "rejected" | "indeterminate";
 function sessionOpenFailure(options: {
   status?: SessionOpenStatus;
   providerFailure?: Record<string, unknown>;
+  classification?: string;
 } = {}) {
   const status = options.status ?? "failed";
   const result = {
@@ -52,7 +56,7 @@ function sessionOpenFailure(options: {
       code: "command_execution_failed",
       message: options.providerFailure
         ? "Provider request failed"
-        : "failed to start ACPX provider: ACPX sidecar command session.open was rejected (retryable=false, classification=session_ensure_failed)",
+        : `failed to start ACPX provider: ACPX sidecar command session.open was rejected (retryable=false, classification=${options.classification ?? "session_ensure_failed"})`,
       ...(options.providerFailure ? { providerFailure: options.providerFailure } : {}),
     },
     status,
@@ -476,6 +480,129 @@ describe("native provider startup retry", () => {
     expect(state.issue.status).toBe("in_progress");
   });
 
+  it("retries startup that a draining server interrupted before any provider session", async () => {
+    const seeded = await seedRun(await createAgent());
+    // A graceful shutdown closes the HTTP listener first; startup that reaches
+    // the runtime API lookup afterwards fails before a runner or provider exists.
+    runtimeApiInternals.resetForTests();
+    provider.execute.mockReset().mockImplementation(async () => {
+      resolveLocalRuntimeApiUrl();
+      throw new Error("expected the closed listener to stop startup");
+    });
+    const failedAt = new Date();
+    await expect(executePaperclipNativeSession({
+      db,
+      execution: seeded.execution,
+      runnerInstanceId: seeded.runnerInstanceId,
+      backend: {
+        descriptor: async () => { throw new Error("Unexpected provider descriptor call"); },
+        openSession: async () => { throw new Error("Unexpected provider session call"); },
+      },
+    })).rejects.toThrow("local_runtime_api_listener_unavailable");
+
+    const state = await read(seeded);
+    expect(state.coordinator).toMatchObject({
+      phase: "retryable_failure",
+      recoveryState: "resuming_session",
+      attempt: 1,
+      leaseOwner: null,
+      failureDetail: expect.objectContaining({
+        originalFailureCode: "local_runtime_api_listener_unavailable",
+        recoveryMode: "bootstrap_retry",
+        providerSessionEstablished: false,
+        providerEventsExist: false,
+        checkpointExists: false,
+      }),
+    });
+    const [low, high] = backoffWindow(failedAt, 1);
+    expect(state.coordinator.nextAttemptAt!.getTime()).toBeGreaterThanOrEqual(low);
+    expect(state.coordinator.nextAttemptAt!.getTime()).toBeLessThanOrEqual(high + 5_000);
+    expect(state.issue.status).toBe("in_progress");
+    expect(state.action).toMatchObject({
+      ownerType: "agent",
+      ownerAgentId: seeded.agentId,
+      wakePolicy: { kind: "resume_native_run", runId: seeded.runId },
+    });
+    // The next server process claims the same run; no replacement run is created.
+    await claimRetry(seeded);
+  });
+
+  it("keeps a closed-listener failure operator-owned once provider work is durable", async () => {
+    const seeded = await seedRun(await createAgent());
+    runtimeApiInternals.resetForTests();
+    provider.execute.mockReset().mockImplementation(async () => {
+      await db.insert(heartbeatRunEvents).values({
+        companyId, runId: seeded.runId, agentId: seeded.agentId, seq: 900,
+        eventType: "turn.started", stream: "system",
+      });
+      resolveLocalRuntimeApiUrl();
+    });
+    await expect(executePaperclipNativeSession({
+      db,
+      execution: seeded.execution,
+      runnerInstanceId: seeded.runnerInstanceId,
+      backend: {
+        descriptor: async () => { throw new Error("Unexpected provider descriptor call"); },
+        openSession: async () => { throw new Error("Unexpected provider session call"); },
+      },
+    })).rejects.toThrow("local_runtime_api_listener_unavailable");
+
+    const state = await read(seeded);
+    expect(state.coordinator).toMatchObject({
+      phase: "terminal_failure",
+      nextAttemptAt: null,
+      failureDetail: expect.objectContaining({ recoveryMode: "ambiguous_state", providerSessionEstablished: true }),
+    });
+    expect(state.issue.status).toBe("blocked");
+  });
+
+  it.each(["grok_model_mismatch", "requested_model_unsupported"])(
+    "stops at a session.open %s rejection with a choose-model action instead of a doomed retry",
+    async (classification) => {
+      const seeded = await seedRun(await createAgent());
+      await failStartup(seeded, sessionOpenFailure({ classification }));
+
+      const state = await read(seeded);
+      // No automatic same-run bootstrap retry: the selected model cannot start.
+      expect(state.coordinator).toMatchObject({
+        phase: "terminal_failure",
+        recoveryState: "blocked",
+        failureCode: "native_provider_model_rejected",
+        attempt: 1,
+        nextAttemptAt: null,
+        failureDetail: expect.objectContaining({
+          originalFailureCode: "native_provider_model_rejected",
+          providerSessionEstablished: false,
+          providerEventsExist: false,
+          checkpointExists: false,
+        }),
+      });
+      expect(String(state.coordinator.failureDetail?.nextAction)).toContain("Choose a supported model");
+      expect(state.run).toMatchObject({ status: "failed", errorCode: "native_provider_model_rejected" });
+      expect(state.issue.status).toBe("blocked");
+      expect(state.issue.executionRunId).toBeNull();
+      // A named, durable board action owns the next step.
+      expect(state.action).toMatchObject({
+        status: "active",
+        ownerType: "board",
+        cause: "native_provider_model_rejected",
+        returnOwnerAgentId: seeded.agentId,
+        wakePolicy: null,
+      });
+      expect(state.action!.nextAction).toContain("Choose a supported model");
+      // The no-replay settler must not fold this owned action into a silent hold.
+      await settleUnrecoverableExecutions(db);
+      expect((await read(seeded)).action).toMatchObject({ id: state.action!.id, status: "active" });
+      expect(await claimNativeSessionResumptions({
+        db,
+        runnerInstanceId: "startup-retry-test",
+        runIds: [seeded.runId],
+        now: new Date(Date.now() + 60 * 60_000),
+        deferIneligible: false,
+      })).toEqual([]);
+    },
+  );
+
   it("blocks with a clear reason once the bounded startup budget is exhausted", async () => {
     const seeded = await seedRun(await createAgent());
     await failStartup(seeded, sessionOpenFailure());
@@ -608,6 +735,34 @@ describe("native provider startup retry", () => {
       backoffWindow(startupResetAt, 1)[0],
     );
     expect(state.issue.status).toBe("in_progress");
+  });
+
+  it("reads the reset clock from an ACP terminal limit failure's provider wording", async () => {
+    const agentId = await createAgent();
+    const limitedAt = new Date(Date.now() - 5 * 60_000);
+    const resetHour = new Date(Date.now() + 3 * 60 * 60_000).getUTCHours();
+    await recordPriorRun(agentId, {
+      status: "failed",
+      startedAt: new Date(limitedAt.getTime() - 60_000),
+      finishedAt: limitedAt,
+      errorCode: "native_provider_usage_limit",
+      resultJson: {
+        providerFailure: limitFailure({
+          category: "quota_exhausted",
+          message: `ACP agent reported a terminal limit failure.\nYou've hit your session limit · resets ${resetHour}:00 (UTC)`,
+        }),
+      },
+    });
+    const expected = new Date(limitedAt);
+    expected.setUTCHours(resetHour, 0, 0, 0);
+    if (expected <= limitedAt) expected.setUTCDate(expected.getUTCDate() + 1);
+
+    const seeded = await seedRun(agentId);
+    await failStartup(seeded, sessionOpenFailure());
+    const state = await read(seeded);
+    expect(state.coordinator.failureDetail).toMatchObject({ providerCooldownAt: expected.toISOString() });
+    expect(await agentProviderLimitCooldown(db, { companyId, agentId, now: new Date() }))
+      .toMatchObject({ resetAt: expected, resetReported: true });
   });
 
   it("holds a startup retry for at most one day before trying again", async () => {

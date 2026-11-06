@@ -1268,6 +1268,77 @@ impl SupervisedProcess {
         let _ = self.child.kill();
         self.wait()
     }
+
+    /// Fence this owned process group when an existing deadline leaves no grace.
+    pub fn terminate_group_immediately(&mut self) -> Result<ProcessExitFact, LocalRunnerError> {
+        if self.finished {
+            return self.wait();
+        }
+        self.stdin.take();
+        #[cfg(unix)]
+        let signal = {
+            use rustix::process::{kill_process_group, Pid, Signal};
+            let group = i32::try_from(self.process_group_id)
+                .ok()
+                .and_then(Pid::from_raw)
+                .ok_or_else(|| {
+                    LocalRunnerError::invalid("owned process group identity is invalid")
+                })?;
+            match kill_process_group(group, Signal::KILL) {
+                Ok(()) => Ok(()),
+                Err(rustix::io::Errno::SRCH) => {
+                    if let Some(exit) = self.try_wait()? {
+                        self.finished = true;
+                        return Ok(exit);
+                    }
+                    Err(LocalRunnerError::invalid(
+                        "owned process group disappeared before leader exit was observed",
+                    ))
+                }
+                Err(error) => Err(LocalRunnerError::invalid(format!(
+                    "failed to signal owned process group: {error}"
+                ))),
+            }
+        };
+        #[cfg(not(unix))]
+        let signal = {
+            if let Some(exit) = self.try_wait()? {
+                self.finished = true;
+                return Ok(exit);
+            }
+            let signal = self.child.kill().map_err(|error| {
+                LocalRunnerError::invalid(format!("failed to stop owned process: {error}"))
+            });
+            if signal.is_err() {
+                if let Some(exit) = self.try_wait()? {
+                    self.finished = true;
+                    return Ok(exit);
+                }
+            }
+            signal
+        };
+        self.reap_after_immediate_signal(signal)
+    }
+
+    fn reap_after_immediate_signal(
+        &mut self,
+        signal: Result<(), LocalRunnerError>,
+    ) -> Result<ProcessExitFact, LocalRunnerError> {
+        signal?;
+        let deadline = Instant::now() + Duration::from_millis(100);
+        loop {
+            if let Some(exit) = self.try_wait()? {
+                self.finished = true;
+                return Ok(exit);
+            }
+            if Instant::now() >= deadline {
+                return Err(LocalRunnerError::invalid(
+                    "owned process termination remains unconfirmed",
+                ));
+            }
+            thread::sleep(Duration::from_millis(1));
+        }
+    }
 }
 
 impl Drop for SupervisedProcess {
@@ -1316,6 +1387,83 @@ fn exit_fact(status: ExitStatus) -> ProcessExitFact {
 mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    #[cfg(unix)]
+    fn immediate_group_fence_does_not_wait_for_shutdown_grace() {
+        let mut process = SupervisedProcess::spawn(
+            Path::new("/bin/sh"),
+            &[
+                "-c".to_owned(),
+                "trap '' TERM; printf 'ready\\n'; while :; do read -r line; done".to_owned(),
+            ],
+            Duration::from_secs(2),
+            1024,
+        )
+        .unwrap();
+        assert_eq!(
+            process
+                .receive_stdout_line(Duration::from_secs(1))
+                .unwrap()
+                .as_deref(),
+            Some("ready")
+        );
+        let started = Instant::now();
+        let exit = process.terminate_group_immediately().unwrap();
+        assert!(started.elapsed() < Duration::from_secs(1));
+        assert!(!exit.success);
+        assert_eq!(
+            process.terminate_group_immediately().unwrap().exit_code,
+            exit.exit_code
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn immediate_group_fence_accepts_observed_leader_exit_and_missing_group() {
+        let mut process = SupervisedProcess::spawn(
+            Path::new("/bin/sh"),
+            &["-c".to_owned(), "exit 0".to_owned()],
+            Duration::from_secs(2),
+            1024,
+        )
+        .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while process.try_wait().unwrap().is_none() {
+            assert!(Instant::now() < deadline);
+            thread::sleep(Duration::from_millis(1));
+        }
+        assert!(!process.finished);
+        assert!(process.terminate_group_immediately().unwrap().success);
+        assert!(process.finished);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn failed_immediate_signal_does_not_wait_or_claim_process_exit() {
+        let mut process = SupervisedProcess::spawn(
+            Path::new("/bin/sh"),
+            &[
+                "-c".to_owned(),
+                "trap '' TERM; printf 'ready\\n'; while :; do read -r line; done".to_owned(),
+            ],
+            Duration::from_secs(2),
+            1024,
+        )
+        .unwrap();
+        assert!(process
+            .receive_stdout_line(Duration::from_secs(1))
+            .unwrap()
+            .is_some());
+        let started = Instant::now();
+        assert!(process
+            .reap_after_immediate_signal(Err(LocalRunnerError::invalid("injected signal failure")))
+            .is_err());
+        assert!(started.elapsed() < Duration::from_secs(1));
+        assert!(!process.finished);
+        assert!(process.try_wait().unwrap().is_none());
+        process.terminate_group_immediately().unwrap();
+    }
 
     #[test]
     #[cfg(unix)]

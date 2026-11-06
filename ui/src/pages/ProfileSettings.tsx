@@ -1,8 +1,9 @@
 import { useEffect, useId, useRef, useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Camera, LoaderCircle, Save, Trash2, UserRoundPen } from "lucide-react";
 import type { AuthSession, CurrentUserProfile, UpdateCurrentUserProfile } from "@paperclipai/shared";
 import { authApi } from "@/api/auth";
+import { useAccountBoundMutation } from "@/hooks/useAccountBoundMutation";
 import { assetsApi } from "@/api/assets";
 import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
@@ -64,8 +65,13 @@ export function ProfileSettings() {
     });
   }
 
-  async function persistProfile(input: UpdateCurrentUserProfile) {
+  // A restored session can show one account while the cookie belongs to
+  // another, and the server saves for the cookie's user. Account-bound
+  // mutations wait for a verified session and abort if the user changed.
+  async function persistProfile(input: UpdateCurrentUserProfile, assertCurrentAccount: () => void) {
+    assertCurrentAccount();
     const profile = await authApi.updateProfile(input);
+    assertCurrentAccount();
     syncSessionProfile(profile);
     return profile;
   }
@@ -74,8 +80,8 @@ export function ProfileSettings() {
     return name.trim() || sessionQuery.data?.user.name || "Board";
   }
 
-  const updateMutation = useMutation({
-    mutationFn: (input: UpdateCurrentUserProfile) => persistProfile(input),
+  const updateMutation = useAccountBoundMutation({
+    mutationFn: (input: UpdateCurrentUserProfile, { assertCurrentAccount }) => persistProfile(input, assertCurrentAccount),
     onSuccess: (profile) => {
       setActionError(null);
       setName(profile.name ?? "");
@@ -86,8 +92,8 @@ export function ProfileSettings() {
     },
   });
 
-  const uploadAvatarMutation = useMutation({
-    mutationFn: async (file: File) => {
+  const uploadAvatarMutation = useAccountBoundMutation({
+    mutationFn: async (file: File, { assertCurrentAccount }) => {
       if (!selectedCompanyId) {
         throw new Error("Select an organization before uploading a profile avatar.");
       }
@@ -97,7 +103,7 @@ export function ProfileSettings() {
         file,
         `profiles/${sessionQuery.data?.user.id ?? "board-user"}`,
       );
-      return persistProfile({ name: resolveProfileName(), image: asset.contentPath });
+      return persistProfile({ name: resolveProfileName(), image: asset.contentPath }, assertCurrentAccount);
     },
     onSuccess: (profile) => {
       setActionError(null);
@@ -109,8 +115,8 @@ export function ProfileSettings() {
     },
   });
 
-  const removeAvatarMutation = useMutation({
-    mutationFn: () => persistProfile({ name: resolveProfileName(), image: null }),
+  const removeAvatarMutation = useAccountBoundMutation({
+    mutationFn: (_input, { assertCurrentAccount }) => persistProfile({ name: resolveProfileName(), image: null }, assertCurrentAccount),
     onSuccess: (profile) => {
       setActionError(null);
       setName(profile.name ?? "");

@@ -331,6 +331,8 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
         expect(retained.metadata?.configFingerprint).toMatchObject({
           workspaceHash: (saved.metadata?.configFingerprint as { workspaceHash: string }).workspaceHash,
         });
+        if (!strategyChange) expect((retained.metadata?.configFingerprint as { lastEvaluatedAt: string }).lastEvaluatedAt)
+          .not.toBe((saved.metadata?.configFingerprint as { lastEvaluatedAt: string }).lastEvaluatedAt);
         expect(retained.metadata?.remoteWorkspace).toMatchObject({ writerRunId: nextRun.id });
       }
     } finally {
@@ -386,7 +388,15 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
     await db.update(heartbeatRuns).set({ lastOutputAt: new Date(Date.now() - WORKSPACE_BUSY_HOLDER_STALE_AFTER_MS - 1_000) })
       .where(eq(heartbeatRuns.id, writer.id));
     await expect(prepareHeartbeatWorkspace(db, input)).rejects.toMatchObject({ status: 409 });
+    // An ended writer whose save has not settled still holds the workspace:
+    // the next run waits from the writer's end, within the same holder cutoff.
     await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, writer.id));
+    await expect(prepareHeartbeatWorkspace(db, input)).rejects.toMatchObject({
+      constructor: WorkspaceBusyDeferral, code: "workspace_busy", executionWorkspaceId: workspace.id,
+      holder: { runId: writer.id, issueId: parent.id, ended: true },
+    });
+    await db.update(heartbeatRuns).set({ finishedAt: new Date(Date.now() - WORKSPACE_BUSY_HOLDER_STALE_AFTER_MS - 1_000) })
+      .where(eq(heartbeatRuns.id, writer.id));
     await expect(prepareHeartbeatWorkspace(db, input)).rejects.toMatchObject({ status: 409 });
     expect(await readAuthority()).toEqual(authority);
     expect(acquire).not.toHaveBeenCalled();
@@ -1754,12 +1764,16 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
     }
     const reserve = vi.spyOn(input.services.executionWorkspacesSvc, "assertTaskRepositoryRecoveryBinding");
     const prepare = vi.spyOn(input.services.executionWorkspacesSvc, "prepareTaskRepositoriesForAdmission");
-    if (transport !== "daytona" || descriptor === "valid") {
+    if (descriptor !== "corrupt") {
       const result = await prepareHeartbeatWorkspace(db, input);
       expect(result.executionTarget).toEqual(target);
       if (transport === "ssh" || transport === "task") expect(reserve).not.toHaveBeenCalled();
       else expect(reserve).toHaveBeenCalledWith({ companyId: issue.companyId, issueId: issue.id,
-        workspaceId: first.persistedExecutionWorkspace!.id, cwd: admittedRoot, agentId: input.agent.id, runId: input.run.id });
+        workspaceId: first.persistedExecutionWorkspace!.id,
+        // Without a committed sync descriptor the sandbox never received this
+        // run's work, so recovery re-admits the host workspace it will seed from.
+        cwd: transport === "daytona" && descriptor === "absent" ? first.executionWorkspace.cwd : admittedRoot,
+        agentId: input.agent.id, runId: input.run.id });
       if (transport !== "daytona") {
         await expect(prepareNativeWorkspaceSync({ db, runId: input.run.id, companyId: issue.companyId,
           workspaceId: first.persistedExecutionWorkspace!.id, workspaceLocalDir: first.executionWorkspace.cwd,
@@ -1767,8 +1781,7 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
       }
       expect(admittedRoot).not.toBe(first.executionWorkspace.cwd);
     } else {
-      await expect(prepareHeartbeatWorkspace(db, input)).rejects.toThrow(descriptor === "absent"
-        ? "native_workspace_sync_descriptor_binding_missing" : "native_workspace_sync_descriptor_digest_mismatch");
+      await expect(prepareHeartbeatWorkspace(db, input)).rejects.toThrow("native_workspace_sync_descriptor_digest_mismatch");
       expect(reserve).not.toHaveBeenCalled();
       expect(await leases(input.run.id)).toMatchObject([{ status: "active" }]);
     }

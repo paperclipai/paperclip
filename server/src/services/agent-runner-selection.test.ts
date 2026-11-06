@@ -118,7 +118,11 @@ describe("server-owned Codex runner selection", () => {
     state.managedEnvironment.mockResolvedValue(null);
     await expect(resolveNewAgentRunnerForCompany({} as never, "company", {
       adapterType: "cursor_cloud", runner: "auto", setupOnly, adapterConfig: {},
-    })).rejects.toMatchObject({ status: 422, details: { code: "managed_sandbox_unavailable" } });
+    })).rejects.toMatchObject({
+      message: "The managed sandbox is unavailable. Restore Paperclip Sandbox and retry.",
+      status: 422,
+      details: { code: "managed_sandbox_unavailable" },
+    });
   });
   it("preserves an explicit Legacy choice on a held Cursor setup draft", async () => {
     state.settings = { experimental: { enableManagedSandboxOnly: true, enableNativeRunner: true } };
@@ -213,11 +217,11 @@ describe("server-owned Codex runner selection", () => {
   });
   it.each(["minimal", "medium", "xhigh"])("keeps unsupported Pi thinking %s explicit", thinking => {
     const input = { adapterType: "pi_local", target, adapterConfig: { model: "custom/model", thinking } };
-    expect(() => resolveNewAgentRunner(input)).toThrow("Legacy runner");
+    expect(() => resolveNewAgentRunner(input)).toThrow("cannot honor");
     expect(resolveNewAgentRunner({ ...input, runner: "legacy" })).toEqual({ adapterType: input.adapterType, adapterConfig: input.adapterConfig });
   });
   it.each([{ command: "custom-pi" }, { args: ["--extension", "custom.ts"] }, { extraArgs: "--no-tools" }, { stdoutLogMode: "raw" }, { thinking: "low", piThinkingLevel: "high" }])("rejects unsupported Pi configuration %j", extra => {
-    expect(() => resolveNewAgentRunner({ adapterType: "pi_local", target, adapterConfig: { model: "custom/model", ...extra } })).toThrow("Legacy runner");
+    expect(() => resolveNewAgentRunner({ adapterType: "pi_local", target, adapterConfig: { model: "custom/model", ...extra } })).toThrow("cannot honor");
   });
   it.each([undefined, "", "model", "provider/"])("requires a Pi provider/model outside inactive setup: %s", model => {
     expect(() => resolveNewAgentRunner({ adapterType: "pi_local", target, adapterConfig: { model } })).toThrow("provider/model");
@@ -262,7 +266,7 @@ describe("server-owned Codex runner selection", () => {
   });
   it.each([{ command: "custom-opencode" }, { variant: "high" }, { extraArgs: ["--agent", "plan"] }, { args: ["--attach", "http://localhost"] }, { dangerouslySkipPermissions: false }])("rejects unsupported OpenCode settings instead of discarding them: %j", adapterConfig => {
     const input = { adapterType: "opencode_local", adapterConfig: { model: "custom/model", ...adapterConfig }, target };
-    expect(() => resolveNewAgentRunner(input)).toThrow("Legacy runner");
+    expect(() => resolveNewAgentRunner(input)).toThrow("cannot honor");
     expect(resolveNewAgentRunner({ ...input, runner: "legacy" })).toEqual({ adapterType: input.adapterType, adapterConfig: input.adapterConfig });
   });
   it.each([undefined, "", "model", "provider/"])("requires an explicit OpenCode provider/model: %s", model => {
@@ -329,7 +333,7 @@ describe("server-owned Codex runner selection", () => {
     expect(() => resolveNewAgentRunner({ adapterType: "codex_local", target })).toThrow("Codex is disabled");
   });
   it.each(["extraArgs", "agentCommand", "networkScope", "filesystemScope", "search"])("rejects incompatible %s without changing runner", field => {
-    expect(() => resolveNewAgentRunner({ adapterType: "codex_local", target, adapterConfig: { [field]: true } })).toThrow("Legacy runner");
+    expect(() => resolveNewAgentRunner({ adapterType: "codex_local", target, adapterConfig: { [field]: true } })).toThrow(field);
     try { resolveNewAgentRunner({ adapterType: "codex_local", target, adapterConfig: { [field]: true } }); }
     catch (error) { expect(error).toMatchObject({ status: 422, details: { fields: [field] } }); }
   });
@@ -488,7 +492,7 @@ describe("server-owned Codex runner selection", () => {
   it("rejects explicit Paperclip execution on an unqualified forced Kubernetes target without provisioning", async () => {
     state.settings = { general: { executionMode: "kubernetes" } };
     await expect(resolveNewAgentRunnerForCompany({} as never, "company", { adapterType: "codex_local", runner: "paperclip" }))
-      .rejects.toMatchObject({ status: 422, message: expect.stringContaining("Legacy runner"), details: { code: "agent_runner_unavailable" } });
+      .rejects.toMatchObject({ status: 422, message: expect.stringContaining("environment connection probe"), details: { code: "agent_runner_unavailable" } });
     expect(state.ensureKubernetesEnvironment).not.toHaveBeenCalled();
     expect(state.resolveEnvironment).not.toHaveBeenCalled();
     expect(state.sandboxQualification).not.toHaveBeenCalled();
@@ -589,7 +593,7 @@ describe("server-owned Codex runner selection", () => {
     await expect(resolveNewAgentRunnerForCompany({} as never, "company", { adapterType: "codex_local", runner: "paperclip", defaultEnvironmentId: "sandbox" })).rejects.toMatchObject({ status: 422, details: { code: "agent_runner_unavailable" } });
   });
   it.each(["codex_local", "claude_local", "opencode_local"])("selects %s on a managed Cloud image without saved platform qualification", async adapterType => {
-    vi.stubEnv("PAPERCLIP_MANAGED_CONFIG", JSON.stringify({ ...managedCloudConfig, environments: [{ name: "Paperclip Computer", provider: "daytona", config: {} }] }));
+    vi.stubEnv("PAPERCLIP_MANAGED_CONFIG", JSON.stringify({ ...managedCloudConfig, environments: [{ name: "Paperclip Sandbox", provider: "daytona", config: {} }] }));
     state.getEnvironment.mockResolvedValue({ id: "sandbox", driver: "sandbox", status: "active",
       config: { provider: "daytona", snapshot: "replacement-snapshot" }, metadata: { managedByPaperclip: true } });
     state.resolveEnvironment.mockRejectedValue(new Error("Saved provider secret is unavailable."));
@@ -605,7 +609,7 @@ describe("server-owned Codex runner selection", () => {
   });
   it.each(["self-hosted", "custom-environment", "captured-template", "stale-marker"])("keeps qualification for a %s sandbox", async kind => {
     vi.stubEnv("PAPERCLIP_MANAGED_CONFIG", kind === "self-hosted" ? undefined : JSON.stringify({ ...managedCloudConfig,
-      environments: kind === "stale-marker" ? [] : [{ name: "Paperclip Computer", provider: "daytona", config: {} }] }));
+      environments: kind === "stale-marker" ? [] : [{ name: "Paperclip Sandbox", provider: "daytona", config: {} }] }));
     vi.stubEnv("PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN", undefined);
     state.getEnvironment.mockResolvedValue({ id: "sandbox", driver: "sandbox", status: "active",
       config: { provider: "daytona", snapshot: "custom-snapshot" },
@@ -616,7 +620,7 @@ describe("server-owned Codex runner selection", () => {
     expect(state.sandboxQualification).toHaveBeenCalled();
   });
   it("ignores a stale captured image and preserves a matching custom image without resolving credentials", async () => {
-    vi.stubEnv("PAPERCLIP_MANAGED_CONFIG", JSON.stringify({ ...managedCloudConfig, environments: [{ name: "Paperclip Computer", provider: "daytona", config: {} }] }));
+    vi.stubEnv("PAPERCLIP_MANAGED_CONFIG", JSON.stringify({ ...managedCloudConfig, environments: [{ name: "Paperclip Sandbox", provider: "daytona", config: {} }] }));
     const config = { provider: "daytona", snapshot: "replacement-snapshot", reuseLease: false, apiKey: "a6b9e7d0-f886-471a-b461-640dd03e8d0f" };
     state.getEnvironment.mockResolvedValue({ id: "sandbox", driver: "sandbox", status: "active", config, metadata: { managedByPaperclip: true } });
     state.resolveEnvironment.mockRejectedValue(new Error("Saved provider secret is unavailable."));
@@ -844,7 +848,7 @@ describe("Claude runner defaults", () => {
   });
   it("does not pin the ordinary model over a plain provider-routing binding", () => {
     expect(() => resolveNewAgentRunner({ adapterType: "claude_local", target: mac,
-      adapterConfig: { env: { CLAUDE_CODE_USE_BEDROCK: { type: "plain", value: "1" } } } })).toThrow("Legacy runner");
+      adapterConfig: { env: { CLAUDE_CODE_USE_BEDROCK: { type: "plain", value: "1" } } } })).toThrow("model");
   });
   it.each(["permissionMode", "acpPermissionMode"])("translates the legacy Claude %s without granting broader permissions", key => {
     for (const mode of ["deny-all", "approve-reads", "approve-all"]) {
@@ -853,7 +857,7 @@ describe("Claude runner defaults", () => {
       expect(native.adapterConfig[key]).toBeUndefined();
     }
     expect(() => resolveNewAgentRunner({ adapterType: "claude_local", target: mac, adapterConfig: { [key]: "deny-all", acpxPermissionMode: "approve-all" } })).toThrow("cannot honor");
-    expect(() => resolveNewAgentRunner({ adapterType: "claude_local", target: mac, adapterConfig: { [key]: "unrecognized" } })).toThrow("Legacy runner");
+    expect(() => resolveNewAgentRunner({ adapterType: "claude_local", target: mac, adapterConfig: { [key]: "unrecognized" } })).toThrow(key);
   });
   it("retains saved native Claude and allows an explicit compatible Legacy switch", () => {
     const saved = { adapterType: "paperclip_runner", adapterConfig: { provider: "acpx", acpxAgent: "claude", model: "custom", acpxPermissionMode: "approve-all", lifecycleMode: "per_turn" } };
@@ -872,7 +876,7 @@ describe("Claude runner defaults", () => {
     }
   });
   it.each(["agentCommand", "networkScope"])("rejects unsupported %s without fallback", key => {
-    expect(() => resolveNewAgentRunner({ adapterType: "claude_local", target: mac, adapterConfig: { [key]: "configured" } })).toThrow("Legacy runner");
+    expect(() => resolveNewAgentRunner({ adapterType: "claude_local", target: mac, adapterConfig: { [key]: "configured" } })).toThrow(key);
   });
   it.each(["low", "medium", "high", "xhigh", "max"])("translates Claude effort %s and preserves it on an explicit Legacy switch", effort => {
     const native = resolveNewAgentRunner({ adapterType: "claude_local", target: mac, adapterConfig: { effort } });

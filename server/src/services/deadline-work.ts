@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+import type { DeadlineReconciliationSnapshot } from "./deadline-reconciliation.js";
 import type { createDeliveryWorkCoordinator } from "./delivery-work-coordinator.js";
 import type { DeliveryQueue } from "./delivery-work-notifications.js";
 
@@ -17,6 +19,8 @@ export function registerDeadlineWork(
     minimumSpacingMs?: number;
   },
 ) {
+  const ownerRevision = randomUUID();
+  let revision = 0, running = false, stopped = false;
   let requested = 1, reconciled = 0;
   let next: number | null = null;
   let earliest = 0;
@@ -24,28 +28,32 @@ export function registerDeadlineWork(
   const worker = coordinator.register(queue, {
     retryMs: task.retryMs,
     pausePassiveMaintenance: true,
-    onSettled: hints => { requested++; task.onSettled?.(hints); },
+    onStop: () => { stopped = true; revision++; },
+    onSettled: hints => { revision++; requested++; task.onSettled?.(hints); },
     run: async signal => {
-      if (!task.canRun()) { requested++; return; }
-      if (Date.now() < earliest) { next = earliest; return; }
-      if (Date.now() < coalesceUntil && (next === null || next > Date.now())) {
-        next = next === null ? coalesceUntil : Math.min(next, coalesceUntil);
-        return;
-      }
-      const generation = ++requested;
-      const startedAt = Date.now();
-      earliest = startedAt + Math.max(task.retryMs, task.minimumSpacingMs ?? 0);
-      await task.run(signal);
-      if (signal.aborted || !task.canRun()) { next = null; return; }
-      const deadline = await task.next();
+      revision++; running = true;
+      try {
+        if (!task.canRun()) { requested++; return; }
+        if (Date.now() < earliest) { next = earliest; return; }
+        if (Date.now() < coalesceUntil && (next === null || next > Date.now())) {
+          next = next === null ? coalesceUntil : Math.min(next, coalesceUntil);
+          return;
+        }
+        const generation = ++requested;
+        const startedAt = Date.now();
+        earliest = startedAt + Math.max(task.retryMs, task.minimumSpacingMs ?? 0);
+        await task.run(signal);
+        if (signal.aborted || !task.canRun()) { next = null; return; }
+        const deadline = await task.next();
 
-      if (!task.canRun()) { next = null; return; }
-      earliest = deadline === null || deadline > Date.now()
-        ? (task.minimumSpacingMs ? Date.now() + task.minimumSpacingMs : 0)
-        : startedAt + Math.max(task.continuationMs ?? task.retryMs, task.minimumSpacingMs ?? 0);
-      next = deadline === null ? null : Math.max(earliest, deadline);
-      coalesceUntil = Date.now() + (task.notificationCoalesceMs ?? 0);
-      reconciled = generation;
+        if (!task.canRun()) { next = null; return; }
+        earliest = deadline === null || deadline > Date.now()
+          ? (task.minimumSpacingMs ? Date.now() + task.minimumSpacingMs : 0)
+          : startedAt + Math.max(task.continuationMs ?? task.retryMs, task.minimumSpacingMs ?? 0);
+        next = deadline === null ? null : Math.max(earliest, deadline);
+        coalesceUntil = Date.now() + (task.notificationCoalesceMs ?? 0);
+        reconciled = generation;
+      } finally { running = false; revision++; }
     },
     // A settled producer must release its admission hold during drain. Keep
     // the unreconciled generation and an in-memory resume wake, without asking
@@ -55,5 +63,11 @@ export function registerDeadlineWork(
       ? Date.now() + task.retryMs
       : next,
   });
-  return { ...worker, wake: () => { requested++; worker.wake(); } };
+  return { ...worker,
+    reconciliationSnapshot: (): DeadlineReconciliationSnapshot => ({
+      revision: `${ownerRevision}:${revision}`,
+      reconciled: !stopped && !running && requested === reconciled,
+    }),
+    wake: () => { revision++; requested++; worker.wake(); },
+  };
 }

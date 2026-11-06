@@ -1982,6 +1982,22 @@ describe("effective run execution workspace config freshness", () => {
     expect(serialized).not.toContain("0.0.0.0");
   });
 
+  it("reports actual reuse when freshness policy requested replacement", () => {
+    const decision = resolveExecutionWorkspaceConfigFreshness({
+      hasExistingWorkspace: true,
+      existingWorkspaceMetadata: {},
+      nextMetadata: buildWorkspaceConfigMetadata(),
+    });
+    const operation = buildWorkspaceConfigFreshnessOperation({
+      decision, hasExistingWorkspace: true, reuseRequested: true,
+      workspaceReused: true, configSnapshotRefreshed: true,
+      previousWorkspaceId: "same", activeWorkspaceId: "same",
+    });
+    expect(operation?.metadata.action).toBe("replace");
+    expect(operation?.system).toContain("reused execution workspace");
+    expect(operation?.system).not.toContain("replaced execution workspace");
+  });
+
   it("does not record a freshness operation when an unchanged workspace is simply reused", () => {
     const metadata = buildWorkspaceConfigMetadata();
     const decision = resolveExecutionWorkspaceConfigFreshness({

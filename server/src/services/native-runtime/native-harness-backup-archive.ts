@@ -4,16 +4,27 @@ import { join, posix } from "node:path";
 import { Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import tar from "tar-stream";
+import { readNativeHarnessBackupSourceInput } from "./native-harness-backup-source.js";
 
 export const MAX_NATIVE_HARNESS_BYTES = 4 * 1024 * 1024 * 1024;
 export const MAX_NATIVE_HARNESS_OBJECT_BYTES = MAX_NATIVE_HARNESS_BYTES + 768 * 1024 * 1024;
 export const MAX_NATIVE_HARNESS_ENTRIES = 100_000;
+export const MAX_NATIVE_HARNESS_PATH_BYTES = 4096;
+// PAX can store both a full path and a full symlink target for each entry.
+// Two KiB also cover PAX framing, both headers and payload padding. The final
+// two zero blocks terminate the archive. Keep this separate from content size.
+export const MAX_NATIVE_HARNESS_TAR_OVERHEAD_BYTES = MAX_NATIVE_HARNESS_ENTRIES
+  * (2 * MAX_NATIVE_HARNESS_PATH_BYTES + 2048) + 1024;
 const fail = () => new Error("native_harness_archive_invalid");
-const safeName = (name: string) => name.length > 0 && Buffer.byteLength(name) <= 4096 && !name.includes("\\")
+export function nativeHarnessArchiveSizeLimit(contentBytes: number) {
+  if (!Number.isSafeInteger(contentBytes) || contentBytes < 0 || contentBytes > MAX_NATIVE_HARNESS_BYTES) throw fail();
+  return Math.min(MAX_NATIVE_HARNESS_OBJECT_BYTES, contentBytes + MAX_NATIVE_HARNESS_TAR_OVERHEAD_BYTES);
+}
+const safeName = (name: string) => name.length > 0 && Buffer.byteLength(name) <= MAX_NATIVE_HARNESS_PATH_BYTES && !name.includes("\\")
   && !/[\u0000-\u001f\u007f]/u.test(name) && !posix.isAbsolute(name)
   && name.split("/").every(part => part !== ".." && part !== "." && part !== "");
 
-const safeLink = (name: string, target: string) => target.length > 0 && Buffer.byteLength(target) <= 4096
+const safeLink = (name: string, target: string) => target.length > 0 && Buffer.byteLength(target) <= MAX_NATIVE_HARNESS_PATH_BYTES
   && !target.includes("\\") && !/[\u0000-\u001f\u007f]/u.test(target) && !posix.isAbsolute(target)
   && !["..", "."].includes(posix.normalize(posix.join(posix.dirname(name), target)))
   && !posix.normalize(posix.join(posix.dirname(name), target)).startsWith("../");
@@ -25,27 +36,29 @@ const validateLinks = (links: Map<string, string>) => {
     }
   }
 };
-const boundedArchive = () => {
+const boundedArchive = (limit = MAX_NATIVE_HARNESS_OBJECT_BYTES) => {
   let bytes = 0;
   return new Transform({ transform(chunk, _encoding, callback) {
     bytes += chunk.length;
-    callback(bytes > MAX_NATIVE_HARNESS_OBJECT_BYTES ? fail() : null, chunk);
+    callback(bytes > limit ? fail() : null, chunk);
   } });
 };
 
-export async function captureNativeHarnessArchive(root: string, target: string, signal?: AbortSignal) {
-  if (!(await lstat(root)).isDirectory()) throw fail();
+export async function captureNativeHarnessArchive(root: string, target: string, signal?: AbortSignal, maxArchiveBytes = MAX_NATIVE_HARNESS_OBJECT_BYTES) {
+  if (!Number.isSafeInteger(maxArchiveBytes) || maxArchiveBytes <= 0 || maxArchiveBytes > MAX_NATIVE_HARNESS_OBJECT_BYTES) throw fail();
+  if (!(await readNativeHarnessBackupSourceInput(() => lstat(root))).isDirectory()) throw fail();
   const archive = tar.pack();
-  const output = pipeline(archive, boundedArchive(), createWriteStream(target, { flags: "wx", mode: 0o600 }), { signal });
-  void output.catch(() => undefined);
+  let outputFailure: unknown;
+  const output = pipeline(archive, boundedArchive(maxArchiveBytes), createWriteStream(target, { flags: "wx", mode: 0o600 }), { signal });
+  void output.catch(error => { outputFailure = error; });
   let count = 0, bytes = 0;
   const links = new Map<string, string>();
   const visit = async (relative: string): Promise<void> => {
-    for (const name of (await readdir(join(root, relative))).sort()) {
+    for (const name of (await readNativeHarnessBackupSourceInput(() => readdir(join(root, relative)))).sort()) {
       signal?.throwIfAborted();
       const entry = relative ? `${relative}/${name}` : name;
       if (!safeName(entry) || ++count > MAX_NATIVE_HARNESS_ENTRIES) throw fail();
-      const file = join(root, entry), stat = await lstat(file);
+      const file = join(root, entry), stat = await readNativeHarnessBackupSourceInput(() => lstat(file));
       if (stat.isDirectory()) {
         await new Promise<void>((resolve, reject) => archive.entry({ name: entry, type: "directory", mode: stat.mode & 0o777 },
           error => error ? reject(error) : resolve()));
@@ -53,17 +66,17 @@ export async function captureNativeHarnessArchive(root: string, target: string, 
       } else if (stat.isFile()) {
         bytes += stat.size;
         if (bytes > MAX_NATIVE_HARNESS_BYTES) throw fail();
-        const handle = await open(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+        const handle = await readNativeHarnessBackupSourceInput(() => open(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK));
         try {
-          const before = await handle.stat();
+          const before = await readNativeHarnessBackupSourceInput(() => handle.stat());
           if (!before.isFile() || before.ino !== stat.ino || before.dev !== stat.dev || before.size !== stat.size) throw fail();
           const stream = archive.entry({ name: entry, size: stat.size, type: "file", mode: stat.mode & 0o777 });
           await pipeline(handle.createReadStream({ autoClose: false }), stream, { signal });
-          const after = await handle.stat();
+          const after = await readNativeHarnessBackupSourceInput(() => handle.stat());
           if (before.size !== after.size || before.mtimeMs !== after.mtimeMs || before.ctimeMs !== after.ctimeMs) throw fail();
         } finally { await handle.close(); }
       } else if (stat.isSymbolicLink()) {
-        const linkname = await readlink(file);
+        const linkname = await readNativeHarnessBackupSourceInput(() => readlink(file));
         if (!safeLink(entry, linkname)) throw fail();
         links.set(entry, linkname);
         await new Promise<void>((resolve, reject) => archive.entry({ name: entry, type: "symlink", linkname },
@@ -72,7 +85,11 @@ export async function captureNativeHarnessArchive(root: string, target: string, 
     }
   };
   try { await visit(""); validateLinks(links); archive.finalize(); await output; }
-  catch (error) { archive.destroy(error as Error); await output.catch(() => undefined); throw error; }
+  catch (error) {
+    archive.destroy((outputFailure ?? error) as Error);
+    await output.catch(() => undefined);
+    throw outputFailure ?? error;
+  }
 }
 
 export async function restoreNativeHarnessArchive(source: string, target: string, signal?: AbortSignal) {
