@@ -18,7 +18,7 @@ import { createAgentLifecycle } from "../services/agent-lifecycle.js";
 import { isAgentSetupDraft } from "../modules/agent-lifecycle/index.js";
 
 import { agentIdentityService } from "../services/agent-identity.js";
-import { aiConnectionRouterService, LOCAL_POOL_ADAPTERS, poolMemberRuntimeConfig } from "../services/ai-connection-router.js";
+import { aiConnectionRouterService, assertPoolAdapterPolicyCompatible, LOCAL_POOL_ADAPTERS, poolMemberRuntimeConfig } from "../services/ai-connection-router.js";
 import { connectionIntentService } from "../services/connection-intents.js";
 import { isCloudManagedInstance } from "../services/cloud-instance.js";
 import { dotRunnerBroker } from "../services/dot-runner-broker.js";
@@ -3201,7 +3201,10 @@ export function agentRoutes(
       let compatible = false;
       for (const member of pool.members) {
         let runtime: ReturnType<typeof poolMemberRuntimeConfig>;
-        try { runtime = poolMemberRuntimeConfig(member, adapterType); } catch { continue; }
+        try {
+          runtime = poolMemberRuntimeConfig(member, adapterType);
+          assertPoolAdapterPolicyCompatible(config, adapterType, runtime.adapterType);
+        } catch { continue; }
         compatible = true;
         const allowUninstalledShared = newAgent && await canInstallSharedAiConnectionForNewAgent(db, req, companyId, member.binding);
         try {

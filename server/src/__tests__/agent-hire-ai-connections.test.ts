@@ -138,6 +138,26 @@ describe("agent-created hires use managed AI connections", () => {
     expect(saved).toMatchObject({ adapterType: "claude_local", runtimeConfig: { aiConnection: binding } });
   });
 
+  it.each(["openai", "anthropic"] as const)("preserves restrictive Codex CLI policy when saving a %s-only pool", async (provider) => {
+    const f = await fixture(provider);
+    const member: AiConnectionPoolMember = {
+      id: randomUUID(), binding: { ...f.account, provider, method: "api_key", mode: "delegated" },
+      profile: provider === "openai" ? { provider: "codex", model: "gpt-5.6-sol" }
+        : { provider: "acpx", acpxAgent: "claude", model: "claude-sonnet-5" },
+    };
+    const pool = await aiConnectionRouterService(db).save(BUILTIN_AI_FAILOVER_ROUTER_KEY, { companyId: f.companyId, config: { name: "Restricted Codex pool", enabled: true, mode: "failover", thresholdPercent: 90, members: [member] } }, f.userId);
+    const binding = { mode: "router", connectionId: pool.id } as const;
+    const adapterConfig = { engine: "cli", extraArgs: ["--sandbox", "read-only"] };
+    await db.insert(principalPermissionGrants).values({ companyId: f.companyId, principalType: "user", principalId: f.userId, permissionKey: "agents:configure" });
+    await db.update(agents).set({ adapterType: "codex_local", adapterConfig }).where(eq(agents.id, f.agentId));
+    const response = await request(f.app).patch(`/api/agents/${f.agentId}`).send({ runtimeConfig: { aiConnection: binding } });
+    expect(response.status, JSON.stringify(response.body)).toBe(provider === "openai" ? 200 : 422);
+    if (provider === "anthropic") expect(response.body.details?.code).toBe("ai_connection_pool_no_eligible_member");
+    const [saved] = await db.select().from(agents).where(eq(agents.id, f.agentId));
+    expect(saved.adapterConfig).toEqual(adapterConfig);
+    expect(saved.runtimeConfig.aiConnection).toEqual(provider === "openai" ? binding : f.binding);
+  });
+
   it.each(["agent-hires", "agents"])("%s inherits a manager's pool without copying legacy credentials", async (endpoint) => {
     const f = await fixture("openai");
     const p = await poolFixture(f);
