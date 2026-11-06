@@ -150,6 +150,7 @@ export function arbitrateNativeStatus(input: {
   /** The saved timer already admitted another run and this run no longer owns checkout. */
   monitorWaitDispatched?: boolean;
   monitorWaitPreserved?: boolean;
+  monitorWaitSuperseded?: boolean;
   boardResponseWaitAuthorized?: boolean;
   boardResponseWaitOrigin?: boolean;
   isConversation?: boolean;
@@ -536,6 +537,11 @@ export function arbitrateNativeStatus(input: {
         effects: [],
       };
     }
+    if (input.monitorWaitSuperseded) return {
+      policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
+      statusAction: "preserve", toStatus: input.priorIssueStatus,
+      reasonCode: "scheduled_monitor_superseded", unblockDescriptor: null, effects: [],
+    };
     if (input.monitorWaitPreserved) {
       return {
         policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,

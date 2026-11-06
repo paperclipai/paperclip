@@ -774,6 +774,17 @@ durable wake and an admitted successor run. The old run must no longer own the
 task's checkout or execution. This settlement preserves the task and successor
 ownership, and neither re-arms the timer nor starts another provider turn.
 Workspace persistence must still succeed first.
+
+When the old monitor wait is no longer eligible, a newer ordinary user-comment
+wake can supersede that old saved wait.
+The finalizer requires the canonical unedited user comment, the matching user wake,
+and the accepted old result with its server-issued monitor receipt. An admitted
+successor must retain the exact task, comment revision, and source-run lineage.
+The finalizer rechecks this proof under the task lock. It records a passive
+settlement and preserves the current task status, assignment, checkout, schedule,
+and newer request. It does not re-arm the old monitor, publish its old waiting
+summary, or start another provider turn. Missing, cancelled, foreign, or conflicting
+proof keeps the old result held. Source Stop and workspace persistence gates remain.
 If a saved monitor expires during workspace recovery, settlement releases the
 old run into the still-persisted schedule. The scheduler then applies its timeout
 or attempt-limit recovery policy. Expiration still rejects new monitor-wait

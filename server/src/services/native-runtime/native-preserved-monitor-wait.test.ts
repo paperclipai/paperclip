@@ -221,6 +221,131 @@ describe.skipIf(!support.supported)("released native monitor results", () => {
     expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId))).toEqual([]);
   });
 
+  async function newerUserRequest(state: "queued" | "consumed") {
+    const f = await fixture();
+    await db.update(issues).set({ status: "blocked", statusVersion: 5 }).where(eq(issues.id, f.issueId));
+    const [comment] = await db.insert(issueComments).values({ companyId: f.companyId, issueId: f.issueId,
+      authorType: "user", authorUserId: "operator", body: "Continue with the new objective." }).returning();
+    const successorId = state === "consumed" ? randomUUID() : null;
+    if (successorId) await db.insert(heartbeatRuns).values({ id: successorId, companyId: f.companyId, agentId: f.agentId,
+      nativeIssueId: f.issueId, runtimeMode: "native", status: "failed", errorCode: "native_continuation_requires_reconciliation",
+      contextSnapshot: { issueId: f.issueId, commentId: comment!.id, wakeCommentId: comment!.id,
+        executionContinuation: { companyId: f.companyId, issueId: f.issueId,
+          objectiveSource: { kind: "comment", id: comment!.id, revision: comment!.updatedAt.toISOString() },
+          resumeDelta: { baseRunId: f.runId } } },
+      resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } },
+    });
+    const [wake] = await db.insert(agentWakeupRequests).values({ companyId: f.companyId, agentId: f.agentId,
+      source: "automation", reason: "issue_reopened_via_comment", requestedByActorType: "user", requestedByActorId: "operator",
+      status: successorId ? "failed" : "queued", runId: successorId,
+      payload: { issueId: f.issueId, commentId: comment!.id,
+        _paperclipWakeContext: { issueId: f.issueId, wakeCommentId: comment!.id, wakeCommentIds: [comment!.id] } },
+    }).returning();
+    if (successorId) await db.update(heartbeatRuns).set({ wakeupRequestId: wake!.id }).where(eq(heartbeatRuns.id, successorId));
+    await db.update(nativeRunFinalizations).set({ attempt: 1 }).where(eq(nativeRunFinalizations.runId, f.runId));
+    return { f, comment: comment!, wake: wake!, successorId };
+  }
+
+  it.each(["queued", "consumed", "owned_successor", "new_monitor"] as const)("settles the old saved monitor result without changing a newer user request (%s)", async state => {
+    const { f, comment, wake, successorId } = await newerUserRequest(state === "queued" ? "queued" : "consumed");
+    if (state === "owned_successor") {
+      await db.update(heartbeatRuns).set({ status: "running" }).where(eq(heartbeatRuns.id, successorId!));
+      await db.update(issues).set({ executionRunId: successorId, checkoutRunId: successorId }).where(eq(issues.id, f.issueId));
+    }
+    if (state === "new_monitor") {
+      const task = await f.readIssue(), nextCheckAt = new Date(Date.now() + 7_200_000);
+      await db.update(issues).set({ monitorNextCheckAt: nextCheckAt, executionPolicy: { ...task.executionPolicy,
+        monitor: { ...(task.executionPolicy?.monitor as Record<string, unknown>), nextCheckAt: nextCheckAt.toISOString() } } })
+        .where(eq(issues.id, f.issueId));
+    }
+    expect(await hasPendingRunCleanup(db, f.companyId, f.runId)).toBe(true);
+    const before = await f.readIssue();
+    await f.finalize();
+    const [coordinator] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId));
+    expect(coordinator).toMatchObject({ phase: "committed", nextAttemptAt: null, failureCode: null, attempt: 2 });
+    expect(await hasPendingRunCleanup(db, f.companyId, f.runId)).toBe(false);
+    expect(await heartbeatService(db, { runtimeEnv: {} }).tickIssueMonitors(new Date(Date.parse(f.nextCheckAt) + 1)))
+      .toMatchObject({ triggered: 0 });
+    expect(await f.readIssue()).toMatchObject({ status: before.status, statusVersion: before.statusVersion,
+      assigneeAgentId: before.assigneeAgentId, assigneeUserId: before.assigneeUserId,
+      executionRunId: before.executionRunId, checkoutRunId: before.checkoutRunId,
+      executionPolicy: before.executionPolicy, monitorNextCheckAt: before.monitorNextCheckAt,
+      monitorAttemptCount: before.monitorAttemptCount, workMode: before.workMode });
+    expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId))).toEqual([wake]);
+    expect(await db.select().from(issueComments).where(eq(issueComments.id, comment!.id))).toEqual([comment]);
+    expect((await db.select().from(nativeRunResults).where(eq(nativeRunResults.id, f.resultId)))[0].resultJson).toEqual(f.result);
+    expect(await db.select().from(issueComments).where(eq(issueComments.createdByRunId, f.runId))).toEqual([]);
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId)))[0])
+      .toMatchObject({ status: "succeeded", finishedAt: f.finishedAt });
+    const decisions = await db.select().from(statusDecisions).where(eq(statusDecisions.runId, f.runId));
+    expect(decisions.at(-1)?.decisionJson).toMatchObject({ effects: [] });
+    await f.finalize();
+    expect(await db.select().from(statusDecisions).where(eq(statusDecisions.runId, f.runId))).toEqual(decisions);
+    expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId)))[0].attempt).toBe(2);
+  });
+
+  it.each(["missing_wake", "actor", "foreign_task", "foreign_company", "untrusted_comment", "deleted_comment", "edited_comment",
+    "prior_comment", "foreign_run", "foreign_base", "wrong_objective", "cancelled_request", "source_stop", "missing_monitor_receipt",
+    "workspace_failed"])("keeps the old monitor held without exact newer user-request proof (%s)", async state => {
+      const consumed = ["foreign_run", "foreign_base", "wrong_objective"].includes(state);
+      const { f, comment, wake, successorId } = await newerUserRequest(consumed ? "consumed" : "queued");
+      if (state === "missing_wake") await db.delete(agentWakeupRequests).where(eq(agentWakeupRequests.id, wake.id));
+      if (state === "actor") await db.update(agentWakeupRequests).set({ requestedByActorType: "agent" }).where(eq(agentWakeupRequests.id, wake.id));
+      if (state === "foreign_task") await db.update(agentWakeupRequests).set({ payload: { ...wake.payload, issueId: randomUUID() } })
+        .where(eq(agentWakeupRequests.id, wake.id));
+      if (state === "foreign_company") {
+        const other = await fixture();
+        await db.update(agentWakeupRequests).set({ companyId: other.companyId, agentId: other.agentId })
+          .where(eq(agentWakeupRequests.id, wake.id));
+      }
+      if (state === "untrusted_comment") await db.update(issueComments).set({ sourceTrust: { preset: "low_trust_review", disposition: "quarantined" } }).where(eq(issueComments.id, comment.id));
+      if (state === "deleted_comment") await db.update(issueComments).set({ deletedAt: new Date() }).where(eq(issueComments.id, comment.id));
+      if (state === "edited_comment") await db.update(issueComments).set({ updatedAt: new Date(comment.createdAt.getTime() + 1) }).where(eq(issueComments.id, comment.id));
+      if (state === "prior_comment") await db.update(issueComments).set({ createdAt: new Date(f.finishedAt.getTime() - 1),
+        updatedAt: new Date(f.finishedAt.getTime() - 1) }).where(eq(issueComments.id, comment.id));
+      if (state === "foreign_run") {
+        const [otherIssue] = await db.insert(issues).values({ companyId: f.companyId, title: "Other task", status: "blocked" }).returning();
+        const [otherRun] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId,
+          nativeIssueId: otherIssue!.id, runtimeMode: "native", status: "failed", wakeupRequestId: wake.id,
+          contextSnapshot: { issueId: otherIssue!.id } }).returning();
+        await db.update(agentWakeupRequests).set({ runId: otherRun!.id }).where(eq(agentWakeupRequests.id, wake.id));
+      }
+      if (state === "foreign_base" || state === "wrong_objective") await db.update(heartbeatRuns).set({ contextSnapshot:
+        sql`jsonb_set(${heartbeatRuns.contextSnapshot}, ${state === "foreign_base" ? "{executionContinuation,resumeDelta,baseRunId}" : "{executionContinuation,objectiveSource,id}"}::text[], ${JSON.stringify(randomUUID())}::jsonb)` })
+        .where(eq(heartbeatRuns.id, successorId!));
+      if (state === "cancelled_request") await db.update(agentWakeupRequests).set({ status: "cancelled" }).where(eq(agentWakeupRequests.id, wake.id));
+      if (state === "source_stop") await db.update(heartbeatRuns).set({ resultJson: sql`jsonb_set(${heartbeatRuns.resultJson}, '{nativeCancellation}', '{"state":"pending"}'::jsonb)` })
+        .where(eq(heartbeatRuns.id, f.runId));
+      if (state === "missing_monitor_receipt") await db.update(heartbeatRuns).set({ resultJson: {} }).where(eq(heartbeatRuns.id, f.runId));
+      const before = await f.readIssue();
+      await f.finalize(state === "workspace_failed" ? "failed" : "succeeded");
+      const [coordinator] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId));
+      expect(coordinator.phase).toBe("retryable_failure");
+      expect(await f.readIssue()).toMatchObject({ status: before.status, executionPolicy: before.executionPolicy,
+        monitorNextCheckAt: before.monitorNextCheckAt, executionRunId: before.executionRunId, checkoutRunId: before.checkoutRunId });
+      expect(await db.select().from(statusDecisions).where(and(eq(statusDecisions.runId, f.runId),
+        eq(statusDecisions.reasonCode, "scheduled_monitor_superseded")))).toEqual([]);
+    });
+
+  it.each(["comment", "wake", "lineage", "source_stop"])("rechecks newer user-request proof under the task lock (%s)", async state => {
+    const { f, comment, wake, successorId } = await newerUserRequest("consumed");
+    const original = monitorDelivery.readNativeSupersededMonitorWait;
+    const race = vi.spyOn(monitorDelivery, "readNativeSupersededMonitorWait").mockImplementationOnce(async (...args) => {
+      const proof = await original(...args);
+      expect(proof).not.toBeNull();
+      if (state === "comment") await db.update(issueComments).set({ deletedAt: new Date() }).where(eq(issueComments.id, comment.id));
+      if (state === "wake") await db.update(agentWakeupRequests).set({ status: "cancelled" }).where(eq(agentWakeupRequests.id, wake.id));
+      if (state === "lineage") await db.update(heartbeatRuns).set({ contextSnapshot: {} }).where(eq(heartbeatRuns.id, successorId!));
+      if (state === "source_stop") await db.update(heartbeatRuns).set({ resultJson: sql`jsonb_set(${heartbeatRuns.resultJson}, '{nativeCancellation}', '{"state":"pending"}'::jsonb)` })
+        .where(eq(heartbeatRuns.id, f.runId));
+      return proof;
+    });
+    try { await f.finalize(); } finally { race.mockRestore(); }
+    expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId)))[0].phase).toBe("retryable_failure");
+    expect(await db.select().from(statusDecisions).where(and(eq(statusDecisions.runId, f.runId),
+      eq(statusDecisions.reasonCode, "scheduled_monitor_superseded")))).toEqual([]);
+  });
+
   it.each(["cleared", "owner", "receipt", "rescheduled"])("rechecks monitor proof under the task lock (%s)", async state => {
     const f = await fixture(), scheduled = await f.readIssue();
     const [owner] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, status: "running" }).returning();
