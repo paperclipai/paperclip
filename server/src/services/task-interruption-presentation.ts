@@ -198,6 +198,11 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
         or ${heartbeatRuns.errorCode} = 'workspace_validation_failed' then ${heartbeatRuns.error} else null end`,
       errorCode: heartbeatRuns.errorCode, livenessState: heartbeatRuns.livenessState, scheduledRetryAt: heartbeatRuns.scheduledRetryAt,
       scheduledRetryReason: heartbeatRuns.scheduledRetryReason,
+      // The run whose resultJson supplied providerFailure. A scheduled retry
+      // shows its predecessor's reason, so redaction must use that run's registry.
+      providerFailureRunId: sql<string>`case when ${heartbeatRuns.resultJson}->'providerFailure' is null
+        and ${heartbeatRuns.status} = 'scheduled_retry' and ${heartbeatRuns.retryOfRunId} is not null
+        then ${heartbeatRuns.retryOfRunId} else ${heartbeatRuns.id} end`,
       resultJson: sql<Record<string, unknown>>`jsonb_build_object('configurationIncomplete', ${heartbeatRuns.resultJson}->'configurationIncomplete',
         'stopReason', ${boundedJsonString(sql`${heartbeatRuns.resultJson}->'stopReason'`, 80)},
         'timeoutSource', ${boundedJsonString(sql`${heartbeatRuns.resultJson}->'timeoutSource'`, 80)},
@@ -313,16 +318,24 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
         agentAdapter: run.agentAdapter ?? "unknown" });
     }
   }
-  const disclosures = [...result.values()].flatMap(presentation => (presentation?.providerFailure || presentation?.workspaceFailure) && presentation.observedRunId
-    ? [{ id: presentation.observedRunId, providerFailure: presentation.providerFailure,
-      workspaceFailure: presentation.workspaceFailure, presentation }] : []);
+  // Redact each explanation with the registry of the run that recorded it: the
+  // workspace failure is the observed run's, while a scheduled retry's provider
+  // failure may be its predecessor's.
+  const disclosures = [...result.entries()].flatMap(([issueId, presentation]) =>
+    (presentation?.providerFailure || presentation?.workspaceFailure) && presentation.observedRunId
+      ? [{ id: presentation.observedRunId, providerFailureRunId: runMap.get(issueId)?.providerFailureRunId ?? presentation.observedRunId,
+        providerFailure: presentation.providerFailure, workspaceFailure: presentation.workspaceFailure, presentation }] : []);
   if (disclosures.length) {
     try {
-      const [safe, settings] = await Promise.all([
-        createRunSecretRedactionRegistry(db).redactForRuns(companyId,
-          disclosures.map(({ id, providerFailure, workspaceFailure }) => ({ id, providerFailure, workspaceFailure }))),
+      const [redacted, settings] = await Promise.all([
+        createRunSecretRedactionRegistry(db).redactForRuns(companyId, disclosures.flatMap(({ id, providerFailureRunId, providerFailure, workspaceFailure }) => [
+          { id: providerFailureRunId, providerFailure, workspaceFailure: undefined },
+          { id, providerFailure: undefined, workspaceFailure },
+        ])),
         instanceSettingsService(db).getGeneral(),
       ]);
+      const safe = disclosures.map((_, index) => ({ providerFailure: redacted[2 * index]?.providerFailure,
+        workspaceFailure: redacted[2 * index + 1]?.workspaceFailure }));
       const safeMessage = (value: unknown) => typeof value === "string"
         ? [...redactCurrentUserText(value, { enabled: settings.censorUsernameInLogs })].slice(0, 4000).join("") : "";
       disclosures.forEach(({ presentation }, index) => {
