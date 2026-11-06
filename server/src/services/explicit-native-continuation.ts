@@ -576,15 +576,81 @@ export async function admitExplicitNativeContinuation(input: {
   return continuation;
 }
 
+type ContinuationRetryAuthority = {
+  continuation: { commentId: string } | { commentId: null; taskRetryRequestId: string };
+  actorId: string; sourceAuthorizationId: string; evidence: Record<string, unknown>;
+};
+
+async function readCommentRetryAuthority(db: Db, input: {
+  companyId: string; issueId: string; parentRunId: string; explicit: Record<string, unknown>;
+}): Promise<ContinuationRetryAuthority | null> {
+  const { companyId, issueId, explicit } = input;
+  if (!z.string().guid().safeParse(explicit.commentId).success) return null;
+  const commentId = explicit.commentId as string;
+  const [comment] = await db.select().from(issueComments).where(and(
+    eq(issueComments.companyId, companyId), eq(issueComments.issueId, issueId),
+    eq(issueComments.id, commentId), eq(issueComments.authorType, "user"),
+    isNull(issueComments.createdByRunId), isNull(issueComments.deletedAt),
+  ));
+  if (!comment?.authorUserId || !comment.body.trim()) return null;
+  const commentBodyHash = createHash("sha256").update(comment.body).digest("hex");
+  const receipts = await db.select().from(issueRecoveryActions).where(and(
+    eq(issueRecoveryActions.companyId, companyId), eq(issueRecoveryActions.sourceIssueId, issueId),
+    eq(issueRecoveryActions.status, "resolved"),
+    sql`${issueRecoveryActions.evidence}->'explicitUserContinuation'->>'runId' = ${input.parentRunId}`,
+  ));
+  const receipt = receipts.find(row => {
+    const auth = row.evidence.explicitUserContinuation as Record<string, unknown> | undefined;
+    return auth && auth.previousRunId === explicit.previousRunId && auth.commentId === commentId &&
+      auth.actorId === comment.authorUserId && !auth.failedRunId && !auth.queuedCommentInterruptId &&
+      auth.commentUpdatedAt === comment.updatedAt.toISOString() && auth.commentBodyHash === commentBodyHash;
+  });
+  return receipt ? { continuation: { commentId }, actorId: comment.authorUserId, sourceAuthorizationId: receipt.id,
+    evidence: { commentUpdatedAt: comment.updatedAt.toISOString(), commentBodyHash } } : null;
+}
+
+/** A task Retry admits one plain continuation in the saved workspace. When that
+ * run fails transiently, its bounded retry keeps the same actor and receipt;
+ * chat, queued-message and fresh-workspace Retries keep their own contracts. */
+async function readTaskRetryRetryAuthority(db: Db, input: {
+  companyId: string; issueId: string; agentId: string; parentRunId: string; explicit: Record<string, unknown>;
+}): Promise<ContinuationRetryAuthority | null> {
+  const { companyId, issueId, explicit } = input;
+  const requestId = z.string().guid().safeParse(explicit.taskRetryRequestId);
+  if (explicit.commentId !== null || !requestId.success || explicit.queuedCommentInterruptId || explicit.readiness) return null;
+  const [wake] = await db.select().from(agentWakeupRequests).where(and(
+    eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.id, requestId.data),
+    eq(agentWakeupRequests.agentId, input.agentId), eq(agentWakeupRequests.reason, "task_retry"),
+    eq(agentWakeupRequests.requestedByActorType, "user"), eq(agentWakeupRequests.status, "coalesced"),
+    sql`${agentWakeupRequests.payload}->>'issueId' = ${issueId}`,
+  ));
+  const intent = readTaskRetryIntent(wake?.payload);
+  if (!wake?.requestedByActorId || !wake.runId || !intent || intent.generationId !== wake.id ||
+      intent.actorId !== wake.requestedByActorId || intent.strategy !== "continue" ||
+      intent.chatActionId || intent.queuedChatRequestId || intent.canonicalIntentId) return null;
+  // The admitted run's authority may be its action ledger, an earlier
+  // automatic-retry receipt, or the Retry receipt itself. Dispatch validation
+  // of the parent below proves which one applies.
+  const [receipt] = await db.select({ id: issueRecoveryActions.id }).from(issueRecoveryActions).where(and(
+    eq(issueRecoveryActions.companyId, companyId), eq(issueRecoveryActions.sourceIssueId, issueId),
+    eq(issueRecoveryActions.status, "resolved"),
+    sql`${issueRecoveryActions.evidence}->'explicitUserContinuation'->>'runId' = ${input.parentRunId}`,
+    sql`${issueRecoveryActions.evidence}->'explicitUserContinuation'->>'taskRetryRequestId' = ${wake.id}`,
+  )).limit(1);
+  return { continuation: { commentId: null, taskRetryRequestId: wake.id }, actorId: wake.requestedByActorId,
+    sourceAuthorizationId: receipt?.id ?? wake.id, evidence: {} };
+}
+
 /** Re-admit a bounded automatic retry without lending it its parent's receipt.
  * The caller holds the task lock and creates the successor in this transaction.
- * Only unchanged user messages are renewable; Retry/Interrupt intents keep their
- * separate one-run contracts. The scheduler still owns retry and cleanup policy.
+ * Unchanged user messages and plain task Retries are renewable; Interrupt and
+ * failed-run retry intents keep their separate one-run contracts. The
+ * scheduler still owns retry and cleanup policy.
  */
 export async function admitExplicitContinuationRetry(input: {
   db: Db; companyId: string; issueId: string; agentId: string;
   parentRunId: string; successorRunId: string; now: Date;
-}): Promise<{ previousRunId: string; commentId: string } | null> {
+}): Promise<{ previousRunId: string; commentId: string | null; taskRetryRequestId?: string } | null> {
   const { db, companyId, issueId, agentId } = input;
   const [task] = await db.select().from(issues).where(and(
     eq(issues.companyId, companyId), eq(issues.id, issueId),
@@ -602,28 +668,11 @@ export async function admitExplicitContinuationRetry(input: {
       await getExecutionBlocker(db, companyId, issueId)) return null;
   const context = parent.contextSnapshot;
   const explicit = context.explicitUserContinuation as Record<string, unknown> | undefined;
-  if (!explicit || !z.string().guid().safeParse(explicit.previousRunId).success ||
-      !z.string().guid().safeParse(explicit.commentId).success || explicit.failedRunId) return null;
-  const commentId = explicit.commentId as string;
-  const [comment] = await db.select().from(issueComments).where(and(
-    eq(issueComments.companyId, companyId), eq(issueComments.issueId, issueId),
-    eq(issueComments.id, commentId), eq(issueComments.authorType, "user"),
-    isNull(issueComments.createdByRunId), isNull(issueComments.deletedAt),
-  ));
-  if (!comment?.authorUserId || !comment.body.trim()) return null;
-  const receipts = await db.select().from(issueRecoveryActions).where(and(
-    eq(issueRecoveryActions.companyId, companyId), eq(issueRecoveryActions.sourceIssueId, issueId),
-    eq(issueRecoveryActions.status, "resolved"),
-    sql`${issueRecoveryActions.evidence}->'explicitUserContinuation'->>'runId' = ${parent.id}`,
-  ));
-  const receipt = receipts.find(row => {
-    const auth = row.evidence.explicitUserContinuation as Record<string, unknown> | undefined;
-    return auth && auth.previousRunId === explicit.previousRunId && auth.commentId === commentId &&
-      auth.actorId === comment.authorUserId && !auth.failedRunId && !auth.queuedCommentInterruptId &&
-      auth.commentUpdatedAt === comment.updatedAt.toISOString() &&
-      auth.commentBodyHash === createHash("sha256").update(comment.body).digest("hex");
-  });
-  if (!receipt) return null;
+  if (!explicit || !z.string().guid().safeParse(explicit.previousRunId).success || explicit.failedRunId) return null;
+  const authority = explicit.commentId === null
+    ? await readTaskRetryRetryAuthority(db, { companyId, issueId, agentId, parentRunId: parent.id, explicit })
+    : await readCommentRetryAuthority(db, { companyId, issueId, parentRunId: parent.id, explicit });
+  if (!authority) return null;
   const [superseding] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
     eq(heartbeatRuns.companyId, companyId),
     or(eq(heartbeatRuns.nativeIssueId, issueId), sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issueId}`),
@@ -646,18 +695,18 @@ export async function admitExplicitContinuationRetry(input: {
       "continuation_source_context_missing", "continuation_task_ownership_changed"].includes(error.message)) return null;
     throw error;
   }
-  const continuation = { previousRunId: parent.id, commentId };
+  const continuation = { previousRunId: parent.id, ...authority.continuation };
   await db.insert(issueRecoveryActions).values({
     companyId, sourceIssueId: issueId, kind: "active_run_watchdog",
     cause: "explicit_user_continuation_retry", fingerprint: input.successorRunId,
     status: "resolved", outcome: "retry_authorized", resolvedAt: input.now,
-    nextAction: "The bounded retry has its own authorization for the unchanged user message.",
+    nextAction: authority.continuation.commentId
+      ? "The bounded retry has its own authorization for the unchanged user message."
+      : "The bounded retry has its own authorization for the same task Retry.",
     evidence: { explicitUserContinuation: {
-      ...continuation, actorId: comment.authorUserId, runId: input.successorRunId,
-      commentUpdatedAt: comment.updatedAt.toISOString(),
-      commentBodyHash: createHash("sha256").update(comment.body).digest("hex"),
+      ...continuation, actorId: authority.actorId, runId: input.successorRunId, ...authority.evidence,
       recordedAt: input.now.toISOString(), automaticRetry: {
-        sourceRunId: parent.id, sourceAuthorizationId: receipt.id,
+        sourceRunId: parent.id, sourceAuthorizationId: authority.sourceAuthorizationId,
       },
     } },
   });

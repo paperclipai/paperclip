@@ -52,6 +52,10 @@ import { museRunnerBroker } from "../muse-runner-broker.js";
 import { nativeCaseHandoffResult } from "./native-case-handoff.js";
 import { assertExternalNativeRunAuthority } from "./external-native-authority.js";
 import { stageRemoteLaunchAssets } from "./remote-launch-assets.js";
+import {
+  NATIVE_CONTINUITY_STATE_ENTRIES, NATIVE_SESSION_ROOT_HELD_ENTRIES, describeUnexpectedNativeSessionRootEntries,
+  isKnownNativeSessionRootEntry,
+} from "./native-session-root-entries.js";
 import { createRunPreparationTiming } from "../execution-preparation-timing.js";
 import { configuredEnvironment } from "../../vendor/paperclip-runner/index.js";
 import { parseProviderPerformanceSpans } from "../../vendor/paperclip-runner/index.js";
@@ -5270,19 +5274,6 @@ async function recoverPluginRunnerCheckpoint(input: {
   }
 }
 
-// Session-root entries owned by one provider session's authority. A continuity
-// break moves them aside together. Backups belong to the retired session too:
-// left active, they make a fresh replacement look like lost harness state.
-const NATIVE_CONTINUITY_STATE_ENTRIES: readonly string[] = [
-  "control-plane",
-  "runner",
-  "codex-home",
-  "opencode",
-  "acpx",
-  "failover-backups",
-  "provider-pack-authority.json",
-];
-
 function moveNativeContinuityState(root: string, archiveRoot: string): void {
   for (const name of NATIVE_CONTINUITY_STATE_ENTRIES) {
     const source = resolve(root, name);
@@ -5306,8 +5297,13 @@ function readSettledRunnerdProjection(root: string, identity: Record<string, str
     if (!isSafeNativeStateDirectory(root)) return refuse("root_unsafe");
     const lifecycle = runnerdAuthorityLifecycle(root, identity as RunnerdDurableIdentity);
     if (lifecycle !== "absent") return refuse(`runner_lifecycle_${lifecycle}`);
-    const unexpected = readdirSync(root).find(name => name !== "continuity-breaks" && !NATIVE_CONTINUITY_STATE_ENTRIES.includes(name));
-    if (unexpected !== undefined) return refuse("unexpected_root_entry");
+    // Every legitimate writer's entry is classified in native-session-root-entries.ts.
+    // Held entries are known evidence that needs its own settlement; anything
+    // else is writer drift. Name each kind separately.
+    const unknown = readdirSync(root).filter(name => !isKnownNativeSessionRootEntry(name));
+    const held = unknown.filter(name => NATIVE_SESSION_ROOT_HELD_ENTRIES.includes(name));
+    if (held.length > 0) return refuse(`held_root_entry(${describeUnexpectedNativeSessionRootEntries(held)})`);
+    if (unknown.length > 0) return refuse(`unexpected_root_entry(${describeUnexpectedNativeSessionRootEntries(unknown)})`);
     const bytes = readBoundedNativeFile(resolve(root, "control-plane", "control-plane-state.json"),
       NATIVE_CONTROL_PLANE_STATE_MAX_BYTES, "runner_durable_identity_too_large").toString("utf8");
     const control = record(JSON.parse(bytes));
