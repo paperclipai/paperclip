@@ -16,6 +16,8 @@ import {
  * and the chat-control-plane mock live in ./chat-adapters-ui.shared.ts; the
  * provider-setup describes run in chat-adapters-ui-providers.spec.ts.
  */
+test.use({ trace: "retain-on-failure" });
+
 test.describe("chat destination partial updates", () => {
   let seed: Seed;
 
