@@ -34,7 +34,10 @@ describe("Codex API-key image tools (pinned binary)", () => {
     // The same files prepareIsolatedCodexHome writes for an API-key agent.
     writeFileSync(join(codexHome, "config.toml"), 'cli_auth_credentials_store = "file"\n[features]\nshell_snapshot = false\n');
     writeFileSync(join(codexHome, "auth.json"), JSON.stringify({ OPENAI_API_KEY: "sk-test-not-a-real-key" }), { mode: 0o600 });
-    const source = { PATH: process.env.PATH, HOME: codexHome, CODEX_HOME: codexHome };
+    // Linux hosts run Codex inside an outer runner sandbox (the server sets
+    // this launch mode), and CI containers cannot create bwrap namespaces.
+    const source: NodeJS.ProcessEnv = { PATH: process.env.PATH, HOME: codexHome, CODEX_HOME: codexHome,
+      ...(process.platform === "linux" ? { PAPERCLIP_RUNNER_EXTERNAL_SANDBOX: "1" } : {}) };
     const launch = createIsolatedCodexAppServerArgs(source);
     const child = spawn(resolvePinnedCodexCommand(), [...launch.slice(0, -1),
       "-c", `openai_base_url="http://127.0.0.1:${port}/v1"`, "-c", `chatgpt_base_url="http://127.0.0.1:${port}/backend-api"`, launch.at(-1)!], {
@@ -62,7 +65,7 @@ describe("Codex API-key image tools (pinned binary)", () => {
         dynamicTools: [{ name: "generate_image", description: "Generate a PNG with the agent's existing OpenAI connection.",
           inputSchema: { type: "object", properties: { prompt: { type: "string" } }, required: ["prompt"] } }],
       });
-      expect(thread.error).toBeUndefined();
+      expect(thread.error, JSON.stringify(thread.error)).toBeUndefined();
       const threadId = String((thread.result as { thread: { id: string } }).thread.id);
       await call("turn/start", { threadId, input: [{ type: "text", text: "Make a cake logo image." }] });
       const deadline = Date.now() + 30_000;
