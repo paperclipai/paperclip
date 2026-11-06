@@ -1203,8 +1203,8 @@ export function DiscoveryGrid({
 
       <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
         {/* Search + sort + actions */}
-        <div className="flex flex-wrap items-center gap-2 border-b border-border px-4 py-3">
-          <div className="flex h-9 min-w-(--sz-12rem) flex-1 items-center gap-2 rounded-md border border-border px-2.5">
+        <div data-canonical-toolbar="skill-catalog" role="toolbar" aria-label="Skill catalog controls" className="flex flex-wrap items-center gap-2 border-b border-border px-4 py-3">
+          <div data-toolbar-control className="design-task-search flex min-w-(--sz-12rem) flex-1 items-center gap-2 rounded-md border border-border px-2.5">
             <Search className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden="true" />
             <input
               value={search}
@@ -2930,7 +2930,7 @@ export function SkillDetailPage({
 
   // Track unsaved edits so we can float a save bar and warn before the page is
   // unloaded with a dirty draft (PAP-10907 J).
-  const savedFileContent = file?.content ?? "";
+  const savedFileContent = file?.markdown ? splitFrontmatter(file.content).body : file?.content ?? "";
   const isDirty = editMode && Boolean(file?.editable) && draft !== savedFileContent;
   useEffect(() => {
     if (!isDirty) return;
@@ -3029,7 +3029,7 @@ export function SkillDetailPage({
                 editMode ? (
                   <>
                     <Button variant="ghost" size="sm" onClick={() => setEditMode(false)} disabled={savePending}>{translateAgentPage("agents:cancel")}</Button>
-                    <Button size="sm" onClick={onSave} disabled={savePending}>
+                    <Button size="sm" onClick={onSave} disabled={savePending || !isDirty}>
                       <Save className="mr-1.5 h-3.5 w-3.5" />
                       {savePending ? translateAgentPage("agents:saving_ae7e88") : translateAgentPage("agents:save")}
                     </Button>

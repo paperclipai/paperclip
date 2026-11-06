@@ -70,17 +70,17 @@ const SHARED_WORKSPACE_CONCURRENCY_OPTIONS: {
   {
     value: "auto",
     get label() { return t("task-components:auto_02862497"); },
-    help: t("deep-ui:concurrent_runs_on_local_ssh_runners_runs_take_turns_in_clou_0a3017"),
+    get help() { return t("deep-ui:concurrent_runs_on_local_ssh_runners_runs_take_turns_in_clou_0a3017"); },
   },
   {
     value: "serialize",
     get label() { return t("task-components:serialize_be3403d5"); },
-    help: t("deep-ui:sandbox_runs_take_turns_in_the_shared_project_workspace_loca_79b32f"),
+    get help() { return t("deep-ui:sandbox_runs_take_turns_in_the_shared_project_workspace_loca_79b32f"); },
   },
   {
     value: "allow",
     get label() { return t("task-components:allow_e213c161"); },
-    help: t("deep-ui:runs_never_wait_for_the_workspace_concurrent_edits_are_possi_98d65a"),
+    get help() { return t("deep-ui:runs_never_wait_for_the_workspace_concurrent_edits_are_possi_98d65a"); },
   },
 ];
 

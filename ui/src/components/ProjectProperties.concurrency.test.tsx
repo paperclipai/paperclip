@@ -6,6 +6,8 @@ import type { ReactNode } from "react";
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { i18n, t } from "@/i18n";
+import { act as reactAct } from "react";
 import { ProjectProperties } from "./ProjectProperties";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { queryKeys } from "../lib/queryKeys";
@@ -94,6 +96,26 @@ function concurrencySelect(): HTMLSelectElement {
 }
 
 describe("ProjectProperties — shared workspace concurrency select", () => {
+  it.each([
+    ["auto", "concurrent_runs_on_local_ssh_runners_runs_take_turns_in_clou_0a3017"],
+    ["serialize", "sandbox_runs_take_turns_in_the_shared_project_workspace_loca_79b32f"],
+    ["allow", "runs_never_wait_for_the_workspace_concurrent_edits_are_possi_98d65a"],
+  ] as const)("refreshes %s workspace help on a locale round trip without saving", async (value, key) => {
+    const update = vi.fn();
+    render(makeProject({ executionWorkspacePolicy: { enabled: true, defaultMode: "shared_workspace", sharedWorkspaceConcurrency: value } }), update);
+    const english = t(`deep-ui:${key}`);
+    expect(container.textContent).toContain(english);
+    try {
+      await reactAct(async () => { await i18n.changeLanguage("zh-CN"); });
+      expect(container.textContent).toContain(t(`deep-ui:${key}`));
+      expect(container.textContent).not.toContain(english);
+      await reactAct(async () => { await i18n.changeLanguage("en"); });
+      expect(container.textContent).toContain(english);
+      expect(concurrencySelect().value).toBe(value);
+      expect(update).not.toHaveBeenCalled();
+    } finally { await reactAct(async () => { await i18n.changeLanguage("en"); }); }
+  });
+
   it("defaults to Auto when the policy has no sharedWorkspaceConcurrency", () => {
     render(makeProject(), vi.fn());
     expect(concurrencySelect().value).toBe("auto");

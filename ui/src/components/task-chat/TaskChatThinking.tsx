@@ -2,9 +2,10 @@ import { t, useTranslation } from "@/i18n";
 import { useState } from "react";
 import { Brain, ChevronRight } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { MarkdownBody } from "@/components/MarkdownBody";
 import type { TaskChatThinkingItem } from "./task-chat-model";
 import { flattenSelfTalk } from "./transcript-adapter";
+import { TaskChatReasoningSummary } from "./TaskChatReasoningSummary";
+import { latestReasoningHeadline } from "./reasoning-summary";
 import { useTaskChatShimmer } from "./TaskChatShimmer";
 
 /** Provider-authored reasoning summaries and deltas; never reconstructed hidden reasoning. */
@@ -26,7 +27,7 @@ export function TaskChatThinking({
   const [open, setOpen] = useState(defaultOpen ?? false);
   const shimmer = useTaskChatShimmer(item.id);
   const body = item.lines.join("\n").trim();
-  const preview = flattenSelfTalk(body);
+  const preview = latestReasoningHeadline(body) ?? flattenSelfTalk(body);
   const baseLabel = item.channel === "detail" ? t("task-chat-ui:reasoningDetail") : t("task-chat-ui:reasoning");
   const label = active
     ? body ? `${baseLabel}…` : t("task-chat-ui:thinkingEllipsis")
@@ -49,8 +50,8 @@ export function TaskChatThinking({
             data-testid="task-chat-thinking-icon"
           />
         </span>
-        <div className="min-w-0 flex-1" data-testid="task-chat-thinking-text" data-conversation-text="progress">
-          <MarkdownBody softBreaks linkIssueReferences>{body}</MarkdownBody>
+        <div className="min-w-0 flex-1" data-testid="task-chat-thinking-text">
+          <TaskChatReasoningSummary text={body} />
         </div>
       </div>
     );
@@ -95,8 +96,8 @@ export function TaskChatThinking({
         <ChevronRight className={cn("tc-hover-disclosure-caret h-3 w-3 shrink-0 transition-[opacity,transform] group-hover/thinking:opacity-80 group-focus-visible/thinking:opacity-80", open ? "rotate-90 opacity-80" : "opacity-0")} aria-hidden />
       </button>
       {open ? (
-        <div data-conversation-text="progress" className="task-chat-expanded-line-wrap ml-2.5 mt-1 min-w-0 max-w-full overflow-hidden border-l-2 border-border pl-2.5 text-xs font-normal text-muted-foreground">
-          <MarkdownBody className="task-chat-reasoning-markdown" softBreaks linkIssueReferences>{body}</MarkdownBody>
+        <div className="task-chat-expanded-line-wrap ml-2.5 mt-1 min-w-0 max-w-full overflow-hidden border-l-2 border-border pl-2.5 text-xs font-normal text-muted-foreground">
+          <TaskChatReasoningSummary text={body} streaming={active} />
         </div>
       ) : null}
     </div>

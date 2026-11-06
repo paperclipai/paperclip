@@ -174,5 +174,7 @@
   "titleChanged": "title changed",
   "descriptionChanged": "description changed",
   "changesSeparator": ", ",
-  "copySuccess": "Copied"
+  "copySuccess": "Copied",
+  "signInExpired": "This sign-in expired",
+  "signInUnfinished": "Sign-in didn’t finish"
 }

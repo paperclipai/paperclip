@@ -21,11 +21,13 @@ export function TaskViewsMenu({
   value,
   onChange,
   badgeCount,
+  coordinator = false,
 }: {
   value: TaskViewKey;
   onChange: (next: TaskViewKey) => void;
   /** Unread count surfaced next to the My-work group, mirroring the nav badge. */
   badgeCount?: number;
+  coordinator?: boolean;
 }) {
   useTranslation("task-components");
   const active = taskView(value);
@@ -54,7 +56,7 @@ export function TaskViewsMenu({
                 </span>
               ) : null}
             </DropdownMenuLabel>
-            {group.views.map((view) => {
+            {group.views.filter(view => coordinator || !view.coordinatorOnly).map((view) => {
               const selected = view.key === value;
               return (
                 <DropdownMenuItem

@@ -4,7 +4,7 @@ import type { Issue } from "@paperclipai/shared";
 import { ChevronDown, ChevronRight, GitBranch } from "lucide-react";
 import { buildIssueTree } from "../lib/issue-tree";
 import { issueFilterLabel } from "../lib/issue-filters";
-import { allTaskListColumns, defaultTaskListColumns, defaultTaskListSort, isTaskListColumnSort, taskListOrderToIssueSort, type TaskListColumnId, type TaskListSort, type TaskListOrder } from "../lib/task-list";
+import { defaultTaskListColumns, defaultTaskListSort, isTaskListColumnSort, taskListOrderToIssueSort, type TaskListColumnId, type TaskListSort, type TaskListOrder } from "../lib/task-list";
 import { sortIssues } from "../lib/issue-sort";
 import { timeAgo } from "../lib/timeAgo";
 import { IssueRow, type IssueRowDensity } from "./IssueRow";
@@ -14,6 +14,8 @@ import { TaskRowGroup } from "./TaskRowGroup";
 import { Badge } from "./ui/badge";
 import { Button } from "./ui/button";
 import { useTaskRowBudget } from "../hooks/useTaskRowBudget";
+import { useTaskListColumnPreferences } from "../hooks/useTaskListColumnPreferences";
+import type { TaskCollectionPreferenceLocation } from "../lib/task-collection-preferences";
 
 export type TaskListItem = {
   issue: Issue;
@@ -39,7 +41,7 @@ export function includeTaskListAncestors(items: readonly TaskListItem[], matches
 }
 
 /** Opt-in collection built from the reviewed row, hierarchy and column primitives. */
-export function TaskList({ items, allItems = items, initialColumns = defaultTaskListColumns, density = "comfortable", collapsedIds, onCollapsedIdsChange, groupBy = "none", emptyState, issueLinkState, collectionKey, sort: controlledSort, onSortChange }: {
+export function TaskList({ items, allItems = items, initialColumns = defaultTaskListColumns, density = "comfortable", collapsedIds, onCollapsedIdsChange, groupBy = "none", emptyState, issueLinkState, collectionKey, preferenceLocation, sort: controlledSort, onSortChange }: {
   items: readonly TaskListItem[];
   allItems?: readonly TaskListItem[];
   initialColumns?: readonly TaskListColumnId[];
@@ -51,15 +53,15 @@ export function TaskList({ items, allItems = items, initialColumns = defaultTask
   issueLinkState?: unknown;
   /** Company/person/view/filter identity; membership changes do not reset it. */
   collectionKey?: string;
+  preferenceLocation?: TaskCollectionPreferenceLocation;
   sort?: TaskListOrder;
   onSortChange?: (sort: TaskListSort | undefined) => void;
 }) {
   useTranslation("task-components");
   const localKey = useId();
-  const [columns, setColumns] = useState(initialColumns);
-  const [columnOrder, setColumnOrder] = useState(allTaskListColumns);
+  const { columns, order: columnOrder, setColumns, setOrder: setColumnOrder } = useTaskListColumnPreferences(preferenceLocation, initialColumns);
   const [localSort, setLocalSort] = useState<TaskListSort>();
-  const sort = controlledSort ?? (onSortChange ? undefined : localSort) ?? defaultTaskListSort;
+  const sort = controlledSort ?? (onSortChange ? undefined : localSort);
   const setSort = (next: TaskListSort | undefined) => {
     setLocalSort(next);
     onSortChange?.(next);

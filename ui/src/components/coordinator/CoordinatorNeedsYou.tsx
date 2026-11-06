@@ -174,7 +174,7 @@ export function CoordinatorNeedsYou() {
   const filtersActive = Boolean(query.trim() || agentFilter || projectFilter);
   const closeHistory = useCallback(() => { setHistoryOpen(false); closePanel(); }, [closePanel]);
   const showHistory = () => { setHistoryOpen(true); if (!isMobile) setPanelVisible(true); };
-  useEffect(() => { setBreadcrumbs([{ label: translateShell("shell:needs_you") }]); }, [setBreadcrumbs, translateShell]);
+  useEffect(() => { setBreadcrumbs([{ label: translateShell("navigation:labels.inbox") }]); }, [setBreadcrumbs, translateShell]);
   useEffect(() => {
     setSettling([]); setHistoryOpen(false); setNow(Date.now()); closePanel();
     return closePanel;
@@ -201,15 +201,15 @@ export function CoordinatorNeedsYou() {
   };
   const duration = typeof document === "undefined" ? 0 : parseCssTimeMs(getComputedStyle(document.documentElement).getPropertyValue("--motion-duration-base")) / 1_000;
   if (!selectedCompanyId) return <p className="text-sm text-muted-foreground">{translateShell("shell:choose_a_company_to_see_its_decisions")}</p>;
-  return <LayoutGroup id="coordinator-decisions"><section className="coordinator-needs-you mx-auto w-full max-w-4xl space-y-6" aria-label={translateShell("shell:needs_you")}>
+  return <LayoutGroup id="coordinator-decisions"><section className="coordinator-needs-you mx-auto w-full max-w-4xl space-y-6" aria-label={translateShell("navigation:labels.inbox")}>
     {isMobile ? <Sheet open={historyOpen} onOpenChange={open => { if (!open) closeHistory(); }}>
       <SheetContent side="bottom" aria-describedby={undefined} className="mobile-task-side-panel inset-0 h-dvh max-h-dvh w-full max-w-none gap-0 border-0 p-0 pt-(--sz-safe-top) pb-(--sz-safe-bottom)">
         <SheetHeader><SheetTitle>{translateShell("shell:decision_history")}</SheetTitle></SheetHeader>
         <div className="min-h-0 flex-1 overflow-y-auto p-4"><HistoryPanel companyId={selectedCompanyId} agents={agentQuery.data ?? []} onClose={closeHistory} mobile /></div>
       </SheetContent>
     </Sheet> : null}
-    <header className="flex items-center justify-between gap-3"><h1 className="text-2xl font-medium">{translateShell("shell:needs_you")}</h1><Button variant="ghost" onClick={showHistory}><History className="size-4" />{translateShell("shell:decision_history")}</Button></header>
-    <div role="toolbar" aria-label={translateShell("shell:decisions_controls")} className="flex flex-wrap items-center gap-2">
+    <header className="flex items-center justify-between gap-3"><h1 className="text-2xl font-medium">{translateShell("navigation:labels.inbox")}</h1><Button variant="ghost" onClick={showHistory}><History className="size-4" />{translateShell("shell:decision_history")}</Button></header>
+    <div data-canonical-toolbar="coordinator-decisions" role="toolbar" aria-label={translateShell("shell:decisions_controls")} className="flex flex-wrap items-center gap-2">
       <ToolbarSearch query={query} onQueryChange={setQuery} label={translateShell("shell:search_decisions")} placeholder={translateShell("shell:search_decisions_or_task_ids")} />
       <NativeSelect aria-label={translateShell("shell:filter_decisions_by_agent")} value={agentFilter} onChange={(event) => setAgentFilter(event.target.value)} className="w-auto"><option value="">{translateShell("shell:all_agents")}</option>{(agentQuery.data ?? []).map((agent) => <option key={agent.id} value={agent.id}>{agent.name}</option>)}</NativeSelect>
       <NativeSelect aria-label={translateShell("shell:filter_decisions_by_project")} value={projectFilter} onChange={(event) => setProjectFilter(event.target.value)} className="w-auto"><option value="">{translateShell("shell:all_projects")}</option>{projects.map(([id, name]) => <option key={id} value={id}>{name}</option>)}</NativeSelect>

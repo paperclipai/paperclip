@@ -997,5 +997,6 @@
     "skip_if_active": "skip if active",
     "skip_missed": "skip missed",
     "enqueue_missed_with_cap": "enqueue missed with cap"
-  }
+  },
+  "createProject": "Create project"
 }

@@ -1,10 +1,11 @@
 import { useTranslation } from "@/i18n";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Inbox, Bell, Boxes, ChevronRight, CircleCheck, FolderOpen, History, LayoutDashboard, MessageCircle, MoreHorizontal, Network, Pin, PinOff, Plus, Repeat, Search, Settings, SquarePen, Unplug } from "lucide-react";
+import { Inbox, Boxes, ChevronRight, CircleCheck, FolderOpen, History, LayoutDashboard, MessageCircle, MoreHorizontal, Network, Pin, PinOff, Plus, Repeat, Search, Settings, SquarePen, Unplug } from "lucide-react";
 import type { Project } from "@paperclipai/shared";
 import { useCoordinatorAttentionCount } from "@/hooks/useCoordinatorAttentionCount";
 import { issuesApi } from "@/api/issues";
+import { instanceSettingsApi } from "@/api/instanceSettings";
 import { projectsApi } from "@/api/projects";
 import { useAgentChatNavigation } from "@/hooks/useAgentChatNavigation";
 import { useRecentTasks } from "@/hooks/useRecentTasks";
@@ -23,13 +24,14 @@ import { Flyout, FlyoutContent, FlyoutTrigger, FlyoutAppearanceProvider } from "
 import { Button } from "./ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 import { StatusIcon } from "./StatusIcon";
+import { taskStatusIconProps } from "@/lib/task-status-presentation";
 
 function ProjectRecent({ project }: { project: Project }) {
   const { t } = useTranslation("navigation");
   const [expanded, setExpanded] = useState(false);
   const { data: tasks, isPending, error } = useQuery({
     queryKey: [...queryKeys.issues.listByProject(project.companyId, project.id), "coordinator-recents"],
-    queryFn: () => issuesApi.listCompact(project.companyId, { projection: "index", projectId: project.id, limit: 12, sortField: "updated", sortDir: "desc" }),
+    queryFn: () => issuesApi.listCompact(project.companyId, { projection: "rows", projectId: project.id, limit: 12, sortField: "updated", sortDir: "desc" }),
     enabled: expanded,
   });
   return <div>
@@ -42,7 +44,7 @@ function ProjectRecent({ project }: { project: Project }) {
     </div>
     {expanded && <div className="ml-5 border-l border-border pl-1">
       {isPending ? <p className="px-3 py-2 text-xs text-muted-foreground" role="status">{t("coordinator.loadingTasks")}</p> : error ? <p className="px-3 py-2 text-xs text-muted-foreground">{t("coordinator.tasksError")}</p> : tasks?.length ? tasks.map(task =>
-        <SidebarNavItem className="design-sidebar-item" key={task.id} to={`/issues/${task.identifier ?? task.id}`} label={task.title} iconNode={<StatusIcon status={task.status} displayStatus={task.displayStatus} />} />)
+        <SidebarNavItem className="design-sidebar-item" key={task.id} to={`/issues/${task.identifier ?? task.id}`} label={task.title} iconNode={<StatusIcon {...taskStatusIconProps(task)} />} />)
         : <p className="px-3 py-2 text-xs text-muted-foreground">{t("coordinator.noTasks")}</p>}
     </div>}
   </div>;
@@ -54,7 +56,6 @@ export function CoordinatorSidebar({ children }: { children?: ReactNode }) {
   const { t } = useTranslation("navigation");
   const moreDestinations = [
     { label: t("labels.search"), to: "/search", icon: Search },
-    { label: t("labels.inbox"), to: "/inbox", icon: Inbox },
     { label: t("labels.dashboard"), to: "/dashboard", icon: LayoutDashboard },
     { label: t("labels.projects"), to: "/projects", icon: FolderOpen },
     { label: t("labels.routines"), to: "/routines", icon: Repeat },
@@ -68,9 +69,16 @@ export function CoordinatorSidebar({ children }: { children?: ReactNode }) {
   const { companyId, userId, agents, chats, session } = useAgentChatNavigation();
   const unreadChatCount = chats.data?.filter(chat => chat.isUnreadForMe).length ?? 0;
   const pinnedNavigation = usePinnedNavigation(userId);
+  const { data: experimental } = useQuery({
+    queryKey: queryKeys.instance.experimentalSettings,
+    queryFn: () => instanceSettingsApi.getExperimental(),
+  });
+  const destinations = experimental?.enableCases
+    ? [...moreDestinations, { label: t("labels.cases"), to: "/cases", icon: Boxes }]
+    : moreDestinations;
   const [moreOpen, setMoreOpen] = useState(false);
   const moreContentRef = useRef<HTMLDivElement>(null);
-  const pinnedDestinations = pinnedNavigation.pins.flatMap(to => moreDestinations.filter(item => item.to === to));
+  const pinnedDestinations = pinnedNavigation.pins.flatMap(to => destinations.filter(item => item.to === to));
   const { entries: recentTasks } = useRecentTasks({ companyId, userId });
   const { collapsed, peeking, isMobile, setSidebarOpen } = useSidebar();
   const rail = collapsed && !peeking;
@@ -119,7 +127,7 @@ export function CoordinatorSidebar({ children }: { children?: ReactNode }) {
             {!rail && <button type="button" aria-label={t("coordinator.newTask")} title={t("coordinator.newTask")} onClick={() => openNewIssue()}
               className="absolute right-3 top-1/2 -translate-y-1/2 rounded-md p-1 text-muted-foreground opacity-0 transition-opacity group-hover/coordinator-new:opacity-100 group-focus-within/coordinator-new:opacity-100 pointer-coarse:opacity-100 hover:bg-sidebar-accent focus-visible:ring-2 focus-visible:ring-ring"><Plus className="size-4" /></button>}
           </div>
-          <SidebarNavItem className="design-sidebar-item" to="/decisions" label={t("coordinator.needsYou")} icon={Bell} badge={attentionCount} badgeLabel={t("badges.decisions")} />
+          <SidebarNavItem className="design-sidebar-item" to="/decisions" label={t("labels.inbox")} icon={Inbox} badge={attentionCount} badgeLabel={t("badges.decisions")} />
           {pinnedDestinations.map(({ label, to, icon }) => <div key={to} className="group/coordinator-pin relative">
             <SidebarNavItem to={to} label={label} icon={icon} className={cn("design-sidebar-item", !rail && "pr-9")} />
             {!rail && <button type="button" aria-label={t("coordinator.unpin", { label })} title={t("coordinator.unpin", { label })} onClick={() => pinnedNavigation.toggle(to)} className="absolute right-3 top-1/2 flex size-7 -translate-y-1/2 items-center justify-center rounded-md text-muted-foreground opacity-0 transition-opacity hover:bg-sidebar-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring group-hover/coordinator-pin:opacity-100 group-focus-within/coordinator-pin:opacity-100 pointer-coarse:opacity-100"><PinOff className="size-3.5" /></button>}
@@ -128,7 +136,7 @@ export function CoordinatorSidebar({ children }: { children?: ReactNode }) {
         <Flyout open={moreOpen} onOpenChange={setMoreOpen}>
           <FlyoutTrigger asChild><button type="button" aria-label={t("coordinator.morePages")} className="design-sidebar-item flex w-auto items-center gap-2.5 rounded-lg py-1.5 text-left transition-colors focus-visible:ring-2 focus-visible:ring-ring"><MoreHorizontal className="size-4 shrink-0" /><span className={rail ? SIDEBAR_RAIL_HIDDEN_LABEL : undefined}>{t("coordinator.more")}</span></button></FlyoutTrigger>
           <FlyoutContent ref={moreContentRef} tabIndex={-1} onOpenAutoFocus={(event) => { event.preventDefault(); moreContentRef.current?.focus(); }} side={isMobile ? "bottom" : "right"} align="start" className="w-56 p-1" aria-label={t("coordinator.morePages")}>
-            {moreDestinations.map(({ label, to, icon: Icon }, index) => {
+            {destinations.map(({ label, to, icon: Icon }, index) => {
               const pinned = pinnedNavigation.pins.includes(to);
               const PinIcon = pinned ? PinOff : Pin;
               return <div key={to}>
@@ -150,7 +158,7 @@ export function CoordinatorSidebar({ children }: { children?: ReactNode }) {
       {!rail && session.isSuccess && recents.length > 0 && <div className="design-sidebar-recents"><SidebarSection label={t("coordinator.recents")}>
         <div className="design-sidebar-recent-list scrollbar-while-scrolling" onScroll={handleRecentScroll} role="region" aria-label={t("coordinator.recents")} tabIndex={0}>
         {recents.map(item => item.kind === "task"
-          ? <SidebarNavItem className="design-sidebar-item" key={item.id} to={`/issues/${item.task.identifier ?? item.id}`} label={item.task.title} iconNode={<StatusIcon status={item.task.status} displayStatus={item.task.displayStatus} externalConversationState={item.task.externalConversationState} />} />
+          ? <SidebarNavItem className="design-sidebar-item" key={item.id} to={`/issues/${item.task.identifier ?? item.id}`} label={item.task.title} iconNode={<StatusIcon {...taskStatusIconProps(item.task)} />} />
           : item.kind === "chat"
             ? <SidebarNavItem className="design-sidebar-item" key={item.id} to={`/chats/${encodeURIComponent(agentRouteRef(item.agent))}`} label={item.agent.name} icon={MessageCircle} />
             : <ProjectRecent key={item.id} project={item.project} />)}

@@ -1,5 +1,6 @@
 import { t, useTranslation } from "@/i18n";
 import type { CSSProperties } from "react";
+import { resolveTaskStatusPresentation, type TaskStatusPresentationInput } from "../lib/task-status-presentation";
 import { cn } from "../lib/utils";
 import {
   statusBadge,
@@ -54,7 +55,8 @@ function scStyle(cssVar: string): CSSProperties {
 
 /** "in_review" → "In review" (sentence case). */
 function sentenceCaseStatus(status: string): string {
-  return displayStatusLabel(status, true);
+  const label = displayStatusLabel(status);
+  return label.charAt(0).toUpperCase() + label.slice(1).toLowerCase();
 }
 
 /**
@@ -122,20 +124,21 @@ export function AgentStatusCapsule({ status }: { status: string }) {
  * Distinct from the generic {@link StatusBadge} so run/goal/approval badges are
  * unaffected.
  */
-export function IssueStatusBadge({ status: taskStatus, displayStatus, externalConversationState }: { status: string; displayStatus?: string | null; externalConversationState?: "active" | "waiting" | null }) {
-  const status = taskStatus === "in_review" && externalConversationState === "waiting" ? "idle" : taskStatus === "in_progress" && displayStatus === "monitoring" ? "monitoring" : taskStatus;
-  const cssVar = taskStatusVar[status] ?? taskStatusVarDefault;
+export function IssueStatusBadge(props: TaskStatusPresentationInput) {
   useTranslation("final-components-b");
+  const { glyphStatus, label, ariaLabel } = resolveTaskStatusPresentation(props);
+  const cssVar = taskStatusVar[glyphStatus] ?? taskStatusVarDefault;
   return (
     <span
       className={cn(
         "status-chip inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-normal leading-none whitespace-nowrap shrink-0",
-        status === "cancelled" && "line-through"
+        glyphStatus === "cancelled" && "line-through"
       )}
       style={scStyle(cssVar)}
+      title={ariaLabel === label ? undefined : ariaLabel}
     >
-      <StatusGlyph status={status} size="sm" />
-      {sentenceCaseStatus(status)}
+      <StatusGlyph status={glyphStatus} size="sm" />
+      {sentenceCaseStatus(label)}
     </span>
   );
 }

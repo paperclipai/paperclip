@@ -927,7 +927,12 @@
     "stopped": "Activity stopped",
     "usage": "Recorded usage",
     "join": "{{first}}, {{next}}",
-    "more": "{{summary}}, and more"
+    "more": "{{summary}}, and more",
+    "ranChecks": "Ran checks",
+    "checkFailed": "Check failed",
+    "skippedChecks": "Skipped checks",
+    "switchedModels": "Switched models",
+    "autoReviewedActions": "Auto-reviewed actions"
   },
   "transcript": {
     "thoughtSeconds_one": "Thought for {{count}}s",

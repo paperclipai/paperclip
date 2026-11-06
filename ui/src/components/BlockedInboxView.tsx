@@ -28,6 +28,7 @@ import { Identity } from "./Identity";
 import { StatusIcon } from "./StatusIcon";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import { taskStatusIconProps } from "@/lib/task-status-presentation";
 
 interface BlockedInboxViewProps {
   companyId: string;
@@ -374,7 +375,7 @@ function BlockedInboxRow({
       showDivider={presentation === "legacy"}
       statusSlot={presentation === "task"
         ? showStatusColumn
-          ? <StatusIcon status={row.issue.status} displayStatus={row.issue.displayStatus} blockerAttention={blockerAttention} />
+          ? <StatusIcon {...taskStatusIconProps(row.issue)} blockerAttention={blockerAttention} />
           : <span className="inline-flex size-4" aria-hidden="true" />
         : undefined}
       showIdentifier={presentation === "task" ? showIdentifierColumn : undefined}
@@ -388,7 +389,7 @@ function BlockedInboxRow({
       ) : undefined}
       mobileLeading={
         <span className="flex shrink-0 items-center gap-1.5 pt-px">
-          <StatusIcon status={row.issue.status} displayStatus={row.issue.displayStatus} blockerAttention={blockerAttention} />
+          <StatusIcon {...taskStatusIconProps(row.issue)} blockerAttention={blockerAttention} />
         </span>
       }
       titleSuffix={
@@ -421,7 +422,7 @@ function BlockedRowDesktopMeta({
   const identifier = row.issue.identifier ?? row.issue.id.slice(0, 8);
   return (
     <span className="hidden shrink-0 items-center gap-2 sm:inline-flex">
-      {showStatusColumn ? <StatusIcon status={row.issue.status} displayStatus={row.issue.displayStatus} blockerAttention={blockerAttention} /> : null}
+      {showStatusColumn ? <StatusIcon {...taskStatusIconProps(row.issue)} blockerAttention={blockerAttention} /> : null}
       {showIdentifierColumn ? <span className="font-mono text-xs text-muted-foreground">{identifier}</span> : null}
     </span>
   );

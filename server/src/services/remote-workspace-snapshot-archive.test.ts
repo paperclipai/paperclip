@@ -275,6 +275,89 @@ describe("portable remote workspace archives", () => {
     await expect(fs.access(path.join(restored, ".git", "objects", "info", "alternates"))).rejects.toMatchObject({ code: "ENOENT" });
     await git(restored, "fsck", "--full", "--no-dangling");
   });
+  it.each(["ordinary", "linked", "borrowed", "shallow", "sha256"].flatMap(kind =>
+    ["local", "serialized"].map(mode => ({ kind, mode }))))(
+    "preserves an inactive rebase bookmark and its unreferenced commit in $mode $kind capture", async ({ kind, mode }) => {
+      const base = await source();
+      await git(base, "init", "-q", "-b", "main", ...(kind === "sha256" ? ["--object-format=sha256"] : []));
+      await fs.writeFile(path.join(base, "work.txt"), "base\n"); await git(base, "add", "."); await git(base, "commit", "-qm", "base");
+      const bookmark = async (repo: string) => {
+        await git(repo, "checkout", "-qb", "old-rebase-tip");
+        await fs.writeFile(path.join(repo, "bookmark.txt"), "preserved rebase commit\n");
+        await git(repo, "add", "."); await git(repo, "commit", "-qm", "old rebase tip");
+        const commit = await git(repo, "rev-parse", "HEAD");
+        await git(repo, "checkout", "-q", "main"); await git(repo, "branch", "-D", "old-rebase-tip");
+        return commit;
+      };
+      let marker = await bookmark(base), cwd = base;
+      if (kind === "linked") {
+        cwd = path.join(root, "linked"); await git(base, "worktree", "add", "-qb", "selected", cwd);
+      } else if (kind === "borrowed" || kind === "shallow") {
+        cwd = path.join(root, "selected");
+        await git(root, "clone", "-q", ...(kind === "borrowed" ? ["--shared", base] : ["--depth=1", `file://${base}`]), cwd);
+        if (kind === "shallow") marker = await bookmark(cwd);
+      }
+      await git(cwd, "update-ref", "REBASE_HEAD", marker);
+      await fs.writeFile(path.join(cwd, "work.txt"), "staged\n"); await git(cwd, "add", "work.txt");
+      await fs.writeFile(path.join(cwd, "work.txt"), "unstaged\n");
+      const head = await git(cwd, "rev-parse", "HEAD"), status = await git(cwd, "status", "--porcelain=v2");
+      const gitDir = await git(cwd, "rev-parse", "--absolute-git-dir");
+      const bytes = await sourceBytes(cwd), administration = await sourceBytes(gitDir);
+      let snapshot: Awaited<ReturnType<typeof capture>>;
+      if (mode === "serialized") {
+        const helper = path.join(root, "helper.cjs"), archivePath = path.join(root, "snapshot.pcws");
+        await fs.writeFile(helper, remoteWorkspaceArchiveScript());
+        const result = await execute(process.execPath, [helper, "capture", cwd, archivePath], { env });
+        snapshot = { archivePath, ...JSON.parse(result.stdout) };
+      } else snapshot = await capture(cwd);
+      expect(await sourceBytes(cwd)).toBe(bytes); expect(await sourceBytes(gitDir)).toBe(administration);
+      await fs.rm(base, { recursive: true, force: true });
+      if (cwd !== base) await fs.rm(cwd, { recursive: true, force: true });
+      const restored = await restore(snapshot);
+      expect(await git(restored, "rev-parse", "HEAD")).toBe(head);
+      expect(await git(restored, "status", "--porcelain=v2")).toBe(status);
+      expect(await git(restored, "rev-parse", "REBASE_HEAD")).toBe(marker);
+      expect(await git(restored, "show", "REBASE_HEAD:bookmark.txt")).toBe("preserved rebase commit");
+      expect(await git(restored, "show", ":work.txt")).toBe("staged");
+      expect(await fs.readFile(path.join(restored, "work.txt"), "utf8")).toBe("unstaged\n");
+      await expect(fs.access(path.join(restored, ".git", "FETCH_HEAD"))).rejects.toMatchObject({ code: "ENOENT" });
+      await git(restored, "fsck", "--full", "--no-dangling");
+    },
+  );
+  it.each(["invalid", "missing_commit", "symlink", "directory", "unmerged"])(
+    "rejects an unsafe inactive rebase bookmark with %s state", async kind => {
+      const cwd = await source(); await git(cwd, "init", "-q", "-b", "main");
+      await fs.writeFile(path.join(cwd, "work.txt"), "base\n"); await git(cwd, "add", "."); await git(cwd, "commit", "-qm", "base");
+      const marker = path.join(cwd, ".git", "REBASE_HEAD"), head = await git(cwd, "rev-parse", "HEAD");
+      if (kind === "symlink") await fs.symlink("HEAD", marker);
+      else if (kind === "directory") await fs.mkdir(marker);
+      else await fs.writeFile(marker, `${kind === "invalid" ? "not-a-commit" : kind === "missing_commit" ? "a".repeat(40) : head}\n`);
+      if (kind === "unmerged") {
+        const object = await git(cwd, "rev-parse", "HEAD:work.txt");
+        await git(cwd, "update-index", "--force-remove", "work.txt");
+        const command = execFile("git", ["-C", cwd, "update-index", "--index-info"], { env });
+        command.stdin!.end(`100644 ${object} 1\twork.txt\n100644 ${object} 2\twork.txt\n`);
+        await new Promise<void>((resolve, reject) => { command.once("error", reject); command.once("exit", code => code === 0 ? resolve() : reject(new Error("index fixture failed"))); });
+      }
+      const bytes = await sourceBytes(cwd);
+      await expect(capture(cwd)).rejects.toThrow("remote_workspace_archive_git_operation_in_progress");
+      expect(await sourceBytes(cwd)).toBe(bytes);
+      await expect(fs.access(path.join(root, "snapshot.pcws"))).rejects.toMatchObject({ code: "ENOENT" });
+    },
+  );
+  it("rejects a bookmark changed after the normalized repository was captured", async () => {
+    const cwd = await source(); await git(cwd, "init", "-q", "-b", "main");
+    await fs.writeFile(path.join(cwd, "work.txt"), "base\n"); await git(cwd, "add", "."); await git(cwd, "commit", "-qm", "base");
+    const first = await git(cwd, "rev-parse", "HEAD");
+    await fs.writeFile(path.join(cwd, "work.txt"), "next\n"); await git(cwd, "commit", "-qam", "next");
+    const second = await git(cwd, "rev-parse", "HEAD"), marker = path.join(cwd, ".git", "REBASE_HEAD");
+    await fs.writeFile(marker, `${first}\n`);
+    const archivePath = path.join(root, "snapshot.pcws");
+    archiveIo.beforeOpen = async target => { if (target === archivePath) await fs.writeFile(marker, `${second}\n`); };
+    await expect(capture(cwd)).rejects.toThrow("remote_workspace_archive_changed");
+    expect(await fs.readFile(marker, "utf8")).toBe(`${second}\n`);
+    await expect(fs.access(archivePath)).rejects.toMatchObject({ code: "ENOENT" });
+  });
   it.each(["rebase-merge", "rebase-apply", "linked-rebase", "sequencer", "MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD"])(
     "rejects a real unfinished %s operation without changing its source or publishing an archive", async operation => {
       let cwd = await source(); await git(cwd, "init", "-q", "-b", "main");

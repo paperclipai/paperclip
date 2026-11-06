@@ -1,5 +1,5 @@
 import { t, useTranslation } from "@/i18n";
-import type { ComponentProps, Ref } from "react";
+import type { ComponentProps, ReactNode, Ref } from "react";
 import { ChevronDown, CirclePlus, Columns3, List, ListTree } from "lucide-react";
 import { IssueFiltersPopover } from "./IssueFiltersPopover";
 import { Button } from "./ui/button";
@@ -10,10 +10,11 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 import { taskListViews as views, type TaskListView } from "@/lib/task-list-views";
 
 /** Canonical proposed task toolbar; review under Components / Toolbars / Tasks. */
-export function TaskListToolbar({ view, onViewChange, viewOptions = views, query, onQueryChange, searchRef, layout, onLayoutChange, allExpanded, onToggleExpanded, onNewTask, filters }: {
+export function TaskListToolbar({ view, onViewChange, viewOptions = views, viewControl, query, onQueryChange, searchRef, layout, onLayoutChange, allExpanded, onToggleExpanded, onNewTask, filters }: {
   view: TaskListView;
   onViewChange: (view: TaskListView) => void;
   viewOptions?: readonly { value: TaskListView; label: string }[];
+  viewControl?: ReactNode;
   query: string;
   onQueryChange: (query: string) => void;
   searchRef?: Ref<HTMLInputElement>;
@@ -27,15 +28,15 @@ export function TaskListToolbar({ view, onViewChange, viewOptions = views, query
   useTranslation("task-components");
   return (
     <div data-canonical-toolbar="tasks" className="design-page-toolbar" role="toolbar" aria-label={t("task-components:taskListControls_515af175")}>
-      <DropdownMenu>
-        <DropdownMenuTrigger asChild><Button variant="outline" className="design-toolbar-button design-view-trigger" aria-label={t("task-components:taskView_4fffa631", { value1: viewOptions.find(option => option.value === view)!.label })}>{viewOptions.find(option => option.value === view)!.label}<ChevronDown aria-hidden /></Button></DropdownMenuTrigger>
+      {viewControl ?? <DropdownMenu>
+        <DropdownMenuTrigger asChild><Button variant="outline" className="design-toolbar-button design-view-trigger" aria-label={`Task view: ${viewOptions.find(option => option.value === view)!.label}`}>{viewOptions.find(option => option.value === view)!.label}<ChevronDown aria-hidden /></Button></DropdownMenuTrigger>
         <DropdownMenuContent align="start" className="task-list-options" aria-label={t("task-components:taskViews_eb704b63")}>
           <DropdownMenuLabel asChild><FlyoutHeader className="task-list-options-heading">{t("task-components:views_69c40459")}</FlyoutHeader></DropdownMenuLabel>
           <DropdownMenuRadioGroup asChild value={view} onValueChange={value => onViewChange(value as TaskListView)}><FlyoutOptions className="task-list-options-items">
             {viewOptions.map(option => <DropdownMenuRadioItem className="task-list-options-item" key={option.value} value={option.value}>{option.label}</DropdownMenuRadioItem>)}
           </FlyoutOptions></DropdownMenuRadioGroup>
         </DropdownMenuContent>
-      </DropdownMenu>
+      </DropdownMenu>}
       <ToolbarSearch query={query} onQueryChange={onQueryChange} inputRef={searchRef} label={t("task-components:searchTasks_46c6f1de")} placeholder={t("task-components:searchTasks_945d1c21")} />
       <div className="design-view-toggle" role="group" aria-label={t("task-components:taskLayout_9d37eff2")}>
         {[{ value: "list", label: t("deep-ui:list_view_5d8c3e"), icon: List }, { value: "board", label: t("task-components:boardView_04b1c2e0"), icon: Columns3 }].map(({ value, label, icon: Icon }) => (

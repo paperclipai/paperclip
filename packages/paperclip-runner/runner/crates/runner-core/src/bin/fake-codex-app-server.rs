@@ -8,6 +8,8 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+const TEST_GATE_TIMEOUT: Duration = Duration::from_secs(120);
+
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct FakeState {
@@ -889,6 +891,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let pre_response_notification = args
         .iter()
         .any(|value| value == "--notification-before-response");
+    let mut goal_update_on_next_thread_read: Option<String> = None;
     let goal_policy_disabled = args.iter().any(|value| value == "--goal-policy-disabled");
     let goal_autostart = args.iter().any(|value| value == "--goal-autostart");
     let goal_autocontinue = args.iter().any(|value| value == "--goal-autocontinue");
@@ -1457,6 +1460,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 {
                     return Err("thread/read must not hydrate turns".into());
                 }
+                if let Some(status) = goal_update_on_next_thread_read.take() {
+                    state.goal = Some(json!({"objective":"Final read goal", "status":status}));
+                    save_state(&state_path, &state)?;
+                    log_call(call_log.as_deref(), "late-goal-on-thread-read")?;
+                    send(
+                        json!({"method":"thread/goal/updated", "params":{"threadId":state.thread_id,"goal":state.goal}}),
+                    )?;
+                }
                 let turns = state
                     .active_turn_id
                     .as_ref()
@@ -1478,6 +1489,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             }))?,
             "thread/goal/get" => {
                 send(json!({"id": id, "result": {"goal": state.goal}}))?;
+                goal_update_on_next_thread_read = argument(&args, "--goal-on-thread-read-file")
+                    .and_then(|path| fs::read_to_string(path).ok());
                 if args
                     .iter()
                     .any(|value| value == "--idle-protocol-failure-on-goal-probe")
@@ -1775,6 +1788,17 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     )?;
                     continue;
                 }
+                if args.iter().any(|value| value == "--quiet-helper-turn") {
+                    send(json!({"method":"item/completed","params":{
+                        "threadId":state.thread_id,"turnId":provider_turn_id,
+                        "item":{"id":"spawn-quiet-helper","type":"collabAgentToolCall",
+                            "tool":"spawnAgent","status":"completed",
+                            "senderThreadId":state.thread_id,"receiverThreadIds":["descendant-0"]}
+                    }}))?;
+                    send(json!({"method":"turn/started","params":{
+                        "threadId":"descendant-0","turnId":"quiet-helper-turn"
+                    }}))?;
+                }
                 if descendant_notifications {
                     // Real Codex announces a child's MCP startup before its
                     // thread/started notification establishes parent lineage.
@@ -2011,15 +2035,34 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                             let turn_id = provider_turn_id.clone();
                             let unsafe_tail =
                                 args.iter().any(|arg| arg == "--unsafe-after-late-usage");
+                            let active_goal = args.iter().any(|arg| arg == "--late-active-goal");
+                            let clear_goal = args.iter().any(|arg| arg == "--late-goal-cleared");
                             let duplicate_burst = args
                                 .iter()
                                 .any(|arg| arg == "--late-accounting-duplicate-burst");
                             thread::spawn(move || {
-                                let deadline = std::time::Instant::now() + Duration::from_secs(10);
+                                let deadline = std::time::Instant::now() + TEST_GATE_TIMEOUT;
                                 while !gate.is_file() && std::time::Instant::now() < deadline {
                                     thread::sleep(Duration::from_millis(1));
                                 }
                                 if gate.is_file() {
+                                    if active_goal || clear_goal {
+                                        let method = if clear_goal {
+                                            "thread/goal/cleared"
+                                        } else {
+                                            "thread/goal/updated"
+                                        };
+                                        let goal = if clear_goal {
+                                            Value::Null
+                                        } else {
+                                            json!({"objective":"Continue work","status":"active"})
+                                        };
+                                        let _ = send(
+                                            json!({"method":method,"params":{"threadId":thread_id,"goal":goal}}),
+                                        );
+                                        let _ = fs::write(gate.with_extension("sent"), "sent");
+                                        return;
+                                    }
                                     if duplicate_burst {
                                         for _ in 0..33 {
                                             let _ = send(
@@ -2094,8 +2137,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         thread::spawn(move || {
                             let result = (|| -> io::Result<()> {
                                 if let Some(gate) = gate.as_ref() {
-                                    let deadline =
-                                        std::time::Instant::now() + Duration::from_secs(5);
+                                    let deadline = std::time::Instant::now() + TEST_GATE_TIMEOUT;
                                     while !gate.is_file() {
                                         if std::time::Instant::now() >= deadline {
                                             return Err(io::Error::new(

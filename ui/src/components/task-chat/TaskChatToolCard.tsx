@@ -14,6 +14,7 @@ import {
 import type { TaskChatToolItem } from "./task-chat-model";
 import { toolTaxonomy } from "./tool-taxonomy";
 import { useTaskChatShimmer } from "./TaskChatShimmer";
+import { TaskChatDiffCounts, TaskChatDiffView } from "./TaskChatDiffView";
 
 const STATUS_ICON = {
   pending: { Icon: Loader2, spin: false, tone: "text-muted-foreground" },
@@ -31,7 +32,8 @@ const STATUS_ICON = {
  * Tool invocation as a flat activity row (v7): [glyph] [name] [mono target] …
  * [hover chevron] [status]. No card chrome — activity is metadata, not
  * content. Clicking toggles a compact result/change summary (left-rail
- * inset). Full diff bodies stay out of the activity feed.
+ * inset). An edit row carries its `+N −M` counts and opens to a compact,
+ * height-capped diff of that one edit.
  */
 export function TaskChatToolCard({ item }: { item: TaskChatToolItem }) {
   useTranslation("task-components");
@@ -70,6 +72,13 @@ export function TaskChatToolCard({ item }: { item: TaskChatToolItem }) {
           ) : null}
         </span>
         <span className="ml-auto flex shrink-0 items-center gap-2">
+          {item.diff && (item.diff.added > 0 || item.diff.removed > 0) ? (
+            <TaskChatDiffCounts
+              added={item.diff.added}
+              removed={item.diff.removed}
+              className="text-(length:--text-micro)"
+            />
+          ) : null}
           {item.decision ? (
             <span
               className={cn(
@@ -105,7 +114,7 @@ export function TaskChatToolCard({ item }: { item: TaskChatToolItem }) {
           ) : null}
         </span>
       </button>
-      {item.target && showDetail ? (
+      {item.target && showDetail && !item.diff?.lines?.length ? (
         <div
           className="task-chat-expanded-line-wrap ml-1.5 mt-0.5 min-w-0 max-w-full overflow-hidden border-l-2 border-border py-1 pl-2.5 font-mono text-(length:--text-micro) leading-relaxed text-muted-foreground"
           data-testid="task-chat-tool-target-detail"
@@ -119,22 +128,26 @@ export function TaskChatToolCard({ item }: { item: TaskChatToolItem }) {
         </pre>
       ) : null}
       {item.diff && showDetail ? (
-        <div
-          className="ml-1.5 mt-0.5 border-l-2 border-border py-1 pl-2.5"
-          data-testid="task-chat-tool-change-summary"
-        >
-          <div className="flex min-w-0 items-center gap-2 text-(length:--text-micro) text-muted-foreground">
-            <span className="shrink-0">{t("task-components:changed_2a6141e4")}</span>
-            {item.diff.path ? (
-              <span className="min-w-0 truncate font-mono text-foreground">
-                {item.diff.path}
-              </span>
-            ) : null}
-            <span className="ml-auto shrink-0 font-mono">
-              +{item.diff.added} −{item.diff.removed}
-            </span>
+        item.diff.lines && item.diff.lines.length > 0 ? (
+          <div className="ml-1.5 mt-1 min-w-0 max-w-full" data-testid="task-chat-tool-diff">
+            <TaskChatDiffView lines={item.diff.lines} truncated={item.diff.truncated} />
           </div>
-        </div>
+        ) : (
+          <div
+            className="ml-1.5 mt-0.5 border-l-2 border-border py-1 pl-2.5"
+            data-testid="task-chat-tool-change-summary"
+          >
+            <div className="flex min-w-0 items-center gap-2 text-(length:--text-micro) text-muted-foreground">
+              <span className="shrink-0">Changed</span>
+              {item.diff.path ? (
+                <span className="min-w-0 truncate font-mono text-foreground">
+                  {item.diff.path}
+                </span>
+              ) : null}
+              <TaskChatDiffCounts added={item.diff.added} removed={item.diff.removed} className="ml-auto" />
+            </div>
+          </div>
+        )
       ) : null}
     </div>
   );

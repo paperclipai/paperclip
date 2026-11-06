@@ -6,6 +6,7 @@ import type { AvatarAgent } from "@/components/AgentAvatar";
 import { IssueReferencePill } from "@/components/IssueReferencePill";
 import { IssueStatusBadge } from "@/components/StatusBadge";
 import { PropertyRow } from "@/components/issue-properties/primitives";
+import { taskStatusIconProps } from "@/lib/task-status-presentation";
 
 export type CaseAgentMap = ReadonlyMap<string, AvatarAgent & { status?: string }>;
 
@@ -36,7 +37,7 @@ export function CaseWorkSummary({ caseData, pendingHandoff, agents }: {
         <PropertyRow label={t("task-components:workflow_2e2d5c56")}><span className="text-sm">{caseData.workflow?.name ?? t("final-components-b:cases.CaseWorkSummary.Case_instructions_b4833c")}</span></PropertyRow>
         {caseData.phase && <PropertyRow label={t("task-components:phase_46342ec1")}><span className="text-sm">{caseData.phase}</span></PropertyRow>}
         <PropertyRow label={t("task-components:agent_11b39c93")}>{assignee ? <AgentIdentity agent={assignee} size="xs" /> : <span className="text-sm text-muted-foreground">{t("task-components:unassigned_14d33bd0")}</span>}</PropertyRow>
-        <PropertyRow label={t("task-components:taskStatus_3fd71308")}><IssueStatusBadge status={task.status} /></PropertyRow>
+        <PropertyRow label={t("task-components:taskStatus_3fd71308")}><IssueStatusBadge {...taskStatusIconProps(task)} /></PropertyRow>
       </div> : <p className="text-sm text-muted-foreground">{t("task-components:thePrimaryTaskIsUnavailable_f9b44128")}</p>}
       {pending && pending.state !== "delivered" && pending.state !== "completed" && pending.state !== "cancelled" && <div className="flex items-start gap-2 text-sm">
         <Clock3 aria-hidden className="mt-0.5 size-4 shrink-0 text-muted-foreground" />

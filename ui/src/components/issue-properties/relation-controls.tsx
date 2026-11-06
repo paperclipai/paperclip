@@ -22,6 +22,7 @@ import {
 import { ArrowUpRight, X } from "lucide-react";
 import { cn } from "../../lib/utils";
 import { StatusIcon } from "../StatusIcon";
+import { taskStatusIconProps } from "@/lib/task-status-presentation";
 
 export function RemovableIssueReferencePill({
   issue,
@@ -55,7 +56,7 @@ export function RemovableIssueReferencePill({
     <LockedIssueChip identifier={issue.identifier} />
   ) : (
     <>
-      <StatusIcon status={issue.status} displayStatus={issue.displayStatus} className="h-3 w-3 shrink-0" />
+      <StatusIcon {...taskStatusIconProps(issue)} className="h-3 w-3 shrink-0" />
       <span className="truncate">{issueLabel}</span>
     </>
   );

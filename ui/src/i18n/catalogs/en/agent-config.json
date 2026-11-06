@@ -1442,5 +1442,6 @@
   "effortMedium": "medium",
   "effortHigh": "high",
   "effortXhigh": "xhigh",
-  "effortMax": "max"
+  "effortMax": "max",
+  "paperclipSandbox": "Paperclip Sandbox"
 }

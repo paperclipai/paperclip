@@ -84,6 +84,11 @@ const {
 }));
 
 // The session lookup never answers on its own; tests set the account directly.
+vi.mock("@/context/CompanyContext", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/context/CompanyContext")>()),
+  useCompany: () => ({ selectedCompany: null }),
+}));
+
 vi.mock("../api/auth", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../api/auth")>();
   return { ...actual, authApi: { ...actual.authApi, getSession: () => new Promise(() => {}) } };
@@ -3308,6 +3313,54 @@ describe("IssueChatThread", () => {
     });
   });
 
+  it("uploads file drops in Chinese and after switching back to English", async () => {
+    const { i18n } = await import("@/i18n");
+    const root = createRoot(container);
+    const attach = vi.fn(async () => undefined);
+    await act(async () => renderIssueThread(root, { onAttachImage: attach }));
+    try {
+      for (const locale of ["zh-CN", "en"]) {
+        await act(async () => { await i18n.changeLanguage(locale); });
+        const composer = container.querySelector('[data-testid="issue-chat-composer"]')!;
+        const file = new File(["raw"], `${locale}.txt`, { type: "text/plain" });
+        await act(async () => { composer.dispatchEvent(createFileDragEvent("dragenter", [file])); });
+        expect(container.querySelector('[data-testid="issue-chat-composer-drop-overlay"]')).not.toBeNull();
+        const drop = createFileDragEvent("drop", [file]);
+        await act(async () => { composer.dispatchEvent(drop); });
+        expect(drop.defaultPrevented).toBe(true);
+        expect(attach).toHaveBeenLastCalledWith(file);
+      }
+      expect(attach).toHaveBeenCalledTimes(2);
+    } finally { await act(async () => { root.unmount(); await i18n.changeLanguage("en"); }); }
+  });
+
+  it("uses the stable Intent detail as the tool title in Chinese without duplicating it", async () => {
+    const { i18n } = await import("@/i18n");
+    const root = createRoot(container);
+    const intent = "Inspect raw user data 原文";
+    try {
+      await act(async () => { await i18n.changeLanguage("zh-CN"); });
+      await act(async () => renderIssueThread(root, {
+        hasOutputForRun: () => true,
+        linkedRuns: [{ runId: "run-intent", agentId: "agent-1", agentName: "Agent 1", status: "succeeded", startedAt: "2026-04-06T12:00:00Z", finishedAt: "2026-04-06T12:01:00Z", createdAt: "2026-04-06T12:00:00Z", adapterType: "codex_local" }],
+        transcriptsByRunId: new Map([["run-intent", [
+          { kind: "tool_call", ts: "2026-04-06T12:00:10Z", name: "read_file", toolUseId: "intent-tool", input: { description: intent, path: "raw.txt" } },
+          { kind: "tool_result", ts: "2026-04-06T12:00:20Z", toolUseId: "intent-tool", toolName: "read_file", content: "raw result", isError: false },
+        ]]]),
+      }));
+      const header = [...container.querySelectorAll('button')].find(b => b.classList.contains("group"));
+      if (header) await act(async () => { header.click(); });
+      const work = [...container.querySelectorAll('button')].find(b => b.textContent?.includes("调用了 1 个工具"));
+      expect(work).toBeDefined();
+      await act(async () => { work!.click(); });
+      const button = [...container.querySelectorAll('button')].find(b => b.textContent?.trim() === intent);
+      expect(button).toBeDefined();
+      await act(async () => { button!.click(); });
+      expect([...container.querySelectorAll('dt')].some(dt => dt.textContent === "Intent")).toBe(false);
+      expect(container.textContent?.split(intent)).toHaveLength(2);
+    } finally { await act(async () => { root.unmount(); await i18n.changeLanguage("en"); }); }
+  });
+
   it("shows full-composer drop instructions while dragging files over the issue composer", () => {
     const root = createRoot(container);
 
@@ -4473,6 +4526,52 @@ describe("IssueAssigneePausedNotice", () => {
     });
     expect(onResume).toHaveBeenCalledTimes(1);
 
+    act(() => root.unmount());
+  });
+
+  it.each([
+    ["preparing", "computer is being prepared"],
+    ["verifying", "setup isn't finished"],
+    ["paused", "setup isn't finished"],
+  ])("shows a setup-draft agent (%s) as still being set up, not manually paused", (lifecycleState, detail) => {
+    const root = createRoot(container);
+    const agent = { ...pausedAgent("setup"), lifecycleState, urlKey: "ceo" } as unknown as Agent;
+
+    act(() => {
+      root.render(
+        <MemoryRouter initialEntries={["/ONB/issues/ONB-1"]}>
+          <IssueAssigneePausedNotice agent={agent} issueStatus="todo" onResume={vi.fn()} resuming={false} />
+        </MemoryRouter>,
+      );
+    });
+
+    const text = container.textContent ?? "";
+    expect(text).not.toContain("paused manually");
+    expect(text).not.toContain("is paused");
+    expect(text).toContain("CEO is still being set up");
+    expect(text.toLowerCase()).toContain(detail);
+    // Resuming a setup draft is not the recovery path; finishing setup is.
+    expect(container.querySelector('[data-testid="issue-assignee-paused-resume"]')).toBeNull();
+    if (lifecycleState !== "preparing") {
+      const finish = container.querySelector('[data-testid="issue-assignee-finish-setup"]');
+      expect(finish?.getAttribute("href")).toBe("/ONB/agents/ceo");
+    } else {
+      expect(container.querySelector('[data-testid="issue-assignee-finish-setup"]')).toBeNull();
+    }
+
+    act(() => root.unmount());
+  });
+
+  it("explains a company-archive pause instead of calling it manual", () => {
+    const root = createRoot(container);
+    act(() => {
+      root.render(
+        <IssueAssigneePausedNotice agent={pausedAgent("company_archived")} issueStatus="todo" onResume={vi.fn()} />,
+      );
+    });
+    expect(container.textContent).not.toContain("paused manually");
+    expect(container.textContent).toContain("company is archived");
+    expect(container.querySelector('[data-testid="issue-assignee-paused-resume"]')).toBeNull();
     act(() => root.unmount());
   });
 

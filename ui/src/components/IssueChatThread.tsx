@@ -229,7 +229,8 @@ import {
 } from "../lib/transcriptPresentation";
 import { buildAgentMentionHref } from "@paperclipai/shared";
 import { useComposerStop } from "@/hooks/useComposerStop";
-import { cn, formatDateTime, formatShortDate } from "../lib/utils";
+import { useComposerSubmitKey } from "@/hooks/useComposerSubmitKey";
+import { agentUrl, cn, formatDateTime, formatShortDate } from "../lib/utils";
 import { liveBlueBadge } from "../lib/status-colors";
 import {
   nextWorkMode,
@@ -824,6 +825,41 @@ export function IssueAssigneePausedNotice({
   useTranslation("task-components");
   if (!agent || agent.status !== "paused" || issueStatusIsTerminalDisposition(issueStatus)) return null;
 
+  // A freshly created agent is stored as paused with pauseReason "setup" until
+  // its setup finishes. That is not an operator pause, so say what is actually
+  // happening and point at the real recovery path instead of "Resume agent".
+  if (agent.pauseReason === "setup") {
+    // Only computer preparation advances on its own (matches NewAgentSetup).
+    // A "verifying" or parked draft waits for the user to finish the wizard.
+    const stillPreparing = ["preparing", "pausing"].includes(agent.lifecycleState ?? "");
+    return (
+      <div data-testid="issue-assignee-paused-notice" className="mb-3">
+        <InlineBanner
+          tone="info"
+          compact
+          title={
+            <>
+              <span className="font-medium">{agent.name}</span> is still being set up.
+            </>
+          }
+          actions={
+            stillPreparing ? undefined : (
+              <Button size="sm" variant="outline" asChild>
+                <Link to={agentUrl(agent)} data-testid="issue-assignee-finish-setup">
+                  Finish setup
+                </Link>
+              </Button>
+            )
+          }
+        >
+          {stillPreparing
+            ? "Its computer is being prepared. Runs start automatically when setup finishes."
+            : "Its setup isn't finished yet. Finish setup to let it start runs."}
+        </InlineBanner>
+      </div>
+    );
+  }
+
   const pauseDetail =
     agent.pauseReason === "budget"
       ? t("deep-ui:it_was_paused_by_a_budget_hard_stop_672b96")
@@ -831,10 +867,15 @@ export function IssueAssigneePausedNotice({
         ? t("deep-ui:it_arrived_paused_from_an_organization_import_imported_agent_d5d5e2")
         : agent.pauseReason === "system"
           ? t("deep-ui:it_was_paused_by_the_system_8da066")
-          : t("deep-ui:it_was_paused_manually_701eb8");
-  // Budget pauses clear on their own when the budget resets; resuming by hand
-  // would fight the hard stop, so the action is only offered for the rest.
-  const canResume = Boolean(onResume) && agent.pauseReason !== "budget";
+          : agent.pauseReason === "company_archived"
+            ? "It was paused because its company is archived."
+            : agent.pauseReason === "manual"
+              ? t("deep-ui:it_was_paused_manually_701eb8")
+              : "";
+  // Budget pauses clear on their own when the budget resets and archive pauses
+  // clear when the company is restored; resuming by hand would fight either, so
+  // the action is only offered for the rest.
+  const canResume = Boolean(onResume) && agent.pauseReason !== "budget" && agent.pauseReason !== "company_archived";
 
   return (
     <div data-testid="issue-assignee-paused-notice" className="mb-3">
@@ -859,7 +900,9 @@ export function IssueAssigneePausedNotice({
             </Button>
           ) : undefined
         }
-      ><Trans ns="task-components" i18nKey="sentence_f563c8617273" components={{ part1: <>{pauseDetail}</> }} /></InlineBanner>
+      >
+        New runs will not start until the agent is resumed.{pauseDetail ? ` ${pauseDetail}` : ""}
+      </InlineBanner>
     </div>
   );
 }
@@ -1003,7 +1046,7 @@ type ComposerAttachmentItem = {
 };
 
 function hasFilePayload(evt: ReactDragEvent<HTMLDivElement>) {
-  return Array.from(evt.dataTransfer?.types ?? []).includes(t("deep-ui:files_abc7e9"));
+  return Array.from(evt.dataTransfer?.types ?? []).includes("Files");
 }
 
 function formatAttachmentSize(bytes: number) {
@@ -1656,9 +1699,9 @@ function IssueChatToolPart({
       : summarizeToolResult(resultText, false);
   const ToolIcon = getToolIcon(toolName);
 
-  const intentDetail = inputDetails.find((d) => d.label === t("deep-ui:intent_29131a"));
+  const intentDetail = inputDetails.find((d) => d.label === "Intent");
   const title = intentDetail?.value ?? displayName;
-  const nonIntentDetails = inputDetails.filter((d) => d.label !== t("deep-ui:intent_29131a"));
+  const nonIntentDetails = inputDetails.filter((d) => d.label !== "Intent");
 
   return (
     <div className="flex gap-2 px-1">
@@ -4658,6 +4701,7 @@ const IssueChatComposer = forwardRef<
 ) {
   useTranslation("task-components");
   const stopControl = useComposerStop(onStop, stopPending);
+  const submitKey = useComposerSubmitKey();
   const restoredRecovery = useMemo(() => {
     const key = sharedDraftKey && loadDraftRecoveryKey(sharedDraftKey);
     return key ? { sourceKey: sharedDraftKey!, key, persisted: true } : null;
@@ -5496,6 +5540,7 @@ const IssueChatComposer = forwardRef<
         placeholder={t("task-components:reply_c253f451")}
         mentions={mentions}
         onSubmit={handleSubmit}
+        submitKey={submitKey}
         imageUploadHandler={
           canAcceptFiles
             ? async (file) => {

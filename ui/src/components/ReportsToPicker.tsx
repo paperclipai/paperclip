@@ -1,6 +1,6 @@
 import { t, useTranslation, Trans } from "@/i18n";
 import { AgentAvatar } from "@/components/AgentAvatar";
-import { useState } from "react";
+import { useState, type ReactElement } from "react";
 import type { Agent } from "@paperclipai/shared";
 import {
   Popover,
@@ -19,6 +19,8 @@ export function ReportsToPicker({
   excludeAgentIds = [],
   disabledEmptyLabel = t("final-components-b:ReportsToPicker.Reports_to_N_A_CEO_8bbec5"),
   chooseLabel = t("final-components-b:ReportsToPicker.Reports_to_9067b8"),
+  trigger,
+  disabledAgentIds = [],
 }: {
   agents: Agent[];
   value: string | null;
@@ -27,6 +29,8 @@ export function ReportsToPicker({
   excludeAgentIds?: string[];
   disabledEmptyLabel?: string;
   chooseLabel?: string;
+  trigger?: ReactElement;
+  disabledAgentIds?: string[];
 }) {
   useTranslation("task-components");
   const [open, setOpen] = useState(false);
@@ -41,7 +45,7 @@ export function ReportsToPicker({
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
-        <button
+        {trigger ?? <button
           type="button"
           className={cn(
             "inline-flex max-w-full min-w-0 items-center gap-1.5 overflow-hidden rounded-md border border-border px-2 py-1 text-xs hover:bg-accent/50 transition-colors",
@@ -75,9 +79,9 @@ export function ReportsToPicker({
               </span>
             </>
           )}
-        </button>
+        </button>}
       </PopoverTrigger>
-      <PopoverContent className="w-48 p-1" align="start">
+      <PopoverContent className={trigger ? "w-64 max-h-80 overflow-y-auto p-1" : "w-48 p-1"} align="start" aria-label="Choose manager">
         <button
           type="button"
           className={cn(
@@ -102,8 +106,10 @@ export function ReportsToPicker({
           <button
             type="button"
             key={a.id}
+            disabled={disabledAgentIds.includes(a.id)}
+            title={disabledAgentIds.includes(a.id) ? "Would create a reporting loop" : undefined}
             className={cn(
-              "flex items-center gap-2 w-full min-w-0 px-2 py-1.5 text-xs rounded hover:bg-accent/50 overflow-hidden",
+              "flex items-center gap-2 w-full min-w-0 px-2 py-1.5 text-xs rounded hover:bg-accent/50 overflow-hidden disabled:opacity-50 disabled:cursor-not-allowed",
               a.id === value && "bg-accent",
             )}
             onClick={() => {

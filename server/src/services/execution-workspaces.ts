@@ -49,7 +49,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { isDeepStrictEqual, promisify } from "node:util";
-import { and, asc, desc, eq, inArray, isNull, lte, ne, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNull, lte, ne, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   executionWorkspaces,
@@ -2939,9 +2939,10 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       reuseEligible?: boolean;
       selectableForTask?: boolean;
       readCondition?: SQL<boolean>;
-    }) => {
+    }, pagination?: { limit: number; cursor?: string }) => {
       const conditions = buildListConditions(companyId, filters);
-      const rows = await db
+      if (pagination?.cursor) conditions.push(gt(executionWorkspaces.id, pagination.cursor));
+      const query = db
         .select({
           id: executionWorkspaces.id,
           name: executionWorkspaces.name,
@@ -2953,8 +2954,10 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           lastUsedAt: executionWorkspaces.lastUsedAt,
         })
         .from(executionWorkspaces)
-        .where(and(...conditions))
-        .orderBy(desc(executionWorkspaces.lastUsedAt), desc(executionWorkspaces.createdAt));
+        .where(and(...conditions));
+      const rows = await (pagination
+        ? query.orderBy(asc(executionWorkspaces.id)).limit(pagination.limit)
+        : query.orderBy(desc(executionWorkspaces.lastUsedAt), desc(executionWorkspaces.createdAt)));
       return rows.map((row) => toExecutionWorkspaceSummary(row));
     },
 

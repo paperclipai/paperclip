@@ -41,6 +41,7 @@ import {
   updateKindLabel,
 } from "./format";
 import type { StatusCardView } from "./types";
+import { taskStatusIconProps } from "@/lib/task-status-presentation";
 
 export function StatusCardDetailDrawer({
   card,
@@ -560,7 +561,7 @@ function WatchedIssueRow({ issue }: { issue: CompanySearchIssueSummary }) {
       >
         {issue.identifier ?? issue.id.slice(0, 8)}
       </Link>
-      <IssueStatusBadge status={issue.status} displayStatus={issue.displayStatus} externalConversationState={issue.externalConversationState} />
+      <IssueStatusBadge {...taskStatusIconProps(issue)} />
       <span className="min-w-0 flex-1 truncate">{issue.title}</span>
       <span className="shrink-0 text-muted-foreground">{relativeTime(issue.updatedAt)}</span>
     </div>

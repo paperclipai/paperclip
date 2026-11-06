@@ -1,4 +1,4 @@
-import { describeUiError } from "@/lib/localized-ui-error";
+import { describeUiError, localizeUiError } from "@/lib/localized-ui-error";
 import { LocaleSwitcher } from "@/components/LocaleSwitcher";
 import { Trans, useTranslation } from "react-i18next";
 import { useQueryView } from "@/components/QueryView";
@@ -691,6 +691,8 @@ function OnboardingWizardInner({
    * browser. Its arrival is also what moves the step off its waiting beat.
    */
   const [connectAuthUrl, setConnectAuthUrl] = useState<string | null>(null);
+  const [retryLogin, setRetryLogin] = useState<(() => void) | null>(null);
+  const [submitLoginCode, setSubmitLoginCode] = useState<(() => void) | null>(null);
   /**
    * The key itself, held only for as long as the wizard is open. It is written
    * into the adapter config at hire time and never into the draft — a draft is
@@ -1561,10 +1563,13 @@ function OnboardingWizardInner({
    */
   const connectSourceLabel = CONNECT_SOURCE_NAMES[adapterType] ?? adapterType;
   const connectCta: { label: string; icon: FooterPrimaryIcon; disabled: boolean } =
-    setupError ? { label: t("onboardingWizard.retry"), icon: "arrow", disabled: false } : connectProgress
+    setupError ? { label: t("onboardingWizard.retry"), icon: "arrow", disabled: false }
+      : retryLogin ? { label: "Retry sign-in", icon: "arrow", disabled: false } : connectProgress
       ? { label: adapterEnvLoading ? t("onboardingWizard.testing") : connectProgress, icon: "spinner", disabled: true }
+      : (connectPhase === "ready" || connectPhase === "waiting") && submitLoginCode
+      ? { label: "Submit code", icon: "arrow", disabled: false }
       : connectPhase === "waiting"
-      ? { label: t("onboardingWizard.waiting_for_code"), icon: "spinner", disabled: true }
+      ? { label: "Waiting for code…", icon: "spinner", disabled: true }
       : connectPhase === "connecting"
         ? { label: t("onboardingWizard.connecting_2240"), icon: "spinner", disabled: true }
         : connectPhase === "ready"
@@ -1604,6 +1609,8 @@ function OnboardingWizardInner({
     setLoading(false);
     setAdapterEnvLoading(false);
     setConnectAuthUrl(null);
+    setSubmitLoginCode(null);
+    setRetryLogin(null);
     connectingSinceRef.current = null;
     setConnectCredentialStored(false);
     // Where the reverse starts depends on how far the sequence got. Backing out
@@ -1621,12 +1628,31 @@ function OnboardingWizardInner({
    * a check. This one would be worse: Cmd+Enter would hire before the sign-in
    * it is meant to start, against a source with no credential.
    */
+  function openConnectAuthorization() {
+    if ((connectPhase !== "ready" && connectPhase !== "waiting") || !connectAuthUrl || retryLogin) return;
+    window.open(connectAuthUrl, "_blank", "noreferrer,noopener");
+    setConnectPhase("waiting");
+  }
+
   function handleConnectStepPrimary() {
     if (setupError) { setSetupError(false); setSetupAttempt(value => value + 1); setError(null); return; }
+    if (retryLogin) {
+      setConnectAuthUrl(null);
+      setSubmitLoginCode(null);
+      setRetryLogin(null);
+      connectingSinceRef.current = null;
+      setConnectCredentialStored(false);
+      setConnectPhase("loading");
+      retryLogin();
+      return;
+    }
+    if ((connectPhase === "ready" || connectPhase === "waiting") && submitLoginCode) {
+      submitLoginCode();
+      return;
+    }
     // Mid-sequence the button belongs to the sign-in, not to the step.
     if (connectPhase === "ready" && connectStepNeedsLogin) {
-      if (connectAuthUrl) window.open(connectAuthUrl, "_blank", "noreferrer,noopener");
-      setConnectPhase("waiting");
+      openConnectAuthorization();
       return;
     }
     // The hold owns the hire once "Connecting" is showing. That now starts at
@@ -2208,7 +2234,7 @@ function OnboardingWizardInner({
         const native = adapters.find(adapter => adapter.type === "paperclip_runner");
         if (!codex || (codex.defaultRunner !== "paperclip" && codex.defaultRunner !== "legacy")
           || !codex.supportedRunners?.includes(codex.defaultRunner)) {
-          throw new Error("onboardingWizard.could_not_confirm_codex_runner_availability_for_this_environment");
+          throw localizeUiError(new Error("Could not confirm Codex runner availability for this environment. Retry setup."), { key: "settings:onboardingWizard.could_not_confirm_codex_runner_availability_for_this_environment" });
         }
         if (codex.defaultRunner !== "paperclip" && !codex?.disabled && !codex?.overriddenBuiltin
           && !native?.disabled && !native?.overriddenBuiltin) {
@@ -2227,7 +2253,7 @@ function OnboardingWizardInner({
           const defaultRunner = refreshedCodex?.defaultRunner;
           if ((defaultRunner !== "paperclip" && defaultRunner !== "legacy")
             || !refreshedCodex?.supportedRunners?.includes(defaultRunner)) {
-            throw new Error("onboardingWizard.could_not_confirm_the_environment_s_default_runner_retry");
+            throw localizeUiError(new Error("Could not confirm the environment's default runner. Retry setup."), { key: "settings:onboardingWizard.could_not_confirm_the_environment_s_default_runner_retry" });
           }
         }
       }
@@ -2650,7 +2676,7 @@ function OnboardingWizardInner({
         step === 4 &&
         agentName.trim() &&
         connectStepReady &&
-        !connectStepLoggingIn
+        (retryLogin || submitLoginCode || !connectStepLoggingIn)
       )
         handleConnectStepPrimary();
       else if (step === 5) handleLaunchToDashboard();
@@ -3171,6 +3197,11 @@ function OnboardingWizardInner({
                           // The prompt arriving is what ends the waiting beat.
                           if (url) setConnectPhase((p) => (p === "loading" ? "ready" : p));
                         }}
+                        onOpenAuthorization={openConnectAuthorization}
+                        onRetryReady={retry => {
+                          if (connectCardLive) setRetryLogin(() => retry);
+                        }}
+                        onSubmitReady={submit => setSubmitLoginCode(() => submit)}
                         onCodeSubmitted={() => {
                           // The button reacts to the paste, not to the server.
                           // Waiting for the login to be stored left about a

@@ -1855,7 +1855,7 @@ export function Secrets() {
 
         <TabsContent value="secrets" className="flex flex-col gap-3">
           <SecretsHowToUse />
-          <div className="flex flex-wrap items-center gap-2">
+          <div data-canonical-toolbar="secrets" role="toolbar" aria-label="Secrets controls" className="flex flex-wrap items-center gap-2">
             <div className="relative w-48 sm:w-64 md:w-80">
               <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
               <Input
@@ -1881,7 +1881,7 @@ export function Secrets() {
               role="group"
               aria-label={translateAgentPage("agents:view_mode")}
               className={cn(
-                "inline-flex items-center rounded-md border border-border p-0.5",
+                "design-view-toggle inline-flex items-center rounded-md border border-border",
                 searching && "opacity-50",
               )}
             >
@@ -1921,8 +1921,9 @@ export function Secrets() {
               >
                 <Folder className="mr-1 h-3.5 w-3.5" />{" "}{translateAgentPage("agents:new_folder")}</Button>
             ) : null}
-            <Button onClick={openCreateSecret} size="sm">
-              <Plus className="h-3.5 w-3.5 mr-1" />{" "}{translateAgentPage("agents:new_secret")}</Button>
+            <Button data-toolbar-primary onClick={openCreateSecret} size="sm">
+              <Plus className="h-3.5 w-3.5 mr-1" /> {translateAgentPage("agents:new_secret")}
+            </Button>
           </div>
           {newFolderOpen && showFolderView ? (
             <div className="flex flex-wrap items-start gap-2" role="group" aria-label={translateAgentPage("agents:create_folder")}>

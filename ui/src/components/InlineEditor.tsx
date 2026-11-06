@@ -18,6 +18,8 @@ interface InlineEditorProps {
   className?: string;
   placeholder?: string;
   multiline?: boolean;
+  /** Keep a short heading's editor as wide as its live text, preserving adjacent controls. */
+  fitContent?: boolean;
   imageUploadHandler?: (file: File) => Promise<string>;
   /** Called when a non-image file is dropped onto the editor. */
   onDropFile?: (file: File) => Promise<void>;
@@ -84,6 +86,7 @@ function OwnedInlineEditor({
   className,
   placeholder = t("final-components-b:InlineEditor.Click_to_edit_f946cf"),
   multiline = false,
+  fitContent = false,
   nullable = false,
   imageUploadHandler,
   onDropFile,
@@ -507,14 +510,14 @@ function OwnedInlineEditor({
   }
 
   if (editing) {
-
-    return (
+    const editor = (
       <textarea
         ref={inputRef}
         value={draft}
         aria-invalid={autosaveState === "error" || undefined}
         aria-description={autosaveState === "error" ? autosave.label ?? undefined : undefined}
         rows={1}
+        aria-label={placeholder}
         onChange={(e) => {
           changeDraft(e.target.value);
           autoSize(e.target);
@@ -530,6 +533,12 @@ function OwnedInlineEditor({
         )}
       />
     );
+    return fitContent ? (
+      <span className="inline-editor-fit">
+        <span aria-hidden className={cn("invisible whitespace-pre", pad, className)}>{draft || " "}</span>
+        {editor}
+      </span>
+    ) : editor;
   }
 
   // Use div instead of Tag when rendering markdown to avoid invalid nesting

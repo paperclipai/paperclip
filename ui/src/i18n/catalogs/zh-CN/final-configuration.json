@@ -174,5 +174,7 @@
   "titleChanged": "标题已更改",
   "descriptionChanged": "描述已更改",
   "changesSeparator": "，",
-  "copySuccess": "已复制"
+  "copySuccess": "已复制",
+  "signInExpired": "此次登录已过期",
+  "signInUnfinished": "登录未完成"
 }

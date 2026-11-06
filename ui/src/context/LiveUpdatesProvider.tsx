@@ -1379,6 +1379,10 @@ function invalidateHeartbeatQueries(
     queryClient.invalidateQueries({
       queryKey: queryKeys.heartbeats(companyId, agentId),
     });
+    // Provider rate limits reported during the run live in runtime state.
+    queryClient.invalidateQueries({
+      queryKey: queryKeys.agents.runtimeState(agentId),
+    });
   }
   const runId = readString(payload.runId);
   if (runId) {
@@ -1986,6 +1990,13 @@ function handleLiveEvent(
   }
 
   if (event.type === "heartbeat.run.event") {
+    return;
+  }
+
+  if (event.type === "agent.runtime_state.updated") {
+    // The server saved a new provider rate-limit snapshot for this agent.
+    const agentId = readString(payload.agentId);
+    if (agentId) queryClient.invalidateQueries({ queryKey: queryKeys.agents.runtimeState(agentId) });
     return;
   }
 

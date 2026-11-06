@@ -3,18 +3,20 @@ import {
   AlertTriangle,
   BookOpen,
   Bot,
+  CircleCheck,
+  CircleDashed,
+  CircleX,
   Box,
   Clock3,
   Database,
   FileCheck2,
   FilePenLine,
   FileText,
-  GitBranch,
+  Globe,
   Info,
   ListChecks,
   PackageCheck,
   Search,
-  ShieldCheck,
   TerminalSquare,
   Users,
 } from "lucide-react";
@@ -32,6 +34,7 @@ import {
   toolActivityPresentation,
   type ToolIcon,
 } from "./tool-taxonomy";
+import { governancePresentation, type GovernanceTone } from "./governance-presentation";
 
 export interface TaskChatActivityPresentation {
   icon: ToolIcon;
@@ -40,6 +43,9 @@ export interface TaskChatActivityPresentation {
   failedLabel?: string;
   interruptedLabel?: string;
   detail?: string;
+  /** Governance rows tint a stopped action and carry its reason as a note. */
+  tone?: GovernanceTone;
+  note?: string;
 }
 
 export function providerNoticeSeverity(item: TaskChatProviderActivityItem): "info" | "warning" | "error" {
@@ -57,19 +63,54 @@ function meaningfulToolDetail(value: string | undefined): string | undefined {
   return value;
 }
 
+/** Host and path without scheme or query, for one-line web activity. */
+export function compactUrl(href: string): string {
+  try {
+    const url = new URL(href);
+    const path = url.pathname === "/" ? "" : url.pathname.replace(/\/$/, "");
+    return `${url.hostname.replace(/^www\./, "")}${path}`;
+  } catch {
+    return href;
+  }
+}
+
+/** Whole-second duration such as "30s" or "2m 5s" from a millisecond detail. */
+export function durationLabel(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  const ms = Number(value);
+  if (!Number.isFinite(ms) || ms < 0) return undefined;
+  const totalSeconds = Math.round(ms / 1000);
+  if (totalSeconds < 60) return `${totalSeconds}s`;
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return seconds === 0 ? `${minutes}m` : `${minutes}m ${seconds}s`;
+}
+
+function modelRouteDetail(item: TaskChatProviderActivityItem): string | undefined {
+  const from = providerDetail(item, "From Model") ?? providerDetail(item, "Requested Model");
+  const to = providerDetail(item, "Effective Model");
+  if (!to || to === "unknown") return undefined;
+  const reason = providerDetail(item, "Reason");
+  const route = from && from !== "unknown" && from !== to ? `${from} → ${to}` : to;
+  return reason && reason !== "provider reroute" ? `${route} · ${reason}` : route;
+}
+
 export function providerActivityPresentation(item: TaskChatProviderActivityItem): TaskChatActivityPresentation {
   const detail = item.summary
     ?? providerDetail(item, "Query", "URL", "Target", "Name", "Reference", "Reason", "Summary");
   switch (item.family) {
     case "research": {
       const action = providerDetail(item, "Action")?.toLowerCase();
+      const query = providerDetail(item, "Query");
+      const url = providerDetail(item, "Url");
       if (action === "open_page") {
-        return { icon: Search, runningLabel: t("activity-ui:provider.researchOpen.running"), completedLabel: t("activity-ui:provider.researchOpen.completed"), failedLabel: t("activity-ui:provider.researchOpen.failed"), interruptedLabel: t("activity-ui:provider.researchOpen.interrupted"), detail };
+        return { icon: Globe, runningLabel: t("activity-ui:provider.researchOpen.running"), completedLabel: t("activity-ui:provider.researchOpen.completed"), failedLabel: t("activity-ui:provider.researchOpen.failed"), interruptedLabel: t("activity-ui:provider.researchOpen.interrupted"), detail: url ? compactUrl(url) : detail };
       }
       if (action === "find_in_page") {
-        return { icon: Search, runningLabel: t("activity-ui:provider.researchFind.running"), completedLabel: t("activity-ui:provider.researchFind.completed"), failedLabel: t("activity-ui:provider.researchFind.failed"), interruptedLabel: t("activity-ui:provider.researchFind.interrupted"), detail };
+        const pattern = providerDetail(item, "Pattern");
+        return { icon: Search, runningLabel: t("activity-ui:provider.researchFind.running"), completedLabel: t("activity-ui:provider.researchFind.completed"), failedLabel: t("activity-ui:provider.researchFind.failed"), interruptedLabel: t("activity-ui:provider.researchFind.interrupted"), detail: [pattern ? `“${pattern}”` : undefined, url ? compactUrl(url) : undefined].filter(Boolean).join(" in ") || detail };
       }
-      return { icon: Search, runningLabel: t("activity-ui:provider.researchSearch.running"), completedLabel: t("activity-ui:provider.researchSearch.completed"), failedLabel: t("activity-ui:provider.researchSearch.failed"), interruptedLabel: t("activity-ui:provider.researchSearch.interrupted"), detail };
+      return { icon: Search, runningLabel: t("activity-ui:provider.researchSearch.running"), completedLabel: t("activity-ui:provider.researchSearch.completed"), failedLabel: t("activity-ui:provider.researchSearch.failed"), interruptedLabel: t("activity-ui:provider.researchSearch.interrupted"), detail: query ? `“${query}”` : detail };
     }
     case "tool_execution": {
       const name = providerDetail(item, "Name");
@@ -105,6 +146,8 @@ export function providerActivityPresentation(item: TaskChatProviderActivityItem)
         detail: [activityIsIdentity ? undefined : boundedActivity, source].filter(Boolean).join(" · ") || undefined,
       };
     }
+    case "plan_proposal":
+      return { icon: FileText, runningLabel: "Writing a plan", completedLabel: "Proposed a plan", failedLabel: "Plan proposal failed", interruptedLabel: "Plan proposal stopped", detail };
     case "plan":
       return { icon: ListChecks, runningLabel: t("activity-ui:provider.plan.running"), completedLabel: t("activity-ui:provider.plan.completed"), failedLabel: t("activity-ui:provider.plan.failed"), interruptedLabel: t("activity-ui:provider.plan.interrupted"), detail };
     case "delegation": {
@@ -117,7 +160,7 @@ export function providerActivityPresentation(item: TaskChatProviderActivityItem)
     }
     case "model_identity":
       return item.eventType === "model.route.changed"
-        ? { icon: Bot, runningLabel: t("activity-ui:provider.modelSwitch.running"), completedLabel: t("activity-ui:provider.modelSwitch.completed"), failedLabel: t("activity-ui:provider.modelSwitch.failed"), interruptedLabel: t("activity-ui:provider.modelSwitch.interrupted"), detail }
+        ? { icon: Bot, runningLabel: t("activity-ui:provider.modelSwitch.running"), completedLabel: t("activity-ui:provider.modelSwitch.completed"), failedLabel: t("activity-ui:provider.modelSwitch.failed"), interruptedLabel: t("activity-ui:provider.modelSwitch.interrupted"), detail: modelRouteDetail(item) ?? detail }
         : { icon: Bot, runningLabel: t("activity-ui:provider.modelVerify.running"), completedLabel: t("activity-ui:provider.modelVerify.completed"), failedLabel: t("activity-ui:provider.modelVerify.failed"), interruptedLabel: t("activity-ui:provider.modelVerify.interrupted"), detail };
     case "context":
       return { icon: Database, runningLabel: t("activity-ui:provider.context.running"), completedLabel: t("activity-ui:provider.context.completed"), failedLabel: t("activity-ui:provider.context.failed"), interruptedLabel: t("activity-ui:provider.context.interrupted"), detail };
@@ -134,15 +177,45 @@ export function providerActivityPresentation(item: TaskChatProviderActivityItem)
         : { icon: FileCheck2, runningLabel: t("activity-ui:provider.reviewEnter.running"), completedLabel: t("activity-ui:provider.reviewEnter.completed"), failedLabel: t("activity-ui:provider.reviewEnter.failed"), interruptedLabel: t("activity-ui:provider.reviewEnter.interrupted"), detail };
     }
     case "hook":
-      return { icon: GitBranch, runningLabel: t("activity-ui:provider.hook.running"), completedLabel: t("activity-ui:provider.hook.completed"), failedLabel: t("activity-ui:provider.hook.failed"), interruptedLabel: t("activity-ui:provider.hook.interrupted"), detail };
+    case "safety": {
+      const governance = governancePresentation(item)!;
+      return {
+        icon: governance.icon,
+        runningLabel: governance.label,
+        completedLabel: governance.label,
+        failedLabel: governance.label,
+        interruptedLabel: governance.label,
+        detail: governance.detail,
+        tone: governance.tone,
+        note: governance.note,
+      };
+    }
     case "memory":
       return { icon: BookOpen, runningLabel: t("activity-ui:provider.memory.running"), completedLabel: t("activity-ui:provider.memory.completed"), failedLabel: t("activity-ui:provider.memory.failed"), interruptedLabel: t("activity-ui:provider.memory.interrupted"), detail };
-    case "safety":
-      return { icon: ShieldCheck, runningLabel: t("activity-ui:provider.safety.running"), completedLabel: t("activity-ui:provider.safety.completed"), failedLabel: t("activity-ui:provider.safety.failed"), interruptedLabel: t("activity-ui:provider.safety.interrupted"), detail };
     case "terminal":
       return { icon: TerminalSquare, runningLabel: t("activity-ui:provider.terminal.running"), completedLabel: t("activity-ui:provider.terminal.completed"), failedLabel: t("activity-ui:provider.terminal.failed"), interruptedLabel: t("activity-ui:provider.terminal.interrupted"), detail };
-    case "wait":
-      return { icon: Clock3, runningLabel: t("activity-ui:provider.wait.running"), completedLabel: t("activity-ui:provider.wait.completed"), failedLabel: t("activity-ui:provider.wait.failed"), interruptedLabel: t("activity-ui:provider.wait.interrupted"), detail };
+    case "wait": {
+      const planned = durationLabel(providerDetail(item, "Planned Duration Ms"));
+      const elapsed = durationLabel(providerDetail(item, "Elapsed Duration Ms"));
+      return {
+        icon: Clock3,
+        runningLabel: planned ? `Waiting ${planned}` : t("activity-ui:provider.wait.running"),
+        completedLabel: elapsed ?? planned ? `Waited ${elapsed ?? planned}` : t("activity-ui:provider.wait.completed"),
+        failedLabel: t("activity-ui:provider.wait.failed"),
+        interruptedLabel: elapsed ? `Stopped waiting after ${elapsed}` : t("activity-ui:provider.wait.interrupted"),
+      };
+    }
+    case "verification": {
+      const status = providerDetail(item, "Status");
+      return {
+        icon: status === "passed" ? CircleCheck : status === "failed" ? CircleX : CircleDashed,
+        runningLabel: "Running a check",
+        completedLabel: status === "not_run" ? "Check not run" : "Check passed",
+        failedLabel: "Check failed",
+        interruptedLabel: "Check not run",
+        detail: item.summary,
+      };
+    }
     case "provider_notice":
       return { icon: providerNoticeSeverity(item) === "info" ? Info : AlertTriangle, runningLabel: t("activity-ui:provider.notice.running"), completedLabel: t("activity-ui:provider.notice.completed"), failedLabel: t("activity-ui:provider.notice.failed"), interruptedLabel: t("activity-ui:provider.notice.interrupted"), detail };
   }

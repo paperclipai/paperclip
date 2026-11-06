@@ -758,7 +758,9 @@ export function environmentService(db: Db) {
               mergeManagedEnvironmentMetadata(row.metadata, desiredMetadata, keys),
             ),
             status: "active",
-            updatedAt: new Date(),
+            updatedAt: row.status === "active" && stockHash(row.config) === stockHash(desiredConfig)
+              ? row.updatedAt
+              : new Date(),
           })
           .where(eq(environments.id, row.id))
           .returning()

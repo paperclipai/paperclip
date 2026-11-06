@@ -163,20 +163,30 @@ export function TaskChatInteractionCard({
       : interaction.payload.target?.revisionNumber ===
         planDocument.latestRevisionNumber);
   if (isResolvedPlanReview && !coordinatorEnabled) {
-    if (resolvedPlanMatchesDocument && showPlanPreview && planDocument) {
-      return (
-        <div
-          id={`interaction-${interaction.id}`}
-          data-testid="task-chat-interaction"
-        >
+    // Keep the decision visible: the approved or sent-back plan stays as a
+    // card while it is current, and the receipt records who decided and why.
+    return (
+      <div
+        id={`interaction-${interaction.id}`}
+        className="w-full space-y-2"
+        data-testid="task-chat-interaction"
+      >
+        {resolvedPlanMatchesDocument && showPlanPreview && planDocument ? (
           <TaskChatPlanPreviewCard
             source={{ kind: "saved", document: planDocument }}
             testId="plan-review-preview"
           />
-        </div>
-      );
-    }
-    return null;
+        ) : null}
+        <TaskChatCompactInteractionCard
+          interaction={interaction}
+          planDocument={planDocument}
+          showPlanPreview={false}
+          presentation="timeline"
+          draftKey={draftKey}
+          {...cardProps}
+        />
+      </div>
+    );
   }
   if (presentation === "timeline" && interaction.status !== "pending") {
     return (

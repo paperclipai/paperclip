@@ -222,4 +222,24 @@ describe.skipIf(!support.supported)("task interruption latest run query", () => 
       taskId: reassigned!.id, agentAdapter: "process",
     }));
   });
+  // N-03: ONB-1 on staging waited 16 minutes on an overdue workspace_busy
+  // retry. Nothing failed, yet the banner offered a Retry that cannot help.
+  it.each(["workspace_busy", "ai_connection_busy", "ai_connection_pool_wait", "runner_revision_wait"])(
+    "does not present an overdue %s wait as a failed attempt", async reason => {
+      const companyId = randomUUID(), agentId = randomUUID(), parentRunId = randomUUID();
+      await db.insert(companies).values({ id: companyId, name: "Waiting task", issuePrefix: `W${companyId.slice(0, 7)}` });
+      await db.insert(agents).values({ id: agentId, companyId, name: "Waiting agent", adapterType: "process" });
+      const [issue] = await db.insert(issues).values({ companyId, title: "Paperclip onboarding",
+        status: "in_progress", assigneeAgentId: agentId }).returning();
+      const now = Date.now();
+      await db.insert(heartbeatRuns).values({ id: parentRunId, companyId, agentId, issueId: issue!.id, scopeKind: "issue",
+        status: "cancelled", errorCode: reason, createdAt: new Date(now - 10 * 60_000), finishedAt: new Date(now - 9 * 60_000) });
+      await db.insert(heartbeatRuns).values({ companyId, agentId, issueId: issue!.id, scopeKind: "issue",
+        status: "scheduled_retry", retryOfRunId: parentRunId, scheduledRetryReason: reason, scheduledRetryAttempt: 2,
+        scheduledRetryAt: new Date(now - 5 * 60_000), createdAt: new Date(now - 9 * 60_000) });
+      captureTaskInterruptionFailure.mockClear();
+      const presentation = (await taskInterruptionPresentations(db, companyId, [issue!])).get(issue!.id);
+      expect(presentation).toMatchObject({ responsibility: "system", state: "working", canRetry: false });
+      expect(captureTaskInterruptionFailure).not.toHaveBeenCalled();
+    });
 });

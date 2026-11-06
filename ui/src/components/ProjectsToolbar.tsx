@@ -65,7 +65,9 @@ export function ProjectsToolbar({ query, onQueryChange, sortField, sortDir, onSo
     </Popover>
     <div className="design-toolbar-actions">
       <Button size="sm" variant="outline" data-toolbar-primary onClick={openNewProject}>
-          <Plus className="h-4 w-4 mr-1" />{t("final-components-a:addProject_44b7ce21")}</Button>
+          <Plus className="h-4 w-4 mr-1" />
+          {t("work:createProject")}
+      </Button>
     </div>
   </div>;
 }

@@ -144,7 +144,7 @@ import {
   shouldTrackIssueActiveRun,
 } from "../lib/issueActiveRun";
 import { prefetchIssueThread } from "../lib/issue-thread-queries";
-import { getIssueDetailQueryOptions, seedIssueDetailProjections } from "../lib/issueDetailCache";
+import { getIssueCoreQueryOptions, getIssueDetailQueryOptions } from "../lib/issueDetailCache";
 import {
   beginIssueDetailNavigation,
   recordIssueDetailReadiness,
@@ -403,6 +403,7 @@ import {
   workspaceFileRefSchema,
   isUuidLike,
 } from "@paperclipai/shared";
+import { taskStatusIconProps } from "@/lib/task-status-presentation";
 
 // Stable empty array for React Query `data` defaults. A literal `= []` default
 // creates a new array reference on every render while `data` is undefined
@@ -1005,8 +1006,7 @@ export function IssueDetailLoadingState({
           {headerSeed ? (
             <>
               <StatusIcon
-                status={headerSeed.status} displayStatus={headerSeed.displayStatus}
-                blockerAttention={headerSeed.blockerAttention}
+                {...taskStatusIconProps(headerSeed)}
               />
               {/* PAP-411: priority UI hidden behind SHOW_TASK_PRIORITY_UI. */}
               {SHOW_TASK_PRIORITY_UI && (
@@ -3327,12 +3327,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
   );
 
   const coreIssueQuery = useQuery({
-    queryKey: [...queryKeys.issues.detail(issueId!), "core"],
-    queryFn: async ({ signal }) => {
-      const core = await issuesApi.getCore(issueId!, { signal });
-      seedIssueDetailProjections(queryClient, core, issueId);
-      return core;
-    },
+    ...getIssueCoreQueryOptions(queryClient, issueId!),
     enabled: !!issueId,
   });
   const { historyExpanded, expandHistory, recent: recentComments, retainComment, acknowledgedComments } = useIssueHistoryWindow(
@@ -7577,7 +7572,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
 
   const issueStatusControl = (
     <StatusIcon
-      status={issue.status} displayStatus={issue.displayStatus} externalConversationState={issue.externalConversationState}
+      {...taskStatusIconProps(issue)}
       size={proposedTaskHeader ? "md" : "lg"}
       blockerAttention={issue.blockerAttention}
       onChange={(status) => updateIssue.mutate({ status })}

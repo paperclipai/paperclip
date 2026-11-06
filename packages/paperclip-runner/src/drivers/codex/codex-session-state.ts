@@ -1,4 +1,6 @@
 import { type CodexUsageBaseline, codexRunUsage } from "./codex-usage-baseline.js";
+import type { ProviderRateLimitSnapshot } from "../provider-rate-limits.js";
+import { workspaceRootsFor } from "../../tool-file-changes.js";
 import type {
   HarnessRuntimeRequest,
   HarnessSessionRecoveryOptions,
@@ -54,6 +56,11 @@ class AsyncQueue<T> implements AsyncIterable<T> {
     this.#closed = true;
     for (const waiter of this.#waiters.splice(0))
       waiter.resolve({ value: undefined, done: true });
+  }
+
+  reopen(): void {
+    if (this.#failure !== null) throw this.#failure;
+    this.#closed = false;
   }
 
   fail(error: Error): void {
@@ -112,6 +119,9 @@ export class CodexSessionState {
   activeTurnId: string | null;
   usageSnapshot: Record<string, unknown> | null = null;
   codexUsageBaseline: CodexUsageBaseline | null = null;
+  /** Latest account rate-limit snapshot, merged across sparse updates. */
+  rateLimits: ProviderRateLimitSnapshot | null = null;
+  rateLimitNoticeSequence = 0;
   result: PrpStructuredRunResult | null = null;
   resultFingerprint: string | null = null;
   readonly normalizeReplayPayload?: HarnessSessionRecoveryOptions["normalizeReplayPayload"];
@@ -145,6 +155,12 @@ export class CodexSessionState {
   readonly restoredTerminalTurns = new Set<string>();
   readonly workspaceChangesByTurn = new Map<string, Record<string, unknown>>();
   readonly emittedFileReferences = new Set<string>();
+  #workspaceRoots: string[] | null = null;
+  /** Working directory and its realpath, for making provider file paths relative. */
+  get workspaceRoots(): string[] {
+    this.#workspaceRoots ??= workspaceRootsFor(this.opened.context.workingDirectory);
+    return this.#workspaceRoots;
+  }
   readonly itemChannels = new Map<
     string,
     "progress" | "final" | "summary" | "detail" | "unknown"

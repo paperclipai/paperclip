@@ -421,12 +421,18 @@ export function OnboardingCardField({
 export function ProviderSubscriptionCard({
   providerName,
   authorizationUrl,
+  onOpenAuthorization,
   mode,
   loading,
+  failure,
+  onRetry,
   children,
 }: {
   providerName: string;
   authorizationUrl?: string;
+  onOpenAuthorization?: () => void;
+  failure?: "expired" | "failed";
+  onRetry?: () => void;
   mode: "submitted_code" | "displayed_code" | "browser_redirect";
   loading?: boolean;
   children: ReactNode;
@@ -435,10 +441,16 @@ export function ProviderSubscriptionCard({
   return (
     <OnboardingLoginCard
       loading={loading}
-      instruction={
-        <Trans ns="final-configuration" i18nKey={`login_${mode}`} values={{ providerName }} components={{ signin: <a href={authorizationUrl} target="_blank" rel="noreferrer noopener" className="underline underline-offset-2 hover:text-foreground" /> }} />
-      }
+      instruction={failure ? (failure === "expired" ? translate("final-configuration:signInExpired") : translate("final-configuration:signInUnfinished")) : (
+        <Trans ns="final-configuration" i18nKey={`login_${mode}`} values={{ providerName }} components={{ signin: <a href={authorizationUrl} onClick={event => { if (!onOpenAuthorization) return; event.preventDefault(); onOpenAuthorization(); }} target="_blank" rel="noreferrer noopener" className="underline underline-offset-2 hover:text-foreground" /> }} />
+      )}
     >
+      {failure && (
+        <div className="flex flex-col items-start gap-3 px-2">
+          <p role="alert" className="text-sm text-muted-foreground">Retry sign-in to get a fresh code. Your setup is saved.</p>
+          {onRetry && <Button type="button" variant="outline" onClick={onRetry}>Retry sign-in</Button>}
+        </div>
+      )}
       {children}
     </OnboardingLoginCard>
   );

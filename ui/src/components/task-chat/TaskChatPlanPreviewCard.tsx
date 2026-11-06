@@ -20,7 +20,8 @@ export function planPreviewContent(markdown: string) {
     ? lines[headingIndex]!.replace(/^#\s+/, "").trim()
     : t("task-components:plan_fa8ed0bd");
   const preview = lines
-    .filter((line, index) => index !== headingIndex && !/^(```|~~~|---+$|\*\*\*+$|___+$)/.test(line))
+    // Section headings ("## Steps") are structure, not plan content.
+    .filter((line, index) => index !== headingIndex && !/^#{1,6}\s+/.test(line) && !/^(```|~~~|---+$|\*\*\*+$|___+$)/.test(line))
     .map((line) => line
       .replace(/^#{1,6}\s+/, "")
       .replace(/^[-*+]\s+/, "")
@@ -57,6 +58,11 @@ export interface TaskChatPlanPreviewCardProps {
 }
 
 function livePlanContent(activity: TaskChatProviderActivityItem) {
+  // A proposed-plan document streams as markdown; a checklist streams as steps.
+  if (activity.output?.trim()) {
+    const fromMarkdown = planPreviewContent(activity.output);
+    if (fromMarkdown.title !== "Plan" || fromMarkdown.preview.length > 0) return fromMarkdown;
+  }
   const title = activity.title.trim() && activity.title.trim().toLowerCase() !== "plan"
     ? activity.title.trim()
     : t("task-components:plan_fa8ed0bd");

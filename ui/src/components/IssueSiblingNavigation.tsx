@@ -6,6 +6,7 @@ import { createIssueDetailPath, withIssueDetailHeaderSeed } from "@/lib/issueDet
 import { cn } from "@/lib/utils";
 import { Link } from "@/lib/router";
 import { StatusIcon } from "./StatusIcon";
+import { taskStatusIconProps } from "@/lib/task-status-presentation";
 
 type IssueSiblingNavigationProps = {
   navigation: IssueSiblingNavigationState | null;
@@ -82,7 +83,7 @@ function SiblingLink({
           "flex min-w-0 items-center gap-1.5 text-xs font-mono text-muted-foreground transition-colors group-hover:text-foreground",
           direction === "next" && "sm:justify-end",
         )}>
-          <StatusIcon status={issue.status} displayStatus={issue.displayStatus} externalConversationState={issue.externalConversationState} blockerAttention={issue.blockerAttention} />
+          <StatusIcon {...taskStatusIconProps(issue)} />
           <span className="shrink-0">{identifier}</span>
         </div>
         <div className="truncate text-sm text-foreground">

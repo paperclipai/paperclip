@@ -1,5 +1,6 @@
 import { Trans } from "@/i18n";
 import { useTranslation } from "@/i18n";
+import { useAuthorizationWindow } from "@/hooks/useAuthorizationWindow";
 import { useId, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import type {
@@ -204,6 +205,7 @@ export function SlackSearchAccess({
     queryKey: ["slack-search", companyId, endpointId],
     queryFn: () => slackToolsApi.search(companyId, endpointId),
   });
+  const authorization = useAuthorizationWindow();
   const view = useQueryView(query);
   if (view.kind === "error")
     return (
@@ -218,12 +220,16 @@ export function SlackSearchAccess({
     return (
       <p role="status" className="text-sm text-muted-foreground">{t("loading_search_access_fe058ff")}</p>
     );
-  return (
+  return (<>
+    {authorization.fallback}
     <SlackSearchView
       status={query.data}
       onConnect={async () => {
-        const result = await slackToolsApi.connect(companyId, endpointId);
-        window.location.assign(result.url);
+        authorization.reserve();
+        try {
+          const result = await slackToolsApi.connect(companyId, endpointId);
+          await authorization.open(result.url);
+        } catch (error) { authorization.cancel(); throw error; }
       }}
       onDisconnect={async () => {
         await slackToolsApi.disconnect(companyId, endpointId);
@@ -234,5 +240,5 @@ export function SlackSearchAccess({
         await query.refetch();
       }}
     />
-  );
+  </>);
 }

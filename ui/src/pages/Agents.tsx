@@ -29,7 +29,8 @@ import { OrgChart } from "./OrgChart";
 import { relativeTime, cn, agentRouteRef, agentUrl } from "../lib/utils";
 import { AgentsToolbar } from "../components/AgentsToolbar";
 import { Button } from "@/components/ui/button";
-import { AlertTriangle, Bot } from "lucide-react";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { AlertTriangle, Bot, MessagesSquare } from "lucide-react";
 import { AGENT_ROLE_LABELS, type Agent, type Environment, type EnvironmentCapabilities } from "@paperclipai/shared";
 import { usePublishSharedQueryData, useSharedPollingQuery } from "../hooks/useSharedPolling";
 
@@ -390,7 +391,7 @@ export function Agents({ initialView = "list" }: { initialView?: AgentsView } = 
         subtitleClassName="truncate"
         subtitle={`${getAgentRoleLabel(agent.role)}${agent.title ? ` - ${agent.title}` : ""}`}
         to={agentUrl(agent)}
-        className="group py-3"
+        className="agent-roster-identity group py-3"
         leading={hasInvalidOrgChain ? (
           <AlertTriangle className="h-3.5 w-3.5 text-amber-500" aria-label={translateAgentPage("agents:invalid_reporting_chain")} />
         ) : (
@@ -399,7 +400,6 @@ export function Agents({ initialView = "list" }: { initialView?: AgentsView } = 
         secondaryRowClassName={cn("pl-11", !builtInCluster && !showEnvironmentColumn && !agent.lastHeartbeatAt && "sm:hidden")}
         secondaryRow={(agent.status === "paused" || builtInCluster || showEnvironmentColumn || agent.lastHeartbeatAt) && (
           <div className="flex flex-wrap items-center gap-2">
-            {agent.status === "paused" && <span className="sm:hidden"><AgentStatusBadge status={agent.status} /></span>}
             {builtInCluster}
             {showEnvironmentColumn && <span className="text-xs text-muted-foreground" title={resolveRenderedEnvironment(agent.id).title}>
               {resolveRenderedEnvironment(agent.id).label} · {resolveRenderedEnvironment(agent.id).detail}
@@ -407,26 +407,22 @@ export function Agents({ initialView = "list" }: { initialView?: AgentsView } = 
             {agent.lastHeartbeatAt && <span className="text-xs text-muted-foreground" title={translateAgentPage("agents:last_heartbeat")}>{relativeTime(agent.lastHeartbeatAt)}</span>}
           </div>
         )}
-        trailing={
-          <div className="flex items-center gap-3">
-            {agentChat.enabled && <Button variant="ghost" size="sm" onClick={event => { event.preventDefault(); event.stopPropagation(); navigate(`/chats/${agentRouteRef(agent)}`); }}>{translateAgentPage("agents:chat")}</Button>}
-            <div className="hidden sm:flex items-center gap-3">
-              {liveRunByAgent.has(agent.id) && (
-                <LiveRunIndicator
-                  agentRef={agentRouteRef(agent)}
-                  runId={liveRunByAgent.get(agent.id)!.runId}
-                  liveCount={liveRunByAgent.get(agent.id)!.liveCount}
-                />
-              )}
-              <span className="w-20 flex justify-end">
-                <AgentStatusBadge status={agent.status} />
-              </span>
-            </div>
-          </div>
-        }
       />
     );
   };
+
+  const renderAgentStatus = (agent: Agent) => (
+    <div className="flex items-center gap-3">
+      {liveRunByAgent.has(agent.id) && (
+        <LiveRunIndicator
+          agentRef={agentRouteRef(agent)}
+          runId={liveRunByAgent.get(agent.id)!.runId}
+          liveCount={liveRunByAgent.get(agent.id)!.liveCount}
+        />
+      )}
+      <AgentStatusBadge status={agent.status} />
+    </div>
+  );
 
   return (
     <div className={cn(
@@ -451,7 +447,17 @@ export function Agents({ initialView = "list" }: { initialView?: AgentsView } = 
       {effectiveView === "list" && agents && agents.length > 0 && (
         <AgentBulkRoster key={selectedCompanyId} companyId={selectedCompanyId}
           agents={agents.filter(agent => !HIDDEN_AGENT_STATUSES.has(agent.status))}
-          visibleAgents={filtered} renderAgent={renderAgentRow} />
+          visibleAgents={filtered} renderAgent={renderAgentRow} renderStatus={renderAgentStatus}
+          renderChat={agentChat.enabled ? agent => (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button variant="ghost" size="icon-sm" aria-label={`Chat with ${agent.name}`} onClick={() => navigate(`/chats/${agentRouteRef(agent)}`)}>
+                  <MessagesSquare className="size-4 text-foreground" aria-hidden />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>chat with this agent</TooltipContent>
+            </Tooltip>
+          ) : undefined} />
       )}
 
 

@@ -22,6 +22,7 @@ export const TASK_VIEW_KEYS = [
   "blocked",
   "recent",
   "everything",
+  "needs_attention",
   "all",
   "active",
   "backlog",
@@ -41,6 +42,7 @@ export interface TaskView {
   statuses?: string[];
   /** One-line description shown in the Views menu. */
   hint: string;
+  coordinatorOnly?: boolean;
 }
 
 export interface TaskViewGroup {
@@ -62,10 +64,11 @@ export const TASK_VIEW_GROUPS: TaskViewGroup[] = [
   {
     get "label"() { return t("display:meta_519255ae1f74"); },
     views: [
-      { key: "all", get "label"() { return t("display:meta_2eee0bb53a4a"); }, surface: "issues", statuses: [], get "hint"() { return t("display:meta_94a29b649e59"); } },
-      { key: "active", get "label"() { return t("display:meta_a733b809d2f1"); }, surface: "issues", statuses: ["todo", "in_progress", "monitoring", "in_review", "blocked"], get "hint"() { return t("display:meta_3997bc7cd63d"); } },
-      { key: "backlog", get "label"() { return t("display:meta_1fe3af46d323"); }, surface: "issues", statuses: ["backlog"], get "hint"() { return t("display:meta_8f1a268e65af"); } },
-      { key: "done", get "label"() { return t("display:meta_e9b450d14bc2"); }, surface: "issues", statuses: ["done", "cancelled"], get "hint"() { return t("display:meta_0435d77b0027"); } },
+      { key: "needs_attention", get label() { return t("display:meta_a126722ec044"); }, surface: "issues", statuses: [], get hint() { return t("display:pendingDecisions"); }, coordinatorOnly: true },
+      { key: "all", get label() { return t("display:meta_2eee0bb53a4a"); }, surface: "issues", statuses: [], get hint() { return t("display:meta_94a29b649e59"); } },
+      { key: "active", get label() { return t("display:meta_a733b809d2f1"); }, surface: "issues", statuses: ["todo", "in_progress", "monitoring", "in_review", "blocked"], get hint() { return t("display:meta_3997bc7cd63d"); } },
+      { key: "backlog", get label() { return t("display:meta_1fe3af46d323"); }, surface: "issues", statuses: ["backlog"], get hint() { return t("display:meta_8f1a268e65af"); } },
+      { key: "done", get label() { return t("display:meta_e9b450d14bc2"); }, surface: "issues", statuses: ["done", "cancelled"], get hint() { return t("display:meta_0435d77b0027"); } },
     ],
   },
 ];
@@ -74,7 +77,7 @@ const VIEWS_BY_KEY = new Map<TaskViewKey, TaskView>(
   TASK_VIEW_GROUPS.flatMap((group) => group.views.map((view) => [view.key, view] as const)),
 );
 
-export const DEFAULT_TASK_VIEW: TaskViewKey = "mine";
+export const DEFAULT_TASK_VIEW: TaskViewKey = "all";
 export const TASK_VIEW_PARAM = "view";
 export const TASK_LAST_VIEW_KEY = "paperclip:tasks:last-view";
 

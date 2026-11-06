@@ -383,7 +383,7 @@ export function Agents() {
         subtitleClassName="whitespace-normal break-words xl:truncate xl:whitespace-nowrap"
         subtitle={`${getAgentRoleLabel(agent.role)}${agent.title ? ` - ${agent.title}` : ""}`}
         to={agentUrl(agent)}
-        className="group"
+        className="agent-roster-identity group py-3"
         leading={hasInvalidOrgChain ? (
           <AlertTriangle className="h-3.5 w-3.5 text-amber-500" aria-label={translateAgentPage("agents:invalid_reporting_chain")} />
         ) : (
@@ -392,7 +392,6 @@ export function Agents() {
         secondaryRowClassName={cn("pl-11", !builtInCluster && !showEnvironmentColumn && !agent.lastHeartbeatAt && "sm:hidden")}
         secondaryRow={(agent.status === "paused" || builtInCluster || showEnvironmentColumn || agent.lastHeartbeatAt) && (
           <div className="flex flex-wrap items-center gap-2">
-            {agent.status === "paused" && <span className="sm:hidden"><AgentStatusBadge status={agent.status} /></span>}
             {builtInCluster}
             {showEnvironmentColumn && <span className="text-xs text-muted-foreground" title={resolveRenderedEnvironment(agent.id).title}>
               {resolveRenderedEnvironment(agent.id).label} · {resolveRenderedEnvironment(agent.id).detail}
@@ -400,25 +399,22 @@ export function Agents() {
             {agent.lastHeartbeatAt && <span className="text-xs text-muted-foreground" title={translateAgentPage("agents:last_heartbeat")}>{relativeTime(agent.lastHeartbeatAt)}</span>}
           </div>
         )}
-        trailing={
-          <div className="flex items-center gap-3">
-            <div className="hidden sm:flex items-center gap-3">
-              {liveRunByAgent.has(agent.id) && (
-                <LiveRunIndicator
-                  agentRef={agentRouteRef(agent)}
-                  runId={liveRunByAgent.get(agent.id)!.runId}
-                  liveCount={liveRunByAgent.get(agent.id)!.liveCount}
-                />
-              )}
-              <span className="w-20 flex justify-end">
-                <AgentStatusBadge status={agent.status} />
-              </span>
-            </div>
-          </div>
-        }
       />
     );
   };
+
+  const renderAgentStatus = (agent: Agent) => (
+    <div className="flex items-center gap-3">
+      {liveRunByAgent.has(agent.id) && (
+        <LiveRunIndicator
+          agentRef={agentRouteRef(agent)}
+          runId={liveRunByAgent.get(agent.id)!.runId}
+          liveCount={liveRunByAgent.get(agent.id)!.liveCount}
+        />
+      )}
+      <AgentStatusBadge status={agent.status} />
+    </div>
+  );
 
   return (
     <div className="space-y-4">
@@ -475,7 +471,7 @@ export function Agents() {
       {effectiveView === "list" && agents && agents.length > 0 && (
         <AgentBulkRoster key={selectedCompanyId} companyId={selectedCompanyId}
           agents={agents.filter(agent => !HIDDEN_AGENT_STATUSES.has(agent.status))}
-          visibleAgents={filtered} renderAgent={renderAgentRow} />
+          visibleAgents={filtered} renderAgent={renderAgentRow} renderStatus={renderAgentStatus} />
       )}
 
 

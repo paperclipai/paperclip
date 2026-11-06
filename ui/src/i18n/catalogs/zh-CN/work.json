@@ -997,5 +997,6 @@
     "skip_if_active": "运行时跳过",
     "skip_missed": "跳过错过的运行",
     "enqueue_missed_with_cap": "有上限地补跑"
-  }
+  },
+  "createProject": "创建项目"
 }

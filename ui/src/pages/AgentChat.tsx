@@ -46,6 +46,14 @@ export function AgentChat() {
   const chat = useQuery({
     queryKey: chatKey,
     queryFn: () => agentChatsApi.get(selectedCompanyId!, agent!.id),
+    initialData: () => enabled && agent && session.isSuccess
+      ? client.getQueryData<Issue[]>(queryKeys.agentChats.list(selectedCompanyId, userId))
+        ?.find(issue => issue.companyId === selectedCompanyId && issue.conversationAgentId === agent?.id)
+      : undefined,
+    initialDataUpdatedAt: () => {
+      const state = client.getQueryState(queryKeys.agentChats.list(selectedCompanyId, userId));
+      return state?.isInvalidated ? 0 : state?.dataUpdatedAt;
+    },
     enabled: enabled && !!agent && session.isFetched,
   });
   const sessionView = useQueryView(session);

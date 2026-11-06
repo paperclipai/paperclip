@@ -16,6 +16,7 @@ import {
 import { cn } from "@/lib/utils";
 import { taskChatComposerSurfaceClasses } from "./composer-surface";
 import { useComposerStop } from "@/hooks/useComposerStop";
+import { useComposerSubmitKey } from "@/hooks/useComposerSubmitKey";
 import { useStreamlinedTaskChatPresentation } from "./presentation-mode";
 import {
   DRAFT_DEBOUNCE_MS,
@@ -431,6 +432,7 @@ export function TaskChatComposer({
 }: TaskChatComposerProps) {
   useTranslation("task-components");
   const streamlined = useStreamlinedTaskChatPresentation();
+  const submitKey = useComposerSubmitKey();
   const stopControl = useComposerStop(onStop, stopPending, confirmedStoppedRunIds);
   const [localBody, setBody] = useState(() => (draftKey ? loadDraft(draftKey) : ""));
   const body = creation ? creation.value : localBody;
@@ -1408,6 +1410,7 @@ export function TaskChatComposer({
                 disabled,
               }] : [goalCommandOption]}
               onSubmit={() => void submit()}
+              submitKey={submitKey}
               fileDropTarget="parent"
               bordered={false}
               className={cn(disabled && "opacity-60")}
@@ -1645,7 +1648,7 @@ export function TaskChatComposer({
                       ? t("task-components:waitingForUploadToFinish_71fd6a43")
                       : uploadFailed
                         ? t("task-components:removeTheFailedAttachmentToSend_10d2ce8e")
-                        : creation ? `${creation.submitLabel} (⌘+Enter)` : t("task-components:sendEnter_b5f7acc1")
+                        : `${creation?.submitLabel ?? t("task-components:send_f6f4688f")} (${submitKey === "mod-enter" ? "⌘/Ctrl+Enter" : "Enter"})`
               }
               aria-label={
                 showStop

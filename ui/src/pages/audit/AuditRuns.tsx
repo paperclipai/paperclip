@@ -219,7 +219,7 @@ export function AuditRuns({
         </div>
       )}
 
-      <div className="flex flex-wrap items-end gap-3 border-y border-border py-3">
+      <div data-canonical-toolbar="audit-runs" role="toolbar" aria-label="Audit filters" className="flex flex-wrap items-end gap-3 border-y border-border py-3">
         {lockedAgentId ? null : <label className="grid gap-1 text-(length:--text-micro) font-medium text-muted-foreground">
           <span>{translateAgentPage("agents:agent_5ce2e6")}</span>
           <Select value={agentId} onValueChange={(value) => updateFilter("agentId", value)}>

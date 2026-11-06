@@ -2,6 +2,8 @@ import { t, useTranslation, Trans } from "@/i18n";
 import { enumDisplayLabel } from "./task-chat-display";
 import { detailDisplayLabel } from "./task-chat-display";
 import { useContext, useEffect, useMemo, useState } from "react";
+import { TaskChatStatusNotice } from "./TaskChatStatusNotice";
+import { isStatusNotice } from "./status-notice-presentation";
 import {
   AlertTriangle,
   Bot,
@@ -9,6 +11,7 @@ import {
   ChevronDown,
   ChevronRight,
   Circle,
+  CircleCheck,
   CircleHelp,
   Clock3,
   ExternalLink,
@@ -50,6 +53,9 @@ import type {
 import { QuestionForm, QuestionResponseSummary } from "./QuestionForm";
 import { TaskChatComposerTakeoverHeader, TaskChatRequestHistoryContext } from "./TaskChatComposerTakeoverContext";
 import { RichWorkProductCard } from "./RichWorkProductCard";
+import { planPreviewContent, TaskChatPlanPreviewCard } from "./TaskChatPlanPreviewCard";
+import { TaskChatDiffCounts, TaskChatDiffView } from "./TaskChatDiffView";
+import { parseUnifiedDiffLines } from "./diff-lines";
 import { useArtifactsV1Enabled } from "@/hooks/useArtifactsV1Enabled";
 import { ArtifactFileRow, ArtifactRow, fileRowSourceFromAttachment, fileRowSourceFromWorkProduct, subjectFromAttachment, subjectFromDocumentSummary, subjectFromWorkProduct, workProductStateBadge } from "@/components/artifacts/v1";
 
@@ -67,6 +73,7 @@ export interface TaskChatProtocolCardProps {
 
 const FAMILY_ICON = {
   plan: GitBranch,
+  plan_proposal: FileText,
   tool_execution: TerminalSquare,
   research: FileText,
   delegation: Bot,
@@ -79,6 +86,7 @@ const FAMILY_ICON = {
   safety: ShieldCheck,
   terminal: TerminalSquare,
   wait: Clock3,
+  verification: CircleCheck,
   provider_notice: AlertTriangle,
 } as const;
 
@@ -260,12 +268,40 @@ function PlanSteps({ steps }: { steps: TaskChatProtocolStep[] }) {
   );
 }
 
+/**
+ * A harness's proposed plan. While it streams it is the live plan card; once
+ * complete, the synchronized Plan document and its approval card carry it, so
+ * the turn keeps only a one-line record.
+ */
+function PlanProposalCard({ item }: { item: TaskChatProviderActivityItem }) {
+  if (item.status === "running") {
+    return <TaskChatPlanPreviewCard source={{ kind: "live", activity: item }} testId="task-chat-plan-proposal" />;
+  }
+  const title = item.output ? planPreviewContent(item.output).title : "Plan";
+  // The saved Plan document normally carries the proposal, but a conflicting
+  // edit can keep it out. The proposal itself stays readable here.
+  return (
+    <details className="group" data-testid="task-chat-plan-proposal">
+      <summary className="flex cursor-pointer list-none items-center gap-2 rounded-sm px-1 py-1 text-sm text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+        <FileText aria-hidden className="h-3.5 w-3.5 shrink-0" />
+        <span className="min-w-0 truncate">Proposed a plan · <span className="text-foreground">{title}</span></span>
+      </summary>
+      {item.output ? (
+        <div className="mt-1 rounded-md border border-border bg-muted/25 px-4 py-3 text-sm" data-testid="task-chat-plan-proposal-body">
+          <MarkdownBody mediaMode="reference">{item.output}</MarkdownBody>
+        </div>
+      ) : null}
+    </details>
+  );
+}
+
 function ProviderActivityCard({
   item,
 }: {
   item: TaskChatProviderActivityItem;
 }) {
   useTranslation("task-components");
+  if (item.family === "plan_proposal") return <PlanProposalCard item={item} />;
   const Icon = FAMILY_ICON[item.family];
   const hasDetails =
     item.details.length > 0 ||
@@ -289,7 +325,7 @@ function ProviderActivityCard({
               className="rounded-sm bg-muted/40 px-2.5 py-2 text-sm"
             >
               <div className="flex items-center gap-2">
-                <StatusIcon status={enumDisplayLabel(child.status)} className="shrink-0" />
+                <StatusIcon status={child.status} className="shrink-0" />
                 <strong className="font-medium">{child.title}</strong>
                 <span
                   className={cn(
@@ -381,128 +417,144 @@ function ProviderActivityCard({
   );
 }
 
-function diffStats(file: TaskChatWorkspaceChangeItem["files"][number]) {
+function WorkspaceChangeFileRow({
+  file,
+  open,
+  onToggle,
+}: {
+  file: TaskChatWorkspaceChangeItem["files"][number];
+  open: boolean;
+  onToggle: () => void;
+}) {
+  const parsed = useMemo(
+    () => (file.diff ? parseUnifiedDiffLines(file.diff) : null),
+    [file.diff],
+  );
+  const expandable = file.binary || Boolean(parsed?.lines.length) || file.diffTruncated === true;
   return (
-    <span className="shrink-0 font-mono text-xs text-muted-foreground">
-      {file.additions == null ? "" : `+${file.additions}`}
-      {file.additions != null && file.deletions != null ? " " : ""}
-      {file.deletions == null ? "" : `−${file.deletions}`}
-    </span>
+    <div className="flex min-w-0 flex-col" data-testid="task-chat-workspace-change-file">
+      <button
+        type="button"
+        aria-expanded={expandable ? open : undefined}
+        disabled={!expandable}
+        className={cn(
+          "group/file flex min-w-0 items-center gap-2 rounded-sm px-2 py-1 text-left text-xs",
+          expandable ? "hover:bg-muted/60" : "cursor-default",
+        )}
+        onClick={expandable ? onToggle : undefined}
+      >
+        <ChevronRight
+          aria-hidden
+          className={cn(
+            "h-3 w-3 shrink-0 text-muted-foreground transition-transform",
+            open && "rotate-90",
+            !expandable && "invisible",
+          )}
+        />
+        <span className="min-w-0 flex-1 truncate font-mono text-foreground">
+          {file.previousPath ? `${file.previousPath} → ${file.path}` : file.path}
+        </span>
+        {file.operation !== "modify" ? (
+          <span className="shrink-0 text-(length:--text-micro) capitalize text-muted-foreground">
+            {file.binary ? "binary · " : ""}
+            {OPERATION_LABEL[file.operation] ?? file.operation.replaceAll("_", " ")}
+          </span>
+        ) : file.binary ? (
+          <span className="shrink-0 text-(length:--text-micro) text-muted-foreground">binary</span>
+        ) : null}
+        <TaskChatDiffCounts added={file.additions} removed={file.deletions} />
+      </button>
+      {open ? (
+        file.binary ? (
+          <p className="ml-7 mt-1 text-xs text-muted-foreground">Binary file; text diff is unavailable.</p>
+        ) : parsed?.lines.length ? (
+          <TaskChatDiffView
+            className="ml-7 mt-1"
+            lines={parsed.lines}
+            truncated={parsed.truncated || file.diffTruncated === true}
+          />
+        ) : (
+          <p className="ml-7 mt-1 text-xs text-muted-foreground">This patch is too large to show here.</p>
+        )
+      ) : null}
+    </div>
   );
 }
 
+const OPERATION_LABEL: Record<string, string> = {
+  create: "new",
+  delete: "deleted",
+  rename: "renamed",
+  mode_change: "mode change",
+};
+
 function WorkspaceChangeCard({ item }: { item: TaskChatWorkspaceChangeItem }) {
   useTranslation("task-components");
-  const [selectedPath, setSelectedPath] = useState<string | null>(null);
+  const [openPaths, setOpenPaths] = useState<ReadonlySet<string>>(() => new Set());
   const [expanded, setExpanded] = useState(false);
-  const selected =
-    item.files.find((file) => file.path === selectedPath) ?? null;
-  const visibleFiles = expanded ? item.files : item.files.slice(0, 3);
+  const visibleFiles = expanded ? item.files : item.files.slice(0, 5);
   const fileCount = item.totals.files || item.files.length;
-  const stats = [
-    item.totals.additions == null ? null : `+${item.totals.additions}`,
-    item.totals.deletions == null ? null : `−${item.totals.deletions}`,
-  ].filter(Boolean).join(" ");
   const summary = item.complete
-    ? fileCount === 1 ? t("task-chat-ui:oneFileChanged", { count: fileCount, stats: stats ? ` · ${stats}` : "" }) : t("task-chat-ui:filesChanged", { count: fileCount, stats: stats ? ` · ${stats}` : "" })
-    : t("task-chat-ui:workspaceInProgress");
+    ? t(fileCount === 1 ? "task-chat-ui:oneFileChanged" : "task-chat-ui:filesChanged", { count: fileCount, stats: "" })
+    : t("task-chat-ui:filesSoFar", { count: fileCount });
+  const toggle = (path: string) =>
+    setOpenPaths((current) => {
+      const next = new Set(current);
+      if (next.has(path)) next.delete(path);
+      else next.add(path);
+      return next;
+    });
   return (
-    <>
-      <CardShell
-        icon={GitBranch}
-        title={t("task-components:workspaceChanges_1ac656d5")}
-        status={item.complete ? "completed" : "running"}
-        summary={summary}
-        testId="task-chat-workspace-change"
-      >
-        <div className="flex flex-col gap-1">
-          {visibleFiles.map((file) => (
-            <button
-              key={`${file.operation}:${file.path}`}
-              type="button"
-              className="flex min-w-0 items-center gap-2 rounded-sm px-2 py-1.5 text-left text-sm hover:bg-muted/60"
-              onClick={() => setSelectedPath(file.path)}
-            >
-              <span className="min-w-0 flex-1">
-                <span className="block truncate font-mono">
-                  {file.previousPath
-                    ? `${file.previousPath} → ${file.path}`
-                    : file.path}
-                </span>
-                <span className="text-xs capitalize text-muted-foreground">
-                  {file.binary ? (t("task-components:binary_a10eca32") + " ") : ""}
-                  {enumDisplayLabel(file.operation, file.operation.replaceAll("_", " "))}
-                </span>
-              </span>
-              {diffStats(file)}
-            </button>
-          ))}
-        </div>
-        <div className="mt-2 flex flex-wrap items-center gap-2">
-          {item.files.length > 3 ? (
-            <Button
-              type="button"
-              size="sm"
-              variant="ghost"
-              onClick={() => setExpanded((value) => !value)}
-            >
-              {expanded
-                ? t("task-components:showFewerFiles_17fe4047")
-                : t("task-components:showMoreFiles_c4abcf78", { value1: item.files.length - 3 })}
-            </Button>
-          ) : null}
-          {item.files.length > 0 ? (
-            <Button
-              type="button"
-              size="sm"
-              variant="outline"
-              onClick={() => setSelectedPath(item.files[0].path)}
-            >{t("task-components:reviewDiff_61468276")}</Button>
-          ) : null}
-        </div>
-      </CardShell>
-      <Dialog
-        open={selected !== null}
-        onOpenChange={(open) => {
-          if (!open) setSelectedPath(null);
-        }}
-      >
-        <DialogContent className="w-full max-w-(--pct-90) overflow-hidden">
-          <DialogHeader>
-            <DialogTitle className="font-mono text-sm">
-              {selected?.path ?? t("task-components:workspaceDiff_a4472b52")}
-            </DialogTitle>
-          </DialogHeader>
-          {item.files.length > 1 ? (
-            <div
-              className="flex max-w-full gap-1 overflow-x-auto pb-1"
-              aria-label={t("task-components:changedFiles_5d4041aa")}
-            >
-              {item.files.map((file) => (
-                <Button
-                  key={file.path}
-                  type="button"
-                  size="sm"
-                  variant={file.path === selected?.path ? "secondary" : "ghost"}
-                  onClick={() => setSelectedPath(file.path)}
-                >
-                  {file.path}
-                </Button>
-              ))}
-            </div>
-          ) : null}
-          {selected?.binary ? (
-            <p className="rounded-sm bg-muted/50 p-3 text-sm text-muted-foreground">{t("task-components:binaryFileTextDiffIsUnavailable_98cd1b4b")}</p>
-          ) : selected?.diff ? (
-            <pre className="max-h-(--sz-70vh) overflow-auto whitespace-pre rounded-sm bg-muted/50 p-3 font-mono text-xs">
-              {selected.diff}
-            </pre>
-          ) : (
-            <p className="rounded-sm bg-muted/50 p-3 text-sm text-muted-foreground">{t("task-components:noInlinePatchWasRecordedForThis_009e7b89")}</p>
-          )}
-        </DialogContent>
-      </Dialog>
-    </>
+    <CardShell
+      icon={GitBranch}
+      title={item.complete ? t("task-chat-ui:changedThisTurn") : t("task-chat-ui:changingFiles")}
+      status={item.complete ? null : "running"}
+      testId="task-chat-workspace-change"
+    >
+      <div className="flex min-w-0 items-center gap-2 px-2 pb-1 text-xs text-muted-foreground">
+        <span>{summary}</span>
+        <TaskChatDiffCounts added={item.totals.additions} removed={item.totals.deletions} />
+        {item.files.length > 1 ? (
+          <button
+            type="button"
+            className="ml-auto text-foreground underline-offset-2 hover:underline"
+            onClick={() =>
+              setOpenPaths((current) =>
+                current.size > 0 ? new Set() : new Set(item.files.map((file) => file.path)),
+              )
+            }
+          >
+            {openPaths.size > 0 ? t("task-chat-ui:collapseAll") : t("task-chat-ui:expandAll")}
+          </button>
+        ) : null}
+      </div>
+      <div className="flex min-w-0 flex-col gap-0.5">
+        {visibleFiles.map((file) => (
+          <WorkspaceChangeFileRow
+            key={`${file.operation}:${file.path}`}
+            file={file}
+            open={openPaths.has(file.path)}
+            onToggle={() => toggle(file.path)}
+          />
+        ))}
+      </div>
+      {item.files.length > 5 ? (
+        <Button
+          type="button"
+          size="sm"
+          variant="ghost"
+          className="mt-1"
+          onClick={() => setExpanded((value) => !value)}
+        >
+          {expanded ? t("task-components:showFewerFiles_17fe4047") : t("task-components:showMoreFiles_c4abcf78", { value1: item.files.length - 5 })}
+        </Button>
+      ) : null}
+      {fileCount > item.files.length ? (
+        <p className="mt-1 px-2 text-xs text-muted-foreground" data-testid="task-chat-workspace-change-omitted">
+          {t("task-chat-ui:omittedFiles", { count: fileCount - item.files.length })}
+        </p>
+      ) : null}
+    </CardShell>
   );
 }
 
@@ -1099,7 +1151,9 @@ export function TaskChatProtocolCard({
   useTranslation("task-components");
   switch (item.surface) {
     case "provider_activity":
-      return <ProviderActivityCard item={item} />;
+      return isStatusNotice(item)
+        ? <TaskChatStatusNotice item={item} resolved={item.resolved} />
+        : <ProviderActivityCard item={item} />;
     case "workspace_change":
       return <WorkspaceChangeCard item={item} />;
     case "workspace_file":

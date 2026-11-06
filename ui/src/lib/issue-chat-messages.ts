@@ -105,7 +105,7 @@ export interface IssueChatTranscriptEntry {
   cachedTokens?: number;
   costUsd?: number;
   changeType?: "add" | "remove" | "context" | "hunk" | "file_header" | "truncation";
-  family?: "plan" | "tool_execution" | "research" | "delegation" | "model_identity" | "context" | "artifact" | "review" | "hook" | "memory" | "safety" | "terminal" | "wait" | "provider_notice";
+  family?: "plan" | "plan_proposal" | "tool_execution" | "research" | "delegation" | "model_identity" | "context" | "artifact" | "review" | "hook" | "memory" | "safety" | "terminal" | "wait" | "verification" | "provider_notice";
   eventType?: string;
   status?: "running" | "completed" | "failed" | "interrupted" | "informational" | "pending" | "resolved" | "expired" | "cancelled";
   title?: string;

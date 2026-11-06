@@ -716,5 +716,12 @@
     "document": "Document",
     "tool_connection": "Tool connection",
     "workspace": "Workspace"
-  }
+  },
+  "classicWorkspaceTitle": "Classic workspace",
+  "classicWorkspaceDescription": "Use the previous workspace instead of the standard Coordinator workspace. This changes your interface across companies on this instance.",
+  "classicWorkspaceFootnote": "Off by default. Turn it off to return to Coordinator. Your work and your teammates’ settings stay the same.",
+  "classicWorkspaceLocal": "This local instance uses the shared Local Board identity.",
+  "classicWorkspaceEnable": "Enable classic workspace",
+  "classicWorkspaceSaving": "Saving your workspace…",
+  "classicWorkspaceLoading": "Loading your preference…"
 }

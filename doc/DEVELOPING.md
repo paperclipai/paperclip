@@ -554,8 +554,7 @@ views. The plus button opens the existing agent picker; adding an agent creates
 one sidebar entry, and choosing them again reopens the same conversation. The
 **Add and reopen** component story exercises that constraint. Agent selection
 and sending use local fixtures. The live `/chats` and `/chats/:agentRef` routes
-use the same sidebar, picker, landing page, and existing chat surface when the
-Agent Chat experimental setting is enabled.
+use the same sidebar, picker, landing page, and existing chat surface for everyone.
 
 Use **Chat & Comments → Issue Thread Interactions → Composer Questions Auto Advance**
 to try the paged composer form. A single selection shows a brief checked-state animation before advancing to the
@@ -2084,6 +2083,13 @@ If a repository is detached or its source configuration changes, its previous ta
 
 Agent, project, environment, secret, skill, and workspace config edits are sampled at the next run boundary. A heartbeat that is already running finishes with the config it started with. Native runners project explicitly configured task environment variables into provider processes and tool commands, including custom `PAPERCLIP_*` names such as `PAPERCLIP_PAGE_BUCKET`. Adding, changing, or removing a projected variable replaces a retained provider process at the next run boundary. Unchanged variables permit process reuse. The projection contains names only; secret values stay in the child environment. Ambient host secrets are not projected. Native projections allow up to 128 variable names, 64 KiB per entry, and 256 KiB of values in total. These native launch limits do not apply to legacy adapter configuration. Runtime authority, provider login credentials, and process-loader settings use their existing restricted paths.
 
+Native OpenCode applies that projection when starting `opencode serve`, so its
+shell tools receive both plain bindings and resolved company secrets from
+`adapterConfig.env`. Forwarded values participate in diagnostic and provider-trace
+redaction. The isolated HOME, provider credential proxy, and GitHub broker retain
+their existing launch rules. OpenCode owns the `OPENCODE_*` and `XDG_*`
+configuration variables; task bindings cannot override them.
+
 When effective run config changes, Paperclip may intentionally skip a saved adapter session, refresh persisted workspace runtime config, replace a reused execution workspace, or avoid reusing a sandbox/environment lease. Fresh execution can lose adapter-specific session, workspace, or sandbox state; correctness of the next run's config takes priority over continuity. Plain environment values affect freshness through value hashes; run result JSON and workspace operation logs expose only the non-sensitive freshness decision categories, without storing secret values, full env maps, provider credentials, or private path details.
 
 An explicit `reuse_existing` Git workspace keeps its recorded source repository, including after its project-workspace row is deleted or the project primary changes. The server verifies the original company, project, repository origin, and worktree registration before reuse. It does not attach a deleted association to the new primary. A conflicting explicit project-workspace selection, missing source identity, or an unverified legacy local checkout blocks the run. Restore the original source. Before intentionally clearing the existing-workspace binding to choose a new repository, review and preserve its retained work. Missing worktrees may be reconstructed only from the verified original source; current project defaults are not a fallback.
@@ -2888,8 +2894,7 @@ and `deny-all` options. Codex conversion keeps a non-empty model and
 otherwise stores the shared `gpt-5.6-sol` default. The native execution boundary
 applies the same default to older runner rows whose model is missing or blank.
 
-For an Agent Chat test drive, enable **Agent Chat** in Experimental settings and
-configure two agents with Paperclip Runner: native Codex and ACPX Claude. Connect
+For an Agent Chat test drive, configure two agents with Paperclip Runner: native Codex and ACPX Claude. Connect
 the Claude account through the agent's **AI connection** section (or supply an
 explicit supported provider credential); an ambient Claude CLI login alone is
 not a credential source for its isolated runner home. The default
@@ -4583,3 +4588,14 @@ A restored task shows its header and properties while uncached history is still 
 Query-cache cleanup snapshots storage keys before deletion because native storage can reorder them as records are removed. Flush cleanup affects only its owning account and yields if another account becomes active.
 
 Run `pnpm exec playwright test -c tests/e2e/playwright.config.ts tests/e2e/disconnect-resilience.spec.ts` for the built-UI outage regressions. The suite uses fresh isolated local data, 20-second API interceptions, and a controlled sign-out session response. It covers retained tasks, comment and document recovery, queued-comment reloads, cached settings/sidebar/task reads, legacy Inbox reloads, real error status handling and sign-out clearing across several company records. The existing CI e2e shards discover it automatically. A real hosted restart or deploy remains a separate acceptance check.
+
+### Chat and task navigation caching
+
+Task-link intent warms the compact core and recent-comments queries used by the
+thread, rather than fetching full enrichment and an unused older-history page.
+Classic and already-expanded tasks keep their full-history prefetch.
+The mounted reads reuse the normal 30-second freshness window; live invalidation
+and background revalidation still apply. Recent-window catch-up retains messages
+observed before navigation. Agent Chat can render from the current person's
+company-scoped navigation list, carrying its original fetch timestamp so stale
+conversations refresh in the background. No conversation is created by a read.

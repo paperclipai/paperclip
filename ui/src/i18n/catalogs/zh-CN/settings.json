@@ -716,5 +716,12 @@
     "document": "文档",
     "tool_connection": "工具连接",
     "workspace": "工作区"
-  }
+  },
+  "classicWorkspaceTitle": "经典工作区",
+  "classicWorkspaceDescription": "使用旧版工作区，替代标准的协调工作区。此设置会更改你在本实例各组织中看到的界面。",
+  "classicWorkspaceFootnote": "默认关闭。关闭后返回协调工作区。你的工作内容和团队成员的设置保持不变。",
+  "classicWorkspaceLocal": "此本地实例使用共享的 Local Board 身份。",
+  "classicWorkspaceEnable": "启用经典工作区",
+  "classicWorkspaceSaving": "正在保存工作区…",
+  "classicWorkspaceLoading": "正在加载偏好设置…"
 }

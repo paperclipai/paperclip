@@ -1142,5 +1142,7 @@
   "config_030d0d0108fa": "YAML anchors are not supported.",
   "config_6df8c278addd": "YAML tags are not supported.",
   "activity_value_skill_test": "skill test",
-  "search_value_monitoring": "Monitoring"
+  "search_value_monitoring": "Monitoring",
+  "taskListMine": "Mine",
+  "pendingDecisions": "Tasks with pending decisions"
 }

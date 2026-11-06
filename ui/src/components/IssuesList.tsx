@@ -107,6 +107,7 @@ import {
 import { taskDateGroup, taskDateGroupSeparator, type TaskDateGroup } from "../lib/task-date-groups";
 import { deriveOriginatingActor, ISSUE_STATUSES, ISSUE_DISPLAY_STATUSES, type Issue, type IssueDisplayStatus, type IssueStatus, type Project } from "@paperclipai/shared";
 import { Badge } from "@/components/ui/badge";
+import { taskStatusIconProps } from "@/lib/task-status-presentation";
 const ISSUE_SEARCH_DEBOUNCE_MS = 250;
 const ISSUE_SEARCH_RESULT_LIMIT = 200;
 const ISSUE_BOARD_COLUMN_RESULT_LIMIT = 200;
@@ -2340,7 +2341,7 @@ function StreamlinedIssuesList({
                         ) : undefined}
                         statusSlot={rowPresentation === "task" ? (
                           <span className="relative inline-flex items-start self-stretch sm:items-center" onClick={(e) => { e.preventDefault(); e.stopPropagation(); }}>
-                            <StatusIcon status={issue.status} displayStatus={issue.displayStatus} externalConversationState={issue.externalConversationState} size="md" blockerAttention={issue.blockerAttention} onChange={(s) => onUpdateIssue(issue.id, { status: s })} />
+                            <StatusIcon {...taskStatusIconProps(issue)} size="md" onChange={(s) => onUpdateIssue(issue.id, { status: s })} />
                             {hasChildren && isExpanded ? (
                               <span aria-hidden="true" className="pointer-events-none absolute top-5 -bottom-2.5 left-1/2 w-px bg-border sm:hidden" />
                             ) : null}
@@ -2364,7 +2365,7 @@ function StreamlinedIssuesList({
                             </button>
                           ) : (
                             <span className="inline-flex items-center" onClick={(e) => { e.preventDefault(); e.stopPropagation(); }}>
-                              <StatusIcon status={issue.status} displayStatus={issue.displayStatus} externalConversationState={issue.externalConversationState} size="md" blockerAttention={issue.blockerAttention} onChange={(s) => onUpdateIssue(issue.id, { status: s })} />
+                              <StatusIcon {...taskStatusIconProps(issue)} size="md" onChange={(s) => onUpdateIssue(issue.id, { status: s })} />
                             </span>
                           )
                         }
@@ -2391,7 +2392,7 @@ function StreamlinedIssuesList({
                               checklistStepNumber={checklistStepNumber}
                               statusSlot={(
                                 <span className="inline-flex items-center" onClick={(e) => { e.preventDefault(); e.stopPropagation(); }}>
-                                  <StatusIcon status={issue.status} displayStatus={issue.displayStatus} externalConversationState={issue.externalConversationState} size="md" blockerAttention={issue.blockerAttention} onChange={(s) => onUpdateIssue(issue.id, { status: s })} />
+                                  <StatusIcon {...taskStatusIconProps(issue)} size="md" onChange={(s) => onUpdateIssue(issue.id, { status: s })} />
                                 </span>
                               )}
                             />

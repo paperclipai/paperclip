@@ -464,9 +464,8 @@ function AppsConnectEntryRoute({
 
 function InboxRootRedirect() {
   const { t: translateShell } = useTranslation("shell");
-  const { enabled: streamlinedUiEnabled } = useStreamlinedUiEnabled();
   const { enabled: combinedInboxTasksEnabled } = useCombinedInboxTasksEnabled();
-  return streamlinedUiEnabled && combinedInboxTasksEnabled
+  return combinedInboxTasksEnabled
     ? <TaskViewRedirect view={taskViewForInboxTab(loadLastInboxTab())} />
     : <Navigate to={`/inbox/${loadLastInboxTab()}`} replace />;
 }

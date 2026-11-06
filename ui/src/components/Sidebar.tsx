@@ -101,16 +101,11 @@ function ClassicSidebar({ children }: { children?: ReactNode }) {
   const liveIssueIds = new Set(
     (liveRuns ?? []).flatMap((run) => run.issueId ? [run.issueId] : []),
   );
-  // PAP-670 splits the nav reorganization across two experimental flags.
-  // Agent Chat: Chat leads Work as one row with its own agent rail (the
-  // streamlined shell only — the legacy shell keeps per-agent rows), and
-  // Workspaces leaves to make room. Combined Inbox + Task List: Inbox becomes
-  // views inside Tasks, so its row goes and its badge rides on Tasks.
   const chatRail = agentChatEnabled && streamlinedUiEnabled;
   // The merged Tasks page only exists in the streamlined shell, so the legacy
   // shell keeps its Inbox row even with the flag on.
   const combinedInboxTasks = streamlinedUiEnabled && experimentalSettings?.enableCombinedInboxTasks === true;
-  const showWorkspacesLink = !chatRail && experimentalSettings?.enableIsolatedWorkspaces === true;
+  const showWorkspacesLink = experimentalSettings?.enableIsolatedWorkspaces === true;
   const showStatusCards = experimentalSettings?.enableStatusCards === true;
   const goalsLinkPending = experimentalSettings === undefined;
   const showGoalsLink = experimentalSettings?.enableGoalsSidebarLink === true;

@@ -4,6 +4,10 @@ import { act, forwardRef, useImperativeHandle, useState, type ForwardedRef } fro
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+vi.mock("@/hooks/useCoordinatorWorkspaceEnabled", () => ({
+  useCoordinatorWorkspaceEnabled: () => ({ enabled: false, loaded: true }),
+}));
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { IssueDocument } from "@paperclipai/shared";
 import type {

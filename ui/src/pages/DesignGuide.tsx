@@ -1988,7 +1988,7 @@ export function DesignGuide() {
             ["[", translateShell("shell:toggle_sidebar")],
             ["]", translateShell("shell:toggle_properties_panel")],
 
-            ["Cmd+Enter / Ctrl+Enter", translateShell("shell:submit_markdown_comment")],
+            ["Enter / Shift+Enter", "Submit task message / add a new line (Command/Ctrl+Enter is available in Experimental settings)"],
           ].map(([key, desc]) => (
             <div key={key} className="flex items-center justify-between px-4 py-2">
               <span className="text-muted-foreground">{desc}</span>

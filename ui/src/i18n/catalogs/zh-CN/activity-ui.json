@@ -927,7 +927,12 @@
     "stopped": "活动已停止",
     "usage": "已记录用量",
     "join": "{{first}}、{{next}}",
-    "more": "{{summary}}，以及其他活动"
+    "more": "{{summary}}，以及其他活动",
+    "ranChecks": "运行了检查",
+    "checkFailed": "检查失败",
+    "skippedChecks": "已跳过检查",
+    "switchedModels": "已切换模型",
+    "autoReviewedActions": "已自动审查操作"
   },
   "transcript": {
     "thoughtSeconds_one": "已思考 {{count}} 秒",

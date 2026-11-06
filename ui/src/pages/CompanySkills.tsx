@@ -2850,7 +2850,7 @@ export function SkillDetailPage({
 
   // Track unsaved edits so we can float a save bar and warn before the page is
   // unloaded with a dirty draft (PAP-10907 J).
-  const savedFileContent = file?.content ?? "";
+  const savedFileContent = file?.markdown ? splitFrontmatter(file.content).body : file?.content ?? "";
   const isDirty = editMode && Boolean(file?.editable) && draft !== savedFileContent;
   useEffect(() => {
     if (!isDirty) return;
@@ -2954,7 +2954,7 @@ export function SkillDetailPage({
                 editMode ? (
                   <>
                     <Button variant="ghost" size="sm" onClick={() => setEditMode(false)} disabled={savePending}>{translateAgentPage("agents:cancel")}</Button>
-                    <Button size="sm" onClick={onSave} disabled={savePending}>
+                    <Button size="sm" onClick={onSave} disabled={savePending || !isDirty}>
                       <Save className="mr-1.5 h-3.5 w-3.5" />
                       {savePending ? translateAgentPage("agents:saving_ae7e88") : translateAgentPage("agents:save")}
                     </Button>

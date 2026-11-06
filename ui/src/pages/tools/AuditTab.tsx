@@ -397,7 +397,7 @@ export function AuditTab({ companyId }: { companyId: string }) {
         description={translateAgentPage("agents:what_your_agents_actually_did_with_your_apps")}
       />
 
-      <div className="flex flex-wrap items-center gap-2">
+      <div data-canonical-toolbar="tool-audit" role="toolbar" aria-label="Tool audit filters" className="flex flex-wrap items-center gap-2">
         <Select value={app} onValueChange={setApp}>
           <SelectTrigger className="w-40">
             <SelectValue placeholder={translateAgentPage("agents:app")} />
