@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { and, eq } from "drizzle-orm";
-import { activityLog, agents, authUsers, companies, companyMemberships, costEvents, createDb, heartbeatRuns, issues } from "@paperclipai/db";
+import { activityLog, agents, authUsers, companies, companyMemberships, costEvents, createDb, heartbeatRuns, issues, projects } from "@paperclipai/db";
 import { startRecoveryPostgres } from "../../__tests__/helpers/recovery-postgres.js";
 import { aiConnectionService } from "../ai-connections.js";
 import { PaperclipRunnerToolAuthority } from "./paperclip-runner-tool-authority.js";
@@ -155,6 +155,40 @@ describe("generate_image for OpenAI API-key Codex agents (N-12)", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
+  it("refuses before calling OpenAI when the task's project budget has stopped work", async () => {
+    const f = await fixture();
+    const fetchMock = stubOpenAiImages();
+    const [project] = await db.insert(projects).values({ companyId: f.companyId, name: "Menu", pausedAt: new Date(), pauseReason: "budget" }).returning();
+    await db.update(issues).set({ projectId: project!.id }).where(eq(issues.id, f.issueId));
+    const authority = new PaperclipRunnerToolAuthority(db, f.binding as never);
+    await expect(authority.execute({ tool: "generate_image", callId: randomUUID(), arguments: { prompt: "logo" } }))
+      .rejects.toThrow("budget");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("settles a paid image whose run stopped before the charge was recorded, without buying another", async () => {
+    const f = await fixture();
+    const fetchMock = stubOpenAiImages();
+    const authority = new PaperclipRunnerToolAuthority(db, f.binding as never);
+    const callId = randomUUID();
+    const input = { prompt: "logo", size: "1024x1024", quality: "auto" };
+    // The state a crash leaves after OpenAI charged but before accounting committed.
+    const key = createHash("sha256").update(callId).digest("hex");
+    const digest = createHash("sha256").update(JSON.stringify({ prompt: "logo", quality: "auto", size: "1024x1024" })).digest("hex");
+    await db.update(heartbeatRuns).set({ resultJson: { imageToolReceipts: { [key]: { digest, state: "charged", charge: {
+      model: "gpt-image-2", providerRequestId: "req_lost", usage: { textInputTokens: 10, imageInputTokens: 0, outputTokens: 100 },
+      costCents: "0.3050000", pricingProvenance: { source: "rate_card", version: "openai-image-standard-2026-11-06" },
+      projectId: null, destination: "generated-image-0a1b2c3d.png", byteSize: PNG.length, sha256: "0".repeat(64),
+      chargedAt: "2026-11-06T12:00:00.000Z" } } } } })
+      .where(eq(heartbeatRuns.id, f.runId));
+    expect(await authority.recover({ tool: "generate_image", callId, arguments: input })).toBeNull();
+    await expect(authority.execute({ tool: "generate_image", callId, arguments: input })).rejects.toThrow("generated-image-0a1b2c3d.png");
+    const costs = await db.select().from(costEvents).where(eq(costEvents.heartbeatRunId, f.runId));
+    expect(costs).toHaveLength(1);
+    expect(costs[0]).toMatchObject({ providerRequestId: "req_lost", outputTokens: 100 });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("refuses when the run's AI connection is no longer an active OpenAI API key", async () => {
     const f = await fixture();
     const fetchMock = stubOpenAiImages();
@@ -185,6 +219,15 @@ describe("generate_image helpers", () => {
       usage: { textInputTokens: 1_000_000, imageInputTokens: 1_000_000, outputTokens: 1_000_000 } });
     expect(price.costUsd).toBe("43.000000000");
     expect(price.pricingProvenance).toMatchObject({ source: "rate_card", version: "openai-image-standard-2026-11-06" });
+  });
+
+  it("stops reading an oversized provider reply before parsing it", async () => {
+    const huge = vi.fn(async () => new Response(new ReadableStream({ start(controller) {
+      for (let i = 0; i < 8; i++) controller.enqueue(new Uint8Array(1024));
+      controller.close();
+    } }), { status: 200 }));
+    await expect(requestOpenAiImage({ prompt: "logo", size: "1024x1024", quality: "auto", apiKey: OPENAI_KEY }, huge as never, { maxResponseBytes: 4096 }))
+      .rejects.toThrow("too large");
   });
 
   it("reports provider errors without echoing the key and rejects non-PNG data", async () => {

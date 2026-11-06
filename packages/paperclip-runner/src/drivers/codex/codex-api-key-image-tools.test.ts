@@ -7,6 +7,7 @@ import { createInterface } from "node:readline";
 import { describe, expect, it } from "vitest";
 import { resolvePinnedCodexCommand } from "./codex-command.js";
 import { createIsolatedCodexAppServerArgs, createSecuredCodexThreadParams } from "./codex-security-config.js";
+import { WORKSPACE } from "./codex-app-server-driver.test-support.js";
 
 /**
  * N-12 (walk step 26): what an OpenAI API-key Codex agent actually gets to call.
@@ -30,7 +31,6 @@ describe("Codex API-key image tools (pinned binary)", () => {
     await new Promise<void>(done => server.listen(0, "127.0.0.1", done));
     const port = (server.address() as { port: number }).port;
     const codexHome = mkdtempSync(join(tmpdir(), "paperclip-n12-api-key-home-"));
-    const workspace = mkdtempSync(join(tmpdir(), "paperclip-n12-api-key-ws-"));
     // The same files prepareIsolatedCodexHome writes for an API-key agent.
     writeFileSync(join(codexHome, "config.toml"), 'cli_auth_credentials_store = "file"\n[features]\nshell_snapshot = false\n');
     writeFileSync(join(codexHome, "auth.json"), JSON.stringify({ OPENAI_API_KEY: "sk-test-not-a-real-key" }), { mode: 0o600 });
@@ -57,7 +57,7 @@ describe("Codex API-key image tools (pinned binary)", () => {
       await call("initialize", { clientInfo: { name: "paperclip-runner", title: "Paperclip Runner", version: "test" }, capabilities: { experimentalApi: true } });
       child.stdin!.write(`${JSON.stringify({ jsonrpc: "2.0", method: "initialized" })}\n`);
       const thread = await call("thread/start", {
-        ...createSecuredCodexThreadParams(workspace, "default", true, false, source),
+        ...createSecuredCodexThreadParams(WORKSPACE, "default", true, false, source),
         model: "gpt-5.6-sol",
         dynamicTools: [{ name: "generate_image", description: "Generate a PNG with the agent's existing OpenAI connection.",
           inputSchema: { type: "object", properties: { prompt: { type: "string" } }, required: ["prompt"] } }],
@@ -84,10 +84,11 @@ describe("Codex API-key image tools (pinned binary)", () => {
       // Paperclip's server-side tool does reach the model on this path.
       expect(JSON.stringify(body)).toContain("generate_image");
     } finally {
+      const exited = child.exitCode !== null || child.signalCode !== null ? Promise.resolve() : new Promise(done => child.once("exit", done));
       child.kill("SIGKILL");
+      await exited;
       server.close();
-      rmSync(codexHome, { recursive: true, force: true });
-      rmSync(workspace, { recursive: true, force: true });
+      rmSync(codexHome, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     }
   }, 90_000);
 });

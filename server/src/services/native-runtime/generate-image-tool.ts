@@ -17,6 +17,8 @@ export const GENERATE_IMAGE_MODEL = "gpt-image-2";
 const OPENAI_IMAGES_URL = "https://api.openai.com/v1/images/generations";
 const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
 const REQUEST_TIMEOUT_MS = 180_000;
+// Base64 of the largest accepted PNG plus room for the JSON envelope.
+const MAX_RESPONSE_BYTES = Math.ceil(MAX_IMAGE_BYTES / 3) * 4 + 64 * 1024;
 
 export const generateImageSchema = z.object({
   prompt: z.string().trim().min(1).max(8000).describe("What to draw. Include subject, style, colors and any exact text."),
@@ -58,14 +60,15 @@ export type GeneratedImage = {
 };
 
 /** Calls the OpenAI Images API. The key is used only in this request header. */
-export async function requestOpenAiImage(input: GenerateImageInput & { apiKey: string }, fetchImpl: typeof fetch = fetch): Promise<GeneratedImage> {
+export async function requestOpenAiImage(input: GenerateImageInput & { apiKey: string }, fetchImpl: typeof fetch = fetch,
+  limits: { maxResponseBytes?: number } = {}): Promise<GeneratedImage> {
   const response = await fetchImpl(OPENAI_IMAGES_URL, {
     method: "POST",
     headers: { authorization: `Bearer ${input.apiKey}`, "content-type": "application/json" },
     body: JSON.stringify({ model: GENERATE_IMAGE_MODEL, prompt: input.prompt, size: input.size, quality: input.quality, n: 1 }),
     signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
   });
-  const text = await response.text();
+  const text = await readBoundedText(response, limits.maxResponseBytes ?? MAX_RESPONSE_BYTES);
   let body: Record<string, unknown> = {};
   try { body = record(JSON.parse(text)); } catch { /* reported below */ }
   if (!response.ok) {
@@ -94,6 +97,30 @@ export async function requestOpenAiImage(input: GenerateImageInput & { apiKey: s
       outputTokens: count(usage.output_tokens),
     },
   };
+}
+
+/** Reads at most `limit` bytes; a larger reply is cancelled before it is parsed or decoded. */
+async function readBoundedText(response: Response, limit: number): Promise<string> {
+  const declared = Number(response.headers.get("content-length"));
+  if (Number.isFinite(declared) && declared > limit) {
+    await response.body?.cancel().catch(() => undefined);
+    throw new ImageGenerationProviderError("OpenAI image generation returned a response that is too large", 502);
+  }
+  if (!response.body) return "";
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.byteLength;
+    if (size > limit) {
+      await reader.cancel().catch(() => undefined);
+      throw new ImageGenerationProviderError("OpenAI image generation returned a response that is too large", 502);
+    }
+    chunks.push(value);
+  }
+  return Buffer.concat(chunks).toString("utf8");
 }
 
 export class ImageGenerationProviderError extends Error {

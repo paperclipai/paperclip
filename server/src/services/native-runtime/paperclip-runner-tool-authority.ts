@@ -423,8 +423,9 @@ export class PaperclipRunnerToolAuthority {
     if (call.tool === GENERATE_IMAGE) {
       const input = generateImageSchema.safeParse(call.arguments);
       const receipt = record(record(run.resultJson?.imageToolReceipts)[toolCallKey(call.callId)]);
-      return input.success && receipt.state === "completed" && receipt.digest === toolInputDigest(input.data)
-        && Object.hasOwn(receipt, "result") ? { result: receipt.result } : null;
+      if (!input.success || receipt.digest !== toolInputDigest(input.data)) return null;
+      if (receipt.state === "charged") await this.#recordImageCharge(toolCallKey(call.callId), record(receipt.charge));
+      return receipt.state === "completed" && Object.hasOwn(receipt, "result") ? { result: receipt.result } : null;
     }
     if (call.tool === DOWNLOAD_ARTIFACT) {
       try { return { result: await this.#downloadArtifact(call.arguments, true) }; }
@@ -1213,15 +1214,17 @@ export class PaperclipRunnerToolAuthority {
     }
     const key = toolCallKey(callId);
     const digest = toolInputDigest(input);
-    const priorReceipt = (resultJson: unknown) => {
+    const priorReceipt = (resultJson: unknown): { result: unknown } | { charged: Record<string, unknown> } | undefined => {
       const receipt = record(record(record(resultJson).imageToolReceipts)[key]);
       if (!Object.keys(receipt).length) return undefined;
       if (receipt.digest !== digest) throw badRequest("This tool call ID was already used for a different image request");
       if (receipt.state === "completed" && Object.hasOwn(receipt, "result")) return { result: receipt.result };
       if (receipt.state === "failed") throw badRequest(String(receipt.error ?? "Image generation failed"));
+      if (receipt.state === "charged") return { charged: receipt };
       throw new SemanticToolOutcomeUnknownError("An earlier attempt of this image call did not finish. Call generate_image again with a new request if the image is still needed.");
     };
     const replay = priorReceipt(initial.run.resultJson);
+    if (replay && "charged" in replay) return this.#settleInterruptedImage(key, replay.charged);
     if (replay) return replay.result;
     const authorize = async () => {
       const current = await this.#boundContext({ tool: GENERATE_IMAGE });
@@ -1229,6 +1232,9 @@ export class PaperclipRunnerToolAuthority {
       const decision = await authorizationService(this.db).decide({ actor: this.#privacyActor(current.run), action: "issue:mutate",
         resource: { type: "issue", companyId: this.binding.companyId, issueId: current.issue.id } });
       if (!decision.allowed) throw forbidden(decision.explanation);
+      // #boundContext checks company and agent budgets; spending also needs the task's project.
+      if (current.issue.projectId && await budgetServiceInTransaction(this.db).getInvocationBlock(this.binding.companyId, this.binding.agentId,
+        { issueId: current.issue.id, projectId: current.issue.projectId })) throw forbidden("Company or budget authority unavailable");
       await assertNoCaseHandoffMutation(this.db, this.binding.runId, this.binding.issueId);
       return current;
     };
@@ -1249,6 +1255,7 @@ export class PaperclipRunnerToolAuthority {
     if (!(await setReceipt({ state: "started" }, true)).length) {
       const [row] = await this.db.select({ resultJson: heartbeatRuns.resultJson }).from(heartbeatRuns).where(eq(heartbeatRuns.id, this.binding.runId));
       const raced = priorReceipt(row?.resultJson);
+      if (raced && "charged" in raced) return this.#settleInterruptedImage(key, raced.charged);
       if (raced) return raced.result;
       throw new SemanticToolOutcomeUnknownError("This image call is already in progress.");
     }
@@ -1271,6 +1278,12 @@ export class PaperclipRunnerToolAuthority {
     const destination = generatedImageDestination(input.name);
     const result = { outcome: "completed", path: destination, contentType: "image/png", ...identity, model: image.model, size: input.size,
       costUsd: price.costUsd, guidance: "Saved in the workspace root. Move or copy it where the task needs it; use register_deliverable if the user should receive it." };
+    // The provider has charged. Persist the charge before any other step, so a
+    // failed save, accounting write or process crash can still settle it.
+    const charge = { model: image.model, providerRequestId: image.providerRequestId, usage: image.usage, costCents: price.costCents,
+      pricingProvenance: price.pricingProvenance, projectId: current.issue.projectId ?? null, destination, ...identity,
+      chargedAt: new Date().toISOString() };
+    await setReceipt({ state: "charged", charge });
     let saveError: unknown;
     try {
       await authorize();
@@ -1280,15 +1293,9 @@ export class PaperclipRunnerToolAuthority {
         await writeGeneratedImageLocally(this.binding.workspaceRoot!, destination, image.bytes);
       }
     } catch (error) { saveError = error; }
-    // The provider has charged for the image whether or not it was saved:
-    // always record the spend. The budget service evaluates hard-stops here.
-    await withOperationAccountingTransaction(this.db, this.binding.companyId, (tx, publications) => createCostEventInTransaction(tx, this.binding.companyId, {
-      agentId: this.binding.agentId, issueId: this.binding.issueId, projectId: current.issue.projectId ?? null, heartbeatRunId: this.binding.runId,
-      provider: "openai", biller: "openai", billingType: "metered_api", model: image.model, costStatus: "estimated",
-      inputTokens: image.usage.textInputTokens + image.usage.imageInputTokens, outputTokens: image.usage.outputTokens,
-      costCents: price.costCents, pricingProvenance: price.pricingProvenance, providerRequestId: image.providerRequestId,
-      occurredAt: new Date(), idempotencyKey: `image_gen:${this.binding.runId}:${key}`,
-    }, publications));
+    // Spend is recorded whether or not the image was saved. The budget
+    // service evaluates hard-stops here.
+    await this.#recordImageCharge(key, charge);
     if (saveError !== undefined) {
       if (!(saveError instanceof SemanticToolOutcomeUnknownError)) {
         await setReceipt({ state: "failed", error: "The image was generated but could not be saved to the workspace" }).catch(() => undefined);
@@ -1299,6 +1306,34 @@ export class PaperclipRunnerToolAuthority {
     await setReceipt({ state: "completed", result });
     await audit("completed", { destination, ...identity, costCents: price.costCents });
     return result;
+  }
+
+  async #recordImageCharge(key: string, charge: Record<string, unknown>) {
+    const usage = record(charge.usage);
+    const tokens = (value: unknown) => typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : 0;
+    // The idempotency key makes a replayed settlement record the charge once.
+    await withOperationAccountingTransaction(this.db, this.binding.companyId, (tx, publications) => createCostEventInTransaction(tx, this.binding.companyId, {
+      agentId: this.binding.agentId, issueId: this.binding.issueId, projectId: typeof charge.projectId === "string" ? charge.projectId : null,
+      heartbeatRunId: this.binding.runId, provider: "openai", biller: "openai", billingType: "metered_api", model: String(charge.model),
+      costStatus: "estimated", inputTokens: tokens(usage.textInputTokens) + tokens(usage.imageInputTokens), outputTokens: tokens(usage.outputTokens),
+      costCents: String(charge.costCents), pricingProvenance: charge.pricingProvenance as never,
+      providerRequestId: typeof charge.providerRequestId === "string" ? charge.providerRequestId : null,
+      // The stored charge time keeps the receipt identical across settlement replays.
+      occurredAt: typeof charge.chargedAt === "string" && !Number.isNaN(Date.parse(charge.chargedAt)) ? new Date(charge.chargedAt) : new Date(0),
+      idempotencyKey: `image_gen:${this.binding.runId}:${key}`,
+    }, publications));
+  }
+
+  /** An interrupted call was paid for but not confirmed saved: record the spend, then settle it as failed. */
+  async #settleInterruptedImage(key: string, receipt: Record<string, unknown>): Promise<never> {
+    const charge = record(receipt.charge);
+    await this.#recordImageCharge(key, charge);
+    const message = `An earlier attempt generated the image but did not confirm saving it. Check whether ${String(charge.destination)} exists in the workspace before generating another.`;
+    await this.db.update(heartbeatRuns).set({
+      resultJson: sql`jsonb_set(coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb), '{imageToolReceipts}',
+        coalesce(${heartbeatRuns.resultJson} -> 'imageToolReceipts', '{}'::jsonb) || ${JSON.stringify({ [key]: { ...receipt, state: "failed", error: message } })}::jsonb)`,
+    }).where(and(eq(heartbeatRuns.id, this.binding.runId), eq(heartbeatRuns.companyId, this.binding.companyId)));
+    throw badRequest(message);
   }
 
   async #readToolResult(value: unknown): Promise<unknown> {
