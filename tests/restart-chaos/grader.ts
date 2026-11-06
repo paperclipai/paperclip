@@ -68,6 +68,9 @@ export function gradeR2(record: TaskRecord, oracle: OracleResult): RuleResult {
   const last = lastReachable(record);
   if (!last) return { verdict: "fail", detail: "no_reachable_sample" };
   if (last.interruption?.workspaceFailure) return { verdict: "fail", detail: `workspace_failure_visible_at_rest: ${last.interruption.workspaceFailure}` };
+  if (record.preFaultSnapshotError) {
+    return { verdict: "fail", detail: `pre_fault_snapshot_failed: durability not checked (${record.preFaultSnapshotError})` };
+  }
   if (record.lostFiles?.length) {
     return { verdict: "fail", detail: `pre_fault_files_lost: ${record.lostFiles.slice(0, 10).join(",")}` };
   }

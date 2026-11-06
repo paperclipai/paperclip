@@ -82,6 +82,7 @@ describe("TaskObserver", () => {
     await observer.poll(observer.record.createdAt! + 1_000);
     await expect(observer.snapshotBeforeFault()).resolves.toBeUndefined();
     expect(observer.record.preFaultFiles).toBeNull();
+    expect(observer.record.preFaultSnapshotError).toMatch(/ENOENT/);
   });
 
   it("fires the planned fault once, after its offset", async () => {

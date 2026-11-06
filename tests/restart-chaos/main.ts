@@ -9,6 +9,7 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { ChaosApi } from "./api.js";
@@ -87,7 +88,9 @@ async function main(): Promise<number> {
     const lab = await seedChaosLab({ api, env: plan.options.env, adapters: [...new Set(plan.tasks.map(task => task.adapter))],
       concurrency: plan.options.concurrency, budgetCents: plan.options.budgetCents,
       fixtureRoot: path.join(supervisor.paths.temporaryRoot, "fixtures"), waveId: plan.waveId, timeline });
-    const observers = plan.tasks.map(task => new TaskObserver(task, api, lab, timeline, supervisor));
+    // The instance root holds the secrets master key and the database: oracle code may not read it.
+    const protectedRoots = [os.homedir(), supervisor.paths.temporaryRoot, resultsRoot];
+    const observers = plan.tasks.map(task => new TaskObserver(task, api, lab, timeline, supervisor, protectedRoots));
     const pending = [...observers];
     const active: TaskObserver[] = [];
     const lastPoll = new Map<TaskObserver, number>();

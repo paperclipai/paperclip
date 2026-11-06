@@ -137,6 +137,12 @@ describe("R1–R6 grading on fixture timelines", () => {
     expect(gradeTask(record(done, { preFaultFiles: ["NOTES.md"], lostFiles: [] }), [fault], 600_000, oracle()).rules.R2.verdict).toBe("pass");
   });
 
+  it("fails R2 visibly when the pre-fault snapshot could not run", () => {
+    const done = [sample(90_000, "done", [run("r1", "succeeded", 1_000, 80_000)])];
+    const unchecked = record(done, { preFaultSnapshotError: "EACCES" });
+    expect(gradeTask(unchecked, [fault], 600_000, oracle()).rules.R2.detail).toMatch(/^pre_fault_snapshot_failed/);
+  });
+
   it("allows outage time on top of the budget", () => {
     const k4: FaultReceipt = { ...fault, kind: "K4", holdMs: 240_000, readyAt: T0 + 290_000 };
     const late = record([sample(700_000, "done", [run("r2", "succeeded", 300_000, 690_000)])], { restAt: T0 + 700_000 });

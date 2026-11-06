@@ -23,6 +23,17 @@ describe("oracle sandbox", () => {
     expect(result.stderr).toMatch(/refused/);
   });
 
+  it.runIf(process.platform === "darwin")("protects an instance root that contains the workspace, except the workspace itself", async () => {
+    const instanceRoot = await temp("restart-chaos-instance-");
+    await writeFile(path.join(instanceRoot, "master.key"), "canary-master-key\n");
+    const workspace = path.join(instanceRoot, "fixtures", "chaos-sandbox");
+    await createFixtureRepository(workspace, 1);
+    const leak = await runOracleCommand(["/bin/cat", path.join(instanceRoot, "master.key")], workspace, { protectedRoots: [instanceRoot] });
+    expect(leak.stdout).not.toContain("canary-master-key");
+    const greet = await runOracleCommand(["python3", "-m", "chaoscli", "greet", "chaos"], workspace, { protectedRoots: [instanceRoot] });
+    expect(greet.stdout.trim()).toBe("hello, chaos");
+  }, 60_000);
+
   it.runIf(process.platform === "darwin")("keeps agent code away from protected files but runs the fixture tests", async () => {
     const secretRoot = await temp("restart-chaos-secret-");
     await writeFile(path.join(secretRoot, ".secrets"), "OPENAI_API_KEY=canary-value\n");

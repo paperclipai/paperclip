@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { readdir, readFile } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { ChaosApiError, type ChaosApi } from "./api.js";
 import { ACTIVE_RUN_STATUSES, isStalledSample, STALL_LIMIT_MS } from "./grader.js";
@@ -83,7 +84,9 @@ export class TaskObserver {
   done = false;
 
   constructor(readonly plan: TaskPlan, private readonly api: ChaosApi, private readonly lab: ChaosLab,
-    private readonly timeline: Timeline, private readonly supervisor: { serverReady: boolean; faultInProgress: boolean }) {
+    private readonly timeline: Timeline, private readonly supervisor: { serverReady: boolean; faultInProgress: boolean },
+    /** Paths oracle commands may not read: the operator's home, the instance root (secrets key, database) and results. */
+    private readonly protectedRoots: readonly string[] = [os.homedir()]) {
     this.record = { plan, issueId: null, identifier: null, createdAt: null, launchError: null, samples: [], retry: null,
       restAt: null, finalStatus: null, deadlineAt: null, timedOut: false, followUp: null, faultIds: [], sweep: null,
       preFaultFiles: null, lostFiles: null };
@@ -142,12 +145,13 @@ export class TaskObserver {
   /** R2: remember which workspace files existed before the first fault hit this task. */
   async snapshotBeforeFault(): Promise<void> {
     if (this.record.preFaultFiles !== null || this.done) return;
-    // One task's snapshot failure must not end the wave: R2 then reports "not checked".
+    // One task's snapshot failure must not end the wave; R2 fails with the reason.
     try {
       const workspace = await this.workspacePath();
       if (workspace) this.record.preFaultFiles = await listWorkspaceFiles(workspace);
     } catch (error) {
-      this.timeline.add("pre_fault_snapshot_failed", { taskId: this.plan.taskId, error: error instanceof Error ? error.message : String(error) });
+      this.record.preFaultSnapshotError = error instanceof Error ? error.message : String(error);
+      this.timeline.add("pre_fault_snapshot_failed", { taskId: this.plan.taskId, error: this.record.preFaultSnapshotError });
     }
   }
 
@@ -295,7 +299,7 @@ export class TaskObserver {
         files[relative] = await readFile(path.join(workspacePath, relative), "utf8").catch(() => null);
       }
       // Agent-editable code: run it sandboxed, away from the operator's home directory.
-      for (const command of definition.collect.commands) commands[command.name] = await runOracleCommand(command.argv, workspacePath);
+      for (const command of definition.collect.commands) commands[command.name] = await runOracleCommand(command.argv, workspacePath, { protectedRoots: this.protectedRoots });
     }
     return {
       issueStatus: issue?.status ?? this.record.finalStatus,
