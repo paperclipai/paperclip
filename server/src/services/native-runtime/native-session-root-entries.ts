@@ -18,7 +18,7 @@ export const NATIVE_CONTINUITY_STATE_ENTRIES: readonly string[] = [
   "failover-backups",
   "provider-pack-authority.json",
   // Runner transport: each cold authority rotation archives the settled prior
-  // epoch here (rotateLocalAuthorityEpoch/rotateExternalAuthorityEpoch).
+  // epoch here (rotateAuthorityEpoch).
   "authority-epochs",
   // Runner transport: execution-owned launch preparation keyed by identity.
   "launch-preparation.json",
