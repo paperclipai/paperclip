@@ -14,7 +14,7 @@ function positiveCredentialRequest(clause: string, hasKeyContext: boolean, needs
   const match = request.exec(clause) ?? (hasKeyContext ? carried.exec(clause) : null);
   if (!match) return false;
   const before = clause.slice(0, match.index).trim();
-  return !/(?:\b(?:do|should|must|can|could|will|would)\s+not|\bdon.t|\bnever|\bnot)\s*$/i.test(before)
+  return !/(?:\b(?:do|should|must|can|could|will|would)\s+not(?:\s+ask\s+(?:you\s+)?to)?|\bdon.t|\bnever|\bnot)\s*$/i.test(before)
     && !/^\s*(?:please\s+)?(?:do not|don.t|never|you (?:should|must) not)\s+(?:(?:paste|send|share|provide|enter)\s*(?:,|or|and)\s*)*$/i.test(before);
 }
 /** Warnings do not authorize a later solicitation. Each imperative clause is
@@ -75,6 +75,7 @@ export function unsafeCredentialTransfer(text:string):boolean {
     ??(context?part.slice(request.index+request[0].length).match(/^\s+(?:it|that|the value)\b(.*)$/i):null);
    if(!object)continue;
    const destination=object[1]!;
+   if(/\bonly\s+(?:an?\s+)?human\s+(?:board\s+)?operator\s+(?:can|may)\s*$/i.test(prefix.trim())&&!destination.trim())continue;
    if(/^\s+(?:name|alias|identifier|label)\b/i.test(destination)&&!/\bvalue\b/i.test(destination))continue;
    if(/^\s+reference\b/i.test(destination)&&!/\b(?:value|key|credential|token|secret|password)\b/i.test(destination))continue;
    if(secureDestination.test(destination)||secureBefore(partStart+request.index)&&/^\s+(?:only\s+)?(?:there|on that page)\s*$/i.test(destination))continue;

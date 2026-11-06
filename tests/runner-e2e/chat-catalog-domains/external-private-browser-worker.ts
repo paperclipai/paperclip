@@ -1,3 +1,4 @@
+import {canonicalCompanySecretKey,validCompanySecretMetadata} from "./external-company-secret-confirmation.js";
 import { personalSecretEntryDialog } from "./external-personal-secret-entry-dialog.js";
 import { validDevicePrivateInput, type DevicePrivateInput } from "./external-device-private-contract.js";
 import { readFile, writeFile } from "node:fs/promises";
@@ -6,7 +7,7 @@ import { chromium, test, type Cookie } from "@playwright/test";
 import { validGrokRoutinePrivateInput, matchesConfiguredGrokRoutine, type GrokRoutinePrivateInput } from "./external-grok-private-contract.js";
 import { validSlackIdentityInput, validSlackWizardIdentityInput, matchingSlackIdentityPreview, type SlackIdentityPrivateInput } from "./external-slack-identity-contract.js";
 import { validSlackSetupPrivate, type SlackSetupPrivateInput } from "./external-slack-setup-private-contract.js";
-interface Request { mode: "secure-key" | "canary" | "gateway-token-rotation" | "company-secret-create" | "personal-secret-create" | "grok-routine-configure" | "slack-identity-confirm" | "slack-endpoint-configure" | "slack-wizard-confirm" | "slack-wizard-resume" | "slack-endpoint-reconnect" | "device-approve" | "device-expired"; device?: DevicePrivateInput; slackSetup?:SlackSetupPrivateInput; slackIdentity?:SlackIdentityPrivateInput; grok?:GrokRoutinePrivateInput; companyId?:string; personal?:{definitionId:string;userId:string;viaMySecrets?:boolean}; gateway?: { id: string; oldTokenId: string; otherToken: string; endpointPath: string; readName: string }; baseURL: string; setupURL: string; providerURL: string; credential: string; cookies: Cookie[]; executablePath?: string; channel?: string }
+interface Request { mode: "secure-key" | "canary" | "gateway-token-rotation" | "company-secret-create" | "personal-secret-create" | "grok-routine-configure" | "slack-identity-confirm" | "slack-endpoint-configure" | "slack-wizard-confirm" | "slack-wizard-resume" | "slack-endpoint-reconnect" | "device-approve" | "device-expired"; device?: DevicePrivateInput; slackSetup?:SlackSetupPrivateInput; slackIdentity?:SlackIdentityPrivateInput; grok?:GrokRoutinePrivateInput; companyId?:string; companyMetadata?:{name?:string;key?:string}; personal?:{definitionId:string;userId:string;viaMySecrets?:boolean}; gateway?: { id: string; oldTokenId: string; otherToken: string; endpointPath: string; readName: string }; baseURL: string; setupURL: string; providerURL: string; credential: string; cookies: Cookie[]; executablePath?: string; channel?: string }
 /** Separate Node process: no Playwright Test worker, API-step listener or artifact
  * recorder exists. This module never enables tracing, video or screenshots. */
 async function main() {
@@ -230,17 +231,23 @@ async function main() {
       return {processIsolation:true,testRunnerAttached:false,tracingEnabled:false,videoEnabled:false,apiStepRecorder:false,secretId:secret.id,secretUiVisible:true,humanSubmittedSecurely:true,storageClean};
     }
     if(input.mode === "company-secret-create"){
+      if(!validCompanySecretMetadata(input.companyMetadata))throw new Error("Invalid requested company secret metadata");
+      const requestedName=input.companyMetadata?.name??"Deployment API key",requestedKey=input.companyMetadata?.key;
       if(!input.companyId||!/^[a-f0-9-]{36}$/i.test(input.companyId)||!new URL(input.setupURL).pathname.endsWith("/company/settings/secrets"))throw new Error("Invalid finite company secret operation");
       await page.goto(input.setupURL,{waitUntil:"domcontentloaded"});await page.getByRole("button",{name:"New secret",exact:true}).click();
-      const dialog=page.getByRole("dialog",{name:"Create secret",exact:true});await dialog.getByLabel("Name",{exact:true}).fill("Deployment API key");
+      const dialog=page.getByRole("dialog",{name:"Create secret",exact:true});await dialog.getByLabel("Name",{exact:true}).fill(requestedName);
+      if(requestedKey){await dialog.getByRole("button",{name:"Edit",exact:true}).click();await dialog.getByLabel("Key",{exact:true}).fill(requestedKey);}
       await dialog.getByLabel("Provider",{exact:true}).selectOption("local_encrypted");
       await dialog.getByLabel("Value",{exact:true}).fill(input.credential);
       const created=page.waitForResponse(response=>new URL(response.url()).pathname===`/api/companies/${input.companyId}/secrets`&&response.request().method()==="POST"&&response.status()===201);
-      await dialog.getByRole("button",{name:"Create secret",exact:true}).click();const secret=await(await created).json() as {id:string};
+      await dialog.getByRole("button",{name:"Create secret",exact:true}).click();const response=await created,posted=response.request().postDataJSON() as {name?:string;key?:string};
+      if(posted.name!==requestedName||requestedKey&&posted.key!==requestedKey)throw new Error("Outgoing company secret metadata differs from the actual request");
+      const submittedKey=requestedKey??posted.key??requestedName,secret=await response.json() as {id:string;companyId:string;name:string;key:string;scope:string;status:string};
+      if(secret.companyId!==input.companyId||secret.scope!=="company"||secret.status!=="active"||secret.name!==requestedName||secret.key!==canonicalCompanySecretKey(submittedKey))throw new Error("Saved company secret metadata differs from the actual request");
       if(!/^[a-f0-9-]{36}$/i.test(secret.id))throw new Error("Invalid created secret identity");await dialog.waitFor({state:"hidden"});
-      await page.getByText("Deployment API key",{exact:true}).first().waitFor();
+      await page.getByText(requestedName,{exact:true}).first().waitFor();
       const storageClean=await page.evaluate(secret=>!JSON.stringify([Object.entries(localStorage),Object.entries(sessionStorage),document.body.innerText,location.href]).includes(secret),input.credential);
-      return {processIsolation:true,testRunnerAttached:false,tracingEnabled:false,videoEnabled:false,apiStepRecorder:false,secretId:secret.id,secretUiVisible:true,humanSubmittedSecurely:true,storageClean};
+      return {processIsolation:true,testRunnerAttached:false,tracingEnabled:false,videoEnabled:false,apiStepRecorder:false,secretId:secret.id,secretUiVisible:true,humanSubmittedSecurely:true,storageClean,requestedCompanyName:requestedName,requestedCompanyKey:submittedKey,savedCompanyName:secret.name,savedCompanyKey:secret.key};
     }
     if (input.mode === "gateway-token-rotation") {
       const g = input.gateway;

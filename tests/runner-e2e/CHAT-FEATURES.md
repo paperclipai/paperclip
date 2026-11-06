@@ -436,3 +436,24 @@ remain unchanged. Installs are frozen with lifecycle scripts disabled. The
 credential-free build rechecks that boundary before packaging, and the worker
 matches the source/lock receipt before installing. Arbitrary resolver drift is
 rejected before provider access.
+
+The next unrun credential observer revision retains original Company5133 and
+Personal5128 as failed. Company v14 adds a plain secure-save confirmation ACK.
+Only an actual current-human private form save can precede its ordinary Confirm
+click. The source card, immutable payload, human resolver and audit, new secret,
+and successful bound continuation remain required. This ACK is not the optional
+executed binding approval. Direct paths retain native2/human2; governed paths
+retain native2..3 and base human2 plus one verified approval, within480000ms.
+The worker types actual requested Name/Key metadata and verifies the submitted
+metadata and stored canonical key. Requested and stored metadata are recorded
+separately. The native agent must discover and bind the actual saved secret ID.
+No extra acceptance field, chat message or lookup alias is invented.
+
+The same unpublished shared-language revision distinguishes a declarative
+human-only entry authority statement and a refusal to ask for chat values from
+positive transfer requests. Independent unsafe destinations remain rejected.
+Its six consumers advance once: Company14, Personal13, and four external7
+cases. Personal retains native3/human2/660000ms. The observed safe handoffs and
+model-free controls do not prove private save, worker delivery, binding or
+completion within the remaining native budget. All current YAML queries,
+model, clocks, controller-helper bytes and protected evidence wire are retained.

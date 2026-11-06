@@ -2600,7 +2600,7 @@
       "chat-catalog-domains/identity-support.ts",
       "chat-scenarios/connection-setup.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.external.v6",
+    "oracleVersion": "paperclip.chat-catalog.external.v7",
     "expectedRunCount": 1,
     "turnTimeoutMs": 120000,
     "attemptTimeoutMs": 420000,
@@ -4892,6 +4892,7 @@
     "scenarioId": "secrets.configure-company-secret",
     "sourceFiles": [
       "chat-catalog-domains/external-company-secret.ts",
+      "chat-catalog-domains/external-company-secret-confirmation.ts",
       "chat-catalog-domains/external-secret-proposal.ts",
       "chat-catalog-domains/external-secret-question.ts",
       "chat-catalog-domains/external-secret-route.ts",
@@ -4913,7 +4914,7 @@
       "chat-flow.ts",
       "chat-scenarios/secrets.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.company-secret-controller-baseline.v13",
+    "oracleVersion": "paperclip.chat-catalog.company-secret-controller-baseline.v14",
     "expectedRunCount": 3,
     "minimumRunCount": 2,
     "expectedHumanMessageCount": 2,
@@ -4954,7 +4955,7 @@
       "../../packages/plugins/sdk/dist/index.js",
       "chat-scenarios/secrets.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.external.v6",
+    "oracleVersion": "paperclip.chat-catalog.external.v7",
     "expectedRunCount": 3,
     "expectedHumanMessageCount": 1,
     "minimumRunCount": 3,
@@ -4996,7 +4997,7 @@
       "../../ui/src/pages/secrets/SetMyUserSecretDialog.tsx",
       "chat-scenarios/secrets.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.personal-secret.v12",
+    "oracleVersion": "paperclip.chat-catalog.personal-secret.v13",
     "expectedRunCount": 3,
     "expectedHumanMessageCount": 2,
     "minimumRunCount": 3,
@@ -5028,7 +5029,7 @@
       "../../server/src/services/secret-proposal-notifications.ts",
       "chat-scenarios/secrets.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.external.v6",
+    "oracleVersion": "paperclip.chat-catalog.external.v7",
     "expectedRunCount": 4,
     "expectedHumanMessageCount": 4,
     "minimumRunCount": 4,
@@ -5076,7 +5077,7 @@
       "../../ui/src/pages/secrets/ImportFromVaultDialog.tsx",
       "chat-scenarios/secrets.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.external.v6",
+    "oracleVersion": "paperclip.chat-catalog.external.v7",
     "expectedRunCount": 3,
     "expectedHumanMessageCount": 2,
     "minimumRunCount": 2,

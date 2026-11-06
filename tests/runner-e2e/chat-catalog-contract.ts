@@ -252,6 +252,7 @@ export function chatCatalogHumanHistoryMatches(input: {
   return (!input.secretApproval || input.implementation.scenarioId === "secrets.configure-company-secret" && input.implementation.optionalCompanySecretBindingApproval === true)
     && (!input.questionAnswer || chatCatalogAllowsHumanQuestionAnswer(input.implementation.scenarioId ?? ""))
     && (!input.questionAnswer?.personalSecretConfirmation || input.implementation.scenarioId === "secrets.personal-secret")
+    && (!input.questionAnswer?.companySecretConfirmation || input.implementation.scenarioId === "secrets.configure-company-secret")
     && (!(input.questionAnswer?.companyEnvironmentNameAnswer||input.questionAnswer?.companySavedSecretNameAnswer) || input.implementation.scenarioId === "secrets.configure-company-secret")
     && validChatCatalogHumanCounts(input.implementation)
     && input.boundary.humanCommentIds.length === count
@@ -286,11 +287,11 @@ export function chatCatalogCompanyEnvironmentNameQuestion(q:{prompt:string;requi
   ||!/^[A-Za-z_][A-Za-z0-9_]{0,119}$/.test(answer)||!validation?.maxLength||validation.maxLength>120||validation.maxLength<answer.length||(validation.minLength??0)>answer.length||(validation.inputType!==undefined&&validation.inputType!=="text"))return false;
  try{return !validation.pattern||new RegExp(validation.pattern).test(answer);}catch{return false;}
 }
-export interface ChatCatalogExpectedHumanQuestionAnswer { interactionId: string; sourceRunId: string; userId: string; personalSecretConfirmation?: { definitionId: string; secretId: string; payloadHash: string }; companyEnvironmentNameAnswer?: { questionId: string; payloadHash: string; value: "DEPLOYMENT_API_KEY" }; companySavedSecretNameAnswer?: { questionId: string; payloadHash: string; value: string; secretId: string } }
+export interface ChatCatalogExpectedHumanQuestionAnswer { interactionId: string; sourceRunId: string; userId: string; personalSecretConfirmation?: { definitionId: string; secretId: string; payloadHash: string }; companySecretConfirmation?: { secretId: string; key: string; payloadHash: string }; companyEnvironmentNameAnswer?: { questionId: string; payloadHash: string; value: "DEPLOYMENT_API_KEY" }; companySavedSecretNameAnswer?: { questionId: string; payloadHash: string; value: string; secretId: string } }
 export interface ChatCatalogVerifiedHumanQuestionAnswer extends ChatCatalogExpectedHumanQuestionAnswer { continuationRunId: string; resolvedAt: string }
 export interface ChatCatalogHumanQuestionAudit {
   companyId?: string; entityId?: string; action?: string; actorType?: string; actorId?: string;
-  details?: Record<string, unknown> | null;
+  details?: Record<string, unknown> | null; createdAt?: string;
 }
 export function verifyChatCatalogHumanQuestionAnswer(input: {
   expected: ChatCatalogExpectedHumanQuestionAnswer; companyId: string; issueId: string; agentId: string;
@@ -298,8 +299,23 @@ export function verifyChatCatalogHumanQuestionAnswer(input: {
   personalSecrets?: Array<{ definition: { id: string }; secret: { id: string; companyId: string; scope: string; ownerUserId?: string | null; userSecretDefinitionId?: string | null; status: string; createdAt: string } | null }>;
   companySecrets?: Array<{id:string;companyId:string;scope:string;key:string;status:string;createdByUserId?:string|null;createdAt:string}>;
   interactions: Array<Partial<AskUserQuestionsInteraction>>; activity: ChatCatalogHumanQuestionAudit[];
-  runs: Array<{ id: string; companyId?: string; agentId: string; status: string; runtimeMode?: string; startedAt?: string | null; contextSnapshot?: Record<string, unknown> | null }>;
+  runs: Array<{ id: string; companyId?: string; agentId: string; status: string; runtimeMode?: string; exitCode?: number | null; startedAt?: string | null; contextSnapshot?: Record<string, unknown> | null }>;
 }): ChatCatalogVerifiedHumanQuestionAnswer | undefined {
+  if (input.expected.companySecretConfirmation) {
+    const b=input.expected,binding=b.companySecretConfirmation!,rows=input.interactions.filter(row=>row.id===b.interactionId),row=rows[0] as unknown as Partial<RequestConfirmationInteraction>|undefined;
+    const source=input.runs.find(run=>run.id===b.sourceRunId),continuations=input.runs.filter(run=>run.contextSnapshot?.interactionId===b.interactionId),continuation=continuations[0];
+    const secrets=input.companySecrets?.filter(secret=>secret.id===binding.secretId),secret=secrets?.[0],resolvedAt=Date.parse(String(row?.resolvedAt)),createdAt=Date.parse(String(row?.createdAt));
+    const audits=input.activity.filter(event=>event.action==="issue.thread_interaction_accepted"&&event.details?.interactionId===b.interactionId),audit=audits[0];
+    const saves=input.activity.filter(event=>event.action==="secret.created"&&event.entityId===binding.secretId),save=saves[0];
+    if(b.personalSecretConfirmation||b.companyEnvironmentNameAnswer||b.companySavedSecretNameAnswer||rows.length!==1||!row||row.kind!=="request_confirmation"||row.status!=="accepted"||row.companyId!==input.companyId||row.issueId!==input.issueId||row.sourceRunId!==b.sourceRunId||row.createdByAgentId!==input.agentId||row.createdByUserId||row.addresseeAgentId||(row.addresseeUserId!=null&&row.addresseeUserId!==b.userId)||!row.originCommentIds?.includes(input.canonicalComment.id)||b.userId!==input.canonicalComment.authorUserId||!chatCatalogHumanQuestionPolicies(row)||row.continuationPolicy!=="wake_assignee"||row.resolvedByUserId!==b.userId||row.resolvedByAgentId||row.result?.outcome!=="accepted"||row.result.resumeFailure||row.result.toolAction||row.result.secretProposal||row.dismissedAt
+      ||!row.payload||!requestConfirmationPayloadSchema.safeParse(row.payload).success||row.payload.target||row.payload.toolAction||row.payload.secretProposal||row.payload.connectionAuthorization||row.payload.qualityReview||createHash("sha256").update(JSON.stringify(row.payload)).digest("hex")!==binding.payloadHash
+      ||secrets?.length!==1||!secret||secret.companyId!==input.companyId||secret.scope!=="company"||secret.status!=="active"||secret.createdByUserId!==b.userId||secret.key!==binding.key||!/^[a-zA-Z0-9_.-]{1,120}$/.test(binding.key)||![createdAt,resolvedAt,Date.parse(secret.createdAt)].every(Number.isFinite)||Date.parse(secret.createdAt)<=createdAt||Date.parse(secret.createdAt)>resolvedAt
+      ||audits.length!==1||audit?.companyId!==input.companyId||audit.entityId!==input.issueId||audit.actorType!=="user"||audit.actorId!==b.userId||audit.details?.interactionKind!=="request_confirmation"||audit.details.interactionStatus!=="accepted"
+      ||saves.length!==1||save?.companyId!==input.companyId||save.actorType!=="user"||save.actorId!==b.userId||!Number.isFinite(Date.parse(String(save.createdAt)))||Date.parse(String(save.createdAt))<createdAt||Date.parse(String(save.createdAt))>resolvedAt
+      ||!source||source.companyId!==input.companyId||source.agentId!==input.agentId||source.status!=="succeeded"||source.exitCode!==0||source.runtimeMode!=="native"||source.contextSnapshot?.issueId!==input.issueId||source.contextSnapshot.commentId!==input.canonicalComment.id||!Number.isFinite(Date.parse(source.startedAt??""))||Date.parse(source.startedAt!)>createdAt
+      ||continuations.length!==1||!continuation||continuation.id===source.id||continuation.companyId!==input.companyId||continuation.agentId!==input.agentId||continuation.status!=="succeeded"||continuation.exitCode!==0||continuation.runtimeMode!=="native"||continuation.contextSnapshot?.issueId!==input.issueId||!Number.isFinite(Date.parse(continuation.startedAt??""))||Date.parse(continuation.startedAt!)<resolvedAt)return;
+    return {...b,continuationRunId:continuation.id,resolvedAt:new Date(resolvedAt).toISOString()};
+  }
   if (input.expected.personalSecretConfirmation) {
     const b = input.expected, binding = b.personalSecretConfirmation!, rows = input.interactions.filter(row => row.id === b.interactionId);
     const row = rows[0] as unknown as Partial<RequestConfirmationInteraction> | undefined;
@@ -307,7 +323,7 @@ export function verifyChatCatalogHumanQuestionAnswer(input: {
     const entries = input.personalSecrets?.filter(entry => entry.definition.id === binding.definitionId), secret = entries?.[0]?.secret;
     const audits = input.activity.filter(event => event.action === "issue.thread_interaction_accepted" && event.details?.interactionId === b.interactionId), audit = audits[0];
     const resolvedAt = Date.parse(String(row?.resolvedAt));
-    if (b.companyEnvironmentNameAnswer || b.companySavedSecretNameAnswer || rows.length !== 1 || !row || row.kind !== "request_confirmation" || row.status !== "accepted"
+    if (b.companySecretConfirmation || b.companyEnvironmentNameAnswer || b.companySavedSecretNameAnswer || rows.length !== 1 || !row || row.kind !== "request_confirmation" || row.status !== "accepted"
       || row.companyId !== input.companyId || row.issueId !== input.issueId || row.sourceRunId !== b.sourceRunId || row.createdByAgentId !== input.agentId || row.createdByUserId
       || (row.addresseeUserId != null && row.addresseeUserId !== b.userId) || row.addresseeAgentId || !row.originCommentIds?.includes(input.canonicalComment.id)
       || b.userId !== input.canonicalComment.authorUserId || !chatCatalogHumanQuestionPolicies(row) || row.continuationPolicy !== "wake_assignee"
@@ -366,20 +382,20 @@ export function verifyChatCatalogHumanQuestionAnswer(input: {
 }
 
 export interface ChatCatalogExpectedCompanySecretBindingApproval {
- interactionId:string;proposalId:string;sourceRunId:string;initialRunId:string;userId:string;secretId:string;targetAgentId:string;configPath:string;payloadHash:string;humanInputId:string;humanInputKind:"comment"|"question";
+ interactionId:string;proposalId:string;sourceRunId:string;initialRunId:string;userId:string;secretId:string;targetAgentId:string;configPath:string;payloadHash:string;humanInputId:string;humanInputKind:"comment"|"question"|"confirmation";humanInputPayloadHash?:string;humanInputSecretKey?:string;
 }
 export interface ChatCatalogVerifiedCompanySecretBindingApproval extends ChatCatalogExpectedCompanySecretBindingApproval {continuationRunId:string;resolvedAt:string}
 export function verifyChatCatalogCompanySecretBindingApproval(input:{
  scenarioId:string;expected:ChatCatalogExpectedCompanySecretBindingApproval;companyId:string;issueId:string;agentId:string;
  interactions:Array<Partial<RequestConfirmationInteraction|AskUserQuestionsInteraction>>;proposals:Array<Partial<import("../../packages/shared/src/types/secrets.js").SecretProposalView>>;activity:Array<ChatCatalogHumanQuestionAudit&{createdAt?:string}>;
  comments:Array<{id:string;companyId?:string;issueId?:string;authorUserId?:string;authorAgentId?:string;createdByRunId?:string;createdAt:string}>;
- secrets:Array<{id:string;companyId:string;scope:string;status:string;createdByUserId?:string|null;createdAt:string}>;
+ secrets:Array<{id:string;companyId:string;scope:string;status:string;key?:string;createdByUserId?:string|null;createdAt:string}>;
  bindings:Array<{secretId:string;targetType:string;targetId:string;configPath:string;versionSelector:string|number}>;
  runs:Array<{id:string;companyId?:string;agentId:string;status:string;runtimeMode?:string;startedAt?:string|null;contextSnapshot?:Record<string,unknown>|null}>;
 }):ChatCatalogVerifiedCompanySecretBindingApproval|undefined {
  const b=input.expected,row=input.interactions.find(q=>q.id===b.interactionId) as Partial<RequestConfirmationInteraction>|undefined,proposal=input.proposals.find(q=>q.id===b.proposalId),payload=row?.payload?.secretProposal;
  const first=input.runs.find(r=>r.id===b.initialRunId),source=input.runs.find(r=>r.id===b.sourceRunId),secret=input.secrets.find(r=>r.id===b.secretId);
- const human=b.humanInputKind==="comment"?input.comments.find(r=>r.id===b.humanInputId):undefined,question=b.humanInputKind==="question"?input.interactions.find(r=>r.id===b.humanInputId):undefined;
+ const human=b.humanInputKind==="comment"?input.comments.find(r=>r.id===b.humanInputId):undefined,question=b.humanInputKind!=="comment"?input.interactions.find(r=>r.id===b.humanInputId):undefined;
  const inputAt=Date.parse(String(human?.createdAt??question?.resolvedAt)),resolvedAt=Date.parse(String(row?.resolvedAt));
  const initialHuman=input.comments.find(c=>c.id===first?.contextSnapshot?.commentId),sourceAt=Date.parse(String(source?.startedAt)),cardAt=Date.parse(String(row?.createdAt)),firstAt=Date.parse(String(first?.startedAt));
  if(input.scenarioId!=="secrets.configure-company-secret"||![sourceAt,cardAt,firstAt,Date.parse(String(payload?.expiresAt))].every(Number.isFinite)||!requestConfirmationPayloadSchema.safeParse(row?.payload).success||!row||input.interactions.filter(q=>q.id===row.id).length!==1||row.kind!=="request_confirmation"||row.status!=="accepted"
@@ -392,7 +408,7 @@ export function verifyChatCatalogCompanySecretBindingApproval(input:{
   ||proposal.targetType!=="agent"||proposal.target?.id!==b.targetAgentId||proposal.configPath!==b.configPath||proposal.appliedBindingConfigPath!==b.configPath||proposal.originIssue?.id!==input.issueId||proposal.originRunId!==b.sourceRunId||proposal.proposedBy?.id!==input.agentId||proposal.resolvedByUserId!==b.userId
   ||!initialHuman||initialHuman.authorUserId!==b.userId||initialHuman.authorAgentId||initialHuman.createdByRunId||initialHuman.companyId!==input.companyId||initialHuman.issueId!==input.issueId||!first||first.companyId!==input.companyId||first.agentId!==input.agentId||first.status!=="succeeded"||first.runtimeMode!=="native"||first.contextSnapshot?.issueId!==input.issueId
   ||!secret||secret.companyId!==input.companyId||secret.scope!=="company"||secret.status!=="active"||secret.createdByUserId!==b.userId||!first||Date.parse(secret.createdAt)<=Date.parse(String(first.startedAt))||Date.parse(secret.createdAt)>=inputAt
-  ||!Number.isFinite(inputAt)||(human?(human.companyId!==input.companyId||human.issueId!==input.issueId||human.authorUserId!==b.userId||!!human.authorAgentId||!!human.createdByRunId):!question||question.kind!=="ask_user_questions"||question.sourceRunId!==b.initialRunId||question.createdByAgentId!==input.agentId||question.status!=="answered"||question.resolvedByUserId!==b.userId||question.companyId!==input.companyId||question.issueId!==input.issueId)
+  ||!Number.isFinite(inputAt)||(b.humanInputKind==="confirmation"?!verifyChatCatalogHumanQuestionAnswer({expected:{interactionId:b.humanInputId,sourceRunId:b.initialRunId,userId:b.userId,companySecretConfirmation:{secretId:b.secretId,key:b.humanInputSecretKey??"",payloadHash:b.humanInputPayloadHash??""}},companyId:input.companyId,issueId:input.issueId,agentId:input.agentId,canonicalComment:initialHuman!,interactions:input.interactions as Array<Partial<AskUserQuestionsInteraction>>,activity:input.activity,companySecrets:input.secrets.map(secret=>({...secret,key:secret.key??""})),runs:input.runs}):(human?(human.companyId!==input.companyId||human.issueId!==input.issueId||human.authorUserId!==b.userId||!!human.authorAgentId||!!human.createdByRunId):!question||question.kind!=="ask_user_questions"||question.sourceRunId!==b.initialRunId||question.createdByAgentId!==input.agentId||question.status!=="answered"||question.resolvedByUserId!==b.userId||question.companyId!==input.companyId||question.issueId!==input.issueId))
   ||!source||source.id===first.id||source.companyId!==input.companyId||source.agentId!==input.agentId||source.runtimeMode!=="native"||source.status!=="succeeded"||source.contextSnapshot?.issueId!==input.issueId
   ||source.contextSnapshot[b.humanInputKind==="comment"?"commentId":"interactionId"]!==b.humanInputId||Date.parse(String(source.startedAt))<inputAt||Date.parse(String(row.createdAt))<Date.parse(String(source.startedAt)))return;
  const continuations=input.runs.filter(r=>r.contextSnapshot?.interactionId===b.interactionId),run=continuations[0];

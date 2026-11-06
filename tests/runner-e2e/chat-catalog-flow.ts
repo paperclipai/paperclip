@@ -71,8 +71,8 @@ export async function runChatCatalogFlow(context: ChatCatalogContext) {
     if (expectedAnswer && evidence.issue && canonicalHuman) {
       const [interactions, activity, companySecrets, personalSecrets] = await Promise.all([
         input.api.get<AskUserQuestionsInteraction[]>(`/api/issues/${evidence.issue.id}/interactions`),
-        input.api.get<ChatCatalogHumanQuestionAudit[]>(`/api/issues/${evidence.issue.id}/activity`),
-        expectedAnswer.personalSecretConfirmation ? undefined : expectedAnswer.companySavedSecretNameAnswer ? input.api.get<NonNullable<Parameters<typeof verifyChatCatalogHumanQuestionAnswer>[0]["companySecrets"]>>(`/api/companies/${input.fixtures.company.id}/secrets`) : undefined,
+        expectedAnswer.companySecretConfirmation ? collectChatCatalogCompanySecretApprovalActivity(input.api,input.fixtures.company.id,evidence.issue.id) : input.api.get<ChatCatalogHumanQuestionAudit[]>(`/api/issues/${evidence.issue.id}/activity`),
+        expectedAnswer.personalSecretConfirmation ? undefined : (expectedAnswer.companySavedSecretNameAnswer || expectedAnswer.companySecretConfirmation) ? input.api.get<NonNullable<Parameters<typeof verifyChatCatalogHumanQuestionAnswer>[0]["companySecrets"]>>(`/api/companies/${input.fixtures.company.id}/secrets`) : undefined,
         expectedAnswer.personalSecretConfirmation ? input.api.get<NonNullable<Parameters<typeof verifyChatCatalogHumanQuestionAnswer>[0]["personalSecrets"]>>(`/api/companies/${input.fixtures.company.id}/me/user-secrets`) : undefined,
       ]);
       questionAnswer = verifyChatCatalogHumanQuestionAnswer({ expected: expectedAnswer, companyId: input.fixtures.company.id,
@@ -91,7 +91,7 @@ export async function runChatCatalogFlow(context: ChatCatalogContext) {
       ]);
       secretApproval=verifyChatCatalogCompanySecretBindingApproval({scenarioId:scenario.id,expected:expectedApproval,companyId:input.fixtures.company.id,issueId:evidence.issue.id,agentId:input.fixtures.agent.id,interactions,proposals,activity,secrets,bindings:usage.bindings,comments:evidence.comments as unknown as Parameters<typeof verifyChatCatalogCompanySecretBindingApproval>[0]["comments"],runs:evidence.runs});
     }
-    const humanAccounting = { basis: secretApproval ? "comments_and_verified_company_binding_approval" : expectedAnswer?.personalSecretConfirmation ? "comments_and_declared_personal_secure_confirmation" : expectedAnswer ? "comments_and_declared_credential_question_answer" : "comments", rawHumanCommentCount: human.length, verifiedHumanQuestionAnswerCount: questionAnswer ? 1 : 0,
+    const humanAccounting = { basis: secretApproval ? "comments_and_verified_company_binding_approval" : expectedAnswer?.companySecretConfirmation ? "comments_and_declared_company_secure_confirmation" : expectedAnswer?.personalSecretConfirmation ? "comments_and_declared_personal_secure_confirmation" : expectedAnswer ? "comments_and_declared_credential_question_answer" : "comments", rawHumanCommentCount: human.length, verifiedHumanQuestionAnswerCount: questionAnswer ? 1 : 0,
       accountedHumanActionCount: human.length + (questionAnswer ? 1 : 0) + (secretApproval ? 1 : 0), declaredHumanActionCount: (implementation!.expectedHumanMessageCount ?? 1) + (secretApproval ? 1 : 0),
       declaredMinimumHumanActionCount: implementation!.expectedHumanMessageCount ?? 1, declaredMaximumHumanActionCount:(implementation!.expectedHumanMessageCount ?? 1)+(implementation!.optionalCompanySecretBindingApproval===true?1:0), verifiedCompanySecretApprovalCount:secretApproval?1:0, companySecretApproval:secretApproval??null, expectedCompanySecretApprovalVerified:expectedApproval?!!secretApproval:null,
       questionAnswer: questionAnswer ?? null, expectedQuestionAnswerVerified: expectedAnswer ? !!questionAnswer : null };
