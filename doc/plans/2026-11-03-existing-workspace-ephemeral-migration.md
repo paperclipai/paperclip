@@ -289,6 +289,24 @@ manifest and suspended state. A concurrent turn, moved source, revoked stamp or
 changed owner defers that source. Unrelated executions continue unchanged.
 No lease, result, task or lifecycle state is rewritten to make a source eligible.
 
+Run the controller-only phase separately so it does not re-read provider
+archives that were already verified:
+
+```sh
+PAPERCLIP_NATIVE_HARNESS_PRESTAGE=true node --max-old-space-size=512 server/dist-runtime/native-harness-prestage.mjs --controllers-only
+```
+
+This finite entry adopts legacy controller checkpoints for successful
+retained sources whose finalizer is committed, has an accepted result, and has
+released its ownership. It locks only the source task and coordinator while
+reading and publishing the original controller state. Related queued/running
+work, checkout, failed sources, recovery state, or any remaining coordinator
+owner (including an expired owner) defers that source. Local controller and warm
+supervisor bytes are rechecked before commit; a changed source rolls back.
+Unrelated runs remain active. Existing controller checkpoint identity, artifact
+provenance, configuration and snapshot checks still apply. The `paperclip.native-controller-prestage.v1` counts describe this phase; neither successful prestaging
+nor zero deferred controller sources authorizes volume detachment.
+
 The final offline migration still stops all writers, verifies every durable
 object, imports deferred sources and all other data, and exports only its normal
 complete eligibility receipt. Qualification starts from the saved pristine
