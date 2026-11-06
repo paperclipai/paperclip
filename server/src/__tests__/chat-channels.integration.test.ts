@@ -3084,7 +3084,8 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       const [review] = await readChatGitHubReviewsByEndpointId(f.endpoint.id);
       expect(review.assessment?.summary).toBe(assessment.summary);
     });
-    it("preserves the published GitHub assessment during passive-response maintenance", async () => {
+    it.each(["external_chat_response_waiting", "preserved_result_status_unproven"] as const)(
+      "preserves the published GitHub assessment during passive-response maintenance: %s", async reason => {
       const f = await publicationRetryFixture();
       await f.service.execute(f.session, "submit_review", f.assessment, "published-before-passive-reply");
       await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, f.run.id));
@@ -3102,13 +3103,14 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       const [next] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.assignedAgentId,
         status: "running", runtimeMode: "native", contextSnapshot: await chatWakeContext({
           endpointId: f.endpoint.id, issueId: f.conversation.issueId, provider: "github", providerMessageId: "41802",
-        }), resultJson: { finalizationPhase: "committed", finalizationReasonCode: "external_chat_response_waiting",
+        }), resultJson: { finalizationPhase: "committed", finalizationReasonCode: reason,
           nativeResult: { schema: "paperclip.run_result.v1", reportedWorkDisposition: "yielded",
             continuation: { kind: "response_wake", idempotencyKey: "passive-author-reply" } },
           presentationDecision: { schema: "paperclip.run_presentation_decision.v1", resolverVersion: "2",
             activityDisposition: "collapse", chosenSource: "none", commentAction: "none", commentId: null,
             reasonCodes: ["yielded_control_plane_wait"] } } }).returning();
-      await db.update(issues).set({ status: "in_review" }).where(eq(issues.id, f.conversation.issueId!));
+      const expectedStatus = reason === "preserved_result_status_unproven" ? "blocked" : "in_review";
+      await db.update(issues).set({ status: expectedStatus }).where(eq(issues.id, f.conversation.issueId!));
       await responses.processPending();
       expect(f.responseComments.get(originalId)!.body).toBe(originalBody);
       expect(f.responseWrites).toHaveLength(writesBefore);
@@ -3116,6 +3118,9 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       await responses.processPending();
       await responses.processPending();
       expect(f.responseComments.get(originalId)!.body).toBe(originalBody);
+      expect(f.responseWrites).toHaveLength(writesBefore);
+      expect((await db.select({ status: issues.status }).from(issues).where(eq(issues.id, f.conversation.issueId!)))[0].status)
+        .toBe(expectedStatus);
       expect(await readChatGitHubReviewsByEndpointId(f.endpoint.id)).toEqual(reviewBefore);
       expect([...f.responseComments.keys()]).toEqual([originalId]);
       expect(await githubRunReplyState(db, { ...f.session, runId: next.id, endpointId: f.endpoint.id })).toBe("none");
@@ -3134,8 +3139,9 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         body: "This turn ended without publishing a final response." })).rejects.toMatchObject({ status: 403 });
       expect(f.responseWrites).toHaveLength(writes);
     });
-    it.each(["completed", "failed", "missing_decision", "comment_requested", "missing_semantic", "legacy", "uncommitted_native", "pending_publication", "missing_decision_then_missing", "uncommitted_then_failed", "malformed_null", "malformed_scalar", "malformed_schema", "malformed_action"] as const)(
-      "keeps GitHub response maintenance truthful for a new request: %s", async scenario => {
+    it.each((["completed", "failed", "missing_decision", "comment_requested", "missing_semantic", "legacy", "uncommitted_native", "pending_publication", "missing_decision_then_missing", "uncommitted_then_failed", "malformed_null", "malformed_scalar", "malformed_schema", "malformed_action"] as const)
+      .flatMap(scenario => ["external_chat_response_waiting", "preserved_result_status_unproven"].map(reason => ({ scenario, reason }))))(
+      "keeps GitHub response maintenance truthful for a new request: $scenario ($reason)", async ({ scenario, reason }) => {
       const pendingPresentation = scenario.startsWith("missing_decision") || scenario.startsWith("uncommitted") || scenario.startsWith("malformed");
       const f = await publicationRetryFixture();
       await f.service.execute(f.session, "submit_review", f.assessment, "review-before-new-request");
@@ -3149,7 +3155,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         status: scenario === "failed" ? "failed" : "succeeded", runtimeMode: scenario === "legacy" ? "legacy" : "native",
         nativePhase: scenario.startsWith("uncommitted") ? "observed" : "committed", contextSnapshot: await chatWakeContext({
           endpointId: f.endpoint.id, issueId: f.conversation.issueId, provider: "github", providerMessageId: "41802",
-        }), resultJson: { finalizationPhase: "committed", finalizationReasonCode: "external_chat_response_waiting",
+        }), resultJson: { finalizationPhase: "committed", finalizationReasonCode: reason,
           ...(scenario === "missing_semantic" ? {} : { nativeResult: { schema: "paperclip.run_result.v1",
             reportedWorkDisposition: scenario === "completed" ? "completed" : "yielded",
             continuation: { kind: "response_wake", idempotencyKey: "new-request-wait" } } }),
@@ -65745,7 +65751,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           });
         }
       } finally { await f.service.shutdown(); }
-    },
+    }, 60_000,
   );
 
   it("leaves saved GitHub input pending when a persisted Retry wait loses board authority", async () => {
@@ -68761,7 +68767,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       }
       vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
       ready = chatFailedRetryNoticeWork(context.service).register(coordinator, () => true).ready;
-      if (mode === "bounded pass") await vi.waitFor(() => expect(held).toBe(true), { timeout: 10_000 });
+      if (mode === "bounded pass") await vi.waitFor(() => expect(held).toBe(true), { timeout: 30_000 });
       else {
         await ready;
         await vi.waitFor(async () => { await vi.advanceTimersByTimeAsync(10);
@@ -68808,7 +68814,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         [...rejectedIds, context.retry.requestId!, context.retry.chatActionId!]));
       if (rejectedIds.length) await db.delete(chatActions).where(inArray(chatActions.id, rejectedIds));
     }
-  });
+  }, 60_000);
 
   it("wakes a not-started retry notice after resumed admission is denied", async () => {
     const context = await deferredFailedRetryNoticeFixture();

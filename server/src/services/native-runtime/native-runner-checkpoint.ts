@@ -4,6 +4,7 @@ import { checkpointDb, heartbeatRuns, issues, nativeRunFinalizations, nativeRunn
 import { inspectDurablePrpCheckpointHeader, inspectUnclaimedBootstrapCheckpoint, decodeDurablePrpCheckpoint, type DurablePrpCheckpoint, type DurablePrpControlPlane, type DurableRecoveryIdentity } from "../../vendor/paperclip-runner/index.js";
 import { createLocalEncryptedCipher } from "../../secrets/local-encrypted-provider.js";
 import { legacyControllerBootId } from "../legacy-controller-lease.js";
+import { assertNativeSourceCheckpointConsumer, lockSourceRecoveryCoordinators } from "./native-source-recovery-ownership.js";
 
 type Binding = { companyId: string; issueId: string; runId: string };
 export const NATIVE_CHECKPOINT_HEADER_INSPECTION_MAX_BYTES = 1024 * 1024;
@@ -85,6 +86,7 @@ export async function validateNativeRunnerCheckpointOwner(
   const activeOwner = owner.leaseOwner !== null && current.leaseOwner === owner.leaseOwner
     && current.leaseExpiresAt !== null && current.leaseExpiresAt > new Date(owned.now);
   if (!activeOwner) {
+    await assertNativeSourceCheckpointConsumer(tx, owner);
     const [task] = await tx.select({ executionRunId: issues.executionRunId }).from(issues)
       .where(and(eq(issues.companyId, owner.companyId), eq(issues.id, owner.issueId)));
     const [successor] = task?.executionRunId && task.executionRunId !== owner.runId
@@ -119,6 +121,10 @@ export function nativeRunnerCheckpointWriter(db: Db, owner: NativeRunnerCheckpoi
     if (checkpoint.runId !== owner.runId) throw new Error("native_runner_checkpoint_binding_mismatch");
     const changed = encryptParts(owner, checkpoint.changedRecords);
     await persistenceDb.transaction(async tx => {
+      if (owner.runId !== owner.authorityRunId) {
+        await lockSourceRecoveryCoordinators(tx, owner.companyId, [owner.runId, owner.authorityRunId]);
+        await assertNativeSourceCheckpointConsumer(tx, owner, checkpoint);
+      }
       await assertNativeRunnerCheckpointOwner(tx, owner, checkpoint.workCommandIds.some(id => !previousWork.has(id)));
       if (checkpoint.predecessor) {
         const [prior] = await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(

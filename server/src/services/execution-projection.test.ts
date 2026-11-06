@@ -38,6 +38,16 @@ const project = (
 ) => projectExecution(r, c, pending, undefined, now);
 
 describe("execution truth projection", () => {
+  it("offers Stop for every live run, including a long-silent native turn", () => {
+    const silentSince = new Date(now.getTime() - 35 * 60_000);
+    const silent = run({ lastUsefulActionAt: silentSince, startedAt: silentSince });
+    expect(project(silent)).toMatchObject({ phase: "working", canStop: true });
+    expect(project(run({ runtimeMode: "legacy" }), undefined).canStop).toBe(true);
+    expect(projectExecution(run({ status: "queued", startedAt: null }), undefined, [], undefined, now).canStop).toBe(true);
+    for (const status of ["succeeded", "cancelled", "timed_out", "failed"] as const) {
+      expect(project(run({ status }), undefined).canStop).toBe(false);
+    }
+  });
   it("shows maintenance only for admission that has not started", () => {
     startTaskDrain();
     try {
@@ -100,6 +110,15 @@ describe("execution truth projection", () => {
     expect(projectExecution(run({ runtimeMode: "legacy", status: "scheduled_retry", scheduledRetryReason: "ai_connection_busy",
       scheduledRetryAttempt: 12, contextSnapshot: { failureRetriesBeforeAiConnectionWait: 0 } }), undefined, [], undefined, now))
       .toMatchObject({ label: "Waiting for AI subscription", phase: "retry_scheduled", attempt: 1, recoveryOwner: null });
+  });
+  it("shows a provider usage limit wait with its reset time", () => {
+    const scheduledRetryAt = new Date("2026-11-05T13:47:50.375Z");
+    expect(projectExecution(run({ runtimeMode: "native", status: "scheduled_retry", scheduledRetryReason: "ai_connection_pool_wait",
+      scheduledRetryAt, scheduledRetryAttempt: 3, contextSnapshot: { wakeReason: "provider_limit_retry", failureRetriesBeforeAiConnectionWait: 0 } }),
+    undefined, [], undefined, now)).toMatchObject({
+      label: "Waiting for usage limit reset", phase: "retry_scheduled", attempt: 1, recoveryOwner: null,
+      nextAction: expect.stringContaining(scheduledRetryAt.toISOString()),
+    });
   });
   it("shows a workspace wait without presenting its deferral count as failed attempts", () => {
     expect(projectExecution(run({ runtimeMode: "legacy", status: "scheduled_retry", scheduledRetryReason: "workspace_busy",

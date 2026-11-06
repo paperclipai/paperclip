@@ -42,7 +42,9 @@ const support = await getEmbeddedPostgresTestSupport();
         title: "Intermediate task", assigneeAgentId: f.agentId, executionPolicy: f.policy }).returning();
       f.input.parentId = parent.id;
     }
-    const input = scenario === "omitted_policy" ? { ...f.input, executionPolicy: undefined } : f.input;
+    const baseInput = scenario === "omitted_policy" ? { ...f.input, executionPolicy: undefined } : f.input;
+    // Descendant trust is the subject here, so keep the deeper placement (board-style nesting).
+    const input = scenario === "descendant" ? { ...baseInput, parentDepthPolicy: "allow_nested" as const } : baseInput;
     await expect(issueService(db).create(f.companyId, input)).resolves.toMatchObject({
       parentId: f.input.parentId, executionWorkspaceId: f.workspace.id,
     });
