@@ -29,6 +29,7 @@ import { resumeNativeWorkspaceSync } from "./native-runtime/native-workspace-syn
 import { claimNativeSessionResumptions } from "./native-runtime/native-finalization-reconciler.js";
 import { claimNativeRestartRecoveries } from "./native-runtime/native-restart-recovery.js";
 import { attemptNativeWorkspaceFinalization } from "./native-runtime/native-workspace-finalizer.js";
+import { addNestedRepositoryWorktree, nestedRepositoryBaseCandidates } from "./nested-repository-worktrees.js";
 import { managedProjectCheckoutName } from "./managed-project-checkout-name.js";
 import { captureGitWorkspaceContents, readManagedCheckoutContents } from "./git-workspace-contents.js";
 import { isolatedRemoteSourcePath } from "./isolated-remote-workspace-source.js";
@@ -660,10 +661,16 @@ describe.skipIf(!support.supported)("remote workspace migration", () => {
     const address = server.address(); if (!address || typeof address === "string") throw new Error("test server not bound");
     return { bare, repoUrl: `http://127.0.0.1:${address.port}/repository.git` };
   }
-  it.each(["present", "pruned", "retry", "source-excludes", "source-excludes-symlink", "missing-base", "missing-base-retry", "missing-base-uploaded-retry", "missing-base-changed-retry", "nested", "nested-retry", "nested-source-changed-retry", "unapproved-nested", "missing", "expired", "corrupt"])("preserves archived Git edits or refuses an unavailable restore point (%s)", async state => {
+  it.each(["present", "root-history", "pruned", "retry", "source-excludes", "source-excludes-symlink", "missing-base", "missing-base-retry", "missing-base-uploaded-retry", "missing-base-changed-retry", "nested", "nested-linked", "nested-retry", "nested-source-changed-retry", "unapproved-nested", "missing", "expired", "corrupt"])("preserves archived Git edits or refuses an unavailable restore point (%s)", async state => {
     const remote = state.startsWith("missing-base") ? await serveRepository() : null;
     const f = await gitArchiveFixture(remote?.repoUrl);
     if (remote) { await git(remote.bare, "fetch", f.base, "main:refs/heads/main"); await git(remote.bare, "update-server-info"); }
+    let rootHistory: string | undefined;
+    if (state === "root-history") {
+      await fs.writeFile(path.join(f.cwd, "history-only.txt"), "saved root history\n");
+      await git(f.cwd, "add", "history-only.txt"); await git(f.cwd, "commit", "-qm", "root history");
+      rootHistory = await git(f.cwd, "rev-parse", "HEAD"); await git(f.cwd, "reset", "--hard", f.commit);
+    }
     await fs.writeFile(path.join(f.cwd, "saved.txt"), "staged edit\n"); await git(f.cwd, "add", "saved.txt");
     await fs.writeFile(path.join(f.cwd, "saved.txt"), "unstaged edit\n");
     if (state.startsWith("source-excludes")) {
@@ -675,6 +682,7 @@ describe.skipIf(!support.supported)("remote workspace migration", () => {
     }
     const sourceExcludes = state.startsWith("source-excludes") ? await fs.readFile(path.join(f.base, ".git", "info", "exclude")) : null;
     const captured = (await captureRestorePoint({ cwd: f.cwd, upstreamCommits: [f.upstream] }))!;
+    if (rootHistory) expect(captured.manifest.preserved).toContain(rootHistory);
     const id = randomUUID(), generation = 1, sealed = await sealRestorePoint(captured.payload,
       { companyId: f.companyId, workspaceId: f.workspaceId, restorePointId: id, generation });
     const objectKey = `${f.companyId}/git-restore-points/${f.workspaceId}/${generation}/${id}.pcrp`;
@@ -691,11 +699,28 @@ describe.skipIf(!support.supported)("remote workspace migration", () => {
       await git(sourceCwd, "add", "."); await git(sourceCwd, "commit", "-qm", "nested source");
       const source = { id: randomUUID(), repoUrl: pathToFileURL(sourceCwd).href, repoRef: "main", cwd: sourceCwd };
       const name = managedProjectCheckoutName(source), nestedCwd = path.join(f.cwd, ".paperclip-repositories", name);
-      await git(f.cwd, "clone", source.repoUrl, nestedCwd); await git(nestedCwd, "checkout", "--detach");
+      let nestedPoint;
+      if (state === "nested-linked") {
+        const [base] = nestedRepositoryBaseCandidates({ companyId: f.companyId, projectId: f.projectId, repoUrl: source.repoUrl });
+        await fs.mkdir(path.dirname(base!), { recursive: true }); await git(root, "clone", source.repoUrl, base!);
+        await fs.mkdir(path.dirname(nestedCwd), { recursive: true });
+        await addNestedRepositoryWorktree({ base: base!, cwd: nestedCwd, repoUrl: source.repoUrl, repoRef: "main" });
+        await fs.writeFile(path.join(nestedCwd, "nested.txt"), "nested staged edit\n"); await git(nestedCwd, "add", "nested.txt");
+        await fs.writeFile(path.join(nestedCwd, "nested.txt"), "nested unstaged edit\n");
+        const captured = (await captureRestorePoint({ cwd: nestedCwd, upstreamCommits: [await git(sourceCwd, "rev-parse", "HEAD")] }))!;
+        const id = randomUUID(), generation = 1, sealed = await sealRestorePoint(captured.payload,
+          { companyId: f.companyId, workspaceId: f.workspaceId, restorePointId: id, generation });
+        const objectKey = `${f.companyId}/git-restore-points/${f.workspaceId}/${generation}/checkouts/${name}/${id}.pcrp`;
+        await storage.putFile({ companyId: f.companyId, namespace: "git-restore-points", objectKey,
+          originalFilename: null, contentType: "application/octet-stream", body: sealed.ciphertext });
+        nestedPoint = { schema: "paperclip.git-restore-point.v1" as const, id, generation, objectKey, byteSize: sealed.ciphertext.length,
+          sha256: sealed.sha256, key: sealed.key, head: captured.manifest.head, index: captured.manifest.index,
+          worktree: captured.manifest.worktree, ignored: captured.manifest.ignored, modes: captured.manifest.modes, headOnRemote: true };
+      } else { await git(f.cwd, "clone", source.repoUrl, nestedCwd); await git(nestedCwd, "checkout", "--detach"); }
       await fs.mkdir(path.join(nestedCwd, ".claude"));
       await fs.writeFile(path.join(nestedCwd, ".claude", "settings.local.json"), '{"permissions":{"allow":["Read"]}}');
       contents = await captureGitWorkspaceContents(f.cwd, { companyId: f.companyId, workspaceId: f.workspaceId },
-        [await readManagedCheckoutContents(nestedCwd, name, source)]);
+        [{ ...await readManagedCheckoutContents(nestedCwd, name, source), ...(nestedPoint ? { restorePoint: nestedPoint } : {}) }]);
       if (state !== "unapproved-nested") await db.insert(projectWorkspaces).values({ ...source, companyId: f.companyId, projectId: f.projectId, name: "Nested source" });
     }
     await db.update(executionWorkspaces).set({ status: "archived", closedAt: new Date(), metadata: {
@@ -808,8 +833,19 @@ describe.skipIf(!support.supported)("remote workspace migration", () => {
     await loadWorkspaceSnapshotArchive({ storage, reference: ref!, targetPath: archivePath });
     await restoreRemoteWorkspaceArchive({ archivePath, targetDir, expectedManifestDigest: ref!.manifestDigest });
     expect(await git(targetDir, "rev-parse", "HEAD")).toBe(f.commit);
+    if (rootHistory) {
+      await git(targetDir, "reflog", "expire", "--expire=now", "--all"); await git(targetDir, "gc", "--prune=now");
+      expect(await git(targetDir, "show", `${rootHistory}:history-only.txt`)).toBe("saved root history");
+    }
+    if (state === "nested-linked") {
+      await fs.rm(contents!.checkouts[0]!.worktree!.base, { recursive: true });
+      const nested = path.join(targetDir, ".paperclip-repositories", contents!.checkouts[0]!.name);
+      expect((await fs.lstat(path.join(nested, ".git"))).isDirectory()).toBe(true);
+      expect(await fs.readFile(path.join(nested, "nested.txt"), "utf8")).toBe("nested unstaged edit\n");
+      expect(await git(nested, "show", ":nested.txt")).toBe("nested staged edit");
+    }
     if (state.startsWith("nested")) {
-      expect(await fs.readFile(path.join(targetDir, ".paperclip-repositories", contents!.checkouts[0]!.name, "nested.txt"), "utf8")).toBe("nested source work\n");
+      if (state !== "nested-linked") expect(await fs.readFile(path.join(targetDir, ".paperclip-repositories", contents!.checkouts[0]!.name, "nested.txt"), "utf8")).toBe("nested source work\n");
       expect(JSON.parse(await fs.readFile(path.join(targetDir, ".paperclip-repositories", contents!.checkouts[0]!.name, ".claude/settings.local.json"), "utf8")))
         .toEqual({ permissions: { allow: ["Read"] } });
     }
