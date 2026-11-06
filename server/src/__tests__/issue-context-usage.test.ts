@@ -44,6 +44,9 @@ suite("issue context usage", () => {
         createdAt: new Date("2026-11-05T10:00:00Z") },
       { ...base, runId, seq: 2, eventType: "context.compacted", payload: prp(runId, "session-a", "context.compacted", {
         schema: "paperclip.context.compacted.v1", compactionId: "c-1" }), createdAt: new Date("2026-11-05T10:00:01Z") },
+      // The same compaction reported twice (item completion and thread/compacted) counts once.
+      { ...base, runId, seq: 5, eventType: "context.compacted", payload: prp(runId, "session-a", "context.compacted", {
+        schema: "paperclip.context.compacted.v1", compactionId: "c-1" }), createdAt: new Date("2026-11-05T10:00:01Z") },
       { ...base, runId, seq: 3, eventType: "item.completed", payload: prp(runId, "session-a", "item.completed", usage(38_200)),
         createdAt: new Date("2026-11-05T10:00:02Z") },
       { ...base, runId, seq: 4, eventType: "item.completed", payload: prp(runId, "session-a", "item.completed", { kind: "usage", usage: { total: {} } }),

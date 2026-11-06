@@ -40,6 +40,7 @@ import {
   shouldScrollIssueDetailToTopOnNavigation,
 } from "./IssueDetail";
 import { queryKeys } from "../lib/queryKeys";
+import { prefetchIssueDetailForNavigation } from "../lib/issueDetailCache";
 import { markCachedSession } from "../lib/cached-session";
 import { startPersistedQueryCache } from "../lib/persisted-query-cache";
 import { clearLocalInboxArchive, filterLocalInboxArchivedIssues, getLocalInboxArchiveIssueIds } from "../lib/inboxArchiveCache";
@@ -2499,6 +2500,32 @@ describe("IssueDetail", () => {
     await waitForAssertion(() => expect(mockIssuesApi.listComments.mock.calls.some(([ref, options]) => ref === "PAP-1"
       && options.order === "desc" && options.limit === 50 && options.after === (loaded ? rows[49].id : latest.id))).toBe(true));
     expect(mockActivityApi.runsForIssue).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])("opens a prefetched task without waiting on navigation reads (Coordinator: %s)", async coordinator => {
+    coordinatorPreference.enabled = coordinator;
+    queryClient.setDefaultOptions({ queries: { retry: false, staleTime: 30_000 } });
+    queryClient.setQueryData(["issues", "history-expanded", "PAP-1"], false);
+    mockIssuesApi.getCore.mockResolvedValue(createIssue({ description: "Prefetched instruction" }));
+    mockIssuesApi.recentComments.mockResolvedValue({
+      comments: [createIssueComment({ body: "Prefetched answer" })],
+      latestCommentId: "comment-1", oldestCommentId: "comment-1", hasMore: true,
+    });
+    await prefetchIssueDetailForNavigation(queryClient, "PAP-1");
+    mockIssuesApi.getCore.mockClear().mockReturnValue(createDeferred<Issue>().promise);
+    mockIssuesApi.recentComments.mockClear().mockReturnValue(createDeferred<IssueRecentComments>().promise);
+    mockIssuesApi.get.mockReturnValue(createDeferred<Issue>().promise);
+    await act(async () => renderIssueView());
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("Issue detail smoke");
+      expect(mockIssueChatThreadRender.mock.calls.at(-1)?.[0]).toMatchObject({
+        compactHistory: true, initialHistoryPending: false,
+        comments: [expect.objectContaining({ body: "Prefetched answer" })],
+      });
+    });
+    expect(mockIssuesApi.getCore).not.toHaveBeenCalled();
+    expect(mockIssuesApi.recentComments).not.toHaveBeenCalled();
+    expect(mockIssuesApi.listComments).not.toHaveBeenCalled();
   });
 
   it("reveals a cold task and recent exchange while full detail and older history are stalled", async () => {

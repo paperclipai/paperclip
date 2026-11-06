@@ -587,6 +587,32 @@ describe("PaperclipControlPlanePort conformance", () => {
     } finally { release(); await duplicate; }
   });
 
+  it("joins the deferred observer it saw on arrival even when that observer settles during the duplicate's persistence", async () => {
+    let release!: () => void, unlock!: () => void, locked!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const unlocked = new Promise<void>(resolve => { unlock = resolve; });
+    const lockHeld = new Promise<void>(resolve => { locked = resolve; });
+    let observed = 0, duplicates = 0;
+    const f = await terminalObserverFixture({ async onCommittedEvent() { observed++; await gate; },
+      async onDuplicateEvent() { duplicates++; } });
+    const signal = new AbortController().signal;
+    await f.port.appendEvent(f.event, { signal, deferPostCommitObservers: true });
+    const lock = db.transaction(async tx => {
+      await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(eq(heartbeatRuns.id, f.identity.runId)).for("update");
+      locked(); await unlocked;
+    });
+    let duplicate: Promise<unknown> | undefined;
+    try {
+      await lockHeld;
+      duplicate = f.port.appendEvent(f.event, { signal });
+      release(); await new Promise(resolve => setTimeout(resolve, 0));
+      unlock(); await lock;
+      expect(await duplicate).toMatchObject({ disposition: "duplicate" });
+      expect(observed).toBe(1);
+      expect(duplicates).toBe(0);
+    } finally { release(); unlock(); await lock; await duplicate?.catch(() => {}); }
+  });
+
   it.each(["company", "agent", "run", "session", "source", "failed", "unproven", "nonterminal", "unscoped"] as const)("does not grant deferred terminal authority to %s evidence", async fault => {
     const f = await terminalObserverFixture();
     const event = { ...f.event,

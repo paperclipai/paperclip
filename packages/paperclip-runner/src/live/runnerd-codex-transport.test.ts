@@ -3900,7 +3900,7 @@ it.each(["admission-only", "admission-only-mismatched-model", "complete", "api-k
     } else {
       await expect(probe).rejects.toThrow(mode === "missing-runtime" ? /ENOENT|unavailable|cleanup/i : mode === "admission-only-mismatched-model" || mode === "mismatched-model" || mode === "remote-mismatched-model" || mode === "model-refresh-error" || mode === "model-cleanup-error" || mode === "missing-model" ? /observed model|mismatched provider model/i : /timed out|cleanup|suspension/i);
       if (mode === "late-remote-release-error") {
-        expect(registrationReleased).toBe(true); expect(cleanupConfirmed).toBe(false);
+        await vi.waitFor(() => expect(registrationReleased).toBe(true)); expect(cleanupConfirmed).toBe(false);
         expect((await stat(runtimeDirectory)).isDirectory()).toBe(true);
       }
       if (mode === "model-refresh-error") {
@@ -5874,6 +5874,15 @@ it.each([undefined, "medium", "minimal", "xhigh", null])("rejects non-exact Pi t
 
 it("rejects Pi thinking settings on a different transport provider", () => {
   expect(() => createCapabilityRunnerdCodexTransport({ provider: "codex", piThinkingLevel: "low" })).toThrow(/only supported/);
+});
+
+describe("runnerd compaction turn payload", () => {
+  it("asks Codex for its own compaction and Claude for its /compact command", async () => {
+    const { runnerdCompactionTurnPayload } = await import("./runnerd-codex-transport.js");
+    expect(runnerdCompactionTurnPayload("codex")).toEqual({ compact: true });
+    expect(runnerdCompactionTurnPayload("acpx")).toEqual({ text: "/compact" });
+    expect(() => runnerdCompactionTurnPayload("opencode")).toThrow("not supported");
+  });
 });
 
 describe("cold process admission budget", () => {

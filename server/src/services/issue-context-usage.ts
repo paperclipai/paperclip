@@ -87,9 +87,12 @@ export async function issueContextUsage(
   const windowTokens = count(context?.windowTokens);
   if (usedTokens === null || windowTokens === null || windowTokens < 1) return null;
 
-  // Every compaction of the session, across all of its runs.
+  // Every compaction of the session, across all of its runs. A provider can
+  // report one compaction through more than one notification; count each id once.
   const [compactions] = await db
-    .select({ count: sql<number>`count(*)::int` })
+    .select({
+      count: sql<number>`count(distinct coalesce(${heartbeatRunEvents.payload} -> 'prpEvent' -> 'payload' ->> 'compactionId', ${heartbeatRunEvents.id}::text))::int`,
+    })
     .from(heartbeatRunEvents)
     .where(and(
       eq(heartbeatRunEvents.companyId, companyId),

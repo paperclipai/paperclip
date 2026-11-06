@@ -466,6 +466,8 @@ export { PluginEnvironmentRunnerIngressError, environmentRunnerIngressErrorData,
 export type { PluginEnvironmentRunnerIngressFailure } from "./environment-runner-ingress-error.js";
 export { ENVIRONMENT_TASK_ERROR_CODES, PluginEnvironmentTaskError, environmentTaskErrorCodeData, readEnvironmentTaskErrorCode } from "./environment-task-error.js";
 export type { PluginEnvironmentTaskErrorCode } from "./environment-task-error.js";
+export { WORKSPACE_OPERATION_FAILURE_REASONS, PluginWorkspaceOperationError, workspaceOperationErrorData, readWorkspaceOperationFailureReason } from "./workspace-operation-error.js";
+export type { PluginWorkspaceOperationFailureReason } from "./workspace-operation-error.js";
 export { PluginEnvironmentStopError, environmentStopErrorData, readEnvironmentStopFailure } from "./environment-stop-error.js";
 export type { PluginEnvironmentStopFailure, PluginEnvironmentStopFailureReason } from "./environment-stop-error.js";
 export { environmentResumeErrorData, readEnvironmentResumeErrorDiagnostic } from "./environment-resume-error.js";

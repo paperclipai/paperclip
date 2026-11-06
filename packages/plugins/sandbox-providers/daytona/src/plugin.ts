@@ -476,6 +476,14 @@ function toTimeoutSeconds(timeoutMs: number): number {
   return Math.max(1, Math.ceil(timeoutMs / 1000));
 }
 
+function resolveSyncTimeoutSeconds(config: DaytonaDriverConfig, minimumTimeoutMs: number | undefined): number {
+  if (minimumTimeoutMs !== undefined && (!Number.isSafeInteger(minimumTimeoutMs)
+    || minimumTimeoutMs <= 0 || minimumTimeoutMs > 30 * 60_000)) {
+    throw new RangeError("Invalid sandbox sync timeout");
+  }
+  return toTimeoutSeconds(Math.max(config.timeoutMs, minimumTimeoutMs ?? 0));
+}
+
 function resolveTimeoutMs(paramsTimeoutMs: number | undefined, config: DaytonaDriverConfig): number {
   return paramsTimeoutMs != null && Number.isFinite(paramsTimeoutMs) && paramsTimeoutMs > 0
     ? Math.trunc(paramsTimeoutMs)
@@ -3696,14 +3704,14 @@ const plugin = definePlugin(trackDaytonaHooks({
   // base64-over-exec fallback. Providers that do not define these keep the
   // byte-identical fallback.
   async onEnvironmentSyncIn(
-    params: PluginEnvironmentSyncInParams,
+    params: PluginEnvironmentSyncInParams & { minimumTimeoutMs?: number },
   ): Promise<PluginEnvironmentSyncResult> {
     if (!params.lease.providerLeaseId) {
       throw new Error("Daytona syncIn requires a provider lease ID.");
     }
     const config = parseDriverConfig(params.config);
     const remoteDir = resolveSyncRemoteDir(params.lease);
-    const timeoutSeconds = toTimeoutSeconds(config.timeoutMs);
+    const timeoutSeconds = resolveSyncTimeoutSeconds(config, params.minimumTimeoutMs);
     const scope = {
       driverKey: params.driverKey,
       companyId: params.companyId,
@@ -3716,12 +3724,13 @@ const plugin = definePlugin(trackDaytonaHooks({
     sandboxHandleWritableDirs.recordWritableTargets(scope, params.operations);
     return await withSandboxActivityGate(scope, async () => {
       const sandbox = await getSandbox(scope, { bypassTeardownGate: true });
-      await ensureSandboxStarted(sandbox, timeoutSeconds, scope);
+      await ensureSandboxStarted(sandbox, toTimeoutSeconds(config.timeoutMs), scope);
       const result = await performSyncIn({
         sandbox,
         operations: params.operations,
         remoteDir,
         timeoutSeconds,
+        commandTimeoutSeconds: toTimeoutSeconds(config.timeoutMs),
       });
       sandboxHandleCache.markFresh(scope);
       return result;
@@ -3730,14 +3739,14 @@ const plugin = definePlugin(trackDaytonaHooks({
 
   // Opt-in native outbound transfer. See onEnvironmentSyncIn.
   async onEnvironmentSyncOut(
-    params: PluginEnvironmentSyncOutParams,
+    params: PluginEnvironmentSyncOutParams & { minimumTimeoutMs?: number },
   ): Promise<PluginEnvironmentSyncResult> {
     if (!params.lease.providerLeaseId) {
       throw new Error("Daytona syncOut requires a provider lease ID.");
     }
     const config = parseDriverConfig(params.config);
     const remoteDir = resolveSyncRemoteDir(params.lease);
-    const timeoutSeconds = toTimeoutSeconds(config.timeoutMs);
+    const timeoutSeconds = resolveSyncTimeoutSeconds(config, params.minimumTimeoutMs);
     const scope = {
       driverKey: params.driverKey,
       companyId: params.companyId,
@@ -3749,7 +3758,7 @@ const plugin = definePlugin(trackDaytonaHooks({
       return await withSandboxActivityGate(scope, async () => {
         const sandbox = await withEnvironmentSyncTransferStep("sandbox_access", async () => {
           const resolved = await getSandbox(scope, { bypassTeardownGate: true });
-          await ensureSandboxStarted(resolved, timeoutSeconds, scope);
+          await ensureSandboxStarted(resolved, toTimeoutSeconds(config.timeoutMs), scope);
           return resolved;
         });
         const result = await performSyncOut({

@@ -3619,6 +3619,24 @@ impl CodexCommandExecutor {
             }
             Some(_) => return Err(DurableRunnerError::invalid("invalid turn.reasoningMode")),
         };
+        // `compact` starts the provider's on-demand context compaction as
+        // this turn. It carries no user text, skills, or reasoning overrides.
+        let compact = match payload.get("compact") {
+            None | Some(Value::Bool(false)) => false,
+            Some(Value::Bool(true)) => true,
+            Some(_) => {
+                return Err(DurableRunnerError::invalid(
+                    "turn.start compact must be a boolean",
+                ))
+            }
+        };
+        if compact
+            && (!skills.is_empty() || reasoning_mode.is_some() || payload.get("text").is_some())
+        {
+            return Err(DurableRunnerError::invalid(
+                "a compaction turn.start cannot carry text, skills, or a reasoning mode",
+            ));
+        }
         self.restore_provider_if_needed()?;
         if reasoning_mode.is_some()
             && self
@@ -3677,10 +3695,24 @@ impl CodexCommandExecutor {
                 ))
             })?;
         self.rollover_provider_identity_epochs_if_needed()?;
-        let text = payload
-            .get("text")
-            .and_then(Value::as_str)
-            .ok_or_else(|| DurableRunnerError::invalid("turn.start payload.text is required"))?;
+        let text = if compact {
+            ""
+        } else {
+            payload
+                .get("text")
+                .and_then(Value::as_str)
+                .ok_or_else(|| DurableRunnerError::invalid("turn.start payload.text is required"))?
+        };
+        if compact
+            && self
+                .state
+                .as_ref()
+                .is_some_and(|state| state.config.provider != "codex")
+        {
+            return Err(DurableRunnerError::invalid(
+                "on-demand context compaction requires Codex",
+            ));
+        }
         let cwd = self
             .state
             .as_ref()
@@ -3716,16 +3748,20 @@ impl CodexCommandExecutor {
             rejected_accepted_turn,
         ) = {
             let provider = self.ensure_provider()?;
-            let result = provider.start_turn_with_options_and_effort(
-                text,
-                &cwd,
-                CodexTurnOptions {
-                    skills: &skills,
-                    reasoning_mode,
-                },
-                payload.get("effort"),
-                run_id.as_deref(),
-            );
+            let result = if compact {
+                provider.start_compaction_turn()
+            } else {
+                provider.start_turn_with_options_and_effort(
+                    text,
+                    &cwd,
+                    CodexTurnOptions {
+                        skills: &skills,
+                        reasoning_mode,
+                    },
+                    payload.get("effort"),
+                    run_id.as_deref(),
+                )
+            };
             (
                 result,
                 provider.completed_turn_authority().is_some(),
@@ -4806,6 +4842,13 @@ impl CodexCommandExecutor {
     }
 
     fn poll_current_provider(&mut self) -> Result<(), DurableRunnerError> {
+        self.poll_current_provider_with_control(true)
+    }
+
+    fn poll_current_provider_with_control(
+        &mut self,
+        allow_control: bool,
+    ) -> Result<(), DurableRunnerError> {
         // Receipt-limit interruption is autonomous recovery. It must advance
         // even while older durable events await acknowledgement, otherwise a
         // slow or disconnected controller can keep an exhausted provider turn
@@ -4845,14 +4888,18 @@ impl CodexCommandExecutor {
             return self.settle_receipt_limit_interrupt_if_deadline_elapsed();
         }
         for _ in 0..MAX_EVENTS_PER_POLL {
-            let event = self
+            let provider = self
                 .provider
                 .as_mut()
-                .expect("provider remains present while polling")
-                .poll()
-                .map_err(|error| {
-                    DurableRunnerError::invalid(format!("Codex provider failed: {error}"))
-                })?;
+                .expect("provider remains present while polling");
+            let event = (if allow_control {
+                provider.poll()
+            } else {
+                provider.poll_disconnected()
+            })
+            .map_err(|error| {
+                DurableRunnerError::invalid(format!("Codex provider failed: {error}"))
+            })?;
             let Some(event) = event else { break };
             let trace_frame_id = self
                 .provider
@@ -5513,6 +5560,21 @@ impl CommandExecutor for CodexCommandExecutor {
         self.retained_events()
     }
 
+    fn poll_disconnected_events(&mut self) -> Result<Vec<PolledEvent>, DurableRunnerError> {
+        // Only an already-admitted local Codex process can supply passive
+        // output. Recovery, facades and cleanup retain their connected path.
+        if self.provider.is_some()
+            && self.state.as_ref().is_some_and(|state| {
+                state.config.provider == "codex"
+                    && state.startup_attempt.is_none()
+                    && !state.receipt_limit_interrupt_pending
+            })
+        {
+            self.poll_current_provider_with_control(false)?;
+        }
+        self.retained_events()
+    }
+
     fn retained_events(&mut self) -> Result<Vec<PolledEvent>, DurableRunnerError> {
         if let Some(error) = &self.startup_evidence_error {
             return Err(error.clone());
@@ -6006,6 +6068,123 @@ mod tests {
             unauthorized_result.result["error"]["message"],
             GENERIC_INVALID_TOOL_CALL_MESSAGE
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn disconnected_poll_never_restores_an_unopened_facade() {
+        let directory = std::env::temp_dir().join(format!(
+            "paperclip-offline-no-restore-{}",
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(&directory).unwrap();
+        fs::write(
+            directory.join(CODEX_PROVIDER_STATE_FILE),
+            b"not a provider state",
+        )
+        .unwrap();
+        let mut executor = CodexCommandExecutor::new(&directory);
+        assert!(executor.poll_disconnected_events().unwrap().is_empty());
+        assert!(executor.maintain_disconnected_provider().unwrap().is_none());
+        assert!(!executor.restore_checked);
+        executor.state = Some(opencode_result_state());
+        assert!(executor.poll_disconnected_events().unwrap().is_empty());
+        assert!(executor.maintain_disconnected_provider().unwrap().is_none());
+        assert!(!executor.restore_checked);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn disconnected_codex_output_is_durable_and_terminal_control_waits_for_reconnect() {
+        let directory =
+            std::env::temp_dir().join(format!("paperclip-offline-codex-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&directory).unwrap();
+        let goal_called = directory.join("goal-called");
+        let script = format!(
+            r#"
+while IFS= read -r line; do
+  case "$line" in
+    *'"method":"initialize"'*) printf '%s\n' '{{"id":1,"result":{{}}}}' ;;
+    *'"method":"thread/start"'*) printf '%s\n' '{{"id":2,"result":{{"thread":{{"id":"thread-1"}}}}}}' ;;
+    *'"method":"turn/start"'*)
+      printf '%s\n' '{{"id":3,"result":{{"turn":{{"id":"turn-1"}}}}}}'
+      printf '%s\n' '{{"method":"turn/started","params":{{"threadId":"thread-1","turn":{{"id":"turn-1","status":"inProgress"}}}}}}'
+      printf '%s\n' '{{"method":"item/agentMessage/delta","params":{{"threadId":"thread-1","turnId":"turn-1","delta":"retained offline output"}}}}'
+      printf '%s\n' '{{"method":"turn/completed","params":{{"threadId":"thread-1","turn":{{"id":"turn-1","status":"completed"}}}}}}' ;;
+    *'"method":"thread/goal/get"'*)
+      touch '{}'
+      printf '%s\n' '{{"id":4,"result":{{"goal":null}}}}' ;;
+  esac
+done
+"#,
+            goal_called.display()
+        );
+        let mut state = opencode_result_state();
+        state.config.provider = "codex".to_owned();
+        state.config.driver = "codex_app_server".to_owned();
+        state.config.command = PathBuf::from("/bin/sh");
+        state.config.args = vec!["-c".to_owned(), script];
+        state.config.model = None;
+        state.goal_capability = Some(SessionGoalCapability::codex_available());
+        let mut provider = CodexProvider::start(&state.config, None).unwrap();
+        provider.start_turn("Test", &state.config.cwd).unwrap();
+        state.provider_process_generation = provider.process_generation();
+        let mut executor = CodexCommandExecutor::new(&directory);
+        executor.state = Some(state);
+        executor.provider = Some(provider);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let mut observed = Vec::new();
+        loop {
+            assert!(std::time::Instant::now() < deadline);
+            let events = executor.poll_disconnected_events().unwrap();
+            if events.is_empty() {
+                continue;
+            }
+            let saved: CodexProviderState =
+                serde_json::from_slice(&fs::read(executor.state_path()).unwrap()).unwrap();
+            assert_eq!(saved.pending_events, events);
+            let count = events.len();
+            observed.extend(events);
+            executor.acknowledge_events(count).unwrap();
+            if observed
+                .iter()
+                .any(|event| event.payload["text"] == "retained offline output")
+            {
+                break;
+            }
+        }
+        let start = observed
+            .iter()
+            .position(|event| event.event_type == "turn.started")
+            .unwrap();
+        let text = observed
+            .iter()
+            .position(|event| event.payload["text"] == "retained offline output")
+            .unwrap();
+        assert!(start < text);
+        let started = std::time::Instant::now();
+        for _ in 0..5 {
+            assert!(executor.poll_disconnected_events().unwrap().is_empty());
+        }
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
+        assert!(!goal_called.exists());
+        assert_eq!(
+            executor
+                .state
+                .as_ref()
+                .unwrap()
+                .active_provider_turn_id
+                .as_deref(),
+            Some("turn-1")
+        );
+        let events = executor.poll_events().unwrap();
+        assert!(goal_called.exists());
+        assert!(events
+            .iter()
+            .any(|event| event.event_type == "turn.completed"));
+        executor.provider.as_mut().unwrap().shutdown().unwrap();
+        fs::remove_dir_all(directory).unwrap();
     }
 
     fn opencode_result_state() -> CodexProviderState {

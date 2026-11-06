@@ -1346,6 +1346,50 @@ fn codex_transport_buffers_notifications_while_waiting_for_responses() {
 }
 
 #[test]
+fn codex_compaction_turn_binds_the_turn_reported_after_its_empty_response() {
+    let directory = temporary_directory("compaction-turn");
+    let config = provider_config(&directory, &[]);
+    let mut provider = CodexProvider::start(&config, None).expect("start fake Codex provider");
+    let started = provider
+        .start_compaction_turn()
+        .expect("start compaction turn");
+    assert_eq!(
+        started.pointer("/turn/id"),
+        Some(&json!("provider-compact-turn-1"))
+    );
+    assert_eq!(
+        provider.active_provider_turn_id(),
+        Some("provider-compact-turn-1")
+    );
+    // A second start while the compaction turn runs is refused.
+    assert!(provider.start_compaction_turn().is_err());
+
+    let mut event_types = Vec::new();
+    let deadline = event_deadline();
+    while std::time::Instant::now() < deadline {
+        if let Some(CodexProviderEvent::Notification { method, params }) =
+            provider.poll().expect("poll provider event")
+        {
+            event_types.extend(
+                normalize_codex_notification(&method, &params)
+                    .into_iter()
+                    .map(|event| event.event_type),
+            );
+        }
+        if event_types.iter().any(|event| event == "turn.completed") {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    assert!(event_types.iter().any(|event| event == "turn.started"));
+    assert!(event_types.iter().any(|event| event == "context.compacted"));
+    assert!(event_types.iter().any(|event| event == "turn.completed"));
+    assert_eq!(provider.active_provider_turn_id(), None);
+    provider.shutdown().expect("stop provider");
+    fs::remove_dir_all(directory).expect("remove Codex integration-test directory");
+}
+
+#[test]
 fn codex_account_updates_do_not_interrupt_turns_or_publish_account_details() {
     let directory = temporary_directory("account-notifications");
     let config = provider_config(&directory, &["--account-notifications"]);

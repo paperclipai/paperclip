@@ -1,4 +1,5 @@
 import { preserveAcceptedRunUsageProjectionSql } from "../usage-receipts.js";
+import { isContextCompactionRun } from "../context-compaction.js";
 import { providerFailureFromError } from "../../vendor/paperclip-runner/index.js";
 import { nativeTaskSessionPublicationHandled } from "../native-runtime/native-task-session-publication.js";
 import { settledResponsePublicationSql } from "../native-runtime/native-response-publication-receipt.js";
@@ -13,6 +14,7 @@ import { RemoteWorkspacePreparationTimeoutError, REMOTE_WORKSPACE_RESTORE_FAILED
 import { escalateRemoteWorkspaceRestoreFailure } from "../remote-workspace-restore-recovery.js";
 import { findReusableSandboxResumeError } from "../reusable-sandbox-resume-error.js";
 import { findPluginWorkerUnavailableError, PLUGIN_WORKER_UNAVAILABLE_CODE } from "../plugin-worker-unavailable-error.js";
+import { findWorkspaceProviderFailure } from "../workspace-provider-failure.js";
 import { isRunnerRevisionMismatch, RUNNER_REVISION_MISMATCH_CODE, RUNNER_REVISION_MISMATCH_RETRY } from "../runner-revision-mismatch.js";
 import { type RunSessionOutcome, resolveNextSessionState, normalizeUsageTotals, resolveCacheAdjustedCostUsd, resolveLedgerBiller, resolveLedgerCostStatus, normalizeLedgerBillingType } from "./run-state.js";
 import { readGitConnectionFailure } from "../git-connection-failure.js";
@@ -986,6 +988,7 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
           readNonEmptyString(
             parseObject(livenessRun.contextSnapshot).goalControlRequestId,
           ) !== null ||
+          isContextCompactionRun(livenessRun.contextSnapshot) ||
           parseObject(livenessRun.contextSnapshot)
             .resumeSessionGoalHeartbeat === true,
       });
@@ -1396,8 +1399,11 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
       recordedResponsibleUserDenialCode ??
       nonRetryablePreflightCode ??
       "setup_failed";
+    // Bounded kind and reason only: a workspace provider's own text never crosses into Core.
+    const workspaceProviderFailure = findWorkspaceProviderFailure(outerErr)?.summary() ?? null;
     logger.error(
-      { err: identityRedactor.redact({ message: outerErr instanceof Error ? outerErr.message : String(outerErr), stack: outerErr instanceof Error ? outerErr.stack : undefined }), runId },
+      { err: identityRedactor.redact({ message: outerErr instanceof Error ? outerErr.message : String(outerErr), stack: outerErr instanceof Error ? outerErr.stack : undefined }), runId,
+        errorCode: setupFailureErrorCode, ...(workspaceProviderFailure ? { workspaceProviderFailure } : {}) },
       "heartbeat execution setup failed",
     );
     const setupFailureAgent = await getAgent(run.agentId).catch(() => null);
@@ -1434,6 +1440,7 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
       ...(providerFailure ? { providerFailure: { ...providerFailure,
         message: redactCurrentUserText(identityRedactor.redact(providerFailure.message), currentUserRedactionOptions) } } : {}),
       ...(connectionFailure ? { connectionFailure } : {}),
+      ...(workspaceProviderFailure ? { workspaceProviderFailure } : {}),
       // A lease lost during setup surfaces as the thrown abort reason, or as
       // the signal's reason when a setup step threw a different error after it.
       ...controllerLeaseLossEvidence(outerErr),
@@ -1565,6 +1572,7 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
           readNonEmptyString(
             parseObject(livenessRun.contextSnapshot).goalControlRequestId,
           ) !== null ||
+          isContextCompactionRun(livenessRun.contextSnapshot) ||
           parseObject(livenessRun.contextSnapshot)
             .resumeSessionGoalHeartbeat === true,
       }).catch((releaseError) => {

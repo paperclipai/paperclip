@@ -1193,10 +1193,11 @@ export function canonicalProviderEventsFromCodex(
       },
     ];
   }
+  // A compaction item starts before the summary exists; only its completion
+  // (or the legacy thread/compacted notification) marks the compaction.
   if (
     method === "thread/compacted" ||
-    ((method === "item/completed" || method === "item/started") &&
-      type === "contextCompaction")
+    (method === "item/completed" && type === "contextCompaction")
   ) {
     return [
       {

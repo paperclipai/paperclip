@@ -41,6 +41,14 @@ source sequence the runner has produced; acknowledged prefixes are removed
 atomically from durable state. After disconnect, every remaining event is sent
 again with the same identity and source sequence.
 
+After disconnect, runnerd tries Core when reconnect is due. Between attempts,
+live Codex and ACPX processes can drain local output into the outbox. Work that
+needs a provider request waits for Core, including managed-provider history
+reads and unanswered tools or approvals. An ACPX sidecar can include a fresh
+`goalAtTerminal` snapshot in `runtime.turn_terminal` to settle the turn offline.
+A missing or stale snapshot waits for a connected goal read. Runnerd suspends
+intake during terminal delivery or an authority transition.
+
 If Codex hits its tool-receipt limit during reconnect, runnerd stops its local
 process group at the original deadline. It reads the remaining stdout in short
 intervals, then replays the frames in order across as many batches as needed.
@@ -75,6 +83,14 @@ The outbox has separate hard and reserved limits. P1/P2 events cannot consume
 the P0 reserve. When the soft limit is reached, the runner enters backpressure
 and rejects the new non-P0 event rather than silently losing it. Exhausting the
 P0 reserve is an explicit unrecoverable condition.
+
+While disconnected, soft-limit backpressure retains the rejected event and its
+suffix at the provider owner until replay ACKs free outbox space. Oversized
+events or exhausted hard limits stop the owned provider and preserve the
+accepted durable prefix. The ACPX sidecar separately caps queued stdout at
+4 MiB; exceeding that bound requests owned provider shutdown and records a
+failure rather than allowing unbounded process memory while the Runner cannot
+read.
 
 ## Recovering Codex between turns
 
@@ -128,6 +144,12 @@ that arrive during the final status read and keeps them queued for delivery.
 As with Codex, a prepared session can continue or be cleaned up. This handoff
 requires a completed turn. Suspended sessions use their usual recovery path.
 
+Before B attaches, Runner saves the events it already received from A's sidecar.
+The readiness snapshot stays blocked until Core acknowledges those events.
+Another turn within A also keeps its buffered events without waiting for an ACK.
+ACPX still replaces the sidecar at the next turn or run attachment. The saved
+provider identity continues through that replacement.
+
 ## Host park eligibility
 
 `CommandExecutor::host_park_ready` defaults to false. Native Codex opts in only
@@ -146,3 +168,32 @@ after that drain, so a late active-goal notification cannot be hidden by the
 older executor journal. This hook does not detach a controller, stop a process,
 or advertise hosted parking support. The host-control consumer must separately
 validate the exact Runner identity and acknowledged sequence cut.
+
+### Hosted park and reclaim loop
+
+A trusted Launcher may pass a connected Unix stream at fd 4 and start durable
+listener mode with `--host-control-fd 4`. The descriptor is close-on-exec before
+provider startup. The private channel accepts the `park`, `claim`, and `retire`
+requests defined in the host-control codec; it cannot execute PRP commands.
+
+`park` requires the exact six-field authority, acknowledged command/event cut,
+no unfinished transition or cleanup, and the provider eligibility proof above.
+The Runner drops its controller connection and credentials, retains its provider
+and journals, and blocks on host control without provider polling. Ordinary
+reconnect grace does not expire a parked Runner. The configured process lifetime
+still applies. Mount ownership stays with Launcher.
+
+`claim` names the accepted park request and supplies a fresh bootstrap ticket.
+It resumes authenticated PRP under the retained authority; ordinary `run.attach`
+must still establish the next authority before new work. Pending reconnect and
+live commands both reject execution before that attachment; snapshots, drain,
+and cleanup remain available. Replaying the same claim returns its acknowledgement without consuming another ticket. A parked
+retirement names the park request. Cancelling a claim additionally requires its
+claim ID, the unchanged authority and sequence cut, and provider quiescence.
+Retirement, parked host-channel loss, or process-lifetime expiry uses the existing
+suspended lifecycle and provider shutdown path. There is no new checkpoint state.
+
+This native loop does not advertise hosted parking support: Launcher retention,
+Core orchestration, provider-specific qualification, and live VM sleep/wake
+verification are required before rollout. Providers without an eligibility
+implementation remain ineligible.

@@ -64,7 +64,7 @@ export const instanceExperimentalSettingsSchema = z.object({
   enablePaperclipNotebook: z.boolean().default(false),
   enableGoogleWorkspaceConnector: z.boolean().default(false),
   enableCases: z.boolean().default(false),
-  enableAgentChat: z.boolean().default(false),
+  enableAgentChat: z.boolean().default(true),
   enableCombinedInboxTasks: z.boolean().default(false),
   enableArtifactsV1: z.boolean().default(true),
   enableConferenceRoomChat: z.boolean().default(false),

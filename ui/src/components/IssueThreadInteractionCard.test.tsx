@@ -219,7 +219,8 @@ describe("IssueThreadInteractionCard", () => {
     const labels = Array.from(host.querySelectorAll("button")).map((button) => button.textContent?.trim());
     expect(labels).toContain("Connect");
     expect(labels).toContain("Not now");
-    expect(host.textContent).toContain("Access is added only for this agent");
+    expect(host.textContent).toContain("New connections default to all agents");
+    expect(host.textContent).toContain("Reusing an account adds access for this agent");
     const loadButton = Array.from(host.querySelectorAll("button")).find((button) =>
       button.textContent?.trim() === "Connect",
     );

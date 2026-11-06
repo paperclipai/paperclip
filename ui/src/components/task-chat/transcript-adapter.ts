@@ -1284,7 +1284,26 @@ export function transcriptToTaskChatItems(
 export function settledRunChildren(
   parsed: readonly TaskChatItem[],
 ): TaskChatTurnChildItem[] {
-  return buildTurnTimelineRows(parsed, false);
+  // A finished run's compactions render as thread dividers (see
+  // settledCompactionMarkers), not inside its collapsed turn.
+  return buildTurnTimelineRows(parsed, false).filter((item) => !isCompactionDivider(item));
+}
+
+/**
+ * Compaction dividers of a finished run. A compaction divides the whole
+ * conversation, so the thread places them between messages rather than
+ * inside the run's collapsed activity, where they would stay hidden.
+ */
+export function settledCompactionMarkers(
+  entries: readonly TranscriptEntry[],
+  runId: string,
+): TaskChatMarkerItem[] {
+  const markers: TaskChatMarkerItem[] = [];
+  entries.forEach((entry, index) => {
+    if (entry.kind !== "provider_activity" || entry.eventType !== "context.compacted") return;
+    markers.push(contextCompactedMarker(entry, `${runId}:compaction:${String(entry.payload.compactionId ?? "")}:${index}`));
+  });
+  return markers;
 }
 
 /**

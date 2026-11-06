@@ -11,7 +11,7 @@ import { readProviderFailure } from "@paperclipai/shared";
 import { nativeCancellationHasUnsettledOwner, notifyNativeCancellation, waitForNativeCancellation } from "./native-cancellation-delivery.js";
 import { readClaimedNativeStopRecovery } from "./native-cancellation-request.js";
 import { publishNativeHarnessBackup } from "./native-harness-backup-publication.js";
-import { durableNativeHarnessStorage, nativeHarnessBackupOwner, persistNativeHarnessBackup, restoreDurableNativeHarnessBackup } from "./native-harness-backup-storage.js";
+import { assertNativeHarnessBackupOwner, durableNativeHarnessStorage, nativeHarnessBackupOwner, persistNativeHarnessBackup, restoreDurableNativeHarnessBackup } from "./native-harness-backup-storage.js";
 import { rehydratePinnedSkillAssets } from "./runtime-context.js";
 import { createNativeUsageDelivery } from "./native-usage-delivery.js";
 import { createNativeRecoveryUsageDelivery } from "./native-recovery-usage-delivery.js";
@@ -52,6 +52,10 @@ import { museRunnerBroker } from "../muse-runner-broker.js";
 import { nativeCaseHandoffResult } from "./native-case-handoff.js";
 import { assertExternalNativeRunAuthority } from "./external-native-authority.js";
 import { stageRemoteLaunchAssets } from "./remote-launch-assets.js";
+import {
+  NATIVE_CONTINUITY_STATE_ENTRIES, NATIVE_SESSION_ROOT_HELD_ENTRIES, describeUnexpectedNativeSessionRootEntries,
+  isKnownNativeSessionRootEntry,
+} from "./native-session-root-entries.js";
 import { createRunPreparationTiming } from "../execution-preparation-timing.js";
 import { configuredEnvironment } from "../../vendor/paperclip-runner/index.js";
 import { parseProviderPerformanceSpans } from "../../vendor/paperclip-runner/index.js";
@@ -1931,6 +1935,7 @@ class SessionAuthorityEpoch {
 }
 
 const sessionToolAuthorityEpochs = new Map<string, SessionAuthorityEpoch>();
+const sessionHarnessBackupOwners = new WeakMap<SessionAuthorityEpoch, Awaited<ReturnType<typeof nativeHarnessBackupOwner>>>();
 const initializingSessionToolAuthorities = new Set<string>();
 const executingRunnerdSessionScopes = new Map<string, string>();
 const executingNativeOwnerScopes = new Map<string, symbol>();
@@ -5269,19 +5274,6 @@ async function recoverPluginRunnerCheckpoint(input: {
   }
 }
 
-// Session-root entries owned by one provider session's authority. A continuity
-// break moves them aside together. Backups belong to the retired session too:
-// left active, they make a fresh replacement look like lost harness state.
-const NATIVE_CONTINUITY_STATE_ENTRIES: readonly string[] = [
-  "control-plane",
-  "runner",
-  "codex-home",
-  "opencode",
-  "acpx",
-  "failover-backups",
-  "provider-pack-authority.json",
-];
-
 function moveNativeContinuityState(root: string, archiveRoot: string): void {
   for (const name of NATIVE_CONTINUITY_STATE_ENTRIES) {
     const source = resolve(root, name);
@@ -5305,8 +5297,13 @@ function readSettledRunnerdProjection(root: string, identity: Record<string, str
     if (!isSafeNativeStateDirectory(root)) return refuse("root_unsafe");
     const lifecycle = runnerdAuthorityLifecycle(root, identity as RunnerdDurableIdentity);
     if (lifecycle !== "absent") return refuse(`runner_lifecycle_${lifecycle}`);
-    const unexpected = readdirSync(root).find(name => name !== "continuity-breaks" && !NATIVE_CONTINUITY_STATE_ENTRIES.includes(name));
-    if (unexpected !== undefined) return refuse("unexpected_root_entry");
+    // Every legitimate writer's entry is classified in native-session-root-entries.ts.
+    // Held entries are known evidence that needs its own settlement; anything
+    // else is writer drift. Name each kind separately.
+    const unknown = readdirSync(root).filter(name => !isKnownNativeSessionRootEntry(name));
+    const held = unknown.filter(name => NATIVE_SESSION_ROOT_HELD_ENTRIES.includes(name));
+    if (held.length > 0) return refuse(`held_root_entry(${describeUnexpectedNativeSessionRootEntries(held)})`);
+    if (unknown.length > 0) return refuse(`unexpected_root_entry(${describeUnexpectedNativeSessionRootEntries(unknown)})`);
     const bytes = readBoundedNativeFile(resolve(root, "control-plane", "control-plane-state.json"),
       NATIVE_CONTROL_PLANE_STATE_MAX_BYTES, "runner_durable_identity_too_large").toString("utf8");
     const control = record(JSON.parse(bytes));
@@ -8515,6 +8512,8 @@ export async function executePaperclipNativeSession(input: {
   taskSessionPublication?: NativeTaskSessionPublicationContext;
   sessionGoalControl?: NativeSessionGoalControl | null;
   resumeSessionGoalHeartbeat?: boolean;
+  /** Compact the resumed provider session instead of running a task turn. */
+  sessionCompaction?: { requestId: string; contextTokensBefore?: number } | null;
   preparationSpans?: NativeRunHistoricalSpan[];
   /** Use a session-owned GitHub broker, rebound only after run ownership is acquired. */
   managedGitHub?: boolean;
@@ -10279,6 +10278,7 @@ async function executePaperclipNativeSessionWithinScope(
             keepSessionOpen: warmSessionId !== null,
             sessionGoalControl: input.sessionGoalControl,
             resumeSessionGoalHeartbeat: input.resumeSessionGoalHeartbeat,
+            sessionCompaction: input.sessionCompaction,
             requireSessionCloseBeforeReturn: runnerdBackend !== null || input.instructionWorkingCopy !== undefined,
             onSessionClosed: input.instructionWorkingCopy?.collectStopped,
             onCheckpoint: async (snapshot) => {
@@ -13741,6 +13741,11 @@ async function createRunnerdBackendWithinSessionClaim(
     return { ...backend, descriptor: () => backend.descriptor(), openSession: input => backend.openSession(input),
       recoverSession: (snapshot, options) => backend.recoverSession!(snapshot, options), bindManagedSession: session => session };
   }
+  if (remoteTarget && input.controllerPersistence && durableNativeHarnessStorage()) {
+    sessionHarnessBackupOwners.set(authorityEpoch, await nativeHarnessBackupOwner(input.db, {
+      ...input.execution.binding, bootId: input.controllerPersistence.bootId,
+    }));
+  }
   const remoteRuntimeRoot = remoteTarget
     ? posix.join(
         remoteTarget.remoteCwd,
@@ -14594,10 +14599,10 @@ async function createRunnerdBackendWithinSessionClaim(
     )
       return;
     const durableStorage = durableNativeHarnessStorage();
-    if (durableStorage && !input.controllerPersistence) throw new Error("native_harness_storage_owner_missing");
-    const backupOwner = durableStorage ? await nativeHarnessBackupOwner(input.db, { ...input.execution.binding,
-      runId: sessionToolAuthorityEpochs.get(sessionScopeId)?.runId ?? input.execution.binding.runId,
-      bootId: input.controllerPersistence!.bootId }) : null;
+    const currentAuthority = sessionToolAuthorityEpochs.get(sessionScopeId);
+    const backupOwner = durableStorage && currentAuthority ? sessionHarnessBackupOwners.get(currentAuthority) : null;
+    if (durableStorage && !backupOwner) throw new Error("native_harness_storage_owner_missing");
+    if (backupOwner) await assertNativeHarnessBackupOwner(input.db, backupOwner);
     // Transport release also runs when provider bootstrap failed. In that case
     // runnerd has no durable provider identity (and may not have created the
     // provider persistence directory at all), so attempting a failover backup

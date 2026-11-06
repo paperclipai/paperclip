@@ -2235,6 +2235,133 @@ impl CodexProvider {
         )
     }
 
+    /// Starts Codex's on-demand context compaction. Codex runs compaction as
+    /// its own turn, but `thread/compact/start` answers `{}`, so the turn
+    /// identity is bound from the `turn/started` notification that follows.
+    /// Messages read while waiting stay buffered for normal event delivery.
+    pub fn start_compaction_turn(&mut self) -> Result<Value, LocalRunnerError> {
+        if self.config.provider != "codex" {
+            return Err(LocalRunnerError::invalid(
+                "on-demand context compaction requires Codex",
+            ));
+        }
+        if self.quarantined {
+            return Err(LocalRunnerError::invalid(
+                "Codex provider is quarantined after unsafe recovered work",
+            ));
+        }
+        if self.active_provider_turn_id.is_some() {
+            return Err(LocalRunnerError::invalid(
+                "Codex already has an active provider turn",
+            ));
+        }
+        if self.ambiguous_turn_start_pending {
+            return Err(LocalRunnerError::invalid(
+                "Codex has an unresolved ambiguous provider turn start",
+            ));
+        }
+        self.rollover_settled_turn_epoch_if_needed()?;
+        let prior_reconciliation_pending = self.completion_reconciliation_pending;
+        self.completion_reconciliation_pending = false;
+        let prior_buffered_message_count = self.pending_messages.len();
+        self.ambiguous_turn_start_pending = true;
+        let runtime_request_scope = new_runtime_request_scope()?;
+        match self.request_classified("thread/compact/start", json!({"threadId": self.thread_id})) {
+            Ok(_) => {}
+            Err(ProviderRequestError::Rejected(error)) => {
+                let definite_rejection = self
+                    .pending_messages
+                    .iter()
+                    .skip(prior_buffered_message_count)
+                    .all(|buffered| is_unbound_rejected_turn_diagnostic(&buffered.value));
+                if definite_rejection {
+                    self.ambiguous_turn_start_pending = false;
+                    self.completion_reconciliation_pending = prior_reconciliation_pending;
+                }
+                return Err(error);
+            }
+            Err(ProviderRequestError::Ambiguous(error)) => return Err(error),
+        }
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        let mut scanned = prior_buffered_message_count;
+        loop {
+            while scanned < self.pending_messages.len() {
+                let message = &self.pending_messages[scanned].value;
+                scanned += 1;
+                if message.get("method").and_then(Value::as_str) != Some("turn/started")
+                    || message.get("id").is_some()
+                {
+                    continue;
+                }
+                let params = message.get("params").cloned().unwrap_or(Value::Null);
+                validate_notification_binding(&self.thread_id, None, &params)?;
+                let provider_turn_id = match bounded_provider_turn_id(notification_turn_id(&params))
+                {
+                    Ok(provider_turn_id) => provider_turn_id,
+                    Err(error) => {
+                        // Codex accepted the compaction without a usable
+                        // identity. It cannot be bound or interrupted, so
+                        // terminate it like an invalid turn/start response.
+                        self.rejected_accepted_turn = Some(RejectedAcceptedTurn::InvalidIdentity);
+                        self.expected_shutdown = true;
+                        self.completed_turn_authority = None;
+                        let _ = self.cancel_pending_requests();
+                        let _ = self.process.terminate_group();
+                        return Err(error);
+                    }
+                };
+                if self.settled_provider_turn_ids.contains(&provider_turn_id) {
+                    return Err(self.reject_accepted_reused_turn_identity(provider_turn_id));
+                }
+                self.accept_replacement_turn(provider_turn_id.clone(), runtime_request_scope);
+                return Ok(json!({"turn": {"id": provider_turn_id}}));
+            }
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            if remaining.is_zero() {
+                // The start stays ambiguous: a late turn/started is still
+                // adopted by the ambiguous-start validator.
+                return Err(LocalRunnerError::invalid(
+                    "Codex thread/compact/start did not report its turn within 30 seconds",
+                ));
+            }
+            let Some(line) = self.receive_provider_stdout_line(remaining)? else {
+                if let Some(exit) = self.process.try_wait()? {
+                    self.drain_provider_diagnostics(Duration::from_millis(50));
+                    let diagnostic_suffix = self.provider_diagnostic_suffix();
+                    return Err(LocalRunnerError::invalid(format!(
+                        "Codex exited before its compaction turn started (exitCode={:?}, signal={:?}){diagnostic_suffix}",
+                        exit.exit_code, exit.signal
+                    )));
+                }
+                continue;
+            };
+            let trace_frame_id = self.trace_inbound(&line);
+            let message = parse_provider_message(&line)?;
+            if self
+                .pending_messages
+                .len()
+                .saturating_add(self.deferred_ambiguous_messages.len())
+                >= MAX_BUFFERED_MESSAGES
+            {
+                return Err(LocalRunnerError::invalid(
+                    "Codex emitted too many messages before its compaction turn started",
+                ));
+            }
+            let retained_bytes = json_size(&message, "buffered Codex provider message")?;
+            self.pending_message_bytes =
+                retain_buffered_message_bytes(self.pending_message_bytes, retained_bytes)
+                    .ok_or_else(|| {
+                        LocalRunnerError::invalid(
+                            "Codex buffered messages exceed the 16 MiB aggregate limit",
+                        )
+                    })?;
+            self.pending_messages.push_back(BufferedProviderMessage {
+                value: message,
+                trace_frame_id,
+            });
+        }
+    }
+
     pub fn steer_turn(&mut self, message: &str) -> Result<Value, LocalRunnerError> {
         let turn_id = self
             .active_provider_turn_id
@@ -2571,6 +2698,59 @@ impl CodexProvider {
     }
 
     pub fn poll(&mut self) -> Result<Option<CodexProviderEvent>, LocalRunnerError> {
+        self.poll_with_control(true)
+    }
+
+    pub(crate) fn poll_disconnected(
+        &mut self,
+    ) -> Result<Option<CodexProviderEvent>, LocalRunnerError> {
+        self.poll_with_control(false)
+    }
+
+    fn disconnected_message_is_passive(&self, message: &Value) -> bool {
+        let Some(method) = message.get("method").and_then(Value::as_str) else {
+            return false;
+        };
+        let params = message.get("params").unwrap_or(&Value::Null);
+        // Preserve frames that need a request, authority reconciliation or a
+        // terminal tail drain for the ordinary connected path.
+        if method == "turn/started"
+            && !notification_turn_id(params)
+                .is_some_and(|id| Some(id) == self.active_provider_turn_id.as_deref())
+        {
+            return false;
+        }
+        message.get("id").is_none()
+            && normalized_codex_terminal_event_type(method, params).is_none()
+            && params.pointer("/item/type").and_then(Value::as_str) != Some("collabAgentToolCall")
+            && matches!(
+                classify_notification_thread(
+                    method,
+                    &self.thread_id,
+                    &self.descendant_thread_ids,
+                    params
+                ),
+                Ok(NotificationThread::Root | NotificationThread::UnrelatedInformation)
+            )
+            && validate_notification_binding(
+                &self.thread_id,
+                self.active_provider_turn_id.as_deref(),
+                params,
+            )
+            .is_ok()
+    }
+
+    fn poll_with_control(
+        &mut self,
+        allow_control: bool,
+    ) -> Result<Option<CodexProviderEvent>, LocalRunnerError> {
+        if !allow_control
+            && (self.quarantined
+                || self.ambiguous_turn_start_pending
+                || self.process.try_wait()?.is_some())
+        {
+            return Ok(None);
+        }
         if self.process.stdout_failed() {
             return Err(LocalRunnerError::invalid(
                 "Codex stdout closed without a valid reader EOF",
@@ -2676,6 +2856,22 @@ impl CodexProvider {
             })?;
             (message, trace_frame_id)
         };
+        if !allow_control && !self.disconnected_message_is_passive(&message) {
+            let bytes = json_size(&message, "buffered Codex provider message")?;
+            self.pending_message_bytes =
+                retain_buffered_message_bytes(self.pending_message_bytes, bytes).ok_or_else(
+                    || {
+                        LocalRunnerError::invalid(
+                            "Codex buffered messages exceed the 16 MiB aggregate limit",
+                        )
+                    },
+                )?;
+            self.pending_messages.push_front(BufferedProviderMessage {
+                value: message,
+                trace_frame_id,
+            });
+            return Ok(None);
+        }
         self.last_trace_frame_id = trace_frame_id;
         if let (Some(trace), Some(frame_id)) = (self.trace.as_mut(), trace_frame_id) {
             let method = message.get("method").and_then(Value::as_str);
@@ -4958,6 +5154,86 @@ done
         provider.deliver_tool_rejection(&rejection).unwrap();
         assert!(provider.pending_tool_requests.is_empty());
         assert!(provider.completed_tool_call_ids.contains("denied-call"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn disconnected_poll_retains_terminal_frame_and_exact_connected_replay() {
+        let mut provider = completion_tail_provider();
+        provider.active_provider_turn_id = Some("offline-turn".to_owned());
+        provider.completed_turn_authority = None;
+        let accepted_start = json!({"method":"turn/started","params":{
+            "threadId":"reader-tail-thread","turn":{"id":"offline-turn"}}});
+        let progress = json!({"method":"item/agentMessage/delta", "params":{
+            "threadId":"reader-tail-thread", "turnId":"offline-turn", "delta":"offline output"}});
+        let terminal = json!({"method":"turn/completed", "params":{
+            "threadId":"reader-tail-thread", "turn":{"id":"offline-turn","status":"completed"}}});
+        for (value, trace_frame_id) in [
+            (accepted_start, Some(9)),
+            (progress, Some(10)),
+            (terminal.clone(), Some(11)),
+        ] {
+            provider.pending_message_bytes += json_size(&value, "fixture").unwrap();
+            provider
+                .pending_messages
+                .push_back(BufferedProviderMessage {
+                    value,
+                    trace_frame_id,
+                });
+        }
+        assert!(matches!(provider.poll_disconnected().unwrap(),
+            Some(CodexProviderEvent::Notification { method, .. }) if method == "turn/started"));
+        assert_eq!(provider.take_provider_trace_frame_id(), Some(9));
+        assert!(
+            matches!(provider.poll_disconnected().unwrap(), Some(CodexProviderEvent::Notification { method, .. }) if method == "item/agentMessage/delta")
+        );
+        assert_eq!(provider.take_provider_trace_frame_id(), Some(10));
+        let bytes = provider.pending_message_bytes;
+        let started = std::time::Instant::now();
+        for _ in 0..5 {
+            assert!(provider.poll_disconnected().unwrap().is_none());
+            assert_eq!(provider.pending_messages.front().unwrap().value, terminal);
+            assert_eq!(provider.pending_message_bytes, bytes);
+            assert_eq!(provider.active_provider_turn_id(), Some("offline-turn"));
+        }
+        assert!(started.elapsed() < Duration::from_secs(1));
+        assert!(
+            matches!(provider.poll().unwrap(), Some(CodexProviderEvent::Notification { method, params }) if method == "turn/completed" && params == terminal["params"])
+        );
+        assert_eq!(provider.take_provider_trace_frame_id(), Some(11));
+        assert!(provider.pending_messages.is_empty());
+        assert_eq!(provider.pending_message_bytes, 0);
+        assert_eq!(provider.active_provider_turn_id(), None);
+        provider.shutdown().unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn disconnected_poll_defers_requests_lineage_and_turn_reconciliation() {
+        let mut provider = completion_tail_provider();
+        provider.active_provider_turn_id = Some("offline-turn".to_owned());
+        for message in [
+            json!({"id":91,"method":"item/tool/call","params":{}}),
+            json!({"method":"item/agentMessage/delta","params":{"threadId":"unverified-child","delta":"child"}}),
+            json!({"method":"turn/started","params":{"threadId":"reader-tail-thread"}}),
+            json!({"method":"turn/started","params":{"threadId":"reader-tail-thread","turn":{"id":"next-turn"}}}),
+        ] {
+            provider.pending_message_bytes = json_size(&message, "fixture").unwrap();
+            provider
+                .pending_messages
+                .push_back(BufferedProviderMessage {
+                    value: message.clone(),
+                    trace_frame_id: Some(12),
+                });
+            let started = std::time::Instant::now();
+            assert!(provider.poll_disconnected().unwrap().is_none());
+            assert!(started.elapsed() < Duration::from_secs(1));
+            let retained = provider.pending_messages.pop_front().unwrap();
+            assert_eq!(retained.value, message);
+            assert_eq!(retained.trace_frame_id, Some(12));
+            assert_eq!(provider.active_provider_turn_id(), Some("offline-turn"));
+        }
+        provider.shutdown().unwrap();
     }
 
     #[cfg(unix)]

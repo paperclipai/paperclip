@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { readFileSync, readdirSync } from 'node:fs';
 import { createRequire } from 'node:module';
-import { catalogTargetSha, catalogManifestSha256, fullCatalogPlanName, fullCatalogCases, validateFullCatalogManifest } from './chat-full-catalog-testops-manifest.mjs';
+import { catalogTargetSha, catalogManifestSha256, fullCatalogPlanName, fullCatalogCases, validateFullCatalogManifest, companySecretBindingApprovalMetadata, validateCompanySecretBindingApprovalSource } from './chat-full-catalog-testops-manifest.mjs';
 
 const { parseDocument } = createRequire(import.meta.url)('yaml');
 const bytes = readFileSync(new URL('./chat-full-catalog-testops-manifest.json', import.meta.url));
@@ -103,7 +103,7 @@ test('repair source metadata binds the corrected candidate and explicit changed 
   const repair = manifest.source.repairMetadata;
   assert.equal(repair.baseTargetSha, '3b66c3c144360ddf32714a0742fd774b8ceafb16');
   assert.equal(repair.previousTargetSha, 'ab2019e976076ec0eb60b026844f3d9211cb0208');
-  assert.equal(manifest.targetSha, '7ccfc33bf074e37d8fd901a6e8453d1b45307e82');
+  assert.equal(manifest.targetSha, '936c3bbe0e83ca15616254f23d9023b2065fc5fb');
   assert.equal(repair.definitionSourceSha, manifest.metadataSourceSha);
   assert.equal(repair.candidateDescriptorSnapshot, 'fixtures/chat-repair-candidate-descriptors.json');
   const descriptorBytes = readFileSync(new URL(repair.candidateDescriptorSnapshot, import.meta.url));
@@ -319,7 +319,10 @@ test('repair source metadata binds the corrected candidate and explicit changed 
   [
     "questions-and-approvals.multi-part-question",
     "originalQuery"
-  ]
+  ],
+  ['secrets.configure-company-secret', 'maximumRuns'],
+  ['secrets.configure-company-secret', 'optionalCompanySecretBindingApproval'],
+  ['secrets.configure-company-secret', 'expectedHumanMessageCount']
 ]);
   for (const change of repair.changedFields) {
     assert.deepEqual(row(change.key)[change.field], change.current);
@@ -330,9 +333,9 @@ test('repair source metadata binds the corrected candidate and explicit changed 
   assert.equal(repair.runtimeConditions.multipart53QuestionClarification.unchangedOtherCatalogQueries, 243);
   assert.equal(repair.runtimeConditions.multipart53QuestionClarification.previousInventoryDigest, '0cf530c11449508e91b5ce664d9375fc8e76466fa908255a1af0ff55169d0220');
   assert.equal(repair.runtimeConditions.multipart53QuestionClarification.inventoryDigest, '814bb3633268cb0488563aed51fce2f987bd47650ddfb5a3302d0354292c2323');
-  assert.equal(repair.descriptorChanges.length, 49);
+  assert.equal(repair.descriptorChanges.length, 52);
   assert.equal(new Set(repair.descriptorChanges.map(change => change.key)).size, 33);
-  assert.deepEqual([...new Set(repair.descriptorChanges.map(change => change.field))].sort(), ['expectedRunCount', 'minimumRunCount', 'oracleVersion', 'setupPolicy', 'sourceFiles']);
+  assert.deepEqual([...new Set(repair.descriptorChanges.map(change => change.field))].sort(), ['expectedRunCount', 'minimumRunCount', 'optionalCompanySecretBindingApproval', 'oracleVersion', 'setupPolicy', 'sourceFiles']);
   for (const change of repair.descriptorChanges) {
     assert.notDeepEqual(change.current, change.previous);
     const declaration = declarations.find(value => value.scenarioId === change.key);
@@ -350,10 +353,13 @@ test('repair source metadata binds the corrected candidate and explicit changed 
     assert.equal(value.oracleVersion, declaration.oracleVersion);
     assert.equal(value.minimumRuns, declaration.minimumRunCount ?? declaration.expectedRunCount);
     assert.equal(value.maximumRuns, declaration.expectedRunCount);
+    const approval = companySecretBindingApprovalMetadata(declaration);
+    assert.deepEqual(Object.fromEntries(Object.keys(approval).map(key => [key, value[key]])), approval);
+    assert.equal(Object.hasOwn(value, 'optionalCompanySecretBindingApproval'), Object.hasOwn(approval, 'optionalCompanySecretBindingApproval'));
     assert.equal(value.declaredTurnTimeoutMs, declaration.turnTimeoutMs);
     assert.equal(value.attemptTimeoutMs, declaration.attemptTimeoutMs);
   }
-  assert.deepEqual(repair.changedFields.filter(change => ['minimumRuns', 'maximumRuns'].includes(change.field)), [{ key: 'skills.studio-test', field: 'maximumRuns', previous: 2, current: 3 }]);
+  assert.deepEqual(repair.changedFields.filter(change => ['minimumRuns', 'maximumRuns'].includes(change.field)), [{ key: 'skills.studio-test', field: 'maximumRuns', previous: 2, current: 3 }, { key: 'secrets.configure-company-secret', field: 'maximumRuns', previous: 2, current: 3 }]);
   assert.deepEqual(repair.runtimeConditions.studio144Accounting, { key: 'skills.studio-test', previousMinimumRuns: 2, previousMaximumRuns: 2, minimumRuns: 2, maximumRuns: 3, requiredActualAcceptedRuns: 3, originalAttemptTimeoutMs: 540000, humanMessages: 1, condition: 'Initial CEO + real Studio worker + exactly one source-bound completion delivery;2-run no-delivery positive is rejected.' });
   assert.equal(repair.runtimeConditions.toolGuidance106.corePRUnmerged, false);
   assert.equal(repair.runtimeConditions.sdkPublicProof.scannerAndCanaryCertificatesUnchanged, true);
@@ -374,4 +380,45 @@ test('repair source metadata binds the corrected candidate and explicit changed 
   ],
   "actualPostAssertionPGCasesPassed": 2
 });
+});
+
+
+test('Company approval metadata is projected without executing a fixture and rejects foreign or changed bounds', () => {
+  const declaration = { scenarioId: 'secrets.configure-company-secret', optionalCompanySecretBindingApproval: true,
+    expectedRunCount: 3, minimumRunCount: 2, expectedHumanMessageCount: 2, attemptTimeoutMs: 480000,
+    setup() { throw new Error('Fixture must not execute'); } };
+  assert.deepEqual(companySecretBindingApprovalMetadata(declaration),
+    { optionalCompanySecretBindingApproval: true, expectedHumanMessageCount: 2 });
+  assert.deepEqual(companySecretBindingApprovalMetadata({ scenarioId: 'other' }), {});
+  const future = structuredClone(manifest);
+  Object.assign(future.cases.find(value => value.key === declaration.scenarioId),
+    companySecretBindingApprovalMetadata(declaration), { minimumRuns: 2, maximumRuns: 3 });
+  assert.equal(validateFullCatalogManifest(future), future);
+  for (const mutation of [
+    { scenarioId: 'secrets.personal-secret' }, { optionalCompanySecretBindingApproval: false },
+    { expectedRunCount: 2 }, { minimumRunCount: 3 }, { expectedHumanMessageCount: 3 }, { attemptTimeoutMs: 480001 },
+  ]) assert.throws(() => companySecretBindingApprovalMetadata({ ...declaration, ...mutation }), /company_approval_invalid/);
+  for (const mutation of [
+    { key: 'secrets.personal-secret' }, { optionalCompanySecretBindingApproval: false },
+    { maximumRuns: 2 }, { minimumRuns: 3 }, { expectedHumanMessageCount: 3 }, { attemptTimeoutMs: 480001 },
+  ]) {
+    const invalid = structuredClone(future);
+    Object.assign(invalid.cases.find(value => value.key === declaration.scenarioId), mutation);
+    assert.throws(() => validateFullCatalogManifest(invalid), /company_approval_invalid/);
+  }
+});
+
+
+test('source admission joins the optional Company approval and base humans to actual static task metadata', () => {
+  const row = { key: 'secrets.configure-company-secret', optionalCompanySecretBindingApproval: true,
+    minimumRuns: 2, maximumRuns: 3, expectedHumanMessageCount: 2, attemptTimeoutMs: 480000 };
+  const task = { id: row.key, optionalCompanySecretBindingApproval: true, minimumExpectedRunCount: 2,
+    expectedRunCount: 3, expectedHumanMessageCount: 2, attemptTimeoutMs: { local: 480000 } };
+  assert.doesNotThrow(() => validateCompanySecretBindingApprovalSource(row, task));
+  for (const mutation of [{ optionalCompanySecretBindingApproval: undefined }, { expectedHumanMessageCount: 3 },
+    { id: 'secrets.personal-secret' }, { expectedRunCount: 2 }, { minimumExpectedRunCount: 3 }]) {
+    assert.throws(() => validateCompanySecretBindingApprovalSource(row, { ...task, ...mutation }));
+  }
+  const unmarked = { ...row }; delete unmarked.optionalCompanySecretBindingApproval;
+  assert.throws(() => validateCompanySecretBindingApprovalSource(unmarked, task), /approval mismatch/);
 });
