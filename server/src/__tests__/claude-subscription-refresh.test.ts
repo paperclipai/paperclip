@@ -113,8 +113,11 @@ describe("Claude subscription renewal through the managed runtime", () => {
     expect((await db.select().from(connectionGrants).where(eq(connectionGrants.id, account.grantId)))[0]!.status).toBe("active");
   });
 
-  it("persists a sign-in repair state for an expired, refused refresh token", async () => {
-    const { service, row, account } = await connect(document(Date.now() - 60_000));
+  it.each(["inference", "broad", "unknown"])("persists a sign-in repair state for an expired, refused refresh token (%s)", async scopes => {
+    const login = JSON.parse(document(Date.now() - 60_000));
+    if (scopes === "broad") login.claudeAiOauth.scopes.push("org:create_api_key");
+    if (scopes === "unknown") delete login.claudeAiOauth.scopes;
+    const { service, row, account } = await connect(JSON.stringify(login));
     vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("private-error", { status: 400 }));
     const error = await service.credential(row).catch(error => error);
     expect(error).toMatchObject({ details: { code: "ai_connection_unavailable", connectionId: account.connectionId } });
@@ -155,6 +158,37 @@ describe("Claude subscription renewal through the managed runtime", () => {
     expect(await aiConnectionService(db).credential(row)).toBe(reconnect ? "reconnected" : "pending-access");
     expect(exchange).toHaveBeenCalledOnce();
     expect(JSON.parse(await service.credentialRaw(row)).claudeAiOauth.refreshToken).toBe(reconnect ? "reconnected-refresh" : "pending-refresh");
+  });
+
+  it.each([false, true])("renews an expired retained pair after recovery before starting a run (already saved=%s)", async alreadySaved => {
+    const { service, row, secretId, owner, account } = await connect(document(Date.now() - 60_000));
+    const realService = secretModule.secretService;
+    let retained = "";
+    const failingVault = vi.spyOn(secretModule, "secretService").mockImplementation((...args) => ({
+      ...realService(...args), rotate: async (_id, input) => {
+        if (typeof input.value !== "string") throw new Error("Expected a credential value");
+        retained = input.value;
+        throw new Error("vault is temporarily unavailable");
+      },
+    }));
+    const exchange = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response(JSON.stringify({ access_token: "retained-access", refresh_token: "retained-refresh", expires_in: 28800 })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ access_token: "current-access", refresh_token: "current-refresh", expires_in: 28800 })));
+    await expect(service.credential(row)).rejects.toThrow("vault is temporarily unavailable");
+    failingVault.mockRestore();
+    if (alreadySaved) await secretService(db).rotate(secretId, { value: retained, preserveAiSessionEpoch: true }, { userId: owner });
+    const nextDay = Date.now() + 9 * 3600_000;
+    vi.spyOn(Date, "now").mockReturnValue(nextDay);
+    const run = await prepareManagedAiRuntime(db, { companyId, agentId, responsibleUserId: owner, adapterType: "claude_local",
+      binding: { provider: "anthropic", method: "subscription", mode: "delegated", ...account }, config: { env: {} } });
+    try {
+      expect(run.config.env.CLAUDE_CODE_OAUTH_TOKEN).toBe("current-access");
+      expect(exchange).toHaveBeenCalledTimes(2);
+      expect(JSON.parse(exchange.mock.calls[1]![1]!.body as string).refresh_token).toBe("retained-refresh");
+      const saved = JSON.parse(await service.credentialRaw(row)).claudeAiOauth;
+      expect(saved.refreshToken).toBe("current-refresh");
+      expect(saved.expiresAt).toBeGreaterThan(nextDay);
+    } finally { await run.cleanup(); }
   });
 
   it("narrows a fresh broad login token before delivering it to execution", async () => {

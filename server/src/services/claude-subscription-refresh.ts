@@ -28,6 +28,7 @@ export async function refreshClaudeSubscription(
     // same single-use refresh token a second time during a save retry.
     const key = pendingKey(companyId, row.grant.id);
     let replacement = pendingExchanges.get(key);
+    let recheckedRecovery = false;
     for (let attempt = 0; ; attempt++) {
       let committed = false;
       try {
@@ -47,7 +48,7 @@ export async function refreshClaudeSubscription(
           )).for("update", { noWait: true });
           if (!secret) throw unprocessable("Reconnect this AI account");
           const current = await readRaw(tx as unknown as Db, { connection: row.connection, grant });
-          if (replacement && current === replacement.value) return { value: current };
+          if (replacement && current === replacement.value) return { value: current, recovered: true };
           // A reconnect or an explicit rotation wins over an uncommitted exchange.
           if (replacement && (secret.id !== replacement.secretId || secret.aiSessionEpoch !== replacement.epoch
             || secret.latestVersion !== replacement.version || current !== replacement.base)) {
@@ -55,13 +56,14 @@ export async function refreshClaudeSubscription(
             replacement = undefined;
           }
           const stored = parseStoredClaudeOauth(current);
-          if (!stored || !claudeRefreshDue(stored)) return { value: current };
+          if (!stored || (!replacement && !claudeRefreshDue(stored))) return { value: current };
+          const recovering = Boolean(replacement);
           let refreshed = replacement?.value;
           if (!refreshed) {
             try { refreshed = await refreshClaudeOauth(stored); }
             catch (error) {
-              if (stored.expiresAt > Date.now() && claudeScopesAllowRun(stored)) return { value: current };
-              if (!claudeScopesAllowRun(stored)) {
+              if (stored.expiresAt > Date.now()) {
+                if (claudeScopesAllowRun(stored)) return { value: current };
                 throw unprocessable("Claude sign-in could not supply an inference-only token. Retry or reconnect.", { code: "ai_connection_busy" });
               }
               if (!(error instanceof ClaudeOauthRefreshError) || !error.rejected) {
@@ -81,13 +83,25 @@ export async function refreshClaudeSubscription(
           await logActivity(tx as unknown as Db, { companyId, actorType: "system", actorId: "claude_refresh",
             action: "ai_connection.credential_refreshed", entityType: "tool_connection", entityId: row.connection.id,
             details: { provider: "anthropic", grantId: grant.id } });
-          return { value: refreshed };
+          return { value: refreshed, recovered: recovering };
         });
         committed = true;
         // Only a confirmed commit or an explicit generation discard settles this obligation.
         pendingExchanges.delete(key);
         if (result.reauth) throw aiConnectionConfigurationFailure("ai_connection_unavailable", "Sign in again to restore this AI connection.", { connectionId: row.connection.id });
         const credential = parseStoredClaudeOauth(result.value!);
+        if (result.recovered && credential && claudeRefreshDue(credential) && !recheckedRecovery) {
+          // First commit the retained pair. It may have expired during a vault
+          // outage; renew its saved refresh token before handing it to a run.
+          // One recheck is enough: a newly issued but unusable token fails closed.
+          recheckedRecovery = true;
+          replacement = undefined;
+          attempt = -1;
+          continue;
+        }
+        if (credential && credential.expiresAt <= Date.now()) {
+          throw unprocessable("Claude sign-in expired during preparation. Retry shortly.", { code: "ai_connection_busy" });
+        }
         if (credential && !claudeScopesAllowRun(credential)) {
           // Keep the rotated pair in the vault, but never expose broad permissions.
           throw unprocessable("Claude sign-in could not supply an inference-only token. Retry or reconnect.", { code: "ai_connection_busy" });
