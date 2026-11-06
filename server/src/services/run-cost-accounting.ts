@@ -32,10 +32,28 @@ async function readAccountingClosure(db: Db, runId: string) {
     preProviderFailure: sql<boolean>`(${heartbeatRuns.resultJson}->'executionRecovery'->>'providerWorkStarted' = 'false'
       or ${heartbeatRuns.usageJson}->>'accountingProviderWorkStarted' = 'false') is true`,
     coordinatorId: nativeRunFinalizations.runId, resultId: nativeRunFinalizations.resultId, phase: nativeRunFinalizations.phase,
+    processPid: heartbeatRuns.processPid, processGroupId: heartbeatRuns.processGroupId,
   }).from(heartbeatRuns).leftJoin(nativeRunFinalizations, and(
     eq(nativeRunFinalizations.runId, heartbeatRuns.id), eq(nativeRunFinalizations.companyId, heartbeatRuns.companyId),
   )).where(eq(heartbeatRuns.id, runId));
   return closure;
+}
+
+/** A native run's receipt source is closed when recovery reached terminal
+ * failure and the run no longer records a provider process identity: recovery
+ * clears it only after verifying that process stopped. */
+const closedNativeReceiptSource = sql`${heartbeatRuns.runtimeMode} = 'native'
+  and ${heartbeatRuns.processPid} is null and ${heartbeatRuns.processGroupId} is null
+  and exists (select 1 from ${nativeRunFinalizations} where ${nativeRunFinalizations.runId} = ${heartbeatRuns.id}
+    and ${nativeRunFinalizations.companyId} = ${heartbeatRuns.companyId}
+    and ${nativeRunFinalizations.resultId} is null and ${nativeRunFinalizations.phase} = 'terminal_failure')`;
+
+async function nativeReceiptSourceClosed(db: Db, run: Pick<typeof heartbeatRuns.$inferSelect,
+  "id" | "companyId" | "runtimeMode" | "processPid" | "processGroupId">) {
+  if (run.runtimeMode !== "native" || run.processPid !== null || run.processGroupId !== null) return false;
+  const [coordinator] = await db.select({ phase: nativeRunFinalizations.phase, resultId: nativeRunFinalizations.resultId })
+    .from(nativeRunFinalizations).where(and(eq(nativeRunFinalizations.runId, run.id), eq(nativeRunFinalizations.companyId, run.companyId)));
+  return coordinator?.phase === "terminal_failure" && coordinator.resultId === null;
 }
 
 /** The run's persisted usage is a durable receipt. Ledger, reservation handoff
@@ -100,8 +118,12 @@ export async function accountRunCost(db: Db, runId: string, hooks: BudgetService
     }
     // A stop can mark the run terminal before the provider's shutdown receipt
     // arrives. Keep the debt pending instead of acknowledging an invented zero
-    // and permanently discarding that late receipt.
-    if (!preProviderFailure && object(run.usageJson).accountingReceiptReady === false) return false;
+    // and permanently discarding that late receipt. Once native recovery has
+    // given up and the provider process is verified stopped, no producer can
+    // deliver it: settle the known part as unpriced usage. A later receipt
+    // still posts through late-receipt reconciliation.
+    const receiptUnavailable = !preProviderFailure && object(run.usageJson).accountingReceiptReady === false;
+    if (receiptUnavailable && !(await nativeReceiptSourceClosed(tx, run))) return false;
     if (!preProviderFailure) await ensureRuntimeAccountingBaseline(tx, run.companyId, run.agentId);
     // Acknowledgement is part of the same transaction. Budget checks inside
     // this transaction must not mistake this receipt for missing accounting.
@@ -141,7 +163,7 @@ export async function accountRunCost(db: Db, runId: string, hooks: BudgetService
       providerRequestId: text(usage.providerRequestId),
       pricingProvenance: object(usage.pricingProvenance),
       model: text(usage.model) ?? "unknown", billingType,
-      costStatus: (costUsd === null || usage.costStatus === "unpriced") && billingType !== "subscription_included" && hasBillableEvidence ? "unpriced" : usage.costStatus === "estimated" ? "estimated" : "reported",
+      costStatus: (costUsd === null || usage.costStatus === "unpriced" || receiptUnavailable) && billingType !== "subscription_included" && hasBillableEvidence ? "unpriced" : usage.costStatus === "estimated" ? "estimated" : "reported",
       inputTokens: amount(usage.inputTokens) ?? 0, cachedInputTokens: amount(usage.cachedInputTokens) ?? 0, outputTokens: amount(usage.outputTokens) ?? 0,
       costCents, occurredAt: run.finishedAt ?? run.createdAt,
     };
@@ -197,7 +219,8 @@ function actionableRunAccounting() {
         or not exists (select 1 from ${nativeRunFinalizations} where ${nativeRunFinalizations.runId} = ${heartbeatRuns.id}
         and ${heartbeatRuns.runtimeMode} = 'native' and ${nativeRunFinalizations.resultId} is null
         and ${nativeRunFinalizations.phase} <> 'terminal_failure'))`,
-      sql`(${heartbeatRuns.usageJson}->>'accountingReceiptReady' is distinct from 'false' or ${heartbeatRuns.resultJson}->'executionRecovery'->>'providerWorkStarted' = 'false' or ${heartbeatRuns.usageJson}->>'accountingProviderWorkStarted' = 'false')`,
+      sql`(${heartbeatRuns.usageJson}->>'accountingReceiptReady' is distinct from 'false' or ${heartbeatRuns.resultJson}->'executionRecovery'->>'providerWorkStarted' = 'false' or ${heartbeatRuns.usageJson}->>'accountingProviderWorkStarted' = 'false'
+        or (${closedNativeReceiptSource}))`,
     )),
   );
 }

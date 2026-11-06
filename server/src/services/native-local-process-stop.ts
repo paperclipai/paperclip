@@ -3,6 +3,7 @@ import { and, asc, desc, eq, exists, gt, inArray, isNotNull, isNull, or, sql } f
 import { environmentLeases, heartbeatRunEvents, heartbeatRuns, nativeRunFinalizations, type Db } from "@paperclipai/db";
 import { notifyRetainedNativeSessionCleanup } from "./retained-native-session-cleanup-notifications.js";
 import { appendHeartbeatRunEvent } from "./heartbeat-run-events.js";
+import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { nativeSessionProviderEvidence } from "./native-runtime/native-session-resume.js";
 import { hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
 import os from "node:os";
@@ -70,6 +71,9 @@ export async function recordNativeLocalProcessStop(db: Db, run: Pick<typeof hear
     payload: { processPid: run.processPid, processGroupId: run.processGroupId,
       processStartedAt: run.processStartedAt?.toISOString() ?? null },
   });
+  // A stopped provider closes its usage source. Accounting may now settle a
+  // terminal run whose final receipt can no longer arrive.
+  await notifyDeliveryWork(db, DELIVERY_QUEUES.accounting, run.companyId);
   return true;
 }
 
