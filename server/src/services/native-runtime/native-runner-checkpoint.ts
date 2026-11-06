@@ -1,3 +1,4 @@
+import { readNativeCheckpointRetirement } from "./native-runner-checkpoint-retirement.js";
 import { notifyLiveRunRecovery } from "../live-run-recovery-notifications.js";
 import { and, eq, exists, gt, isNull, lte, inArray, notExists, or, sql } from "drizzle-orm";
 import { checkpointDb, heartbeatRuns, issues, nativeRunFinalizations, nativeRunnerCheckpoints, type Db } from "@paperclipai/db";
@@ -127,6 +128,12 @@ export function nativeRunnerCheckpointWriter(db: Db, owner: NativeRunnerCheckpoi
         await assertNativeSourceCheckpointConsumer(tx, owner, checkpoint);
       }
       await assertNativeRunnerCheckpointOwner(tx, owner, checkpoint.workCommandIds.some(id => !previousWork.has(id)));
+      if (checkpoint.reset || checkpoint.changedRecords.has("header") || checkpoint.removedRecords.includes("header")) {
+        const [header] = await tx.select({ material: nativeRunnerCheckpoints.material }).from(nativeRunnerCheckpoints).where(and(
+          eq(nativeRunnerCheckpoints.companyId, owner.companyId), eq(nativeRunnerCheckpoints.runId, owner.runId),
+          eq(nativeRunnerCheckpoints.part, "header"))).for("share").limit(1);
+        if (header && readNativeCheckpointRetirement(header.material, owner)) throw new Error("native_runner_checkpoint_retired");
+      }
       if (checkpoint.predecessor) {
         const [prior] = await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
           eq(heartbeatRuns.id, checkpoint.predecessor.runId), eq(heartbeatRuns.companyId, owner.companyId),
@@ -216,6 +223,7 @@ export async function loadNativeRunnerCheckpointHeader(db: Pick<Db, "select">, b
     eq(nativeRunnerCheckpoints.companyId, binding.companyId), eq(nativeRunnerCheckpoints.issueId, binding.issueId),
     eq(nativeRunnerCheckpoints.runId, binding.runId), eq(nativeRunnerCheckpoints.part, "header"))).limit(1);
   if (!row) return null;
+  if (readNativeCheckpointRetirement(row.material, binding)) throw new Error("native_runner_checkpoint_retired");
   try { return decryptPart(createLocalEncryptedCipher("read"), binding, "header", row.material); }
   catch { return null; }
 }
@@ -225,6 +233,8 @@ export async function loadNativeRunnerCheckpoint(db: Pick<Db, "select">, binding
     eq(nativeRunnerCheckpoints.companyId, binding.companyId), eq(nativeRunnerCheckpoints.issueId, binding.issueId),
     eq(nativeRunnerCheckpoints.runId, binding.runId)));
   if (!rows.length) return null;
+  const header = rows.find(row => row.part === "header");
+  if (header && readNativeCheckpointRetirement(header.material, binding)) throw new Error("native_runner_checkpoint_retired");
   const cipher = createLocalEncryptedCipher("read");
   const parts = new Map(rows.map(row =>
     [row.part, decryptPart(cipher, binding, row.part, row.material)] as const));

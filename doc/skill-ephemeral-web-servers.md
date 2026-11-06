@@ -90,15 +90,17 @@ use the latest branch as a replacement for missing installed content.
    `versions` phases. The latter also fills missing version metadata indexes so
    subsequent library/history reads need no object downloads. Keep original bytes
    until independent verification succeeds.
-3. Stop admission and skill/source writers; retire every filesystem-authoritative
-   process. The `--writers-stopped` flag attests this operator action; it does not
-   stop the application itself.
-4. Apply final installation conversion on the host with the legacy files:
+3. Copy installations on the host with the legacy files. This phase shares the
+   cache, publication and row locks with normal writers. It checks the exact
+   local source again before publication:
 
    ```sh
-   pnpm --filter @paperclipai/server exec tsx scripts/migrate-skill-packages.ts --phase=installations --company=<uuid> --limit=10 --apply --writers-stopped
+   pnpm --filter @paperclipai/server exec tsx scripts/migrate-skill-packages.ts --phase=installations --company=<uuid> --limit=10 --apply
    ```
 
+4. Keep all original directories, versions and inline bytes. Conversion does not
+   settle old execution, recovery or pin uncertainty. Preserve or settle every
+   remaining local dependency through its owner before removing the volume.
 5. Sweep `eligibility` and `verification`, including all historical versions. The
    latter verifies object bytes independently of caches. Follow all cursors; a
    successful first batch is not a complete readiness report.
@@ -109,9 +111,10 @@ Managed conversion preserves skill IDs, keys, history, assignments, pins and acc
 provenance. Identical complete snapshots reuse their version IDs. Catalog conversion
 preserves the original reset version as well as installed content. A missing legacy
 directory can use a complete verified saved version. A partial Markdown-only rescue,
-unknown revision, unsafe source tree or active legacy selection without exact version
-identity is a blocker. Settle or snapshot such runs while A is still available; do
-not cancel them simply to pass preflight.
+unknown revision or unsafe source tree blocks conversion. An active legacy selection
+without exact version identity remains a retention and volume-removal blocker even
+after copy-only conversion. Preserve or settle such runs while A is still available;
+do not cancel them simply to pass preflight.
 
 Report statuses distinguish linked-local sources, legacy managed/catalog records,
 missing current versions, unknown active-run selections, missing/corrupt packages,
