@@ -24,8 +24,6 @@ const VERIFY_READ_ATTEMPTS = 3;
 const VERIFY_READ_BACKOFF_MS = [250, 1_000];
 const TRANSIENT_READ_CODES = new Set(["ECONNRESET", "EPIPE", "ETIMEDOUT", "ECONNABORTED", "ERR_STREAM_PREMATURE_CLOSE"]);
 
-/** A body cut off mid-download (socket reset after HTTP 200) says nothing
- * about the stored bytes; reading the object again is safe. */
 function isTransientRead(error: unknown, signal: AbortSignal): boolean {
   if (signal.aborted || !error || typeof error !== "object") return false;
   const { code, message } = error as { code?: unknown; message?: unknown };
@@ -40,8 +38,6 @@ function delay(ms: number, signal: AbortSignal): Promise<void> {
   });
 }
 
-/** Digest of the already-published object. A missing/unreadable object keeps
- * reporting the publication error; a body cut off mid-download is re-read. */
 async function publishedDigest(provider: StorageProvider, objectKey: string, signal: AbortSignal, publishError: unknown): Promise<string> {
   for (let attempt = 1; ; attempt++) {
     const existing = await provider.getObject({ objectKey, signal }).catch(() => { throw publishError; });

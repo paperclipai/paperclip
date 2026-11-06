@@ -67,9 +67,13 @@ it("refuses a build which reuses a published name for different bytes", async ()
   expect(objects.get("ui-assets/v1/chunk-hash.js")?.toString()).toBe("original");
 });
 
-function resetStream(): Readable {
+function resetStream(prefix: Buffer): Readable {
+  let sent = false;
   return new Readable({
-    read() { this.destroy(Object.assign(new Error("aborted"), { code: "ECONNRESET" })); },
+    read() {
+      if (!sent) { sent = true; this.push(prefix); return; }
+      this.destroy(Object.assign(new Error("aborted"), { code: "ECONNRESET" }));
+    },
   });
 }
 
@@ -83,9 +87,9 @@ it("re-reads a published asset whose download is cut off mid-body", async () => 
   provider.getObject = async input => {
     reads++;
     const object = await getObject(input);
-    return reads === 1 ? { ...object, stream: resetStream() } : object;
+    return reads === 1 ? { ...object, stream: resetStream(Buffer.from("orig")) } : object;
   };
-  await retained.publish(root);
+  await expect(retained.publish(root)).resolves.toBeUndefined();
   expect(reads).toBe(2);
 });
 
@@ -96,7 +100,7 @@ it("still fails startup when every re-read is cut off", async () => {
   await retained.publish(root);
   const getObject = provider.getObject.bind(provider);
   let reads = 0;
-  provider.getObject = async input => { reads++; return { ...(await getObject(input)), stream: resetStream() }; };
+  provider.getObject = async input => { reads++; return { ...(await getObject(input)), stream: resetStream(Buffer.from("orig")) }; };
   await expect(retained.publish(root)).rejects.toMatchObject({ code: "ECONNRESET" });
   expect(reads).toBe(3);
 });
