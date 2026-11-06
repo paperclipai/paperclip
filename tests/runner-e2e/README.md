@@ -1208,6 +1208,27 @@ changes can repeat the dependency install; this bounds retained builder disk
 at the cost of install-cache granularity. The build reports workspace and pack
 sizes, and final runtime and CLI checks still execute in the published image.
 
+Build speed comes from three layout rules. The Rust third-party dependency
+graph compiles in its own layer, keyed only by the Cargo manifests and lock, so
+a Runner source change recompiles one crate from the default-branch registry
+cache. The revision-metadata step sits above both `COPY --from` steps, so the
+cached base and CLI layers download while the builder stages compile. Both
+copies use `--link`, so they do not wait for that download.
+
+To publish only the image for a branch, without a paid gate, dispatch with
+`image_only`. Authorization, target resolution, catalog validation and the
+signed, verified image publication run unchanged; every campaign job is
+skipped. Keep a selector that includes a Daytona cell:
+
+```bash
+gh workflow run runner-full-stack-e2e.yml \
+  --ref master \
+  -f target_branch=fix/example \
+  -f all=false \
+  -f id=core-compatibility.runner-codex.daytona.message-marker \
+  -f image_only=true
+```
+
 The ephemeral Daytona fixture requests a 60-minute wall-clock lifetime at creation.
 The provider destroys each sandbox at that expiry in any state. This bound includes
 room for each declared attempt and the acquisition budget. It supplements the
