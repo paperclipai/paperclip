@@ -2,7 +2,7 @@ import { updateAgentConfigurationInTransaction } from "./agent-configuration-tra
 import { createHash } from "node:crypto";
 import { adoptAgentFiles, agentFileToken, isAgentFileSaveRecorded } from "./agent-file-store.js";
 import { invalidateAgentFileProjection, persistDurableAgentFiles } from "./agent-file-durability.js";
-import { and, desc, eq, getTableColumns, lt, or, sql } from "drizzle-orm";
+import { and, desc, eq, getTableColumns, inArray, sql } from "drizzle-orm";
 import {
   activityLog,
   agents,
@@ -142,9 +142,9 @@ export function agentInstructionRevisionService(db: Db) {
       const state = await lockTarget(tx, target);
       const bound = await authorizePluginReset(tx, actor, target, state.agent);
       // Preserve the formerly configured entry before an explicit stock reset.
-      await currentFile(tx, target, state, bound);
-      const row = await currentFile(tx, target, { ...state, entryFile: bound.declaredEntryFile }, bound);
-      return { snapshot: row ? snapshot(row) : null, configuredEntryFile: state.entryFile };
+      await currentFile(tx, target, state);
+      const row = await currentFile(tx, target, { ...state, entryFile: bound.declaredEntryFile });
+      return { snapshot: row ? snapshot(await withSaveRecord(tx, row)) : null, configuredEntryFile: state.entryFile };
     });
   }
   async function head(tx: Tx, target: InstructionTarget, entryFile: string) {
@@ -157,33 +157,76 @@ export function agentInstructionRevisionService(db: Db) {
   }
   // The deployed revision tables are read-only upgrade input. Current bytes
   // live in the agent directory; old UUID clients receive a content ETag.
-  async function currentFile(tx: Tx, target: InstructionTarget, state: Awaited<ReturnType<typeof lockTarget>>, actor?: RevisionActor) {
+  async function currentFile(tx: Tx, target: InstructionTarget, state: Awaited<ReturnType<typeof lockTarget>>) {
     await adoptAgentFiles(tx, state.agent);
     const bytes = await readInstructionBytes(state.root, state.entryFile);
     if (bytes === null) return null;
-    return currentRow(target, state.entryFile, bytes, actor);
+    return currentRow(target, state.entryFile, bytes);
   }
   function currentRow(target: InstructionTarget, entryFile: string, bytes: Buffer, actor?: RevisionActor): Revision {
     return { ...target, id: agentFileToken(bytes), entryFile, contentBase64: bytes.toString("base64"),
       contentHash: createHash("sha256").update(bytes).digest("hex"), byteLength: bytes.length,
       parentRevisionId: null, baseRevisionId: null, restoredFromRevisionId: null, source: "api",
+      ...actorFields(actor), createdAt: new Date(0) };
+  }
+  function actorFields(actor?: RevisionActor) {
+    return {
       actorAgentId: actor?.type === "agent" ? actor.agentId ?? null : null,
       actorUserId: actor?.type === "board" ? actor.userId ?? null : null,
       responsibleUserId: actor?.type === "board" ? actor.userId ?? null : actor?.type === "agent" ? actor.onBehalfOfUserId ?? null : null,
-      sourceRunId: actor && actor.type !== "plugin" ? actor.runId ?? null : null, createdAt: new Date(0) };
+      sourceRunId: actor && actor.type !== "plugin" ? actor.runId ?? null : null,
+    };
   }
-  async function getRevision(
-    tx: Tx,
-    target: InstructionTarget,
-    entryFile: string,
-    id: string,
-  ) {
-    const [row] = await tx
-      .select()
-      .from(revisions)
-      .where(and(owner(target, entryFile), eq(revisions.id, id)));
-    if (!row) throw notFound("Instruction revision not found");
-    return row;
+  // Every save writes one `agent.files_updated` row with the path and content
+  // hash. Those rows are the instruction history; adoption rows only repair the
+  // runtime journal and name nobody as the writer.
+  function saveRecords(target: InstructionTarget, entryFile: string) {
+    return and(
+      eq(activityLog.companyId, target.companyId), eq(activityLog.entityType, "agent"),
+      eq(activityLog.entityId, target.agentId), eq(activityLog.action, "agent.files_updated"),
+      eq(sql<string>`${activityLog.details}->>'path'`, entryFile),
+      sql`${activityLog.details}->>'contentHash' is not null`,
+      sql`${activityLog.details}->>'source' is distinct from 'adopted'`,
+    );
+  }
+  type SaveRecord = typeof activityLog.$inferSelect;
+  function saveSource(source: unknown): AgentInstructionSource {
+    if (source === "legacy_restore") return "restore";
+    return source === "board" || source === "api" || source === "tool" || source === "cleanup" ? source : "api";
+  }
+  function saveRevision(save: SaveRecord, entryFile: string, current: Revision | null): Omit<Revision, "contentBase64"> {
+    const contentHash = String(save.details!.contentHash);
+    const byteLength = typeof save.details!.byteLength === "number" ? save.details!.byteLength
+      : current?.contentHash === contentHash ? current.byteLength : 0;
+    return { id: save.id, companyId: save.companyId, agentId: save.entityId, entryFile, contentHash, byteLength,
+      parentRevisionId: null, baseRevisionId: null, restoredFromRevisionId: null, source: saveSource(save.details!.source),
+      actorAgentId: save.actorType === "agent" ? save.actorId : null,
+      actorUserId: save.actorType === "user" ? save.actorId : null,
+      responsibleUserId: save.responsibleUserId, sourceRunId: save.runId, createdAt: save.createdAt };
+  }
+  // The content ETag carries no history. Its writer is the latest save of these
+  // exact bytes, never the reader; bytes with no recorded save have no writer.
+  async function withSaveRecord(tx: Tx, row: Revision): Promise<Revision> {
+    const [saved] = await tx.select().from(activityLog)
+      .where(and(saveRecords(row, row.entryFile), eq(sql<string>`${activityLog.details}->>'contentHash'`, row.contentHash)))
+      .orderBy(desc(activityLog.createdAt), desc(activityLog.id)).limit(1);
+    if (!saved) return row;
+    const { id: _saveId, byteLength: _byteLength, ...writer } = saveRevision(saved, row.entryFile, row);
+    return { ...row, ...writer, id: row.id, byteLength: row.byteLength };
+  }
+  // A history ID is a legacy revision, a save record, or the current content
+  // ETag. A save's bytes are kept only while they are still current.
+  async function resolveRevision(tx: Tx, target: InstructionTarget, entryFile: string, id: string, current: Revision | null): Promise<Revision> {
+    const [legacy] = await tx.select().from(revisions).where(and(owner(target, entryFile), eq(revisions.id, id)));
+    if (legacy) return legacy;
+    if (current && current.entryFile === entryFile && current.id === id) return withSaveRecord(tx, current);
+    const [saved] = await tx.select().from(activityLog).where(and(saveRecords(target, entryFile), eq(activityLog.id, id)));
+    if (!saved) throw notFound("Instruction revision not found");
+    if (!current || current.entryFile !== entryFile || current.contentHash !== saved.details!.contentHash) {
+      throw notFound("This save is in the history, but its content is no longer kept. Only the current content can be read.", {
+        code: "INSTRUCTION_REVISION_CONTENT_NOT_RETAINED", revisionId: id });
+    }
+    return { ...saveRevision(saved, entryFile, current), contentBase64: current.contentBase64 };
   }
   async function readCurrent(
     target: InstructionTarget,
@@ -191,9 +234,9 @@ export function agentInstructionRevisionService(db: Db) {
   ): Promise<AgentInstructionSnapshot | null> {
     return db.transaction(async (tx) => {
       const state = await lockTarget(tx, target, actor);
-      const bound = await authorizeRead(tx, actor, target);
-      const row = await currentFile(tx, target, state, bound);
-      return row ? snapshot(row) : null;
+      await authorizeRead(tx, actor, target);
+      const row = await currentFile(tx, target, state);
+      return row ? snapshot(await withSaveRecord(tx, row)) : null;
     });
   }
   /** Trusted orchestration read for the already authorized run target. This
@@ -239,23 +282,27 @@ export function agentInstructionRevisionService(db: Db) {
           { code: "INSTRUCTION_ENTRY_CHANGED", entryFile: state.entryFile },
         );
       await assertInstructionPathSafe(state.root, state.entryFile);
-      const current = await currentFile(tx, input, state, bound);
+      const current = await currentFile(tx, input, state);
       const restored =
         "restoreRevisionId" in input
-          ? await getRevision(
+          ? await resolveRevision(
               tx,
               input,
               input.entryFile,
               input.restoreRevisionId,
+              current,
             )
           : null;
       const candidate = bytes ?? Buffer.from(restored!.contentBase64, "base64");
-      const recordSave = (row: Revision) => tx.insert(activityLog).values({ companyId: input.companyId,
+      const writer = actorFields(bound);
+      const recordSave = (row: Revision, adopted: boolean) => tx.insert(activityLog).values({ companyId: input.companyId,
         actorType: bound.type === "plugin" ? "plugin" : bound.type === "board" ? "user" : "agent",
         actorId: (bound.type === "plugin" ? bound.pluginId : bound.type === "board" ? bound.userId : bound.agentId)!,
-        agentId: bound.type === "agent" ? bound.agentId : null, runId: row.sourceRunId,
-        responsibleUserId: row.responsibleUserId, action: "agent.files_updated", entityType: "agent", entityId: input.agentId,
-        details: { path: input.entryFile, contentHash: row.contentHash, source: restored ? "legacy_restore" : (input as InstructionCommitInput).source } });
+        agentId: bound.type === "agent" ? bound.agentId : null, runId: writer.sourceRunId,
+        responsibleUserId: writer.responsibleUserId, action: "agent.files_updated", entityType: "agent", entityId: input.agentId,
+        details: { path: input.entryFile, contentHash: row.contentHash, byteLength: row.byteLength,
+          source: adopted ? "adopted" : restored ? "legacy_restore" : (input as InstructionCommitInput).source } })
+        .returning({ createdAt: activityLog.createdAt }).then(([saved]) => saved!.createdAt);
       const bindEntry = async () => {
         if (
           !state.agent.adapterConfig.instructionsRootPath ||
@@ -276,9 +323,11 @@ export function agentInstructionRevisionService(db: Db) {
       // An exact replay can safely return the durable receipt even after its base
       // advanced. Restore also deduplicates identical content, preserving history.
       if (current && current.contentBase64 === candidate.toString("base64")) {
-        if (!await isAgentFileSaveRecorded(tx, state.agent, input.entryFile, current.contentHash)) await recordSave(current);
+        // These bytes predate this call. Record the caller's adoption for the
+        // runtime journal, and answer with the bytes' own writer.
+        if (!await isAgentFileSaveRecorded(tx, state.agent, input.entryFile, current.contentHash)) await recordSave(current, true);
         await bindEntry();
-        return { row: current, changed: false };
+        return { row: await withSaveRecord(tx, current), changed: false };
       }
       // A pre-upgrade run can still pin a historical UUID. Compare its bytes,
       // never let the old head project over a newer directory.
@@ -299,7 +348,7 @@ export function agentInstructionRevisionService(db: Db) {
       await materializeInstructionBytes(state.root, state.entryFile, candidate);
       await persistDurableAgentFiles(tx, state.agent, state.root);
       const row = currentRow(input, input.entryFile, candidate, bound);
-      await recordSave(row);
+      row.createdAt = await recordSave(row, false);
       await bindEntry();
       return { row, changed: true };
     });
@@ -317,36 +366,38 @@ export function agentInstructionRevisionService(db: Db) {
     const limit = Math.max(1, Math.min(100, target.limit ?? 50));
     return db.transaction(async (tx) => {
       const state = await lockTarget(tx, target, actor);
-      const bound = await authorizeRead(tx, actor, target);
-      await currentFile(tx, target, state, bound);
-      instructionPath(target.entryFile);
-      const cursor = target.cursor
-        ? await getRevision(tx, target, target.entryFile, target.cursor)
-        : null;
+      await authorizeRead(tx, actor, target);
+      const current = await currentFile(tx, target, state);
+      const entryFile = instructionPath(target.entryFile);
+      // History merges adopted legacy revision rows with the save records that
+      // replaced them. Both share one (created_at, id) order.
+      const entries = sql`(
+        select ${revisions.id} as id, ${revisions.createdAt} as created_at from ${revisions}
+          where ${owner(target, entryFile)}
+        union all
+        select ${activityLog.id} as id, ${activityLog.createdAt} as created_at from ${activityLog}
+          where ${saveRecords(target, entryFile)}
+      ) entries`;
+      if (target.cursor) {
+        const [known] = await tx.execute<{ id: string }>(sql`select id from ${entries} where id = ${target.cursor}`);
+        if (!known) throw notFound("Instruction revision not found");
+      }
       // Keep PostgreSQL timestamp precision; JS Date truncates microseconds and
       // would skip revisions in the cursor's fractional millisecond.
-      const cursorTime = cursor
-        ? sql`(select created_at from agent_instruction_revisions where id = ${cursor.id})`
-        : null;
-      const rows = await tx
-        .select(revisionMetadataColumns)
-        .from(revisions)
-        .where(
-          and(
-            owner(target, target.entryFile),
-            cursor && cursorTime
-              ? or(
-                  lt(revisions.createdAt, cursorTime),
-                  and(
-                    eq(revisions.createdAt, cursorTime),
-                    lt(revisions.id, cursor.id),
-                  ),
-                )
-              : undefined,
-          ),
-        )
-        .orderBy(desc(revisions.createdAt), desc(revisions.id))
-        .limit(limit + 1);
+      const page = await tx.execute<{ id: string }>(sql`
+        select id from ${entries}
+        ${target.cursor ? sql`where (created_at, id) < (select created_at, id from ${entries} where id = ${target.cursor})` : sql``}
+        order by created_at desc, id desc limit ${limit + 1}`);
+      const ids = Array.from(page, (row) => row.id);
+      const legacy = ids.length ? await tx.select(revisionMetadataColumns).from(revisions)
+        .where(and(owner(target, entryFile), inArray(revisions.id, ids))) : [];
+      const saves = ids.length ? await tx.select().from(activityLog)
+        .where(and(saveRecords(target, entryFile), inArray(activityLog.id, ids))) : [];
+      const byId = new Map<string, Omit<Revision, "contentBase64">>([
+        ...legacy.map((row) => [row.id, row] as const),
+        ...saves.map((save) => [save.id, saveRevision(save, entryFile, current)] as const),
+      ]);
+      const rows = ids.map((id) => byId.get(id)!);
       return {
         revisions: rows.slice(0, limit).map(metadata),
         nextCursor: rows.length > limit ? rows[limit - 1]!.id : null,
@@ -358,14 +409,15 @@ export function agentInstructionRevisionService(db: Db) {
     actor: AuthorizationActor,
   ) {
     return db.transaction(async (tx) => {
-      await lockTarget(tx, target, actor);
+      const state = await lockTarget(tx, target, actor);
       await authorizeRead(tx, actor, target);
       return snapshot(
-        await getRevision(
+        await resolveRevision(
           tx,
           target,
           instructionPath(target.entryFile),
           target.revisionId,
+          await currentFile(tx, target, state),
         ),
       );
     });

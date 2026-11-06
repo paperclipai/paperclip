@@ -233,7 +233,8 @@ export function agentFileStore(db: Db) {
         const currentHash = previous?.hash ?? null;
         const incomingHash = input.bytes === null ? null : fileHash(input.bytes);
         if (currentHash === incomingHash) {
-          if (!await isAgentFileSaveRecorded(tx, agent, relative, incomingHash)) await audit(tx, agent, bound, { path: relative, contentHash: incomingHash });
+          // Bytes already on disk are adopted, not written, by this caller.
+          if (!await isAgentFileSaveRecorded(tx, agent, relative, incomingHash)) await audit(tx, agent, bound, { path: relative, contentHash: incomingHash, source: "adopted" });
           return { contentHash: currentHash, changed: false };
         }
         if (currentHash !== input.baseHash) throw conflict("This file changed since it was read. Reload before saving.", { code: "AGENT_FILE_CONFLICT", path: relative, currentHash });
@@ -249,7 +250,7 @@ export function agentFileStore(db: Db) {
         }
         if (input.bytes === null) await fs.unlink(await assertInstructionPathSafe(root, relative));
         else await materializeInstructionBytes(root, relative, input.bytes);
-        await audit(tx, agent, bound, { path: relative, contentHash: incomingHash });
+        await audit(tx, agent, bound, { path: relative, contentHash: incomingHash, ...(input.bytes ? { byteLength: input.bytes.length } : {}) });
         return { contentHash: incomingHash, changed: true };
       }),
     apply: (input: { companyId: string; agentId: string; sourceDir: string; baseline: DirectorySnapshot; checkpoint?: AgentFileManifest }, actor: AuthorizationActor) =>
@@ -313,7 +314,11 @@ export function agentFileStore(db: Db) {
         assertDirectorySize(total, finalEntries.size);
         await mergeDirectoryWithBaseline({ ...input, baseline: applyBaseline, targetDir: root,
           ...(input.checkpoint ? { snapshots: { source: incoming, current } } : {}) });
-        await audit(tx, agent, bound, { sourceRunId: actor.runId, contract: AGENT_FILES_CONTRACT });
+        // A run that changed the instruction entry saved it: name the entry and
+        // its resulting bytes so instruction history can show this save.
+        const entry = changed.includes(entryPath) ? await readInstructionBytes(root, entryPath) : null;
+        await audit(tx, agent, bound, { sourceRunId: actor.runId, contract: AGENT_FILES_CONTRACT,
+          ...(entry ? { path: entryPath, contentHash: fileHash(entry), byteLength: entry.length } : {}) });
         return { storageWarning: storageWarning(total, finalEntries.size, fullFile) };
       }),
   };
