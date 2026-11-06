@@ -84,8 +84,11 @@ describe("agent lifecycle commands", () => {
     expect(console.log).toHaveBeenCalledWith(JSON.stringify(cleared, null, 2));
   });
 
-  it("reports a refused clear-error request without a second lifecycle action", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ error: "Agent is not in error status" }, { status: 409 }));
+  it.each([
+    { status: 403, message: "Insufficient permission to clear this agent's error" },
+    { status: 409, message: "Agent is not in error status" },
+  ])("reports a $status clear-error refusal without attempting another lifecycle action", async ({ status, message }) => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ error: message }, { status }));
     vi.stubGlobal("fetch", fetchMock);
     vi.spyOn(console, "error").mockImplementation(() => {});
     vi.spyOn(process, "exit").mockImplementation(((code?: string | number | null) => {
