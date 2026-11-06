@@ -268,6 +268,49 @@ function resumeArchivedControlPlane(
   return archivedState;
 }
 
+/**
+ * Recognize a rotation that an earlier attempt already committed.
+ *
+ * The epoch archive for the active control plane's exact identity means a
+ * rotation away from that authority already started. A retry can restore the
+ * prior run's controller checkpoint into the root after that, which makes the
+ * root look as if the rotation never happened while its Runner state is
+ * already archived. Returns the archived snapshot (and removes the restored
+ * copy) so every caller continues from the same archive-only state, or null
+ * when no rotation was committed. A copy that still holds an unfinished warm
+ * transition, staged attachment, or pending attachment is not a plain restore
+ * and fails closed.
+ */
+function takeCommittedRotation(
+  root: string,
+  activeState: Record<string, unknown>,
+): Record<string, unknown> | null {
+  const identity = controlPlaneIdentity(activeState);
+  const archivedControlPlane = resolve(
+    authorityArchiveDirectory(root, identity),
+    "control-plane",
+  );
+  if (!existsSync(archivedControlPlane)) return null;
+  const pendingAttachment =
+    Array.isArray(activeState.commands) &&
+    activeState.commands.some((entry) => {
+      const command = record(entry);
+      return command.type === "run.attach" && command.status === "pending";
+    });
+  if (
+    activeState.warmTransition !== undefined ||
+    activeState.stagedRunAttachment !== undefined ||
+    pendingAttachment
+  ) {
+    throw new Error("native_runner_authority_archive_conflict");
+  }
+  return resumeArchivedControlPlane(
+    resolve(root, "control-plane"),
+    archivedControlPlane,
+    identity,
+  );
+}
+
 /** True only for two regular files with the same bytes. */
 function sameRegularFile(left: string, right: string): boolean {
   const leftMetadata = lstatSync(left);
@@ -5699,10 +5742,19 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       candidateRunnerState?.schema ===
         "paperclip.runner.durable.state.warm-transition.v1";
     let controlPlaneState: Record<string, unknown> | null;
+    // Set when the active control plane was a restored copy of authority that
+    // an earlier attempt already rotated away from (see takeCommittedRotation).
+    let committedRotationSource: Record<string, unknown> | null = null;
     try {
       controlPlaneState = existsSync(controlPlaneStatePath)
         ? readControlPlaneState(controlPlaneDirectory)
         : null;
+      // Normalize before any check trusts the active copy. Every later lane
+      // then sees the same archive-only state that the rotation committed.
+      if (controlPlaneState && supportsColdRotation) {
+        committedRotationSource = takeCommittedRotation(this.#root, controlPlaneState);
+        if (committedRotationSource) controlPlaneState = null;
+      }
     } catch (error) {
       if (supportsColdRotation && localStateOwner && !hasRunnerWarmBoundary) {
         quarantineLocalRuntimeState(this.#root, error);
@@ -5888,7 +5940,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         throw new Error("PRP provider resume state is unavailable");
       }
       // An interrupted rotation leaves only its archive marker.
-      rotationSource = latestArchivedControlPlaneState(
+      rotationSource = committedRotationSource ?? latestArchivedControlPlaneState(
         this.#root,
         desiredIdentity,
       );

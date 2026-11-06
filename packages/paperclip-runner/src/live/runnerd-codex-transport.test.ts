@@ -1823,6 +1823,56 @@ describe("authority rotation after the prior controller state is restored", () =
       }
     },
   );
+
+  // Drives the transport's real start path. The missing runnerd binary stops
+  // it right after the rotation, so its ENOENT proves the retry passed every
+  // earlier check without reading the retired live Runner state.
+  it.each([
+    ["a completed warm handoff", { completedWarmTransition: { receipt: { commandId: "warm-command" } } }, "resumes"],
+    ["a source attachment hook", {}, "resumes"],
+    ["an unfinished warm transition", { warmTransition: { receipt: { commandId: "warm-command" } } }, "conflicts"],
+    ["a pending attachment", { commands: [{ commandId: "attach", type: "run.attach", status: "pending", payload: {} }] }, "conflicts"],
+  ] as const)("transport retry after a committed rotation with %s", async (_name, restoredFields, outcome) => {
+    const root = await mkdtemp(join(tmpdir(), "runner-committed-rotation-transport-"));
+    const archiveKey = createHash("sha256").update(JSON.stringify(priorIdentity)).digest("hex").slice(0, 24);
+    const archivedControlPlane = join(root, "authority-epochs", `epoch-${archiveKey}`, "control-plane");
+    const restoredState = { ...controlPlaneState, ...restoredFields };
+    const steps: string[] = [];
+    const { transport } = createCapabilityRunnerdCodexTransport({
+      provider: "codex",
+      stateDirectory: root,
+      runnerBinary: join(root, "missing-paperclip-runnerd"),
+      prpIdentity: desiredIdentity,
+      ...(_name === "a source attachment hook" ? { onRecoveryAccountingEvent: () => undefined } : {}),
+      // The previous attempt already moved the live Runner state.
+      prepareExternalRunnerState: async () => { steps.push("prepared"); },
+      readRunnerState: async () => { steps.push("read"); throw new Error("live runner state was archived"); },
+      archiveExternalRunnerState: async (input) => {
+        steps.push(`archived:${input.archiveKey}`);
+        return suspendedRunnerState;
+      },
+    } as Parameters<typeof createCapabilityRunnerdCodexTransport>[0]);
+    try {
+      await mkdir(archivedControlPlane, { recursive: true });
+      await writeFile(join(archivedControlPlane, "control-plane-state.json"), JSON.stringify(controlPlaneState));
+      // Retry preparation restored the prior run's controller checkpoint.
+      await mkdir(join(root, "control-plane"), { recursive: true });
+      await writeFile(join(root, "control-plane", "control-plane-state.json"), JSON.stringify(restoredState));
+      const started = transport.request("thread/read", {});
+      if (outcome === "conflicts") {
+        await expect(started).rejects.toThrow("native_runner_authority_archive_conflict");
+        expect(steps).toEqual([]);
+        await expect(stat(join(root, "control-plane", "control-plane-state.json"))).resolves.toBeDefined();
+        return;
+      }
+      await expect(started).rejects.toThrow(/ENOENT|missing-paperclip-runnerd/);
+      expect(steps).toEqual([`archived:${archiveKey}`]);
+      await expect(stat(join(root, "control-plane"))).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      await transport.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 });
 
 it("quiesces the control route before checkpoint and containment regardless of process completion", async () => {
