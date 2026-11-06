@@ -458,6 +458,15 @@ describe("portable remote workspace archives", () => {
       { env: { ...env, PATH: `${bin}${path.delimiter}${process.env.PATH ?? ""}` } }))
       .rejects.toMatchObject({ code: 1, stdout: "", stderr: "remote_workspace_sandbox_disk_full: the sandbox disk is full; free space in the sandbox before saving the workspace" });
   });
+  it("keeps a failing Git program distinct from a damaged Git entry", async () => {
+    const cwd = await source(); await git(cwd, "init", "-q", "-b", "main");
+    const bin = path.join(root, "failing-bin"); await fs.mkdir(bin);
+    await fs.writeFile(path.join(bin, "git"), "#!/bin/sh\nprintf '%s' 'fatal: SYNTHETIC_PRIVATE_GIT_PATH' >&2\nexit 128\n", { mode: 0o700 });
+    const helper = path.join(root, "archive.cjs"); await fs.writeFile(helper, remoteWorkspaceArchiveScript());
+    await expect(execute(process.execPath, [helper, "capture", cwd, path.join(root, "remote.pcws")],
+      { env: { ...env, PATH: `${bin}${path.delimiter}${process.env.PATH ?? ""}` } }))
+      .rejects.toMatchObject({ code: 1, stdout: "", stderr: "remote_workspace_archive_failed: exit=128 program=git" });
+  });
   it.each([["an empty directory", "directory"], ["a gitfile for a removed worktree", "gitfile"]])(
     "does not save an enclosing repository's state for %s",
     async (_name, kind) => {
