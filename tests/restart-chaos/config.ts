@@ -30,7 +30,7 @@ export const DAYTONA_VCPU_BUDGET = 40;
 
 export type ParsedCommand =
   | { mode: "wave"; options: WaveOptions; keep: boolean }
-  | { mode: "replay"; ref: ReplayRef; keep: boolean; overrides: Partial<Pick<WaveOptions, "pollMs" | "budgetCents">> };
+  | { mode: "replay"; ref: ReplayRef; keep: boolean; overrides: Partial<Pick<WaveOptions, "pollMs" | "budgetCents" | "masks">> };
 
 export interface ReplayRef { waveId: string; taskId: string }
 
@@ -91,11 +91,13 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
   const pollMs = integer(values["poll-ms"], "poll-ms", 3_000, 2_000, 5_000);
   const budgetCents = integer(values["budget-cents"], "budget-cents", 3_000, 1, 100_000);
   if (values.replay !== undefined) {
-    for (const key of ["env", "adapters", "workloads", "faults", "triggers", "concurrency", "tasks", "seed", "daytona-image", "daytona-cpu", "rc06-masked"] as const) {
+    for (const key of ["env", "adapters", "workloads", "faults", "triggers", "concurrency", "tasks", "seed", "daytona-image", "daytona-cpu"] as const) {
       if (values[key] !== undefined) throw new Error(`--replay reproduces the saved plan; do not combine it with --${key}`);
     }
     return { mode: "replay", ref: parseReplayRef(values.replay), keep,
-      overrides: { ...(values["poll-ms"] ? { pollMs } : {}), ...(values["budget-cents"] ? { budgetCents } : {}) } };
+      overrides: { ...(values["poll-ms"] ? { pollMs } : {}), ...(values["budget-cents"] ? { budgetCents } : {}),
+        // The saved plan already carries its masks; this adds the RC-06 mask to a replay of an unmasked wave.
+        ...(values["rc06-masked"] ? { masks: ["rc06"] } : {}) } };
   }
   const env = (values.env ?? "local") as EnvironmentKind;
   if (!ENVIRONMENT_KINDS.includes(env)) throw new Error(`Unknown env "${env}"; allowed: ${ENVIRONMENT_KINDS.join(", ")}`);

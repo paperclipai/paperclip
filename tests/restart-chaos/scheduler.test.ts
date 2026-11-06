@@ -67,6 +67,20 @@ describe("replay", () => {
     expect(again.waveId).toBe(`${plan.waveId}-replay-t03-1700000000001`);
   });
 
+  it("keeps the source wave's masks on replay and lets --rc06-masked add the RC-06 mask", () => {
+    const masked = planWave("w-20261106T101112-s42", { ...plan.options, masks: ["rc06"] });
+    expect(replayWave(masked, { waveId: masked.waveId, taskId: "t01" }, 1).options.masks).toEqual(["rc06"]);
+    expect(replayWave(plan, { waveId: plan.waveId, taskId: "t01" }, 1).options.masks).toBeUndefined();
+    const command = parseCommand(["--replay", `${plan.waveId}/t01`, "--rc06-masked"]);
+    if (command.mode !== "replay") throw new Error("expected replay");
+    expect(command.overrides.masks).toEqual(["rc06"]);
+    expect(replayWave(plan, { waveId: plan.waveId, taskId: "t01" }, 1, command.overrides).options.masks).toEqual(["rc06"]);
+    expect(replayWave(masked, { waveId: masked.waveId, taskId: "t01" }, 1, command.overrides).options.masks).toEqual(["rc06"]);
+    const wave = parseCommand(["--rc06-masked", "--seed", "3"]);
+    if (wave.mode !== "wave") throw new Error("expected wave");
+    expect(wave.options.masks).toEqual(["rc06"]);
+  });
+
   it("replays the recorded fault sequence that crossed the task, other tasks' faults included", () => {
     const createdAt = 1_000_000;
     const faults = [
