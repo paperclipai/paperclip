@@ -282,14 +282,14 @@ describe("managed plugin environments under managed-sandbox-only", () => {
     metadata: { managedByPaperclip: true, defaultForInstance: true },
   });
   // Listed first, so a lookup that only excluded `local` would pick it.
-  const computer = makeEnvironment({
-    id: "computer-env",
-    name: "Paperclip Computer",
+  const pluginEnvironment = makeEnvironment({
+    id: "plugin-env",
+    name: "Remote Host",
     driver: "plugin",
-    config: { pluginKey: "paperclip-cloud.plugin-agent-computer", driverKey: "tasks", driverConfig: {} },
+    config: { pluginKey: "example.remote-host-plugin", driverKey: "tasks", driverConfig: {} },
     metadata: {
       managedByPaperclip: true,
-      managedPluginEnvironment: "paperclip-cloud.plugin-agent-computer:tasks",
+      managedPluginEnvironment: "example.remote-host-plugin:tasks",
     },
   });
   const sandbox = makeEnvironment({
@@ -297,7 +297,7 @@ describe("managed plugin environments under managed-sandbox-only", () => {
     name: "Paperclip Sandbox",
     metadata: { managedByPaperclip: true, managedSandboxProvider: "daytona" },
   });
-  const environments = [local, computer, sandbox];
+  const environments = [local, pluginEnvironment, sandbox];
   const resolve = (agentDefaultEnvironmentId: string | null, instanceDefaultEnvironmentId: string | null) =>
     resolveAdapterTestEnvironmentId({
       agentDefaultEnvironmentId,
@@ -305,23 +305,23 @@ describe("managed plugin environments under managed-sandbox-only", () => {
       localDefaultEnvironmentId: resolveLocalDefaultEnvironmentId(environments),
       managedSandboxOnly: true,
       managedSandboxEnvironmentId: resolveManagedSandboxEnvironmentId(environments),
-      visibleEnvironmentIds: [computer.id, sandbox.id],
+      visibleEnvironmentIds: [pluginEnvironment.id, sandbox.id],
     });
 
   it("never mistakes the plugin row for the managed sandbox", () => {
     expect(resolveManagedSandboxEnvironmentId(environments)).toBe("sandbox-env");
-    expect(resolveManagedSandboxEnvironmentId([local, computer])).toBeNull();
+    expect(resolveManagedSandboxEnvironmentId([local, pluginEnvironment])).toBeNull();
   });
 
-  it("tests an agent without a computer in the sandbox", () => {
-    expect(resolve("sandbox-env", "computer-env")).toBe("sandbox-env");
-    // An existing stack keeps local as its default: the redirect lands on the sandbox.
+  it("tests an agent without the plugin environment in the sandbox", () => {
+    expect(resolve("sandbox-env", "plugin-env")).toBe("sandbox-env");
+    // An instance that keeps local as its default: the redirect lands on the sandbox.
     expect(resolve(null, null)).toBe("sandbox-env");
   });
 
-  it("tests an agent on Paperclip Computer on its computer", () => {
-    expect(resolve("computer-env", null)).toBe("computer-env");
-    expect(resolve(null, "computer-env")).toBe("computer-env");
+  it("tests an agent on the plugin environment there", () => {
+    expect(resolve("plugin-env", null)).toBe("plugin-env");
+    expect(resolve(null, "plugin-env")).toBe("plugin-env");
   });
 });
 

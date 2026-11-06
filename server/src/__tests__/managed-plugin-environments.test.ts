@@ -13,7 +13,7 @@ import {
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { environmentService } from "../services/environments.js";
 
-const PLUGIN_KEY = "paperclip-cloud.plugin-agent-computer";
+const PLUGIN_KEY = "example.remote-host-plugin";
 const MARKER = `${PLUGIN_KEY}:tasks`;
 
 const support = await getEmbeddedPostgresTestSupport();
@@ -43,7 +43,7 @@ const support = await getEmbeddedPostgresTestSupport();
     await db.insert(plugins).values({
       id: pluginId,
       pluginKey: PLUGIN_KEY,
-      packageName: "@paperclip-cloud/plugin-agent-computer",
+      packageName: "@example/remote-host-plugin",
       version: "1.0.0",
       status: "ready",
       manifestJson: {
@@ -55,8 +55,8 @@ const support = await getEmbeddedPostgresTestSupport();
 
   const ensure = (overrides: Record<string, unknown> = {}) =>
     environmentService(db).ensureManagedPluginEnvironment({
-      name: "Paperclip Computer",
-      description: "Runs the agent on its own computer",
+      name: "Remote Host",
+      description: "Runs the agent on a remote host",
       pluginKey: PLUGIN_KEY,
       driverKey: "tasks",
       driverConfig: {},
@@ -75,8 +75,8 @@ const support = await getEmbeddedPostgresTestSupport();
     const first = await ensure();
     expect(first.action).toBe("added");
     expect(first.environment).toMatchObject({
-      name: "Paperclip Computer",
-      description: "Runs the agent on its own computer",
+      name: "Remote Host",
+      description: "Runs the agent on a remote host",
       driver: "plugin",
       status: "active",
       config: { pluginKey: PLUGIN_KEY, driverKey: "tasks", driverConfig: { normalized: true } },
@@ -96,7 +96,7 @@ const support = await getEmbeddedPostgresTestSupport();
   it("adopts a hand-made row for the same plugin and driver, keeping its agents", async () => {
     const companyId = await company();
     const [handMade] = await db.insert(environments).values({
-      name: "Computer (manual)",
+      name: "Remote Host (manual)",
       driver: "plugin",
       status: "active",
       config: { pluginKey: PLUGIN_KEY, driverKey: "tasks", driverConfig: {} },
@@ -111,7 +111,7 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({
       id: handMade!.id,
-      name: "Paperclip Computer",
+      name: "Remote Host",
       metadata: { note: "made by hand", managedByPaperclip: true, managedPluginEnvironment: MARKER },
     });
     const [kept] = await db.select().from(agents).where(eq(agents.id, agentId));
@@ -161,14 +161,14 @@ const support = await getEmbeddedPostgresTestSupport();
   });
 
   it("refuses to take a name another environment already holds", async () => {
-    await db.insert(environments).values({ name: "Paperclip Computer", driver: "ssh", status: "active", config: {} });
+    await db.insert(environments).values({ name: "Remote Host", driver: "ssh", status: "active", config: {} });
     await expect(ensure()).rejects.toThrow(/already exists with driver "ssh"/);
   });
 
   it("allows at most one row per marker", async () => {
     await ensure();
     await expect(db.insert(environments).values({
-      name: "Second computer",
+      name: "Second remote host",
       driver: "plugin",
       status: "active",
       config: { pluginKey: PLUGIN_KEY, driverKey: "tasks", driverConfig: {} },

@@ -86,10 +86,9 @@ export function resolveAdapterTestEnvironmentId(input: {
  * Find the active managed sandbox environment id in an environment list. The
  * platform provisioner stamps the managed environment with
  * `metadata.managedByPaperclip` (see `isPlatformManagedEnvironment`). The
- * local-default environment and managed plugin environments (such as a
- * Paperclip Computer row) also carry that stamp, so this function requires the
- * `sandbox` driver and never mistakes a plugin row for the managed sandbox. The function
- * selects only an `active` environment, never an `archived` one, so the Test
+ * local-default environment and managed plugin environment rows also carry
+ * that stamp, so this function requires the `sandbox` driver and never
+ * mistakes a plugin row for the managed sandbox. The function selects only an `active` environment, never an `archived` one, so the Test
  * resolution matches the server run-time resolver that requires an active
  * managed sandbox (see `findManagedSandboxEnvironment`). The Test resolution
  * uses this id as the redirect target under the managed-sandbox-only policy. The

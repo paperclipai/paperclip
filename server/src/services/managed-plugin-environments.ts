@@ -10,7 +10,7 @@
  *
  * - The first ensure adopts an existing unmarked row for the same plugin and
  *   driver instead of adding a second one, so a hand-made row keeps the agents
- *   that point at it (and their computers).
+ *   that point at it.
  * - Later ensures converge the row to the declaration and write nothing when
  *   it already matches.
  * - Archiving is only for a declared plugin that is not running; the next
