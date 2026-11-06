@@ -2,8 +2,8 @@ import { adoptAgentFiles, inspectAgentFile, fileHash, agentFilePath, MAX_AGENT_F
 import { invalidateAgentFileProjection, persistDurableAgentFiles, restoreDurableAgentFiles } from "./agent-file-durability.js";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { and, eq, sql } from "drizzle-orm";
-import { agentFileRoots, agentInstructionHeads, agents, fileStorageDb, type Db } from "@paperclipai/db";
+import { and, desc, eq, inArray, sql } from "drizzle-orm";
+import { activityLog, agentFileRoots, agentInstructionHeads, agents, fileStorageDb, type Db } from "@paperclipai/db";
 import { instructionPath, assertInstructionPathSafe, instructionBytes, readInstructionBytes } from "./agent-instruction-files.js";
 import { notFound, unprocessable } from "../errors.js";
 import { resolveHomeAwarePath, resolvePaperclipInstanceRoot } from "../home-paths.js";
@@ -41,6 +41,9 @@ type AgentLike = {
 
 type AgentInstructionsFileSummary = {
   path: string;
+  /** Creation is exposed only when recorded; historical files may only have a modification date. */
+  createdAt?: string;
+  updatedAt?: string;
   contentHash?: string;
   binary?: boolean;
   size: number;
@@ -223,7 +226,7 @@ async function readFileSummary(rootPath: string, relativePath: string, entryFile
   const stat = await fs.stat(absolutePath);
   // External bundles may contain large assets; listing must not read them.
   const file = stat.size > MAX_AGENT_FILE_BYTES ? null : await inspectAgentFile(rootPath, relativePath);
-  return summarizeFile(relativePath, entryFile, file?.size ?? stat.size, file?.bytes ?? null, file?.hash);
+  return { ...summarizeFile(relativePath, entryFile, file?.size ?? stat.size, file?.bytes ?? null, file?.hash), updatedAt: stat.mtime.toISOString() };
 }
 
 function summarizeFile(relativePath: string, entryFile: string, size: number, bytes: Buffer | null, hash?: string): AgentInstructionsFileSummary {
@@ -517,6 +520,25 @@ export function syncInstructionsBundleConfigFromFilePath(
 
 export function agentInstructionsService(db?: Db) {
   if (db) db = fileStorageDb(db);
+  async function getFileDates(agent: AgentLike, relativePath: string, contentHash?: string, connection?: Pick<Db, "select">): Promise<{ createdAt?: string; updatedAt?: string }> {
+    const state = await recoverManagedBundleState(agent, deriveBundleState(agent));
+    if (!state.rootPath) return {};
+    const filename = await assertInstructionPathSafe(state.rootPath, relativePath);
+    if (connection && contentHash) {
+      // One bounded lookup for the open file, never one query per tree row.
+      // Match the content hash so an unrecorded external edit cannot inherit an old save date.
+      const [saved] = await connection.select({ date: activityLog.createdAt, details: activityLog.details }).from(activityLog)
+        .where(and(eq(activityLog.companyId, agent.companyId), eq(activityLog.entityType, "agent"),
+          eq(activityLog.entityId, agent.id), inArray(activityLog.action, ["agent.files_updated", "agent.instructions_file_updated"]),
+          eq(sql<string>`${activityLog.details}->>'path'`, relativePath),
+          eq(sql<string>`${activityLog.details}->>'contentHash'`, contentHash)))
+        .orderBy(desc(activityLog.createdAt)).limit(1);
+      if (saved) return saved.details?.created === true ? { createdAt: saved.date.toISOString() } : { updatedAt: saved.date.toISOString() };
+    }
+    // Filesystem birth times reset on atomic replacement/restoration. Only expose mtime.
+    const stat = await statIfExists(filename);
+    return stat?.isFile() ? { updatedAt: stat.mtime.toISOString() } : {};
+  }
   async function getManagedEntryFingerprint(agent: AgentLike): Promise<{ entryFile: string; contentHash: string | null } | null> {
     if (!db || agentInstructionsBundleMode(agent) !== "managed") return null;
     const state = deriveBundleState(agent);
@@ -560,7 +582,7 @@ export function agentInstructionsService(db?: Db) {
     return toBundle(agent, state, summaries);
   }
 
-  async function readFile(agent: AgentLike, relativePath: string): Promise<AgentInstructionsFileDetail> {
+  async function readFile(agent: AgentLike, relativePath: string, connection?: Pick<Db, "select">): Promise<AgentInstructionsFileDetail> {
     const state = await recoverManagedBundleState(agent, deriveBundleState(agent));
     if (relativePath === LEGACY_PROMPT_TEMPLATE_PATH) {
       const content = asString(state.config[PROMPT_KEY]);
@@ -582,7 +604,7 @@ export function agentInstructionsService(db?: Db) {
     const file = await inspectAgentFile(state.rootPath, relativePath);
     if (file === null) throw notFound("Instructions file not found");
     const summary = summarizeFile(relativePath, state.entryFile, file.size, file.bytes, file.hash);
-    return { ...summary, content: summary.binary ? "" : file.bytes!.toString("utf8") };
+    return { ...summary, ...await getFileDates(agent, relativePath, file.hash, connection), content: summary.binary ? "" : file.bytes!.toString("utf8") };
   }
 
   async function ensureWritableBundle(
@@ -722,12 +744,14 @@ export function agentInstructionsService(db?: Db) {
     await assertInstructionPathSafe(prepared.state.rootPath!, relativePath);
     const absolutePath = resolvePathWithinRoot(prepared.state.rootPath!, relativePath);
     await fs.mkdir(path.dirname(absolutePath), { recursive: true });
+    const existed = Boolean(await statIfExists(absolutePath));
     await fs.writeFile(absolutePath, content, "utf8");
     const nextAgent = { ...agent, adapterConfig: prepared.adapterConfig };
     const [bundle, file] = await Promise.all([
       getBundle(nextAgent),
       readFile(nextAgent, relativePath),
     ]);
+    if (!existed && file.updatedAt) { file.createdAt = file.updatedAt; delete file.updatedAt; }
     return { bundle, file, adapterConfig: prepared.adapterConfig };
   }
 
@@ -882,7 +906,7 @@ export function agentInstructionsService(db?: Db) {
 
   // Public managed reads and configuration changes share the same row lock as
   // editor/runtime writes. Internal helpers operate on the already-loaded tree.
-  async function withProjection<T>(agent: AgentLike, write: boolean, operation: (current: AgentLike) => Promise<T>, managedDestination = false) {
+  async function withProjection<T>(agent: AgentLike, write: boolean, operation: (current: AgentLike, connection?: Pick<Db, "select">) => Promise<T>, managedDestination = false) {
     if (!db) return operation(agent);
     return db.transaction(async tx => {
       const [current] = await tx.select().from(agents).where(and(eq(agents.id, agent.id), eq(agents.companyId, agent.companyId))).for("update");
@@ -891,7 +915,7 @@ export function agentInstructionsService(db?: Db) {
       const root = managed ? await adoptAgentFiles(tx, current) : managedDestination ? resolveManagedInstructionsRoot(current) : null;
       if (!managed && root) await restoreDurableAgentFiles(tx, current, root);
       if (write && root) await invalidateAgentFileProjection(root);
-      const result = await operation(current);
+      const result = await operation(current, tx);
       if (write && root) await persistDurableAgentFiles(tx, current, root);
       return result;
     });
@@ -899,9 +923,10 @@ export function agentInstructionsService(db?: Db) {
 
   return {
     getManagedEntryFingerprint,
+    getFileDates: (agent: AgentLike, relativePath: string, hash?: string) => getFileDates(agent, relativePath, hash, db),
     getBundleLocation: (agent: AgentLike) => withProjection(agent, false, getBundleLocation),
     getBundle: (agent: AgentLike) => withProjection(agent, false, getBundle),
-    readFile: (agent: AgentLike, relativePath: string) => withProjection(agent, false, current => readFile(current, relativePath)),
+    readFile: (agent: AgentLike, relativePath: string) => withProjection(agent, false, (current, connection) => readFile(current, relativePath, connection)),
     updateBundle: (agent: AgentLike, input: Parameters<typeof updateBundle>[1]) => withProjection(agent, true, current => updateBundle(current, input), input.mode === "managed"),
     writeFile,
     deleteFile,
