@@ -1425,7 +1425,7 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
     projectRepositoryPaths.push(...repositories.map(repository => repository.relativePath));
     persistedExecutionWorkspace = await executionWorkspacesSvc.getStoredById(agent.companyId, persistedExecutionWorkspace.id);
   }
-  if (remoteFresh?.mode === "fresh_isolated_workspace") {
+  if (remoteAuthority && persistedExecutionWorkspace?.metadata?.remoteWorkspaceRecoveredFiles) {
     const recorded = persistedExecutionWorkspace?.metadata?.remoteWorkspaceRecoveredFiles;
     const recoveredFiles = (Array.isArray(recorded) ? recorded : []).map(value => {
       const file = parseObject(value);

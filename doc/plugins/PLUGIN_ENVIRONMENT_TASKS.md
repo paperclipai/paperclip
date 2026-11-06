@@ -117,6 +117,21 @@ warm or source recovery capabilities do not imply support. Older strict Core
 schemas reject this description field, so coordinate advertisement with a
 compatible Core version.
 
+Core's lease-bound task owner exposes capability-gated `release` and `resume`
+methods for both Codex and ACPX. They require `releaseResumeVersion: 1`, warm-task
+support and a selected account, and validate the operation result and exact task
+ID with the SDK parser. These methods are a forwarding facade; Core does not yet
+call them automatically or change its warm-session timeout policy.
+
+The caller must serialize settled release against new work and disposal, quiet
+its owned connection's liveness checks and reconnect loop before release, and
+retain the same pending ticket for ambiguous resume retries. Ordinary owner
+rebind must first check the new run's account, credentials and project scope.
+After resume, authenticate the source with the fresh ticket before warm readiness
+and ordinary `run.attach`. An RPC error does not prove that release or resume had
+no effect; it must not trigger reconnect, a replacement ticket or turn replay.
+The facade does not supply this orchestration or enable provider retention.
+
 ## Error codes
 
 Core does not read the text of a task error. To report a failure that Core can

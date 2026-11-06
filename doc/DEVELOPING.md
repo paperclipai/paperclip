@@ -1069,6 +1069,44 @@ defines synchronization, permissions and evidence. After map edits, run
 `node scripts/check-maps.mjs` for structural/reference checks; it does not start an
 instance or qualify access as an agent.
 
+### Agent worktree preflight
+
+Prepare a new or updated agent worktree with one command:
+
+```sh
+node scripts/agent-preflight.mjs
+```
+
+It does what `pnpm install --frozen-lockfile`, the Runner's `ensure:eval-build-deps`,
+`build:rust`, `build` and `build:runner-binaries` did, and skips work whose inputs
+are unchanged:
+
+- **install** is skipped when the lockfile, every `package.json`, `patches/`, Node
+  and pnpm match this worktree's last install.
+- **Runner build** is skipped when the Runner's build stamp is current. When another
+  worktree built the same inputs (the build-input digest described under
+  "Reused Runner build in the server build", plus the compiler), the Runner and eval
+  kernel `dist` are cloned from the shared cache. A restore skips the build's lint
+  checks; CI runs them.
+- **Runner debug binaries** (`runner/target/debug`) are reused the same way, keyed
+  by every file the Rust build reads.
+- A worktree without `runner/target` starts from a clone of a shared cargo seed
+  that holds only third-party crates, so cargo compiles only the Runner crate.
+
+The cache lives in `~/.cache/paperclip/agent-build` (`PAPERCLIP_AGENT_CACHE_DIR`
+moves it, `PAPERCLIP_AGENT_CACHE=0` or `--no-cache` turns it off). Entries are
+keyed by content and toolchain, never by path or mtime, are written once with an
+atomic rename, and are restored as APFS clones, so concurrent worktrees can share
+them. The seed never holds the Runner crate: cargo records its out-of-package
+includes by absolute path, so units from another checkout cannot be trusted. Keep
+the cache on the worktrees' volume so clones stay cheap. `--explain` prints each
+step's decision; `--skip-rust-debug` skips the debug binaries.
+
+Do not share `CARGO_TARGET_DIR` between worktrees: cargo serializes builds on its
+lock, and the Runner crate's absolute-path dependency records would make one
+worktree's freshness check read another's files. The preflight disables the cache
+when `CARGO_TARGET_DIR` is set.
+
 ### Incremental local verification
 
 Use the local verification entry point for ordinary issue work:
@@ -1368,6 +1406,40 @@ Do not add a lockfile inside a provider.
 exists, which changes what a release resolves. Daytona already has one; the
 release build resolves it in place when it is stale.
 
+Daytona is the one exception: it commits its own lockfile, so the workspace
+leaves it out and the script installs it from that lockfile (`LOCKED_PROVIDERS`).
+The same rule applies to it: do not refresh or commit that lockfile. The script
+resolves a stale one in place for the run, and the lockfile refresh workflow
+commits the new one after merge.
+
+Dependabot updates the providers through this workspace (see
+`.github/dependabot.yml`), and Daytona through a second entry. Dependabot does
+not expand a workspace glob that starts with `../`, so
+`scripts/typecheck-sandbox-providers/pnpm-workspace.yaml` lists each provider by
+its full path. When you add a provider, add it there and to `SANDBOX_PROVIDERS`
+in `scripts/typecheck-test-programs.mjs`. A test checks that the two lists match.
+
+#### Sandbox provider tests
+
+`pnpm test:run` does not reach the sandbox providers, because they are outside the
+root workspace. `scripts/test-sandbox-providers.mjs` installs them the same way as
+the typecheck above, then runs every provider's `pnpm test`, four at a time:
+
+```sh
+node scripts/test-sandbox-providers.mjs
+```
+
+The required `Sandbox provider tests` job runs it when a pull request changes a
+provider, the plugin SDK, or `packages/shared`, which the SDK imports. Those paths
+are the `//#ci:sandbox-providers` inputs in `turbo.json`. Global CI inputs, such as
+`scripts/**` or a `package.json`, select every job. If the SDK gets a new workspace
+dependency, add that package to the inputs. A test in
+`.github/scripts/tests/ci-plan.test.mjs` fails until you do.
+
+Some Daytona file-sync tests need GNU `tar` and coreutils. They skip on macOS
+unless those tools are on `PATH`, so they run only on Linux. The job turns off
+core dumps: a core file in an exported directory changes the transferred file count.
+
 #### Reused Runner build in the server build
 
 The server build vendors `packages/paperclip-runner/dist`, so its
@@ -1376,7 +1448,7 @@ build. It used to run the Runner's full `build` every time. Now the Runner's
 `build` brackets itself with `scripts/record-build-inputs.mjs`: `--begin`, its
 first step, forgets the previous stamp and records a digest of the build's
 inputs (every file under `packages/paperclip-runner` except `dist`,
-`dist-browser`, `runner/target`, `node_modules` and dot-directories; every
+`dist-browser`, `runner/target`, `provider-assets` (written by the build), `node_modules` and dot-directories; every
 file under `packages/paperclip-eval-kernel` except `dist` and `node_modules`;
 every file under the root `patches` directory, which the acpx profile check
 hashes and the provider entrypoint bundler copies into `dist`; and the root
@@ -2950,7 +3022,7 @@ runtimes on Apple Silicon, Intel Mac, and Linux x64 with supported glibc;
 Linux ARM64 remains Legacy until the pinned runtimes support it.
 Unsupported or unqualified targets retain Legacy. Claude over Darwin SSH keeps
 an automatic Legacy default; explicit native execution
-requires matching remote assets. The runner override is in Advanced. Ordinary Claude models default to `claude-opus-5-5`; explicit models
+requires matching remote assets. Agent setup and configuration select the runner automatically and do not expose a runner dropdown. Ordinary Claude models default to `claude-opus-5-5`; explicit models
 and provider routing remain authoritative. Existing agents keep their saved runner. Converting an existing Claude, Codex, OpenCode, or Pi agent selects its
 corresponding provider, preserves compatible models, credentials, workspace,
 and instructions, and resets execution sessions while retaining run history.
@@ -3007,6 +3079,7 @@ them. Existing Pi agents retain their saved runner and native policies.
 Agent configuration uses the same section layout across adapters: model and
 provider belong to **Adapter**, environment variables have their own section,
 and command/extra arguments are folded under **Configuration → Advanced**.
+Advanced is omitted when the selected adapter has no settings in that section.
 Lifecycle, timeout, and interrupt grace settings live under **Advanced Run
 Policy**. Permission selectors with a single valid mode are hidden; a saved
 unsupported mode still exposes remediation.
@@ -3403,7 +3476,7 @@ successful warm-session retention or admit another provider turn.
 Run the credential-free real-process restart suite with:
 
 ```sh
-pnpm --filter @paperclipai/paperclip-runner build:runner-binaries
+pnpm --filter @paperclipai/paperclip-runner run build:runner-binaries
 pnpm exec vitest run server/src/services/native-runtime/native-runner-restart-recovery.integration.test.ts
 pnpm --filter @paperclipai/paperclip-runner exec vitest run src/live/runnerd-codex-transport-adoption.test.ts -t 'adopts a live runner'
 ```

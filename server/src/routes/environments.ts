@@ -93,17 +93,16 @@ function redactSecretLikeConfigKeys(value: Record<string, unknown>): Record<stri
   const result: Record<string, unknown> = {};
   for (const [key, child] of Object.entries(value)) {
     if (SECRET_LIKE_CONFIG_KEY_PATTERN.test(key)) continue;
-    if (isPlainRecord(child)) {
-      result[key] = redactSecretLikeConfigKeys(child);
-    } else if (Array.isArray(child)) {
-      result[key] = child.map((element) =>
-        isPlainRecord(element) ? redactSecretLikeConfigKeys(element) : element,
-      );
-    } else {
-      result[key] = child;
-    }
+    result[key] = redactSecretLikeConfigValue(child);
   }
   return result;
+}
+
+/** Objects and arrays at any depth, including arrays nested in arrays. */
+function redactSecretLikeConfigValue(value: unknown): unknown {
+  if (isPlainRecord(value)) return redactSecretLikeConfigKeys(value);
+  if (Array.isArray(value)) return value.map(redactSecretLikeConfigValue);
+  return value;
 }
 
 /**

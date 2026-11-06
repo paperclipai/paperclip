@@ -9,7 +9,7 @@ export class Timeline {
 
   add(kind: string, data: Record<string, unknown> = {}): TimelineEntry {
     const now = Date.now();
-    const entry: TimelineEntry = { at: new Date(now).toISOString(), t: now - this.origin, kind, ...data };
+    const entry: TimelineEntry = { ...data, at: new Date(now).toISOString(), t: now - this.origin, kind };
     this.entries.push(entry);
     if (this.path) appendFileSync(this.path, `${JSON.stringify(entry)}\n`, { mode: 0o600 });
     if (process.env.RESTART_CHAOS_QUIET !== "1") console.info(`[chaos +${Math.round(entry.t / 1000)}s] ${kind} ${JSON.stringify(data)}`);

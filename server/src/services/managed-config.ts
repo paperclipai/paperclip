@@ -146,16 +146,19 @@ function findSecretLikeConfigKey(value: Record<string, unknown>, path: string): 
   for (const [key, child] of Object.entries(value)) {
     const childPath = path.length > 0 ? `${path}.${key}` : key;
     if (SECRET_LIKE_CONFIG_KEY_PATTERN.test(key)) return childPath;
-    if (isPlainObject(child)) {
-      const nested = findSecretLikeConfigKey(child, childPath);
-      if (nested) return nested;
-    } else if (Array.isArray(child)) {
-      for (const [index, element] of child.entries()) {
-        if (!isPlainObject(element)) continue;
-        const nested = findSecretLikeConfigKey(element, `${childPath}[${index}]`);
-        if (nested) return nested;
-      }
-    }
+    const nested = findSecretLikeConfigKeyInValue(child, childPath);
+    if (nested) return nested;
+  }
+  return null;
+}
+
+/** Objects and arrays at any depth, including arrays nested in arrays. */
+function findSecretLikeConfigKeyInValue(value: unknown, path: string): string | null {
+  if (isPlainObject(value)) return findSecretLikeConfigKey(value, path);
+  if (!Array.isArray(value)) return null;
+  for (const [index, element] of value.entries()) {
+    const nested = findSecretLikeConfigKeyInValue(element, `${path}[${index}]`);
+    if (nested) return nested;
   }
   return null;
 }
