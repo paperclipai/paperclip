@@ -2208,8 +2208,6 @@ a.paperclip-mention-chip[data-mention-kind="agent"]::before {
   background-size: contain;
 }
 
-/* Skills read as colored inline references in both task composers. Keep the
-   decoration in CSS so Lexical retains the original link and Markdown label. */
 .paperclip-mdxeditor-content a.paperclip-mention-chip[data-mention-kind="skill"] {
   display: inline;
   min-height: 0;

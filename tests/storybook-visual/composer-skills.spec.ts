@@ -66,8 +66,6 @@ for (const surface of ["composer-new-task", "composer-skills"]) {
             const heights = await skill.evaluate((element) => {
               const paragraph = element.closest("p")!;
               const height = paragraph.getBoundingClientRect().height;
-              // Compare the same text at the same width, with the skill rendered
-              // as ordinary text. The icon must not increase any line's height.
               const plain = paragraph.cloneNode(true) as HTMLElement;
               plain.querySelector('[data-mention-kind="skill"]')!.replaceWith(element.textContent!);
               paragraph.after(plain);
@@ -80,8 +78,6 @@ for (const surface of ["composer-new-task", "composer-skills"]) {
           await page.evaluate(() => document.fonts.ready);
           await page.screenshot({ path: testInfo.outputPath(`${surface}-${state}-${theme}-${mobile ? "mobile" : "desktop"}.png`), fullPage: true });
           if (state === "slash-commands") {
-            // Keep the open popup aligned when the viewport or just the
-            // composer changes width (for example, a task side panel opens).
             await page.setViewportSize({ width: mobile ? 430 : 1000, height: 844 });
             await page.locator(".paperclip-task-chat-composer").evaluate((element) => {
               (element as HTMLElement).style.width = "85%";
