@@ -155,7 +155,7 @@ export function AiConnectionField({
         }}>
           <option value="">Individual account</option>
           {compatiblePools.map(pool => <option key={pool.id} value={pool.id}>{pool.name}</option>)}
-          {value?.mode === "router" && !compatiblePools.some(pool => pool.id === value.connectionId) && <option value={value.connectionId}>Pool unavailable — enable routing and the pool</option>}
+          {value?.mode === "router" && !compatiblePools.some(pool => pool.id === value.connectionId) && <option value={value.connectionId}>{accounts.isSuccess ? "Pool unavailable — enable routing and the pool" : "Saved connection pool"}</option>}
         </select>
         {value?.mode === "router" && <span className="text-muted-foreground">The pool selects an account and its model. Existing tasks keep their account until a backup is needed.</span>}
       </label>}

@@ -286,7 +286,26 @@ it("shows connection-load failures for a saved pool with a retry", async () => {
   </QueryClientProvider>));
   await settle();
   expect(container.querySelector('[role="alert"]')?.textContent).toContain("An unexpected error occurred");
+  expect(container.querySelector("select")?.selectedOptions[0]?.textContent).toBe("Saved connection pool");
+  expect(container.textContent).not.toContain("Pool unavailable");
   await click("Retry connections");
   await settle();
   expect(mocks.list).toHaveBeenCalledTimes(2);
+});
+
+it("keeps saved-pool copy neutral while loading, then confirms availability", async () => {
+  let resolveList!: (value: unknown) => void;
+  mocks.list.mockImplementation(() => new Promise(resolve => { resolveList = resolve; }));
+  const pool = mixedPool();
+  flushSync(() => root.render(<QueryClientProvider client={client}>
+    <AiConnectionField companyId="company" agentId="agent" agentName="Nova" adapterType="claude_local" value={{ mode: "router", connectionId: pool.id }} onChange={onChange} />
+  </QueryClientProvider>));
+  await settle();
+  expect(container.querySelector("select")?.selectedOptions[0]?.textContent).toBe("Saved connection pool");
+  expect(container.textContent).not.toContain("Pool unavailable");
+  expect(container.querySelector('[role="alert"]')).toBeNull();
+  resolveList({ currentUserId: "owner", connections: [], pools: [pool] });
+  await settle();
+  expect(container.querySelector("select")?.selectedOptions[0]?.textContent).toBe(pool.name);
+  expect(container.textContent).not.toContain("Pool unavailable");
 });
