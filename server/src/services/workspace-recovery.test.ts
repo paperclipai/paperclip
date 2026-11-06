@@ -2424,8 +2424,27 @@ describe("automatic retained workspace recovery", () => {
       expect((await action(f.actionId)).evidence.explicitUserContinuation).toBeUndefined();
     }, 30_000);
 
-  it("resumes the same failed-preparation HTTP Retry from the real preservation worker", async () => {
+  async function stoppedWorkspaceWorker(f: { runId: string }) {
+    const source = await run(f.runId);
+    const deploymentWorker = { provider: "railway" as const, projectId: randomUUID(), environmentId: randomUUID(), serviceId: randomUUID(), deploymentId: randomUUID() };
+    const owner = { token: randomUUID(), hostname: "previous-controller", pid: 123,
+      processStartedAt: new Date().toISOString(), worker: deploymentWorker };
+    const stopProof = { v: 1 as const, iss: "paperclip-cloud" as const, aud: "paperclip-workspace-worker-stop/v1" as const,
+      sub: "test-stack", stopped: true as const, iat: Math.floor(Date.now() / 1000),
+      exp: Math.floor(Date.now() / 1000) + 30, runId: f.runId, ownerToken: owner.token, worker: deploymentWorker };
+    // Model the already verified platform boundary. Persisting the receipt and
+    // releasing the owner still use the real recovery implementation. Its JWT
+    // expiry is acquisition authority; retained audit evidence does not expire.
+    const proof = vi.spyOn(workerProof, "requestWorkspaceWorkerStopProof").mockResolvedValue({ status: "verified", proof: stopProof });
+    await db.update(heartbeatRuns).set({ runnerProfileJson: {
+      ...source.runnerProfileJson, nativeWorkspaceFinalizationOwner: owner,
+    } }).where(eq(heartbeatRuns.id, f.runId));
+    return { proof, stopProof, owner, deploymentWorker };
+  }
+
+  it.each(["current worker", "stopped worker"] as const)("resumes the same failed-preparation HTTP Retry from the real preservation worker: %s", async mode => {
     const f = await failedRemotePreparation();
+    const stoppedWorker = mode === "stopped worker" ? await stoppedWorkspaceWorker(f) : undefined;
     const [lease] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.lease.id));
     await db.update(environmentLeases).set({ status: "active", releasedAt: null, cleanupStatus: null,
       metadata: { ...lease.metadata, remoteExecutionTermination: null } }).where(eq(environmentLeases.id, lease.id));
@@ -2457,6 +2476,12 @@ describe("automatic retained workspace recovery", () => {
       expect(successor.contextSnapshot).toMatchObject({ previousRunId: f.runId, taskRetryRequestId: requestId });
       expect(await readFreshWorkspaceReadiness(db, successor)).toMatchObject({ mode: "resume_preserved_workspace" });
       expect(await hasVerifiedWorkspaceRepair(db, await run(f.runId))).toBe(true);
+      if (mode === "stopped worker") {
+        expect(stoppedWorker!.proof).toHaveBeenCalledWith({ runId: f.runId, ownerToken: stoppedWorker!.owner.token,
+          worker: stoppedWorker!.deploymentWorker });
+        expect((await run(f.runId)).runnerProfileJson?.nativeWorkspaceOwnerStopProof).toEqual(stoppedWorker!.stopProof);
+        expect((await run(f.runId)).runnerProfileJson?.nativeWorkspaceFinalizationOwner).toBeUndefined();
+      }
       const remote = (await run(f.runId)).runnerProfileJson!.remoteWorkspace as { snapshotId: string };
       const saved = await createSavedWorkspaceLoader(db)({ companyId: f.companyId, workspaceId: f.workspaceId, snapshotId: remote.snapshotId });
       try { expect(await readFile(path.join(saved.root, "saved.txt"), "utf8")).toBe("finished work\n"); }
@@ -2466,10 +2491,10 @@ describe("automatic retained workspace recovery", () => {
       expect(f.runtime.resumeRunLease).toHaveBeenCalledOnce();
       expect((await run(f.runId))).toMatchObject({ status: "failed", errorCode: "setup_failed" });
       expect(errors).not.toHaveBeenCalled();
-    } finally { releaseStop(); await coordinator.stop(); await worker.stop(); }
+    } finally { releaseStop(); await coordinator.stop(); await worker.stop(); stoppedWorker?.proof.mockRestore(); }
   }, 40_000);
 
-  it.each(["delayed_provider_event", "native_input", "session_checkpoint", "session_after", "controller_recovery", "process", "coordinator",
+  it.each(["malformed_worker_stop", "foreign_run_worker_stop", "unstopped_worker", "active_workspace_owner", "delayed_provider_event", "native_input", "session_checkpoint", "session_after", "controller_recovery", "process", "coordinator",
     "runtime_selected", "live_controller", "missing_error", "missing_measurement", "foreign_error", "unknown_result",
     "wrong_snapshot", "wrong_generation", "active_writer", "missing_stop", "foreign_stop", "additional_unstopped_lease",
     "operator_stop", "newer_input", "reassigned", "wrong_actor", "actor_permission_revoked",
@@ -2481,6 +2506,15 @@ describe("automatic retained workspace recovery", () => {
       await db.update(heartbeatRuns).set({ sessionIdBefore: randomUUID() }).where(eq(heartbeatRuns.id, f.runId));
       await recoverRetainedWorkspace(f.input);
       const source = await run(f.runId), heartbeat = heartbeatService(db);
+      const stoppedWorkerAudit = { v: 1, iss: "paperclip-cloud", aud: "paperclip-workspace-worker-stop/v1",
+        sub: "test-stack", stopped: true, iat: 100, exp: 160, runId: f.runId, ownerToken: randomUUID(),
+        worker: { provider: "railway", projectId: randomUUID(), environmentId: randomUUID(), serviceId: randomUUID(), deploymentId: randomUUID() } };
+      source.runnerProfileJson = { ...source.runnerProfileJson, nativeWorkspaceOwnerStopProof:
+        gate === "malformed_worker_stop" ? { stopped: true } : {
+          ...stoppedWorkerAudit, ...(gate === "foreign_run_worker_stop" ? { runId: randomUUID() } : {}),
+          ...(gate === "unstopped_worker" ? { stopped: false } : {}),
+        }, ...(gate === "active_workspace_owner" ? { nativeWorkspaceFinalizationOwner: { token: randomUUID() } } : {}) };
+      await db.update(heartbeatRuns).set({ runnerProfileJson: source.runnerProfileJson }).where(eq(heartbeatRuns.id, f.runId));
       const actorId = gate === "actor_permission_revoked" ? randomUUID() : "local-board";
       if (gate === "actor_permission_revoked") {
         await db.insert(authUsers).values({ id: actorId, name: "Retry owner", email: `${actorId}@example.invalid`, createdAt: new Date(), updatedAt: new Date() });
@@ -2633,12 +2667,13 @@ describe("automatic retained workspace recovery", () => {
     expect(await readFile(path.join(cwd, "saved.txt"), "utf8")).toBe("existing task work\n");
   });
 
-  it.each(["complete", "automatic_lost", "catalog", "catalog_warning", "catalog_unknown_warning", "catalog_provider_warning", "invalid_published_root"] as const)(
+  it.each(["complete", "stopped_worker", "automatic_lost", "catalog", "catalog_warning", "catalog_unknown_warning", "catalog_provider_warning", "invalid_published_root"] as const)(
     "dispatches the recovered failed-preparation Retry once through the native provider boundary (%s)", async mode => {
-    const unavailableCatalog = mode !== "complete" && mode !== "automatic_lost" && mode !== "invalid_published_root", withWarning = mode.includes("warning");
+    const unavailableCatalog = mode !== "complete" && mode !== "stopped_worker" && mode !== "automatic_lost" && mode !== "invalid_published_root", withWarning = mode.includes("warning");
     const localStorage = getStorageService();
     const databaseUrl = process.env.DATABASE_URL, masterKey = process.env.PAPERCLIP_SECRETS_MASTER_KEY;
     const experimental = await instanceSettingsService(db).getExperimental();
+    let stoppedWorker: Awaited<ReturnType<typeof stoppedWorkspaceWorker>> | undefined;
     let storage: { mockRestore(): void } | undefined;
     const starts = vi.spyOn(agentStarts, "withAgentStartLock");
     const retryResumes: Promise<void>[] = [];
@@ -2660,7 +2695,12 @@ describe("automatic retained workspace recovery", () => {
         await withheldPreparationRetry(f);
       }
       if (mode === "complete") await db.update(heartbeatRuns).set({ sessionIdBefore: randomUUID() }).where(eq(heartbeatRuns.id, f.runId));
+      if (mode === "stopped_worker") stoppedWorker = await stoppedWorkspaceWorker(f);
       await recoverRetainedWorkspace(f.input);
+      if (stoppedWorker) {
+        expect((await run(f.runId)).runnerProfileJson?.nativeWorkspaceOwnerStopProof).toEqual(stoppedWorker.stopProof);
+        expect((await run(f.runId)).runnerProfileJson?.nativeWorkspaceFinalizationOwner).toBeUndefined();
+      }
       const source = await run(f.runId), nextDirectory = path.join(root, randomUUID(), "next");
       await mkdir(nextDirectory, { recursive: true });
       const nextRemote = await realpath(nextDirectory);
@@ -2866,6 +2906,7 @@ describe("automatic retained workspace recovery", () => {
         await ownedHeartbeat?.drainActiveRunExecutions();
       } finally {
         resumeSpy?.mockRestore(); starts.mockRestore();
+        stoppedWorker?.proof.mockRestore();
         storage?.mockRestore();
         if (databaseUrl === undefined) delete process.env.DATABASE_URL; else process.env.DATABASE_URL = databaseUrl;
         if (masterKey === undefined) delete process.env.PAPERCLIP_SECRETS_MASTER_KEY; else process.env.PAPERCLIP_SECRETS_MASTER_KEY = masterKey;

@@ -17,6 +17,23 @@ function validWorker(worker: unknown): worker is WorkspaceWorker {
   return value.provider === "railway" && ["projectId", "environmentId", "serviceId", "deploymentId"].every(key =>
     typeof value[key] === "string" && value[key].length > 0 && value[key].length <= 200);
 }
+/** Shape of a host-persisted audit receipt, not current stop authority. The
+ * signature and expiry are checked when ownership is acquired. Continuation
+ * must independently verify no owner, stopped leases and saved-file receipts. */
+export function isRetainedWorkspaceWorkerStopProof(value: unknown, runId: string): value is WorkspaceWorkerStopProof {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const proof = value as Record<string, unknown>;
+  return proof.v === 1 && proof.iss === "paperclip-cloud" && proof.aud === "paperclip-workspace-worker-stop/v1"
+    && proof.runId === runId && proof.stopped === true
+    && typeof proof.sub === "string" && proof.sub.length > 0 && proof.sub.length <= 200
+    && typeof proof.ownerToken === "string" && proof.ownerToken.length > 0 && proof.ownerToken.length <= 200
+    && Number.isInteger(proof.iat) && Number.isInteger(proof.exp)
+    && Number(proof.exp) > Number(proof.iat) && Number(proof.exp) - Number(proof.iat) <= 60
+    && validWorker(proof.worker)
+    && Object.keys(proof.worker).every(key => ["provider", "projectId", "environmentId", "serviceId", "deploymentId"].includes(key))
+    && Object.keys(proof).every(key => ["v", "iss", "aud", "sub", "stopped", "iat", "exp", "runId", "ownerToken", "worker"].includes(key));
+}
+
 export function currentWorkspaceWorker(env: NodeJS.ProcessEnv = process.env): WorkspaceWorker | undefined {
   const ids = [env.RAILWAY_PROJECT_ID, env.RAILWAY_ENVIRONMENT_ID, env.RAILWAY_SERVICE_ID, env.RAILWAY_DEPLOYMENT_ID];
   if (ids.some(id => !id?.trim())) return undefined;
