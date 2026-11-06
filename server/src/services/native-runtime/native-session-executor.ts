@@ -7558,7 +7558,10 @@ export async function nativeProviderRecoveryEvidence(input: {
     identity: DurableRecoveryIdentity;
     transientIngressFailure: boolean;
   };
-}): Promise<{
+} & (
+  | { executionTargetKind: AdapterExecutionTarget["kind"]; metadataOnly?: never }
+  | { metadataOnly: true; executionTargetKind?: never }
+)): Promise<{
   recoveryMode: NativeRecoveryMode;
   providerSessionEstablished: boolean;
   providerEventsExist: boolean;
@@ -7602,7 +7605,8 @@ export async function nativeProviderRecoveryEvidence(input: {
     ? await loadNativeUnclaimedBootstrapCheckpoint(input.db, input.bootstrap.binding, input.bootstrap.identity)
     : null;
   let controllerCheckpointMatches = true;
-  if (checkpointRecord.backendKind === "runner" && record(run?.runnerProfileJson).nativePreparationFencingVersion === NATIVE_PREPARATION_FENCING_VERSION) {
+  if (input.executionTargetKind === "remote" && checkpointRecord.backendKind === "runner"
+    && record(run?.runnerProfileJson).nativePreparationFencingVersion === NATIVE_PREPARATION_FENCING_VERSION) {
     controllerCheckpointMatches = false;
     if (run?.nativeIssueId && run.nativeSessionId && run.runnerInstanceId) {
       const header = await loadNativeRunnerCheckpointHeader(input.db, {
@@ -10917,6 +10921,7 @@ async function executePaperclipNativeSessionWithinScope(
       const recoveryEvidence = await nativeProviderRecoveryEvidence({
         db: input.db,
         runId: input.execution.binding.runId,
+        executionTargetKind: input.runnerExecutionTarget?.kind ?? "local",
         sourceFailureCode,
         bootstrap,
       });
@@ -11169,7 +11174,8 @@ async function executePaperclipNativeSessionWithinScope(
           .for("update");
         if (recoveryEvidence.unclaimedBootstrap && bootstrap) {
           const currentEvidence = await nativeProviderRecoveryEvidence({ db: tx as unknown as Db,
-            runId: input.execution.binding.runId, sourceFailureCode, bootstrap });
+            runId: input.execution.binding.runId, executionTargetKind: input.runnerExecutionTarget?.kind ?? "local",
+            sourceFailureCode, bootstrap });
           if (!runBeforeWrite || ["cancelled", "succeeded"].includes(runBeforeWrite.status)
             || Object.keys(record(runBeforeWrite.resultJson?.nativeCancellation)).length > 0
             || runBeforeWrite.runnerInstanceId !== bootstrap.identity.runnerInstanceId
