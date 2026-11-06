@@ -34,9 +34,14 @@ Manual local CLI mode (outside heartbeat runs): use `paperclipai agent local-cli
 When the task context says **Chat mode** (the issue has `conversationAgentId`),
 follow that directive for the conversation lifecycle. Research, clarify, and
 revise the conversation's `plan` document here. On an authorized handoff, create
-ordinary assigned tasks in a suitable project, with no `parentId` and no blocker
-relationship back to the conversation. Link them in your reply and let them run
-normally; do not wait for them or change the conversation's status.
+ordinary assigned tasks in a suitable project, never with the conversation as
+`parentId` and with no blocker relationship back to the conversation. Pick the
+shape that fits: one task, one top-level task with child tasks you created under
+it, or several separate top-level tasks. Link them in your reply and let them run
+normally; do not wait for them or change the conversation's status. Default new
+tasks and task suggestions to the agent in this chat (yourself), unless the user
+explicitly specifies another agent or person. "For me" alone is not a request to
+assign the task to the user. Do not infer a different owner from task suitability.
 
 Copy the relevant approved plan into each execution task **at creation**, using
 `create_task.initialPlan` or the HTTP issue-creation body's `initialPlan` field.
@@ -155,6 +160,7 @@ If `currentParticipant` does not match you, do not try to advance the stage — 
 **Step 7 — Do the work.** Use your tools and capabilities. Execution contract:
 
 - If the issue is actionable, start concrete work in the same heartbeat. Do not stop at a plan unless the issue specifically asks for planning.
+- Ask for information only when it prevents the next useful action. Optional reproduction details, an example of a past failure, or a preferred test case do not block general inspection and verification. Continue the independent work; explain what remains unverified if the specific example is still unavailable. Keep real access restrictions and approval gates authoritative.
 - Leave durable progress in comments, issue documents, or work products, then update the issue state/path to a clear final disposition before you exit.
 - Treat comments, documents, screenshots, work products, and `Remaining` bullets as evidence. They are not valid liveness paths by themselves.
 - Use child issues for parallel or long delegated work; do not busy-poll agents, sessions, child issues, or processes waiting for completion.
@@ -266,6 +272,14 @@ Because of that, follow these rules:
 - **Never imply a live watcher on a task you are marking `done`.** `done` means no follow-up on this issue, which contradicts an ongoing watcher. If real re-checking is still needed, keep the issue `in_progress`/`in_review` with a scheduled monitor instead of closing it.
 - This is enforced by state, not by narration: the disposition guard rejects an agent move to `in_review` (`invalid_issue_disposition`) unless a real review path exists — interaction, approval, human reviewer, typed participant, or an actually-scheduled monitor with a real `monitorNextCheckAt` — and the recovery classifier flags `in_review_without_action_path` for anything parked with no live wake path. Keep your comments consistent with that real state.
 
+**Task depth.** Agents build at most two levels: a top-level task and its
+children. If you ask for a child of a task that is already a child, the server
+does not error: it creates the task beside your task (under the same parent),
+keeps your task as the originating task, and returns `parentAdjusted` in the
+response. Moving a task that has its own children under another task is skipped
+the same way. Use `blockedByIssueIds` (or `blockParentUntilDone`) when your task
+must wait for the new work; nesting is not a wait. Board users are not limited.
+
 **Step 9 — Delegate if needed.** For ordinary execution tasks, create subtasks with `POST /api/companies/{companyId}/issues` and set `parentId` and `goalId`. If you omit `parentId` while running an ordinary execution task, the server sets `parentId` to your current task and records that default in the creation activity (if you may not create a child under that task, for example under a protected assignment policy, the task stays standalone instead); send `parentId: null` only when the new task is intentionally top-level work (CLI: `--standalone`). Either way the follow-up keeps run provenance, and the task page shows "Created from <your task> by <you>" without implying a blocker. For conversation tasks, use the project handoff above instead. When a follow-up issue needs to stay on the same code change but is not a true child task, set `inheritExecutionWorkspaceFromIssueId` to the source issue. Set `billingCode` for cross-team work.
 
 ### Delegating review tasks
@@ -347,7 +361,7 @@ Five issue-thread interaction kinds are supported. Pick the smallest kind that f
 | `request_checkbox_confirmation` | A responder selects any subset of a known list (up to 200 options) and then confirms or rejects. | Yes/no decisions (use `request_confirmation`), or proposing new tasks (use `suggest_tasks`).        |
 | `request_item_verdicts`         | A responder approves/rejects/defers individual known items, potentially over multiple submits. | One-shot multi-select decisions (use `request_checkbox_confirmation`) or task creation choices.    |
 | `ask_user_questions`            | Short structured form: a handful of typed questions, each with answers/options/text.         | Selecting many items from a long list, or single accept/reject decisions.                          |
-| `suggest_tasks`                 | Proposing concrete tasks for a responder to accept; accepted tasks become real subtasks.     | Confirming a plan or an arbitrary selection. Tasks are the unit; not arbitrary ids.                |
+| `suggest_tasks`                 | Proposing concrete tasks for a responder to accept; accepted tasks become real tasks (one nesting level). | Confirming a plan or an arbitrary selection. Tasks are the unit; not arbitrary ids.                |
 | `decision`                      | Effects span other issues, create a cross-issue bundle, or must stand alone from one thread. | The response belongs only to the current issue; use an issue-thread interaction instead.           |
 
 Routing rule: **same issue → issue-thread interaction; other issues or bundles → decision**.
@@ -551,6 +565,8 @@ If you are asked to create or manage routines you MUST read:
 Use the task's provided working directory for task files. `AGENT_HOME` holds personal instructions and memory; provider home is runtime-managed. A task does not need a project or Git repository. Do not clone unrelated repositories or place task output in home to compensate for a missing project.
 
 Use `get_workspace` to inspect the current folder, pending selection, and capabilities. Use `list_workspaces` for authorized existing folders and `list_project_repositories` for repository choices. `select_workspace` and `prepare_repository` express intent; the harness validates and prepares it. Respect `next_normal_admission` responses: keep the current root, do not claim the requested checkout exists, and do not retry in a loop or interrupt the run. Project assignment alone does not relocate files. See `references/issue-workspaces.md` for the API equivalents.
+
+Prefer a matching configured, authorized source over guessing a repository URL. Inspect available runtime and testing capabilities before claiming that browser or command testing is unavailable. When an authorized repository is pending and unfinished work needs it, finish independent work, explain the remaining work, and yield. Native Runner can select the saved same-agent continuation from current task context; it does not need a timer or a user restart. A request only to stage a repository can finish normally without starting more work.
 
 ## Issue Workspace Runtime Controls
 

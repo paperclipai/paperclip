@@ -58,6 +58,18 @@ describe("Codex app-server Codex driver", () => {
     await session.close({ reason: "fixture complete" });
   });
 
+  it("starts a compaction turn through thread/compact/start without submitting a message", async () => {
+    const transport = new FakeCodexTransport();
+    const session = await makeDriver([transport]).openSession({
+      runId: "run-compact", normalizedSessionId: "normalized-compact", workingDirectory: WORKSPACE,
+    });
+    const started = await session.startTurn({ message: { role: "user", text: "" }, continuation: true, compact: true });
+    expect(started.turnId).toBe("turn-compact");
+    expect(transport.calls.filter(call => call.method === "turn/start")).toHaveLength(0);
+    expect(transport.calls.find(call => call.method === "thread/compact/start")?.params).toEqual({ threadId: "thread-1" });
+    await session.close({ reason: "fixture complete" });
+  });
+
   it("retains one correlation-bound steering acknowledgement after the rehydrated runnerd echo", async () => {
     const transport = new FakeCodexTransport("thread-root");
     const session = await makeDriver([transport]).openSession({
@@ -648,7 +660,7 @@ describe("Codex app-server Codex driver", () => {
       ).rejects.toBeInstanceOf(HarnessCapabilityUnavailableError);
       for (const action of ["set", "pause", "resume", "clear"] as const) {
         await expect(
-          unsupported.goal?.({ action, ...(action === "set" ? { objective: "Must not reach the provider" } : {}) }),
+          unsupported.goal?.(action === "set" ? { action, objective: "Must not reach the provider" } : { action }),
         ).rejects.toBeInstanceOf(HarnessCapabilityUnavailableError);
       }
       expect(unsupportedTransport.calls.filter(({ method }) =>

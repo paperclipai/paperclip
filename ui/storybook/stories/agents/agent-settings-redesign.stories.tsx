@@ -37,6 +37,7 @@ const meta = {
         "permissions",
         "api-keys",
         "revisions",
+        "advanced",
       ],
     },
     adapterType: {
@@ -59,6 +60,13 @@ export default meta;
 type Story = StoryObj<typeof meta>;
 export const Overview: Story = { args: { initialTab: "overview" } };
 export const Instructions: Story = { args: { initialTab: "instructions" } };
+export const Advanced: Story = {
+  args: { initialTab: "advanced" },
+  parameters: { paperclip: {
+    capabilities: ["agents/instructions"], status: "current", implementation: "mixed", boundary: "fixtures",
+    notes: "Production YAML editor inside the settings preview shell. Mutable fixtures simulate saves and revision conflicts; server authorization and secret restoration require integration verification.",
+  } },
+};
 export const Skills: Story = { args: { initialTab: "skills" } };
 export const Runtime: Story = {
   name: "Harness / Runtime",

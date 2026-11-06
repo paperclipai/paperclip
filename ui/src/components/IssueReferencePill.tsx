@@ -6,6 +6,7 @@ import { cn } from "../lib/utils";
 import { LockedIssueChip, isLockedIssueStub } from "./LockedIssueChip";
 import { badgeVariants } from "./ui/badge";
 import { StatusIcon } from "./StatusIcon";
+import { taskStatusIconProps } from "@/lib/task-status-presentation";
 
 export function IssueReferencePill({
   issue,
@@ -17,7 +18,7 @@ export function IssueReferencePill({
 }: {
   issue:
     | (Pick<IssueRelationIssueSummary, "id" | "identifier" | "title"> &
-        { status?: string })
+        { status?: string; displayStatus?: string })
     | IssueLockedStub;
   strikethrough?: boolean;
   variant?: "mention" | "property";
@@ -42,7 +43,7 @@ export function IssueReferencePill({
   );
   const content = (
     <>
-      {issue.status ? <StatusIcon status={issue.status} className="h-3 w-3 shrink-0" /> : null}
+      {issue.status ? <StatusIcon {...taskStatusIconProps({ ...issue, status: issue.status })} className="h-3 w-3 shrink-0" /> : null}
       {children !== undefined ? children : <span className="min-w-0 truncate">{issue.identifier ?? issue.title}</span>}
     </>
   );

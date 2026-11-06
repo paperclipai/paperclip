@@ -115,6 +115,17 @@ class WarmAttachTransport extends FakeCodexTransport {
 }
 
 describe("Codex app-server Codex driver", () => {
+  it.each(["codex_app_server", "acpx_runtime"])("keeps startup provider evidence for the selected %s driver", async kind => {
+    const transport = new FakeCodexTransport();
+    transport.rejectMethods.set("thread/start", new CodexRpcError(JSON.stringify({ error: {
+      code: "insufficient_quota", message: "The provider allowance is exhausted." }, status: 429 }), -32603));
+    const driver = makeDriver([transport], { driverIdentity: { kind, displayName: "Fixture", version: "1" } });
+    const error = await driver.openSession({ runId: "startup-cause", normalizedSessionId: "startup-cause", workingDirectory: WORKSPACE }).catch(error => error);
+    if (kind === "codex_app_server") expect(error.providerFailure).toMatchObject({ provider: "openai", phase: "startup",
+      category: "quota_exhausted", message: "The provider allowance is exhausted.", httpStatus: 429 });
+    else expect(error.providerFailure).toBeUndefined();
+  });
+
   it("accepts runner-proven warm attachment when the host active-turn reducer is stale", async () => {
     const transport = new WarmAttachTransport();
     const driver = makeDriver([transport]);
@@ -128,9 +139,10 @@ describe("Codex app-server Codex driver", () => {
       message: { role: "user", text: "first turn" },
     });
     await expect(
-      session.attachRun?.({ runId: "run-warm-second" }),
+      session.attachRun?.({ runId: "run-warm-second", currentRunGrant: { runtimeContext: null, instructions: "Current registered instructions." } }),
     ).resolves.toBeUndefined();
     expect(transport.attachments).toHaveLength(1);
+    expect(transport.attachments[0]).toMatchObject({ currentRunGrant: { runtimeContext: null, instructions: "Current registered instructions." } });
     expect((await session.snapshot()).activeTurnId).toBeNull();
 
     await expect(
@@ -773,6 +785,7 @@ describe("Codex app-server Codex driver", () => {
         runId: "run-1",
         environmentLeaseId: "lease-1",
         runnerInstanceId: "runner-codex",
+        driverSessionId: "thread-1",
         normalizedSessionId: "normalized-1",
       },
       capabilities,
@@ -807,7 +820,7 @@ it("sends explicit skill input on every requested turn", async () => {
     await collectUntilTerminal(session.events());
     transport.turnStartResponse = Promise.resolve({ turn: { id: "turn-2", status: "inProgress", items: [] } });
   }
-  await session.close();
+  await session.close({ reason: "fixture complete" });
 });
 
 
@@ -818,7 +831,7 @@ it("reapplies explicit skills after recovery without persisting them into ordina
     runId: "initial", normalizedSessionId: "skill-recovery", workingDirectory: WORKSPACE,
   });
   const snapshot = await original.snapshot();
-  await original.close();
+  await original.close({ reason: "fixture complete" });
   for (const selected of [skillInputs, []]) {
     const transport = new FakeCodexTransport();
     const recovery = await makeDriver([transport], { skillInputs: selected }).recoverSession(snapshot);
@@ -828,6 +841,6 @@ it("reapplies explicit skills after recovery without persisting them into ordina
       await session.startTurn({ message: { role: "user", text: "Continue" } });
       const items = transport.calls.find((call) => call.method === "turn/start")?.params.input as Array<{type:string}>;
       expect(items.filter((item) => item.type === "skill")).toEqual(selected);
-    } finally { await session.close(); }
+    } finally { await session.close({ reason: "fixture complete" }); }
   }
 });

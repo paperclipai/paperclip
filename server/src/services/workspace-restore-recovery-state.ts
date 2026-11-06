@@ -10,12 +10,14 @@ export const LEGACY_WORKSPACE_RECOVERY_SCHEMA = "paperclip.workspace-restore-rec
 export function nativeRunHasNoWorkspaceAccess(run: Pick<typeof heartbeatRuns.$inferSelect,
   "id" | "companyId" | "agentId" | "issueId" | "nativeIssueId" | "runtimeMode" | "driverKind" | "runnerProfileJson">): boolean {
   const input = run.runnerProfileJson?.nativeExecutionInput as Record<string, unknown> | undefined;
-  if (run.runtimeMode !== "native" || input?.schema !== "paperclip.native-execution-input.v6") return false;
+  if (run.runtimeMode !== "native" || !input || (input.schema !== "paperclip.native-execution-input.v6" && input.schema !== "paperclip.native-execution-input.v8")) return false;
   const binding = input.binding as Record<string, unknown> | undefined;
   const workspace = input.workspace as Record<string, unknown> | undefined;
   const provider = input.provider as Record<string, unknown> | undefined;
-  const driver = provider?.kind === "grok_bot" ? "grok_bot_mcp"
-    : provider?.kind === "openai_dot" ? "openai_dot_mcp" : null;
+  const driver = input?.schema === "paperclip.native-execution-input.v8"
+    ? provider?.kind === "muse" && provider.bridgeRevision === "muse-v1" ? "muse_external" : null
+    : provider?.kind === "grok_bot" ? "grok_bot_mcp"
+      : provider?.kind === "openai_dot" ? "openai_dot_mcp" : null;
   return driver !== null && run.driverKind === driver && workspace?.access === "none" && workspace.cwd === null
     && binding?.runId === run.id && binding.companyId === run.companyId && binding.agentId === run.agentId
     && binding.issueId === (run.nativeIssueId ?? run.issueId);

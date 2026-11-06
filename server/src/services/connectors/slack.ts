@@ -6,6 +6,7 @@ import { slackBotCatalogIsCurrent, syncSlackBotTools } from "./slack-catalog.js"
 import { SLACK_TOOLS } from "@paperclipai/shared";
 import { measureRunPhase } from "../execution-preparation-timing.js";
 import { measureRunTransaction } from "../execution-transaction-timing.js";
+import { prepareSlackEndpoints } from "./slack-endpoint-preparation.js";
 import {
   toolProfiles,
   toolProfileBindings,
@@ -104,16 +105,11 @@ export async function slackAssignedResource(
   db: Db,
   binding: Partial<SlackTaskBinding> & { companyId: string; agentId: string },
 ) {
-  const resources = [];
-  for (const endpoint of await measureRunPhase("connectors.slack.candidates", () => slackEndpointCandidates(db, binding))) {
-    resources.push(
-      ...(await slackAssignedEndpoint(db, {
-        ...binding,
-        endpointId: endpoint.id,
-      }, endpoint)),
-    );
-  }
-  return resources;
+  const endpoints = await measureRunPhase("connectors.slack.candidates", () => slackEndpointCandidates(db, binding));
+  return prepareSlackEndpoints(endpoints, endpoint => slackAssignedEndpoint(db, {
+    ...binding,
+    endpointId: endpoint.id,
+  }, endpoint));
 }
 
 const messageView = (message: SlackObject, team: string, channel: string) => ({

@@ -1,6 +1,6 @@
 {
   "name": "@paperclipai/plugin-kubernetes",
-  "version": "0.1.0",
+  "version": "0.1.0-alpha.1",
   "description": "Kubernetes sandbox provider plugin for Paperclip environments",
   "license": "MIT",
   "homepage": "https://github.com/paperclipai/paperclip",
@@ -49,7 +49,7 @@
   },
   "dependencies": {
     "@kubernetes/client-node": "^1.0.0",
-    "zod": "^3.24.2"
+    "zod": "^4.6.6"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

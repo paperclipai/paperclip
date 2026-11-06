@@ -8,6 +8,12 @@ import {
   agentRuntimeState,
   agentWakeupRequests,
   companySkills,
+  completionContracts,
+  nativeRunResults,
+  nativeRunFinalizations,
+  workAssessments,
+  statusDecisions,
+  statusDecisionEffects,
   companies,
   authUsers,
   companyMemberships,
@@ -31,8 +37,10 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { heartbeatService } from "../services/heartbeat.ts";
 import { runningProcesses } from "../adapters/index.ts";
+import { taskInterruptionPresentation } from "../services/task-interruption-presentation.js";
 
 const mockAdapterExecute = vi.hoisted(() =>
   vi.fn(async () => ({
@@ -57,7 +65,8 @@ vi.mock("../adapters/index.ts", async () => {
   };
 });
 
-const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+const external = resolveExternalTestDatabaseUrl("PAPERCLIP_DEPENDENCY_TEST_DATABASE_URL");
+const embeddedPostgresSupport = external ? { supported: true, reason: undefined } : await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
 if (!embeddedPostgresSupport.supported) {
@@ -97,8 +106,8 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
 
   beforeAll(async () => {
-    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-heartbeat-dependency-scheduling-");
-    db = createDb(tempDb.connectionString);
+    if (!external) tempDb = await startEmbeddedPostgresTestDatabase("paperclip-heartbeat-dependency-scheduling-");
+    db = createDb(external ?? tempDb!.connectionString);
     await db.insert(authUsers).values({ id: "responsible-user", name: "Fixture owner", email: "owner@example.test", createdAt: new Date(), updatedAt: new Date() });
     heartbeat = heartbeatService(db);
     await ensureIssueRelationsTable(db);
@@ -144,6 +153,12 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
     await db.delete(documents);
     await db.delete(issueRelations);
     await db.delete(issueTreeHolds);
+    await db.delete(statusDecisionEffects);
+    await db.delete(statusDecisions);
+    await db.delete(workAssessments);
+    await db.delete(nativeRunFinalizations);
+    await db.delete(nativeRunResults);
+    await db.delete(completionContracts);
     await db.delete(issues);
     await db.delete(heartbeatRunEvents);
     await db.delete(activityLog);
@@ -173,6 +188,8 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
   });
 
   afterAll(async () => {
+    await db?.delete(authUsers).where(eq(authUsers.id, "responsible-user"));
+    await db?.$client.end();
     await tempDb?.cleanup();
   });
 
@@ -257,6 +274,76 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
     } finally {
       finishParent();
     }
+  }, 45_000);
+
+  it("keeps a saved native continuation behind its active predecessor without retagging that run", async () => {
+    const companyId = randomUUID(), agentId = randomUUID(), issueId = randomUUID();
+    let finishPredecessor!: () => void;
+    const predecessorFinished = new Promise<void>(resolve => { finishPredecessor = resolve; });
+    mockAdapterExecute.mockImplementationOnce(async () => {
+      await predecessorFinished;
+      return { exitCode: 0, signal: null, timedOut: false, errorMessage: null,
+        summary: "The repository is staged; continue on the saved admission.", provider: "test", model: "test-model" };
+    });
+    mockAdapterExecute.mockImplementationOnce(async () => {
+      await db.update(issues).set({ status: "done" }).where(eq(issues.id, issueId));
+      return { exitCode: 0, signal: null, timedOut: false, errorMessage: null,
+        summary: "Verified and delivered the prepared repository.", provider: "test", model: "test-model" };
+    });
+    await db.insert(companies).values({ id: companyId, name: "Saved repository continuation",
+      issuePrefix: `N${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false, defaultResponsibleUserId: "responsible-user" });
+    await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: "responsible-user", status: "active", membershipRole: "member" });
+    await db.insert(agents).values({ id: agentId, companyId, name: "Repository worker", role: "engineer", status: "active",
+      adapterType: "codex_local", adapterConfig: {}, permissions: {}, runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } } });
+    await db.insert(issues).values({ id: issueId, companyId, title: "Continue repository verification", status: "todo",
+      assigneeAgentId: agentId, responsibleUserId: "responsible-user" });
+    try {
+      const predecessor = await heartbeat.wakeup(agentId, { source: "assignment", triggerDetail: "system", reason: "issue_assigned",
+        payload: { issueId }, contextSnapshot: { issueId, source: "initial-repository-request" } });
+      expect(predecessor).not.toBeNull();
+      expect(await waitForCondition(async () => mockAdapterExecute.mock.calls.length === 1, 30_000)).toBe(true);
+      const contractId = randomUUID(), resultId = randomUUID(), assessmentId = randomUUID(), decisionId = randomUUID();
+      await db.insert(completionContracts).values({ id: contractId, companyId, issueId, revision: 1,
+        schemaVersion: "paperclip.completion-contract.v1", policyVersion: "test", risk: "standard",
+        completionAuthority: "server_arbiter", incompleteCriteriaPolicy: "preserve_non_terminal",
+        contractJson: {}, canonicalSha256: contractId, createdByActorType: "system", createdByActorId: "test" });
+      await db.update(heartbeatRuns).set({ nativeIssueId: issueId, completionContractId: contractId }).where(eq(heartbeatRuns.id, predecessor!.id));
+      await db.insert(nativeRunResults).values({ id: resultId, companyId, issueId, runId: predecessor!.id,
+        completionContractId: contractId, serverFingerprint: resultId, schemaStatus: "accepted", resultJson: {}, canonicalSha256: resultId });
+      await db.insert(workAssessments).values({ id: assessmentId, companyId, issueId, runId: predecessor!.id,
+        contractId, resultId, triggerKind: "turn_finished", triggerActorCompanyId: companyId,
+        priorIssueStatus: "in_progress", priorStatusVersion: 0, policyVersion: "test", assessmentJson: {}, inputDigest: assessmentId });
+      await db.insert(statusDecisions).values({ id: decisionId, companyId, issueId, runId: predecessor!.id,
+        assessmentId, decisionVersion: 1, policyVersion: "test", fromStatus: "in_progress", toStatus: "in_progress",
+        reasonCode: "live_continuation_registered", decisionJson: {}, decisionDigest: decisionId, applicationState: "applied", appliedAt: new Date() });
+      const [intent] = await db.insert(agentWakeupRequests).values({ companyId, agentId, source: "automation", triggerDetail: "system",
+        reason: "issue_status_changed", requestedByActorType: "system", requestedByActorId: "native-status-committer",
+        idempotencyKey: `native-status:${decisionId}:continuation`, payload: { issueId, taskId: issueId, nativeDecisionId: decisionId, continuationKind: "same_agent",
+          _paperclipWakeContext: { issueId, taskId: issueId, source: "native_status_decision", continuationKind: "same_agent" } } }).returning();
+      await db.insert(statusDecisionEffects).values({ companyId, issueId, decisionId, ordinal: 0,
+        effectKind: "enqueue_continuation", targetType: "agent_wakeup_request", targetId: intent!.id,
+        idempotencyKey: `native-status:${decisionId}:continuation`, payload: { continuationKind: "same_agent" }, deliveryState: "delivered", deliveredAt: new Date() });
+      await heartbeat.dispatchPendingNativeStatusWakeups({ companyId });
+      await heartbeat.dispatchPendingNativeStatusWakeups({ companyId });
+      const queued = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, companyId));
+      expect(queued.filter(row => row.status === "deferred_issue_execution"), JSON.stringify(queued.map(row => ({ status: row.status, reason: row.reason, runId: row.runId, error: row.error })))).toHaveLength(1);
+      expect(queued.find(row => row.id === intent!.id)).toMatchObject({ status: "coalesced", runId: null });
+      const [unchanged] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, predecessor!.id));
+      expect(unchanged!.contextSnapshot).toMatchObject({ source: "initial-repository-request" });
+      expect(unchanged!.contextSnapshot?.nativeStatusWakeIntentId).toBeUndefined();
+      expect(mockAdapterExecute).toHaveBeenCalledTimes(1);
+      finishPredecessor();
+      expect(await waitForCondition(async () => mockAdapterExecute.mock.calls.length === 2, 10_000)).toBe(true);
+      await heartbeat.drainActiveRunExecutions();
+      const completed = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId));
+      expect(completed).toHaveLength(2);
+      const successor = completed.find(run => run.id !== predecessor!.id)!;
+      expect(successor).toMatchObject({ status: "succeeded", contextSnapshot: { source: "native_status_decision", nativeStatusWakeIntentId: intent!.id } });
+      expect(successor.startedAt!.getTime()).toBeGreaterThanOrEqual(completed.find(run => run.id === predecessor!.id)!.finishedAt!.getTime());
+      await heartbeat.dispatchPendingNativeStatusWakeups({ companyId });
+      expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId))).toHaveLength(2);
+    } finally { finishPredecessor(); }
   }, 45_000);
 
   it("dispatches and coalesces durable native status wake intents into one heartbeat run", async () => {
@@ -603,14 +690,9 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
     });
     expect(interactionWake).not.toBeNull();
 
-    await waitForCondition(async () => {
-      const run = await db
-        .select({ status: heartbeatRuns.status })
-        .from(heartbeatRuns)
-        .where(eq(heartbeatRuns.id, interactionWake!.id))
-        .then((rows) => rows[0] ?? null);
-      return run?.status === "succeeded";
-    });
+    // This checks dependency interaction semantics, not provider startup speed.
+    // Join the admitted execution before inspecting its persisted outcome.
+    await heartbeat.drainActiveRunExecutions();
 
     const interactionRun = await db
       .select({
@@ -1148,16 +1230,18 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       })
       .where(eq(issues.id, blockedIssueId));
 
+    mockAdapterExecute.mockImplementationOnce(async () => {
+      await db.update(issues).set({ status: "done" }).where(eq(issues.id, readyIssueId));
+      return { exitCode: 0, signal: null, timedOut: false, errorMessage: null,
+        summary: "Ready queued run completed.", provider: "test", model: "test-model" };
+    });
     await heartbeat.resumeQueuedRuns();
 
-    await waitForCondition(async () => {
-      const run = await db
-        .select({ status: heartbeatRuns.status })
-        .from(heartbeatRuns)
-        .where(eq(heartbeatRuns.id, readyRunId))
-        .then((rows) => rows[0] ?? null);
-      return run?.status === "succeeded";
-    });
+    expect(await waitForCondition(async () => {
+      const [ready] = await db.select({ status: heartbeatRuns.status }).from(heartbeatRuns).where(eq(heartbeatRuns.id, readyRunId));
+      return ready?.status === "succeeded";
+    }, 30_000)).toBe(true);
+    await heartbeat.drainActiveRunExecutions();
 
     const [blockedRun, blockedWakeup, blockedIssue, readyRun] = await Promise.all([
       db
@@ -1198,6 +1282,13 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
     expect(blockedRun?.errorCode).toBe("issue_dependencies_blocked");
     expect(blockedRun?.finishedAt).toBeTruthy();
     expect(blockedRun?.resultJson).toMatchObject({ stopReason: "issue_dependencies_blocked" });
+    expect(blockedRun?.resultJson).toMatchObject({ cancellation: { source: "control_plane", expected: true } });
+    const [waitingIssue] = await db.select().from(issues).where(eq(issues.id, blockedIssueId));
+    expect(await taskInterruptionPresentation(db, waitingIssue!)).toMatchObject({ state: "resolved", canRetry: false });
+    await db.update(heartbeatRuns).set({ resultJson: { ...blockedRun!.resultJson, timeoutFired: true } })
+      .where(eq(heartbeatRuns.id, blockedRunId));
+    expect(await taskInterruptionPresentation(db, waitingIssue!)).toMatchObject({ state: "failed", canRetry: true });
+    await db.update(heartbeatRuns).set({ resultJson: blockedRun!.resultJson }).where(eq(heartbeatRuns.id, blockedRunId));
     expect(blockedWakeup?.status).toBe("skipped");
     expect(blockedWakeup?.error).toContain("dependencies are still blocked");
     expect(blockedIssue).toMatchObject({
@@ -1206,8 +1297,8 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       executionLockedAt: null,
     });
     expect(readyRun?.status).toBe("succeeded");
-    expect(mockAdapterExecute.mock.calls.length).toBeGreaterThanOrEqual(1);
-  });
+    expect(mockAdapterExecute).toHaveBeenCalledTimes(1);
+  }, 40_000);
 
   it("suppresses normal wakeups while allowing comment interaction wakes under a pause hold", async () => {
     const companyId = randomUUID();

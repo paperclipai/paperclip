@@ -114,7 +114,7 @@ export type FoldSourceResolvedRunInput = {
 
 export type FoldOutcome =
   | { kind: "folded"; evaluationIssueId: string | null }
-  | { kind: "stale" };
+  | { kind: "stale"; retryAt?: number };
 
 export type WatchdogDecisionActor =
   | { type: "board"; userId?: string | null; runId?: string | null }

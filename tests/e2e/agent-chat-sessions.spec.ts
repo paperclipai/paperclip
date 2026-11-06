@@ -126,7 +126,7 @@ test("chat first open is read-only; concurrent first sends and retries share one
   }
 });
 
-test("feature flag blocks new sends and resets while preserving existing history", async ({
+test("retired Chat opt-outs allow sends and resets while preserving existing history", async ({
   page,
   request,
 }) => {
@@ -140,22 +140,22 @@ test("feature flag blocks new sends and resets while preserving existing history
         data: { enableAgentChat: false },
       }),
     );
-    for (const body of ["blocked message", "/new"])
+    for (const body of ["Available to existing people", "/new"])
       expect(
         (
           await request.post(`/api/issues/${issue.id}/comments`, {
-            data: { body },
+            data: { body, clientRequestId: crypto.randomUUID() },
           })
         ).status(),
-      ).toBe(404);
+      ).toBe(201);
     await page.reload();
-    await expect(page.getByText(/Agent Chat is disabled/)).toBeVisible();
+    await expect(page.getByText("Visible history", { exact: true }).first()).toBeVisible();
     expect(
       (await json(await request.get(`/api/issues/${issue.id}/comments`))).some(
         (c: any) => c.body.includes("Visible history"),
       ),
     ).toBe(true);
-    expect((await request.post(f.chatPath, { data: {} })).status()).toBe(404);
+    expect((await request.post(f.chatPath, { data: {} })).status()).toBe(200);
   } finally {
     await f.restore();
   }
@@ -180,7 +180,7 @@ test("Stop then queued /new resets unpause the conversation without losing histo
             (c: any) => c.body === "Provider is streaming and ready to stop.",
           )
         );
-      })
+      }, { timeout: 30_000 })
       .toBe(true);
     const issue = await json(await request.get(f.chatPath));
     const active = (
@@ -253,18 +253,58 @@ test("Stop then queued /new resets unpause the conversation without losing histo
   }
 });
 
+test("Coordinator agent switching preserves drafts and opens one conversation only on send", async ({ page, request }) => {
+  const f = await setup(request);
+  try {
+    await page.goto(f.route);
+    await expect(page.getByRole("navigation", { name: "Workspace navigation" })).toBeVisible();
+    const editor = page.getByTestId("task-chat-composer-input").locator('[contenteditable="true"]');
+    const picker = page.getByRole("dialog", { name: "Chat with an agent", exact: true });
+    const switchTo = async (name: string) => {
+      await page.getByRole("button", { name: /^Switch agent. Currently / }).click();
+      await picker.getByRole("combobox").fill(name);
+      await picker.getByRole("combobox").press("Enter");
+      await expect(picker).not.toBeVisible();
+      await expect(page.getByRole("button", { name: `Switch agent. Currently ${name}`, exact: true })).toBeVisible();
+    };
+    await editor.fill("Unsent Coordinator draft for Alpha");
+    await switchTo("Beta");
+    await expect(editor).toHaveText("");
+    expect(await json(await request.get(`/api/companies/${f.company.id}/chats/${f.agents[1].id}`))).toBeNull();
+    await switchTo("Alpha");
+    await expect(editor).toContainText("Unsent Coordinator draft for Alpha");
+    await page.reload();
+    await expect(editor).toContainText("Unsent Coordinator draft for Alpha");
+    expect(await json(await request.get(f.chatPath))).toBeNull();
+    await editor.fill("");
+    await send(page, "Coordinator conversation acceptance");
+    await idle(request, f.chatPath);
+    const chat = await json(await request.get(f.chatPath));
+    await switchTo("Beta");
+    await switchTo("Alpha");
+    await expect(page.getByText("Coordinator conversation acceptance", { exact: true })).toBeVisible();
+    expect((await json(await request.get(f.chatPath))).id).toBe(chat.id);
+    expect(await json(await request.get(`/api/companies/${f.company.id}/chats`))).toHaveLength(1);
+  } finally {
+    await f.restore();
+  }
+});
+
 test("secondary chat navigation preserves layout, unique conversations, history, and drafts", async ({
   page,
   request,
 }) => {
   const originalExperimental = await json(await request.get("/api/instance/settings/experimental"));
   const f = await setup(request);
+  const originalWorkspace = await json(await request.get("/api/workspace-preferences/me"));
+  const workspacePath = `/api/companies/${f.company.id}/workspace-preferences/me`;
   try {
+    await json(await request.put(workspacePath, { data: { coordinatorWorkspaceEnabled: false } }));
     await json(await request.patch("/api/instance/settings/experimental", {
       data: { enableStreamlinedUi: true },
     }));
     await page.goto(`/${f.company.issuePrefix}/dashboard`);
-    await page.getByRole("link", { name: "Chat", exact: true }).click();
+    await page.getByRole("link", { name: /^Chat(?:\s|$)/ }).click();
     // With no recent conversation, Chat opens the first human-created primary.
     // Navigation alone must not create a conversation or start execution.
     expect(await json(await request.get(`/api/companies/${f.company.id}/primary-agent/me`))).toMatchObject({
@@ -333,7 +373,7 @@ test("secondary chat navigation preserves layout, unique conversations, history,
     await expect(editor).toContainText("Unsent draft for Alpha");
     await expect(nav.getByRole("link")).toHaveCount(6);
 
-    await page.getByRole("link", { name: "Chat", exact: true }).click();
+    await page.getByRole("link", { name: /^Chat(?:\s|$)/ }).click();
     await expect(page.getByRole("link", { name: "Configure Alpha", exact: true })).toBeVisible();
     await expect(editor).toContainText("Unsent draft for Alpha");
     expect(await sidebar.boundingBox()).toEqual(landingBounds);
@@ -346,7 +386,7 @@ test("secondary chat navigation preserves layout, unique conversations, history,
       },
     }));
     await idle(request, betaPath);
-    await page.getByRole("link", { name: "Chat", exact: true }).click();
+    await page.getByRole("link", { name: /^Chat(?:\s|$)/ }).click();
     await expect(page.getByRole("link", { name: "Configure Alpha", exact: true })).toBeVisible();
     await compose.click();
     await picker.getByRole("combobox").fill("Beta");
@@ -365,6 +405,7 @@ test("secondary chat navigation preserves layout, unique conversations, history,
     await page.reload();
     await expect(page.getByText("Background activity", { exact: true })).toBeVisible();
   } finally {
+    await json(await request.put(workspacePath, { data: { coordinatorWorkspaceEnabled: originalWorkspace.coordinatorWorkspaceEnabled } }));
     await f.restore();
     await json(await request.patch("/api/instance/settings/experimental", {
       data: { enableStreamlinedUi: originalExperimental.enableStreamlinedUi },

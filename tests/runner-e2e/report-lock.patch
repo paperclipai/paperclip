@@ -1,0 +1,14 @@
+diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml
+index 45b3aaf..a87f8e7 100644
+--- a/pnpm-lock.yaml
++++ b/pnpm-lock.yaml
+@@ -1306,6 +1306,9 @@ importers:
+       lucide-react:
+         specifier: ^1.48.0
+         version: 1.48.0(react@19.2.8)
++      mdast-util-from-markdown:
++        specifier: ^2.0.3
++        version: 2.0.3
+       mermaid:
+         specifier: ^12.1.0
+         version: 12.1.0

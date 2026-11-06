@@ -12,7 +12,9 @@
  * inventory for the mapping. No timing/motion values live here — those are
  * CSS motion tokens in ui/src/index.css.
  */
+import type { TaskChatMcpStartupFailure } from "./TaskChatRunHealthBanner";
 import type {
+  Issue,
   TaskBrowser,
   IssueAttachment,
   IssueCommentMetadata,
@@ -20,6 +22,9 @@ import type {
   IssueDocument,
   IssueDocumentSummary,
   IssueWorkProduct,
+  DecisionHistoryItem,
+  ConversationTaskHandoff,
+  AttentionItem,
 } from "@paperclipai/shared";
 import type {
   PaperclipQuestionResponse,
@@ -30,6 +35,7 @@ export type { PaperclipQuestionResponse, PaperclipQuestionSet };
 
 export type TaskChatProviderActivityFamily =
   | "plan"
+  | "plan_proposal"
   | "tool_execution"
   | "research"
   | "delegation"
@@ -42,6 +48,7 @@ export type TaskChatProviderActivityFamily =
   | "safety"
   | "terminal"
   | "wait"
+  | "verification"
   | "provider_notice";
 
 export type TaskChatProviderActivityStatus =
@@ -55,6 +62,8 @@ export interface TaskChatWorkspaceChangeFile {
   deletions: number | null;
   binary: boolean;
   diff: string | null;
+  /** The patch was shortened by its producer; counts still cover all of it. */
+  diffTruncated?: boolean;
 }
 import type { IssueThreadInteraction } from "@/lib/issue-thread-interactions";
 
@@ -86,7 +95,20 @@ export interface TaskChatDiff {
   added: number;
   removed: number;
   /** Optional unified-diff-ish lines for display only. */
-  lines?: Array<{ kind: "add" | "remove" | "context"; text: string }>;
+  lines?: TaskChatDiffLine[];
+  /** True when the producer bounded the patch and lines were omitted. */
+  truncated?: boolean;
+  /**
+   * Per-file counts reported by the producer for the whole patch. When present
+   * they are authoritative; `added`/`removed` are their sums, not line counts.
+   */
+  files?: Array<{ path: string; additions: number; deletions: number; truncated: boolean }>;
+}
+
+export interface TaskChatDiffLine {
+  /** `file` starts the next file when one edit call changed several files. */
+  kind: "add" | "remove" | "context" | "hunk" | "file";
+  text: string;
 }
 
 export interface TaskChatTokenUsage {
@@ -162,6 +184,7 @@ export interface TaskChatMessageItem {
    */
   presentation?: IssueCommentPresentation | null;
   metadata?: IssueCommentMetadata | null;
+  chatMessage?: IssueCommentMetadata["chatMessage"];
   /** Agent that owns the source run, used to build run-detail links in metadata rows. */
   runAgentId?: string | null;
   /** Raw comment timestamp (ISO) — the collapsed system row shows relative time. */
@@ -186,6 +209,14 @@ export interface TaskChatThinkingItem {
   transcriptIndex?: number;
 }
 
+/** An automatic approval review folded onto the tool row it approved. */
+export interface TaskChatAutoReview {
+  decision: "allowed";
+  riskLevel?: string;
+  userConsent?: string;
+  rationale?: string;
+}
+
 /** A tool invocation row (ACP tool_call / tool_call_update). */
 export interface TaskChatToolItem {
   id: string;
@@ -205,6 +236,20 @@ export interface TaskChatToolItem {
   diff?: TaskChatDiff;
   /** Resolved permission decision badge, when one applied. */
   decision?: "allowed" | "rejected";
+  /** Automatic approval review that let this call run. */
+  autoReview?: TaskChatAutoReview;
+  /** Canonical operation (read, search, list, execute, edit) when known. */
+  operation?: string;
+  /** Provider's short description of the call, such as Claude's Bash description. */
+  description?: string;
+  /** Process exit code, when the harness reported one. */
+  exitCode?: number | null;
+  /** Wall-clock tool duration in milliseconds, when known. */
+  durationMs?: number | null;
+  /** Why the harness or a policy refused to run the tool. */
+  blockedReason?: string;
+  /** Execution id of the delegation (subagent) that made this call. */
+  parentToolUseId?: string;
 }
 
 /**
@@ -249,7 +294,7 @@ export interface TaskChatStatusItem {
 export interface TaskChatMarkerItem {
   id: string;
   kind: "marker";
-  variant: "session_start" | "interrupted" | "turn_boundary";
+  variant: "session_start" | "interrupted" | "turn_boundary" | "context_compacted";
   label: string;
   detail?: string;
   /** False when the recorded run cannot be retried, even after the chat continues. */
@@ -357,6 +402,13 @@ export interface TaskChatProtocolChild {
   status: string;
   metadata?: string;
   summary?: string;
+  /** Subagent type the provider dispatched (`Explore`, `general-purpose`). */
+  role?: string;
+  model?: string;
+  /** Latest provider progress summary while the child runs. */
+  progress?: string;
+  prompt?: string;
+  result?: string;
 }
 
 export interface TaskChatProviderActivityItem {
@@ -376,6 +428,50 @@ export interface TaskChatProviderActivityItem {
   outputTruncated?: boolean;
   /** Index of the latest provider event coalesced into this activity. */
   transcriptIndex?: number;
+  /** Provider activity identity, e.g. the delegation id for a subagent. */
+  activityId?: string;
+  /** Delegation (subagent) execution that made this tool call. */
+  parentToolUseId?: string;
+  /** First and latest provider event times coalesced into this activity. */
+  startedAtMs?: number;
+  updatedAtMs?: number;
+  /** A retry status notice the turn has moved past. */
+  resolved?: boolean;
+  /** When the provider first reported this activity (ISO timestamp). */
+  startedAt?: string;
+  /** Automatic approval review that let this tool execution run. */
+  autoReview?: TaskChatAutoReview;
+}
+
+export type TaskChatSubagentStatus = "running" | "completed" | "failed" | "cancelled";
+
+/**
+ * A delegated subagent (Claude Agent/Task call, Codex or Cursor child) with
+ * the tool rows it made, nested under the parent turn.
+ */
+export interface TaskChatSubagent {
+  id: string;
+  /** Subagent type the provider dispatched, e.g. `Explore` or `general-purpose`. */
+  agentType: string;
+  /** Short task description the parent wrote for the child. */
+  description: string;
+  prompt?: string;
+  model?: string;
+  status: TaskChatSubagentStatus;
+  /** Latest provider progress summary (Claude `agentProgressSummaries`). */
+  progressSummary?: string;
+  startedAtMs?: number | null;
+  finishedAtMs?: number | null;
+  /** Child tool/thinking rows, in order. */
+  activity: TaskChatActivityPhaseItem["items"];
+  result?: string;
+}
+
+/** Subagents dispatched together; one renders as a card, several as a tree. */
+export interface TaskChatSubagentGroupItem {
+  id: string;
+  kind: "subagent_group";
+  subagents: TaskChatSubagent[];
 }
 
 export interface TaskChatWorkspaceChangeItem {
@@ -495,6 +591,7 @@ export type TaskChatProtocolItem =
 
 /** Items a turn can group — everything except another turn. */
 export type TaskChatTurnChildItem =
+  | TaskChatSubagentGroupItem
   | TaskChatMessageItem
   | TaskChatThinkingItem
   | TaskChatToolItem
@@ -539,6 +636,8 @@ export interface TaskChatTurnItem {
   continuedAfterSteering?: boolean;
   /** Durable response shown after the ordered Paperclip Runner timeline. */
   finalResponse?: TaskChatMessageItem;
+  /** MCP servers the harness could not start for this run (run-health banner). */
+  mcpStartupFailures?: TaskChatMcpStartupFailure[];
   summary: {
     /** e.g. "38s" — omitted when unknown. */
     durationLabel?: string;
@@ -550,6 +649,14 @@ export interface TaskChatTurnItem {
     /** Failed/interrupted turns get a ✗ affordance instead of ✓. */
     failed?: boolean;
   };
+}
+
+export interface TaskChatTaskCreatedItem {
+  id: string;
+  kind: "task_created";
+  task: Pick<Issue, "id" | "identifier" | "title" | "status" | "displayStatus" | "externalConversationState" | "blockerAttention">;
+  isSubtask: boolean;
+  timestamp: string;
 }
 
 export interface TaskChatProjectCreatedItem {
@@ -582,7 +689,11 @@ export interface TaskChatBrowserItem {
 }
 
 export type TaskChatItem =
+  | { id: string; kind: "pending_question"; question: AttentionItem }
+  | { id: string; kind: "decision_receipt"; receipt: DecisionHistoryItem }
+  | { id: string; kind: "task_handoff"; handoff: ConversationTaskHandoff; animateEntry?: boolean }
   | TaskChatBrowserItem
+  | TaskChatTaskCreatedItem
   | TaskChatProjectCreatedItem
   | TaskChatSkillCreatedItem
   | TaskChatMessageItem
@@ -596,6 +707,7 @@ export type TaskChatItem =
   | TaskChatPlanDocumentItem
   | TaskChatTurnItem
   | TaskChatBriefItem
+  | TaskChatSubagentGroupItem
   | TaskChatProtocolItem;
 
 /** Latest lifecycle state wins for each request; terminal entries suppress stale pending cards. */

@@ -14,6 +14,13 @@ export type { InvokableAgentSnapshot, IssueSnapshot, ReleaseRecoveryBlockedNotic
 export type LockedIssueExecution = {
   /** Plan bounded recovery without draining messages while the finishing owner cleans up. */
   recoveryOnly?: boolean;
+  /**
+   * The finishing run was deliberately stopped, and the issue now belongs to
+   * this other agent (a reassignment committed while that stop was settling).
+   * Promote only that assignee's deferred wake; the stopped run's own queued
+   * work stays put and no recovery is planned for it.
+   */
+  handoffAssigneeAgentId?: string;
   primaryIssue: IssueSnapshot;
   run: RunSnapshot;
 };
@@ -123,6 +130,7 @@ export interface WakeQueueTransaction {
   cancelDeferredWake(input: {
     companyId: string;
     wakeId: string;
+    agentId: string;
     reason: string;
     now: Date;
   }): Promise<boolean>;
@@ -135,7 +143,7 @@ export interface WakeQueueTransaction {
     now: Date;
   }): Promise<DeferredWakeCandidate | null>;
   /** Sets `status = 'failed'` guarded by the current `deferred_issue_execution` status. */
-  failDeferredWake(input: { companyId: string; wakeId: string; now: Date }): Promise<boolean>;
+  failDeferredWake(input: { companyId: string; wakeId: string; agentId: string; now: Date }): Promise<boolean>;
   getPauseHoldFacts(input: {
     companyId: string;
     issueId: string;
@@ -235,7 +243,7 @@ export interface WakeQueueTransaction {
  */
 export interface IssueLockWriter {
   withIssueExecutionLock(
-    input: { companyId: string; runId: string; now: Date },
+    input: { companyId: string; runId: string; now: Date; resumeStrandedQueue?: boolean },
     fn: (
       locked: LockedIssueExecution,
       ports: { host: WakeQueueHost; transaction: WakeQueueTransaction },
@@ -322,7 +330,9 @@ export type DurableWakeAdmissionReceipt = {
   requestedAt: Date;
 };
 
-export type CoalescedDeferredAdmissionReceipt = DurableWakeAdmissionReceipt & {
+export type CoalescedDeferredAdmissionReceipt =
+  Omit<DurableWakeAdmissionReceipt, "id" | "requestedAt"> &
+  Partial<Pick<DurableWakeAdmissionReceipt, "id" | "requestedAt">> & {
   agentId: string;
   source: string;
   triggerDetail: string | null;
@@ -407,6 +417,8 @@ export interface WakeAdmissionReader {
       companyId: string;
       agentId: string;
       issueId: string;
+      /** Matches only deferred wakes for this chat conversation or for no conversation. */
+      chatConversationId?: string | null;
       durableActor?: { type: string | null; id: string | null };
     },
   ): Promise<ExistingDeferredWake | null>;
@@ -420,6 +432,7 @@ export interface WakeAdmissionWriter {
     input: {
       companyId: string;
       activeExecutionRunId: string;
+      activeExecutionRunStatus: WakeAdmissionActiveExecutionRun["status"];
       mergedContextSnapshot: Record<string, unknown>;
       durableReceipt?: DurableWakeAdmissionReceipt;
       agentId: string;
@@ -430,7 +443,7 @@ export interface WakeAdmissionWriter {
       requestedByActorId: string | null;
       idempotencyKey: string | null;
     },
-  ): Promise<Record<string, unknown>>;
+  ): Promise<Record<string, unknown> | null>;
   /** Merges the wake's context into an already-queued deferred wake, guarded by its current status. */
   mergeIntoExistingDeferredWake(
     scope: TransactionScope,

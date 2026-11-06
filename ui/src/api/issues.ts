@@ -1,10 +1,14 @@
 import type { SetIssueTitle } from "@paperclipai/shared";
+import { ISSUE_SUMMARIES_MAX_IDS } from "@paperclipai/shared";
+import type { IssueSummary } from "@paperclipai/shared";
 import type { ExecutionReconciliation } from "@paperclipai/shared";
+import type { IssueContextUsage } from "@paperclipai/shared";
 import type {
   AcceptedPlanDecompositionSummary,
   AskUserQuestionsAnswer,
   Approval,
   CompactIssue,
+  InboxMineSnapshot,
   CreateIssueTreeHold,
   DocumentRevision,
   FeedbackTargetType,
@@ -19,10 +23,12 @@ import type {
   IssueAttachment,
   IssueCostSummary,
   IssueComment,
+  IssueRecentComments,
   IssueQueuedCommentQueue,
   IssueDocument,
   IssueLabel,
   IssueRecoveryAction,
+  WorkspaceSourceInspection,
   IssueRetryNowResponse,
   StalledReviewDecision,
   StalledReviewDecisionResponse,
@@ -42,6 +48,8 @@ import type {
 } from "@paperclipai/shared";
 import { api, ApiError, detachInflightGet, type RequestOptions } from "./client";
 import { CommentSubmissionUnknownError } from "../lib/comment-submit-result";
+import { classifySendFailure } from "../lib/pending-send";
+import { interactionResolutionErrorCode } from "../lib/interaction-resolution-error";
 
 function hasCommentReceipt(value: unknown): boolean {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
@@ -72,6 +80,104 @@ async function confirmedCommentResponse<T>(
   }
 }
 
+/**
+ * Resolutions that failed transiently in this tab. A resolution may land on
+ * the server and lose its response; resending it then gets
+ * `interaction_already_resolved`. That is our own answer, not a conflict, but
+ * only when the saved resolution is exactly the one we sent: someone else may
+ * have resolved the card meanwhile with the same status and different choices.
+ */
+const transientlyFailedResolutions = new Set<string>();
+
+function sameSet(left: readonly string[] | null | undefined, right: readonly string[] | null | undefined): boolean {
+  const a = new Set(left ?? []);
+  const b = new Set(right ?? []);
+  return a.size === b.size && [...a].every((value) => b.has(value));
+}
+
+function sameText(left: string | null | undefined, right: string | null | undefined): boolean {
+  return (left?.trim() || null) === (right?.trim() || null);
+}
+
+type AcceptInteractionInput = {
+  selectedClientKeys?: string[];
+  selectedOptionIds?: string[];
+  rememberAction?: boolean;
+};
+
+/** Whether a stored accepted resolution records exactly this accept request. */
+export function acceptedResolutionMatches(current: IssueThreadInteraction, data: AcceptInteractionInput | undefined): boolean {
+  if (current.status !== "accepted") return false;
+  if (current.kind === "suggest_tasks") {
+    // The server skips every suggested task that was not selected.
+    const allKeys = current.payload.tasks.map((task) => task.clientKey);
+    const selected = new Set(data?.selectedClientKeys ?? allKeys);
+    return sameSet(current.result?.skippedClientKeys, allKeys.filter((key) => !selected.has(key)));
+  }
+  if (current.kind === "request_checkbox_confirmation") {
+    return sameSet(current.result?.selectedOptionIds, data?.selectedOptionIds);
+  }
+  return !data?.selectedClientKeys && !data?.selectedOptionIds;
+}
+
+/** Whether a stored rejection records exactly this reject request. */
+export function rejectedResolutionMatches(current: IssueThreadInteraction, reason: string | undefined): boolean {
+  if (current.status !== "rejected") return false;
+  const result = (current.result ?? null) as { reason?: string | null; rejectionReason?: string | null } | null;
+  return sameText(current.kind === "suggest_tasks" ? result?.rejectionReason : result?.reason, reason);
+}
+
+/** Whether stored answers record exactly these answers. */
+export function answeredResolutionMatches(current: IssueThreadInteraction, answers: AskUserQuestionsAnswer[]): boolean {
+  if (current.status !== "answered" || current.kind !== "ask_user_questions") return false;
+  const saved = current.result?.answers ?? [];
+  if (saved.length !== answers.length) return false;
+  return answers.every((answer) => {
+    const match = saved.find((row) => row.questionId === answer.questionId);
+    return Boolean(match && sameSet(match.optionIds, answer.optionIds) && sameText(match.otherText, answer.otherText));
+  });
+}
+
+async function resolveInteractionOnce(
+  issueId: string,
+  interactionId: string,
+  /** Identifies this exact request; a different answer is a different resolution. */
+  requestFingerprint: string,
+  matchesRequest: (current: IssueThreadInteraction) => boolean,
+  request: () => Promise<IssueThreadInteraction>,
+): Promise<IssueThreadInteraction> {
+  const key = `${issueId}:${interactionId}:${requestFingerprint}`;
+  try {
+    const result = await request();
+    transientlyFailedResolutions.delete(key);
+    return result;
+  } catch (error) {
+    if (classifySendFailure(error) === "pending") {
+      transientlyFailedResolutions.add(key);
+      throw error;
+    }
+    if (
+      transientlyFailedResolutions.has(key) &&
+      interactionResolutionErrorCode(error) === "interaction_already_resolved"
+    ) {
+      const current = await api
+        .get<IssueThreadInteraction[]>(`/issues/${issueId}/interactions`)
+        .then((rows) => rows.find((row) => row.id === interactionId) ?? null)
+        .catch((readError: unknown) => {
+          // A temporary read failure is no verdict: let it escape so the
+          // replay policy retries, and the next attempt verifies again.
+          if (classifySendFailure(readError) === "pending") throw readError;
+          return null;
+        });
+      if (current && matchesRequest(current)) {
+        transientlyFailedResolutions.delete(key);
+        return current;
+      }
+    }
+    throw error;
+  }
+}
+
 export type IssueUpdateResponse = Issue & {
   comment?: IssueComment | null;
   changes: IssueChanges;
@@ -84,8 +190,13 @@ export type ResolveRecoveryActionResponse = {
 };
 
 export type IssueListFilters = {
+  ids?: readonly string[];
+  parentIds?: readonly string[];
+  oneChildPerParent?: boolean;
+  projection?: "index" | "rows";
   attention?: "blocked";
   status?: string;
+  displayStatus?: string;
   projectId?: string;
   parentId?: string;
   assigneeAgentId?: string;
@@ -112,7 +223,7 @@ export type IssueListFilters = {
   q?: string;
   limit?: number;
   offset?: number;
-  sortField?: "updated" | "id";
+  sortField?: "updated" | "created" | "id";
   afterId?: string;
   sortDir?: "asc" | "desc";
 };
@@ -121,8 +232,11 @@ function issueListSearchParams(filters?: IssueListFilters) {
   const params = new URLSearchParams();
   if (filters?.attention) params.set("attention", filters.attention);
   if (filters?.status) params.set("status", filters.status);
+  if (filters?.displayStatus) params.set("displayStatus", filters.displayStatus);
   if (filters?.projectId) params.set("projectId", filters.projectId);
   if (filters?.parentId) params.set("parentId", filters.parentId);
+  if (filters?.parentIds) params.set("parentIds", filters.parentIds.join(","));
+  if (filters?.oneChildPerParent) params.set("oneChildPerParent", "true");
   if (filters?.assigneeAgentId)
     params.set("assigneeAgentId", filters.assigneeAgentId);
   if (filters?.participantAgentId)
@@ -169,6 +283,22 @@ function issueListSearchParams(filters?: IssueListFilters) {
 }
 
 export const issuesApi = {
+  inboxMine: (companyId: string, options?: RequestOptions) => {
+    const path = `/companies/${companyId}/inbox/mine`;
+    detachInflightGet(path);
+    return api.get<InboxMineSnapshot>(path, { ...options, cache: "no-store" });
+  },
+  summaries: async (companyId: string, issueIds: readonly string[], options?: RequestOptions): Promise<IssueSummary[]> => {
+    if (issueIds.length > ISSUE_SUMMARIES_MAX_IDS) throw new Error("Too many issue summary IDs");
+    const ids = [...new Set(issueIds.map((id) => id.trim().toLowerCase()))].sort();
+    if (ids.length === 0) return [];
+    const params = new URLSearchParams({ ids: ids.join(",") });
+    const path = `/companies/${companyId}/issues/summaries?${params}`;
+    // React Query deduplicates within an account; URL-only HTTP coalescing must
+    // never join a request sent with the previous account's cookie.
+    detachInflightGet(path);
+    return api.get<IssueSummary[]>(path, { ...options, cache: "no-store" });
+  },
   /** Fetch every page for bounded task-detail relations, not just the default first page. */
   listAll: async (companyId: string, filters: Omit<IssueListFilters, "limit" | "offset" | "sortField" | "sortDir" | "afterId" | "attention">, options?: RequestOptions): Promise<Issue[]> => {
     const pageSize = 500;
@@ -197,7 +327,8 @@ export const issuesApi = {
     options?: RequestOptions,
   ) => {
     const params = issueListSearchParams(filters);
-    params.set("view", "compact");
+    params.set("view", filters?.projection ?? "compact");
+    if (filters?.ids) params.set("ids", filters.ids.join(","));
     const path = `/companies/${companyId}/issues?${params.toString()}`;
     return options
       ? api.get<CompactIssue[]>(path, options)
@@ -234,10 +365,15 @@ export const issuesApi = {
   createLabel: (companyId: string, data: { name: string; color: string }) =>
     api.post<IssueLabel>(`/companies/${companyId}/labels`, data),
   deleteLabel: (id: string) => api.delete<IssueLabel>(`/labels/${id}`),
+  getCore: (id: string, options?: RequestOptions) => api.get<Issue>(`/issues/${id}?view=core`, options),
+  recentComments: (id: string, options?: RequestOptions) => api.get<IssueRecentComments>(`/issues/${id}/recent-comments`, options),
   get: (id: string, options?: RequestOptions) =>
     options
       ? api.get<Issue>(`/issues/${id}`, options)
       : api.get<Issue>(`/issues/${id}`),
+  getContextUsage: (id: string) => api.get<IssueContextUsage | null>(`/issues/${id}/context-usage`),
+  compactContext: (id: string) =>
+    api.post<{ requestId: string; runId: string }>(`/issues/${id}/context/compact`, {}),
   getRunnerGoal: (id: string, agentId?: string | null) => {
     const query = agentId ? `?agentId=${encodeURIComponent(agentId)}` : "";
     return api.get<RunnerGoalProjection>(`/issues/${id}/runner-goal${query}`);
@@ -253,8 +389,8 @@ export const issuesApi = {
     api.put<IssueWatchdog>(`/issues/${id}/watchdog`, data),
   deleteWatchdog: (id: string) =>
     api.delete<{ ok: true }>(`/issues/${id}/watchdog`),
-  markRead: (id: string) =>
-    api.post<{ id: string; lastReadAt: Date }>(`/issues/${id}/read`, {}),
+  markRead: (id: string, throughCommentId?: string) =>
+    api.post<{ id: string; lastReadAt: Date }>(`/issues/${id}/read`, throughCommentId ? { throughCommentId } : {}),
   markUnread: (id: string) =>
     api.delete<{ id: string; removed: boolean }>(`/issues/${id}/read`),
   archiveFromInbox: (id: string) =>
@@ -287,8 +423,19 @@ export const issuesApi = {
     api.post<{ runId: string; resultId: string; status: "queued" }>(`/issues/${id}/recovery-actions/resume-workspace-finalization`, data),
   retryWorkspaceExport: (id: string, data: { actionId: string; runId: string; repairNote: string }) =>
     api.post<{ runId: string; resultId: string; leaseId: string; status: "queued" }>(`/issues/${id}/recovery-actions/retry-workspace-export`, data),
-  recoveryActions: (id: string) =>
-    api.get<{ active: IssueRecoveryAction | null; actions: IssueRecoveryAction[] }>(`/issues/${id}/recovery-actions`),
+  retryTask: (issueId: string, body: { idempotencyKey: string; observedRunId: string | null }) =>
+    api.post<{ requestId: string | null; accepted: boolean; stale: boolean; presentation: import("@paperclipai/shared").TaskInterruptionPresentation | null }>(`/issues/${issueId}/retry`, body),
+  recoverWorkspace: (id: string, data: { actionId: string; runId: string; idempotencyKey: string }) =>
+    api.post<{ actionId: string; status: string }>(`/issues/${id}/recovery-actions/recover-workspace`, data),
+  reconstructWorkspace: (id: string, data: { actionId: string; runId: string; expectedStatusVersion: number; attachmentIds: string[];
+    missingWork: string; actionOutcome: "completed" | "not_performed" | "mixed"; outcomeEvidence: string; acknowledgeLostWork: true }) =>
+    api.post<{ runId: string; actionId: string; status: "queued"; replayed: boolean }>(`/issues/${id}/recovery-actions/reconstruct-workspace`, data),
+  recoveryActions: (id: string, source?: { runId: string; actionId?: string }) => {
+    const query = source ? new URLSearchParams({ inspectSourceRunId: source.runId,
+      ...(source.actionId ? { inspectSourceActionId: source.actionId } : {}) }) : null;
+    return api.get<{ active: IssueRecoveryAction | null; actions: IssueRecoveryAction[];
+      sourceInspection?: WorkspaceSourceInspection }>(`/issues/${id}/recovery-actions${query ? `?${query}` : ""}`);
+  },
   resolveRecoveryAction: (
     id: string,
     data: {
@@ -374,6 +521,7 @@ export const issuesApi = {
       order?: "asc" | "desc";
       limit?: number;
     },
+    options?: RequestOptions,
   ) => {
     const params = new URLSearchParams();
     if (filters?.after) params.set("after", filters.after);
@@ -382,6 +530,7 @@ export const issuesApi = {
     const qs = params.toString();
     return api.get<IssueComment[]>(
       `/issues/${id}/comments${qs ? `?${qs}` : ""}`,
+      options,
     );
   },
   getQueuedComments: (id: string) =>
@@ -445,20 +594,30 @@ export const issuesApi = {
   acceptInteraction: (
     id: string,
     interactionId: string,
-    data?: {
-      selectedClientKeys?: string[];
-      selectedOptionIds?: string[];
-      rememberAction?: boolean;
-    },
+    data?: AcceptInteractionInput,
   ) =>
-    api.post<IssueThreadInteraction>(
-      `/issues/${id}/interactions/${interactionId}/accept`,
-      data ?? {},
+    resolveInteractionOnce(
+      id,
+      interactionId,
+      `accept:${JSON.stringify([data?.selectedClientKeys ?? null, data?.selectedOptionIds ?? null])}`,
+      (current) => acceptedResolutionMatches(current, data),
+      () =>
+        api.post<IssueThreadInteraction>(
+          `/issues/${id}/interactions/${interactionId}/accept`,
+          data ?? {},
+        ),
     ),
   rejectInteraction: (id: string, interactionId: string, reason?: string) =>
-    api.post<IssueThreadInteraction>(
-      `/issues/${id}/interactions/${interactionId}/reject`,
-      reason ? { reason } : {},
+    resolveInteractionOnce(
+      id,
+      interactionId,
+      `reject:${JSON.stringify(reason ?? null)}`,
+      (current) => rejectedResolutionMatches(current, reason),
+      () =>
+        api.post<IssueThreadInteraction>(
+          `/issues/${id}/interactions/${interactionId}/reject`,
+          reason ? { reason } : {},
+        ),
     ),
   cancelInteraction: (id: string, interactionId: string, reason?: string) =>
     api.post<IssueThreadInteraction>(
@@ -470,6 +629,8 @@ export const issuesApi = {
       `/issues/${id}/interactions/${interactionId}/skip`,
       reason ? { reason } : {},
     ),
+  dismissInteraction: (id: string, interactionId: string) =>
+    api.post<IssueThreadInteraction>(`/issues/${id}/interactions/${interactionId}/dismiss`, {}),
   respondToInteraction: (
     id: string,
     interactionId: string,
@@ -478,9 +639,16 @@ export const issuesApi = {
       summaryMarkdown?: string | null;
     },
   ) =>
-    api.post<IssueThreadInteraction>(
-      `/issues/${id}/interactions/${interactionId}/respond`,
-      data,
+    resolveInteractionOnce(
+      id,
+      interactionId,
+      `respond:${JSON.stringify(data.answers)}`,
+      (current) => answeredResolutionMatches(current, data.answers),
+      () =>
+        api.post<IssueThreadInteraction>(
+          `/issues/${id}/interactions/${interactionId}/respond`,
+          data,
+        ),
     ),
   submitInteractionVerdicts: (
     id: string,
@@ -495,8 +663,8 @@ export const issuesApi = {
       `/issues/${id}/interactions/${interactionId}/verdicts`,
       { verdicts },
     ),
-  getComment: (id: string, commentId: string) =>
-    api.get<IssueComment>(`/issues/${id}/comments/${commentId}`),
+  getComment: (id: string, commentId: string, options?: RequestOptions) =>
+    api.get<IssueComment>(`/issues/${id}/comments/${encodeURIComponent(commentId)}`, options),
   listFeedbackVotes: (id: string) =>
     api.get<FeedbackVote[]>(`/issues/${id}/feedback-votes`),
   getCostSummary: (id: string, options: { excludeRoot?: boolean } = {}) => {
@@ -576,6 +744,8 @@ export const issuesApi = {
     api.get<DocumentRevision[]>(
       `/issues/${id}/documents/${encodeURIComponent(key)}/revisions`,
     ),
+  getDocumentRevision: (id: string, key: string, revisionId: string) =>
+    api.get<DocumentRevision>(`/issues/${id}/documents/${encodeURIComponent(key)}/revisions/${encodeURIComponent(revisionId)}`),
   restoreDocumentRevision: (id: string, key: string, revisionId: string) =>
     api.post<IssueDocument>(
       `/issues/${id}/documents/${encodeURIComponent(key)}/revisions/${revisionId}/restore`,

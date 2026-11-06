@@ -6,22 +6,32 @@ import { isForbiddenConfigEnvKey, parseObject } from "@paperclipai/adapter-utils
 import { requireServerAdapter } from "../adapters/index.js";
 import { agentEnvironmentTestService } from "./agent-environment-test.js";
 import { aiConnectionRouterService } from "./ai-connection-router.js";
+import { aiConnectionService } from "./ai-connections.js";
 import { withManagedAiProbe, stripAiAuthBindings } from "./ai-connection-runtime.js";
+import { PLUGIN_RUNNER_AI_CONNECTION_REQUIRED, pluginEnvironmentRunnerTaskDriver, pluginRunnerAiConnectionRequiredFailure } from "./plugin-runner-ai-connection.js";
 import { environmentService } from "./environments.js";
 import { secretService } from "./secrets.js";
+import { instanceSettingsService } from "./instance-settings.js";
+import { assertProviderApiPlacementPolicy, resolveProviderApiPlacement } from "./native-runtime/provider-api-placement.js";
+import { museRunnerBroker } from "./muse-runner-broker.js";
+import { RUNNER_REVISION_MISMATCH_CODE } from "./runner-revision-mismatch.js";
 import { dotRunnerBroker } from "./dot-runner-broker.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 import type { LifecycleAgent } from "../modules/agent-lifecycle/index.js";
 
 export function assertHarnessTestPassed(result: AdapterEnvironmentTestResult) {
   const verified = result.checks.some(check => check.level === "info" &&
-    (/hello_probe_(passed|succeeded)$/.test(check.code) || check.code === "ai_connection_api_key_reverified"));
+    (/hello_probe_(passed|succeeded)$/.test(check.code) || check.code === "ai_connection_api_key_reverified" || check.code === "copilot_metadata_verified"
+      || (result.adapterType === "paperclip_runner" && check.code === "cursor_cloud_account_ready")));
   const authenticationFailed = result.checks.some(check =>
-    check.code === ADAPTER_AUTH_MISSING_CHECK_CODE || /_hello_probe_auth_required$/.test(check.code));
+    check.code === ADAPTER_AUTH_MISSING_CHECK_CODE || check.code === "COPILOT_AUTH_REQUIRED" || /_hello_probe_auth_required$/.test(check.code));
   const incomplete = !verified && (result.status === "warn" || result.checks.some(check => check.code.includes("hello_probe")));
   if (result.status === "fail" || authenticationFailed || incomplete) {
     const has = (suffix: string) => result.checks.some(check => check.code.endsWith(suffix));
-    const code = authenticationFailed ? "harness_auth_failed"
+    const code = result.checks.some(check => check.code === PLUGIN_RUNNER_AI_CONNECTION_REQUIRED) ? PLUGIN_RUNNER_AI_CONNECTION_REQUIRED
+      : result.checks.some(check => check.code === RUNNER_REVISION_MISMATCH_CODE) ? RUNNER_REVISION_MISMATCH_CODE
+      : result.checks.some(check => check.level === "error" && check.retryable === true) ? "test_environment_unavailable"
+      : authenticationFailed ? "harness_auth_failed"
       : has("_hello_probe_model_unavailable") || has("_model_invalid") ? "harness_model_unavailable"
       : has("_command_unresolvable") ? "harness_command_unavailable"
       : has("_cwd_invalid") ? "harness_cwd_invalid"
@@ -43,6 +53,12 @@ export function agentHarnessVerificationService(db: Db, manager: PluginWorkerMan
       const binding = await dotRunnerBroker(db).bindingForAgent(agent.companyId, agent.id);
       return binding?.status === "ready" && binding.wakeVerified && binding.id === agent.adapterConfig[agent.adapterConfig.provider === "grok_bot" ? "externalBindingId" : "dotBindingId"] ? "complete" : "pending";
     }
+    if (agent.adapterType === "paperclip_runner" && agent.adapterConfig.provider === "muse") {
+      const binding = await museRunnerBroker(db).bindingForAgent(agent.companyId,agent.id);
+      return binding?.status === "ready" && binding.paired && binding.receiverDetected && binding.backgroundReplyVerified && binding.id === agent.adapterConfig.museBindingId ? "complete" : "pending";
+    }
+    const providerApi = resolveProviderApiPlacement({ agent });
+    if (providerApi) assertProviderApiPlacementPolicy(await instanceSettingsService(db).getGeneral());
     const [company] = await db.select().from(companies).where(eq(companies.id, agent.companyId));
     const responsibleUserId = agent.lifecycleOperation?.responsibleUserId ?? company.defaultResponsibleUserId;
     const context = { consumerType: "agent" as const, consumerId: agent.id, actorType: "system" as const,
@@ -58,17 +74,28 @@ export function agentHarnessVerificationService(db: Db, manager: PluginWorkerMan
     }
     if (binding) config = { ...config, env: stripAiAuthBindings(config.env) };
     config = (await secrets.resolveAdapterConfigForRuntime(agent.companyId, config, context, { adapterType: agent.adapterType })).config;
-    const environmentId = await tests.resolveAdapterTestEnvironmentId(agent.companyId, agent.defaultEnvironmentId);
+    const environmentId = providerApi ? null : await tests.resolveAdapterTestEnvironmentId(agent.companyId, agent.defaultEnvironmentId, agent.adapterType === "paperclip_runner" && config.provider === "acpx" && config.acpxAgent === "copilot");
     if (environmentId) {
-      await tests.assertAdapterTestEnvironmentForCompany(agent.companyId, environmentId);
+      await tests.assertAdapterTestEnvironmentForCompany(agent.companyId, environmentId, agent.adapterType);
       const environment = await environments.getById(environmentId);
+      // Run admission refuses these agents before any lease, so verification must too.
+      const preconfiguredHome = agent.adapterType === "paperclip_runner" && config.homeMode === "preconfigured";
+      if (agent.adapterType === "paperclip_runner" && environment && (preconfiguredHome || !binding)
+        && await pluginEnvironmentRunnerTaskDriver(db, environment)) throw pluginRunnerAiConnectionRequiredFailure(preconfiguredHome);
       const env = Object.fromEntries(Object.entries(binding ? stripAiAuthBindings(environment?.envVars) : parseObject(environment?.envVars))
         .filter(([key]) => !isForbiddenConfigEnvKey(key)));
       const resolved = await secrets.resolveEnvBindings(agent.companyId, env,
         { ...context, consumerType: "environment", consumerId: environmentId });
       config = { ...config, env: { ...resolved.env, ...parseObject(config.env) } };
     }
-    const target = await tests.resolveAdapterTestExecutionContext({ agentId: agent.id, companyId: agent.companyId, adapterType: agent.adapterType, environmentId });
+    if (binding) await aiConnectionService(db).select({
+      companyId: agent.companyId, userId: responsibleUserId, agentId: agent.id,
+      adapterType: agent.adapterType, model: config.model, runnerProvider: config.provider,
+      acpxAgent: config.acpxAgent, binding,
+    });
+    const target = providerApi
+      ? { executionTarget: null, environmentName: null, fallbackChecks: [], release: async (_status?: "released" | "failed") => {} }
+      : await tests.resolveAdapterTestExecutionContext({ agentId: agent.id, companyId: agent.companyId, adapterType: agent.adapterType, environmentId });
     let status: "released" | "failed" = "failed";
     try {
       if (target.fallbackChecks.length) throw Object.assign(new Error("The test environment is unavailable"), { code: "test_environment_unavailable" });

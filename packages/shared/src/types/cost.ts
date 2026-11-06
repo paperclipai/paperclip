@@ -3,7 +3,7 @@ import type { BillingType, CostStatus } from "../constants.js";
 
 export interface CostEvent {
   subscriptionId?: string | null;
-  usageKind?: "agent" | "decision" | "fast_response";
+  usageKind?: "agent" | "decision" | "fast_response" | "prompt_injection";
   responsibleUserId?: string | null;
   id: string;
   companyId: string;
@@ -24,6 +24,8 @@ export interface CostEvent {
   outputTokens: number;
   costCents: number;
   costCentsExact?: string;
+  /** Original usage retained when a late authoritative receipt corrects a placeholder. */
+  reportedUsageJson?: Record<string, unknown> | null;
   occurredAt: Date;
   createdAt: Date;
 }

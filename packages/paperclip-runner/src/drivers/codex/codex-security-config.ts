@@ -248,12 +248,15 @@ function tomlString(value: string): string {
   return JSON.stringify(value);
 }
 
+export const CODEX_UPDATE_PLAN_TOOL_CONFIG = "tools.update_plan.enabled=true";
+
 export function createIsolatedCodexAppServerArgs(
   source: NodeJS.ProcessEnv | undefined = undefined,
   readOnlyRoots: string[] = [],
   /** Server-registered run copy, never an environment/config-supplied root. */
   instructionWorkingCopyRoot?: string,
   protectedPaths: string[] = [],
+  disableWebSearch = false,
 ): string[] {
   const explicitSource = source;
   source ??= process.env;
@@ -351,11 +354,16 @@ export function createIsolatedCodexAppServerArgs(
     ...(commandEnv.length > 0
       ? ["-c", `shell_environment_policy.set={${commandEnv}}`]
       : []),
+    // Codex ships its update_plan checklist tool disabled. Paperclip renders it
+    // as the turn plan (`turn/plan/updated` -> `plan.updated`).
+    "-c",
+    CODEX_UPDATE_PLAN_TOOL_CONFIG,
     "--disable",
     "image_generation",
     ...(externalRunnerSandbox
       ? ["--dangerously-bypass-approvals-and-sandbox"]
       : []),
+    ...(disableWebSearch ? ["-c", 'web_search="disabled"'] : []),
     "app-server",
   ];
 }

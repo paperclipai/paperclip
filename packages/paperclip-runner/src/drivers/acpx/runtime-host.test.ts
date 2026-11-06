@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { createPiLaunchSpec } from "./pi-acp-runtime.js";
 import { createCopilotToolEvidence } from "./copilot-tool-evidence.js";
@@ -20,6 +21,7 @@ import {
 } from "../../contracts/runtime-context.js";
 import { releaseMaterializedNativeRuntimeSkills } from "../runtime-context-materializer.js";
 import { openCodexAcpxRuntime } from "./codex-runtime-adapter.js";
+import { acpxSidecarErrorCode } from "../../cli/acpx-sidecar-input.js";
 import { stageManagedCodexCredential } from "./codex-credentials.js";
 import type {
   VerifiedAcpxCommandLease,
@@ -188,9 +190,9 @@ afterEach(async () => {
   // Release every sealed skills tree before the plain `rm` below. `rm` does
   // not restore write permission, so a tree still sealed at this point would
   // otherwise fail with EACCES and hide the real test failure.
+  // Cancelled opens can reuse one home. Parallel cleanup must visit it once.
   await Promise.all(
-    materializedSkillsHomes
-      .splice(0)
+    [...new Set(materializedSkillsHomes.splice(0))]
       .map((skillsHome) => releaseMaterializedNativeRuntimeSkills(skillsHome)),
   );
   await Promise.all(
@@ -201,10 +203,76 @@ afterEach(async () => {
 });
 
 describe("ACPX runtime host", () => {
+  it.each(["copilot", "cursor"] as const)("reports missing %s credentials as credential admission", async agent => {
+    const fixture = await hostFixture();
+    const openRuntime = vi.fn(async () => runtimePort());
+    const failure = await AcpxRuntimeHost.open({ ...fixture.options, agent, model:"gpt-5.6-sol",
+      permissionMode:"approve-all",environment:{} }, fixture.dependencies({openRuntime})).catch(error => error);
+    expect(failure).toMatchObject({code:agent === "copilot" ? "COPILOT_AUTH_REQUIRED" : "CURSOR_CREDENTIALS_MISSING"});
+    expect(acpxSidecarErrorCode(failure)).toBe("ACPX_ADMISSION_CREDENTIAL");
+    expect(openRuntime).not.toHaveBeenCalled();
+    expect(fixture.commandClose).not.toHaveBeenCalled();
+  });
+  it("retains binding admission when the selected workspace is missing", async () => {
+    const fixture = await hostFixture();
+    await rm(fixture.options.workingDirectory,{recursive:true});
+    const openRuntime = vi.fn(async () => runtimePort());
+    const dependencies = fixture.dependencies({openRuntime});
+    const verifyInstallation = vi.fn(dependencies.verifyInstallation!);
+    const failure = await AcpxRuntimeHost.open({ ...fixture.options,agent:"codex",model:"gpt-5.6-sol",
+      permissionMode:"approve-all" }, {...dependencies,verifyInstallation}).catch(error => error);
+    expect(acpxSidecarErrorCode(failure)).toBe("ACPX_ADMISSION_BINDING");
+    expect(verifyInstallation).not.toHaveBeenCalled();
+    expect(openRuntime).not.toHaveBeenCalled();
+  });
+  it("retains the admission stage when provider classification replaces the error", async () => {
+    const fixture = await hostFixture();
+    const openRuntime = vi.fn(async () => { throw new Error("Unauthorized private-token-canary"); });
+    const failure = await AcpxRuntimeHost.open({ ...fixture.options, agent: "copilot", model: "gpt-5.6-sol",
+      permissionMode: "approve-all", environment: {COPILOT_GITHUB_TOKEN:"synthetic-test-token"} }, fixture.dependencies({openRuntime})).catch(error => error);
+    expect(failure).toMatchObject({code:"COPILOT_AUTH_REQUIRED"});
+    expect(acpxSidecarErrorCode(failure)).toBe("ACPX_ADMISSION_RUNTIME");
+    expect(failure.message).not.toContain("private-token-canary");
+    expect(openRuntime).toHaveBeenCalledOnce();
+    expect(fixture.commandClose).toHaveBeenCalledOnce();
+  });
+  it("reports failed Pi skill materialization as skills admission before launch", async () => {
+    const fixture = await hostFixture();
+    const digest = "0".repeat(64);
+    const bundle = {schema:NATIVE_RUNTIME_ASSET_SCHEMA,digest,manifestDigest:digest,
+      rootPath:join(fixture.root,"missing-assigned-skill"),fileCount:1,totalBytes:1};
+    const snapshot = {prompt:{revision:PAPERCLIP_EXECUTION_PROMPT_REVISION,text:PAPERCLIP_EXECUTION_PROMPT,digest:nativeRuntimePromptDigest()},
+      instructions:{entryPath:"AGENTS.md",bundle},skills:[{key:"assigned",runtimeName:"assigned",versionId:"v1",bundle}],
+      mcp:{assignmentSetId:"none",digest,bindingId:null}};
+    const context = {...snapshot,aggregateDigest:canonicalNativeRuntimeContextDigest(snapshot)};
+    const openRuntime = vi.fn(async () => runtimePort());
+    const failure = await AcpxRuntimeHost.open({ ...fixture.options, agent:"pi",model:"anthropic/claude-sonnet-5",
+      piThinkingLevel:"low",permissionMode:"approve-all",providerPolicy:{readOnly:false},runtimeContext:context },fixture.dependencies({openRuntime})).catch(error => error);
+    expect(failure).toBeInstanceOf(Error);
+    expect(failure.message).toContain("missing-assigned-skill");
+    expect(acpxSidecarErrorCode(failure)).toBe("ACPX_ADMISSION_SKILLS");
+    expect(openRuntime).not.toHaveBeenCalled();
+    expect(fixture.commandClose).not.toHaveBeenCalled();
+  });
+  it.each(["installation", "sandbox", "credential", "runtime"] as const)("retains the failed %s admission stage through the sidecar boundary", async stage => {
+    const fixture = await hostFixture();
+    const failure = new Error("private-token-canary");
+    const openRuntime = vi.fn(async () => { throw failure; });
+    const dependencies = fixture.dependencies({ openRuntime });
+    if (stage === "installation") dependencies.verifyInstallation = async () => { throw failure; };
+    if (stage === "sandbox") dependencies.prepareSandbox = async () => { throw failure; };
+    if (stage === "credential") dependencies.stageCredential = async () => { throw failure; };
+    const rejected = await AcpxRuntimeHost.open({ ...fixture.options, agent: "codex", model: "gpt-5.6-sol",
+      permissionMode: "approve-all", environment: { OPENAI_API_KEY: "synthetic-test-key" } }, dependencies).catch(error => error);
+    expect(rejected).toBe(failure);
+    expect(acpxSidecarErrorCode(rejected)).toBe(`ACPX_ADMISSION_${stage.toUpperCase()}`);
+    if (stage !== "runtime") expect(openRuntime).not.toHaveBeenCalled();
+    if (stage === "runtime") expect(fixture.commandClose).toHaveBeenCalledOnce();
+  });
   it("rejects preconfigured Codex before admission resources or runtime launch", async () => {
     const fixture = await hostFixture();
     const openRuntime = vi.fn(), prepareSandbox = vi.fn();
-    await expect(AcpxRuntimeHost.open({ ...fixture.options, agent: "codex", permissionMode: "approve-all",
+    await expect(AcpxRuntimeHost.open({ ...fixture.options, agent: "codex", model: "gpt-5.6-sol", permissionMode: "approve-all",
       environment: { HOME: fixture.root, PAPERCLIP_RUNNER_HOME_MODE: "preconfigured" },
     }, fixture.dependencies({ openRuntime, prepareSandbox }))).rejects.toThrow("cannot protect Runner state");
     expect(prepareSandbox).not.toHaveBeenCalled();
@@ -214,7 +282,7 @@ describe("ACPX runtime host", () => {
   it.each(["claude", "codex"] as const)("rejects preconfigured read-only %s before provider admission", async agent => {
     const fixture = await hostFixture();
     const openRuntime = vi.fn();
-    await expect(AcpxRuntimeHost.open({ ...fixture.options, agent, permissionMode: "approve-all",
+    await expect(AcpxRuntimeHost.open({ ...fixture.options, agent, model: "explicit-test-model", permissionMode: "approve-all",
       providerPolicy: { readOnly: true }, environment: { HOME: fixture.root, PAPERCLIP_RUNNER_HOME_MODE: "preconfigured" },
     }, fixture.dependencies({ openRuntime }))).rejects.toThrow("preconfigured ACPX read-only execution is not supported");
     expect(openRuntime).not.toHaveBeenCalled();
@@ -223,7 +291,7 @@ describe("ACPX runtime host", () => {
   it.each(["approve-reads", "approve-paperclip", "deny-all"] as const)("rejects unqualified preconfigured permission mode %s before admission", async permissionMode => {
     const fixture = await hostFixture();
     const openRuntime = vi.fn();
-    await expect(AcpxRuntimeHost.open({ ...fixture.options, permissionMode,
+    await expect(AcpxRuntimeHost.open({ ...fixture.options, agent: "claude", model: "claude-sonnet-5", permissionMode,
       environment: { HOME: fixture.root, PAPERCLIP_RUNNER_HOME_MODE: "preconfigured" },
     }, fixture.dependencies({ openRuntime }))).rejects.toThrow("requires ACPX approve-all");
     expect(openRuntime).not.toHaveBeenCalled();
@@ -311,8 +379,110 @@ describe("ACPX runtime host", () => {
   ])("rejects invalid assigned connection bindings before runtime launch", async (environment) => {
     const fixture = await hostFixture();
     const openRuntime = vi.fn();
-    await expect(AcpxRuntimeHost.open({ ...fixture.options, environment }, fixture.dependencies({ openRuntime }))).rejects.toThrow(/assigned native MCP/);
+    await expect(AcpxRuntimeHost.open({ ...fixture.options, agent: "claude", model: "claude-sonnet-5", permissionMode: "approve-reads", environment }, fixture.dependencies({ openRuntime }))).rejects.toThrow(/assigned native MCP/);
     expect(openRuntime).not.toHaveBeenCalled();
+  });
+
+  it("leaves an active Claude owner's effort settings unchanged when a second opener loses the lifetime lease", async () => {
+    const fixture = await hostFixture();
+    let settingsPath = "";
+    const openRuntime = vi.fn(async () => runtimePort({ getStatus: async () => ({ models: { currentModelId: "claude-sonnet-5" } }) }));
+    const dependencies = fixture.dependencies({ openRuntime });
+    const prepare = dependencies.prepareSandbox!;
+    dependencies.prepareSandbox = async input => {
+      const sandbox = await prepare(input);
+      settingsPath = join(sandbox.agentHomeDirectory, "settings.json");
+      return sandbox;
+    };
+    const options = { ...fixture.options, agent: "claude" as const, model: "claude-sonnet-5", permissionMode: "approve-all" as const };
+    const host = await AcpxRuntimeHost.open(options, dependencies);
+    try {
+      const ownedSettings = `${JSON.stringify({ ...JSON.parse(await readFile(settingsPath, "utf8")), effortLevel: "high", activeOwnerMarker: true })}\n`;
+      await writeFile(settingsPath, ownedSettings, { mode: 0o600 });
+      await expect(AcpxRuntimeHost.open(options, dependencies)).rejects.toThrow("already has an active lease");
+      expect(await readFile(settingsPath, "utf8")).toBe(ownedSettings);
+      expect(openRuntime).toHaveBeenCalledTimes(1);
+    } finally { await host.close({ reason: "ownership regression complete" }); }
+    const nextOwner = await waitForAcpxOperation(() => AcpxRuntimeHost.open(options, dependencies));
+    try {
+      expect(JSON.parse(await readFile(settingsPath, "utf8"))).not.toHaveProperty("activeOwnerMarker");
+      expect(openRuntime).toHaveBeenCalledTimes(2);
+    } finally { await nextOwner.close({ reason: "next owner complete" }); }
+  });
+
+  it.each([false, true])("cancels Claude startup promptly while retaining its settings write and lease (late failure: %s)", async failWrite => {
+    const fixture = await hostFixture();
+    const controller = new AbortController();
+    let announceWrite!: () => void;
+    let finishWrite!: () => void;
+    const writeStarted = new Promise<void>(resolve => { announceWrite = resolve; });
+    const writePending = new Promise<void>(resolve => { finishWrite = resolve; });
+    const openRuntime = vi.fn(async () => runtimePort({ getStatus: async () => ({ models: { currentModelId: "claude-sonnet-5" } }) }));
+    const dependencies = fixture.dependencies({ openRuntime });
+    const prepare = dependencies.prepareSandbox!;
+    dependencies.prepareSandbox = async input => {
+      const sandbox = await prepare(input);
+      const initialize = sandbox.initializeOwnedConfiguration;
+      return { ...sandbox, initializeOwnedConfiguration: async () => {
+        announceWrite();
+        await writePending;
+        if (failWrite) throw new Error("settings write failed after cancellation");
+        await initialize?.();
+      } };
+    };
+    const options = { ...fixture.options, agent: "claude" as const, model: "claude-sonnet-5", permissionMode: "approve-all" as const };
+    const opening = AcpxRuntimeHost.open({ ...options, signal: controller.signal }, dependencies);
+    const rejected = expect(opening).rejects.toThrow("settings admission cancelled");
+    try {
+      await writeStarted;
+      controller.abort(new Error("settings admission cancelled"));
+      await runAcpxOperationAttempt(() => rejected, Date.now() + 1_000);
+      expect(openRuntime).not.toHaveBeenCalled();
+      await expect(AcpxRuntimeHost.open(options, fixture.dependencies({ openRuntime }))).rejects.toThrow("already has an active lease");
+    } finally { finishWrite(); }
+    await rejected;
+    expect(openRuntime).not.toHaveBeenCalled();
+    const nextOwner = await waitForAcpxOperation(() => AcpxRuntimeHost.open(options, fixture.dependencies({ openRuntime })));
+    await nextOwner.close({ reason: "cancelled initializer ownership released" });
+  });
+
+  it.each(["deny-all", "approve-all"] as const)("admits the compact assigned MCP catalog through PRP with %s policy", async permissionMode => {
+    const fixture = await hostFixture();
+    const runtimeContext = { skills: [], mcp: { bindingId: "assigned-run" } } as unknown as NativeRuntimeContextSnapshot;
+    const catalog = ["paperclip_search_assigned_tools", "paperclip_call_assigned_tool"].map(name => ({ name, inputSchema: { type: "object" } }));
+    const readOnly = permissionMode === "deny-all";
+    const handler = vi.fn(async () => ({ value: "assigned result" }));
+    let bridge: { url: string; bearerToken: string } | undefined;
+    const options = { ...fixture.options, agent: "claude" as const, model: "claude-sonnet-5",
+      permissionMode, providerPolicy: { readOnly }, runtimeContext,
+      semanticTools: { tools: catalog, handler } };
+    const openRuntime = vi.fn(async (launch: AcpxRuntimePortOpenOptions) => {
+      expect(launch.permissionMode).toBe(permissionMode);
+      expect(launch.launchEnvironment.PAPERCLIP_RUNNER_HOME_MODE).toBeUndefined();
+      expect(launch.mcpServers.map(server => server.name)).toEqual(["paperclip"]);
+      if (!("url" in launch.mcpServers[0])) throw new Error("missing tool bridge");
+      bridge = launch.mcpServers[0];
+      return runtimePort({ getStatus: async () => ({ models: { currentModelId: "claude-sonnet-5" } }) });
+    });
+    const dependencies = fixture.dependencies({ openRuntime });
+    const prepare = dependencies.prepareSandbox!;
+    dependencies.prepareSandbox = input => { expect(input.providerPolicy?.readOnly).toBe(readOnly); return prepare(input); };
+    await expect(AcpxRuntimeHost.open(options, dependencies)).rejects.toThrow("assigned native MCP launch binding is unavailable");
+    await expect(AcpxRuntimeHost.open({ ...options, assignedMcpTransport: "prp", semanticTools: undefined }, dependencies)).rejects.toThrow("assigned native MCP launch binding is unavailable");
+    expect(openRuntime).not.toHaveBeenCalled();
+    const host = await AcpxRuntimeHost.open({ ...options, assignedMcpTransport: "prp" }, dependencies);
+    try {
+      for (const tool of catalog) {
+        const response = await fetch(bridge!.url, { method: "POST", headers: {
+          Authorization: `Bearer ${bridge!.bearerToken}`, "Content-Type": "application/json",
+        }, body: JSON.stringify({ jsonrpc: "2.0", id: tool.name, method: "tools/call", params: { name: tool.name, arguments: {} } }) });
+        expect(response.status).toBe(200);
+        expect(await response.json()).toMatchObject({ id: tool.name, result: { content: expect.any(Array) } });
+        expect(handler).toHaveBeenLastCalledWith(expect.objectContaining({ tool: tool.name, arguments: {} }));
+      }
+      expect(handler).toHaveBeenCalledTimes(catalog.length);
+    } finally { await host.close({ reason: "PRP assignment verified" }); }
+    expect(openRuntime).toHaveBeenCalledTimes(1);
   });
 
   it("registers the assigned connection gateway alongside the Claude task bridge", async () => {
@@ -321,7 +491,8 @@ describe("ACPX runtime host", () => {
     const host = await AcpxRuntimeHost.open({
       ...fixture.options,
       agent: "claude", model: "claude-sonnet-5",
-      environment: { ...fixture.options.environment,
+      permissionMode: "approve-reads",
+      environment: {
         PAPERCLIP_NATIVE_MCP_NAME: "paperclip-assigned",
         PAPERCLIP_NATIVE_MCP_URL: "http://127.0.0.1:3211/mcp/gateway",
         PAPERCLIP_NATIVE_MCP_TOKEN: "fixture-gateway-token-".repeat(3),
@@ -336,6 +507,28 @@ describe("ACPX runtime host", () => {
       expect(servers[1]).toEqual({ name: "paperclip-assigned", url: "http://127.0.0.1:3211/mcp/gateway",
         bearerToken: "fixture-gateway-token-".repeat(3), runnerOwned: true });
     } finally { await host.close({ reason: "gateway test complete" }); }
+  });
+
+  it.each([false, true])("keeps stdio registration session-local and omits it for readOnly=%s", async readOnly => {
+    const fixture = await hostFixture();
+    const command = join(fixture.root, "desktop-server");
+    await writeFile(command, "#!/bin/sh\nexit 0\n", { mode: 0o555 });
+    const binding = { name: "desktop", command: await realpath(command), args: ["mcp"], env: { HOME: fixture.root },
+      sha256: `sha256:${createHash("sha256").update(await readFile(command)).digest("hex")}`,
+      serialResource: join(fixture.root, "cua.sock") };
+    let servers: AcpxRuntimePortOpenOptions["mcpServers"] = [];
+    const host = await AcpxRuntimeHost.open({ ...fixture.options, agent: "claude", model: "claude-sonnet-5",
+      permissionMode: "approve-reads", providerPolicy: { readOnly },
+      environment: { PAPERCLIP_NATIVE_MCP_STDIO: JSON.stringify([binding]), PAPERCLIP_NATIVE_MCP_PROXY: "/verified/runnerd" },
+    }, fixture.dependencies({ openRuntime: async options => {
+      servers = options.mcpServers;
+      return runtimePort({ getStatus: async () => ({ models: { currentModelId: "claude-sonnet-5" } }) });
+    } }));
+    try {
+      const desktop = servers.find(server => server.name === "desktop");
+      if (readOnly) expect(desktop).toBeUndefined();
+      else expect(desktop).toMatchObject({ name: "desktop", command: "/verified/runnerd", runnerOwned: false, env: {} });
+    } finally { await host.close({ reason: "stdio policy verified" }); }
   });
 
   it.each([
@@ -820,17 +1013,42 @@ describe("ACPX runtime host", () => {
     expect(fixture.commandClose).toHaveBeenCalledOnce();
   });
 
+  it.each(["claude", "codex", "copilot"] as const)("preloads essential task tools only for Claude through the host (%s)", async agent => {
+    const fixture = await hostFixture();
+    const model = agent === "claude" ? "claude-opus-5-5" : "gpt-5.6-sol";
+    let bridge: Extract<AcpxRuntimePortOpenOptions["mcpServers"][number], { url: string }> | undefined;
+    const environment = agent === "claude" ? { ANTHROPIC_API_KEY: "fixture-not-a-real-credential" }
+      : agent === "copilot" ? { COPILOT_GITHUB_TOKEN: "fixture-not-a-real-credential" }
+        : { PAPERCLIP_ACPX_CODEX_AUTH_JSON_SECRET: "{}" };
+    const host = await AcpxRuntimeHost.open({
+      ...fixture.options, agent, model, permissionMode: "deny-all", environment,
+      semanticTools: { tools: [{ name: "set_task_title", inputSchema: { type: "object", properties: {} } }], handler: async () => ({}) },
+    }, fixture.dependencies({ openRuntime: async options => {
+      bridge = options.mcpServers.find((server): server is NonNullable<typeof bridge> => "url" in server && server.runnerOwned);
+      return runtimePort({ getStatus: async () => ({ models: { currentModelId: model, availableModelIds: [model] } }) });
+    } }));
+    try {
+      const response = await fetch(bridge!.url, {
+        method: "POST", headers: { Authorization: `Bearer ${bridge!.bearerToken}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+      });
+      const listed = await response.json() as { result: { tools: Array<{ name: string; _meta?: Record<string, unknown> }> } };
+      expect(listed.result.tools.filter(tool => tool._meta?.["anthropic/alwaysLoad"] === true).map(({ name }) => name))
+        .toEqual(agent === "claude" ? ["set_task_title", "paperclip_finish", "paperclip_block"] : []);
+    } finally { await host.close({ reason: "tool preload verified" }); }
+  });
+
   it("forwards semantic receipt capture through the real runtime host and authenticated bridge", async () => {
     const fixture = await hostFixture();
     const events: CanonicalProviderEvent[] = [];
     const evidence = createCopilotToolEvidence({ sessionId: "backend-1", turnId: "turn-1", workingDirectory: fixture.options.workingDirectory,
       active: () => true, emit: event => { validateAcpxRichEvent(event); events.push(JSON.parse(JSON.stringify(event))); } });
-    let bridge: AcpxRuntimePortOpenOptions["mcpServers"][number] | undefined;
+    let bridge: Extract<AcpxRuntimePortOpenOptions["mcpServers"][number], { url: string }> | undefined;
     const host = await AcpxRuntimeHost.open({ ...fixture.options, agent: "copilot", model: "gpt-5.6-sol",
       permissionMode: "deny-all", environment: { COPILOT_GITHUB_TOKEN: "fixture-not-a-real-credential" },
       semanticTools: { tools: [{ name: "get_task_context", inputSchema: { type: "object", properties: {}, additionalProperties: false } }],
         handler: async () => ({ accepted: false }), captureSemanticReceipt: () => evidence.captureSemanticReceipt() },
-    }, fixture.dependencies({ openRuntime: async options => { bridge = options.mcpServers[0]; return runtimePort(); } }));
+    }, fixture.dependencies({ openRuntime: async options => { bridge = urlBridge(options.mcpServers[0]); return runtimePort(); } }));
     try {
       const response = await fetch(bridge!.url, { method: "POST", headers: { Authorization: `Bearer ${bridge!.bearerToken}`, "Content-Type": "application/json" },
         body: JSON.stringify({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "get_task_context", arguments: {} } }) });
@@ -875,7 +1093,7 @@ describe("ACPX runtime host", () => {
       },
       fixture.dependencies({
         openRuntime: async (options) => {
-          bridge = options.mcpServers[0];
+          bridge = urlBridge(options.mcpServers[0]);
           return runtimePort();
         },
       }),
@@ -1364,7 +1582,7 @@ describe("ACPX runtime host", () => {
     ).rejects.toThrow("initialization and cleanup failed");
     expect(runtime.close).toHaveBeenCalledOnce();
     expect(credential.close).not.toHaveBeenCalled();
-    expect(fixture.commandClose).toHaveBeenCalledOnce();
+    expect(fixture.commandClose).not.toHaveBeenCalled();
     expect(retainedAdmissionCleanup).not.toBeNull();
     let cleanupSettled = false;
     void retainedAdmissionCleanup!.finally(() => {
@@ -1377,6 +1595,7 @@ describe("ACPX runtime host", () => {
     await retainedAdmissionCleanup;
     expect(cleanupSettled).toBe(true);
     expect(credential.close).toHaveBeenCalledOnce();
+    expect(fixture.commandClose).toHaveBeenCalledOnce();
   });
 
   it("retains credential ownership when runtime shutdown fails until retry succeeds", async () => {
@@ -1454,7 +1673,7 @@ describe("ACPX runtime host", () => {
 
     const first = host.close({ reason: "runtime close pending" });
     await waitForAcpxOperation(() => expect(runtime.close).toHaveBeenCalledOnce());
-    await waitForAcpxOperation(() => expect(fixture.commandClose).toHaveBeenCalledOnce());
+    expect(fixture.commandClose).not.toHaveBeenCalled();
     const second = host.close({ reason: "same exact close" });
     await expect(readFile(authPath, "utf8")).resolves.toBe("{}");
     await expect(
@@ -1472,6 +1691,7 @@ describe("ACPX runtime host", () => {
       undefined,
       undefined,
     ]);
+    expect(fixture.commandClose).toHaveBeenCalledOnce();
     await expect(readFile(authPath)).rejects.toMatchObject({ code: "ENOENT" });
     const contender = await waitForAcpxOperation(() =>
       stageManagedCodexCredential({
@@ -1484,9 +1704,10 @@ describe("ACPX runtime host", () => {
     await contender.close();
   }, ACPX_LONG_WAIT_TEST_TIMEOUT_MS);
 
-  it("retains the exact pending cleanup while independent resources close", async () => {
+  it("retains the exact pending cleanup and command snapshot until runtime retirement", async () => {
     const fixture = await hostFixture();
-    const firstClose = new Promise<void>(() => undefined);
+    let resolveRuntimeClose!: () => void;
+    const firstClose = new Promise<void>(resolve => { resolveRuntimeClose = resolve; });
     const runtime = runtimePort({
       onClose: vi
         .fn()
@@ -1514,6 +1735,9 @@ describe("ACPX runtime host", () => {
     await Promise.resolve();
     expect(settled).toBe(false);
     expect(runtime.close).toHaveBeenCalledOnce();
+    expect(fixture.commandClose).not.toHaveBeenCalled();
+    resolveRuntimeClose();
+    await Promise.all([first, second]);
     expect(fixture.commandClose).toHaveBeenCalledOnce();
   }, ACPX_LONG_WAIT_TEST_TIMEOUT_MS);
 
@@ -1555,6 +1779,7 @@ describe("ACPX runtime host", () => {
     const onElicitation = vi.fn();
     const onExtensionRequest = vi.fn();
     const onExtensionNotification = vi.fn();
+    const onTerminalSessionFailure = vi.fn();
     const runtime = runtimePort({ startTurn });
     const host = await AcpxRuntimeHost.open(
       {
@@ -1574,6 +1799,7 @@ describe("ACPX runtime host", () => {
         onElicitation,
         onExtensionRequest,
         onExtensionNotification,
+        onTerminalSessionFailure,
       }),
     ).toMatchObject({ requestId: turn.requestId, result: turn.result });
     expect(startTurn).toHaveBeenCalledWith({
@@ -1582,6 +1808,7 @@ describe("ACPX runtime host", () => {
       onElicitation,
       onExtensionRequest,
       onExtensionNotification,
+      onTerminalSessionFailure,
     });
     expect(() =>
       host.startTurn({ text: "Concurrent", requestId: "turn-2" }),
@@ -1763,10 +1990,11 @@ describe("ACPX runtime host", () => {
 
   it("retains a settled turn when shutdown cleanup must be retried", async () => {
     const fixture = await hostFixture();
-    let settleTurn!: (value: { stopReason: string }) => void;
+    const credential = credentialLeaseFixture(fixture.root);
+    let settleTurn!: (value: Awaited<AcpxRuntimeTurn["result"]>) => void;
     const turn = {
       ...runtimeTurn(),
-      result: new Promise<{ stopReason: string }>((resolve) => {
+      result: new Promise<Awaited<AcpxRuntimeTurn["result"]>>((resolve) => {
         settleTurn = resolve;
       }),
     };
@@ -1777,6 +2005,8 @@ describe("ACPX runtime host", () => {
         if (failRuntimeClose) throw new Error("runtime cleanup failed");
       },
     });
+    const dependencies = fixture.dependencies({ openRuntime: async () => runtime });
+    dependencies.stageCredential = vi.fn(async () => credential);
     const host = await AcpxRuntimeHost.open(
       {
         ...fixture.options,
@@ -1785,14 +2015,16 @@ describe("ACPX runtime host", () => {
         permissionMode: "approve-reads",
         environment: { PAPERCLIP_ACPX_CODEX_AUTH_JSON_SECRET: "{}" },
       },
-      fixture.dependencies({ openRuntime: async () => runtime }),
+      dependencies,
     );
     host.startTurn({ text: "Complete the task.", requestId: "turn-1" });
 
     const firstClose = host.close({ reason: "first shutdown" });
-    settleTurn({ stopReason: "end_turn" });
+    settleTurn({ status: "completed", stopReason: "end_turn" });
     await expect(firstClose).rejects.toThrow(/cleanup failed/);
     expect(turn.cancel).toHaveBeenCalledOnce();
+    expect(credential.close).not.toHaveBeenCalled();
+    expect(host.isClosed()).toBe(false);
 
     failRuntimeClose = false;
     await expect(
@@ -1800,6 +2032,8 @@ describe("ACPX runtime host", () => {
     ).resolves.toBeUndefined();
     expect(turn.cancel).toHaveBeenCalledTimes(2);
     expect(runtime.close).toHaveBeenCalledTimes(2);
+    expect(credential.close).toHaveBeenCalledOnce();
+    expect(host.isClosed()).toBe(true);
   });
 
   it("closes a command lease that resolves after admission is aborted", async () => {
@@ -2084,7 +2318,7 @@ describe("ACPX runtime host", () => {
   }, ACPX_LONG_WAIT_TEST_TIMEOUT_MS);
 });
 
-// Deadline tests exercise runtime admission and cleanup, not kernel lease
+// Runtime lifecycle tests exercise admission and cleanup, not kernel lease
 // acquisition. Keep their credential owner deterministic: real lease staging
 // uses hashed loopback ports that unrelated parallel tests can occupy. The
 // credential and retained-owner integration tests still use real leases.
@@ -2097,6 +2331,11 @@ function credentialLeaseFixture(root: string) {
     activateLifetimeOwner: async () => undefined,
     close: vi.fn(async () => undefined),
   };
+}
+
+function urlBridge(server: AcpxRuntimePortOpenOptions["mcpServers"][number] | undefined) {
+  if (!server || !("url" in server)) throw new Error("missing tool bridge");
+  return server;
 }
 
 function runtimePort(
@@ -2169,7 +2408,7 @@ async function hostFixture() {
     dependencies(
       input: Pick<AcpxRuntimeHostDependencies, "openRuntime"> &
         Partial<
-          Pick<AcpxRuntimeHostDependencies, "reportRetainedCleanupFailure">
+          Pick<AcpxRuntimeHostDependencies, "reportRetainedCleanupFailure" | "prepareSandbox" | "verifyInstallation">
         > & {
           // Opt-in only. When true, `prepareSandbox` runs the real
           // preparation once, then returns that same sandbox for every
@@ -2180,19 +2419,19 @@ async function hostFixture() {
     ): AcpxRuntimeHostDependencies {
       let reusedSandbox: AcpxRuntimeSandbox | null = null;
       return {
-        verifyInstallation: async (profile) =>
+        verifyInstallation: input.verifyInstallation ?? (async (profile) =>
           ({
             commandDigest: profile.commandDigest,
             agentServerPackageJsonPath: join(root, "package.json"),
             agentRuntimePackageJsonPath: null,
             openCommand: async () => command,
-          }) satisfies VerifiedAcpxInstallation,
+          }) satisfies VerifiedAcpxInstallation),
         openRuntime: input.openRuntime,
         // Record the skills home the instant the sandbox exists, ahead of
         // the materialize call that seals it. A test that overrides
         // `prepareSandbox` for a non-Claude agent replaces this wrapper, but
         // those agents never materialize skills, so nothing is lost.
-        prepareSandbox: async (sandboxInput) => {
+        prepareSandbox: input.prepareSandbox ?? (async (sandboxInput) => {
           if (input.reuseSandbox && reusedSandbox) return reusedSandbox;
           const sandbox = await prepareAcpxRuntimeSandbox(sandboxInput);
           if (sandboxInput.agent === "claude") {
@@ -2200,7 +2439,7 @@ async function hostFixture() {
           }
           if (input.reuseSandbox) reusedSandbox = sandbox;
           return sandbox;
-        },
+        }),
         retainAdmissionCleanup: trackAdmissionCleanup,
         reportRetainedCleanupFailure:
           input.reportRetainedCleanupFailure ?? vi.fn(),
