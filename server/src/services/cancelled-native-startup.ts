@@ -175,10 +175,6 @@ async function isCancelledUnclaimedWorkspaceWaitRetry(db: Db, run: Run): Promise
     || run.runnerProfileJson !== null || typeof issueId !== "string" || !isUuidLike(issueId)) return false;
   const systemCancellation = run.errorCode === "cancelled" && run.resultJson?.stopReason === "cancelled"
     && cancellation?.source === "control_plane" && cancellation.expected === true && cancellation.initiator.type === "system";
-  // Older retry schedulers persisted the pause refusal only in the run log.
-  // The exact warning certifies a scheduled retry was refused before promotion.
-  // Retry Now can record a harmless lifecycle event before this warning.
-  // A released, company-scoped hold and membership bind that event to this task.
   const pausedBeforePromotion = run.errorCode === "issue_paused" && run.resultJson === null && run.finishedAt
     ? await db.select({ id: heartbeatRunEvents.id }).from(heartbeatRunEvents)
       .innerJoin(issueTreeHolds, and(eq(issueTreeHolds.companyId, run.companyId),

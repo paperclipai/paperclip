@@ -1335,7 +1335,6 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
         companyId: f.companyId, runId: f.sourceRunId, now: dueAt,
       })).toMatchObject({ outcome: "gate_suppressed", errorCode: "issue_paused" });
     }
-    // Old scheduler builds wrote the same suppression event but no JSON marker.
     await db.update(heartbeatRuns).set({ resultJson: null }).where(eq(heartbeatRuns.id, f.sourceRunId));
     await issueTreeControlService(db).releaseHold(f.companyId, pauseRootIssueId, pause.id,
       { actor: { actorType: "user", actorId: "board" } });
