@@ -326,6 +326,7 @@ export function activityService(db: Db) {
         error: run.error,
         errorCode: run.errorCode,
         continuationAttempt,
+        contextSnapshot: run.contextSnapshot as Record<string, unknown> | null,
         evidence: {
           issueCommentsCreated: countValue(commentStats?.count),
           documentRevisionsCreated: countValue(documentStats?.count),
