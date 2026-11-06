@@ -74,7 +74,7 @@ it.each(["value","mixed","owner","source","field","schema","initial","help solic
  if(fault==="owner")row.addresseeUserId="other";
  if(fault==="source")row.sourceRunId="other";
  if(fault==="field")q.prompt="What environment variable value should Morgan receive?";
- if(fault==="schema")q.textValidation!.pattern=".*";
+ if(fault==="schema")q.textValidation!.pattern="^OTHER_API_KEY$";
  if(fault==="initial")q.initialText="prepopulated";
  if(fault==="help solicitation")q.helpText="Also provide the key value.";
  expect(companySecretQuestionHandoff(row,binding)).toBeUndefined();
@@ -201,4 +201,15 @@ it("admits the actual secure saved-name card with a proposed metadata default, n
  const rawValue=structuredClone(row);rawValue.payload.questionSet!.questions[0]!.prompt="What is the deployment key value?";expect(companySecretQuestionHandoff(rawValue,binding)).toBeUndefined();
  const environment=structuredClone(row);environment.payload.questionSet!.questions[0]!.prompt="What environment variable name should Morgan receive?";expect(boundSecretQuestion(environment,binding,"pending","company-environment-name")).toBeUndefined();
  const choice=question();choice.payload.questionSet!.questions[0]!.initialText="deployment_api_key";expect(companySecretQuestionHandoff(choice,binding)).toBeUndefined();
+});
+
+it("admits the actual bounded environment-name card without an authored regexp or sentence template",()=>{
+ const row=question();row.payload=questionSetToAskUserQuestionsPayload({schema:"paperclip.question_set.v1",title:"Deployment API key setup",description:"Open /RUN/company/settings/secrets, click New secret, and store the deployment API key (do not paste the value here). Once saved, tell me which environment variable name Morgan should receive it as so I can bind it to Morgan's configuration.",submitLabel:"Save",questions:[{id:"env_var_name",prompt:"Which environment variable name should Morgan receive the deployment key as?",helpText:"For example DEPLOY_API_KEY",required:true,answerMode:"text",textValidation:{minLength:1,maxLength:120,inputType:"text"}}]});
+ expect(companySecretQuestionHandoff(row,binding)).toMatchObject({questionId:"env_var_name",environmentName:"DEPLOYMENT_API_KEY"});
+ const q=row.payload.questionSet!.questions[0]!;
+ for(const pattern of ["^[A-Z_]+$","^DEPLOYMENT_API_KEY$"]){q.textValidation!.pattern=pattern;expect(companySecretQuestionHandoff(row,binding)).toBeDefined();}
+ for(const pattern of ["^OTHER_API_KEY$","["]){q.textValidation!.pattern=pattern;expect(companySecretQuestionHandoff(row,binding)).toBeUndefined();}
+ delete q.textValidation!.pattern;
+ for(const prompt of ["Which environment variable name and key value should Morgan receive?","Which environment variable name should Riley receive?"]){q.prompt=prompt;expect(companySecretQuestionHandoff(row,binding)).toBeUndefined();}
+ q.prompt="Which environment variable name should Morgan receive the deployment key as?";q.initialText="unknown-credential";expect(companySecretQuestionHandoff(row,binding)).toBeUndefined();
 });

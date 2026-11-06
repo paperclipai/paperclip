@@ -257,7 +257,12 @@ continuation. The final configuration and visible confirmation remain required.
 The existing operator-directed and authorized direct-binding paths remain two
 runs/two actions. Query, model and 480000 ms budget are unchanged. Original v11
 result 5057 remains FAILED after a real secure save and an unanswered pending
-binding proposal; v12 is unrun until fresh native evidence qualifies it.
+binding proposal. V12 result 5059 also remains FAILED before entry on a safe
+environment-name text card. V13 admits the bounded metadata-NAME purpose without
+requiring one authored regexp or sentence template; the actual submitted
+canonical environment name must satisfy any authored pattern. Value questions,
+unknown prefills and changed actor/payload remain rejected. V13 is unrun until
+fresh native evidence qualifies it.
 
 ### Authored skill inspection
 

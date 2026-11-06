@@ -280,6 +280,12 @@ export function chatCatalogSavedSecretNameIntent(text:string):boolean {
   &&/\b(?:saved?|stored?|created?|added|used?|under)\b/i.test(prompt)
   &&!/\b(?:value|plaintext|password|CEO|Riley|Jordan|another|other person)\b/i.test(prompt);
 }
+export function chatCatalogCompanyEnvironmentNameQuestion(q:{prompt:string;required?:boolean;answerMode:string;initialText?:string;options?:readonly unknown[];customAnswer?:{enabled?:boolean};textValidation?:{minLength?:number;maxLength?:number;pattern?:string;inputType?:string}},answer="DEPLOYMENT_API_KEY"):boolean {
+ const prompt=q.prompt.replace(/\(Do not include the key value\.\)/gi,"").trim(),validation=q.textValidation;
+ if(!q.required||q.answerMode!=="text"||q.initialText!==undefined||q.options?.length||q.customAnswer?.enabled||prompt.length>400||!/\b(?:env|environment)\s+variable\s+name\b/i.test(prompt)||!/\bMorgan\b/i.test(prompt)||/\b(?:value|password|plaintext|CEO|Riley|Jordan|another|other person)\b/i.test(prompt)
+  ||!/^[A-Za-z_][A-Za-z0-9_]{0,119}$/.test(answer)||!validation?.maxLength||validation.maxLength>120||validation.maxLength<answer.length||(validation.minLength??0)>answer.length||(validation.inputType!==undefined&&validation.inputType!=="text"))return false;
+ try{return !validation.pattern||new RegExp(validation.pattern).test(answer);}catch{return false;}
+}
 export interface ChatCatalogExpectedHumanQuestionAnswer { interactionId: string; sourceRunId: string; userId: string; personalSecretConfirmation?: { definitionId: string; secretId: string; payloadHash: string }; companyEnvironmentNameAnswer?: { questionId: string; payloadHash: string; value: "DEPLOYMENT_API_KEY" }; companySavedSecretNameAnswer?: { questionId: string; payloadHash: string; value: string; secretId: string } }
 export interface ChatCatalogVerifiedHumanQuestionAnswer extends ChatCatalogExpectedHumanQuestionAnswer { continuationRunId: string; resolvedAt: string }
 export interface ChatCatalogHumanQuestionAudit {
@@ -330,9 +336,7 @@ export function verifyChatCatalogHumanQuestionAnswer(input: {
     const parsed = askUserQuestionsPayloadSchema.safeParse(row.payload), qs = parsed.success ? parsed.data.questionSet : undefined;
     const q = qs?.questions[0], answer = row.result.answers[0];
     if (!qs || qs.questions.length !== 1 || !q || q.id !== environmentName.questionId || q.answerMode !== "text" || !q.required
-      || q.options?.length || q.customAnswer?.enabled || q.initialText !== undefined
-      || q.textValidation?.pattern !== "^[A-Za-z_][A-Za-z0-9_]*$" || q.textValidation.minLength !== 1
-      || !q.textValidation.maxLength || q.textValidation.maxLength > 120 || q.textValidation.maxLength < 18
+      || !chatCatalogCompanyEnvironmentNameQuestion(q,environmentName.value)
       || environmentName.value !== "DEPLOYMENT_API_KEY" || answer?.questionId !== q.id || answer.optionIds.length !== 0
       || answer.otherText !== environmentName.value || createHash("sha256").update(JSON.stringify(row.payload)).digest("hex") !== environmentName.payloadHash) return;
   } else if(savedName){

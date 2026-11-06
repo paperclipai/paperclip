@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { chatCatalogHumanQuestionPolicies } from "../chat-catalog-contract.js";
+import { chatCatalogCompanyEnvironmentNameQuestion, chatCatalogHumanQuestionPolicies } from "../chat-catalog-contract.js";
 import type { AskUserQuestionsInteraction } from "../../../packages/shared/src/types/issue.js";
 import { askUserQuestionsPayloadSchema } from "../../../packages/shared/src/validators/issue.js";
 
@@ -18,8 +18,7 @@ export function boundSecretQuestion(value: unknown, b: SecretQuestionBinding, st
   const q = qs.questions[0]!;
   if (!q.required || (mode
     ? q.answerMode !== "text" || !!q.options?.length || !!q.customAnswer?.enabled || (q.initialText !== undefined && (mode !== "company-saved-secret-name" || (q.initialText !== "" && !/^[a-zA-Z0-9_.-]{1,120}$/.test(q.initialText))))
-      || (mode === "company-environment-name" && (q.textValidation?.pattern !== "^[A-Za-z_][A-Za-z0-9_]*$" || q.textValidation.minLength !== 1
-      || !q.textValidation.maxLength || q.textValidation.maxLength > 120 || q.textValidation.maxLength < "DEPLOYMENT_API_KEY".length))
+      || (mode === "company-environment-name" && !chatCatalogCompanyEnvironmentNameQuestion(q))
     : q.answerMode !== "single_select" || !q.options?.length)) return;
   return { row: { ...row, id: row.id }, questionSet: qs, question: { ...q, options: q.options ?? [] },
     text: [qs.title, qs.description, q.header, q.prompt, q.helpText, q.customAnswer?.enabled ? q.customAnswer.label : undefined, q.customAnswer?.enabled ? q.customAnswer.placeholder : undefined, qs.submitLabel].filter(Boolean).join("\n"),

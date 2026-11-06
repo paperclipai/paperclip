@@ -3,7 +3,7 @@ import { pollUntil } from "../api.js";
 import {isDeepStrictEqual} from "node:util";
 import {visibleSecretSettingsURL} from "./external-secret-route.js";
 import {companySecretMenuDirections,companySecretMenuURL} from "./external-company-secret-menu.js";
-import { chatCatalogSavedSecretNameIntent, verifyChatCatalogCompanySecretBindingApproval, type ChatCatalogExpectedCompanySecretBindingApproval, chatCatalogNativePhaseRemainingBudget, chatCatalogOriginalPhaseDeadline } from "../chat-catalog-contract.js";
+import { chatCatalogCompanyEnvironmentNameQuestion, chatCatalogSavedSecretNameIntent, verifyChatCatalogCompanySecretBindingApproval, type ChatCatalogExpectedCompanySecretBindingApproval, chatCatalogNativePhaseRemainingBudget, chatCatalogOriginalPhaseDeadline } from "../chat-catalog-contract.js";
 import { createHash, randomBytes } from "node:crypto";
 import { expect, type Page } from "@playwright/test";
 import type { ChatCatalogContext } from "../chat-catalog-contract.js";
@@ -82,8 +82,7 @@ export function companySecretQuestionHandoff(value:unknown,b:SecretQuestionBindi
  if(!deploymentSecretGuidance(text)||!/settings/i.test(text)||!/secrets/i.test(text)
   ||solicitsChatCredential([text,...q.options!.map(o=>`${o.label} ${o.description??""}`)].join("\n")))return;
  if(q.answerMode==="text"){
-  const prompt=q.prompt.replace(/\(Do not include the key value\.\)/gi,"").trim();
-  if(unsafeCredentialTransfer(text)||(!savedName&&!/^(?:After saving [^?]+,\s*)?(?:what|which) environment variable name should Morgan (?:receive|use)\?$/i.test(prompt))
+  if(unsafeCredentialTransfer(text)||(!savedName&&!chatCatalogCompanyEnvironmentNameQuestion(q))
    || /\b(?:CEO|Riley|Jordan|another agent|all agents|every agent)\b/i.test(text))return;
   const answer=row.result?.answers[0];
   if(savedName){
@@ -203,7 +202,7 @@ export const companySecretExternalCases=[definition("secrets.configure-company-s
  },
  optionalCompanySecretBindingApproval:true,
  expectedCompanySecretBindingApproval(value){if(!gradeCompanySecret(value).passed)return;return companySecretApprovalProof(value);},
- oracleVersion:"paperclip.chat-catalog.company-secret-controller-baseline.v12",expectedRunCount:3,minimumRunCount:2,expectedHumanMessageCount:2,attemptTimeoutMs:480000,
+ oracleVersion:"paperclip.chat-catalog.company-secret-controller-baseline.v13",expectedRunCount:3,minimumRunCount:2,expectedHumanMessageCount:2,attemptTimeoutMs:480000,
  sourceFiles:["chat-catalog-domains/external-company-secret.ts","chat-catalog-domains/external-secret-proposal.ts","chat-catalog-domains/external-secret-question.ts","chat-catalog-domains/external-secret-route.ts","chat-catalog-domains/external-company-secret-menu.ts","chat-catalog-contract.ts","chat-catalog-flow.ts","chat-catalog-domains/external-private-browser.ts","chat-catalog-domains/external-private-browser-worker.ts","chat-catalog-domains/external-credential-language.ts","chat-catalog-domains/external-secret-scan.ts","chat-catalog-domains/external-support.ts","chat-catalog-domains/internal-support.ts","chat-catalog-domains/identity-support.ts","live-fixtures.ts","../../server/src/services/secrets.ts","run-observations.ts","chat-flow.ts","chat-scenarios/secrets.yaml"],
  async act(ctx,state){
   const deadline=chatCatalogOriginalPhaseDeadline(ctx),remaining=()=>remainingIdentityObservationBudget(ctx);

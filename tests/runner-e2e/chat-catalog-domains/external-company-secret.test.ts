@@ -346,3 +346,16 @@ it("reads both actual public audit scopes and deduplicates the shared issue even
  const conflict=vi.fn(async(route:string)=>route.includes("/companies/")?[{...issueAudit[0]!,actorId:"other"}]:issueAudit);
  await expect(collectChatCatalogCompanySecretApprovalActivity({get:conflict} as unknown as Parameters<typeof collectChatCatalogCompanySecretApprovalActivity>[0],"company","source")).rejects.toThrow("identity changed");
 });
+
+it("independently accounts for the actual environment-name purpose without trusting an authored regexp",()=>{
+ const o=questionOutcome("anyone",false,true),row=o.interactions[0]!,q=row.payload.questionSet!.questions[0]!;
+ q.prompt="Which environment variable name should Morgan receive the deployment key as?";delete q.textValidation!.pattern;
+ o.state.initialQuestionPayloadHash=createHash("sha256").update(JSON.stringify(row.payload)).digest("hex");
+ const expected=companySecretExternalCases[0]!.expectedHumanQuestionAnswer!(o)!;expect(expected).toBeDefined();
+ const evidence={expected,companyId:"company",issueId:"source",agentId:"ceo",canonicalComment:{id:"human",authorUserId:"person"},interactions:[row],activity:[{companyId:"company",entityId:"source",action:"issue.thread_interaction_answered",actorType:"user",actorId:"person",details:{interactionId:"question",interactionKind:"ask_user_questions",interactionStatus:"answered",answeredQuestionCount:1}}],runs:o.runs.map((run,index)=>({...run,companyId:"company",agentId:"ceo",runtimeMode:"native",startedAt:index?"2026-11-04T13:40:01Z":"2026-11-04T13:30:00Z",contextSnapshot:index?{issueId:"source",interactionId:"question"}:{issueId:"source",commentId:"human"}}))};
+ expect(verifyChatCatalogHumanQuestionAnswer(evidence)).toBeDefined();
+ const changed=structuredClone(row);changed.payload.questionSet!.questions[0]!.textValidation!.pattern="^OTHER_API_KEY$";
+ const bad={...expected,companyEnvironmentNameAnswer:{...expected.companyEnvironmentNameAnswer!,payloadHash:createHash("sha256").update(JSON.stringify(changed.payload)).digest("hex")}};
+ expect(verifyChatCatalogHumanQuestionAnswer({...evidence,expected:bad,interactions:[changed]})).toBeUndefined();
+ const wrong=structuredClone(row);Object.assign(wrong.result.answers[0]!,{otherText:"plaintext credential"});expect(verifyChatCatalogHumanQuestionAnswer({...evidence,interactions:[wrong]})).toBeUndefined();
+});
