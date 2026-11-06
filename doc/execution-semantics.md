@@ -548,8 +548,14 @@ an active or ephemeral one. It records the save obligation for the exact writer
 run while the workspace is still bound to that writer. A Stop during an
 accepted result's copy-back retries ends that copy-back, and no finalization
 exports those files afterwards. Preservation admits that writer as well and
-leaves the accepted result uncommitted. Other accepted results keep their own
-export repair path. Paperclip's workspace recovery then saves those files, which
+leaves the accepted result uncommitted. A failed remote writer whose accepted
+result exhausted its copy-back retries can also retain its files through this
+path. It needs the exact stopped sandbox receipt, accepted completion contract,
+and unchanged dirty workspace binding. This works even when a newer setup
+attempt has failed on the old writer's hold. File recovery preserves both
+attempts and the accepted result; it does not apply that result or repeat the
+provider work. Other accepted results keep their own export repair path.
+Paperclip's workspace recovery then saves those files, which
 releases the hold. It never replays the stopped run. While that save is in
 progress, its last progress counts as the ended writer's activity for the holder cutoff. A waiter keeps waiting instead of
 failing setup. The save's retry budget bounds that wait. A save that exhausts
