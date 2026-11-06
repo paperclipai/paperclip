@@ -971,7 +971,7 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
     } else expect(f.deps.scheduleBoundedRetryForRun).not.toHaveBeenCalled();
   });
 
-  // S53: Daytona returned HTTP 502 on sandbox create and cleanup of the
+  // Daytona returned HTTP 502 on sandbox create and cleanup of the
   // provisional allocation could not be confirmed. The orchestrator wraps the
   // worker refusal exactly as staging recorded it.
   const daytonaCreate502 = (withEnvelope = true) => new JsonRpcCallError({ code: -32000,

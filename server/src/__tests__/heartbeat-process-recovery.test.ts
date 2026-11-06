@@ -5638,7 +5638,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     mockAdapterExecute.mockClear();
   });
 
-  describe("transient sandbox provider refusal during lease acquisition (S53)", () => {
+  describe("transient sandbox provider refusal during lease acquisition", () => {
     // Daytona answered sandbox create with HTTP 502 and the provisional
     // allocation's cleanup could not be confirmed, exactly as staging recorded.
     const daytonaCreate502 = () => new JsonRpcCallError({ code: -32000,
