@@ -1,4 +1,4 @@
-import { createReadStream, createWriteStream, existsSync, mkdirSync, readdirSync, statSync, unlinkSync } from "node:fs";
+import { closeSync, createReadStream, createWriteStream, existsSync, mkdirSync, openSync, readdirSync, readSync, statSync, unlinkSync } from "node:fs";
 import { basename, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { spawn } from "node:child_process";
@@ -124,7 +124,34 @@ function monthlyRetentionCutoff(nowMs: number, monthlyMonths: number): number {
  * - Monthly tier: keep the NEWEST backup per calendar month for `monthlyMonths` months
  * - Everything else is deleted
  */
-function pruneOldBackups(backupDir: string, retention: BackupRetentionPolicy, filenamePrefix: string): number {
+// A complete gzip stream of empty input is 20 bytes (10-byte header,
+// empty deflate block, 8-byte trailer). Anything at or below that size
+// cannot hold dump content, and a file without the gzip magic is not a
+// gzip stream at all. Bare ".sql" files are the backup writer's
+// pre-compression intermediate: one left behind is an unverified orphan,
+// not a finished backup.
+const EMPTY_GZIP_STREAM_BYTES = 20;
+
+type TierBackupStatus = "representative" | "invalid" | "unreadable";
+
+function tierBackupStatus(entry: { name: string; fullPath: string; sizeBytes: number }): TierBackupStatus {
+  if (!entry.name.endsWith(".sql.gz")) return "invalid";
+  if (entry.sizeBytes <= EMPTY_GZIP_STREAM_BYTES) return "invalid";
+  try {
+    const fd = openSync(entry.fullPath, "r");
+    try {
+      const header = Buffer.alloc(2);
+      const read = readSync(fd, header, 0, 2, 0);
+      return read === 2 && header[0] === 0x1f && header[1] === 0x8b ? "representative" : "invalid";
+    } finally {
+      closeSync(fd);
+    }
+  } catch {
+    return "unreadable";
+  }
+}
+
+export function pruneOldBackups(backupDir: string, retention: BackupRetentionPolicy, filenamePrefix: string): number {
   if (!existsSync(backupDir)) return 0;
 
   const now = Date.now();
@@ -132,7 +159,7 @@ function pruneOldBackups(backupDir: string, retention: BackupRetentionPolicy, fi
   const weeklyCutoff = now - Math.max(1, retention.weeklyWeeks) * 7 * 24 * 60 * 60 * 1000;
   const monthlyCutoff = monthlyRetentionCutoff(now, retention.monthlyMonths);
 
-  type BackupEntry = { name: string; fullPath: string; mtimeMs: number };
+  type BackupEntry = { name: string; fullPath: string; mtimeMs: number; sizeBytes: number; tierStatus: TierBackupStatus };
   const entries: BackupEntry[] = [];
 
   for (const name of readdirSync(backupDir)) {
@@ -140,7 +167,9 @@ function pruneOldBackups(backupDir: string, retention: BackupRetentionPolicy, fi
     if (!name.endsWith(".sql") && !name.endsWith(".sql.gz")) continue;
     const fullPath = resolve(backupDir, name);
     const stat = statSync(fullPath);
-    entries.push({ name, fullPath, mtimeMs: stat.mtimeMs });
+    const entry = { name, fullPath, mtimeMs: stat.mtimeMs, sizeBytes: stat.size, tierStatus: "invalid" as TierBackupStatus };
+    entry.tierStatus = tierBackupStatus(entry);
+    entries.push(entry);
   }
 
   // Sort newest first so the first entry per week/month bucket is the one we keep
@@ -158,9 +187,17 @@ function pruneOldBackups(backupDir: string, retention: BackupRetentionPolicy, fi
     const week = isoWeekKey(date);
     const month = monthKey(date);
 
-    // Weekly tier — keep newest per calendar week
+    // Weekly tier — keep newest per calendar week. Only a plausible
+    // finished backup may claim the bucket: an unverified orphan (bare
+    // ".sql" or an implausibly small / non-gzip ".sql.gz") never evicts
+    // the bucket's real backup by being newer. See #15351.
     if (entry.mtimeMs >= weeklyCutoff) {
-      if (keepWeekBuckets.has(week)) {
+      if (entry.tierStatus === "unreadable") {
+        continue;
+      }
+      if (entry.tierStatus !== "representative") {
+        toDelete.push(entry.fullPath);
+      } else if (keepWeekBuckets.has(week)) {
         toDelete.push(entry.fullPath);
       } else {
         keepWeekBuckets.add(week);
@@ -168,9 +205,14 @@ function pruneOldBackups(backupDir: string, retention: BackupRetentionPolicy, fi
       continue;
     }
 
-    // Monthly tier — keep newest per calendar month
+    // Monthly tier — keep newest per calendar month, same rule as weekly.
     if (entry.mtimeMs >= monthlyCutoff) {
-      if (keepMonthBuckets.has(month)) {
+      if (entry.tierStatus === "unreadable") {
+        continue;
+      }
+      if (entry.tierStatus !== "representative") {
+        toDelete.push(entry.fullPath);
+      } else if (keepMonthBuckets.has(month)) {
         toDelete.push(entry.fullPath);
       } else {
         keepMonthBuckets.add(month);

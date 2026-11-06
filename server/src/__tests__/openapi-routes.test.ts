@@ -433,6 +433,23 @@ describe("openapi routes", () => {
       .toEqual(["status", "commit"]);
     expect(spec.paths["/api/health"].get.responses[503]).toBeDefined();
   });
+  it("documents the truncated-backup warning code in the health response", () => {
+    const spec = buildOpenApiSpec() as any;
+    const warningCodeEnums: unknown[][] = [];
+    const walk = (value: unknown): void => {
+      if (Array.isArray(value)) {
+        if (value.includes("database_backup_stale")) warningCodeEnums.push(value);
+        value.forEach(walk);
+        return;
+      }
+      if (value && typeof value === "object") Object.values(value).forEach(walk);
+    };
+    walk(spec);
+    expect(warningCodeEnums.length).toBeGreaterThan(0);
+    for (const warningCodes of warningCodeEnums) {
+      expect(warningCodes).toContain("database_backup_truncated");
+    }
+  });
   it("documents only writable agent update fields and lifecycle status requests", () => {
     const document = buildOpenApiSpec() as any;
     const properties = document.paths["/api/agents/{id}"].patch.requestBody.content["application/json"].schema.properties;
