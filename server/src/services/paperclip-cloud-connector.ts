@@ -35,7 +35,7 @@ export const GMAIL_CONNECTOR_SCOPES = [
 export { GOOGLE_WORKSPACE_CONNECTOR_PROFILES };
 
 export type PaperclipCloudConnectorEnvironment = "development" | "test" | "staging" | "production";
-export type PaperclipCloudConnectorOperation = "status" | "session" | "claim" | "refresh" | "revoke" | "webhook-bind" | "event-lease" | "event-ack" | "github-app" | "slack-events";
+export type PaperclipCloudConnectorOperation = "status" | "session" | "claim" | "refresh" | "revoke" | "webhook-bind" | "event-lease" | "event-ack" | "github-app" | "slack-events" | "mcp-client-mirror" | "mcp-revocation-index";
 export type PaperclipCloudConnectorProfileId = GoogleWorkspaceConnectorProfileId | GitHubConnectorProfileId | AsanaConnectorProfileId | "slack.manager" | "github.bot";
 export type PaperclipCloudConnectorProvider = "google" | "github" | "asana" | "slack";
 
@@ -124,6 +124,8 @@ type ConnectorResponse = {
 };
 
 const ENDPOINTS: Record<PaperclipCloudConnectorOperation, string> = {
+  "mcp-client-mirror": "/v1/connector/mcp-client-mirror",
+  "mcp-revocation-index": "/v1/connector/mcp-revocation-index",
   "slack-events": "/v1/connector/slack-events",
   "github-app": "/v1/connector/github-apps",
   status: "/v1/connector/instance-status",
@@ -391,6 +393,14 @@ export function createPaperclipCloudConnector(input: {
   }
 
   return {
+    async syncMcpClientMirror(serialized: string): Promise<unknown> {
+      const response = await call("mcp-client-mirror", {subject:"instance-client-metadata",companyId:"instance-client-metadata"}, {field:"binding",value:serialized});
+      return (response as ConnectorResponse & {mcpClientMirror?:unknown}).mcpClientMirror;
+    },
+    async syncMcpRevocationIndex(values: { subject: string; companyId: string; serialized: string }): Promise<unknown> {
+      const response = await call("mcp-revocation-index", values, { field: "binding", value: values.serialized });
+      return (response as ConnectorResponse & { mcpRevocationIndex?: unknown }).mcpRevocationIndex;
+    },
     eventWakeVersion: () => eventWakeVersion,
     async slackEventsAvailable() {
       const response = await call("status", { subject: "instance-capabilities", companyId: "instance-capabilities" });

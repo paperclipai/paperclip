@@ -3018,6 +3018,13 @@
       "when": 1793881366830,
       "tag": "0432_remarkable_khan",
       "breakpoints": true
+    },
+    {
+      "idx": 433,
+      "version": "7",
+      "when": 1793926018458,
+      "tag": "0433_parallel_vindicator",
+      "breakpoints": true
     }
   ]
 }
