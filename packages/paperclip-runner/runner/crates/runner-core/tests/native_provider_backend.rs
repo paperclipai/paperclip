@@ -2313,6 +2313,7 @@ fn restart_lost_opencode_turn_records_a_recoverable_cause() {
     let directory = temporary_directory("opencode-restart-lost-turn");
     let mut config = opencode_config(&directory);
     let proxy_script = directory.join("qualified-opencode-proxy-script");
+    #[cfg(unix)]
     fs::set_permissions(&proxy_script, fs::Permissions::from_mode(0o700)).unwrap();
     fs::write(
         &proxy_script,
@@ -2324,6 +2325,7 @@ fn restart_lost_opencode_turn_records_a_recoverable_cause() {
         ),
     )
     .unwrap();
+    #[cfg(unix)]
     fs::set_permissions(&proxy_script, fs::Permissions::from_mode(0o500)).unwrap();
     config
         .opencode_launch_profile
