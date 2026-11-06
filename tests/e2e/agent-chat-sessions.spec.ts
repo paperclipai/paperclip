@@ -290,7 +290,7 @@ test("Coordinator agent switching preserves drafts and opens one conversation on
   }
 });
 
-test("secondary chat navigation preserves layout, unique conversations, history, and drafts", async ({
+test("secondary chat navigation preserves layout, separate conversations, history, and drafts", async ({
   page,
   request,
 }) => {
@@ -321,7 +321,6 @@ test("secondary chat navigation preserves layout, unique conversations, history,
     const compose = sidebar.getByRole("button", { name: "Add chat", exact: true });
     const picker = page.getByRole("dialog", { name: "Chat with an agent", exact: true });
     const chatListPath = `/api/companies/${f.company.id}/chats`;
-    const betaPath = `${chatListPath}/${f.agents[1].id}`;
     await compose.click();
     await expect(picker.getByRole("option")).toHaveCount(6);
     await picker.getByRole("combobox").fill("Beta");
@@ -330,28 +329,36 @@ test("secondary chat navigation preserves layout, unique conversations, history,
     await expect(picker).not.toBeVisible();
     await expect(page.getByRole("link", { name: "Configure Beta", exact: true })).toBeVisible();
     expect(await sidebar.boundingBox()).toEqual(landingBounds);
-    const beta = await json(await request.get(betaPath));
+    const [beta] = await json(await request.get(chatListPath));
     expect(beta.conversationAgentId).toBe(f.agents[1].id);
     expect(await json(await request.get(chatListPath))).toHaveLength(1);
     expect(await json(await request.get(`/api/companies/${f.company.id}/heartbeat-runs`))).toHaveLength(0);
 
-    // Explicitly adding an existing agent must reopen the same conversation.
+    // Adding the same agent again creates a distinct conversation.
     await compose.click();
     await expect(picker.getByRole("combobox")).toHaveValue("");
     await picker.getByRole("combobox").fill("Beta");
-    await expect(picker.getByRole("option", { name: /^Beta / })).toContainText("Open chat");
+    await expect(picker.getByRole("option", { name: /^Beta / })).toContainText("New chat");
     await picker.getByRole("combobox").press("Enter");
     await expect(picker).not.toBeVisible();
-    expect((await json(await request.get(betaPath))).id).toBe(beta.id);
-    expect(await json(await request.get(chatListPath))).toHaveLength(1);
+    const betaChats = await json(await request.get(chatListPath));
+    expect(betaChats).toHaveLength(2);
+    expect(new Set(betaChats.map((chat: { id: string }) => chat.id)).size).toBe(2);
+    expect(betaChats.map((chat: { id: string }) => chat.id)).toContain(beta.id);
+    const secondBeta = betaChats.find((chat: { id: string }) => chat.id !== beta.id);
+    await sidebar.locator(`a[href$="/${beta.id}"]`).click();
+    await expect(page).toHaveURL(new RegExp(`${beta.id}$`));
+    await sidebar.locator(`a[href$="/${secondBeta.id}"]`).click();
+    await expect(page).toHaveURL(new RegExp(`${secondBeta.id}$`));
 
     await compose.click();
     await picker.getByRole("combobox").fill("Alpha");
     await picker.getByRole("combobox").press("Enter");
     await expect(picker).not.toBeVisible();
     await expect(page.getByRole("link", { name: "Configure Alpha", exact: true })).toBeVisible();
-    const alphaLink = nav.getByRole("link", { name: /^Alpha / });
-    const betaLink = nav.getByRole("link", { name: /^Beta / });
+    const alpha = (await json(await request.get(chatListPath))).find((chat: { conversationAgentId: string }) => chat.conversationAgentId === f.agents[0].id);
+    const alphaLink = sidebar.locator(`a[href$="/${alpha.id}"]`);
+    const betaLink = sidebar.locator(`a[href$="/${beta.id}"]`);
     // Open chat first, then other conversations, then the rest alphabetically.
     await expect(nav.getByRole("link")).toHaveText([/^Alpha/, /^Beta/, /^Delta/, /^Epsilon/, /^Gamma/, /^Zeta/]);
     const editor = page.getByTestId("task-chat-composer-input").locator('[contenteditable="true"]');
