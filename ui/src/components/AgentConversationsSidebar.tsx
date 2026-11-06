@@ -32,6 +32,14 @@ export function AgentConversationsSidebar() {
   const byId = new Map(roster.map(agent => [agent.id, agent]));
   for (const result of historyAgents) if (result.data) byId.set(result.data.id, result.data);
   const active = [...byId.values()].find(agent => agent.id === activeRef || (agent.status !== "terminated" && encodeURIComponent(agentRouteRef(agent)) === activeRef));
+  const activeId = active?.id;
+  const existingChatAgentIds = useMemo(() => {
+    const ids = (chats.data ?? []).flatMap(chat => chat.conversationAgentId ? [chat.conversationAgentId] : []);
+    if (activeId && !ids.includes(activeId)) ids.unshift(activeId);
+    return ids;
+  }, [chats.data, activeId]);
+  const unreadAgentIds = useMemo(() => (chats.data ?? [])
+    .flatMap(chat => chat.isUnreadForMe && chat.conversationAgentId ? [chat.conversationAgentId] : []), [chats.data]);
   const conversations = (chats.data ?? []).flatMap(chat => {
     const agent = chat.conversationAgentId ? byId.get(chat.conversationAgentId) : undefined;
     return agent ? [agent] : [];
@@ -49,9 +57,9 @@ export function AgentConversationsSidebar() {
   const previews = Object.fromEntries((chats.data ?? []).filter(chat => chat.conversationState === "active")
     .map(chat => [chat.conversationAgentId!, "Working…"]));
   return <AgentConversationSidebar key={`${companyId}:${userId}`} agents={[...conversations, ...teammates]} availableAgents={roster}
-    existingChatAgentIds={conversations.map(agent => agent.id)}
+    existingChatAgentIds={existingChatAgentIds}
     activeId={active?.id} previews={previews}
-    unreadAgentIds={(chats.data ?? []).filter(chat => chat.isUnreadForMe).flatMap(chat => chat.conversationAgentId ? [chat.conversationAgentId] : [])}
+    unreadAgentIds={unreadAgentIds}
     unreadMessageCounts={unreadMessageCounts}
     // Loaded chats stay listed through an outage (the banner covers it); an
     // outage before the first load is a skeleton, and only a real failure is an error.

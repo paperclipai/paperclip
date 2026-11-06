@@ -5,8 +5,17 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { Agent } from "@paperclipai/shared";
 import { AgentConversationsSidebar } from "./AgentConversationsSidebar";
+import type { AgentConversationSidebarProps } from "./AgentConversationSidebar";
 import { queryKeys } from "@/lib/queryKeys";
 const state = vi.hoisted(() => ({ companyId: "company-a", navigate: vi.fn(), closeSidebar: vi.fn(), ensure: vi.fn(), getAgent: vi.fn() }));
+const sidebarInputs = vi.hoisted(() => [] as Pick<AgentConversationSidebarProps, "existingChatAgentIds" | "unreadAgentIds" | "unreadMessageCounts">[]);
+vi.mock("./AgentConversationSidebar", async importOriginal => {
+  const original = await importOriginal<typeof import("./AgentConversationSidebar")>();
+  return { AgentConversationSidebar: (props: AgentConversationSidebarProps) => {
+    sidebarInputs.push({ existingChatAgentIds: props.existingChatAgentIds, unreadAgentIds: props.unreadAgentIds, unreadMessageCounts: props.unreadMessageCounts });
+    return <original.AgentConversationSidebar {...props} />;
+  } };
+});
 vi.mock("@/context/CompanyContext", () => ({ useCompany: () => ({ selectedCompanyId: state.companyId }) }));
 vi.mock("@/context/SidebarContext", () => ({ useSidebar: () => ({ isMobile: true, setSidebarOpen: state.closeSidebar }) }));
 vi.mock("@/hooks/useAgentChatEnabled", () => ({ useAgentChatEnabled: () => ({ enabled: true, loaded: true }) }));
@@ -38,6 +47,7 @@ beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
   state.companyId = "company-a";
+  sidebarInputs.length = 0;
   state.navigate.mockReset(); state.closeSidebar.mockReset(); state.ensure.mockReset(); state.getAgent.mockReset();
   state.ensure.mockImplementation(async (_company, id) => chat(id));
   memberships.agentMemberships = {};
@@ -119,6 +129,30 @@ it("passes numeric unread counts to Add chat and updates them from the account c
     await new Promise(resolve => setTimeout(resolve, 0));
   });
   expect(document.querySelector('[aria-label*="unread message"]')).toBeNull();
+});
+
+it("reuses chat indexes for 500 agents across unchanged parent renders and refreshes changed counts", async () => {
+  const agents = Array.from({ length: 500 }, (_, index) => ({ ...roster[0], id: `agent-${index}`, name: `Agent ${index}`, urlKey: `agent-${index}` }));
+  const chats = agents.map(agent => ({ ...chat(agent.id), isUnreadForMe: true, unreadMessageCount: 7 }));
+  const key = queryKeys.agentChats.list("company-a", "user-a");
+  client.setQueryData(queryKeys.agents.list("company-a"), agents);
+  client.setQueryData(key, chats);
+  await render(); await addChat();
+  const first = sidebarInputs.at(-1)!;
+  expect(first.existingChatAgentIds).toHaveLength(500);
+  expect(first.unreadAgentIds).toHaveLength(500);
+  expect(document.querySelectorAll('[aria-label^="7 unread messages from"]')).toHaveLength(500);
+  await render();
+  const unchanged = sidebarInputs.at(-1)!;
+  expect(unchanged.existingChatAgentIds).toBe(first.existingChatAgentIds);
+  expect(unchanged.unreadAgentIds).toBe(first.unreadAgentIds);
+  expect(unchanged.unreadMessageCounts).toBe(first.unreadMessageCounts);
+  await act(async () => {
+    client.setQueryData(key, [{ ...chats[0], isUnreadForMe: false, unreadMessageCount: 0 }, ...chats.slice(1)]);
+    await new Promise(resolve => setTimeout(resolve, 0));
+  });
+  expect(document.querySelector('[aria-label="7 unread messages from Agent 0"]')).toBeNull();
+  expect(document.querySelectorAll('[aria-label^="7 unread messages from"]')).toHaveLength(499);
 });
 
 it("retains terminated agents' history by id without offering them for new chats", async () => {
