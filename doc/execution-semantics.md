@@ -1647,6 +1647,14 @@ On startup and on the periodic recovery loop, Paperclip performs the following r
 3. reconcile stranded assigned work
 4. scan silent active runs only for source-aware terminal folding and legacy cleanup; API reads classify ordinary output silence for the board UI
 
+The orphan reap normally waits until a `running` run has been unchanged for five
+minutes. A legacy run whose controller lease belongs to an earlier server boot
+and has expired, which was still preparing (before adapter dispatch), and which
+has no recorded process is recovered when that lease expires instead. The
+expired lease proves that the earlier owner is gone, and no provider work
+started. A live lease, a lease of the current boot, a dispatched adapter, or a
+recorded process keeps the five-minute guard.
+
 The stranded-work pass closes the gap where issue state survives a crash but the wake/run path does not. The silent-run scan covers the separate case where a live process exists but has stopped producing observable output.
 
 Native finalization reconciliation (part of native recovery and the orphan
@@ -2378,6 +2386,22 @@ All of these must be true:
 - No local Runner lifecycle evidence exists for the old owner.
 - Each quarantined root for the scope passes the same journal and local
   Runner evidence checks for the same owner.
+
+A local per-turn Runner can end the same way: the result was accepted, but its
+`runner.suspend` command did not finish, so its own receipt is still
+unsuspended. The next local run retires that owner with the same checks and
+these differences:
+
+- The Runner's own receipt may be unsuspended. It may not be unreadable or
+  name another owner.
+- Only the Runner's own lifecycle commands (`runner.suspend`, `runner.drain`,
+  `runner.shutdown`) may be unfinished. All other commands must be complete.
+- The prior run's recorded Runner process is proven stopped by exact PID and
+  start time, as in restart recovery. A PID that now belongs to another
+  process counts as stopped. A live recorded process, a live process group, a
+  live recorded provider process, a missing identity, or a start time that
+  cannot be compared keeps the rejection, for example
+  `retirement_refused=runner_process_alive`. A later Retry checks again.
 
 The provider session then follows the normal resume-or-replace policy. A
 resumed sandbox, a warm session, a plugin task, a restart claim, or any
@@ -3317,6 +3341,13 @@ A graceful shutdown can also suspend a restart-recovery claim whose execution
 has not yet reached provider dispatch. That execution has lost its authority:
 it leaves the run running, its budget hold held and its workspace unmarked, and
 the next controller adopts the same run. It does not settle the run as failed.
+Shutdown closes the runtime API listener before it drains runs. A local Runner
+execution that then needs the listener (for example, to give a new runner its
+callback origin) detaches the same way instead of failing. It keeps its claim,
+the drain suspends it, and the next controller adopts the run. A remote Runner
+execution has no process evidence on the controller host, so it keeps the
+same-run bootstrap retry. A listener that never started is still a startup
+failure.
 Remote Runner processes use their authenticated connection lease as the bound
 on disconnected lifetime. The controller's shorter connection-recovery budget
 limits its own attempt; it must not terminate the remote owner while another
