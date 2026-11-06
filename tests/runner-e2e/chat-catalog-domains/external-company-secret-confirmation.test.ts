@@ -53,6 +53,7 @@ it("admits explicit secure-save acknowledgments across explanatory sentences and
   "Confirm this card first. Save the deployment key there.",
   "Do not save the deployment key. Then accept this card.",
   "Save the deployment key, then cancel the save. Then accept this card.",
+  "Save the deployment key, then decline to save it. Then accept this card.",
   "Save your profile. Then confirm here that secure entry is complete.",
   "Save the other key. Then accept this card.",
   "Earlier, save the deployment key there. Then accept this card.",
