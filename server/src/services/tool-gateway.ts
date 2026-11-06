@@ -21,7 +21,7 @@ import { nativeProviderCatalogFor } from "./native-provider-catalogs.js";
 import { composeConnectionInstructions } from "./connection-instructions.js";
 import { googleWorkspaceToolTarget, googleWorkspaceGrantedScopes, isGoogleWorkspaceToolGranted } from "@paperclipai/shared";
 import { isInsufficientConnectionScope, INSUFFICIENT_CONNECTION_SCOPE_MESSAGE } from "./connection-permission-errors.js";
-import { githubAccessError } from "./tool-access/github-access-errors.js";
+import { githubAccessDeniedInstructions, githubAccessError } from "./tool-access/github-access-errors.js";
 import { toolSourceTemplateKeySql } from "./tool-access/source-template-key.js";
 import { boundedMcpToolName } from "./mcp-tool-names.js";
 import { browserUseService } from "./browser-use.js";
@@ -6155,10 +6155,13 @@ export function createToolGatewayService(
     transport: "mcp_http" | "local_stdio" | "cognee_cloud" = "mcp_http",
     spawnedLocalProcess = false,
     sourceTemplateKey?: string | null,
+    toolContext?: { toolName: string; connectionMethodKey: unknown },
   ) {
     const record = asRecord(result);
     if (!record) throw malformedRemoteMcpResponse();
     const providerContent = normalizeMcpContent(record.content);
+    const githubFailure = record.isError === true
+      ? githubAccessError(sourceTemplateKey, providerContent) : null;
     const googleWorkspacePermissionDenied =
       record.isError === true &&
       (sourceTemplateKey === "gmail" ||
@@ -6166,7 +6169,9 @@ export function createToolGatewayService(
       /caller does not have permission/i.test(providerContent);
     const content = googleWorkspacePermissionDenied
       ? "Google rejected this call. Google Workspace MCP is a Developer Preview: enroll the signed-in Workspace account and this OAuth client's Google Cloud project in Google's Developer Preview Program, wait for Google's registration confirmation, then reconnect and try again."
-      : providerContent;
+      : githubFailure && toolContext
+        ? `${providerContent}\n\n${githubAccessDeniedInstructions(toolContext.toolName, toolContext.connectionMethodKey)}`
+        : providerContent;
     return {
       content,
       data: {
@@ -6177,7 +6182,7 @@ export function createToolGatewayService(
         spawnedLocalProcess,
       },
       ...(record.isError === true
-        ? { error: "MCP tool returned an error result", ...githubAccessError(sourceTemplateKey, providerContent) }
+        ? { error: "MCP tool returned an error result", ...githubFailure }
         : {}),
     };
   }
@@ -6603,6 +6608,7 @@ export function createToolGatewayService(
         "mcp_http",
         false,
         sourceTemplateKey,
+        { toolName: entry.toolName, connectionMethodKey: connection.config.connectionMethodKey ?? connection.transportConfig.connectionMethodKey },
       );
       await markCallHealth(
         "ok",
