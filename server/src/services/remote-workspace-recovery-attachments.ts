@@ -4,18 +4,18 @@ import { and, eq, inArray, sql } from "drizzle-orm";
 import { heartbeatRuns, workspaceOperations, type Db } from "@paperclipai/db";
 import { remoteWorkspaceRunReferenceSchema } from "@paperclipai/shared";
 import { recoveryRunAncestry } from "./recovery-run-ancestry.js";
-import { verifiedWorkspaceRepairReceipt } from "./workspace-recovery-receipt.js";
+import { immutableRemoteWorkspaceRecoveryAttachment } from "./workspace-recovery-receipt.js";
 import { hasRequiredWorkspaceRecovery } from "./workspace-restore-recovery-state.js";
 import { assertExecutionWorkspaceRecordAccess } from "./task-workspace-access.js";
 import { getWorkspaceSnapshot, loadWorkspaceSnapshotArchive } from "./remote-workspace-snapshot-storage.js";
 import { restoreRemoteWorkspaceArchive } from "./remote-workspace-snapshot-archive.js";
-import { getStorageService } from "../storage/index.js";
+import { getStorageService, type StorageService } from "../storage/index.js";
 
 /** Import verified canonical recovery as a sidecar. The selected workspace and
  * its own files stay intact; this does not grant execution or replay authority. */
 export async function attachPreservedRemoteWorkspaceSnapshots(input: {
   db: Db; companyId: string; issueId: string; runId: string; workspaceId: string;
-  sourceRunIds: string[]; cwd: string;
+  sourceRunIds: string[]; cwd: string; storage?: StorageService;
 }) {
   const [writer] = await input.db.select().from(heartbeatRuns).where(and(
     eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.id, input.runId),
@@ -24,7 +24,7 @@ export async function attachPreservedRemoteWorkspaceSnapshots(input: {
       ${heartbeatRuns.contextSnapshot}->>'issueId') = ${input.issueId}`,
   ));
   if (!writer) throw new Error("remote_workspace_recovery_writer_changed");
-  const ancestry = await recoveryRunAncestry(input);
+  const ancestry: Array<{ id: string }> = await recoveryRunAncestry(input);
   const sources = ancestry.length ? await input.db.select().from(heartbeatRuns).where(and(
     eq(heartbeatRuns.companyId, input.companyId), inArray(heartbeatRuns.id, ancestry.map(row => row.id)),
   )) : [];
@@ -49,18 +49,20 @@ export async function attachPreservedRemoteWorkspaceSnapshots(input: {
     if (canonicalSources.has(source.id) && (remote.state !== "saved" || !remote.snapshotId))
       throw new Error("remote_workspace_recovery_receipt_invalid");
     if (remote.workspaceId === input.workspaceId || remote.state !== "saved" || !remote.snapshotId) continue;
-    const operationId = await verifiedWorkspaceRepairReceipt(input.db, source);
-    if (!operationId) {
+    const proof = await immutableRemoteWorkspaceRecoveryAttachment(input.db, source);
+    if (!proof) {
       if (hasRequiredWorkspaceRecovery(source.resultJson)) throw new Error("remote_workspace_recovery_receipt_invalid");
       continue;
     }
+    const operationId = proof.operationId;
     await assertExecutionWorkspaceRecordAccess(input.db, { type: "agent", source: "agent_jwt",
       companyId: input.companyId, agentId: writer.agentId, runId: writer.id,
       onBehalfOfUserId: writer.responsibleUserId === "local-board" ? null : writer.responsibleUserId },
     input.companyId, remote.workspaceId);
     const saved = await getWorkspaceSnapshot(input.db, { companyId: input.companyId,
       workspaceId: remote.workspaceId, snapshotId: remote.snapshotId });
-    if (!saved) throw new Error("remote_workspace_recovery_snapshot_missing");
+    if (!saved || saved.sha256 !== proof.sha256 || saved.generation !== proof.generation)
+      throw new Error("remote_workspace_recovery_snapshot_missing");
     const provenance = JSON.stringify({ schema: "paperclip.remote-workspace-recovery-attachment.v1",
       operationId, sourceRunId: source.id, workspaceId: remote.workspaceId,
       snapshotId: remote.snapshotId, sha256: saved.sha256 });
@@ -80,7 +82,7 @@ export async function attachPreservedRemoteWorkspaceSnapshots(input: {
       const staging = await mkdtemp(path.join(parent, ".preparing-"));
       try {
         const archivePath = path.join(staging, "archive.pcws");
-        await loadWorkspaceSnapshotArchive({ storage: getStorageService(), reference: saved, targetPath: archivePath });
+        await loadWorkspaceSnapshotArchive({ storage: input.storage ?? getStorageService(), reference: saved, targetPath: archivePath });
         await restoreRemoteWorkspaceArchive({ archivePath, targetDir: path.join(staging, "files"), expectedManifestDigest: saved.manifestDigest });
         await rm(archivePath);
         await writeFile(path.join(staging, "provenance.json"), provenance, { flag: "wx", mode: 0o600 });

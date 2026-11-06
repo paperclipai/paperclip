@@ -1,4 +1,4 @@
-import { and, desc, eq, sql, type AnyColumn, type SQL } from "drizzle-orm";
+import { and, desc, eq, inArray, sql, type AnyColumn, type SQL } from "drizzle-orm";
 import { executionWorkspaces, executionWorkspaceSnapshots, heartbeatRuns, issueRecoveryActions, workspaceOperations, type Db } from "@paperclipai/db";
 import { readRemoteWorkspaceAuthority, remoteWorkspaceRunReferenceSchema, type ExecutionBlocker } from "@paperclipai/shared";
 import { z } from "zod";
@@ -167,4 +167,39 @@ export async function verifiedWorkspaceRepairReceipt(db: Db, run: Pick<typeof he
 
 export async function hasVerifiedWorkspaceRepair(...args: Parameters<typeof verifiedWorkspaceRepairReceipt>) {
   return (await verifiedWorkspaceRepairReceipt(...args)) !== null;
+}
+
+/** Read-only historical bytes have no execution authority. Their immutable
+ * receipt stays valid after a later writer advances the source workspace.
+ * Admission must continue to use verifiedWorkspaceRepairReceipt instead. */
+export async function immutableRemoteWorkspaceRecoveryAttachment(db: Db, run: Pick<typeof heartbeatRuns.$inferSelect,
+  "id" | "companyId" | "nativeIssueId" | "issueId" | "contextSnapshot" | "runnerProfileJson">): Promise<{
+    kind: "immutable_remote_workspace_attachment"; operationId: string; workspaceId: string;
+    snapshotId: string; sha256: string; generation: number;
+  } | null> {
+  const issueId = run.nativeIssueId ?? run.issueId ?? run.contextSnapshot?.issueId;
+  const parsed = remoteWorkspaceRunReferenceSchema.safeParse(run.runnerProfileJson?.remoteWorkspace);
+  if (typeof issueId !== "string" || !parsed.success || parsed.data.state !== "saved") return null;
+  const remote = parsed.data, snapshotId = remote.snapshotId;
+  if (!snapshotId) return null;
+  const [saved] = await db.select({ operationId: workspaceOperations.id, metadata: workspaceOperations.metadata,
+    evidence: issueRecoveryActions.evidence, sha256: executionWorkspaceSnapshots.sha256,
+    generation: executionWorkspaceSnapshots.generation }).from(workspaceOperations)
+    .innerJoin(issueRecoveryActions, and(eq(issueRecoveryActions.companyId, workspaceOperations.companyId),
+      eq(issueRecoveryActions.sourceIssueId, workspaceOperations.issueId),
+      sql`${issueRecoveryActions.id}::text = ${workspaceOperations.metadata}->>'recoveryActionId'`))
+    .innerJoin(executionWorkspaceSnapshots, and(eq(executionWorkspaceSnapshots.companyId, run.companyId),
+      eq(executionWorkspaceSnapshots.executionWorkspaceId, remote.workspaceId),
+      eq(executionWorkspaceSnapshots.id, snapshotId), eq(executionWorkspaceSnapshots.sourceRunId, run.id),
+      eq(executionWorkspaceSnapshots.epoch, remote.epoch), inArray(executionWorkspaceSnapshots.status, ["committed", "superseded"])))
+    .where(and(eq(workspaceOperations.companyId, run.companyId), eq(workspaceOperations.issueId, issueId),
+      eq(workspaceOperations.executionWorkspaceId, remote.workspaceId), eq(workspaceOperations.heartbeatRunId, run.id),
+      eq(workspaceOperations.phase, "workspace_recovery"), eq(workspaceOperations.status, "succeeded"),
+      sql`${workspaceOperations.metadata}->>'snapshotId' = ${snapshotId}`)).limit(1);
+  const proof = saved?.metadata, state = readWorkspaceRecovery(saved?.evidence ?? null);
+  if (!saved || !proof || state?.runId !== run.id || state.status !== "recovered"
+    || proof.storage !== "remote_workspace" || proof.leaseId !== remote.leaseId || proof.providerLeaseId !== remote.providerLeaseId
+    || proof.epoch !== remote.epoch || proof.sha256 !== saved.sha256 || proof.generation !== saved.generation || !saved.sha256) return null;
+  return { kind: "immutable_remote_workspace_attachment" as const, operationId: saved.operationId,
+    workspaceId: remote.workspaceId, snapshotId, sha256: saved.sha256, generation: saved.generation };
 }

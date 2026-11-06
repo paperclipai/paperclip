@@ -478,7 +478,7 @@ export async function prepareRemoteWorkspace(input: {
       savedArchive: isSavedWorkspaceRepository(input.workspace, initial, repository),
       resolveGitAuth: await createRemoteWorkspaceGitAuth(input.db, input.workspace.companyId, input.runId) });
   }
-  const recoveredFiles: Array<{ operationId: string; sourceRunId: string; path: string }> = [];
+  const recoveredFiles: Array<{ operationId: string; sourceRunId: string; path: string; provenance: string }> = [];
   if (!sameAllocation) {
     // Shared and inherited workspaces retain their original source task. The
     // current writer's task owns its recovery attachments, including a child's
@@ -497,7 +497,8 @@ export async function prepareRemoteWorkspace(input: {
     if (recoverySourceRunIds.length) {
       const scratch = await mkdtemp(path.join(os.tmpdir(), "pc-workspace-recovery-import-"));
       try {
-        const scope = { db: input.db, companyId: input.workspace.companyId, issueId, sourceRunIds: recoverySourceRunIds, cwd: scratch };
+        const scope = { db: input.db, companyId: input.workspace.companyId, issueId, sourceRunIds: recoverySourceRunIds,
+          cwd: scratch, storage: input.storage };
         const recovered = [
           ...await attachPreservedWorkspaceSnapshots(scope),
           ...await attachPreservedRemoteWorkspaceSnapshots({ ...scope, runId: input.runId, workspaceId: input.workspace.id }),
@@ -505,15 +506,29 @@ export async function prepareRemoteWorkspace(input: {
         for (const item of recovered) {
           const relative = `.paperclip-recovered/${item.operationId}`;
           await input.assertOwned?.();
+          const provenance = await readFile(path.join(item.path, "provenance.json"), "utf8");
           const exists = await hasRemoteRecoveryAttachment({ target, remoteCwd: remoteRoot, operationId: item.operationId,
-            provenance: await readFile(path.join(item.path, "provenance.json"), "utf8") });
+            provenance });
           if (!exists) await target.runner!.syncIn!([{ operationId: randomUUID(), files: [{
               kind: "directory", sourcePath: item.path, targetPath: path.posix.join(remoteRoot, relative),
             }] }]);
-          recoveredFiles.push({ operationId: item.operationId, sourceRunId: item.sourceRunId, path: relative });
+          recoveredFiles.push({ operationId: item.operationId, sourceRunId: item.sourceRunId, path: relative, provenance });
         }
       } finally { await rm(scratch, { recursive: true, force: true }); }
     }
+  }
+  // A saved workspace can already contain edited sidecars. Publish only paths
+  // whose exact host-recorded proof is present in this actual prepared root.
+  const retained = input.workspace.metadata?.remoteWorkspaceRecoveredFiles;
+  for (const value of Array.isArray(retained) ? retained : []) {
+    const item = object(value);
+    if (typeof item.operationId !== "string" || !/^[a-f0-9-]{36}$/.test(item.operationId)
+      || typeof item.sourceRunId !== "string" || item.path !== `.paperclip-recovered/${item.operationId}`)
+      throw new Error("remote_workspace_recovered_files_invalid");
+    if (recoveredFiles.some(current => current.operationId === item.operationId) || typeof item.provenance !== "string") continue;
+    await input.assertOwned?.();
+    if (await hasRemoteRecoveryAttachment({ target, remoteCwd: remoteRoot, operationId: item.operationId, provenance: item.provenance }))
+      recoveredFiles.push({ operationId: item.operationId, sourceRunId: item.sourceRunId, path: item.path, provenance: item.provenance });
   }
   await input.assertOwned?.();
   const prepared = await input.db.transaction(async tx => {
@@ -537,7 +552,8 @@ export async function prepareRemoteWorkspace(input: {
       .where(eq(environmentLeases.id, lease.id)).returning();
     const [savedWorkspace] = await tx.update(executionWorkspaces).set({ cwd: remoteRoot, providerRef: remoteRoot,
       metadata: { ...workspace.metadata, remoteWorkspace: authority,
-        ...(recoveredFiles.length ? { remoteWorkspaceRecoveredFiles: recoveredFiles } : {}) }, updatedAt: new Date() }).where(eq(executionWorkspaces.id, workspace.id)).returning();
+        ...(recoveredFiles.length || workspace.metadata?.remoteWorkspaceRecoveredFiles !== undefined
+          ? { remoteWorkspaceRecoveredFiles: recoveredFiles } : {}) }, updatedAt: new Date() }).where(eq(executionWorkspaces.id, workspace.id)).returning();
     const runReference = reference(workspace.id, authority, "prepared");
     const issueId = await persistRunReference(tx, workspace.companyId, input.runId, runReference);
     if (restoredExport) {

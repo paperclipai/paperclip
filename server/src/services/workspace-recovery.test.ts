@@ -1710,7 +1710,7 @@ describe("automatic retained workspace recovery", () => {
     finally { await saved.cleanup(); }
   }, 30_000);
 
-  it("restores the newest recovered tick bytes when Retry follows a later empty workspace placeholder", async () => {
+  it.each(["retained_history", "ordinary_followup"])("restores the newest recovered tick bytes after a later workspace selection: %s", async kind => {
     vi.stubEnv("DATABASE_URL", connectionString);
     vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY", "62".repeat(32));
     try {
@@ -1744,7 +1744,7 @@ describe("automatic retained workspace recovery", () => {
         mode: "isolated_workspace", strategyType: "project_primary", cwd: `/workspaces/${randomUUID()}`,
         metadata: { remoteWorkspace: { schema: "paperclip.remote-workspace.v1", epoch: 1,
           snapshotId: null, source: { kind: "empty" }, writerRunId: f.runId, dirty: false, location: null },
-          remoteWorkspaceRecoverySourceRunIds: [oldRunId],
+        ...(kind === "retained_history" ? { remoteWorkspaceRecoverySourceRunIds: [oldRunId] } : {}),
           remoteWorkspaceSnapshotRepositories: { snapshotId: randomUUID(), repositories: [] } },
       }).returning();
       await db.update(issues).set({ executionWorkspaceId: placeholder.id }).where(eq(issues.id, f.issueId));
@@ -1804,7 +1804,7 @@ describe("automatic retained workspace recovery", () => {
         const recovered = prepared.workspace.metadata?.remoteWorkspaceRecoveredFiles as Array<{ path: string }> | undefined;
         const contents = await Promise.all(["", ...(recovered ?? []).map(item => `${item.path}/files`)]
           .map(relative => readFile(path.join(prepared.remoteRoot, relative, "ticks.log"), "utf8").catch(() => null)));
-        expect(contents).toContain("2026-11-06T07:21:00Z\n");
+        if (kind === "retained_history") expect(contents).toContain("2026-11-06T07:21:00Z\n");
         expect(contents).toContain(tickLog);
         const continuation = await buildExecutionContinuation({ db, companyId: f.companyId, issueId: f.issueId,
           agentId: agent.id, runId: successor.id, context: successor.contextSnapshot!, summary: null, exposeLowTrustRaw: false });
@@ -1868,8 +1868,82 @@ describe("automatic retained workspace recovery", () => {
           const cold = await prepareRemoteWorkspace({ db, storage, workspace: coldWorkspace, runId: successor.id,
             lease: coldLease as EnvironmentLease, target: { ...target, leaseId: coldLease.id, remoteCwd: await realpath(coldAllocationPath) } });
           expect(await readFile(path.join(cold.remoteRoot, newest!.path, "files", "ticks.log"), "utf8")).toBe(editedLog);
+          if (kind === "ordinary_followup") {
+            await rm(path.join(cold.remoteRoot, newest!.path), { recursive: true });
+            await saveRemoteWorkspace({ db, storage, workspace: cold.workspace, runId: successor.id,
+              lease: cold.lease, target: { ...target, leaseId: coldLease.id, remoteCwd: cold.remoteRoot }, assertOwned: async () => {} });
+            await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, successor.id));
+            await db.update(environmentLeases).set({ status: "released", releasedAt: new Date(), cleanupStatus: "success" })
+              .where(eq(environmentLeases.id, coldLease.id));
+            const [normal] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: agent.id, issueId: f.issueId,
+              status: "running", runtimeMode: "legacy", contextSnapshot: { issueId: f.issueId } }).returning();
+            const ordinaryWorkspace = await reserveRemoteWorkspace({ db, storage, companyId: f.companyId, issueId: f.issueId,
+              runId: normal.id, agentId: agent.id, environmentId: f.lease.environmentId!, projectId: null,
+              projectWorkspaceId: null, existingWorkspaceId: placeholder.id, source: { kind: "empty" } });
+            const ordinaryAllocation = await realpath(await mkdtemp(path.join(root, "ordinary-")));
+            const [ordinaryLease] = await db.insert(environmentLeases).values({ companyId: f.companyId, issueId: f.issueId,
+              heartbeatRunId: normal.id, environmentId: f.lease.environmentId, provider: "daytona", providerLeaseId: randomUUID(), status: "active" }).returning();
+            const ordinary = await prepareRemoteWorkspace({ db, storage, workspace: ordinaryWorkspace, runId: normal.id,
+              lease: ordinaryLease as EnvironmentLease, target: { ...target, leaseId: ordinaryLease.id, remoteCwd: ordinaryAllocation } });
+            expect(await lstat(path.join(ordinary.remoteRoot, newest!.path)).then(() => true, () => false)).toBe(false);
+            expect(ordinary.workspace.metadata?.remoteWorkspaceRecoveredFiles ?? []).toEqual([]);
+          }
         } finally { acquire.mockRestore(); storageRead.mockRestore(); }
       expect((await run(f.runId)).error).toBe("native_remote_recovery_lease_mismatch");
+    } finally { vi.unstubAllEnvs(); }
+  }, 30_000);
+
+  it("reads canonical attachments from the caller's storage backend", async () => {
+    const f = await failedRemotePreparation(); await recoverRetainedWorkspace(f.input);
+    const source = await run(f.runId), destination = await mkdtemp(path.join(root, "injected-storage-"));
+    const [writer] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: source.agentId,
+      issueId: f.issueId, status: "running", responsibleUserId: "local-board", contextSnapshot: { issueId: f.issueId } }).returning();
+    const global = getStorageService(), read = global.getObject.bind(global);
+    const injected = { ...global, getObject: vi.fn(read) };
+    const wrongBackend = vi.spyOn(global, "getObject").mockRejectedValue(new Error("wrong storage backend"));
+    try {
+      const scope = { db, companyId: f.companyId, issueId: f.issueId, runId: writer.id, workspaceId: randomUUID(),
+        sourceRunIds: [source.id], cwd: destination, storage: injected };
+      const attached = await attachPreservedRemoteWorkspaceSnapshots(scope);
+      expect(await readFile(path.join(attached[0].path, "files", "saved.txt"), "utf8")).toBe("finished work\n");
+      expect(injected.getObject).toHaveBeenCalled();
+      expect(wrongBackend).not.toHaveBeenCalled();
+    } finally { wrongBackend.mockRestore(); }
+  }, 30_000);
+
+  it("restores ordinary same-workspace Retry after reservation advances current authority", async () => {
+    vi.stubEnv("DATABASE_URL", connectionString);
+    try {
+      const f = await failedRemotePreparation(); await recoverRetainedWorkspace(f.input);
+      const source = await run(f.runId);
+      await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: source.agentId, status: "running" });
+      const receipt = await requestTaskRetry({ db, companyId: f.companyId, issueId: f.issueId, actorId: "local-board",
+        actorSource: "local_implicit", observedRunId: source.id, idempotencyKey: randomUUID() });
+      await heartbeatService(db).resumeTaskRetry(f.companyId, receipt.requestId!);
+      const [successor] = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId),
+        sql`${heartbeatRuns.contextSnapshot}->>'taskRetryRequestId' = ${receipt.requestId}`));
+      expect(await readFreshWorkspaceReadiness(db, successor)).toMatchObject({ mode: "resume_preserved_workspace" });
+      await db.update(heartbeatRuns).set({ status: "running" }).where(eq(heartbeatRuns.id, successor.id));
+      const storage = { ...getStorageService(), provider: "s3" as const };
+      const reserved = await reserveRemoteWorkspace({ db, storage, companyId: f.companyId, issueId: f.issueId,
+        runId: successor.id, agentId: source.agentId, environmentId: f.lease.environmentId!, projectId: null,
+        projectWorkspaceId: null, existingWorkspaceId: f.workspaceId, source: { kind: "empty" } });
+      expect(await hasVerifiedWorkspaceRepair(db, source)).toBe(false);
+      const [lease] = await db.insert(environmentLeases).values({ companyId: f.companyId, issueId: f.issueId,
+        heartbeatRunId: successor.id, environmentId: f.lease.environmentId, provider: "daytona", providerLeaseId: randomUUID(), status: "active" }).returning();
+      const target = { ...targets.get(f.lease.id)!, leaseId: lease.id,
+        remoteCwd: await realpath(await mkdtemp(path.join(root, "same-workspace-"))),
+        runner: { ...targets.get(f.lease.id)!.runner!, syncIn: async operations => {
+          for (const operation of operations) for (const file of operation.files) {
+            await mkdir(path.dirname(file.targetPath), { recursive: true }); await cp(file.sourcePath, file.targetPath, { recursive: true });
+          }
+          return { filesTransferred: 1, bytesTransferred: 0, operations: [] };
+        } } } satisfies AdapterSandboxExecutionTarget;
+      const prepared = await prepareRemoteWorkspace({ db, storage, workspace: reserved, runId: successor.id,
+        lease: lease as EnvironmentLease, target });
+      expect(prepared.workspace.id).toBe(f.workspaceId);
+      expect(await readFile(path.join(prepared.remoteRoot, "saved.txt"), "utf8")).toBe("finished work\n");
+      expect(prepared.workspace.metadata?.remoteWorkspaceRecoveredFiles ?? []).toEqual([]);
     } finally { vi.unstubAllEnvs(); }
   }, 30_000);
 
@@ -1911,7 +1985,7 @@ describe("automatic retained workspace recovery", () => {
     } finally { failingRead?.mockRestore(); }
   }, 30_000);
 
-  it("deduplicates canonical sidecars without changing a later selected workspace or its files", async () => {
+  it.each(["unchanged", "advanced"])("deduplicates immutable canonical sidecars when the source workspace is %s", async state => {
     const f = await failedRemotePreparation(); await recoverRetainedWorkspace(f.input);
     const source = await run(f.runId), destination = path.join(root, randomUUID()); await mkdir(destination);
     await writeFile(path.join(destination, "later.txt"), "Later selected work\n");
@@ -1926,6 +2000,36 @@ describe("automatic retained workspace recovery", () => {
     expect(first).toHaveLength(1);
     expect(await readFile(path.join(first[0].path, "files", "saved.txt"), "utf8")).toBe("finished work\n");
     await writeFile(path.join(first[0].path, "files", "saved.txt"), "User edited sidecar\n");
+    if (state === "advanced") {
+      vi.stubEnv("DATABASE_URL", connectionString);
+      try {
+        const [child] = await db.insert(issues).values({ companyId: f.companyId, parentId: f.issueId,
+          assigneeAgentId: source.agentId, title: "Later legitimate workspace writer", status: "in_progress", executionWorkspaceId: f.workspaceId }).returning();
+        const [later] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: source.agentId,
+          issueId: child.id, status: "running", responsibleUserId: "local-board", contextSnapshot: { issueId: child.id } }).returning();
+        const storage = { ...getStorageService(), provider: "s3" as const };
+        const reserved = await reserveRemoteWorkspace({ db, storage, companyId: f.companyId, issueId: child.id,
+          runId: later.id, agentId: source.agentId, environmentId: f.lease.environmentId!, projectId: null,
+          projectWorkspaceId: null, existingWorkspaceId: f.workspaceId, source: { kind: "empty" } });
+        const allocation = await realpath(await mkdtemp(path.join(root, "later-writer-")));
+        const [lease] = await db.insert(environmentLeases).values({ companyId: f.companyId, issueId: child.id,
+          heartbeatRunId: later.id, environmentId: f.lease.environmentId, provider: "daytona", providerLeaseId: randomUUID(), status: "active" }).returning();
+        const target = { ...targets.get(f.lease.id)!, leaseId: lease.id, remoteCwd: allocation,
+          runner: { ...targets.get(f.lease.id)!.runner!, syncIn: async operations => {
+            for (const operation of operations) for (const file of operation.files) {
+              await mkdir(path.dirname(file.targetPath), { recursive: true }); await cp(file.sourcePath, file.targetPath, { recursive: true });
+            }
+            return { filesTransferred: 1, bytesTransferred: 0, operations: [] };
+          } } } satisfies AdapterSandboxExecutionTarget;
+        const advanced = await prepareRemoteWorkspace({ db, storage, workspace: reserved, runId: later.id, lease: lease as EnvironmentLease, target });
+        await writeFile(path.join(advanced.remoteRoot, "later.txt"), "newer source workspace bytes\n");
+        await saveRemoteWorkspace({ db, storage, workspace: advanced.workspace, runId: later.id, lease: advanced.lease,
+          target: { ...target, remoteCwd: advanced.remoteRoot }, assertOwned: async () => {} });
+        expect(await hasVerifiedWorkspaceRepair(db, source)).toBe(false);
+        const old = source.runnerProfileJson!.remoteWorkspace as { snapshotId: string };
+        expect((await db.select().from(executionWorkspaceSnapshots).where(eq(executionWorkspaceSnapshots.id, old.snapshotId)))[0].status).toBe("superseded");
+      } finally { vi.unstubAllEnvs(); }
+    }
     expect(await attachPreservedRemoteWorkspaceSnapshots(scope)).toEqual(first);
     expect(await readFile(path.join(first[0].path, "files", "saved.txt"), "utf8")).toBe("User edited sidecar\n");
     expect(await readFile(path.join(destination, "later.txt"), "utf8")).toBe("Later selected work\n");
