@@ -165,6 +165,27 @@ describe("codex_local stderr fallback error derivation", () => {
 
     expect(result.errorMessage).toBe("Codex exited with code 1");
   });
+
+  it("reports settled local ownership after provider failure and runtime cleanup", async () => {
+    const cleanup = vi.fn(async () => undefined);
+    prepareCodexRuntimeConfig.mockResolvedValueOnce({ cleanup, notes: [] });
+    runAdapterExecutionTargetProcess.mockImplementation(async (_runId, _target, _command, _args, options) => {
+      options.onProcessStopped?.();
+      return { exitCode: 1, signal: null, timedOut: false, stdout: "", stderr: "quota exceeded", pid: 123, startedAt: new Date().toISOString() };
+    });
+    const result = await execute(buildContext() as never);
+    expect(cleanup).toHaveBeenCalledOnce();
+    expect(result).toMatchObject({ exitCode: 1, executionSettlement: {
+      providerStopped: true, workspaceSettled: true, actionOutcomes: "unknown",
+    } });
+    expect(result.executionRecovery).toBeUndefined();
+  });
+
+  it("withholds local settlement when process transport returns without a stop receipt", async () => {
+    mockFailedProcess("quota exceeded");
+    const result = await execute(buildContext() as never);
+    expect(result.executionSettlement).toBeUndefined();
+  });
 });
 
 describe("firstMeaningfulStderrLine", () => {

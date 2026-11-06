@@ -1,3 +1,4 @@
+import { withLocalProviderSettlement } from "@paperclipai/adapter-utils/local-provider-settlement";
 import { createProviderStoppedBoundary } from "@paperclipai/adapter-utils/provider-stopped-boundary";
 import { withWorkspaceRestore } from "@paperclipai/adapter-utils/workspace-restore-result";
 import { cancellableSandboxStartup } from "@paperclipai/adapter-utils/acpx-engine/startup-cancellation";
@@ -198,6 +199,10 @@ function resolveBillingType(env: Record<string, string>): "api" | "subscription"
 }
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
+  return withLocalProviderSettlement(ctx, executeWithCleanup);
+}
+
+async function executeWithCleanup(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
   const target = ctx.executionTarget;
   if (!ctx.signal || !ctx.stopRemoteStartup || target?.kind !== "remote" || target.transport !== "sandbox" || !target.runner) {
     return executeTurn(ctx);

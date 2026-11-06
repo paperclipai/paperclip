@@ -1,3 +1,4 @@
+import { withLocalProviderSettlement } from "@paperclipai/adapter-utils/local-provider-settlement";
 import { createProviderStoppedBoundary } from "@paperclipai/adapter-utils/provider-stopped-boundary";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -187,6 +188,10 @@ async function buildKimiSkillsDir(
 }
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
+  return withLocalProviderSettlement(ctx, executeWithCleanup);
+}
+
+async function executeWithCleanup(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
   const providerStop = createProviderStoppedBoundary(ctx.onProviderStopped);
   const engineSelection = await resolveKimiExecutionEngineForRun(ctx);
   if (engineSelection.unavailableReason) {
