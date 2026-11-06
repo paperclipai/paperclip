@@ -472,6 +472,8 @@ export { PluginEnvironmentStopError, environmentStopErrorData, readEnvironmentSt
 export type { PluginEnvironmentStopFailure, PluginEnvironmentStopFailureReason } from "./environment-stop-error.js";
 export { environmentResumeErrorData, readEnvironmentResumeErrorDiagnostic } from "./environment-resume-error.js";
 export type { PluginEnvironmentResumeErrorDiagnostic } from "./environment-resume-error.js";
+export { environmentAcquireErrorData, readEnvironmentAcquireErrorDiagnostic } from "./environment-acquire-error.js";
+export type { PluginEnvironmentAcquireErrorDiagnostic } from "./environment-acquire-error.js";
 export { environmentTaskErrorData, readEnvironmentTaskErrorDiagnostic } from "./environment-task-error.js";
 export type { PluginEnvironmentTaskErrorDiagnostic } from "./environment-task-error.js";
 

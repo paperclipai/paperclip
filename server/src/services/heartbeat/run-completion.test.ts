@@ -27,7 +27,7 @@ import { LegacyControllerLeaseLostError } from "../legacy-controller-lease.js";
 import { requestedRunCancellation } from "../run-cancellation.js";
 import { ProjectAccessDeniedError } from "../project-access-denial.js";
 import { RemoteWorkspaceOperationError, RemoteWorkspaceOperationTimeoutError, RemoteWorkspacePreparationTimeoutError, RemoteWorkspaceRestoreError } from "../remote-workspace-transport.js";
-import { EnvironmentRunError } from "../environment-run-orchestrator.js";
+import { EnvironmentRunError, environmentRunOrchestrator } from "../environment-run-orchestrator.js";
 import { ReusableSandboxResumeError } from "../reusable-sandbox-resume-error.js";
 import { PluginWorkerUnavailableError } from "../plugin-worker-unavailable-error.js";
 import { environmentTaskErrorCodeData, JsonRpcCallError, PluginEnvironmentTaskError, PluginWorkspaceOperationError, workspaceOperationErrorData } from "@paperclipai/plugin-sdk";
@@ -967,6 +967,44 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
     expect(failed).toMatchObject({ status: "failed", errorCode: scenario === "fresh" ? "plugin_worker_unavailable" : "setup_failed" });
     if (scenario === "fresh") {
       expect(failed.resultJson).toMatchObject({ executionRecovery: { kind: "bootstrap", providerWorkStarted: false } });
+      expect(f.deps.scheduleBoundedRetryForRun).toHaveBeenCalledWith(expect.objectContaining({ id: f.run.id }), f.agent);
+    } else expect(f.deps.scheduleBoundedRetryForRun).not.toHaveBeenCalled();
+  });
+
+  // S53: Daytona returned HTTP 502 on sandbox create and cleanup of the
+  // provisional allocation could not be confirmed. The orchestrator wraps the
+  // worker refusal exactly as staging recorded it.
+  const daytonaCreate502 = (withEnvelope = true) => new JsonRpcCallError({ code: -32000,
+    message: "Daytona sandbox creation failed (HTTP 502); cleanup could not be confirmed for paperclip-create-05f81d77",
+    data: withEnvelope ? { schema: "paperclip/environment-creation-cleanup/v1", providerDiagnostic: { httpStatus: 502 },
+      cleanup: { providerLeaseId: "paperclip-create-05f81d77", companyId: "company", environmentId: "environment",
+        attemptId: "05f81d77", accountFingerprint: "a".repeat(64), labels: {} } } : undefined });
+  const acquireThroughOrchestrator = async (refusal: unknown) => {
+    const orchestrator = environmentRunOrchestrator(db, { environmentRuntime: {
+      acquireRunLease: async () => { throw refusal; },
+    } as never });
+    return orchestrator.acquireLease({ companyId: randomUUID(), environment: { id: randomUUID(), name: "Paperclip Sandbox", driver: "sandbox" } as never,
+      issueId: null, agentId: randomUUID(), heartbeatRunId: randomUUID(), persistedExecutionWorkspace: null,
+      executionWorkspaceSettings: null, adapterType: null }).then(() => { throw new Error("expected a refusal"); }, (error: unknown) => error);
+  };
+
+  it.each(["fresh", "started", "message_only", "permanent", "retained"] as const)("routes a %s sandbox provider lease refusal through bounded bootstrap recovery", async scenario => {
+    const f = await fixture({ runtimeMode: scenario === "retained" ? "native" : "legacy" });
+    const refusal = scenario === "message_only" ? daytonaCreate502(false)
+      : scenario === "permanent" ? new JsonRpcCallError({ code: -32000, message: "Daytona sandbox creation failed (HTTP 400)",
+        data: { schema: "paperclip/environment-acquire-error/v1", providerDiagnostic: { httpStatus: 400 } } })
+      : daytonaCreate502();
+    const error = await acquireThroughOrchestrator(refusal);
+    f.deps.scheduleBoundedRetryForRun.mockResolvedValueOnce({ outcome: "not_scheduled", reason: "Fixture scheduler boundary", issueId: null });
+    await f.completion.failRunSetup(f.setup(error, scenario === "started"));
+    const failed = await read(f.run.id);
+    const retried = scenario === "fresh";
+    expect(failed).toMatchObject({ status: "failed", errorCode: retried ? "environment_provider_unavailable" : "setup_failed" });
+    // The staging message is kept verbatim for diagnostics.
+    expect(failed.error).toContain("Daytona sandbox creation failed");
+    if (retried) {
+      expect(failed.resultJson).toMatchObject({ executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+        providerFailure: { provider: "sandbox", phase: "startup", category: "overloaded", httpStatus: 502, retryability: "transient" } });
       expect(f.deps.scheduleBoundedRetryForRun).toHaveBeenCalledWith(expect.objectContaining({ id: f.run.id }), f.agent);
     } else expect(f.deps.scheduleBoundedRetryForRun).not.toHaveBeenCalled();
   });

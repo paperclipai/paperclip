@@ -1105,6 +1105,19 @@ replacement. The run records the refusal by closed labels only (cause label, HTT
 status, errno-style code), never by provider text. On exhaustion, the task gets a
 specific recovery notice, and generic recovery does not grant another budget.
 
+An environment provider that refuses a new lease with a transient status (HTTP
+408, 425, 429, 500, 502, 503 or 504, or a closed connection errno) before provider
+dispatch uses the same bounded bootstrap budget (`environment_provider_unavailable`).
+The status comes only from structured fields: the worker's validated acquisition
+envelope or the in-process error's status; message text is never parsed, and
+other statuses stay `setup_failed`. Each retry is a new creation attempt with its
+own durable creation record and provider name. A provisional allocation whose
+cleanup could not be confirmed stays owned by its own record, which the creation
+reconciler settles; a retry neither reuses nor abandons it. The task shows the
+provider failure as the reason, retries automatically, and on exhaustion becomes
+`blocked` with a specific recovery notice and a Retry. Because no provider work
+started, no execution-reconciliation hold is created.
+
 A saved workspace that cannot be restored into a new allocation before provider
 dispatch fails with `remote_workspace_restore_failed`. The run error names the
 server step (`snapshot_lookup`, `snapshot_download`, or `sandbox_restore`) and,
