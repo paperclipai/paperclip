@@ -130,6 +130,14 @@ Current implementation status:
 - Node.js 24.11+
 - pnpm 9+
 
+On native Windows, local Claude and Codex subscription sign-in uses ConPTY through
+the optional, bundled `node-pty` dependency. Python is used only on Linux and macOS.
+Keep optional dependencies when you install Paperclip to use Windows browser sign-in.
+The login flow needs the provider CLI on Paperclip's PATH and Windows PowerShell.
+Windows credential reads reject symbolic links, directory junctions, hard links, and
+files larger than 64 KiB. Windows access uses the private login directory and its
+inherited ACLs; POSIX ownership and mode checks continue to apply on Unix.
+
 ## Dependency Lockfile Policy
 
 GitHub Actions owns `pnpm-lock.yaml`.
