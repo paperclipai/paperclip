@@ -3317,6 +3317,13 @@ A graceful shutdown can also suspend a restart-recovery claim whose execution
 has not yet reached provider dispatch. That execution has lost its authority:
 it leaves the run running, its budget hold held and its workspace unmarked, and
 the next controller adopts the same run. It does not settle the run as failed.
+Shutdown closes the runtime API listener before it drains runs. A local Runner
+execution that then needs the listener (for example, to give a new runner its
+callback origin) detaches the same way instead of failing. It keeps its claim,
+the drain suspends it, and the next controller adopts the run. A remote Runner
+execution has no process evidence on the controller host, so it keeps the
+same-run bootstrap retry. A listener that never started is still a startup
+failure.
 Remote Runner processes use their authenticated connection lease as the bound
 on disconnected lifetime. The controller's shorter connection-recovery budget
 limits its own attempt; it must not terminate the remote owner while another
