@@ -228,11 +228,6 @@ export function createOAuthClientProtocol({ fetchRemoteHttpUrl, assertOAuthEndpo
       required: tokenEndpointAuthMethod !== "none",
       maxLength: MAX_OAUTH_DCR_CLIENT_SECRET_LENGTH,
     });
-    // Some authorization servers add provider-owned metadata to the registered
-    // client. Paperclip still uses only the exact redirect, grant and response
-    // types it requested, so accept bounded supersets while requiring every
-    // requested value to remain present. Hugging Face, for example, adds the
-    // device-code grant to an otherwise valid authorization-code registration.
     assertOAuthDcrArray(
       record,
       "redirect_uris",
@@ -245,7 +240,7 @@ export function createOAuthClientProtocol({ fetchRemoteHttpUrl, assertOAuthEndpo
     // metadata inherits the values Paperclip requested. Additional provider-owned
     // values do not widen Paperclip's behavior because they are never persisted as
     // a flow choice or sent in authorization/token requests.
-    assertOAuthDcrArray(record, "grant_types", requestedMetadata.grant_types, {
+    assertOAuthDcrArray(record, "grant_types", ["authorization_code"], {
       allowAdditional: true,
       allowOmitted: true,
     });

@@ -14519,8 +14519,18 @@ describeEmbeddedPostgres("tool access service", () => {
       "redirect_uris",
     ],
     [
-      "a reduced grant set",
-      { client_id: "notion-dcr-client", grant_types: ["authorization_code"] },
+      "a grant set without authorization_code",
+      { client_id: "notion-dcr-client", grant_types: ["refresh_token"] },
+      "grant_types",
+    ],
+    [
+      "an empty grant set",
+      { client_id: "notion-dcr-client", grant_types: [] },
+      "grant_types",
+    ],
+    [
+      "malformed grant metadata",
+      { client_id: "notion-dcr-client", grant_types: "authorization_code" },
       "grant_types",
     ],
     [
