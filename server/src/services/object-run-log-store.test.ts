@@ -483,7 +483,7 @@ describe("S3 run log store", () => {
     await store.append(h, event(3));
     expect((await store.finalize(h)).bytes).toBeGreaterThan(9 * 1024 * 1024);
   });
-  it("sheds only client reads that opt in while internal reads keep queuing", async () => {
+  it("bounds ordinary reads while explicit internal reads keep queuing", async () => {
     const m = memory(),
       store = createObjectRunLogStore({
         provider: m.provider,
@@ -502,14 +502,21 @@ describe("S3 run log store", () => {
       await gate;
       return get(i);
     };
-    const polls = Array.from({ length: 40 }, () => store.read(handle, { priority: "interactive" }));
-    await expect(store.read(handle, { priority: "interactive" })).rejects.toBeInstanceOf(
-      ObjectJournalBusyError,
-    );
-    const internal = store.read(handle);
-    open();
-    for (const poll of await Promise.allSettled(polls))
-      if (poll.status === "rejected") expect(poll.reason).toBeInstanceOf(ObjectJournalBusyError);
-    expect((await internal).content.trim().split("\n")).toHaveLength(1);
+    const polls = Array.from({ length: 40 }, () => store.read(handle));
+    const excess = store.read(handle);
+    let rejected: unknown;
+    void excess.catch((error) => { rejected = error; });
+    let internal: ReturnType<typeof store.read> | undefined;
+    try {
+      await vi.waitFor(() => expect(rejected).toBeInstanceOf(ObjectJournalBusyError));
+      internal = store.read(handle, { priority: "background" });
+      open();
+      for (const poll of await Promise.allSettled(polls))
+        if (poll.status === "rejected") expect(poll.reason).toBeInstanceOf(ObjectJournalBusyError);
+      expect((await internal).content.trim().split("\n")).toHaveLength(1);
+    } finally {
+      open();
+      await Promise.allSettled([...polls, excess, ...(internal ? [internal] : [])]);
+    }
   });
 });
