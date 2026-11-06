@@ -136,7 +136,11 @@ test.describe("Announcement placement on a new company's first task", () => {
     };
     await serveConnectorsAnnouncement(page, long);
     // The narrowest supported sidebar width on a short laptop window.
-    await page.addInitScript(() => localStorage.setItem("paperclip.sidebar.width", "208"));
+    // Classic and Coordinator workspaces persist the width under different keys.
+    await page.addInitScript(() => {
+      localStorage.setItem("paperclip.sidebar.width", "208");
+      localStorage.setItem("paperclip.coordinator.sidebar-width", "208");
+    });
     const viewport = { width: 1280, height: 720 };
     await page.setViewportSize(viewport);
     await page.goto(`/${company.issuePrefix}/issues/${issue.identifier}`);
@@ -146,6 +150,8 @@ test.describe("Announcement placement on a new company's first task", () => {
     await page.waitForTimeout(500);
 
     const card = await box(announcement, "announcement");
+    // The docked well spans the sidebar column, so its width is the sidebar width.
+    expect(Math.round(card.width), "sidebar renders at its 208px minimum").toBe(208);
     expect.soft(card.height, "docked card keeps at most half the window height").toBeLessThanOrEqual(viewport.height / 2 + 1);
     await expect.soft(page.getByLabel("Workspace navigation").getByRole("link", { name: "Tasks" })).toBeInViewport();
     const accountTrigger = page.getByRole("button", { name: "Open account menu" });
