@@ -10,7 +10,11 @@ it("keeps component names through the production bundle for React error traces",
   const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-component-names-"));
   try {
     await mkdir(path.join(root, "public"));
-    await mkdir(path.join(root, "src"));
+    await mkdir(path.join(root, "src/assets"), { recursive: true });
+    await writeFile(
+      path.join(root, "src/assets/offline-character.webm"),
+      await readFile(new URL("../assets/offline-character.webm", import.meta.url)),
+    );
     await writeFile(
       path.join(root, "public/sw.js"),
       await readFile(new URL("../../public/sw.js", import.meta.url)),

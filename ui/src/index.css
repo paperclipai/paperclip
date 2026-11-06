@@ -23,8 +23,9 @@
   --offline-character-outer-end: #686c6e;
   --offline-character-inner-start: #292929;
   --offline-character-inner-end: #727679;
-  --offline-character-face: #333333;
+  --offline-character-face: #212121;
   --offline-character-tear: #f6fdff;
+  --offline-character-tear-shadow: #809299;
   --offline-content-width: 32rem;
   --offline-control-height: 2.75rem;
   --offline-radius: 0.5rem;
@@ -71,8 +72,33 @@
   gap: var(--offline-identity-gap);
 }
 .paperclip-offline-character {
+  position: relative;
   width: var(--offline-character-size);
   height: var(--offline-character-size);
+}
+.paperclip-offline-animation,
+.paperclip-offline-still {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+.paperclip-offline-animation {
+  visibility: hidden;
+}
+.paperclip-offline-character.is-playing .paperclip-offline-animation {
+  visibility: visible;
+}
+.paperclip-offline-character.is-playing .paperclip-offline-still {
+  visibility: hidden;
+}
+@media (prefers-reduced-motion: reduce) {
+  .paperclip-offline-character.is-playing .paperclip-offline-animation {
+    visibility: hidden;
+  }
+  .paperclip-offline-character.is-playing .paperclip-offline-still {
+    visibility: visible;
+  }
 }
 .paperclip-offline h1 {
   margin: 0;
