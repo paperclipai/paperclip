@@ -128,6 +128,9 @@ test("job names select complete, successful shard sets only", () => {
   assert.equal(e2eShardJob("ci / e2e"), null);
   assert.deepEqual(runnerPackageJob("ci / Verify Paperclip Runner (vitest package)"), { index: 1, count: 1 });
   assert.deepEqual(runnerPackageJob("ci / Verify Paperclip Runner (package (2/3))"), { index: 2, count: 3 });
+  // The lane labels that #19646 shipped keep the "vitest" prefix.
+  assert.deepEqual(runnerPackageJob("ci / Verify Paperclip Runner (vitest package (3/3))"), { index: 3, count: 3 });
+  assert.equal(runnerPackageJob("ci / Verify Paperclip Runner (vitest native server)"), null);
   assert.equal(runnerPackageJob("ci / Verify Paperclip Runner (vitest native server)"), null);
   const job = (name, conclusion = "success") => ({ name, conclusion });
   const shards = [job("ci / e2e shard (1/2)"), job("ci / e2e shard (2/2)"), job("ci / build")];
@@ -288,6 +291,24 @@ test("oversized-file reporters warn above the configurable budget and never thro
   playwright.onEnd();
   assert.equal(lines.length, 1);
   assert.match(lines[0], /^::warning file=tests\/e2e\/long\.spec\.ts,.*took 190s/);
+
+  // Two specs that declare their tests through one shared helper are timed
+  // per spec, not added together under the helper.
+  lines.length = 0;
+  const shared = new OversizedSpecReporter({ environment: {}, write: line => lines.push(line), root: "/repo" });
+  const viaHelper = specPath => ({
+    location: { file: "/repo/tests/e2e/smoke-lab.shared.ts" },
+    parent: { type: "describe", location: { file: "/repo/tests/e2e/smoke-lab.shared.ts" },
+      parent: { type: "file", location: { file: `/repo/${specPath}` }, parent: { type: "project" } } },
+  });
+  shared.onTestEnd(viaHelper("tests/e2e/smoke-lab-p1-p4.spec.ts"), { status: "passed", duration: 120_000 });
+  shared.onTestEnd(viaHelper("tests/e2e/smoke-lab-p5-p7.spec.ts"), { status: "passed", duration: 120_000 });
+  shared.onEnd();
+  assert.deepEqual(lines, [], "neither spec is over the limit; the helper must not sum them");
+  shared.onTestEnd(viaHelper("tests/e2e/smoke-lab-p5-p7.spec.ts"), { status: "passed", duration: 70_000 });
+  shared.onEnd();
+  assert.equal(lines.length, 1);
+  assert.match(lines[0], /^::warning file=tests\/e2e\/smoke-lab-p5-p7\.spec\.ts,.*took 190s/);
 });
 
 test("CI test configs wire the oversized-file reporters for GitHub Actions", () => {
