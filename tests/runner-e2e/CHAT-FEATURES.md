@@ -505,3 +505,32 @@ This is an acknowledgment of an actual prior current-person secure save, not
 permission to execute a binding. The separate saved-value, payload, actor,
 continuation and governed-approval proofs remain mandatory. Original failures
 remain unchanged; v15 has not run natively. Counts, queries and clocks are unchanged.
+
+
+The next coherent fixture calibration retains every original outcome from launch
+3277 (all four selected cases reported FAILED). Multipart question v6 removes the
+shared send helper's automatic human dismissal when the ordinary composer is
+already usable below the saved form. Later human comments still classify the form
+as historical, but it remains answerable and the latest human direction governs;
+this setup correction does not guarantee that a native turn will reuse it.
+The original query, same-form fidelity check and one answer-bound continuation
+remain required.
+
+Company secret v16 and Personal secret v15, plus the four shared external secret
+consumers at v8, admit a bounded instruction to enter the value at the independently
+supported secure destination and save there. They retain the actual current-human
+secure-save prerequisite, separate governed binding approval where required,
+consumer delivery, owner isolation and no-leak proofs. Personal menu discovery
+separates its single imprecise setup hint from independently validated, visible,
+current-company task citation anchors; neither hint nor citation grants private
+entry authority.
+
+Team install v9 accepts a truthful current report that the exact required skill
+remains unattached when independently saved state proves it is still missing.
+False attached/full-recovery claims and contradictions with an actually recovered
+state remain rejected. This assertion calibration provides no runtime-migration
+or new native pass credit. All 244 YAML definitions, original queries, model,
+permissions, human/native bounds and clocks remain unchanged. Cap 2 and zero
+retries remain the controller policy. Existing candidate core overlays stay
+unmerged, and the held full-catalog gate remains 196 of 244. The next native
+measurement is still required; none of these local controls regrades an original.

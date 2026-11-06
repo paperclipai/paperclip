@@ -346,7 +346,7 @@ export const teamInstallExternalCases = [
     gradeTeamInstall,
     {
       authentication: "human-session",
-      oracleVersion: "paperclip.chat-catalog.team-install.v8",
+      oracleVersion: "paperclip.chat-catalog.team-install.v9",
       expectedRunCount: 2,
       expectedHumanMessageCount: 2,
       attemptTimeoutMs: 480_000,

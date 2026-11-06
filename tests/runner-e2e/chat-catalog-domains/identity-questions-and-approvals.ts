@@ -258,7 +258,7 @@ export const questionIdentityCases = [
     },
   }),
   identityDefinition("questions-and-approvals.multi-part-question", ctx => questionFixture(ctx, true), gradeQuestions, {
-    expectedRunCount: 2, observe: observeQuestion, oracleVersion: "paperclip.chat-catalog.required-question.v5",
+    expectedRunCount: 2, observe: observeQuestion, oracleVersion: "paperclip.chat-catalog.required-question.v6",
     sourceFiles: ["chat-catalog-domains/identity-support.ts", "chat-catalog-domains/internal-support.ts", "chat-catalog-domains/identity-questions-and-approvals.ts", "chat-scenarios/questions-and-approvals.yaml", "../../packages/paperclip-runner/src/protocol-actions/request-human-input.ts", "chat-catalog-flow.ts", "chat-flow.ts", "cleanup-verification.ts", "runner.spec.ts"],
     async verifyResult(ctx, _state, value) {
       if (await ctx.input.page.getByTestId("task-chat-composer-input").isVisible()) return;
