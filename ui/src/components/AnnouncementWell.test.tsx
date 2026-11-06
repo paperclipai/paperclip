@@ -49,6 +49,16 @@ describe("announcement placement gates", () => {
     health = { deploymentMode: "local_trusted" } as HealthStatus; await render(); expect(visible()).toBe(true);
     expect(state.hook).toHaveBeenLastCalledWith(expect.objectContaining({ userId: "local-board", enabled: true }));
   });
+  it("docks in normal flow for the sidebar and floats only when asked", async () => {
+    await act(async () => root.render(<QueryClientProvider client={client}><AnnouncementWell health={health} placement="sidebar" /></QueryClientProvider>));
+    const docked = container.querySelector('[aria-label="Paperclip announcements"]')!;
+    expect(docked.getAttribute("data-placement")).toBe("sidebar");
+    expect(docked.className).not.toMatch(/\bfixed\b/);
+    await render();
+    const floating = container.querySelector('[aria-label="Paperclip announcements"]')!;
+    expect(floating.getAttribute("data-placement")).toBe("floating");
+    expect(floating.className).toMatch(/\bfixed\b/);
+  });
   it("yields to toasts and modal/command dialogs without dismissing", async () => {
     await render(); expect(visible()).toBe(true);
     state.toasts = [{}]; await render(); expect(visible()).toBe(false);

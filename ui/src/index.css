@@ -3559,6 +3559,8 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
   --announcement-available-width: calc(100vw - var(--spacing) * 6);
   --announcement-image-height: 8.5rem;
   --announcement-image-mobile-height: 6rem;
+  /* Docked in the sidebar: the navigation keeps at least half the height. */
+  --announcement-sidebar-max-height: 50dvh;
   --announcement-mobile-bottom: calc(var(--spacing) * 19 + env(safe-area-inset-bottom, 0px));
   --announcement-max-height: calc(100dvh - var(--spacing) * 6);
   --announcement-mobile-max-height: calc(100dvh - var(--announcement-mobile-bottom) - var(--spacing) * 3);
@@ -3566,6 +3568,11 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
 
 .announcement-well {
   animation: announcement-enter var(--motion-duration-fast) var(--motion-ease-standard) both;
+}
+/* Docked in the narrow sidebar column: keep the image band compact so the
+   sidebar navigation keeps most of its height. */
+.announcement-well[data-placement="sidebar"] {
+  --announcement-image-height: var(--announcement-image-mobile-height);
 }
 @keyframes announcement-enter {
   from { opacity: 0; }
