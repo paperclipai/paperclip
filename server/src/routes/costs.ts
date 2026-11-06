@@ -32,7 +32,7 @@ import {
   accessService,
 } from "../services/index.js";
 import { assertBoard, assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
-import { fetchAllQuotaWindows, fetchCompanyQuotaWindows } from "../services/quota-windows.js";
+import { fetchAllQuotaWindows, fetchCompanyQuotaWindows, mergeQuotaWindowResults } from "../services/quota-windows.js";
 import { badRequest, forbidden } from "../errors.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 
@@ -346,8 +346,7 @@ export function costRoutes(
     // Subscription accounts cover what the user connected centrally. Local
     // adapters (kimi_local) report their own provider windows, which no
     // managed connection can supply.
-    const reported = new Set(managed.map((result) => result.provider));
-    res.json([...managed, ...adapterReported.filter((result) => !reported.has(result.provider))]);
+    res.json(mergeQuotaWindowResults(managed, adapterReported));
   });
 
   router.get("/companies/:companyId/budgets/overview", async (req, res) => {

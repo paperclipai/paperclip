@@ -1,32 +1,16 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
+import type { ProviderQuotaResult } from "@paperclipai/adapter-utils";
+import { mergeQuotaWindowResults } from "../services/quota-windows.js";
 
-// The route merges two sources: quotas from connected accounts, and quotas
-// reported by local adapters. Connected accounts stay authoritative for their
-// provider, so the merge is what this file pins down.
-const mocks = vi.hoisted(() => ({
-  managed: vi.fn(),
-  adapterReported: vi.fn(),
-}));
-
-vi.mock("../services/quota-windows.js", () => ({
-  fetchCompanyQuotaWindows: mocks.managed,
-  fetchAllQuotaWindows: mocks.adapterReported,
-}));
-
-/** Reimplementation of the merge the route performs. */
-function mergeQuotas(
-  managed: Array<{ provider: string; ok: boolean }>,
-  adapterReported: Array<{ provider: string; ok: boolean }>,
-): Array<{ provider: string; ok: boolean }> {
-  const reported = new Set(managed.map((result) => result.provider));
-  return [...managed, ...adapterReported.filter((result) => !reported.has(result.provider))];
+function result(provider: string, ok: boolean): ProviderQuotaResult {
+  return { provider, ok, windows: [] };
 }
 
-describe("quota window merge", () => {
+describe("mergeQuotaWindowResults", () => {
   it("adds a provider no connected account reports", () => {
-    const merged = mergeQuotas(
-      [{ provider: "anthropic", ok: false }],
-      [{ provider: "kimi", ok: true }],
+    const merged = mergeQuotaWindowResults(
+      [result("anthropic", false)],
+      [result("kimi", true)],
     );
     expect(merged.map((row) => row.provider)).toEqual(["anthropic", "kimi"]);
   });
@@ -34,26 +18,20 @@ describe("quota window merge", () => {
   it("keeps the connected account authoritative for its provider", () => {
     // A local adapter reporting the same provider must not overwrite or
     // duplicate the connected account's result.
-    const merged = mergeQuotas(
-      [{ provider: "anthropic", ok: true }],
-      [{ provider: "anthropic", ok: false }],
+    const merged = mergeQuotaWindowResults(
+      [result("anthropic", true)],
+      [result("anthropic", false)],
     );
-    expect(merged).toEqual([{ provider: "anthropic", ok: true }]);
+    expect(merged).toEqual([result("anthropic", true)]);
   });
 
   it("passes adapter failures through so the panel can explain them", () => {
-    const merged = mergeQuotas(
-      [],
-      [{ provider: "kimi", ok: false }],
-    );
-    expect(merged).toEqual([{ provider: "kimi", ok: false }]);
+    const merged = mergeQuotaWindowResults([], [result("kimi", false)]);
+    expect(merged).toEqual([result("kimi", false)]);
   });
 
   it("returns the connected accounts unchanged when no adapter reports", () => {
-    const managed = [
-      { provider: "anthropic", ok: true },
-      { provider: "openai", ok: false },
-    ];
-    expect(mergeQuotas(managed, [])).toEqual(managed);
+    const managed = [result("anthropic", true), result("openai", false)];
+    expect(mergeQuotaWindowResults(managed, [])).toEqual(managed);
   });
 });
