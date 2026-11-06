@@ -168,9 +168,17 @@ fn checkpoints_the_sidecar_and_rebinds_consecutive_warm_runs_before_accepting_wo
 }
 
 fn unused_fence_ports() -> [u16; 3] {
-    let listeners = (0..3)
-        .map(|_| std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap())
-        .collect::<Vec<_>>();
+    // Lifetime fence candidates must be dynamic ports (49152 and above). An
+    // OS-assigned port can be lower, for example on Linux.
+    let mut listeners = Vec::new();
+    for port in (49_152..=u16::MAX).rev() {
+        if let Ok(listener) = std::net::TcpListener::bind(("127.0.0.1", port)) {
+            listeners.push(listener);
+            if listeners.len() == 3 {
+                break;
+            }
+        }
+    }
     let ports = listeners
         .iter()
         .map(|listener| listener.local_addr().unwrap().port())
