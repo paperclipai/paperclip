@@ -4,6 +4,8 @@ import os from "node:os";
 import { createSystemRecovery, failSystemRecovery, SystemRecoveryFailure } from "./system-recovery-state.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { createPostgresWakeQueueAdapter } from "../modules/wake-queue/adapters/postgres.js";
+import { createPostgresRunDispatchAdapter } from "../modules/run-dispatch/adapters/postgres.js";
+import { issueTreeControlService } from "./issue-tree-control.js";
 import { createReleaseIssueExecution } from "../modules/wake-queue/application/use-cases.js";
 import * as nativeExecutor from "./native-runtime/native-session-executor.js";
 import { appendHeartbeatRunEvent } from "./heartbeat-run-events.js";
@@ -1299,6 +1301,79 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
     expect(await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId),
       eq(heartbeatRuns.status, "queued")))).toHaveLength(1);
   });
+
+  async function seedHistoricalPausedWorkspaceRetry() {
+    const f = await seedCancelledWorkspaceWaitRetry();
+    const dueAt = new Date("2026-09-11T10:00:00Z");
+    const [pause] = await db.insert(issueTreeHolds).values({ companyId: f.companyId,
+      rootIssueId: f.issueId, mode: "pause", status: "active", createdAt: new Date(dueAt.getTime() - 1_000),
+      releasePolicy: { strategy: "manual" } }).returning();
+    await db.insert(issueTreeHoldMembers).values({ companyId: f.companyId, holdId: pause.id,
+      issueId: f.issueId, issueTitle: "Paused workspace retry", issueStatus: "blocked", assigneeAgentId: f.agentId });
+    await db.update(heartbeatRuns).set({ status: "scheduled_retry", errorCode: null,
+      finishedAt: null, resultJson: null, scheduledRetryAt: dueAt, scheduledRetryAttempt: 1,
+    }).where(eq(heartbeatRuns.id, f.sourceRunId));
+    expect(await createPostgresRunDispatchAdapter(db).promoteOrCancelDueRetry({
+      companyId: f.companyId, runId: f.sourceRunId, now: dueAt,
+    })).toMatchObject({ outcome: "gate_suppressed", errorCode: "issue_paused" });
+    // Old scheduler builds wrote the same suppression event but no JSON marker.
+    await db.update(heartbeatRuns).set({ resultJson: null }).where(eq(heartbeatRuns.id, f.sourceRunId));
+    await issueTreeControlService(db).releaseHold(f.companyId, f.issueId, pause.id,
+      { actor: { actorType: "user", actorId: "board" } });
+    return { ...f, pauseId: pause.id, dueAt };
+  }
+
+  it("resumes saved input after a historical pause suppressed an unclaimed workspace retry", async () => {
+    const f = await seedHistoricalPausedWorkspaceRetry();
+    await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, status: "running" });
+    const [wake] = await db.insert(agentWakeupRequests).values({ companyId: f.companyId, agentId: f.agentId,
+      source: "on_demand", reason: "issue_commented", requestedByActorType: "user", requestedByActorId: "board",
+      status: "deferred_issue_execution", updatedAt: new Date(0), payload: { issueId: f.issueId, commentId: f.commentId,
+        executionWait: { reason: "execution_recovery" },
+        _paperclipWakeContext: { issueId: f.issueId, wakeCommentId: f.commentId, wakeCommentIds: [f.commentId] } },
+    }).returning();
+    const heartbeat = heartbeatService(db);
+    await Promise.all([heartbeat.resumeExecutionWaitComments(), heartbeat.resumeExecutionWaitComments()]);
+    const successors = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId),
+      eq(heartbeatRuns.status, "queued")));
+    expect(successors).toHaveLength(1);
+    expect(successors[0].contextSnapshot).toMatchObject({ forceFreshSession: true, wakeCommentIds: [f.commentId] });
+    expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wake.id)))[0])
+      .toMatchObject({ status: "coalesced", runId: successors[0].id });
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.sourceRunId)))[0])
+      .toMatchObject({ status: "cancelled", startedAt: null, errorCode: "issue_paused", resultJson: null });
+  });
+
+  it.each(["missing_event", "wrong_event", "missing_member", "active_pause", "late_pause", "early_release",
+    "started", "provider_event", "lease", "operator_stop", "parent_executed", "retry_binding"])(
+    "holds a historical pause-suppressed workspace retry with %s evidence", async kind => {
+      const f = await seedHistoricalPausedWorkspaceRetry();
+      if (kind === "missing_event") await db.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, f.sourceRunId));
+      if (kind === "wrong_event") await db.update(heartbeatRunEvents).set({ payload: { holdId: f.pauseId,
+        rootIssueId: f.issueId, issueId: randomUUID(), scheduledRetryReason: "workspace_busy" } })
+        .where(eq(heartbeatRunEvents.runId, f.sourceRunId));
+      if (kind === "missing_member") await db.delete(issueTreeHoldMembers).where(eq(issueTreeHoldMembers.holdId, f.pauseId));
+      if (kind === "active_pause") await db.update(issueTreeHolds).set({ status: "active", releasedAt: null })
+        .where(eq(issueTreeHolds.id, f.pauseId));
+      if (kind === "late_pause") await db.update(issueTreeHolds).set({ createdAt: new Date(f.dueAt.getTime() + 1) })
+        .where(eq(issueTreeHolds.id, f.pauseId));
+      if (kind === "early_release") await db.update(issueTreeHolds).set({ releasedAt: new Date(f.dueAt.getTime() - 1) })
+        .where(eq(issueTreeHolds.id, f.pauseId));
+      if (kind === "started") await db.update(heartbeatRuns).set({ startedAt: f.dueAt }).where(eq(heartbeatRuns.id, f.sourceRunId));
+      if (kind === "provider_event") await appendHeartbeatRunEvent(db, { companyId: f.companyId,
+        agentId: f.agentId, runId: f.sourceRunId, eventType: "turn.started", stream: "system", level: "info" });
+      if (kind === "lease") await db.insert(environmentLeases).values({ companyId: f.companyId,
+        heartbeatRunId: f.sourceRunId, provider: "local", leasePolicy: "ephemeral", status: "released",
+        cleanupStatus: "success", releasedAt: new Date() });
+      if (kind === "operator_stop") await db.update(heartbeatRuns).set({ errorCode: "operator_interrupted",
+        resultJson: { stopReason: "cancelled", cancellation: { source: "operator", expected: true,
+          initiator: { type: "user", userId: "board" }, reason: "Stopped", recordedAt: f.dueAt.toISOString() } } })
+        .where(eq(heartbeatRuns.id, f.sourceRunId));
+      if (kind === "parent_executed") await db.update(heartbeatRuns).set({ resultJson: {
+        executionRecovery: { kind: "workspace_wait", providerWorkStarted: true } } }).where(eq(heartbeatRuns.id, f.parentRunId));
+      if (kind === "retry_binding") await db.update(heartbeatRuns).set({ retryOfRunId: null }).where(eq(heartbeatRuns.id, f.sourceRunId));
+      expect(await admit(f)).toBeNull();
+    });
 
   it.each(["message", "retry"])("admits an unclaimed workspace retry through the heartbeat %s path", async kind => {
     const f = await seedCancelledWorkspaceWaitRetry();

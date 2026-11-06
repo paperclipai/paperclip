@@ -1,7 +1,7 @@
 import { isPreDispatchReviewWait } from "./pre-dispatch-review-wait.js";
 import { createHash } from "node:crypto";
-import { and, eq, inArray, isNotNull, isNull, lte, or, sql } from "drizzle-orm";
-import { environmentLeases, heartbeatRunEvents, heartbeatRuns, nativeRunFinalizations, nativeRunResults, type Db } from "@paperclipai/db";
+import { and, eq, gt, inArray, isNotNull, isNull, lte, or, sql } from "drizzle-orm";
+import { environmentLeases, heartbeatRunEvents, heartbeatRuns, issueTreeHolds, issueTreeHoldMembers, nativeRunFinalizations, nativeRunResults, type Db } from "@paperclipai/db";
 import { isUuidLike } from "@paperclipai/shared";
 import { claimedAdapterType } from "./conversation-continuation.js";
 import { PROCESS_IDENTITY_RECORDED, PROCESS_START_REQUESTED } from "./native-local-process-stop.js";
@@ -172,17 +172,40 @@ async function isCancelledUnclaimedWorkspaceWaitRetry(db: Db, run: Run): Promise
   const cancellation = readRunCancellation(run.resultJson);
   const issueId = run.issueId ?? run.contextSnapshot?.issueId;
   if (run.runtimeMode !== "legacy" || run.startedAt !== null || run.executionStage !== null
-    || run.runnerProfileJson !== null || typeof issueId !== "string" || !isUuidLike(issueId)
-    || run.errorCode !== "cancelled" || run.resultJson?.stopReason !== "cancelled"
-    || cancellation?.source !== "control_plane" || cancellation.expected !== true || cancellation.initiator.type !== "system") return false;
+    || run.runnerProfileJson !== null || typeof issueId !== "string" || !isUuidLike(issueId)) return false;
+  const systemCancellation = run.errorCode === "cancelled" && run.resultJson?.stopReason === "cancelled"
+    && cancellation?.source === "control_plane" && cancellation.expected === true && cancellation.initiator.type === "system";
+  // Older retry schedulers persisted the pause refusal only in the run log.
+  // Its first event certifies a scheduled retry was refused before promotion;
+  // a released, company-scoped hold and membership bind that event to this task.
+  const pausedBeforePromotion = run.errorCode === "issue_paused" && run.resultJson === null && run.finishedAt
+    ? await db.select({ id: heartbeatRunEvents.id }).from(heartbeatRunEvents)
+      .innerJoin(issueTreeHolds, and(eq(issueTreeHolds.companyId, run.companyId),
+        sql`${issueTreeHolds.id}::text = ${heartbeatRunEvents.payload}->>'holdId'`,
+        sql`${issueTreeHolds.rootIssueId}::text = ${heartbeatRunEvents.payload}->>'rootIssueId'`))
+      .innerJoin(issueTreeHoldMembers, and(eq(issueTreeHoldMembers.companyId, run.companyId),
+        eq(issueTreeHoldMembers.holdId, issueTreeHolds.id), eq(issueTreeHoldMembers.issueId, issueId),
+        eq(issueTreeHoldMembers.skipped, false)))
+      .where(and(eq(heartbeatRunEvents.companyId, run.companyId), eq(heartbeatRunEvents.runId, run.id),
+        eq(heartbeatRunEvents.seq, 1), eq(heartbeatRunEvents.eventType, "lifecycle"),
+        eq(heartbeatRunEvents.stream, "system"), eq(heartbeatRunEvents.level, "warn"),
+        eq(heartbeatRunEvents.message, "Scheduled retry suppressed because the issue is held by an active subtree pause hold"),
+        sql`${heartbeatRunEvents.payload}->>'issueId' = ${issueId}`,
+        sql`${heartbeatRunEvents.payload}->>'scheduledRetryReason' = 'workspace_busy'`,
+        eq(issueTreeHolds.mode, "pause"), eq(issueTreeHolds.status, "released"),
+        lte(issueTreeHolds.createdAt, run.finishedAt), isNotNull(issueTreeHolds.releasedAt),
+        gt(issueTreeHolds.releasedAt, run.finishedAt))).limit(1).then(rows => rows.length > 0)
+    : false;
+  if (!systemCancellation && !pausedBeforePromotion) return false;
   const [source] = await db.select({ agentId: heartbeatRuns.agentId, createdAt: heartbeatRuns.createdAt,
     retryOfRunId: heartbeatRuns.retryOfRunId,
   }).from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, run.companyId), eq(heartbeatRuns.id, run.id),
     eq(heartbeatRuns.scheduledRetryReason, "workspace_busy"),
     sql`${heartbeatRuns.contextSnapshot}->>'retryReason' = 'workspace_busy'`,
     sql`${heartbeatRuns.contextSnapshot}->>'retryOfRunId' = ${heartbeatRuns.retryOfRunId}::text`,
-    sql`(${heartbeatRuns.resultJson} - array['stopReason', 'cancellation', 'startupCancellation',
-      'timeoutFired', 'timeoutSource', 'timeoutConfigured', 'effectiveTimeoutSec']) = '{}'::jsonb`,
+    pausedBeforePromotion ? isNull(heartbeatRuns.resultJson)
+      : sql`(${heartbeatRuns.resultJson} - array['stopReason', 'cancellation', 'startupCancellation',
+        'timeoutFired', 'timeoutSource', 'timeoutConfigured', 'effectiveTimeoutSec']) = '{}'::jsonb`,
     noRetainedExecutionPredicate(), noProviderOutputPredicate(), isNull(heartbeatRuns.runnerProfileJson),
     isNull(heartbeatRuns.usageJson)));
   if (!source?.retryOfRunId) return false;
