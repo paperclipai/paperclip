@@ -15,6 +15,7 @@ import { notifyInstructionCollection } from "../instruction-collection-notificat
 import { notifyChatRunMilestones } from "../chat-run-milestone-notifications.js";
 import { scheduledIssueMonitorWait } from "../issue-monitors.js";
 import { onboardingFirstTaskCompletionAllowed } from "../onboarding-first-task-admission.js";
+import { NativeDeliverableEvidenceError, validateNativeDeliverableEvidence } from "./native-deliverable-feedback.js";
 import { hasPublishedGitHubReview, readInheritedGitHubReviewWait } from "../chat-channels/github/review-wait.js";
 import { lockNativeGovernanceSources, pendingNativeGovernance } from "./native-governance.js";
 import { findSupersededExternalReviewRequests, supersedeExternalReviewRequestsInTransaction } from "./superseded-external-review-requests.js";
@@ -1791,6 +1792,29 @@ export async function commitNativeStatusDecision(input: {
     if (input.decision.statusAction === "done" && !await onboardingFirstTaskCompletionAllowed(tx as unknown as Db, {
       companyId: input.companyId, issueId: input.issueId, runId: input.runId,
     })) throw new NativeStatusRaceError();
+    if (input.decision.statusAction === "done") {
+      try {
+        const [saved] = await tx.select({ context: heartbeatRuns.contextSnapshot, receipts: heartbeatRuns.resultJson,
+          envelope: nativeRunResults.resultJson }).from(heartbeatRuns)
+          .innerJoin(nativeRunResults, and(eq(nativeRunResults.runId, heartbeatRuns.id),
+            eq(nativeRunResults.id, coordinator.resultId!), eq(nativeRunResults.companyId, input.companyId),
+            eq(nativeRunResults.issueId, input.issueId), eq(nativeRunResults.schemaStatus, "accepted")))
+          .where(and(eq(heartbeatRuns.id, input.runId), eq(heartbeatRuns.companyId, input.companyId),
+            eq(heartbeatRuns.nativeIssueId, input.issueId), eq(heartbeatRuns.runtimeMode, "native")))
+          .limit(1).for("share", { of: [heartbeatRuns, nativeRunResults], noWait: true });
+        if (!saved) throw new NativeStatusRaceError();
+        const continuation = record(saved.context?.executionContinuation);
+        const objective = typeof continuation.objective === "string" ? continuation.objective
+          : [issue.title, issue.description].filter(Boolean).join("\n");
+        await validateNativeDeliverableEvidence(tx as unknown as Db, { companyId: input.companyId, issueId: input.issueId,
+          runId: input.runId, objective, semanticToolReceipts: saved.receipts?.semanticToolReceipts, lockSources: true,
+          authoritativeDone: true }, record(saved.envelope).result);
+      } catch (error) {
+        if (error instanceof NativeDeliverableEvidenceError || record(error).code === "55P03" ||
+            record(record(error).cause).code === "55P03") throw new NativeStatusRaceError();
+        throw error;
+      }
+    }
     if (reasonCode === "scheduled_monitor_waiting") {
       const expected = input.requireMonitorWait;
       const inReview = input.decision.statusAction === "in_review" && input.decision.toStatus === "in_review";

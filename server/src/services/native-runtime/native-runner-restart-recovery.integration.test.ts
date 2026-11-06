@@ -392,17 +392,18 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
           onExecutionLeaseAcquired: () => preparation!.stop(),
           instructionWorkingCopy: {
             hasChanges: async () => {
-              // Completion has released the coordinator, but the startup still
-              // owns its session. A leftover preparation timer would detach it.
               const [settled] = await fixture.db.select().from(nativeRunFinalizations)
                 .where(eq(nativeRunFinalizations.runId, fixture.runId));
-              expect(settled.leaseOwner).toBeNull();
+              expect(settled).toMatchObject({ leaseOwner: claim.leaseOwner, attempt: claim.providerAttempt });
               await new Promise(resolve => setTimeout(resolve, 21_000));
               return false;
             },
             collectStopped: async () => undefined,
           },
         }).finally(() => preparation?.stop().catch(() => undefined));
+        const [released] = await fixture.db.select().from(nativeRunFinalizations)
+          .where(eq(nativeRunFinalizations.runId, fixture.runId));
+        expect(released.leaseOwner).toBeNull();
         expect(logs.filter(line => line.includes("controller authority detached for restart"))).toHaveLength(1);
         const recoveredCalls = await runner.execute({ command: "cat", args: [`${remoteCwd}/provider-calls.log`] });
         expect(recoveredCalls.stdout.split("\n").filter(line => line === "turn/start")).toHaveLength(1);
@@ -2219,10 +2220,15 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
     },
   );
 
-  it.each([2, 3])("recovers a checkpointed restart interruption within provider budget %s", async (attempt) => {
-    const fixture = await seedRun(`INTERRUPTED-${attempt}`);
+  it.each([
+    { attempt: 2, driverKind: "codex_app_server" },
+    { attempt: 3, driverKind: "codex_app_server" },
+    { attempt: 2, driverKind: "acpx_runtime" },
+    { attempt: 2, driverKind: "opencode_server" },
+  ])("recovers a checkpointed $driverKind restart interruption within provider budget $attempt", async ({ attempt, driverKind }) => {
+    const fixture = await seedRun(`INTERRUPTED-${driverKind}-${attempt}`);
     await fixture.db.update(heartbeatRuns).set({ runnerProfileJson: { sessionCheckpoint: {
-      driverKind: "codex_app_server",
+      driverKind,
       sessionId: fixture.native.normalizedSessionId,
       identity: { companyId, issueId: fixture.issueId, runId: fixture.runId, agentId, sessionId: fixture.native.normalizedSessionId },
       providerSessionId: "interrupted-provider",

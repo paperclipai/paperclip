@@ -482,8 +482,8 @@ interface PluginToolExecuteRequest {
   tool: string;
   /** Parameters matching the tool's declared JSON Schema. */
   parameters?: unknown;
-  /** Agent run context. */
-  runContext: ToolRunContext;
+  /** Agent run context. projectId may be omitted or null when the run has no project. */
+  runContext: Omit<ToolRunContext, "projectId"> & { projectId?: string | null };
 }
 
 /**
@@ -862,13 +862,15 @@ export function pluginRoutes(
       return '"runContext.runId" does not belong to "runContext.agentId"';
     }
 
-    const [project] = await db
-      .select({ companyId: projects.companyId })
-      .from(projects)
-      .where(eq(projects.id, runContext.projectId))
-      .limit(1);
-    if (!project || project.companyId !== runContext.companyId) {
-      return '"runContext.projectId" does not belong to "runContext.companyId"';
+    if (runContext.projectId) {
+      const [project] = await db
+        .select({ companyId: projects.companyId })
+        .from(projects)
+        .where(eq(projects.id, runContext.projectId))
+        .limit(1);
+      if (!project || project.companyId !== runContext.companyId) {
+        return '"runContext.projectId" does not belong to "runContext.companyId"';
+      }
     }
 
     return null;
@@ -1060,7 +1062,7 @@ export function pluginRoutes(
       return;
     }
 
-    const { tool, parameters, runContext } = body;
+    const { tool, parameters, runContext: requestedRunContext } = body;
 
     // Validate required fields
     if (!tool || typeof tool !== "string") {
@@ -1068,17 +1070,26 @@ export function pluginRoutes(
       return;
     }
 
-    if (!runContext || typeof runContext !== "object") {
+    if (!requestedRunContext || typeof requestedRunContext !== "object") {
       res.status(400).json({ error: '"runContext" is required and must be an object' });
       return;
     }
 
-    if (!runContext.agentId || !runContext.runId || !runContext.companyId || !runContext.projectId) {
+    if (!requestedRunContext.agentId || !requestedRunContext.runId || !requestedRunContext.companyId) {
       res.status(400).json({
-        error: '"runContext" must include agentId, runId, companyId, and projectId',
+        error: '"runContext" must include agentId, runId, and companyId',
       });
       return;
     }
+
+    const requestedProjectId: unknown = requestedRunContext.projectId;
+    if (requestedProjectId != null && typeof requestedProjectId !== "string") {
+      res.status(400).json({ error: '"runContext.projectId" must be a string when present' });
+      return;
+    }
+    // A run can have no project. Plugins then get an empty projectId, the same
+    // value the tool gateway sends, so both paths give plugins one contract.
+    const runContext: ToolRunContext = { ...requestedRunContext, projectId: requestedProjectId ?? "" };
 
     assertCompanyAccess(req, runContext.companyId);
     const scopeError = await validateToolRunContextScope(runContext);

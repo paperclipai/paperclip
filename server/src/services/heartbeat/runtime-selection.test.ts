@@ -1,8 +1,10 @@
 import { randomUUID } from "node:crypto";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { execFile as execFileCallback } from "node:child_process";
+import { promisify } from "node:util";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { activityLog, agents, companies, completionContracts, createDb, applyPendingMigrations, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, executionWorkspaces, heartbeatRuns, issues, nativeRunFinalizations, workspaceOperations, type Db } from "@paperclipai/db";
+import { activityLog, agents, authUsers, companyMemberships, principalPermissionGrants, environments, environmentLeases, companies, completionContracts, createDb, applyPendingMigrations, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, executionWorkspaces, heartbeatRuns, issues, nativeRunFinalizations, workspaceOperations, type Db } from "@paperclipai/db";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
@@ -14,9 +16,12 @@ import { prepareNativeWorkspaceSync } from "../native-runtime/native-workspace-s
 import { resolveHeartbeatNativeRuntimeMode } from "../native-runtime/runtime-mode.js";
 import { claimNativeRestartRecoveries } from "../native-runtime/native-restart-recovery.js";
 import { buildNativeModelEnvelope, canonicalNativeRuntimeContextDigest } from "../../vendor/paperclip-runner/index.js";
-import { selectHeartbeatRuntime, type HeartbeatRuntimeSelectionInput } from "./runtime-selection.js";
+import { prepareAndSelectHeartbeatRuntime, selectHeartbeatRuntime, type HeartbeatRuntimeSelectionInput } from "./runtime-selection.js";
 import { reserveRunBudget } from "../budget-reservations.js";
 import { legacyControllerClaim } from "../legacy-controller-lease.js";
+import { agentInstructionWorkingCopyService } from "../agent-instruction-working-copies.js";
+import { createHeartbeatInstructionWorkingCopy } from "./instruction-working-copy.js";
+import { environmentService } from "../environments.js";
 
 // Keep the real contract, session, and runtime-selection transactions. Replace only
 // filesystem materialization and sandbox synchronization at their external boundaries.
@@ -81,6 +86,87 @@ describe.skipIf(!support.supported)("heartbeat runtime selection boundary", () =
   const read = (id: string) => db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, id)).then(rows => rows[0]!);
   const coordinators = (id: string) => db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, id));
   const sandbox = { kind: "remote" as const, transport: "sandbox" as const, remoteCwd: "/workspace", reusableLeaseConfigured: false };
+
+  it("preserves preparation failure and skips runtime selection", async () => {
+    const { input, run } = await fixture();
+    const initiating = new Error("Synthetic preparation failure");
+    const phases: string[] = [];
+    await expect(prepareAndSelectHeartbeatRuntime(db, input, {
+      measure: async (phase, work) => { phases.push(phase); return work(); },
+      prepareInstructions: async () => { throw initiating; },
+    })).rejects.toBe(initiating);
+    expect(phases).toEqual(["instructions"]);
+    expect(await coordinators(run.id)).toEqual([]);
+    expect(buildNativeRuntimeContext).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])("checkpoints the real instruction copy under the selected agent-default warm policy (changed: %s)", async changed => {
+    const { input, issue, agent, run } = await fixture();
+    const userId = randomUUID(), environmentId = randomUUID(), leaseId = randomUUID();
+    vi.stubEnv("PAPERCLIP_HOME", instructionRoot);
+    const { resolveManagedInstructionsRoot } = await import("../agent-instructions.js");
+    const canonical = resolveManagedInstructionsRoot(agent), remoteCwd = join(instructionRoot, randomUUID(), "task");
+    await mkdir(canonical, { recursive: true }); await mkdir(remoteCwd, { recursive: true });
+    await writeFile(join(canonical, "AGENTS.md"), "Synthetic instructions for this local fixture only.\n");
+    const execute = promisify(execFileCallback);
+    await execute("git", ["init", remoteCwd]);
+    const target = { kind: "remote" as const, transport: "sandbox" as const, environmentId, leaseId, remoteCwd,
+      runnerLifecyclePolicy: null, reusableLeaseConfigured: true, effectiveCapabilities: { reusableLeases: true } as never,
+      runner: { execute: async (command: { command: string; args?: string[]; cwd?: string; env?: Record<string,string>; stdin?: string; timeoutMs?: number }) => {
+        const args = [...(command.args ?? [])], env = { PATH: process.env.PATH, ...command.env };
+        if (command.stdin != null && (args[0] === "-c" || args[0] === "-lc")) {
+          Object.assign(env, { PAPERCLIP_TEST_STDIN: command.stdin });
+          args[1] = `printf '%s' "$PAPERCLIP_TEST_STDIN" | (${args[1]})`;
+        }
+        const result = await execute(command.command, args, { cwd: command.cwd, env, timeout: command.timeoutMs, maxBuffer: 32 * 1024 * 1024 });
+        return { exitCode: 0, signal: null, timedOut: false, ...result, pid: null, startedAt: new Date().toISOString() };
+      } } };
+    await db.insert(authUsers).values({ id: userId, name: "Fixture editor", email: `${userId}@example.test`, createdAt: new Date(), updatedAt: new Date() });
+    await db.insert(companyMemberships).values([{ companyId: agent.companyId, principalType: "user", principalId: userId, membershipRole: "operator" },
+      { companyId: agent.companyId, principalType: "agent", principalId: agent.id, membershipRole: "member" }]);
+    await db.insert(principalPermissionGrants).values({ companyId: agent.companyId, principalType: "user", principalId: userId, permissionKey: "agents:configure", scope: { agentIds: [agent.id] } });
+    await db.insert(environments).values({ id: environmentId, name: `Loopback sandbox ${environmentId}`, driver: "sandbox" });
+    const [lease] = await db.insert(environmentLeases).values({ id: leaseId, companyId: agent.companyId, environmentId, heartbeatRunId: run.id,
+      provider: "fixture", providerLeaseId: "local-loopback", leasePolicy: "reuse_by_environment" }).returning();
+    input.agent = { ...agent, adapterConfig: { ...agent.adapterConfig, lifecycleMode: "warm", idleTimeoutMs: 900_000,
+      instructionsBundleMode: "managed", instructionsRootPath: canonical, instructionsEntryFile: "AGENTS.md" } };
+    await db.update(agents).set({ adapterConfig: input.agent.adapterConfig }).where(eq(agents.id, agent.id));
+    await db.update(heartbeatRuns).set({ responsibleUserId: userId }).where(eq(heartbeatRuns.id, run.id));
+    input.run = await read(run.id);
+    input.workspace.executionTarget = target;
+    input.workspace.executionWorkspace.cwd = remoteCwd;
+    input.workspace.activeEnvironmentLease = { lease: (await environmentService(db).getLeaseById(lease.id))! };
+    input.nativeRuntimeResolution = resolveHeartbeatNativeRuntimeMode({ persisted: input.run, enabled: true, runtimeConfig: {}, adapterConfig: input.agent.adapterConfig,
+      agent: input.agent, issue, target, workspaceId: null });
+    expect(input.nativeRuntimeResolution.kind).toBe("native");
+    const { agentInstructionsBundleMode } = await import("../agent-instructions.js");
+    expect(agentInstructionsBundleMode(input.agent)).toBe("managed");
+    const copies = agentInstructionWorkingCopyService(db);
+    const instructionEvents = vi.fn(async () => {});
+    const controller = createHeartbeatInstructionWorkingCopy({ db, instructionCopies: copies, readRun: () => input.run, agent: input.agent,
+      context: input.task.context, session: { taskSession: null, taskSessionForRun: null, sessionConfigMetadata: {} as never },
+      workspace: input.workspace, appendRunEvent: instructionEvents });
+    const phases: string[] = [];
+    const selected = await prepareAndSelectHeartbeatRuntime(db, input, {
+      measure: async (phase, work) => { phases.push(phase); return work(); },
+      prepareInstructions: async nativeLifecyclePolicy => {
+        const runtimeConfig = await controller.prepare({ runtimeConfig: {}, nativeRuntimeResolution: input.nativeRuntimeResolution, hasInstructionFilesystem: true, nativeLifecyclePolicy });
+        return { runtimeConfig, instructionCopy: controller.instructionCopy };
+      },
+    });
+    expect(phases).toEqual(["instructions", "runtime_selection"]);
+    expect(instructionEvents.mock.calls).toEqual([]);
+    expect(controller.instructionCopy).not.toBeNull();
+    if (!selected.selected || !selected.nativeExecution) throw new Error("Expected native selection");
+    expect(selected.nativeExecution.session.lifecyclePolicy).toEqual({ mode: "warm", idleTimeoutMs: 900_000 });
+    expect((await copies.get(agent.companyId, run.id))?.receipt?.warm).toBe(true);
+    if (changed) await writeFile(join(controller.instructionCopy!.executionRoot, "memory.txt"), "Synthetic changed memory.\n");
+    expect(await controller.nativeInstructionWorkingCopy()!.checkpointWarm!()).toBe(true);
+    expect((await copies.get(agent.companyId, run.id))?.state).toBe("warm_saved");
+    expect(instructionEvents).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ eventType: "instruction_save",
+      payload: expect.objectContaining({ state: changed ? "saved" : "unchanged", contract: "agent_files", errorCode: null }) }));
+    if (changed) expect(await readFile(join(canonical, "memory.txt"), "utf8")).toBe("Synthetic changed memory.\n");
+  }, 45_000);
 
   it.each(["matching", "different-session", "absent"])("persists the migrated logical cwd only for the receipt's exact session: %s", async receipt => {
     const sameSession = receipt === "matching";

@@ -153,7 +153,7 @@ results in place; keep failures actionable inline. Notifications for other work
 remain useful. Repeated delivery of the same run outcome must refresh cached state
 without repeating its toast, including after reconnecting. A terminal outcome
 delivered more than five minutes after the run finished is historical and should
-refresh state silently. Expected cancellation is neutral gray, not an error. The composer's Stop action stops the current response and leaves the composer available for a new message. Pause work is a separate explicit task or subtree action. A paused task replaces the composer with an amber takeover. It says “Task is
+refresh state silently. Expected cancellation is neutral gray, not an error. A busy workspace is a transient system wait with no user action. Show it only as a quiet status in the composer strip and the Workspace property row, never as a pinned banner, conversation notice or toast. The composer's Stop action stops the current response and leaves the composer available for a new message. Pause work is a separate explicit task or subtree action. A paused task replaces the composer with an amber takeover. It says “Task is
 paused.” and “Resume this task to send a message.” with a “Resume task” action.
 Subtrees use “Subtree is paused.” and “Resume subtree.” The takeover cannot be
 dismissed, retains drafts, and hides message inputs until the pause is released.
@@ -407,9 +407,12 @@ Project, Parent Task, Tags, Worktree, Last updated**. The reusable
 width tokens and configurable column order. Review the complete composition in
 **Design proposals → Components → Task list → All columns**.
 
-- Created by is the recorded creator (human or agent); Assignee is the current
-  assignee. Both show names without avatars. Do not infer either from tree depth
-  or task status.
+- Created by is the recorded creator (human or agent) and shows a name. Assignee
+  shows the current agent's avatar or human's profile photo beside their name,
+  with the shared avatar fallback when an image is unavailable. Human photos load
+  only from Paperclip asset URLs; external profile URLs use initials. The avatar stays
+  visible while a long name reveals on hover or focus. Do not infer either
+  identity from tree depth or task status.
 - Task combines the status icon and title under one header and one Columns-menu
   choice. Sorting Task uses the title. Status sorting is unavailable for now.
 - Parent Task refers to the structural parent; it can show its ID and title.
@@ -951,7 +954,7 @@ Standard. Artifact type filters also support Compact for dense standalone uses. 
 patterns. Tabs contains only Playground, Standard and Compact. Playground
 compares the two sizes with local fixture state; narrow width remains a control.
 
-Accepted toolbar foundation for Design Proposals and the opt-in sandbox:
+Accepted toolbar foundation for all production inline collection and audit toolbars:
 
 - Use the shared `ToolbarSearch` and 44px control height, with one token-driven
   border, radius and horizontal padding across Tasks, Decisions, Skills and
@@ -976,6 +979,31 @@ Further consolidation proposals, pending visual review:
 - Use canonical Standard or Compact filled tabs for the compared label strips.
   Keep panel-switching tab semantics separate from exclusive collection
   filters. Closable document tabs retain their additional behavior.
+
+### Collection empty states and roster selection
+
+Projects uses the large artifact stack with a dark grey Paperclip mark on an off-white
+image front. The empty-state action is “Create project”. Artwork, message and
+primary action have 20px gaps (`gap-5`). Hovering or keyboard-focusing the action
+fans the same artwork as hovering the graphic. Artifacts uses that stack for
+Tasks and the corresponding single full-size artifact for each other type filter.
+
+Agent lists give chat and status their own vertically centered cells. Chat has a
+screen-reader-only column label and a MessageCircleCheck icon action. Hover and
+focus highlight the entire row; the identity link has no separate background.
+Bulk actions portal to a fixed card centered in the viewport, 48px above the
+bottom safe area, with the shared border and a soft shadow. The card retains its
+contents during the quintic rise/drop transition; reduced motion removes travel.
+Selection never inserts space above the roster.
+
+Agent Overview's Profile uses the bulk-edit avatar/name chips for reporting
+relationships. Within raised modules, their background uses the Skills chip
+surface so they remain distinct from the module. Agent chips have hover/focus
+states and link to the agent's overview. Reports to precedes Direct reports:
+No manager opens the manager picker; an assigned manager has a linked chip and
+an adjacent edit control. The picker disables self/descendant choices to prevent
+reporting loops. The editable heading sizes to its live text so the primary-agent
+crown stays beside the name throughout editing.
 
 ### Segmented controller comparison
 

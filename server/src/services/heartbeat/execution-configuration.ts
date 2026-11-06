@@ -19,6 +19,7 @@ import { AI_AUTH_ENV_KEYS, isAiConnectionBusy, prepareManagedAiRuntime, stripAiA
 import { managedAiSessionIdentityCompatible } from "../ai-connection-session.js";
 import type { companySkillService } from "../company-skills.js";
 import { connectionIntentService } from "../connection-intents.js";
+import { PLUGIN_RUNNER_AI_CONNECTION_REQUIRED, pluginEnvironmentRunnerTaskDriver, pluginRunnerAiConnectionRequiredMessage } from "../plugin-runner-ai-connection.js";
 import { prepareConnectionInstructionDelivery } from "../connection-instructions.js";
 import { applyConnectorSkills, prepareConnectorSkillDelivery, resolveConnectorAssignments } from "../connector-runtime.js";
 import { resolveManagedGitHubIdentitySelection } from "../git-credentials.js";
@@ -104,6 +105,16 @@ export async function prepareHeartbeatExecutionConfiguration(db: Db, input: Hear
   if (preconfiguredHome && pinnedSkillTest) {
     throw new ConfigurationIncompleteFailure("Skill tests require an isolated Runner home to deliver the saved version.", {
       configurationIncomplete: { reason: "skill_unavailable", actionUrl: `/agents/${agent.id}/runtime` },
+    });
+  }
+  // A plugin Runner-task environment runs only managed AI connections. Refuse a new
+  // admission before secrets, leases, or provider calls. Resumed native input keeps
+  // the contract it was admitted under.
+  if (agent.adapterType === "paperclip_runner" && (preconfiguredHome || !input.config.aiBinding) && !persistedNativeExecutionInput
+    && selectedEnvironmentForConfig && await pluginEnvironmentRunnerTaskDriver(db, selectedEnvironmentForConfig)) {
+    throw new ConfigurationIncompleteFailure(pluginRunnerAiConnectionRequiredMessage(preconfiguredHome), {
+      configurationIncomplete: { reason: PLUGIN_RUNNER_AI_CONNECTION_REQUIRED, actionUrl: `/agents/${agent.id}/runtime`,
+        ...(preconfiguredHome ? { homeMode: "preconfigured" } : {}) },
     });
   }
   const initialHarness = agentHarnessType(agent.adapterType, sourceWorkspaceConfig);

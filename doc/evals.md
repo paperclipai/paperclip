@@ -137,6 +137,13 @@ It requires a fresh owned agent with no prior work runs and uses three provider 
 Cloud fleet operations and trusted CI remain private. Local eval gateway qualification
 does not qualify Cloud routes, and these selections stay outside `--all`.
 
+The explicit [onboarding approval-history journey](../tests/runner-e2e/README.md#first-task-onboarding)
+continues an interview through partial plan acceptance, approved hiring, and a
+separate execution confirmation. It requires the assigned child's real execution,
+saved output, unchanged approved scope, and reload persistence. Deterministic
+PostgreSQL producer/consumer tests run in ordinary CI; native provider cells
+require an explicit paid selection and a recorded live result.
+
 The deployment-targeted [saved skill journey](../tests/runner-e2e/product-journeys/saved-skill-use.md) checks one company skill assigned by key, its exact admitted immutable version, a bound native source read/load, and a run-authored saved result from skill-only inputs. It uses the reusable Product journey target and remains unqualified until a real target run passes.
 
 The explicit-only [case handoff workflow](../tests/runner-e2e/README.md#persistent-case-handoffs-explicit-only)
@@ -371,7 +378,10 @@ Use the selectors documented in the [runner E2E README](../tests/runner-e2e/READ
 for a suite, profile, case, group, or environment. Daytona needs the immutable
 image digest and `DAYTONA_API_KEY`; follow the README and fixture security guide.
 `--all` excludes manual suites such as `everyday-workflows`. Select that suite
-explicitly; use a narrow selector while developing a fixture.
+explicitly; use a narrow selector while developing a fixture. Its staging-soak
+reliability cases need `--group reliability` as well; see
+[Everyday workflows](../tests/runner-e2e/EVERYDAY-WORKFLOWS.md#staging-soak-reliability-group)
+for the command and the before-release cadence.
 
 For Runner Evals, the narrowest useful local validation is the report program's
 help/validation path and the deterministic Runner checks documented in
@@ -608,7 +618,9 @@ verified worker process loss, and multi-turn answers grounded in actual task
 records. See the [workflow and qualification limits](../tests/runner-e2e/README.md#remaining-native-agent-chat-qualification).
 The 26 native `first-task` cells inspect the production wizard's saved native
 default on qualified targets, without an API runner switch. The 26 Legacy cells
-select Legacy explicitly in Advanced. Live results and semantic answer reviews must accompany
+use an API-configured inactive setup record and resume it in the wizard, as
+described in the [first-task setup contract](../tests/runner-e2e/README.md#first-task-onboarding).
+Live results and semantic answer reviews must accompany
 any qualification claim; catalog presence alone is not a pass.
 
 The explicit-only [native question/resume qualification](../tests/runner-e2e/README.md#task-continuation)

@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { createRunSecretRedactionRegistry } from "../services/run-secret-redaction.js";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { agents, agentWakeupRequests, companies, createDb, applyPendingMigrations, heartbeatRuns, issues, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS } from "@paperclipai/db";
+import { agents, agentWakeupRequests, companies, createDb, applyPendingMigrations, heartbeatRuns, issues, nativeRunFinalizations, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS } from "@paperclipai/db";
 import { taskInterruptionPresentation, taskInterruptionPresentations } from "../services/task-interruption-presentation.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
@@ -23,6 +23,28 @@ describe.skipIf(!support.supported)("task interruption latest run query", () => 
     db = createDb(database.connectionString);
   }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
   afterAll(async () => { await db?.$client.end(); await database?.cleanup(); });
+
+  it("shows a pending native same-run resume instead of a competing Retry", async () => {
+    const companyId = randomUUID(), agentId = randomUUID(), runId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Resuming task", issuePrefix: `R${companyId.slice(0, 7)}` });
+    await db.insert(agents).values({ id: agentId, companyId, name: "Resuming agent", adapterType: "paperclip_runner" });
+    const [issue] = await db.insert(issues).values({ companyId, title: "Resume after attach failure",
+      status: "in_progress", assigneeAgentId: agentId }).returning();
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, nativeIssueId: issue.id, scopeKind: "issue",
+      status: "failed", runtimeMode: "native", errorCode: "native_session_interrupted", finishedAt: new Date() });
+    const resumeAt = new Date(Date.now() + 30_000);
+    await db.insert(nativeRunFinalizations).values({ companyId, issueId: issue.id, runId, phase: "retryable_failure",
+      attempt: 1, nextAttemptAt: resumeAt });
+    for (const presentation of [(await taskInterruptionPresentations(db, companyId, [issue])).get(issue.id),
+      await taskInterruptionPresentation(db, issue)]) {
+      expect(presentation).toMatchObject({ state: "retry_scheduled", canRetry: false, nextRetryAt: resumeAt.toISOString() });
+    }
+    // Exhausted recovery is terminal: exactly one Retry returns.
+    await db.update(nativeRunFinalizations).set({ phase: "terminal_failure", nextAttemptAt: null })
+      .where(eq(nativeRunFinalizations.runId, runId));
+    expect((await taskInterruptionPresentations(db, companyId, [issue])).get(issue.id))
+      .toMatchObject({ state: "failed", canRetry: true });
+  });
 
   it("redacts workspace preparation errors on task detail and list reads", async () => {
     vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY", "a".repeat(64));
@@ -89,6 +111,33 @@ describe.skipIf(!support.supported)("task interruption latest run query", () => 
         expect(JSON.stringify(presentation)).not.toContain(secret);
       }
       expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run!.id)))[0]?.resultJson).toEqual({ providerFailure });
+    } finally { vi.unstubAllEnvs(); }
+  });
+
+  it("redacts a scheduled retry's predecessor provider explanation with the predecessor's registry", async () => {
+    vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY", "a".repeat(64));
+    try {
+      const f = await seedInterruptionFixture(db, { selected: 1, history: 1, unrelated: 0, payloadBytes: 0 });
+      const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, f.companyId));
+      const predecessorId = randomUUID();
+      const secret = `private-predecessor-value-${randomUUID()}`;
+      const providerFailure = { schema: "paperclip.provider-failure.v1", provider: "daytona", phase: "startup",
+        category: "overloaded", message: `Sandbox refused lease for ${secret}.`, httpStatus: 502, retryability: "transient" };
+      await db.insert(heartbeatRuns).values({ id: predecessorId, companyId: f.companyId, agentId: run!.agentId,
+        status: "failed", errorCode: "environment_provider_unavailable", resultJson: { providerFailure },
+        createdAt: new Date(run!.createdAt.getTime() - 60_000) });
+      await db.update(heartbeatRuns).set({ status: "scheduled_retry", retryOfRunId: predecessorId, resultJson: {},
+        scheduledRetryAt: new Date(Date.now() + 30_000), scheduledRetryAttempt: 1 }).where(eq(heartbeatRuns.id, run!.id));
+      await createRunSecretRedactionRegistry(db).register(f.companyId, predecessorId, secret);
+      const list = await taskInterruptionPresentations(db, f.companyId, f.input);
+      const detail = await taskInterruptionPresentation(db, f.input[0]!);
+      for (const presentation of [list.get(f.input[0]!.id), detail]) {
+        expect(presentation?.observedRunId).toBe(run!.id);
+        expect(presentation?.providerFailure).toMatchObject({ httpStatus: 502 });
+        expect(presentation?.providerFailure?.message).toContain("Sandbox refused lease");
+        expect(presentation?.providerFailure?.message).toContain("REDACTED");
+        expect(JSON.stringify(presentation)).not.toContain(secret);
+      }
     } finally { vi.unstubAllEnvs(); }
   });
 
@@ -222,4 +271,24 @@ describe.skipIf(!support.supported)("task interruption latest run query", () => 
       taskId: reassigned!.id, agentAdapter: "process",
     }));
   });
+  // N-03: ONB-1 on staging waited 16 minutes on an overdue workspace_busy
+  // retry. Nothing failed, yet the banner offered a Retry that cannot help.
+  it.each(["workspace_busy", "ai_connection_busy", "ai_connection_pool_wait", "runner_revision_wait"])(
+    "does not present an overdue %s wait as a failed attempt", async reason => {
+      const companyId = randomUUID(), agentId = randomUUID(), parentRunId = randomUUID();
+      await db.insert(companies).values({ id: companyId, name: "Waiting task", issuePrefix: `W${companyId.slice(0, 7)}` });
+      await db.insert(agents).values({ id: agentId, companyId, name: "Waiting agent", adapterType: "process" });
+      const [issue] = await db.insert(issues).values({ companyId, title: "Paperclip onboarding",
+        status: "in_progress", assigneeAgentId: agentId }).returning();
+      const now = Date.now();
+      await db.insert(heartbeatRuns).values({ id: parentRunId, companyId, agentId, issueId: issue!.id, scopeKind: "issue",
+        status: "cancelled", errorCode: reason, createdAt: new Date(now - 10 * 60_000), finishedAt: new Date(now - 9 * 60_000) });
+      await db.insert(heartbeatRuns).values({ companyId, agentId, issueId: issue!.id, scopeKind: "issue",
+        status: "scheduled_retry", retryOfRunId: parentRunId, scheduledRetryReason: reason, scheduledRetryAttempt: 2,
+        scheduledRetryAt: new Date(now - 5 * 60_000), createdAt: new Date(now - 9 * 60_000) });
+      captureTaskInterruptionFailure.mockClear();
+      const presentation = (await taskInterruptionPresentations(db, companyId, [issue!])).get(issue!.id);
+      expect(presentation).toMatchObject({ responsibility: "system", state: "working", canRetry: false });
+      expect(captureTaskInterruptionFailure).not.toHaveBeenCalled();
+    });
 });

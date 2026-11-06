@@ -3,6 +3,7 @@ import * as executionTargets from "@paperclipai/adapter-utils/execution-target";
 import type { AdapterEnvironmentTestContext } from "@paperclipai/adapter-utils";
 import type { AdapterEnvironmentTestResult } from "@paperclipai/shared";
 import type { Db } from "@paperclipai/db";
+import { environmentTaskErrorCodeData, JsonRpcCallError, PluginEnvironmentTaskError } from "@paperclipai/plugin-sdk";
 
 const { runtimeProbe, claudeProbe, verifyKey, markAuthFailed } = vi.hoisted(() => ({
   runtimeProbe: vi.fn(), claudeProbe: vi.fn(), verifyKey: vi.fn(), markAuthFailed: vi.fn(),
@@ -19,7 +20,7 @@ function readiness(): AdapterEnvironmentTestResult {
     code: "acpx_remote_runtime_unverified", level: "warn", message: "The remote platform is supported. Runtime package integrity and readiness must still be verified by the remote runner before launch.",
   }] };
 }
-const context: AdapterEnvironmentTestContext = { companyId: "company-1", adapterType: "paperclip_runner", environmentName: "Paperclip Computer",
+const context: AdapterEnvironmentTestContext = { companyId: "company-1", adapterType: "paperclip_runner", environmentName: "Paperclip Sandbox",
   config: { provider: "acpx", acpxAgent: "claude", model: "claude-opus-5-5", env: { CLAUDE_CODE_OAUTH_TOKEN: "fixture-token" }, managedAiConnection: { method: "subscription" } },
   executionTarget: { kind: "remote" as const, transport: "sandbox" as const, providerKey: "daytona", leaseId: "lease-1", remoteCwd: "/workspace", runner: { execute: vi.fn().mockResolvedValue({ exitCode: 0, timedOut: false, stdout: "", stderr: "", signal: null }) } },
 };
@@ -156,6 +157,17 @@ describe("managed Runner connection test status", () => {
     await expect(testConnection({ executionTarget: { ...context.executionTarget!, runnerTask } as AdapterEnvironmentTestContext["executionTarget"] }))
       .rejects.toMatchObject({ status: 422, details: { code: "ai_connection_incompatible" } });
     expect(runtimeProbe).not.toHaveBeenCalled();
+  });
+  it("keeps the stable Runner revision mismatch result when plugin description fails", async () => {
+    verifiedClaude();
+    const refusal = new JsonRpcCallError({ code: -32002, message: "The installed Runner does not match the expected revision",
+      data: environmentTaskErrorCodeData(new PluginEnvironmentTaskError("runner_revision_mismatch")) });
+    const runnerTask = vi.fn().mockRejectedValue(refusal);
+    const result = await testConnection({ executionTarget: { ...context.executionTarget!, runnerTask } as AdapterEnvironmentTestContext["executionTarget"] });
+    expect(result).toMatchObject({ status: "fail", checks: [{ code: "runner_revision_mismatch", level: "error", retryable: true }] });
+    expect(() => assertHarnessTestPassed(result)).toThrow(expect.objectContaining({ code: "runner_revision_mismatch" }));
+    expect(runtimeProbe).not.toHaveBeenCalled();
+    expect(markAuthFailed).not.toHaveBeenCalled();
   });
   it("keeps actionable warnings after a successful hello", async () => {
     vi.stubEnv("PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN", "managed-fixture"); verifiedClaude();
