@@ -158,7 +158,7 @@ async function open(
     // Runner owns these calls until a durable result, cancellation, or lease
     // expiry. A shorter MCP deadline would leave an unknown effect pending.
     durableToolRequests: true,
-    completionFeedback: openCodeProxyCompletionFeedback((method, params) => requestController(method, params, true)),
+    completionFeedback: openCodeProxyCompletionFeedback((method, params, signal) => requestController(method, params, true, signal)),
     dynamicToolHandler: async (call) =>
       requestController("item/tool/call", {
         threadId: session?.ids().driverSessionId ?? "opening",

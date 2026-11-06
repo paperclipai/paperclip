@@ -185,6 +185,8 @@ export type OpenCodeCompletionFeedback = (result: PrpStructuredRunResult, call: 
   callId: string;
   threadId: string;
   turnId: string;
+  /** Aborts when the MCP client abandons the completion call. */
+  signal?: AbortSignal;
 }) => Promise<string>;
 
 export interface OpenCodeServerDriverOptions {
@@ -1193,6 +1195,7 @@ class OpenCodeHarnessSession implements HarnessSession {
           this.#dynamicToolHandler ? () => this.#dynamicToolHandler!({
             tool: "get_task_context", callId: `${call.callId}:continuation`,
             threadId: this.#providerSessionId, turnId, arguments: {},
+            ...(call.signal ? { signal: call.signal } : {}),
           }) : undefined);
         if (this.#closed || this.#activeTurnId !== turnId)
           throw new Error("The turn ended while resolving completion");
@@ -1230,6 +1233,7 @@ class OpenCodeHarnessSession implements HarnessSession {
         const feedback = this.#completionFeedback
           ? await this.#completionFeedback(validation.result, {
               tool, callId: call.callId, threadId: this.#providerSessionId, turnId,
+              ...(call.signal ? { signal: call.signal } : {}),
             })
           : "Semantic completion accepted.";
         if (typeof feedback !== "string" || !feedback.trim())

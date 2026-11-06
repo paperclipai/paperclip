@@ -93,7 +93,7 @@ export async function startOpenCodeMcpBridge(
     };
     try { options.onDiagnostic(JSON.stringify(diagnostic)); } catch { /* Optional diagnostics never change admission. */ }
   };
-  const calls = new Map<string, { fingerprint: string; promise: Promise<unknown> }>();
+  const calls = new Map<string, { fingerprint: string; promise: Promise<unknown>; waiting: Set<ServerResponse> }>();
   const controllers = new Map<string, AbortController>();
   const server = createServer((request, response) => {
     void handleRequest(request, response, {
@@ -185,7 +185,7 @@ async function handleRequest(
     tools: OpenCodeMcpToolDefinition[];
     admittedTools: OpenCodeMcpToolDefinition[];
     validators: Map<string, ValidateFunction>;
-    calls: Map<string, { fingerprint: string; promise: Promise<unknown> }>;
+    calls: Map<string, { fingerprint: string; promise: Promise<unknown>; waiting: Set<ServerResponse> }>;
     controllers: Map<string, AbortController>;
     handler: OpenCodeMcpBridgeOptions["handler"];
     onRejectedCall: OpenCodeMcpBridgeOptions["onRejectedCall"];
@@ -309,14 +309,21 @@ async function handleRequest(
   );
   if (!existing) {
     if (context.calls.size >= 2_048) context.calls.delete(context.calls.keys().next().value!);
-    context.calls.set(callId, { fingerprint, promise: execution });
+    context.calls.set(callId, { fingerprint, promise: execution, waiting: new Set() });
     context.controllers.set(callId, controller!);
     void execution.finally(() => context.controllers.delete(callId)).catch(() => undefined);
-    // A client that drops its connection has abandoned the call just like one
-    // that sends notifications/cancelled. Abort so a call still waiting to be
-    // handed to the controller is never dispatched after the client gave up.
+  }
+  // A client that drops its connection has abandoned the call just like one
+  // that sends notifications/cancelled. Abort once no connection still waits
+  // on this call identity, so a call still waiting to be handed to the
+  // controller is never dispatched after every client gave up. A live retry
+  // of the same call keeps it alive.
+  const waiting = (existing ?? context.calls.get(callId))?.waiting;
+  if (waiting && context.controllers.has(callId)) {
+    waiting.add(response);
     response.once("close", () => {
-      if (!response.writableFinished) controller!.abort();
+      waiting.delete(response);
+      if (!response.writableFinished && waiting.size === 0) context.controllers.get(callId)?.abort();
     });
   }
   try {
