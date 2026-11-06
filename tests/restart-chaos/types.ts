@@ -147,6 +147,8 @@ export interface FaultReceipt {
   /** What fired the fault (absent for time). */
   trigger?: TriggerId;
   triggerDelayMs?: number;
+  /** Host 1-minute load average when the fault started (timeout findings above 16 are load-suspect). */
+  loadAvg1m?: number;
   /** K6: the extra kills and the phase each one hit. */
   crashLoop?: Array<{ pid: number | null; target: string; phase: string; at: number }>;
   serverLogOffsetAtStart: number;

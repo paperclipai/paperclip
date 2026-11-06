@@ -6,7 +6,8 @@ import { observedFaultSchedule, planTasks, taskFaultSchedule, TRIGGER_DELAY_RANG
 import type { ChaosLab } from "./seed.js";
 import { crashLoopShouldFire } from "./supervisor.js";
 import { Timeline } from "./timeline.js";
-import type { TaskPlan, WaveOptions } from "./types.js";
+import { ledgerLine } from "./ledger.js";
+import type { TaskGrade, TaskPlan, TaskRecord, WaveOptions, WavePlan } from "./types.js";
 
 process.env.RESTART_CHAOS_QUIET = "1";
 const lab: ChaosLab = { companyId: "c1", environmentId: "e1", projectId: "p1", fixtureRepositoryPath: "/tmp/none",
@@ -162,6 +163,18 @@ describe("trigger firing", () => {
     observer.record.benchFirstSeenAt = start + 30_000;
     expect(observer.faultDue(start + 49_999)).toBeNull();
     expect(observer.faultDue(start + 50_000)).toMatchObject({ trigger: "tool" });
+  });
+});
+
+describe("ledger load", () => {
+  it("records the highest load among the task's crossing faults", () => {
+    const plan = { waveId: "w", seed: 1, options: { env: "local" } } as unknown as WavePlan;
+    const record = { plan: base, identifier: "CHA-1", issueId: "i1", retry: null } as unknown as TaskRecord;
+    const grade = { rules: {}, T: { verdict: "pass" }, crossed: true, crossingFaults: ["f01", "f02"], pass: true, signature: null } as unknown as TaskGrade;
+    const line = ledgerLine(plan, record, grade, "sha", null,
+      [{ faultId: "f01", loadAvg1m: 12.5 }, { faultId: "f02", loadAvg1m: 21 }, { faultId: "f03", loadAvg1m: 40 }]);
+    expect(line.maxLoadAvg1m).toBe(21);
+    expect(ledgerLine(plan, record, grade, "sha", null).maxLoadAvg1m).toBeUndefined();
   });
 });
 

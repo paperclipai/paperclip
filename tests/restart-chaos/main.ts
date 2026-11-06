@@ -158,7 +158,7 @@ async function main(): Promise<number> {
           gitSha, gitDirty, issue: observer.issue, secrets }).catch(error => { timeline.add("evidence_failed", { taskId: observer.plan.taskId, error: String(error) }); return null; });
       }
       await writeFile(path.join(waveDir, `${observer.plan.taskId}.grade.json`), `${JSON.stringify({ record: observer.record, grade }, null, 2)}\n`, { mode: 0o600 });
-      lines.push(ledgerLine(plan, observer.record, grade, gitSha, evidence));
+      lines.push(ledgerLine(plan, observer.record, grade, gitSha, evidence, faults));
       timeline.add("task_graded", { taskId: observer.plan.taskId, pass: grade.pass, crossed: grade.crossed, signature: grade.signature,
         rules: Object.fromEntries(Object.entries(grade.rules).map(([id, rule]) => [id, rule.verdict])), T: grade.T.verdict });
     }

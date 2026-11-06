@@ -18,6 +18,7 @@ import { randomBytes } from "node:crypto";
 import { createWriteStream, statSync, type WriteStream } from "node:fs";
 import { mkdir, readFile, symlink } from "node:fs/promises";
 import { createRequire } from "node:module";
+import os from "node:os";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { prepareControllerDatabase } from "../runner-e2e/controller-database.js";
@@ -247,12 +248,13 @@ export class ChaosSupervisor {
     const receipt: FaultReceipt = {
       faultId: `f${String(this.faultCount).padStart(2, "0")}`, kind, requestedBy, signal: FAULT_SIGNAL[kind], holdMs,
       ...(trigger ? { trigger: trigger.trigger, triggerDelayMs: trigger.delayMs } : {}),
+      loadAvg1m: Math.round(os.loadavg()[0]! * 100) / 100,
       requestedAt, startedAt: Date.now(), stoppedAt: null, restartedAt: null, healthyAt: null, readyAt: null,
       phases: [], serverLogOffsetAtStart: this.serverLogOffset(), serverLogOffsetAtReady: null, error: null,
     };
     this.faultInProgress = true;
     this.serverReady = false;
-    this.timeline.add("fault_started", { faultId: receipt.faultId, fault: kind, signal: receipt.signal, holdMs, requestedBy, previousPid: previous?.pid });
+    this.timeline.add("fault_started", { faultId: receipt.faultId, fault: kind, signal: receipt.signal, loadAvg1m: receipt.loadAvg1m, holdMs, requestedBy, previousPid: previous?.pid });
     this.log.write(`\n[restart-chaos] ${receipt.faultId} ${kind} ${receipt.signal} hold=${holdMs}ms requestedBy=${requestedBy} at ${new Date().toISOString()}\n`);
     try {
       if (!previous?.pid || this.exited(previous)) throw new Error("No live Paperclip server to fault");

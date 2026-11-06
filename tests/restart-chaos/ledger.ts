@@ -28,12 +28,16 @@ export interface LedgerLine {
   pass: boolean;
   signature: string | null;
   retried: boolean;
+  /** Highest host 1-minute load average among the crossing faults. */
+  maxLoadAvg1m?: number;
   evidence: string | null;
   replay: string;
   recordedAt: string;
 }
 
-export function ledgerLine(plan: WavePlan, record: TaskRecord, grade: TaskGrade, gitSha: string, evidence: string | null): LedgerLine {
+export function ledgerLine(plan: WavePlan, record: TaskRecord, grade: TaskGrade, gitSha: string, evidence: string | null,
+  faults: ReadonlyArray<{ faultId: string; loadAvg1m?: number }> = []): LedgerLine {
+  const loads = faults.filter(fault => grade.crossingFaults.includes(fault.faultId) && fault.loadAvg1m !== undefined).map(fault => fault.loadAvg1m!);
   const rules = Object.fromEntries(Object.entries(grade.rules).map(([id, rule]) => [id, rule.verdict])) as Record<RuleId, string>;
   const ruleDetails = Object.fromEntries(Object.entries(grade.rules).map(([id, rule]) => [id, rule.detail])) as Record<RuleId, string>;
   return {
@@ -42,6 +46,7 @@ export function ledgerLine(plan: WavePlan, record: TaskRecord, grade: TaskGrade,
     ...(record.plan.trigger ? { trigger: record.plan.trigger, triggerMissed: record.triggerMissed ?? [] } : {}),
     holdMs: record.plan.holdMs, fireAfterMs: record.plan.fireAfterMs, issue: record.identifier ?? record.issueId,
     crossed: grade.crossed, crossingFaults: grade.crossingFaults, rules, ruleDetails, T: grade.T.verdict, pass: grade.pass,
+    ...(loads.length ? { maxLoadAvg1m: Math.max(...loads) } : {}),
     signature: grade.signature, retried: Boolean(record.retry), evidence, replay: replayCommand(plan.waveId, record.plan.taskId),
     recordedAt: new Date().toISOString(),
   };
