@@ -2,6 +2,7 @@ import { readClaimedNativeStopRecovery } from "../native-runtime/native-cancella
 import { readContextCompactionRequest } from "../context-compaction.js";
 import { remoteWorkspaceFailureCause } from "../remote-workspace-transport.js";
 import { readNativePostResultFailureDiagnostic } from "../native-runtime/native-post-result-failure.js";
+import { acceptedNativeAdapterResult } from "../native-runtime/native-accepted-result-settlement.js";
 import { NativeStartupCleanupPendingError } from "../native-runtime/native-startup-cleanup.js";
 import { NativeControllerRecoveryWaitingError } from "../native-runtime/native-controller-recovery.js";
 import { describeFailedAttachment } from "../native-runtime/remote-warm-session-recovery.js";
@@ -1160,14 +1161,22 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
     // The control code can be a fencing label; the closed diagnostic says
     // what actually failed after an accepted result (no provider text).
     const postResultFailure = readNativePostResultFailureDiagnostic(adapterErr);
+    // A runner that could not prove suspension after an accepted result left a
+    // local workspace untouched: there is nothing to copy back. Settle the
+    // accepted result instead of failing the run over runner bookkeeping.
+    const settleAcceptedResult = nativeRuntimeResolution.kind === "native"
+      && postResultFailure?.category === "runner_settlement_incomplete"
+      && !nativeWorkspaceSync && !remoteWorkspaceAuthority;
     try {
-      await recordWorkspaceFinalize("failed", {
-        errorMessage:
-          adapterErr instanceof Error
-            ? adapterErr.message
-            : String(adapterErr),
-        ...(postResultFailure ? { failureDiagnostic: postResultFailure } : {}),
-      });
+      await recordWorkspaceFinalize(settleAcceptedResult ? "succeeded" : "failed", settleAcceptedResult
+        ? { runnerSettlementDiagnostic: postResultFailure }
+        : {
+            errorMessage:
+              adapterErr instanceof Error
+                ? adapterErr.message
+                : String(adapterErr),
+            ...(postResultFailure ? { failureDiagnostic: postResultFailure } : {}),
+          });
     } catch (recordErr) {
       logger.warn(
         {
@@ -1215,6 +1224,31 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
             ? "workspace_sync_out_unrecoverable"
             : "workspace_sync_out_failed",
         );
+      }
+      if (settleAcceptedResult && proposedResult) {
+        // Finalize exactly as a returned result would, then let the ordinary
+        // completion path settle the run, session, accounting and agent.
+        const accepted = await acceptedNativeAdapterResult(db, {
+          runId: run.id, companyId: run.companyId, resultId: proposedResult,
+          model: nativeExecution?.provider.model ?? null, driverKind: nativeExecution?.session.driverKind ?? "unknown",
+          postResultFailure: postResultFailure!,
+        });
+        if (accepted) {
+          await onLog("stderr", "[paperclip] runner settlement was incomplete after the result was accepted; finalizing the accepted result\n")
+            .catch(() => undefined);
+          try {
+            await measureRunPhase("execution.native_finalize", () => finalizeNativeRun({
+              db, runId: run.id, workspaceFinalizeStatus: "succeeded",
+            }));
+            await dispatchPendingNativeStatusWakeups({ companyId: run.companyId });
+          } catch (finalizeErr) {
+            logger.warn(
+              { err: finalizeErr, runId: run.id },
+              "native result persisted but finalization did not apply; the reconciliation loop will retry",
+            );
+          }
+          return { dispatched: true, adapterResult: accepted };
+        }
       }
       try {
         await measureRunPhase("execution.native_finalize", () => finalizeNativeRun({
