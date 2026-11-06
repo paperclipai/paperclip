@@ -201,8 +201,8 @@ test('pr command blocks a contributor lockfile change', () => {
 
 test('workflows run the trust policy from trusted code and pass the verified hash to the proof refresh', () => {
   const pr = readFileSync('.github/workflows/pr-trusted.yml', 'utf8');
-  assert.match(pr, /git show "\$BASE_SHA:\.github\/scripts\/lockfile-trust\.mjs" > "\$policy"/);
-  assert.match(pr, /node "\$policy" pr/);
+  assert.match(pr, /git show "\$trusted_base:\.github\/scripts\/lockfile-trust\.mjs" > "\$policy"/);
+  assert.match(pr, /BASE_SHA="\$trusted_base" node "\$policy" pr/);
   assert.match(pr, /PAPERCLIP_CI_PR_AUTHOR: \$\{\{ github\.event\.pull_request\.user\.login \}\}/);
   assert.doesNotMatch(pr, /github\.head_ref != 'chore\/refresh-lockfile'/);
 
@@ -210,4 +210,70 @@ test('workflows run the trust policy from trusted code and pass the verified has
   assert.match(refresh, /node \.github\/scripts\/lockfile-trust\.mjs merged/);
   assert.match(refresh, /--refresh --trusted-lock-sha256 "\$TRUSTED_LOCK_SHA256"/);
   assert.ok(refresh.indexOf('lockfile-trust.mjs merged') < refresh.indexOf('--trusted-lock-sha256'));
+});
+
+// Run the policy job's step script, as GitHub would, against a merge commit.
+function runPolicyStep({ staleBase, githubSha, headSha, author, headRef, root }) {
+  const workflow = readFileSync('.github/workflows/pr-trusted.yml', 'utf8');
+  const step = workflow.split('      - name: Block untrusted lockfile edits\n')[1];
+  const lines = step.split('\n');
+  const start = lines.findIndex((line) => line === '        run: |') + 1;
+  const end = lines.findIndex((line, index) => index >= start && line.trim() !== '' && !line.startsWith('          '));
+  const script = lines.slice(start, end).map((line) => line.slice(10)).join('\n');
+  const output = path.join(root, '.output');
+  writeFileSync(output, '');
+  const result = spawnSync('bash', ['-e', '-c', script], {
+    cwd: root, encoding: 'utf8',
+    env: { ...process.env, RUNNER_TEMP: mkdtempSync(path.join(tmpdir(), 'policy-runner-')), GITHUB_OUTPUT: output,
+      GITHUB_REPOSITORY: repo, GITHUB_SHA: githubSha, BASE_SHA: staleBase, HEAD_SHA: headSha, PR_NUMBER: '1',
+      PR_AUTHOR: author, HEAD_REPO: repo, HEAD_REF: headRef },
+  });
+  return { status: result.status, stdout: result.stdout + result.stderr, output: readFileSync(output, 'utf8') };
+}
+
+test('the policy step loads the policy from the merge commit when the recorded base is stale', () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'lockfile-policy-step-'));
+  try {
+    const git = (...args) => execFileSync('git', args, { cwd: root, encoding: 'utf8' }).trim();
+    const commit = (message) => {
+      git('add', '.');
+      git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', message);
+      return git('rev-parse', 'HEAD');
+    };
+    git('init', '-q', '-b', 'master');
+    writeFileSync(path.join(root, 'pnpm-lock.yaml'), 'lock: base\n');
+    const staleBase = commit('base before the policy');
+    // A contributor branch named like the refresh branch, from the stale base. The earlier rule exempts it.
+    git('checkout', '-q', '-b', 'chore/refresh-lockfile');
+    writeFileSync(path.join(root, 'pnpm-lock.yaml'), 'lock: contributor\n');
+    const head = commit('contributor lockfile');
+    git('checkout', '-q', 'master');
+    execFileSync('mkdir', ['-p', path.join(root, '.github/scripts')]);
+    writeFileSync(path.join(root, '.github/scripts/lockfile-trust.mjs'), readFileSync('.github/scripts/lockfile-trust.mjs'));
+    commit('add the policy');
+    git('-c', 'user.name=GitHub', '-c', 'user.email=noreply@github.com', 'merge', '-q', '--no-ff', '-X', 'theirs', '-m', 'merge', head);
+    const merge = git('rev-parse', 'HEAD');
+
+    const blocked = runPolicyStep({ root, staleBase, githubSha: merge, headSha: head, author: 'someuser', headRef: 'chore/refresh-lockfile' });
+    assert.equal(blocked.status, 1, blocked.stdout);
+    assert.match(blocked.stdout, /Untrusted lockfile change/);
+
+    // A contributor pull request that does not touch lock content passes through the loaded policy.
+    git('checkout', '-q', '-b', 'docs', staleBase);
+    writeFileSync(path.join(root, 'notes.md'), 'docs\n');
+    const docs = commit('docs only');
+    git('checkout', '-q', 'master');
+    git('-c', 'user.name=GitHub', '-c', 'user.email=noreply@github.com', 'merge', '-q', '--no-ff', '-m', 'merge docs', docs);
+    const allowed = runPolicyStep({ root, staleBase, githubSha: git('rev-parse', 'HEAD'), headSha: docs, author: 'someuser', headRef: 'docs' });
+    assert.equal(allowed.status, 0, allowed.stdout);
+    assert.match(allowed.stdout, /does not change lock content/);
+    assert.match(allowed.output, /^writer=none$/m);
+
+    // Without GitHub's merge commit, the step keeps the recorded base, which predates the policy.
+    const fallback = runPolicyStep({ root, staleBase, githubSha: head, headSha: head, author: 'someuser', headRef: 'chore/refresh-lockfile' });
+    assert.equal(fallback.status, 0, fallback.stdout);
+    assert.match(fallback.output, /^writer=none$/m);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });

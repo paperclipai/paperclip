@@ -228,7 +228,7 @@ If `@cryppadotta` is not the right reviewer identity in the public repo, change 
 
 The reporting-lock proof (`tests/runner-e2e/report-lock.json` and `report-lock.patch`) controls the lock that paid evaluation jobs install, so it counts as lock content too. Only this workflow writes it.
 
-`.github/scripts/lockfile-trust.mjs` enforces these rules in the `pr-trusted.yml` policy job. The job runs the copy of the script from the base commit, so a pull request cannot change the check that judges it. To update a Dependabot pull request that is behind `master`, comment `@dependabot recreate`. Do not merge `master` into its branch, because a merged lockfile no longer matches Dependabot's commit.
+`.github/scripts/lockfile-trust.mjs` enforces these rules in the `pr-trusted.yml` policy job. The job runs the copy of the script from the current tip of the base branch, which is the first parent of GitHub's merge commit. A pull request therefore cannot change the check that judges it. The job does not use `pull_request.base.sha`, because GitHub does not update it on every push. To update a Dependabot pull request that is behind `master`, comment `@dependabot recreate`. Do not merge `master` into its branch, because a merged lockfile no longer matches Dependabot's commit.
 
 After a Dependabot lockfile merges, this workflow renews the proof. It first confirms three things: GitHub signed the merge commit, Dependabot opened the pull request, and the lockfile at the pull request head matches a verified Dependabot commit. It then records the merged lockfile in the proof and merges the refresh like any other. Paid evaluation jobs refuse the new lockfile until that refresh merges.
 
