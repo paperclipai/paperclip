@@ -996,6 +996,7 @@ describe("automatic retained workspace recovery", () => {
     } }).where(eq(heartbeatRuns.id, f.runId));
     const target = targets.get(f.lease.id)!, syncOut = target.runner!.syncOut!, execute = target.runner!.execute;
     let transfers = 0, sandboxWriteFailures = 0;
+    const readonlyExports: Array<Parameters<typeof syncOut>[0][number]["files"][number]> = [];
     if (pressure === "sandbox-write") target.runner!.execute = async input => {
       const fault = `(()=>{const fs=require('node:fs/promises'),sync=require('node:fs');
         const full=()=>${JSON.stringify([path.join(pack, "node_modules"), path.join(pack, "provider-assets")])}.some(p=>sync.existsSync(p));
@@ -1013,13 +1014,21 @@ describe("automatic retained workspace recovery", () => {
       return response;
     };
     target.runner!.syncOut = async operations => {
+      const mappings = operations.flatMap(operation => operation.files);
+      if (mappings.some(mapping => mapping.kind === "directory")) {
+        // These regressions isolate journaled cache reclamation after BOTH
+        // export paths fail. Directory-export recovery has its own real-provider
+        // coverage; this boundary explicitly cannot perform that alternative.
+        readonlyExports.push(...mappings);
+        throw new Error("cache-reclaim fixture directory export unavailable");
+      }
       transfers++;
       if (pressure === "transfer" && (await Promise.all(["node_modules", "provider-assets"].map(name =>
         lstat(path.join(pack, name)).then(() => true, () => false)))).some(Boolean))
         throw new Error(REMOTE_WORKSPACE_SANDBOX_DISK_FULL);
       return syncOut(operations);
     };
-    return { ...f, runner, pack, sessions, digest, transfers: () => transfers,
+    return { ...f, runner, pack, sessions, digest, transfers: () => transfers, readonlyExports,
       sandboxWriteFailures: () => sandboxWriteFailures };
   }
 
@@ -1067,6 +1076,9 @@ describe("automatic retained workspace recovery", () => {
     await recoverRetainedWorkspace(f.input);
     expect(readWorkspaceRecovery((await action(f.actionId)).evidence)?.status).toBe("recovered");
     expect(f.transfers()).toBe(2);
+    expect(f.readonlyExports).toEqual([{ kind: "directory", sourcePath: await realpath(f.remote),
+      targetPath: expect.stringMatching(/[/]source$/), followSymlinks: false, preserveSourceEntries: true,
+      exclude: [".paperclip-runtime"] }]);
     await expect(lstat(path.join(f.pack, "node_modules"))).rejects.toMatchObject({ code: "ENOENT" });
     await expect(lstat(path.join(f.pack, "provider-assets"))).rejects.toMatchObject({ code: "ENOENT" });
     expect(JSON.parse(await readFile(path.join(f.pack, "provider-pack.json"), "utf8")).digest).toBe(f.digest);
@@ -1142,6 +1154,9 @@ describe("automatic retained workspace recovery", () => {
     const f = await pressuredToolCache(), target = targets.get(f.lease.id)!, syncOut = target.runner!.syncOut!;
     let transfers = 0;
     target.runner!.syncOut = async operations => {
+      // Fail the second sealed-archive transfer, after cache cleanup, rather
+      // than consuming this fault on the earlier read-only directory fallback.
+      if (operations.some(operation => operation.files.some(mapping => mapping.kind === "directory"))) return syncOut(operations);
       if (++transfers === 2) throw new Error("controlled later transfer failure");
       return syncOut(operations);
     };

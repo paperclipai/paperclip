@@ -1016,12 +1016,26 @@ source, transfers its files through the provider's existing bulk channel, and
 checks the received inventory and the source again before sealing a portable
 archive on the controller. It rechecks the source after sealing. No source files
 or provider caches are removed. Linked Git worktrees, initialized submodules, alternate object stores,
-Git administrative symlinks, and configuration outside the portable key contract
+Git administrative symlinks, setuid/setgid/sticky entries, and configuration outside the portable key contract
 cannot use this fallback. Pure file-based config reads do not follow includes;
 controller Git normalization starts only after every config passes that contract.
 They remain retained if their normal archive cannot be saved. Transfer failures
 or changed files retain the original disk-full error and do not produce a
 preservation receipt.
+
+The fallback's `portableKey` allowlist in
+`server/src/services/remote-workspace-readonly-inventory.ts` is authoritative and
+intentionally stricter than normal capture's `portableGitSettings` sanitizer.
+Normal capture drops unrelated settings; the fallback rejects every unlisted key
+before controller Git can read the copied source configuration. This includes
+otherwise ordinary settings such as `pull.rebase`, `commit.gpgsign`, `fetch.prune`,
+`extensions.worktreeConfig`, and `remote.origin.mirror`.
+
+The directory transfer requests `preserveSourceEntries` to preserve ordinary
+filenames and permissions while honoring explicit exclusions. Daytona and
+Kubernetes implement and qualify this mapping contract. Other providers have not
+been qualified for this fallback; inventory verification still prevents a
+provider that omits or alters entries from publishing an incomplete save.
 
 The fallback applies the normal untracked dependency exclusions before inspecting
 links inside reinstallable environments. Tracked environment files remain part of
