@@ -5,7 +5,7 @@ import { mkdir, writeFile, readFile } from "node:fs/promises";
 import { createIsolatedTestHome } from "./helpers/isolated-test-home.js";
 import path from "node:path";
 import { and, eq } from "drizzle-orm";
-import { createDb, closeRegisteredClients, companies, agents, agentTaskSessions, authUsers, companyMemberships, connectionGrants, plugins, aiConnectionQuotaCooldowns, aiConnectionRouterCursors, aiConnectionTaskPins, toolConnections, companySecrets, heartbeatRuns, issues, dotAgentBindings, grokBotRoutines } from "@paperclipai/db";
+import { createDb, closeRegisteredClients, companies, agents, agentTaskSessions, agentRuntimeState, authUsers, companyMemberships, connectionGrants, plugins, aiConnectionQuotaCooldowns, aiConnectionRouterCursors, aiConnectionTaskPins, toolConnections, companySecrets, heartbeatRuns, issues, dotAgentBindings, grokBotRoutines } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "@paperclipai/db/test-embedded-postgres";
 import { BUILTIN_AI_FAILOVER_ROUTER_KEY, type AiConnectionPoolMember, type AiConnectionRouterRequest, type AiConnectionRouterResult, type PaperclipPluginManifestV1 } from "@paperclipai/shared";
 import { aiConnectionRouterService, AiConnectionPoolExhausted, poolMemberRuntimeConfig, applyAiConnectionRouterTaskSettings, quotaIdentityFromSessionSnapshot } from "../services/ai-connection-router.js";
@@ -28,6 +28,7 @@ import { getServerAdapter, registerServerAdapter, unregisterServerAdapter, type 
 import { waitForPendingRunFailureReports } from "../services/run-failure-report.js";
 import { dotRunnerBroker } from "../services/dot-runner-broker.js";
 import { preparePoolAdapterClaim, effectiveRunAgent } from "../services/heartbeat/effective-run-adapter.js";
+import { resolveCodexExecutionEngineForRun } from "../../../packages/adapters/codex-local/src/server/acp.js";
 
 const captureRunFailure = vi.hoisted(() => vi.fn());
 vi.mock("../sentry.js", async (importOriginal) => ({
@@ -95,8 +96,70 @@ describe("durable, authorized connection routing", () => {
     const selection = await resolve(pool.id, randomUUID(), { adapterType: "claude_local" });
     expect(selection).toMatchObject({ adapterType: "codex_local", memberId: members[0]!.id });
     expect(poolMemberRuntimeConfig(members[0]!, "claude_local")).toMatchObject({ adapterType: "codex_local" });
-    expect(applyAiConnectionRouterTaskSettings({ command: "claude", extraArgs: ["--claude-only"], cwd: home, permissions: "retained" }, selection, "claude_local"))
+    expect(applyAiConnectionRouterTaskSettings({ command: "claude", cwd: home, permissions: "retained" }, selection, "claude_local"))
       .toEqual({ ...selection.runtimeConfig, cwd: home, permissions: "retained" });
+  });
+  it("refuses cross-provider execution when source CLI policy cannot be preserved", () => {
+    const target = { poolId: randomUUID(), memberId: members[1]!.id, binding: members[1]!.binding,
+      adapterType: "claude_local", runtimeConfig: poolMemberRuntimeConfig(members[1]!, "codex_local").config, notes: [] };
+    for (const source of [
+      { engine: "cli", extraArgs: ["--sandbox", "read-only"] },
+      { dangerouslyBypassApprovalsAndSandbox: false },
+      { command: "codex-policy-wrapper" },
+      { agentCommand: "node restricted-codex-acp.js" },
+    ]) expect(() => applyAiConnectionRouterTaskSettings(source, target, "codex_local")).toThrow("preserve");
+    expect(() => applyAiConnectionRouterTaskSettings({ dangerouslyBypassApprovalsAndSandbox: false }, { ...target, adapterType: undefined }, "codex_local"))
+      .toThrow("preserve");
+    expect(() => applyAiConnectionRouterTaskSettings({ alwaysApprove: false }, target, "grok_local")).toThrow("preserve");
+  });
+  it("clears standard source ACP commands and retains portable ACP permission modes", () => {
+    const target = { poolId: randomUUID(), memberId: members[1]!.id, binding: members[1]!.binding,
+      adapterType: "claude_local", runtimeConfig: poolMemberRuntimeConfig(members[1]!, "codex_local").config, notes: [] };
+    const config = applyAiConnectionRouterTaskSettings({ engine: "acp", agentCommand: "codex-acp", acpAgentCommand: "codex-acp", permissionMode: "deny-all" }, target, "codex_local");
+    expect(config.permissionMode).toBe("deny-all");
+    expect(config).not.toHaveProperty("agentCommand"); expect(config).not.toHaveProperty("acpAgentCommand");
+  });
+  it("qualifies actual native harness changes and clears the source ACP command", () => {
+    const grok = { adapterType: "paperclip_runner", poolId: randomUUID(), memberId: randomUUID(), binding: members[1]!.binding,
+      runtimeConfig: { provider: "acpx", acpxAgent: "grok", model: "grok-4" }, notes: [] };
+    const source = { provider: "acpx", acpxAgent: "claude", agentCommand: "claude-agent-acp", acpxPermissionMode: "deny-all" };
+    expect(applyAiConnectionRouterTaskSettings(source, grok, "paperclip_runner"))
+      .toEqual({ provider: "acpx", acpxAgent: "grok", model: "grok-4", acpxPermissionMode: "deny-all" });
+    expect(() => applyAiConnectionRouterTaskSettings({ ...source, extraArgs: ["--allowedTools", "Read"] }, grok, "paperclip_runner")).toThrow("preserve");
+    const codex = { ...grok, runtimeConfig: { provider: "codex", model: "gpt-5.6-sol" } };
+    expect(() => applyAiConnectionRouterTaskSettings(source, codex, "paperclip_runner")).toThrow("preserve");
+  });
+  it("preserves the explicit CLI engine for Claude to Codex in-place workspace execution", async () => {
+    const target = { poolId: randomUUID(), memberId: members[0]!.id, binding: members[0]!.binding,
+      adapterType: "codex_local", runtimeConfig: poolMemberRuntimeConfig(members[0]!, "claude_local").config, notes: [] };
+    const config = applyAiConnectionRouterTaskSettings({ engine: "cli", cwd: home }, target, "claude_local");
+    expect(config.engine).toBe("cli");
+    await expect(resolveCodexExecutionEngineForRun({ config, executionTarget: { kind: "local", workspaceRealization: { mode: "in_place" } } as never }))
+      .resolves.toEqual({ engine: "cli", explicit: true });
+  });
+  it("does not allocate an account that would weaken the source execution policy", async () => {
+    const pool = await service().save(BUILTIN_AI_FAILOVER_ROUTER_KEY, { companyId, config: {
+      name: randomUUID(), enabled: true, mode: "failover", thresholdPercent: 90, members: [members[1]!],
+    } }, "alice");
+    await expect(resolve(pool.id, randomUUID(), { adapterType: "codex_local", sourceAdapterConfig: { engine: "cli", extraArgs: ["--sandbox", "read-only"] } }))
+      .rejects.toThrow("preserve");
+    expect(await db.select().from(aiConnectionTaskPins).where(eq(aiConnectionTaskPins.poolId, pool.id))).toHaveLength(0);
+  });
+  it("does not move a failed pin to an account with an incompatible permission policy", async () => {
+    await db.delete(aiConnectionQuotaCooldowns).where(eq(aiConnectionQuotaCooldowns.companyId, companyId));
+    const pool = await service().save(BUILTIN_AI_FAILOVER_ROUTER_KEY, { companyId, config: {
+      name: randomUUID(), enabled: true, mode: "failover", thresholdPercent: 90, members,
+    } }, "alice");
+    const taskKey = randomUUID();
+    const source = await resolve(pool.id, taskKey, { adapterType: "codex_local" });
+    if (source.binding.mode === "responsible_user") throw new Error("Expected explicit account");
+    await service().recordQuotaCooldown(companyId, source.binding.connectionId, await identityFor(source.binding.grantId), new Date(Date.now() + 60_000));
+    try {
+      expect(await db.transaction(tx => aiConnectionRouterService(tx as unknown as typeof db).transitionQuotaPin({ companyId,
+        poolId: pool.id, agentId, taskKey, userId: "alice", adapterType: "codex_local", expectedSelection: source,
+        attemptedMemberIds: [source.memberId], sourceAdapterConfig: { dangerouslyBypassApprovalsAndSandbox: false } }))).toMatchObject({ kind: "unavailable" });
+      expect((await db.select().from(aiConnectionTaskPins).where(eq(aiConnectionTaskPins.poolId, pool.id)))[0]?.selection.memberId).toBe(source.memberId);
+    } finally { await db.delete(aiConnectionQuotaCooldowns).where(eq(aiConnectionQuotaCooldowns.companyId, companyId)); }
   });
   it("claims a builtin pool without delaying dispatch for an external usage probe", async () => {
     const pool = await service().save(BUILTIN_AI_FAILOVER_ROUTER_KEY, { companyId, config: {
@@ -181,6 +244,27 @@ describe("durable, authorized connection routing", () => {
       expect(await db.select({ adapterType: agents.adapterType }).from(agents).where(eq(agents.id, agent!.id))).toEqual([{ adapterType: "claude_local" }]);
     } finally { await heartbeat.drainActiveRunExecutions(); unregisterServerAdapter("codex_local"); }
   }, 30_000);
+  it("gives a taskless manual pooled run its own session affinity instead of a foreign provider session", async () => {
+    const pool = await service().save(BUILTIN_AI_FAILOVER_ROUTER_KEY, { companyId, config: {
+      name: randomUUID(), enabled: true, mode: "failover", thresholdPercent: 90, members: [members[0]!],
+    } }, "alice");
+    const [agent] = await db.insert(agents).values({ companyId, name: "Manual pool affinity", adapterType: "claude_local",
+      adapterConfig: { cwd: home, engine: "cli" }, runtimeConfig: { aiConnection: { mode: "router", connectionId: pool.id }, heartbeat: { enabled: false } } }).returning();
+    await db.insert(agentRuntimeState).values({ companyId, agentId: agent!.id, adapterType: "claude_local", sessionId: randomUUID() });
+    const execute = vi.fn(async (ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> => {
+      expect(ctx.runtime.taskKey).toBe(ctx.runId);
+      expect(ctx.runtime.sessionId).toBeNull();
+      throw new Error("manual affinity fixture stopped before provider start");
+    });
+    registerServerAdapter({ ...getServerAdapter("codex_local"), execute });
+    const heartbeat = heartbeatService(db, { runtimeEnv: {} });
+    try {
+      const run = await heartbeat.wakeup(agent!.id, { source: "on_demand", reason: "manual", triggerDetail: "manual", contextSnapshot: { responsibleUserId: "alice", wakeReason: "manual" } });
+      await heartbeat.drainActiveRunExecutions();
+      expect(execute).toHaveBeenCalledOnce();
+      expect((await heartbeat.getRun(run!.id))?.error).toContain("manual affinity fixture");
+    } finally { await heartbeat.drainActiveRunExecutions(); unregisterServerAdapter("codex_local"); }
+  }, 30_000);
   it("continues a quota-interrupted Claude turn on Codex through the public heartbeat lifecycle", async () => {
     await db.delete(aiConnectionQuotaCooldowns).where(eq(aiConnectionQuotaCooldowns.companyId, companyId));
     await instanceSettingsService(db).updateExperimental({ enableWorktreeRunExecution: true });
@@ -258,6 +342,25 @@ describe("durable, authorized connection routing", () => {
     const [pin] = await db.select().from(aiConnectionTaskPins).where(and(eq(aiConnectionTaskPins.poolId, pool.id), eq(aiConnectionTaskPins.taskKey, taskKey)));
     expect(pin?.selection.memberId).toBe(members[1]!.id);
     expect(await db.transaction(tx => aiConnectionRouterService(tx as unknown as typeof db, worker).transitionQuotaPin(input))).toMatchObject({ kind: "unavailable" });
+  });
+  it("rechecks and fails over the same pinned account after task model and effort overrides change", async () => {
+    await db.delete(aiConnectionQuotaCooldowns).where(eq(aiConnectionQuotaCooldowns.companyId, companyId));
+    const pool = await service().save(BUILTIN_AI_FAILOVER_ROUTER_KEY, { companyId, config: {
+      name: randomUUID(), enabled: true, mode: "failover", thresholdPercent: 90, members,
+    } }, "alice");
+    const taskKey = randomUUID();
+    const original = await resolve(pool.id, taskKey, { adapterType: "claude_local" });
+    const changed = await resolve(pool.id, taskKey, { adapterType: "claude_local", overrides: { model: "gpt-5.6-terra", modelReasoningEffort: "high" } });
+    expect(changed.memberId).toBe(original.memberId);
+    expect(changed.runtimeConfig).not.toEqual(original.runtimeConfig);
+    await service().recheckLegacyPinnedPoolAccount({ companyId, agentId, taskKey, userId: "alice", selection: changed });
+    if (changed.binding.mode === "responsible_user") throw new Error("Expected explicit account");
+    await service().recordQuotaCooldown(companyId, changed.binding.connectionId, await identityFor(changed.binding.grantId), new Date(Date.now() + 60_000));
+    try {
+      const result = await db.transaction(tx => aiConnectionRouterService(tx as unknown as typeof db).transitionQuotaPin({ companyId,
+        poolId: pool.id, agentId, taskKey, userId: "alice", adapterType: "claude_local", expectedSelection: changed, attemptedMemberIds: [changed.memberId] }));
+      expect(result).toMatchObject({ kind: "selected", selection: { memberId: members[1]!.id, adapterType: "claude_local" } });
+    } finally { await db.delete(aiConnectionQuotaCooldowns).where(eq(aiConnectionQuotaCooldowns.companyId, companyId)); }
   });
   it("routes a built-in ordered pool without the plugin flag or worker", async () => {
     await instanceSettingsService(db).updateExperimental({ enableAiConnectionRouters: false });

@@ -2178,7 +2178,11 @@ export function heartbeatService(
           );
         }
       }
-      const taskKey = deriveTaskKeyWithHeartbeatFallback(context, null);
+      const admittedPoolId = readNonEmptyString(parseObject(context.aiRouterSelection).poolId);
+      const admittedProfile = parseObject(run.runnerProfileJson);
+      const admittedPool = admittedPoolId && (parseObject(admittedProfile.adapterDispatch).poolId === admittedPoolId ||
+        Object.keys(parseObject(admittedProfile.nativeExecutionInput)).length > 0);
+      let taskKey = deriveTaskKeyWithHeartbeatFallback(context, null) ?? (admittedPool ? readNonEmptyString(context.aiRouterTaskKey) : null);
       const sessionCodec = getAdapterSessionCodec(agent.adapterType);
       const issueId = readNonEmptyString(context.issueId);
       if (issueId && canApplyTaskWorkspaceSelectionAtAdmission({ admittedInput: parseObject(run.runnerProfileJson).nativeExecutionInput, restarting: Boolean(runOptions.nativeRestartRecovery), hasLeaseOwner: Boolean(runOptions.nativeLeaseOwner) })) {
@@ -2564,6 +2568,7 @@ export function heartbeatService(
           const selection = await router.resolve({
             companyId: agent.companyId, poolId: requestedAiBinding.connectionId, agentId: agent.id,
             userId: responsibleUserId, adapterType: loadedAgent.adapterType, taskKey: String(context.aiRouterTaskKey),
+            sourceAdapterConfig: { ...parseObject(loadedAgent.adapterConfig), ...issueAssigneeOverrides?.adapterConfig },
             overrides: issueAssigneeOverrides?.adapterConfig ?? {},
             existingGrantId: typeof savedIdentity === "string" ? savedIdentity.split(":")[0] : undefined,
             requireExisting: Boolean(taskSession?.sessionDisplayId) && !shouldResetTaskSessionForWake(context),
@@ -2573,6 +2578,7 @@ export function heartbeatService(
             throw new Error("The pool adapter changed after this run was claimed; start a new turn.");
           }
           context.aiRouterSelection = selection;
+          taskKey ??= routerTaskKey;
           if (LOCAL_POOL_ADAPTERS.includes(loadedAgent.adapterType)) {
             await options.afterLegacyPoolSelection?.(run.id, selection);
             await router.recheckLegacyPinnedPoolAccount({ companyId: agent.companyId, agentId: agent.id,
@@ -2581,7 +2587,7 @@ export function heartbeatService(
           aiBinding = selection.binding;
           // Provider-specific fields from the configured harness must not leak into the selected member.
           config = applyAiConnectionRouterTaskSettings(config, selection, loadedAgent.adapterType);
-          if (issueAssigneeOverrides) issueAssigneeOverrides = { ...issueAssigneeOverrides, adapterConfig: applyAiConnectionRouterTaskSettings(issueAssigneeOverrides.adapterConfig ?? {}, selection, loadedAgent.adapterType) };
+          if (issueAssigneeOverrides) issueAssigneeOverrides = { ...issueAssigneeOverrides, adapterConfig: applyAiConnectionRouterTaskSettings(issueAssigneeOverrides.adapterConfig ?? {}, selection, loadedAgent.adapterType, { ...parseObject(loadedAgent.adapterConfig), ...issueAssigneeOverrides.adapterConfig }) };
           agent = { ...agent, adapterConfig: config };
           context.aiRouterSelection = selection;
           await db.update(heartbeatRuns).set({ contextSnapshot: sql`coalesce(${heartbeatRuns.contextSnapshot}, '{}'::jsonb) || ${JSON.stringify({ aiRouterTaskKey: context.aiRouterTaskKey, aiRouterSelection: selection })}::jsonb` }).where(eq(heartbeatRuns.id, run.id));

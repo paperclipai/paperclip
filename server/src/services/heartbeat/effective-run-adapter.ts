@@ -37,6 +37,7 @@ export async function preparePoolAdapterClaim(db: Db, run: typeof heartbeatRuns.
     const selection = await aiConnectionRouterService(db, workerManager).resolve({ companyId: agent.companyId, poolId: binding.connectionId,
       agentId: agent.id, userId, adapterType: agent.adapterType, taskKey, overrides: parseObject(parseObject(issue?.overrides).adapterConfig),
       requireExisting: Boolean(session?.sessionDisplayId) && !shouldResetTaskSessionForWake(context),
+      sourceAdapterConfig: { ...parseObject(agent.adapterConfig), ...parseObject(parseObject(issue?.overrides).adapterConfig) },
       skipUsageProbe: pool?.pluginKey === BUILTIN_AI_FAILOVER_ROUTER_KEY,
       existingGrantId: typeof identity === "string" ? identity.split(":")[0] : undefined });
     return { adapterDispatch: { ...adapterDispatch, adapterType: selection.adapterType ?? poolExecutionAdapterType(selection.binding, agent.adapterType), poolId: selection.poolId, memberId: selection.memberId },

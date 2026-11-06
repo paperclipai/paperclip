@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { and, eq, gt, ne, sql } from "drizzle-orm";
 import { aiConnectionPools, aiConnectionQuotaCooldowns, aiConnectionRouterCursors, aiConnectionTaskPins, companySecrets, connectionGrants, instanceSettings, plugins, toolApplications, toolConnections, toolConnectionInstalls, type Db } from "@paperclipai/db";
-import { BUILTIN_AI_FAILOVER_ROUTER_KEY, aiConnectionMetadataSchema, aiConnectionRouterAppDefinition, aiConnectionRouterSlug, aiConnectionPoolConfigSchema, isAiConnectionCompatible, type AiConnectionPool, type AiConnectionPoolMember, type AiConnectionRouterRequest, type AiConnectionRouterSelection, type AiConnectionPoolSaveInput, type AiConnectionUsage } from "@paperclipai/shared";
+import { BUILTIN_AI_FAILOVER_ROUTER_KEY, agentHarnessType, aiConnectionMetadataSchema, aiConnectionRouterAppDefinition, aiConnectionRouterSlug, aiConnectionPoolConfigSchema, isAiConnectionCompatible, type AiConnectionPool, type AiConnectionPoolMember, type AiConnectionRouterRequest, type AiConnectionRouterSelection, type AiConnectionPoolSaveInput, type AiConnectionUsage } from "@paperclipai/shared";
 import { isCodexLocalKnownModel, codexLocalReasoningEffortsForModel } from "@paperclipai/adapter-codex-local";
 import { models as claudeModels, claudeLocalReasoningEffortsForModel } from "@paperclipai/adapter-claude-local";
 import { models as grokModels, grokLocalReasoningEffortsForModel } from "@paperclipai/adapter-grok-local";
@@ -16,14 +16,60 @@ import { HttpError, forbidden, notFound, conflict, unprocessable } from "../erro
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 import { resolvePaperclipRunnerProviderProfile, resolvePaperclipRunnerNativeProviderInput } from "./native-runtime/provider-profile.js";
 import { findActiveServerAdapter } from "../adapters/index.js";
+import { parseObject } from "../adapters/utils.js";
 
 const usageCache = new Map<string, { expires: number; value: AiConnectionUsage }>();
 const usageInFlight = new Map<string, Promise<AiConnectionUsage | undefined>>();
 const routedRuntimeKeys = new Set(["provider", "acpxAgent", "model", "modelReasoningEffort", "reasoningEffort", "effort", "variant"]);
-const harnessCommandKeys = new Set(["command", "args", "extraArgs", "engine"]);
-export function applyAiConnectionRouterTaskSettings(config: Record<string, unknown>, selection: AiConnectionRouterSelection, configuredAdapterType?: string) {
-  const switchingHarness = configuredAdapterType && selection.adapterType && configuredAdapterType !== selection.adapterType;
-  return { ...Object.fromEntries(Object.entries(config).filter(([key]) => !routedRuntimeKeys.has(key) && !(switchingHarness && harnessCommandKeys.has(key)))), ...selection.runtimeConfig };
+const harnessCommandKeys = new Set(["command", "args", "extraArgs", "engine", "agentCommand", "acpAgentCommand"]);
+function poolHarnessChanges(config: Record<string, unknown>, sourceAdapterType: string, targetAdapterType: string, targetConfig: Record<string, unknown>) {
+  return agentHarnessType(sourceAdapterType, config) !== agentHarnessType(targetAdapterType, { ...config, ...targetConfig }) ||
+    (sourceAdapterType === "paperclip_runner" && targetAdapterType === "paperclip_runner" && config.provider !== targetConfig.provider);
+}
+export function assertPoolAdapterPolicyCompatible(config: Record<string, unknown>, sourceAdapterType: string, targetAdapterType: string, targetRuntimeConfig: Record<string, unknown> = {}): void {
+  if (!poolHarnessChanges(config, sourceAdapterType, targetAdapterType, targetRuntimeConfig)) return;
+  const sourceHarness = agentHarnessType(sourceAdapterType, config);
+  const targetConfig = { ...config, ...targetRuntimeConfig };
+  const refuse = () => { throw unprocessable("Cannot preserve the configured execution policy across providers. Use accounts with the same harness or portable ACP permission settings.", { code: "pool_execution_policy_incompatible" }); };
+  for (const key of ["args", "extraArgs"]) {
+    const value = config[key];
+    if ((Array.isArray(value) && value.some(item => typeof item === "string" && item.trim())) || (typeof value === "string" && value.trim())) refuse();
+  }
+  if (["dangerouslyBypassApprovalsAndSandbox", "dangerouslyBypassSandbox", "dangerouslySkipPermissions", "alwaysApprove"].some(key => config[key] === false)) refuse();
+  if (["sandboxMode", "sandbox", "approvalPolicy", "approval_policy", "sandbox_mode"].some(key => config[key] != null)) refuse();
+  const canonicalCommands: Record<string, string> = { claude_local: "claude", codex_local: "codex", grok_local: "grok", opencode_local: "opencode" };
+  const canonicalAcpCommands: Record<string, string> = { claude_local: "claude-agent-acp", codex_local: "codex-acp" };
+  for (const key of ["command", "agentCommand", "acpAgentCommand"]) {
+    const value = config[key];
+    const command = typeof value === "string" ? value.trim() : "";
+    const expected = key === "command" ? canonicalCommands[sourceHarness] : canonicalAcpCommands[sourceHarness];
+    if (command && (!expected || ![expected, `${expected}.cmd`, `${expected}.exe`].includes(command))) refuse();
+  }
+  const sourceEngine = typeof config.engine === "string" ? config.engine.trim().toLowerCase() : "";
+  const sourceAcp = sourceAdapterType !== "paperclip_runner" && ["claude_local", "codex_local"].includes(sourceHarness) && sourceEngine !== "cli";
+  const targetEngine = typeof targetConfig.engine === "string" ? targetConfig.engine.trim().toLowerCase() : "";
+  const targetAcp = targetAdapterType !== "paperclip_runner" && ["claude_local", "codex_local"].includes(targetAdapterType) && targetEngine !== "cli";
+  for (const key of ["permissionMode", "acpPermissionMode"]) {
+    const value = config[key];
+    const mode = typeof value === "string" ? value.trim() : "";
+    if (mode && !["default", "approve-all"].includes(mode) && !(sourceAcp && targetAcp && ["approve-reads", "deny-all"].includes(mode))) refuse();
+  }
+  if (!targetAcp && ["nonInteractivePermissions", "acpNonInteractivePermissions"].some(key => config[key] != null)) refuse();
+  if (config.acpxPermissionMode != null && config.acpxPermissionMode !== "approve-all" &&
+      !(sourceAdapterType === "paperclip_runner" && config.provider === "acpx" && targetAdapterType === "paperclip_runner" && targetConfig.provider === "acpx")) refuse();
+  if (config.acpxSessionMode != null && config.acpxSessionMode !== "agent" &&
+      !(sourceAdapterType === "paperclip_runner" && config.provider === "acpx" && targetAdapterType === "paperclip_runner" && targetConfig.provider === "acpx" && config.acpxAgent === targetConfig.acpxAgent)) refuse();
+  if (config.opencodePermissionMode != null && config.opencodePermissionMode !== "allow") refuse();
+  if (config.codexPermissionMode != null && config.codexPermissionMode !== "never") refuse();
+}
+export function applyAiConnectionRouterTaskSettings(config: Record<string, unknown>, selection: AiConnectionRouterSelection, configuredAdapterType?: string, sourcePolicyConfig = config) {
+  const targetAdapter = selection.adapterType ?? (configuredAdapterType ? poolExecutionAdapterType(selection.binding, configuredAdapterType) : undefined);
+  const switchingHarness = configuredAdapterType && targetAdapter && poolHarnessChanges(sourcePolicyConfig, configuredAdapterType, targetAdapter, selection.runtimeConfig);
+  if (switchingHarness) assertPoolAdapterPolicyCompatible(sourcePolicyConfig, configuredAdapterType, targetAdapter!, selection.runtimeConfig);
+  const sourceEngine = typeof sourcePolicyConfig.engine === "string" ? sourcePolicyConfig.engine.trim().toLowerCase() : "";
+  const retainedEngine = switchingHarness && ["claude_local", "codex_local"].includes(configuredAdapterType ?? "") &&
+    ["claude_local", "codex_local"].includes(targetAdapter ?? "") && ["cli", "acp"].includes(sourceEngine) ? { engine: sourceEngine } : {};
+  return { ...Object.fromEntries(Object.entries(config).filter(([key]) => !routedRuntimeKeys.has(key) && !(switchingHarness && harnessCommandKeys.has(key)))), ...retainedEngine, ...selection.runtimeConfig };
 }
 export class AiConnectionPoolExhausted extends Error {
   readonly code = "ai_connection_pool_exhausted";
@@ -42,9 +88,15 @@ export function poolExecutionAdapterType(binding: { provider: string }, configur
 }
 
 function samePoolSelection(left: AiConnectionRouterSelection, right: AiConnectionRouterSelection, configuredAdapterType: string) {
+  const identity = (selection: AiConnectionRouterSelection) => ({
+    poolId: selection.poolId,
+    memberId: selection.memberId,
+    binding: selection.binding,
+    adapterType: selection.adapterType ?? poolExecutionAdapterType(selection.binding, configuredAdapterType),
+  });
   return isDeepStrictEqual(
-    { ...left, adapterType: left.adapterType ?? poolExecutionAdapterType(left.binding, configuredAdapterType) },
-    { ...right, adapterType: right.adapterType ?? poolExecutionAdapterType(right.binding, configuredAdapterType) },
+    identity(left),
+    identity(right),
   );
 }
 
@@ -281,9 +333,13 @@ export function aiConnectionRouterService(db: Db, workerManager?: PluginWorkerMa
     } finally { if (timer) clearTimeout(timer); }
   }
 
-  async function resolve(input: { companyId: string; poolId: string; agentId: string; userId: string | null; adapterType: string; taskKey: string; overrides?: Record<string, unknown>; existingGrantId?: string; requireExisting?: boolean; persisted?: AiConnectionRouterSelection; skipUsageProbe?: boolean }) {
+  async function resolve(input: { companyId: string; poolId: string; agentId: string; userId: string | null; adapterType: string; taskKey: string; overrides?: Record<string, unknown>; existingGrantId?: string; requireExisting?: boolean; persisted?: AiConnectionRouterSelection; skipUsageProbe?: boolean; sourceAdapterConfig?: Record<string, unknown> }) {
     const pinWhere = and(eq(aiConnectionTaskPins.companyId, input.companyId), eq(aiConnectionTaskPins.poolId, input.poolId), eq(aiConnectionTaskPins.agentId, input.agentId), eq(aiConnectionTaskPins.taskKey, input.taskKey));
-    const validateSelection = async (selection: AiConnectionRouterSelection, client = db) => aiConnectionService(client).select({ companyId: input.companyId, agentId: input.agentId, userId: input.userId, adapterType: poolExecutionAdapterType(selection.binding, input.adapterType), binding: selection.binding, model: selection.runtimeConfig.model, runnerProvider: selection.runtimeConfig.provider, acpxAgent: selection.runtimeConfig.acpxAgent });
+    const validateSelection = async (selection: AiConnectionRouterSelection, client = db) => {
+      const effectiveAdapter = poolExecutionAdapterType(selection.binding, input.adapterType);
+      assertPoolAdapterPolicyCompatible(input.sourceAdapterConfig ?? {}, input.adapterType, effectiveAdapter, selection.runtimeConfig);
+      return aiConnectionService(client).select({ companyId: input.companyId, agentId: input.agentId, userId: input.userId, adapterType: effectiveAdapter, binding: selection.binding, model: selection.runtimeConfig.model, runnerProvider: selection.runtimeConfig.provider, acpxAgent: selection.runtimeConfig.acpxAgent });
+    };
     if (input.persisted) {
       if (input.persisted.poolId !== input.poolId) throw unprocessable("Persisted pool selection does not match this run");
       if (input.adapterType !== "paperclip_runner" && !LOCAL_POOL_ADAPTERS.includes(input.adapterType)) {
@@ -323,6 +379,7 @@ export function aiConnectionRouterService(db: Db, workerManager?: PluginWorkerMa
       const deadline = Date.now() + 15_000;
       const candidates: AiConnectionRouterRequest["candidates"] = [];
       const identities = new Map<string, string>();
+      let policyRefusal: HttpError | undefined;
       for (const member of pin ? [pin.member] : pool.members) {
         try {
           const effective = poolMemberRuntimeConfig(member, input.adapterType, input.overrides);
@@ -332,8 +389,12 @@ export function aiConnectionRouterService(db: Db, workerManager?: PluginWorkerMa
           if (!identity) continue;
           identities.set(member.id, identity);
           candidates.push({ member, runtimeConfig: effective.config, notes: effective.notes });
-        } catch (error) { if (pin) throw error; }
+        } catch (error) {
+          if (pin) throw error;
+          if (error instanceof HttpError && parseObject(error.details).code === "pool_execution_policy_incompatible") policyRefusal = error;
+        }
       }
+      if (candidates.length === 0 && policyRefusal) throw policyRefusal;
       if (!pin && input.requireExisting) {
         const existing = candidates.find((candidate) => candidate.member.binding.grantId === input.existingGrantId);
         if (!existing) throw unprocessable("Reset this task session before adopting the connection pool");
@@ -419,6 +480,7 @@ export function aiConnectionRouterService(db: Db, workerManager?: PluginWorkerMa
     attemptedMemberIds: string[];
     failureKind?: "quota" | "auth" | "runner";
     allowCoolingSelection?: boolean;
+    sourceAdapterConfig?: Record<string, unknown>;
   }): Promise<{ kind: "selected"; selection: AiConnectionRouterSelection; retryAt?: Date } | { kind: "cooldown"; retryAt: Date } | { kind: "unavailable" }> {
     // This operation must use the caller's transaction, which owns admission and stop evidence.
     const [cursor] = await db.select().from(aiConnectionRouterCursors).where(and(
@@ -453,6 +515,7 @@ export function aiConnectionRouterService(db: Db, workerManager?: PluginWorkerMa
     for (const member of members) {
       try {
         const effective = poolMemberRuntimeConfig(member, input.adapterType);
+        assertPoolAdapterPolicyCompatible(input.sourceAdapterConfig ?? {}, input.adapterType, effective.adapterType, effective.config);
         const authorized = await aiConnectionService(db).select({ companyId: input.companyId, agentId: input.agentId, userId: input.userId,
           adapterType: effective.adapterType, binding: member.binding, model: effective.config.model,
           runnerProvider: effective.config.provider, acpxAgent: effective.config.acpxAgent });
@@ -493,6 +556,7 @@ export function aiConnectionRouterService(db: Db, workerManager?: PluginWorkerMa
       let effective: ReturnType<typeof poolMemberRuntimeConfig>;
       try {
         effective = poolMemberRuntimeConfig(member, input.adapterType);
+        assertPoolAdapterPolicyCompatible(input.sourceAdapterConfig ?? {}, input.adapterType, effective.adapterType, effective.config);
         const authorized = await aiConnectionService(db).select({ companyId: input.companyId, agentId: input.agentId, userId: input.userId,
           adapterType: effective.adapterType, binding: member.binding, model: effective.config.model,
           runnerProvider: effective.config.provider, acpxAgent: effective.config.acpxAgent });
