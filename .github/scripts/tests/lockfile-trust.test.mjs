@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import {
@@ -213,6 +213,7 @@ test('workflows run the trust policy from trusted code and pass the verified has
 });
 
 // Run the policy job's step script, as GitHub would, against a merge commit.
+// RUNNER_TEMP is a symlink, so the policy must still recognize itself as the entry point.
 function runPolicyStep({ staleBase, githubSha, headSha, author, headRef, root }) {
   const workflow = readFileSync('.github/workflows/pr-trusted.yml', 'utf8');
   const step = workflow.split('      - name: Block untrusted lockfile edits\n')[1];
@@ -222,9 +223,11 @@ function runPolicyStep({ staleBase, githubSha, headSha, author, headRef, root })
   const script = lines.slice(start, end).map((line) => line.slice(10)).join('\n');
   const output = path.join(root, '.output');
   writeFileSync(output, '');
+  const runnerTemp = path.join(mkdtempSync(path.join(tmpdir(), 'policy-runner-')), 'temp');
+  symlinkSync(mkdtempSync(path.join(tmpdir(), 'policy-runner-real-')), runnerTemp);
   const result = spawnSync('bash', ['-e', '-c', script], {
     cwd: root, encoding: 'utf8',
-    env: { ...process.env, RUNNER_TEMP: mkdtempSync(path.join(tmpdir(), 'policy-runner-')), GITHUB_OUTPUT: output,
+    env: { ...process.env, RUNNER_TEMP: runnerTemp, GITHUB_OUTPUT: output,
       GITHUB_REPOSITORY: repo, GITHUB_SHA: githubSha, BASE_SHA: staleBase, HEAD_SHA: headSha, PR_NUMBER: '1',
       PR_AUTHOR: author, HEAD_REPO: repo, HEAD_REF: headRef },
   });
@@ -273,6 +276,33 @@ test('the policy step loads the policy from the merge commit when the recorded b
     const fallback = runPolicyStep({ root, staleBase, githubSha: head, headSha: head, author: 'someuser', headRef: 'chore/refresh-lockfile' });
     assert.equal(fallback.status, 0, fallback.stdout);
     assert.match(fallback.output, /^writer=none$/m);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('the policy step fails when the loaded policy exits without reporting a writer', () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'lockfile-policy-silent-'));
+  try {
+    const git = (...args) => execFileSync('git', args, { cwd: root, encoding: 'utf8' }).trim();
+    const commit = (message) => {
+      git('add', '.');
+      git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', message);
+      return git('rev-parse', 'HEAD');
+    };
+    git('init', '-q', '-b', 'master');
+    execFileSync('mkdir', ['-p', path.join(root, '.github/scripts')]);
+    writeFileSync(path.join(root, '.github/scripts/lockfile-trust.mjs'), 'process.exit(0);\n');
+    const baseSha = commit('a policy that skips its checks');
+    git('checkout', '-q', '-b', 'feature');
+    writeFileSync(path.join(root, 'pnpm-lock.yaml'), 'lock: contributor\n');
+    const head = commit('contributor lockfile');
+    git('checkout', '-q', 'master');
+    git('-c', 'user.name=GitHub', '-c', 'user.email=noreply@github.com', 'merge', '-q', '--no-ff', '-m', 'merge', head);
+
+    const result = runPolicyStep({ root, staleBase: baseSha, githubSha: git('rev-parse', 'HEAD'), headSha: head, author: 'someuser', headRef: 'feature' });
+    assert.equal(result.status, 1, result.stdout);
+    assert.match(result.stdout, /did not report a lockfile writer/);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
