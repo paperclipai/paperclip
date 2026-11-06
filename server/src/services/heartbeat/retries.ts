@@ -312,6 +312,35 @@ export function readTransientRecoveryContractFromRun(
     : null;
 }
 
+export function readLimitResetRetryAt(
+  run: Pick<typeof heartbeatRuns.$inferSelect, "error" | "resultJson">,
+  now: Date,
+): Date | null | undefined {
+  const result = parseObject(run.resultJson);
+  const message = [run.error, result.errorMessage, result.message, result.error]
+    .filter((value): value is string => typeof value === "string")
+    .join(" ");
+  if (!/limit.*resets/i.test(message)) return undefined;
+
+  const structured = readTransientRetryNotBeforeFromRun(run);
+  if (structured) {
+    return new Date(Math.max(now.getTime() + 1_000, structured.getTime() + 60_000));
+  }
+
+  const match = /resets\s+(\d{1,2})(?::([0-5]\d))?\s*(am|pm)\s*\(UTC\)/i.exec(message);
+  if (!match || Number(match[1]) < 1 || Number(match[1]) > 12) {
+    return null;
+  }
+  const hour = (Number(match[1]) % 12) + (match[3].toLowerCase() === "pm" ? 12 : 0);
+  const dueAt = new Date(now);
+  dueAt.setUTCHours(hour, Number(match[2] ?? 0), 0, 0);
+  dueAt.setTime(dueAt.getTime() + 60_000);
+  if (dueAt.getTime() <= now.getTime()) {
+    dueAt.setUTCDate(dueAt.getUTCDate() + 1);
+  }
+  return dueAt;
+}
+
 function isSpawnLikeFailureMessage(value: unknown) {
   if (typeof value !== "string") return false;
   return /failed to start command|spawn\b|\bENOENT\b/i.test(value);
@@ -455,23 +484,40 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
       (interruptedPreparation ? "interrupted_preparation" : BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON);
     const wakeReason =
       opts?.wakeReason ?? BOUNDED_TRANSIENT_HEARTBEAT_RETRY_WAKE_REASON;
-    const maxAttempts = Math.max(
-      0,
-      Math.floor(
-        opts?.maxAttempts ?? BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS,
-      ),
-    );
+    const limitRetryAt =
+      retryReason === BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON
+        ? readLimitResetRetryAt(run, now)
+        : undefined;
+    if (limitRetryAt === null) {
+      return {
+        outcome: "not_scheduled" as const,
+        reason:
+          "Limit reset time is ambiguous; automatic fast retry suppressed.",
+        issueId: readNonEmptyString(run.contextSnapshot?.issueId),
+      };
+    }
+    const maxAttempts = limitRetryAt
+      ? 1
+      : Math.max(
+          0,
+          Math.floor(
+            opts?.maxAttempts ?? BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS,
+          ),
+        );
     const consumedAttempts = executionRetryAttemptCount(run, retryReason);
     const nextAttempt = consumedAttempts + 1;
+    const retryDelayMs = limitRetryAt
+      ? Math.max(1_000, limitRetryAt.getTime() - now.getTime())
+      : opts?.delayMs;
     const computedBaseSchedule =
-      opts?.delayMs != null
+      retryDelayMs != null
         ? nextAttempt <= maxAttempts
           ? {
               attempt: nextAttempt,
-              baseDelayMs: Math.max(0, Math.floor(opts.delayMs)),
-              delayMs: Math.max(0, Math.floor(opts.delayMs)),
+              baseDelayMs: Math.max(0, Math.floor(retryDelayMs)),
+              delayMs: Math.max(0, Math.floor(retryDelayMs)),
               dueAt: new Date(
-                now.getTime() + Math.max(0, Math.floor(opts.delayMs)),
+                now.getTime() + Math.max(0, Math.floor(retryDelayMs)),
               ),
               maxAttempts,
             }
