@@ -235,6 +235,34 @@ describe("IssueMonitorBanner / IssueMonitorComposerStrip rendering", () => {
     flushSync(() => root.unmount());
   });
 
+  it.each([-120_000, 120_000])("keeps pending PR links visible during an active run (offset: %s)", offset => {
+    const issue = { ...issueWithMonitor(new Date(NOW.getTime() + offset).toISOString()), status: "in_progress" as const };
+    issue.executionState!.monitor!.serviceName = "github";
+    const product = {
+      id: "pr-1", type: "pull_request", title: "Update runtime probe",
+      url: "https://github.com/example/repo/pull/42", status: "ready_for_review",
+      reviewState: "needs_board_review", updatedAt: NOW,
+    } as unknown as IssueWorkProduct;
+    const root = createRoot(container);
+    const render = (hasActiveRun: boolean, products = [product]) => flushSync(() => root.render(<>
+      <IssueMonitorBanner issue={issue} hasActiveRun={hasActiveRun} workProducts={products} onCheckNow={vi.fn()} />
+      <IssueMonitorComposerStrip issue={issue} hasActiveRun={hasActiveRun} workProducts={products} onCheckNow={vi.fn()} />
+    </>));
+    try {
+      render(true);
+      expect(container.textContent).toContain("Monitor waits for current run");
+      expect(Array.from(container.querySelectorAll("a")).map(link => link.href)).toEqual([product.url, product.url]);
+      expect(container.querySelector("button")).toBeNull();
+      expect(container.textContent).toContain("Review on GitHub while the current run finishes saving its work.");
+      expect(container.textContent).not.toMatch(/overdue|next tick|then check status/i);
+      render(false);
+      expect(container.textContent).toContain("Pull request review requested");
+      expect(Array.from(container.querySelectorAll("button")).map(button => button.textContent)).toEqual(["Check status", "Check status"]);
+      render(true, [{ ...product, metadata: { state: "merged" } }]);
+      expect(container.querySelector("a")).toBeNull();
+    } finally { flushSync(() => root.unmount()); }
+  });
+
   it("explains automatic workspace waiting without promising that a reply bypasses the lock", () => {
     const issue = {
       status: "todo", scheduledRetry: { status: "scheduled_retry", scheduledRetryReason: "workspace_busy", scheduledRetryAt: NOW.toISOString() },

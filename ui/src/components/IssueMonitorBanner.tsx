@@ -118,6 +118,7 @@ export function buildMonitorSurfaceCopy(
 
   const eta = formatMonitorEta(derived.nextCheckAt, now); // "in 2h 12m" | "due now" | "overdue by 18m"
   const absolute = formatMonitorAbsolute(derived.nextCheckAt, {}, now); // local time, e.g. "Today, 4:08 PM"
+  const awaitingPullRequestReview = derived.source === "monitor" && derived.serviceName?.toLowerCase() === "github" && pendingPullRequestReviews > 0;
   if (derived.source === "monitor" && hasActiveRun) {
     const hint = "The check can start after the current run finishes saving its work.";
     return {
@@ -128,9 +129,10 @@ export function buildMonitorSurfaceCopy(
       tone: "info",
       executionWait: true,
       checkUnavailable: true,
+      pullRequestReview: awaitingPullRequestReview,
     };
   }
-  if (derived.source === "monitor" && derived.serviceName?.toLowerCase() === "github" && pendingPullRequestReviews > 0) {
+  if (awaitingPullRequestReview) {
     return {
       bannerTitle: "Pull request review requested",
       stripTitle: "Pull request review requested",
@@ -351,7 +353,9 @@ export function IssueMonitorComposerStrip({
       </div>
       {!copy.automaticChecksPaused ? (
         <p className="mt-1.5 text-xs text-muted-foreground">
-          {copy.pullRequestReview
+          {copy.pullRequestReview && copy.executionWait
+            ? "Review on GitHub while the current run finishes saving its work."
+            : copy.pullRequestReview
             ? "Review on GitHub, then check status to have the agent verify the result."
             : copy.workspaceWait || copy.executionWait
             ? "You can keep sending instructions while the agent waits."
