@@ -10,6 +10,7 @@ import { readRegisteredArtifacts } from "../registered-artifact.js";
 import { createIssueThreadInteractionSchema } from "../../../packages/shared/src/validators/issue.js";
 import { checks, type Entity } from "./internal-support.js";
 import { busyRuntimeWorker, releaseRuntimeWorker } from "./runtime-busy-worker.js";
+import { clickInteractionAction } from "./runtime-support.js";
 import { runtimeQueueCases } from "./runtime-queue.js";
 import { runtimeDefinition, runtimeObservation, observeRuntime } from "./runtime-support.js";
 export function gradeInterruption(value: unknown) {
@@ -44,11 +45,8 @@ export const runtimeInterruptionCases = [runtimeDefinition("steering.interrupt-w
     payload: { version: 1, prompt: "Use this saved simpler layout on the next eligible attempt?", supersedeOnUserComment: false,
       target: { type: "issue_document", issueId: task.id, documentId: plan.id, key: "plan", revisionId: plan.latestRevisionId, revisionNumber: plan.latestRevisionNumber } } }));
   await ctx.input.page.goto(`/${ctx.input.fixtures.company.issuePrefix}/issues/${task.identifier ?? task.id}`, { waitUntil: "domcontentloaded" });
-  const card = ctx.input.page.locator(`[data-interaction-id=${JSON.stringify(confirmation.id)}]`);
   const accept = ctx.input.page.waitForResponse(r => r.request().method() === "POST" && new URL(r.url()).pathname === `/api/issues/${task.id}/interactions/${confirmation.id}/accept`);
-  const acceptButton = card.getByRole("button", { name: /Approve|Accept/i });
-  if (await acceptButton.count()) await acceptButton.first().click();
-  else await ctx.input.page.getByRole("button", { name: /Approve|Accept/i }).first().click();
+  await clickInteractionAction(ctx.input.page, confirmation, "Approve");
   if ((await accept).status() !== 200) throw new Error("Actual human simpler-plan approval did not succeed");
   const session = await ctx.input.api.get<{ user: { id: string } }>("/api/auth/get-session");
   const approved = (await ctx.input.api.get<IssueThreadInteraction[]>(`/api/issues/${task.id}/interactions`)).find(row => row.id === confirmation.id)!;

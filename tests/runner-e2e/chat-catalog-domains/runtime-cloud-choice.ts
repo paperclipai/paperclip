@@ -5,7 +5,7 @@ import type { IssueThreadInteraction } from "../../../packages/shared/src/types/
 import { expect } from "@playwright/test";
 import { checks } from "./internal-support.js";
 import { waitForReply } from "./identity-support.js";
-import { runtimeDefinition, runtimeObservation, observeRuntime } from "./runtime-support.js";
+import { interactionSurface, runtimeDefinition, runtimeObservation, observeRuntime } from "./runtime-support.js";
 import { runtimePrivateSpec, selectedRuntimeInputs } from "./runtime-private.js";
 import { createOwnedDaytonaTarget, deleteOwnedDaytonaTarget, type OwnedDaytonaTarget } from "./runtime-daytona-target.js";
 import { privateClaudeOperation } from "./runtime-claude-private.js";
@@ -48,7 +48,7 @@ export const runtimeCloudChoiceCases = [runtimeDefinition("agents.ambiguous-clou
       const runs = await ctx.allRuns();
       if (questions.some(row => row.sourceRunId !== runs[0]?.id || row.issueId !== source.id)) throw new Error("Clarification card is not attributed to the actual canonical source run");
       await expect(ctx.input.page.getByTestId("task-chat-unanswered-question").first()).toBeVisible();
-      state.visibleChoiceText = await ctx.input.page.locator(`[data-interaction-id=${JSON.stringify(questions[0]!.id)}]`).innerText();
+      state.visibleChoiceText = await interactionSurface(ctx.input.page, questions[0]!).first().innerText();
     }
     else await expect(ctx.input.page.getByTestId("task-chat-composer-input")).toBeVisible();
     state.questionVisible = questions.length > 0 || /\?|which|do you mean/i.test((await observeRuntime(ctx, state)).reply); state.sourceWaiting = source.conversationState === "waiting";

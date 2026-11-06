@@ -28,7 +28,7 @@ it.each(["draft", "changes_requested", "merged", "closed", "failed", "archived",
   expect(download).not.toHaveBeenCalled();
 });
 
-it.each(["unregistered", "duplicate", "old-run", "unattributed", "wrong-issue", "wrong-attachment-issue", "wrong-type", "wrong-title", "wrong-filename", "wrong-attachment-id", "negative-size", "excessive-size", "size-mismatch", "hash-mismatch", "download-failure"])("refuses %s output evidence even when ready for review", async reason => {
+it.each(["unregistered", "duplicate", "old-run", "unattributed", "wrong-issue", "wrong-attachment-issue", "wrong-type", "wrong-filename", "wrong-attachment-id", "negative-size", "excessive-size", "size-mismatch", "hash-mismatch", "download-failure"])("refuses %s output evidence even when ready for review", async reason => {
   const { api, product, attachment, get, download } = fixture();
   product.status = "ready_for_review";
   if (reason === "unregistered") get.mockImplementation(async (path: string) => path.endsWith("work-products") ? [] : [attachment]);
@@ -38,7 +38,6 @@ it.each(["unregistered", "duplicate", "old-run", "unattributed", "wrong-issue", 
   if (reason === "wrong-issue") product.issueId = "other-issue";
   if (reason === "wrong-attachment-issue") attachment.issueId = "other-issue";
   if (reason === "wrong-type") product.type = "document";
-  if (reason === "wrong-title") product.title = "other.txt";
   if (reason === "wrong-filename") attachment.originalFilename = "other.txt";
   if (reason === "wrong-attachment-id") product.metadata.attachmentId = "other-attachment";
   if (reason === "negative-size") attachment.byteSize = -1;
@@ -47,6 +46,16 @@ it.each(["unregistered", "duplicate", "old-run", "unattributed", "wrong-issue", 
   if (reason === "hash-mismatch") attachment.sha256 = "incorrect";
   if (reason === "download-failure") download.mockRejectedValue(new Error("Authenticated download returned 404"));
   await expect(readRegisteredArtifacts(api, "issue", "run", ["proof.txt"])).rejects.toThrow();
+});
+
+it("identifies the deliverable by its run-attributed file, not its display title", async () => {
+  const { api, product, attachment, download } = fixture();
+  product.title = "Acorn Notes proof (proof.txt)";
+  expect((await readRegisteredArtifacts(api, "issue", "run", ["proof.txt"]))[0]?.contentVerified).toBe(true);
+  attachment.originalFilename = "other.txt";
+  download.mockClear();
+  await expect(readRegisteredArtifacts(api, "issue", "run", ["proof.txt"])).rejects.toBeInstanceOf(RegisteredArtifactNotFoundError);
+  expect(download).not.toHaveBeenCalled();
 });
 
 it("does not accept a filename or unchecked content as downloaded evidence", async () => {

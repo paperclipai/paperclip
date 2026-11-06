@@ -12,7 +12,7 @@ import { checks, type Entity } from "./internal-support.js";
 import { waitForReply } from "./identity-support.js";
 import { matchesClaudeFixtureTarget, privateClaudeOperation, type ClaudePrivateReceipt } from "./runtime-claude-private.js";
 import { selectedRuntimeInputs, runtimePrivateSpec } from "./runtime-private.js";
-import { openRuntimeAgentProfile, observeRuntime, runtimeDefinition, runtimeObservation, type RuntimeAgent } from "./runtime-support.js";
+import { clickInteractionAction, openRuntimeAgentProfile, observeRuntime, runtimeDefinition, runtimeObservation, type RuntimeAgent } from "./runtime-support.js";
 const continueHire = "The Anthropic account is connected now. Continue the same Morgan frontend engineer hire using Claude Code.";
 export function supportedClaudeSetupLink(href: string, origin: string, prefix: string) {
   try { const url = new URL(href, origin); return url.origin === origin && url.pathname.startsWith(`/${prefix}/`) && (url.pathname.endsWith("/company/settings/connections") || url.pathname.endsWith("/apps/connect") && ["anthropic", "claude"].includes(url.searchParams.get("source") ?? url.searchParams.get("provider") ?? "")); } catch { return false; }
@@ -69,7 +69,7 @@ export const runtimeClaudeAccountCases = [runtimeDefinition("agents.hire-needs-a
     if (target) await ctx.input.page.locator(`[id^="comment-"] a[href=${JSON.stringify(target)}]`).first().click();
     else {
       if (!request) throw new Error("The canonical waiting response exposed neither a supported account setup link nor an actual addressed Anthropic setup request");
-      await ctx.input.page.locator(`[data-interaction-id=${JSON.stringify(request.id)}]`).getByRole("button", { name: /Connect|Set up|Continue/i }).first().click();
+      await clickInteractionAction(ctx.input.page, request, /Connect|Set up|Continue/i);
     }
     await expect(ctx.input.page.getByRole("heading", { name: /connections|Connect.*Anthropic|Connect a model provider/i }).first()).toBeVisible(); state.supportedSetupVisible = true;
     const selected = selectedRuntimeInputs(ctx, "agents.hire-needs-account");
@@ -92,7 +92,7 @@ export const runtimeClaudeAccountCases = [runtimeDefinition("agents.hire-needs-a
       state.setupRequestReconciled = completedClaudeSetupMatches({ request: resolved, sourceId: ctx.issue()!.id, sourceRunId: firstRun.id, companyId: before.companyId, humanId: session.user.id, connectionId: String(state.connectionId) });
       if (!state.setupRequestReconciled) throw new Error("The actual addressed Anthropic setup request did not reconcile against established human account access");
       await ctx.input.page.reload({ waitUntil: "domcontentloaded" });
-      await expect(ctx.input.page.locator(`[data-interaction-id=${JSON.stringify(String(state.setupRequestId))}]`)).toContainText(/connected|ready|complete/i);
+      await expect(ctx.input.page.locator(`[id=${JSON.stringify(`interaction-${String(state.setupRequestId)}`)}]`)).toContainText(/connected|ready|complete/i);
       await ctx.refreshIssue();
       state.setupAutoWakeExpected = ["in_progress", "in_review"].includes(ctx.issue()!.status) && ctx.issue()!.assigneeAgentId === resolved!.payload.requestingAgentId;
       if (state.setupAutoWakeExpected) {

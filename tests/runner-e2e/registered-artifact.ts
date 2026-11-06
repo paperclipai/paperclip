@@ -19,10 +19,14 @@ export async function readRegisteredArtifacts(api: RunnerApi, issueId: string, r
     api.get<IssueWorkProduct[]>(`/api/issues/${encodeURIComponent(issueId)}/work-products`),
     api.get<IssueAttachment[]>(`/api/issues/${encodeURIComponent(issueId)}/attachments`),
   ]);
+  // The file name identifies a deliverable; its work-product title is a
+  // human-facing label the agent may choose, so it is not part of identity.
+  const filenameOf = (product: IssueWorkProduct) =>
+    attachments.find(attachment => attachment.id === product.metadata?.attachmentId)?.originalFilename;
   return Promise.all(names.map(async name => {
     const registered = products.filter(product => product.issueId === issueId &&
       product.createdByRunId === runId && product.type === "artifact" &&
-      REGISTERED_ARTIFACT_STATUSES.has(product.status) && product.title === name);
+      REGISTERED_ARTIFACT_STATUSES.has(product.status) && (product.title === name || filenameOf(product) === name));
     if (registered.length === 0) throw new RegisteredArtifactNotFoundError(name);
     if (registered.length !== 1) throw new Error(`Expected one registered artifact ${name} from the tested run; observed ${registered.length}`);
     const product = registered[0]!;

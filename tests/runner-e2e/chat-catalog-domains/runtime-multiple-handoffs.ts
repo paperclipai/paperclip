@@ -23,7 +23,7 @@ export function gradeMultipleHandoffs(value: unknown) {
   c.add("logo-task-and-delivered-logo-unchanged", !!logoBefore && !!logo && sameTask(logoBefore, logo) && logo.status === "done" && logo.assigneeAgentId === (s.logoWorker as Entity).id
     && before?.contentVerified === true && after?.contentVerified === true && before.attachmentId === after.attachmentId && before.sha256 === after.sha256
     && before.content === after.content && after.content.includes(String(s.logoMarker)) && /<svg\b/i.test(after.content) && s.logoRevisionsUnchanged === true,
-  "The separate real Logo task, SVG bytes, artifact identity, saved revisions and original worker attribution remain unchanged.");
+  "The separate real Logo task, logo bytes, artifact identity, saved revisions and original worker attribution remain unchanged.");
   c.add("canonical-reply-honestly-identifies-affected-pending-work", /website/i.test(String(s.queryReply)) && /queue|pending|wait|next|forward|saved/i.test(String(s.queryReply))
     && !/already (?:implemented|consumed)|headline (?:is|has been) (?:already )?(?:changed|updated)|I(?:'ve| have)? implemented/i.test(String(s.queryReply)),
   "The canonical reply identifies Website and accurately describes feedback saved behind active work rather than claiming it already executed.");
@@ -39,16 +39,16 @@ export const runtimeMultipleHandoffCases = [runtimeDefinition("agent-chat.multip
   for (const scope of [{ scopeType: "company", scopeId: ctx.input.fixtures.company.id }, { scopeType: "agent", scopeId: logoWorker.id }])
     await ctx.input.api.post(`${root}/budgets/policies`, { ...scope, amount: 500, hardStopEnabled: true, isActive: true, unpricedUsagePolicy: "allow" });
   const logo = await ctx.input.api.post<Entity>(`${root}/issues`, { title: "Logo", status: "todo", assigneeAgentId: logoWorker.id,
-    description: `Create an actual small SVG logo file logo.svg with a simple acorn/circle mark, visible text Acorn and the exact reference ${logoMarker} in its SVG metadata or text. Save a short non-plan task delivery document describing it and register the real SVG file as a downloadable artifact work product titled logo.svg. Then complete this same task. No other task, publication or website change is authorized.` });
+    description: `Create an actual small logo file logo.html containing an inline SVG with a simple acorn/circle mark, visible text Acorn and the exact reference ${logoMarker} in its SVG metadata or text. Save a short non-plan task delivery document describing it and register the real logo.html file as a downloadable artifact work product titled logo.html. Then complete this same task. No other task, publication or website change is authorized.` });
   const complete = await pollUntil({ label: "Actual separate Logo work completed before the Website conversation", deadlineAt: Date.now() + 240_000,
     load: async () => ({ task: await ctx.input.api.get<Entity>(`/api/issues/${logo.id}`), runs: await ctx.allRuns() }),
     accept: v => v.task.status === "done" && v.runs.length === 1 && v.runs[0]?.agentId === logoWorker.id && v.runs[0].status === "succeeded" });
-  const [artifact] = await readRegisteredArtifacts(ctx.input.api, logo.id, complete.runs[0]!.id, ["logo.svg"]);
-  if (!artifact?.contentVerified || !artifact.content.includes(logoMarker) || !/<svg\b/i.test(artifact.content)) throw new Error("Completed Logo prerequisite lacks its actual native-created SVG");
+  const [artifact] = await readRegisteredArtifacts(ctx.input.api, logo.id, complete.runs[0]!.id, ["logo.html"]);
+  if (!artifact?.contentVerified || !artifact.content.includes(logoMarker) || !/<svg\b/i.test(artifact.content)) throw new Error("Completed Logo prerequisite lacks its actual native-created logo");
   const documents = await ctx.input.api.get<Entity[]>(`/api/issues/${logo.id}/documents`), revisions: Entity[] = [];
   for (const doc of documents) revisions.push(...await ctx.input.api.get<Entity[]>(`/api/issues/${logo.id}/documents/${encodeURIComponent(doc.key!)}/revisions`));
   const busy = await busyRuntimeWorker(ctx); await openStandingChat(ctx);
-  const message = `Keep these two existing work references in this conversation: Website ${busy.task.identifier ?? busy.task.id} is assigned to Morgan and actively waiting for the brief; Logo ${logo.identifier ?? logo.id} was completed by Riley and its actual delivered SVG is ${new URL(`/api/attachments/${artifact.attachmentId}/content?download=1`, ctx.input.api.baseURL).href}. Acknowledge these separate references, without creating, reassigning, editing or starting any task. Keep the Logo deliverable unchanged.`;
+  const message = `Keep these two existing work references in this conversation: Website ${busy.task.identifier ?? busy.task.id} is assigned to Morgan and actively waiting for the brief; Logo ${logo.identifier ?? logo.id} was completed by Riley and its actual delivered logo is ${new URL(`/api/attachments/${artifact.attachmentId}/content?download=1`, ctx.input.api.baseURL).href}. Acknowledge these separate references, without creating, reassigning, editing or starting any task. Keep the Logo deliverable unchanged.`;
   await sendChatMessage(ctx.input.page, message);
   const saved = await pollUntil({ label: "Real source history retains separate active Website and completed Logo", deadlineAt: Date.now() + 150_000,
     load: async () => { await ctx.refreshIssue(); return { source: ctx.issue(), runs: await ctx.allRuns() }; },
@@ -85,7 +85,7 @@ export const runtimeMultipleHandoffCases = [runtimeDefinition("agent-chat.multip
   async observe(ctx, state) {
     const o = await observeRuntime(ctx, state), logo = state.logoBefore as Entity;
     state.logoAfter = await ctx.input.api.get<Entity>(`/api/issues/${logo.id}`);
-    const [artifact] = await readRegisteredArtifacts(ctx.input.api, logo.id, String(state.logoRunId), ["logo.svg"]); state.logoArtifactAfter = artifact;
+    const [artifact] = await readRegisteredArtifacts(ctx.input.api, logo.id, String(state.logoRunId), ["logo.html"]); state.logoArtifactAfter = artifact;
     const documents = await ctx.input.api.get<Entity[]>(`/api/issues/${logo.id}/documents`), revisions: Entity[] = [];
     for (const doc of documents) revisions.push(...await ctx.input.api.get<Entity[]>(`/api/issues/${logo.id}/documents/${encodeURIComponent(doc.key!)}/revisions`));
     state.logoRevisionsUnchanged = JSON.stringify(documents.map(doc => [doc.id, doc.latestRevisionId]).sort()) === JSON.stringify((state.logoDocumentsBefore as Entity[]).map(doc => [doc.id, doc.latestRevisionId]).sort())

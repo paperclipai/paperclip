@@ -1,4 +1,4 @@
-import { expect } from "@playwright/test";
+import { expect, type Page } from "@playwright/test";
 import { pollUntil } from "../api.js";
 import type { ChatCatalogCase, ChatCatalogContext } from "../chat-catalog-contract.js";
 import { codexSubscriptionAgentConfig } from "../codex-subscription-fixture.js";
@@ -71,6 +71,24 @@ export async function verifyRuntimeResult(ctx: ChatCatalogContext, state: Record
   await expect(ctx.input.page.getByRole("heading", { name: target.name!, exact: true }).first()).toBeVisible();
   await ctx.input.evidence("chat-catalog-runtime-profile-opened.json", { agentId: target.id, companyId: target.companyId, url: ctx.input.page.url() });
   await ctx.input.page.goto(source, { waitUntil: "domcontentloaded" });
+}
+/**
+ * A pending interaction renders inline in the thread as `#interaction-<id>`,
+ * or docked in the composer takeover, which carries its title but no id.
+ */
+export function interactionSurface(page: Page, interaction: { id: string; title?: string | null }) {
+  const inline = page.locator(`[id=${JSON.stringify(`interaction-${interaction.id}`)}]`);
+  return interaction.title
+    ? inline.or(page.getByTestId("task-chat-composer-takeover").filter({ hasText: interaction.title }))
+    : inline;
+}
+/** Open a pending request from its timeline chip when it is not already docked, then use its own action. */
+export async function clickInteractionAction(page: Page, interaction: { id: string; title?: string | null }, name: string | RegExp) {
+  const docked = page.getByTestId("task-chat-composer-takeover").filter({ hasText: interaction.title ?? "" });
+  const action = (interaction.title ? docked : interactionSurface(page, interaction)).getByRole("button", typeof name === "string" ? { name, exact: true } : { name });
+  await expect(interactionSurface(page, interaction).first()).toBeVisible();
+  if (!(await action.first().isVisible())) await page.locator(`[id=${JSON.stringify(`interaction-${interaction.id}`)}]`).click();
+  await action.first().click();
 }
 export function runtimeDefinition(scenarioId: string, setup: ChatCatalogCase["setup"], grade: ChatCatalogCase["grade"], extra: Partial<ChatCatalogCase> = {}): ChatCatalogCase {
   return { scenarioId, setup, grade, observe: observeRuntime, verifyResult: verifyRuntimeResult,

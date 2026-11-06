@@ -50,7 +50,7 @@ const settings = privilegedDefinition("instance-operations.instance-settings", "
     await expect.poll(async () => (await ctx.input.api.get<{ enableAgentChat: boolean }>(endpoint, { timeout: remaining() })).enableAgentChat, { timeout: remaining() }).toBe(false);
     state.savedDisabled = true;
     await page.goto(source, { waitUntil: "domcontentloaded", timeout: remaining() });
-    await expect(page.getByText(/Agent Chat is disabled(?:\.| in Experimental settings)/).first()).toBeVisible({ timeout: remaining() });
+    await expect(page.getByText(/Agent Chat is disabled(?:\.| in Experimental settings| for this instance)/).first()).toBeVisible({ timeout: remaining() });
     state.disabledRouteClear = true;
     await page.goto(settingsUrl, { waitUntil: "domcontentloaded", timeout: remaining() });
     await expect(toggle).toHaveAttribute("aria-checked", "false", { timeout: remaining() }); await toggle.click({ timeout: remaining() });
