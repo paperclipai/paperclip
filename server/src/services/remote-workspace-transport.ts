@@ -418,8 +418,8 @@ async function captureReadOnlyWorkspaceArchive(input: {
   target: RemoteWorkspaceTarget; remoteCwd: string; operationId: string;
 }) {
   if (!/^[a-f0-9-]{36}$/.test(input.operationId)) throw new Error("remote_workspace_operation_identity_invalid");
-  const inspect = async () => {
-    const value = JSON.parse(await command(input.target, "capture", ["-e", readonlyWorkspaceInventoryScript(), input.remoteCwd])) as Awaited<ReturnType<typeof readWorkspaceInventory>>;
+  const inspect = async (timeoutMs = 300_000) => {
+    const value = JSON.parse(await command(input.target, "capture", ["-e", readonlyWorkspaceInventoryScript(), input.remoteCwd], undefined, timeoutMs)) as Awaited<ReturnType<typeof readWorkspaceInventory>>;
     if (!/^[a-f0-9]{64}$/.test(value.sha256) || !Number.isSafeInteger(value.byteSize) || value.byteSize < 0
       || !Number.isSafeInteger(value.entries) || value.entries < 0 || !Array.isArray(value.exclude)
       || value.exclude.length > 4096 || !value.exclude.every(item => typeof item === "string" && item.length > 0
@@ -438,16 +438,20 @@ async function captureReadOnlyWorkspaceArchive(input: {
     stage = "transfer";
     await transferArchive(input.target, "syncOut", [{ operationId: input.operationId,
       files: [{ kind: "directory", sourcePath: input.remoteCwd, targetPath: copy,
-        followSymlinks: false, exclude: before.exclude }] }], Math.max(1, before.byteSize));
+        followSymlinks: false, preserveSourceEntries: true, exclude: before.exclude }] }], Math.max(1, before.byteSize));
     stage = "verify";
-    const received = await readWorkspaceInventory(copy, true);
+    const verificationStarted = performance.now();
+    const verificationSignal = AbortSignal.timeout(120_000);
+    const remaining = () => { verificationSignal.throwIfAborted(); return Math.max(1, Math.ceil(120_000 - (performance.now() - verificationStarted))); };
+    const received = await readWorkspaceInventory(copy, true, verificationSignal);
     const same = (observed: typeof before) => observed.sha256 === before.sha256
       && observed.byteSize === before.byteSize && observed.entries === before.entries;
-    if (!same(received) || !same(await inspect())) throw new Error("remote_workspace_readonly_capture_changed");
+    if (!same(received) || !same(await inspect(remaining()))) throw new Error("remote_workspace_readonly_capture_changed");
     stage = "archive";
-    const receipt = await captureRemoteWorkspaceDirectory({ cwd: copy, archivePath, exclude: before.exclude });
+    const receipt = await captureRemoteWorkspaceDirectory({ cwd: copy, archivePath, exclude: before.exclude, signal: verificationSignal });
     stage = "verify";
-    if (!same(await inspect())) throw new Error("remote_workspace_readonly_capture_changed");
+    if (!same(await inspect(remaining()))) throw new Error("remote_workspace_readonly_capture_changed");
+    verificationSignal.throwIfAborted();
     // Only the sealed portable archive remains a candidate for durable upload.
     await rm(copy, { recursive: true, force: true });
     const savedRoot = root;
@@ -455,7 +459,8 @@ async function captureReadOnlyWorkspaceArchive(input: {
   } catch (error) {
     if (root) await rm(root, { recursive: true, force: true });
     const reason = error instanceof Error && error.message === "remote_workspace_readonly_capture_unsafe" ? "unsafe_source"
-      : error instanceof Error && error.message === "remote_workspace_readonly_capture_changed" ? "source_changed" : "operation_failed";
+      : error instanceof Error && error.message === "remote_workspace_readonly_capture_changed" ? "source_changed"
+        : error instanceof Error && error.message === "remote_workspace_readonly_capture_budget" ? "budget_exceeded" : "operation_failed";
     const { label, code } = sandboxProviderFailureLabel(error);
     throw new Error(`remote_workspace_readonly_capture_failed: stage=${stage} reason=${reason} transport=${label}${code ? ` code=${code}` : ""}`);
   }

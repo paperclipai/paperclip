@@ -379,6 +379,24 @@ describe("kubernetes onEnvironmentSyncIn (native single-exec transfer)", () => {
 });
 
 describe("kubernetes onEnvironmentSyncOut (native single-exec transfer)", () => {
+  // The pod's pinned descriptor protocol depends on Linux /proc/self/fd.
+  it.skipIf(process.platform !== "linux")("preserves source entry names when requested while retaining explicit exclusions", async () => {
+    const remoteDir = await makeTmp("k8s-source-entry-"), hostOut = await makeTmp("k8s-source-output-");
+    await fs.mkdir(path.join(remoteDir, "nested"));
+    const names = ["._result.txt", ".paperclip-upload-result", "nested/._result.txt", "nested/.paperclip-upload-result"];
+    for (const name of names) await fs.writeFile(path.join(remoteDir, name), `user work: ${name}`);
+    await fs.writeFile(path.join(remoteDir, "excluded.txt"), "excluded by caller");
+    const { exec } = makeRealExec();
+    await performSyncOut({ exec, remoteDir, timeoutMs: 30_000, operations: [{ operationId: "preserve", files: [{
+      kind: "directory", sourcePath: remoteDir, targetPath: hostOut, preserveSourceEntries: true, exclude: ["excluded.txt"],
+    }] }] });
+    for (const name of names) {
+      expect(await fs.readFile(path.join(hostOut, name), "utf8")).toBe(`user work: ${name}`);
+      expect(await fs.readFile(path.join(remoteDir, name), "utf8")).toBe(`user work: ${name}`);
+    }
+    await expect(fs.stat(path.join(hostOut, "excluded.txt"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   it("streams all file mappings back over a SINGLE exec and reassembles them at host targets, preserving mode and per-operation counts", async () => {
     const remoteDir = await makeTmp("k8s-sandbox-");
     const hostOut = await makeTmp("k8s-hostout-");

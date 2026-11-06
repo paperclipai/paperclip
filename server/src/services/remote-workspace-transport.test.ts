@@ -603,6 +603,79 @@ describe("remote workspace transport safety with real sandbox commands", () => {
     await expect(fs.access(copiedRoot!)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
+  it.each(["python", "node"])("recovers a full sandbox without copying an untracked %s environment", async kind => {
+    await git(workspace, "init", "--initial-branch=main");
+    await fs.writeFile(path.join(workspace, "saved.txt"), "retained work\n");
+    await git(workspace, "add", "saved.txt"); await git(workspace, "commit", "-m", "Saved work");
+    const dependency = kind === "python" ? ".venv" : "node_modules";
+    await fs.mkdir(path.join(workspace, dependency, "bin"), { recursive: true });
+    await fs.writeFile(path.join(workspace, kind === "python" ? ".venv/pyvenv.cfg" : "package.json"), kind === "python" ? "home = /usr/bin\n" : "{}\n");
+    await fs.symlink(process.execPath, path.join(workspace, dependency, "bin", "runtime"));
+    const { remote, execute } = target();
+    execute.mockResolvedValueOnce({ exitCode: 1, stdout: "", stderr: "remote_workspace_sandbox_disk_full: the sandbox disk is full; free space in the sandbox before saving the workspace",
+      timedOut: false, signal: null, pid: process.pid, startedAt: new Date().toISOString() });
+    remote.runner!.syncOut = async operations => {
+      const mapping = operations[0]!.files[0]!;
+      expect(mapping.exclude).toContain(dependency);
+      await fs.cp(mapping.sourcePath, mapping.targetPath, { recursive: true, verbatimSymlinks: true,
+        filter: file => !(mapping.exclude ?? []).some(excluded => {
+          const relative = path.relative(mapping.sourcePath, file).split(path.sep).join("/");
+          return relative === excluded || relative.startsWith(`${excluded}/`);
+        }) });
+      return { operations: [] };
+    };
+    const saved = await captureRemoteWorkspaceArchive({ target: remote, remoteCwd: workspace, operationId: randomUUID() });
+    try {
+      const restored = path.join(scratch, "restored");
+      await restoreRemoteWorkspaceArchive({ archivePath: saved.archivePath, targetDir: restored, expectedManifestDigest: saved.manifestDigest });
+      expect(await fs.readFile(path.join(restored, "saved.txt"), "utf8")).toBe("retained work\n");
+      await expect(fs.access(path.join(restored, dependency))).rejects.toMatchObject({ code: "ENOENT" });
+      expect(await fs.readlink(path.join(workspace, dependency, "bin", "runtime"))).toBe(process.execPath);
+    } finally { await saved.cleanup(); }
+  });
+
+  it("rejects excessive Git roots before parsing controller configuration", async () => {
+    for (let index = 0; index < 65; index++) {
+      const directory = path.join(workspace, `repo-${index}`, ".git"); await fs.mkdir(directory, { recursive: true });
+      await fs.writeFile(path.join(directory, "config"), "");
+    }
+    const bin = path.join(scratch, "bin"), invoked = path.join(scratch, "git-invoked"); await fs.mkdir(bin);
+    await fs.writeFile(path.join(bin, "git"), `#!/bin/sh\nprintf invoked > '${invoked}'\nexit 1\n`, { mode: 0o700 });
+    vi.stubEnv("PATH", `${bin}${path.delimiter}${process.env.PATH}`);
+    try {
+      await expect(readWorkspaceInventory(workspace, true)).rejects.toThrow("remote_workspace_readonly_capture_budget");
+      await expect(fs.access(invoked)).rejects.toMatchObject({ code: "ENOENT" });
+    } finally { vi.unstubAllEnvs(); }
+  });
+
+  it("bounds refspec work before controller normalization", async () => {
+    await git(workspace, "init", "--initial-branch=main");
+    await fs.appendFile(path.join(workspace, ".git", "config"), `[remote "origin"]\n${"fetch = +refs/heads/*:refs/remotes/origin/*\n".repeat(257)}`);
+    await expect(readWorkspaceInventory(workspace, true)).rejects.toThrow("remote_workspace_readonly_capture_budget");
+  });
+
+  it("cancels controller inventory before reading its source", async () => {
+    const reason = new Error("verification deadline");
+    await expect(readWorkspaceInventory(path.join(scratch, "missing"), true, AbortSignal.abort(reason))).rejects.toBe(reason);
+  });
+
+  it("retains tracked environment files during full-disk recovery", async () => {
+    await git(workspace, "init", "--initial-branch=main");
+    await fs.mkdir(path.join(workspace, ".venv"));
+    await fs.writeFile(path.join(workspace, ".venv", "pyvenv.cfg"), "tracked user data\n");
+    await fs.writeFile(path.join(workspace, ".venv", "result.txt"), "must survive\n");
+    await git(workspace, "add", ".venv"); await git(workspace, "commit", "-m", "Tracked environment data");
+    const { remote, execute } = target();
+    execute.mockResolvedValueOnce({ exitCode: 1, stdout: "", stderr: "remote_workspace_sandbox_disk_full: the sandbox disk is full; free space in the sandbox before saving the workspace",
+      timedOut: false, signal: null, pid: process.pid, startedAt: new Date().toISOString() });
+    const saved = await captureRemoteWorkspaceArchive({ target: remote, remoteCwd: workspace, operationId: randomUUID() });
+    try {
+      const restored = path.join(scratch, "restored");
+      await restoreRemoteWorkspaceArchive({ archivePath: saved.archivePath, targetDir: restored, expectedManifestDigest: saved.manifestDigest });
+      expect(await fs.readFile(path.join(restored, ".venv", "result.txt"), "utf8")).toBe("must survive\n");
+    } finally { await saved.cleanup(); }
+  });
+
   it("rejects internal Git config symlinks before controller normalization can follow an include", async () => {
     await fs.mkdir(path.join(workspace, ".git"));
     const outside = path.join(scratch, "outside-config");

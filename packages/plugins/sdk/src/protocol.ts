@@ -818,6 +818,13 @@ export interface PluginSyncFileMapping {
    */
   followSymlinks?: boolean;
   /**
+   * Outbound directory transfers preserve source entry names, including `._*`
+   * and provider scratch-like names. Explicit `exclude` patterns still apply;
+   * providers omit only scratch paths created by this exact transfer. This does
+   * not relax archive member or symlink validation. Ignored for syncIn/files.
+   */
+  preserveSourceEntries?: boolean;
+  /**
    * Advisory read-write intent for the sandbox target. `"rw"` means the author
    * expects the agent to change the bytes at the target and keep the change.
    * `"ro"` means the target is a read-only tree. An absent value defaults to

@@ -12,7 +12,7 @@ vi.mock("./plugin.js", async () => {
 import { performSyncOut } from "./file-sync.js";
 
 const roots: string[] = [];
-afterEach(async () => { await Promise.all(roots.splice(0).map(root => fs.rm(root, { recursive: true, force: true }))); });
+afterEach(async () => { vi.unstubAllEnvs(); await Promise.all(roots.splice(0).map(root => fs.rm(root, { recursive: true, force: true }))); });
 const executable = (names: string[], version: string) => names.map(name => {
   const resolved = spawnSync("/bin/sh", ["-c", 'command -v "$1"', "sh", name], { encoding: "utf8" }).stdout?.trim();
   return resolved && spawnSync(resolved, ["--version"], { encoding: "utf8" }).stdout?.includes(version) ? resolved : undefined;
@@ -49,7 +49,9 @@ while True:
             data = data[os.write(dst, data):]
 `;
 
-it.skipIf(Object.values(requiredTools).some(tool => !tool)).each(["success", "producer failure", "sparse archive over budget"])("preserves source bytes under archive capacity failure: %s", async scenario => {
+it.skipIf(Object.values(requiredTools).some(tool => !tool)).each(["success", "producer failure", "sparse archive over budget", "preserve source entries", "preserve entries direct archive", "preserve entries GNU host archive"])("preserves source bytes under archive capacity failure: %s", async scenario => {
+  const preserveSourceEntries = scenario.startsWith("preserve");
+  const directArchive = scenario === "preserve entries direct archive";
   const producerFails = scenario === "producer failure";
   const sparseOverBudget = scenario === "sparse archive over budget";
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "daytona-capacity-"));
@@ -73,18 +75,26 @@ it.skipIf(Object.values(requiredTools).some(tool => !tool)).each(["success", "pr
     await fs.writeFile(path.join(output, "result.bin"), "newer host work");
   }
   const env = { ...process.env, PATH: `${bin}:${process.env.PATH}` };
+  if (scenario === "preserve entries GNU host archive") vi.stubEnv("PATH", env.PATH);
   const bytes = Buffer.alloc(5 * 1024 * 1024, sparseOverBudget ? 0 : "saved work\n");
   await fs.writeFile(path.join(remote, "result.bin"), sparseOverBudget ? "" : bytes, { mode: 0o600 });
   if (sparseOverBudget) await fs.truncate(path.join(remote, "result.bin"), bytes.length);
   await fs.symlink("/etc/passwd", path.join(remote, "unsafe-link"));
   await fs.symlink("result.bin", path.join(remote, "safe-link"));
+  if (preserveSourceEntries) {
+    await fs.writeFile(path.join(remote, "excluded.txt"), "excluded by caller");
+    await fs.mkdir(path.join(remote, "nested"));
+    for (const name of ["._result.txt", ".paperclip-upload-result", "nested/._result.txt", "nested/.paperclip-upload-result"]) {
+      await fs.writeFile(path.join(remote, name), `user work: ${name}`);
+    }
+  }
   const failures: string[] = [];
   const sandbox = {
     // A miniature provider-reported quota makes the sparse-file case bounded.
     disk: sparseOverBudget ? 1 / 4096 : 1,
     process: {
       executeCommand: async (command: string) => {
-        const result = spawnSync("bash", ["-c", 'ulimit -f 128; exec sh -c "$1"', "bash", command], { env, encoding: "utf8" });
+        const result = spawnSync("bash", ["-c", directArchive ? 'exec sh -c "$1"' : 'ulimit -f 128; exec sh -c "$1"', "bash", command], { env, encoding: "utf8" });
         if (result.status !== 0) failures.push(result.stderr);
         return { exitCode: result.status ?? 1, result: result.stdout + result.stderr };
       },
@@ -111,8 +121,8 @@ it.skipIf(Object.values(requiredTools).some(tool => !tool)).each(["success", "pr
       deleteFile: (file: string) => fs.rm(file, { force: true }),
     },
   };
-  const sync = performSyncOut({ sandbox: sandbox as never, remoteDir: remote, timeoutSeconds: 30,
-    operations: [{ operationId: "export", files: [{ sourcePath: remote, targetPath: output, kind: "directory" }] }],
+  const sync = performSyncOut({ sandbox: sandbox as never, remoteDir: directArchive ? root : remote, timeoutSeconds: 30,
+    operations: [{ operationId: "export", files: [{ sourcePath: remote, targetPath: output, kind: "directory", preserveSourceEntries, exclude: preserveSourceEntries && !directArchive ? ["excluded.txt"] : undefined }] }],
   });
   if (producerFails || sparseOverBudget) {
     await expect(sync).rejects.toThrow(sparseOverBudget ? "sandbox disk budget" : "without a successful archive receipt");
@@ -122,14 +132,23 @@ it.skipIf(Object.values(requiredTools).some(tool => !tool)).each(["success", "pr
     return;
   }
   await sync;
-  expect(failures.join("\n")).toMatch(/File\s?size limit exceeded/i);
+  if (!directArchive) expect(failures.join("\n")).toMatch(/File\s?size limit exceeded/i);
   expect((await fs.readFile(path.join(output, "result.bin"))).equals(bytes)).toBe(true);
   expect((await fs.readFile(path.join(remote, "result.bin"))).equals(bytes)).toBe(true);
   expect((await fs.stat(path.join(output, "result.bin"))).mode & 0o777).toBe(0o600);
   expect(await fs.readlink(path.join(output, "safe-link"))).toBe("result.bin");
   expect(await fs.readdir(output)).not.toContain("unsafe-link");
   expect(await fs.readlink(path.join(remote, "unsafe-link"))).toBe("/etc/passwd");
-  expect((await fs.readdir(remote)).filter(name => name.startsWith(".paperclip-upload"))).toEqual([]);
+  if (preserveSourceEntries) {
+    if (directArchive) expect(await fs.readFile(path.join(output, "excluded.txt"), "utf8")).toBe("excluded by caller");
+    else await expect(fs.stat(path.join(output, "excluded.txt"))).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await fs.readFile(path.join(remote, "excluded.txt"), "utf8")).toBe("excluded by caller");
+    for (const name of ["._result.txt", ".paperclip-upload-result", "nested/._result.txt", "nested/.paperclip-upload-result"]) {
+      expect(await fs.readFile(path.join(output, name), "utf8")).toBe(`user work: ${name}`);
+      expect(await fs.readFile(path.join(remote, name), "utf8")).toBe(`user work: ${name}`);
+    }
+  }
+  expect((await fs.readdir(remote)).filter(name => name.startsWith(".paperclip-upload"))).toEqual(preserveSourceEntries ? [".paperclip-upload-result"] : []);
 }, 40_000);
 
 it.skipIf(Object.values(requiredTools).some(tool => !tool)).each([

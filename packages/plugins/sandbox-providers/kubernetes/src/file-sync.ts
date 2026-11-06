@@ -409,12 +409,17 @@ async function assertTarballEntriesConfined(archivePath: string): Promise<void> 
   }
 }
 
-async function extractHostTarball(input: { archivePath: string; localDir: string }): Promise<void> {
+async function extractHostTarball(input: { archivePath: string; localDir: string; preserveSourceEntries?: boolean }): Promise<void> {
   // The archive is sandbox-authored and untrusted: validate every member (and
   // link target) is confined before letting host-side tar write a single byte.
   await assertTarballEntriesConfined(input.archivePath);
   await fs.mkdir(input.localDir, { recursive: true });
-  await execFileAsync("tar", ["-xf", input.archivePath, "-C", input.localDir], {
+  // macOS tar otherwise consumes source files named `._*` as AppleDouble
+  // metadata instead of writing their bytes. These are ordinary user entries.
+  const preserveMacEntries = input.preserveSourceEntries && process.platform === "darwin"
+    && (await execFileAsync("tar", ["--version"])).stdout.includes("bsdtar");
+  await execFileAsync("tar", ["-xf", input.archivePath, "-C", input.localDir,
+    ...(preserveMacEntries ? ["--no-mac-metadata", "--options=!mac-ext"] : [])], {
     env: { ...process.env, COPYFILE_DISABLE: "1" },
     maxBuffer: 64 * 1024 * 1024,
   });
@@ -835,7 +840,7 @@ async function syncOutDirectoryMapping(input: {
   const { exec, mapping, remoteDir, timeoutMs, maxOutputBytes } = input;
   assertConfinedSandboxPath(remoteDir, mapping.sourcePath, "source");
   return withHostTempDir(async (tmp) => {
-    const excludeFlags = ["._*", ...(mapping.exclude ?? [])]
+    const excludeFlags = [...(mapping.preserveSourceEntries ? [] : ["._*"]), ...(mapping.exclude ?? [])]
       .map((entry) => `--exclude ${shQuote(entry)}`)
       .join(" ");
     const script = [
@@ -867,7 +872,7 @@ async function syncOutDirectoryMapping(input: {
       label: "syncOut directory transfer",
     });
     const bytesTransferred = (await fs.stat(localTar)).size;
-    await extractHostTarball({ archivePath: localTar, localDir: mapping.targetPath });
+    await extractHostTarball({ archivePath: localTar, localDir: mapping.targetPath, preserveSourceEntries: mapping.preserveSourceEntries });
     const filesTransferred = await countHostFiles(mapping.targetPath, mapping.exclude);
     return { filesTransferred, bytesTransferred };
   });

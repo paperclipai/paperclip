@@ -386,13 +386,18 @@ export async function assertTarballEntriesConfined(
   }
 }
 
-async function extractHostTarball(input: { archivePath: string; localDir: string }): Promise<void> {
+async function extractHostTarball(input: { archivePath: string; localDir: string; preserveSourceEntries?: boolean }): Promise<void> {
   // The archive is sandbox-authored and untrusted: validate every member (and
   // link target) is confined before letting host-side tar write a single byte.
   await withEnvironmentSyncTransferStep("archive_validate", () => assertTarballEntriesConfined(input.archivePath));
   await withEnvironmentSyncTransferStep("archive_extract", async () => {
     await fs.mkdir(input.localDir, { recursive: true });
-    await execFileAsync("tar", ["-xf", input.archivePath, "-C", input.localDir], {
+    // macOS tar otherwise consumes source files named `._*` as AppleDouble
+    // metadata instead of writing their bytes. These are ordinary user entries.
+    const preserveMacEntries = input.preserveSourceEntries && process.platform === "darwin"
+      && (await execFileAsync("tar", ["--version"])).stdout.includes("bsdtar");
+    await execFileAsync("tar", ["-xf", input.archivePath, "-C", input.localDir,
+      ...(preserveMacEntries ? ["--no-mac-metadata", "--options=!mac-ext"] : [])], {
       env: { ...process.env, COPYFILE_DISABLE: "1" },
       maxBuffer: 32 * 1024 * 1024,
     });
@@ -1346,7 +1351,12 @@ async function syncOutDirectoryMapping(input: {
   return withHostTempDir(async (tmp) => {
     const remoteTar = path.posix.join(remoteDir, scratchName(".tar"));
     const remoteList = path.posix.join(remoteDir, scratchName(".list"));
-    const excludes = ["._*", `${SCRATCH_PREFIX}*`, ...(mapping.exclude ?? [])];
+    const scratchPaths = [remoteTar, remoteList].flatMap(file => {
+      const relative = path.posix.relative(mapping.sourcePath, file);
+      return relative && !relative.startsWith("../") && !path.posix.isAbsolute(relative)
+        ? [relative, `./${relative}`] : [];
+    });
+    const excludes = [...(mapping.preserveSourceEntries ? scratchPaths : ["._*", `${SCRATCH_PREFIX}*`]), ...(mapping.exclude ?? [])];
     const excludeFlags = excludes
       .flatMap((entry) => [entry, `${entry.replace(/\/$/, "")}/*`])
       .map((entry) => `--exclude ${shellQuote(entry)}`)
@@ -1381,7 +1391,7 @@ async function syncOutDirectoryMapping(input: {
     ].join("\n");
     const confinedEntriesScript = (archive: string | null) => [
       `cd ${shellQuote(mapping.sourcePath)}`,
-      `find . -mindepth 1 \\( ${prunePaths} \\) -prune -o -type l -exec sh -c ${shellQuote(filterLinks)} sh {} + -o \\( -type f -o -type d \\) -print0 ${archive ? `> ${shellQuote(remoteList)} && ` : "| "}` +
+      `find . -mindepth 1 ${prunePaths ? `\\( ${prunePaths} \\) -prune -o ` : ""}-type l -exec sh -c ${shellQuote(filterLinks)} sh {} + -o \\( -type f -o -type d \\) -print0 ${archive ? `> ${shellQuote(remoteList)} && ` : "| "}` +
       `tar -c --no-xattrs --hard-dereference --no-recursion --null ${excludeFlags} -f ${shellQuote(archive ?? "-")} -T ${shellQuote(archive ? remoteList : "-")}`,
     ].join(" && ");
 
@@ -1431,7 +1441,7 @@ async function syncOutDirectoryMapping(input: {
         }
         bytesTransferred += await withEnvironmentSyncTransferStep("archive_download", async () => (await fs.stat(localTar)).size);
         try {
-          await extractHostTarball({ archivePath: localTar, localDir: mapping.targetPath });
+          await extractHostTarball({ archivePath: localTar, localDir: mapping.targetPath, preserveSourceEntries: mapping.preserveSourceEntries });
           break;
         } catch (error) {
           if (!(error instanceof UnsafeOutboundArchiveError) || attempt > 0) throw error;

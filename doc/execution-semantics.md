@@ -1023,6 +1023,17 @@ They remain retained if their normal archive cannot be saved. Transfer failures
 or changed files retain the original disk-full error and do not produce a
 preservation receipt.
 
+The fallback applies the normal untracked dependency exclusions before inspecting
+links inside reinstallable environments. Tracked environment files remain part of
+the save. Its outbound mapping requests `preserveSourceEntries`; providers retain
+ordinary `._*` and scratch-like user filenames while excluding only the current
+transfer's own scratch paths and the explicit source exclusions. Older providers
+that omit files fail inventory verification rather than publish an incomplete save.
+Fallback inventory is limited to 100,000 entries, 64 standalone repositories,
+1 MiB of configuration, 1,024 settings and 256 refspec/merge entries. Controller
+verification and archive normalization share a two-minute cancellation deadline.
+These limits reject excessive work before publication and keep the source retained.
+
 Shallow and partial Git checkouts retain their available object files instead
 of asking a mirror clone to transfer promised or index-only objects. Capture
 does not fetch missing objects. It preserves the shallow boundary, promisor pack

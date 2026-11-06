@@ -472,6 +472,13 @@ export interface SandboxSyncFileMapping {
   exclude?: string[];
   followSymlinks?: boolean;
   /**
+   * Outbound directory transfers preserve source entry names, including `._*`
+   * and provider scratch-like names. Explicit `exclude` patterns still apply;
+   * providers omit only scratch paths created by this exact transfer. This does
+   * not relax archive member or symlink validation. Ignored for syncIn/files.
+   */
+  preserveSourceEntries?: boolean;
+  /**
    * Advisory read-write intent for the sandbox target. `"rw"` marks a target the
    * agent may change and keep; `"ro"` marks a read-only tree. An absent value
    * defaults to `"ro"` (read-only is the safe default for an advisory signal).
