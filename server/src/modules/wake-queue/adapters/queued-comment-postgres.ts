@@ -11,7 +11,7 @@ import { notifyChatRunMilestones } from "../../../services/chat-run-milestone-no
 import { and, eq, inArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agentWakeupRequests, agents, heartbeatRuns, issueComments, issues } from "@paperclipai/db";
-import type { IssueComment, IssueQueuedCommentQueue } from "@paperclipai/shared";
+import { isUuidLike, type IssueComment, type IssueQueuedCommentQueue } from "@paperclipai/shared";
 import {
   buildQueuedCommentQueueSnapshot,
   decideQueuedCommentQueueSteering,
@@ -140,8 +140,11 @@ function buildTransaction(tx: Db, companyId: string, issueId: string, deps: Queu
 
     async buildQueueSnapshot({ issue, actor, wake, state, queueRun, activeRun }): Promise<IssueQueuedCommentQueue> {
       const commentIds = queuedCommentIdsFromWakePayload(wake?.payload ?? null);
+      const queryableIds = commentIds
+        .map((id) => id.trim())
+        .filter((id) => isUuidLike(id));
       const rows =
-        commentIds.length > 0
+        queryableIds.length > 0
           ? await tx
               .select()
               .from(issueComments)
@@ -149,7 +152,7 @@ function buildTransaction(tx: Db, companyId: string, issueId: string, deps: Queu
                 and(
                   eq(issueComments.companyId, companyId),
                   eq(issueComments.issueId, issue.id),
-                  inArray(issueComments.id, commentIds),
+                  inArray(issueComments.id, queryableIds),
                 ),
               )
           : [];
