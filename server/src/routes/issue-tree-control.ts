@@ -97,17 +97,19 @@ export function issueTreeControlRoutes(
     root: { id: string; companyId: string },
     holdId: string,
     actor: ReturnType<typeof getActorInfo>,
+    /** Snapshot members already received an explicit wake. */
+    options: { skipMembers?: boolean } = {},
   ) {
     // A pause Stop is an operator hold. Re-dispatch the work it interrupted
     // once, under current admission gates; never replay uncertain actions.
     const hold = await treeControlSvc.getHold(root.companyId, holdId);
     if (!hold || hold.mode !== "pause") return [];
-    // The pause gate also covered tasks created under the tree after its
-    // snapshot, so work it refused there is owed too.
-    const currentTree = await treeControlSvc.listTreeIssues(root.companyId, hold.rootIssueId);
     return resumeInterruptedWork(db, {
       companyId: root.companyId,
-      issueIds: [...(hold.members ?? []).map((member) => member.issueId), ...currentTree.map((issue) => issue.id)],
+      issueIds: options.skipMembers ? [] : (hold.members ?? []).map((member) => member.issueId),
+      // Gates also refused work on tasks outside the snapshot for this hold.
+      suppressedByHoldId: hold.id,
+      excludeIssueIds: options.skipMembers ? (hold.members ?? []).map((member) => member.issueId) : [],
       rootIssueId: root.id,
       actor,
       wakeup: (agentId, opts) => heartbeat.wakeup(agentId, opts),
@@ -574,9 +576,11 @@ export function issueTreeControlRoutes(
         }
       }
 
-      // An explicit wake above already covers every executable member.
-      if (hold.mode === "pause" && req.body.metadata?.wakeAgents !== true) {
-        wakeFailures.push(...await resumePauseInterruptedWork(root, hold.id, actor));
+      // An explicit wake above already covers every executable member, but not
+      // tasks outside the snapshot whose work a gate refused for this hold.
+      if (hold.mode === "pause") {
+        wakeFailures.push(...await resumePauseInterruptedWork(root, hold.id, actor,
+          { skipMembers: req.body.metadata?.wakeAgents === true }));
       }
 
       res.json({ ...hold, ...(wakeFailures.length ? { wakeFailures } : {}) });

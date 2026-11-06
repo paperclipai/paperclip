@@ -145,6 +145,7 @@ import {
 } from "../issue-rewake-throttle.js";
 import { logActivity } from "../activity-log.js";
 import { ISSUE_BLOCKERS_RESOLVED_WAKE_REASON } from "../issue-dependency-wakeups.js";
+import { resumeIfPauseAlreadyReleased } from "../issue-tree-resume.js";
 import {
   ISSUE_PAUSED_ERROR_CODE,
   ISSUE_TREE_CONTROL_INTERACTION_WAKE_REASONS,
@@ -985,6 +986,9 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
               ],
             },
           });
+          // A release that committed before this refusal did not see it.
+          await resumeIfPauseAlreadyReleased(db, { companyId: run.companyId, issueId,
+            holdId: activePauseHold.holdId, wakeup: (agentId, opts) => trackWakeup(agentId, opts) });
         };
         // Cancellation promotes the agent's next queued run under the agent
         // start lock, so a caller holding that lock settles it after release.

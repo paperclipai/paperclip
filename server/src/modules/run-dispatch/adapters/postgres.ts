@@ -27,6 +27,7 @@ import {
   heartbeatRuns,
   issueRecoveryActions,
   issueComments,
+  issueTreeHolds,
   issues,
   nativeRunFinalizations,
   projects,
@@ -747,6 +748,17 @@ export function createPostgresRunDispatchAdapter(
     tx: Db,
     input: CancelSuppressedRetryInput,
   ): Promise<CancelSuppressedRetryResult> {
+    // A retry a pause refused is owed one re-dispatch when that pause is released.
+    const pauseHoldId = input.errorCode === ISSUE_PAUSED_ERROR_CODE ? readNonEmptyString(input.details.holdId) : null;
+    if (pauseHoldId) {
+      // Hold the pause against a concurrent release until this refusal commits,
+      // so release either sees the refused retry or the retry sees no pause.
+      // Under a released pause the retry stays parked for the next promotion.
+      const [active] = await tx.select({ id: issueTreeHolds.id }).from(issueTreeHolds).where(and(
+        eq(issueTreeHolds.companyId, input.companyId), eq(issueTreeHolds.id, pauseHoldId),
+        eq(issueTreeHolds.status, "active"))).for("share");
+      if (!active) return { applied: false };
+    }
     await notifyExecutionRunWork(tx, { companyId: input.companyId, runId: input.runId });
     await notifyInstructionCollection(tx, { companyId: input.companyId, runId: input.runId });
     await notifyExternalAgentSettlement(tx, { companyId: input.companyId, runId: input.runId });
@@ -754,8 +766,6 @@ export function createPostgresRunDispatchAdapter(
     await notifyScheduledRetryCancellation(tx, { companyId: input.companyId, runId: input.runId });
     await notifyUnsafeWorkspaceExportRecovery(tx, { companyId: input.companyId, issueId: input.issueId ?? undefined });
     await notifyChatRunMilestones(tx, { companyId: input.companyId, issueId: input.issueId ?? undefined, runId: input.runId });
-    // A retry a pause refused is owed one re-dispatch when that pause is released.
-    const pauseHoldId = input.errorCode === ISSUE_PAUSED_ERROR_CODE ? readNonEmptyString(input.details.holdId) : null;
     const pauseSuppression = pauseHoldId ? pauseSuppressionResult({
       holdId: pauseHoldId, rootIssueId: readNonEmptyString(input.details.rootIssueId),
     }) : null;
