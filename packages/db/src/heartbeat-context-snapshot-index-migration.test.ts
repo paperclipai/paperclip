@@ -72,7 +72,19 @@ d("heartbeat context_snapshot expression index migration", () => {
       "EXPLAIN SELECT id FROM agent_wakeup_requests WHERE company_id = '00000000-0000-0000-0000-000000000001' AND status = 'deferred_issue_execution' AND payload ->> 'issueId' = 'x' LIMIT 1",
     );
     const wakeText = wakePlan.map((r) => Object.values(r)[0]).join("\n");
-    expect(wakeText).toContain("agent_wakeup_requests_company_payload_issue_idx");
+    expect(wakeText).toMatch(/agent_wakeup_requests_company_(payload_issue|pending_issue_key)_idx/);
+    expect(wakeText).not.toContain("Seq Scan");
+
+    const pendingWakePlan = await sql.unsafe(
+      "EXPLAIN SELECT 1 FROM agent_wakeup_requests w WHERE w.company_id = '00000000-0000-0000-0000-000000000001' AND coalesce(w.payload->>'issueId', w.payload->>'taskId', w.payload->'_paperclipWakeContext'->>'issueId') = 'x' AND w.status IN ('queued', 'claimed', 'deferred_issue_execution')",
+    );
+    expect(pendingWakePlan.map((r) => Object.values(r)[0]).join("\n"))
+      .toContain("agent_wakeup_requests_company_pending_issue_key_idx");
+    const unfinishedRunPlan = await sql.unsafe(
+      "EXPLAIN SELECT 1 FROM heartbeat_runs r WHERE r.company_id = '00000000-0000-0000-0000-000000000001' AND coalesce(r.context_snapshot->>'issueId', r.context_snapshot->>'taskId', r.native_issue_id::text) = 'x' AND r.status IN ('queued', 'running', 'scheduled_retry')",
+    );
+    expect(unfinishedRunPlan.map((r) => Object.values(r)[0]).join("\n"))
+      .toContain("heartbeat_runs_company_unfinished_issue_key_idx");
 
     // Idempotency: re-running the migration statements against an already
     // migrated database must be a no-op, not an error.
@@ -80,6 +92,7 @@ d("heartbeat context_snapshot expression index migration", () => {
       "./migrations/0209_heartbeat_context_snapshot_indexes.sql",
       "./migrations/0210_heartbeat_context_taskkey_index.sql",
       "./migrations/0345_luxuriant_carmella_unuscione.sql",
+      "./migrations/0438_opposite_harrier.sql",
     ]) {
       const migrationSql = await readFile(
         fileURLToPath(new URL(migration, import.meta.url)),

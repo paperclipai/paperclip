@@ -3053,6 +3053,13 @@
       "when": 1793982073367,
       "tag": "0437_workable_oracle",
       "breakpoints": true
+    },
+    {
+      "idx": 438,
+      "version": "7",
+      "when": 1794005080231,
+      "tag": "0438_opposite_harrier",
+      "breakpoints": true
     }
   ]
 }

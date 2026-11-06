@@ -178,6 +178,12 @@ export const heartbeatRuns = pgTable(
       table.issueId,
       table.createdAt,
     ),
+    companyUnfinishedIssueKeyIdx: index("heartbeat_runs_company_unfinished_issue_key_idx")
+      .on(
+        sql`(coalesce(${table.contextSnapshot}->>'issueId', ${table.contextSnapshot}->>'taskId', ${table.nativeIssueId}::text))`,
+        table.companyId,
+      )
+      .where(sql`${table.status} in ('queued', 'running', 'scheduled_retry')`),
     companyResponsibleUserIdx: index("heartbeat_runs_company_responsible_user_idx").on(
       table.companyId,
       table.responsibleUserId,
