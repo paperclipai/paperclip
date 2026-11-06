@@ -9,6 +9,7 @@ import { ThemeProvider } from "@/context/ThemeContext";
 import { IssueGalleryContext } from "@/context/IssueGalleryContext";
 import { MemoryRouter, useLocation } from "@/lib/router";
 import { TaskChatAgentIdentity, TaskChatBubble } from "./TaskChatBubble";
+import { copyTextToClipboard } from "@/lib/clipboard";
 import { paperclipHumanAvatarUrl } from "@/lib/issue-chat-human-author";
 import type { TaskChatMessageItem } from "./task-chat-model";
 
@@ -16,6 +17,8 @@ vi.mock("@/context/CompanyContext", async (importOriginal) => ({
   ...await importOriginal<typeof import("@/context/CompanyContext")>(),
   useCompany: () => ({ selectedCompany: { issuePrefix: "TES" } }),
 }));
+
+vi.mock("@/lib/clipboard", () => ({ copyTextToClipboard: vi.fn().mockResolvedValue(undefined) }));
 
 function CurrentPath() {
   return <output>{useLocation().pathname}</output>;
@@ -142,6 +145,36 @@ describe("TaskChatBubble attachment chips", () => {
     }
     renderMessage("Board reply");
     expect(container.textContent).not.toContain("Sent from iMessage");
+  });
+
+  it("copies the viewer's original Markdown beside the timestamp, including attachment links", async () => {
+    const text = "**My message**\n\n[report.txt](/api/attachments/report/content)";
+    flushSync(() => root!.render(
+      <ThemeProvider>
+        <TaskChatBubble item={{ id: "own", kind: "message", author: "human", isCurrentUser: true, text, timestamp: "15m ago" }} />
+      </ThemeProvider>,
+    ));
+    const toolbar = container.querySelector('[data-testid="task-chat-bubble-actions"]')!;
+    expect(toolbar.parentElement?.parentElement?.textContent).toContain("15m ago");
+    const button = toolbar.querySelector('button[aria-label="Copy message"]') as HTMLButtonElement;
+    await act(async () => button.click());
+    expect(copyTextToClipboard).toHaveBeenLastCalledWith(text);
+    expect(button.querySelector(".lucide-check")).not.toBeNull();
+  });
+
+  it.each([
+    { author: "human" as const, isCurrentUser: false },
+    { author: "human" as const, isCurrentUser: undefined },
+    { author: "agent" as const, isCurrentUser: true },
+    { author: "human" as const, isCurrentUser: true, optimistic: "pending" as const },
+    { author: "human" as const, isCurrentUser: true, optimistic: "queued" as const },
+  ])("omits the own-message toolbar for %j", (state) => {
+    flushSync(() => root!.render(
+      <ThemeProvider>
+        <TaskChatBubble item={{ id: "other", kind: "message", text: "Message", timestamp: "15m ago", ...state }} />
+      </ThemeProvider>,
+    ));
+    expect(container.querySelector('[data-testid="task-chat-bubble-actions"]')).toBeNull();
   });
 
   it("opens attachment images in the shared task gallery", () => {
