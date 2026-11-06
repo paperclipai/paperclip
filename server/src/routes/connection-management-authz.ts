@@ -449,6 +449,16 @@ export async function filterConnectionManagementPolicies<T extends { selectors: 
   if (req.actor.type !== "agent") return rows;
   const context = connectionRequestContext(req);
   if (!context) throw forbidden("Connection management authority is required");
+  // Rules often name the same resources. One read decision per resource keeps
+  // long rule lists within the agent API timeout.
+  const service = connectionManagementService(db);
+  const decisions = new Map<string, Promise<boolean>>();
+  const applicationConnections = new Map<string, Promise<{ connectionId: string }[]>>();
+  const catalogConnections = new Map<string, Promise<{ connectionId: string }[]>>();
+  const once = <V>(cache: Map<string, Promise<V>>, key: string, load: () => Promise<V>) => {
+    if (!cache.has(key)) cache.set(key, load());
+    return cache.get(key)!;
+  };
   const visible: T[] = [];
   for (const row of rows) {
     const resources: Partial<ConnectionManagementResource>[] = [{}];
@@ -456,16 +466,15 @@ export async function filterConnectionManagementPolicies<T extends { selectors: 
     for (const key of ["connectionId", "profileId", "gatewayId", "projectId", "issueId", "routineId"] as const) for (const id of ids(key)) resources.push({ [key]: id });
     for (const id of ids("agentId")) resources.push({ targetAgentId: id });
     for (const applicationId of ids("applicationId")) {
-      const connections = await db.select({ connectionId: toolConnections.id }).from(toolConnections).where(and(eq(toolConnections.applicationId, applicationId), eq(toolConnections.companyId, context.resource.companyId)));
-      resources.push(...connections);
+      resources.push(...await once(applicationConnections, applicationId, () => db.select({ connectionId: toolConnections.id }).from(toolConnections).where(and(eq(toolConnections.applicationId, applicationId), eq(toolConnections.companyId, context.resource.companyId)))));
     }
     for (const id of ids("catalogEntryId")) {
-      const [entry] = await db.select({ connectionId: toolCatalogEntries.connectionId }).from(toolCatalogEntries).where(and(eq(toolCatalogEntries.id, id), eq(toolCatalogEntries.companyId, context.resource.companyId)));
-      if (entry) resources.push(entry);
+      resources.push(...await once(catalogConnections, id, () => db.select({ connectionId: toolCatalogEntries.connectionId }).from(toolCatalogEntries).where(and(eq(toolCatalogEntries.id, id), eq(toolCatalogEntries.companyId, context.resource.companyId)))));
     }
     let allowed = true;
     for (const resource of resources) {
-      if (!(await connectionManagementService(db).capability(req.actor, "connections:profiles", { ...context.resource, ...resource }, { mutation: false, readContext: context })).allowed) { allowed = false; break; }
+      const key = JSON.stringify(Object.entries(resource).sort(([a], [b]) => a.localeCompare(b)));
+      if (!(await once(decisions, key, async () => (await service.capability(req.actor, "connections:profiles", { ...context.resource, ...resource }, { mutation: false, readContext: context })).allowed))) { allowed = false; break; }
     }
     if (allowed) visible.push(row);
   }
