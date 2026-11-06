@@ -1,3 +1,4 @@
+import { captureRemoteNativeProviderArtifacts } from "./native-provider-artifact-capture.js";
 import { NativeSessionDiagnostics, nativeSessionDiagnostics, type NativeDiagnosticLease } from "./native-session-diagnostics.js";
 import { recordAgentProviderRateLimits } from "../agent-provider-rate-limits.js";
 import { nativePostResultFailureCategory, type NativePostResultFailureCategory } from "./native-post-result-failure.js";
@@ -15671,22 +15672,10 @@ async function createRunnerdBackendWithinSessionClaim(
         return;
       }
       if (!openCodeLaunchArtifacts) throw new Error("native_provider_artifacts_admission_missing");
-      const captureRoot = mkdtempSync(join(tmpdir(), "paperclip-provider-launch-"));
-      try {
-        const files = (["nodeCommand", "opencodeProxy", "opencodeExecutable"] as const).map(name => {
-          const targetPath = join(captureRoot, expectedProviderPackManifest!.payload.artifacts[name].path);
-          mkdirSync(dirname(targetPath), { recursive: true, mode: 0o700 });
-          return { sourcePath: openCodeLaunchArtifacts!.paths[name as keyof OpenCodeLaunchArtifacts["paths"]], targetPath,
-            kind: "file" as const, mode: 0o500 };
-        });
-        const signal = providerArtifactsSignal();
-        signal.throwIfAborted();
-        await remoteCommandRunner.syncOut!([{ operationId: `provider-artifacts-${randomUUID()}`, files }]);
-        signal.throwIfAborted();
-        providerArtifacts = await retainNativeProviderArtifacts({ db: input.db, storage: artifactStorage, owner: backupOwner,
-          source: { sourceRoot: captureRoot, manifest: expectedProviderPackManifest, launchRoot: openCodeLaunchArtifacts.root, accountUid: openCodeLaunchArtifacts.accountUid },
-          signal });
-      } finally { await removeNativeHarnessBackup(captureRoot); }
+      const signal = providerArtifactsSignal();
+      providerArtifacts = await captureRemoteNativeProviderArtifacts({ runner: remoteCommandRunner,
+        launch: openCodeLaunchArtifacts, manifest: expectedProviderPackManifest, signal, context: input.executionContext },
+        source => retainNativeProviderArtifacts({ db: input.db, storage: artifactStorage, owner: backupOwner, source, signal }));
     } : undefined,
     bindDiagnosticSession: session => {
       const retained = nativeSessionDiagnostics(session);

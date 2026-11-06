@@ -1,3 +1,5 @@
+import { NativeExecutionContext } from "../src/services/native-runtime/native-execution-context.js";
+import { captureRemoteNativeProviderArtifacts } from "../src/services/native-runtime/native-provider-artifact-capture.js";
 import { execFile } from "node:child_process";
 import { promisify, parseArgs } from "node:util";
 import { fileURLToPath } from "node:url";
@@ -526,18 +528,31 @@ try {
     ...binding,
     bootId: ids.boot,
   });
-  const receipt = await retainNativeProviderArtifacts({
-    db,
-    storage,
-    owner,
-    source: {
-      sourceRoot: mapped(original.path, launch.root),
-      manifest,
-      launchRoot: launch.root,
-      accountUid: launch.accountUid,
-    },
-    signal: AbortSignal.timeout(180000),
-  });
+  const captureStartedAt = performance.now();
+  const captureContext = new NativeExecutionContext(execution, 300_000);
+  let receipt: Awaited<ReturnType<typeof retainNativeProviderArtifacts>>;
+  try {
+    receipt = await captureRemoteNativeProviderArtifacts(
+      {
+        runner: oldRunner as never,
+        launch,
+        manifest,
+        signal: captureContext.signal,
+        context: captureContext,
+      },
+      (source) =>
+        retainNativeProviderArtifacts({
+          db,
+          storage,
+          owner,
+          source,
+          signal: captureContext.signal,
+        }),
+    );
+  } finally {
+    captureContext.finish();
+  }
+  const artifactCaptureMs = Math.round(performance.now() - captureStartedAt);
   const first = await probe(original.id, {
     phase: "first",
     state: originalState,
@@ -810,6 +825,7 @@ try {
     oldLease: ids.lease,
     newLease: nextLease,
     workspaceSnapshot: saved.snapshotId,
+    artifactCaptureMs,
     uploads,
     controllerCheckpoint: "encrypted real PostgreSQL reload",
     harness: "AES authenticated object reload",

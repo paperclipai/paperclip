@@ -57,8 +57,25 @@ Artifact cleanup uses the existing bounded checkpoint and backup expiration
 owners. It requires closed work, settled native ownership, and exact stopped
 remote execution receipts. A remaining backup or run reference keeps the object.
 A failed external delete keeps its receipt and reference for a later normal
-expiration attempt. There is no new idle scan or timer. Checkpoint deletion
-rechecks resume handles after external deletion.
+expiration attempt. There is no new idle scan or timer.
+
+Checkpoint expiration checks current resume handles under its existing locks.
+It then fences old generations and atomically replaces the expired header with
+a versioned, company/run-scoped retirement marker. An earlier handle keeps the
+original checkpoint and files. After retirement, readers and header writers
+refuse the old checkpoint. The marker stays in the existing header index until
+external artifact deletion succeeds, including after a server restart. No
+transaction waits for a network delete. Families with more than 100 related
+runs keep every pin and checkpoint. Missing object storage keeps the marker and
+pins for a later normal cleanup attempt.
+
+The capture wait responds to Stop, startup completion, and the execution
+deadline. Native bulk transfer does not offer a cancellation signal. Core keeps
+that actual transfer registered as pending startup work after it stops waiting.
+The late operation can write only its private local scratch files. It cannot
+publish after the context closes. It removes its scratch files and releases its
+worker responsibility only after actual settlement. Stop does not imply that
+this transport has finished.
 
 ## Local qualification
 
@@ -70,6 +87,8 @@ pnpm --filter @paperclipai/server exec vitest run --config vitest.config.ts \
   src/services/native-runtime/native-harness-backup-archive.test.ts \
   src/services/native-runtime/remote-opencode-artifacts.test.ts \
   src/services/native-runtime/native-provider-pack-admission.test.ts \
+  src/services/native-runtime/native-provider-artifact-capture.test.ts \
+  src/services/native-runtime/native-runner-checkpoint-retirement.test.ts \
   src/services/native-runtime/native-session-executor.test.ts \
   src/__tests__/native-harness-backup-expiration.test.ts \
   src/__tests__/native-harness-backup-expiration-config.test.ts
