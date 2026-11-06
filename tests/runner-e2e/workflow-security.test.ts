@@ -82,11 +82,14 @@ describe("public repository paid workflow security", () => {
     );
   });
 
+  // PR #18348 added the ninth pr-trusted bootstrap, in the Vitest selection job.
+  const trustedPnpmBootstraps = {
+    "runner-full-stack-e2e.yml": 8,
+    "pr-trusted.yml": 9,
+  } as const;
+
   it("keeps pnpm bootstrap registry telemetry out of trusted workflow setup", async () => {
-    for (const workflowName of [
-      "runner-full-stack-e2e.yml",
-      "pr-trusted.yml",
-    ]) {
+    for (const workflowName of Object.keys(trustedPnpmBootstraps) as Array<keyof typeof trustedPnpmBootstraps>) {
       const workflow = await readFile(
         path.join(repositoryRoot, ".github/workflows", workflowName),
         "utf8",
@@ -95,7 +98,7 @@ describe("public repository paid workflow security", () => {
         .split(/\n(?= {6}- )/u)
         .filter((step) => step.includes("uses: pnpm/action-setup@"));
 
-      expect(pnpmSetupSteps, workflowName).toHaveLength(8);
+      expect(pnpmSetupSteps, workflowName).toHaveLength(trustedPnpmBootstraps[workflowName]);
       for (const step of pnpmSetupSteps) {
         expect(step, workflowName).toContain('NPM_CONFIG_AUDIT: "false"');
         expect(step, workflowName).toContain('NPM_CONFIG_FUND: "false"');
@@ -139,7 +142,7 @@ describe("public repository paid workflow security", () => {
         step.includes("uses: pnpm/action-setup@") ? [index] : [],
       );
 
-      expect(pnpmSetupStepIndexes, name).toHaveLength(8);
+      expect(pnpmSetupStepIndexes, name).toHaveLength(trustedPnpmBootstraps[name as keyof typeof trustedPnpmBootstraps]);
       for (const pnpmSetupStepIndex of pnpmSetupStepIndexes) {
         const pnpmSetupStep = steps[pnpmSetupStepIndex]!;
         const nodeBootstrapStep = steps[pnpmSetupStepIndex - 1]!;
@@ -361,7 +364,7 @@ describe("public repository paid workflow security", () => {
       paidExecution,
     );
     expect(everydayOracleStep).toContain(
-      "if: (matrix.suiteId == 'everyday-workflows' || matrix.suiteId == 'grok-qualification' || matrix.suiteId == 'grok-subscription-qualification') && (matrix.caseId == 'build-revise' || matrix.caseId == 'delegate-feedback' || matrix.caseId == 'agent-review-handoff' || matrix.caseId == 'hire-reuse' || matrix.caseId == 'recover-controller' || matrix.caseId == 'stop-redirect')",
+      "if: matrix.caseId == 'build-revise' || matrix.caseId == 'delegate-feedback' || matrix.caseId == 'agent-review-handoff' || matrix.caseId == 'hire-reuse' || matrix.caseId == 'recover-controller' || matrix.caseId == 'stop-redirect'\n",
     );
     expect(everydayOracleStep).toContain(
       `oracle_image='${everydayOracleImage}'`,

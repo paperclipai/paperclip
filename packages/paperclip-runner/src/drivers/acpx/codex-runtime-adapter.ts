@@ -25,6 +25,7 @@ import {
 } from "acpx/runtime";
 
 import type {
+  AcpxPlanProposal,
   AcpxRuntimeGoalCapability,
   AcpxRuntimeGoalSnapshot,
   AcpxRuntimeSteeringCapability,
@@ -105,12 +106,30 @@ interface AcpxRuntimeExtensionTurn {
   promptStarted: Promise<void>;
   onRequest?: AcpRuntimeOptions["onExtensionRequest"];
   onNotification?: AcpRuntimeOptions["onExtensionNotification"];
+  onPlanProposal?: (proposal: AcpxPlanProposal) => void;
 }
 
 interface AcpxRuntimeExtensionBoundary {
   active: AcpxRuntimeExtensionTurn | null;
   sessionIds: Set<string>;
   steering: AcpxRuntimeSteeringCapability | null;
+}
+
+/**
+ * Claude Code's ExitPlanMode permission request (claude-agent-acp titles it
+ * "Approve Plan" with ACP kind `switch_mode`) carries the proposed plan as
+ * `toolCall.rawInput.plan`. Returns null for every other request.
+ */
+export function claudeExitPlanModeProposal(request: { raw?: unknown }): AcpxPlanProposal | null {
+  const raw = request.raw && typeof request.raw === "object" ? request.raw as Record<string, unknown> : {};
+  const toolCall = raw.toolCall && typeof raw.toolCall === "object" ? raw.toolCall as Record<string, unknown> : {};
+  if (toolCall.kind !== "switch_mode") return null;
+  const input = toolCall.rawInput && typeof toolCall.rawInput === "object" ? toolCall.rawInput as Record<string, unknown> : {};
+  const markdown = typeof input.plan === "string" ? input.plan.trim() : "";
+  if (!markdown) return null;
+  const toolCallId = typeof toolCall.toolCallId === "string" && toolCall.toolCallId.trim()
+    ? toolCall.toolCallId.trim() : "claude-exit-plan-mode";
+  return { toolCallId, markdown };
 }
 
 export class AcpxProviderProcessLostError extends Error {
@@ -420,6 +439,16 @@ export async function openQualifiedAcpxRuntime(
       }
       if ((permissionBoundary.hasAdmittedTurn && !extensionBoundary.active)
         || extensionBoundary.active?.signal.aborted || context.signal.aborted) return { outcome: "cancel" };
+      if (options.profile.agent === "claude") {
+        const plan = claudeExitPlanModeProposal(request);
+        if (plan !== null) {
+          // Paperclip owns plan approval. Record the proposal for the issue's
+          // Plan document and approval gate, then decline Claude's native
+          // "Ready to code?" prompt so the turn ends without implementing.
+          extensionBoundary.active?.onPlanProposal?.(plan);
+          return { outcome: "reject_once" };
+        }
+      }
       if (options.profile.agent === "kimi" && options.readOnly === true
         && !kimiReadOnlyPermissionAllowed(request, runnerOwnedMcpServerNames)) return { outcome: "reject_once" };
       const disposition = decideAcpxPermission(
@@ -627,6 +656,14 @@ export async function openQualifiedAcpxRuntime(
     modeBinding?.assertReady();
     piThinking?.assertReady();
     effortAdmission?.assertReady();
+    // A read-only (Planning) Claude run uses Claude Code's native plan mode, so
+    // the model proposes through ExitPlanMode instead of editing.
+    if (options.profile.agent === "claude" && options.readOnly === true && !preconfigured) {
+      if (!runtime.setConfigOption) throw new Error("Claude plan mode requires native mode configuration");
+      const spawnsBeforeControl = commandLaunches.count;
+      await runtime.setConfigOption({ handle, key: "mode", value: "plan" });
+      if (commandLaunches.count > spawnsBeforeControl) await commandLaunches.refreshConsumedCommand?.();
+    }
     // A provider can answer only after the verified sentinel is armed, but do
     // not admit the session until the owner has observed that exact handoff.
     await children.verifyLifetimeOwnership();
@@ -1495,6 +1532,7 @@ function runtimePort(
         signal: input.signal ? AbortSignal.any([controller.signal, input.signal, approval.signal]) : AbortSignal.any([controller.signal, approval.signal]),
         promptStarted: Promise.resolve(),
         onRequest: input.onExtensionRequest, onNotification: input.onExtensionNotification,
+        onPlanProposal: input.onPlanProposal,
       };
       extensionBoundary.active = extensionTurn;
       promptUsage?.begin(input.requestId, identity.backendSessionId);
@@ -1537,6 +1575,9 @@ function runtimePort(
             : approval.signal,
           ...(input.onElicitation
             ? { onElicitation: input.onElicitation }
+            : {}),
+          ...(input.onTerminalSessionFailure
+            ? { onTerminalSessionFailure: input.onTerminalSessionFailure }
             : {}),
         });
       } catch (error) {

@@ -138,7 +138,14 @@ export function createProcessTreeOwner(root: ChildProcess, options: {
     const ids = new Set(preserved.map(group => group.processGroupId));
     return new Set(liveGroups().filter(group => !ids.has(group.processGroupId)).map(group => group.processGroupId));
   }
-  function signalSnapshot(signal: NodeJS.Signals, selected?: ReadonlySet<number>) {
+  /** Darwin killpg reports EPERM, not ESRCH, when every remaining group member
+   * has exited but is not yet reaped. A zombie-only group needs no signal; any
+   * running member keeps EPERM a real failure. */
+  async function exitedSinceSnapshot(pid: number) {
+    const fresh = await readTable();
+    return !!fresh && !fresh.some(row => row.processGroupId === pid && running(row));
+  }
+  async function signalSnapshot(signal: NodeJS.Signals, selected?: ReadonlySet<number>) {
     const currentProcessGroupId = table.find(row => row.pid === process.pid)?.processGroupId ?? null;
     if (currentProcessGroupId === null) throw new Error("Cleanup caller group identity is unavailable");
     const live = liveGroups();
@@ -147,14 +154,18 @@ export function createProcessTreeOwner(root: ChildProcess, options: {
     for (const pid of ordered) {
       if (selected && !selected.has(pid)) continue;
       try { signalGroup(pid, signal); }
-      catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error; else continue; }
+      catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code === "ESRCH" || (code === "EPERM" && await exitedSinceSnapshot(pid))) continue;
+        throw error;
+      }
       signaled.push(pid);
     }
     return signaled;
   }
   async function signal(signal: NodeJS.Signals, selected?: ReadonlySet<number>) {
     await observe();
-    return signalSnapshot(signal, selected);
+    return await signalSnapshot(signal, selected);
   }
   function gracefulRoots() {
     const live = liveGroups();
@@ -183,7 +194,7 @@ export function createProcessTreeOwner(root: ChildProcess, options: {
     // Choose and deliver from one validated table. ESRCH grants no ownership
     // coverage: the next grace poll can select that branch's surviving owner.
     const selected = new Set([...gracefulRoots()].filter(pid => !covered.has(pid)));
-    const delivered = signalSnapshot(signal, selected);
+    const delivered = await signalSnapshot(signal, selected);
     for (const pid of delivered) {
       if (pid === root.pid) directGraceDelivered = true;
       covered.add(pid);

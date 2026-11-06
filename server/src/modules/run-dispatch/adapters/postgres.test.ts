@@ -21,6 +21,7 @@ import {
   environmentLeases,
   heartbeatRunEvents,
   heartbeatRuns,
+  issueApprovals,
   issueComments,
   issueDocuments,
   issueRelations,
@@ -42,6 +43,7 @@ import { createPostgresRunDispatchAdapter, requeueAdoptedCommentsForAssignee } f
 import type { Db } from "@paperclipai/db";
 import { settleUnrecoverableExecutions } from "../../../services/execution-recovery-resolution.js";
 import { getExecutionBlocker } from "../../../services/execution-blocker.js";
+import { projectTaskInterruption } from "../../../services/task-interruption-presentation.js";
 import { reserveRunBudget } from "../../../services/budget-reservations.js";
 import { budgetService, flushBudgetEvaluationWork, recheckAdmittedRunBudgetReadOnly } from "../../../services/budgets.js";
 import { costService } from "../../../services/costs.js";
@@ -387,6 +389,33 @@ describeEmbeddedPostgres("run-dispatch postgres adapter", () => {
     expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]!.status).toBe("blocked");
   });
 
+  it("keeps recovered preparation behind approvals added after scheduling", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const issueId = randomUUID();
+    await seedIssue({ companyId, issueId, assigneeAgentId: agentId, status: "in_progress" });
+    const retryReason = "interrupted_preparation";
+    const replacementId = await seedRun({ companyId, agentId, status: "scheduled_retry",
+      contextSnapshot: { issueId, wakeReason: retryReason, retryReason, forceFreshSession: true } });
+    const adapter = createPostgresRunDispatchAdapter(db);
+    expect(await adapter.evaluateScheduledRetryGate({ companyId, runId: replacementId, retryReasonOverride: retryReason, now: new Date() }))
+      .toMatchObject({ allowed: true });
+    const approvalId = randomUUID();
+    await db.insert(approvals).values({ id: approvalId, companyId, type: "hire_agent", status: "pending", payload: {} });
+    await db.insert(issueApprovals).values({ companyId, issueId, approvalId });
+    expect(await adapter.evaluateScheduledRetryGate({ companyId, runId: replacementId, retryReasonOverride: retryReason, now: new Date() }))
+      .toMatchObject({ allowed: false, errorCode: "issue_waiting_for_response" });
+    await db.update(heartbeatRuns).set({ status: "queued" }).where(eq(heartbeatRuns.id, replacementId));
+    const reservation = await reserveRunBudget(db, companyId, replacementId, null);
+    expect(await adapter.cancelStaleQueuedRun({ companyId, runId: replacementId, expectedStatus: "queued", now: new Date() }))
+      .toMatchObject({ outcome: "cancelled", errorCode: "issue_waiting_for_response" });
+    await db.update(heartbeatRuns).set({ status: "running" }).where(eq(heartbeatRuns.id, replacementId));
+    const dispatch = vi.fn(async () => undefined);
+    expect(await adapter.dispatchResolvedInteractionIfCurrent({ companyId, runId: replacementId,
+      reservationId: reservation.id, expectedStatus: "running", now: new Date(), dispatch }))
+      .toMatchObject({ dispatched: false, cancellation: { outcome: "cancelled" } });
+    expect(dispatch).not.toHaveBeenCalled();
+  });
+
   it.each(["queued", "final", "resolved"] as const)("rechecks late native replacement dependencies at %s dispatch", async mode => {
     const { companyId, agentId } = await seedCompanyAndAgent();
     const issueId = randomUUID(), blockerId = randomUUID();
@@ -397,6 +426,7 @@ describeEmbeddedPostgres("run-dispatch postgres adapter", () => {
     const adapter = createPostgresRunDispatchAdapter(db);
     expect(await adapter.evaluateScheduledRetryGate({ companyId, runId: replacementId, retryReasonOverride: "native_safe_replacement", now: new Date() }))
       .toMatchObject({ allowed: true });
+    await db.update(heartbeatRuns).set({ runtimeMode: "native" }).where(eq(heartbeatRuns.id, replacementId));
     await db.insert(issueRelations).values({ companyId, issueId: blockerId, relatedIssueId: issueId, type: "blocks" });
     const dispatch = vi.fn(async () => undefined);
     if (mode === "queued") {
@@ -414,6 +444,14 @@ describeEmbeddedPostgres("run-dispatch postgres adapter", () => {
       });
     }
     expect(dispatch).toHaveBeenCalledTimes(mode === "resolved" ? 1 : 0);
+    if (mode !== "resolved") {
+      const [cancelled] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, replacementId));
+      expect(cancelled).toMatchObject({ status: "cancelled", runtimeMode: "native", startedAt: null,
+        resultJson: { stopReason: "issue_dependencies_blocked", timeoutSource: "stale_queued_run_gate" } });
+      expect(projectTaskInterruption({ id: issueId, companyId, status: "in_progress", assigneeAgentId: agentId, projectId: null }, {
+        run: cancelled!, agent: { status: "idle", pauseReason: null }, paused: false, approval: false,
+      })).toMatchObject({ state: "resolved", canRetry: false });
+    }
     expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]!.status).toBe("in_progress");
   });
 

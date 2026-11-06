@@ -7,7 +7,6 @@ import { formatRetryReason } from "@/lib/runRetryState";
 import type { IssueScheduledRetry } from "@paperclipai/shared";
 import { useRetryNowMutation, type RetryNowError } from "../hooks/useRetryNowMutation";
 import { Badge } from "@/components/ui/badge";
-import { InlineBanner } from "@/components/InlineBanner";
 import { describeError } from "@/api/errors";
 
 const MAX_TURN_CONTINUATION = "max_turns_continuation";
@@ -34,13 +33,9 @@ export function IssueScheduledRetryCard({
   if (!scheduledRetry || !issueId) return null;
   if (scheduledRetry.status !== "scheduled_retry") return null;
 
-  if (scheduledRetry.scheduledRetryReason === "workspace_busy") {
-    return (
-      <InlineBanner tone="info" icon={Clock} title="Waiting for workspace" className="mb-3">
-        Another task is using this workspace. Work starts automatically when it is available.
-      </InlineBanner>
-    );
-  }
+  // Workspace contention is a transient wait with nothing for the user to do.
+  // The composer strip and properties row carry the quiet status instead.
+  if (scheduledRetry.scheduledRetryReason === "workspace_busy") return null;
 
   const continuation = isContinuationReason(scheduledRetry.scheduledRetryReason);
   const dueAtIso = scheduledRetry.scheduledRetryAt

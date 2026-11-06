@@ -88,6 +88,8 @@ describe("heartbeat run state module", () => {
     expect(projectedSql(utf8.columns[0].resultJson)).toContain("pg_column_size");
     await asciiState.getRun("evidence", { includeExecutionEvidence: true });
     expect(projectedSql(ascii.columns[2].resultJson)).toContain("startupPreparationSettledAt");
+    // A pending reassignment Stop is read through this projection on SQL_ASCII.
+    expect(projectedSql(ascii.columns[2].resultJson)).toContain("reassignmentStopRequested");
     await asciiState.getRunWorkspaceSettlement("settlement");
     expect(projectedSql(ascii.columns[3].error)).toBe("NULL");
     expect(ascii.execute).toHaveBeenCalledTimes(1);

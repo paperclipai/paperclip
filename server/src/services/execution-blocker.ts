@@ -11,7 +11,7 @@ import { queuedCommentIdsFromWakePayload } from "./issue-queued-comment-queue.js
 import { EXECUTION_RECONCILIATION_CAUSES, type ExecutionBlocker } from "@paperclipai/shared";
 import { hasRequiredWorkspaceRecovery, LEGACY_WORKSPACE_RECOVERY_SCHEMA, nativeRunHasNoWorkspaceAccess } from "./workspace-restore-recovery-state.js";
 import { unreconciledNativeExportPredicate } from "./native-runtime/native-workspace-reconstruction.js";
-import { hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
+import { hasRecoveredCleanupStopReceipt, hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
 import { readNativeWorkspaceSyncReference } from "./native-runtime/native-workspace-sync.js";
 import { completedWorkspaceRecoveryCondition, hasVerifiedWorkspaceRepair, workspaceRecoveryDisplay } from "./workspace-recovery-receipt.js";
 import { nativeManualAdmissionHoldsExecution } from "./native-runtime/native-runner-ownership.js";
@@ -69,10 +69,17 @@ const blockerRunFields = {
 
 export async function hasPendingRunCleanup(db: Db, companyId: string, runId: string): Promise<boolean> {
   if (await nativeManualAdmissionHoldsExecution(db, { companyId, runId })) return true;
+  // Recovery saved the files and re-stopped this sandbox before queueing its
+  // destroy. That destroy is resource cleanup, not a live owner of the run.
+  const recoveredStopped = (await db.select().from(environmentLeases).where(and(
+    eq(environmentLeases.companyId, companyId), eq(environmentLeases.heartbeatRunId, runId),
+    sql`${environmentLeases.metadata}->'workspaceRecoveryCleanup' is not null`,
+  ))).filter(hasRecoveredCleanupStopReceipt).map(lease => lease.id);
   const [state] = await db.execute<{ pending: boolean }>(sql`SELECT
     ${heartbeatRuns.runnerProfileJson}->>'nativeWorkspaceFinalizationOwner' IS NOT NULL
     OR EXISTS (SELECT 1 FROM ${environmentLeases}
       WHERE ${environmentLeases.companyId} = ${companyId} AND ${environmentLeases.heartbeatRunId} = ${runId}
+        ${recoveredStopped.length ? sql`AND ${environmentLeases.id}::text NOT IN (${sql.join(recoveredStopped.map(id => sql`${id}`), sql`, `)})` : sql``}
         AND (( ${environmentLeases.releasedAt} IS NULL AND NOT COALESCE(
             ${environmentLeases.status} = 'retained' AND ${environmentLeases.leasePolicy} = 'reuse_by_environment'
               AND ${environmentLeases.cleanupStatus} = 'success', false))
@@ -126,14 +133,18 @@ export function nativeExecutionRecoveryActionPredicate() {
       and ${heartbeatRuns.runtimeMode} = 'native')`;
 }
 
-// Runner startup lifecycle families: they open no turn. Every other event the
-// runner sourced counts as provider work, so a new or unlisted family keeps
-// the hold (fail closed). Server-side records without a source event (spans,
-// process identity, lifecycle) count only when they name turn or provider work.
-export const PROVIDER_STARTUP_EVENT_PREFIXES = ["harness.", "session.", "workspace.", "runtime.phase.",
-  "runtime.activity.", "provider.notice.", "auth.credentials.", "mcp_app.discovered", "mcp_app.initializing", "mcp_app.ready",
-  "mcp_app.resource.", "mcp_app.host_context.", "mcp_app.teardown", "mcp_app.failed"] as const;
-export const PROVIDER_STARTUP_EVENT_TYPES = ["run.attached", "run.detached"] as const;
+// Exact runner startup lifecycle events (event-v3 schema): they open no turn.
+// Every other runner-sourced event counts as provider work, so a new, unlisted
+// or turn-scoped event (for example workspace.diff.recorded or a session goal)
+// keeps the hold (fail closed). Server-side records without a source event
+// (spans, process identity, lifecycle) count only when they name turn or
+// provider work.
+export const PROVIDER_STARTUP_EVENT_TYPES = ["harness.starting", "harness.ready", "harness.diagnostic", "harness.exited",
+  "session.starting", "session.started", "session.resuming", "session.resumed", "session.reconciled", "session.updated",
+  "session.capabilities.updated", "session.closed", "session.failed", "workspace.ready", "runtime.phase.changed",
+  "runtime.activity.recorded", "provider.notice.recorded", "auth.credentials.updated", "run.attached", "run.detached",
+  "mcp_app.discovered", "mcp_app.initializing", "mcp_app.ready", "mcp_app.resource.resolved",
+  "mcp_app.host_context.changed", "mcp_app.teardown", "mcp_app.failed"] as const;
 const SERVER_TURN_WORK_EVENT_PREFIXES = ["turn.", "item.", "tool.", "semantic_tool.", "run.result."] as const;
 const SERVER_TURN_WORK_EVENT_TYPES = ["provider.event", "provider.rpc_result"] as const;
 
@@ -144,8 +155,7 @@ const anyType = (eventType: SQL, types: readonly string[]) =>
 
 /** SQL truth for an event row (alias columns) that may prove provider turn work. */
 export function providerTurnWorkEventCondition(eventType: SQL, sourceEventId: SQL) {
-  return sql`((${sourceEventId} is not null and not (${anyType(eventType, PROVIDER_STARTUP_EVENT_TYPES)}
-      or ${anyPrefix(eventType, PROVIDER_STARTUP_EVENT_PREFIXES)}))
+  return sql`((${sourceEventId} is not null and not ${anyType(eventType, PROVIDER_STARTUP_EVENT_TYPES)})
     or ${anyType(eventType, SERVER_TURN_WORK_EVENT_TYPES)} or ${anyPrefix(eventType, SERVER_TURN_WORK_EVENT_PREFIXES)})`;
 }
 
@@ -301,7 +311,13 @@ export async function getExecutionBlocker(db: Db, companyId: string, issueId: st
   const cancellation = run ? readRunCancellation(run.resultJson) : null;
   const eligibleContinuation = Boolean(!restoreHold && run && conversation?.assigneeAgentId === run.agentId &&
     !["done", "cancelled"].includes(conversation.status) && canContinueCancelledRun(run));
-  const canRetry = Boolean(!restoreHold && run && conversation?.assigneeAgentId === run.agentId &&
+  // A failed run whose saved work is verifiably recovered no longer needs the
+  // hold to protect its files. Offer the same Retry that admission accepts, so
+  // an infrastructure failure (such as a restart) is not left to a new message.
+  // An intentional Stop keeps "send a new message" as its only continuation.
+  const recoveredFailure = Boolean(restoreHold && run?.status === "failed" && !workspaceRepairRequired &&
+    workspaceRecovery?.status === "recovered");
+  const canRetry = Boolean((!restoreHold || recoveredFailure) && run && conversation?.assigneeAgentId === run.agentId &&
     !["done", "cancelled"].includes(conversation.status) && await canRetryStoppedRun(db, run));
   const runError = run && canRetry && isPreDispatchReviewWait(run)
     ? "Waiting for review; this continuation never started."
@@ -349,7 +365,8 @@ export async function getExecutionBlocker(db: Db, companyId: string, issueId: st
     // A stopped reviewer can differ from the task owner who receives the work back.
     agentId: run?.agentId ?? null,
     cause: action.cause,
-    nextAction: workspaceRecovery?.message ?? (reconstructionPending ? "Continuation from saved sources is queued and waiting for execution checks." : nextAction),
+    nextAction: (workspaceRecovery?.status === "recovered" && canRetry && !chatBinding
+      ? "Saved work recovered. Retry or send a message to continue." : workspaceRecovery?.message) ?? (reconstructionPending ? "Continuation from saved sources is queued and waiting for execution checks." : nextAction),
     ...(workspaceRecovery ? { workspaceRecovery } : {}),
     runStatus: run?.status ?? null,
     runError: runError?.slice(0, 1024) ?? null,

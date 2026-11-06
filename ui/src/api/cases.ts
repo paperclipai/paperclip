@@ -1,4 +1,4 @@
-import type { CaseHandoff, DocumentRevision, HandoffCaseInput, HandoffCaseResult, IssueDocument, IssueLabel } from "@paperclipai/shared";
+import type { CaseHandoff, DocumentRevision, HandoffCaseInput, HandoffCaseResult, IssueBlockerAttention, IssueDocument, IssueLabel } from "@paperclipai/shared";
 import { api } from "./client";
 
 // -----------------------------------------------------------------------------
@@ -102,6 +102,8 @@ export interface CaseIssueLink {
     identifier: string;
     title: string;
     status: string;
+    /** Glyph-only blocker state; present for blocked tasks. */
+    blockerAttention?: IssueBlockerAttention;
   };
 }
 
@@ -139,6 +141,8 @@ export function isImageAttachment(attachment: CaseAttachmentRef): boolean {
 export interface CaseWorkIssue {
   id: string; identifier: string | null; title: string; status: string; statusVersion: number;
   assigneeAgentId: string | null; assigneeAgentName: string | null;
+  /** Glyph-only blocker state; present for blocked tasks. */
+  blockerAttention?: IssueBlockerAttention;
 }
 
 /** The full detail payload (loadCaseDetail on the server). */
@@ -183,6 +187,8 @@ export interface CaseAttributionIssue {
   identifier: string;
   title: string;
   status: string;
+  /** Glyph-only blocker state; present for blocked tasks. */
+  blockerAttention?: IssueBlockerAttention;
 }
 
 export interface CaseEvent {
