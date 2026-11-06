@@ -156,9 +156,10 @@ function installCopilotAssets(packageRoot) {
 
 function stampRestoredBuild(root, packageRoot, inputs, entryKey) {
   const outputs = collectBuildOutputFiles(packageRoot);
+  const recordedAt = new Date().toISOString();
   writeBuildInputsStamp(buildInputsStampPath(packageRoot), { ...inputs, platform: process.platform, arch: process.arch,
-    startedAt: new Date().toISOString(), recordedAt: new Date().toISOString(), restoredFrom: entryKey,
-    outputCount: outputs.length, outputs });
+    startedAt: recordedAt, recordedAt, restoredFrom: entryKey, outputCount: outputs.length, outputs });
+  return recordedAt;
 }
 
 function runnerBuildStep(root, cache, toolchain) {
@@ -167,9 +168,12 @@ function runnerBuildStep(root, cache, toolchain) {
   const inputs = assessment.inputs ?? computeBuildInputsDigest(root);
   const key = runnerDistKey(inputs.digest, toolchain);
   // The Runner's stamp does not record the compiler or flags, so the preflight
-  // keeps its own record of the full key the current build was made with.
+  // keeps its own record of the full key the current build was made with,
+  // tied to that build's stamp time. Any other Runner build rewrites the stamp
+  // and so breaks the tie: the next preflight rebuilds or restores.
   const keyFile = path.join(stateDirectory(root), "runner-build.json");
-  if (assessment.current && readJson(keyFile)?.key === key) {
+  const record = readJson(keyFile);
+  if (assessment.current && record?.key === key && record.recordedAt === assessment.stamp.recordedAt) {
     installCopilotAssets(packageRoot);
     return { step: "runner-build", action: "skipped", reason: assessment.detail };
   }
@@ -191,8 +195,7 @@ function runnerBuildStep(root, cache, toolchain) {
     const missing = expectedBuildOutputs(packageRoot).filter(file => !existsSync(file));
     if (cloned && !changed && missing.length === 0 && computeBuildInputsDigest(root).digest === inputs.digest) {
       installCopilotAssets(packageRoot);
-      stampRestoredBuild(root, packageRoot, inputs, key);
-      writeJson(keyFile, { key });
+      writeJson(keyFile, { key, recordedAt: stampRestoredBuild(root, packageRoot, inputs, key) });
       return { step: "runner-build", action: "restored", seconds: (Date.now() - started) / 1000 };
     }
     for (const tree of DIST_TREES) removeTree(path.join(root, tree));
@@ -201,7 +204,7 @@ function runnerBuildStep(root, cache, toolchain) {
   const seconds = exec("pnpm", ["--filter", "@paperclipai/paperclip-runner", "build"], root);
   const after = assessRunnerBuild({ repoRoot: root, packageRoot });
   if (!after.current || after.stamp.digest !== inputs.digest) return { step: "runner-build", action: "built", seconds };
-  writeJson(keyFile, { key });
+  writeJson(keyFile, { key, recordedAt: after.stamp.recordedAt });
   const published = publishEntry(cache, "runner-dist", key, directory => {
     for (const tree of DIST_TREES) cloneInto(path.join(root, tree), path.join(directory, tree));
   }, { meta: { outputs: after.stamp.outputs } });
