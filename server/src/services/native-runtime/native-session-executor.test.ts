@@ -18396,6 +18396,18 @@ it.each([
   ).toBe("native_event_replay_conflict");
 });
 
+it("saves a runner-marked model rejection from a provider terminal as a model choice", () => {
+  const rejected = new NativeProviderTerminalFailure("provider_turn_failed", false,
+    "native_provider_model_rejected: openrouter/unavailable-model is not a valid model ID");
+  const code = nativeSessionFailureSourceCode(rejected);
+  expect(code).toBe("native_provider_model_rejected");
+  expect(nativeSessionFailureDisposition(1, new Date(), code)).toEqual({ phase: "terminal_failure", failureCode: code, nextAttemptAt: null });
+  // A recoverable terminal or an unmarked message stays a generic provider failure.
+  expect(nativeSessionFailureSourceCode(new NativeProviderTerminalFailure("provider_turn_failed", true,
+    "native_provider_model_rejected: openrouter/unavailable-model is not a valid model ID"))).toBe("native_provider_terminal_failed");
+  expect(nativeSessionFailureSourceCode(new NativeProviderTerminalFailure("provider_turn_failed", false,
+    "openrouter/unavailable-model is not a valid model ID"))).toBe("native_provider_terminal_failed");
+});
 it("keeps an ACPX missing runtime package failure actionable and stops automatic retries", () => {
   const failure = new Error('PRP command session.open failed: {"result":{"code":"command_execution_failed","message":"failed to start ACPX provider: ACPX sidecar command session.open was rejected (retryable=false, classification=runtime_package_missing)"},"status":"failed"}');
   const code = nativeSessionFailureSourceCode(failure);
