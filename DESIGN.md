@@ -407,9 +407,12 @@ Project, Parent Task, Tags, Worktree, Last updated**. The reusable
 width tokens and configurable column order. Review the complete composition in
 **Design proposals → Components → Task list → All columns**.
 
-- Created by is the recorded creator (human or agent); Assignee is the current
-  assignee. Both show names without avatars. Do not infer either from tree depth
-  or task status.
+- Created by is the recorded creator (human or agent) and shows a name. Assignee
+  shows the current agent's avatar or human's profile photo beside their name,
+  with the shared avatar fallback when an image is unavailable. Human photos load
+  only from Paperclip asset URLs; external profile URLs use initials. The avatar stays
+  visible while a long name reveals on hover or focus. Do not infer either
+  identity from tree depth or task status.
 - Task combines the status icon and title under one header and one Columns-menu
   choice. Sorting Task uses the title. Status sorting is unavailable for now.
 - Parent Task refers to the structural parent; it can show its ID and title.
