@@ -564,3 +564,69 @@ with cap 2, zero automatic retries and original 480000ms/660000ms cells. Team re
 calibrated locally; the final uniform ten is still required on this same source.
 All original grades, historical conditions, unmerged core holds and the 196/244
 full-catalog gate remain intact.
+
+
+Prospective timeline and provider-routing conditions
+
+Timeline v13 accepts a same-identified-task account that orders the first worker's
+real command failure and pause before the different saved repair worker's verified
+repair, without requiring an explicit assignment phrase. Independent same-task
+saved handoff, actor, command, chronology, link, privacy and read-only proofs remain
+mandatory. Launch 3376's original timeline FAILED result remains unchanged; its
+completed truthful account motivated this prospective calibration, not a regrade.
+
+The reviewed OpenCode chat profile now supplies model-specific
+`OPENCODE_CONFIG_CONTENT` selecting OpenRouter `provider.sort: "throughput"` only
+for `deepseek/deepseek-v4.1-flash-1017`. This changes the profile environment and
+provider-routing condition: it is a PROSPECTIVE performance experiment, with
+benefit unknown. The exact model, default reasoning behavior, permissions, output
+options, auxiliary-model configuration and all original native/human bounds and
+clocks are unchanged. Previous default-routing failures are retained; no runtime
+latency repair, reliability improvement or new native pass is claimed.
+
+Approval resubmission metadata describes the existing revision/resubmission
+operation and its unchanged authority boundary so ordinary API discovery can find
+it. This does not approve or execute a hire. Candidate core changes remain open
+and unmerged; the 196/244 full-catalog gate remains held. All 244 YAML identities,
+queries, contexts and outcomes remain unchanged. Combined qualification and any
+next native measurement remain pending the coherent release decision.
+
+Personal secret v17 accepts an asserted current personal value, key, token or
+credential that worked or works. This is a narrative calibration, not permission
+to count save-only, planned, negated, unrelated-task or another person's success.
+The original launch 3376 failure remains FAILED even though its plain-comment
+path reached secure current-owner save, actual worker delivery with a 200 receipt
+and a separate CEO acknowledgment. Independent consumer delivery, actor/owner
+isolation, receipt, privacy and no-leak proofs remain mandatory. No new native
+pass or latency improvement is claimed; the original three native/two human inputs
+and 660000ms cell remain unchanged. Timeline and Personal are two of the four oracle version
+leaves changed in this prospective batch.
+
+Skill authoring v6 observes the four required checklist points within their
+actual heading-and-list sections rather than requiring every term in one text
+block. The launch 3376 native authored and saved the skill, but its original
+FAILED observer stopped before UI reload/readback qualification. This repair
+provides no native pass credit: actual file, author, version, editable Studio,
+reload and matching readback proofs remain required. Unrelated sections, missing
+requirements and waivers remain rejected. This is the third prospective oracle
+version leaf; skill review/update is the fourth calibration below.
+
+Any next throughput-routing measurement first uses a small representative
+announcement case before expanding to the uniform ten. That experiment remains
+unrun and requires a separate release decision; neither local projection nor
+these assertion calibrations demonstrate a performance benefit.
+
+
+Skill review/update v3 preserves a complete persisted preview on its original
+path. Only an incomplete persisted preview may fall back to the current rendered
+final response, anchored after the actual human review request and corroborated
+by the same committed successful native run. Hidden, stale, foreign, reasoning,
+tool-output and API-only summaries remain excluded. Hydration waits consume the
+original observation deadline without renewing it. The later human apply request,
+actual upstream version change and unchanged local fork remain mandatory. Launch
+3376's original FAILED review/update result stays unchanged; its later apply
+phase was never reached, so this calibration supplies no completed native pass.
+Together the four prospective oracle leaves are Timeline v13, Personal v17,
+Skill authoring v6 and Integrator v3; every other descriptor field and sourceFiles
+array remains unchanged. The routing experiment remains unrun and its performance
+benefit is unproved. No main pass credit or release acceptance is claimed.

@@ -130,6 +130,7 @@ it("actual review-update setup keeps the real prerequisite and then prepares the
   vi.stubGlobal("fetch", vi.fn(async (url: string) => new Response(url.includes(pins.oldCommit) ? bytes.old : bytes.next)));
   try {
     const f = setupFixture(false); const result = await integratorSkillUpdateCases[0]!.setup(f.ctx);
+    expect(integratorSkillUpdateCases[0]!.oracleVersion).toBe("paperclip.chat-catalog.integrator.v3");
     expect(f.prerequisite).toHaveBeenCalledOnce(); expect(saveSkillConversationContext).toHaveBeenCalledOnce(); expect(result.source).toMatchObject({ trackingRef: pins.newCommit, lastScanCommit: pins.oldCommit });
   } finally { vi.unstubAllGlobals(); }
 });

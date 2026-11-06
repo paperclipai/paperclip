@@ -3,6 +3,7 @@ import { questionSetToAskUserQuestionsPayload } from "../../../packages/shared/s
 import { expect, it } from "vitest";
 import {
   gradePersonalSecret,
+  personalSecretExternalCases,
   personalSecretGuidance,
   personalSecretConfirmation,
   personalSecretQuestionHandoff,
@@ -315,4 +316,9 @@ it("keeps successful worked wording dependent on actual worker delivery",()=>{
  expect(gradePersonalSecret(o).passed).toBe(true);
  o.state.workerReceiptBound=false;
  expect(gradePersonalSecret(o).passed).toBe(false);
+});
+
+it("declares the prospective personal acknowledgment calibration without changing its bounds", () => {
+  expect(personalSecretExternalCases[0]).toMatchObject({ oracleVersion: "paperclip.chat-catalog.personal-secret.v17",
+    expectedRunCount: 3, minimumRunCount: 3, expectedHumanMessageCount: 2, attemptTimeoutMs: 660000 });
 });

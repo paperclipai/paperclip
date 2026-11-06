@@ -62,6 +62,7 @@ it("rejects invented inspection receipts and keeps other skill cases on their or
  f.state.authoredSkillInspection={companyId:"company",skillId:"other",versionId:"revision",libraryVisible:true,studioVisible:true,editable:true,checklistVisible:true,reloaded:true,readbackMatched:true};
  expect(gradeIntegratorSkills(f.o).passed).toBe(false);
  expect(integratorSkillsCases.find(x=>x.scenarioId==="skills.explicit-restriction")!.oracleVersion).toBe("paperclip.chat-catalog.integrator.v1");
+ expect(integratorSkillsCases.find(x=>x.scenarioId==="skills.author-skill")!.oracleVersion).toBe("paperclip.chat-catalog.skill-authoring.v6");
 });
 it("cannot extend an exhausted original case budget to inspect a finished artifact",async()=>{
  const f=fixture();Object.assign(f.ctx,{observationDeadlineAt:Date.now()-1});
