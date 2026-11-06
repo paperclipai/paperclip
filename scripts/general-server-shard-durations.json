@@ -1345,14 +1345,14 @@
     "server/src/services/vercel-connect.test.ts": 163,
     "server/src/services/workspace-git-operation-scheduler.test.ts": 1674,
     "server/src/services/workspace-git-snapshot-streaming.test.ts": 30880,
-    "server/src/services/workspace-recovery-admission.test.ts": 32000,
-    "server/src/services/workspace-recovery-preparation-dispatch.test.ts": 49000,
-    "server/src/services/workspace-recovery-preparation-gates.test.ts": 29000,
-    "server/src/services/workspace-recovery-preparation-proof.test.ts": 44000,
-    "server/src/services/workspace-recovery-preparation.test.ts": 66000,
-    "server/src/services/workspace-recovery-retry-copyback.test.ts": 32000,
+    "server/src/services/workspace-recovery-admission.test.ts": 66000,
+    "server/src/services/workspace-recovery-preparation-dispatch.test.ts": 101000,
+    "server/src/services/workspace-recovery-preparation-gates.test.ts": 60000,
+    "server/src/services/workspace-recovery-preparation-proof.test.ts": 91000,
+    "server/src/services/workspace-recovery-preparation.test.ts": 136000,
+    "server/src/services/workspace-recovery-retry-copyback.test.ts": 66000,
     "server/src/services/workspace-recovery-source.test.ts": 7319,
-    "server/src/services/workspace-recovery-warm-handoff.test.ts": 56000,
+    "server/src/services/workspace-recovery-warm-handoff.test.ts": 116000,
     "server/src/services/workspace-restore-reconciliation.test.ts": 5517,
     "server/src/services/workspace-runtime-exposure-backfill.test.ts": 4136,
     "server/src/services/workspace-runtime-exposure.test.ts": 14546,
@@ -1390,17 +1390,17 @@
         }
       },
       "server/src/services/workspace-recovery.test.ts": {
-        "sourceRun": 41300933157,
-        "sourceDurationMs": 309441,
-        "apportionedBy": "Local per-file test time for the same tests, averaged over a whole-file run and per-file runs; the recorded predecessor cost is divided in those proportions.",
+        "sourceRun": 42296943853,
+        "sourceDurationMs": 636000,
+        "apportionedBy": "Local per-file test time for the same tests, averaged over a whole-file run and per-file runs; the predecessor's current CI cost (636s, master runs 42296943853 and 42294279748) is divided in those proportions.",
         "files": {
-          "server/src/services/workspace-recovery-admission.test.ts": 32000,
-          "server/src/services/workspace-recovery-preparation-dispatch.test.ts": 49000,
-          "server/src/services/workspace-recovery-preparation-gates.test.ts": 29000,
-          "server/src/services/workspace-recovery-preparation-proof.test.ts": 44000,
-          "server/src/services/workspace-recovery-preparation.test.ts": 66000,
-          "server/src/services/workspace-recovery-retry-copyback.test.ts": 32000,
-          "server/src/services/workspace-recovery-warm-handoff.test.ts": 56000
+          "server/src/services/workspace-recovery-admission.test.ts": 66000,
+          "server/src/services/workspace-recovery-preparation-dispatch.test.ts": 101000,
+          "server/src/services/workspace-recovery-preparation-gates.test.ts": 60000,
+          "server/src/services/workspace-recovery-preparation-proof.test.ts": 91000,
+          "server/src/services/workspace-recovery-preparation.test.ts": 136000,
+          "server/src/services/workspace-recovery-retry-copyback.test.ts": 66000,
+          "server/src/services/workspace-recovery-warm-handoff.test.ts": 116000
         }
       }
     }
