@@ -15,8 +15,8 @@ export const composerSkills = [
   },
   {
     id: "skill-release-notes",
-    key: "release-notes",
-    slug: "release-notes",
+    key: "release-notes-for-project",
+    slug: "release-notes-for-project",
     name: "Release notes",
     description: null,
   },

@@ -7,12 +7,14 @@ import { TaskChatComposer } from "@/components/task-chat/TaskChatComposer";
 import { TaskChatComposerDock } from "@/components/task-chat/TaskChatComposerDock";
 import { TaskChatThreadView } from "@/components/task-chat/TaskChatThreadView";
 import { useCompany } from "@/context/CompanyContext";
+import { useSidebar } from "@/context/SidebarContext";
 import { queryKeys } from "@/lib/queryKeys";
 import { composerSkills } from "../../support/composerSkills";
 
 function TaskSkillsStory() {
   const client = useQueryClient();
   const { selectedCompanyId } = useCompany();
+  const { isMobile } = useSidebar();
   const [sent, setSent] = useState<string | null>(null);
 
   useLayoutEffect(() => {
@@ -39,8 +41,8 @@ function TaskSkillsStory() {
           { id: "response", kind: "message", author: "agent", authorName: "Codex", text: "The redirect is fixed. Use a skill to check the full sign-in flow." },
         ]} />
         {sent && <output aria-label="Submitted Markdown" className="mb-4 text-sm">{sent}</output>}
-        <TaskChatComposerDock mobile={false} streamlined={false}>
-          <TaskChatComposer workMode="standard" onAdd={async (body) => { setSent(body); }} />
+        <TaskChatComposerDock mobile={isMobile} streamlined={false}>
+          <TaskChatComposer mobile={isMobile} workMode="standard" onAdd={async (body) => { setSent(body); }} />
         </TaskChatComposerDock>
       </div>
     </main>
@@ -72,7 +74,7 @@ export const SlashCommands: Story = {
     const menu = within(await page.findByTestId("mention-autocomplete-menu"));
     await expect(menu.getByText("/test-it-for-real")).toBeVisible();
     await expect(menu.getByText(composerSkills[0]!.description!)).toBeVisible();
-    await expect(menu.getByText("/release-notes")).toBeVisible();
+    await expect(menu.getByText(`/${composerSkills[2]!.slug}`)).toBeVisible();
   },
 };
 

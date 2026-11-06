@@ -1725,7 +1725,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
                   </span>
                 ) : option.kind === "skill" ? (
                   <span className="flex min-w-0 flex-1 items-center gap-2">
-                    <span className="max-w-1/2 shrink-0 truncate">{slashCommandLabel(option)}</span>
+                    <span className={cn("shrink-0 truncate", option.description ? "max-w-1/2" : "max-w-full")}>{slashCommandLabel(option)}</span>
                     {option.description && (
                       <span className="min-w-0 flex-1 truncate text-xs text-popover-foreground/70" title={option.description}>
                         {option.description}

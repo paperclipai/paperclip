@@ -487,7 +487,7 @@ export const SlashCommands: Story = {
     const menu = within(menuElement);
     await expect(menu.getByText("/test-it-for-real")).toBeVisible();
     await expect(menu.getByText(SKILLS[0]!.description!)).toBeVisible();
-    await expect(menu.getByText("/release-notes")).toBeVisible();
+    await expect(menu.getByText(`/${SKILLS[2]!.slug}`)).toBeVisible();
     await expect(menu.getByText("/routine:Daily check-in")).toBeVisible();
     await expect(menuElement.getBoundingClientRect().right).toBeLessThanOrEqual(canvasElement.ownerDocument.defaultView!.innerWidth);
   },
@@ -516,6 +516,7 @@ export const CreateWithRichChips: Story = {
     const receipt = await page.findByRole("status");
     await expect(receipt).toHaveTextContent("Task created");
     await expect(receipt).toHaveTextContent("/test-it-for-real");
+    await expect(within(receipt).getByRole("link", { name: "/test-it-for-real" })).toHaveAttribute("href", `/skills/${SKILLS[0]!.id}`);
     await expect(receipt).toHaveTextContent("/routine:Daily check-in");
     await expect(receipt.querySelector('[data-mention-kind="agent"]')).toHaveAttribute("style", expect.stringContaining("electric-grove"));
   },

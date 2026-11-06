@@ -21,6 +21,18 @@ for (const surface of ["composer-new-task", "composer-skills"]) {
           }).__STORYBOOK_ADDONS_CHANNEL__?.data.playFunctionThrewException)).toBeUndefined();
           expect(errors).toEqual([]);
           expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+          const editor = page.getByRole("textbox", { name: "editable markdown" });
+          const editorFont = await editor.evaluate((element) => getComputedStyle(element).fontSize);
+          const expectedFont = await page.evaluate((isMobile) => {
+            const token = isMobile ? "--text-base" : "--text-sm";
+            const probe = document.createElement("span");
+            probe.style.fontSize = `var(${token})`;
+            document.body.append(probe);
+            const size = getComputedStyle(probe).fontSize;
+            probe.remove();
+            return size;
+          }, mobile);
+          expect(editorFont).toBe(expectedFont);
 
           if (state === "slash-commands") {
             const menu = page.getByTestId("mention-autocomplete-menu");
@@ -44,6 +56,8 @@ for (const surface of ["composer-new-task", "composer-skills"]) {
             expect(Math.abs((descriptionBounds!.y + descriptionBounds!.height / 2)
               - (labelBounds!.y + labelBounds!.height / 2))).toBeLessThan(2);
             await expect(menu.getByRole("button", { name: /\/release-notes/ })).toBeVisible();
+            const uncutName = menu.getByText("/release-notes-for-project", { exact: true });
+            expect(await uncutName.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
           } else {
             const skill = page.getByRole("textbox", { name: "editable markdown" }).locator('[data-mention-kind="skill"]');
             await expect(page.getByRole("textbox", { name: "editable markdown" })).toHaveText("Use /test-it-for-real to verify the sign-in redirect.");
