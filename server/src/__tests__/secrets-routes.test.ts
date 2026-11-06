@@ -169,6 +169,26 @@ describe("secret routes", () => {
     expect(mockLogActivity).not.toHaveBeenCalled();
   });
 
+  it("gives a denied agent safe response and saved-wait options without echoing the submitted value", async () => {
+    const value = "private-denial-canary-value";
+    const res = await request(createApp({
+      type: "agent", agentId: "agent-1", companyId: "company-1", source: "agent_jwt",
+    })).post("/api/companies/company-1/secrets").send({ name: "Deployment key", value });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("finish the current conversation response");
+    expect(res.body.error).toContain("without claiming that credential setup is complete");
+    expect(res.body.error).toContain("first create a non-governing secure-save acknowledgment");
+    expect(res.body.error).toContain("request_human_input");
+    expect(res.body.error).toContain("request_confirmation");
+    expect(res.body.error).toContain("never ask for the secret value in that card");
+    expect(res.body.error).toContain("Wait only on the actual saved request");
+    expect(JSON.stringify(res.body)).not.toContain(value);
+    expect(res.body).not.toHaveProperty("details");
+    expect(mockSecretService.create).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+
   it.each([undefined, ""])("validates a board caller's missing or empty managed value %j", async (value) => {
     const res = await request(createApp()).post("/api/companies/company-1/secrets")
       .send({ name: "Deployment key", value });
