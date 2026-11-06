@@ -2701,8 +2701,7 @@ impl CodexCommandExecutor {
                         // trustworthy success notification to replay. Terminate it
                         // conservatively so the controller cannot wait forever or
                         // mistake an unknown outcome for success.
-                        let restart_continuable =
-                            restart_lost_turn_is_continuable(&provider_label);
+                        let restart_continuable = restart_lost_turn_is_continuable(&provider_label);
                         let provider_terminal = NormalizedProviderEvent {
                             event_type: "turn.failed".to_owned(),
                             priority: EventPriority::P0,

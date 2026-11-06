@@ -184,7 +184,8 @@ fn unused_fence_ports() -> [u16; 3] {
 /// cause instead of a terminal provider failure.
 #[test]
 fn restores_the_conversation_after_losing_an_active_turn_to_a_runner_restart() {
-    let fixture = Fixture(std::env::temp_dir().join(format!("acpx-restart-{}", uuid::Uuid::new_v4())));
+    let fixture =
+        Fixture(std::env::temp_dir().join(format!("acpx-restart-{}", uuid::Uuid::new_v4())));
     fs::create_dir_all(&fixture.0).unwrap();
     fs::set_permissions(&fixture.0, fs::Permissions::from_mode(0o700)).unwrap();
     let sidecar = fixture.0.join("sidecar");
@@ -257,8 +258,13 @@ fn restores_the_conversation_after_losing_an_active_turn_to_a_runner_restart() {
         ))
         .unwrap();
     assert_eq!(started.result["status"], "accepted");
-    // The runner process dies with the turn still active.
+    // The runner process dies with the turn still active, after the turn sent
+    // the controller a semantic call that has no result yet.
     drop(original);
+    let state_path = fixture.0.join("acpx-provider-state.json");
+    let mut saved: Value = serde_json::from_slice(&fs::read(&state_path).unwrap()).unwrap();
+    saved["openSemanticCalls"] = json!(["call-lost"]);
+    fs::write(&state_path, serde_json::to_vec(&saved).unwrap()).unwrap();
 
     let mut restored = AcpxCommandExecutor::with_runner_config(&fixture.0, &config);
     let snapshot = restored
@@ -273,13 +279,32 @@ fn restores_the_conversation_after_losing_an_active_turn_to_a_runner_restart() {
         .expect("the lost turn is terminated");
     assert_eq!(failed.payload["providerTurnId"], "provider-turn-1");
     assert_eq!(failed.payload["providerTerminalObserved"], false);
-    assert_eq!(failed.payload["error"]["code"], "provider_turn_lost_on_restore");
+    assert_eq!(
+        failed.payload["error"]["code"],
+        "provider_turn_lost_on_restore"
+    );
     assert_eq!(failed.payload["error"]["recoverable"], true);
     // The run stays open for the controller's single same-conversation continuation.
-    assert!(!events.iter().any(|event| event.event_type == "run.terminal"));
+    assert!(!events
+        .iter()
+        .any(|event| event.event_type == "run.terminal"));
+    // The controller can still answer the lost call. That result settles the
+    // call instead of failing against the restored provider, which never saw it.
+    let lost_result = json!({
+        "callId": "call-lost", "operationId": "register_deliverable",
+        "result": {"ok": true}, "isError": false,
+    });
+    let settled = restored
+        .execute(&command(5, "semantic_tool.result", lost_result.clone()))
+        .unwrap();
+    assert_eq!(settled.result["retired"], true);
+    // Only the lost turn's calls settle this way.
+    assert!(restored
+        .execute(&command(6, "semantic_tool.result", lost_result))
+        .is_err());
     let continued = restored
         .execute(&command(
-            5,
+            7,
             "turn.start",
             json!({"turnId": "provider-turn-2", "text": "Continue."}),
         ))

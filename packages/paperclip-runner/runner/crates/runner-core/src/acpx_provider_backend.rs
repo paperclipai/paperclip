@@ -1,7 +1,7 @@
 use crate::generated_acpx_profiles::{
     acpx_release_profile, ACPX_DRIVER_KIND, QUALIFIED_ACPX_VERSION,
 };
-use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::fs::{self, DirBuilder, File};
 use std::io::{Read, Write};
 use std::net::TcpListener;
@@ -70,6 +70,8 @@ pub const ACPX_PROVIDER_STATE_FILE: &str = "acpx-provider-state.json";
 const ACPX_PROVIDER_STATE_SCHEMA: &str = "paperclip.runner.acpx-provider-state.v3";
 const MAX_PROVIDER_STATE_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_PENDING_EVENTS: usize = 8_320;
+// Matches the bounded number of pending ACPX tool calls.
+const MAX_OPEN_SEMANTIC_CALLS: usize = 4_096;
 const MAX_EVENTS_PER_POLL: usize = 128;
 const PROVIDER_LIFETIME_CONFIRMATION_TIMEOUT: Duration = Duration::from_secs(5);
 const PROVIDER_LIFETIME_CONFIRMATION_RETRY: Duration = Duration::from_millis(10);
@@ -597,6 +599,13 @@ struct AcpxDurableState {
     pending_runtime_requests: BTreeMap<String, Value>,
     #[serde(default = "initial_event_sequence")]
     next_event_sequence: u64,
+    /// Semantic tool calls emitted to the controller without a result yet.
+    #[serde(default)]
+    open_semantic_calls: BTreeSet<String>,
+    /// Open calls of a turn lost to a runner restart. The restored provider
+    /// never sees their results; the controller may still deliver them.
+    #[serde(default)]
+    retired_semantic_calls: BTreeSet<String>,
 }
 
 impl AcpxDurableState {
@@ -623,6 +632,8 @@ impl AcpxDurableState {
             pending_events: VecDeque::new(),
             pending_runtime_requests: BTreeMap::new(),
             next_event_sequence: initial_event_sequence(),
+            open_semantic_calls: BTreeSet::new(),
+            retired_semantic_calls: BTreeSet::new(),
         }
     }
 
@@ -789,6 +800,31 @@ impl AcpxDurableState {
             if let Some(id) = event.payload.get("requestId").and_then(Value::as_str) {
                 self.pending_runtime_requests.remove(id);
             }
+        } else if let Some(call_id) = event
+            .payload
+            .pointer("/semantic_tool/callId")
+            .and_then(Value::as_str)
+        {
+            // Remember semantic calls the controller may still answer. A lost
+            // turn's open calls become retired calls on restore, so a later
+            // controller result for them settles instead of failing.
+            match event.event_type.as_str() {
+                "semantic_tool.input"
+                    if self.open_semantic_calls.len() < MAX_OPEN_SEMANTIC_CALLS =>
+                {
+                    self.open_semantic_calls.insert(call_id.to_owned());
+                }
+                "semantic_tool.result" => {
+                    self.open_semantic_calls.remove(call_id);
+                }
+                _ => {}
+            }
+        } else if matches!(
+            event.event_type.as_str(),
+            "turn.completed" | "turn.failed" | "turn.cancelled" | "turn.interrupted"
+        ) {
+            // A provider-observed terminal settles its calls in the live bridge.
+            self.open_semantic_calls.clear();
         }
         self.next_event_sequence = next_sequence;
         self.pending_events.push_back(PolledEvent {
@@ -1226,6 +1262,10 @@ impl AcpxCommandExecutor {
         state.lifecycle = "session_open".to_owned();
         state.active_turn_id = None;
         state.turn_controls = turn_controls;
+        // The controller may still answer the lost turn's semantic calls.
+        // The restored provider never issued them, so settle them on arrival.
+        let open = std::mem::take(&mut state.open_semantic_calls);
+        state.retired_semantic_calls.extend(open);
         state.push(NormalizedProviderEvent {
             event_type: "session.resumed".to_owned(),
             priority: EventPriority::P0,
@@ -2205,6 +2245,19 @@ impl AcpxCommandExecutor {
         let result: ToolResult = serde_json::from_value(payload.clone()).map_err(|error| {
             DurableRunnerError::invalid(format!("semantic tool result is invalid: {error}"))
         })?;
+        if let Some(state) = self.state.as_mut() {
+            if state.retired_semantic_calls.remove(&result.call_id) {
+                // The call belonged to a turn lost to a runner restart. Its
+                // provider process is gone; acknowledge the controller result
+                // so the call settles, without sending it to the new provider.
+                self.save_state()?;
+                return Ok(CommandExecution::result(json!({
+                    "status": "delivered",
+                    "callId": result.call_id,
+                    "retired": true,
+                })));
+            }
+        }
         self.session
             .as_mut()
             .ok_or_else(|| DurableRunnerError::invalid("ACPX session is unavailable"))?

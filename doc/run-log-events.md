@@ -359,6 +359,10 @@ An ACPX session records this only after the original provider lifetime loses
 its fence quorum and the same conversation is restored. Otherwise its
 `turn.failed` carries `error.code: "acpx_active_turn_recovery_closed"` with
 `error.recoverable: false`, and the run closes with an honest restart message.
+After an ACPX restore, the controller can still deliver results for semantic
+calls of the lost turn. Runnerd acknowledges each one as `retired` without
+sending it to the restored provider, so the calls settle and live semantic
+dispatch resumes for the continuation.
 
 ## Native Local Process Stop Evidence
 
