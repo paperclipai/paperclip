@@ -60,10 +60,16 @@ export function chatFeatureProfile(profile: RunnerProfileFixture): RunnerProfile
     const { instructionsBundle: _manual, ...payload } = profile.buildAgent(input);
     const config = payload.adapterConfig as Record<string, unknown>;
     const { codexPermissionMode: _permission, ...adapterConfig } = config;
+    const throughputRouting = profile.id === "runner-opencode" && profile.provider === "opencode"
+      && profile.model === CHAT_FEATURE_OPENCODE_MODEL && profile.adapterType === "paperclip_runner" && profile.credential === "OPENROUTER_API_KEY";
     return { ...payload, name: "CEO", title: "CEO", role: "ceo",
       capabilities: "Coordinates company work and delegates tasks to the team.",
       budgetMonthlyCents: CHAT_FEATURE_BUDGET_CENTS,
-      adapterConfig: { ...adapterConfig, timeoutSec: profile.id === "runner-opencode" ? CHAT_NATIVE_TIMEOUT_POLICY.savedAgentTimeoutSec : 120, ...(profile.provider === "codex" ? { modelReasoningEffort: "low" } : {}) },
+      adapterConfig: { ...adapterConfig, ...(throughputRouting ? { env: { ...(adapterConfig.env as Record<string, unknown>),
+        OPENCODE_CONFIG_CONTENT: JSON.stringify({ provider: { openrouter: { models: {
+          "deepseek/deepseek-v4.1-flash-1017": { options: { provider: { sort: "throughput" } } },
+        } } } }),
+      } } : {}), timeoutSec: profile.id === "runner-opencode" ? CHAT_NATIVE_TIMEOUT_POLICY.savedAgentTimeoutSec : 120, ...(profile.provider === "codex" ? { modelReasoningEffort: "low" } : {}) },
       runtimeConfig: { ...(payload.runtimeConfig as Record<string, unknown>),
         heartbeat: { enabled: false, maxConcurrentRuns: 1, maxDailyRuns: 3, maxDailyCostCents: CHAT_FEATURE_BUDGET_CENTS } },
     };
