@@ -2855,6 +2855,54 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
 
   });
 
+  it.each([
+    "both signature headers",
+    "SHA-256 header only",
+    "legacy header only",
+  ])("accepts a signed app webhook with %s", async (headers) => {
+    const { svc, routine, trigger, secretMaterial } = await firefliesFixture(false, "app_webhook");
+    const payload = { event: "deployment.completed", deployment_id: "deploy-headers" };
+    const rawBody = Buffer.from(JSON.stringify(payload));
+    const secret = secretMaterial!.webhookSecret;
+    const signature = `sha256=${createHmac("sha256", secret).update(rawBody).digest("hex")}`;
+    const result = await svc.firePublicTrigger(trigger.publicId!, {
+      rawBody,
+      payload,
+      hubSignatureHeader: headers === "legacy header only" ? undefined : signature,
+      firefliesSignatureHeader: headers === "SHA-256 header only"
+        ? undefined
+        : headers === "legacy header only"
+          ? signature
+          : `sha1=${createHmac("sha1", secret).update(rawBody).digest("hex")}`,
+    });
+
+    expect(result.status).toBe("issue_created");
+    const runs = await svc.listRuns(routine.id);
+    expect(runs).toHaveLength(1);
+    expect(runs[0].triggerPayload).toEqual(payload);
+  });
+
+  it.each(["invalid SHA-256 header", "SHA-1 header only"])(
+    "rejects an app webhook with %s despite valid bearer authorization",
+    async (headers) => {
+      const { svc, routine, trigger, secretMaterial } = await firefliesFixture(false, "app_webhook");
+      const payload = { event: "deployment.completed", deployment_id: "deploy-invalid" };
+      const rawBody = Buffer.from(JSON.stringify(payload));
+      const secret = secretMaterial!.webhookSecret;
+
+      await expect(svc.firePublicTrigger(trigger.publicId!, {
+        rawBody,
+        payload,
+        authorizationHeader: `Bearer ${secret}`,
+        hubSignatureHeader: headers === "SHA-1 header only" ? undefined : `sha256=${"0".repeat(64)}`,
+        firefliesSignatureHeader: headers === "SHA-1 header only"
+          ? `sha1=${createHmac("sha1", secret).update(rawBody).digest("hex")}`
+          : `sha256=${createHmac("sha256", secret).update(rawBody).digest("hex")}`,
+      })).rejects.toMatchObject({ status: 401 });
+      expect(await svc.listRuns(routine.id)).toEqual([]);
+    },
+  );
+
   it("dispatches one Fireflies run for concurrent retries and passes meeting metadata", async () => {
     const { svc, routine, trigger, delivery, wakeups } = await firefliesFixture();
     const results = await Promise.all([
