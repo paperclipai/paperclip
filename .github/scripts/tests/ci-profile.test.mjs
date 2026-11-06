@@ -330,10 +330,10 @@ test("workflow exporter runs trusted code and keeps keys out of the PR jobs", ()
   assertNoPrWorkflowCredentials(pr);
   assert.match(pr, /if: always\(\) && env.PAPERCLIP_CI_PROFILE == 'true'/);
   assert.doesNotMatch(pr, /PAPERCLIP_CI_PROFILE:.*labels/);
-  assert.equal(pr.match(/PAPERCLIP_CI_PROFILE: \$\{\{ needs.gate.outputs.profile_ci \}\}/g).length, 9);
+  assert.equal(pr.match(/PAPERCLIP_CI_PROFILE: \$\{\{ needs.gate.outputs.profile_ci \}\}/g).length, 10);
   // upload-artifact excludes files inside dot-directories by default. Keep
   // this opt-in scoped to timing NDJSON, never the workspace or other secrets.
-  assert.equal(pr.match(/path: \.ci-profile\/\*\.ndjson\n {10}include-hidden-files: true/g).length, 9);
+  assert.equal(pr.match(/path: \.ci-profile\/\*\.ndjson\n {10}include-hidden-files: true/g).length, 10);
   const routing = readFileSync(new URL("../../workflows/ci-routing.yml", import.meta.url), "utf8");
   assert.match(routing, /PROFILE_CI: \$\{\{ steps.profile.outputs.profile_ci \}\}/);
   assert.match(routing, /\/git\/ref\/heads\/master/);
