@@ -75,7 +75,7 @@ export interface LiveFixtureValues {
   setupQualification?: { recorded: boolean; adapterType: string | null; platformResponses: number; adapterResponses: number };
 
   onboardingRuntime?: {
-    mode: "production-wizard" | "post-onboarding-runtime-switch";
+    mode: "production-wizard" | "api-configured-legacy-setup" | "post-onboarding-runtime-switch";
     originalAdapterType: string;
     originalModel: string | null;
     testedAdapterType: string;

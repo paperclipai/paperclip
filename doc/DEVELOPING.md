@@ -1368,6 +1368,19 @@ Do not add a lockfile inside a provider.
 exists, which changes what a release resolves. Daytona already has one; the
 release build resolves it in place when it is stale.
 
+Daytona is the one exception: it commits its own lockfile, so the workspace
+leaves it out and the script installs it from that lockfile (`LOCKED_PROVIDERS`).
+The same rule applies to it: do not refresh or commit that lockfile. The script
+resolves a stale one in place for the run, and the lockfile refresh workflow
+commits the new one after merge.
+
+Dependabot updates the providers through this workspace (see
+`.github/dependabot.yml`), and Daytona through a second entry. Dependabot does
+not expand a workspace glob that starts with `../`, so
+`scripts/typecheck-sandbox-providers/pnpm-workspace.yaml` lists each provider by
+its full path. When you add a provider, add it there and to `SANDBOX_PROVIDERS`
+in `scripts/typecheck-test-programs.mjs`. A test checks that the two lists match.
+
 #### Sandbox provider tests
 
 `pnpm test:run` does not reach the sandbox providers, because they are outside the
@@ -2971,7 +2984,7 @@ runtimes on Apple Silicon, Intel Mac, and Linux x64 with supported glibc;
 Linux ARM64 remains Legacy until the pinned runtimes support it.
 Unsupported or unqualified targets retain Legacy. Claude over Darwin SSH keeps
 an automatic Legacy default; explicit native execution
-requires matching remote assets. The runner override is in Advanced. Ordinary Claude models default to `claude-opus-5-5`; explicit models
+requires matching remote assets. Agent setup and configuration select the runner automatically and do not expose a runner dropdown. Ordinary Claude models default to `claude-opus-5-5`; explicit models
 and provider routing remain authoritative. Existing agents keep their saved runner. Converting an existing Claude, Codex, OpenCode, or Pi agent selects its
 corresponding provider, preserves compatible models, credentials, workspace,
 and instructions, and resets execution sessions while retaining run history.
@@ -3028,6 +3041,7 @@ them. Existing Pi agents retain their saved runner and native policies.
 Agent configuration uses the same section layout across adapters: model and
 provider belong to **Adapter**, environment variables have their own section,
 and command/extra arguments are folded under **Configuration → Advanced**.
+Advanced is omitted when the selected adapter has no settings in that section.
 Lifecycle, timeout, and interrupt grace settings live under **Advanced Run
 Policy**. Permission selectors with a single valid mode are hidden; a saved
 unsupported mode still exposes remediation.
@@ -3424,7 +3438,7 @@ successful warm-session retention or admit another provider turn.
 Run the credential-free real-process restart suite with:
 
 ```sh
-pnpm --filter @paperclipai/paperclip-runner build:runner-binaries
+pnpm --filter @paperclipai/paperclip-runner run build:runner-binaries
 pnpm exec vitest run server/src/services/native-runtime/native-runner-restart-recovery.integration.test.ts
 pnpm --filter @paperclipai/paperclip-runner exec vitest run src/live/runnerd-codex-transport-adoption.test.ts -t 'adopts a live runner'
 ```

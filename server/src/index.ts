@@ -137,6 +137,7 @@ import { cloudActorHeaderSourceFromHeaders, resolveCloudTenantActor } from "./mi
 import {
   feedbackService,
   applyManagedEnvironments,
+  createManagedEnvironmentRecovery,
   backfillPrincipalAccessCompatibility,
   backfillLegacyToolOAuthTokens,
   bootstrapExecutionPolicyFromEnv,
@@ -1175,6 +1176,17 @@ async function startServerWithDatabaseTeardown(
     throw err;
   }
 
+  // Post-boot recovery of managed environments (re-ensuring a row when its
+  // plugin worker becomes ready). Shutdown stops it before the database closes,
+  // and so does the startup-failure teardown: a later startup step that throws
+  // must not leave an attempt writing through a closed database.
+  const managedEnvironmentRecovery = createManagedEnvironmentRecovery();
+  const closeDatabaseAfterStartupFailure = startupDatabase.close;
+  startupDatabase.close = async () => {
+    await managedEnvironmentRecovery.stop();
+    await closeDatabaseAfterStartupFailure?.();
+  };
+
   // Ensure the sandbox and plugin environments declared in the managed-config
   // document (`environments` section) before the heartbeat resumes queued runs. The
   // document already parsed fail-closed above; the ensure step itself is
@@ -1190,6 +1202,7 @@ async function startServerWithDatabaseTeardown(
       locals?: { bundledPluginsStartup?: Promise<unknown>; managedBundledPluginKeys?: readonly string[] };
     }).locals;
     const managedEnvironmentsResult = await applyManagedEnvironments(db as any, managedConfig, {
+      recovery: managedEnvironmentRecovery,
       pluginsReady: appLocals?.bundledPluginsStartup,
       autoInstalledPluginKeys: appLocals?.managedBundledPluginKeys,
       workerManager: pluginWorkerManager,
@@ -2043,6 +2056,7 @@ async function startServerWithDatabaseTeardown(
     await runtimeResponseDelivery?.stop();
     await deploymentHints?.stop();
     await deliveryWork.stop();
+    await managedEnvironmentRecovery.stop();
 
     // Whatever the drain did not finalize (timed-out runs, the hot-restart
     // skip path) still has a local-only tail when the in-flight run-log

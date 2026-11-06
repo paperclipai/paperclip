@@ -4,7 +4,6 @@ import { needsClaudeSetupQualification, qualifyClaudeSetup } from "../lib/qualif
 import { runOnboardingConnectionTest } from "../lib/onboarding-connection-test";
 import { agentHarnessType } from "@paperclipai/shared";
 import { adaptersApi, type AdapterInfo } from "../api/adapters";
-import { AgentRunnerSelect } from "./AgentRunnerSelect";
 import { healthApi } from "@/api/health";
 import { describeError } from "@/api/errors";
 import { LocalProviderLoginInstructions } from "./AdapterLoginChrome";
@@ -2202,7 +2201,7 @@ function OnboardingWizardInner({
               || typeof probe.details.leaseId !== "string" || !probe.details.leaseId) {
               throw new Error(typeof probe.details?.platformQualificationDiagnostic === "string"
                 ? probe.details.platformQualificationDiagnostic
-                : probe.summary || "The environment's platform qualification could not be confirmed. Retry the connection probe or select Legacy runner in Advanced.");
+                : probe.summary || "The environment's platform qualification could not be confirmed. Retry the connection probe.");
             }
             const refreshed = await queryClient.fetchQuery({ queryKey: availabilityKey, staleTime: 0,
               queryFn: () => adaptersApi.list({ companyId: createdCompanyId, environmentId }, { signal }) });
@@ -3232,30 +3231,21 @@ function OnboardingWizardInner({
                     ) : null}
                   </motion.div>
 
-                  {sourceSelected && ["codex_local", "claude_local", "opencode_local", "pi_local"].includes(adapterType) && <details className="space-y-3">
-                    <summary className="cursor-pointer text-sm text-muted-foreground">Advanced</summary>
-                    {/* The gateway is an alternative route, not the next
-                        thing after the key, so it waits here rather than
-                        sitting under the API key field (N-16). Same gates as
-                        the key card it used to live in. */}
-                    {connectCardLive && connectCardMounted && !connectProgress && credentialMode === "api" && createdCompanyId && (adapterType === "codex_local" || adapterType === "claude_local") && <OnboardingGatewaySetup
-                      companyId={createdCompanyId} agentId={setupAgentId ?? undefined} environmentId={resolvedLoginEnvironmentId ?? undefined}
-                      adapterType={adapterType} disabled={loading || adapterEnvLoading}
-                      // Ghost padding pulled back so the label lines up with
-                      // the Advanced summary above it.
-                      className="-ml-3"
-                      onComplete={binding => {
-                        setGatewayConnection({ companyId: createdCompanyId, adapterType, binding });
-                        setApiKey("");
-                        setModel("");
-                        setError(null);
-                      }} />}
-                    <AgentRunnerSelect value={runner} disabled={loading || adapterEnvLoading}
-                      pending={runnerDiscovery.isFetching} error={runnerDiscovery.error ? describeError(runnerDiscovery.error).body : undefined} onRetry={() => { void runnerDiscovery.refetch(); }}
-                      defaultRunner={runnerDiscovery.data?.find(item => item.type === adapterType)?.defaultRunner}
-                      supportedRunners={runnerDiscovery.data?.find(item => item.type === adapterType)?.supportedRunners}
-                      onChange={setRunner} />
-                  </details>}
+                  {sourceSelected && connectCardLive && connectCardMounted && !connectProgress && credentialMode === "api" && createdCompanyId && (adapterType === "codex_local" || adapterType === "claude_local") && (
+                    <details className="space-y-3">
+                      <summary className="cursor-pointer text-sm text-muted-foreground">Advanced</summary>
+                      <OnboardingGatewaySetup
+                        companyId={createdCompanyId} agentId={setupAgentId ?? undefined} environmentId={resolvedLoginEnvironmentId ?? undefined}
+                        adapterType={adapterType} disabled={loading || adapterEnvLoading}
+                        className="-ml-3"
+                        onComplete={binding => {
+                          setGatewayConnection({ companyId: createdCompanyId, adapterType, binding });
+                          setApiKey("");
+                          setModel("");
+                          setError(null);
+                        }} />
+                    </details>
+                  )}
 
                   {/* Conditional adapter fields */}
 
