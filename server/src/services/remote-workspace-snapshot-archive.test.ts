@@ -324,9 +324,9 @@ describe("portable remote workspace archives", () => {
       await git(restored, "fsck", "--full", "--no-dangling");
     },
   );
-  it.each(["ordinary", "linked", "borrowed"].flatMap(kind => ["local", "serialized"].map(mode => ({ kind, mode }))))(
+  it.each(["ordinary", "linked", "borrowed", "shallow", "partial", "sha256"].flatMap(kind => ["local", "serialized"].map(mode => ({ kind, mode }))))(
     "resumes and aborts a resolved pending merge after $mode $kind sources disappear", async ({ kind, mode }) => {
-      const base = await source(); await git(base, "init", "-q", "-b", "main");
+      const base = await source(); await git(base, "init", "-q", "-b", "main", ...(kind === "sha256" ? ["--object-format=sha256"] : []));
       await fs.writeFile(path.join(base, "work.txt"), "base\n"); await git(base, "add", "."); await git(base, "commit", "-qm", "base");
       await git(base, "checkout", "-qb", "feature");
       await fs.writeFile(path.join(base, "work.txt"), "feature\n"); await git(base, "commit", "-qam", "feature");
@@ -337,6 +337,18 @@ describe("portable remote workspace archives", () => {
       let cwd = base;
       if (kind === "linked") { cwd = path.join(root, "linked"); await git(base, "worktree", "add", "-qb", "selected", cwd); }
       if (kind === "borrowed") { cwd = path.join(root, "borrowed"); await git(root, "clone", "-q", "--shared", base, cwd); }
+      if (kind === "shallow" || kind === "partial") {
+        cwd = path.join(root, "selected");
+        if (kind === "partial") await git(base, "config", "uploadpack.allowFilter", "true");
+        await git(root, "clone", "-q", "--no-single-branch", ...(kind === "shallow" ? ["--depth=2"] : ["--filter=blob:none"]), `file://${base}`, cwd);
+        if (kind === "shallow") expect(await git(cwd, "rev-parse", "--is-shallow-repository")).toBe("true");
+        if (kind === "partial") {
+          expect(await git(cwd, "config", "remote.origin.promisor")).toBe("true");
+          await expect(git(cwd, "merge", "--no-ff", "--no-commit", feature)).rejects.toThrow();
+          await git(cwd, "merge", "--abort");
+          await git(cwd, "config", "remote.origin.url", "https://example.invalid/workspace.git");
+        }
+      }
       await expect(git(cwd, "merge", "--no-ff", "--no-commit", feature)).rejects.toThrow();
       await fs.writeFile(path.join(cwd, "work.txt"), "resolved\n"); await git(cwd, "add", "work.txt");
       await fs.writeFile(path.join(cwd, "work.txt"), "later unstaged work\n");
