@@ -7310,6 +7310,7 @@ export function nativeSessionFailureSourceCode(
   | "provider_session_open_rejected"
   | "runner_ingress_access_rejected"
   | "runner_ingress_acquisition_failed"
+  | "local_runtime_api_listener_unavailable"
   | "native_session_interrupted" {
   if (error instanceof NativePermissionDeclinedError) return "native_permission_declined";
   if (error instanceof NativeProviderStateIncompatibleError) return NATIVE_PROVIDER_STATE_INCOMPATIBLE;
@@ -7410,6 +7411,12 @@ export function nativeSessionFailureSourceCode(
     }
     return "provider_session_open_rejected";
   }
+  // This process has no HTTP listener (graceful shutdown closes it first), so
+  // the control plane cannot hand a runner its callback origin. The lookup runs
+  // before any runner or provider process is created.
+  if (/\blocal_runtime_api_listener_unavailable\b/.test(message)) {
+    return "local_runtime_api_listener_unavailable";
+  }
   return "native_session_interrupted";
 }
 
@@ -7505,6 +7512,7 @@ export async function nativeProviderRecoveryEvidence(input: {
     "provider_request_protocol_error",
     "native_runner_process_exited",
     "provider_session_open_rejected",
+    "local_runtime_api_listener_unavailable",
   ]).has(input.sourceFailureCode);
   if (!checkpointExists && !providerEventsExist && (definitelyPreSession
     || unclaimedBootstrap && input.bootstrap?.transientIngressFailure)) {

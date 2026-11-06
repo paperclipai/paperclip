@@ -895,5 +895,11 @@ export class CodexHarnessSession
   async detachControllerForRestart(): Promise<void> {
     if (this.transport.detachControllerForRestart === undefined) return;
     await this.transport.detachControllerForRestart();
+    // The next controller replays the runner journal. End this controller's
+    // stream without its buffered suffix so the detached consumer unwinds
+    // instead of waiting for provider events that will never arrive here.
+    // Pending runtime requests stay open for the adopting controller.
+    this.eventQueue.clear();
+    this.eventQueue.close();
   }
 }

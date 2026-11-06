@@ -128,7 +128,7 @@ The issue is actively owned work.
 
 For agent-owned issues, `in_progress` should not be allowed to become a silent dead state.
 
-### Monitoring presentation
+### Execution-backed presentation
 
 An agent-owned `in_progress` task displays **Monitoring** with a blue clock while
 it has a persisted ordinary monitor deadline and no active run, execution or
@@ -136,6 +136,16 @@ checkout lock, review participant, or active recovery action. The persisted
 status remains `in_progress`. Monitor admission, checkout, finalization, recovery,
 and agent lifecycle filters keep their existing contracts. Review, blocked,
 terminal, and provider-quota recovery states keep their own presentation.
+
+For agent-owned tasks whose lifecycle status is `in_progress`, the visible
+**In Progress** state requires a task-linked `queued` or `running` run. Stale
+execution/checkout locks and scheduled retries alone do not establish activity.
+Without an active run, an open recovery action displays **Blocked**, a pending review
+stage or active pending thread interaction displays **In Review**, an ordinary
+scheduled monitor displays **Monitoring**, and other work displays **Todo**.
+These projections do not change stored lifecycle status, locks, admission,
+continuation authority, or recovery. Human-owned tasks retain their explicit
+ownership status.
 
 Task reads expose optional, read-only `displayStatus`. Board task collections and
 search can filter by `displayStatus`; filtering happens before pagination and
@@ -538,8 +548,14 @@ an active or ephemeral one. It records the save obligation for the exact writer
 run while the workspace is still bound to that writer. A Stop during an
 accepted result's copy-back retries ends that copy-back, and no finalization
 exports those files afterwards. Preservation admits that writer as well and
-leaves the accepted result uncommitted. Other accepted results keep their own
-export repair path. Paperclip's workspace recovery then saves those files, which
+leaves the accepted result uncommitted. A failed remote writer whose accepted
+result exhausted its copy-back retries can also retain its files through this
+path. It needs the exact stopped sandbox receipt, accepted completion contract,
+and unchanged dirty workspace binding. This works even when a newer setup
+attempt has failed on the old writer's hold. File recovery preserves both
+attempts and the accepted result; it does not apply that result or repeat the
+provider work. Other accepted results keep their own export repair path.
+Paperclip's workspace recovery then saves those files, which
 releases the hold. It never replays the stopped run. While that save is in
 progress, its last progress counts as the ended writer's activity for the holder cutoff. A waiter keeps waiting instead of
 failing setup. The save's retry budget bounds that wait. A save that exhausts
@@ -1245,6 +1261,8 @@ Explicit retry admission checks the local parent adapter controller and verified
 A new user message can continue a terminal native run whose process fields were cleared before local stop receipts existed. Admission must verify the exact run, runner, workspace, and provider session in the retained suspended state, with no active provider turn, pending tool call, or undelivered output. Missing or mismatched state keeps the hold. A later recorded process launch also keeps the hold until its stop is verified. Normal assignment, decision, controller, environment cleanup, and active-run gates still apply. The message starts one fresh conversation turn; it does not replay the failed run, reset its recovery budget, or certify unknown action outcomes.
 
 The task thread exposes the guarded Retry action for failed or timed-out conversation runs and native preparation cancelled before provider startup when the never-started proof is verified. The server projects this eligibility on the recovery notice and rechecks it on Retry. Cleanup quarantine retains its inspection path, and non-conversation reconciliation gates remain enforced. Pending decisions, active execution, pause, budget, dependency, and ownership gates remain in force. A refused Retry reports its reason inline and remains available for another attempt. When a newer linked-human GitHub message was saved but its admission was skipped by a budget or agent-availability gate, ordinary task Retry selects that unstarted message before considering the older failed run. The existing chat task-Retry owner snapshots the complete pending batch, including eligible skipped input, into a new admission generation bound to the canonical processed deliveries, comments, principal, session generation, admitted instruction snapshots, and task Retry intent. It retains the original skipped receipt and failed result unchanged. A terminal failed publication of that old result also remains history for a distinct selected request; pending or uncertain publication still holds work, and the old output is never replayed. Board Retry refusals expose only stable allowlisted authority categories, never source payloads, identifiers, or credential fingerprints. Admission rechecks source integrity and current access, then uses the normal new-user-turn continuation proof: a committed failed result can remain history only after controller, successor, process, workspace, and exact remote-termination guards pass. Unknown ownership stays deferred; Retry cannot certify it. The existing chat retry queue owns delivery and bounded infrastructure retries; a committed receipt settles a lost acknowledgment without another execution. An accepted saved-input receipt discharges only its matching unadmitted-input gate, allowing later genuine conversation or tree-resume wakes without replaying the skipped request.
+
+When the latest attempt was refused before dispatch, Retry keeps that exact attempt as its authority source. Admission verifies its stored refusal receipt and the absence of provider execution, sessions, leases, and output. Every earlier execution hold must also pass its normal stop and recovery checks. A refused attempt cannot replace that evidence or authorize replay of the earlier turn.
 
 A deliberate Retry also binds an already completed file-preservation record to
 that intent. Other recovery holds for the same source run can then use its saved
@@ -2577,13 +2595,26 @@ Shutdown, process loss, and provider failure use the existing durable failure re
 If shutdown or a recorded unexpected system interruption stops Paperclip Runner
 preparation before native execution was selected, recovery verifies that no
 provider, process launch, native result or coordinator exists. The previous
-controller must have settled or lost its lease.
+controller must have settled or lost its lease. A failed `process_lost` run also
+qualifies when restart recovery committed its explicit bootstrap certificate
+that provider work did not start. The error label alone grants no replay.
 Required workspace recovery must have an exact saved-file receipt and stopped
 leases before the task can continue. Once these checks pass, the server retires
 its own unchanged bootstrap-failure block and schedules one bounded retry.
 Startup also discovers this obligation when file recovery completed before the
 restart. A pending Retry or saved message owns its continuation instead of
-starting a competing automatic attempt. Retry uses the same preparation proof
+starting a competing automatic attempt. If a replacement was already withheld
+by the workspace gate before execution, continuation retains that cancelled row
+and uses its existing predecessor claim and remaining failure budget.
+Recovery adopts that withheld row only when it is the source's sole retry child.
+Multiple-child history reuses the newest existing child, ordered by creation time
+and run ID, without scheduling another replacement.
+Clearing the file hold records a pending continuation before enqueue. Restart
+reconstructs that obligation until a successor is recorded. Known admission
+gates defer it without a polling deadline; eligibility changes wake the existing
+recovery worker. An unresolved enqueue or receipt write keeps its shared retry
+deadline. Delivery or exhaustion retires that obligation.
+Retry uses the same preparation proof
 and preserves the recovered workspace. Current task ownership, human blocks,
 pauses, approvals, budgets and the existing retry limit remain effective.
 Operator Stops retain their explicit continuation requirements. Other ambiguous

@@ -727,7 +727,7 @@ describe.skipIf(!support.supported)("remote workspace migration", () => {
     const address = server.address(); if (!address || typeof address === "string") throw new Error("test server not bound");
     return { bare, repoUrl: `http://127.0.0.1:${address.port}/repository.git` };
   }
-  it.each(["present", "root-history", "pruned", "retry", "source-excludes", "source-excludes-symlink", "missing-base", "missing-base-retry", "missing-base-uploaded-retry", "missing-base-changed-retry", "nested", "nested-linked", "nested-retry", "nested-source-changed-retry", "unapproved-nested", "missing", "expired", "corrupt"])("preserves archived Git edits or refuses an unavailable restore point (%s)", async state => {
+  it.each(["present", "root-history", "pruned", "retry", "missing-base-failed-upload-retry", "source-excludes", "source-excludes-symlink", "missing-base", "missing-base-retry", "missing-base-uploaded-retry", "missing-base-changed-retry", "nested", "nested-linked", "nested-retry", "nested-source-changed-retry", "unapproved-nested", "missing", "expired", "corrupt"])("preserves archived Git edits or refuses an unavailable restore point (%s)", async state => {
     const remote = state.startsWith("missing-base") ? await serveRepository() : null;
     const f = await gitArchiveFixture(remote?.repoUrl);
     if (remote) { await git(remote.bare, "fetch", f.base, "main:refs/heads/main"); await git(remote.bare, "update-server-info"); }
@@ -838,6 +838,20 @@ describe.skipIf(!support.supported)("remote workspace migration", () => {
       storage.putFile = async input => { const result = await put(input); if (fail) { fail = false; throw new Error("upload reply lost"); } return result; };
       await expect(migrateRemoteWorkspace({ db, storage, ...f, apply: true })).rejects.toThrow("upload reply lost");
     }
+    let failedAttempt: Record<string, unknown> | undefined;
+    if (state === "missing-base-failed-upload-retry") {
+      const put = storage.putFile.bind(storage); let fail = true;
+      storage.putFile = async input => {
+        if (fail && input.namespace === "workspace-snapshots") { fail = false; throw new Error("upload_part InternalError"); }
+        return put(input);
+      };
+      await expect(migrateRemoteWorkspace({ db, storage, ...f, apply: true })).rejects.toThrow("upload_part InternalError");
+      const [pending] = await db.select().from(executionWorkspaceSnapshots);
+      expect(pending).toMatchObject({ status: "pending", objectKey: null });
+      failedAttempt = (pending!.metadata!.uploads as Record<string, unknown>[])[0]!;
+      expect((await storage.headObject(f.companyId, failedAttempt.objectKey as string)).exists).toBe(false);
+      expect(readRemoteWorkspaceAuthority((await workspace(f.workspaceId)).metadata)).toBeNull();
+    }
     if (state === "missing-base-uploaded-retry") {
       const get = storage.getObject.bind(storage); let reads = 0;
       storage.getObject = async (...args) => {
@@ -886,6 +900,16 @@ describe.skipIf(!support.supported)("remote workspace migration", () => {
       return;
     }
     await migrateRemoteWorkspace({ db, storage, ...f, apply: true });
+    if (failedAttempt) {
+      const [saved] = await db.select().from(executionWorkspaceSnapshots);
+      const attempts = saved!.metadata!.uploads as Record<string, unknown>[];
+      expect(saved!.status).toBe("committed");
+      expect(attempts).toHaveLength(2);
+      expect(attempts[0]).toEqual(failedAttempt);
+      expect(attempts[1]!.manifestDigest).not.toBe(failedAttempt.manifestDigest);
+      expect(await db.select().from(workspaceOperations).where(eq(workspaceOperations.phase, "remote_workspace_migration")))
+        .toEqual([expect.objectContaining({ id: saved!.sourceOperationId, status: "succeeded" })]);
+    }
     if (interrupted) {
       const operations = await db.select().from(workspaceOperations).where(eq(workspaceOperations.phase, "remote_workspace_migration"));
       expect(operations).toHaveLength(1);

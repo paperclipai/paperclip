@@ -1548,9 +1548,14 @@ without one, the report has no synthetic reporting stack.
 
 Credential patterns, the current user's home path, registered run-secret values,
 and known host/runtime environment credentials are removed before truncation.
-Declared environment secret bindings are included even when their key has no
-credential-like name. Runtime values are used only for redaction and are never
-copied into an event. Stack fields are limited to 8,192 characters,
+Environment values stay private unless their names and values identify an ordinary
+process setting. Flags and counts require both a setting-name match and a boolean
+or numeric value. Mode labels use a closed value list. Paths, regions, and key
+selectors such as `SORT_KEY` use explicit ordinary-setting names. Unknown opaque
+values remain private, including credentials under arbitrary names. Declared
+secret bindings and recognizable credential contents override ordinary-setting
+exemptions, including short values. Runtime values are used only for redaction
+and are never copied into an event. Stack fields are limited to 8,192 characters,
 exception messages to 2,048, provider titles to 4,096, and provider details to
 12,288. Other diagnostic strings are limited to 200 characters (adapter cause
 messages: 2,048). Truncation is marked in the text and in

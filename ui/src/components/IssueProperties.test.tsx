@@ -23,6 +23,7 @@ import { ApiError } from "../api/client";
 const mockAgentsApi = vi.hoisted(() => ({
   list: vi.fn(),
   adapterModels: vi.fn(),
+  runtimeState: vi.fn(),
 }));
 
 const mockProjectsApi = vi.hoisted(() => ({
@@ -639,6 +640,7 @@ describe("IssueProperties", () => {
     document.body.appendChild(container);
     mockAgentsApi.list.mockResolvedValue([]);
     mockAgentsApi.adapterModels.mockResolvedValue([]);
+    mockAgentsApi.runtimeState.mockResolvedValue(null);
     mockRoutinesApi.get.mockReset();
     mockProjectsApi.list.mockResolvedValue([]);
     mockExecutionWorkspacesApi.list.mockResolvedValue([]);
@@ -683,6 +685,92 @@ describe("IssueProperties", () => {
 
   afterEach(() => {
     document.body.innerHTML = "";
+  });
+
+  it.each([true, false])("reserves the usage-limit row while runtime data loads (inline: %s)", async (inline) => {
+    let resolveRuntimeState!: (value: unknown) => void;
+    const runtimeState = new Promise<unknown>((resolve) => { resolveRuntimeState = resolve; });
+    mockAgentsApi.runtimeState.mockReturnValueOnce(runtimeState);
+    const root = renderProperties(container, {
+      issue: createIssue({ assigneeAgentId: "agent-1" }),
+      childIssues: [],
+      onUpdate: vi.fn(),
+      inline,
+    });
+
+    try {
+      const row = container.querySelector('[data-property-label="Usage limit"]')
+        ?.closest('[data-property-row="true"]');
+      expect(row).toBeTruthy();
+      expect(row?.querySelector('[role="status"]')?.getAttribute("aria-label"))
+        .toBe("Loading usage limit");
+      const nextRow = row?.nextElementSibling;
+
+      await act(async () => {
+        resolveRuntimeState({
+          stateJson: {
+            providerRateLimits: {
+              schema: "paperclip.provider.rate_limits.v1",
+              provider: "openai",
+              observedAt: new Date().toISOString(),
+              windows: [{
+                id: "primary",
+                label: "5-hour window",
+                shortLabel: "5h",
+                windowMinutes: 300,
+                usedPercent: 42,
+                resetsAt: null,
+                status: "allowed",
+              }],
+              credits: null,
+              limitReached: null,
+            },
+          },
+        });
+      });
+      await waitForAssertion(() => {
+        expect(row?.querySelector('button[aria-label="Provider usage limit: 5h 42%"]')).toBeTruthy();
+      });
+
+      expect(container.querySelector('[data-property-label="Usage limit"]')
+        ?.closest('[data-property-row="true"]')).toBe(row);
+      expect(row?.nextElementSibling).toBe(nextRow);
+      expect(row?.querySelector('[role="status"]')).toBeNull();
+    } finally {
+      act(() => root.unmount());
+    }
+  });
+
+  it.each([null, "user-1"])("does not reserve a usage-limit row without an agent (user: %s)", async (assigneeUserId) => {
+    const root = renderProperties(container, {
+      issue: createIssue({ assigneeUserId }),
+      childIssues: [],
+      onUpdate: vi.fn(),
+    });
+    try {
+      await flush();
+      expect(container.querySelector('[data-property-label="Usage limit"]')).toBeNull();
+    } finally {
+      act(() => root.unmount());
+    }
+  });
+
+  it.each(["missing", "forbidden"])("hides the usage-limit placeholder when runtime data is %s", async (outcome) => {
+    if (outcome === "forbidden") {
+      mockAgentsApi.runtimeState.mockRejectedValueOnce(new ApiError("Forbidden", 403, null));
+    }
+    const root = renderProperties(container, {
+      issue: createIssue({ assigneeAgentId: "agent-1" }),
+      childIssues: [],
+      onUpdate: vi.fn(),
+    });
+    try {
+      await waitForAssertion(() => {
+        expect(container.querySelector('[data-property-label="Usage limit"]')).toBeNull();
+      });
+    } finally {
+      act(() => root.unmount());
+    }
   });
 
   it("marks the task-detail property typography and section rhythm", () => {
