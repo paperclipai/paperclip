@@ -4906,6 +4906,7 @@
       "chat-catalog-domains/identity-support.ts",
       "live-fixtures.ts",
       "../../server/src/services/secrets.ts",
+      "../../server/src/routes/issues.ts",
       "run-observations.ts",
       "chat-flow.ts",
       "chat-scenarios/secrets.yaml"
