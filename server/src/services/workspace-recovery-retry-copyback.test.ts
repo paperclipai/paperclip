@@ -11,7 +11,7 @@ import { getStorageService } from "../storage/index.js";
 import { migrateRemoteWorkspace } from "./remote-workspace-migration.js";
 import { attachPreservedWorkspaceSnapshots, verifiedWorkspaceSnapshotReceipt } from "./workspace-recovery-snapshot.js";
 import { requestTaskRetry } from "./task-retry.js";
-import { requestRestartInterruptedTurnRetry } from "./heartbeat/restart-interrupted-turn.js";
+import { requestInterruptedNativeTurnRetry, requestRestartInterruptedTurnRetry } from "./heartbeat/restart-interrupted-turn.js";
 import { startTaskDrain, stopTaskDrain } from "./task-admission.js";
 import { activityLog, companies, environmentLeases, environments, heartbeatRuns, issueComments, issueRecoveryActions, issues, nativeRunFinalizations, nativeRunResults, agentWakeupRequests, workspaceOperations, executionWorkspaces, withDedicatedDbConnection } from "@paperclipai/db";
 import { readFreshWorkspaceReadiness } from "./fresh-workspace-continuation.js";
@@ -116,18 +116,20 @@ describe("automatic retained workspace recovery", () => {
     .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.status, "queued")));
 
   it.each([
-    { title: "a restart lost its sandbox before the turn started", turn: "none" as const, error: "native_remote_recovery_lease_mismatch" },
-    { title: "a same-run retry found the settled turn's remote runner gone", turn: "settled" as const, error: "runner_remote_process_identity_unavailable" },
-    { title: "a same-run retry found the settled turn's sandbox lease gone", turn: "settled" as const, error: "native_remote_recovery_lease_mismatch" },
-  ])("continues a user turn once, without a second message, after $title and recovery saved the work", async ({ turn, error }) => {
+    { title: "the first attachment found the previous runner gone", turn: "none" as const, error: "runner_remote_process_identity_unavailable", initial: true },
+    { title: "a restart lost its sandbox before the turn started", turn: "none" as const, error: "native_remote_recovery_lease_mismatch", initial: false },
+    { title: "a same-run retry found the settled turn's remote runner gone", turn: "settled" as const, error: "runner_remote_process_identity_unavailable", initial: false },
+    { title: "a same-run retry found the settled turn's sandbox lease gone", turn: "settled" as const, error: "native_remote_recovery_lease_mismatch", initial: false },
+  ])("continues a user turn once, without a second message, after $title and recovery saved the work", async ({ turn, error, initial }) => {
     const f = await restartAllocationLostSource(turn, error);
     const service = heartbeatService(db, { environmentRuntime: f.environmentRuntime });
     // Keep the agent's only slot busy so the successor stays observable as queued.
     await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, status: "running" });
-    const requested = await requestRestartInterruptedTurnRetry(db, f.claim);
+    const request = () => initial ? requestInterruptedNativeTurnRetry(db, f.runId) : requestRestartInterruptedTurnRetry(db, f.claim);
+    const requested = await request();
     expect(requested).toMatchObject({ requested: true });
     // A duplicate hook call (for example a second restart sweep) is idempotent.
-    expect(await requestRestartInterruptedTurnRetry(db, f.claim)).toMatchObject({ requested: true });
+    expect(await request()).toMatchObject({ requested: true });
     // Saved-work recovery runs first; its completion hook resumes saved input.
     await vi.waitFor(async () => {
       await Promise.all(await reconcileRetainedWorkspaces(db, f.environmentRuntime, current => service.resumeRemoteStopComments(current)) ?? []);
@@ -136,7 +138,7 @@ describe("automatic retained workspace recovery", () => {
     expect(await readFile(path.join(f.host, "saved.txt"), "utf8")).toBe("finished work\n");
     await vi.waitFor(async () => expect(await queuedSuccessors(f.companyId)).toHaveLength(1), { timeout: 10_000, interval: 50 });
     const [successor] = await queuedSuccessors(f.companyId);
-    expect(successor.contextSnapshot).toMatchObject({ previousRunId: f.runId, wakeReason: "task_retry" });
+    expect(successor.contextSnapshot).toMatchObject({ previousRunId: f.runId, wakeReason: "task_retry", forceFreshSession: true });
     const retries = await db.select().from(agentWakeupRequests).where(and(eq(agentWakeupRequests.companyId, f.companyId),
       eq(agentWakeupRequests.reason, "task_retry")));
     expect(retries.filter(wake => wake.idempotencyKey?.startsWith("task-retry:"))).toHaveLength(1);

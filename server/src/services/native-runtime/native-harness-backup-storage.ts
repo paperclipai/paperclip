@@ -1,7 +1,7 @@
 import { publishNativeHarnessBackup } from "./native-harness-backup-publication.js";
 import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID } from "node:crypto";
 import { createReadStream, createWriteStream } from "node:fs";
-import { mkdtemp, readFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import os from "node:os";
 import { pipeline } from "node:stream/promises";
@@ -19,12 +19,16 @@ import { removeNativeHarnessBackup } from "./native-harness-backup-cleanup.js";
 import { hasRemoteTerminationReceipt, resolveRemoteTerminationLease } from "../remote-execution-termination.js";
 import { offlineMigrationExecutionWhere } from "../offline-migration-execution.js";
 import { readNativeHarnessBackupSource } from "./native-harness-backup-source.js";
+import { pinNativeProviderArtifactsForBackup, releaseRetiredNativeProviderArtifacts, restoreNativeProviderArtifacts, retainNativeProviderArtifacts,
+  type NativeProviderArtifactReceipt, type NativeProviderArtifactSource } from "./native-provider-artifacts.js";
+import { canonicalProviderPackJson } from "./remote-provider-pack-verification.js";
 
 const SCHEMA = "paperclip.native-harness-object.v1";
 type Binding = { companyId: string; scopeDigest: string; id: string };
 type Reference = Binding & {
   schema: typeof SCHEMA; objectKey: string; sha256: string; byteSize: number;
   material: Record<string, unknown>; manifestSha256: string;
+  providerArtifacts?: NativeProviderArtifactReceipt;
 };
 type Row = typeof nativeHarnessBackups.$inferSelect;
 type OfflineOwner = { kind: "offline_migration"; companyId: string; issueId: string; runId: string;
@@ -182,11 +186,20 @@ export async function persistNativeHarnessBackup(input: {
   db: Db; storage: StorageService; owner: NativeRunnerCheckpointFenceOwner | OfflineOwner;
   scopeDigest: string; root: string; signal?: AbortSignal; maxArchiveBytes?: number;
   inactiveSource?: { normalizedSessionId: string; runnerInstanceId: string; providerLeaseId: string };
+  providerArtifacts?: NativeProviderArtifactSource;
 }): Promise<void> {
   if (!/^[a-f0-9]{64}$/.test(input.scopeDigest)) fail("scope_invalid");
+  if (input.providerArtifacts) {
+    if ("kind" in input.owner) fail("provider_artifacts_require_runtime_owner");
+    const receipt = await retainNativeProviderArtifacts({ ...input, owner: input.owner, source: input.providerArtifacts });
+    const manifestPath = join(input.root, "manifest.json");
+    const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+    await writeFile(manifestPath, JSON.stringify({ ...manifest, providerArtifacts: receipt }), { mode: 0o600 });
+  }
   const source = input.inactiveSource ? await readNativeHarnessBackupSource(input.root) : undefined;
   if (source === null) fail("prestage_source_changed");
   const manifestBytes = source?.manifestBytes ?? await readFile(join(input.root, "manifest.json"));
+  const providerArtifacts = JSON.parse(manifestBytes.toString("utf8")).providerArtifacts as NativeProviderArtifactReceipt | undefined;
   const manifestSha256 = `sha256:${createHash("sha256").update(manifestBytes).digest("hex")}`;
   const inactiveSource = input.inactiveSource ? { ...input.inactiveSource, root: input.root, manifestSha256, scopeDigest: input.scopeDigest } : undefined;
   const binding = { companyId: input.owner.companyId, scopeDigest: input.scopeDigest, id: randomUUID() };
@@ -194,11 +207,11 @@ export async function persistNativeHarnessBackup(input: {
   const key = randomBytes(32);
   try {
     const archive = join(scratch, "archive"), encrypted = join(scratch, "encrypted");
-    await captureNativeHarnessArchive(input.root, archive, input.signal, input.maxArchiveBytes);
+    await captureNativeHarnessArchive(input.root, archive, input.signal, input.maxArchiveBytes, providerArtifacts ? ["provider-artifacts"] : []);
     const plaintext = await digest(archive, input.signal), iv = randomBytes(12);
     const cipher = createCipheriv("aes-256-gcm", key, iv); cipher.setAAD(aad(binding));
     await pipeline(createReadStream(archive), cipher, createWriteStream(encrypted, { flags: "wx", mode: 0o600 }), { signal: input.signal });
-    const ref: Reference = { schema: SCHEMA, ...binding, manifestSha256,
+    const ref: Reference = { schema: SCHEMA, ...binding, manifestSha256, ...(providerArtifacts ? { providerArtifacts } : {}),
       objectKey: `${binding.companyId}/native-harness-backups/${binding.scopeDigest}/${binding.id}.pchn`,
       ...await digest(encrypted, input.signal),
       material: createLocalEncryptedCipher("write").encrypt(JSON.stringify({ schema: SCHEMA, ...binding,
@@ -208,6 +221,8 @@ export async function persistNativeHarnessBackup(input: {
       await fence(tx, input.owner, inactiveSource);
       await tx.insert(nativeHarnessBackups).values({ ...binding, issueId: input.owner.issueId, runId: input.owner.runId,
         manifestSha256, reference: ref });
+      if (providerArtifacts) await pinNativeProviderArtifactsForBackup(tx, { companyId: input.owner.companyId,
+        runId: input.owner.runId, backupId: binding.id, receipt: providerArtifacts });
     });
     await input.storage.putFile({ companyId: ref.companyId, namespace: "native-harness-backups", objectKey: ref.objectKey,
       originalFilename: null, contentType: "application/octet-stream", body: createReadStream(encrypted),
@@ -247,7 +262,13 @@ export async function restoreDurableNativeHarnessBackup(input: {
   const localManifest = await readFile(join(current, "manifest.json")).catch((error: NodeJS.ErrnoException) => {
     if (error.code === "ENOENT") return null; throw error;
   });
-  if (localManifest && `sha256:${createHash("sha256").update(localManifest).digest("hex")}` === ref.manifestSha256) return true;
+  if (localManifest && `sha256:${createHash("sha256").update(localManifest).digest("hex")}` === ref.manifestSha256) {
+    if (canonicalProviderPackJson(JSON.parse(localManifest.toString("utf8")).providerArtifacts)
+      !== canonicalProviderPackJson(ref.providerArtifacts)) fail("provider_artifacts_mismatch");
+    if (ref.providerArtifacts) await restoreNativeProviderArtifacts({ ...input, receipt: ref.providerArtifacts,
+      targetRoot: join(current, "provider-artifacts") });
+    return true;
+  }
   const scratch = await mkdtemp(join(os.tmpdir(), "pc-harness-restore-"));
   const key = Buffer.from(wrapped.key, "base64");
   try {
@@ -263,6 +284,10 @@ export async function restoreDurableNativeHarnessBackup(input: {
     await restoreNativeHarnessArchive(archive, restored, input.signal);
     const manifest = await readFile(join(restored, "manifest.json"));
     if (`sha256:${createHash("sha256").update(manifest).digest("hex")}` !== ref.manifestSha256) fail("manifest_mismatch");
+    const restoredManifest = JSON.parse(manifest.toString("utf8"));
+    if (canonicalProviderPackJson(restoredManifest.providerArtifacts) !== canonicalProviderPackJson(ref.providerArtifacts)) fail("provider_artifacts_mismatch");
+    if (ref.providerArtifacts) await restoreNativeProviderArtifacts({ ...input, receipt: ref.providerArtifacts,
+      targetRoot: join(restored, "provider-artifacts") });
     const { mkdir, cp } = await import("node:fs/promises");
     await mkdir(input.backupRoot, { recursive: true, mode: 0o700 });
     const pending = join(input.backupRoot, `.durable-${randomUUID()}`);
@@ -290,6 +315,8 @@ export async function deleteRetiredNativeHarnessBackup(db: Db, storage: StorageS
     eq(nativeHarnessBackups.id, id), eq(nativeHarnessBackups.status, "retired")));
   if (!row) return false;
   const ref = reference(row);
+  if (ref.providerArtifacts) await releaseRetiredNativeProviderArtifacts({ db, storage, companyId: row.companyId,
+    runId: row.runId, backupId: row.id, receipt: ref.providerArtifacts, signal });
   await storage.deleteObject(ref.companyId, ref.objectKey, { allVersions: true, signal });
   await db.delete(nativeHarnessBackups).where(and(eq(nativeHarnessBackups.id, id), eq(nativeHarnessBackups.status, "retired")));
   return true;
