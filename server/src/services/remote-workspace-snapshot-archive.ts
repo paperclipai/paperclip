@@ -130,12 +130,13 @@ async function workspaceArchive(input: {
     // directory's repository. Git would fail with a raw command error that
     // names local paths, or discover an enclosing repository and save that
     // repository's settings, refs and index as this directory's state.
-    // Only Git's own rejection identifies the entry. A full disk, a timeout or
-    // a missing Git binary keeps its existing diagnostic.
+    // Only Git's rejection of the entry itself identifies it. A full disk, a
+    // timeout, a missing or failing Git binary keeps its existing diagnostic.
     const top = await git(repo, ["rev-parse", "--path-format=absolute", "--show-toplevel"])
       .catch((error: { code?: unknown; message?: unknown }) => {
         check();
-        if (typeof error.code !== "number" || /No space left on device|Disk quota exceeded/iu.test(String(error.message))) throw error;
+        if (typeof error.code !== "number"
+          || !/^fatal: (not a git repository\b|invalid gitfile format\b)/mu.test(String(error.message))) throw error;
         return fail("invalid_git_repository");
       });
     if (await fs.realpath(top.trim()).catch(() => null) !== repo) fail("invalid_git_repository");
