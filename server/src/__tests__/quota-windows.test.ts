@@ -699,7 +699,7 @@ describe("fetchCodexQuota", () => {
     });
     const windows = await fetchCodexQuota("token", null);
     expect(windows).toHaveLength(1);
-    expect(windows[0]).toMatchObject({ label: "5h limit", usedPercent: 30, resetsAt: "2026-01-02T00:00:00.000Z" });
+    expect(windows[0]).toMatchObject({ label: "24h limit", usedPercent: 30, resetsAt: "2026-01-02T00:00:00.000Z" });
   });
 
   it("parses secondary_window alongside primary_window", async () => {
