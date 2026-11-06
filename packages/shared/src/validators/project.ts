@@ -48,8 +48,9 @@ export const projectWorkspaceRuntimeConfigSchema = z.object({
 
 const urlSchema = z.string().url();
 // Git's scp-style remote, [user@]host:path. Git reads this form when no slash
-// comes before the first colon. A one-letter host would be a Windows drive.
-const SCP_STYLE_GIT_REMOTE = /^(?:[^@/\s]+@)?[^@:/\s]{2,}:(?!\/\/)\S+$/;
+// comes before the first colon outside brackets, so an IPv6 host is bracketed.
+// A one-letter host would be a Windows drive.
+const SCP_STYLE_GIT_REMOTE = /^(?:[^@/\s]+@)?(?:\[[^\]@/\s]+\]|[^@:/\s]{2,}):(?!\/\/)\S+$/;
 
 /** A URL, or a Git scp-style remote such as `git@github.com:owner/repo.git`. */
 export function isRepositoryUrl(value: string): boolean {

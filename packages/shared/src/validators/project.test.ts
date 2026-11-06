@@ -12,6 +12,8 @@ describe("project workspace repoUrl", () => {
     "git@github.com-work:acme/app.git",
     "git@gitlab.example.com:group/sub/app.git",
     "deploy@git.example.com:~/app.git",
+    "git@[::1]:acme/app.git",
+    "git@[::ffff:192.0.2.1]:acme/app.git",
   ])("accepts the Git remote %s", repoUrl => {
     expect(isRepositoryUrl(repoUrl)).toBe(true);
     expect(createProjectWorkspaceSchema.safeParse({ repoUrl }).success).toBe(true);
