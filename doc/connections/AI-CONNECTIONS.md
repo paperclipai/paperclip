@@ -100,7 +100,11 @@ absent. It never imports the operator's ambient login.
 
 When a run or account probe uses a credential with less than two hours left,
 the server renews it under the existing company credential mutation lock. The
-rotated pair is saved before the access token is returned. Legacy and native
+rotated pair is saved before the access token is returned. A new broad login
+credential is first renewed with only `user:inference`. Runs never receive the
+broader login token. If the provider refuses that scope, execution waits for
+repair. Account probes can report `permission_denied` because the narrowed token
+has no `user:profile` permission, as with the previous setup-token flow. Legacy and native
 runs receive only the access token through `CLAUDE_CODE_OAUTH_TOKEN`. Renewal
 preserves the session epoch and records `ai_connection.credential_refreshed`.
 There is no background renewal scan.
@@ -108,7 +112,9 @@ There is no background renewal scan.
 A temporary provider failure keeps a still-valid access token. Once the token
 expires, a temporary failure defers execution; a refused refresh requests sign-in.
 Save retries retain the successful exchange in memory and never exchange the
-same refresh token again. As with the server-side Codex quota exchange, a process
+same refresh token again. If all save attempts fail, the server keeps the pair
+in memory for the next credential use. A reconnect discards that pending pair.
+As with the server-side Codex quota exchange, a process
 loss after the provider exchange and before the vault commit can require sign-in.
 
 Existing bare-token connections and long-lived setup tokens retain their current

@@ -8,6 +8,7 @@ import path from "node:path";
 import { eq } from "drizzle-orm";
 import { companies, agents, companyMemberships, companySecrets, connectionGrants, toolConnections, createDb } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "@paperclipai/db/test-embedded-postgres";
+import { readAiConnectionConfigurationFailure } from "../services/ai-connection-configuration-failure.js";
 import { aiConnectionService } from "../services/ai-connections.js";
 import { prepareManagedAiRuntime } from "../services/ai-connection-runtime.js";
 import * as secretModule from "../services/secrets.js";
@@ -20,7 +21,7 @@ let home: string;
 const companyId = randomUUID();
 const agentId = randomUUID();
 const document = (expiresAt: number, accessToken = "old-access", refreshToken = "old-refresh") => JSON.stringify({
-  claudeAiOauth: { accessToken, refreshToken, expiresAt, scopes: ["user:inference", "user:profile"], subscriptionType: "max" },
+  claudeAiOauth: { accessToken, refreshToken, expiresAt, scopes: ["user:inference"], subscriptionType: "max" },
 });
 beforeAll(async () => {
   home = await mkdtemp(path.join(os.tmpdir(), "claude-refresh-"));
@@ -115,7 +116,9 @@ describe("Claude subscription renewal through the managed runtime", () => {
   it("persists a sign-in repair state for an expired, refused refresh token", async () => {
     const { service, row, account } = await connect(document(Date.now() - 60_000));
     vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("private-error", { status: 400 }));
-    await expect(service.credential(row)).rejects.toMatchObject({ details: { code: "ai_connection_reauth_required" } });
+    const error = await service.credential(row).catch(error => error);
+    expect(error).toMatchObject({ details: { code: "ai_connection_unavailable", connectionId: account.connectionId } });
+    expect(readAiConnectionConfigurationFailure(error)).toBe("ai_connection_unavailable");
     expect((await db.select().from(connectionGrants).where(eq(connectionGrants.id, account.grantId)))[0]!.status).toBe("needs_reauthorization");
     expect((await db.select().from(toolConnections).where(eq(toolConnections.id, account.connectionId)))[0]!.healthMessage).not.toContain("private-error");
   });
@@ -136,6 +139,48 @@ describe("Claude subscription renewal through the managed runtime", () => {
     expect(attempts).toBe(2);
     expect(exchange).toHaveBeenCalledOnce();
     expect(JSON.parse(await service.credentialRaw(row)).claudeAiOauth.refreshToken).toBe("saved-refresh");
+  });
+
+  it.each([false, true])("keeps an exchanged pair after all save retries and respects a later reconnect (%s)", async reconnect => {
+    const { service, row, secretId, owner } = await connect(document(Date.now() - 60_000));
+    const realService = secretModule.secretService;
+    const failingVault = vi.spyOn(secretModule, "secretService").mockImplementation((...args) => ({
+      ...realService(...args), rotate: async () => { throw new Error("vault is temporarily unavailable"); },
+    }));
+    const exchange = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({ access_token: "pending-access", refresh_token: "pending-refresh", expires_in: 28800 })));
+    await expect(service.credential(row)).rejects.toThrow("vault is temporarily unavailable");
+    failingVault.mockRestore();
+    if (reconnect) await secretService(db).rotate(secretId, { value: document(Date.now() + 28800_000, "reconnected", "reconnected-refresh") }, { userId: owner });
+    // A new service instance represents the next request, after the outage.
+    expect(await aiConnectionService(db).credential(row)).toBe(reconnect ? "reconnected" : "pending-access");
+    expect(exchange).toHaveBeenCalledOnce();
+    expect(JSON.parse(await service.credentialRaw(row)).claudeAiOauth.refreshToken).toBe(reconnect ? "reconnected-refresh" : "pending-refresh");
+  });
+
+  it("narrows a fresh broad login token before delivering it to execution", async () => {
+    const broad = JSON.parse(document(Date.now() + 28800_000));
+    broad.claudeAiOauth.scopes = ["org:create_api_key", "user:profile", "user:inference"];
+    const { service, row, account, owner } = await connect(JSON.stringify(broad));
+    const exchange = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({ access_token: "inference-access", refresh_token: "rotated-refresh", expires_in: 28800, scope: "user:inference" })));
+    const run = await prepareManagedAiRuntime(db, { companyId, agentId, responsibleUserId: owner, adapterType: "claude_local",
+      binding: { provider: "anthropic", method: "subscription", mode: "delegated", ...account }, config: { env: {} } });
+    try {
+      expect(run.config.env.CLAUDE_CODE_OAUTH_TOKEN).toBe("inference-access");
+      expect(JSON.parse(exchange.mock.calls[0]![1]!.body as string).scope).toBe("user:inference");
+      expect(JSON.parse(await service.credentialRaw(row)).claudeAiOauth.scopes).toEqual(["user:inference"]);
+    } finally { await run.cleanup(); }
+  });
+
+  it.each(["refused", "broader response"])("never delivers a broad token if narrowing is %s", async kind => {
+    const broad = JSON.parse(document(Date.now() + 28800_000));
+    broad.claudeAiOauth.scopes = ["org:create_api_key", "user:inference"];
+    const { service, row } = await connect(JSON.stringify(broad));
+    const exchange = vi.spyOn(globalThis, "fetch").mockResolvedValue(kind === "refused"
+      ? new Response("private-scope-refusal", { status: 400 })
+      : new Response(JSON.stringify({ access_token: "still-broad", refresh_token: "rotated-broad-refresh", expires_in: 28800, scope: "org:create_api_key user:inference" })));
+    await expect(service.credential(row)).rejects.toMatchObject({ details: { code: "ai_connection_busy" } });
+    expect(exchange).toHaveBeenCalledOnce();
+    if (kind !== "refused") expect(JSON.parse(await service.credentialRaw(row)).claudeAiOauth.refreshToken).toBe("rotated-broad-refresh");
   });
 
   it("keeps the session epoch for renewal and changes it for an explicit reconnect", async () => {

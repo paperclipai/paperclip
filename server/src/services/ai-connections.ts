@@ -1,4 +1,4 @@
-import { claudeAccessTokenOf, claudeRefreshDue, parseStoredClaudeOauth } from "./claude-oauth-credential.js";
+import { claudeAccessTokenOf } from "./claude-oauth-credential.js";
 import { refreshClaudeSubscription } from "./claude-subscription-refresh.js";
 import { notifyLoginSessionChanged } from "./login-cleanup-notifications.js";
 import type { ConnectionManagementContext } from "./connection-management.js";
@@ -590,12 +590,11 @@ export function aiConnectionService(db: Db) {
     return value;
   }
   async function credential(row: Parameters<typeof credentialRaw>[0], retry = 0, audit?: Parameters<typeof credentialRaw>[2]): Promise<string> {
-    const raw = await credentialRaw(row, retry, audit);
     const metadata = aiConnectionMetadataSchema.parse(row.connection.config.ai);
-    if (metadata.provider !== "anthropic" || metadata.method !== "subscription") return raw;
-    const stored = parseStoredClaudeOauth(raw);
-    if (!stored || !claudeRefreshDue(stored)) return claudeAccessTokenOf(raw);
-    return refreshClaudeSubscription(db, row, (tx, selected) => aiConnectionService(tx).credentialRaw(selected));
+    if (metadata.provider !== "anthropic" || metadata.method !== "subscription") return credentialRaw(row, retry, audit);
+    // Resolve under the credential lock too: resolution records lastResolvedAt,
+    // so concurrent pre-lock reads would contend with the rotating writer.
+    return refreshClaudeSubscription(db, row, (tx, selected) => aiConnectionService(tx).credentialRaw(selected, retry, audit));
   }
   async function save(
     companyId: string,
