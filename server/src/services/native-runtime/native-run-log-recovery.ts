@@ -73,8 +73,6 @@ export async function readRecoverableRunLog(
         );
       },
     );
-  // This serves the client log poll, which retries a busy (503) read, so it
-  // may be shed under load. Internal readers call the store and always queue.
   return store.read(handle, { priority: "interactive", ...options });
 }
 

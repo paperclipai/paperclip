@@ -33,7 +33,6 @@ export interface RunLogReadOptions {
   /** Include the start of the first NDJSON record when reading a log tail. */
   alignStartToRecord?: boolean;
   signal?: AbortSignal;
-  /** Object storage only: "interactive" reads may be shed under load so a client retries. */
   priority?: ObjectJournalIOPriority;
 }
 

@@ -157,14 +157,12 @@ describe("encrypted object provider trace reads under load", () => {
         await gate;
         return get(i);
       };
-      // 8 active plus 32 waiting fills the interactive class.
       const clients = Array.from({ length: 40 }, () => store.read(ref, undefined, "interactive"));
       await expect(store.read(ref, undefined, "interactive")).rejects.toBeInstanceOf(
         ObjectJournalBusyError,
       );
       const finalization = store.read(ref);
       open();
-      // A client read may still be shed on a later range read; the client retries it.
       for (const read of await Promise.allSettled(clients))
         if (read.status === "rejected") expect(read.reason).toBeInstanceOf(ObjectJournalBusyError);
         else expect(read.value).toEqual(bytes);

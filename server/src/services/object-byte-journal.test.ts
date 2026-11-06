@@ -252,7 +252,6 @@ describe("object byte journal", () => {
       prefix: "c/r/busy",
       readPriority: "interactive",
     });
-    // 8 active plus 32 waiting fills the interactive class.
     const reads = Array.from({ length: 40 }, () => reader.head());
     await expect(reader.head()).rejects.toBeInstanceOf(ObjectJournalBusyError);
     const other = createObjectByteJournal({ provider: s.provider, prefix: "c/r/writer" });

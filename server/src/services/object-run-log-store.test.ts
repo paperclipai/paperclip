@@ -502,14 +502,12 @@ describe("S3 run log store", () => {
       await gate;
       return get(i);
     };
-    // 8 active plus 32 waiting fills the interactive class.
     const polls = Array.from({ length: 40 }, () => store.read(handle, { priority: "interactive" }));
     await expect(store.read(handle, { priority: "interactive" })).rejects.toBeInstanceOf(
       ObjectJournalBusyError,
     );
     const internal = store.read(handle);
     open();
-    // A poll may still be shed on a later range read; the client retries it.
     for (const poll of await Promise.allSettled(polls))
       if (poll.status === "rejected") expect(poll.reason).toBeInstanceOf(ObjectJournalBusyError);
     expect((await internal).content.trim().split("\n")).toHaveLength(1);

@@ -324,8 +324,6 @@ export function errorHandler(
     return;
   }
 
-  // Saturated object storage sheds retryable reads (run logs, provider
-  // traces). That is load, not a server fault: ask the client to retry.
   if (isObjectJournalBusyError(rootError)) {
     if (!res.headersSent) {
       res.set("Retry-After", "2");

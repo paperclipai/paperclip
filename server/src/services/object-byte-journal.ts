@@ -214,10 +214,6 @@ export function isObjectJournalBusyError(error: unknown): error is ObjectJournal
   return error instanceof ObjectJournalBusyError;
 }
 
-/**
- * Writer and background operations always queue. Only interactive reads, which
- * a client can retry, are shed when the process-wide queue is saturated.
- */
 export type ObjectJournalIOPriority = "background" | "interactive";
 const MAX_ACTIVE_IO = 8;
 const MAX_WAITING_INTERACTIVE_IO = 32;
@@ -237,7 +233,6 @@ async function objectIO<T>(
     if (priority === "interactive" && queue.length >= MAX_WAITING_INTERACTIVE_IO)
       throw new ObjectJournalBusyError();
     await new Promise<void>((resolve, reject) => {
-      // A granted waiter owns the slot it was handed; an aborted one leaves the queue.
       const grant = () => {
         signal?.removeEventListener("abort", abort);
         resolve();
@@ -263,7 +258,6 @@ async function objectIO<T>(
 export interface ObjectByteJournalOptions {
   provider: StorageProvider;
   prefix: string;
-  /** Queue class for this journal's reads. Writes always use the background class. */
   readPriority?: ObjectJournalIOPriority;
 
   encode?: (bytes: Buffer) => Promise<Buffer>;

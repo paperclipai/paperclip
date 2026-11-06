@@ -240,8 +240,6 @@ export function createProviderTraceObjectStore(
       capture.finishIdle();
     }
   }
-  // Background reads (capture finalization, migration digests) always queue;
-  // only client reads that can be retried pass "interactive" and may be shed.
   async function* readChunks(
     ref: string,
     signal?: AbortSignal,
