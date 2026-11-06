@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { parseKimiUsage } from "./quota.js";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { getQuotaWindows, parseKimiUsage } from "./quota.js";
 
 const fixture = {
   usages: {
@@ -71,4 +71,36 @@ describe("parseKimiUsage", () => {
     expect(parseKimiUsage({})).toEqual([]);
     expect(parseKimiUsage({ usages: "nope" })).toEqual([]);
   });
+});
+
+describe("getQuotaWindows cancellation", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
+  });
+
+  it("aborts a stalled provider request and reports a transient failure", async () => {
+    // The runtime dependency rule asks for evidence that cancellation works
+    // while a dependency is slow: the request must stop at the deadline and
+    // the result must be a failure, not a hang.
+    vi.stubEnv("KIMI_API_KEY", "test-key");
+    vi.stubGlobal(
+      "fetch",
+      (_url: string, init?: RequestInit) =>
+        new Promise((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () =>
+            reject(new DOMException("The operation was aborted.", "AbortError")),
+          );
+        }),
+    );
+
+    const started = Date.now();
+    const result = await getQuotaWindows();
+    const elapsed = Date.now() - started;
+
+    expect(result.ok).toBe(false);
+    expect(result.provider).toBe("kimi");
+    expect(result.errorFamily).toBe("transient_upstream");
+    expect(elapsed).toBeLessThan(20000);
+  }, 25000);
 });
