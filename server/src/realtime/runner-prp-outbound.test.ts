@@ -455,7 +455,7 @@ describe("runner provider-ingress WebSocket wire", () => {
     }
   });
 
-  it("names an expired runner connection lease in the run log and terminal error", async () => {
+  it.each(["refused", "unauthenticated"] as const)("names an expired runner connection lease in the run log and terminal error when reconnect is %s", async reconnect => {
     vi.useFakeTimers();
     const first = new FakeSocket();
     const create = sockets.create;
@@ -463,6 +463,9 @@ describe("runner provider-ingress WebSocket wire", () => {
     sockets.create = () => {
       opens += 1;
       if (opens === 1) return openingSocket(first);
+      // An open socket whose PRP authentication never completes, as when the
+      // controller refuses the runner's lapsed credential.
+      if (reconnect === "unauthenticated") return openingSocket();
       const refused = new FakeSocket();
       refused.readyState = WebSocket.CONNECTING;
       queueMicrotask(() => {
@@ -483,7 +486,10 @@ describe("runner provider-ingress WebSocket wire", () => {
     const states: Array<[string, string | undefined]> = [];
     const handle = connectRunnerPrpIngress({
       authority: {
-        attachWireConnection: vi.fn(() => ({ isAuthenticated: () => true })),
+        attachWireConnection: vi.fn(() => {
+          const authenticated = opens === 1;
+          return { isAuthenticated: () => authenticated };
+        }),
         activeRunnerConnectionCount: () => 0,
         get connectionLeaseFailure() { return leaseFailure; },
       } as unknown as DurablePrpControlPlane,

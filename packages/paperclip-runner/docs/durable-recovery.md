@@ -48,11 +48,11 @@ as a tool event during a long silent tool call, therefore cannot starve
 renewal. Frames still decrypt in arrival order, and the renewed expiry is
 persisted (absorbing any event write already staged) before the reply is sent.
 When an authenticated connection closes or is refused because its lease has
-expired or was revoked, the controller records that reason
-(`connectionLeaseFailure`). Provider ingress reports it in the run log and, if
-reconnect grace runs out, as the `runner_connection_lease_expired` or
-`runner_connection_lease_revoked` failure code instead of a generic transport
-loss.
+expired, the controller records that reason (`connectionLeaseFailure`).
+Provider ingress reports it in the run log and, if reconnect grace runs out,
+as the `runner_connection_lease_expired` failure code instead of a generic
+transport loss. A credential revoked by a warm handoff is not reported, because
+a replacement runner owns the run.
 
 If a reply is lost, reconnect authentication may reconcile a later expiry only
 when this runner has an outstanding renewal on that same credential. Warm

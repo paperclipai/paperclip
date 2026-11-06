@@ -1776,7 +1776,7 @@ class DurableCoreStore {
 
 /** Why an authenticated runner connection lost its lease authority. */
 export interface DurablePrpConnectionLeaseFailure {
-  readonly code: "connection_lease_expired" | "connection_lease_revoked";
+  readonly code: "connection_lease_expired";
   readonly leaseId: string;
   readonly expiresAtUnixMs: number;
   readonly observedAtUnixMs: number;
@@ -3060,8 +3060,8 @@ export class DurablePrpControlPlane {
   /**
    * Admit every post-handshake frame against persisted authority before
    * dispatch, including lease_renew. Renewal cannot revive a revoked or
-   * expired credential or bypass changes to its persisted binding. A lapsed
-   * or revoked lease is recorded so the owner can report why the runner left.
+   * expired credential or bypass changes to its persisted binding. An expired
+   * lease is recorded so the owner can report why the runner left.
    */
   #admitAuthenticatedFrame(connection: AuthorityConnection): boolean {
     if (
@@ -3083,10 +3083,11 @@ export class DurablePrpControlPlane {
     const lease = connection.lease;
     if (lease === null || connection.secureChannel === null) return;
     const now = Date.now();
-    const revoked = lease.revokedAt !== null;
-    if (!revoked && lease.expiresAtUnixMs > now) return;
+    // Only expiry is reported. A revoked credential is the expected outcome of
+    // a warm handoff to a replacement runner, not a lost lease.
+    if (lease.expiresAtUnixMs > now) return;
     this.#connectionLeaseFailure = {
-      code: revoked ? "connection_lease_revoked" : "connection_lease_expired",
+      code: "connection_lease_expired",
       leaseId: lease.leaseId,
       expiresAtUnixMs: lease.expiresAtUnixMs,
       observedAtUnixMs: now,
