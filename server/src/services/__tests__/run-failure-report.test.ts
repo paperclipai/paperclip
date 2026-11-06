@@ -893,6 +893,33 @@ describeEmbeddedPostgres("reportRunFailure", () => {
     expect(mockCaptureRunFailure).toHaveBeenCalledTimes(1);
   });
 
+  function aiConnectionRequiredRun(overrides: Partial<typeof heartbeatRuns.$inferSelect> = {}) {
+    return buildRun({
+      errorCode: "configuration_incomplete",
+      executionStage: "preparing",
+      resultJson: {
+        configurationIncomplete: { reason: "ai_connection_required", actionUrl: "/agents/fixture/runtime" },
+        executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+      },
+      ...overrides,
+    });
+  }
+
+  it("keeps a plugin Runner-task run without a managed AI connection actionable on the task", async () => {
+    await seedCompanyAndAgent();
+    await reportRunFailure(db, aiConnectionRequiredRun(), { phase: "setup" });
+    expect(mockCaptureRunFailure).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { executionStage: "executing" },
+    { resultJson: { configurationIncomplete: { reason: "ai_connection_required" }, executionRecovery: { kind: "bootstrap", providerWorkStarted: true } } },
+  ])("reports AI-connection-required markers without an exact pre-dispatch outcome: %j", async (overrides) => {
+    await seedCompanyAndAgent();
+    await reportRunFailure(db, aiConnectionRequiredRun(overrides), { phase: "setup" });
+    expect(mockCaptureRunFailure).toHaveBeenCalledTimes(1);
+  });
+
   function localPathConfigurationRun(overrides: Partial<typeof heartbeatRuns.$inferSelect> = {}) {
     return buildRun({
       errorCode: "workspace_validation_failed",

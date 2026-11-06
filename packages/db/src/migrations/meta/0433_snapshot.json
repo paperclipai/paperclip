@@ -1,5 +1,5 @@
 {
-  "id": "b997e250-9e03-449a-812c-2a3255ab6ea0",
+  "id": "10b23b32-3586-4a30-a993-618e7d3ca893",
   "prevId": "a87278a8-15b3-4187-94a9-f4bb79d8640d",
   "version": "7",
   "dialect": "postgresql",
@@ -42492,12 +42492,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "origin_issue_id": {
-          "name": "origin_issue_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
         "origin_identity_context_id": {
           "name": "origin_identity_context_id",
           "type": "uuid",
@@ -42931,27 +42925,6 @@
             },
             {
               "expression": "origin_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "issues_company_origin_issue_idx": {
-          "name": "issues_company_origin_issue_idx",
-          "columns": [
-            {
-              "expression": "company_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "origin_issue_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -43559,19 +43532,6 @@
             "id"
           ],
           "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "issues_origin_issue_id_issues_id_fk": {
-          "name": "issues_origin_issue_id_issues_id_fk",
-          "tableFrom": "issues",
-          "tableTo": "issues",
-          "columnsFrom": [
-            "origin_issue_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "set null",
           "onUpdate": "no action"
         },
         "issues_execution_workspace_id_execution_workspaces_id_fk": {
@@ -61921,6 +61881,13 @@
         },
         "coordinator_workspace_enabled": {
           "name": "coordinator_workspace_enabled",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": true
+        },
+        "classic_workspace_enabled": {
+          "name": "classic_workspace_enabled",
           "type": "boolean",
           "primaryKey": false,
           "notNull": true,

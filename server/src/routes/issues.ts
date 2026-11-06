@@ -14985,26 +14985,51 @@ export function issueRoutes(
           runToStopForReassignment.companyId === existing.companyId &&
           runToStopForReassignment.contextSnapshot?.issueId === existing.id;
         if (runToStopForReassignment && !isHumanSelfHandoff) {
-          const cancelled = await heartbeat.cancelRun(
-            runToStopForReassignment.id,
-            "Cancelled before issue reassignment",
-            {
-              errorCode: "issue_reassigned",
-              resultJson: { reassignmentStopConfirmed: true, issueMutationStopId },
-              eventMessage: "run cancelled before issue reassignment",
-              eventPayload: { issueId: existing.id },
-            },
-          );
-          if (!cancelled || cancelled.status !== "cancelled") {
-            throw conflict(
-              "The active agent run could not be stopped before reassignment",
+          let cancelled: Awaited<ReturnType<typeof heartbeat.cancelRun>> = null;
+          try {
+            cancelled = await heartbeat.cancelRun(
+              runToStopForReassignment.id,
+              "Cancelled before issue reassignment",
               {
-                code: "runner_goal_reassignment_stop_unconfirmed",
-                runId: runToStopForReassignment.id,
+                errorCode: "issue_reassigned",
+                resultJson: { reassignmentStopConfirmed: true, issueMutationStopId },
+                eventMessage: "run cancelled before issue reassignment",
+                eventPayload: { issueId: existing.id },
               },
             );
+          } catch (error) {
+            // The durable Stop intent is committed; only its remote owner's
+            // acknowledgement is outstanding. Settle below like any pending Stop.
+            if (!(error instanceof HttpError && parseObject(error.details).code === "native_stop_pending")) throw error;
           }
-          interruptedRunId = cancelled.id;
+          if (!cancelled || cancelled.status !== "cancelled") {
+            // A native Stop can outlast this request. Once its durable fence is
+            // committed the stop will complete, so apply the reassignment now:
+            // the new assignee's wake defers behind the stopping run and is
+            // promoted when it releases the issue. Refusing here would stop the
+            // work but drop the reassignment. A run that already finished on its
+            // own needs no stop. A failed native run may still own a same-run
+            // retry, so it keeps requiring a confirmed stop.
+            // Read the server-owned Stop fence through the bounded evidence projection,
+            // which is available even where the presentation projection hides resultJson.
+            const current = await heartbeat.getRun(runToStopForReassignment.id, { includeExecutionEvidence: true });
+            const finishedWithoutRetry = Boolean(current) && (
+              ["succeeded", "cancelled", "timed_out", "interrupted"].includes(current!.status) ||
+              (current!.status === "failed" && current!.runtimeMode !== "native"));
+            const stopDurablyRequested = current?.runtimeMode === "native" &&
+              ["running", "queued"].includes(current.status) &&
+              parseObject(current.resultJson).reassignmentStopRequested === true;
+            if (!finishedWithoutRetry && !stopDurablyRequested) {
+              throw conflict(
+                "The active agent run could not be stopped before reassignment",
+                {
+                  code: "runner_goal_reassignment_stop_unconfirmed",
+                  runId: runToStopForReassignment.id,
+                },
+              );
+            }
+          }
+          interruptedRunId = runToStopForReassignment.id;
         }
       }
 

@@ -177,8 +177,7 @@ change, reject submission and require new preparation and validation.
 Return `project_auth` with the same configuration ID and provider.
 Set `allowed: true` only after the checks pass.
 Core saves this result on the task lease. Core requires the exact configuration,
-provider, and project set before each submission. This also applies when the
-provider uses an installed account.
+provider, and project set before each submission.
 A new preparation or check removes the prior validation. A failed check does not
 authorize credential transfer. The dispatch update also checks that validation
 has not changed while Core waited for database work.
@@ -268,9 +267,10 @@ after the probe and its descendants stop. A lost reply keeps the task available
 for `stop`, `status`, and `complete`. Core checks the profile and model before
 it accepts the account. Do not store the token in task metadata or logs.
 
-For a native hello probe, select a saved AI account or use the installed account.
-Core rejects local environment overrides when no saved account is selected.
-This includes draft credentials. The probe uses the installed VM environment. Core does not test a different installed account in their place.
+A native hello probe requires a managed AI connection and an isolated Runner home.
+Without them, the probe fails the `ai_connection_required` check before Core
+acquires a lease or calls a task operation. See
+[Managed AI connection required](PLUGIN_RUNNER_EXECUTION.md#managed-ai-connection-required).
 Only Core can supply the selected account identity and local credential home.
 
 ## Fresh attempts

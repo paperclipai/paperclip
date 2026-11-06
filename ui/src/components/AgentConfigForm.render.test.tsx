@@ -3449,6 +3449,25 @@ describe("AgentConfigForm environment selector", () => {
     expect(findButton(container, "Cancel")).toBeFalsy();
     expect(mockAgentsApi.cancelClaudeSetupTokenLogin).not.toHaveBeenCalled();
   });
+  it.each(["claude_local", "codex_local"])("offers inline retry for %s when its host has no retry footer", async adapterType => {
+    const claude = adapterType === "claude_local";
+    const statusApi = claude ? mockAgentsApi.getClaudeSetupTokenLoginStatus : mockAgentsApi.getAdapterAuthLoginStatus;
+    statusApi.mockResolvedValueOnce({ sessionId: claude ? "claude-session-1" : "session-1", status: "failed", expiresAt: null });
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    roots.push(root);
+    await act(async () => renderFormView(root, createFormQueryClient(),
+      <AdapterLoginPanel companyId="company-1" adapterType={adapterType} environmentId="sandbox-1" chrome="onboarding" autoStart />));
+    await flushUntil(() => Boolean(findButton(container, "Retry sign-in")));
+    expect(container.textContent).toContain("Sign-in didn’t finish");
+    const startApi = claude ? mockAgentsApi.startClaudeSetupTokenLogin : mockAgentsApi.startAdapterAuthLogin;
+    startApi.mockResolvedValueOnce({ sessionId: "retry-session", status: "starting", expiresAt: null });
+    await clickByText(container, "Retry sign-in");
+    await flushUntil(() => (container.textContent ?? "").includes("Sign in to"));
+    expect(startApi).toHaveBeenCalledTimes(2);
+    expect(findButton(container, "Retry sign-in")).toBeUndefined();
+  });
   it("offers an apply-existing affordance when the status route reports a stored value", async () => {
     mockAgentsApi.getClaudeOAuthTokenStatus.mockResolvedValue({
       secretId: "secret-1",

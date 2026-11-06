@@ -15,6 +15,7 @@ import { readConnectionFailure, type ConnectionFailure } from "@paperclipai/adap
 import { isAiConnectionConfigurationReason } from "./ai-connection-configuration-failure.js";
 import { readRunFailureReportingMode, type RunFailureReportingMode } from "../sentry-run-failure-policy.js";
 import { RESTRICTED_WORKSPACE_SOURCE_REASON } from "./workspace-source-restriction.js";
+import { PLUGIN_RUNNER_AI_CONNECTION_REQUIRED } from "./plugin-runner-ai-connection.js";
 import { NATIVE_PROVIDER_OVERLOADED_CODE } from "./native-runtime/native-provider-failure.js";
 
 type HeartbeatRun = typeof heartbeatRuns.$inferSelect;
@@ -156,6 +157,19 @@ function isRestrictedWorkspaceSourceBlocker(run: HeartbeatRun, options: RunFailu
   const configuration = asRecord(run.resultJson?.configurationIncomplete);
   const recovery = asRecord(run.resultJson?.executionRecovery);
   return configuration?.reason === RESTRICTED_WORKSPACE_SOURCE_REASON &&
+    recovery?.kind === "bootstrap" && recovery.providerWorkStarted === false;
+}
+
+/** A plugin Runner-task run without a managed AI connection, refused before dispatch; the task notice names the owner action. */
+function isPluginRunnerAiConnectionRequiredBlocker(run: HeartbeatRun, options: RunFailureReportOptions): boolean {
+  if (
+    run.status !== "failed" || run.errorCode !== "configuration_incomplete" ||
+    run.executionStage !== "preparing" || options.phase !== "setup" ||
+    run.exitCode != null || run.signal != null
+  ) return false;
+  const configuration = asRecord(run.resultJson?.configurationIncomplete);
+  const recovery = asRecord(run.resultJson?.executionRecovery);
+  return configuration?.reason === PLUGIN_RUNNER_AI_CONNECTION_REQUIRED &&
     recovery?.kind === "bootstrap" && recovery.providerWorkStarted === false;
 }
 
@@ -318,6 +332,7 @@ export function reportRunFailure(db: Db, run: HeartbeatRun, options: RunFailureR
     isAiConnectionSelectionBlocker(run, options) ||
     isLocalPathWorkspaceConfigurationBlocker(run, options) ||
     isRestrictedWorkspaceSourceBlocker(run, options) ||
+    isPluginRunnerAiConnectionRequiredBlocker(run, options) ||
     isGitConnectionFailure(run, options) ||
     isProviderQuotaFailure(run, options) ||
     isCodexAcpModelCapacityFailure(run, options) ||

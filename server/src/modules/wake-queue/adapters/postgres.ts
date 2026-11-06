@@ -1275,8 +1275,16 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
             !interruptedQueue),
         };
         const preDrain = decidePreDrain(preDrainFacts);
+        // A deliberate stop does not promote the stopped agent's queued work.
+        // When a reassignment committed while that stop was still settling, the
+        // new assignee's wake parked behind this run; it is explicit new work
+        // and must run now, or the task is left with no run at all.
+        const handoffAssigneeAgentId = preDrain.kind === "released" &&
+          decidePreDrain({ ...preDrainFacts, executionCancellationAcknowledged: false }).kind === "proceed" &&
+          issueRow?.assigneeAgentId && !issueRow.assigneeUserId && issueRow.assigneeAgentId !== run.agentId
+          ? issueRow.assigneeAgentId : undefined;
 
-        if (preDrain.kind === "released") {
+        if (preDrain.kind === "released" && !handoffAssigneeAgentId) {
           return { outcome: { kind: "released" }, postCommitEffects: [], run: runSnapshot };
         }
 
@@ -1335,7 +1343,7 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
           };
         }
 
-        if (await recordNativeTerminalRecoveryIfNeeded(tx, run, issueRow, input.now)) {
+        if (!handoffAssigneeAgentId && await recordNativeTerminalRecoveryIfNeeded(tx, run, issueRow, input.now)) {
           return { outcome: { kind: "released" }, postCommitEffects: [], run: runSnapshot };
         }
 
@@ -1357,7 +1365,8 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
           return { outcome: { kind: "released" }, postCommitEffects: [], run: runSnapshot };
         }
 
-        const locked: LockedIssueExecution = { primaryIssue: toIssueSnapshot(issueRow), run: runSnapshot, recoveryOnly };
+        const locked: LockedIssueExecution = { primaryIssue: toIssueSnapshot(issueRow), run: runSnapshot,
+          recoveryOnly: recoveryOnly && !handoffAssigneeAgentId, ...(handoffAssigneeAgentId ? { handoffAssigneeAgentId } : {}) };
         const result = await fn(locked, { host: buildHost(tx, deps), transaction: buildTransaction(tx, deps, db, run) });
         // Explicit retry admission requires the exact source's task claim.
         // Preserve it only when the existing queue-first recovery policy

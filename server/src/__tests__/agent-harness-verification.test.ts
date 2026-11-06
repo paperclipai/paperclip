@@ -24,6 +24,11 @@ describe("saved harness verification", () => {
       expect(error).toMatchObject({ code, message: "The harness test failed" });
     }
   });
+  it("classifies a plugin Runner-task target without a managed AI connection before retryable checks", () => {
+    const refused = result("fail", ["ai_connection_required", "opencode_cwd_invalid"]);
+    refused.checks[1] = { ...refused.checks[1], level: "error", retryable: true };
+    expect(() => assertHarnessTestPassed(refused)).toThrow(expect.objectContaining({ code: "ai_connection_required" }));
+  });
   it("preserves a retryable failed check before classifying configuration failures", () => {
     const temporary = result("fail", ["opencode_cwd_invalid", "opencode_command_unresolvable"]);
     temporary.checks[0] = { ...temporary.checks[0], level: "error", retryable: true };

@@ -164,6 +164,22 @@ export function buildConfigurationIncompleteRecoveryNoticeSeed(
       tone: "danger",
     };
   }
+  if (readNonEmptyStringField(configurationIncomplete, "reason") === "ai_connection_required") {
+    if (readNonEmptyStringField(configurationIncomplete, "homeMode") === "preconfigured") {
+      return {
+        title: "Isolated Runner home required",
+        body: "Paperclip stopped before the agent started because this agent runs in a plugin-provided environment, which requires a managed AI connection. A preconfigured Runner home does not use the agent's AI connection. The task is blocked until the agent uses an isolated Runner home.",
+        nextAction: "Switch this agent to an isolated Runner home in Configuration, then retry the task.",
+        tone: "danger",
+      };
+    }
+    return {
+      title: "AI connection required",
+      body: "Paperclip stopped before the agent started because this agent runs in a plugin-provided environment, which requires a managed AI connection. The task is blocked until the agent has one.",
+      nextAction: "Choose an AI connection for this agent in Configuration, then retry the task.",
+      tone: "danger",
+    };
+  }
   if (readNonEmptyStringField(configurationIncomplete, "reason") === "ai_connection_unavailable") {
     return {
       title: "AI connection needs attention",

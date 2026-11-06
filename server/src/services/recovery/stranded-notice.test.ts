@@ -343,3 +343,18 @@ it("names a remote Runner that was still not updated after its retries", () => {
   expect(notice.body).not.toContain("authentication");
   expect(JSON.stringify(notice.metadata)).toContain("remote Runner received the update");
 });
+
+it("names the managed AI connection a plugin Runner-task environment requires", () => {
+  const notice = buildConfigurationIncompleteRecoveryNoticeSeed({ reason: "ai_connection_required" });
+  expect(notice.title).toBe("AI connection required");
+  expect(notice.body).toContain("requires a managed AI connection");
+  expect(notice.nextAction).toContain("Choose an AI connection");
+  expect(notice.body).not.toContain("secret/env");
+});
+
+it("tells the operator to switch a preconfigured Runner home to an isolated one", () => {
+  const notice = buildConfigurationIncompleteRecoveryNoticeSeed({ reason: "ai_connection_required", homeMode: "preconfigured" });
+  expect(notice.title).toBe("Isolated Runner home required");
+  expect(notice.nextAction).toContain("isolated Runner home");
+  expect(notice.nextAction).not.toContain("Choose an AI connection");
+});
