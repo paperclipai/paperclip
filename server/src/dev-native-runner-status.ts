@@ -7,6 +7,7 @@ import {
 } from "@paperclipai/db";
 import { resolveMigrationConnection } from "@paperclipai/db/migration-runtime";
 import { localPaperclipRunnerSupported } from "./lib/agent-runner-platform.js";
+import { nativeRunnerRequiredForDev } from "./lib/dev-native-runner-requirement.js";
 
 import { instanceSettingsService } from "./services/instance-settings.js";
 
@@ -49,10 +50,12 @@ async function main(): Promise<void> {
 
     console.log(
       JSON.stringify({
-        nativeRunnerRequired: localPaperclipRunnerSupported()
-          || experimental.enableNativeRunner === true
-          || experimental.enableOpenAiDot === true
-          || persistedNativeRun,
+        nativeRunnerRequired: nativeRunnerRequiredForDev({
+          localRunnerSupported: localPaperclipRunnerSupported(),
+          rolloutEnabled: experimental.enableNativeRunner === true,
+          dotRolloutEnabled: experimental.enableOpenAiDot === true,
+          persistedNativeRun,
+        }),
         rolloutEnabled: experimental.enableNativeRunner === true,
         dotRolloutEnabled: experimental.enableOpenAiDot === true,
         persistedNativeRun,
