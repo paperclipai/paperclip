@@ -8,22 +8,21 @@ export function imagePreparationReceiptIds(
   comments: readonly IssueChatComment[], attachments: readonly IssueAttachment[], products: readonly IssueWorkProduct[],
 ): Set<string> {
   const commentsById = new Map(comments.map(comment => [comment.id, comment]));
-  const titlesByAttachment = new Map<string, string>();
+  const imageRunsByAttachment = new Map<string, string | null>();
   for (const product of products) {
     const source = fileRowSourceFromWorkProduct(product);
     if (source?.attachmentId && isImageLikeOutput(source.contentType, source.filename)) {
-      titlesByAttachment.set(source.attachmentId, product.title);
+      imageRunsByAttachment.set(source.attachmentId, product.createdByRunId);
     }
   }
   const ids = new Set<string>();
   for (const attachment of attachments) {
     const comment = attachment.issueCommentId ? commentsById.get(attachment.issueCommentId) : undefined;
-    const title = titlesByAttachment.get(attachment.id);
-    if (title && comment && comment.authorType === "agent" && attachment.originatingRunId &&
+    if (comment && comment.authorType === "agent" && attachment.originatingRunId &&
+      imageRunsByAttachment.get(attachment.id) === attachment.originatingRunId &&
       (comment.runId ?? comment.createdByRunId) === attachment.originatingRunId &&
       comment.authorAgentId === attachment.createdByAgentId &&
-      comment.metadata?.authorizationReason === "paperclip_runner_protocol" &&
-      comment.body === `Prepared ${title} for this response.`) ids.add(comment.id);
+      comment.metadata?.authorizationReason === "paperclip_runner_protocol") ids.add(comment.id);
   }
   return ids;
 }
@@ -49,7 +48,7 @@ export function groupImageResources<T extends TaskChatItem>(items: readonly T[])
       continue;
     }
     const nextRunId = item.workProduct?.createdByRunId ?? item.attachment?.originatingRunId;
-    if (group && runId === nextRunId) {
+    if (group && runId != null && runId === nextRunId) {
       group.imageItems!.push(...(item.imageItems ?? [item]));
     } else {
       group = { ...item, imageItems: [...(item.imageItems ?? [item])] };

@@ -99,8 +99,10 @@ Images produced in a task turn appear as compact thumbnails in a wrapping grid.
 Keep the first image's row and each tile mounted as more results arrive. Documents,
 video, and authored messages retain their chronological positions and separate
 image batches. Open thumbnails in the existing gallery, with keyboard navigation
-and downloads. Generated native image preparation receipts are redundant with
-those tiles; hide only receipts linked to the image, author, and originating run.
+and downloads. Images without an originating run stay separate. Generated native
+image preparation receipts are redundant with those tiles; identify them by the
+protocol marker and links to the image, author, and originating run, independent
+of receipt wording or image title.
 
 ## Contextual feedback
 

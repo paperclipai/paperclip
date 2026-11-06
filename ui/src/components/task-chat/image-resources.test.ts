@@ -32,6 +32,18 @@ describe("image resources in a results stream", () => {
     expect(rows[5]).toBe(video);
   });
 
+  it.each([null, undefined])("keeps images without a run separate (%s)", (runId) => {
+    const unattributed = (id: string) => {
+      const item = image(id);
+      return { ...item, workProduct: { ...item.workProduct!, createdByRunId: runId } as IssueWorkProduct };
+    };
+    const text: TaskChatItem = { id: "text", kind: "message", author: "agent", text: "Next turn" };
+    const rows = groupImageResources([unattributed("a"), unattributed("b"), text, unattributed("c")]);
+    expect(rows.map(row => row.id)).toEqual(["a", "b", "text", "c"]);
+    expect(rows[0]).toMatchObject({ imageItems: [{ id: "a" }] });
+    expect(rows[1]).toMatchObject({ imageItems: [{ id: "b" }] });
+  });
+
   it("groups unregistered image uploads with work products from the same run", () => {
     const attachment: TaskChatMaterializedResourceItem = { id: "upload", kind: "protocol", surface: "resource", resourceKind: "attachment", title: "upload.png", subtitle: "Image", href: "/upload.png",
       attachment: { id: "upload", contentType: "application/octet-stream", originalFilename: "upload.png", contentPath: "/upload.png", originatingRunId: "run-1" } as IssueAttachment } satisfies TaskChatMaterializedResourceItem;
