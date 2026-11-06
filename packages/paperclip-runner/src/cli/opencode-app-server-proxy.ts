@@ -21,6 +21,7 @@ import {
 } from "./opencode-proxy-events.js";
 import { enqueueOpenCodeProxyInput, openCodeProxyCompletionFeedback } from "./opencode-proxy-input.js";
 import { createBackpressuredFrameWriter, createOpenCodeProxyOutput } from "./opencode-proxy-output.js";
+import { createOpenCodeProxyControllerRequests } from "./opencode-proxy-controller.js";
 import {
   assertOpenCodeProxyCollaborationMode,
   openCodeProxyCollaborationModes,
@@ -42,12 +43,6 @@ type RpcMessage = {
 };
 
 const input = createInterface({ input: process.stdin, crlfDelay: Infinity });
-const pending = new Map<
-  string,
-  { resolve(value: unknown): void; reject(error: Error): void; retainEnvelope: boolean }
->();
-let controllerInputClosed = false;
-let nextServerRequestId = 1;
 let driver: OpenCodeServerDriver | null = null;
 let session: HarnessSession | null = null;
 let eventPump: Promise<void> | null = null;
@@ -66,33 +61,8 @@ const stdoutFrames = createBackpressuredFrameWriter(process.stdout);
 const output = createOpenCodeProxyOutput((value, options) => stdoutFrames.write(value, options));
 const send = output.send;
 
-function abandonedToolCallError(): Error {
-  return new Error(
-    "Paperclip tool call was abandoned by the MCP client before it was dispatched; it did not run.",
-  );
-}
-
-function requestController(
-  method: string,
-  params: unknown,
-  retainEnvelope = false,
-  signal?: AbortSignal,
-): Promise<unknown> {
-  if (controllerInputClosed) return Promise.reject(new Error("OpenCode controller input is closed"));
-  if (signal?.aborted) return Promise.reject(abandonedToolCallError());
-  const id = `opencode-${nextServerRequestId++}`;
-  return new Promise((resolveValue, reject) => {
-    pending.set(id, { resolve: resolveValue, reject, retainEnvelope });
-    // Once written, the request belongs to runnerd and its result is awaited
-    // even if the client leaves. Before that, a cancelled call is withdrawn.
-    send({ id, method, params }, signal ? {
-      signal,
-      onAbandoned: () => {
-        if (pending.delete(id)) reject(abandonedToolCallError());
-      },
-    } : undefined);
-  });
-}
+const controller = createOpenCodeProxyControllerRequests(send);
+const requestController = controller.request;
 
 function record(value: unknown): Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
@@ -355,19 +325,7 @@ async function pumpEvents(opened: HarnessSession): Promise<void> {
 
 async function handle(message: RpcMessage): Promise<void> {
   if (message.method === undefined && message.id !== undefined) {
-    const waiter = pending.get(String(message.id));
-    if (!waiter) return;
-    pending.delete(String(message.id));
-    if (message.error !== undefined)
-      waiter.reject(new Error(JSON.stringify(message.error)));
-    else {
-      const contentItems = record(message.result).contentItems;
-      waiter.resolve(
-        !waiter.retainEnvelope && Array.isArray(contentItems)
-          ? (contentItems[0] ?? message.result)
-          : message.result,
-      );
-    }
+    controller.respond({ id: message.id, result: message.result, error: message.error });
     return;
   }
   if (!message.method || message.id === undefined) return;
@@ -511,9 +469,7 @@ function failProxy(error: unknown): void {
 
 function shutdown(exitCode = 0): Promise<void> {
   shutdownPromise ??= (async () => {
-    for (const waiter of pending.values())
-      waiter.reject(new Error("OpenCode proxy is shutting down"));
-    pending.clear();
+    controller.rejectAll(new Error("OpenCode proxy is shutting down"));
     await session
       ?.close({ reason: "proxy_shutdown", force: true })
       .catch(() => {});
@@ -528,10 +484,7 @@ function shutdown(exitCode = 0): Promise<void> {
 }
 
 input.on("close", () => {
-  controllerInputClosed = true;
-  for (const waiter of pending.values())
-    waiter.reject(new Error("OpenCode controller input closed before its response"));
-  pending.clear();
+  controller.closeInput(new Error("OpenCode controller input closed before its response"));
   // Preserve command order and the bootstrap drain. A queued command cannot
   // create a new unanswered controller request after EOF.
   void pendingInput.then(() => shutdown());

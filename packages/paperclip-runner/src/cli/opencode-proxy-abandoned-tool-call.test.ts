@@ -1,8 +1,14 @@
 import { EventEmitter } from "node:events";
+import { chmod, copyFile, mkdtemp, readdir, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { startOpenCodeMcpBridge, type OpenCodeMcpBridge, type OpenCodeMcpCall } from "../drivers/opencode/mcp-bridge.js";
-import { createBackpressuredFrameWriter } from "./opencode-proxy-output.js";
+import { OpenCodeServerDriver } from "../drivers/opencode/opencode-server-driver.js";
+import { createOpenCodeProxyControllerRequests } from "./opencode-proxy-controller.js";
+import { openCodeProxyCompletionFeedback } from "./opencode-proxy-input.js";
+import { createBackpressuredFrameWriter, createOpenCodeProxyOutput } from "./opencode-proxy-output.js";
 
 /** A stdout whose reader (runnerd) is waiting on controller acknowledgements. */
 class StalledStdout extends EventEmitter {
@@ -121,4 +127,68 @@ describe("OpenCode proxy abandoned tool calls", () => {
     expect(stdout.frames().map(frame => frame.method)).toEqual(["item/started", "item/completed", "item/tool/call"]);
     expect(outcomes).toEqual([]);
   });
+});
+
+describe("OpenCode proxy abandoned completion (driver + proxy wiring)", () => {
+  const cleanup: string[] = [];
+  afterEach(async () => {
+    await Promise.all(cleanup.splice(0).map(path => rm(path, { recursive: true, force: true })));
+  });
+
+  it("withdraws a queued paperclip_finish feedback frame when its MCP client cancels", async () => {
+    const fixtureRoot = await mkdtemp(join(tmpdir(), "paperclip-opencode-abandon-fixture-"));
+    const root = await mkdtemp(join(tmpdir(), "paperclip-opencode-abandon-"));
+    const workspace = await mkdtemp(join(tmpdir(), "paperclip-opencode-abandon-workspace-"));
+    cleanup.push(fixtureRoot, root, workspace);
+    const fixture = join(fixtureRoot, "fake-opencode-server.mjs");
+    await copyFile(resolve("test/fixtures/fake-opencode-server.mjs"), fixture);
+    await chmod(fixture, 0o755);
+
+    // The proxy's real stdout path: delta batching, backpressured writer and
+    // controller requests, over a stdout that runnerd is not reading yet.
+    const stdout = new StalledStdout();
+    const writer = createBackpressuredFrameWriter(stdout);
+    const output = createOpenCodeProxyOutput((frame, options) => writer.write(frame, options));
+    const controller = createOpenCodeProxyControllerRequests(output.send);
+    output.send({ method: "item/started", params: { itemId: "backlog" } });
+    expect(stdout.lines).toHaveLength(1);
+
+    let queuedCallId: string | undefined;
+    const driver = new OpenCodeServerDriver({
+      model: "openrouter/deepseek/deepseek-v4-flash-0731", runtimeDirectory: root, command: fixture,
+      environment: { PATH: process.env.PATH, OPENROUTER_API_KEY: "fixture-key" },
+      completionFeedback: openCodeProxyCompletionFeedback((method, params, signal) => {
+        queuedCallId = String(params.callId);
+        return controller.request(method, params, true, signal);
+      }),
+    });
+    const session = await driver.openSession({ runId: "abandon-finish", normalizedSessionId: "abandon-finish", workingDirectory: workspace });
+    try {
+      const proposed: unknown[] = [];
+      void (async () => {
+        for await (const event of session.events()) if (event.eventType === "run.result.proposed") proposed.push(event);
+      })().catch(() => undefined);
+      await session.startTurn({ message: { role: "user", text: "finish" } });
+      await until(() => queuedCallId !== undefined && writer.queuedFrames > 0);
+
+      // The MCP client times out and cancels the call it is waiting on.
+      const sessionDir = (await readdir(root, { withFileTypes: true })).find(entry => entry.isDirectory())!.name;
+      const config = JSON.parse(await readFile(join(root, sessionDir, "config/opencode/opencode.json"), "utf8"));
+      const cancel = await fetch(config.mcp.paperclip.url, {
+        method: "POST",
+        headers: { ...config.mcp.paperclip.headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ jsonrpc: "2.0", method: "notifications/cancelled", params: { requestId: Number(queuedCallId), reason: "Request timed out" } }),
+      });
+      expect(cancel.status).toBe(202);
+      await until(() => writer.queuedFrames === 0);
+
+      stdout.resume();
+      const completionFrames = stdout.frames().filter(frame => frame.method === "item/tool/call");
+      expect(completionFrames).toEqual([]);
+      expect(proposed).toEqual([]);
+      expect((await session.snapshot()).semanticResult ?? null).toBeNull();
+    } finally {
+      await session.close({ reason: "test complete" });
+    }
+  }, 30_000);
 });
