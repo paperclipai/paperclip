@@ -170,13 +170,19 @@ function runnerBuildStep(root, cache, toolchain) {
   const entry = readEntry(cache, "runner-dist", key);
   if (entry) {
     const started = Date.now();
-    for (const tree of DIST_TREES) {
-      removeTree(path.join(root, tree));
-      cloneInto(path.join(entry.directory, tree), path.join(root, tree));
+    let cloned = true;
+    try {
+      for (const tree of DIST_TREES) {
+        removeTree(path.join(root, tree));
+        cloneInto(path.join(entry.directory, tree), path.join(root, tree));
+      }
+    } catch (error) {
+      cloned = false;
+      log(`could not restore the cached Runner build: ${error.message.split("\n")[0]}`);
     }
-    const changed = findChangedBuildOutput(packageRoot, entry.meta.outputs ?? []);
+    const changed = cloned && findChangedBuildOutput(packageRoot, entry.meta.outputs ?? []);
     const missing = expectedBuildOutputs(packageRoot).filter(file => !existsSync(file));
-    if (!changed && missing.length === 0 && computeBuildInputsDigest(root).digest === inputs.digest) {
+    if (cloned && !changed && missing.length === 0 && computeBuildInputsDigest(root).digest === inputs.digest) {
       // Copilot assets live outside dist; the build installs them after compiling.
       exec(process.execPath, ["scripts/install-copilot-assets.mjs"], packageRoot);
       stampRestoredBuild(root, packageRoot, inputs, key);

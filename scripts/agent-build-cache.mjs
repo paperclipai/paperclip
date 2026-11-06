@@ -129,7 +129,8 @@ export function cloneInto(source, destination) {
 /** Moves an existing path out of the way and deletes it, so the name can be reused at once. */
 export function removeTree(target) {
   if (!existsSync(target) && !isLink(target)) return;
-  const doomed = `${target}.old-${randomUUID()}`;
+  // A hidden name, so pruning treats a leftover as a stale temporary.
+  const doomed = path.join(path.dirname(target), `.old-${path.basename(target)}-${randomUUID()}`);
   renameSync(target, doomed);
   rmSync(doomed, { recursive: true, force: true });
 }
