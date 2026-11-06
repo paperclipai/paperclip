@@ -1717,6 +1717,10 @@ describe("automatic retained workspace recovery", () => {
       const f = await failedRemotePreparation();
       const tickLog = Array.from({ length: 12 }, (_, i) => `2026-11-06T07:${String(21 + i).padStart(2, "0")}:00Z\n`).join("");
       await writeFile(path.join(f.remote, "ticks.log"), tickLog);
+      if (kind === "retained_history") {
+        const readonlySource = path.join(f.remote, "source-assets");
+        await mkdir(readonlySource); await writeFile(path.join(readonlySource, "asset.txt"), "Preserved source asset\n"); await chmod(readonlySource, 0o555);
+      }
       await recoverRetainedWorkspace(f.input);
       const initial = await run(f.runId), oldRunId = randomUUID(), oldActionId = randomUUID();
       await db.insert(heartbeatRuns).values({ id: oldRunId, companyId: f.companyId, issueId: f.issueId,
@@ -1806,6 +1810,12 @@ describe("automatic retained workspace recovery", () => {
           .map(relative => readFile(path.join(prepared.remoteRoot, relative, "ticks.log"), "utf8").catch(() => null)));
         if (kind === "retained_history") expect(contents).toContain("2026-11-06T07:21:00Z\n");
         expect(contents).toContain(tickLog);
+        if (kind === "retained_history") {
+          const currentSidecar = (recovered as Array<{ path: string; sourceRunId: string }>).find(item => item.sourceRunId === source.id)!;
+          expect(await readFile(path.join(prepared.remoteRoot, currentSidecar.path, "files", "source-assets", "asset.txt"), "utf8"))
+            .toBe("Preserved source asset\n");
+          expect((await lstat(path.join(prepared.remoteRoot, currentSidecar.path, "files", "source-assets"))).mode & 0o777).toBe(0o555);
+        }
         const continuation = await buildExecutionContinuation({ db, companyId: f.companyId, issueId: f.issueId,
           agentId: agent.id, runId: successor.id, context: successor.contextSnapshot!, summary: null, exposeLowTrustRaw: false });
         const providerContext: Record<string, unknown> = { ...successor.contextSnapshot,
@@ -1953,6 +1963,9 @@ describe("automatic retained workspace recovery", () => {
             expect(await readFile(path.join(inherited.remoteRoot, newest!.path, "files", "ticks.log"), "utf8")).toBe(editedLog);
             await db.update(workspaceOperations).set({ status: "succeeded" }).where(eq(workspaceOperations.id,
               (olderPaths.find(item => item.sourceRunId === source.id))!.operationId));
+            const immutableAssets = path.join(inherited.remoteRoot, "readonly-assets");
+            await mkdir(immutableAssets); await writeFile(path.join(immutableAssets, "asset.txt"), "Read-only workspace asset\n");
+            await chmod(immutableAssets, 0o555);
             await saveRemoteWorkspace({ db, storage, workspace: inherited.workspace, runId: childRun.id,
               lease: childLease as EnvironmentLease, target: { ...target, leaseId: childLease.id, remoteCwd: inherited.remoteRoot },
               assertOwned: async () => {} });
@@ -1967,6 +1980,8 @@ describe("automatic retained workspace recovery", () => {
             const snapshotRetained = await prepareRemoteWorkspace({ db, storage, workspace: snapshotReserved, runId: childRun.id,
               lease: childLease as EnvironmentLease, target: { ...target, leaseId: childLease.id, remoteCwd: inherited.remoteRoot } });
             expect(snapshotRetained.workspace.metadata?.remoteWorkspaceRecoveredFiles).toHaveLength(olderPaths.length);
+            expect((await lstat(immutableAssets)).mode & 0o777).toBe(0o555);
+            expect(await readFile(path.join(immutableAssets, "asset.txt"), "utf8")).toBe("Read-only workspace asset\n");
             expect(await readFile(path.join(snapshotRetained.remoteRoot, newest!.path, "files", "ticks.log"), "utf8")).toBe(editedLog);
             const legacySnapshot = { ...snapshotRetained.workspace, metadata: { ...snapshotRetained.workspace.metadata,
               remoteWorkspaceRecoveredFiles: olderPaths.map(({ operationId, sourceRunId, path }) => ({ operationId, sourceRunId, path })) } };

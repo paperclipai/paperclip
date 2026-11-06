@@ -514,7 +514,7 @@ export async function prepareRemoteWorkspace(input: {
             }] }]);
           recoveredFiles.push({ operationId: item.operationId, sourceRunId: item.sourceRunId, path: relative, provenance });
         }
-      } finally { await rm(scratch, { recursive: true, force: true }); }
+      } finally { await removeTaskDirectoryTree(scratch); }
     }
   }
   await retainRemoteRecoveryAttachments({ db: input.db, workspace: input.workspace, runId: input.runId,

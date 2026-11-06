@@ -3,6 +3,7 @@ import path from "node:path";
 import os from "node:os";
 import type { AdapterSandboxExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
 import { hasRemoteRecoveryAttachment } from "./remote-workspace-transport.js";
+import { removeTaskDirectoryTree } from "./isolated-task-directory-snapshot.js";
 import { LEGACY_WORKSPACE_RECOVERY_MIGRATION } from "./legacy-workspace-recovery-migration.js";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { executionWorkspaceSnapshots, executionWorkspaces, heartbeatRuns, workspaceOperations, type Db } from "@paperclipai/db";
@@ -92,7 +93,7 @@ export async function attachPreservedRemoteWorkspaceSnapshots(input: {
         await rm(archivePath);
         await writeFile(path.join(staging, "provenance.json"), provenance, { flag: "wx", mode: 0o600 });
         await rename(staging, destination);
-      } finally { await rm(staging, { recursive: true, force: true }); }
+      } finally { await removeTaskDirectoryTree(staging); }
     }
     result.push({ operationId, path: destination, sourceRunId: source.id });
   }
@@ -213,5 +214,5 @@ export async function retainRemoteRecoveryAttachments(input: {
       if (await hasRemoteRecoveryAttachment({ target: input.target, remoteCwd: input.remoteRoot, operationId: item.operationId, provenance }))
         input.recoveredFiles.push({ operationId: item.operationId, sourceRunId: item.sourceRunId, path: item.path, provenance });
     }
-  } finally { if (snapshotScratch) await rm(snapshotScratch, { recursive: true, force: true }); }
+  } finally { if (snapshotScratch) await removeTaskDirectoryTree(snapshotScratch); }
 }
