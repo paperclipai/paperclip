@@ -3156,15 +3156,6 @@ function OnboardingWizardInner({
                           onChange={setModel} open={modelOpen} onOpenChange={setModelOpen}
                           allowDefault={false} required groupByProvider={false}
                           creatable={connectionModels.models.length === 0} presentation="native" />}
-                        {createdCompanyId && (adapterType === "codex_local" || adapterType === "claude_local") && <OnboardingGatewaySetup
-                          companyId={createdCompanyId} agentId={setupAgentId ?? undefined} environmentId={resolvedLoginEnvironmentId ?? undefined}
-                          adapterType={adapterType} disabled={loading || adapterEnvLoading}
-                          onComplete={binding => {
-                            setGatewayConnection({ companyId: createdCompanyId, adapterType, binding });
-                            setApiKey("");
-                            setModel("");
-                            setError(null);
-                          }} />}
                         {(hasGatewaySelection || connectionModels) && <Button type="button" variant="ghost" disabled={loading || adapterEnvLoading} onClick={() => {
                           setGatewayConnection(undefined);
                           setSelectedSavedKey({ companyId: createdCompanyId!, envKey: apiKeyEnvKeyFor(adapterType), id: "" });
@@ -3276,6 +3267,22 @@ function OnboardingWizardInner({
                       ) : <p className="text-xs text-muted-foreground">This environment does not support browser sign-in. Choose another sign-in environment or connect with an API key.</p>
                     ) : null}
                   </motion.div>
+
+                  {sourceSelected && connectCardLive && connectCardMounted && !connectProgress && credentialMode === "api" && createdCompanyId && (adapterType === "codex_local" || adapterType === "claude_local") && (
+                    <details className="space-y-3">
+                      <summary className="cursor-pointer text-sm text-muted-foreground">Advanced</summary>
+                      <OnboardingGatewaySetup
+                        companyId={createdCompanyId} agentId={setupAgentId ?? undefined} environmentId={resolvedLoginEnvironmentId ?? undefined}
+                        adapterType={adapterType} disabled={loading || adapterEnvLoading}
+                        className="-ml-3"
+                        onComplete={binding => {
+                          setGatewayConnection({ companyId: createdCompanyId, adapterType, binding });
+                          setApiKey("");
+                          setModel("");
+                          setError(null);
+                        }} />
+                    </details>
+                  )}
 
                   {/* Conditional adapter fields */}
 
