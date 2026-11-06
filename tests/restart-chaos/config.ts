@@ -1,7 +1,7 @@
 import { parseArgs } from "node:util";
 import {
-  ADAPTER_IDS, ENVIRONMENT_KINDS, FAULT_KINDS, WORKLOAD_IDS,
-  type AdapterId, type EnvironmentKind, type FaultKind, type WaveOptions, type WorkloadId,
+  ADAPTER_IDS, ENVIRONMENT_KINDS, FAULT_KINDS, TRIGGER_IDS, WORKLOAD_IDS,
+  type AdapterId, type EnvironmentKind, type FaultKind, type TriggerId, type WaveOptions, type WorkloadId,
 } from "./types.js";
 
 export const CREDENTIAL_FOR_ADAPTER: Record<AdapterId, "OPENAI_API_KEY" | "ANTHROPIC_API_KEY" | "OPENROUTER_API_KEY"> = {
@@ -63,6 +63,7 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
       adapters: { type: "string" },
       workloads: { type: "string" },
       faults: { type: "string" },
+      triggers: { type: "string" },
       concurrency: { type: "string" },
       tasks: { type: "string" },
       seed: { type: "string" },
@@ -76,7 +77,7 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
   const pollMs = integer(values["poll-ms"], "poll-ms", 3_000, 2_000, 5_000);
   const budgetCents = integer(values["budget-cents"], "budget-cents", 3_000, 1, 100_000);
   if (values.replay !== undefined) {
-    for (const key of ["env", "adapters", "workloads", "faults", "concurrency", "tasks", "seed"] as const) {
+    for (const key of ["env", "adapters", "workloads", "faults", "triggers", "concurrency", "tasks", "seed"] as const) {
       if (values[key] !== undefined) throw new Error(`--replay reproduces the saved plan; do not combine it with --${key}`);
     }
     return { mode: "replay", ref: parseReplayRef(values.replay), keep,
@@ -89,6 +90,7 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
     adapters: list<AdapterId>(values.adapters, ADAPTER_IDS, "adapters", ["codex", "claude"]),
     workloads: list<WorkloadId>(values.workloads, WORKLOAD_IDS, "workloads", WORKLOAD_IDS),
     faults: list<FaultKind>(values.faults, FAULT_KINDS, "faults", ["K1", "K2", "K4"]),
+    triggers: list<TriggerId>(values.triggers, TRIGGER_IDS, "triggers", ["time"]),
     concurrency: integer(values.concurrency, "concurrency", 4, 1, 20),
     tasks: integer(values.tasks, "tasks", 8, 1, 200),
     seed: integer(values.seed, "seed", now % 2_147_483_647, 0, 2_147_483_647),
