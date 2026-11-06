@@ -288,7 +288,7 @@ it("accepts a saved-value confirmation without a fabricated initial reply and re
   const o = valid();
   const payload = { version: 1, prompt: "Open Settings Secrets, My secrets, Set my value for your personal publishing credential PERSONAL_PUBLISHING_KEY definition definition. Never paste the value in chat. When you have saved it, confirm this card.", acceptLabel: "Confirm" };
   const row = { id: "confirmation", companyId: "company", issueId: "source", sourceRunId: "initial", createdByAgentId: "ceo", originCommentIds: ["human"], kind: "request_confirmation", status: "accepted", resolverPolicy: "anyone", continuationPolicy: "wake_assignee", resolvedByUserId: "person", resolvedAt: "2026-11-03T23:59:59Z", result: { version: 1, outcome: "accepted" }, payload };
-  Object.assign(o.state, { sourceIssueId: "source", confirmationVisibleBeforeEntry: true, initialConfirmationId: row.id, canonicalHumanCommentId: "human", initialConfirmationPayloadHash: createHash("sha256").update(JSON.stringify(payload)).digest("hex") });
+  Object.assign(o.state, { sourceIssueId: "source", confirmationVisibleBeforeEntry: true, initialConfirmationId: row.id, initialConfirmationContinuationPolicy: row.continuationPolicy, canonicalHumanCommentId: "human", initialConfirmationPayloadHash: createHash("sha256").update(JSON.stringify(payload)).digest("hex") });
   Object.assign(o.state.currentSecret, { createdAt: "2026-11-03T23:59:58Z" });
   Object.assign(o.runs[2]!, { agentId: "ceo", contextSnapshot: { issueId: "source", interactionId: row.id } });
   o.phaseReplies.shift();

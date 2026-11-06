@@ -287,7 +287,7 @@ export function chatCatalogCompanyEnvironmentNameQuestion(q:{prompt:string;requi
   ||!/^[A-Za-z_][A-Za-z0-9_]{0,119}$/.test(answer)||!validation?.maxLength||validation.maxLength>120||validation.maxLength<answer.length||(validation.minLength??0)>answer.length||(validation.inputType!==undefined&&validation.inputType!=="text"))return false;
  try{return !validation.pattern||new RegExp(validation.pattern).test(answer);}catch{return false;}
 }
-export interface ChatCatalogExpectedHumanQuestionAnswer { interactionId: string; sourceRunId: string; userId: string; personalSecretConfirmation?: { definitionId: string; secretId: string; payloadHash: string }; companySecretConfirmation?: { secretId: string; key: string; payloadHash: string; continuationPolicy: "wake_assignee" | "wake_assignee_on_accept" }; companyEnvironmentNameAnswer?: { questionId: string; payloadHash: string; value: "DEPLOYMENT_API_KEY" }; companySavedSecretNameAnswer?: { questionId: string; payloadHash: string; value: string; secretId: string } }
+export interface ChatCatalogExpectedHumanQuestionAnswer { interactionId: string; sourceRunId: string; userId: string; personalSecretConfirmation?: { definitionId: string; secretId: string; payloadHash: string; continuationPolicy: "wake_assignee" | "wake_assignee_on_accept" }; companySecretConfirmation?: { secretId: string; key: string; payloadHash: string; continuationPolicy: "wake_assignee" | "wake_assignee_on_accept" }; companyEnvironmentNameAnswer?: { questionId: string; payloadHash: string; value: "DEPLOYMENT_API_KEY" }; companySavedSecretNameAnswer?: { questionId: string; payloadHash: string; value: string; secretId: string } }
 export interface ChatCatalogVerifiedHumanQuestionAnswer extends ChatCatalogExpectedHumanQuestionAnswer { continuationRunId: string; resolvedAt: string }
 export interface ChatCatalogHumanQuestionAudit {
   companyId?: string; entityId?: string; action?: string; actorType?: string; actorId?: string;
@@ -326,7 +326,7 @@ export function verifyChatCatalogHumanQuestionAnswer(input: {
     if (b.companySecretConfirmation || b.companyEnvironmentNameAnswer || b.companySavedSecretNameAnswer || rows.length !== 1 || !row || row.kind !== "request_confirmation" || row.status !== "accepted"
       || row.companyId !== input.companyId || row.issueId !== input.issueId || row.sourceRunId !== b.sourceRunId || row.createdByAgentId !== input.agentId || row.createdByUserId
       || (row.addresseeUserId != null && row.addresseeUserId !== b.userId) || row.addresseeAgentId || !row.originCommentIds?.includes(input.canonicalComment.id)
-      || b.userId !== input.canonicalComment.authorUserId || !chatCatalogHumanQuestionPolicies(row) || row.continuationPolicy !== "wake_assignee"
+      || b.userId !== input.canonicalComment.authorUserId || !chatCatalogHumanQuestionPolicies(row) || (row.continuationPolicy !== "wake_assignee" && row.continuationPolicy !== "wake_assignee_on_accept") || row.continuationPolicy !== binding.continuationPolicy
       || row.resolvedByUserId !== b.userId || row.resolvedByAgentId || row.result?.outcome !== "accepted" || row.result.resumeFailure || row.dismissedAt
       || !row.payload || row.payload.target || row.payload.toolAction || row.payload.secretProposal || row.payload.connectionAuthorization || row.payload.qualityReview
       || !chatCatalogHasExactDefinitionId([row.payload.prompt, row.payload.detailsMarkdown].filter(Boolean).join("\n"), binding.definitionId) || createHash("sha256").update(JSON.stringify(row.payload)).digest("hex") !== binding.payloadHash

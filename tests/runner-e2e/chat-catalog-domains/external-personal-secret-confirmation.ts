@@ -9,16 +9,27 @@ export function personalSecretConfirmationHandoff(value: unknown, b: PersonalCon
   if (!row?.id || row.kind !== "request_confirmation" || row.status !== status || row.companyId !== b.companyId || row.issueId !== b.issueId
     || row.sourceRunId !== b.runId || row.createdByAgentId !== b.agentId || row.createdByUserId || row.addresseeAgentId
     || (row.addresseeUserId != null && row.addresseeUserId !== b.userId) || !row.originCommentIds?.includes(b.canonicalCommentId)
-    || !chatCatalogHumanQuestionPolicies(row) || row.continuationPolicy !== "wake_assignee" || !p
+    || !chatCatalogHumanQuestionPolicies(row) || (row.continuationPolicy !== "wake_assignee" && row.continuationPolicy !== "wake_assignee_on_accept") || !p
     || p.target || p.toolAction || p.secretProposal || p.connectionAuthorization || p.qualityReview
     || !requestConfirmationPayloadSchema.safeParse(p).success || row.dismissedAt
     || (status === "pending" ? row.resolvedByUserId || row.resolvedByAgentId : row.resolvedByUserId !== b.userId || row.resolvedByAgentId || row.result?.outcome !== "accepted")) return;
   const actionText = [p.prompt, p.detailsMarkdown].filter(Boolean).join("\n");
   const text = [actionText, p.acceptLabel].filter(Boolean).join("\n");
+  const entry = String.raw`(?:it|(?:your|the|this)\s+(?:personal\s+)?(?:publishing\s+)?(?:key|value|credential|secret))\b`;
+  const postSave = new RegExp(String.raw`\b(?:when|once|after)\s+(?:you(?:\s+have|['’]ve)?\s+)?(?:sav(?:ed|ing)|set(?:ting)?|enter(?:ed|ing))(?=\s*(?:[,.;!?]|$)|\s+${entry})`, "i").exec(actionText);
+  const completedQuestion = new RegExp(String.raw`\b(?:have|has)\s+(?:you|the\s+user)\s+(?:saved|set|entered)\s+${entry}[^?]*\?`, "i").test(actionText);
+  const saveThen = new RegExp(String.raw`\b(?:save|set|enter)\s+${entry}[^!?]{0,400}\bthen\s+confirm\b`, "i").exec(actionText);
+  const saveThenConfirm = !!saveThen && !/(?:\b(?:do|should|must|can|could|will|would)\s+not|\bdon.t|\bnever|\b(?:skip|avoid))\s*$/i.test(actionText.slice(0, saveThen.index));
+  const confirmsAfter = (tail: string) => [...tail.matchAll(/\bconfirm\b[^.!?]*/gi)].some(match =>
+    !/(?:\b(?:do|should|must)\s+not|\bdon.t|\bnever|\b(?:skip|avoid))\s*$/i.test(tail.slice(0, match.index))
+    && !/\b(?:before|permission|authorize)\b/i.test(match[0]));
+  const confirmsSavedEntry = /\bconfirm\b/i.test(text) && (completedQuestion
+    || saveThenConfirm && confirmsAfter(actionText.slice(saveThen!.index))
+    || !!postSave && confirmsAfter(actionText.slice(postSave.index + postSave[0].length)));
   if (!guidance(text) || !chatCatalogHasExactDefinitionId(actionText, b.definitionId) || !/\bPERSONAL_PUBLISHING_KEY\b/.test(text) || !/my secrets/i.test(text)
-    || !/\b(?:when|once|after)\b[^.!?]*\b(?:saved|set|entered)\b[^.!?]*\bconfirm\b|\bconfirm\b[^.!?]*\b(?:saved|set|entered)\b/i.test(text)
+    || !confirmsSavedEntry
     || /\b(?:deploy(?:ment)?|delet(?:e|ion)|execut(?:e|ion)|purchas(?:e|ing))\b/i.test(actionText)) return;
-  return { interactionId: row.id, payloadHash: createHash("sha256").update(JSON.stringify(p)).digest("hex"), acceptLabel: p.acceptLabel ?? "Approve", prompt: p.prompt };
+  return { interactionId: row.id, payloadHash: createHash("sha256").update(JSON.stringify(p)).digest("hex"), acceptLabel: p.acceptLabel ?? "Approve", prompt: p.prompt, continuationPolicy: row.continuationPolicy };
 }
 export async function acceptPersonalSecretConfirmation(page: Page, issueId: string, interactionId: string, label: string, prompt: string, remaining: () => number) {
   const card = page.getByTestId("task-chat-composer-takeover");

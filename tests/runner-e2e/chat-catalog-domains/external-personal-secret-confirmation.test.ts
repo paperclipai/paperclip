@@ -19,7 +19,7 @@ it.each(["company", "issue", "run", "creator", "origin", "definition", "approval
 function accounting(){
  const row={...card(),status:"accepted",resolvedByUserId:"person",resolvedAt:"2026-11-05T12:01:00Z",result:{version:1,outcome:"accepted"}};
  const payloadHash=createHash("sha256").update(JSON.stringify(row.payload)).digest("hex");
- return {expected:{interactionId:"confirmation",sourceRunId:"initial",userId:"person",personalSecretConfirmation:{definitionId:"current-definition",secretId:"secret",payloadHash}},companyId:"company",issueId:"source",agentId:"ceo",canonicalComment:{id:"human",authorUserId:"person"},interactions:[row],personalSecrets:[{definition:{id:"current-definition"},secret:{id:"secret",companyId:"company",scope:"user",ownerUserId:"person",userSecretDefinitionId:"current-definition",status:"active",createdAt:"2026-11-05T12:00:50Z"}}],activity:[{companyId:"company",entityId:"source",action:"issue.thread_interaction_accepted",actorType:"user",actorId:"person",details:{interactionId:"confirmation",interactionKind:"request_confirmation",interactionStatus:"accepted"}}],runs:[{id:"initial",companyId:"company",agentId:"ceo",status:"succeeded",runtimeMode:"native",startedAt:"2026-11-05T12:00:00Z",contextSnapshot:{issueId:"source",commentId:"human"}},{id:"continuation",companyId:"company",agentId:"ceo",status:"succeeded",runtimeMode:"native",startedAt:"2026-11-05T12:01:01Z",contextSnapshot:{issueId:"source",interactionId:"confirmation"}}]};
+ return {expected:{interactionId:"confirmation",sourceRunId:"initial",userId:"person",personalSecretConfirmation:{definitionId:"current-definition",secretId:"secret",payloadHash,continuationPolicy:"wake_assignee"}},companyId:"company",issueId:"source",agentId:"ceo",canonicalComment:{id:"human",authorUserId:"person"},interactions:[row],personalSecrets:[{definition:{id:"current-definition"},secret:{id:"secret",companyId:"company",scope:"user",ownerUserId:"person",userSecretDefinitionId:"current-definition",status:"active",createdAt:"2026-11-05T12:00:50Z"}}],activity:[{companyId:"company",entityId:"source",action:"issue.thread_interaction_accepted",actorType:"user",actorId:"person",details:{interactionId:"confirmation",interactionKind:"request_confirmation",interactionStatus:"accepted"}}],runs:[{id:"initial",companyId:"company",agentId:"ceo",status:"succeeded",runtimeMode:"native",startedAt:"2026-11-05T12:00:00Z",contextSnapshot:{issueId:"source",commentId:"human"}},{id:"continuation",companyId:"company",agentId:"ceo",status:"succeeded",runtimeMode:"native",startedAt:"2026-11-05T12:01:01Z",contextSnapshot:{issueId:"source",interactionId:"confirmation"}}]};
 }
 it("counts initial chat plus one bound actual human confirmation exactly once",()=>{
  const input=accounting(),answer=verifyChatCatalogHumanQuestionAnswer(input as never);expect(answer).toMatchObject({continuationRunId:"continuation"});
@@ -48,5 +48,32 @@ it("binds an exact definition URI in visible details through admission and indep
  Object.assign(row.payload,{detailsMarkdown:"Open /RUN/company/settings/secrets?definition=foreign-definition"});
  expect(personalSecretConfirmationHandoff(row,binding,personalSecretGuidance)).toBeUndefined();
  Object.assign(input.interactions[0]!.payload,row.payload);input.expected.personalSecretConfirmation.payloadHash=createHash("sha256").update(JSON.stringify(row.payload)).digest("hex");
+ expect(verifyChatCatalogHumanQuestionAnswer(input as never)).toBeUndefined();
+});
+
+it.each(["After saving, confirm here so I can pick up RUN-1.", "Have you saved your personal credential? Confirm here.", "Save your personal credential. Definition current-definition uses PERSONAL_PUBLISHING_KEY. Then confirm here."])("accepts a bound post-save acknowledgement: %s", ending => {
+ const row=card();row.continuationPolicy="wake_assignee_on_accept";
+ row.payload.prompt=row.payload.prompt.replace("When you have saved it, confirm this card so the requirement is recorded.",ending);
+ expect(personalSecretConfirmationHandoff(row,binding,personalSecretGuidance)).toMatchObject({continuationPolicy:"wake_assignee_on_accept"});
+});
+it.each(["Confirm before saving your personal credential.", "Confirm so you can save your personal credential.", "You saved your personal credential yesterday. Confirm permission to enter a new value.", "After saving your profile, confirm here.", "After saving OTHER_KEY, confirm here.", "Do not save your personal credential. Then confirm here.", "Confirm here before saving. After saving, I will resume."])("rejects a non-post-save acknowledgement: %s", ending => {
+ const row=card();row.payload.prompt=row.payload.prompt.replace("When you have saved it, confirm this card so the requirement is recorded.",ending);
+ expect(personalSecretConfirmationHandoff(row,binding,personalSecretGuidance)).toBeUndefined();
+});
+it("independently credits either immutable accepted-response policy only with actual save and continuation",()=>{
+ const input=accounting();input.interactions[0]!.continuationPolicy="wake_assignee_on_accept";input.expected.personalSecretConfirmation.continuationPolicy="wake_assignee_on_accept";
+ expect(verifyChatCatalogHumanQuestionAnswer(input as never)).toMatchObject({continuationRunId:"continuation"});
+ input.interactions[0]!.continuationPolicy="wake_assignee";
+ expect(verifyChatCatalogHumanQuestionAnswer(input as never)).toBeUndefined();
+});
+it.each(["pending","declined","historical save","foreign owner","wrong runtime","missing continuation","effect"])("rejects nonqualifying accepted-response %s",fault=>{
+ const input=accounting();input.interactions[0]!.continuationPolicy="wake_assignee_on_accept";input.expected.personalSecretConfirmation.continuationPolicy="wake_assignee_on_accept";
+ if(fault==="pending")input.interactions[0]!.status="pending";
+ if(fault==="declined")input.interactions[0]!.result.outcome="declined";
+ if(fault==="historical save")input.personalSecrets[0]!.secret.createdAt="2026-11-04T12:00:00Z";
+ if(fault==="foreign owner")input.personalSecrets[0]!.secret.ownerUserId="other";
+ if(fault==="wrong runtime")input.runs[1]!.runtimeMode="process";
+ if(fault==="missing continuation")input.runs.pop();
+ if(fault==="effect")Object.assign(input.interactions[0]!.payload,{toolAction:{toolName:"deploy"}});
  expect(verifyChatCatalogHumanQuestionAnswer(input as never)).toBeUndefined();
 });

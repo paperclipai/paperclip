@@ -236,7 +236,7 @@ export function gradePersonalSecret(value: unknown) {
       .at(-1);
   const confirmationRow = o.interactions.find(row => row.id === o.state.initialConfirmationId);
   const confirmation = personalSecretConfirmationHandoff(confirmationRow, { companyId: o.companyId, issueId: String(o.state.sourceIssueId), agentId: o.leadId, userId: String(o.state.currentPersonId), runId: String(o.state.initialRunId), definitionId: String(o.state.definitionId), canonicalCommentId: String(o.state.canonicalHumanCommentId) }, personalSecretGuidance, "accepted");
-  const confirmationAccepted = o.state.confirmationVisibleBeforeEntry === true && !!confirmation && confirmation.payloadHash === o.state.initialConfirmationPayloadHash
+  const confirmationAccepted = o.state.confirmationVisibleBeforeEntry === true && !!confirmation && confirmation.payloadHash === o.state.initialConfirmationPayloadHash && confirmation.continuationPolicy === o.state.initialConfirmationContinuationPolicy
     && o.activity.some(event => event.action === "issue.thread_interaction_accepted" && event.companyId === o.companyId && event.entityId === o.state.sourceIssueId && event.actorType === "user" && event.actorId === o.state.currentPersonId && event.details?.interactionId === confirmation.interactionId && event.details.interactionStatus === "accepted");
   const secret = o.state.currentSecret as Partial<CompanySecret> | undefined;
   c.add(
@@ -458,7 +458,7 @@ export const personalSecretExternalCases = [
       expectedHumanQuestionAnswer(value) {
         const o = externalObservation(value);
         if (!o || !gradePersonalSecret(value).passed) return;
-        if (o.state.initialConfirmationId) return { interactionId: String(o.state.initialConfirmationId), sourceRunId: String(o.state.initialRunId), userId: String(o.state.currentPersonId), personalSecretConfirmation: { definitionId: String(o.state.definitionId), secretId: String(o.state.secretId), payloadHash: String(o.state.initialConfirmationPayloadHash) } };
+        if (o.state.initialConfirmationId) return { interactionId: String(o.state.initialConfirmationId), sourceRunId: String(o.state.initialRunId), userId: String(o.state.currentPersonId), personalSecretConfirmation: { definitionId: String(o.state.definitionId), secretId: String(o.state.secretId), payloadHash: String(o.state.initialConfirmationPayloadHash), continuationPolicy: o.state.initialConfirmationContinuationPolicy as "wake_assignee" | "wake_assignee_on_accept" } };
         if (!o.state.initialQuestionId) return;
         return { interactionId: String(o.state.initialQuestionId), sourceRunId: String(o.state.initialRunId), userId: String(o.state.currentPersonId) };
       },
@@ -608,7 +608,7 @@ export const personalSecretExternalCases = [
         if (initial.companyId !== source.companyId || (pendingQuestions.length ? !question && !confirmation : !commentHandoff))
           throw new Error("Personal setup must direct the current person's secure publishing value before human action");
         state.initialRunId = run.id;
-        if (confirmation) Object.assign(state, { initialConfirmationId: confirmation.interactionId, initialConfirmationPayloadHash: confirmation.payloadHash, canonicalHumanCommentId: canonical[0]!.id });
+        if (confirmation) Object.assign(state, { initialConfirmationId: confirmation.interactionId, initialConfirmationPayloadHash: confirmation.payloadHash, initialConfirmationContinuationPolicy: confirmation.continuationPolicy, canonicalHumanCommentId: canonical[0]!.id });
         if (confirmation) {
           const visible = await readVisiblePersonalSecretConfirmation(ctx.input.page, confirmation, { origin: initial.origin, prefix: String(ctx.input.fixtures.company.issuePrefix), definitionId: String(state.definitionId) }, personalSecretGuidance, remaining);
           state.confirmationVisibleBeforeEntry = visible.definitionVisible;
@@ -684,13 +684,13 @@ export const personalSecretExternalCases = [
           const current = personalSecretConfirmationHandoff(cards.find(row => (row as { id?: string }).id === confirmation.interactionId), confirmationBinding, personalSecretGuidance);
           if (!own || own.id !== state.secretId || own.ownerUserId !== state.currentPersonId || own.userSecretDefinitionId !== state.definitionId || own.status !== "active"
             || cards.some(row => (row as { id?: string; status?: string }).status === "pending" && (row as { id?: string }).id !== confirmation.interactionId)
-            || !current || current.payloadHash !== confirmation.payloadHash) throw new Error("Personal confirmation requires unchanged card and actual saved own value");
+            || !current || current.payloadHash !== confirmation.payloadHash || current.continuationPolicy !== confirmation.continuationPolicy) throw new Error("Personal confirmation requires unchanged card and actual saved own value");
           await confirmThenStartPersonalConsumer(
             async () => {
               const response = await acceptPersonalSecretConfirmation(ctx.input.page, source.id, confirmation.interactionId, confirmation.acceptLabel, confirmation.prompt, remaining);
               const accepted = personalSecretConfirmationHandoff(response, confirmationBinding, personalSecretGuidance, "accepted");
               const audit = await ctx.input.api.get<Array<{ companyId: string; entityId: string; actorType: string; actorId: string; action: string; details?: Record<string, unknown> }>>(`/api/issues/${source.id}/activity`);
-              if (!accepted || accepted.payloadHash !== confirmation.payloadHash || !audit.some(event => event.companyId === source.companyId && event.entityId === source.id && event.actorType === "user" && event.actorId === state.currentPersonId && event.action === "issue.thread_interaction_accepted" && event.details?.interactionId === confirmation.interactionId && event.details.interactionStatus === "accepted")) throw new Error("Personal secure-entry confirmation lacks actual human acceptance audit");
+              if (!accepted || accepted.payloadHash !== confirmation.payloadHash || accepted.continuationPolicy !== confirmation.continuationPolicy || !audit.some(event => event.companyId === source.companyId && event.entityId === source.id && event.actorType === "user" && event.actorId === state.currentPersonId && event.action === "issue.thread_interaction_accepted" && event.details?.interactionId === confirmation.interactionId && event.details.interactionStatus === "accepted")) throw new Error("Personal secure-entry confirmation lacks actual human acceptance audit");
             },
             () => ctx.input.api.patch(`/api/issues/${state.taskId}`, { status: "todo" }).then(() => undefined),
           );
