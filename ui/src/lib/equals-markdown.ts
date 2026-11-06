@@ -16,12 +16,24 @@ import { isEscaped, rewriteMarkdownProse } from "./underscore-markdown";
 const ESCAPED_EQUALS_RUN_RE = /(?:\\=)+/g;
 
 function unescapeProse(text: string): string {
+  // One forward pass: matches arrive in order, so track whether only
+  // indentation or quote markers precede the current offset on its line.
+  let scanned = 0;
+  let lineStartOnly = true;
   return text.replace(ESCAPED_EQUALS_RUN_RE, (run: string, offset: number, whole: string) => {
+    for (; scanned < offset; scanned += 1) {
+      const char = whole[scanned]!;
+      if (char === "\n") lineStartOnly = true;
+      else if (char !== ">" && !/\s/u.test(char)) lineStartOnly = false;
+    }
+    const atLineStart = lineStartOnly;
+    scanned = offset + run.length;
+    lineStartOnly = false;
     if (isEscaped(whole, offset)) return run;
     // At the start of a line (after indentation or quote markers) a run of `=`
     // can underline the previous line as a heading, so its escape stays. This
     // includes the start of a prose chunk, whose preceding text is unknown.
-    if (/^[\s>]*$/u.test(whole.slice(whole.lastIndexOf("\n", offset - 1) + 1, offset))) return run;
+    if (atLineStart) return run;
     const length = run.length / 2;
     const before = whole[offset - 1];
     const after = whole[offset + run.length];

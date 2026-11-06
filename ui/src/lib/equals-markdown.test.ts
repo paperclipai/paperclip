@@ -43,6 +43,19 @@ describe("unescapeEqualsSigns", () => {
     unchanged("x \\=\\=`code`\\=\\= y");
   });
 
+  it("keeps an escape after an escaped backslash and removes it after an odd run", () => {
+    // `\\\=` is an escaped backslash followed by an escaped `=`; only the `=` escape goes.
+    expect(unescapeEqualsSigns("a\\\\\\=b")).toBe("a\\\\=b");
+    unchanged("a\\\\=b");
+  });
+
+  it("stays linear on one long line with many assignments", () => {
+    const line = Array.from({ length: 25_000 }, (_, index) => `k${index}\\=v`).join(" ");
+    const started = performance.now();
+    expect(unescapeEqualsSigns(line)).toBe(line.replaceAll("\\=", "="));
+    expect(performance.now() - started).toBeLessThan(1_000);
+  });
+
   it("leaves text without escaped equals untouched", () => {
     unchanged("plain a=b");
     unchanged("");
