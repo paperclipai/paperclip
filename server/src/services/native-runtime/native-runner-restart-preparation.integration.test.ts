@@ -61,6 +61,7 @@ describeEmbeddedPostgres("native runner restart recovery: preparation", () => {
     } }).where(eq(heartbeatRuns.id, fixture.runId));
     const remoteSandbox = join(runtimeRoot, `remote-${fixture.runId}`);
     const shell: CommandManagedRuntimeRunner = { execute: async input => {
+      const startedAt = new Date().toISOString();
       const child = spawn(input.command, input.args ?? [], { cwd: input.cwd,
         env: { ...process.env, ...input.env }, stdio: ["pipe", "pipe", "pipe"] });
       let stdout = "", stderr = "", timedOut = false;
@@ -71,7 +72,8 @@ describeEmbeddedPostgres("native runner restart recovery: preparation", () => {
       const timeout = setTimeout(() => { timedOut = true; child.kill("SIGKILL"); }, input.timeoutMs ?? 30_000);
       try { return await new Promise((resolveResult, reject) => {
         child.once("error", reject);
-        child.once("close", (exitCode, signal) => resolveResult({ stdout, stderr, exitCode, signal, timedOut }));
+        child.once("close", (exitCode, signal) => resolveResult({ stdout, stderr, exitCode, signal, timedOut,
+          pid: child.pid ?? null, startedAt }));
       }); } finally { clearTimeout(timeout); }
     } };
     const workspaceSync = await prepareNativeWorkspaceSync({ db: fixture.db, runId: fixture.runId, companyId,
@@ -124,8 +126,6 @@ describeEmbeddedPostgres("native runner restart recovery: preparation", () => {
       expect(run).toMatchObject({ status: "running", nativeSessionId: fixture.native.normalizedSessionId });
       const [action] = await fixture.db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, fixture.issueId));
       expect(action).toMatchObject({ ownerType: "agent", ownerAgentId: agentId });
-      // The focused restart regression needs no Rust artifacts. This opt-in
-      // acceptance also runs the real Runner and controlled Codex provider.
       if (process.env.PAPERCLIP_TEST_DRAIN_CONTINUATION === "1") {
         const claim = claims[0];
         const root = join(runtimeRoot, `continued-${fixture.runId}`);

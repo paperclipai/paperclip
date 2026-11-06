@@ -5,7 +5,7 @@ import { notifyExecutionRunWork } from "../execution-control-notifications.js";
 import { logger } from "../../middleware/logger.js";
 import { createHash, randomUUID } from "node:crypto";
 import { stat } from "node:fs/promises";
-import { and, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import {
   agentWakeupRequests,
   environmentLeases,
@@ -27,6 +27,8 @@ import { issueRecoveryActionService } from "../issue-recovery-actions.js";
 import { buildExecutionContinuation } from "../execution-continuation.js";
 import { appendHeartbeatRunEvent } from "../heartbeat-run-events.js";
 import { hasRemoteTerminationReceipt } from "../remote-execution-termination.js";
+import { NATIVE_PROVIDER_DURABLE_EVENT_TYPES } from "./native-retired-backup-source.js";
+import { completedWorkspaceRecoveryCondition } from "../workspace-recovery-receipt.js";
 
 export const NATIVE_SAFE_REPLACEMENT_REASON = "native_safe_replacement";
 const record = (v: unknown): Record<string, unknown> =>
@@ -44,6 +46,66 @@ const processAlive = (pid: number | null) => {
 };
 
 type ReplacementDb = Db | Parameters<Parameters<Db["transaction"]>[0]>[0];
+
+const listenerUnavailable = "local_runtime_api_listener_unavailable";
+function historicalListenerGuardPending() {
+  const profile = heartbeatRuns.runnerProfileJson, detail = nativeRunFinalizations.failureDetail;
+  const providerEvents = sql.join([...NATIVE_PROVIDER_DURABLE_EVENT_TYPES].map(value => sql`${value}`), sql`, `);
+  return and(
+    eq(nativeRunFinalizations.failureCode, "native_session_interrupted"),
+    eq(heartbeatRuns.errorCode, "native_session_interrupted"), eq(heartbeatRuns.error, listenerUnavailable),
+    sql`${detail}->>'message' = ${listenerUnavailable}`,
+    sql`${detail}->>'originalFailureCode' = 'native_session_interrupted'`,
+    sql`${detail}->>'recoveryMode' = 'ambiguous_state'`,
+    sql`${detail}->'providerSessionEstablished' = 'false'::jsonb`,
+    sql`${detail}->'providerEventsExist' = 'false'::jsonb`,
+    sql`${detail}->'checkpointExists' = 'false'::jsonb`,
+    eq(nativeRunFinalizations.attempt, 1),
+    isNull(nativeRunFinalizations.leaseOwner), isNull(nativeRunFinalizations.leaseExpiresAt),
+    isNull(nativeRunFinalizations.assessmentId), isNull(nativeRunFinalizations.decisionId),
+    isNull(heartbeatRuns.processPid), isNull(heartbeatRuns.processGroupId),
+    isNull(heartbeatRuns.sessionIdBefore), isNull(heartbeatRuns.sessionIdAfter), isNull(heartbeatRuns.retryOfRunId),
+    sql`not (coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) ?| array['cancellation', 'nativeCancellation'])`,
+    sql`coalesce(${profile}->'sessionCheckpoint', 'null'::jsonb) = 'null'::jsonb`,
+    sql`coalesce(${profile}->'nativeProviderPackAdmission', 'null'::jsonb) = 'null'::jsonb`,
+    sql`coalesce(${profile}#>>'{nativeProviderPackAdmissionState,state}', 'pending') = 'pending'`,
+    sql`${profile}#>>'{nativeExecutionInput,binding,runId}' = ${heartbeatRuns.id}::text`,
+    sql`${profile}#>>'{nativeExecutionInput,binding,companyId}' = ${heartbeatRuns.companyId}::text`,
+    sql`${profile}#>>'{nativeExecutionInput,binding,agentId}' = ${heartbeatRuns.agentId}::text`,
+    sql`${profile}#>>'{nativeExecutionInput,binding,issueId}' = ${nativeRunFinalizations.issueId}::text`,
+    sql`${profile}#>>'{nativeExecutionInput,session,normalizedSessionId}' = ${heartbeatRuns.nativeSessionId}::text`,
+    sql`not exists (select 1 from ${heartbeatRuns} prior where prior.company_id = ${heartbeatRuns.companyId}
+      and prior.native_session_id = ${heartbeatRuns.nativeSessionId} and prior.id <> ${heartbeatRuns.id})`,
+    sql`not exists (select 1 from ${heartbeatRunEvents} event where event.company_id = ${heartbeatRuns.companyId}
+      and event.run_id = ${heartbeatRuns.id} and (event.source_event_id is not null
+        or event.event_type in (${providerEvents}) or event.event_type ~ '^(turn|item|tool|semantic_tool|run[.]result)[.]'))`,
+    sql`not exists (select 1 from ${toolInvocations} invocation where invocation.company_id = ${heartbeatRuns.companyId}
+      and invocation.run_id = ${heartbeatRuns.id})`,
+    sql`not exists (select 1 from ${issueRecoveryActions}
+      where ${issueRecoveryActions.companyId} = ${heartbeatRuns.companyId}
+        and ${issueRecoveryActions.sourceIssueId} = ${nativeRunFinalizations.issueId}
+        and ${issueRecoveryActions.cause} = 'native_continuation_requires_reconciliation'
+        and ${issueRecoveryActions.evidence}->>'runId' = ${heartbeatRuns.id}::text
+        and ${issueRecoveryActions.evidence}->'automaticRecovery'->>'replay' = 'blocked'
+        and not coalesce((${completedWorkspaceRecoveryCondition(heartbeatRuns.id)}), false))`,
+    sql`exists (select 1 from ${issues} task where task.company_id = ${heartbeatRuns.companyId}
+      and task.id = ${nativeRunFinalizations.issueId} and task.assignee_agent_id = ${heartbeatRuns.agentId}
+      and task.status in ('todo', 'in_progress', 'in_review', 'blocked')
+      and (task.status <> 'blocked' or exists (select 1 from ${issueRecoveryActions} hold
+        where hold.company_id = task.company_id and hold.source_issue_id = task.id and hold.kind = 'active_run_watchdog'
+          and hold.cause = ${nativeRunFinalizations.failureCode} and hold.evidence->>'runId' = ${heartbeatRuns.id}::text
+          and hold.evidence#>>'{nativeFailureBlock,runId}' = ${heartbeatRuns.id}::text
+          and hold.evidence#>'{nativeFailureBlock,statusVersion}' = to_jsonb(task.status_version))))`,
+  );
+}
+
+async function historicalListenerGuardEvidence(db: ReplacementDb, run: typeof heartbeatRuns.$inferSelect) {
+  const [evidence] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns)
+    .innerJoin(nativeRunFinalizations, eq(nativeRunFinalizations.runId, heartbeatRuns.id)).where(and(
+      eq(heartbeatRuns.companyId, run.companyId), eq(heartbeatRuns.id, run.id), historicalListenerGuardPending(),
+    )).limit(1);
+  return Boolean(evidence);
+}
 
 /** A saved remote source is proved by its current ledger, never a controller path. */
 async function remoteWorkspaceReplacementEvidence(
@@ -113,10 +175,10 @@ export function nativeReplacementPending() {
   return and(
     eq(heartbeatRuns.status, "failed"),
     eq(nativeRunFinalizations.phase, "terminal_failure"),
-    inArray(
+    or(inArray(
       nativeRunFinalizations.failureCode,
       ["native_provider_terminal_failed", "native_session_cleanup_quarantined", "provider_transport_failed"],
-    ),
+    ), historicalListenerGuardPending()),
     isNull(nativeRunFinalizations.resultId),
     sql`coalesce(${nativeRunFinalizations.failureDetail}->>'successorRunId', '') = ''`,
     sql`coalesce(${nativeRunFinalizations.failureDetail}->>'replacementDenied', '') = ''`,
@@ -170,11 +232,13 @@ export async function reconcileSafeNativeReplacements(
         );
       // Teardown is still in progress. The next sweep rechecks its durable outcome.
       if (leases.some((lease) => lease.releasedAt === null)) continue;
-      const stoppedSession = coordinator.failureCode !== "native_provider_terminal_failed"
+      const historicalListener = coordinator.failureCode === "native_session_interrupted";
+      if (historicalListener && !await historicalListenerGuardEvidence(db, run)) continue;
+      const stoppedSession = coordinator.failureCode !== "native_provider_terminal_failed" && !historicalListener
         ? await options.verifyStoppedSession?.(run) ?? null : null;
       // A transport label alone is not evidence. Keep inspecting these candidates
       // as process cleanup and the final transcript become durable.
-      if (coordinator.failureCode !== "native_provider_terminal_failed" && !stoppedSession) continue;
+      if (coordinator.failureCode !== "native_provider_terminal_failed" && !historicalListener && !stoppedSession) continue;
       const invocations = await db
         .select()
         .from(toolInvocations)
@@ -280,6 +344,7 @@ export async function reconcileSafeNativeReplacements(
         /* The named operator outcome retains incomplete context. */
       }
       const remoteWorkspace = await remoteWorkspaceReplacementEvidence(db, run, coordinator.issueId, leases);
+      if (historicalListener && (!remoteWorkspace?.workspacePreserved || !remoteWorkspace.providerStopped || invocations.length)) continue;
       const decision = decideNativeReplacement({
         failedSession: true,
         // A facade transport failure can conceal an authoritative protocol
@@ -413,6 +478,13 @@ export async function reconcileSafeNativeReplacements(
           current.attempt >= 3
         )
           return false;
+        let historicalRun: typeof heartbeatRuns.$inferSelect | undefined;
+        if (historicalListener) {
+          const [currentRun] = await tx.select().from(heartbeatRuns).where(and(
+            eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, run.companyId),
+          )).for("update");
+          historicalRun = currentRun;
+        }
         if (task.status === "blocked") {
           const failureHolds = await tx.select().from(issueRecoveryActions).where(and(
             eq(issueRecoveryActions.companyId, run.companyId),
@@ -427,6 +499,14 @@ export async function reconcileSafeNativeReplacements(
           });
           if (!ownsBlock) return false;
         }
+        const preservationHolds = historicalListener ? await tx.select().from(issueRecoveryActions).where(and(
+          eq(issueRecoveryActions.companyId, run.companyId), eq(issueRecoveryActions.sourceIssueId, task.id),
+          eq(issueRecoveryActions.kind, "active_run_watchdog"),
+          eq(issueRecoveryActions.cause, "native_continuation_requires_reconciliation"),
+          sql`${issueRecoveryActions.evidence}->>'runId' = ${run.id}`,
+          sql`${issueRecoveryActions.evidence}->'automaticRecovery'->>'replay' = 'blocked'`,
+        )).for("update") : [];
+        if (historicalListener && (!historicalRun || !await historicalListenerGuardEvidence(tx, historicalRun))) return false;
         if (remoteWorkspace) {
           const currentWorkspace = await remoteWorkspaceReplacementEvidence(tx, run, coordinator.issueId, leases, true);
           if (!currentWorkspace?.workspacePreserved || !currentWorkspace.providerStopped) return false;
@@ -548,6 +628,7 @@ export async function reconcileSafeNativeReplacements(
           eq(issueRecoveryActions.cause, current.failureCode!),
           sql`${issueRecoveryActions.evidence}->>'runId' = ${run.id}`,
         )).for("update");
+        holds.push(...preservationHolds);
         if (holds.some(hold => hold.status === "active" || hold.status === "escalated")) {
           await notifyUnsafeWorkspaceExportRecovery(tx, { companyId: run.companyId, issueId: task.id });
         }

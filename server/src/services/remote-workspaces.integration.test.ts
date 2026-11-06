@@ -47,6 +47,9 @@ import { instanceSettingsService } from "./instance-settings.js";
 import { resolveRemoteWorkspaceSource } from "./heartbeat/remote-workspace-source.js";
 import { toExecutionWorkspace } from "./execution-workspaces.js";
 import { recoveryPostgresSupport, startRecoveryPostgres } from "../__tests__/helpers/recovery-postgres.js";
+import { getExecutionBlocker } from "./execution-blocker.js";
+import { executionControlSchedule } from "./execution-control-work.js";
+import { createSystemRecovery } from "./system-recovery-state.js";
 
 const exec = promisify(execFile);
 let databaseUrl = process.env.PAPERCLIP_REMOTE_WORKSPACE_TEST_DATABASE_URL;
@@ -91,6 +94,10 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
       ? (row.metadata.uploads as { objectKey: string }[]).map(item => item.objectKey) : [])].filter((value): value is string => !!value))) {
       await storage.deleteObject(ids.company, key);
     }
+    if (temporary && process.env.PAPERCLIP_TEST_HISTORICAL_LISTENER === "1") await db.transaction(async tx => {
+      await tx.execute(sql`select set_config('client_min_messages', 'warning', true)`);
+      await tx.execute(sql`TRUNCATE companies CASCADE`);
+    });
     await db.delete(executionWorkspaceSnapshots).where(eq(executionWorkspaceSnapshots.companyId, ids.company));
     await db.delete(workspaceOperations).where(eq(workspaceOperations.companyId, ids.company));
     await db.delete(activityLog).where(eq(activityLog.companyId, ids.company));
@@ -1646,8 +1653,13 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
     } finally { await recovered.cleanup(); }
   }, 60_000);
 
-  it.each(["saved", "dirty", "unsaved", "foreign_snapshot", "delete_requested", "deletion_race", "controller_claim_race", "stale_epoch", "unconfirmed_stop", "unknown_action"] as const)(
-    "checks durable remote work at the native safe-replacement decision (%s)", async scenario => {
+  it.each(["saved", "dirty", "unsaved", "foreign_snapshot", "delete_requested", "deletion_race", "controller_claim_race", "stale_epoch", "unconfirmed_stop", "unknown_action", "historical_listener_guard", "historical_listener_provider_event", "historical_listener_checkpoint", "historical_listener_resumed", "historical_listener_other_message", "historical_listener_cancelled", "historical_listener_prior_session", "historical_listener_unconfirmed_stop", "historical_listener_dirty", "historical_listener_stale_block", "historical_listener_unknown_event", "historical_listener_budget", "historical_listener_bad_preservation"] as const)(
+    "checks durable remote work at the native safe-replacement decision (%s)", async kind => {
+      const historicalListener = kind.startsWith("historical_listener_");
+      const processAcceptance = kind === "historical_listener_guard" && process.env.PAPERCLIP_TEST_HISTORICAL_LISTENER === "1";
+      const scenario = kind === "historical_listener_unconfirmed_stop" ? "unconfirmed_stop"
+        : kind === "historical_listener_dirty" ? "dirty" : historicalListener ? "saved" : kind;
+      const shouldSchedule = scenario === "saved" && (!historicalListener || kind === "historical_listener_guard");
       const reserved = await reserve({ kind: "empty" }), first = await target("native-replacement-sandbox");
       const prepared = await prepareRemoteWorkspace({ db, storage, workspace: reserved, runId: ids.run,
         lease: await lease(), target: first, assertOwned: async () => undefined });
@@ -1663,6 +1675,11 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
         .where(eq(executionWorkspaceSnapshots.id, authority.snapshotId!));
       if (scenario === "delete_requested") await db.update(executionWorkspaceSnapshots).set({ status: "delete_requested" })
         .where(eq(executionWorkspaceSnapshots.id, authority.snapshotId!));
+      if (processAcceptance) {
+        const { recordHistoricalListenerFailure } = await import("../__tests__/helpers/historical-listener-continuation.js");
+        await recordHistoricalListenerFailure({ db, connectionString: databaseUrl!, runId: ids.run, cwd: prepared.remoteRoot,
+          environmentId: ids.environment, leaseId: ids.lease });
+      }
       const stopped = (await db.update(environmentLeases).set({ status: "released", releasedAt: new Date(), cleanupStatus: "success",
         metadata: { ...prepared.lease.metadata, ...(scenario !== "unconfirmed_stop" ? {
           remoteExecutionTermination: remoteTerminationReceipt(prepared.lease, {
@@ -1670,19 +1687,67 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
           }),
         } : {}) },
       }).where(eq(environmentLeases.id, ids.lease)).returning())[0]! as EnvironmentLease;
-      if (scenario === "saved") {
+      if (shouldSchedule) {
         await db.transaction(tx => clearRemoteWorkspaceLocationForReleasedLease({ db: tx, lease: stopped }));
         await fs.rm(prepared.remoteRoot, { recursive: true, force: true });
         await expect(fs.stat(prepared.remoteRoot)).rejects.toThrow();
       }
       const [source] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, ids.run));
-      await db.update(heartbeatRuns).set({ status: "failed", finishedAt: new Date(), runnerProfileJson: {
+      const sessionId = randomUUID();
+      await db.update(heartbeatRuns).set({ status: "failed", finishedAt: new Date(),
+        ...(historicalListener && !processAcceptance ? { nativeSessionId: sessionId } : {}),
+        ...(historicalListener ? { error: "local_runtime_api_listener_unavailable", errorCode: "native_session_interrupted" } : {}), runnerProfileJson: {
         ...source!.runnerProfileJson, recoveryEventInventoryVersion: 1,
-        nativeExecutionInput: { provider: { kind: "codex" }, workspace: { cwd: prepared.remoteRoot } },
+        nativeExecutionInput: processAcceptance ? source!.runnerProfileJson!.nativeExecutionInput : { provider: { kind: "codex" }, workspace: { cwd: prepared.remoteRoot },
+          ...(historicalListener ? { binding: { runId: ids.run, companyId: ids.company, agentId: ids.agent, issueId: ids.issue },
+            session: { normalizedSessionId: sessionId } } : {}) },
       } }).where(eq(heartbeatRuns.id, ids.run));
-      await db.insert(nativeRunFinalizations).values({ runId: ids.run, companyId: ids.company, issueId: ids.issue,
-        phase: "terminal_failure", attempt: 1, failureCode: "native_provider_terminal_failed",
-        failureDetail: { originalFailureCode: "fixture_checkpoint_unusable" } });
+      if (!processAcceptance) await db.insert(nativeRunFinalizations).values({ runId: ids.run, companyId: ids.company, issueId: ids.issue,
+        phase: "terminal_failure", attempt: 1, failureCode: historicalListener ? "native_session_interrupted" : "native_provider_terminal_failed",
+        failureDetail: historicalListener ? { originalFailureCode: "native_session_interrupted", message: "local_runtime_api_listener_unavailable",
+          recoveryMode: "ambiguous_state", providerSessionEstablished: false, providerEventsExist: false, checkpointExists: false }
+          : { originalFailureCode: "fixture_checkpoint_unusable" } });
+      if (historicalListener && !processAcceptance) {
+        const blocked = await issueService(db).update(ids.issue, { status: "blocked" });
+        await db.insert(issueRecoveryActions).values({ companyId: ids.company, sourceIssueId: ids.issue,
+          kind: "active_run_watchdog", cause: "native_session_interrupted", ownerType: "board", status: "active",
+          fingerprint: createHash("sha256").update(`${ids.run}:native_session_interrupted`).digest("hex"),
+          evidence: { runId: ids.run, nativeFailureBlock: { runId: ids.run, statusVersion: blocked!.statusVersion } },
+          nextAction: "Reconcile the original startup failure." });
+      }
+      if (kind === "historical_listener_guard" || kind === "historical_listener_bad_preservation") {
+        const actionId = randomUUID(), preservationId = randomUUID();
+        await db.insert(issueRecoveryActions).values({ id: actionId, companyId: ids.company, sourceIssueId: ids.issue,
+          kind: "active_run_watchdog", cause: "native_continuation_requires_reconciliation", ownerType: "system", status: "resolved", outcome: "blocked",
+          fingerprint: `native-workspace:${ids.run}`, evidence: { runId: ids.run,
+            workspaceRestoreFailure: "restore_failed", workspaceRestoreRecovery: { schema: "paperclip.workspace-restore-recovery.v1", leaseIds: [ids.lease] },
+            automaticRecovery: { replay: "blocked" }, continuationDelivery: "invalidated",
+            systemRecovery: { ...createSystemRecovery(ids.run), state: "complete", preservationOperationIds: [preservationId] },
+            workspaceRecovery: { schema: "paperclip.workspace-recovery.v1", runId: ids.run, status: "recovered", stage: "saving_receipts", attempt: 1, requestIds: [] },
+          }, nextAction: "Files were preserved without replay." });
+        await db.insert(workspaceOperations).values([{ id: preservationId, companyId: ids.company, heartbeatRunId: ids.run, issueId: ids.issue,
+          executionWorkspaceId: reserved.id, phase: "workspace_recovery", status: kind === "historical_listener_bad_preservation" ? "failed" : "succeeded", startedAt: new Date(),
+          metadata: { recoveryActionId: actionId, snapshotId: authority.snapshotId } },
+        { companyId: ids.company, heartbeatRunId: ids.run, issueId: ids.issue, phase: "workspace_finalize", status: "succeeded", startedAt: new Date(),
+          metadata: { owningService: "workspace_recovery", preservationOperationIds: [preservationId] } }]);
+      }
+      if (kind === "historical_listener_stale_block") await issueService(db).update(ids.issue, { status: "blocked", actorUserId: "operator" });
+      if (kind === "historical_listener_unknown_event") await db.insert(heartbeatRunEvents).values({ companyId: ids.company, runId: ids.run,
+        agentId: ids.agent, seq: 100, eventType: "future.provider.activity", sourceEventId: "source-provider-event" });
+      if (kind === "historical_listener_budget") await db.update(nativeRunFinalizations).set({ attempt: 3 }).where(eq(nativeRunFinalizations.runId, ids.run));
+      if (kind === "historical_listener_checkpoint") await db.update(heartbeatRuns).set({ runnerProfileJson: {
+        ...((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, ids.run)))[0]!.runnerProfileJson), sessionCheckpoint: { providerSessionId: "already-started" },
+      } }).where(eq(heartbeatRuns.id, ids.run));
+      if (kind === "historical_listener_resumed") await db.update(heartbeatRuns).set({ sessionIdBefore: "prior-session" }).where(eq(heartbeatRuns.id, ids.run));
+      if (kind === "historical_listener_prior_session") await db.insert(heartbeatRuns).values({ id: randomUUID(), companyId: ids.company,
+        agentId: ids.agent, status: "succeeded", nativeSessionId: sessionId });
+      if (kind === "historical_listener_other_message") await db.update(nativeRunFinalizations).set({ failureDetail: {
+        message: "provider reported local_runtime_api_listener_unavailable", originalFailureCode: "native_session_interrupted", recoveryMode: "ambiguous_state",
+        providerSessionEstablished: false, providerEventsExist: false, checkpointExists: false,
+      } }).where(eq(nativeRunFinalizations.runId, ids.run));
+      if (kind === "historical_listener_cancelled") await db.update(issues).set({ status: "cancelled" }).where(eq(issues.id, ids.issue));
+      if (kind === "historical_listener_provider_event") await appendHeartbeatRunEvent(db, { companyId: ids.company, runId: ids.run,
+        agentId: ids.agent, eventType: "turn.started", stream: "system" });
       if (scenario === "unknown_action") await appendHeartbeatRunEvent(db, { companyId: ids.company, runId: ids.run,
         agentId: ids.agent, eventType: "tool.execution.started", stream: "system",
         payload: { name: "send_email", executionId: "unconfirmed-external-action", transport: "process" } });
@@ -1717,12 +1782,48 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
           expect(blocked).toBe(true);
         } finally { release(); await deletion; replacement = await pending; }
       } else replacement = await reconcileSafeNativeReplacements(db);
-      expect(replacement).toMatchObject({ scheduled: scenario === "saved" ? 1 : 0 });
+      expect(replacement).toMatchObject({ scheduled: shouldSchedule ? 1 : 0 });
       const successors = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, ids.run));
-      expect(successors).toHaveLength(scenario === "saved" ? 1 : 0);
-      if (scenario === "saved") expect(successors[0]).toMatchObject({ status: "scheduled_retry",
+      expect(successors).toHaveLength(shouldSchedule ? 1 : 0);
+      if (shouldSchedule) expect(successors[0]).toMatchObject({ status: "scheduled_retry",
         contextSnapshot: { retryOfRunId: ids.run, forceFreshSession: true } });
-      else expect(await fs.readFile(path.join(prepared.remoteRoot, "saved.txt"), "utf8"))
+      if (kind === "historical_listener_guard") expect(await getExecutionBlocker(db, ids.company, ids.issue)).toBeNull();
+      if (["historical_listener_provider_event", "historical_listener_checkpoint", "historical_listener_resumed", "historical_listener_other_message",
+        "historical_listener_cancelled", "historical_listener_prior_session", "historical_listener_unknown_event", "historical_listener_budget", "historical_listener_stale_block", "historical_listener_bad_preservation"].includes(kind)) {
+        expect(await executionControlSchedule(db).replacement()).toBeNull();
+      }
+      if (kind === "historical_listener_bad_preservation") {
+        expect(await getExecutionBlocker(db, ids.company, ids.issue)).toMatchObject({ cause: "native_continuation_requires_reconciliation" });
+
+      }
+      if (processAcceptance) {
+        expect(await reconcileSafeNativeReplacements(db)).toMatchObject({ scheduled: 0 });
+        const { completeHistoricalListenerSuccessor } = await import("../__tests__/helpers/historical-listener-continuation.js");
+        await completeHistoricalListenerSuccessor({ db, runId: successors[0]!.id, root: path.join(root, "successor-runtime"),
+          prepareWorkspace: async () => {
+            const leaseId = randomUUID(), runId = successors[0]!.id;
+            const [nextLease] = await db.insert(environmentLeases).values({ id: leaseId, companyId: ids.company,
+              environmentId: ids.environment, heartbeatRunId: runId, issueId: ids.issue, provider: "daytona",
+              providerLeaseId: `allocation-${leaseId}`, status: "active" }).returning();
+            const next = await reserveRemoteWorkspace({ db, storage, companyId: ids.company, issueId: ids.issue,
+              runId, agentId: ids.agent, environmentId: ids.environment, projectId: null, projectWorkspaceId: null,
+              existingWorkspaceId: reserved.id, source: { kind: "empty" } });
+            const nextTarget = { ...await target("historical-successor"), leaseId, sandboxId: nextLease.providerLeaseId! };
+            const nextPrepared = await prepareRemoteWorkspace({ db, storage, workspace: next, runId,
+              lease: nextLease as EnvironmentLease, target: nextTarget });
+            return { cwd: nextPrepared.remoteRoot, finalize: async () => {
+              const { workspaceOperationService } = await import("./workspace-operations.js");
+              const recorder = workspaceOperationService(db).createRecorder({ companyId: ids.company, issueId: ids.issue, heartbeatRunId: runId });
+              const saved = await recorder.recordOperation({ phase: "workspace_finalize", cwd: nextPrepared.remoteRoot, run: async () => {
+                await saveRemoteWorkspace({ db, storage, workspace: nextPrepared.workspace, runId, lease: nextPrepared.lease,
+                  target: nextTarget, assertOwned: async () => undefined });
+                return { status: "succeeded", exitCode: 0 };
+              } });
+              expect(saved.status).toBe("succeeded");
+            } };
+          } });
+      }
+      if (!shouldSchedule) expect(await fs.readFile(path.join(prepared.remoteRoot, "saved.txt"), "utf8"))
         .toBe("work survives a failed provider session\n");
       if (scenario === "unknown_action") {
         const [decision] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, ids.run));
