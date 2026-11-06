@@ -2224,6 +2224,7 @@ a.paperclip-mention-chip[data-mention-kind="agent"]::before {
   margin-inline-end: var(--spacing);
   vertical-align: var(--skill-mention-icon-offset);
   background-color: currentColor;
+  -webkit-mask: var(--skill-mention-icon) center / contain no-repeat;
   mask: var(--skill-mention-icon) center / contain no-repeat;
 }
 
