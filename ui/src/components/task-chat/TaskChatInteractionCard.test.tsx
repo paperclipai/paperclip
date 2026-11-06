@@ -240,6 +240,28 @@ describe("TaskChatInteractionCard", () => {
     expect(container.textContent).not.toContain("Approve the plan?");
   });
 
+  it("shows the collapsed pending-request preview as plain text, not raw markdown", () => {
+    const summary = "The `creative-brief` document is saved on this task. It covers:\n\n- **Brand voice and audience:** Gen Z core buyers and holiday gift buyers.\n- __Style rules:__ see [the brief](#document-creative-brief) and ~~old~~ *new* notes.";
+    flushSync(() => {
+      root.render(
+        <TooltipProvider>
+          <ThemeProvider>
+            <TaskChatInteractionCard
+              item={interactionItem(createRequestConfirmation({ title: "Review the creative brief (v1)", summary }))}
+              showPendingRequest
+              onReviewRequest={() => {}}
+            />
+          </ThemeProvider>
+        </TooltipProvider>,
+      );
+    });
+    const row = container.querySelector('[data-testid="task-chat-pending-request"]');
+    expect(row).not.toBeNull();
+    const preview = row!.textContent ?? "";
+    expect(preview).toContain("The creative-brief document is saved on this task. It covers: Brand voice and audience: Gen Z core buyers and holiday gift buyers. Style rules: see the brief and old new notes.");
+    expect(preview).not.toMatch(/[`*_~[\]]|(^|\s)- /);
+  });
+
   it("renders a plan confirmation as a linked document preview", () => {
     const interaction = createRequestConfirmation({
       sourceRunId: "run-plan",

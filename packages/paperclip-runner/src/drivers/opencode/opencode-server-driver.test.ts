@@ -3084,6 +3084,9 @@ describe("OpenCodeServerDriver", () => {
       const observed = await events;
       const failure = observed.find(event => event.eventType === "turn.failed");
       expect(failure?.payload.error).toMatchObject({ providerFailure: { provider: "openrouter", category: "overloaded", message: "Provider is busy." } });
+      // Provider text stays in display fields: the notice summary, never the failure message.
+      expect((failure?.payload.error as Record<string, unknown>).message).toBeUndefined();
+      expect(observed.find(event => event.eventType === "provider.notice.recorded")?.payload.summary).toBe("Provider is busy.");
       expect(JSON.stringify(failure)).not.toContain("private-body");
     } finally { await session.close({ reason: "test complete" }); }
   });

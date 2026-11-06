@@ -235,6 +235,47 @@ const support = externalDatabase ? { supported: true } : await getEmbeddedPostgr
     } });
   });
 
+  // After the interview moves to chat, nothing drives the onboarding task.
+  // It must follow the chat instead of asking the user how it continues.
+  it("resolves the onboarding task when its interview moves to the agent chat", async () => {
+    const f = await seed();
+    const onboarding = await f.direct();
+    await db.update(issues).set({ originKind: "onboarding_first_task", status: "in_review" }).where(eq(issues.id, onboarding.id));
+    const payload = { version: 1 as const, questions: [
+      { id: "business", prompt: "What does your organization do?", selectionMode: "single" as const, options: [{ id: "shop", label: "A shop" }] },
+    ] };
+    await f.service.create(onboarding, { kind: "ask_user_questions", continuationPolicy: "wake_assignee", payload }, { agentId: f.agentId });
+    const stalledReviewCards = async () => (await attentionService(db).list(f.companyId, {
+      actor: { type: "board", source: "local_implicit", userId: f.userId }, userId: f.userId,
+    })).items.filter(item => item.sourceKind === "review" && item.subject.id === onboarding.id)
+      .map(item => item.subject.metadata?.reviewAttentionState);
+    expect(await stalledReviewCards()).toEqual([]);
+
+    await f.service.create(f.scope, { kind: "ask_user_questions", continuationPolicy: "wake_assignee", payload }, { agentId: f.agentId });
+
+    // No "Choose how this task continues" stalled-review card for the user.
+    expect(await stalledReviewCards()).toEqual([]);
+    const [task] = await db.select().from(issues).where(eq(issues.id, onboarding.id));
+    expect(task.status).toBe("done");
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, onboarding.id));
+    expect(comments.map(comment => comment.body).join("\n")).toContain(`/issues/${f.conversationId}`);
+  });
+
+  it("leaves the onboarding task open when it still has a pending card for the user", async () => {
+    const f = await seed();
+    const onboarding = await f.direct();
+    await db.update(issues).set({ originKind: "onboarding_first_task", status: "in_review" }).where(eq(issues.id, onboarding.id));
+    const payload = { version: 1 as const, questions: [
+      { id: "business", prompt: "What does your organization do?", selectionMode: "single" as const, options: [{ id: "shop", label: "A shop" }] },
+    ] };
+    await f.service.create(onboarding, { kind: "ask_user_questions", payload }, { agentId: f.agentId });
+    await db.insert(issueThreadInteractions).values({ companyId: f.companyId, issueId: onboarding.id,
+      kind: "ask_user_questions", createdByAgentId: f.agentId, addresseeUserId: "teammate-user", payload });
+    await f.service.create(f.scope, { kind: "ask_user_questions", payload }, { agentId: f.agentId });
+    const [task] = await db.select().from(issues).where(eq(issues.id, onboarding.id));
+    expect(task.status).toBe("in_review");
+  });
+
   it("moves the onboarding interview for native provider questions, but keeps cards meant for someone else", async () => {
     const f = await seed();
     const onboarding = await f.direct();

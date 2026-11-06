@@ -990,6 +990,7 @@ export interface Issue {
   lastExternalCommentAt?: Date | null;
   lastActivityAt?: Date | null;
   isUnreadForMe?: boolean;
+  unreadMessageCount?: number;
   archivedAt?: Date | null;
   archivedByActorType?: "user" | "agent" | null;
   archivedByAgentId?: string | null;

@@ -4456,13 +4456,15 @@ describe("TaskChatThread blocker links", () => {
           '[data-testid="task-chat-live-work-step"] a',
         ),
       ].map((link) => link.textContent);
+      // Each step leads with the shared task status glyph (its <title> is
+      // the status label), the same glyph the task list draws (BUG-07).
       expect(orderedLinks).toEqual([
-        "PAP-17424Run the guarded cutover",
-        "PAP-17425Verify the live projection",
-        "PAP-17427Verify the completed projection",
+        "DonePAP-17424Run the guarded cutover",
+        "In ProgressPAP-17425Verify the live projection",
+        "TodoPAP-17427Verify the completed projection",
       ]);
       expect(notice.textContent).toContain(
-        "Now runningPAP-17426Restore live alias projection",
+        "Now runningIn ProgressPAP-17426Restore live alias projection",
       );
       expect(
         notice.querySelector('a[href="/issues/PAP-17426"]'),
@@ -5555,6 +5557,30 @@ describe("TaskChatThread live transcript", () => {
       ).toBeNull();
     },
   );
+
+  it("renders one Stopped row when an interrupted native turn settles without a reply", () => {
+    const runId = "native-interrupted";
+    nativeTranscriptState.transcriptByRun.set(runId, [
+      assistantEntry("2026-11-06T15:14:05Z", "INTERRUPTED-PROGRESS-LINE", "progress"),
+      { kind: "run_terminal", ts: "2026-11-06T15:14:26Z", turnState: "cancelled", runState: "cancelled", disposition: "blocked" },
+    ]);
+    const activeRun = {
+      id: runId, runtimeMode: "native" as const, status: "running", invocationSource: "issue" as const,
+      triggerDetail: null, startedAt: "2026-11-06T15:14:05Z", createdAt: "2026-11-06T15:14:05Z", finishedAt: null,
+      agentId: "agent-1", agentName: "Researcher", adapterType: "paperclip_runner",
+    };
+    renderThread({ comments: [], onAdd: async () => {}, issueStatus: "in_progress", activeRun });
+    // Interrupt cancels the turn. A stopped turn posts no reply comment, so the
+    // settled turn alone owns it; the live tail must not render a second row.
+    renderThread({
+      comments: [], onAdd: async () => {}, issueStatus: "in_progress",
+      linkedRuns: [{ ...activeRun, runId, status: "cancelled", finishedAt: "2026-11-06T15:14:26Z",
+        errorCode: "operator_interrupted", resultJson: { operatorInterrupted: true, cancelledByActorType: "user" } }],
+    });
+    expect(container.querySelector('[data-testid="task-chat-live-transcript"]')).toBeNull();
+    expect(container.textContent?.split("INTERRUPTED-PROGRESS-LINE")).toHaveLength(2);
+    expect(container.textContent?.match(/Stopped (for|after) /g)).toHaveLength(1);
+  });
 
   it("keeps the transcript mounted through run settle until the settled turn renders (PAP-462 B4)", () => {
     transcriptState.transcriptByRun.set("run-1", [
