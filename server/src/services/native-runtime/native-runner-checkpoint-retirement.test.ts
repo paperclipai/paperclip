@@ -6,6 +6,7 @@ import {
 } from "./native-runner-checkpoint-retirement.js";
 
 it.each([
+  "invalid_uuid",
   "foreign_company",
   "foreign_run",
   "duplicate",
@@ -23,6 +24,7 @@ it.each([
     agentId: randomUUID(),
     sessionId: randomUUID(),
   });
+  if (kind === "invalid_uuid") value.agentId = "------------------------------------";
   if (kind === "foreign_company") value.companyId = randomUUID();
   if (kind === "foreign_run") value.runIds = [randomUUID()];
   if (kind === "duplicate") value.runIds = [runId, runId];

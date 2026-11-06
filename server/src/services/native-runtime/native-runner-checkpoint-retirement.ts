@@ -8,7 +8,7 @@ export type NativeCheckpointRetirement = {
   runIds: string[];
   retiredAt: string;
 };
-const uuid = /^[a-f0-9-]{36}$/;
+const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
 export function readNativeCheckpointRetirement(
   value: unknown,
   binding: { companyId: string; runId: string },
