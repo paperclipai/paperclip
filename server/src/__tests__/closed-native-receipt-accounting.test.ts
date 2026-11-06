@@ -142,4 +142,28 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(late.costAccountingPending).toBe(true);
     expect(late.usageJson).toMatchObject({ accountingLateReceiptPending: true });
   });
+
+  // A producer receipt priced only from the rate card is normally not a money
+  // correction. For a charge settled without its receipt, it is the first price.
+  it("prices the unavailable charge when a complete rate-card receipt arrives later", async () => {
+    const f = await fixture({ unpricedUsagePolicy: "block" });
+    expect(await accountRunCost(db, f.run.id)).toBe(true);
+    await persistUsageReceipt(db, { schema: "paperclip/accounting-receipt/v1", id: randomUUID(),
+      companyId: f.companyId, runId: f.run.id, adapterType: "paperclip_runner", sourceId: f.sourceId, sequence: 2,
+      receivedAt: new Date().toISOString(),
+      producerEvent: { sourceEventId: randomUUID(), eventType: "turn.completed" },
+      receipt: { complete: true, usageBasis: "per_run", provider: "anthropic", biller: "anthropic",
+        model: "claude-sonnet-5", billingType: "metered_api", costUsd: 0.25, costStatus: "estimated",
+        pricingProvenance: { source: "rate_card", version: "anthropic-test" },
+        usage: { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0 } } });
+    expect((await f.readRun()).usageJson).toMatchObject({ accountingLateReceiptPending: true });
+    await accountRunCost(db, f.run.id);
+    await flushBudgetEvaluationWork(db);
+    expect((await f.readRun()).costAccountingPending).toBe(false);
+    const charges = await f.charges();
+    expect(charges).toHaveLength(1);
+    expect(charges[0]).toMatchObject({ costStatus: "estimated" });
+    expect(Number(charges[0].costCents)).toBeCloseTo(25, 5);
+    expect(await f.block()).toBeNull();
+  });
 });

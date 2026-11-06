@@ -127,7 +127,10 @@ export async function persistUsageReceiptInTransaction(tx: Db, raw: UsageReceipt
     const authoritative = envelope.receipt.pricingProvenance
       && !["rate_card", "unknown"].includes(envelope.receipt.pricingProvenance.source);
     const rateCardOnly = envelope.producerEvent && envelope.receipt.pricingProvenance?.source === "rate_card";
-    const changed = envelope.lateDelta !== undefined
+    // A charge settled without its final receipt accepts any complete receipt,
+    // including a rate-card price, as a correction.
+    const unavailableClosed = previous.accountingReceiptUnavailable === true && envelope.receipt.complete === true;
+    const changed = unavailableClosed || envelope.lateDelta !== undefined
       || (envelope.producerEvent?.eventType === "usage.reported" && !envelope.receipt.usage)
       || envelope.receipt.usageBasis === "session_cumulative"
       || ["provider", "biller", "model", "billingType"].some(key => {
@@ -311,7 +314,8 @@ export async function reconcileLateRunUsageReceiptInTransaction(tx: Db, run: typ
     : receipt?.billingType === "subscription" ? "subscription_included" : receipt?.billingType ?? "unknown";
   const biller = receipt?.biller ?? receipt?.provider ?? "unknown";
   const qualified = late && receipt?.complete && receipt.usageBasis !== "session_cumulative"
-    && late.sourceId === previous.accountingReceiptSourceId && sameTokens && authoritative
+    && late.sourceId === previous.accountingReceiptSourceId && sameTokens
+    && (authoritative || (previous.accountingReceiptUnavailable === true && receipt.pricingProvenance?.source === "rate_card"))
     && rawAmount != null && receipt.costStatus !== "unpriced" && events.length === 1
     && receipt.model === events[0].event.model && receipt.provider === events[0].event.provider
     && biller === events[0].event.biller && billingType === events[0].event.billingType

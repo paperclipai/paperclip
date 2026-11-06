@@ -196,7 +196,10 @@ export async function accountRunCost(db: Db, runId: string, hooks: BudgetService
     // Late usage reported by a later run can arrive before this charge posts.
     const lateDebt = usage.accountingLateReceiptPending === true;
     await tx.update(heartbeatRuns).set({ costAccountingPending: lateDebt, costAccountedAt: new Date(), accountingProjectionVersion: "v2",
-      accountingLastError: lateDebt ? "late_usage_requires_reconciliation" : null, accountingLastAttemptAt: new Date() }).where(eq(heartbeatRuns.id, run.id));
+      accountingLastError: lateDebt ? "late_usage_requires_reconciliation" : null, accountingLastAttemptAt: new Date(),
+      // A complete receipt arriving later may price this charge (see usage-receipts).
+      ...(receiptUnavailable ? { usageJson: sql`coalesce(${heartbeatRuns.usageJson}, '{}'::jsonb) || '{"accountingReceiptUnavailable":true}'::jsonb` } : {}),
+    }).where(eq(heartbeatRuns.id, run.id));
     return true;
   }), { "budget.accounting.owner": "run" });
   for (const file of recoveredFiles) {
