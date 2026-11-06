@@ -3451,6 +3451,32 @@ export function toolAccessService(
           action: "connection_installs.changed", outcome: "success", reasonCode: "installs_changed",
           details: { added: added.map(({ targetType, targetId }) => ({ targetType, targetId })), removed: removed.map(({ targetType, targetId }) => ({ targetType, targetId })) },
         });
+      } else if (existingProfile?.status === "active" && lockedConnection.status === "active" && lockedConnection.enabled) {
+        // Editing a live connection's "Which agents can use this connection?"
+        // must reach those agents' runs. Installs are the reach gate for run
+        // tool hand-off, GitHub credentials and token minting, so a target the
+        // operator newly permits is installed too. Setup paths commit installs
+        // themselves, and targets that were already permitted keep their
+        // install choice. Narrowing never uninstalls here: the access editor
+        // cannot drop below the installed set.
+        const installedFor = (targetType: string, targetId: string) => existingInstalls.some((install) =>
+          (install.targetType === "company" && install.targetId === companyId)
+          || (install.targetType === targetType && install.targetId === targetId));
+        const added = bindingInputs.flatMap(({ targetType, targetId }) => (targetType === "company" || targetType === "agent")
+          && !existingBindings.some((prior) => prior.targetType === targetType && prior.targetId === targetId)
+          && !installedFor(targetType, targetId) ? [{ targetType, targetId }] : []);
+        if (added.length) {
+          await tx.insert(toolConnectionInstalls).values(added.map((binding) => ({
+            companyId, connectionId: connection.id, targetType: binding.targetType, targetId: binding.targetId,
+            createdByAgentId: actor?.actorType === "agent" ? (actor.actorId ?? null) : null,
+            createdByUserId: connectionActorUserId(actor),
+          }))).onConflictDoNothing();
+          await tx.insert(toolAccessAuditEvents).values({
+            companyId, connectionId: connection.id, actorType: actor?.actorType ?? "system", actorId: actor?.actorId ?? null,
+            action: "connection_installs.changed", outcome: "success", reasonCode: "access_widened",
+            details: { added: added.map(({ targetType, targetId }) => ({ targetType, targetId })), removed: [] },
+          });
+        }
       }
       for (const bindingInput of bindingInputs) {
         const [binding] = await tx

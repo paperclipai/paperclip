@@ -113,7 +113,10 @@ describeDatabase("connector access runtime synchronization", () => {
     for (const result of results) if (result.status === "rejected") throw result.reason;
     expect(results.map(result => result.status)).toEqual(["fulfilled", "fulfilled"]);
     if (change === "uninstall") {
-      expect(await db.select().from(toolConnectionInstalls).where(eq(toolConnectionInstalls.connectionId, connectionId))).toHaveLength(0);
+      // The uninstall's agent row is gone; the later "any agent" access save
+      // installs the connection company-wide so permitted agents can use it.
+      expect((await db.select().from(toolConnectionInstalls).where(eq(toolConnectionInstalls.connectionId, connectionId)))
+        .map(install => `${install.targetType}:${install.targetId}`)).toEqual([`company:${companyId}`]);
       const bindings = await db.select().from(toolProfileBindings).where(eq(toolProfileBindings.companyId, companyId));
       expect(bindings.some(binding => binding.metadata?.source === "tool_connection_install")).toBe(false);
     } else {
