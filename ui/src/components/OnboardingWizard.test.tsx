@@ -4014,6 +4014,68 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       } finally { await act(async () => root.unmount()); }
     });
 
+    it.each([
+      ["claude_local", false], ["codex_local", false], ["claude_local", true], ["codex_local", true],
+    ] as const)("discovers and releases %s after its resume read rejects on abort (panel mounted: %s)", async (adapterType, panelMounted) => {
+      const claude = adapterType === "claude_local";
+      const activeApi = claude ? mockAgentsApi.getActiveClaudeSetupTokenLoginSession : mockAgentsApi.getActiveAdapterAuthLoginSession;
+      const cancelApi = claude ? mockAgentsApi.cancelClaudeSetupTokenLogin : mockAgentsApi.cancelAdapterAuthLogin;
+      const startApi = claude ? mockAgentsApi.startClaudeSetupTokenLogin : mockAgentsApi.startAdapterAuthLogin;
+      const session = { sessionId: "abandoned-session", environmentId: "env-sandbox-1", status: "waiting_for_user", expiresAt: null,
+        panelMode: claude ? "submitted_browser_code" : "displayed_code",
+        aiConnection: { provider: claude ? "anthropic" : "openai", method: "subscription", ownership: "personal", agentIds: [], allAgents: true } };
+      let serverActive = true;
+      let aborts = 0;
+      let finishDiscovery!: () => void;
+      let finishCancellation = () => {};
+      const discovery = new Promise<void>(resolve => { finishDiscovery = resolve; });
+      activeApi.mockImplementation((...args: unknown[]) => {
+        const options = args.at(-1) as { signal?: AbortSignal; fresh?: boolean };
+        if (options?.fresh) return discovery.then(() => serverActive ? session : null);
+        if (!serverActive) return Promise.resolve(null);
+        return new Promise((_resolve, reject) => options?.signal?.addEventListener("abort", () => {
+          aborts++;
+          reject(new DOMException("The request was aborted", "AbortError"));
+        }, { once: true }));
+      });
+      cancelApi.mockImplementation(() => new Promise(resolve => { finishCancellation = () => { serverActive = false; resolve({}); }; }));
+      mockAgentsApi.getAdapterAuthSignal.mockResolvedValue({ status: "absent" });
+      const { root } = await openStep4({ adapterType });
+      const matchMedia = window.matchMedia;
+      const restoreMotion = () => Object.defineProperty(window, "matchMedia", { configurable: true, writable: true, value: matchMedia });
+      try {
+        if (panelMounted) await pickSource(claude ? /Claude/ : /OpenAI/);
+        else {
+          Object.defineProperty(window, "matchMedia", { configurable: true, writable: true,
+            value: (media: string) => ({ matches: false, media, onchange: null, addListener() {}, removeListener() {}, addEventListener() {}, removeEventListener() {}, dispatchEvent: () => false }) });
+          const tile = [...document.body.querySelectorAll('[role="radio"]')].find(tile => (claude ? /Claude/ : /OpenAI/).test(tile.textContent ?? ""))!;
+          await act(async () => (tile as HTMLElement).click());
+          expect(activeApi).toHaveBeenCalledTimes(1);
+          restoreMotion();
+        }
+        await act(async () => [...document.body.querySelectorAll("button")].find(button => button.textContent?.trim().startsWith("Back"))!.click());
+        for (let i = 0; i < 12; i++) await flushReact();
+        expect(aborts).toBeGreaterThan(0);
+        await vi.waitFor(() => expect((activeApi.mock.calls as unknown[][]).some(call => (call.at(-1) as { fresh?: boolean })?.fresh)).toBe(true));
+        expect(document.querySelectorAll('[role="radio"][aria-checked="true"]')).toHaveLength(0);
+        await pickSource(claude ? /Claude/ : /OpenAI/);
+        expect(startApi).not.toHaveBeenCalled();
+        await act(async () => finishDiscovery());
+        await vi.waitFor(() => expect(cancelApi).toHaveBeenCalled());
+        expect(startApi).not.toHaveBeenCalled();
+        await act(async () => finishCancellation());
+        for (let i = 0; i < 12; i++) await flushReact();
+        expect(serverActive).toBe(false);
+        expect(startApi).toHaveBeenCalledTimes(1);
+        expect(mockAgentsApi.hire).not.toHaveBeenCalled();
+      } finally {
+        restoreMotion();
+        finishDiscovery();
+        finishCancellation();
+        await act(async () => root.unmount());
+      }
+    });
+
     it("cancels claude_local on Back and starts a fresh sign-in when selected again", async () => {
       const session = {
         sessionId: "claude-session-1",

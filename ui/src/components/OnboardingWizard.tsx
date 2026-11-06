@@ -1,3 +1,4 @@
+import { cancelAdapterLoginSession, cancelPendingAdapterLogin } from "./useAdapterLoginCancellation";
 import { useQueryView } from "@/components/QueryView";
 import type { AgentRunner, AgentRunnerChoice } from "@paperclipai/shared";
 import { needsClaudeSetupQualification, qualifyClaudeSetup } from "../lib/qualify-claude-setup";
@@ -1161,10 +1162,8 @@ function OnboardingWizardInner({
           ? await agentsApi.getActiveClaudeSetupTokenLoginSession(createdCompanyId!, { signal })
           : await agentsApi.getActiveAdapterAuthLoginSession(createdCompanyId!, adapterType, { signal });
         if (session && dismissedLoginResumes.current.has(loginResumeKey)) {
-          const cancel = adapterCaps.login?.panelMode === "submitted_browser_code"
-            ? agentsApi.cancelClaudeSetupTokenLogin(createdCompanyId!, session.sessionId)
-            : agentsApi.cancelAdapterAuthLogin(createdCompanyId!, adapterType, session.sessionId);
-          await cancel.catch(() => {});
+          await cancelAdapterLoginSession(createdCompanyId!, adapterType,
+            adapterCaps.login?.panelMode === "submitted_browser_code", session.sessionId);
           return null;
         }
         return session;
@@ -1567,7 +1566,11 @@ function OnboardingWizardInner({
   function unwindConnectStep() {
     localLogin.cancel();
     dismissedLoginResumes.current.add(loginResumeKey);
-    if (createdCompanyId) void queryClient.cancelQueries({ queryKey: queryKeys.agents.activeLoginSession(createdCompanyId, adapterType) });
+    if (createdCompanyId) {
+      void queryClient.cancelQueries({ queryKey: queryKeys.agents.activeLoginSession(createdCompanyId, adapterType) });
+      if (canShowAdapterLogin && credentialMode !== "api") void cancelPendingAdapterLogin(createdCompanyId, adapterType,
+        adapterCaps.login?.panelMode === "submitted_browser_code");
+    }
     connectAttemptRef.current++;
     hiringAgentRef.current = null;
     setLoading(false);
