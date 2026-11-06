@@ -17,7 +17,7 @@ describe("canonical instruction tools through native authority", () => {
   let companyId: string, agentId: string, targetAgentId: string, userId: string, runId: string, issueId: string, root: string;
   let authority: PaperclipRunnerToolAuthority;
   const entryFile = "policy/ENTRY.md";
-  const original = "﻿# Original\r\n\0☃\n";
+  const original = "\uFEFF# Original\r\n\0☃\n";
   beforeAll(async () => {
     home = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "instruction-tool-home-")));
     process.env.PAPERCLIP_HOME = home;
@@ -68,7 +68,7 @@ describe("canonical instruction tools through native authority", () => {
   });
   it("serializes duplicate writes at the filesystem commit and replays the exact receipt after restart", async () => {
     const first = await call("read_agent_instructions");
-    const content = "﻿# Instructions — 日本語 🦀\r\n".repeat(600) + "\nFINAL TAIL\n";
+    const content = "\uFEFF# Instructions — 日本語 🦀\r\n".repeat(600) + "\nFINAL TAIL\n";
     const request = { tool: "update_agent_instructions", callId: randomUUID(), arguments: {
       targetAgentId, entryFile, content, baseRevisionId: first.revision.id,
     } };
