@@ -479,7 +479,14 @@ export async function prepareRemoteWorkspace(input: {
       resolveGitAuth: await createRemoteWorkspaceGitAuth(input.db, input.workspace.companyId, input.runId) });
   }
   const recoveredFiles: Array<{ operationId: string; sourceRunId: string; path: string; provenance: string }> = [];
-  if (!sameAllocation) {
+  const retained = input.workspace.metadata?.remoteWorkspaceRecoveredFiles;
+  const legacySources = (Array.isArray(retained) ? retained : []).flatMap(value => {
+    const item = object(value);
+    return typeof item.provenance !== "string" && typeof item.sourceRunId === "string" ? [item.sourceRunId] : [];
+  });
+  // Older records have no host proof. Rebuild it from their scoped saved
+  // receipts, then verify the live destination without overwriting user edits.
+  if (!sameAllocation || legacySources.length) {
     // Shared and inherited workspaces retain their original source task. The
     // current writer's task owns its recovery attachments, including a child's
     // preserved files recorded during migration of an ancestor's workspace.
@@ -488,6 +495,7 @@ export async function prepareRemoteWorkspace(input: {
       .where(and(eq(heartbeatRuns.companyId, input.workspace.companyId), eq(heartbeatRuns.id, input.runId)));
     const retainedSources = input.workspace.metadata?.remoteWorkspaceRecoverySourceRunIds;
     const recoverySourceRunIds = [...new Set([
+      ...legacySources,
       ...(Array.isArray(retainedSources) ? retainedSources.filter((id): id is string => typeof id === "string") : []),
       ...(typeof run?.context?.taskRetryRequestId === "string" || run?.context?.explicitUserContinuation
         ? [input.runId] : []),
@@ -509,6 +517,7 @@ export async function prepareRemoteWorkspace(input: {
           const provenance = await readFile(path.join(item.path, "provenance.json"), "utf8");
           const exists = await hasRemoteRecoveryAttachment({ target, remoteCwd: remoteRoot, operationId: item.operationId,
             provenance });
+          if (!exists && sameAllocation) continue;
           if (!exists) await target.runner!.syncIn!([{ operationId: randomUUID(), files: [{
               kind: "directory", sourcePath: item.path, targetPath: path.posix.join(remoteRoot, relative),
             }] }]);
@@ -519,7 +528,6 @@ export async function prepareRemoteWorkspace(input: {
   }
   // A saved workspace can already contain edited sidecars. Publish only paths
   // whose exact host-recorded proof is present in this actual prepared root.
-  const retained = input.workspace.metadata?.remoteWorkspaceRecoveredFiles;
   for (const value of Array.isArray(retained) ? retained : []) {
     const item = object(value);
     if (typeof item.operationId !== "string" || !/^[a-f0-9-]{36}$/.test(item.operationId)

@@ -1300,7 +1300,9 @@ authorize an empty replacement or replay completed work.
 Read-only imports can use a superseded immutable snapshot with the exact saved
 operation receipt. They do not establish current workspace execution authority.
 Restored sidecars keep user edits, and only paths present with their recorded
-provenance in the current prepared root are published to the provider.
+provenance in the current prepared root are published to the provider. Older
+attachment records rebuild this proof from saved receipts; reusing a live
+allocation never replaces their files.
 
 When a legacy turn admitted by an explicit user message fails or times out, a bounded transient retry needs its own durable continuation authorization. Initial admission binds the message's exact body digest and revision. Scheduling requires that original binding and revalidates the human author, source task, assignee, and execution ownership, then records the successor's receipt in the same transaction as its run. Historical receipts without a message binding cannot authorize automatic retries and are not backfilled. The parent receipt remains intact. Dispatch checks the exact successor, retry parent, and unchanged message binding again. Deleted or edited input, changed actors or ownership, superseded work, and duplicate successors cannot renew authority. One-run Retry and Interrupt intents retain their separate admission contracts; they are not renewable user-message authority. Other retry policies cannot borrow this receipt: their scheduling fails closed. Successful explicit turns do not create a prose-only missing-comment follow-up with spent authority.
 

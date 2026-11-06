@@ -1853,7 +1853,19 @@ describe("automatic retained workspace recovery", () => {
           expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0].executionWorkspaceId).toBe(placeholder.id);
           const editedLog = `${tickLog}User preserved annotation\n`;
           await writeFile(path.join(boundary.executionWorkspace.cwd, newest!.path, "files", "ticks.log"), editedLog);
-          const [selectedWorkspace] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, placeholder.id));
+          let [selectedWorkspace] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, placeholder.id));
+          if (kind === "retained_history") {
+            const olderPaths = selectedWorkspace.metadata!.remoteWorkspaceRecoveredFiles as Array<{ operationId: string; sourceRunId: string; path: string }>;
+            const [legacy] = await db.update(executionWorkspaces).set({ metadata: { ...selectedWorkspace.metadata,
+              remoteWorkspaceRecoveredFiles: olderPaths.map(({ operationId, sourceRunId, path }) => ({ operationId, sourceRunId, path })) } })
+              .where(eq(executionWorkspaces.id, selectedWorkspace.id)).returning();
+            const upgraded = await prepareRemoteWorkspace({ db, storage, workspace: legacy, runId: successor.id,
+              lease: boundary.activeEnvironmentLease!.lease, target: boundary.executionTarget });
+            expect(upgraded.workspace.metadata?.remoteWorkspaceRecoveredFiles).toEqual(expect.arrayContaining(olderPaths.map(item =>
+              expect.objectContaining({ operationId: item.operationId, sourceRunId: item.sourceRunId, path: item.path }))));
+            expect(await readFile(path.join(upgraded.remoteRoot, newest!.path, "files", "ticks.log"), "utf8")).toBe(editedLog);
+            selectedWorkspace = upgraded.workspace;
+          }
           await saveRemoteWorkspace({ db, storage, workspace: selectedWorkspace, runId: successor.id,
             lease: boundary.activeEnvironmentLease!.lease, target: boundary.executionTarget, assertOwned: async () => {} });
           await db.update(environmentLeases).set({ status: "released", releasedAt: new Date(), cleanupStatus: "success" })
