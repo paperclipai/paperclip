@@ -34,7 +34,8 @@ afterEach(async () => {
   await fs.rm(root, { recursive: true, force: true });
 });
 
-it("privately restores an archived linked checkout at a new path and keeps its files and extra history after cold restore", async () => {
+it.each(["warm", "pruned", "missing-prerequisite"])("privately restores an archived linked checkout at a new path and keeps its files and extra history after cold restore (cache: %s)", async cache => {
+  const pruned = cache !== "warm";
   const identity = { companyId: randomUUID(), workspaceId: randomUUID() }, projectId = randomUUID();
   const remote = path.join(root, "remote"), old = path.join(root, "old");
   await fs.mkdir(remote); await fs.mkdir(old);
@@ -42,11 +43,17 @@ it("privately restores an archived linked checkout at a new path and keeps its f
   await fs.writeFile(path.join(remote, ".gitignore"), ".claude/settings.local.json\n");
   await fs.writeFile(path.join(remote, "note.txt"), "remote\n");
   git(remote, "add", "."); git(remote, "commit", "-qm", "initial");
-  const upstream = git(remote, "rev-parse", "HEAD");
+  const initial = git(remote, "rev-parse", "HEAD");
+  let upstream = initial;
   const source = { id: randomUUID(), repoUrl: pathToFileURL(remote).href, repoRef: "main", cwd: null };
   const name = managedProjectCheckoutName(source);
   const [base] = nestedRepositoryBaseCandidates({ ...identity, projectId, repoUrl: source.repoUrl });
   await fs.mkdir(path.dirname(base!), { recursive: true }); git(root, "clone", "-q", source.repoUrl, base!);
+  if (pruned) {
+    await fs.writeFile(path.join(remote, "remote-advance.txt"), "new prerequisite\n");
+    git(remote, "add", "remote-advance.txt"); git(remote, "commit", "-qm", "advance remote");
+    upstream = git(remote, "rev-parse", "HEAD");
+  }
   const oldNested = path.join(old, ".paperclip-repositories", name);
   await fs.mkdir(path.dirname(oldNested), { recursive: true });
   await addNestedRepositoryWorktree({ base: base!, cwd: oldNested, repoUrl: source.repoUrl, repoRef: source.repoRef });
@@ -78,9 +85,18 @@ it("privately restores an archived linked checkout at a new path and keeps its f
     key: sealed.key, generation, head: manifest.head, index: manifest.index, worktree: manifest.worktree,
     ignored: manifest.ignored, modes: manifest.modes, headOnRemote: false,
   } }]);
+  const expectedSnapshot = await currentRestorePointSnapshot(oldNested);
+  if (pruned) {
+    expect(manifest.prerequisites).toContain(upstream);
+    git(base!, "worktree", "remove", "--force", oldNested);
+    git(base!, "branch", "-D", descriptor.branchName!);
+    git(base!, "update-ref", "refs/remotes/origin/main", initial);
+    git(base!, "reflog", "expire", "--expire=now", "--all"); git(base!, "gc", "--prune=now");
+    expect(() => git(base!, "cat-file", "-e", `${upstream}^{commit}`)).toThrow();
+  }
   await fs.writeFile(path.join(base!, "cache-only.txt"), "unrelated active cache files\n");
   const sourceState = () => ({ refs: git(base!, "show-ref"), worktrees: git(base!, "worktree", "list", "--porcelain"),
-    status: git(base!, "status", "--porcelain"), index: git(base!, "ls-files", "--stage"), checkout: git(oldNested, "status", "--porcelain") });
+    status: git(base!, "status", "--porcelain"), index: git(base!, "ls-files", "--stage"), checkout: pruned ? null : git(oldNested, "status", "--porcelain") });
   const before = sourceState();
   const moved = path.join(root, "new"); await fs.mkdir(moved);
   const restore = (isolateRepositories: boolean, authorizeSource = async () => {}, cwd = moved) => restoreGitWorkspaceContents({ cwd,
@@ -92,13 +108,20 @@ it("privately restores an archived linked checkout at a new path and keeps its f
   contents.checkouts[0]!.worktree!.base = remote;
   await expect(restore(true)).rejects.toThrow("could not be restored");
   contents.checkouts[0]!.worktree!.base = recordedBase;
+  if (cache === "missing-prerequisite") {
+    git(remote, "reset", "--hard", initial);
+    git(remote, "reflog", "expire", "--expire=now", "--all"); git(remote, "gc", "--prune=now");
+    await expect(restore(true)).rejects.toThrow("could not be restored");
+    expect(sourceState()).toEqual(before);
+    return;
+  }
   const other = path.join(root, "other-import"); await fs.mkdir(other);
   await Promise.all([restore(true), restore(true, undefined, other)]);
   expect(await currentRestorePointSnapshot(path.join(other, ".paperclip-repositories", name)))
-    .toEqual(await currentRestorePointSnapshot(oldNested));
+    .toEqual(expectedSnapshot);
   const nested = path.join(moved, ".paperclip-repositories", name);
   expect((await fs.lstat(path.join(nested, ".git"))).isDirectory()).toBe(true);
-  expect(await currentRestorePointSnapshot(nested)).toEqual(await currentRestorePointSnapshot(oldNested));
+  expect(await currentRestorePointSnapshot(nested)).toEqual(expectedSnapshot);
   expect(git(nested, "symbolic-ref", "--short", "HEAD")).toBe(descriptor.branchName);
   expect(await fs.readFile(path.join(nested, ".claude", "settings.local.json"), "utf8")).toBe(settings);
   await expect(fs.access(path.join(nested, "cache-only.txt"))).rejects.toMatchObject({ code: "ENOENT" });

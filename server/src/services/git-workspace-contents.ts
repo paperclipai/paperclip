@@ -285,6 +285,7 @@ export async function restoreGitWorkspaceContents(input: Identity & { cwd: strin
           if (gitObjectSource && checkout.restorePoint) await copyVerifiedGitExcludes(gitObjectSource, temporary);
           if (checkout.restorePoint && input.isolateRepositories) {
             const { payload, manifest } = await loadGitRestorePoint({ storage: input.storage ?? getStorageService(), workspace, ref: checkout.restorePoint });
+            for (const commit of manifest.prerequisites) await ensureSavedGitCommit(temporary, checkout.source.repoUrl, commit, input.resolveGitAuth);
             await importRestorePoint({ repositoryCwd: temporary, payload });
             for (const commit of manifest.preserved) await gitCacheCommand(temporary, ["update-ref", `refs/paperclip-preserved/${commit}`, commit]);
           } else if (checkout.restorePoint) await ensureGitRestorePointCommit({ storage: input.storage ?? getStorageService(), workspace,
