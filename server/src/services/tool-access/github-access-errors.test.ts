@@ -39,6 +39,7 @@ describe("GitHub tool access failures", () => {
       expect(text).toMatch(/until GitHub access is repaired/);
       expect(text).toContain("https://github.com/new");
       expect(text).toContain("Refresh access");
+      expect(text).toContain("Add More Repos on GitHub");
       expect(text).toMatch(/personal account/i);
       expect(text).toMatch(/organization argument/i);
       expect(text).toMatch(/does not.*personal account/i);

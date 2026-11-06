@@ -145,6 +145,9 @@ Direct MCP calls and connection tests receive the same method-specific repair
 steps. A GitHub provider denial is an MCP tool error result, not an HTTP
 authentication failure for the gateway. Invalid gateway credentials still fail
 authentication before any provider call.
+Repair steps are attached after provider output passes content checks, so model
+checks inspect the provider's text without treating Paperclip's own instructions
+as untrusted output. Unsafe provider responses still fail those checks.
 
 For an App connection's `create_repository`, the agent checks the intended
 repository owner first. The authenticated GitHub username and the accounts
@@ -153,7 +156,7 @@ grant access to the user's personal repositories. Personal repository creation
 needs App access to that personal account; organization creation needs App access
 to that organization and the tool's `organization` argument. The agent must
 keep the owner requested by the user. The user can choose the intended account
-from **Configure on GitHub**, then select **Refresh access**. If creation remains
+from **Add More Repos on GitHub**, then select **Refresh access**. If creation remains
 unavailable, the user can create the repository on GitHub and give the App access,
 then the agent continues with that repository. Token connections ask
 the user to check token permissions and repository selection, then update or
