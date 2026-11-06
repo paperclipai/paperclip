@@ -97,9 +97,10 @@
     },
     {
       "path": "rules/ui-render-cost.mdc",
-      "description": "Render cost of UI code over large collections: no nested scans, stable memo dependencies, and realistic-size tests for changed large-collection paths.",
+      "description": "Render cost of UI components and hooks over large collections: no nested scans, stable memo dependencies, and realistic-size tests for changed large-collection paths.",
       "scope": [
-        "ui/src/**"
+        "ui/src/**/*.tsx",
+        "ui/src/**/use*.ts"
       ]
     }
   ]

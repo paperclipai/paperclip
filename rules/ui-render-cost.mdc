@@ -1,16 +1,16 @@
 ---
 description: Keep UI render work proportional to collection size, keep memo inputs stable, and test large-collection paths at realistic size.
-globs: "ui/src/**"
+globs: "ui/src/**/*.tsx,ui/src/**/use*.ts"
 alwaysApply: false
 ---
 
 # Render work must stay proportional to its data
 
-Applies to `ui/src/**` code that iterates over a collection during render, in a
-`useMemo`, or in a selector, when the collection can be large. Large means
-hundreds of items or more. Examples are catalogs shipped with the app and lists
-that grow with a company's data, such as tasks, runs, agents, connections and
-activity.
+Applies to components (`ui/src/**/*.tsx`) and hooks (`ui/src/**/use*.ts`) that
+iterate over a collection during render, in a `useMemo`, or in a selector, when
+the collection can be large. Large means hundreds of items or more. Examples are
+catalogs shipped with the app and lists that grow with a company's data, such
+as tasks, runs, agents, connections and activity.
 
 ## Why
 
