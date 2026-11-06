@@ -2828,13 +2828,23 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
               if (pending.id !== opts.taskRetryRequestId || retry?.generationId !== pending.id || retry.chatActionId ||
                   retry.actorId !== opts.requestedByActorId || retry.sourceRunId !== enrichedContextSnapshot.previousRunId)
                 return { kind: "deferred" as const };
+              // A declined Retry stays saved, but never silently: name the gate
+              // so the task explains it and a new click can replace this intent.
+              const declineRetry = async (reason: string, message: string) => {
+                await writeDeferredExecutionWait(tx as unknown as Db, { companyId: agent.companyId,
+                  requestId: pending.id }, { reason, message }, { replace: true });
+                logger.warn({ requestId: pending.id, issueId, reason }, "Task Retry could not start");
+                return { kind: "deferred" as const };
+              };
               if (!await taskRetryMutationAllowed(tx as unknown as Db, { companyId: agent.companyId, issueId,
-                actorId: retry.actorId, actorSource: retry.actorSource })) return { kind: "deferred" as const };
+                actorId: retry.actorId, actorSource: retry.actorSource }))
+                return declineRetry("retry_authority_denied", "The user who requested Retry can no longer change this task.");
               if (retry.boardMessageOrigin) {
                 const origin = await readTaskRetryBoardMessageOrigin(tx as unknown as Db, { companyId: agent.companyId,
                   issueId, agentId, sourceRunId: retry.sourceRunId, actorId: retry.actorId });
                 if (!origin || origin.commentId !== retry.boardMessageOrigin.commentId ||
-                    origin.identityContextId !== retry.boardMessageOrigin.identityContextId) return { kind: "deferred" as const };
+                    origin.identityContextId !== retry.boardMessageOrigin.identityContextId)
+                  return declineRetry("retry_source_changed", "The saved message this Retry continues has changed.");
               }
             }
             if (opts.queuedCommentRequestId) {

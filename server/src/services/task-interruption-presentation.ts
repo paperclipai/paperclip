@@ -68,6 +68,11 @@ const retryWaitMessages: Record<string, string> = {
   finalizing_saved_result: "Paperclip is finishing the saved result before Retry can continue.",
   cleanup_quarantined: "Retry cannot continue this attempt. Send a new message after the previous execution has stopped.",
   cancelled_by_operator: "This attempt was stopped. Send a new message to continue from saved work.",
+  // A new click replaces a Retry declined for its requester's access with a
+  // fresh attempt under the clicker's access, so Retry stays available.
+  retry_authority_denied: "Retry could not start with the requesting user's access. Press Retry to start it with yours.",
+  // An edited saved message can never be replayed; only new input continues.
+  retry_source_changed: "Retry cannot continue because its saved message changed. Send a new message to continue from saved work.",
 };
 
 /** Recognize old persisted failures without displaying arbitrary run error text. */
@@ -152,7 +157,7 @@ export function projectTaskInterruption(issue: ProjectionIssue, input: Projectio
     const reason = Object.hasOwn(retryWaitMessages, retryWait.executionWaitReason) ? retryWait.executionWaitReason : "execution_recovery";
     // Keep the latest input receipt so message submission can settle independently.
     return { ...base, state: "failed",
-      canRetry: !["cleanup_quarantined", "cancelled_by_operator"].includes(reason), retryWait: { reason,
+      canRetry: !["cleanup_quarantined", "cancelled_by_operator", "retry_source_changed"].includes(reason), retryWait: { reason,
       message: retryWaitMessages[reason] ?? "Retry is waiting for execution checks. Your message is saved." } };
   }
   if (wait && wait.requestedAt.getTime() > now - 10_000 && system?.state !== "exhausted")

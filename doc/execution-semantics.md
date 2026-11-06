@@ -1249,6 +1249,19 @@ Newer saved input keeps its own receipt while the existing Retry explanation sta
 visible. Terminal waits direct the user to send new input and hide the Retry action
 that cannot continue that attempt.
 
+Dispatch never declines a board Retry silently. When the intent itself can no
+longer start, the intent keeps a named wait and the task shows it. If its saved
+board message changed (`retry_source_changed`), the wait is terminal: Retry is
+hidden and the user sends a new message. If its requester can no longer change
+the task (`retry_authority_denied`), Retry stays available: a later click with a
+new idempotency key replaces that intent with a fresh attempt under the clicker's current authority, instead of joining it, and starts
+at most one run. The replaced intent is recorded as `skipped` with
+`task_retry_replaced`. Clicks that arrive while a Retry waits on shared state
+(cleanup, recovery, an active run, preservation) still join that Retry; it
+starts by itself once the gate clears. A Retry accepted during the pre-deploy
+drain stays saved and is dispatched by the deferred-receipt worker after the
+restart.
+
 A remote native run can lose its original runner or sandbox before reattachment.
 This happens after a server restart, and for a same-run retry after a turn ends
 without a semantic result. The reattachment then fails with
