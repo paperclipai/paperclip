@@ -623,8 +623,8 @@ function installCodexPlatformFixture(outcome: CodexPlatformFixtureOutcome) {
   codexPlatformFixtureReceipt = receipt;
   let qualified = false;
   const diagnostic = outcome === "permission"
-    ? "Instance admin access is required to qualify this environment. Ask an instance admin or choose Legacy runner in Advanced."
-    : "The setup lease could not be confirmed as released. Ask an instance admin to resolve cleanup or choose Legacy runner in Advanced.";
+    ? "Instance admin access is required to qualify this environment. Ask an instance admin to qualify this environment."
+    : "The setup lease could not be confirmed as released. Ask an instance admin to resolve cleanup, then retry setup.";
   const fixtureFetch: typeof fetch = async (input, init) => {
     const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url, window.location.origin);
     const method = init?.method ?? (input instanceof Request ? input.method : "GET");
@@ -697,15 +697,10 @@ function managedCodexQualificationStory(outcome: CodexPlatformFixtureOutcome): S
         await screen.findByRole("heading", { name: "Let's get started..." }, { timeout: STEP_TIMEOUT_MS });
       } else {
         await screen.findByText(outcome === "permission"
-          ? "Instance admin access is required to qualify this environment. Ask an instance admin or choose Legacy runner in Advanced."
-          : "The setup lease could not be confirmed as released. Ask an instance admin to resolve cleanup or choose Legacy runner in Advanced.", {}, { timeout: STEP_TIMEOUT_MS });
-        await userEvent.click(screen.getByText("Advanced", { exact: true, selector: "summary" }));
-        const runnerControl = screen.getByRole("button", { name: "Runner" });
-        await expect(runnerControl).toHaveTextContent("Legacy runner (default)");
-        await waitFor(() => expect(runnerControl).toBeEnabled(), { timeout: STEP_TIMEOUT_MS });
-        await userEvent.click(runnerControl);
-        await expect(await screen.findByRole("option", { name: "Legacy runner (default)" })).toBeEnabled();
-        await userEvent.keyboard("{Escape}");
+          ? "Instance admin access is required to qualify this environment. Ask an instance admin to qualify this environment."
+          : "The setup lease could not be confirmed as released. Ask an instance admin to resolve cleanup, then retry setup.", {}, { timeout: STEP_TIMEOUT_MS });
+        await expect(screen.queryByRole("button", { name: "Runner" })).not.toBeInTheDocument();
+        await expect(screen.queryByText("Advanced", { exact: true, selector: "summary" })).not.toBeInTheDocument();
         await expect(screen.queryByRole("heading", { name: "Let's get started..." })).not.toBeInTheDocument();
       }
       const receipt = codexPlatformFixtureReceipt!;

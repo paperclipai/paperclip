@@ -12,7 +12,7 @@ T-oracle.
 
 ```sh
 pnpm install --frozen-lockfile
-pnpm --filter @paperclipai/paperclip-runner build:runner-binaries   # native runner (debug)
+pnpm --filter @paperclipai/paperclip-runner run build:runner-binaries   # native runner (debug)
 set -a; source ~/.secrets; set +a                                   # provider keys, process env only
 node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/main.ts --env local \
   --adapters codex,claude,opencode --concurrency 4 --tasks 8 --faults K1,K2,K4 --seed 42
@@ -31,7 +31,7 @@ are wired (see the TODO in `seed.ts`).
 | File | Role |
 | --- | --- |
 | `supervisor.ts` | Owns the server. Reuses `tests/runner-e2e` process code (config, ports, env isolation, wrapper-owned Postgres, process-tree stopper, `replaceController`). Faults: K1 SIGKILL + immediate restart, K2 SIGTERM + restart, K4 SIGKILL + 2–5 min hold. The controller runtime cache is kept (discarding it is K11). |
-| `seed.ts` | Chaos Lab company, encrypted provider secrets, native Codex / ACPX Claude / OpenCode agents from the runner-e2e catalog, and the `chaos-sandbox` project (git repo: python CLI, one failing test, `bench.sh` ≈ 4 min) with isolated git-worktree workspaces. |
+| `seed.ts` | Chaos Lab company, encrypted provider secrets, native Codex / ACPX Claude / OpenCode agents from the runner-e2e catalog, and the `chaos-sandbox` project (git repo: python CLI, one failing test, `bench.sh` ≈ 4 min) with isolated git-worktree workspaces. It first turns on the instance `enableIsolatedWorkspaces` setting; without it the server ignores the project policy and every repo task shares the primary checkout. |
 | `scheduler.ts` | Seeded plan: workload × adapter × fault cells and a random fire time per task. Saved to `results/<wave>/plan.json`. `--replay` reruns one task alone with the same choices and fires the recorded sequence of faults that crossed it (other tasks' faults included) at the same offsets from launch. |
 | `observer.ts` | Polls each issue and its runs. When a task rests needing Retry it calls `POST /api/issues/:id/retry` once, with the body `useTaskRetry.ts` sends. Collects T-oracle artifacts and the R6 sweep. |
 | `grader.ts` | Pure R1–R6 grading over the samples. |

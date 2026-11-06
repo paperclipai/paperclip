@@ -157,4 +157,55 @@ describe("Codex driver terminal-turn history replay", () => {
       events.find((event) => event.eventType === "session.failed")?.payload,
     ).toMatchObject({ code: "turn_binding_mismatch" });
   });
+
+  it("records a restore-lost turn this session never bound without failing its own turn", async () => {
+    const transport = new FakeCodexTransport();
+    const session = await makeDriver([transport]).openSession({
+      runId: "run-unbound-restore-loss",
+      normalizedSessionId: "normalized-unbound-restore-loss",
+      workingDirectory: WORKSPACE,
+    });
+    await session.startTurn({ message: { role: "user", text: "Continue." } });
+    const lost = {
+      threadId: "thread-1",
+      turn: { id: "turn-uncheckpointed", status: "failed", items: [],
+        error: { code: "provider_turn_lost_on_restore", message: "lost", recoverable: true } },
+    };
+    transport.push("turn/completed", lost);
+    // A replay of the same report stays ignored.
+    transport.push("turn/completed", lost);
+    transport.push("turn/completed", {
+      threadId: "thread-1",
+      turn: { id: "turn-1", status: "completed", items: [] },
+    });
+    const events = await collectUntilTerminal(session.events());
+    expect(events.find((event) => event.eventType === "session.failed")).toBeUndefined();
+    expect(events.filter((event) => event.eventType === "turn.failed")).toHaveLength(0);
+    expect(events.find((event) => event.eventType === "turn.completed")?.turnId).toBe("turn-1");
+    expect(events.find((event) => event.eventType === "harness.diagnostic"
+      && event.payload.classification === "unbound_restored_turn_lost")?.payload)
+      .toMatchObject({ receivedTurnId: "turn-uncheckpointed", expectedTurnId: "turn-1" });
+  });
+
+  it.each([
+    ["an ordinary failure", { status: "failed", error: { code: "provider_failed", recoverable: false } }],
+    ["a completion", { status: "completed" }],
+  ])("still rejects %s for a turn this session never bound", async (_label, terminal) => {
+    const transport = new FakeCodexTransport();
+    const session = await makeDriver([transport]).openSession({
+      runId: "run-unbound-terminal",
+      normalizedSessionId: "normalized-unbound-terminal",
+      workingDirectory: WORKSPACE,
+    });
+    await session.startTurn({ message: { role: "user", text: "Continue." } });
+    transport.push("turn/completed", {
+      threadId: "thread-1",
+      turn: { id: "turn-unknown", items: [], ...terminal },
+    });
+    const events: PrpEvent[] = [];
+    for await (const event of session.events()) events.push(event);
+    expect(
+      events.find((event) => event.eventType === "session.failed")?.payload,
+    ).toMatchObject({ code: "turn_binding_mismatch" });
+  });
 });

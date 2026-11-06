@@ -4843,6 +4843,59 @@ describe("executeNativeSession recovery", () => {
     completeTerminatedLocalNativeSessionCleanup(binding);
   });
 
+  it("keeps an unrecoverable close from quarantining unrelated tasks of the same backend", async () => {
+    const companyId = "unrecoverable-scope-company";
+    const capabilities = { resume: true, typedEvents: true, steering: false, interruption: false, structuredResult: true };
+    const scoped = (suffix: string, overrides: { issueId?: string; sessionId?: string } = {}) => {
+      const scopedIdentity = { ...identity, companyId, runId: `run-${suffix}`,
+        issueId: overrides.issueId ?? `issue-${suffix}`, sessionId: overrides.sessionId ?? `session-${suffix}` };
+      const close = vi.fn(async () => {});
+      const session: NativeSession = {
+        identity: () => scopedIdentity, capabilities: async () => capabilities,
+        async *events() { throw new Error(`transport ${suffix} stopped`); },
+        startTurn: async () => ({ turnId: `turn-${suffix}` }), result: async () => null,
+        async snapshot() { return { backendKind: "mock", sessionId: `driver-${suffix}`, identity: scopedIdentity,
+          providerSessionId: `provider-${suffix}`, cursor: null, activeTurnId: null, pendingRuntimeRequests: [], lineage: [] }; },
+        close,
+      };
+      const backend: NativeSessionBackend = {
+        // Every task shares the backend kind/name, as all Codex runs of a company do.
+        descriptor: async () => ({ kind: "runner", name: "shared-codex-backend", version: "1", capabilities }),
+        openSession: vi.fn(async () => session),
+      };
+      const controlPlane: ControlPlanePort = {
+        openRun: async () => {}, checkpointSession: async () => {},
+        appendEvent: async () => ({ cursor: 0, highestContiguousSourceSeq: 0, disposition: "committed" }),
+        replayEvents: async () => ({ events: [], highestContiguousSourceSeq: 0 }), completeRun: vi.fn(async () => {}),
+      };
+      const options = {
+        input: { ...input, binding: { ...input.binding, companyId, runId: scopedIdentity.runId, issueId: scopedIdentity.issueId },
+          session: { ...input.session, normalizedSessionId: scopedIdentity.sessionId } },
+        backend, controlPlane, runnerInstanceId: "shared-runner", controlPlaneInstanceId: "control",
+        requireSessionCloseBeforeReturn: true,
+      };
+      return { scopedIdentity, close, backend, options };
+    };
+    const quarantined = scoped("a");
+    quarantined.close.mockRejectedValue(new NativeSessionCloseUnrecoverableError());
+    await expect(executeNativeSession(quarantined.options)).rejects.toMatchObject({
+      message: "transport a stopped", cleanupError: expect.any(NativeSessionCloseUnrecoverableError) });
+
+    // A different task and conversation shares no resource with the retained owner.
+    const unrelated = scoped("b");
+    await expect(executeNativeSession(unrelated.options)).rejects.toThrow("transport b stopped");
+    expect(unrelated.backend.openSession).toHaveBeenCalledOnce();
+
+    // The retained owner may still write its own task and conversation: both stay gated.
+    for (const sameResource of [scoped("c", { issueId: quarantined.scopedIdentity.issueId }),
+      scoped("d", { sessionId: quarantined.scopedIdentity.sessionId })]) {
+      await expect(executeNativeSession(sameResource.options)).rejects.toBeInstanceOf(NativeSessionCleanupQuarantinedError);
+      expect(sameResource.backend.openSession).not.toHaveBeenCalled();
+    }
+    expect(completeTerminatedLocalNativeSessionCleanup({ companyId, runId: quarantined.scopedIdentity.runId,
+      runnerInstanceId: "shared-runner" })).toBe(true);
+  });
+
   it("propagates an exhausted required backend checkpoint close", async () => {
     vi.useFakeTimers();
     try {

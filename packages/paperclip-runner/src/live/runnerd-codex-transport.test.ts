@@ -1485,6 +1485,26 @@ it("defers turn starts until their command result and rejects stale identities",
   ).toBe("accept");
 });
 
+it("does not hold a pending turn start behind another turn's restore-lost terminal", () => {
+  const { runnerdTerminalProviderTurnId: terminalTurn, terminalMayBelongToPendingTurnStart: mayBelong } =
+    runnerdRecoveryInternals;
+  // The restored runner reports the previous, unbound turn as lost after the
+  // new turn.start result named the new provider turn.
+  const lostTurn = terminalTurn("turn.failed", {
+    providerTurnId: "provider-turn-previous", status: "failed",
+    error: { code: "provider_turn_lost_on_restore", recoverable: true },
+  });
+  expect(lostTurn).toBe("provider-turn-previous");
+  expect(mayBelong({ expectedProviderTurnId: "provider-turn-new", terminalProviderTurnId: lostTurn })).toBe(false);
+  // Its own terminal, an unnamed terminal, or any terminal before the command
+  // result stays held until turn.accepted is exposed.
+  expect(mayBelong({ expectedProviderTurnId: "provider-turn-new", terminalProviderTurnId: "provider-turn-new" })).toBe(true);
+  expect(mayBelong({ expectedProviderTurnId: "provider-turn-new", terminalProviderTurnId: null })).toBe(true);
+  expect(mayBelong({ expectedProviderTurnId: null, terminalProviderTurnId: lostTurn })).toBe(true);
+  expect(terminalTurn("provider.event", { events: [{ method: "turn/completed",
+    params: { turn: { id: "provider-turn-raw", status: "failed" } } }] })).toBe("provider-turn-raw");
+});
+
 it("requires ACPX command results to preserve the requested turn identity", () => {
   expect(
     runnerdRecoveryInternals.turnStartCommandResultValid({
