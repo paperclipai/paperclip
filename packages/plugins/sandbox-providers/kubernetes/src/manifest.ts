@@ -49,6 +49,11 @@ const manifest: PaperclipPluginManifestV1 = {
             type: "string",
             description: "Override the default registry for agent runtime images (default: ghcr.io/paperclipai).",
           },
+          runtimeImage: {
+            type: "string",
+            description:
+              "Full runtime image reference for this environment's adapter (versioned tag or @sha256 digest). Overrides imageRegistry. Pods pull IfNotPresent, so use a new tag or digest to roll out an image update.",
+          },
           imageAllowList: {
             type: "array",
             items: { type: "string" },
