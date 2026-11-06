@@ -1,4 +1,5 @@
-import { cancelAdapterLoginSession, cancelPendingAdapterLogin } from "./useAdapterLoginCancellation";
+import type { AiConnectionLoginIntent } from "@paperclipai/shared";
+import { cancelAdapterLoginSession, cancelPendingAdapterLogin, matchesAdapterLoginTarget } from "./useAdapterLoginCancellation";
 import { useQueryView } from "@/components/QueryView";
 import type { AgentRunner, AgentRunnerChoice } from "@paperclipai/shared";
 import { needsClaudeSetupQualification, qualifyClaudeSetup } from "../lib/qualify-claude-setup";
@@ -1150,6 +1151,10 @@ function OnboardingWizardInner({
    * panel unmounted and the resumed session unreachable from this step. A 404
    * means no active session for the caller.
    */
+  const managedSubscriptionIntent: AiConnectionLoginIntent | undefined = managedSubscriptionProvider
+    ? { provider: managedSubscriptionProvider, method: "subscription", name: `My ${CONNECT_SOURCE_NAMES[adapterType] ?? managedProvider} subscription`, ownership: "personal", agentIds: [], allAgents: true }
+    : undefined;
+  const loginTarget = { environmentId: resolvedLoginEnvironmentId ?? "", aiConnection: managedSubscriptionIntent };
   const dismissedLoginResumes = useRef(new Set<string>());
   const loginResumeKey = JSON.stringify([createdCompanyId, adapterType]);
   const activeLoginSessionQuery = useQuery({
@@ -1162,7 +1167,7 @@ function OnboardingWizardInner({
           ? await agentsApi.getActiveClaudeSetupTokenLoginSession(createdCompanyId!, { signal })
           : await agentsApi.getActiveAdapterAuthLoginSession(createdCompanyId!, adapterType, { signal });
         if (session && dismissedLoginResumes.current.has(loginResumeKey)) {
-          await cancelAdapterLoginSession(createdCompanyId!, adapterType,
+          if (matchesAdapterLoginTarget(session, loginTarget)) await cancelAdapterLoginSession(createdCompanyId!, adapterType,
             adapterCaps.login?.panelMode === "submitted_browser_code", session.sessionId);
           return null;
         }
@@ -1569,7 +1574,7 @@ function OnboardingWizardInner({
     if (createdCompanyId) {
       void queryClient.cancelQueries({ queryKey: queryKeys.agents.activeLoginSession(createdCompanyId, adapterType) });
       if (canShowAdapterLogin && credentialMode !== "api") void cancelPendingAdapterLogin(createdCompanyId, adapterType,
-        adapterCaps.login?.panelMode === "submitted_browser_code");
+        adapterCaps.login?.panelMode === "submitted_browser_code", loginTarget);
     }
     connectAttemptRef.current++;
     hiringAgentRef.current = null;
@@ -3252,7 +3257,7 @@ function OnboardingWizardInner({
                         adapterType={adapterType}
                         environmentId={resolvedLoginEnvironmentId}
                         chrome="onboarding"
-                        aiConnection={managedProvider === "anthropic" || managedProvider === "openai" || managedProvider === "xai" ? { provider: managedProvider, method: "subscription", name: `My ${CONNECT_SOURCE_NAMES[adapterType] ?? managedProvider} subscription`, ownership: "personal", agentIds: [], allAgents: true } : undefined}
+                        aiConnection={managedSubscriptionIntent}
                         autoStart
                         active={connectCardLive}
                         onPromptReady={(url) => {

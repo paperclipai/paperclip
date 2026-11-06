@@ -2613,7 +2613,7 @@ function DisplayedCodeLoginPanel({
   onRetryReady,
 }: AdapterLoginPanelProps) {
   const [sessionId, setSessionId] = useState<string | null>(null);
-  const cancellation = useAdapterLoginCancellation(loginActive, companyId, adapterType, false, sessionId);
+  const cancellation = useAdapterLoginCancellation(loginActive, companyId, adapterType, false, sessionId, { environmentId, aiConnection });
   const [retrying, setRetrying] = useState(false);
   const [startError, setStartError] = useState<string | null>(null);
   // The server delivers the one-time prompt on the first owner read only. Latch
@@ -2678,7 +2678,7 @@ function DisplayedCodeLoginPanel({
     queryKey: ["adapter-login-active-session", companyId, adapterType],
     queryFn: async ({ signal }) => {
       try {
-        const active = await cancellation.accept(() => agentsApi.getActiveAdapterAuthLoginSession(companyId, adapterType, { signal }));
+        const active = await cancellation.resume(() => agentsApi.getActiveAdapterAuthLoginSession(companyId, adapterType, { signal }));
         if (!active) return null;
         if ((aiConnection && active.environmentId !== environmentId) || Boolean(active.aiConnection) !== Boolean(aiConnection) || (aiConnection && (active.aiConnection?.provider !== aiConnection.provider || active.aiConnection?.method !== aiConnection.method || active.aiConnection?.connectionId !== aiConnection.connectionId || active.aiConnection?.ownership !== aiConnection.ownership || active.aiConnection?.allAgents !== aiConnection.allAgents || JSON.stringify(active.aiConnection?.agentIds) !== JSON.stringify(aiConnection.agentIds)))) throw new AdapterLoginConflictError(active.sessionId);
         return active;
@@ -3157,7 +3157,7 @@ function SubmittedBrowserCodeLoginPanel({
   onRetryReady,
 }: AdapterLoginPanelProps) {
   const [sessionId, setSessionId] = useState<string | null>(null);
-  const cancellation = useAdapterLoginCancellation(loginActive, companyId, adapterType, true, sessionId);
+  const cancellation = useAdapterLoginCancellation(loginActive, companyId, adapterType, true, sessionId, { environmentId, aiConnection });
   const [retrying, setRetrying] = useState(false);
   const [startError, setStartError] = useState<string | null>(null);
   // The server delivers the authorization URL on the guarded prompt read only.
@@ -3321,7 +3321,7 @@ function SubmittedBrowserCodeLoginPanel({
     queryKey: ["claude-setup-token-active-session", companyId],
     queryFn: async ({ signal }) => {
       try {
-        const active = await cancellation.accept(() => agentsApi.getActiveClaudeSetupTokenLoginSession(companyId, { signal }));
+        const active = await cancellation.resume(() => agentsApi.getActiveClaudeSetupTokenLoginSession(companyId, { signal }));
         if (!active) return null;
         if ((aiConnection && active.environmentId !== environmentId) || Boolean(active.aiConnection) !== Boolean(aiConnection) || (aiConnection && (active.aiConnection?.provider !== aiConnection.provider || active.aiConnection?.method !== aiConnection.method || active.aiConnection?.connectionId !== aiConnection.connectionId || active.aiConnection?.ownership !== aiConnection.ownership || active.aiConnection?.allAgents !== aiConnection.allAgents || JSON.stringify(active.aiConnection?.agentIds) !== JSON.stringify(aiConnection.agentIds)))) throw new Error("Another sign-in attempt is active. Finish or cancel it in its original account setup before starting this one.");
         return active;

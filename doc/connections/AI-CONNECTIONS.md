@@ -44,7 +44,8 @@ picker and provider setup. Execution environment selection lives in Configure.
 Back from subscription sign-in cancels that attempt and pending prompt or status
 reads. A session returned after Back is released instead of reopening sign-in. If an
 aborted read hides the session ID, a separate owner lookup releases the attempt
-before a replacement can start.
+before a replacement can start. Cleanup checks the abandoned environment and
+account intent, so a conflicting settings sign-in stays active.
 Selecting a subscription again starts a fresh attempt. Reloading the page can
 still resume a sign-in that was not cancelled.
 

@@ -4076,6 +4076,51 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       }
     });
 
+    it.each((["claude_local", "codex_local"] as const).flatMap(adapterType =>
+      (["environment", "legacy", "connection", "ownership", "agents", "allAgents"] as const).map(difference => [adapterType, difference] as const)))("preserves another %s sign-in after Back when %s differs", async (adapterType, difference) => {
+      const claude = adapterType === "claude_local";
+      const activeApi = claude ? mockAgentsApi.getActiveClaudeSetupTokenLoginSession : mockAgentsApi.getActiveAdapterAuthLoginSession;
+      const cancelApi = claude ? mockAgentsApi.cancelClaudeSetupTokenLogin : mockAgentsApi.cancelAdapterAuthLogin;
+      const startApi = claude ? mockAgentsApi.startClaudeSetupTokenLogin : mockAgentsApi.startAdapterAuthLogin;
+      const intent = { provider: claude ? "anthropic" : "openai", method: "subscription", ownership: "personal", agentIds: [] as string[], allAgents: true };
+      const session = { sessionId: "settings-sign-in", environmentId: difference === "environment" ? "other-environment" : "env-sandbox-1",
+        status: "waiting_for_user", expiresAt: null, aiConnection: difference === "legacy" ? undefined : { ...intent,
+          ...(difference === "connection" ? { connectionId: "other-connection" } : {}),
+          ...(difference === "ownership" ? { ownership: "organization" } : {}),
+          ...(difference === "agents" ? { agentIds: ["other-agent"] } : {}),
+          ...(difference === "allAgents" ? { allAgents: false } : {}) } };
+      activeApi.mockResolvedValue(session);
+      mockAgentsApi.getAdapterAuthSignal.mockResolvedValue({ status: "absent" });
+      const { root } = await openStep4({ adapterType });
+      try {
+        for (let i = 0; i < 12; i++) await flushReact();
+        expect(document.body.textContent).toContain("Sign-in didn’t finish");
+        await act(async () => [...document.body.querySelectorAll("button")].find(button => button.textContent?.trim().startsWith("Back"))!.click());
+        for (let i = 0; i < 12; i++) await flushReact();
+        expect(cancelApi).not.toHaveBeenCalled();
+        expect(startApi).not.toHaveBeenCalled();
+        expect(document.querySelectorAll('[role="radio"][aria-checked="true"]')).toHaveLength(0);
+      } finally { await act(async () => root.unmount()); }
+    });
+
+    it.each(["claude_local", "codex_local"] as const)("preserves a conflicting %s resume response received after Back", async adapterType => {
+      const claude = adapterType === "claude_local";
+      const activeApi = claude ? mockAgentsApi.getActiveClaudeSetupTokenLoginSession : mockAgentsApi.getActiveAdapterAuthLoginSession;
+      const cancelApi = claude ? mockAgentsApi.cancelClaudeSetupTokenLogin : mockAgentsApi.cancelAdapterAuthLogin;
+      let finish!: (session: unknown) => void;
+      activeApi.mockReturnValue(new Promise(resolve => { finish = resolve; }));
+      mockAgentsApi.getAdapterAuthSignal.mockResolvedValue({ status: "absent" });
+      const { root } = await openStep4({ adapterType });
+      try {
+        await pickSource(claude ? /Claude/ : /OpenAI/);
+        await act(async () => [...document.body.querySelectorAll("button")].find(button => button.textContent?.trim().startsWith("Back"))!.click());
+        await act(async () => finish({ sessionId: "settings-sign-in", environmentId: "another-environment", status: "waiting_for_user" }));
+        for (let i = 0; i < 12; i++) await flushReact();
+        expect(cancelApi).not.toHaveBeenCalled();
+        expect(document.querySelectorAll('[role="radio"][aria-checked="true"]')).toHaveLength(0);
+      } finally { await act(async () => root.unmount()); }
+    });
+
     it("cancels claude_local on Back and starts a fresh sign-in when selected again", async () => {
       const session = {
         sessionId: "claude-session-1",
