@@ -1,11 +1,12 @@
 import { AgentIdentity } from "@/components/AgentIdentity";
 import { useMemo, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, CheckCircle2 } from "lucide-react";
 import type { Issue } from "@paperclipai/shared";
 import { describeError } from "../api/errors";
 import { issuesApi } from "../api/issues";
 import { queryKeys } from "../lib/queryKeys";
+import { invalidateInboxIssueQueries } from "../lib/inboxArchiveCache";
 import { cn } from "../lib/utils";
 import { applyIssueFilters, type IssueFilterState, type IssueFilterWorkspaceContext } from "../lib/issue-filters";
 import { resolveInboxIssueBlockerAttention } from "../lib/inbox-live-descendants";
@@ -22,6 +23,7 @@ import {
 import { BlockedReasonChip } from "./BlockedReasonChip";
 import { useQueryView } from "./QueryView";
 import { IssueGroupHeader } from "./IssueGroupHeader";
+import { InboxGroupMarkAllRead } from "./InboxGroupMarkAllRead";
 import { IssueRow, type IssueRowPresentation } from "./IssueRow";
 import { Identity } from "./Identity";
 import { StatusIcon } from "./StatusIcon";
@@ -70,7 +72,17 @@ export function BlockedInboxView({
   showUpdatedColumn,
   presentation = "legacy",
 }: BlockedInboxViewProps) {
-  const [collapsedVariants, setCollapsedVariants] = useState<Set<string>>(() => new Set());
+  const [collapsedGroupKeys, setCollapsedGroupKeys] = useState<Set<string>>(() => new Set());
+  const queryClient = useQueryClient();
+  const markGroupReadMutation = useMutation({
+    mutationFn: async (issueIds: string[]) => {
+      await Promise.all(issueIds.map((issueId) => issuesApi.markRead(issueId)));
+    },
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.issues.listBlockedAttention(companyId) });
+      void invalidateInboxIssueQueries(queryClient, companyId);
+    },
+  });
 
   const blockedQuery = useQuery({
     queryKey: [...queryKeys.issues.listBlockedAttention(companyId), "live-descendant-summary", issueFilters.showAgentCreatedTasks],
@@ -86,6 +98,25 @@ export function BlockedInboxView({
         limit: BLOCKED_LIST_LIMIT,
       }),
   });
+  // The blocked list carries no per-user read state, so ask separately which
+  // blocked tasks are unread for me; group headers use it for "Mark all as read".
+  const unreadBlockedQuery = useQuery({
+    queryKey: [...queryKeys.issues.listBlockedAttention(companyId), "unread-for-me", issueFilters.showAgentCreatedTasks],
+    queryFn: () =>
+      issuesApi.list(companyId, {
+        attention: "blocked",
+        unreadForUserId: "me",
+        includeRoutineExecutions: true,
+        includeAgentCreatedTasks: issueFilters.showAgentCreatedTasks,
+        includeParticipatedTasks: true,
+        limit: BLOCKED_LIST_LIMIT,
+      }),
+    enabled: !!currentUserId,
+  });
+  const unreadBlockedIssueIds = useMemo(
+    () => new Set((unreadBlockedQuery.data ?? []).map((issue) => issue.id)),
+    [unreadBlockedQuery.data],
+  );
   const {
     data: issues = [] as Issue[],
     isLoading,
@@ -112,15 +143,15 @@ export function BlockedInboxView({
   }, [currentUserId, filteredRows, issueFilters, liveIssueIds, workspaceFilterContext]);
   const sortedRows = useMemo(() => sortBlockedInboxRows(issueFilteredRows, sortBy), [issueFilteredRows, sortBy]);
   const groups = useMemo(
-    () => groupBlockedInboxRows(issueFilteredRows, sortBy),
-    [issueFilteredRows, sortBy],
+    () => groupBlockedInboxRows(issueFilteredRows, sortBy, groupBy === "none" ? "blocker_type" : groupBy),
+    [groupBy, issueFilteredRows, sortBy],
   );
 
-  const toggleVariant = (variant: string) => {
-    setCollapsedVariants((prev) => {
+  const toggleGroup = (groupKey: string) => {
+    setCollapsedGroupKeys((prev) => {
       const next = new Set(prev);
-      if (next.has(variant)) next.delete(variant);
-      else next.add(variant);
+      if (next.has(groupKey)) next.delete(groupKey);
+      else next.add(groupKey);
       return next;
     });
   };
@@ -237,15 +268,26 @@ export function BlockedInboxView({
           ))
         ) : (
           groups.map((group) => {
-            const isCollapsed = collapsedVariants.has(group.variant);
+            const isCollapsed = collapsedGroupKeys.has(group.key);
+            const unreadIssueIds = group.rows
+              .filter((row) => unreadBlockedIssueIds.has(row.issue.id) || row.issue.isUnreadForMe === true)
+              .map((row) => row.issue.id);
             return (
-              <div key={group.variant} data-testid={`blocked-inbox-group-${group.variant}`}>
+              <div key={group.key} data-testid={`blocked-inbox-group-${group.key.replace(":", "-")}`}>
                 <div className={presentation === "task" ? "rounded-lg px-3 sm:pl-0 sm:pr-4" : "px-3 sm:px-4"}>
                   <IssueGroupHeader
                     label={`${group.label} · ${group.rows.length}`}
                     collapsible
                     collapsed={isCollapsed}
-                    onToggle={() => toggleVariant(group.variant)}
+                    onToggle={() => toggleGroup(group.key)}
+                    trailing={(
+                      <InboxGroupMarkAllRead
+                        groupLabel={group.label}
+                        unreadCount={unreadIssueIds.length}
+                        pending={markGroupReadMutation.isPending}
+                        onConfirm={() => markGroupReadMutation.mutate(unreadIssueIds)}
+                      />
+                    )}
                   />
                 </div>
                 {!isCollapsed && (
