@@ -55,10 +55,10 @@ const support = await getEmbeddedPostgresTestSupport();
       name: "get_me", toolName: "get_me", versionHash: "fixture", riskLevel: "read", isReadOnly: true,
     }).returning();
     const service = toolAccessService(db);
-    const finish = (access: "all_agents" | { agentIds: string[] }, authorizeAgentInstall?: (agentId: string) => Promise<void>) =>
+    const finish = (access: "all_agents" | { agentIds: string[] }, authorizeInstall?: (target: { targetType: string; targetId: string }) => Promise<void>) =>
       service.finishGalleryAppConnection(input.companyId, selected.connectionId, {
         enabledCatalogEntryIds: [tool.id], askFirstCatalogEntryIds: [], access,
-      }, board, { authorizeAgentInstall });
+      }, board, { authorizeInstall });
     await finish({ agentIds: [input.agentId] });
     return { input, selected, service, finish, tool };
   }
@@ -126,34 +126,50 @@ const support = await getEmbeddedPostgresTestSupport();
   it("rejects and rolls back an agent install the caller may not make", async () => {
     const { input, selected, finish } = await connectFromTaskChat();
     const frontend = await hire(input.companyId, "Frontend Engineer");
-    const authorizeAgentInstall = vi.fn(async (agentId: string) => { throw new Error(`denied ${agentId}`); });
-    await expect(finish({ agentIds: [input.agentId, frontend] }, authorizeAgentInstall)).rejects.toThrow(`denied ${frontend}`);
-    expect(authorizeAgentInstall).toHaveBeenCalledTimes(1);
+    const authorizeInstall = vi.fn(async (target: { targetId: string }) => { throw new Error(`denied ${target.targetId}`); });
+    await expect(finish({ agentIds: [input.agentId, frontend] }, authorizeInstall)).rejects.toThrow(`denied ${frontend}`);
+    expect(authorizeInstall).toHaveBeenCalledTimes(1);
     expect(await installKeys(selected.connectionId)).toEqual([`agent:${input.agentId}`]);
     const [profile] = await db.select().from(toolProfiles).where(eq(toolProfiles.profileKey, `app:${selected.connectionId}`));
     const bindings = await db.select().from(toolProfileBindings).where(eq(toolProfileBindings.profileId, profile.id));
     expect(bindings.map(binding => binding.targetId)).toEqual([input.agentId]);
   });
 
-  it("refuses a connection creator who cannot configure the newly picked agent", async () => {
-    const { input, selected, tool } = await connectFromTaskChat();
-    const frontend = await hire(input.companyId, "Frontend Engineer");
-    await db.update(toolConnections).set({ createdByUserId: "creator" }).where(eq(toolConnections.id, selected.connectionId));
-    await db.insert(companyMemberships).values({ companyId: input.companyId, principalType: "user", principalId: "creator", status: "active", membershipRole: "operator" });
+  async function finishAs(actor: Express.Request["actor"], companyId: string, connectionId: string, body: unknown) {
     const app = express();
     app.use(express.json());
-    app.use((req, _res, next) => {
-      req.actor = { type: "board", userId: "creator", userName: "Creator", userEmail: null, isInstanceAdmin: false, source: "session",
-        companyIds: [input.companyId], memberships: [{ companyId: input.companyId, membershipRole: "operator", status: "active" }] };
-      next();
-    });
+    app.use((req, _res, next) => { req.actor = actor; next(); });
     app.use("/api", toolAccessRoutes(db));
     app.use(errorHandler);
-    const response = await request(app).post(`/api/companies/${input.companyId}/tools/apps/${selected.connectionId}/finish`)
-      .send({ enabledCatalogEntryIds: [tool.id], askFirstCatalogEntryIds: [], access: { agentIds: [input.agentId, frontend] } });
+    return request(app).post(`/api/companies/${companyId}/tools/apps/${connectionId}/finish`).send(body);
+  }
+
+  async function asCreator(companyId: string, connectionId: string) {
+    await db.update(toolConnections).set({ createdByUserId: "creator" }).where(eq(toolConnections.id, connectionId));
+    await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: "creator", status: "active", membershipRole: "operator" });
+    return { type: "board" as const, userId: "creator", userName: "Creator", userEmail: null, isInstanceAdmin: false, source: "session" as const,
+      companyIds: [companyId], memberships: [{ companyId, membershipRole: "operator", status: "active" }] };
+  }
+
+  it.each(["picked agent", "any agent"] as const)("refuses a connection creator who cannot configure the agents a %s save installs", async mode => {
+    const { input, selected, tool } = await connectFromTaskChat();
+    const frontend = await hire(input.companyId, "Frontend Engineer");
+    const creator = await asCreator(input.companyId, selected.connectionId);
+    const access = mode === "any agent" ? "all_agents" : { agentIds: [input.agentId, frontend] };
+    const response = await finishAs(creator, input.companyId, selected.connectionId, { enabledCatalogEntryIds: [tool.id], askFirstCatalogEntryIds: [], access });
     expect(response.status, JSON.stringify(response.body)).toBe(403);
     expect(response.body.error).toContain("so you cannot install this connection on it");
     expect(await installKeys(selected.connectionId)).toEqual([`agent:${input.agentId}`]);
     expect(await githubFor(input.companyId, frontend)).toEqual({ configured: false });
+  });
+
+  it("lets a board operator who can configure every agent widen access to any agent", async () => {
+    const { input, selected, tool } = await connectFromTaskChat();
+    const frontend = await hire(input.companyId, "Frontend Engineer");
+    const response = await finishAs({ type: "board", userId: "local-board", userName: "Board", userEmail: null, isInstanceAdmin: true, source: "local_implicit" },
+      input.companyId, selected.connectionId, { enabledCatalogEntryIds: [tool.id], askFirstCatalogEntryIds: [], access: "all_agents" });
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    expect(await installKeys(selected.connectionId)).toContain(`company:${input.companyId}`);
+    expect(await githubFor(input.companyId, frontend)).toMatchObject({ configured: true, grant: { id: selected.id } });
   });
 });

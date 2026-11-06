@@ -3154,8 +3154,8 @@ export function toolAccessService(
     input: FinishToolApp,
     actor?: ActorInfo,
     options?: {
-      /** Rejects an agent install the caller may not make. Called for each agent this save installs. */
-      authorizeAgentInstall?: (agentId: string) => Promise<void>;
+      /** Rejects an install the caller may not make. Called for each install target this save adds. */
+      authorizeInstall?: (target: { targetType: "company" | "agent"; targetId: string }) => Promise<void>;
     },
   ): Promise<FinishToolAppResult> {
     await actor?.managementContext?.reauthorize();
@@ -3474,10 +3474,8 @@ export function toolAccessService(
         const added = bindingInputs.flatMap(({ targetType, targetId }) => (targetType === "company" || targetType === "agent")
           && !previouslyPermitted(targetType, targetId)
           && !installedFor(targetType, targetId) ? [{ targetType, targetId }] : []);
-        // Installing on an agent changes that agent's configuration, as on
-        // the installs endpoint.
-        for (const { targetType, targetId } of added)
-          if (targetType === "agent") await options?.authorizeAgentInstall?.(targetId);
+        // An install changes the configuration of every agent it reaches.
+        for (const target of added) await options?.authorizeInstall?.(target);
         if (added.length) {
           await tx.insert(toolConnectionInstalls).values(added.map((binding) => ({
             companyId, connectionId: connection.id, targetType: binding.targetType, targetId: binding.targetId,

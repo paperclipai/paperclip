@@ -6,7 +6,7 @@ import { aggregatorAppsSyncSchema, aggregatorAppsRefreshSchema, arcadeDiscoveryS
 import { Router, type Request, type Response } from "express";
 import type { Db } from "@paperclipai/db";
 import { agents, companies, connectionGrants, issueThreadInteractions, toolConnectionInstalls } from "@paperclipai/db";
-import { and, eq, or } from "drizzle-orm";
+import { and, eq, ne, or } from "drizzle-orm";
 import {
   APP_STORE_DEFINITIONS,
   isConnectorFeatureEnabled,
@@ -1520,13 +1520,21 @@ function connectorEnrollmentPrincipal(req: Request): string {
     const existing = await svc.getConnection(req.params.connectionId as string, companyId);
     await assertToolConnectionConfigureAccess(req, existing);
     const result = await svc.finishGalleryAppConnection(companyId, existing.id, req.body, connectionRequestActor(req), {
-      authorizeAgentInstall: async (agentId) => {
-        const decision = await access.decide({
-          actor: req.actor,
-          action: "agent_config:update",
-          resource: { type: "agent", companyId, agentId },
-        });
-        if (!decision.allowed) throw forbidden(`You cannot edit agent ${agentId}, so you cannot install this connection on it`);
+      // An access save installs the connection for the agents it newly
+      // permits. A company install reaches every agent, so the caller must be
+      // able to edit each of them.
+      authorizeInstall: async (target) => {
+        const agentIds = target.targetType === "agent" ? [target.targetId]
+          : (await db.select({ id: agents.id }).from(agents)
+            .where(and(eq(agents.companyId, companyId), ne(agents.status, "terminated")))).map((agent) => agent.id);
+        for (const agentId of agentIds) {
+          const decision = await access.decide({
+            actor: req.actor,
+            action: "agent_config:update",
+            resource: { type: "agent", companyId, agentId },
+          });
+          if (!decision.allowed) throw forbidden(`You cannot edit agent ${agentId}, so you cannot install this connection on it`);
+        }
       },
     });
     await logActivity(db, {
