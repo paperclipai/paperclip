@@ -2204,7 +2204,8 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       } finally { await act(async () => root.unmount()); }
     });
 
-    it.each([false, true])("selects the subscription again after a subscription to API to subscription round trip (Back during API save: %s)", async interrupted => {
+    it.each(["completed", "before selection", "after selection", "failed response after selection"] as const)("selects the subscription again after a subscription to API to subscription round trip (API save: %s)", async completion => {
+      const interrupted = completion !== "completed";
       const accounts: import("@paperclipai/shared").AiConnectionList = { currentUserId: "user-1", canManageConnections: true, connections: [{
         id: "subscription-account", grantId: "subscription-grant", companyId: "company-new", provider: "openai", method: "subscription",
         ownership: "personal", ownerUserId: "user-1", isDefault: true, status: "connected", name: "My subscription",
@@ -2220,7 +2221,11 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
         const apply = () => { for (const account of accounts.connections) account.isDefault = account.grantId === grantId; };
         if (interrupted && grantId === "managed-grant" && !held) {
           held = true;
-          return new Promise<Record<string, never>>(resolve => { finishApiDefault = () => { apply(); resolve({}); }; });
+          return new Promise<Record<string, never>>((resolve, reject) => { finishApiDefault = () => {
+            apply();
+            if (completion === "failed response after selection") reject(new Error("API default response was lost"));
+            else resolve({});
+          }; });
         }
         apply();
         return {};
@@ -2240,9 +2245,15 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
         await pressArcPrimary();
         if (!interrupted) expect(accounts.connections.find(account => account.isDefault)?.method).toBe("api_key");
         await goBack();
-        if (interrupted) await act(async () => finishApiDefault());
+        if (completion === "before selection") await act(async () => finishApiDefault());
         await act(async () => (document.querySelector('[aria-label="Use subscription instead"]') as HTMLButtonElement).click());
         await pickSource(/OpenAI/);
+        if (completion === "after selection" || completion === "failed response after selection") {
+          expect(document.body.textContent).toContain("Connect a model");
+          expect(document.body.textContent).not.toContain("Let's get started...");
+          await act(async () => finishApiDefault());
+          await vi.waitFor(() => expect(document.body.textContent).toContain("Let's get started..."));
+        }
         expect(accounts.connections.find(account => account.isDefault)?.grantId).toBe("subscription-grant");
         expect(document.body.textContent).toContain("Let's get started...");
         await goBack();
@@ -2250,6 +2261,27 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
         await pickSource(/OpenAI.*API/);
         await pressArcPrimary();
         expect(accounts.connections.find(account => account.isDefault)?.grantId).toBe("managed-grant");
+        if (completion === "completed") for (const completeBeforeReselect of [true, false]) {
+          let finishSubscriptionDefault!: () => void;
+          managedApi.setDefault.mockImplementationOnce(async (_companyId, grantId) => new Promise<Record<string, never>>(resolve => {
+            finishSubscriptionDefault = () => { for (const account of accounts.connections) account.isDefault = account.grantId === grantId; resolve({}); };
+          }));
+          await goBack();
+          await act(async () => (document.querySelector('[aria-label="Use subscription instead"]') as HTMLButtonElement).click());
+          await pickSource(/OpenAI/);
+          await goBack();
+          if (completeBeforeReselect) await act(async () => finishSubscriptionDefault());
+          await act(async () => (document.querySelector('[aria-label="Use API key instead"]') as HTMLButtonElement).click());
+          await pickSource(/OpenAI.*API/);
+          await pressArcPrimary();
+          if (!completeBeforeReselect) {
+            expect(document.body.textContent).toContain("Connect a model");
+            expect(document.body.textContent).not.toContain("Let's get started...");
+            await act(async () => finishSubscriptionDefault());
+          }
+          await vi.waitFor(() => expect(document.body.textContent).toContain("Let's get started..."));
+          expect(accounts.connections.find(account => account.isDefault)?.grantId).toBe("managed-grant");
+        }
         expect(managedApi.create).toHaveBeenCalledTimes(1);
         expect(mockAgentsApi.hire).toHaveBeenCalledTimes(1);
       } finally { await act(async () => root.unmount()); }

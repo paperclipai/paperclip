@@ -738,7 +738,7 @@ function OnboardingWizardInner({
    */
   const apiKeySecretRef = useRef<{ key: string; companyId: string; envKey: string; grantId?: string; binding?: Awaited<ReturnType<typeof storeProviderApiKey>>["binding"]; aiConnection?: AiConnectionBinding } | null>(null);
   const managedSubscriptionRef = useRef<{ companyId: string; binding: AiConnectionBinding; grantId?: string; sessionId?: string } | null>(null);
-  const selectedDefaultRef = useRef<{ companyId: string; provider: string; grantId: string } | null>(null);
+  const defaultSelectionsRef = useRef(new Map<string, { pending: Promise<unknown>; queued: number; revision: number; grantId?: string | null }>());
   const managedProvider = aiProviderForAdapter(adapterType);
   const managedSubscriptionProvider = managedProvider === "anthropic" || managedProvider === "openai" || managedProvider === "xai" ? managedProvider : undefined;
   function managedBindingForStep(): AiConnectionBinding | undefined {
@@ -765,9 +765,13 @@ function OnboardingWizardInner({
   const connectionModels = connectionModelState.connectionModels;
   const hasGatewaySelection = credentialMode === "api" && gatewayConnection?.companyId === createdCompanyId && gatewayConnection.adapterType === adapterType;
   const connectionSelection = JSON.stringify([createdCompanyId, adapterType, runner, model, command, args, url, credentialMode, apiKey, selectedSavedKey, gatewayConnection]);
-  const connectedSelectionRef = useRef<{ agentId: string; selection: string } | null>(null);
+  const connectedSelectionRef = useRef<{ agentId: string; selection: string; defaultRevision: number } | null>(null);
+  function rememberConnectedSelection(agentId: string) {
+    connectedSelectionRef.current = { agentId, selection: connectionSelection,
+      defaultRevision: defaultSelectionsRef.current.get(JSON.stringify([createdCompanyId, managedProvider]))?.revision ?? 0 };
+  }
   if (createdAgentId && connectedSelectionRef.current?.agentId !== createdAgentId) {
-    connectedSelectionRef.current = { agentId: createdAgentId, selection: connectionSelection };
+    rememberConnectedSelection(createdAgentId);
   }
   const gatewayLookupFailed = hasGatewaySelection && !connectionModelState.refreshing
     && Boolean(connectionModelState.error || (!connectionModels && !connectionModelState.loading));
@@ -1991,10 +1995,7 @@ function OnboardingWizardInner({
         const grantId = stored?.grantId ?? (await aiConnectionsApi.create(companyId, { provider: managedProvider, method: "api_key", name: `My ${CONNECT_SOURCE_NAMES[adapterType] ?? managedProvider} API`, ownership: "personal", apiKey: key, agentIds: [], allAgents: true })).grantId;
         apiKeySecretRef.current = { key, companyId, envKey, grantId };
         if (!isCurrent()) return false;
-        await aiConnectionsApi.setDefault(companyId, grantId);
-        selectedDefaultRef.current = { companyId, provider: managedProvider, grantId };
-        void queryClient.invalidateQueries({ queryKey: ["ai-connections", companyId] });
-        if (!isCurrent()) return false;
+        if (!await selectManagedDefault(companyId, managedProvider, grantId, isCurrent)) return false;
         apiKeySecretRef.current = { key, companyId, envKey, grantId, aiConnection: { provider: managedProvider, method: "api_key", mode: "responsible_user" } };
         return true;
       }
@@ -2002,13 +2003,39 @@ function OnboardingWizardInner({
       apiKeySecretRef.current = { key, companyId, envKey, binding: legacyStored.binding };
       return true;
     } catch (err) {
-      setError(
+      if (isCurrent()) setError(
         err instanceof Error
           ? `Could not store the API key: ${describeError(err).body}`
           : "Could not store the API key.",
       );
       return false;
     }
+  }
+
+  function selectManagedDefault(companyId: string, provider: string, grantId: string, isCurrent: () => boolean, visibleDefault?: string) {
+    const key = JSON.stringify([companyId, provider]);
+    let selection = defaultSelectionsRef.current.get(key);
+    if (!selection) {
+      selection = { pending: Promise.resolve(), queued: 0, revision: 0 };
+      defaultSelectionsRef.current.set(key, selection);
+    }
+    const state = selection;
+    state.revision++;
+    state.queued++;
+    const request = state.pending.then(async () => {
+      if (!isCurrent()) return false;
+      if (visibleDefault === grantId && (state.grantId === undefined || state.grantId === grantId)) return true;
+      state.grantId = null;
+      try {
+        await aiConnectionsApi.setDefault(companyId, grantId);
+        state.grantId = grantId;
+      } finally {
+        void queryClient.invalidateQueries({ queryKey: ["ai-connections", companyId] });
+      }
+      return isCurrent();
+    }).finally(() => { state.queued--; });
+    state.pending = request.catch(() => {});
+    return request;
   }
 
   async function selectManagedSubscription(companyId: string, isCurrent: () => boolean) {
@@ -2032,12 +2059,7 @@ function OnboardingWizardInner({
     if (!isCurrent()) return;
     if (!grantId) throw new Error("Choose a subscription account in Connections, then retry setup.");
     managedSubscriptionRef.current = { companyId, binding, grantId };
-    const lastDefault = selectedDefaultRef.current;
-    if (visibleDefault === grantId && (!lastDefault || lastDefault.companyId !== companyId
-      || lastDefault.provider !== binding.provider || lastDefault.grantId === grantId)) return;
-    await aiConnectionsApi.setDefault(companyId, grantId);
-    selectedDefaultRef.current = { companyId, provider: binding.provider, grantId };
-    void queryClient.invalidateQueries({ queryKey: ["ai-connections", companyId] });
+    await selectManagedDefault(companyId, binding.provider, grantId, isCurrent, visibleDefault);
   }
 
   function buildAdapterConfig(bindApiKey = false, setupRunner?: AgentRunner, existingAgent?: Agent): Record<string, unknown> {
@@ -2365,7 +2387,9 @@ function OnboardingWizardInner({
       setError("Choose a model for this gateway connection before connecting your agent.");
       return;
     }
-    if (createdAgentId && connectedSelectionRef.current?.selection === connectionSelection) {
+    const defaultSelection = defaultSelectionsRef.current.get(JSON.stringify([createdCompanyId, managedProvider]));
+    if (createdAgentId && connectedSelectionRef.current?.selection === connectionSelection
+      && !defaultSelection?.queued && connectedSelectionRef.current.defaultRevision === (defaultSelection?.revision ?? 0)) {
       setStep(5);
       return;
     }
@@ -2437,6 +2461,11 @@ function OnboardingWizardInner({
       if (credentialMode === "api" && !selectedApiKey && apiKey.trim()) {
         apiKeyStored = await storeApiKeyUserSecret(createdCompanyId, isCurrent);
         if (!apiKeyStored || !isCurrent()) return;
+      }
+      if (credentialMode === "api" && selectedApiKey?.aiConnection?.mode === "responsible_user") {
+        const grantId = selectedApiKey.id.startsWith("ai:") ? selectedApiKey.id.slice(3) : undefined;
+        if (!grantId) throw new Error("Choose a connected API account before continuing.");
+        if (!await selectManagedDefault(createdCompanyId, selectedApiKey.aiConnection.provider, grantId, isCurrent, grantId)) return;
       }
       if (credentialMode !== "api" && canUseLocalLogin && managedProvider && !managedBindingForStep() && !savedSubscription && !savedKeys.storedLogin.data) {
         const account = await localLogin.connect();
@@ -2533,7 +2562,7 @@ function OnboardingWizardInner({
           runtimeConfig: buildSetupRuntimeConfig(true, existingAgent),
         }, createdCompanyId);
         if (!isCurrent()) return;
-        connectedSelectionRef.current = { agentId: createdAgentId, selection: connectionSelection };
+        rememberConnectedSelection(createdAgentId);
         void queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(createdCompanyId) });
         void queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(createdAgentId) });
         setStep(5);
@@ -2610,7 +2639,7 @@ function OnboardingWizardInner({
 
       if (!isCurrent()) return;
       setCreatedAgentId(agent.id);
-      connectedSelectionRef.current = { agentId: agent.id, selection: connectionSelection };
+      rememberConnectedSelection(agent.id);
       // Advance to the Review step — the lead is now online. The user drives
       // strategy + hiring from the planning chat after "Get started".
       setStep(5);

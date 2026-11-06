@@ -27,6 +27,11 @@ another connection. Failed verification or saving keeps the user on Connect.
 Switching back to subscription explicitly selects the completed subscription
 account again. Browser sign-in uses its saved session result; local sign-in uses
 its saved account result. Reusing the entered API key selects that account again.
+Default changes for the same company and provider run in order. Connect waits
+for earlier changes before deciding whether the selected account is already the
+default. A failed or lost response cannot count as a confirmed default selection.
+The unchanged-setup shortcut expires when another default selection is attempted,
+including one that finishes after Back.
 An agent that already uses a connected account cannot switch to a legacy secret
 binding. Selecting one stays on Connect and directs the user to choose a connected
 API account or connect a new key. Unmanaged setup can still reuse saved secrets.
