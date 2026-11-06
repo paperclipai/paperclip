@@ -5,6 +5,7 @@ import { promises as fs } from "node:fs";
 import {
   createObjectByteJournal,
   type ObjectByteJournal,
+  type ObjectJournalIOPriority,
   type ObjectJournalWriter,
 } from "./object-byte-journal.js";
 import { deriveLocalEncryptedInstanceSecret } from "../secrets/local-encrypted-provider.js";
@@ -64,7 +65,7 @@ export function createProviderTraceObjectStore(
     }, 1000);
     capture.timer.unref();
   }
-  function channelsFor(ref: string, filePath = "") {
+  function channelsFor(ref: string, filePath = "", readPriority?: ObjectJournalIOPriority) {
     const match = objectProviderTraceRef(ref);
     if (!match) throw new Error("invalid_object_trace_ref");
     return ["native", "rehydration"].map((channel, i) => {
@@ -79,6 +80,7 @@ export function createProviderTraceObjectStore(
       const journal = createObjectByteJournal({
         provider,
         prefix: root,
+        readPriority,
         async encode(bytes) {
           const iv = randomBytes(12),
             cipher = createCipheriv("aes-256-gcm", key, iv);
@@ -238,9 +240,13 @@ export function createProviderTraceObjectStore(
       capture.finishIdle();
     }
   }
-  async function* readChunks(ref: string, signal?: AbortSignal) {
+  async function* readChunks(
+    ref: string,
+    signal?: AbortSignal,
+    priority: ObjectJournalIOPriority = "background",
+  ) {
     let nativeTail: number | undefined;
-    for (const [index, { journal }] of channelsFor(ref).entries()) {
+    for (const [index, { journal }] of channelsFor(ref, "", priority).entries()) {
       const snapshot = await journal.head(signal);
       if (!snapshot || snapshot.head.deleted) throw new Error("provider_trace_payload_unavailable");
       if (snapshot.head.end > MAX_CAPTURE_BYTES)
@@ -254,9 +260,13 @@ export function createProviderTraceObjectStore(
       }
     }
   }
-  async function read(ref: string, signal?: AbortSignal) {
+  async function read(
+    ref: string,
+    signal?: AbortSignal,
+    priority: ObjectJournalIOPriority = "background",
+  ) {
     const chunks: Buffer[] = [];
-    for await (const bytes of readChunks(ref, signal)) chunks.push(bytes);
+    for await (const bytes of readChunks(ref, signal, priority)) chunks.push(bytes);
     return Buffer.concat(chunks);
   }
   async function stop(ref: string) {

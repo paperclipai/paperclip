@@ -361,6 +361,118 @@ export async function evaluateNativeProviderProcesses(input: {
   };
 }
 
+/** Run event types that can carry a provider process identity. */
+export const NATIVE_PROVIDER_PROCESS_EVENT_TYPES = [
+  "harness.ready",
+  "session.started",
+  "session.resumed",
+  "session.updated",
+  "turn.started",
+  "provider.event",
+  "provider.rpc_result",
+] as const;
+
+function parsedProcessStart(value: unknown): Date | null {
+  const parsed = typeof value === "string" ? new Date(value) : null;
+  return parsed && !Number.isNaN(parsed.getTime()) ? parsed : null;
+}
+
+/** Provider process identities from a saved checkpoint and recent run events. */
+export function nativeProviderProcessIdentities(
+  checkpoint: Record<string, unknown>,
+  providerEvents: ReadonlyArray<{ payload: Record<string, unknown> | null }>,
+): NativeProviderProcessIdentity[] {
+  const identities: NativeProviderProcessIdentity[] = [];
+  const checkpointProcess =
+    checkpoint.process && typeof checkpoint.process === "object" && !Array.isArray(checkpoint.process)
+      ? (checkpoint.process as Record<string, unknown>)
+      : {};
+  for (const [field, startedAtField] of [
+    ["providerPid", "providerProcessStartedAt"],
+    ["codexPid", "codexProcessStartedAt"],
+    ["sidecarPid", "sidecarProcessStartedAt"],
+    ["agentPid", "agentProcessStartedAt"],
+  ] as const) {
+    const value = checkpointProcess[field];
+    if (typeof value === "number" && Number.isInteger(value) && value > 0) {
+      identities.push({ pid: value, processStartedAt: parsedProcessStart(checkpointProcess[startedAtField]) });
+    }
+  }
+  for (const providerEvent of providerEvents) {
+    const prpEvent = providerEvent.payload?.prpEvent;
+    const event = prpEvent && typeof prpEvent === "object" && !Array.isArray(prpEvent)
+      ? (prpEvent as Record<string, unknown>) : {};
+    const eventPayload = event.payload && typeof event.payload === "object" && !Array.isArray(event.payload)
+      ? (event.payload as Record<string, unknown>) : {};
+    const processId = eventPayload.processId;
+    if (typeof processId === "number" && Number.isInteger(processId) && processId > 0) {
+      identities.push({ pid: processId,
+        processStartedAt: parsedProcessStart(eventPayload.processStartedAt ?? eventPayload.providerProcessStartedAt) });
+    }
+  }
+  return identities;
+}
+
+export type NativeLocalRunnerStopProof =
+  | { stopped: true }
+  | {
+      stopped: false;
+      reason:
+        | "runner_process_identity_missing"
+        | "runner_process_alive"
+        | "runner_process_identity_unverifiable"
+        | "runner_process_group_alive"
+        | "provider_process_alive"
+        | "provider_process_identity_unverifiable";
+    };
+
+/**
+ * Proves that a finished local runner and its recorded provider processes
+ * stopped, with the same exact PID and start-time checks as restart recovery.
+ * A PID that now belongs to a different process counts as stopped. A live
+ * process with the recorded identity, a live process group, or a live PID
+ * whose start time cannot be compared is not proof.
+ */
+export async function proveNativeLocalRunnerStopped(input: {
+  processPid: number | null;
+  processGroupId: number | null;
+  processStartedAt: Date | null;
+  providerProcesses?: readonly NativeProviderProcessIdentity[];
+  /** A current, server-authored stop receipt already proved this exact Runner and group absent. */
+  runnerStopRecorded?: boolean;
+  isProcessAlive?: (pid: number) => boolean;
+  isProcessGroupAlive?: (processGroupId: number) => boolean;
+  readProcessStartedAt?: (pid: number) => Promise<Date | null>;
+}): Promise<NativeLocalRunnerStopProof> {
+  const refuse = (reason: Extract<NativeLocalRunnerStopProof, { stopped: false }>["reason"]) =>
+    ({ stopped: false as const, reason });
+  // A local Runner leads its own process group. Without both identities, a
+  // live child in that group could outlive the Runner unseen.
+  if (!input.processPid || !Number.isInteger(input.processPid) || input.processPid <= 1 || !input.processGroupId
+    || (!input.processStartedAt && !input.runnerStopRecorded)) {
+    return refuse("runner_process_identity_missing");
+  }
+  if (!input.runnerStopRecorded) {
+    const runner = await evaluateNativeProviderProcesses({
+      identities: [{ pid: input.processPid, processStartedAt: input.processStartedAt }],
+      isProcessAlive: input.isProcessAlive,
+      readProcessStartedAt: input.readProcessStartedAt,
+    });
+    if (runner.livePids.length > 0) return refuse("runner_process_alive");
+    if (runner.ambiguousLivePids.length > 0) return refuse("runner_process_identity_unverifiable");
+  }
+  const groupAlive = input.isProcessGroupAlive ?? processGroupIsAlive;
+  if (groupAlive(input.processGroupId)) return refuse("runner_process_group_alive");
+  const providers = await evaluateNativeProviderProcesses({
+    identities: (input.providerProcesses ?? []).filter(identity => identity.pid !== input.processPid),
+    isProcessAlive: input.isProcessAlive,
+    readProcessStartedAt: input.readProcessStartedAt,
+  });
+  if (providers.livePids.length > 0) return refuse("provider_process_alive");
+  if (providers.ambiguousLivePids.length > 0) return refuse("provider_process_identity_unverifiable");
+  return { stopped: true };
+}
+
 export function classifyNativeRunnerRecoveryEvidence(input: {
   runnerPidAlive: boolean;
   runnerGroupAlive: boolean;
@@ -926,79 +1038,12 @@ export async function claimNativeRestartRecoveries(input: {
         .where(
           and(
             eq(heartbeatRunEvents.runId, row.run.id),
-            inArray(heartbeatRunEvents.eventType, [
-              "harness.ready",
-              "session.started",
-              "session.resumed",
-              "session.updated",
-              "turn.started",
-              "provider.event",
-              "provider.rpc_result",
-            ]),
+            inArray(heartbeatRunEvents.eventType, [...NATIVE_PROVIDER_PROCESS_EVENT_TYPES]),
           ),
         )
         .orderBy(desc(heartbeatRunEvents.id))
         .limit(100);
-      const checkpointProcess =
-        checkpointRecord.process &&
-        typeof checkpointRecord.process === "object" &&
-        !Array.isArray(checkpointRecord.process)
-          ? (checkpointRecord.process as Record<string, unknown>)
-          : {};
-      const providerProcessIdentities: NativeProviderProcessIdentity[] = [];
-      const checkpointProcessFields = [
-        ["providerPid", "providerProcessStartedAt"],
-        ["codexPid", "codexProcessStartedAt"],
-        ["sidecarPid", "sidecarProcessStartedAt"],
-        ["agentPid", "agentProcessStartedAt"],
-      ] as const;
-      for (const [field, startedAtField] of checkpointProcessFields) {
-        const value = checkpointProcess[field];
-        if (typeof value === "number" && Number.isInteger(value) && value > 0) {
-          const rawStartedAt = checkpointProcess[startedAtField];
-          const parsedStartedAt =
-            typeof rawStartedAt === "string" ? new Date(rawStartedAt) : null;
-          providerProcessIdentities.push({
-            pid: value,
-            processStartedAt:
-              parsedStartedAt && !Number.isNaN(parsedStartedAt.getTime())
-                ? parsedStartedAt
-                : null,
-          });
-        }
-      }
-      for (const providerEvent of providerEvents) {
-        const prpEvent = providerEvent.payload?.prpEvent;
-        const event =
-          prpEvent && typeof prpEvent === "object" && !Array.isArray(prpEvent)
-            ? (prpEvent as Record<string, unknown>)
-            : {};
-        const eventPayload =
-          event.payload &&
-          typeof event.payload === "object" &&
-          !Array.isArray(event.payload)
-            ? (event.payload as Record<string, unknown>)
-            : {};
-        const processId = eventPayload.processId;
-        if (
-          typeof processId === "number" &&
-          Number.isInteger(processId) &&
-          processId > 0
-        ) {
-          const rawStartedAt =
-            eventPayload.processStartedAt ??
-            eventPayload.providerProcessStartedAt;
-          const parsedStartedAt =
-            typeof rawStartedAt === "string" ? new Date(rawStartedAt) : null;
-          providerProcessIdentities.push({
-            pid: processId,
-            processStartedAt:
-              parsedStartedAt && !Number.isNaN(parsedStartedAt.getTime())
-                ? parsedStartedAt
-                : null,
-          });
-        }
-      }
+      const providerProcessIdentities = nativeProviderProcessIdentities(checkpointRecord, providerEvents);
       const providerProcesses = await evaluateNativeProviderProcesses({
         identities: (remoteProcess ? [] : providerProcessIdentities).filter(
           (identity) => identity.pid !== row.run.processPid,

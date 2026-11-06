@@ -30,6 +30,8 @@ export interface LedgerLine {
   evidence: string | null;
   replay: string;
   recordedAt: string;
+  /** Known signatures masked for this wave, e.g. ["rc06"]. */
+  masks?: string[];
 }
 
 export function ledgerLine(plan: WavePlan, record: TaskRecord, grade: TaskGrade, gitSha: string, evidence: string | null,
@@ -46,6 +48,7 @@ export function ledgerLine(plan: WavePlan, record: TaskRecord, grade: TaskGrade,
     ...(loads.length ? { maxLoadAvg1m: Math.max(...loads) } : {}),
     signature: grade.signature, retried: Boolean(record.retry), evidence, replay: replayCommand(plan.waveId, record.plan.taskId),
     recordedAt: new Date().toISOString(),
+    ...(plan.options.masks?.length ? { masks: [...plan.options.masks] } : {}),
   };
 }
 
@@ -64,7 +67,7 @@ export function renderSummary(lines: readonly LedgerLine[], latestWave?: string)
   const cells = new Map<string, { pass: number; total: number; crossed: number }>();
   const signatures = new Map<string, { count: number; latest: LedgerLine }>();
   for (const line of lines) {
-    const key = `${line.env} · ${line.adapter} · ${line.workload} · ${line.fault}${line.trigger ? ` ^${line.trigger}` : ""}`;
+    const key = `${line.env} · ${line.adapter} · ${line.workload} · ${line.fault}${line.trigger ? ` ^${line.trigger}` : ""}${line.masks?.length ? ` · ${line.masks.map(mask => `${mask}-masked`).join(",")}` : ""}`;
     const cell = cells.get(key) ?? { pass: 0, total: 0, crossed: 0 };
     cell.total += 1; if (line.pass) cell.pass += 1; if (line.crossed) cell.crossed += 1;
     cells.set(key, cell);
@@ -78,7 +81,7 @@ export function renderSummary(lines: readonly LedgerLine[], latestWave?: string)
   if (latestWave) {
     out.push(`## Latest wave ${latestWave}`, "", "| Task | Cell | Crossed | R1 | R2 | R3 | R4 | R5 | R6 | T | Result |", "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |");
     for (const line of lines.filter(candidate => candidate.waveId === latestWave)) {
-      out.push(`| ${line.taskId} ${line.issue ?? ""} | ${line.adapter} ${line.workload} ${line.fault}${line.trigger ? ` ^${line.trigger}${line.triggerMissed?.length ? " (missed)" : ""}` : ""} | ${line.crossed ? "yes" : "no"} | ${line.rules.R1} | ${line.rules.R2} | ${line.rules.R3} | ${line.rules.R4} | ${line.rules.R5} | ${line.rules.R6} | ${line.T} | ${line.pass ? "PASS" : `FAIL ${line.signature}`} |`);
+      out.push(`| ${line.taskId} ${line.issue ?? ""} | ${line.adapter} ${line.workload} ${line.fault}${line.trigger ? ` ^${line.trigger}${line.triggerMissed?.length ? " (missed)" : ""}` : ""}${line.masks?.length ? ` (${line.masks.map(mask => `${mask}-masked`).join(", ")})` : ""} | ${line.crossed ? "yes" : "no"} | ${line.rules.R1} | ${line.rules.R2} | ${line.rules.R3} | ${line.rules.R4} | ${line.rules.R5} | ${line.rules.R6} | ${line.T} | ${line.pass ? "PASS" : `FAIL ${line.signature}`} |`);
     }
     out.push("");
   }

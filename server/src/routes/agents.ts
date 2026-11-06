@@ -1,4 +1,5 @@
 import { assertProviderApiPlacementPolicy, managedCursorApiDefaultEnabled, resolveProviderApiPlacement } from "../services/native-runtime/provider-api-placement.js";
+import { isObjectJournalBusyError } from "../services/object-byte-journal.js";
 import { readTaskPanelActivations } from "../services/plugin-task-panels.js";
 import { enqueueNativeRuntimeResponse } from "../services/native-runtime/native-runtime-response-delivery.js";
 import { latestFailedRunsByAgent } from "@paperclipai/shared";
@@ -7547,7 +7548,10 @@ export function agentRoutes(
 
       const entries = await providerTraces
         .readExactEntries(run.id, run.companyId)
-        .catch(() => null);
+        .catch(error => {
+          if (isObjectJournalBusyError(error)) throw error;
+          return null;
+        });
       if (entries === null) {
         res.json({
           created: 0,

@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { HttpError } from "../errors.js";
 import { errorHandler } from "../middleware/error-handler.js";
 import { mcpDiscoveryHttpFailure, retainMcpConnectionFailure } from "../services/mcp-connection-failure.js";
+import { ObjectJournalBusyError } from "../services/object-byte-journal.js";
 
 const recordResponsibleUserDenialOnActiveRunMock = vi.hoisted(() => vi.fn());
 const captureExceptionMock = vi.hoisted(() => vi.fn());
@@ -110,6 +111,23 @@ describe("errorHandler", () => {
 
     expect(res.status).toHaveBeenCalledWith(503);
     expect(res.json).toHaveBeenCalledWith({ error: "Server is shutting down" });
+    expect(res.err).toBeUndefined();
+    expect(captureExceptionMock).not.toHaveBeenCalled();
+    expect(telemetryMocks.trackErrorHandlerCrash).not.toHaveBeenCalled();
+  });
+
+  it("answers a shed object-storage read with a retryable 503 without reporting it", () => {
+    const res = { ...makeRes(), set: vi.fn() } as any;
+    const next = vi.fn() as unknown as NextFunction;
+
+    errorHandler(new ObjectJournalBusyError(), makeReq(), res, next);
+
+    expect(res.set).toHaveBeenCalledWith("Retry-After", "2");
+    expect(res.status).toHaveBeenCalledWith(503);
+    expect(res.json).toHaveBeenCalledWith({
+      error: "Object storage is busy; retry shortly",
+      code: "object_journal_io_busy",
+    });
     expect(res.err).toBeUndefined();
     expect(captureExceptionMock).not.toHaveBeenCalled();
     expect(telemetryMocks.trackErrorHandlerCrash).not.toHaveBeenCalled();
