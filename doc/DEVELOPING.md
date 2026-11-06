@@ -186,6 +186,19 @@ Authorized test jobs and the final `verify` and `e2e` aggregates use the selecte
 AWS fleet. A stale admission roster can allocate only the short metadata gate;
 the fresh CODEOWNERS check still denies PR execution for a removed owner.
 
+AWS runners are sometimes lost mid-job. `ci-runner-loss-rerun.yml` re-runs the
+failed jobs of a PR's first CI attempt once when every failed job lost its
+runner. A lost runner is recognized by the check-run annotation "lost
+communication with the server" or "received a shutdown signal". When the only
+annotation is "The operation was canceled.", the job log is checked for the
+same messages. The `verify` and `e2e` aggregates are not counted. Any other
+failure, a failed routing gate, or a PR whose head has moved prevents the
+automatic re-run. The workflow job summary lists each failed job and its
+evidence. Like a maintainer's "Re-run failed jobs", the re-run reuses the
+gate's successful outputs, including its AWS admission. Attempt 2's
+triggering actor is `github-actions[bot]`, so `profile-ci` does not export
+that attempt. Later attempts are never re-run automatically.
+
 The routing workflow also selects the CI scope. Middle PRs in a stack and PRs
 whose diff changes only release notes (`releases/v*.md` or
 `releases/beta/v*.md`) skip the build, test, and e2e lanes. The `policy` job
@@ -407,12 +420,18 @@ This gives interrupted jobs an independent recovery path. It keeps the same
 source, commands, assertions and required gates. A failed test still needs a fix;
 a successful rerun does not explain an earlier failure.
 
-The two PR Runner Vitest jobs separate package tests from native server tests.
-The first runs the complete package inventory; the second runs the complete
-native server group. The existing `--shard=1/2` and `--shard=2/2` commands route
-through `run-pr-vitest-lane.mjs` for compatibility with the master-pinned
-workflow. Other workflow names and shard counts keep their existing coverage.
-Both jobs still prepare debug binaries. A separate exact-key debug cache holds
+The PR Runner Vitest jobs separate package tests from native server tests.
+Three `--package-lane=K/3` jobs each run one duration-balanced partition of the
+package inventory, and one `--native-server` job runs the complete native server
+group. `run-pr-vitest-lane.mjs` asks `vitest list` for the inventory, so it
+follows the `vitest.config.ts` includes. It partitions the files with the general
+server partitioner, using the weights in
+`packages/paperclip-runner/scripts/vitest-lane-durations.json`. Files missing
+from that manifest get the median weight. The legacy `--shard=1/2` and
+`--shard=2/2` commands keep their earlier PR behavior: the first runs the whole
+package inventory and the second runs the native group. Other workflow names and
+shard counts keep their existing coverage. Every lane still prepares debug
+binaries. A separate exact-key debug cache holds
 the workspace library and every Cargo binary target. Its key includes source,
 protocol and fixture content, Cargo configuration, compiler flags, toolchain
 and checkout path. Only the Rust lane of a verified master push saves it.
@@ -580,6 +599,13 @@ one sidebar entry, and choosing them again reopens the same conversation. The
 **Add and reopen** component story exercises that constraint. Agent selection
 and sending use local fixtures. The live `/chats` and `/chats/:agentRef` routes
 use the same sidebar, picker, landing page, and existing chat surface for everyone.
+The **Switch agents · Unread chats** page stories cover per-agent unread badges
+in the chat header picker in dark, light, and mobile views. The header and Add
+chat pickers show numeric unread message counts from the shared account-scoped
+chat-list cache, with indexed lookups and no per-agent read-state requests.
+Chat endpoints return `unreadMessageCount` alongside `isUnreadForMe`; the count
+uses the same batched query and excludes human messages, deleted messages, system
+notices, and fast responses. Opening or selecting a chat does not mark unseen messages read.
 
 Use **Chat & Comments → Issue Thread Interactions → Composer Questions Auto Advance**
 to try the paged composer form. A single selection shows a brief checked-state animation before advancing to the
