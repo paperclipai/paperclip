@@ -34,8 +34,10 @@ const SYNONYMS: Record<string, string> = {
   blocker: "dependencies", blockers: "dependencies", files: "attachments",
 };
 
+const SEARCH_FUNCTION_WORDS = new Set(["a", "an", "the", "for", "of", "to", "in", "on", "at", "by", "with", "and", "or", "from"]);
+
 function words(text: string): string[] {
-  return text.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean)
+  return text.toLowerCase().split(/[^a-z0-9]+/).filter((word) => word.length > 0 && !SEARCH_FUNCTION_WORDS.has(word))
     .flatMap((word) => [word, ...(SYNONYMS[word] ? [SYNONYMS[word]] : [])])
     .map((word) => word.length > 3 && word.endsWith("s") ? word.slice(0, -1) : word);
 }
