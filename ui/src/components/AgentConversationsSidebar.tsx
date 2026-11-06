@@ -1,3 +1,4 @@
+import { useMemo } from "react";
 import { AgentConversationSidebar } from "./AgentConversationSidebar";
 import { queryViewKind } from "./QueryView";
 import { useAgentChatNavigation, useOpenAgentChat } from "@/hooks/useAgentChatNavigation";
@@ -12,6 +13,9 @@ import { resourceMembershipState, useResourceMemberships } from "@/hooks/useReso
 /** Account- and company-scoped data for the secondary chat navigation. */
 export function AgentConversationsSidebar() {
   const { companyId, userId, agents, chats, session } = useAgentChatNavigation();
+  const unreadMessageCounts = useMemo(() => new Map((chats.data ?? [])
+    .flatMap(chat => chat.conversationAgentId && chat.unreadMessageCount
+      ? [[chat.conversationAgentId, chat.unreadMessageCount] as const] : [])), [chats.data]);
   const openChat = useOpenAgentChat(companyId, userId);
   const navigate = useNavigate();
   const memberships = useResourceMemberships(companyId);
@@ -48,6 +52,7 @@ export function AgentConversationsSidebar() {
     existingChatAgentIds={conversations.map(agent => agent.id)}
     activeId={active?.id} previews={previews}
     unreadAgentIds={(chats.data ?? []).filter(chat => chat.isUnreadForMe).flatMap(chat => chat.conversationAgentId ? [chat.conversationAgentId] : [])}
+    unreadMessageCounts={unreadMessageCounts}
     // Loaded chats stay listed through an outage (the banner covers it); an
     // outage before the first load is a skeleton, and only a real failure is an error.
     loading={[agents, chats, session].some(query => { const kind = queryViewKind(query); return kind === "loading" || kind === "reconnecting"; })}

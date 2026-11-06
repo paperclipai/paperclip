@@ -43,18 +43,18 @@ afterEach(async () => {
 
 describe("AgentChatPicker", () => {
   it("shows unread per agent through search and clears it when read state updates", async () => {
-    await render({ existingChatAgentIds: ["first", "second"], unreadAgentIds: ["second"] });
-    expect(options()[0].querySelector('[aria-label^="Unread messages"]')).toBeNull();
-    expect(options()[1].querySelector('[aria-label="Unread messages from Alex"]')?.textContent).toBe("Unread");
+    await render({ existingChatAgentIds: ["first", "second"], unreadMessageCounts: new Map([["first", 0], ["second", 12]]) });
+    expect(options()[0].querySelector('[aria-label*="unread message"]')).toBeNull();
+    expect(options()[1].querySelector('[aria-label="12 unread messages from Alex"]')?.textContent).toBe("12");
     await search("designer");
     expect(options()).toHaveLength(1);
-    expect(options()[0].textContent).toContain("Unread");
-    await render({ unreadAgentIds: [] });
-    expect(options()[0].textContent).not.toContain("Unread");
+    expect(options()[0].textContent).toContain("12");
+    await render({ unreadMessageCounts: new Map([["second", 0]]) });
+    expect(options()[0].textContent).not.toContain("12");
     expect(options()[0].textContent).toContain("Open chat");
   });
 
-  it("indexes unread and existing chat membership once for a large team", async () => {
+  it("uses indexed counts and memoized chat membership for a large team", async () => {
     const roster = Array.from({ length: 500 }, (_, index) => ({ ...agents[index % 2], id: `agent-${index}`, name: `Agent ${index}` }));
     // Count element visits during index construction. A per-row scan fails
     // immediately, without relying on machine-dependent timing thresholds.
@@ -64,14 +64,18 @@ describe("AgentChatPicker", () => {
       if (typeof key === "string" && /^\d+$/.test(key) && ++visits > ids.length * 2) throw new Error("Repeated chat membership scan");
       return Reflect.get(target, key, receiver);
     } });
-    await render({ agents: roster, existingChatAgentIds: boundedIds, unreadAgentIds: boundedIds });
+    const counts = new Map(ids.map(id => [id, 7]));
+    const getCount = vi.spyOn(counts, "get");
+    await render({ agents: roster, existingChatAgentIds: boundedIds, unreadMessageCounts: counts });
     expect(options()).toHaveLength(500);
-    expect(document.querySelectorAll('[aria-label^="Unread messages from"]')).toHaveLength(500);
-    expect(visits).toBe(1000);
+    expect(document.querySelectorAll('[aria-label^="7 unread messages from"]')).toHaveLength(500);
+    expect(visits).toBe(500);
+    expect(getCount).toHaveBeenCalledTimes(500);
     await search("Agent 499");
     expect(options().length).toBeLessThan(500);
     expect(options().some(option => option.textContent?.includes("Agent 499"))).toBe(true);
-    expect(visits).toBe(1000);
+    expect(visits).toBe(500);
+    expect(getCount).toHaveBeenCalledTimes(1000);
   });
 
   it("shows saved custom avatars and default avatars in agent choices", async () => {

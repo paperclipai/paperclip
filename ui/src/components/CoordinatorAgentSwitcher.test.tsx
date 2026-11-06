@@ -16,7 +16,7 @@ vi.mock("@/api/agentChats", () => ({ agentChatsApi: { list: state.listChats } })
 vi.mock("@/api/auth", () => ({ authApi: { getSession: () => ({ user: { id: "user-a" } }) } }));
 
 const agents = ["Mira", "Alex", "Sam"].map(name => ({ id: name, name, urlKey: name.toLowerCase(), companyId: "company-a", role: "engineer", status: "idle" } as Agent));
-const chat = (agentId: string, unread: boolean) => ({ id: `chat-${agentId}`, conversationAgentId: agentId, isUnreadForMe: unread } as Issue);
+const chat = (agentId: string, unreadMessageCount: number) => ({ id: `chat-${agentId}`, conversationAgentId: agentId, isUnreadForMe: unreadMessageCount > 0, unreadMessageCount } as Issue);
 let client: QueryClient;
 let root: Root;
 let container: HTMLDivElement;
@@ -34,21 +34,21 @@ beforeEach(() => {
   client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
   client.setQueryData(queryKeys.auth.session, { user: { id: "user-a" } });
   client.setQueryData(queryKeys.agents.list("company-a"), agents);
-  client.setQueryData(queryKeys.agentChats.list("company-a", "user-a"), [chat("Alex", true), chat("Sam", false)]);
+  client.setQueryData(queryKeys.agentChats.list("company-a", "user-a"), [chat("Alex", 12), chat("Sam", 0)]);
   container = document.createElement("div"); document.body.append(container); root = createRoot(container);
 });
 afterEach(async () => { await act(async () => root.unmount()); client.clear(); container.remove(); vi.unstubAllGlobals(); });
 
 it("opens cached badges without requests and follows read-state cache updates", async () => {
   await render(); await open();
-  expect(document.querySelector('[aria-label="Unread messages from Alex"]')).not.toBeNull();
-  expect(document.querySelector('[aria-label="Unread messages from Sam"]')).toBeNull();
+  expect(document.querySelector('[aria-label="12 unread messages from Alex"]')?.textContent).toBe("12");
+  expect(document.querySelector('[aria-label="1 unread message from Sam"]')).toBeNull();
   await act(async () => {
-    client.setQueryData(queryKeys.agentChats.list("company-a", "user-a"), [chat("Alex", false), chat("Sam", true)]);
+    client.setQueryData(queryKeys.agentChats.list("company-a", "user-a"), [chat("Alex", 0), chat("Sam", 1)]);
     await new Promise(resolve => setTimeout(resolve, 0));
   });
-  expect(document.querySelector('[aria-label="Unread messages from Alex"]')).toBeNull();
-  expect(document.querySelector('[aria-label="Unread messages from Sam"]')).not.toBeNull();
+  expect(document.querySelector('[aria-label="12 unread messages from Alex"]')).toBeNull();
+  expect(document.querySelector('[aria-label="1 unread message from Sam"]')).not.toBeNull();
   await act(async () => [...document.querySelectorAll<HTMLElement>('[role="option"]')].find(option => option.textContent?.includes("Sam"))!.click());
   expect(state.navigate).toHaveBeenCalledWith("/chats/sam");
   expect(client.getQueryData<Issue[]>(queryKeys.agentChats.list("company-a", "user-a"))![1].isUnreadForMe).toBe(true);
@@ -71,10 +71,10 @@ it("keeps switching available while unread history is still loading", async () =
 it("does not carry unread badges into a different account", async () => {
   await render(); await open();
   await act(async () => {
-    client.setQueryData(queryKeys.agentChats.list("company-a", "user-b"), [chat("Sam", true)]);
+    client.setQueryData(queryKeys.agentChats.list("company-a", "user-b"), [chat("Sam", 1)]);
     client.setQueryData(queryKeys.auth.session, { user: { id: "user-b" } });
     await new Promise(resolve => setTimeout(resolve, 0));
   });
-  expect(document.querySelector('[aria-label="Unread messages from Alex"]')).toBeNull();
-  expect(document.querySelector('[aria-label="Unread messages from Sam"]')).not.toBeNull();
+  expect(document.querySelector('[aria-label="12 unread messages from Alex"]')).toBeNull();
+  expect(document.querySelector('[aria-label="1 unread message from Sam"]')).not.toBeNull();
 });

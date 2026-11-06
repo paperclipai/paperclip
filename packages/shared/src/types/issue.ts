@@ -990,6 +990,8 @@ export interface Issue {
   lastExternalCommentAt?: Date | null;
   lastActivityAt?: Date | null;
   isUnreadForMe?: boolean;
+  /** Unread agent messages for the current viewer, returned by chat endpoints. */
+  unreadMessageCount?: number;
   archivedAt?: Date | null;
   archivedByActorType?: "user" | "agent" | null;
   archivedByAgentId?: string | null;

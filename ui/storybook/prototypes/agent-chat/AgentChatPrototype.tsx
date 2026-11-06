@@ -216,7 +216,7 @@ export interface AgentChatPrototypeProps {
   entryScenario?: EntryScenario;
   sidebarScenario?: SidebarScenario;
   coordinator?: boolean;
-  unreadAgentIds?: readonly string[];
+  unreadMessageCounts?: Record<string, number>;
 }
 
 /** Production pages with an in-memory API. No alternate chat controller. */
@@ -227,7 +227,7 @@ export function AgentChatPrototype({
   entryScenario,
   sidebarScenario,
   coordinator = false,
-  unreadAgentIds,
+  unreadMessageCounts,
 }: AgentChatPrototypeProps) {
   const [ready, setReady] = useState(false);
   const navigate = useNavigate();
@@ -254,6 +254,7 @@ export function AgentChatPrototype({
         conversationUserId?: string | null;
         conversationState?: "waiting";
         isUnreadForMe?: boolean;
+        unreadMessageCount?: number;
       }
     >();
     const messages = new Map<string, IssueChatComment[]>();
@@ -287,7 +288,8 @@ export function AgentChatPrototype({
         conversationAgentId: taskComparison ? null : a.id,
         conversationUserId: taskComparison ? null : "user-board",
         conversationState: "waiting" as const,
-        isUnreadForMe: unreadAgentIds?.includes(a.id) ?? false,
+        isUnreadForMe: (unreadMessageCounts?.[a.id] ?? 0) > 0,
+        unreadMessageCount: unreadMessageCounts?.[a.id] ?? 0,
       };
       const hasExistingChat = sidebarScenario
         ? (sidebarScenario === "large-team" || sidebarAgents.some(initial => initial.id === a.id)) && (scenario !== "empty" || a.id !== agent.id)
@@ -435,7 +437,7 @@ export function AgentChatPrototype({
       }
       if (method === "POST" && path.endsWith("/read")) {
         const conversation = [...chats.values()].find(chat => chat.id === task.id);
-        if (conversation) conversation.isUnreadForMe = false;
+        if (conversation) { conversation.isUnreadForMe = false; conversation.unreadMessageCount = 0; }
         return Response.json({});
       }
       if (method === "PATCH" && /\/issues\/[^/]+$/.test(path)) {
@@ -621,7 +623,7 @@ export function AgentChatPrototype({
       }
       queryClient.clear();
     };
-  }, [scenario, taskComparison, entryScenario, sidebarScenario, coordinator, unreadAgentIds, contextInitiallyOpen, queryClient]);
+  }, [scenario, taskComparison, entryScenario, sidebarScenario, coordinator, unreadMessageCounts, contextInitiallyOpen, queryClient]);
   useLayoutEffect(() => {
     if (ready && !initialRouteSet.current) {
       initialRouteSet.current = true;

@@ -103,6 +103,24 @@ it("shows accessible unread indicators only for the current company and human", 
   expect(container.querySelector('[aria-label^="Unread messages"]')).toBeNull();
 });
 
+it("passes numeric unread counts to Add chat and updates them from the account cache", async () => {
+  const key = queryKeys.agentChats.list("company-a", "user-a");
+  client.setQueryData(key, [{ ...chat("alice"), isUnreadForMe: true, unreadMessageCount: 8 }, chat("bob")]);
+  await render(); await addChat();
+  expect(document.querySelector('[aria-label="8 unread messages from alice"]')?.textContent).toBe("8");
+  expect(document.querySelector('[aria-label*="unread message from bob"]')).toBeNull();
+  await act(async () => {
+    client.setQueryData(key, [{ ...chat("alice"), isUnreadForMe: true, unreadMessageCount: 1 }]);
+    await new Promise(resolve => setTimeout(resolve, 0));
+  });
+  expect(document.querySelector('[aria-label="1 unread message from alice"]')?.textContent).toBe("1");
+  await act(async () => {
+    client.setQueryData(key, [{ ...chat("alice"), isUnreadForMe: false, unreadMessageCount: 0 }]);
+    await new Promise(resolve => setTimeout(resolve, 0));
+  });
+  expect(document.querySelector('[aria-label*="unread message"]')).toBeNull();
+});
+
 it("retains terminated agents' history by id without offering them for new chats", async () => {
   const retired = { ...roster[0], id: "retired-id", name: "Retired", status: "terminated", urlKey: "alice" };
   client.setQueryData(queryKeys.agents.detail(retired.id), retired);

@@ -18,11 +18,11 @@ export function CoordinatorAgentSwitcher({ agent }: { agent: Agent }) {
   // the picker needs no requests per agent and never waits for chat history.
   const chatAgentIds = useMemo(() => {
     const existing: string[] = [];
-    const unread: string[] = [];
+    const unread = new Map<string, number>();
     for (const chat of chats.data ?? []) {
       if (!chat.conversationAgentId) continue;
       existing.push(chat.conversationAgentId);
-      if (chat.isUnreadForMe) unread.push(chat.conversationAgentId);
+      if (chat.unreadMessageCount) unread.set(chat.conversationAgentId, chat.unreadMessageCount);
     }
     return { existing, unread };
   }, [chats.data]);
@@ -42,7 +42,7 @@ export function CoordinatorAgentSwitcher({ agent }: { agent: Agent }) {
       error={agents.error}
       onRetry={() => { void agents.refetch(); }}
       existingChatAgentIds={chatAgentIds.existing}
-      unreadAgentIds={chatAgentIds.unread}
+      unreadMessageCounts={chatAgentIds.unread}
       onSelect={next => { navigate(`/chats/${encodeURIComponent(agentRouteRef(next))}`); }}
     />
   );
