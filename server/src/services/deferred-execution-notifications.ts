@@ -1,3 +1,5 @@
+import type { Db } from "@paperclipai/db";
+import { sql } from "drizzle-orm";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 
 export type DeferredExecutionScope = { companyId: string; requestId?: string };
@@ -24,7 +26,17 @@ export async function notifyTaskRetrySettlement(tx: object, scope: DeferredExecu
 }
 
 export async function notifyDeferredExecutionEligibility(tx: object, scope?: { companyId: string }) {
-  await notifyDeliveryWork(tx, DELIVERY_QUEUES.workspaceRecovery, scope ? JSON.stringify({ companyId: scope.companyId }) : "*");
+  // Only an actual continuation obligation may wake this passive worker.
+  // Empty eligibility hints during idle drain must not keep maintenance active.
+  const pending = await (tx as Pick<Db, "execute">).execute<{ pendingPreparationContinuation: boolean }>(sql`
+    select exists (select 1 from issue_recovery_actions
+      where evidence ? 'systemRecovery' and evidence#>>'{systemRecovery,state}' = 'complete'
+        and evidence->>'bootstrapPreparationSettledAt' is not null
+        and coalesce(evidence->>'bootstrapPreparationContinuation', 'pending') in ('pending', 'deferred')
+        ${scope ? sql`and company_id = ${scope.companyId}::uuid` : sql``}
+    ) as "pendingPreparationContinuation"`);
+  if (pending[0]?.pendingPreparationContinuation === true)
+    await notifyDeliveryWork(tx, DELIVERY_QUEUES.workspaceRecovery, scope ? JSON.stringify({ companyId: scope.companyId }) : "*");
   await notifyDeliveryWork(tx, DELIVERY_QUEUES.nativeProcessSessions, scope ? JSON.stringify({ companyId: scope.companyId }) : "*");
   if (scope) {
     await notifyDeferredExecutionWork(tx, scope);

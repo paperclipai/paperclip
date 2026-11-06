@@ -2345,13 +2345,36 @@ describe("automatic retained workspace recovery", () => {
     } finally { await restarted.$client.end(); }
   }, 30_000);
 
-  it.each(["restart", "pause", "claimed"] as const)("retains preparation continuation after settlement before enqueue (%s)", async mode => {
+  it.each([false, true])("continues a recovered lost preparation without an earlier retry (startup=%s)", async alreadyRecovered => {
+    const f = await interruptedRemotePreparation("process_lost");
+    if (alreadyRecovered) await recoverRetainedWorkspace(f.input);
+    const restarted = createDb(connectionString);
+    try {
+      const heartbeat = heartbeatService(restarted);
+      await Promise.all(await reconcileRetainedWorkspaces(restarted, f.environmentRuntime,
+        heartbeat.resumeRemoteStopComments, true) ?? []);
+      await Promise.all([heartbeat.resumeRemoteStopComments(await run(f.runId)),
+        heartbeat.resumeRemoteStopComments(await run(f.runId))]);
+      const successors = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, f.runId));
+      expect(successors).toHaveLength(1);
+      expect(successors[0]).toMatchObject({ status: "scheduled_retry", scheduledRetryAttempt: 1 });
+      expect(await getExecutionBlocker(db, f.companyId, f.issueId)).toBeNull();
+      expect(await nextWorkspaceRecoveryAt(restarted)).toBeNull();
+    } finally { await restarted.$client.end(); }
+  }, 30_000);
+
+  it.each(["restart", "pause", "claimed", "duplicate"] as const)("retains preparation continuation after settlement before enqueue (%s)", async mode => {
     const f = await interruptedRemotePreparation("process_lost"), withheld = await withheldPreparationRetry(f);
     await recoverRetainedWorkspace(f.input);
     const source = await run(f.runId);
     expect(await settleInterruptedNativeBootstrap(db, { run: source, providerDispatchStarted: false })).not.toBeNull();
     expect((await action(f.actionId)).evidence.automaticRecovery).toMatchObject({ replay: "allowed" });
     expect(await nextWorkspaceRecoveryAt(db)).not.toBeNull();
+    const duplicateId = mode === "duplicate" ? randomUUID() : null;
+    if (duplicateId) {
+      const prior = await action(f.actionId);
+      await db.insert(issueRecoveryActions).values({ ...prior, id: duplicateId });
+    }
     if (mode === "claimed") {
       const first = await heartbeatService(db).scheduleBoundedRetry(f.runId);
       expect(first.outcome).toBe("scheduled");
@@ -2396,9 +2419,32 @@ describe("automatic retained workspace recovery", () => {
       expect((await action(f.actionId)).evidence).toMatchObject({ bootstrapPreparationContinuation: "delivered",
         bootstrapPreparationContinuationRunId: successors[0].id });
       expect(await nextWorkspaceRecoveryAt(restarted)).toBeNull();
+      if (duplicateId) expect((await action(duplicateId)).evidence.bootstrapPreparationContinuation).toBe("delivered");
       expect(await retainedWorkspaceCandidates(restarted, undefined, false, true)).not.toEqual(
         expect.arrayContaining([expect.objectContaining({ run: expect.objectContaining({ id: f.runId }) })]));
     } finally { await restarted.$client.end(); }
+  }, 30_000);
+
+  it("revisits a pending continuation after enqueue fails before a new notification", async () => {
+    const f = await interruptedRemotePreparation("process_lost"), withheld = await withheldPreparationRetry(f);
+    await recoverRetainedWorkspace(f.input);
+    expect(await settleInterruptedNativeBootstrap(db, { run: await run(f.runId), providerDispatchStarted: false })).not.toBeNull();
+    const heartbeat = heartbeatService(db), passiveSweep = {};
+    let attempts = 0;
+    const onRecovered = async (source: Awaited<ReturnType<typeof run>>) => {
+      if (source.id !== f.runId) return;
+      if (++attempts === 1) throw new Error("database read unavailable before enqueue notification");
+      await heartbeat.resumeRemoteStopComments(source);
+    };
+    await Promise.all(await reconcileRetainedWorkspaces(db, f.environmentRuntime, onRecovered, true, undefined, passiveSweep) ?? []);
+    expect(attempts).toBe(1);
+    expect(await nextWorkspaceRecoveryAt(db)).not.toBeNull();
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, withheld.id))).toHaveLength(0);
+    await Promise.all(await reconcileRetainedWorkspaces(db, f.environmentRuntime, onRecovered, true, undefined, passiveSweep) ?? []);
+    expect(attempts).toBe(2);
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, withheld.id)))
+      .toEqual([expect.objectContaining({ status: "scheduled_retry", scheduledRetryAttempt: 2 })]);
+    expect(await nextWorkspaceRecoveryAt(db)).toBeNull();
   }, 30_000);
 
   it.each(["no_certificate", "provider_started", "runtime_selected", "live_controller", "operator_stop", "missing_stop_receipt", "wrong_snapshot", "retry_exhausted", "human_reblock", "paused", "reassigned", "approval"] as const)(

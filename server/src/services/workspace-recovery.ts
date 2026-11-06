@@ -518,7 +518,10 @@ export function retainedWorkspaceCandidates(db: Db, cursor?: string, unfinishedO
         then (${issueRecoveryActions.evidence}->>'runId')::uuid end`)))
     .where(and(inArray(heartbeatRuns.status, terminal),
       workspaceRecoverySourceEligible(true),
-      unfinishedOnly ? sql`${issueRecoveryActions.evidence}#>>'{systemRecovery,state}' in ('scheduled', 'running', 'awaiting_evidence')` : undefined,
+      unfinishedOnly ? sql`(${issueRecoveryActions.evidence}#>>'{systemRecovery,state}' in ('scheduled', 'running', 'awaiting_evidence')
+        or (${issueRecoveryActions.evidence}#>>'{systemRecovery,state}' = 'complete'
+          and ${issueRecoveryActions.evidence}->>'bootstrapPreparationSettledAt' is not null
+          and coalesce(${issueRecoveryActions.evidence}->>'bootstrapPreparationContinuation', 'pending') = 'pending'))` : undefined,
       obligationsOnly ? sql`(${issueRecoveryActions.evidence}#>>'{systemRecovery,state}' in ('scheduled', 'running', 'awaiting_evidence')
         or (${issueRecoveryActions.evidence}#>>'{systemRecovery,state}' = 'complete' and (${cleanup} or ${interruptedPreparation})) or ${waitingInput})` : undefined,
       sql`(${issueRecoveryActions.evidence}#>>'{systemRecovery,state}' in ('scheduled', 'running', 'awaiting_evidence', 'complete', 'exhausted')
