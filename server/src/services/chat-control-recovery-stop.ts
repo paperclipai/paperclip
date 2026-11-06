@@ -65,7 +65,11 @@ export function readChatControlRecoveryAdmission(
     return "invalid";
   return value.phase;
 }
-const MAX_ANCESTRY = 64;
+// Workspace-busy and AI-seat-busy waits have no attempt ceiling: each attempt
+// appends one automatic hop, about every two minutes. A bound of 64 was hit
+// after roughly two hours of contention on a shared sandbox workspace, which
+// left the retry queued forever while it held the issue execution lock.
+export const CHAT_CONTROL_RECOVERY_MAX_ANCESTRY = 1024;
 const uuid = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i;
 function record(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
@@ -84,7 +88,9 @@ export type ChatControlRecoveryScope = {
 };
 export type ChatControlRecoveryStop =
   | { kind: "clear" }
-  | { kind: "unresolved" }
+  // ancestry_exhausted is permanent: the chain only grows, so waiting cannot
+  // resolve it. Other unresolved proofs may clear once pending chat state lands.
+  | { kind: "unresolved"; reason?: "ancestry_exhausted" }
   | {
       kind: "stopped";
       conversationId: string;
@@ -180,7 +186,7 @@ export async function readChatControlRecoveryStop(
   if (!Object.values(scope).every(id)) return { kind: "unresolved" };
   let runId = scope.sourceRunId;
   const seen = new Set<string>();
-  for (let depth = 0; depth < MAX_ANCESTRY; depth++) {
+  for (let depth = 0; depth < CHAT_CONTROL_RECOVERY_MAX_ANCESTRY; depth++) {
     if (seen.has(runId)) return { kind: "unresolved" };
     seen.add(runId);
     const [run] = await db
@@ -645,5 +651,5 @@ export async function readChatControlRecoveryStop(
     }
     return { kind: publications.length > 50 ? "unresolved" : "clear" };
   }
-  return { kind: "unresolved" };
+  return { kind: "unresolved", reason: "ancestry_exhausted" };
 }
