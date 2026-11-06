@@ -180,7 +180,8 @@ describe("secret routes", () => {
     expect(res.body.error).toContain("without claiming that credential setup is complete");
     expect(res.body.error).toContain("first create a non-governing secure-save acknowledgment");
     expect(res.body.error).toContain("request_human_input");
-    expect(res.body.error).toContain("request_confirmation");
+    expect(res.body.error).toContain('interactionKind="confirmation"');
+    expect(res.body.error).not.toContain("using request_confirmation");
     expect(res.body.error).toContain("never ask for the secret value in that card");
     expect(res.body.error).toContain("Wait only on the actual saved request");
     expect(JSON.stringify(res.body)).not.toContain(value);
