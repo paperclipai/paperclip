@@ -4,7 +4,8 @@ import { authUsers, budgetReservations, companyMemberships, completionContracts,
 import { expect, it, vi } from "vitest";
 import { heartbeatService } from "../services/heartbeat.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
-import { classifyNativeRunnerRecoveryEvidence, currentNativeControllerIdentity, nextNativeProviderAttempt, type NativeRestartRecoveryClaim } from "../services/native-runtime/native-restart-recovery.js";
+import { classifyNativeRunnerRecoveryEvidence, currentNativeControllerIdentity } from "../services/native-runtime/native-restart-recovery.js";
+import type { NativeSessionBackend } from "@paperclipai/paperclip-runner";
 import { PaperclipControlPlanePort } from "../services/native-runtime/paperclip-control-plane-port.js";
 import { CONTROL_PLANE_CONFORMANCE_OPEN, CONTROL_PLANE_CONFORMANCE_RESULT, CONTROL_PLANE_CONFORMANCE_TERMINAL } from "../vendor/paperclip-runner/testing.js";
 import { describeEmbeddedPostgres, nativeRestartFixture } from "./helpers/native-restart.js";
@@ -103,18 +104,31 @@ describeEmbeddedPostgres("heartbeat native recovery interrupted by graceful shut
 
     await f.db.update(nativeRunFinalizations).set({ controllerPid: 2_000_000_001, attempt: drainedAttempt })
       .where(eq(nativeRunFinalizations.runId, f.runId));
-    const resumed = vi.fn(() => { throw new Error("next boot reached provider dispatch"); });
-    const next = heartbeatService(f.db, { nativeSessionBackendFactory: resumed });
-    let claim: NativeRestartRecoveryClaim | undefined;
+    // Let the executor take its execution lease, then record the attempt it
+    // saved when it reaches the provider session.
+    const savedAttempts: number[] = [];
+    const reachedProvider = async () => {
+      const [owner] = await f.db.select({ attempt: nativeRunFinalizations.attempt }).from(nativeRunFinalizations)
+        .where(eq(nativeRunFinalizations.runId, f.runId));
+      savedAttempts.push(owner.attempt);
+      throw new Error("stop at provider dispatch");
+    };
+    const backend = vi.fn((): NativeSessionBackend => ({
+      async descriptor() {
+        return { kind: "mock", name: "drained-budget", version: "1", capabilities: {
+          resume: true, typedEvents: true, steering: false, interruption: true, structuredResult: true },
+          runtimeContextCapabilities: { instructions: "native", skills: "native", mcp: "native" } };
+      },
+      openSession: reachedProvider,
+      recoverSession: reachedProvider,
+    }));
+    const next = heartbeatService(f.db, { nativeSessionBackendFactory: backend });
     try {
       const { claims } = await next.recoverNativeRunsAfterRestart(new Date(), [f.runId]);
       expect(claims).toEqual([expect.objectContaining({ runId: f.runId, chargesProviderAttempt: charges })]);
-      claim = claims[0];
     } finally { await next.drainActiveRunExecutions(); }
-    expect(resumed).toHaveBeenCalledOnce();
-    // The executor applies the claim's charge when it takes the execution lease.
-    expect(nextNativeProviderAttempt(drainedAttempt, claim!.kind, claim!.chargesProviderAttempt))
-      .toBe(charges ? drainedAttempt + 1 : drainedAttempt);
+    expect(backend).toHaveBeenCalledOnce();
+    expect(savedAttempts).toEqual([charges ? drainedAttempt + 1 : drainedAttempt]);
   }, 90_000);
 
   it("still refuses a fourth attempt after a crash", () => {
