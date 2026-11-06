@@ -4,7 +4,7 @@ import { ConnectionInstructionsEditor } from "../ConnectionInstructions";
 import { useEffect, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { isAppAggregator, aggregatorManagementUrl } from "@paperclipai/shared/aggregator-apps";
-import { REMOTE_MCP_CONNECTOR_METHODS, defaultConnectionAgentInstructions, getConnectableAppDefinition, type ToolConnection } from "@paperclipai/shared";
+import { REMOTE_MCP_CONNECTOR_METHODS, defaultConnectionAgentInstructions, getConnectableAppDefinition, type ConnectionIntentSetupOptions, type ToolConnection } from "@paperclipai/shared";
 import { askFirstCatalogEntryIdsFor } from "../connection-defaults";
 import { RemoteMcpAccountChoice } from "./RemoteMcpAccountChoice";
 import { readConnectionIntentOAuthOutcome, type ConnectionSetupFlowProps } from "../ConnectionSetupFlow";
@@ -250,12 +250,16 @@ export function RemoteMcpProductionSetup({ providerId, connection, host = "page"
           ? [{ targetType: "company", targetId: selectedCompanyId }]
           : state.agentIds.map((targetId) => ({ targetType: "agent", targetId })));
       }
-      if (saveDraft) { if (onCancel) onCancel(); else navigate("/apps"); return; }
-      if (result.auth?.kind === "oauth") {
-        if (interactionId && (!connection || connection.status === "draft")) await connectionIntentsApi.setPhase(interactionId, "authorizing", {
+      if (interactionId && (!connection || connection.status === "draft") && (saveDraft || result.auth?.kind === "oauth")) {
+        const interaction = await connectionIntentsApi.setPhase(interactionId, saveDraft ? "requested" : "authorizing", {
           connectionId: result.connectionId,
           access: state.allAgents ? "all_agents" : { agentIds: state.agentIds },
         });
+        queries.setQueryData<ConnectionIntentSetupOptions>(["connection-intent", interactionId, "setup-options"],
+          current => current ? { ...current, interaction } : current);
+      }
+      if (saveDraft) { if (onCancel) onCancel(); else navigate("/apps"); return; }
+      if (result.auth?.kind === "oauth") {
         onPhaseChange?.("authorizing");
         const oauth = await toolsApi.startOAuth(result.connectionId, { asCurrentUser: result.connection.credentialPolicy === "per_user", ...(interactionId ? { interactionId } : {}) });
         const target = resolveAuthorizationTarget(oauth.authorizationUrl);

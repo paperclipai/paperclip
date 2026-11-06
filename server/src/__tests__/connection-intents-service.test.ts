@@ -11,6 +11,7 @@ import {
   issueComments,
   companies,
   companyMemberships,
+  principalPermissionGrants,
   companySecretBindings,
   companySecrets,
   connectionGrantDelegations,
@@ -918,6 +919,7 @@ describeEmbeddedPostgres("connectionIntentService", () => {
     const [agent] = await db.insert(agents).values({ companyId: company.id, name: "Default agent", role: "general", adapterType: "process" }).returning();
     const [otherAgent] = await db.insert(agents).values({ companyId: company.id, name: "Other agent", role: "general", adapterType: "process" }).returning();
     await db.insert(companyMemberships).values({ companyId: company.id, principalType: "user", principalId: "grant-user", membershipRole: "owner", status: "active" });
+    await db.insert(principalPermissionGrants).values({ companyId: company.id, principalType: "user", principalId: "grant-user", permissionKey: "agents:configure" });
     const [issue] = await db.insert(issues).values({ companyId: company.id, title: "Connect Circleback", status: "in_progress", assigneeAgentId: agent.id }).returning();
     const [run] = await db.insert(heartbeatRuns).values({ companyId: company.id, agentId: agent.id, status: "running", responsibleUserId: "grant-user", contextSnapshot: { issueId: issue.id } }).returning();
     const [application] = await db.insert(toolApplications).values({ companyId: company.id, applicationKey: randomUUID(), name: source, type: "mcp_http", metadata: { sourceTemplateKey: source } }).returning();
@@ -959,6 +961,27 @@ describeEmbeddedPostgres("connectionIntentService", () => {
     expect((await access.getConnection(f.connection.id, f.company.id))?.config?.mcpAgentAccessConfigured).toBe(true);
   });
 
+  it("keeps installations with a separate narrow profile when account completion is additive", async () => {
+    const f = await accessFixture("github");
+    const access = toolAccessService(db);
+    await access.finishGalleryAppConnection(f.company.id, f.connection.id, {
+      enabledCatalogEntryIds: f.catalog.map(tool => tool.id), askFirstCatalogEntryIds: [], access: { agentIds: [f.agent.id] },
+    });
+    const [appProfile] = await db.select().from(toolProfiles).where(eq(toolProfiles.profileKey, `app:${f.connection.id}`));
+    await db.delete(toolProfileBindings).where(eq(toolProfileBindings.profileId, appProfile.id));
+    const [narrow] = await db.insert(toolProfiles).values({ companyId: f.company.id, profileKey: randomUUID(), name: "Narrow existing access", defaultAction: "deny" }).returning();
+    await db.insert(toolProfileEntries).values({ companyId: f.company.id, profileId: narrow.id, selectorType: "catalog_entry", catalogEntryId: f.catalog[0].id, effect: "include" });
+    await db.insert(toolProfileBindings).values({ companyId: f.company.id, profileId: narrow.id, targetType: "agent", targetId: f.agent.id });
+    await access.finishGalleryAppConnection(f.company.id, f.connection.id, {
+      enabledCatalogEntryIds: f.catalog.map(tool => tool.id), askFirstCatalogEntryIds: [], access: { agentIds: [f.otherAgent.id] }, preserveExistingAccess: true,
+    });
+    expect((await access.listConnectionInstalls(f.connection.id, f.company.id)).map(install => install.targetId).sort()).toEqual([f.agent.id, f.otherAgent.id].sort());
+    const effective = await access.getEffectiveToolAssignmentsForAgent(f.company.id, f.agent.id);
+    expect(effective.installedConnections.map(connection => connection.id)).toContain(f.connection.id);
+    expect(effective.allowedTools.map(tool => tool.id)).toEqual([f.catalog[0].id]);
+    expect((await db.select().from(toolProfileBindings).where(eq(toolProfileBindings.profileId, appProfile.id))).map(binding => binding.targetId)).toEqual([f.otherAgent.id]);
+  });
+
   it("creates and resolves an access card for a 46-tool connector without model-supplied tool names", async () => {
     const f = await accessFixture("notion");
     await db.insert(toolCatalogEntries).values(Array.from({ length: 43 }, (_, i) => ({
@@ -992,6 +1015,11 @@ describeEmbeddedPostgres("connectionIntentService", () => {
       canManageOrganizationGrant: true,
     })).rejects.toThrow("Select the requesting agent");
     expect((await f.service.loadIntent(interaction.id)).interaction.payload.setupAccess).toBeUndefined();
+    const incompleteDraft = { connectionId: f.connection.id, access: { agentIds: [] } };
+    await f.service.updatePhase(interaction.id, "requested", "grant-user", { setupAccess: incompleteDraft });
+    expect((await f.service.loadIntent(interaction.id)).interaction.payload.setupAccess).toEqual(incompleteDraft);
+    await expect(f.service.updatePhase(interaction.id, "authorizing", "grant-user", { setupAccess: incompleteDraft }))
+      .rejects.toThrow("Select the requesting agent");
     const restrictedSetup = { connectionId: f.connection.id, access: { agentIds: [f.agent.id] } };
     await f.service.updatePhase(interaction.id, "authorizing", "grant-user", { setupAccess: restrictedSetup });
     await f.service.updatePhase(interaction.id, "needs_retry", "grant-user");
@@ -1003,6 +1031,27 @@ describeEmbeddedPostgres("connectionIntentService", () => {
       responsibleUserId: "grant-user", serviceSlug: "notion" })).toBeNull();
     await expect(f.service.complete(interaction.id, f.connection.id, "grant-user", { oauthCompletion: true }))
       .rejects.toMatchObject({ status: 403 });
+  });
+
+  it("checks agent edit scope when saving task audiences and again at OAuth completion", async () => {
+    const f = await accessFixture("notion");
+    await db.update(companyMemberships).set({ membershipRole: "member" }).where(eq(companyMemberships.companyId, f.company.id));
+    await db.delete(principalPermissionGrants).where(eq(principalPermissionGrants.companyId, f.company.id));
+    const interaction = await issueThreadInteractionService(db).createConnectionIntent(f.issue, {
+      payload: { version: 1, serviceSlug: "notion", serviceName: "Notion", requestingAgentId: f.agent.id, requestingAgentName: f.agent.name, phase: "requested" },
+      sourceRunId: f.claims.run_id, addresseeUserId: "grant-user", idempotencyKey: randomUUID(),
+    });
+    const setupAccess = { connectionId: f.connection.id, access: { agentIds: [f.agent.id] } };
+    await expect(f.service.updatePhase(interaction.id, "authorizing", "grant-user", { setupAccess })).rejects.toMatchObject({ status: 403 });
+    await db.insert(principalPermissionGrants).values({ companyId: f.company.id, principalType: "user", principalId: "grant-user", permissionKey: "agents:configure", scope: { targetAgentIds: [f.agent.id] } });
+    await f.service.updatePhase(interaction.id, "authorizing", "grant-user", { setupAccess });
+    await expect(f.service.updatePhase(interaction.id, "authorizing", "grant-user", {
+      setupAccess: { connectionId: f.connection.id, access: { agentIds: [f.agent.id, f.otherAgent.id] } }, canManageOrganizationGrant: true,
+    })).rejects.toMatchObject({ status: 403 });
+    await db.delete(principalPermissionGrants).where(eq(principalPermissionGrants.companyId, f.company.id));
+    await expect(f.service.complete(interaction.id, f.connection.id, "grant-user", { oauthCompletion: true, canManageOrganizationGrant: true }))
+      .rejects.toMatchObject({ status: 403 });
+    expect((await f.service.loadIntent(interaction.id)).interaction.status).toBe("pending");
   });
 
   it("applies the selected audience for an organization OAuth grant without requiring personal credentials", async () => {

@@ -2,7 +2,7 @@ import { notifyGitHubCredentialChange } from "./github-connection-notifications.
 import { notifyVoiceChange } from "./voice/voice-recovery-notifications.js";
 import { notifyToolConnectionHealth, writeToolConnectionHealthChange } from "./tool-connection-health-notifications.js";
 import { connectionHealthSchedule } from "./tool-access/catalog/health-schedule.js";
-import type { ConnectionManagementContext } from "./connection-management.js";
+import { assertAgentConnectionInstallAccess, type ConnectionManagementContext } from "./connection-management.js";
 import { connectionActorUserId } from "./tool-access/actor.js";
 import { restConnectorFor } from "./connectors/rest-registry.js";
 import { createConnectionCredentialValidation } from "./tool-access/connections/credential-validation.js";
@@ -3438,8 +3438,12 @@ export function toolAccessService(
       if (connection.connectionPurpose === "tool") {
         const desired = new Map(bindingInputs.flatMap((binding) => binding.targetType === "company" || binding.targetType === "agent"
           ? [[`${binding.targetType}:${binding.targetId}`, { targetType: binding.targetType, targetId: binding.targetId }] as const] : []));
-        const removed = existingInstalls.filter((install) => !desired.has(`${install.targetType}:${install.targetId}`));
+        const removed = input.preserveExistingAccess ? [] : existingInstalls.filter((install) => !desired.has(`${install.targetType}:${install.targetId}`));
         const added = [...desired.values()].filter((binding) => !existingInstalls.some((install) => install.targetType === binding.targetType && install.targetId === binding.targetId));
+        if (actor?.managementContext) {
+          await assertAgentConnectionInstallAccess(tx as unknown as Db, actor.managementContext.actor, companyId,
+            [...removed, ...added].filter(target => target.targetType === "agent").map(target => target.targetId));
+        }
         if (removed.length) await tx.delete(toolConnectionInstalls).where(inArray(toolConnectionInstalls.id, removed.map((install) => install.id)));
         if (added.length) await tx.insert(toolConnectionInstalls).values(added.map((binding) => ({
           companyId, connectionId: connection.id, targetType: binding.targetType, targetId: binding.targetId,

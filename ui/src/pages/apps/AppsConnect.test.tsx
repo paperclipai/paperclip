@@ -692,11 +692,23 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
 
   it("inline aggregator saves and resumes a draft without storing credentials in browser storage", async () => {
     const onCancel = vi.fn();
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const intentKey = ["connection-intent", "intent-inline", "setup-options"];
+    client.setQueryData(intentKey, { interaction: { payload: { phase: "requested" } } });
+    intentPhaseMock.mockImplementation(async (_id, phase, setupAccess) => ({ payload: { phase, setupAccess } }));
     const connection = { id: "conn-inline-draft", status: "draft", credentialPolicy: "per_user", authKind: "none", config: { url: "https://provider.example/mcp", sourceTemplateKey: "zapier", connectionMethodKey: "generated-url" } };
     connectAppMock.mockResolvedValue({ connectionId: connection.id, connection, catalog: [] });
     getConnectionMock.mockResolvedValue(connection);
-    const content = <ConnectionSetupFlow host="dialog" serviceSlug="zapier" requestedAgentId="agent-1" interactionId="intent-inline" onCancel={onCancel} />;
-    const root = await render(undefined, false, content);
+    getConnectionInstallsMock.mockResolvedValue({ installs: [] });
+    const content = (setupAccess?: { connectionId: string; access: { agentIds: string[] } }) => <ConnectionSetupFlow host="dialog" serviceSlug="zapier" requiredAgentId="agent-1" setupAccess={setupAccess} interactionId="intent-inline" onCancel={onCancel} />;
+    const root = await render(client, false, content());
+    await openAccessAdvanced();
+    await act(async () => radioContaining("Just agents I pick")!.click());
+    await flushReact();
+    await act(async () => buttonByText("Select agents")!.click());
+    await flushReact();
+    await act(async () => document.body.querySelector<HTMLElement>('[aria-label="Allow Ada"]')!.click());
+    await flushReact();
     await act(async () => setInputValue(container.querySelector<HTMLInputElement>('input[type="password"]')!, "https://provider.example/mcp?token=fixture-secret"));
     await act(async () => buttonByText("Save & exit")!.click());
     await vi.waitFor(() => expect(onCancel).toHaveBeenCalled());
@@ -705,13 +717,19 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(JSON.stringify(sessionStorage)).not.toContain("fixture-secret");
     expect(finishAppMock).not.toHaveBeenCalled();
     expect(putConnectionInstallsMock).not.toHaveBeenCalled();
+    expect(intentPhaseMock).toHaveBeenCalledWith("intent-inline", "requested", {
+      connectionId: connection.id, access: { agentIds: ["agent-1"] },
+    });
+    const saved = client.getQueryData<{ interaction: { payload: { setupAccess: { connectionId: string; access: { agentIds: string[] } } } } }>(intentKey)!;
+    expect(saved.interaction.payload.setupAccess).toEqual({ connectionId: connection.id, access: { agentIds: ["agent-1"] } });
     await act(async () => root.unmount());
     mountedRoot = null;
-    await render(undefined, false, content);
+    await render(client, false, content(saved.interaction.payload.setupAccess));
     await vi.waitFor(() => expect(container.textContent).toContain("MCP server URL"));
     expect(getConnectionMock).toHaveBeenCalledWith(connection.id);
     // Resuming lands on the same single screen it was saved from, not "step 2".
     expect(container.textContent).not.toContain("Step 2 of 2");
+    expect(container.textContent).toContain("available to 1 selected agent");
   });
 
   it.each(["page", "dialog"] as const)("lets %s setup cancel after an invalid provider URL without trying to save it", async (host) => {

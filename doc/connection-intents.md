@@ -75,7 +75,9 @@ New tool setup uses the normal Apps identity and audience choices, including acc
 
 Saving a tool connection's agent audience updates its permission profile and installations in the same transaction. This includes GitHub credential admission and newly hired agents. Explicitly narrowing or clearing the audience removes the corresponding installations. An access request without exact tool names can review an indexed catalog of up to 500 tools; explicit model-selected tool lists remain limited to 20. Existing action blocks still apply, and write tools granted by an access card require approval.
 
-New task setup must include the requesting agent, even when the human chooses a broader audience. The form and phase save reject an omitted requester before provider sign-in. Resuming OAuth with hidden audience controls retains the saved audience rather than submitting form defaults; gateway draft setup restores the saved selection into its visible controls.
+New task setup must include the requesting agent, even when the human chooses a broader audience. The form and authorization phase save reject an omitted requester before provider sign-in. Save & exit persists the audience on the interaction without granting access; an incomplete draft can still have no agents selected. Resuming OAuth with hidden audience controls retains the saved audience rather than submitting form defaults; gateway draft setup restores the saved selection into its visible controls.
+
+Agent installation changes made by finishing setup use the same agent-edit checks as direct installation changes. Explicit task audiences are checked when saved and again at OAuth completion. Additive completion retains existing installations, including agents using a separate narrow profile; retaining an installation does not add those agents to the app's broader permission profile.
 
 ## Verification
 

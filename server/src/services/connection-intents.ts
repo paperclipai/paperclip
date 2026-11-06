@@ -1,4 +1,4 @@
-import { connectionManagementService } from "./connection-management.js";
+import { assertAgentConnectionInstallAccess, connectionManagementService } from "./connection-management.js";
 import { CHAT_HUMAN_CREDENTIAL_FIELDS, chatCredentialEntryGenerations } from "./chat-channels/credentials.js";
 import { updateAgentConfigurationInTransaction } from "./agent-configuration-transaction.js";
 import { emailChannelService } from "./email-channels.js";
@@ -1121,6 +1121,9 @@ export function connectionIntentService(db: Db) {
       if (setupAccess && setupAccess !== "all_agents" && !setupAccess.agentIds.includes(payload.requestingAgentId)) {
         throw conflict("Select the requesting agent or all agents to continue this task");
       }
+      if (setupAccess && setupAccess !== "all_agents") await assertAgentConnectionInstallAccess(txDb,
+        { type: "board", userId, source: options.bypassCurrentMembershipCheck ? "local_implicit" : "session" },
+        loaded.issue.companyId, setupAccess.agentIds);
       if (payload.accessRequest && (payload.accessRequest.connectionId !== connectionId || !options.canManageOrganizationGrant)) {
         if (payload.accessRequest.connectionId !== connectionId) throw conflict("Use the connection named in this access request");
         throw forbidden("Granting agent tool access requires connection-management authority");
@@ -1375,9 +1378,12 @@ export function connectionIntentService(db: Db) {
           throw unprocessable("Only tool connection setup can select a new audience");
         }
         await access.getConnection(setupAccess.connectionId, loaded.issue.companyId);
-        if (setupAccess.access !== "all_agents" && !setupAccess.access.agentIds.includes(loaded.interaction.payload.requestingAgentId)) {
+        if (phase === "authorizing" && setupAccess.access !== "all_agents" && !setupAccess.access.agentIds.includes(loaded.interaction.payload.requestingAgentId)) {
           throw conflict("Select the requesting agent or all agents to continue this task");
         }
+        if (setupAccess.access !== "all_agents") await assertAgentConnectionInstallAccess(db,
+          { type: "board", userId, source: options.bypassCurrentMembershipCheck ? "local_implicit" : "session" },
+          loaded.issue.companyId, setupAccess.access.agentIds);
         if (!options.canManageOrganizationGrant && (setupAccess.access === "all_agents"
           || setupAccess.access.agentIds.some(id => id !== loaded.interaction.payload.requestingAgentId))) {
           throw forbidden("Sharing a connection with other agents requires connection-management authority");

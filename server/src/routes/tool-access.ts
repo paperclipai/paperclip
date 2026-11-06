@@ -59,7 +59,7 @@ import {
   updateToolProfileWithEntriesSchema,
 } from "@paperclipai/shared";
 import { filterConnectionManagementRows, filterConnectionManagementPolicies, connectionManagementGuard, requiredConnectionUserAction, connectionRequestActor, connectionRequestContext, connectionRequestUserId } from "./connection-management-authz.js";
-import { connectionManagementService } from "../services/connection-management.js";
+import { assertAgentConnectionInstallAccess, connectionManagementService } from "../services/connection-management.js";
 import { validate } from "../middleware/validate.js";
 import { getActorInfo, assertBoard, assertBoardOrAgent, assertCompanyAccess, assertInstanceAdmin, getAccessibleResource, hasCompanyAccess } from "./authz.js";
 import { badRequest, forbidden, HttpError, notFound, unprocessable } from "../errors.js";
@@ -1977,22 +1977,7 @@ function connectorEnrollmentPrincipal(req: Request): string {
             .filter((install) => install.targetType === "agent")
             .map((install) => install.targetId),
         )];
-        for (const agentId of changedAgentIds) {
-          const [agent] = await db
-            .select({ id: agents.id, companyId: agents.companyId })
-            .from(agents)
-            .where(and(eq(agents.id, agentId), eq(agents.companyId, connection.companyId)))
-            .limit(1);
-          if (!agent) throw forbidden("The target agent is not available in this company");
-          const decision = await access.decide({
-            actor: req.actor,
-            action: "agent_config:update",
-            resource: { type: "agent", companyId: connection.companyId, agentId: agent.id },
-          });
-          if (!decision.allowed) {
-            throw forbidden(`You cannot edit agent ${agent.id}, so you cannot change its connection installs`);
-          }
-        }
+        await assertAgentConnectionInstallAccess(db, req.actor, connection.companyId, changedAgentIds);
       }
       const snapshot = await svc.putConnectionInstalls(connection.id, req.body, connectionRequestActor(req));
       await logActivity(db, {
