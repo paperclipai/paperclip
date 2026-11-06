@@ -90,6 +90,32 @@ setup shows an agent-access checkbox, enabled for all company agents by default
 for connection managers. The owner can limit access to the current agent. This access applies only to
 the owner's tasks. Reconnect never expands existing access.
 
+## Claude subscription renewal
+
+Local Claude browser sign-in uses `claude auth login` in a connection-specific
+home. Paperclip stores the access token, refresh token, expiry and subscription
+metadata in the encrypted credential secret. On macOS, it reads only that home's
+namespaced Keychain item, with the credential file as fallback when the item is
+absent. It never imports the operator's ambient login.
+
+When a run or account probe uses a credential with less than two hours left,
+the server renews it under the existing company credential mutation lock. The
+rotated pair is saved before the access token is returned. Legacy and native
+runs receive only the access token through `CLAUDE_CODE_OAUTH_TOKEN`. Renewal
+preserves the session epoch and records `ai_connection.credential_refreshed`.
+There is no background renewal scan.
+
+A temporary provider failure keeps a still-valid access token. Once the token
+expires, a temporary failure defers execution; a refused refresh requests sign-in.
+Save retries retain the successful exchange in memory and never exchange the
+same refresh token again. As with the server-side Codex quota exchange, a process
+loss after the provider exchange and before the vault commit can require sign-in.
+
+Existing bare-token connections and long-lived setup tokens retain their current
+format. The discarded refresh token cannot be recovered from a bare access token.
+Reconnect an affected connection once to obtain a renewable credential. An
+unexpired long-lived setup token needs no change.
+
 ## Storage and API
 
 AI connections pair `connectionPurpose: ai` with `transport: runtime_auth`.
