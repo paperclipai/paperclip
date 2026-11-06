@@ -1227,6 +1227,22 @@ Newer saved input keeps its own receipt while the existing Retry explanation sta
 visible. Terminal waits direct the user to send new input and hide the Retry action
 that cannot continue that attempt.
 
+A remote native run can lose its original runner or sandbox before reattachment.
+This happens after a server restart, and for a same-run retry after a turn ends
+without a semantic result. The reattachment then fails with
+`native_remote_recovery_lease_mismatch`, `native_plugin_recovery_lease_mismatch`
+or `runner_remote_process_identity_unavailable`. The server requests the task
+Retry itself, once per run, under the authority of the user who sent the message,
+assigned the task, or clicked Retry. It does this only when the run recorded no
+provider turn or its last provider turn is settled. Activity records the request
+as `restart-recovery` on behalf of that user. Admission keeps every gate: saved-work
+recovery, stop proof, approvals, pauses, budget and ownership. A Retry that the
+server requested gets no second automatic attempt. System wakes and runs with an
+in-flight provider turn do not continue automatically. For these failed runs, a
+recovered workspace hold offers Retry (`canRetry`) and says "Retry or send a
+message to continue." An intentional Stop keeps "send a message" as its only
+continuation.
+
 When a native attempt fails before launch because its predecessor's session is
 quarantined, explicit task Retry verifies the retained journal's actual owner.
 That owner must belong to the same company, task, agent, workspace, native session,
