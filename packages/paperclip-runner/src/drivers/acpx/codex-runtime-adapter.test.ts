@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import type {
+  AcpPermissionRequest,
   AcpAgentRegistry,
   AcpRuntime,
   AcpRuntimeHandle,
@@ -114,7 +115,7 @@ describe("Codex ACPX runtime adapter", () => {
       if (!restoring) spawnProvider();
       return HANDLE;
     });
-    vi.mocked(runtime.setConfigOption).mockImplementation(async input => {
+    vi.mocked(runtime.setConfigOption!).mockImplementation(async input => {
       if (restoring) spawnProvider();
       const guard = created.protocolGuardFactory!();
       guard("outbound", { id: 0, method: "session/load", params: { sessionId: "backend-1" } });
@@ -546,7 +547,7 @@ describe("Codex ACPX runtime adapter", () => {
     const options = openOptions(fakeCommand()); options.profile = { ...options.profile, agent: "cursor" };
     options.refreshConsumedCommand = vi.fn(async () => undefined);
     let created!: AcpRuntimeOptions;
-    vi.mocked(runtime.setConfigOption).mockImplementation(async () => {
+    vi.mocked(runtime.setConfigOption!).mockImplementation(async () => {
       const guard = created.protocolGuardFactory!();
       const binding = cursorInstructionBinding(options.systemInstructions);
       guard("outbound", { id: 0, method: "session/load", params: { sessionId: "backend-1" } });
@@ -574,7 +575,7 @@ describe("Codex ACPX runtime adapter", () => {
     let created!: AcpRuntimeOptions;
     const binding = cursorInstructionBinding(options.systemInstructions);
     const configs = (mode: string) => [{ id: "mode", currentValue: mode }];
-    vi.mocked(runtime.setConfigOption).mockImplementation(async input => {
+    vi.mocked(runtime.setConfigOption!).mockImplementation(async input => {
       const guard = created.protocolGuardFactory!();
       guard("outbound", { id: 0, method: "session/load", params: { sessionId: "backend-1" } });
       guard("inbound", { id: 0, result: { modes: { currentModeId: "agent" }, configOptions: configs("agent"), _meta: { paperclipCursorInstructions: {
@@ -586,7 +587,7 @@ describe("Codex ACPX runtime adapter", () => {
     const port = await openCodexAcpxRuntime(options, {
       createRegistry: () => registry(), createStore: () => store(), createRuntime: value => { created = value; return runtime; },
     });
-    expect(vi.mocked(runtime.setConfigOption).mock.calls.map(([call]) => [call.key, call.value])).toEqual([["model", options.profile.reportedModelId], ["mode", selected]]);
+    expect(vi.mocked(runtime.setConfigOption!).mock.calls.map(([call]) => [call.key, call.value])).toEqual([["model", options.profile.reportedModelId], ["mode", selected]]);
     expect(options.refreshConsumedCommand).toHaveBeenCalledTimes(2);
     expect(await port.identity()).toMatchObject({ mode: selected });
     expect(runtime.startTurn).not.toHaveBeenCalled();
@@ -652,13 +653,13 @@ describe("Codex ACPX runtime adapter", () => {
 
   it("requires the Pi capability handshake and acknowledgments, preserves follow-up order, and never starts a second prompt", async () => {
     const pending = pendingExtensionTurn("turn-1");
-    const runtime = Object.assign(fakeRuntime(), { requestExtension: vi.fn(async () => ({ accepted: true })) });
+    const runtime = Object.assign(fakeRuntime(), { requestExtension: vi.fn(async (_input: unknown) => ({ accepted: true })) });
     vi.mocked(runtime.startTurn).mockReturnValue(pending.turn);
     let created!: AcpRuntimeOptions & { onAgentInitialize?: (result: unknown) => void };
     const options = openOptions(fakeCommand());
     options.profile = { ...options.profile, agent: "pi" };
     options.piThinkingLevel = "low";
-    vi.mocked(runtime.setConfigOption).mockImplementation(async input => {
+    vi.mocked(runtime.setConfigOption!).mockImplementation(async input => {
       const guard = created.protocolGuardFactory!();
       guard("outbound", { id: 0, method: "session/load", params: { sessionId: "backend-1" } });
       guard("inbound", { id: 0, result: { modes: { currentModeId: "high" }, configOptions: [{ id: "thought_level", currentValue: "high" }] } });
@@ -734,9 +735,7 @@ describe("Codex ACPX runtime adapter", () => {
     expect(runtimeOptions!.permissionPolicy).toMatchObject({ defaultAction: "escalate" });
     const turn = port.startTurn({ text: "Attempt a write.", requestId: "permission-test" });
     try {
-      await runtimeOptions!.onPermissionRequest!({
-        sessionId: "backend-1", inferredKind: "write", raw: {},
-      }, { signal: new AbortController().signal });
+      await runtimeOptions!.onPermissionRequest!(permissionRequest("backend-1", "edit"), { signal: new AbortController().signal });
       expect(signal?.aborted).toBe(true);
       await expect(turn.result).rejects.toThrow("Approval required");
       await expect((async () => { for await (const _event of turn.events) { /* drain */ } })())
@@ -2361,21 +2360,13 @@ describe("Codex ACPX runtime adapter", () => {
     ]);
     await expect(
       runtimeOptions?.onPermissionRequest?.(
-        {
-          sessionId: "session-1",
-          inferredKind: "execute",
-          raw: { _meta: { is_mcp_tool_approval: true } },
-        },
+        permissionRequest("session-1", "execute", { _meta: { is_mcp_tool_approval: true } }),
         { signal: new AbortController().signal },
       ),
     ).resolves.toEqual({ outcome: "reject_once" });
     await expect(
       runtimeOptions?.onPermissionRequest?.(
-        {
-          sessionId: "session-1",
-          inferredKind: "execute",
-          raw: {},
-        },
+        permissionRequest("session-1", "execute"),
         { signal: new AbortController().signal },
       ),
     ).resolves.toEqual({ outcome: "reject_once" });
@@ -2399,11 +2390,7 @@ describe("Codex ACPX runtime adapter", () => {
 
     await expect(
       runtimeOptions?.onPermissionRequest?.(
-        {
-          sessionId: "session-1",
-          inferredKind: "write",
-          raw: {},
-        },
+        permissionRequest("session-1", "edit"),
         { signal: new AbortController().signal },
       ),
     ).resolves.toEqual({ outcome: "reject_once" });
@@ -2438,11 +2425,7 @@ describe("Codex ACPX runtime adapter", () => {
       expect(runtimeOptions?.nonInteractivePermissions).toBe("fail");
       await expect(
         runtimeOptions?.onPermissionRequest?.(
-          {
-            sessionId: "backend-1",
-            inferredKind: "write",
-            raw: {},
-          },
+          permissionRequest("backend-1", "edit"),
           { signal: new AbortController().signal },
         ),
       ).resolves.toEqual(expected);
@@ -3618,8 +3601,18 @@ function fakeCommand(): VerifiedAcpxCommandLease {
   return { spawn: vi.fn(), close: vi.fn() };
 }
 
-function fakeChild(): ChildProcess {
-  const child = new EventEmitter() as ChildProcess;
+type FakeChildProcess = ChildProcess & { exitCode: number | null; signalCode: NodeJS.Signals | null };
+
+function permissionRequest(
+  sessionId: string,
+  inferredKind: AcpPermissionRequest["inferredKind"],
+  raw: Record<string, unknown> = {},
+): AcpPermissionRequest {
+  return { sessionId, inferredKind, raw: raw as unknown as AcpPermissionRequest["raw"] };
+}
+
+function fakeChild(): FakeChildProcess {
+  const child = new EventEmitter() as FakeChildProcess;
   Object.defineProperties(child, {
     exitCode: { value: null, writable: true },
     signalCode: { value: null, writable: true },
@@ -3633,10 +3626,10 @@ function fakeChild(): ChildProcess {
 }
 
 function failingSignalChild(): {
-  child: ChildProcess;
+  child: FakeChildProcess;
   errors: [Error, Error];
 } {
-  const child = new EventEmitter() as ChildProcess;
+  const child = new EventEmitter() as FakeChildProcess;
   const errors: [Error, Error] = [
     new Error("SIGTERM delivery failed"),
     new Error("SIGKILL delivery failed"),
@@ -3654,8 +3647,8 @@ function failingSignalChild(): {
   return { child, errors };
 }
 
-function childThatExitsAfterSignalCalls(exitAfter: number): ChildProcess {
-  const child = new EventEmitter() as ChildProcess;
+function childThatExitsAfterSignalCalls(exitAfter: number): FakeChildProcess {
+  const child = new EventEmitter() as FakeChildProcess;
   Object.defineProperties(child, {
     exitCode: { value: null, writable: true },
     signalCode: { value: null, writable: true },
@@ -3676,8 +3669,8 @@ function childThatExitsAfterSignalCalls(exitAfter: number): ChildProcess {
   return child;
 }
 
-function stubbornChild(): ChildProcess {
-  const child = new EventEmitter() as ChildProcess;
+function stubbornChild(): FakeChildProcess {
+  const child = new EventEmitter() as FakeChildProcess;
   Object.defineProperties(child, {
     pid: { value: 71_001 },
     exitCode: { value: null, writable: true },
@@ -3691,8 +3684,8 @@ function stubbornChild(): ChildProcess {
   return child;
 }
 
-function childThatExitsOnKill(): ChildProcess {
-  const child = new EventEmitter() as ChildProcess;
+function childThatExitsOnKill(): FakeChildProcess {
+  const child = new EventEmitter() as FakeChildProcess;
   Object.defineProperties(child, {
     pid: { value: 71_002 },
     exitCode: { value: null, writable: true },

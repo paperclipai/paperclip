@@ -241,7 +241,7 @@ describe("OpenCodeServerDriver", () => {
     });
     const session = await driver.openSession({ runId: "empty", normalizedSessionId: "empty", workingDirectory: root });
     try {
-      expect(await session.read()).toMatchObject({ messages: [] });
+      expect(await session.read!()).toMatchObject({ messages: [] });
     } finally {
       await session.close({ reason: "test" });
     }
@@ -338,7 +338,7 @@ describe("OpenCodeServerDriver", () => {
     });
     const descriptor = await driver.descriptor();
     expect(
-      descriptor.capabilities.typedEventFamilies.find(
+      descriptor.capabilities.typedEventFamilies?.find(
         (family) => family.family === "plan",
       ),
     ).toMatchObject({ availability: "unsupported" });
@@ -751,7 +751,7 @@ describe("OpenCodeServerDriver", () => {
     // run.terminal is owned by the native-session layer above this driver.
     // Keep both absences explicit instead of synthesizing Codex-shaped input.
     expect(
-      (await driver.descriptor()).capabilities.typedEventFamilies.find(
+      (await driver.descriptor()).capabilities.typedEventFamilies?.find(
         (family) => family.family === "plan",
       ),
     ).toMatchObject({ availability: "unsupported" });
@@ -1105,7 +1105,7 @@ describe("OpenCodeServerDriver", () => {
     expect(JSON.stringify(events)).not.toContain(
       "submitted prompt must not become assistant text",
     );
-    expect(await session.usage()).toMatchObject({
+    expect(await session.usage!()).toMatchObject({
       input: 3,
       output: 2,
       costUsd: 0.001,
@@ -1772,7 +1772,7 @@ describe("OpenCodeServerDriver", () => {
     // A prompt tools map replaces OpenCode's session permissions. Question is
     // enabled in config without overwriting the allow/ask/deny or path policy.
     expect(submittedPrompt).not.toHaveProperty("tools");
-    expect(JSON.stringify(submittedPrompt?.parts ?? null)).not.toContain(
+    expect(JSON.stringify((submittedPrompt as Record<string, unknown> | null)?.parts ?? null)).not.toContain(
       PAPERCLIP_EXECUTION_PROMPT,
     );
     const sessionRoot = join(root, "context");
@@ -2871,13 +2871,13 @@ describe("OpenCodeServerDriver", () => {
       await session.startTurn({ message: { role: "user", text: "finish" } });
       await started;
       let stopped = false;
-      const stop = session[operation]({ reason: "fixture stop" }).then(() => { stopped = true; });
+      const stop = session[operation]!({ reason: "fixture stop" }).then(() => { stopped = true; });
       await new Promise<void>(resolve => setImmediate(resolve));
       expect(stopped).toBe(false);
       releaseFeedback();
       await stop;
       expect((await session.snapshot()).semanticResult).not.toBeNull();
-      const transcript = await session.transcript();
+      const transcript = await session.transcript!();
       expect(transcript.events.filter(event => event.eventType === "run.result.proposed")).toHaveLength(1);
       expect(transcript.events.some(event => event.eventType === "item.completed" && (event.payload.item as { is_error?: boolean })?.is_error)).toBe(false);
     } finally {
