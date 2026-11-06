@@ -6,9 +6,14 @@ import {
   CLOUD_CONTROL_HEADER,
   verifyCloudControlAssertion,
   type CloudControlAction,
+  type CloudControlClaims,
 } from "../services/cloud-runtime-identity.js";
 
 const idleCapabilities = new WeakMap<Request, VerifiedIdleCapabilities>();
+const controlClaims = new WeakMap<Request, CloudControlClaims>();
+export function verifiedCloudControlClaims(req: Request): CloudControlClaims | undefined {
+  return controlClaims.get(req);
+}
 /** Only this middleware's verified assertion can install request capabilities. */
 export function verifiedIdleCapabilities(req: Request): VerifiedIdleCapabilities | undefined {
   return idleCapabilities.get(req);
@@ -60,6 +65,7 @@ export function cloudControlMiddleware(): RequestHandler {
     }
     try {
       const claims = verifyCloudControlAssertion({ compactJws: assertion, expectedAction });
+      controlClaims.set(req, claims);
       if (claims.idleCapabilities) idleCapabilities.set(req, claims.idleCapabilities as VerifiedIdleCapabilities);
     } catch (error) {
       logger.warn({ err: error }, "Rejected Cloud control assertion");

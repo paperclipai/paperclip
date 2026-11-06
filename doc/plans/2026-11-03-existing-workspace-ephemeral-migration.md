@@ -14,6 +14,16 @@ The strict request contains only an `attemptId` UUID. The owner first checks
 durable-data eligibility, validates the replacement's ephemeral configuration,
 and audits the attempt without storing its secret. It never creates a missing
 signing key or changes admission, process configuration, or workspace bindings.
+Preparation uses startup durability checks, so ordinary admission before skill
+pins are saved does not impose a global-idle requirement. Retention and migration
+checks keep their stronger pin requirements. Actual admitted local skill assets
+still require their owning preservation proof before volume removal.
+
+The existing audit owner accepts a caller-bound receipt UUID. Preparation derives
+it from the verified signed request ID and stack under its own namespace. The
+database primary key atomically consumes that assertion before returning the key,
+including concurrent replicas and process restarts. The process-local assertion
+fence remains an early refusal. Expired assertions cannot return a secret.
 
 The private, non-cacheable response binds the original key and its digest to the
 attempt, stack, stamped Core commit, Railway deployment, observation time, and
