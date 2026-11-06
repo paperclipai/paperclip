@@ -27,7 +27,9 @@ it("binds every TestOps Reliability case to its existing explicit-only cell", ()
     expect(execution.environment.id).toBe(row.environment);
     expect(row.environment).toBe(cell.environment);
     // Six cells use DeepSeek 1017 on OpenCode; queue-steer needs a steering-capable driver (Codex app server).
-    if (row.name === "queue-steer") expect([execution.profile.provider, execution.profile.id]).toEqual(["codex", "runner-codex"]);
+    // It runs the cheaper gpt-6.1-sol, half the gpt-5.6-sol price on the reviewed rate card.
+    if (row.name === "queue-steer") expect([execution.profile.provider, execution.profile.id, execution.profile.model])
+      .toEqual(["codex", "runner-codex", "gpt-6.1-sol"]);
     else expect([execution.profile.provider, execution.profile.model]).toEqual(["opencode", reliabilityModel]);
     expect(row.signature).toBe(everydayReliabilitySignatures[row.name as keyof typeof everydayReliabilitySignatures].signature);
     // OpenRouter (or the OpenAI key for the Codex steering cell), plus Daytona only for sandbox cells.
@@ -39,6 +41,13 @@ it("binds every TestOps Reliability case to its existing explicit-only cell", ()
   expect(executions.find(value => value.task.id === "three-turn-revise")!.environment.configurationKey).toBeUndefined();
   expect(executions.find(value => value.task.id === "long-silent-command")!.environment.configurationKey).toBe("warm-reuse-v1");
   for (const job of buildMatrixJobs(executions)) expect(job.timeoutMinutes).toBeGreaterThan(20);
+});
+
+it("runs every native Codex everyday cell, standard and reliability, on the gpt-6.1-sol default", () => {
+  const codex = runnerMatrix.filter(execution => execution.suite.id === "everyday-workflows" && execution.profile.id === "runner-codex");
+  expect(codex.filter(execution => everydayReliabilityCaseIds.includes(execution.task.id as never))).toHaveLength(7);
+  expect(codex.filter(execution => !everydayReliabilityCaseIds.includes(execution.task.id as never)).length).toBeGreaterThan(0);
+  expect(new Set(codex.map(execution => execution.profile.model))).toEqual(new Set(["gpt-6.1-sol"]));
 });
 
 it("keeps a case that steers an active turn on a steering-capable driver", async () => {
