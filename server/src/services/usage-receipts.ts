@@ -127,9 +127,11 @@ export async function persistUsageReceiptInTransaction(tx: Db, raw: UsageReceipt
     const authoritative = envelope.receipt.pricingProvenance
       && !["rate_card", "unknown"].includes(envelope.receipt.pricingProvenance.source);
     const rateCardOnly = envelope.producerEvent && envelope.receipt.pricingProvenance?.source === "rate_card";
-    // A charge settled without its final receipt accepts any complete receipt,
-    // including a rate-card price, as a correction.
-    const unavailableClosed = previous.accountingReceiptUnavailable === true && envelope.receipt.complete === true;
+    // A charge settled without its final receipt accepts a complete receipt's
+    // price, including a rate-card price, as a correction. A receipt with no
+    // price adds no evidence; token changes are detected below as usual.
+    const unavailableClosed = previous.accountingReceiptUnavailable === true && envelope.receipt.complete === true
+      && incomingMoney !== null;
     const changed = unavailableClosed || envelope.lateDelta !== undefined
       || (envelope.producerEvent?.eventType === "usage.reported" && !envelope.receipt.usage)
       || envelope.receipt.usageBasis === "session_cumulative"

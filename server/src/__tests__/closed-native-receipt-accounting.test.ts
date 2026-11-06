@@ -143,6 +143,20 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(late.usageJson).toMatchObject({ accountingLateReceiptPending: true });
   });
 
+  it("does not reopen the hold for a later complete receipt that adds no price or usage", async () => {
+    const f = await fixture();
+    expect(await accountRunCost(db, f.run.id)).toBe(true);
+    await persistUsageReceipt(db, { schema: "paperclip/accounting-receipt/v1", id: randomUUID(),
+      companyId: f.companyId, runId: f.run.id, adapterType: "paperclip_runner", sourceId: f.sourceId, sequence: 2,
+      receivedAt: new Date().toISOString(),
+      producerEvent: { sourceEventId: randomUUID(), eventType: "turn.completed" },
+      receipt: { complete: true, usageBasis: "per_run", provider: "anthropic", biller: "anthropic",
+        model: "claude-sonnet-5", billingType: "metered_api", costStatus: "unpriced",
+        usage: { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0 } } });
+    expect((await f.readRun()).costAccountingPending).toBe(false);
+    expect(await f.block()).toBeNull();
+  });
+
   // A producer receipt priced only from the rate card is normally not a money
   // correction. For a charge settled without its receipt, it is the first price.
   it("prices the unavailable charge when a complete rate-card receipt arrives later", async () => {
