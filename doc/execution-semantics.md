@@ -2496,8 +2496,8 @@ A restart can also land after the agent proposed its result but before the
 provider turn ended. When the restored runner proves that turn ended with the
 result Paperclip accepted, it records a reconciliation and the run terminal,
 which settle that turn. When provider history no longer contains the checkpointed
-turn but Paperclip durably holds the result that exact turn proposed, recovery
-also settles the turn with that result. Either way, recovery finalizes the
+turn, or the runner reports it lost on restore, but Paperclip durably holds the
+result that exact turn proposed, recovery also settles the turn with that result. Either way, recovery finalizes the
 accepted result instead of failing and rerunning finished work. A missing turn
 without such a result still fails closed, because its outcome is unknown.
 

@@ -1,7 +1,7 @@
 import { readCodexThreadState, readCodexTurnMetadata, readCodexTurnItems } from "./codex-history.js";
 import { codexRunUsage, codexUsageBaselineForNextRun, observeCodexUsage } from "./codex-usage-baseline.js";
 import { randomUUID } from "node:crypto";
-import { NativeProviderTerminalFailure } from "../../contracts/native-session-backend.js";
+import { isNativeRestartInterruption, NativeProviderTerminalFailure } from "../../contracts/native-session-backend.js";
 
 import type {
   HarnessGoalOperation,
@@ -791,12 +791,15 @@ export class CodexHarnessSession
       const expectedTurn = turns.find(
         (turn) => text(turn.id) === expectedTurnId,
       );
-      if (expectedTurn === undefined && this.result !== null && this.resultTurnId === expectedTurnId) {
+      const holdsTurnResult = this.result !== null && this.resultTurnId === expectedTurnId;
+      if (holdsTurnResult && (expectedTurn === undefined || (
+        text(expectedTurn.status) === "failed" && isNativeRestartInterruption(expectedTurn.error)))) {
         // Provider history can lose a turn whose process was killed before its
-        // terminal was flushed. Paperclip already holds the semantic result this
-        // exact turn proposed, so that durable result is the turn's outcome:
-        // settle it rather than fail recovery and rerun finished work. Without
-        // such a result the outcome stays unknown and recovery fails closed.
+        // terminal was flushed, or the restored runner can report it lost on
+        // restore. Paperclip already holds the semantic result this exact turn
+        // proposed, so that durable result is the turn's outcome: settle it
+        // rather than fail recovery and rerun finished work. Without such a
+        // result the outcome stays unknown and recovery fails closed.
         reconciledTerminalTurnId = expectedTurnId;
         mapTerminalTurn(this, { id: expectedTurnId, status: "completed", items: [] }, expectedTurnId, true);
       } else if (expectedTurn === undefined) {
@@ -823,6 +826,10 @@ export class CodexHarnessSession
     for (const [turnId, fingerprint] of this.terminalTurns) {
       const observed = turns.find((turn) => text(turn.id) === turnId);
       if (observed === undefined) continue;
+      // A turn settled from its durable result keeps that outcome when the
+      // restored runner reports the same turn lost on restore.
+      if (this.result !== null && this.resultTurnId === turnId &&
+          text(observed.status) === "failed" && isNativeRestartInterruption(observed.error)) continue;
       if (
         !["completed", "failed", "interrupted", "cancelled"].includes(
           text(observed.status),
