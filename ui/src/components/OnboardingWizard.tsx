@@ -3,7 +3,6 @@ import type { AgentRunner, AgentRunnerChoice } from "@paperclipai/shared";
 import { needsClaudeSetupQualification, qualifyClaudeSetup } from "../lib/qualify-claude-setup";
 import { agentHarnessType } from "@paperclipai/shared";
 import { adaptersApi, type AdapterInfo } from "../api/adapters";
-import { AgentRunnerSelect } from "./AgentRunnerSelect";
 import { healthApi } from "@/api/health";
 import { describeError } from "@/api/errors";
 import { LocalProviderLoginInstructions } from "./AdapterLoginChrome";
@@ -2241,7 +2240,7 @@ function OnboardingWizardInner({
             || typeof probe.details.leaseId !== "string" || !probe.details.leaseId) {
             throw new Error(typeof probe.details?.platformQualificationDiagnostic === "string"
               ? probe.details.platformQualificationDiagnostic
-              : probe.summary || "The environment's platform qualification could not be confirmed. Retry the connection probe or select Legacy runner in Advanced.");
+              : probe.summary || "The environment's platform qualification could not be confirmed. Retry the connection probe.");
           }
           const refreshed = await queryClient.fetchQuery({ queryKey: availabilityKey, staleTime: 0,
             queryFn: () => adaptersApi.list({ companyId: createdCompanyId, environmentId }) });
@@ -3277,15 +3276,6 @@ function OnboardingWizardInner({
                       ) : <p className="text-xs text-muted-foreground">This environment does not support browser sign-in. Choose another sign-in environment or connect with an API key.</p>
                     ) : null}
                   </motion.div>
-
-                  {sourceSelected && ["codex_local", "claude_local", "opencode_local", "pi_local"].includes(adapterType) && <details className="space-y-3">
-                    <summary className="cursor-pointer text-sm text-muted-foreground">Advanced</summary>
-                    <AgentRunnerSelect value={runner} disabled={loading || adapterEnvLoading}
-                      pending={runnerDiscovery.isFetching} error={runnerDiscovery.error ? describeError(runnerDiscovery.error).body : undefined} onRetry={() => { void runnerDiscovery.refetch(); }}
-                      defaultRunner={runnerDiscovery.data?.find(item => item.type === adapterType)?.defaultRunner}
-                      supportedRunners={runnerDiscovery.data?.find(item => item.type === adapterType)?.supportedRunners}
-                      onChange={setRunner} />
-                  </details>}
 
                   {/* Conditional adapter fields */}
 

@@ -4130,6 +4130,8 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
           }));
           await pickSource(source);
           await settle();
+          expect(document.body.querySelector('[aria-label="Runner"]')).toBeNull();
+          expect([...document.body.querySelectorAll("summary")].some(summary => summary.textContent === "Advanced")).toBe(false);
           expect(button("Connect").disabled).toBe(true);
           await act(async () => button("Connect").dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", metaKey: true, bubbles: true })));
           await settle();

@@ -1824,9 +1824,12 @@ There are thirteen cases on `legacy-codex`, `legacy-claude`, `runner-codex`, and
 production wizard, omits the runner override, and verifies the saved native
 configuration without changing runners afterward. `runner-acpx-claude` does the
 same for Claude on its qualified default targets and inspects the saved ACPX
-Claude profile directly. Both Legacy profiles select Legacy runner in Advanced
-before authentication and creation. All four paths are labeled
-`production-wizard`; there is no post-onboarding runner switch. Persona,
+Claude profile directly. Both Legacy profiles configure the inactive setup record
+through the normal agent API before authentication, reload, and finish the saved
+setup in the wizard. They are labeled `api-configured-legacy-setup`; the native
+paths retain `production-wizard`. The UI exposes no runner dropdown, and there
+is no post-onboarding runner switch. Legacy coverage proves setup resumption,
+not the fresh-agent automatic default. Persona,
 managed instructions, skills, seeded question, and task invocation are preserved. The native path removes the legacy
 Paperclip operational skill because Runner supplies that contract through its
 protocol; other assigned skills, including `/first-task`, are retained.

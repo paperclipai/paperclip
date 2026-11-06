@@ -186,13 +186,13 @@ live VM provisioning.
 Manual: Hire an agent with a distinct name and role. Complete any required approval, reload the roster, and open its configuration. Confirm manager, adapter, and model persisted; run a small task to prove execution readiness.
 
 For a new Codex hire, choose the Codex harness. Automatic selection uses Paperclip
-Runner on a qualified selected target; Advanced offers an explicit Legacy runner
-override. Record the persisted runner and
+Runner on a qualified selected target. Hiring and configuration do not expose a
+runner dropdown; omit Advanced when no other settings remain. Record the persisted runner and
 underlying harness, rather than treating the displayed Codex name as execution
 proof. See [runtime selection and validation](./runs-adapters.md#adapter-setup)
 and [target qualification](./execution-environments.md#environment-settings).
 
-Repeat with an explicit Legacy Codex hire. If approval is required, compare its
+Repeat with an explicit Legacy Codex hire through the API or CLI. If approval is required, compare its
 reviewed execution configuration before and after restart and activation; approval
 must retain the reviewed runner. Test an existing Legacy and native agent through
 an unrelated edit, reload and restart: neither is automatically upgraded.
@@ -207,8 +207,7 @@ Use the [portability recipe](./companies.md) for package preparation and boundar
 For Claude Code on qualified macOS or GNU/Linux x64/ARM64, submit without a
 runner override and inspect
 saved configuration: `paperclip_runner`, `provider: acpx`, `acpxAgent: claude`,
-and ordinary model `claude-opus-5-5`. The Advanced runner selector can explicitly
-choose Legacy. Keep explicit model/account choices and saved runners on edits.
+and ordinary model `claude-opus-5-5`. Keep explicit model/account choices and saved runners on edits.
 Verify useful output and a follow-up after a controller restart; setup success
 alone does not establish session continuity. Unsupported architectures/libc and unknown environment qualification retain
 Legacy. Darwin SSH also defaults to Legacy until automatic matching assets are
@@ -240,11 +239,11 @@ Check that it explains that verification is paused and offers **Retry now**. Fix
 retry, and reload; the failure must disappear only after readiness commits.
 Provider output and credentials must not appear in the lifecycle message.
 
-An explicit runner change is a configuration change, with normal revisions and
+An explicit runner change through the API or CLI is a configuration change, with normal revisions and
 session invalidation. Obsolete Claude tuning options (including maxTurnsPerRun) are ignored with a field-specific warning;
 permission, network, filesystem and command incompatibilities still produce an error.
 Selecting another runner must not silently discard security settings or change an active run's
-recorded execution. Keep runner choice in Advanced and verify the next eligible
+recorded execution. Verify the next eligible
 run separately from historical transcripts.
 
 Existing legacy Claude, Codex, and Grok Build agents on qualified default environments, or
