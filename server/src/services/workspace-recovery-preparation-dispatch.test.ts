@@ -29,7 +29,7 @@ import { heartbeatService } from "./heartbeat.js";
 import { hasVerifiedWorkspaceRepair } from "./workspace-recovery-receipt.js";
 import { createSavedWorkspaceLoader } from "./remote-workspaces.js";
 import { getExecutionBlocker } from "./execution-blocker.js";
-import { useWorkspaceRecoveryFixture, action, boardRecoveryApp, connectionString, db, failedRemotePreparation, interruptedRemotePreparation, root, run, stoppedWorkspaceWorker, withheldPreparationRetry } from "./workspace-recovery.test-fixture.js";
+import { useWorkspaceRecoveryFixture, action, boardRecoveryApp, connectionString, db, failedRemotePreparation, interruptedRemotePreparation, root, run, stoppedWorkspaceWorker, withheldPreparationRetry } from "./__tests__/workspace-recovery-fixture.js";
 const targets = vi.hoisted(() => new Map<string, AdapterSandboxExecutionTarget>());
 vi.mock("./environment-execution-target.js", async importOriginal => {
   const actual = await importOriginal<typeof import("./environment-execution-target.js")>();

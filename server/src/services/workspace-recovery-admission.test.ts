@@ -55,7 +55,7 @@ import { prepareRemoteWorkspace, readRemoteWorkspaceAuthority, reserveRemoteWork
 import { getExecutionBlocker, hasPendingRunCleanup } from "./execution-blocker.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 import * as workerProof from "./native-runtime/native-workspace-platform-proof.js";
-import { useWorkspaceRecoveryFixture, action, connectionString, db, makeRetryDue, replaceFixtureState, root, run, seed } from "./workspace-recovery.test-fixture.js";
+import { useWorkspaceRecoveryFixture, action, connectionString, db, makeRetryDue, replaceFixtureState, root, run, seed } from "./__tests__/workspace-recovery-fixture.js";
 const targets = vi.hoisted(() => new Map<string, AdapterSandboxExecutionTarget>());
 vi.mock("./environment-execution-target.js", async importOriginal => {
   const actual = await importOriginal<typeof import("./environment-execution-target.js")>();

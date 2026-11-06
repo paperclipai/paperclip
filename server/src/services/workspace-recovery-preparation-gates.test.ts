@@ -26,7 +26,7 @@ import { createSavedWorkspaceLoader, readRemoteWorkspaceAuthority, saveRemoteWor
 import { createReusableLeaseHandoff } from "./environment-lease-handoff.js";
 import { preserveRemoteWorkspacePreparationFailure } from "./native-runtime/native-workspace-finalization-state.js";
 import { getExecutionBlocker } from "./execution-blocker.js";
-import { useWorkspaceRecoveryFixture, acceptedRemoteExport, action, boardRecoveryApp, db, interruptedRemotePreparation, makeRetryDue, root, run, seed, withheldPreparationRetry } from "./workspace-recovery.test-fixture.js";
+import { useWorkspaceRecoveryFixture, acceptedRemoteExport, action, boardRecoveryApp, db, interruptedRemotePreparation, makeRetryDue, root, run, seed, withheldPreparationRetry } from "./__tests__/workspace-recovery-fixture.js";
 const targets = vi.hoisted(() => new Map<string, AdapterSandboxExecutionTarget>());
 vi.mock("./environment-execution-target.js", async importOriginal => {
   const actual = await importOriginal<typeof import("./environment-execution-target.js")>();

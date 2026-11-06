@@ -8,14 +8,14 @@
 //
 // vi.mock() only applies to the file that declares it, so each suite keeps its
 // own environment-execution-target mock and passes its `targets` map in.
-import { appendHeartbeatRunEvent } from "./heartbeat-run-events.js";
-import { recordRequiredWorkspaceRestoreFailure, terminalizeLegacyExecution } from "./legacy-execution-recovery.js";
-import { resolveExternalTestDatabaseUrl } from "../__tests__/helpers/external-test-database.js";
-import { environmentService } from "./environments.js";
-import { classifyEnvironmentCapabilities, environmentRuntimeService } from "./environment-runtime.js";
-import { readSystemRecovery, createSystemRecovery, failSystemRecovery, reserveSystemRecoveryAttempt, SystemRecoveryFailure } from "./system-recovery-state.js";
-import { adoptSystemRecovery } from "./system-recovery.js";
-import { requestTaskRetry } from "./task-retry.js";
+import { appendHeartbeatRunEvent } from "../heartbeat-run-events.js";
+import { recordRequiredWorkspaceRestoreFailure, terminalizeLegacyExecution } from "../legacy-execution-recovery.js";
+import { resolveExternalTestDatabaseUrl } from "../../__tests__/helpers/external-test-database.js";
+import { environmentService } from "../environments.js";
+import { classifyEnvironmentCapabilities, environmentRuntimeService } from "../environment-runtime.js";
+import { readSystemRecovery, createSystemRecovery, failSystemRecovery, reserveSystemRecoveryAttempt, SystemRecoveryFailure } from "../system-recovery-state.js";
+import { adoptSystemRecovery } from "../system-recovery.js";
+import { requestTaskRetry } from "../task-retry.js";
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { chmod, cp, lstat, mkdir, mkdtemp, readdir, realpath, rename, rm, writeFile } from "node:fs/promises";
@@ -25,19 +25,19 @@ import express from "express";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, expect, vi } from "vitest";
 import { agents, completionContracts, companies, createDb, applyPendingMigrations, environmentLeases, environments, heartbeatRuns, issueRecoveryActions, issues, nativeRunFinalizations, nativeRunResults, agentWakeupRequests, executionWorkspaces } from "@paperclipai/db";
-import { CONTROL_PLANE_CONFORMANCE_RESULT, CONTROL_PLANE_CONFORMANCE_TERMINAL } from "../vendor/paperclip-runner/testing.js";
+import { CONTROL_PLANE_CONFORMANCE_RESULT, CONTROL_PLANE_CONFORMANCE_TERMINAL } from "../../vendor/paperclip-runner/testing.js";
 import type { AdapterSandboxExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
 import type { EnvironmentLease } from "@paperclipai/shared";
-import { startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
-import { prepareNativeWorkspaceSync, resumeNativeWorkspaceSync } from "./native-runtime/native-workspace-sync.js";
-import { remoteTerminationReceipt } from "./remote-execution-termination.js";
-import { prepareSandboxStopAndRetain, settleStopOnlyCleanup, readStopOnlyCleanup } from "./sandbox-stop-and-retain.js";
-import * as heartbeatServices from "./heartbeat.js";
-import { heartbeatService } from "./heartbeat.js";
-import { prepareRemoteWorkspace, reserveRemoteWorkspace } from "./remote-workspaces.js";
-import { issueRoutes } from "../routes/issues.js";
-import { errorHandler } from "../middleware/index.js";
-import * as workerProof from "./native-runtime/native-workspace-platform-proof.js";
+import { startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
+import { prepareNativeWorkspaceSync, resumeNativeWorkspaceSync } from "../native-runtime/native-workspace-sync.js";
+import { remoteTerminationReceipt } from "../remote-execution-termination.js";
+import { prepareSandboxStopAndRetain, settleStopOnlyCleanup, readStopOnlyCleanup } from "../sandbox-stop-and-retain.js";
+import * as heartbeatServices from "../heartbeat.js";
+import { heartbeatService } from "../heartbeat.js";
+import { prepareRemoteWorkspace, reserveRemoteWorkspace } from "../remote-workspaces.js";
+import { issueRoutes } from "../../routes/issues.js";
+import { errorHandler } from "../../middleware/index.js";
+import * as workerProof from "../native-runtime/native-workspace-platform-proof.js";
 
 export let db: ReturnType<typeof createDb>;
 export let root: string;

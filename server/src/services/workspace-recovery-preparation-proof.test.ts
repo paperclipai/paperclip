@@ -12,7 +12,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { AdapterSandboxExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
 import { recoverRetainedWorkspace } from "./workspace-recovery.js";
 import { heartbeatService } from "./heartbeat.js";
-import { useWorkspaceRecoveryFixture, boardRecoveryApp, db, failedRemotePreparation, fixtureCompanyIds, receiptOnlyRecoveryApp, run } from "./workspace-recovery.test-fixture.js";
+import { useWorkspaceRecoveryFixture, boardRecoveryApp, db, failedRemotePreparation, fixtureCompanyIds, receiptOnlyRecoveryApp, run } from "./__tests__/workspace-recovery-fixture.js";
 const targets = vi.hoisted(() => new Map<string, AdapterSandboxExecutionTarget>());
 vi.mock("./environment-execution-target.js", async importOriginal => {
   const actual = await importOriginal<typeof import("./environment-execution-target.js")>();

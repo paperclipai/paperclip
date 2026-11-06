@@ -38,7 +38,7 @@ import { getExecutionBlocker } from "./execution-blocker.js";
 import { buildExecutionContinuation } from "./execution-continuation.js";
 import { createHeartbeatRunOutput } from "./heartbeat/run-output.js";
 import { objectLogFixture } from "./heartbeat/__tests__/object-log-fixture.js";
-import { useWorkspaceRecoveryFixture, action, boardRecoveryApp, connectionString, db, failedRemotePreparation, fixtureCompanyIds, receiptOnlyRecoveryApp, root, run, stoppedWorkspaceWorker } from "./workspace-recovery.test-fixture.js";
+import { useWorkspaceRecoveryFixture, action, boardRecoveryApp, connectionString, db, failedRemotePreparation, fixtureCompanyIds, receiptOnlyRecoveryApp, root, run, stoppedWorkspaceWorker } from "./__tests__/workspace-recovery-fixture.js";
 const targets = vi.hoisted(() => new Map<string, AdapterSandboxExecutionTarget>());
 vi.mock("./environment-execution-target.js", async importOriginal => {
   const actual = await importOriginal<typeof import("./environment-execution-target.js")>();

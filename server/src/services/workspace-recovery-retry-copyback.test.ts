@@ -36,7 +36,7 @@ import { createSavedWorkspaceLoader, prepareRemoteWorkspace, readRemoteWorkspace
 import { canonicalProviderPackJson } from "./native-runtime/remote-provider-pack-verification.js";
 import { REMOTE_WORKSPACE_SANDBOX_DISK_FULL } from "./remote-workspace-transport.js";
 import { getExecutionBlocker } from "./execution-blocker.js";
-import { useWorkspaceRecoveryFixture, acceptedRemoteExport, action, connectionString, db, failedWarmSource, makeRetryDue, receiptOnlyRecoveryApp, root, run, seed } from "./workspace-recovery.test-fixture.js";
+import { useWorkspaceRecoveryFixture, acceptedRemoteExport, action, connectionString, db, failedWarmSource, makeRetryDue, receiptOnlyRecoveryApp, root, run, seed } from "./__tests__/workspace-recovery-fixture.js";
 const targets = vi.hoisted(() => new Map<string, AdapterSandboxExecutionTarget>());
 vi.mock("./environment-execution-target.js", async importOriginal => {
   const actual = await importOriginal<typeof import("./environment-execution-target.js")>();

@@ -31,7 +31,7 @@ import { claimNativeSessionResumptions } from "./native-runtime/native-finalizat
 import { getExecutionBlocker } from "./execution-blocker.js";
 import { issueRoutes } from "../routes/issues.js";
 import { errorHandler } from "../middleware/index.js";
-import { useWorkspaceRecoveryFixture, action, connectionString, db, failedWarmSource, replaceFixtureState, root, run, seed, warmHandoffSource } from "./workspace-recovery.test-fixture.js";
+import { useWorkspaceRecoveryFixture, action, connectionString, db, failedWarmSource, replaceFixtureState, root, run, seed, warmHandoffSource } from "./__tests__/workspace-recovery-fixture.js";
 const targets = vi.hoisted(() => new Map<string, AdapterSandboxExecutionTarget>());
 vi.mock("./environment-execution-target.js", async importOriginal => {
   const actual = await importOriginal<typeof import("./environment-execution-target.js")>();
