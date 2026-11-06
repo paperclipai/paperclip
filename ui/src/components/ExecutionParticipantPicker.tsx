@@ -11,7 +11,7 @@ import { sortAgentsByRecency, getRecentAssigneeIds } from "../lib/recent-assigne
 import {
   buildExecutionPolicy,
   stageParticipantValues,
-} from "../lib/issue-execution-policy";
+} from "../lib/localized-issue-execution-policy";
 import { useExecutionPolicy } from "../hooks/useExecutionPolicy";
 import { cn } from "../lib/utils";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";

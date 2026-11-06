@@ -30,7 +30,7 @@ import { useCoordinatorWorkspaceEnabled } from "../hooks/useCoordinatorWorkspace
 import { getRecentAssigneeIds, getRecentAssigneeSelectionIds, sortAgentsByRecency, trackRecentAssignee, trackRecentAssigneeUser } from "../lib/recent-assignees";
 import { getLastProjectId, getRecentProjectIds, trackRecentProject } from "../lib/recent-projects";
 import { recordRecentTask } from "../lib/recent-tasks";
-import { buildExecutionPolicy } from "../lib/issue-execution-policy";
+import { buildExecutionPolicy } from "../lib/localized-issue-execution-policy";
 import { createUuid } from "../lib/uuid";
 import { isIssueWorkMode, nextWorkMode } from "../lib/work-mode-meta";
 import { useToastActions } from "../context/ToastContext";

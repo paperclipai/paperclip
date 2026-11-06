@@ -1,11 +1,14 @@
-import { localizeUiError } from "@/lib/localized-ui-error";
 import type { IssueExecutionPolicy, IssueExecutionStageParticipant, IssueExecutionStagePrincipal } from "@paperclipai/shared";
 import { issueExecutionPolicySchema } from "@paperclipai/shared";
-import { parseAssigneeValue } from "./assignees.js";
+import { parseAssigneeValue } from "./assignee-selection.js";
 import { createUuid as newId } from "./uuid.js";
 
 type StageType = "review" | "approval";
 const nullablePolicySchema = issueExecutionPolicySchema.nullable();
+
+export class ExecutionPolicyUnavailableError extends Error {
+  constructor() { super("Execution policy is unavailable"); }
+}
 
 /** Apply wire-format defaults without treating an invalid policy as no policy. */
 export function readExecutionPolicy(policy: unknown) {
@@ -65,7 +68,7 @@ export function buildExecutionPolicy(input: {
   approverValues: string[];
 }): IssueExecutionPolicy | null {
   const parsed = readExecutionPolicy(input.existingPolicy);
-  if (!parsed.success) throw localizeUiError(new Error("Execution policy is unavailable"), { key: "integration-errors:policyUnavailable" });
+  if (!parsed.success) throw new ExecutionPolicyUnavailableError();
   const existingPolicy = parsed.data;
   const mode = existingPolicy?.mode ?? "normal";
   const stages: IssueExecutionPolicy["stages"] = [];

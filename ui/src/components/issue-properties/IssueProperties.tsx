@@ -51,7 +51,7 @@ import {
 import { getRecentProjectIds } from "../../lib/recent-projects";
 import { orderItemsBySelectedAndRecent } from "../../lib/recent-selections";
 import { formatAssigneeUserLabel, formatUserLabel } from "../../lib/assignees";
-import { buildExecutionPolicy, stageParticipantValues } from "../../lib/issue-execution-policy";
+import { buildExecutionPolicy, stageParticipantValues } from "../../lib/localized-issue-execution-policy";
 import { useExecutionPolicy } from "../../hooks/useExecutionPolicy";
 import {
   areAutomaticMonitorChecksPaused,

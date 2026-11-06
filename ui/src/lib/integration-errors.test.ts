@@ -2,7 +2,7 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { i18n } from "@/i18n";
 import { describeUiError, uiErrorDescriptor } from "./localized-ui-error";
-import { buildExecutionPolicy } from "./issue-execution-policy";
+import { buildExecutionPolicy } from "./localized-issue-execution-policy";
 import { stopFailedNativeRun } from "./native-run-stop";
 import { qualifyRunnerEnvironment } from "./qualify-claude-setup";
 import { readZipArchive } from "./zip";
