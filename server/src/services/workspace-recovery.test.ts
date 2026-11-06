@@ -1880,6 +1880,39 @@ describe("automatic retained workspace recovery", () => {
           const cold = await prepareRemoteWorkspace({ db, storage, workspace: coldWorkspace, runId: successor.id,
             lease: coldLease as EnvironmentLease, target: { ...target, leaseId: coldLease.id, remoteCwd: await realpath(coldAllocationPath) } });
           expect(await readFile(path.join(cold.remoteRoot, newest!.path, "files", "ticks.log"), "utf8")).toBe(editedLog);
+          if (kind === "retained_history") {
+            await saveRemoteWorkspace({ db, storage, workspace: cold.workspace, runId: successor.id,
+              lease: cold.lease, target: { ...target, leaseId: coldLease.id, remoteCwd: cold.remoteRoot }, assertOwned: async () => {} });
+            await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, successor.id));
+            await db.update(environmentLeases).set({ status: "released", releasedAt: new Date(), cleanupStatus: "success" }).where(eq(environmentLeases.id, coldLease.id));
+            const [child] = await db.insert(issues).values({ companyId: f.companyId, parentId: f.issueId,
+              assigneeAgentId: agent.id, title: "Shared workspace continuation", status: "in_progress", executionWorkspaceId: placeholder.id }).returning();
+            const [childRun] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: agent.id, issueId: child.id,
+              status: "running", contextSnapshot: { issueId: child.id } }).returning();
+            const [saved] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, placeholder.id));
+            const olderPaths = saved.metadata!.remoteWorkspaceRecoveredFiles as Array<{ operationId: string; sourceRunId: string; path: string }>;
+            await db.update(executionWorkspaces).set({ metadata: { ...saved.metadata, remoteWorkspaceRecoveredFiles:
+              olderPaths.map(({ operationId, sourceRunId, path }) => ({ operationId, sourceRunId, path })) } }).where(eq(executionWorkspaces.id, saved.id));
+            const shared = await reserveRemoteWorkspace({ db, storage, companyId: f.companyId, issueId: child.id,
+              runId: childRun.id, agentId: agent.id, environmentId: f.lease.environmentId!, projectId: null,
+              projectWorkspaceId: null, existingWorkspaceId: placeholder.id, source: { kind: "empty" } });
+            const [childLease] = await db.insert(environmentLeases).values({ companyId: f.companyId, issueId: child.id,
+              heartbeatRunId: childRun.id, environmentId: f.lease.environmentId, provider: "daytona", providerLeaseId: coldLease.providerLeaseId, status: "active" }).returning();
+            const inherited = await prepareRemoteWorkspace({ db, storage, workspace: shared, runId: childRun.id,
+              lease: childLease as EnvironmentLease, target: { ...target, leaseId: childLease.id, remoteCwd: cold.remoteRoot } });
+            expect(inherited.workspace.metadata?.remoteWorkspaceRecoveredFiles).toEqual(expect.arrayContaining(olderPaths.map(item =>
+              expect.objectContaining({ operationId: item.operationId, sourceRunId: item.sourceRunId, path: item.path }))));
+            expect(await readFile(path.join(inherited.remoteRoot, newest!.path, "files", "ticks.log"), "utf8")).toBe(editedLog);
+            const [withoutProof] = await db.update(executionWorkspaces).set({ metadata: { ...inherited.workspace.metadata,
+              remoteWorkspaceRecoveredFiles: olderPaths.map(({ operationId, sourceRunId, path }) => ({ operationId, sourceRunId, path })) } })
+              .where(eq(executionWorkspaces.id, inherited.workspace.id)).returning();
+            await db.update(workspaceOperations).set({ status: "failed" }).where(eq(workspaceOperations.id,
+              (olderPaths.find(item => item.sourceRunId === source.id))!.operationId));
+            await expect(prepareRemoteWorkspace({ db, storage, workspace: withoutProof, runId: childRun.id,
+              lease: childLease as EnvironmentLease, target: { ...target, leaseId: childLease.id, remoteCwd: cold.remoteRoot } }))
+              .rejects.toThrow("remote_workspace_recovery_receipt_invalid");
+            expect(await readFile(path.join(inherited.remoteRoot, newest!.path, "files", "ticks.log"), "utf8")).toBe(editedLog);
+          }
           if (kind === "ordinary_followup") {
             await rm(path.join(cold.remoteRoot, newest!.path), { recursive: true });
             await saveRemoteWorkspace({ db, storage, workspace: cold.workspace, runId: successor.id,

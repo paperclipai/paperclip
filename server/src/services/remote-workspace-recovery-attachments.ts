@@ -3,6 +3,7 @@ import path from "node:path";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { heartbeatRuns, workspaceOperations, type Db } from "@paperclipai/db";
 import { remoteWorkspaceRunReferenceSchema } from "@paperclipai/shared";
+import { readSnapshot, verifiedWorkspaceSnapshotReceipt } from "./workspace-recovery-snapshot.js";
 import { recoveryRunAncestry } from "./recovery-run-ancestry.js";
 import { immutableRemoteWorkspaceRecoveryAttachment } from "./workspace-recovery-receipt.js";
 import { hasRequiredWorkspaceRecovery } from "./workspace-restore-recovery-state.js";
@@ -92,4 +93,32 @@ export async function attachPreservedRemoteWorkspaceSnapshots(input: {
     result.push({ operationId, path: destination, sourceRunId: source.id });
   }
   return result;
+}
+
+/** Verify a sidecar already inside an authorized shared workspace. This only
+ * reconstructs its immutable identity; it cannot import files or admit work. */
+export async function retainedRecoveryAttachmentProvenance(input: {
+  db: Db; companyId: string; issueIds: string[]; sourceRunId: string; operationId: string;
+}): Promise<string | null> {
+  const [source] = await input.db.select().from(heartbeatRuns).where(and(
+    eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.id, input.sourceRunId)));
+  const issueId = source?.nativeIssueId ?? source?.issueId ?? source?.contextSnapshot?.issueId;
+  if (!source || typeof issueId !== "string" || !input.issueIds.includes(issueId)) return null;
+  const [operation] = await input.db.select().from(workspaceOperations).where(and(
+    eq(workspaceOperations.companyId, input.companyId), eq(workspaceOperations.issueId, issueId),
+    eq(workspaceOperations.heartbeatRunId, source.id), eq(workspaceOperations.id, input.operationId),
+    eq(workspaceOperations.status, "succeeded")));
+  if (operation?.phase === "workspace_recovery_snapshot") {
+    const saved = readSnapshot(operation.metadata, input.companyId, source.id);
+    const proof = await verifiedWorkspaceSnapshotReceipt(input.db, { companyId: input.companyId, issueId,
+      runId: source.id, actionId: saved.recoveryActionId, operationIds: [operation.id],
+      leaseId: saved.leaseId, providerLeaseId: saved.providerLeaseId });
+    return proof ? JSON.stringify({ schema: saved.schema, operationId: operation.id, sourceRunId: source.id,
+      leaseId: saved.leaseId, sha256: saved.archive.sha256 }) : null;
+  }
+  if (operation?.phase !== "workspace_recovery") return null;
+  const proof = await immutableRemoteWorkspaceRecoveryAttachment(input.db, source);
+  return proof?.operationId === operation.id ? JSON.stringify({ schema: "paperclip.remote-workspace-recovery-attachment.v1",
+    operationId: proof.operationId, sourceRunId: source.id, workspaceId: proof.workspaceId,
+    snapshotId: proof.snapshotId, sha256: proof.sha256 }) : null;
 }
