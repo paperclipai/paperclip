@@ -1,10 +1,14 @@
 import { useEffect, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { ONBOARDING_FIRST_TASK_ORIGIN_KIND } from "@paperclipai/shared";
 import { useAccountIdentity } from "@/api/companies-query";
 import type { HealthStatus } from "@/api/health";
+import { issuesApi } from "@/api/issues";
 import { useCompany } from "@/context/CompanyContext";
 import { useDialogState } from "@/context/DialogContext";
 import { useOptionalToastActions, useOptionalToastState } from "@/context/ToastContext";
 import { useAnnouncement } from "@/hooks/useAnnouncement";
+import { queryKeys } from "@/lib/queryKeys";
 import { AnnouncementCard } from "./AnnouncementCard";
 
 // Includes the command palette, sheets and dialogs created outside DialogContext.
@@ -22,16 +26,36 @@ function useModalOpen(enabled: boolean) {
   return open;
 }
 
+const FINISHED_ONBOARDING_STATUSES = new Set(["done", "cancelled"]);
+
+/**
+ * A new user's first session is the onboarding first task. Announcements wait
+ * until that task is finished so they cannot cover its questions. Unknown
+ * state (loading or a failed read) keeps the optional card hidden.
+ */
+function useOnboardingInProgress(companyId: string | null) {
+  const query = useQuery({
+    queryKey: queryKeys.issues.onboardingFirstTask(companyId ?? "__none__"),
+    queryFn: ({ signal }) => issuesApi.list(companyId!, { originKind: ONBOARDING_FIRST_TASK_ORIGIN_KIND, limit: 1 }, { signal }),
+    enabled: Boolean(companyId),
+    staleTime: 60_000,
+  });
+  if (!companyId) return false;
+  if (!query.isSuccess) return true;
+  return query.data.some((issue) => issue.originKind === ONBOARDING_FIRST_TASK_ORIGIN_KIND && !FINISHED_ONBOARDING_STATUSES.has(issue.status));
+}
+
 export function AnnouncementWell({ health }: { health?: HealthStatus }) {
   const { userId: accountId, settled } = useAccountIdentity();
   const { selectedCompanyId, loading } = useCompany();
   const { onboardingOpen } = useDialogState();
   const toastActions = useOptionalToastActions();
   const toasts = useOptionalToastState();
+  const onboardingInProgress = useOnboardingInProgress(selectedCompanyId);
   const userId = health?.deploymentMode === "local_trusted" ? "local-board" : (settled ? accountId : null);
   const { announcement, dismiss } = useAnnouncement({
     userId, companyId: selectedCompanyId,
-    enabled: Boolean(userId && !loading && selectedCompanyId && !onboardingOpen),
+    enabled: Boolean(userId && !loading && selectedCompanyId && !onboardingOpen && !onboardingInProgress),
     onSaveFailure: (savedLocally) => toastActions?.pushToast({
       title: savedLocally ? "Dismissed in this browser" : "Dismissed for this visit",
       body: "Couldn’t save across devices. We’ll retry when you reconnect or return.",
