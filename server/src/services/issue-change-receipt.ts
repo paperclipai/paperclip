@@ -24,6 +24,8 @@ export function buildIssueChanges(
   const changes: IssueChanges = {};
   const keys = new Set([...Object.keys(existing), ...Object.keys(updated)]);
   keys.delete("updatedAt");
+  // Server-owned fence counter; it follows the title/description/project changes reported here.
+  keys.delete("contextReferenceRevision");
 
   for (const key of keys) {
     const from = existing[key];

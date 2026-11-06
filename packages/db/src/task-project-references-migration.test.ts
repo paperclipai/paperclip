@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 import { applyPendingMigrations, inspectMigrations } from "./client.js";
 import { EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./test-embedded-postgres.js";
 
-const migrationName = "0432_task_project_references.sql";
+const migrationName = "0438_task_project_references.sql";
 const migrationHash = createHash("sha256").update(await readFile(new URL(`./migrations/${migrationName}`, import.meta.url), "utf8")).digest("hex");
 const support = await getEmbeddedPostgresTestSupport();
 

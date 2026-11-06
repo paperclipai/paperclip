@@ -1,0 +1,169 @@
+CREATE TABLE "issue_project_references" (
+	"company_id" uuid NOT NULL,
+	"issue_id" uuid NOT NULL,
+	"source_kind" text NOT NULL,
+	"source_id" uuid NOT NULL,
+	"project_id" uuid NOT NULL,
+	CONSTRAINT "issue_project_references_issue_id_source_kind_source_id_project_id_pk" PRIMARY KEY("issue_id","source_kind","source_id","project_id"),
+	CONSTRAINT "issue_project_references_source_kind_check" CHECK ("issue_project_references"."source_kind" in ('issue', 'comment', 'document', 'annotation', 'interaction', 'case'))
+);
+--> statement-breakpoint
+ALTER TABLE "issues" ADD COLUMN "context_reference_revision" bigint DEFAULT 0 NOT NULL;--> statement-breakpoint
+ALTER TABLE "issue_project_references" ADD CONSTRAINT "issue_project_references_company_issue_fk" FOREIGN KEY ("company_id","issue_id") REFERENCES "public"."issues"("company_id","id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+CREATE INDEX "issue_project_references_company_project_idx" ON "issue_project_references" USING btree ("company_id","project_id");--> statement-breakpoint
+-- Task project references (C1b). Every source write advances the task's
+-- context_reference_revision and rewrites that source's candidate rows in the
+-- same statement, so no writer can bypass the fence. Candidates are a superset
+-- of the structured parser's result; the context owner re-parses for truth.
+CREATE OR REPLACE FUNCTION paperclip_project_reference_candidates(body text) RETURNS uuid[]
+LANGUAGE sql IMMUTABLE AS $$
+	SELECT coalesce(array_agg(DISTINCT lower(id.m[1])::uuid), '{}')
+	FROM regexp_matches(coalesce(body, ''), 'project://[^)\s]+', 'gi') AS href(m)
+	CROSS JOIN LATERAL regexp_matches(href.m[1], '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}', 'gi') AS id(m)
+$$;--> statement-breakpoint
+-- removed: [{issue_id, source_id}]; added: [{company_id, issue_id, source_id, body}].
+-- Tasks are locked in ID order (lock-order step 4) before their rows change.
+CREATE OR REPLACE FUNCTION paperclip_sync_project_reference_sources(kind text, removed jsonb, added jsonb) RETURNS void
+LANGUAGE plpgsql AS $$
+BEGIN
+	PERFORM 1 FROM issues WHERE id IN (
+		SELECT (r->>'issue_id')::uuid FROM jsonb_array_elements(removed || added) r
+	) ORDER BY id FOR NO KEY UPDATE;
+	UPDATE issues SET context_reference_revision = context_reference_revision + 1
+	WHERE id IN (SELECT (r->>'issue_id')::uuid FROM jsonb_array_elements(removed || added) r);
+	DELETE FROM issue_project_references p USING jsonb_array_elements(removed) r
+	WHERE p.issue_id = (r->>'issue_id')::uuid AND p.source_kind = kind AND p.source_id = (r->>'source_id')::uuid;
+	INSERT INTO issue_project_references (company_id, issue_id, source_kind, source_id, project_id)
+	SELECT (a->>'company_id')::uuid, (a->>'issue_id')::uuid, kind, (a->>'source_id')::uuid, candidate
+	FROM jsonb_array_elements(added) a CROSS JOIN LATERAL unnest(paperclip_project_reference_candidates(a->>'body')) candidate
+	WHERE EXISTS (SELECT 1 FROM issues i WHERE i.id = (a->>'issue_id')::uuid)
+	ON CONFLICT DO NOTHING;
+END;
+$$;--> statement-breakpoint
+CREATE OR REPLACE FUNCTION paperclip_bump_issue_context_reference_revision() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+	IF NEW.title IS DISTINCT FROM OLD.title OR NEW.description IS DISTINCT FROM OLD.description
+		OR NEW.project_id IS DISTINCT FROM OLD.project_id THEN
+		NEW.context_reference_revision := OLD.context_reference_revision + 1;
+	END IF;
+	RETURN NEW;
+END;
+$$;--> statement-breakpoint
+CREATE TRIGGER paperclip_issue_context_reference_revision_trigger
+BEFORE UPDATE OF "title", "description", "project_id" ON "issues"
+FOR EACH ROW EXECUTE FUNCTION paperclip_bump_issue_context_reference_revision();--> statement-breakpoint
+-- The task's own fields: primary project, title and description.
+CREATE OR REPLACE FUNCTION paperclip_issue_project_references() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+	DELETE FROM issue_project_references WHERE issue_id = NEW.id AND source_kind = 'issue';
+	INSERT INTO issue_project_references (company_id, issue_id, source_kind, source_id, project_id)
+	SELECT NEW.company_id, NEW.id, 'issue', NEW.id, candidate FROM unnest(array_remove(
+		paperclip_project_reference_candidates(NEW.title || ' ' || coalesce(NEW.description, '')) || NEW.project_id, NULL)) candidate
+	ON CONFLICT DO NOTHING;
+	RETURN NULL;
+END;
+$$;--> statement-breakpoint
+CREATE TRIGGER paperclip_issue_project_references_trigger
+AFTER INSERT OR UPDATE OF "title", "description", "project_id" ON "issues"
+FOR EACH ROW EXECUTE FUNCTION paperclip_issue_project_references();--> statement-breakpoint
+-- Issue documents of every key, by latest body. A document's source ID is its document ID.
+CREATE OR REPLACE FUNCTION paperclip_issue_document_project_references() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+	IF TG_OP = 'INSERT' THEN
+		PERFORM paperclip_sync_project_reference_sources('document', '[]', coalesce((SELECT jsonb_agg(jsonb_build_object(
+			'company_id', n.company_id, 'issue_id', n.issue_id, 'source_id', n.document_id, 'body', d.latest_body))
+			FROM new_rows n JOIN documents d ON d.id = n.document_id), '[]'));
+	ELSIF TG_OP = 'DELETE' THEN
+		PERFORM paperclip_sync_project_reference_sources('document', coalesce((SELECT jsonb_agg(jsonb_build_object(
+			'issue_id', o.issue_id, 'source_id', o.document_id)) FROM old_rows o), '[]'), '[]');
+	ELSE
+		PERFORM paperclip_sync_project_reference_sources('document',
+			coalesce((SELECT jsonb_agg(jsonb_build_object('issue_id', o.issue_id, 'source_id', o.document_id)) FROM old_rows o JOIN new_rows n ON n.id = o.id
+				WHERE (n.issue_id, n.document_id) IS DISTINCT FROM (o.issue_id, o.document_id)), '[]'),
+			coalesce((SELECT jsonb_agg(jsonb_build_object('company_id', n.company_id, 'issue_id', n.issue_id, 'source_id', n.document_id, 'body', d.latest_body))
+				FROM old_rows o JOIN new_rows n ON n.id = o.id JOIN documents d ON d.id = n.document_id
+				WHERE (n.issue_id, n.document_id) IS DISTINCT FROM (o.issue_id, o.document_id)), '[]'));
+	END IF;
+	RETURN NULL;
+END;
+$$;--> statement-breakpoint
+CREATE TRIGGER paperclip_issue_document_project_references_insert AFTER INSERT ON "issue_documents"
+REFERENCING NEW TABLE AS new_rows FOR EACH STATEMENT EXECUTE FUNCTION paperclip_issue_document_project_references();--> statement-breakpoint
+CREATE TRIGGER paperclip_issue_document_project_references_update AFTER UPDATE ON "issue_documents"
+REFERENCING OLD TABLE AS old_rows NEW TABLE AS new_rows FOR EACH STATEMENT EXECUTE FUNCTION paperclip_issue_document_project_references();--> statement-breakpoint
+CREATE TRIGGER paperclip_issue_document_project_references_delete AFTER DELETE ON "issue_documents"
+REFERENCING OLD TABLE AS old_rows FOR EACH STATEMENT EXECUTE FUNCTION paperclip_issue_document_project_references();--> statement-breakpoint
+CREATE OR REPLACE FUNCTION paperclip_document_body_project_references() RETURNS trigger
+LANGUAGE plpgsql AS $$
+DECLARE changed jsonb;
+BEGIN
+	SELECT jsonb_agg(jsonb_build_object('company_id', l.company_id, 'issue_id', l.issue_id, 'source_id', n.id, 'body', n.latest_body))
+	INTO changed FROM old_rows o JOIN new_rows n ON n.id = o.id JOIN issue_documents l ON l.document_id = n.id
+	WHERE n.latest_body IS DISTINCT FROM o.latest_body;
+	IF changed IS NOT NULL THEN PERFORM paperclip_sync_project_reference_sources('document', changed, changed); END IF;
+	RETURN NULL;
+END;
+$$;--> statement-breakpoint
+CREATE TRIGGER paperclip_document_body_project_references AFTER UPDATE ON "documents"
+REFERENCING OLD TABLE AS old_rows NEW TABLE AS new_rows FOR EACH STATEMENT EXECUTE FUNCTION paperclip_document_body_project_references();--> statement-breakpoint
+-- Comments, plan-review annotation comments, thread interactions and workflow
+-- case facts. Arguments: source kind, task column, content expression (JSON is
+-- searched as text). Unchanged sources neither advance the revision nor lock.
+CREATE OR REPLACE FUNCTION paperclip_row_project_references() RETURNS trigger
+LANGUAGE plpgsql AS $$
+DECLARE sources text := 'SELECT jsonb_build_object(''company_id'', company_id, ''issue_id'', %1$I, ''source_id'', id, ''body'', %2$s) s FROM %3$I WHERE %1$I IS NOT NULL';
+	removed jsonb; added jsonb;
+BEGIN
+	EXECUTE format('WITH o AS (' || CASE WHEN TG_OP = 'INSERT' THEN 'SELECT NULL::jsonb s WHERE false' ELSE sources END || '),'
+		|| ' n AS (' || CASE WHEN TG_OP = 'DELETE' THEN 'SELECT NULL::jsonb s WHERE false' ELSE replace(sources, '%3$I', '%4$I') END || ')'
+		|| ' SELECT (SELECT coalesce(jsonb_agg(s), ''[]'') FROM (SELECT s FROM o EXCEPT SELECT s FROM n) r),'
+		|| ' (SELECT coalesce(jsonb_agg(s), ''[]'') FROM (SELECT s FROM n EXCEPT SELECT s FROM o) a)',
+		TG_ARGV[1], TG_ARGV[2], 'old_rows', 'new_rows') INTO removed, added;
+	IF removed <> '[]' OR added <> '[]' THEN PERFORM paperclip_sync_project_reference_sources(TG_ARGV[0], removed, added); END IF;
+	RETURN NULL;
+END;
+$$;--> statement-breakpoint
+CREATE TRIGGER paperclip_comment_project_references_insert AFTER INSERT ON "issue_comments"
+REFERENCING NEW TABLE AS new_rows FOR EACH STATEMENT EXECUTE FUNCTION paperclip_row_project_references('comment', 'issue_id', 'CASE WHEN deleted_at IS NULL THEN body END');--> statement-breakpoint
+CREATE TRIGGER paperclip_comment_project_references_update AFTER UPDATE ON "issue_comments"
+REFERENCING OLD TABLE AS old_rows NEW TABLE AS new_rows FOR EACH STATEMENT EXECUTE FUNCTION paperclip_row_project_references('comment', 'issue_id', 'CASE WHEN deleted_at IS NULL THEN body END');--> statement-breakpoint
+CREATE TRIGGER paperclip_comment_project_references_delete AFTER DELETE ON "issue_comments"
+REFERENCING OLD TABLE AS old_rows FOR EACH STATEMENT EXECUTE FUNCTION paperclip_row_project_references('comment', 'issue_id', 'CASE WHEN deleted_at IS NULL THEN body END');--> statement-breakpoint
+CREATE TRIGGER paperclip_annotation_project_references_insert AFTER INSERT ON "document_annotation_comments"
+REFERENCING NEW TABLE AS new_rows FOR EACH STATEMENT EXECUTE FUNCTION paperclip_row_project_references('annotation', 'issue_id', 'body');--> statement-breakpoint
+CREATE TRIGGER paperclip_annotation_project_references_update AFTER UPDATE ON "document_annotation_comments"
+REFERENCING OLD TABLE AS old_rows NEW TABLE AS new_rows FOR EACH STATEMENT EXECUTE FUNCTION paperclip_row_project_references('annotation', 'issue_id', 'body');--> statement-breakpoint
+CREATE TRIGGER paperclip_annotation_project_references_delete AFTER DELETE ON "document_annotation_comments"
+REFERENCING OLD TABLE AS old_rows FOR EACH STATEMENT EXECUTE FUNCTION paperclip_row_project_references('annotation', 'issue_id', 'body');--> statement-breakpoint
+CREATE TRIGGER paperclip_interaction_project_references_insert AFTER INSERT ON "issue_thread_interactions"
+REFERENCING NEW TABLE AS new_rows FOR EACH STATEMENT EXECUTE FUNCTION paperclip_row_project_references('interaction', 'issue_id', 'concat_ws('' '', title, summary, payload::text, result::text)');--> statement-breakpoint
+CREATE TRIGGER paperclip_interaction_project_references_update AFTER UPDATE ON "issue_thread_interactions"
+REFERENCING OLD TABLE AS old_rows NEW TABLE AS new_rows FOR EACH STATEMENT EXECUTE FUNCTION paperclip_row_project_references('interaction', 'issue_id', 'concat_ws('' '', title, summary, payload::text, result::text)');--> statement-breakpoint
+CREATE TRIGGER paperclip_interaction_project_references_delete AFTER DELETE ON "issue_thread_interactions"
+REFERENCING OLD TABLE AS old_rows FOR EACH STATEMENT EXECUTE FUNCTION paperclip_row_project_references('interaction', 'issue_id', 'concat_ws('' '', title, summary, payload::text, result::text)');--> statement-breakpoint
+CREATE TRIGGER paperclip_case_project_references_insert AFTER INSERT ON "cases"
+REFERENCING NEW TABLE AS new_rows FOR EACH STATEMENT EXECUTE FUNCTION paperclip_row_project_references('case', 'work_issue_id', 'concat_ws('' '', title, summary, fields::text)');--> statement-breakpoint
+CREATE TRIGGER paperclip_case_project_references_update AFTER UPDATE ON "cases"
+REFERENCING OLD TABLE AS old_rows NEW TABLE AS new_rows FOR EACH STATEMENT EXECUTE FUNCTION paperclip_row_project_references('case', 'work_issue_id', 'concat_ws('' '', title, summary, fields::text)');--> statement-breakpoint
+CREATE TRIGGER paperclip_case_project_references_delete AFTER DELETE ON "cases"
+REFERENCING OLD TABLE AS old_rows FOR EACH STATEMENT EXECUTE FUNCTION paperclip_row_project_references('case', 'work_issue_id', 'concat_ws('' '', title, summary, fields::text)');
+--> statement-breakpoint
+-- Backfill: the projection is complete on upgrade. Only text containing a
+-- project link is scanned (trigram-indexed where available).
+INSERT INTO issue_project_references (company_id, issue_id, source_kind, source_id, project_id)
+SELECT company_id, id, 'issue', id, candidate FROM issues CROSS JOIN LATERAL unnest(array_remove(
+	paperclip_project_reference_candidates(CASE WHEN title || coalesce(description, '') ILIKE '%project://%' THEN title || ' ' || coalesce(description, '') END)
+	|| project_id, NULL)) candidate
+UNION SELECT company_id, issue_id, 'comment', id, candidate FROM issue_comments
+	CROSS JOIN LATERAL unnest(paperclip_project_reference_candidates(body)) candidate WHERE deleted_at IS NULL AND body ILIKE '%project://%'
+UNION SELECT l.company_id, l.issue_id, 'document', d.id, candidate FROM issue_documents l JOIN documents d ON d.id = l.document_id
+	CROSS JOIN LATERAL unnest(paperclip_project_reference_candidates(d.latest_body)) candidate WHERE d.latest_body ILIKE '%project://%'
+UNION SELECT company_id, issue_id, 'annotation', id, candidate FROM document_annotation_comments
+	CROSS JOIN LATERAL unnest(paperclip_project_reference_candidates(body)) candidate WHERE issue_id IS NOT NULL AND body ILIKE '%project://%'
+UNION SELECT company_id, issue_id, 'interaction', id, candidate FROM issue_thread_interactions
+	CROSS JOIN LATERAL unnest(paperclip_project_reference_candidates(concat_ws(' ', title, summary, payload::text, result::text))) candidate
+UNION SELECT company_id, work_issue_id, 'case', id, candidate FROM cases
+	CROSS JOIN LATERAL unnest(paperclip_project_reference_candidates(concat_ws(' ', title, summary, fields::text))) candidate WHERE work_issue_id IS NOT NULL;
