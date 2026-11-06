@@ -28,6 +28,17 @@ export interface WaveOptions {
   budgetCents: number;
   /** Poll interval for the observer, 2–5 s per plan §5. */
   pollMs: number;
+  /** `--env daytona`: the immutable runner image (registry/repository@sha256:…). */
+  daytonaImage?: string;
+  /** `--env daytona`: vCPU per sandbox (see seed.ts chaosDaytonaShape). */
+  daytonaCpu?: number;
+  /**
+   * Known product signatures this wave deliberately masks. "rc06" keeps the
+   * company budget amount but disables its hard stop, so a stuck
+   * accounting row (RC-06) cannot wedge every later task. Spend is still
+   * recorded per wave. Absent on plans written before masks existed.
+   */
+  masks?: string[];
 }
 
 export interface TaskPlan {
@@ -161,6 +172,8 @@ export interface RestSweep {
   activeRuns: string[];
   runningWorkspaceOperations: string[];
   activeRecoveryAction: boolean;
+  /** `--env daytona`: orphaned sandboxes and held leases belonging to this task's runs. */
+  daytonaLeaks?: string[];
   error: string | null;
 }
 

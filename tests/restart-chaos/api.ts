@@ -33,4 +33,8 @@ export class ChaosApi {
   post<T>(route: string, body?: unknown, timeoutMs?: number) { return this.request<T>("POST", route, body ?? {}, timeoutMs); }
   put<T>(route: string, body?: unknown) { return this.request<T>("PUT", route, body ?? {}); }
   patch<T>(route: string, body?: unknown) { return this.request<T>("PATCH", route, body ?? {}); }
+  async delete(route: string, options?: { allowNotFound?: boolean; timeout?: number }): Promise<void> {
+    try { await this.request<unknown>("DELETE", route, undefined, options?.timeout); }
+    catch (error) { if (!(options?.allowNotFound && error instanceof ChaosApiError && error.status === 404)) throw error; }
+  }
 }

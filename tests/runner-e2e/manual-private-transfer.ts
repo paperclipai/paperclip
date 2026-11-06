@@ -12,12 +12,17 @@ import { BoundedHistoryPublisher } from "./history-budget.js";
 import { privateArtifactKey, retainPrivateTransfer, transferPrivateArtifact, verifyPrivateHistory, type PrivateEvidenceCompleteness } from "./private-history.js";
 import { authorizeManualPrivateEvidence, MANUAL_PRIVATE_PROTOCOL, manualCellKind, manualPrivateSessionPolicy } from "./manual-private-retention.js";
 import { shippedChatEvidenceAuthority } from "./testops-chat-admission.js";
+import { manualDispatchEvidenceAuthority } from "./manual-dispatch-authority.js";
 
 const hash = (bytes: string | Buffer) => createHash("sha256").update(bytes).digest("hex");
 function request(env: NodeJS.ProcessEnv) {
   const ids = JSON.parse(env.MANUAL_PRIVATE_IDS ?? "null") as string[];
-  const approval = env.PAPERCLIP_TESTOPS_CHAT_MAIN_ADMISSION !== undefined ? shippedChatEvidenceAuthority(env) : authorizeManualPrivateEvidence({ workflowSha: env.GITHUB_SHA ?? "", targetSha: env.TARGET_SHA ?? "",
-    runId: env.GITHUB_RUN_ID ?? "", attempt: env.GITHUB_RUN_ATTEMPT ?? "", executionIds: ids }, env.MANUAL_PRIVATE_APPROVALS_JSON ?? "");
+  const approval: { workflowSha: string; targetSha: string; runId: string; attempt: string; executionIds: readonly string[]; approvalSha256: string;
+    launchSha256?: string; launchBinding?: "dispatcher" } =
+    env.PAPERCLIP_TESTOPS_CHAT_MAIN_ADMISSION !== undefined ? shippedChatEvidenceAuthority(env)
+      : env.PAPERCLIP_MANUAL_DISPATCH_AUTHORITY !== undefined ? manualDispatchEvidenceAuthority(env)
+        : authorizeManualPrivateEvidence({ workflowSha: env.GITHUB_SHA ?? "", targetSha: env.TARGET_SHA ?? "",
+          runId: env.GITHUB_RUN_ID ?? "", attempt: env.GITHUB_RUN_ATTEMPT ?? "", executionIds: ids }, env.MANUAL_PRIVATE_APPROVALS_JSON ?? "");
   return { ids, approval, bucket: env.RUNNER_E2E_PRIVATE_HISTORY_S3_BUCKET ?? "" };
 }
 async function output(name: string, value: string) {
@@ -30,13 +35,15 @@ async function prepare(env: NodeJS.ProcessEnv) {
   const target = await realpath(env.TARGET_ROOT ?? ""), trusted = path.resolve(import.meta.dirname, "../..");
   if (target === trusted) throw new Error("Trusted transfer code must be separate from target checkout");
   const launch = await readFile(path.join(target, "tests/runner-e2e/launch.ts"));
-  if (hash(launch) !== approval.launchSha256) throw new Error("Target evidence launcher differs from protected approval");
+  const targetLaunchSha256 = hash(launch);
+  if (approval.launchBinding !== "dispatcher" && targetLaunchSha256 !== approval.launchSha256)
+    throw new Error("Target evidence launcher differs from protected approval");
   for (const file of ["manual-private-handoff.ts", "manual-private-retention.ts", "manual-private-report-assets.ts"]) {
     if (!(await readFile(path.join(target, "tests/runner-e2e", file))).equals(await readFile(path.join(trusted, "tests/runner-e2e", file))))
       throw new Error("Target private evidence protocol differs from trusted implementation");
   }
   const temporary = await realpath(env.RUNNER_TEMP ?? ""), root = await mkdtemp(path.join(temporary, "manual-private-evidence-"));
-  await writeFile(path.join(root, "identity.json"), JSON.stringify({ ...approval, executionIds: [id], root, status: "pending" }), { mode: 0o600, flag: "wx" });
+  await writeFile(path.join(root, "identity.json"), JSON.stringify({ ...approval, launchSha256: targetLaunchSha256, executionIds: [id], root, status: "pending" }), { mode: 0o600, flag: "wx" });
   await output("root", root); await output("session_policy", JSON.stringify(manualPrivateSessionPolicy({ bucket, runId: approval.runId, executionIds: [id], mode: "cell-write" })));
 }
 function requireSession(env: NodeJS.ProcessEnv) {

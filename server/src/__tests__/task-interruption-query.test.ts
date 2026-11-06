@@ -4,6 +4,7 @@ import { createRunSecretRedactionRegistry } from "../services/run-secret-redacti
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { agents, agentWakeupRequests, companies, createDb, applyPendingMigrations, heartbeatRuns, issues, nativeRunFinalizations, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS } from "@paperclipai/db";
 import { taskInterruptionPresentation, taskInterruptionPresentations } from "../services/task-interruption-presentation.js";
+import { readNativeSessionResumptionAgent } from "../services/native-runtime/native-session-resumption-admission.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { captureInterruptionQuery, seedInterruptionFixture } from "./helpers/task-interruption-fixture.js";
@@ -39,11 +40,77 @@ describe.skipIf(!support.supported)("task interruption latest run query", () => 
       await taskInterruptionPresentation(db, issue)]) {
       expect(presentation).toMatchObject({ state: "retry_scheduled", canRetry: false, nextRetryAt: resumeAt.toISOString() });
     }
+    // The coordinator also pushes nextAttemptAt while it defers an ineligible
+    // candidate. Those deferrals, or one far past the failure, never hide Retry.
+    const otherAgentId = randomUUID();
+    await db.insert(agents).values({ id: otherAgentId, companyId, name: "Other agent", adapterType: "paperclip_runner" });
+    const admission = async () => {
+      const [currentIssue] = await db.select().from(issues).where(eq(issues.id, issue.id));
+      const [currentRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+      const [coordinator] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, runId));
+      return readNativeSessionResumptionAgent(db, { issue: currentIssue!, run: currentRun!, coordinator: coordinator! });
+    };
+    expect(await admission()).not.toBeNull();
+    const otherRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: otherRunId, companyId, agentId: otherAgentId, status: "cancelled",
+      finishedAt: new Date(Date.now() - 60_000), createdAt: new Date(Date.now() - 60 * 60_000) });
+    const terminatedManagerId = randomUUID();
+    await db.insert(agents).values({ id: terminatedManagerId, companyId, name: "Former manager",
+      adapterType: "paperclip_runner", status: "terminated" });
+    for (const [table, change, restore] of [
+      ["issue", { assigneeAgentId: otherAgentId }, { assigneeAgentId: agentId }],
+      ["issue", { status: "blocked" }, { status: "in_progress" }],
+      ["issue", { executionRunId: otherRunId }, { executionRunId: null }],
+      ["issue", { checkoutRunId: otherRunId }, { checkoutRunId: null }],
+      ["run", { contextSnapshot: { nativeQuestionCancellation: { requestId: "q" } } }, { contextSnapshot: {} }],
+      // Invokability is more than status: an idle agent under a terminated manager is refused.
+      ["agent", { reportsTo: terminatedManagerId }, { reportsTo: null }],
+    ] as const) {
+      if (table === "issue") await db.update(issues).set(change).where(eq(issues.id, issue.id));
+      else if (table === "run") await db.update(heartbeatRuns).set(change).where(eq(heartbeatRuns.id, runId));
+      else await db.update(agents).set(change).where(eq(agents.id, agentId));
+      // The scheduler would defer this candidate, so the task offers Retry.
+      if (table !== "run") expect(await admission()).toBeNull();
+      expect((await taskInterruptionPresentations(db, companyId, [issue])).get(issue.id))
+        .toMatchObject({ state: "failed", canRetry: true });
+      if (table === "issue") await db.update(issues).set(restore).where(eq(issues.id, issue.id));
+      else if (table === "run") await db.update(heartbeatRuns).set(restore).where(eq(heartbeatRuns.id, runId));
+      else await db.update(agents).set(restore).where(eq(agents.id, agentId));
+    }
+    expect(await admission()).not.toBeNull();
+    // A provider cooldown can schedule the resume an hour out; it stays visible.
+    const cooldown = new Date(Date.now() + 60 * 60_000);
+    await db.update(nativeRunFinalizations).set({ nextAttemptAt: cooldown }).where(eq(nativeRunFinalizations.runId, runId));
+    expect((await taskInterruptionPresentations(db, companyId, [issue])).get(issue.id))
+      .toMatchObject({ state: "retry_scheduled", canRetry: false, nextRetryAt: cooldown.toISOString() });
     // Exhausted recovery is terminal: exactly one Retry returns.
     await db.update(nativeRunFinalizations).set({ phase: "terminal_failure", nextAttemptAt: null })
       .where(eq(nativeRunFinalizations.runId, runId));
     expect((await taskInterruptionPresentations(db, companyId, [issue])).get(issue.id))
       .toMatchObject({ state: "failed", canRetry: true });
+  });
+
+  it("decides several pending native resumes in one list read", async () => {
+    const companyId = randomUUID(), agentId = randomUUID(), otherAgentId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Resuming list", issuePrefix: `L${companyId.slice(0, 7)}` });
+    await db.insert(agents).values([{ id: agentId, companyId, name: "Resuming agent", adapterType: "paperclip_runner" },
+      { id: otherAgentId, companyId, name: "Other agent", adapterType: "paperclip_runner" }]);
+    const resumeAt = new Date(Date.now() + 30_000);
+    const list = [];
+    for (let index = 0; index < 6; index++) {
+      const [issue] = await db.insert(issues).values({ companyId, title: `Resume ${index}`, status: "in_progress",
+        assigneeAgentId: index % 2 ? otherAgentId : agentId }).returning();
+      const runId = randomUUID();
+      await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, nativeIssueId: issue.id, scopeKind: "issue",
+        status: "failed", runtimeMode: "native", errorCode: "native_session_interrupted", finishedAt: new Date() });
+      await db.insert(nativeRunFinalizations).values({ companyId, issueId: issue.id, runId, phase: "retryable_failure",
+        attempt: 1, nextAttemptAt: resumeAt });
+      list.push(issue);
+    }
+    const result = await taskInterruptionPresentations(db, companyId, list);
+    list.forEach((issue, index) => expect(result.get(issue.id)).toMatchObject(index % 2
+      ? { state: "failed", canRetry: true }
+      : { state: "retry_scheduled", canRetry: false, nextRetryAt: resumeAt.toISOString() }));
   });
 
   it("redacts workspace preparation errors on task detail and list reads", async () => {

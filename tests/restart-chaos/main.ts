@@ -14,6 +14,8 @@ import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { ChaosApi, isSocketTypeOfServiceRace } from "./api.js";
 import { CREDENTIAL_FOR_ADAPTER, parseCommand, replayCommand, waveIdFor } from "./config.js";
+import { assertControllerMatchesImage, prepareDaytonaImageArtifacts } from "./daytona-image.js";
+import { DaytonaWaveSweeper, leaksForTask, unattributedLeaks, type DaytonaSweepResult } from "./daytona-sweep.js";
 import { knownSecretValues, writeEvidenceBundle } from "./evidence.js";
 import { gradeTask } from "./grader.js";
 import { appendLedger, ledgerLine, writeSummary, type LedgerLine } from "./ledger.js";
@@ -48,8 +50,41 @@ async function loadPlan(): Promise<{ plan: WavePlan; keep: boolean }> {
   return { plan: planWave(waveIdFor(command.options.seed), command.options), keep: command.keep };
 }
 
+function run(command: string, args: string[], cwd: string, label: string) {
+  const result = spawnSync(command, args, { cwd, stdio: "inherit" });
+  if (result.status !== 0) throw new Error(`${label} failed (${command} ${args.join(" ")})`);
+}
+
+/** The bundled Daytona plugin is outside the root workspace; prepare it as CI does. */
+function ensureDaytonaPlugin() {
+  const root = path.join(repositoryRoot, "packages/plugins/sandbox-providers/daytona");
+  if (["dist/manifest.js", "dist/worker.js", "node_modules/@daytonaio/sdk"].every(file => existsSync(path.join(root, file)))) return;
+  run("pnpm", ["install", "--ignore-workspace", "--frozen-lockfile", "--ignore-scripts"], root, "Daytona plugin install");
+  run(process.execPath, [path.join(repositoryRoot, "scripts/link-plugin-dev-sdk.mjs")], repositoryRoot, "Plugin SDK link");
+  run("pnpm", ["--dir", root, "build"], repositoryRoot, "Daytona plugin build");
+}
+
+/**
+ * `--env daytona`: extract the image's Linux runnerd and provider pack (cached
+ * per image digest, no Docker) and refuse to run a controller whose runner
+ * source differs from the image.
+ */
+async function prepareDaytona(plan: WavePlan, timeline: Timeline): Promise<Record<string, string>> {
+  const image = plan.options.daytonaImage!;
+  const artifacts = await prepareDaytonaImageArtifacts({ image, cacheRoot: path.join(resultsRoot, "daytona-images"),
+    log: line => console.info(`[daytona-image] ${line}`) });
+  const { localContentId } = await assertControllerMatchesImage(artifacts, repositoryRoot);
+  timeline.add("daytona_image_matched", { image, contentId: artifacts.contentId, localContentId, sourceRevision: artifacts.sourceRevision,
+    runnerdSha256: artifacts.runnerdSha256, providerPackDigest: artifacts.providerPackDigest, platformManifestDigest: artifacts.platformManifestDigest });
+  ensureDaytonaPlugin();
+  timeline.add("daytona_vcpu_plan", { cpuPerSandbox: plan.options.daytonaCpu, concurrency: plan.options.concurrency,
+    taskVcpu: plan.options.concurrency * (plan.options.daytonaCpu ?? 0) });
+  return { PAPERCLIP_RUNNER_REMOTE_BINARY_PATH: artifacts.runnerdPath, PAPERCLIP_RUNNER_REMOTE_PROVIDER_PACK_PATH: artifacts.providerPackPath };
+}
+
 function preflight(plan: WavePlan) {
-  const missing = [...new Set(plan.tasks.map(task => CREDENTIAL_FOR_ADAPTER[task.adapter]))].filter(key => !process.env[key]);
+  const missing = [...new Set([...plan.tasks.map(task => CREDENTIAL_FOR_ADAPTER[task.adapter]),
+    ...(plan.options.env === "daytona" ? ["DAYTONA_API_KEY"] : [])])].filter(key => !process.env[key]);
   if (missing.length) throw new Error(`Missing credentials ${missing.join(", ")}. Run: set -a; source ~/.secrets; set +a`);
   const runner = process.env.PAPERCLIP_RUNNER_BINARY
     ?? path.join(repositoryRoot, "packages/paperclip-runner/runner/target/debug/paperclip-runnerd");
@@ -71,8 +106,11 @@ async function main(): Promise<number> {
   timeline.add("wave_planned", { waveId: plan.waveId, seed: plan.seed, gitSha, gitDirty, replayOf: plan.replayOf ?? null,
     tasks: plan.tasks.map(task => `${task.taskId}:${task.adapter}/${task.workload}/${task.fault}${task.trigger ? `^${task.trigger}+${task.triggerDelayMs ?? 0}ms` : ""}@${task.fireAfterMs}ms${task.holdMs ? ` hold ${task.holdMs}ms` : ""}`) });
   preflight(plan);
+  const serverEnvironment = plan.options.env === "daytona" ? await prepareDaytona(plan, timeline) : {};
 
   const supervisor = await ChaosSupervisor.create({ repositoryRoot, waveDir, timeline });
+  let sweeper: DaytonaWaveSweeper | null = null;
+  let sandboxSweep: DaytonaSweepResult | null = null;
   let interrupted = false;
   const onSignal = (signal: NodeJS.Signals) => { if (!interrupted) { interrupted = true; timeline.add("harness_interrupted", { signal }); } };
   process.on("SIGINT", onSignal); process.on("SIGTERM", onSignal);
@@ -87,14 +125,31 @@ async function main(): Promise<number> {
     harnessError ??= error;
     interrupted = true;
   });
+  // Spend is read once per wave: after the tasks, or during cleanup when the wave stopped early.
+  let spendTarget: { api: ChaosApi; companyId: string } | null = null;
+  let spendRecorded = false;
+  const recordWaveSpend = async () => {
+    if (!spendTarget || spendRecorded) return;
+    spendRecorded = true;
+    // Each wave owns its company, so all-time spend is exactly this wave, even across a month boundary.
+    const spend = await spendTarget.api.get<Record<string, unknown>>(`/api/companies/${spendTarget.companyId}/costs/summary?period=all`)
+      .catch(error => ({ error: String(error) }));
+    timeline.add("wave_spend", { spend });
+    console.info(`Wave spend: ${JSON.stringify(spend)}`);
+  };
   let faultFailures = 0;
   let faultsQueued = 0;
   try {
-    await supervisor.start();
+    await supervisor.start(serverEnvironment);
     const api = new ChaosApi(supervisor.baseUrl);
-    const lab = await seedChaosLab({ api, env: plan.options.env, adapters: [...new Set(plan.tasks.map(task => task.adapter))],
-      concurrency: plan.options.concurrency, budgetCents: plan.options.budgetCents,
-      fixtureRoot: path.join(supervisor.paths.temporaryRoot, "fixtures"), waveId: plan.waveId, timeline });
+    const lab = await seedChaosLab({ api, env: plan.options.env, daytonaImage: plan.options.daytonaImage, daytonaCpu: plan.options.daytonaCpu,
+      adapters: [...new Set(plan.tasks.map(task => task.adapter))],
+      concurrency: plan.options.concurrency, budgetCents: plan.options.budgetCents, masks: plan.options.masks,
+      fixtureRoot: path.join(supervisor.paths.temporaryRoot, "fixtures"), waveId: plan.waveId, timeline,
+      onEnvironment: owned => {
+        sweeper = new DaytonaWaveSweeper({ apiKey: process.env.DAYTONA_API_KEY!, companyId: owned.companyId, environmentId: owned.environmentId, api });
+      } });
+    spendTarget = { api, companyId: lab.companyId };
     // The instance root holds the secrets master key and the database: oracle code may not read it.
     const protectedRoots = [os.homedir(), supervisor.paths.temporaryRoot, resultsRoot];
     const observers = plan.tasks.map(task => new TaskObserver(task, api, lab, timeline, supervisor, protectedRoots));
@@ -151,10 +206,22 @@ async function main(): Promise<number> {
     // R6: let finalizers settle, then sweep for anything still pending.
     const quietFor = Date.now() - lastDoneAt;
     if (quietFor < QUIET_BEFORE_SWEEP_MS) await delay(QUIET_BEFORE_SWEEP_MS - quietFor);
+    await recordWaveSpend();
     timeline.add("wave_sweep", {});
+    if (sweeper) {
+      sandboxSweep = await (sweeper as DaytonaWaveSweeper).sweep();
+      timeline.add("daytona_sweep", { ...sandboxSweep });
+    }
+    const attributed = new Set<string>();
     const secrets = knownSecretValues();
     for (const observer of observers) {
       observer.record.sweep = await observer.sweep();
+      if (sandboxSweep) {
+        const runIds = new Set(observer.record.samples.flatMap(sample => (sample.runs ?? []).map(run => run.id)));
+        const leaks = leaksForTask(sandboxSweep, runIds, observer.record.issueId);
+        for (const leak of leaks) attributed.add(leak);
+        observer.record.sweep.daytonaLeaks = leaks;
+      }
       let artifacts: OracleArtifacts | null = null;
       if (observer.record.issueId) artifacts = await observer.collectArtifacts().catch(() => null);
       const oracle = artifacts ? observer.definition.grade(observer.plan.nonce, artifacts)
@@ -173,14 +240,45 @@ async function main(): Promise<number> {
         rules: Object.fromEntries(Object.entries(grade.rules).map(([id, rule]) => [id, rule.verdict])), T: grade.T.verdict });
     }
     await writeFile(path.join(waveDir, "faults.json"), `${JSON.stringify(faults, null, 2)}\n`, { mode: 0o600 });
+    // R6 at wave level: a leak no task's runs account for (e.g. the setup probe) still fails the wave.
+    if (sandboxSweep) {
+      const unattributed = unattributedLeaks(sandboxSweep, attributed);
+      if (sandboxSweep.error || unattributed.length) {
+        anyFailure = true;
+        timeline.add("daytona_sweep_wave_leak", { error: sandboxSweep.error, unattributed });
+      }
+    }
   } catch (error) {
     harnessError = error;
     timeline.add("harness_error", { error: error instanceof Error ? error.stack ?? error.message : String(error) });
   } finally {
-    try { await supervisor.stop(); } catch (error) {
-      // Incomplete cleanup is a harness failure; keep the instance for inspection.
+    // Best effort for an interrupted or failed wave; the server may already be down.
+    if (supervisor.serverReady) await recordWaveSpend().catch(() => undefined);
+    // A failure here (for example writing the report) must not skip stopping the controller and Postgres.
+    try { if (sweeper) try {
+      const owned = sweeper as DaytonaWaveSweeper;
+      // An interrupted wave still reports what it leaked before cleanup.
+      sandboxSweep ??= await owned.sweep(0);
+      // Cleanup only through Paperclip; the harness never changes a sandbox.
+      const cleanup = await owned.cleanUp();
+      timeline.add("daytona_cleanup", cleanup);
+      console.info(`Daytona R6 sweep: ${sandboxSweep.liveSandboxes.length} live, ${sandboxSweep.archivedSandboxes.length} archived after release, `
+        + `${sandboxSweep.orphanSandboxes.length} orphaned, `
+        + `${sandboxSweep.heldLeases.length} held leases${sandboxSweep.error ? `, error ${sandboxSweep.error}` : ""}; `
+        + `environment deleted: ${cleanup.environmentDeleted}; still running after cleanup: ${cleanup.remainingSandboxes.join(", ") || "none"}`);
+      // A sandbox neither archived nor destroyed after cleanup is a leak for a person to act on.
+      if (cleanup.remainingSandboxes.length) anyFailure = true;
+      if (cleanup.errors.length) harnessError ??= new Error(`Daytona cleanup incomplete: ${cleanup.errors.join("; ")}`);
+      await writeFile(path.join(waveDir, "sandbox-sweep.json"), `${JSON.stringify({ sweep: sandboxSweep, cleanup }, null, 2)}\n`, { mode: 0o600 });
+    } catch (error) {
       harnessError ??= error;
-      timeline.add("supervisor_stop_failed", { error: String(error) });
+      timeline.add("daytona_cleanup_failed", { error: String(error) });
+    } } finally {
+      try { await supervisor.stop(); } catch (error) {
+        // Incomplete cleanup is a harness failure; keep the instance for inspection.
+        harnessError ??= error;
+        timeline.add("supervisor_stop_failed", { error: String(error) });
+      }
     }
     if (lines.length) {
       await appendLedger(resultsRoot, lines);
