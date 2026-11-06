@@ -431,12 +431,17 @@ describe.skipIf(!recoveryPostgresSupport.supported)("follow-up after a recovered
     await cp(join(root, "control-plane", "control-plane-state.json"), join(epoch, "control-plane", "control-plane-state.json"));
     await writeFile(join(epoch, "runner-state.json"), "{}\n", { mode: 0o600 });
     await mkdir(join(root, "diagnostics"), { mode: 0o700 });
+    // The launch preparation saved for the retired identity.
+    const preparation = JSON.stringify({ schema: "paperclip.runner.launch-preparation-store.v1", entries: [] });
+    await writeFile(join(root, "launch-preparation.json"), preparation, { mode: 0o600 });
     expect(await followUp.start()).toBe(ADMITTED);
     expect(await archivedOwners(root)).toEqual([prior.runId]);
     // Archived epochs belong to the retired lineage; launch inputs stay.
     const [archive] = await readdir(join(root, "continuity-breaks"));
     expect(existsSync(join(root, "continuity-breaks", archive!, "authority-epochs", "epoch-0123456789abcdef01234567"))).toBe(true);
     expect(existsSync(join(root, "authority-epochs"))).toBe(false);
+    expect(await readFile(join(root, "continuity-breaks", archive!, "launch-preparation.json"), "utf8")).toBe(preparation);
+    expect(existsSync(join(root, "launch-preparation.json"))).toBe(false);
     expect(existsSync(join(root, "runtime-context.json"))).toBe(true);
     expect(followUp.logs.join("")).toContain(`Run ${prior.runId} finished without a saved runner checkpoint`);
   }, 60_000);
@@ -447,6 +452,16 @@ describe.skipIf(!recoveryPostgresSupport.supported)("follow-up after a recovered
     const root = await restoreHeldRoot(prior, followUp);
     await writeFile(join(root, "unrecognized-state"), "{}\n");
     expect(await followUp.start()).toBe(stranded("unexpected_root_entry(unrecognized-state)"));
+    expect(followUp.logs.join("")).not.toContain("finished without a saved runner checkpoint");
+  }, 60_000);
+
+  it("keeps a finished owner held by a provider checkpoint and names it as held", async () => {
+    const prior = await seedRecoveredPriorRun();
+    const followUp = await admitFollowUp(prior);
+    const root = await restoreHeldRoot(prior, followUp);
+    await mkdir(join(root, "cursor-cloud"), { mode: 0o700 });
+    await writeFile(join(root, "unrecognized-state"), "{}\n");
+    expect(await followUp.start()).toBe(stranded("held_root_entry(cursor-cloud)"));
     expect(followUp.logs.join("")).not.toContain("finished without a saved runner checkpoint");
   }, 60_000);
 

@@ -39,7 +39,8 @@ export const NATIVE_SESSION_ROOT_LAUNCH_ENTRIES: readonly string[] = [
  * Known entries that are evidence a finished-owner proof must never override:
  * a plugin Runner receipt, in-flight backup maintenance, and Cursor Cloud's
  * own checkpoint (archived only by its provider runtime). Retirement refuses
- * while any of them is present.
+ * while any of them is present and reports it as `held_root_entry`, apart from
+ * unclassified drift (`unexpected_root_entry`).
  */
 export const NATIVE_SESSION_ROOT_HELD_ENTRIES: readonly string[] = [
   "plugin-runner-state.json",
