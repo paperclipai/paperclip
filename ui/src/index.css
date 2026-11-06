@@ -3567,6 +3567,11 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
 .announcement-well {
   animation: announcement-enter var(--motion-duration-fast) var(--motion-ease-standard) both;
 }
+/* Docked in the narrow sidebar column: keep the image band compact so the
+   sidebar navigation keeps most of its height. */
+.announcement-well[data-placement="sidebar"] {
+  --announcement-image-height: var(--announcement-image-mobile-height);
+}
 @keyframes announcement-enter {
   from { opacity: 0; }
   to { opacity: 1; }
