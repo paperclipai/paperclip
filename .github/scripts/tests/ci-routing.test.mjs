@@ -282,9 +282,9 @@ test("path scope skips full CI for a single-PR stack that only touches release n
   }).full_ci, "false");
 });
 
-function routingPlacement(vars = {}, github = {}) {
+function routingPlacement(vars = {}, github = {}, placementJobs = jobs) {
   const source = "[34892728]";
-  const expression = jobs.match(/^ {4}runs-on: \$\{\{ (.+) \}\}$/m)?.[1];
+  const expression = placementJobs.match(/^ {4}runs-on: \$\{\{ (.+) \}\}$/m)?.[1];
   assert.ok(expression, "routing expression is missing");
   return vm.runInNewContext(expression, {
     vars: {
@@ -330,3 +330,46 @@ for (const [name, vars, github, expected = "ubuntu-latest"] of placementCases) {
     assert.equal(routingPlacement(vars, github), expected);
   });
 }
+
+const catalogWorkflow = readFileSync(new URL("../../workflows/chat-catalog-testops.yml", import.meta.url), "utf8");
+const catalogAuthorize = catalogWorkflow.split("  authorize:\n")[1].split("\n  select:\n")[0];
+const catalogContext = {
+  event_name: "workflow_dispatch",
+  workflow_ref: "paperclipai/paperclip/.github/workflows/chat-catalog-testops.yml@refs/heads/master",
+  actor: "dotta",
+  triggering_actor: "dotta",
+  run_attempt: "1",
+};
+
+const catalogPlacementCases = [
+  ["approved first manual master attempt", {}, awsRunner],
+  ["foreign repository", { repository: "other/paperclip" }],
+  ["foreign repository ID", { repository_id: "999" }],
+  ["untrusted branch", { ref: "refs/heads/other" }],
+  ["tag", { ref: "refs/tags/master" }],
+  ["pull request", { event_name: "pull_request" }],
+  ["push", { event_name: "push" }],
+  ["different workflow", { workflow_ref: "paperclipai/paperclip/.github/workflows/ci-routing.yml@refs/heads/master" }],
+  ["branch workflow", { workflow_ref: "paperclipai/paperclip/.github/workflows/chat-catalog-testops.yml@refs/heads/other" }],
+  ["unapproved actor", { actor_id: "999" }],
+  ["partial actor ID", { actor_id: "4892728" }],
+  ["different triggering actor", { triggering_actor: "other" }],
+  ["missing triggering actor", { triggering_actor: "" }],
+  ["rerun", { run_attempt: "2" }],
+  ["missing attempt", { run_attempt: "" }],
+];
+
+for (const [name, overrides, expected = "ubuntu-latest"] of catalogPlacementCases) {
+  test(`catalog authorize placement before allocation: ${name}`, () => {
+    assert.equal(routingPlacement({}, { ...catalogContext, ...overrides }, catalogAuthorize), expected);
+  });
+}
+
+test("catalog placement retains downstream jobs and actual dispatch guard", () => {
+  assert.match(catalogWorkflow.split("  select:\n")[1].split("\n  build:\n")[0], /^ {4}runs-on: ubuntu-latest$/m);
+  assert.match(catalogAuthorize, /ref: \$\{\{ github\.sha \}\}/);
+  assert.match(catalogAuthorize, /persist-credentials: false/);
+  assert.match(catalogAuthorize, /TESTOPS_ALLOWED_ACTOR_IDS: \$\{\{ vars\.RUNNER_E2E_ALLOWED_ACTOR_IDS \}\}/);
+  assert.match(catalogAuthorize, /run: node tests\/runner-e2e\/chat-completion-testops-cli\.mjs guard/);
+  assert.doesNotMatch(catalogAuthorize, /secrets\.|environment:/);
+});

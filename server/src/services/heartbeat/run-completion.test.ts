@@ -16,7 +16,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { appendHeartbeatRunEvent } from "../heartbeat-run-events.js";
 import { createNativeRunLogCoverageVerifier, formatNativeRunLogEvent } from "../native-runtime/native-run-log-export.js";
 import type { Db } from "@paperclipai/db";
-import { activityLog, agents, agentWakeupRequests, budgetReservations, caseHandoffs, cases, companies, completionContracts, costEvents, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRuns, heartbeatRunEvents, issues, nativeRunFinalizations } from "@paperclipai/db";
+import { activityLog, agents, agentWakeupRequests, budgetReservations, caseHandoffs, cases, companies, completionContracts, costEvents, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRuns, heartbeatRunEvents, issueRecoveryActions, issues, nativeRunFinalizations } from "@paperclipai/db";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
@@ -26,9 +26,17 @@ import { UnresolvedWorkspaceBaseRefError } from "../workspace-runtime.js";
 import { LegacyControllerLeaseLostError } from "../legacy-controller-lease.js";
 import { requestedRunCancellation } from "../run-cancellation.js";
 import { ProjectAccessDeniedError } from "../project-access-denial.js";
-import { RemoteWorkspaceOperationTimeoutError, RemoteWorkspacePreparationTimeoutError } from "../remote-workspace-transport.js";
+import { RemoteWorkspaceOperationError, RemoteWorkspaceOperationTimeoutError, RemoteWorkspacePreparationTimeoutError, RemoteWorkspaceRestoreError } from "../remote-workspace-transport.js";
+import { EnvironmentRunError } from "../environment-run-orchestrator.js";
+import { ReusableSandboxResumeError } from "../reusable-sandbox-resume-error.js";
+import { PluginWorkerUnavailableError } from "../plugin-worker-unavailable-error.js";
+import { environmentTaskErrorCodeData, JsonRpcCallError, PluginEnvironmentTaskError, PluginWorkspaceOperationError, workspaceOperationErrorData } from "@paperclipai/plugin-sdk";
+import { RUNNER_REVISION_MISMATCH_RETRY } from "../runner-revision-mismatch.js";
+import { workspaceProviderCallFailure } from "../workspace-provider-failure.js";
+import { logger } from "../../middleware/logger.js";
+import { unprocessable } from "../../errors.js";
 import { createHeartbeatLifecycle, type HeartbeatLifecycleDependencies } from "./run-lifecycle.js";
-import { createHeartbeatRunPreparation, ConfigurationIncompleteFailure } from "./run-preparation.js";
+import { createHeartbeatRunPreparation, ConfigurationIncompleteFailure, classifyManagedProjectAuthFailure } from "./run-preparation.js";
 import { createHeartbeatRunState, getAdapterSessionCodec } from "./run-state.js";
 import { buildEffectiveRunSessionConfigMetadata } from "./workspaces.js";
 import { createHeartbeatRunCompletion, type CompleteHeartbeatRunInput, type FailHeartbeatRunInput, type HeartbeatRunCompletionDependencies } from "./run-completion.js";
@@ -924,6 +932,196 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
       expect(failed.resultJson).toMatchObject({ executionRecovery: { kind: "bootstrap", providerWorkStarted: false } });
       expect(f.deps.scheduleBoundedRetryForRun).toHaveBeenCalledWith(expect.objectContaining({ id: f.run.id }), f.agent);
     } else expect(f.deps.scheduleBoundedRetryForRun).not.toHaveBeenCalled();
+  });
+
+  it.each(["fresh", "started", "untrusted", "retained"] as const)("routes a %s preserved sandbox resume failure through bounded bootstrap recovery", async scenario => {
+    const f = await fixture({ runtimeMode: scenario === "retained" ? "native" : "legacy" });
+    const providerError = Object.assign(new Error("Sandbox abc is not in a valid state: stopping /home/daytona/secret"), { statusCode: 400 });
+    const resume = new ReusableSandboxResumeError({ provider: "daytona", providerLeaseId: "lease-1", cause: providerError });
+    // The orchestrator wraps the runtime error, exactly as staging recorded it.
+    const wrapped = new EnvironmentRunError("lease_acquire_failed",
+      `Failed to acquire lease for environment "Paperclip Sandbox" (sandbox): ${resume.message}`, { cause: resume });
+    const error = scenario === "untrusted" ? new Error(wrapped.message) : wrapped;
+    f.deps.scheduleBoundedRetryForRun.mockResolvedValueOnce({ outcome: "not_scheduled", reason: "Fixture scheduler boundary", issueId: null });
+    await f.completion.failRunSetup(f.setup(error, scenario === "started"));
+    const failed = await read(f.run.id);
+    expect(failed).toMatchObject({ status: "failed", errorCode: scenario === "fresh" ? "reusable_sandbox_resume_failed" : "setup_failed" });
+    // The closed-label cause is recorded; provider text never is.
+    expect(failed.error).toContain("cause=provider_error status=400");
+    expect(failed.error).not.toContain("/home/daytona");
+    if (scenario === "fresh") {
+      expect(failed.resultJson).toMatchObject({ executionRecovery: { kind: "bootstrap", providerWorkStarted: false } });
+      expect(f.deps.scheduleBoundedRetryForRun).toHaveBeenCalledWith(expect.objectContaining({ id: f.run.id }), f.agent);
+    } else expect(f.deps.scheduleBoundedRetryForRun).not.toHaveBeenCalled();
+  });
+
+  it.each(["fresh", "started", "untrusted", "retained"] as const)("routes a %s stopped plugin worker refusal through bounded bootstrap recovery", async scenario => {
+    const f = await fixture({ runtimeMode: scenario === "retained" ? "native" : "legacy" });
+    const refusal = new PluginWorkerUnavailableError({ pluginId: "plugin-1", workerStatus: "stopped",
+      message: 'Cannot call "environmentExecute" — worker for "plugin-1" is stopped' });
+    const error = scenario === "untrusted" ? new Error(refusal.message)
+      : new EnvironmentRunError("workspace_realization_failed", refusal.message, { cause: refusal });
+    f.deps.scheduleBoundedRetryForRun.mockResolvedValueOnce({ outcome: "not_scheduled", reason: "Fixture scheduler boundary", issueId: null });
+    await f.completion.failRunSetup(f.setup(error, scenario === "started"));
+    const failed = await read(f.run.id);
+    expect(failed).toMatchObject({ status: "failed", errorCode: scenario === "fresh" ? "plugin_worker_unavailable" : "setup_failed" });
+    if (scenario === "fresh") {
+      expect(failed.resultJson).toMatchObject({ executionRecovery: { kind: "bootstrap", providerWorkStarted: false } });
+      expect(f.deps.scheduleBoundedRetryForRun).toHaveBeenCalledWith(expect.objectContaining({ id: f.run.id }), f.agent);
+    } else expect(f.deps.scheduleBoundedRetryForRun).not.toHaveBeenCalled();
+  });
+
+  const runnerMismatch = () => new JsonRpcCallError({ code: -32002, message: "The installed Runner does not match the expected revision",
+    data: environmentTaskErrorCodeData(new PluginEnvironmentTaskError("runner_revision_mismatch")) });
+
+  it.each(["fresh", "wrapped", "started", "untrusted", "retained"] as const)("waits for the Runner update after a %s Runner mismatch", async scenario => {
+    const f = await fixture({ runtimeMode: scenario === "retained" ? "native" : "legacy" });
+    const refusal = runnerMismatch();
+    const error = scenario === "untrusted" ? new Error(refusal.message)
+      : scenario === "wrapped" ? new Error("Plugin Runner task failed", { cause: refusal })
+      : classifyManagedProjectAuthFailure(refusal, f.agent.id);
+    f.deps.scheduleBoundedRetryForRun.mockResolvedValueOnce({ outcome: "not_scheduled", reason: "Fixture scheduler boundary", issueId: null });
+    await f.completion.failRunSetup(f.setup(error, scenario === "started"));
+    const failed = await read(f.run.id);
+    const retried = scenario === "fresh" || scenario === "wrapped";
+    expect(failed).toMatchObject({ status: "failed", errorCode: retried ? "runner_revision_mismatch" : "setup_failed" });
+    expect(failed.resultJson).not.toHaveProperty("configurationIncomplete");
+    if (retried) {
+      expect(failed.resultJson).toMatchObject({ executionRecovery: { kind: "bootstrap", providerWorkStarted: false } });
+      expect(f.deps.scheduleBoundedRetryForRun).toHaveBeenCalledWith(expect.objectContaining({ id: f.run.id }), f.agent, RUNNER_REVISION_MISMATCH_RETRY);
+    } else expect(f.deps.scheduleBoundedRetryForRun).not.toHaveBeenCalled();
+  });
+
+  it("waits for the Runner update on an answered interaction instead of its two-attempt continuation retry", async () => {
+    const f = await fixture({ contextSnapshot: { interactionId: "interaction-1", interactionStatus: "answered", interactionKind: "ask_user_questions",
+      mutation: "interaction", wakeReason: "issue_commented" } });
+    f.deps.scheduleBoundedRetryForRun.mockResolvedValueOnce({ outcome: "not_scheduled", reason: "Fixture scheduler boundary", issueId: null });
+    await f.completion.failRunSetup(f.setup(runnerMismatch()));
+    expect(await read(f.run.id)).toMatchObject({ status: "failed", errorCode: "runner_revision_mismatch" });
+    expect(f.deps.scheduleBoundedRetryForRun).toHaveBeenCalledWith(expect.objectContaining({ id: f.run.id }), f.agent, RUNNER_REVISION_MISMATCH_RETRY);
+    expect(f.deps.scheduleInteractionContinuationInfrastructureRetryIfEligible).not.toHaveBeenCalled();
+  });
+
+  it("records a workspace provider's reason on the run and in the setup failure log without retrying", async () => {
+    const f = await fixture();
+    const logged = vi.spyOn(logger, "error");
+    onTestFinished(() => logged.mockRestore());
+    const rejection = new JsonRpcCallError({ code: -32002, message: "Invalid runtime computer connection",
+      data: workspaceOperationErrorData(new PluginWorkspaceOperationError("runtime_connection_invalid")) });
+    await f.completion.failRunSetup(f.setup(workspaceProviderCallFailure(rejection)));
+    const failed = await read(f.run.id);
+    expect(failed).toMatchObject({ status: "failed", errorCode: "setup_failed",
+      error: "The selected runtime's saved connection is invalid; reprovision the runtime before retrying",
+      resultJson: { workspaceProviderFailure: { kind: "provider", reason: "runtime_connection_invalid", retryable: false } } });
+    expect(JSON.stringify(failed)).not.toContain("Invalid runtime computer connection");
+    expect(f.deps.scheduleBoundedRetryForRun).not.toHaveBeenCalled();
+    const setupLog = logged.mock.calls.find(call => call[1] === "heartbeat execution setup failed");
+    expect(setupLog?.[0]).toMatchObject({ runId: f.run.id, errorCode: "setup_failed",
+      workspaceProviderFailure: { kind: "provider", reason: "runtime_connection_invalid", retryable: false } });
+  });
+
+  it("retries a workspace operation the stopped provider worker never received", async () => {
+    const f = await fixture();
+    const refusal = new PluginWorkerUnavailableError({ pluginId: "plugin-1", workerStatus: "stopped",
+      message: 'Cannot call "workspaceOperation" — worker for "plugin-1" is stopped' });
+    f.deps.scheduleBoundedRetryForRun.mockResolvedValueOnce({ outcome: "not_scheduled", reason: "Fixture scheduler boundary", issueId: null });
+    await f.completion.failRunSetup(f.setup(workspaceProviderCallFailure(refusal)));
+    expect(await read(f.run.id)).toMatchObject({ status: "failed", errorCode: "plugin_worker_unavailable",
+      error: "Workspace storage provider is not running; retry the same workspace",
+      resultJson: { workspaceProviderFailure: { kind: "worker_unavailable", reason: null, retryable: true } } });
+    expect(f.deps.scheduleBoundedRetryForRun).toHaveBeenCalledWith(expect.objectContaining({ id: f.run.id }), f.agent);
+  });
+
+  it("keeps a found project authentication conflict a configuration gap that blocks for the board", async () => {
+    const f = await fixture();
+    const conflict = unprocessable("This agent's managed AI connection conflicts with project authentication settings in .claude/settings.json.",
+      { code: "ai_connection_incompatible" });
+    await f.completion.failRunSetup(f.setup(classifyManagedProjectAuthFailure(conflict, f.agent.id)));
+    expect(await read(f.run.id)).toMatchObject({ status: "failed", errorCode: "configuration_incomplete",
+      resultJson: { configurationIncomplete: { reason: "ai_connection_incompatible", actionUrl: `/agents/${f.agent.id}/runtime` } } });
+    expect(f.deps.scheduleBoundedRetryForRun).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["an unavailable Runner identity", new Error("Runner identity unavailable")],
+    ["an unreachable execution host", Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" })],
+    ["another 422", unprocessable("Select a saved AI account", { code: "ai_connection_busy" })],
+  ])("does not report %s as a project authentication conflict", async (_name, error) => {
+    const f = await fixture();
+    const classified = classifyManagedProjectAuthFailure(error, f.agent.id);
+    expect(classified).toBe(error);
+    await f.completion.failRunSetup(f.setup(classified));
+    const failed = await read(f.run.id);
+    expect(failed.errorCode).not.toBe("configuration_incomplete");
+    expect(failed.resultJson).not.toHaveProperty("configurationIncomplete");
+  });
+
+  it("routes a lease acquisition refused by a stopped provider worker through bounded bootstrap recovery", async () => {
+    const f = await fixture();
+    const refusal = new PluginWorkerUnavailableError({ pluginId: "plugin-1", workerStatus: null,
+      message: 'Sandbox provider "daytona" is installed via plugin "paperclip.daytona-sandbox-provider", but its worker is not running.' });
+    const wrapped = new EnvironmentRunError("lease_acquire_failed",
+      `Failed to acquire lease for environment "Paperclip Sandbox" (sandbox): ${refusal.message}`, { cause: refusal });
+    f.deps.scheduleBoundedRetryForRun.mockResolvedValueOnce({ outcome: "not_scheduled", reason: "Fixture scheduler boundary", issueId: null });
+    await f.completion.failRunSetup(f.setup(wrapped));
+    expect(await read(f.run.id)).toMatchObject({ status: "failed", errorCode: "plugin_worker_unavailable",
+      resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } } });
+    expect(f.deps.scheduleBoundedRetryForRun).toHaveBeenCalledWith(expect.objectContaining({ id: f.run.id }), f.agent);
+  });
+
+  it.each(["retried", "exhausted", "refused", "started", "in progress"] as const)("names a %s saved workspace restore failure and leaves recovery", async scenario => {
+    const f = await fixture();
+    const [issue] = await db.insert(issues).values({ companyId: f.run.companyId, title: "Parent task", status: scenario === "in progress" ? "in_progress" : "blocked",
+      assigneeAgentId: f.agent.id }).returning();
+    await db.update(heartbeatRuns).set({ issueId: issue.id, contextSnapshot: { issueId: issue.id } }).where(eq(heartbeatRuns.id, f.run.id));
+    const sandboxCause = scenario === "refused"
+      ? "remote_workspace_operation_failed: operation=restore exit=1; remote_workspace_restore_failed: stage=inspect_root reason=occupied_root"
+      : "remote_workspace_operation_failed: operation=restore exit=1; remote_workspace_restore_failed: stage=extract code=EIO exit=1";
+    const error = new RemoteWorkspaceRestoreError("sandbox_restore", scenario !== "refused", new RemoteWorkspaceOperationError(sandboxCause));
+    if (scenario === "retried") f.deps.scheduleBoundedRetryForRun.mockResolvedValueOnce({ outcome: "scheduled" } as never);
+    else f.deps.scheduleBoundedRetryForRun.mockResolvedValueOnce({ outcome: "retry_exhausted", attempt: 3, maxAttempts: 2 } as never);
+    await f.completion.failRunSetup(f.setup(error, scenario === "started"));
+    const failed = await read(f.run.id);
+    // The run names the restore step and the sandbox step instead of a bare exit status.
+    expect(failed.error).toBe(`remote_workspace_restore_failed: step=sandbox_restore; ${sandboxCause}`);
+    const actions = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issue.id));
+    if (scenario === "started") {
+      expect(failed.errorCode).toBe("setup_failed");
+      expect(f.deps.scheduleBoundedRetryForRun).not.toHaveBeenCalled();
+      // Started work keeps its existing reconciliation path.
+      expect(actions.filter(action => action.cause === "remote_workspace_restore_failed")).toHaveLength(0);
+      return;
+    }
+    expect(failed).toMatchObject({ status: "failed", errorCode: "remote_workspace_restore_failed" });
+    expect(failed.resultJson).toMatchObject({ executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+      remoteWorkspaceRestore: { step: "sandbox_restore", retryable: scenario !== "refused" } });
+    if (scenario === "refused") expect(f.deps.scheduleBoundedRetryForRun).not.toHaveBeenCalled();
+    else expect(f.deps.scheduleBoundedRetryForRun).toHaveBeenCalledWith(expect.objectContaining({ id: f.run.id }), f.agent);
+    // Stranded-work recovery owns scanned statuses; a retry owns the next step.
+    if (scenario === "retried" || scenario === "in progress") { expect(actions).toHaveLength(0); return; }
+    expect(actions).toHaveLength(1);
+    expect(actions[0]).toMatchObject({ status: "active", ownerType: "board", cause: "remote_workspace_restore_failed",
+      kind: "stranded_assigned_issue", returnOwnerAgentId: f.agent.id });
+    expect(actions[0]!.evidence).toMatchObject({ runId: f.run.id, restoreFailure: failed.error });
+    expect(actions[0]!.nextAction).toContain("saved workspace version was kept");
+  });
+
+  it("keeps an active recovery action that another writer created for the task", async () => {
+    const f = await fixture();
+    const [issue] = await db.insert(issues).values({ companyId: f.run.companyId, title: "Parent task", status: "blocked",
+      assigneeAgentId: f.agent.id }).returning();
+    await db.update(heartbeatRuns).set({ issueId: issue.id, contextSnapshot: { issueId: issue.id } }).where(eq(heartbeatRuns.id, f.run.id));
+    const [existing] = await db.insert(issueRecoveryActions).values({ companyId: f.run.companyId, sourceIssueId: issue.id,
+      kind: "active_run_watchdog", status: "active", ownerType: "board", cause: "other_failure", fingerprint: "other",
+      evidence: { runId: "other-run" }, nextAction: "Handle the other failure.", attemptCount: 1 }).returning();
+    const error = new RemoteWorkspaceRestoreError("sandbox_restore", false, new RemoteWorkspaceOperationError(
+      "remote_workspace_operation_failed: operation=restore exit=1; remote_workspace_restore_failed: stage=inspect_root reason=occupied_root"));
+    await f.completion.failRunSetup(f.setup(error));
+    expect((await read(f.run.id)).errorCode).toBe("remote_workspace_restore_failed");
+    const actions = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issue.id));
+    expect(actions).toHaveLength(1);
+    expect(actions[0]).toMatchObject({ id: existing.id, cause: "other_failure", fingerprint: "other", nextAction: "Handle the other failure.",
+      attemptCount: 1, evidence: { runId: "other-run" } });
   });
 
   it("records a lease lost before dispatch as a retryable host stop, not an opaque setup failure", async () => {

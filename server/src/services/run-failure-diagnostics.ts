@@ -3,8 +3,10 @@ import { getEnvironmentAcquisitionDiagnostic } from "./environment-acquisition-d
 import type { heartbeatRuns } from "@paperclipai/db";
 import { readControllerLeaseLoss, readControllerLeaseLossCause, readRunCancellation } from "./run-cancellation.js";
 import { readProcessLossDiagnostic } from "./process-loss-diagnostics.js";
+import { readReviewedChatBindingDenialReason } from "./reviewed-chat-binding-diagnostics.js";
 import { WORKSPACE_RESTORE_FAILURE_CODES } from "@paperclipai/shared";
 import { redactDiagnosticText } from "@paperclipai/adapter-utils/command-redaction";
+import { directoryMergeLockTimeoutDiagnosticsFor } from "@paperclipai/adapter-utils/directory-merge-lock-diagnostics";
 import { sanitizeWorkspaceRestoreDiagnostic } from "@paperclipai/adapter-utils/workspace-restore-diagnostics";
 import {
   ACP_PROCESS_TERMINAL_SIGNALS,
@@ -12,6 +14,7 @@ import {
   ACP_TOOL_KINDS,
 } from "@paperclipai/adapter-utils/acpx-engine/constants";
 import { redactCurrentUserText } from "../log-redaction.js";
+import { storageFailureDiagnosticsFor } from "../storage/failure-diagnostics.js";
 import { redactSensitiveText, REDACTED_EVENT_VALUE } from "../redaction.js";
 import { readNativeModelRejectionDiagnostic, readNativeTurnFailureDiagnostic } from "./native-runtime/native-provider-failure.js";
 import { readRemoteRunnerRecoveryDiagnostic, readRemoteRunnerRecoveryError } from "./native-runtime/remote-runner-recovery-diagnostics.js";
@@ -327,6 +330,9 @@ export function collectRunFailureDiagnostics(run: Run, options: RunFailureReport
     if (leaseLoss.deadlineLateMs !== undefined) execution.controllerLeaseDeadlineLateMs = leaseLoss.deadlineLateMs;
     if (leaseLoss.renewalCount !== undefined) execution.controllerLeaseRenewalCount = leaseLoss.renewalCount;
   }
+  const reviewedChatDenial = run.errorCode === "setup_failed"
+    ? readReviewedChatBindingDenialReason(read(result, "reviewedChatBinding")) : null;
+  if (reviewedChatDenial) execution.reviewedChatBindingDenialReason = reviewedChatDenial;
   Object.assign(execution, scalars(result, [
     "mode", "stopReason", "timeoutFired", "timeoutSource", "timeoutConfigured",
     "effectiveTimeoutSec", "errorFamily",
@@ -410,26 +416,20 @@ export function collectRunFailureDiagnostics(run: Run, options: RunFailureReport
       execution.environmentAcquisitionBudgetMs = acquisition.budgetMs;
       if (acquisition.providerState) execution.environmentAcquisitionProviderState = acquisition.providerState;
     }
-    if (execution.restoreLockOwnerState === undefined && read(error, "code") === "ERR_WORKSPACE_RESTORE_LOCK_TIMEOUT") {
-      const lock = read(error, "workspaceRestoreLock");
-      const operation = read(lock, "operation");
-      if (["agent_directory_prepare", "agent_directory_release", "agent_directory_collect", "agent_directory_checkpoint", "agent_directory_handoff"].some(value => value === operation)) {
-        execution.restoreLockOperation = operation as string;
-      }
-      const ownerState = read(lock, "ownerState");
-      if (["alive", "dead", "unknown", "missing", "invalid"].some(value => value === ownerState)) {
-        execution.restoreLockOwnerState = ownerState as string;
-      }
-      for (const field of ["knownLocalHolder", "ownerSameProcess", "ownerPredatesProcess"]) {
-        const value = read(lock, field);
-        if (typeof value === "boolean") execution[`restoreLock${field[0]!.toUpperCase()}${field.slice(1)}`] = value;
-      }
-      for (const field of ["ownerAgeMs", "waitMs"]) {
-        const value = read(lock, field);
-        if (typeof value === "number" && Number.isSafeInteger(value) && value >= 0 && value <= 7 * 24 * 60 * 60 * 1000) {
-          execution[`restoreLock${field[0]!.toUpperCase()}${field.slice(1)}`] = value;
-        }
-      }
+    const lock = execution.restoreLockOwnerState === undefined ? directoryMergeLockTimeoutDiagnosticsFor(error) : null;
+    for (const [field, value] of Object.entries(lock ?? {})) {
+      execution[`restoreLock${field[0]!.toUpperCase()}${field.slice(1)}`] = value;
+    }
+    // A bare socket error ("aborted", ECONNRESET) cannot say which storage
+    // read it interrupted; the provider's fixed-shape record can.
+    const storage = storageFailureDiagnosticsFor(error);
+    if (storage && execution.storageOperation === undefined) {
+      execution.storageProvider = storage.provider;
+      execution.storageOperation = storage.operation;
+      execution.storageErrorCode = storage.errorCode;
+      if (storage.httpStatus !== null) execution.storageHttpStatus = storage.httpStatus;
+      if (storage.requestId !== null) execution.storageRequestId = storage.requestId;
+      if (storage.attempts !== null) execution.storageAttempts = storage.attempts;
     }
     const entry: RunFailureException = {};
     for (const field of ["name", "message", "stack", "code"] as const) {

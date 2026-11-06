@@ -1134,11 +1134,12 @@ untyped capacity text, and Codex CLI transient upstream failures remain reportab
 The run keeps its failed state and its terminal diagnostic.
 
 A native Codex model capacity failure stays local only while its automatic
-retry owns recovery. The run must carry `native_provider_overloaded` and the
-closed `codex`/`server_overloaded` diagnostic. The proof of the retry is the
-`native_provider_overloaded` successor run for the same task, which only the
-committed capacity status decision creates. The run's own finalization fields
-are not required: a late terminal write can replace them with an earlier result.
+retry owns recovery. The run must carry `native_provider_overloaded`. The proof
+of the retry is the `native_provider_overloaded` successor run for the same
+task, which only the committed capacity status decision creates, and only for
+the typed `codex`/`server_overloaded` diagnostic. The run's own `resultJson` is
+not required: the live heartbeat's failed-status write replaces it with the
+adapter's copy, which lacks the finalizer's diagnostic and finalization fields.
 Exhausted or held capacity failures, other retry lanes, setup failures, signals,
 and unreadable retry evidence remain reportable. A failed retry reports its own
 outcome.
@@ -2213,7 +2214,7 @@ expired and cross-invocation context cannot select another call's parent.
 | --- | --- | --- | --- |
 | Dispatch / receipt / return | `execution.plugin_dispatch` → `plugin.worker` | Host invocation; worker monotonic durations anchored to its epoch start | Outer minus worker time is an unattributed dispatch/scheduling remainder. It is not network latency. |
 | Repeated host reads | `plugin.host.identity.read`, `config.read`, `progress.read`, `progress.write` | Worker invocation, one span per awaited call, bounded by receipt budget | Round trip and host service together. Span count is call count; overlapping reads are not additive. |
-| Plugin coordination | `plugin.storage.queue`, `storage.execute`, `runtime.queue`, `runtime.prepare`, `runtime.reconcile`, `runtime.verify`, `workspace.prepare` | Invoking plugin, monotonic durations | The plugin keeps its locking and authorization owners. `plugin.reused` is boolean. |
+| Plugin coordination | `plugin.storage.queue`, `storage.execute`, `runtime.queue`, `runtime.prepare`, `runtime.reconcile`, `runtime.verify`, `workspace.prepare`, `workspace.failure` | Invoking plugin, monotonic durations | The plugin keeps its locking and authorization owners. `plugin.reused` is boolean. `plugin.failure_reason` on `workspace.failure` is a closed workspace operation failure reason or `unknown`. |
 | Completed remote lifecycle | `plugin.remote.lifecycle`, linked to the host-owned observer | Bounded prior monotonic durations, up to ten minutes old | Independent lifecycle trace; never a child of a later polling request. The worker cannot supply link IDs. |
 | Remote operation receipt | `plugin.remote.request` → `plugin.remote.operation` | Remote monotonic offsets, checked against local round trip and parent bounds | Closed operation classes cover mount refresh, guest setup, process execution, scripts and cleanup. No remote wall-clock subtraction. |
 | Retained/cold transport | `runner.transport.attach`, `resume`, `cold_start`, `prepare`, `registration`, `provider_identity` | Controller process, current active context on every operation | A retained transport must not capture the preceding run's trace. These parents overlap their children. |

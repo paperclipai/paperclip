@@ -12,8 +12,11 @@ import { TaskChatAgentIdentity, TaskChatBubble } from "./TaskChatBubble";
 import { TaskChatBubbleActions } from "./TaskChatBubbleActions";
 import { formatTaskChatTimestamp } from "./task-chat-adapter";
 import { TaskChatRunnerActivityGroup } from "./TaskChatRunnerActivityGroup";
+import { TaskChatSubagentTree } from "./TaskChatSubagentCard";
+import { TaskChatRunHealthBanner, partitionRunHealthItems } from "./TaskChatRunHealthBanner";
 import { TaskChatProtocolCard } from "./TaskChatProtocolCard";
 import { TaskChatPlanPreviewCard } from "./TaskChatPlanPreviewCard";
+import { TaskChatMarker } from "./TaskChatMarker";
 import { TaskChatShimmerScope, useTaskChatShimmer } from "./TaskChatShimmer";
 import {
   buildTurnTimelineRows,
@@ -156,7 +159,8 @@ export function TaskChatRunnerTurn({
   finishedAtMs,
   activityUnavailable = false,
   allowSummaryFallback = true,
-  suppressFinal = false,
+  awaitingContinuation = false,
+  waitSummary = null,
   continuedAfterSteering = false,
   showHeader = true,
   onRuntimeRequestDecision,
@@ -175,8 +179,14 @@ export function TaskChatRunnerTurn({
   finishedAtMs?: number | null;
   activityUnavailable?: boolean;
   allowSummaryFallback?: boolean;
-  /** Accepted wait/interaction authority overrides an early provider final. */
-  suppressFinal?: boolean;
+  /**
+   * Accepted wait/interaction authority: the turn is waiting, so an early
+   * provider final that only restates the wait is not presented as a reply.
+   * Prose the agent wrote for the user stays visible.
+   */
+  awaitingContinuation?: boolean;
+  /** The accepted yielded result's wait summary, when known. */
+  waitSummary?: string | null;
   /** The visible tail resumes the same native run after an accepted steer. */
   continuedAfterSteering?: boolean;
   /** The task thread keeps a shared header across native and legacy discovery. */
@@ -186,22 +196,21 @@ export function TaskChatRunnerTurn({
     decision: TaskChatRuntimeRequestDecision,
   ) => void | Promise<void>;
 }) {
+  const { failures: mcpStartupFailures, rest: turnItems } = partitionRunHealthItems(items);
   const terminal = isTerminalRunStatus(status);
   const waitingLabel = runnerWaitingLabel({ runId, status, execution, preparationLabel, startedAtMs });
-  const yielded = items.some(
+  const yielded = turnItems.some(
     (item) =>
       item.kind === "protocol" &&
       item.surface === "run_result" &&
       item.disposition === "yielded",
   );
-  const observedFinal = suppressFinal
-    ? undefined
-    : paperclipRunnerFinalResponse(items, {
-        allowFallback: terminal && allowSummaryFallback,
-      });
+  const observedFinal = paperclipRunnerFinalResponse(turnItems, awaitingContinuation
+    ? { allowFallback: false, yielded: true, waitSummary }
+    : { allowFallback: terminal && allowSummaryFallback });
   const observedProviderText = Boolean(
     observedFinal &&
-    items.some(
+    turnItems.some(
       (item) =>
         item.kind === "message" &&
         item.id === observedFinal.id &&
@@ -220,8 +229,8 @@ export function TaskChatRunnerTurn({
   if (finalRef.current.runId !== runId) finalRef.current = { runId };
   // A provider final can arrive before the accepted yielded result. Clear any
   // replay latch once the control plane establishes that this turn is waiting
-  // for continuation rather than presenting a durable assistant reply.
-  if (yielded || suppressFinal) finalRef.current = { runId };
+  // for continuation; only an authored (non-wait) final is re-latched below.
+  if (yielded || awaitingContinuation) finalRef.current = { runId };
   if (
     observedFinal &&
     (!finalRef.current.item ||
@@ -233,7 +242,7 @@ export function TaskChatRunnerTurn({
     finalRef.current.providerText = observedProviderText;
   }
   const final = finalRef.current.item;
-  const timelineItems = paperclipRunnerTimelineItems(items);
+  const timelineItems = paperclipRunnerTimelineItems(turnItems);
   const currentActivityItems = currentActivityStatusItems(timelineItems);
   const timelineRows = buildTurnTimelineRows(
     omitProgressRepeatedByResponse(timelineItems, final?.text),
@@ -249,6 +258,7 @@ export function TaskChatRunnerTurn({
       {showHeader ? <TaskChatRunnerHeader runId={runId} agentName={agentName} agentIcon={agentIcon} agent={agent}
         status={status} execution={execution} preparationLabel={preparationLabel} startedAtMs={startedAtMs}
         finishedAtMs={finishedAtMs} continuedAfterSteering={continuedAfterSteering} /> : null}
+      <TaskChatRunHealthBanner failures={mcpStartupFailures} />
       {activityUnavailable ? (
         <div
           className="px-1 py-1 text-xs text-muted-foreground"
@@ -282,6 +292,10 @@ export function TaskChatRunnerTurn({
                       : "task-chat-plan-preview"
                   }
                 />
+              ) : row.kind === "marker" ? (
+                <TaskChatMarker item={row} />
+              ) : row.kind === "subagent_group" ? (
+                <TaskChatSubagentTree subagents={row.subagents} />
               ) : row.kind === "protocol" ? (
                 <TaskChatProtocolCard
                   item={row}

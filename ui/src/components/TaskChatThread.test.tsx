@@ -5,6 +5,10 @@ import { act, forwardRef, useImperativeHandle, type ForwardedRef } from "react";
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+vi.mock("@/hooks/useCoordinatorWorkspaceEnabled", () => ({
+  useCoordinatorWorkspaceEnabled: () => ({ enabled: false, loaded: true }),
+}));
 import { ThemeProvider } from "@/context/ThemeContext";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -20,7 +24,7 @@ import type {
 } from "@paperclipai/shared";
 import { heartbeatsApi } from "@/api/heartbeats";
 import { nativeRunEventsToTranscript } from "./transcript/native-run-events";
-import { pendingConnectionIntentInteraction } from "@/fixtures/issueThreadInteractionFixtures";
+import { genericPendingRequestConfirmationInteraction, pendingConnectionIntentInteraction } from "@/fixtures/issueThreadInteractionFixtures";
 import { TaskChatScrollNavigation, useTaskChatScrollNavigation } from "./task-chat/scroll-navigation";
 import { CoordinatorPresentation } from "./coordinator/CoordinatorPresentation";
 import type { HeartbeatRunEvent } from "@paperclipai/shared";
@@ -246,6 +250,37 @@ describe.each(["legacy", "native"] as const)("historical %s system status", (run
     expect(container.querySelector('[data-testid="issue-assignee-paused-notice"]')).not.toBeNull();
     expect(pausedAgent.status).toBe("paused");
     expect(props.onResumeAssignee).not.toHaveBeenCalled();
+  });
+
+  it.runIf(runtimeMode === "native")("keeps a failed MCP start on a historical settled run while hiding other notices", () => {
+    const prp = (seq: number, eventType: string, payload: Record<string, unknown>) => ({
+      id: seq, companyId: "company", runId: "mcp", agentId: "agent", seq, eventType, stream: "system", level: "info",
+      color: null, message: null, createdAt: new Date(`2025-01-01T10:00:0${seq}Z`),
+      payload: { prpEvent: { schema: "paperclip.prp.event.v1", sourceEventId: `event-${seq}`, sourceSeq: seq,
+        sourceInstanceId: "runner", sourceKind: "runner", runId: "mcp", normalizedSessionId: "session", eventType,
+        schemaVersion: 1, priority: 1, emittedAt: `2025-01-01T10:00:0${seq}.000Z`, payload } },
+    }) as Parameters<typeof nativeRunEventsToTranscript>[0][number];
+    const notice = (seq: number, category: string, summary: string, details: unknown[] = []) => prp(seq, "provider.notice.recorded", {
+      schema: "paperclip.provider.notice.v1", noticeId: `notice-${seq}`, severity: "warning", category, scope: "session",
+      recoverable: true, userActionable: true, summary, details,
+    });
+    nativeTranscriptState.transcriptByRun.set("mcp", [
+      ...nativeRunEventsToTranscript([
+        notice(1, "mcp_server_startup_failed", "github MCP server failed to start: No such file or directory (os error 2)",
+          [{ name: "server", value: "github" }, { name: "reason", value: "No such file or directory (os error 2)" }]),
+        notice(2, "auth", "Sign in again"),
+      ]),
+      { kind: "assistant", channel: "progress", ts: "2025-01-01T10:00:05Z", text: "Inspected the source." },
+      { kind: "assistant", channel: "final", ts: "2025-01-01T10:00:20Z", text: "I couldn't reach the GitHub MCP server." },
+    ]);
+    render(<TaskChatThread comments={[comment("response", "I couldn't reach the GitHub MCP server.", "mcp")]}
+      linkedRuns={[run("mcp", "succeeded", 0)]} onAdd={async () => {}} issueStatus="done" />);
+    const banners = container.querySelectorAll('[data-testid="task-chat-run-health-banner"]');
+    expect([...banners].map((banner) => banner.textContent)).toEqual([
+      "github MCP server failed to start: No such file or directory (os error 2)",
+    ]);
+    expect(container.textContent).not.toContain("Sign in again");
+    expect(container.textContent).toContain("I couldn't reach the GitHub MCP server.");
   });
 
   it("replaces old failure and wait notices when a new attempt succeeds, regardless of fetch order", () => {
@@ -3063,6 +3098,243 @@ describe("TaskChatThread runtime transcript selection", () => {
     );
   });
 
+  it("keeps a streamed interview reply visible after its run yields to a question card", () => {
+    // Mirrors a staging onboarding interview: the first-task agent streams a
+    // user-facing reply, posts an interview question card, and settles with
+    // reportedWorkDisposition "yielded". The reply must not vanish on settle.
+    const runId = "interview-run";
+    const reply =
+      "I've posted a question card on this task that asks four things. When you answer, I'll save a written plan.";
+    const event = (
+      seq: number,
+      eventType: string,
+      payload: Record<string, unknown>,
+    ) =>
+      ({
+        id: seq,
+        companyId: "company-1",
+        agentId: "agent-1",
+        stream: "system",
+        level: "info",
+        color: null,
+        message: null,
+        runId,
+        seq,
+        eventType,
+        createdAt: new Date("2026-08-25T18:00:00Z"),
+        payload: {
+          prpEvent: {
+            schema: "paperclip.prp.event.v1",
+            schemaVersion: 1,
+            runId,
+            eventType,
+            sourceEventId: `interview-${seq}`,
+            sourceKind:
+              eventType === "run.result.accepted" || eventType === "run.terminal"
+                ? "control_plane"
+                : "runner",
+            sourceInstanceId: "runner-1",
+            sourceSeq: seq,
+            normalizedSessionId: "session-1",
+            emittedAt: `2026-08-25T18:00:${String(seq).padStart(2, "0")}Z`,
+            payload,
+          },
+        },
+      }) satisfies HeartbeatRunEvent;
+    const result = {
+      schema: "paperclip.run_result.v1",
+      reportedWorkDisposition: "yielded",
+      summary: "Waiting for user answers on the interview question card.",
+      continuation: {
+        kind: "response_wake",
+        idempotencyKey: "first-task-interview-wait-v1",
+      },
+      completionClaim: { objectiveSatisfied: false, remainingWork: [] },
+      attentionRequests: [],
+      evidence: [],
+      verification: [],
+      artifacts: [],
+    };
+    const streamed = event(2, "item.delta", {
+      kind: "agentMessage",
+      channel: "final",
+      text: reply,
+      item: { id: "reply", type: "agentMessage", channel: "final" },
+    });
+    const completed = event(3, "item.completed", {
+      kind: "agentMessage",
+      channel: "final",
+      text: reply,
+      item: { id: "reply", type: "agentMessage", channel: "final", text: reply },
+    });
+    const question = {
+      ...questionInteraction(
+        "interview-questions",
+        "What does your organization do?",
+        "2026-08-25T18:00:04.000Z",
+      ),
+      sourceRunId: runId,
+    } as IssueThreadInteraction;
+    const linkedRun = (status: "running" | "succeeded") => ({
+      runId,
+      runtimeMode: "native" as const,
+      status,
+      agentId: "agent-1",
+      agentName: "Runner",
+      adapterType: "paperclip_runner",
+      createdAt: "2026-08-25T18:00:00Z",
+      startedAt: "2026-08-25T18:00:00Z",
+      finishedAt: status === "running" ? null : "2026-08-25T18:00:30Z",
+      resultJson: status === "running" ? null : { nativeResult: result },
+    });
+
+    // 1. Live: the reply streams in and is visible.
+    nativeTranscriptState.transcriptByRun.set(
+      runId,
+      nativeRunEventsToTranscript([streamed]),
+    );
+    renderThread({
+      comments: [],
+      onAdd: async () => {},
+      issueStatus: "in_progress",
+      interactions: [],
+      activeRun: { ...nativeRunningRun(), id: runId },
+      linkedRuns: [linkedRun("running")],
+    });
+    expect(container.textContent).toContain("I've posted a question card");
+
+    // 2. Still live: the question card the reply describes lands first.
+    nativeTranscriptState.transcriptByRun.set(
+      runId,
+      nativeRunEventsToTranscript([streamed, completed]),
+    );
+    renderThread({
+      comments: [],
+      onAdd: async () => {},
+      issueStatus: "in_progress",
+      interactions: [question],
+      activeRun: { ...nativeRunningRun(), id: runId },
+      linkedRuns: [linkedRun("running")],
+    });
+    expect(container.textContent).toContain("I've posted a question card");
+
+    // 3. Settled: the run yielded to the question card it posted.
+    nativeTranscriptState.transcriptByRun.set(
+      runId,
+      nativeRunEventsToTranscript([
+        streamed,
+        completed,
+        event(4, "run.result.proposed", result),
+        event(5, "run.result.accepted", { result }),
+        event(6, "run.terminal", {
+          schema: "paperclip.prp.terminal.v1",
+          turnTerminalState: "completed",
+          runTerminalState: "succeeded",
+          reportedWorkDisposition: "yielded",
+        }),
+      ]),
+    );
+    renderThread({
+      comments: [],
+      onAdd: async () => {},
+      issueStatus: "in_progress",
+      interactions: [question],
+      activeRun: undefined,
+      linkedRuns: [linkedRun("succeeded")],
+    });
+    expect(container.textContent).toContain("I've posted a question card");
+    expect(container.textContent).not.toContain(
+      "Waiting for user answers on the interview question card.",
+    );
+
+    // 4. Answered: the card leaves pending and the turn becomes an accepted
+    // response wake. The authored reply must keep its slot, not be replaced
+    // by the wait summary.
+    renderThread({
+      comments: [],
+      onAdd: async () => {},
+      issueStatus: "in_progress",
+      interactions: [
+        {
+          ...question,
+          status: "answered",
+          resolvedAt: new Date("2026-08-25T18:01:00.000Z"),
+          updatedAt: new Date("2026-08-25T18:01:00.000Z"),
+        } as IssueThreadInteraction,
+      ],
+      activeRun: undefined,
+      linkedRuns: [linkedRun("succeeded")],
+    });
+    expect(container.textContent).toContain("I've posted a question card");
+    expect(container.textContent).not.toContain(
+      "Waiting for user answers on the interview question card.",
+    );
+  });
+
+  it("keeps a steered yielded turn's reply in the segment that wrote it", () => {
+    const runId = "steered-interview";
+    nativeTranscriptState.transcriptByRun.set(runId, [
+      assistantEntry("2026-08-25T18:00:02.000Z", "Here is the question card I just posted for you.", "final"),
+      assistantEntry("2026-08-25T18:00:10.000Z", "Folding in the steering note.", "progress"),
+    ]);
+    renderThread({
+      comments: [
+        {
+          id: "steer",
+          companyId: "company-1",
+          issueId: "issue-1",
+          authorType: "user",
+          authorAgentId: null,
+          authorUserId: "user-1",
+          body: "Steering note from the user.",
+          presentation: null,
+          metadata: null,
+          runId: null,
+          consumedByRunId: runId,
+          steeredIntoRunId: runId,
+          conversationAnchorAt: new Date("2026-08-25T18:00:05.000Z"),
+          createdAt: new Date("2026-08-25T18:00:05.000Z"),
+          updatedAt: new Date("2026-08-25T18:00:05.000Z"),
+        },
+      ],
+      onAdd: async () => {},
+      issueStatus: "in_progress",
+      interactions: [
+        {
+          ...questionInteraction("steered-card", "Pick one", "2026-08-25T18:00:03.000Z"),
+          sourceRunId: runId,
+        } as IssueThreadInteraction,
+      ],
+      linkedRuns: [
+        {
+          runId,
+          runtimeMode: "native",
+          status: "succeeded",
+          agentId: "agent-1",
+          agentName: "Runner",
+          adapterType: "paperclip_runner",
+          createdAt: "2026-08-25T18:00:00.000Z",
+          startedAt: "2026-08-25T18:00:00.000Z",
+          finishedAt: "2026-08-25T18:00:20.000Z",
+          resultJson: {
+            nativeResult: {
+              schema: "paperclip.run_result.v1",
+              reportedWorkDisposition: "yielded",
+              summary: "Waiting for Pick one.",
+            },
+          },
+        },
+      ],
+    });
+    const text = container.textContent ?? "";
+    const replyAt = text.indexOf("Here is the question card I just posted");
+    const steerAt = text.indexOf("Steering note from the user.");
+    expect(replyAt).toBeGreaterThanOrEqual(0);
+    expect(steerAt).toBeGreaterThanOrEqual(0);
+    expect(replyAt).toBeLessThan(steerAt);
+    expect(text.split("Here is the question card I just posted")).toHaveLength(2);
+  });
+
   it("keeps a yielded question turn out of the final-response slot", () => {
     nativeTranscriptState.transcriptByRun.set("native-question", [
       assistantEntry("2026-08-25T18:00:01.000Z", "Preparing the verification question.", "progress"),
@@ -4683,6 +4955,39 @@ describe("TaskChatThread mobile composer dock", () => {
 });
 
 describe("TaskChatThread live transcript", () => {
+  it("collapses the turn plan to its header while a saved interaction opens in the composer", () => {
+    nativeTranscriptState.transcriptByRun.set("run-plan-approval", [{
+      kind: "provider_activity",
+      ts: "2026-08-24T12:00:01.000Z",
+      family: "plan",
+      eventType: "plan.updated",
+      status: "running",
+      title: "Plan",
+      payload: {
+        planId: "turn-1",
+        steps: [
+          { stepId: "one", body: "Inspect", status: "completed" },
+          { stepId: "two", body: "Build", status: "in_progress" },
+        ],
+      },
+    }]);
+    renderThread({
+      comments: [],
+      onAdd: async () => {},
+      issueStatus: "in_progress",
+      activeRun: {
+        id: "run-plan-approval", status: "running" as const, invocationSource: "issue" as const, triggerDetail: null,
+        startedAt: "2026-08-24T12:00:00.000Z", finishedAt: null, createdAt: "2026-08-24T12:00:00.000Z",
+        agentId: "agent-1", agentName: "Codex", adapterType: "paperclip_runner", runtimeMode: "native" as const,
+      },
+      interactions: [{ ...genericPendingRequestConfirmationInteraction, sourceRunId: "run-plan-approval" }],
+    });
+    const island = container.querySelector('[data-testid="task-chat-turn-status-island"]')!;
+    expect(island.querySelector('[data-testid="task-chat-turn-plan-headline"]')?.textContent).toBe("Build");
+    expect(island.querySelector('[aria-label="Within-turn checklist"]')).toBeNull();
+    expect(island.querySelector('[data-testid="task-chat-turn-plan-header"]')?.tagName).toBe("DIV");
+  });
+
   it("places the turn status island below composer accessories and hides it when the turn is terminal", () => {
     nativeTranscriptState.transcriptByRun.set("run-status", [
       {
@@ -4756,7 +5061,13 @@ describe("TaskChatThread live transcript", () => {
     const stack = container.querySelector(
       '[data-testid="task-chat-composer-stack"]',
     )!;
-    expect(island.textContent).toContain("Step 2 / 2");
+    expect(
+      island.querySelector('[data-testid="task-chat-turn-plan-headline"]')?.textContent,
+    ).toBe("Build");
+    expect(
+      island.querySelector('[data-testid="task-chat-turn-plan-progress"]')?.textContent,
+    ).toContain("1/2");
+    expect(island.querySelector('[aria-current="step"]')?.textContent).toContain("Build");
     expect(island.textContent).toContain("1 file changed");
     expect(accessory.compareDocumentPosition(island)).toBe(
       Node.DOCUMENT_POSITION_FOLLOWING,

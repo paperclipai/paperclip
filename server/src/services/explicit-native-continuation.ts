@@ -12,20 +12,20 @@ import { readNativeWorkspaceSyncReference } from "./native-runtime/native-worksp
 import { preserveNativeFailedWorkspace, preserveTaskRemoteWorkspaceWriter } from "./native-runtime/native-failed-workspace-recovery.js";
 import { createHash } from "node:crypto";
 import { appendHeartbeatRunEvent } from "./heartbeat-run-events.js";
-import { canContinueCancelledRun } from "./run-cancellation.js";
+import { canContinueCancelledRun, userStopBoundaryAt } from "./run-cancellation.js";
 import { readQueuedInteractionResponse } from "./queued-interaction-response.js";
 import { isCancelledNativeStartup, isFailedNativePreparation, isFailedNativePreparationRetryAncestor } from "./cancelled-native-startup.js";
 import { hasNativeLocalProcessStop, hasHistoricalSuspendedNativeSession, recordedLocalExecutionStopped } from "./native-local-process-stop.js";
 import { completeTerminatedRemoteNativeSessionCleanup } from "../vendor/paperclip-runner/index.js";
-import { hasRemoteTerminationReceipt, remoteLeaseCleanupScope } from "./remote-execution-termination.js";
+import { hasRecoveredCleanupStopReceipt, hasRemoteTerminationReceipt, remoteLeaseCleanupScope } from "./remote-execution-termination.js";
 import { z } from "zod";
-import { and, desc, eq, gt, inArray, isNull, ne, or, sql } from "drizzle-orm";
+import { and, desc, eq, gt, inArray, isNull, ne, not, or, sql } from "drizzle-orm";
 import {
   agents, agentWakeupRequests, approvals, issueApprovals, issueThreadInteractions,
   environmentLeases, heartbeatRuns, issueComments, issueRecoveryActions,
   issues, nativeRunFinalizations, nativeRunResults, type Db,
 } from "@paperclipai/db";
-import { executionBlockerPredicate, getExecutionBlocker, hasPendingRunCleanup, nativeExecutionRecoveryActionPredicate } from "./execution-blocker.js";
+import { executionBlockerPredicate, getExecutionBlocker, hasPendingRunCleanup, nativeExecutionRecoveryActionPredicate, restoreHoldReleasedForCurrentOwnerPredicate } from "./execution-blocker.js";
 import { buildExecutionContinuation } from "./execution-continuation.js";
 import { adapterExecutionControls } from "./adapter-execution-control.js";
 import { persistActivity } from "./activity-log.js";
@@ -104,6 +104,11 @@ export async function undeliveredLegacyUserCommentIds(
     // native identity/process metadata is not proof that its prompt was sent.
     // Admission separately verifies process termination before a new turn.
     sql`not (${heartbeatRuns.status} = 'cancelled' and ${heartbeatRuns.startedAt} is null)`,
+    // A claimed turn parked for a busy workspace stopped before provider
+    // dispatch; the host records that it sent no prompt.
+    sql`not coalesce(${heartbeatRuns.status} = 'cancelled' and ${heartbeatRuns.errorCode} = 'workspace_busy'
+      and ${heartbeatRuns.resultJson}#>>'{executionRecovery,kind}' = 'workspace_wait'
+      and ${heartbeatRuns.resultJson}#>'{executionRecovery,providerWorkStarted}' = 'false'::jsonb, false)`,
     or(...commentIds.map(id => or(
       sql`${heartbeatRuns.contextSnapshot}->>'wakeCommentId' = ${id}`,
       sql`${heartbeatRuns.contextSnapshot}->'wakeCommentIds' @> ${JSON.stringify([id])}::jsonb`,
@@ -227,6 +232,7 @@ export async function admitExplicitNativeContinuation(input: {
     eq(issueRecoveryActions.companyId, companyId), eq(issueRecoveryActions.sourceIssueId, issueId),
     boundary ? or(gt(issueRecoveryActions.createdAt, boundary.createdAt), nativeExecutionRecoveryActionPredicate(),
       blocker?.recoveryActionId ? eq(issueRecoveryActions.id, blocker.recoveryActionId) : undefined) : undefined,
+    not(restoreHoldReleasedForCurrentOwnerPredicate()),
     or(executionBlockerPredicate(), and(
       inArray(issueRecoveryActions.cause, ["native_workspace_sync_out_unrecoverable", "native_workspace_sync_out_retry_exhausted"]),
       sql`${issueRecoveryActions.evidence}#>>'{workspaceRecovery,status}' = 'recovered'`,
@@ -294,7 +300,7 @@ export async function admitExplicitNativeContinuation(input: {
     if (!run || run.agentId !== agentId || !terminal.includes(run.status) ||
         (run.nativeIssueId ?? run.issueId ?? run.contextSnapshot?.issueId) !== issueId ||
         !run.finishedAt) return blocked("source_unavailable", "The previous execution has not finished or its owner changed. Your message is saved.");
-    if (!queuedInterrupt && !queuedRequest && authorizedAt <= run.finishedAt) return blocked("message_predates_stop", "This message arrived before the previous run stopped. Send a new message to continue.");
+    if (!queuedInterrupt && !queuedRequest && authorizedAt <= userStopBoundaryAt(run)!) return blocked("message_predates_stop", "This message arrived before the previous run stopped. Send a new message to continue.");
     if (adapterExecutionControls.has(run.id)) return blocked("execution_settling", "Waiting for the previous run to stop. Your message will start automatically.");
     const [coordinator] = await db.select().from(nativeRunFinalizations).where(and(
       eq(nativeRunFinalizations.companyId, companyId), eq(nativeRunFinalizations.runId, run.id),
@@ -305,6 +311,9 @@ export async function admitExplicitNativeContinuation(input: {
     if (!lockedRun || lockedRun.status !== run.status || lockedRun.agentId !== run.agentId ||
         lockedRun.finishedAt?.getTime() !== run.finishedAt.getTime()) return null;
     run = lockedRun;
+    // A user's message written after their Stop request is new direction even
+    // when the stopped native run settled later.
+    const stoppedAt = userStopBoundaryAt(run)!;
     const failedPreparation = await isFailedNativePreparation(db, run, coordinator);
     const unusedAdmission = run.status === "cancelled" && !run.startedAt &&
       run.errorCode === "execution_reconciliation_required" &&
@@ -377,14 +386,14 @@ export async function admitExplicitNativeContinuation(input: {
     if (partiallyDeliveredQueue && run.runtimeMode !== "native" && !unusedAdmission && !cancelledStartup && !failedPreparation) return null;
     if ((queuedInterrupt || queuedRequest) && !legacyUserTurn && !unusedAdmission &&
         !(queuedRequest && run.runtimeMode === "native" &&
-          (run.status !== "cancelled" || authorizedAt > run.finishedAt!)) &&
+          (run.status !== "cancelled" || authorizedAt > stoppedAt)) &&
         !(queuedRequest && cancelledStartup && authorizedAt > run.finishedAt!) &&
         !(nativeQueuedSend && (run.runtimeMode === "native" || cancelledStartup) && authorizedAt > run.finishedAt!) &&
         !(queuedInterrupt && response?.source.requiresFreshSession && run.runtimeMode === "native")) return null;
     // A saved native message sent after Stop is a new user direction. Older
     // input cannot restart a cancelled run merely because it is still queued.
     if (queuedRequest && !queuedInterrupt && run.status === "cancelled" && !unusedAdmission &&
-        !canContinueCancelledRun(run) && !(run.runtimeMode === "native" && authorizedAt > run.finishedAt!) &&
+        !canContinueCancelledRun(run) && !(run.runtimeMode === "native" && authorizedAt > stoppedAt) &&
         !(cancelledStartup && authorizedAt > run.finishedAt!)) return null;
     if (retry && run.status === "cancelled" && !canContinueCancelledRun(run) && !cancelledStartup)
       return blocked("cancelled_by_operator", "Inspect the stopped run and send a new message to continue.");
@@ -434,7 +443,7 @@ export async function admitExplicitNativeContinuation(input: {
     const remote = leases.some(lease => lease.provider !== "local");
     if (remote) {
       // Never interpret remote PIDs using the control-plane host's process table.
-      if (!leases.every(hasRemoteTerminationReceipt)) return blocked("remote_cleanup", "Waiting for the previous environment to stop. Your message will start automatically.");
+      if (!leases.every(lease => hasRemoteTerminationReceipt(lease) || hasRecoveredCleanupStopReceipt(lease))) return blocked("remote_cleanup", "Waiting for the previous environment to stop. Your message will start automatically.");
       if (run.runtimeMode === "native" && !input.dryRun && !leases.every(lease => completeTerminatedRemoteNativeSessionCleanup({
         companyId, runId: run.id, remoteCleanupScope: remoteLeaseCleanupScope(lease)!,
       }))) return null;
@@ -495,7 +504,8 @@ export async function admitExplicitNativeContinuation(input: {
       companyId, runId: String(stopped.evidence.runId), agentId,
       eventType: "native.stopped_conversation_verified", stream: "system", level: "info",
       message: "The old runner and provider stopped. New user input will use a fresh session; prior action outcomes remain recorded.",
-      payload: stopped.evidence,
+      payload: { ...stopped.evidence, successorRunId: input.successorRunId,
+        ...(input.taskRetryRequestId ? { taskRetryRequestId: input.taskRetryRequestId } : {}) },
     });
   }
   const authorization = { ...continuation, actorId, commentId, ...(response ? { interactionId: response.source.interactionId } : {}), ...(retry ? { failedRunId: input.failedRunId } : {}),

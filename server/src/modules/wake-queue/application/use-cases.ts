@@ -169,6 +169,11 @@ async function runReleaseDrain(
     }
     processedWakeIds.add(candidate.id);
 
+    if (locked.handoffAssigneeAgentId && candidate.agentId !== locked.handoffAssigneeAgentId) {
+      preservedWakeIds.push(candidate.id);
+      continue;
+    }
+
     // A lead can post its closing comment before committing Done. Check
     // again when the source run releases its queue, using every original
     // comment ID so coalesced human or unrelated input is never hidden.
@@ -317,6 +322,9 @@ async function runReleaseDrain(
     if (!promoted) continue;
     return promoted;
   }
+
+  // A stopped run never plans recovery for itself, including after a handoff.
+  if (locked.handoffAssigneeAgentId) return { outcome: { kind: "released" }, postCommitEffects };
 
   return runReleaseRecoveryTail(issue, run, ports.host, ports.transaction, input, postCommitEffects);
 }

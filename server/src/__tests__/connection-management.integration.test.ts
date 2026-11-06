@@ -54,7 +54,7 @@ describe("connection management with production default agents", () => {
     server = await startRunnerApiTestServer({ authPublicBaseUrl: "https://paperclip.fixture.invalid", humanSessions: true, databaseUrl: process.env.PAPERCLIP_CONNECTION_MANAGEMENT_TEST_DATABASE_URL });
     lifecycle = configureAgentLifecycle(server.db, { requiredPluginIds: async () => [], runPlugin: async () => "complete", runHost: async () => "complete" });
     vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY_FILE", join(server.root, "master.key"));
-    await instanceSettingsService(server.db).updateExperimental({ enableChatConnectors: true, enableGitHubReviewBots: true });
+    await instanceSettingsService(server.db).updateExperimental({ enableChatConnectors: true, enableGitHubReviewBots: true, enableGoogleWorkspaceConnector: true });
   }, 90_000);
   afterAll(async () => { await lifecycle?.stop(); await server?.close(); providerFetch?.mockRestore(); vi.unstubAllEnvs(); vi.unstubAllGlobals(); });
 
