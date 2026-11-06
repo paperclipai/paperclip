@@ -174,6 +174,32 @@ it.each([
   expect(logs).toContain(title);
 });
 
+it("classifies a typed spend limit as quota without the weekly limit's reset time", () => {
+  expect(classifyClaudeTerminalSessionFailure({
+    category: "limit",
+    title: "You've hit your monthly spend limit · raise it at claude.ai/settings/usage?from=cc_cli_limit_message · your weekly limit resets Oct 7, 5am (America/Toronto)",
+  }, now)).toEqual({ errorCode: "provider_quota", errorFamily: "provider_quota", providerQuotaResetUnknown: true });
+});
+
+it("marks a typed spend limit as having no reset time in the run result", async () => {
+  const title = "You've hit your monthly spend limit · raise it at claude.ai/settings/usage?from=cc_cli_limit_message · your session limit resets 4:30pm (America/Chicago)";
+  const { result } = await executeFailure(title);
+  expect(result).toMatchObject({
+    exitCode: 1,
+    errorCode: "provider_quota",
+    errorFamily: "provider_quota",
+    resultJson: { errorFamily: "provider_quota", providerQuotaResetUnknown: true },
+  });
+  expect(result.retryNotBefore).toBeUndefined();
+  expect(result.resultJson?.providerQuotaRetryNotBefore).toBeUndefined();
+});
+
+it("does not mark a typed session limit as having no reset time", async () => {
+  const { result } = await executeFailure("You've hit your session limit · resets 4:30pm (America/Chicago)");
+  expect(result.retryNotBefore).toBe("2026-07-15T21:30:00.000Z");
+  expect(result.resultJson?.providerQuotaResetUnknown).toBeUndefined();
+});
+
 it("does not infer quota from the historical generic terminal-limit error", () => {
   expect(classifyClaudeTerminalSessionFailure({
     category: "limit",

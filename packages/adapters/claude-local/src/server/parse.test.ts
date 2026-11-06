@@ -8,6 +8,7 @@ import {
   isClaudeTransientUpstreamError,
   isClaudePoisonedPreviousMessageIdError,
   isClaudeRefusalResult,
+  isClaudeSpendLimitError,
   isClaudeUnknownSessionError,
   isClaudeImageProcessingError,
   isClaudeModelNotFoundError,
@@ -209,6 +210,70 @@ describe("isClaudeTransientUpstreamError", () => {
     expect(extractClaudeRetryNotBefore({ errorMessage }, now)?.toISOString()).toBe(
       "2026-08-29T02:30:00.000Z",
     );
+  });
+
+  it.each([
+    "You've hit your monthly spend limit · raise it at claude.ai/settings/usage?from=cc_cli_limit_message · your weekly limit resets Oct 7, 5am (America/Toronto)",
+    "You’ve hit your org's monthly spend limit · ask your admin to raise it at claude.ai/admin-settings/usage · your session limit resets 4pm (America/Chicago)",
+  ])("classifies the spend limit as provider quota without a retry time: %s", (errorMessage) => {
+    // The reset in the message belongs to another limit. The spend limit clears
+    // when the owner raises it, so recovery falls back to its quota backoff.
+    const now = new Date("2026-10-04T12:00:00.000Z");
+
+    expect(isClaudeProviderQuotaError({ errorMessage })).toBe(true);
+    expect(isClaudeSpendLimitError({ errorMessage })).toBe(true);
+    expect(isClaudeTransientUpstreamError({ errorMessage })).toBe(false);
+    expect(extractClaudeRetryNotBefore({ errorMessage }, now)).toBeNull();
+  });
+
+  it("does not take another limit's reset time from the same output for a spend limit", () => {
+    const now = new Date("2026-10-04T12:00:00.000Z");
+    const input = {
+      stdout: "You've hit your session limit · resets 4pm (America/Chicago)",
+      errorMessage:
+        "You've hit your monthly spend limit · raise it at claude.ai/settings/usage?from=cc_cli_limit_message",
+    };
+
+    expect(isClaudeProviderQuotaError(input)).toBe(true);
+    expect(extractClaudeRetryNotBefore(input, now)).toBeNull();
+  });
+
+  it("classifies a spend limit the CLI printed only as plain-text stdout", () => {
+    const now = new Date("2026-10-04T12:00:00.000Z");
+    const input = {
+      parsed: null,
+      stdout: "You've hit your monthly spend limit · raise it at claude.ai/settings/usage?from=cc_cli_limit_message · your weekly limit resets Oct 7, 5am (America/Toronto)\n",
+      stderr: "",
+      errorMessage: "Claude exited with code 1",
+    };
+
+    expect(isClaudeSpendLimitError(input)).toBe(true);
+    expect(isClaudeProviderQuotaError(input)).toBe(true);
+    expect(extractClaudeRetryNotBefore(input, now)).toBeNull();
+  });
+
+  it("keeps a weekly limit's reset when only the agent's stdout quotes a spend limit", () => {
+    const now = new Date("2026-10-04T12:00:00.000Z");
+    const input = {
+      stdout: JSON.stringify({
+        type: "assistant",
+        message: { content: [{ type: "text", text: "The user saw \"You've hit your monthly spend limit\" yesterday." }] },
+      }),
+      errorMessage: "You've hit your weekly limit · resets 5am (America/Toronto)",
+    };
+
+    expect(isClaudeSpendLimitError(input)).toBe(false);
+    expect(isClaudeProviderQuotaError(input)).toBe(true);
+    expect(extractClaudeRetryNotBefore(input, now)?.toISOString()).toBe("2026-10-05T09:00:00.000Z");
+  });
+
+  it.each([
+    "Agent is paused because its budget hard-stop was reached.",
+    "Configured budget limit reached",
+    "Rate limit exceeded; retry later",
+  ])("does not classify a non-provider limit as provider quota: %s", (errorMessage) => {
+    expect(isClaudeProviderQuotaError({ errorMessage })).toBe(false);
+    expect(isClaudeSpendLimitError({ errorMessage })).toBe(false);
   });
 
   it("classifies Anthropic API rate_limit_error and overloaded_error as transient", () => {
@@ -483,6 +548,16 @@ describe("extractClaudeRetryNotBefore", () => {
       now,
     );
     expect(extracted?.toISOString()).toBe("2026-04-23T03:15:00.000Z");
+  });
+
+  it("still parses the weekly limit's own reset time", () => {
+    const now = new Date("2026-10-04T12:00:00.000Z");
+    const errorMessage = "You've hit your weekly limit · resets 5am (America/Toronto)";
+
+    expect(isClaudeProviderQuotaError({ errorMessage })).toBe(true);
+    expect(extractClaudeRetryNotBefore({ errorMessage }, now)?.toISOString()).toBe(
+      "2026-10-05T09:00:00.000Z",
+    );
   });
 
   it("returns null when no reset hint is present", () => {
