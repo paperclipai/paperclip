@@ -30,12 +30,6 @@ export async function assertNativeSessionPreparationAuthority(input: {
   if (!owned) throw new Error("native_session_lease_lost");
 }
 
-/**
- * A recovery execution that loses its claim before provider dispatch has no
- * authority to settle the run. True when a graceful shutdown suspended this
- * claim for the next controller, or another controller has claimed the run.
- * The still-running run then belongs to that successor, not to this execution.
- */
 export async function nativeRecoveryClaimRelinquished(input: {
   db: Db; companyId: string; runId: string; leaseOwner: string;
 }): Promise<boolean> {
@@ -43,7 +37,6 @@ export async function nativeRecoveryClaimRelinquished(input: {
     status: heartbeatRuns.status, resultId: nativeRunFinalizations.resultId,
     leaseOwner: nativeRunFinalizations.leaseOwner, recoveryState: nativeRunFinalizations.recoveryState,
     leaseLive: sql<boolean>`coalesce(${nativeRunFinalizations.leaseExpiresAt} > clock_timestamp(), false)`,
-    // The shutdown drain records this exact disposition when it suspends a claim.
     lastDisposition: sql<string | null>`${nativeRunFinalizations.recoveryHistory} -> -1 ->> 'disposition'`,
   }).from(nativeRunFinalizations).innerJoin(heartbeatRuns, eq(heartbeatRuns.id, nativeRunFinalizations.runId))
     .where(and(eq(nativeRunFinalizations.companyId, input.companyId), eq(nativeRunFinalizations.runId, input.runId),

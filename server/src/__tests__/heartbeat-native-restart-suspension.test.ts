@@ -7,10 +7,6 @@ import { instanceSettingsService } from "../services/instance-settings.js";
 import { describeEmbeddedPostgres, nativeRestartFixture } from "./helpers/native-restart.js";
 
 
-// RC-14: startup recovery claims a native run and starts its execution. A
-// graceful SIGTERM then suspends that claim for the next controller before
-// the execution reaches provider dispatch. The dying execution has lost its
-// authority, so it must leave the run for the next boot instead of failing it.
 describeEmbeddedPostgres("heartbeat native recovery interrupted by graceful shutdown", () => {
   const fixture = nativeRestartFixture();
 
@@ -22,8 +18,6 @@ describeEmbeddedPostgres("heartbeat native recovery interrupted by graceful shut
       createdAt: new Date(), updatedAt: new Date() });
     await f.db.insert(companyMemberships).values({ companyId: fixture.current.companyId, principalType: "user",
       principalId: userId, membershipRole: "owner" });
-    // Production binds the completion contract during runtime selection; the
-    // shared fixture pre-binds one, which a first selection would not persist.
     await f.db.update(heartbeatRuns).set({ responsibleUserId: userId, completionContractId: null,
       completionContractSha256: null }).where(eq(heartbeatRuns.id, f.runId));
     return f;
@@ -33,8 +27,6 @@ describeEmbeddedPostgres("heartbeat native recovery interrupted by graceful shut
     "leaves a recovery execution suspended %s for the next controller",
     async (point) => {
       const f = await seedRecoverableRun(`SUSPENDED-${point}`);
-      // An overload replacement enforces continuation ownership, which exposes
-      // the seam between budget admission and the final dispatch gate.
       if (point === "before_dispatch_gate") await f.db.update(heartbeatRuns)
         .set({ scheduledRetryReason: "native_provider_overloaded" }).where(eq(heartbeatRuns.id, f.runId));
       const dying = vi.fn(() => { throw new Error("A suspended recovery must not open a provider session"); });
@@ -67,9 +59,6 @@ describeEmbeddedPostgres("heartbeat native recovery interrupted by graceful shut
         eq(workspaceOperations.heartbeatRunId, f.runId), eq(workspaceOperations.status, "failed")))).toEqual([]);
       expect(await f.db.select().from(budgetReservations).where(and(eq(budgetReservations.runId, f.runId),
         eq(budgetReservations.state, "released")))).toEqual([]);
-
-      // The next boot adopts the same run and reaches provider dispatch once.
-      // The drained server exits; its controller PID is gone at the next boot.
       await f.db.update(nativeRunFinalizations).set({ controllerPid: 2_000_000_001 })
         .where(eq(nativeRunFinalizations.runId, f.runId));
       const resumed = vi.fn(() => { throw new Error("next boot reached provider dispatch"); });
