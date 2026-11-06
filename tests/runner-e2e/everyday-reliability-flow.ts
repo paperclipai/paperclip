@@ -9,7 +9,7 @@ import {
   threeTurnRevisions, type EverydayReliabilityCaseId,
 } from "./everyday-reliability-cases.js";
 import {
-  executedRuns, gradeInterruptRedirect, gradeLongSilentCommand, gradeQueueSteer, gradeQueuedAcrossRestart,
+  executedRuns, gradeInterruptRedirect, recoveredRunIds, gradeLongSilentCommand, gradeQueueSteer, gradeQueuedAcrossRestart,
   gradeReassignMidrun, gradeResumptionRule, gradeThreeTurnRevise, gradeTreePauseRelease, runIssueId, runsCarrying,
   type ResumptionObservation, type RetryClick,
 } from "./everyday-reliability.js";
@@ -38,6 +38,8 @@ export interface ReliabilityFlowContext {
   restart(): Promise<unknown>;
   note(action: string, detail?: unknown): void;
   allowInterrupted(runId: string): void;
+  /** Record failures whose work a later run verifiably resumed. */
+  allowRecovered(runIds: readonly string[]): void;
   evidence(name: string, value: unknown): Promise<void>;
   capture(id: string, label: string, file: string): Promise<void>;
 }
@@ -312,7 +314,9 @@ async function treePauseRelease(ctx: ReliabilityFlowContext, watcher: Resumption
   const holdUntil = Math.min(ctx.deadlineAt, Math.max(holdCreatedAt + RELIABILITY_BOUNDS.holdObservationMs, dueAt + 15_000), holdCreatedAt + 5 * 60_000);
   while (Date.now() < holdUntil) {
     const state = await ctx.refresh();
-    const early = executedRuns(state.runs).find(run => childIds.includes(runIssueId(run) ?? "") && Date.parse(run.startedAt!) > holdCreatedAt);
+    // A run that started while the hold request was in flight is one the hold interrupted.
+    const early = executedRuns(state.runs).find(run => childIds.includes(runIssueId(run) ?? "")
+      && !interruptedRuns.some(interrupted => interrupted.id === run.id) && Date.parse(run.startedAt!) > holdCreatedAt);
     if (early) throw new Error(`Child run ${early.id} started during the tree hold`);
     await sleep(5_000);
   }
@@ -412,6 +416,9 @@ export async function driveReliabilityScenario(caseId: EverydayReliabilityCaseId
   const watcher = new ResumptionWatcher(ctx);
   try {
     const outcome = await scenarios[caseId](ctx, watcher);
+    const recovered = recoveredRunIds((await ctx.refresh()).runs);
+    ctx.allowRecovered(recovered);
+    if (recovered.length) ctx.note("reliability-recovered-runs", recovered);
     return { ...outcome, checks: async () => {
       const checks = [...await outcome.checks(), ...watcher.checks()];
       await ctx.evidence("reliability-observations.json", { caseId, signature: everydayReliabilitySignatures[caseId],

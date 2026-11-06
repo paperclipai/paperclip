@@ -227,10 +227,11 @@ export function isExpectedStoryInterruption(
   );
 }
 
-export function storyUnexpectedRunFailure(runs: StoryRun[], allowedRunIds: readonly string[]) {
+/** `recoveredRunIds`: failures whose work a later run on the same task verifiably resumed. */
+export function storyUnexpectedRunFailure(runs: StoryRun[], allowedRunIds: readonly string[], recoveredRunIds: readonly string[] = []) {
   return runs.find((run) =>
     ["failed", "timed_out", "cancelled", "interrupted"].includes(run.status) &&
-    !isStoryWorkspaceDeferral(run) &&
+    !isStoryWorkspaceDeferral(run) && !recoveredRunIds.includes(run.id) &&
     !isExpectedStoryInterruption(run, allowedRunIds),
   );
 }
@@ -275,6 +276,8 @@ export function storyLifecycleChecks(input: {
   parentId: string;
   leadId: string;
   allowedInterruptedRuns?: string[];
+  /** Failed runs whose work a later run on the same task verifiably resumed (reliability scenarios). */
+  recoveredRuns?: readonly string[];
   /** Agents that may execute on the parent; defaults to the lead (reassignment adds the new owner). */
   parentAgentIds?: readonly string[];
   requireRemoteRestart?: boolean;
@@ -310,7 +313,8 @@ export function storyLifecycleChecks(input: {
     ),
     check(
       "successful-runs",
-      executed.every((r) => r.status === "succeeded" || isExpectedStoryInterruption(r, allowed)),
+      executed.every((r) => r.status === "succeeded" || isExpectedStoryInterruption(r, allowed)
+        || (input.recoveredRuns ?? []).includes(r.id)),
       "Only the expected stop or process-loss outcome of an injected interruption is exempt.",
     ),
     check(

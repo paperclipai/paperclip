@@ -48,6 +48,17 @@ export function runsCarrying(runs: readonly StoryRun[], commentId: string): Stor
 export const successfulDeliveries = (runs: readonly StoryRun[], commentId: string) =>
   runsCarrying(runs, commentId).filter(run => run.status === "succeeded");
 
+/**
+ * Failed or interrupted runs whose task a later run completed successfully: the
+ * product rule's "resumed automatically or through a working Retry". The
+ * resumption checks separately fail send-a-message blockers and dead Retries.
+ */
+export function recoveredRunIds(runs: readonly StoryRun[]): string[] {
+  return executedRuns(runs).filter(run => ["failed", "timed_out", "cancelled", "interrupted"].includes(run.status)
+    && runs.some(later => later.status === "succeeded" && runIssueId(later) === runIssueId(run)
+      && ms(later.startedAt) >= ms(run.finishedAt))).map(run => run.id);
+}
+
 const earliest = (runs: readonly StoryRun[]) => [...runs].sort((a, b) => ms(a.startedAt) - ms(b.startedAt))[0];
 
 /** Pairs of runs that executed on the same task at the same time. */

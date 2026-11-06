@@ -7,7 +7,7 @@ import {
   everydayReliabilityTasks, isEverydayReliabilityCase,
 } from "./everyday-reliability-cases.js";
 import {
-  completeStepLines, concurrentExecutors, gradeInterruptRedirect, gradeLongSilentCommand, gradeQueueSteer,
+  completeStepLines, concurrentExecutors, recoveredRunIds, gradeInterruptRedirect, gradeLongSilentCommand, gradeQueueSteer,
   gradeQueuedAcrossRestart, gradeReassignMidrun, gradeResumptionRule, gradeThreeTurnRevise, gradeTreePauseRelease,
   requiresUserMessage,
 } from "./everyday-reliability.js";
@@ -31,7 +31,8 @@ describe("reliability selection stays explicit", () => {
 
   it("selects the whole reliability set only through its group", () => {
     const selected = selectRunnerExecutions(parseRunnerSelectors(["--suite", "everyday-workflows", "--group", "reliability"]));
-    expect(selected.map(execution => execution.id).sort()).toEqual(everydayReliabilityExecutionIds("everyday-workflows").sort());
+    expect(selected.map(execution => execution.id).sort())
+      .toEqual(everydayReliabilityExecutionIds("everyday-workflows", everydayReliabilityFacadeProfileIds).sort());
     expect(selected).toHaveLength(reliabilityCellCount);
     expect(selected.every(execution => execution.environment.id === "daytona")).toBe(true);
   });
@@ -49,7 +50,7 @@ describe("reliability selection stays explicit", () => {
 
   it("allows a single case or exact ID and keeps the cells discoverable in --list", () => {
     expect(selectRunnerExecutions(parseRunnerSelectors(["--suite", "everyday-workflows", "--case", "long-silent-command"]))
-      .map(execution => execution.profile.id).sort()).toEqual(["runner-acpx-grok", "runner-acpx-kimi", "runner-acpx-pi", "runner-codex"]);
+      .map(execution => execution.profile.id).sort()).toEqual(["runner-codex", ...everydayReliabilityFacadeProfileIds].sort());
     expect(selectRunnerExecutions(parseRunnerSelectors(["--id", "everyday-workflows.runner-codex.daytona.queue-steer"]))).toHaveLength(1);
     expect(reliable(selectRunnerExecutions(parseRunnerSelectors(["--list"])))).toHaveLength(reliabilityCellCount);
     expect(selectRunnerExecutions(parseRunnerSelectors(["--suite", "everyday-workflows", "--group", "slow"]))
@@ -83,9 +84,9 @@ describe("reliability selection stays explicit", () => {
   it("requires the facade credentials before provider spend and records each soak signature", () => {
     const credentials = (profile: string) => runnerMatrix.find(execution =>
       execution.id === `everyday-workflows.${profile}.daytona.long-silent-command`)!.requiredCredentials;
-    expect(credentials("runner-acpx-grok")).toEqual(["XAI_API_KEY", "DAYTONA_API_KEY"]);
-    expect(credentials("runner-acpx-kimi")).toEqual(["KIMI_API_KEY", "DAYTONA_API_KEY"]);
-    expect(credentials("runner-acpx-pi")).toEqual(["OPENROUTER_API_KEY", "DAYTONA_API_KEY"]);
+    const facadeCredentials: Record<string, string> = { "runner-acpx-grok": "XAI_API_KEY", "runner-acpx-kimi": "KIMI_API_KEY", "runner-acpx-pi": "OPENROUTER_API_KEY" };
+    for (const profile of everydayReliabilityFacadeProfileIds)
+      expect(credentials(profile)).toEqual([facadeCredentials[profile], "DAYTONA_API_KEY"]);
     expect(Object.keys(everydayReliabilitySignatures).sort()).toEqual([...everydayReliabilityCaseIds].sort());
     for (const task of everydayReliabilityTasks)
       expect(task.buildPrompt("sample")).not.toMatch(/finish_task|paperclip_finish|PATCH|mark .*done|api\/issues/i);
@@ -108,6 +109,16 @@ describe("reliability interruption bookkeeping", () => {
 });
 
 describe("product rule: resume automatically or offer a Retry that works", () => {
+  it("treats a failure as recovered only when a later run on the same task succeeds", () => {
+    const lost = run("lost", { status: "failed", errorCode: "runner_lost", finishedAt: at(60) });
+    expect(recoveredRunIds([lost, run("retry", { startedAt: at(70), finishedAt: at(120) })])).toEqual(["lost"]);
+    expect(recoveredRunIds([lost])).toEqual([]);
+    expect(recoveredRunIds([lost, run("other", { nativeIssueId: "child", startedAt: at(70) })])).toEqual([]);
+    const lifecycle = { issues: [{ id: "parent", companyId: "company", title: "t", status: "done" }], parentId: "parent", leadId: "lead",
+      runs: [lost, run("retry", { startedAt: at(70), finishedAt: at(120) })] };
+    expect(failed(storyLifecycleChecks(lifecycle))).toEqual(["successful-runs"]);
+    expect(failed(storyLifecycleChecks({ ...lifecycle, recoveredRuns: ["lost"] }))).toEqual([]);
+  });
   it("passes automatic resumption", () => expect(failed(gradeResumptionRule({ observations: [], retryClicks: [] }))).toEqual([]));
   it("fails a send-a-message blocker, a dead Retry, a repeated Retry, and a stall", () => {
     const blocker = { at: at(1), issueId: "parent", blocker: { cause: "x", nextAction: "Saved work recovered. Send a message to continue.", canRetry: false } };

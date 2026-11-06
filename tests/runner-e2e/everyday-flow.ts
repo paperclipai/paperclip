@@ -93,6 +93,8 @@ export interface EverydayEvidence {
   agents: Row[];
   downloads: Row[];
   allowedInterruptedRuns: string[];
+  /** Reliability scenarios: failures a later run on the same task verifiably resumed. */
+  recoveredRuns?: string[];
   remoteRestart?: RemoteRestartEvidence;
   remoteWorkspaceStorage?: RemoteWorkspaceStorageEvidence;
   reliability?: { signature: string; observed: string; fixes: readonly string[] };
@@ -384,7 +386,7 @@ export async function runEverydayFlow(input: Input) {
           )),
       reject: (state) => {
         if (state.runs.length > 12) return "bounded execution count exceeded";
-        const bad = storyUnexpectedRunFailure(state.runs, ev.allowedInterruptedRuns);
+        const bad = storyUnexpectedRunFailure(state.runs, ev.allowedInterruptedRuns, ev.recoveredRuns);
         if (bad)
           return `native execution failed ${bad.errorCode ?? ""}: ${bad.error ?? bad.status}`;
         if (
@@ -800,6 +802,7 @@ export async function runEverydayFlow(input: Input) {
         helperAgentId, workspacePath: input.workspacePath, deadlineAt: input.deadlineAt, parentId: parent!.id,
         refresh, reply: message => reply(message), openParent,
         restart: () => input.restart(), note, allowInterrupted: runId => { ev.allowedInterruptedRuns.push(runId); },
+        allowRecovered: runIds => { ev.recoveredRuns = [...runIds]; },
         evidence: input.evidence, capture: input.capture });
     }
     if (caseId === "agent-review-handoff") {
@@ -1638,7 +1641,8 @@ export async function runEverydayFlow(input: Input) {
         .filter(
           (r) =>
             !isStoryWorkspaceDeferral(r) &&
-            !isExpectedStoryInterruption(r, ev.allowedInterruptedRuns),
+            !isExpectedStoryInterruption(r, ev.allowedInterruptedRuns) &&
+            !(ev.recoveredRuns ?? []).includes(r.id),
         )
         .every(
           (r) =>
@@ -1685,6 +1689,7 @@ export async function runEverydayFlow(input: Input) {
         parentId: parent!.id,
         leadId: fixtures.agent.id,
         allowedInterruptedRuns: ev.allowedInterruptedRuns,
+        recoveredRuns: ev.recoveredRuns,
         parentAgentIds: reliability?.parentAgentIds,
         requireRemoteRestart,
         remoteRestart: ev.remoteRestart,
