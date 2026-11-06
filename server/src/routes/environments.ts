@@ -19,7 +19,10 @@ import {
 import { conflict, forbidden, unprocessable } from "../errors.js";
 import { isCloudManagedInstance } from "../services/cloud-instance.js";
 import { getManagedInstanceConfig, SECRET_LIKE_CONFIG_KEY_PATTERN } from "../services/managed-config.js";
-import { MANAGED_PLUGIN_ENVIRONMENT_MARKER_KEY } from "../services/managed-plugin-environments.js";
+import {
+  MANAGED_PLUGIN_ENVIRONMENT_MARKER_KEY,
+  managedPluginEnvironmentMarker,
+} from "../services/managed-plugin-environments.js";
 import { parseExecutionPolicyBootstrapEnv } from "../services/execution-policy-bootstrap.js";
 import { isExecutionForcedToKubernetes } from "../services/execution-allowlist.js";
 import { validate } from "../middleware/validate.js";
@@ -90,17 +93,16 @@ function redactSecretLikeConfigKeys(value: Record<string, unknown>): Record<stri
   const result: Record<string, unknown> = {};
   for (const [key, child] of Object.entries(value)) {
     if (SECRET_LIKE_CONFIG_KEY_PATTERN.test(key)) continue;
-    if (isPlainRecord(child)) {
-      result[key] = redactSecretLikeConfigKeys(child);
-    } else if (Array.isArray(child)) {
-      result[key] = child.map((element) =>
-        isPlainRecord(element) ? redactSecretLikeConfigKeys(element) : element,
-      );
-    } else {
-      result[key] = child;
-    }
+    result[key] = redactSecretLikeConfigValue(child);
   }
   return result;
+}
+
+/** Objects and arrays at any depth, including arrays nested in arrays. */
+function redactSecretLikeConfigValue(value: unknown): unknown {
+  if (isPlainRecord(value)) return redactSecretLikeConfigKeys(value);
+  if (Array.isArray(value)) return value.map(redactSecretLikeConfigValue);
+  return value;
 }
 
 /**
@@ -183,6 +185,20 @@ function isManagedSandboxProvisioningConfigured(): boolean {
 }
 
 /**
+ * Whether the managed-config document declares the plugin entry this row's
+ * marker names. Fails closed like `isManagedSandboxProvisioningConfigured`.
+ */
+function isManagedPluginEnvironmentDeclared(marker: string): boolean {
+  try {
+    return (getManagedInstanceConfig()?.pluginEnvironments ?? []).some(
+      (spec) => managedPluginEnvironmentMarker(spec) === marker,
+    );
+  } catch {
+    return true;
+  }
+}
+
+/**
  * Whether this row occupies a provisioner-owned environment slot whose
  * platform markers are LIVE state — i.e. some platform code path converges
  * the markers on this exact row, so a marker here is never a stale
@@ -196,6 +212,9 @@ function isManagedSandboxProvisioningConfigured(): boolean {
  *   owned only while a managed-sandbox bootstrap path is configured —
  *   `ensureManagedSandboxEnvironment` then adopts and refreshes whichever
  *   row holds the slot on every boot.
+ * - The row of a managed-config plugin entry (its
+ *   `managedPluginEnvironment` marker) while the document declares that
+ *   entry: `applyManagedEnvironments` converges the markers on it every boot.
  * - Any sandbox row bearing the legacy kubernetes marker while the
  *   persisted instance execution policy forces kubernetes:
  *   `findKubernetesEnvironment` selects marked rows (newest first) for
@@ -214,6 +233,10 @@ async function isPlatformSlotEnvironment(
   options: { isForcedKubernetesExecution: () => Promise<boolean> },
 ): Promise<boolean> {
   if (environment.driver === "local") return true;
+  if (environment.driver === "plugin") {
+    const pluginMarker = environment.metadata?.[MANAGED_PLUGIN_ENVIRONMENT_MARKER_KEY];
+    return typeof pluginMarker === "string" && isManagedPluginEnvironmentDeclared(pluginMarker);
+  }
   if (environment.driver !== "sandbox") return false;
   if (
     environment.metadata?.managedByPaperclip === true &&

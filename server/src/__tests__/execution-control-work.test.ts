@@ -62,6 +62,41 @@ describe("execution-control lifecycle", () => {
     expect(run).toHaveBeenCalledTimes(runs + 1);
     expect(c.nextWakeAt()).toBeNull();
   });
+  it.each(["empty", "pending", "concurrent"] as const)("settles only proved-empty replacement notifications during drain (%s)", async kind => {
+    vi.useFakeTimers(); const owner = fakeOwner(); let draining = false;
+    const c = coordinator(owner, () => !draining);
+    const run = vi.fn(async () => {}), next = vi.fn(async (): Promise<number | null> => null);
+    await registerExecutionControlWork(c, [{ queue: DELIVERY_QUEUES.executionReplacement, run, next,
+      settleEmptyWhilePaused: true }]).ready;
+    const before = idleWorkSnapshot().active;
+    draining = true;
+    let release: (() => void) | undefined;
+    if (kind === "pending") next.mockResolvedValue(Date.now() + 15_000);
+    if (kind === "concurrent") next.mockImplementationOnce(() => new Promise(resolve => {
+      release = () => resolve(null);
+    }));
+    await owner.transaction(tx => notifyDeliveryWork(tx, DELIVERY_QUEUES.executionReplacement));
+    await vi.advanceTimersByTimeAsync(15_000);
+    if (kind === "concurrent") {
+      expect(release).toBeTypeOf("function");
+      next.mockResolvedValue(Date.now() + 15_000);
+      await owner.transaction(tx => notifyDeliveryWork(tx, DELIVERY_QUEUES.executionReplacement));
+      release!(); await vi.advanceTimersByTimeAsync(1);
+    }
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(idleWorkSnapshot().active).toBe(before + (kind === "empty" ? 0 : 1));
+    const reads = next.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(next).toHaveBeenCalledTimes(reads);
+    expect(run).toHaveBeenCalledTimes(1);
+    if (kind !== "empty") {
+      draining = false; next.mockResolvedValue(null);
+      await vi.advanceTimersByTimeAsync(15_000);
+      expect(run).toHaveBeenCalledTimes(2);
+    }
+    expect(idleWorkSnapshot().active).toBe(before);
+    expect(c.nextWakeAt()).toBeNull();
+  });
   it("keeps a change arriving during a sweep and does not overlap it", async () => {
     vi.useFakeTimers(); const owner = fakeOwner(); const c = coordinator(owner);
     let release!: () => void;

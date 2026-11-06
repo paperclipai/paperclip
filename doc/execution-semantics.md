@@ -1054,6 +1054,9 @@ Fallback inventory is limited to 100,000 entries, 64 standalone repositories,
 1 MiB of configuration, 1,024 settings and 256 refspec/merge entries. Controller
 verification and archive normalization share a two-minute cancellation deadline.
 These limits reject excessive work before publication and keep the source retained.
+Inventory rechecks cancellation after file identity validation and before opening
+the read stream. An expired deadline rejects the capture without an unhandled
+stream error or a successful preservation receipt.
 
 Shallow and partial Git checkouts retain their available object files instead
 of asking a mirror clone to transfer promised or index-only objects. Capture
@@ -2328,6 +2331,17 @@ predecessor/successor receipts for every earlier owner. Unrelated, live, or
 incompletely linked owners remain ambiguous. The run then fails closed
 with `runner_harness_state_mismatch: backup_without_reusable_lease`.
 
+A Runner close can also fail to prove suspension after the control plane
+accepted the run's result (`native.post_result_failure` with category
+`runner_settlement_incomplete`). The provider work is complete, so this is not
+a run failure. The executor first proves that it still holds the exact,
+unexpired finalization lease and that the result is accepted. It then releases
+that lease to finalization. A run on a local workspace has nothing to copy
+back. Paperclip finalizes its accepted result and completes the run from that
+result through the ordinary completion path. Load or a slow suspend command
+cannot turn an accepted result into `adapter_failed`. A run with a synced or
+remote workspace keeps its copy-back retry path.
+
 A per-turn sandbox turn can finish through recovery without a Runner
 suspension receipt or failover backup on the controller. For example, its
 post-turn checkpoint copy can fail on a full sandbox disk. The controller
@@ -2415,8 +2429,11 @@ run, release its environment, or start another provider. Lease expiry alone does
 not authorize that stale preparation to take ownership; normal recovery must
 establish a new claim first.
 
-An exact local Codex restart can restore the conversation after losing its active
-turn. Runnerd records this as `provider_turn_lost_on_restore`, with no invented
+An exact local Codex, OpenCode, or ACPX restart can restore the conversation after
+losing its active turn. ACPX first requires the original provider lifetime to lose
+its fence quorum; without that proof, or with an accepted result, unanswered
+runtime request, or active goal, it closes the session as before. Cursor Cloud
+agents run remotely and are excluded. Runnerd records this as `provider_turn_lost_on_restore`, with no invented
 task result. The admitted restart attempt may send one continuation in that same
 conversation. It preserves the workspace and asks the agent to reconcile unfinished
 commands and external actions before proceeding. It does not resend the task or
@@ -2640,7 +2657,10 @@ leases before the task can continue. Once these checks pass, the server retires
 its own unchanged bootstrap-failure block and schedules one bounded retry.
 Startup also discovers this obligation when file recovery completed before the
 restart. A pending Retry or saved message owns its continuation instead of
-starting a competing automatic attempt. If a replacement was already withheld
+starting a competing automatic attempt. Explicit admission uses the same verified
+preparation proof, including the certified failed `process_lost` form. A prior
+unstarted retry refused by the execution gate remains historical evidence; its
+host dispatch receipt must also verify before the new turn can start. If a replacement was already withheld
 by the workspace gate before execution, continuation retains that cancelled row
 and uses its existing predecessor claim and remaining failure budget.
 Recovery adopts that withheld row only when it is the source's sole retry child.
@@ -3268,6 +3288,10 @@ waiting for provider startup. An abrupt controller exit during session opening
 can then recover through the same exact process-identity checks as an active turn.
 
 Both graceful and hot restarts detach the old controller from native sessions.
+A graceful shutdown can also suspend a restart-recovery claim whose execution
+has not yet reached provider dispatch. That execution has lost its authority:
+it leaves the run running, its budget hold held and its workspace unmarked, and
+the next controller adopts the same run. It does not settle the run as failed.
 Remote Runner processes use their authenticated connection lease as the bound
 on disconnected lifetime. The controller's shorter connection-recovery budget
 limits its own attempt; it must not terminate the remote owner while another
@@ -3629,6 +3653,34 @@ and final dispatch gates. Queued and final native replacement dispatch also
 re-read dependency readiness, since new dependencies need not change the
 displayed task status. Old blocked rows without a receipt remain held; no
 historical status backfill is performed.
+
+Older native executors recorded the local callback-listener startup guard as
+`native_session_interrupted`. A saved exact guard outcome can enter the same
+bounded safe-replacement path after restart. This requires the first attempt,
+an unused provider-session identity, matching saved execution bindings, no
+provider events, checkpoint, admission receipt, tool call, or cancellation, and
+the existing current snapshot and confirmed stop receipts. A generic error or
+a pending provider-pack receipt alone grants no recovery authority. The same
+transaction can retire that run's completed file-preservation hold only when
+its bound recovery and finalization receipts prove completion. Unrelated holds,
+later task blocks, normal dispatch admission, and the three-attempt budget remain
+effective.
+
+Historical replacement discovery reads at most 100 candidates per pass and
+keeps a cursor only for the remaining scan. A work notification preserves forward
+progress and requests a final rescan, so held earlier rows cannot hide a later
+eligible run. Completed scans of held history become quiet. Final snapshot
+publication, verified lease cleanup, local process-stop proof, completed workspace
+recovery, and dispatch eligibility changes notify the existing replacement worker
+in their transactions. A cleared historical interaction only requests another
+proof check; it grants no new continuation authority. Source provider effects,
+task pause or cancellation, and the original authority checks still prevent replay.
+Temporary decision failures retain the existing worker's retry and advance the
+bounded cursor, with a forced rescan of earlier failures. A failed page cannot
+hide later ready runs. During drain, the initialized replacement worker can read
+readiness once per notification generation to discharge an empty notification
+without starting replacement. Concrete pending work and changes arriving during
+that read remain outstanding. Restart reconstructs the scan from durable records.
 
 For legacy GitHub input without a saved App ID or its own response receipt,
 Task Retry may prove the endpoint's earlier non-null App claim from a processed

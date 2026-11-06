@@ -1,11 +1,11 @@
 import { nextWorkspaceRecoveryAt } from "./system-recovery.js";
-import { and, asc, eq, isNotNull, ne, sql } from "drizzle-orm";
+import { and, asc, eq, isNotNull, sql } from "drizzle-orm";
 import { adapterAuthSessions, heartbeatRuns, issueRecoveryActions, nativeRunFinalizations, type Db } from "@paperclipai/db";
 import type { createDeliveryWorkCoordinator } from "./delivery-work-coordinator.js";
 import { type DeliveryQueue } from "./delivery-work-notifications.js";
 import { EXECUTION_RECONCILIATION_INTERVAL_MS } from "./execution-control-deadline.js";
 import { obsoleteExecutionConversationHold, unresolvedExecutionDispositions } from "./execution-recovery-resolution.js";
-import { nativeReplacementPending } from "./native-runtime/native-safe-replacement.js";
+import { hasPendingNativeReplacements, nativeReplacementPending } from "./native-runtime/native-safe-replacement.js";
 import { nextAbandonedNativeOwnerReleaseAt } from "./native-runtime/native-failed-run-owner-release.js";
 import { hasPendingPauseResume } from "./issue-tree-resume.js";
 
@@ -16,6 +16,7 @@ export function registerExecutionControlWork(
     run: () => Promise<unknown>;
     next: () => Promise<number | null>;
     onSettled?: () => void;
+    settleEmptyWhilePaused?: boolean;
   }>,
   canRun: () => boolean = () => true,
 ) {
@@ -24,6 +25,7 @@ export function registerExecutionControlWork(
     let reconciled = 0;
     let next: number | null = null;
     let earliestRunAt = 0;
+    let pausedGeneration = 0, pausedPending = true;
     const worker = coordinator.register(duty.queue, {
       retryMs: EXECUTION_RECONCILIATION_INTERVAL_MS,
       pausePassiveMaintenance: true,
@@ -42,7 +44,18 @@ export function registerExecutionControlWork(
         next = deadline === null ? null : Math.max(deadline, earliestRunAt);
         reconciled = generation;
       },
-      hasPending: async () => reconciled !== requested,
+      hasPending: async (runAllowed = true) => {
+        if (reconciled === requested) return false;
+        if (runAllowed || !duty.settleEmptyWhilePaused || !canRun() || reconciled === 0) return true;
+        if (pausedGeneration !== requested) {
+          const generation = requested;
+          const deadline = await duty.next();
+          if (generation !== requested) return true;
+          pausedGeneration = generation; pausedPending = deadline !== null; next = deadline;
+          if (!pausedPending) reconciled = generation;
+        }
+        return pausedPending;
+      },
       nextRunAt: () => next,
     });
     return { ...worker, wake: () => { requested += 1; worker.wake(); } };
@@ -75,15 +88,13 @@ export function executionControlSchedule(db: Db) {
     },
     async replacement() {
       const [legacy, quota] = await Promise.all([
-        db.select({ id: heartbeatRuns.id }).from(heartbeatRuns)
-          .innerJoin(nativeRunFinalizations, eq(nativeRunFinalizations.runId, heartbeatRuns.id))
-          .where(and(nativeReplacementPending(), ne(nativeRunFinalizations.failureCode, "native_provider_usage_limit"))).limit(1),
+        hasPendingNativeReplacements(db),
         db.select({ at: nativeRunFinalizations.nextAttemptAt }).from(heartbeatRuns)
           .innerJoin(nativeRunFinalizations, eq(nativeRunFinalizations.runId, heartbeatRuns.id))
           .where(and(nativeReplacementPending(), eq(nativeRunFinalizations.failureCode, "native_provider_usage_limit"),
             sql`coalesce(${nativeRunFinalizations.failureDetail}->>'replacementWaitingForCleanup', 'false') <> 'true'`)),
       ]);
-      if (legacy.length || quota.some(row => row.at === null)) return retry();
+      if (legacy || quota.some(row => row.at === null)) return retry();
       return deadline(quota.map(row => row.at));
     },
     async continuation() {

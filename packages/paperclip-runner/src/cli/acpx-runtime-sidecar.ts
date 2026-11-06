@@ -176,6 +176,12 @@ let openParams: AcpxSidecarOpenParams | null = null;
 let claudeCompactionCount = 0;
 let runId: string | null = null;
 let turnId: string | null = null;
+/**
+ * A restored session runs in a new provider process whose MCP request ids
+ * restart. The controller keys semantic calls by run and call id, so prefix
+ * this process's ids to keep them distinct from calls earlier in the run.
+ */
+let callIdNamespace: string | null = null;
 let activeCopilotEvidence: CopilotToolEvidence | undefined;
 let sequence = 0;
 let requestSequence = 0;
@@ -843,7 +849,10 @@ async function waitForTool(call: RunnerToolCall): Promise<unknown> {
   if (!activeTurnId || !activeRunId || call.signal.aborted) {
     throw new Error("ACPX tool call is not bound to an active turn");
   }
-  const callId = boundedIdentity(call.callId, "callId");
+  const providerCallId = boundedIdentity(call.callId, "callId");
+  const callId = callIdNamespace === null
+    ? providerCallId
+    : boundedIdentity(`${callIdNamespace}:${providerCallId}`, "callId");
   if (tools.has(callId) || normalizingTools.has(callId)) throw new Error("ACPX tool call is duplicated");
   const operationId = boundedIdentity(call.tool, "operationId");
   if (tools.size + normalizingTools.size >= MAX_PENDING_TOOLS) {
@@ -1803,6 +1812,9 @@ async function finishOpenedHost(openedHost: AcpxRuntimeHost, params: AcpxSidecar
   const opened = await verifyOpenedAcpxSidecarHost(openedHost, sanitizeRuntimeStatus, undefined, retainFailedAdmissionCleanup);
   host = openedHost;
   openParams = params;
+  callIdNamespace = params.expectedIdentity === undefined
+    ? null
+    : `r${randomUUID().replaceAll("-", "").slice(0, 12)}`;
   emit("runtime.process", { role: "sidecar", pid: process.pid, processGroupId: null, startedAt: new Date().toISOString() });
   return { identity: acpxProviderSessionIdentity(openedHost.identity(), openedHost.binding()), sidecarPid: process.pid,
     status: opened.status, turnControls: openedHost.steeringCapability() ?? { steering: false, queuedFollowUp: false } };
