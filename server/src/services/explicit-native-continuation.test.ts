@@ -2350,6 +2350,29 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
     expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.sourceRunId)))[0])
       .toEqual(coordinatorBefore);
   });
+  it.each(["failed", "cancelled"] as const)("sends a saved follow-up once after a %s native source and a task marked done", async status => {
+    const f = await committedQueuedSendFixture();
+    await db.update(heartbeatRuns).set({ status }).where(eq(heartbeatRuns.id, f.sourceRunId));
+    await db.update(nativeRunFinalizations).set({ phase: "terminal_failure" })
+      .where(eq(nativeRunFinalizations.runId, f.sourceRunId));
+    const [sourceBefore] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.sourceRunId));
+    await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, status: "running" });
+    const heartbeat = heartbeatService(db);
+    await heartbeat.resumeQueuedCommentInterrupt(f.companyId, f.requestId);
+    await heartbeat.resumeQueuedCommentInterrupt(f.companyId, f.requestId);
+    const [receipt] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, f.requestId));
+    expect(receipt).toMatchObject({ status: "coalesced", runId: expect.any(String) });
+    const successors = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId),
+      eq(heartbeatRuns.issueId, f.issueId), sql`${heartbeatRuns.id} <> ${f.sourceRunId}`));
+    expect(successors).toHaveLength(1);
+    const envelope = await buildExecutionContinuation({ db, companyId: f.companyId, issueId: f.issueId,
+      agentId: f.agentId, runId: successors[0].id, context: successors[0].contextSnapshot!,
+      summary: null, exposeLowTrustRaw: false });
+    expect(envelope.messages).toEqual(expect.arrayContaining([expect.objectContaining({ id: f.commentId,
+      body: "Show the unread count as a number" })]));
+    expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0]).toMatchObject({ status: "todo" });
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.sourceRunId)))[0]).toEqual(sourceBefore);
+  });
   it("blocks explicit Send on a done task before dispatch when its isolated worktree has no source", async () => {
     const f = await committedQueuedSendFixture();
     const settings = instanceSettingsService(db), experimental = await settings.getExperimental();

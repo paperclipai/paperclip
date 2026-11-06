@@ -3826,7 +3826,10 @@ result to finish committing, even after workspace export recovery clears its
 execution blocker. Committed successful results no longer create continuation
 waits from recovered-export history. A saved Send intent can also continue a task
 that this result marked `done`. Admission reopens that task in the same transaction
-that creates its successor and consumes the queue. Automatic stale input and
+that creates its successor and consumes the queue. If a person marked the task
+`done` after a failed or cancelled run, the history preflight validates the
+prospective reopened status only after verifying the saved Send intent and
+settled source; it does not reopen the task during a dry run. Automatic stale input and
 cancelled tasks keep their existing status gates. Applied conversation resets retire older
 non-workspace holds; active workspace holds remain authoritative across the
 boundary. Workspace recovery holds still block the reset. Queue authorization

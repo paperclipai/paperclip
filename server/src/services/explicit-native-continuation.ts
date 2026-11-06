@@ -524,6 +524,7 @@ export async function admitExplicitNativeContinuation(input: {
   // Prove required task history is available before retiring any hold.
   await buildExecutionContinuation({ db, companyId, issueId, agentId,
     context: { previousRunId: previous.id, wakeCommentId: commentId },
+    ...(nativeQueuedSend && task.status === "done" ? { prospectiveTaskStatus: "todo" as const } : {}),
     summary: null, exposeLowTrustRaw: false });
   const continuation = { previousRunId: previous.id, commentId, ...(retry ? { failedRunId: input.failedRunId! } : {}),
     ...(queuedInterrupt ? { queuedCommentInterruptId: input.queuedCommentInterruptId! } : {}),
