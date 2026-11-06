@@ -1074,7 +1074,7 @@ instance or qualify access as an agent.
 Prepare a new or updated agent worktree with one command:
 
 ```sh
-pnpm agent:preflight
+node scripts/agent-preflight.mjs
 ```
 
 It does what `pnpm install --frozen-lockfile`, the Runner's `ensure:eval-build-deps`,

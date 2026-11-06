@@ -5,7 +5,6 @@
   "scripts": {
     "perf:workspace-admission": "node --import ./server/node_modules/tsx/dist/loader.mjs server/scripts/benchmark-workspace-admission.ts",
     "postinstall": "node scripts/link-plugin-dev-sdk.mjs",
-    "agent:preflight": "node scripts/agent-preflight.mjs",
     "preflight:workspace-links": "node cli/node_modules/tsx/dist/cli.mjs scripts/ensure-workspace-package-links.ts",
     "dev": "pnpm --filter @paperclipai/server exec tsx ../scripts/dev-runner.ts watch",
     "dev:watch": "pnpm --filter @paperclipai/server exec tsx ../scripts/dev-runner.ts watch",

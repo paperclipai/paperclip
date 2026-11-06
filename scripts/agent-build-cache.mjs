@@ -166,6 +166,9 @@ export function readEntry(cache, kind, key) {
  */
 export function publishEntry(cache, kind, key, populate, { replace = () => false, meta = {} } = {}) {
   if (!cache) return false;
+  // Check before copying anything, so an unchanged run does not clone a tree to discard it.
+  const current = readEntry(cache, kind, key);
+  if (current && !replace(current.meta)) return false;
   const kindDirectory = path.join(cache, kind);
   mkdirSync(kindDirectory, { recursive: true });
   const temporary = path.join(kindDirectory, `.tmp-${randomUUID()}`);

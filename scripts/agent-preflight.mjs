@@ -25,11 +25,11 @@
 // traceability and similar). They depend only on the same inputs, and CI runs
 // them; run `pnpm --filter @paperclipai/paperclip-runner build` for them locally.
 //
-// Usage: pnpm agent:preflight [--no-cache] [--force-install] [--skip-rust-debug] [--explain]
+// Usage: node scripts/agent-preflight.mjs [--no-cache] [--force-install] [--skip-rust-debug] [--explain]
 
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -74,7 +74,8 @@ function stateDirectory(root) {
 // --- install ---------------------------------------------------------------
 
 export function installKey(root, toolchain) {
-  const tracked = spawnSync("git", ["ls-files", "-z", "--", "pnpm-lock.yaml", "pnpm-workspace.yaml", ".npmrc",
+  // Untracked, non-ignored manifests count too: a new workspace package needs an install.
+  const tracked = spawnSync("git", ["ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", "pnpm-lock.yaml", "pnpm-workspace.yaml", ".npmrc",
     ":(glob)**/package.json", "patches"], { cwd: root, encoding: "utf8" });
   if (tracked.status !== 0) return null;
   const files = tracked.stdout.split("\0").filter(Boolean);
@@ -147,6 +148,12 @@ function runnerDistKey(digest, toolchain) {
   return makeKey("runner-dist", { digest, toolchain });
 }
 
+// Copilot assets live outside dist, and the build installs them after compiling.
+// The installer is idempotent, so a skipped or restored build runs it too.
+function installCopilotAssets(packageRoot) {
+  exec(process.execPath, ["scripts/install-copilot-assets.mjs"], packageRoot);
+}
+
 function stampRestoredBuild(root, packageRoot, inputs, entryKey) {
   const outputs = collectBuildOutputFiles(packageRoot);
   writeBuildInputsStamp(buildInputsStampPath(packageRoot), { ...inputs, platform: process.platform, arch: process.arch,
@@ -159,14 +166,14 @@ function runnerBuildStep(root, cache, toolchain) {
   const assessment = assessRunnerBuild({ repoRoot: root, packageRoot });
   const inputs = assessment.inputs ?? computeBuildInputsDigest(root);
   const key = runnerDistKey(inputs.digest, toolchain);
-  const publish = outputs => publishEntry(cache, "runner-dist", key, directory => {
-    for (const tree of DIST_TREES) cloneInto(path.join(root, tree), path.join(directory, tree));
-  }, { meta: { outputs } });
-  if (assessment.current) {
-    // A worktree that built before the cache existed still shares its build.
-    const published = !readEntry(cache, "runner-dist", key) && publish(assessment.stamp.outputs);
-    return { step: "runner-build", action: "skipped", reason: assessment.detail, published };
+  // The Runner's stamp does not record the compiler or flags, so the preflight
+  // keeps its own record of the full key the current build was made with.
+  const keyFile = path.join(stateDirectory(root), "runner-build.json");
+  if (assessment.current && readJson(keyFile)?.key === key) {
+    installCopilotAssets(packageRoot);
+    return { step: "runner-build", action: "skipped", reason: assessment.detail };
   }
+  rmSync(keyFile, { force: true });
   const entry = readEntry(cache, "runner-dist", key);
   if (entry) {
     const started = Date.now();
@@ -183,9 +190,9 @@ function runnerBuildStep(root, cache, toolchain) {
     const changed = cloned && findChangedBuildOutput(packageRoot, entry.meta.outputs ?? []);
     const missing = expectedBuildOutputs(packageRoot).filter(file => !existsSync(file));
     if (cloned && !changed && missing.length === 0 && computeBuildInputsDigest(root).digest === inputs.digest) {
-      // Copilot assets live outside dist; the build installs them after compiling.
-      exec(process.execPath, ["scripts/install-copilot-assets.mjs"], packageRoot);
+      installCopilotAssets(packageRoot);
       stampRestoredBuild(root, packageRoot, inputs, key);
+      writeJson(keyFile, { key });
       return { step: "runner-build", action: "restored", seconds: (Date.now() - started) / 1000 };
     }
     for (const tree of DIST_TREES) removeTree(path.join(root, tree));
@@ -193,7 +200,11 @@ function runnerBuildStep(root, cache, toolchain) {
   }
   const seconds = exec("pnpm", ["--filter", "@paperclipai/paperclip-runner", "build"], root);
   const after = assessRunnerBuild({ repoRoot: root, packageRoot });
-  const published = after.current && after.stamp.digest === inputs.digest && publish(after.stamp.outputs);
+  if (!after.current || after.stamp.digest !== inputs.digest) return { step: "runner-build", action: "built", seconds };
+  writeJson(keyFile, { key });
+  const published = publishEntry(cache, "runner-dist", key, directory => {
+    for (const tree of DIST_TREES) cloneInto(path.join(root, tree), path.join(directory, tree));
+  }, { meta: { outputs: after.stamp.outputs } });
   return { step: "runner-build", action: "built", seconds, published };
 }
 
@@ -224,13 +235,19 @@ function debugBinsStep(root, cache, toolchain, bins) {
   const entry = readEntry(cache, "runner-debug-bins", key);
   if (entry && bins.every(bin => existsSync(path.join(entry.directory, bin)))) {
     const started = Date.now();
-    mkdirSync(debug, { recursive: true });
-    for (const bin of bins) {
-      removeTree(path.join(debug, bin));
-      cloneInto(path.join(entry.directory, bin), path.join(debug, bin));
+    try {
+      mkdirSync(debug, { recursive: true });
+      for (const bin of bins) {
+        removeTree(path.join(debug, bin));
+        cloneInto(path.join(entry.directory, bin), path.join(debug, bin));
+      }
+      writeJson(stampFile, { key, bins: states() });
+      return { step: "debug-bins", action: "restored", seconds: (Date.now() - started) / 1000 };
+    } catch (error) {
+      // A concurrent prune can remove the entry mid-restore; build instead.
+      rmSync(stampFile, { force: true });
+      log(`could not restore cached debug binaries: ${error.message.split("\n")[0]}`);
     }
-    writeJson(stampFile, { key, bins: states() });
-    return { step: "debug-bins", action: "restored", seconds: (Date.now() - started) / 1000 };
   }
   const seconds = exec("cargo", ["build", "--manifest-path", "runner/Cargo.toml", "--locked", "--workspace", "--bins"],
     path.join(root, RUNNER_PACKAGE));
