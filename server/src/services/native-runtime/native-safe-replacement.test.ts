@@ -235,8 +235,11 @@ const support = externalDatabaseUrl
         eventType: "tool.execution.started", stream: "system",
         payload: { name: "paperclip_finish", executionId: "completion", transport: "process" },
       });
-      await reconcileSafeNativeReplacements(db, new Date(), { verifyStoppedSession });
-      await reconcileSafeNativeReplacements(db, new Date(), { verifyStoppedSession });
+      for (let sweep = 0; sweep < 2; sweep++) {
+        const decision = reconcileSafeNativeReplacements(db, new Date(), { verifyStoppedSession });
+        if (mode === "changed") await expect(decision).rejects.toThrow("native_replacement_decision_retry_required");
+        else await decision;
+      }
       const successors = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, source.runId));
       expect(successors).toHaveLength(mode === "verified" ? 1 : 0);
       const [hold] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, source.issueId));
