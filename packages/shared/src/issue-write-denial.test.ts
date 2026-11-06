@@ -80,10 +80,15 @@ describe("describeIssueWriteDenial", () => {
     expect(copy.description).not.toContain("attempt");
   });
 
-  it("gives the run-context denial a copy-pasteable fix", () => {
+  it("stops the run-context denial from sending the agent into a retry loop", () => {
     const copy = describeIssueWriteDenial("cross_issue_influence_run_context_required");
-    expect(copy.sanctionedPath).toContain("X-Paperclip-Run-Id");
-    expect(copy.sanctionedPath).toContain("PAPERCLIP_RUN_ID");
+    // The header is not the problem: a run without a persisted row cannot be
+    // attributed, so repeating the identical request can never succeed.
+    expect(copy.sanctionedPath).toContain("Do not retry");
+    expect(copy.sanctionedPath).not.toContain("X-Paperclip-Run-Id");
+    expect(copy.description).toContain("not persisted");
+    expect(copy.description).toContain("retrying");
+    expect(copy.whoCanAct).toContain("run started from an issue");
   });
 
   it("tells a spoof attempt that the write itself was fine", () => {
