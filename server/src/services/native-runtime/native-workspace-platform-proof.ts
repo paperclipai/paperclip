@@ -78,7 +78,7 @@ export async function requestWorkspaceWorkerStopProof(binding: WorkspaceStopBind
   const env = options.env ?? process.env;
   const context = getCloudStackContext(env);
   const token = env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN?.trim();
-  if (!workspaceWorkerStopProofSupported(binding.worker, env) || !context?.cloudOrigin || !token) return { status: "unsupported" };
+  if (!workspaceWorkerStopProofSupported(binding.worker, env) || !context?.stackId || !context.cloudOrigin || !token) return { status: "unsupported" };
   let origin: URL;
   try { origin = new URL(context.cloudOrigin); } catch { return { status: "unsupported" }; }
   if (origin.protocol !== "https:" || origin.username || origin.password) return { status: "unsupported" };
