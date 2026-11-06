@@ -1,4 +1,5 @@
 import { notifyLiveRunRecovery } from "../live-run-recovery-notifications.js";
+import { NATIVE_SESSION_RESUMPTION_ISSUE_STATUSES } from "./native-session-resumption-statuses.js";
 import { notifyExternalAgentSettlement } from "../../modules/external-agents/index.js";
 import { pendingNativeRunProjectionCondition } from "./native-run-projection.js";
 import { nativeStatusReassessmentSourceIsSuperseded, reassessNativeStatusFromSource } from "./native-status-reassessment.js";
@@ -158,7 +159,7 @@ export async function claimNativeSessionResumptions(input: {
       if (await retireSupersededNativeRetry(tx as unknown as Db, {
         run, coordinator, issueExecutionRunId: issue.executionRunId, now,
       })) return false;
-      if (!["todo", "in_progress", "in_review"].includes(issue.status)) return false;
+      if (!(NATIVE_SESSION_RESUMPTION_ISSUE_STATUSES as readonly string[]).includes(issue.status)) return false;
       const row = { run, coordinator };
       if (
         row.run.runtimeMode !== "native" ||

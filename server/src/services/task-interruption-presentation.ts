@@ -216,10 +216,15 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
         or ${heartbeatRuns.errorCode} = 'workspace_validation_failed' then ${heartbeatRuns.error} else null end`,
       errorCode: heartbeatRuns.errorCode, livenessState: heartbeatRuns.livenessState, scheduledRetryAt: heartbeatRuns.scheduledRetryAt,
       scheduledRetryReason: heartbeatRuns.scheduledRetryReason,
+      // Candidate only: the coordinator also pushes nextAttemptAt forward while
+      // it defers an ineligible run. The scheduler's own admission check below
+      // decides whether this resume is real.
       nativeResumeAt: sql<Date | null>`(select ${nativeRunFinalizations.nextAttemptAt} from ${nativeRunFinalizations}
         where ${nativeRunFinalizations.companyId} = ${heartbeatRuns.companyId} and ${nativeRunFinalizations.runId} = ${heartbeatRuns.id}
           and ${heartbeatRuns.runtimeMode} = 'native' and ${heartbeatRuns.status} = 'failed'
-          and ${nativeRunFinalizations.resultId} is null and ${nativeRunFinalizations.phase} = 'retryable_failure')`.mapWith(value => value == null ? null : new Date(value)),
+          and ${nativeRunFinalizations.resultId} is null and ${nativeRunFinalizations.phase} = 'retryable_failure'
+          and ${heartbeatRuns.contextSnapshot}->'nativeQuestionCancellation' is null
+          and ${heartbeatRuns.runnerProfileJson}->'legacyWorkspaceRecoveryMigration' is null)`.mapWith(value => value == null ? null : new Date(value)),
       // The run whose resultJson supplied providerFailure. A scheduled retry
       // shows its predecessor's reason, so redaction must use that run's registry.
       providerFailureRunId: sql<string>`case when ${heartbeatRuns.resultJson}->'providerFailure' is null
@@ -279,6 +284,38 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
         inArray(approvals.status, ["pending", "revision_requested"]))),
     db.select({ status: companies.status, pauseReason: companies.pauseReason }).from(companies).where(eq(companies.id, companyId)),
   ]);
+  // Advertise a pending resume only when the scheduler would admit it, using
+  // its own check, so the task never hides Retry behind a deferred candidate
+  // and never offers Retry beside a resume that will run. Rare rows only.
+  // Candidates are failed native runs inside an active coordinator retry, so
+  // there are few. Their rows load in three batched reads; admission itself
+  // runs a few bounded reads per candidate, four at a time.
+  const resumeCandidates = runs.filter(run => run.nativeResumeAt);
+  if (resumeCandidates.length) {
+    const { readNativeSessionResumptionAgent } = await import("./native-runtime/native-session-resumption-admission.js");
+    const candidateIds = resumeCandidates.map(run => run.id);
+    const [fullRuns, coordinators] = await Promise.all([
+      db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, companyId), inArray(heartbeatRuns.id, candidateIds))),
+      db.select().from(nativeRunFinalizations).where(and(eq(nativeRunFinalizations.companyId, companyId),
+        inArray(nativeRunFinalizations.runId, candidateIds))),
+    ]);
+    const issueIds = [...new Set(fullRuns.flatMap(run => run.nativeIssueId ? [run.nativeIssueId] : []))];
+    const issueRows = issueIds.length ? await db.select().from(issues).where(and(eq(issues.companyId, companyId),
+      inArray(issues.id, issueIds))) : [];
+    const runById = new Map(fullRuns.map(run => [run.id, run]));
+    const coordinatorByRun = new Map(coordinators.map(row => [row.runId, row]));
+    const issueById = new Map(issueRows.map(row => [row.id, row]));
+    for (let start = 0; start < resumeCandidates.length; start += 4) {
+      await Promise.all(resumeCandidates.slice(start, start + 4).map(async candidate => {
+        const run = runById.get(candidate.id);
+        const issue = run?.nativeIssueId ? issueById.get(run.nativeIssueId) : undefined;
+        const coordinator = coordinatorByRun.get(candidate.id);
+        const admitted = run && issue && coordinator
+          && await readNativeSessionResumptionAgent(db, { issue, run, coordinator }).catch(() => null);
+        if (!admitted) candidate.nativeResumeAt = null;
+      }));
+    }
+  }
   const runIds = runs.map(run => run.id);
   const actions = runIds.length ? await db.selectDistinctOn([issueRecoveryActions.sourceIssueId]).from(issueRecoveryActions).where(and(
     eq(issueRecoveryActions.companyId, companyId), inArray(issueRecoveryActions.sourceIssueId, ids),
