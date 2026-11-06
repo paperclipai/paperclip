@@ -42,6 +42,7 @@ import { InlineBanner } from "../components/InlineBanner";
 import type { Agent, Issue } from "@paperclipai/shared";
 import { PluginSlotOutlet } from "@/plugins/slots";
 import { SmokeLabDashboardCard } from "../components/SmokeLabDashboardCard";
+import { taskStatusIconProps } from "@/lib/task-status-presentation";
 
 const DASHBOARD_ACTIVITY_LIMIT = 10;
 
@@ -545,7 +546,7 @@ export function Dashboard() {
                     >
                       <div className="flex items-start gap-2 @xl:grid @xl:grid-cols-(--dashboard-task-list-columns) @xl:items-baseline">
                         <span className="flex size-6 shrink-0 items-center justify-end @xl:self-center">
-                          <StatusIcon status={issue.status} displayStatus={issue.displayStatus} externalConversationState={issue.externalConversationState} blockerAttention={issue.blockerAttention} />
+                          <StatusIcon {...taskStatusIconProps(issue)} />
                         </span>
                         <span className="flex min-w-0 flex-1 flex-col gap-1 @xl:contents">
                           <span className="flex min-w-0 items-baseline gap-2 @xl:contents">

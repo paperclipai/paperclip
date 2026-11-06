@@ -924,6 +924,19 @@ describe("live remote runner lease reattachment", () => {
     expect(result.leaseContext.executionWorkspaceId).toBe("ew-1");
     expect(result.environment.config.reuseLease).toBe(false);
   });
+  it("forwards the admitted warm idle window to the recovery resume", async () => {
+    const savedLease = originalLease();
+    mockGetLease.mockResolvedValue(savedLease);
+    const runtime = makeMockRuntime();
+    const result = await environmentRunOrchestrator({} as never, { environmentRuntime: runtime }).acquireForRun({
+      ...input, admittedLifecycleMode: "warm", adapterConfig: { lifecycleMode: "warm", idleTimeoutMs: 1_800_000 },
+    });
+    expect(runtime.resumeRunLease).toHaveBeenCalledWith({
+      environment: result.environment, lease: savedLease, requestedCwd: "/remote/workspace",
+      warmRunnerIdleTimeoutMs: 1_800_000,
+    });
+    expect(runtime.acquireRunLease).not.toHaveBeenCalled();
+  });
   it("does not return the retained sandbox to preparation while its lifecycle resume is pending", async () => {
     let ready = false;
     let release!: () => void;

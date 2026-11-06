@@ -24,6 +24,7 @@ import {
   documentRevisions,
   heartbeatRuns,
   instanceSettings,
+  issueRelations,
   issues,
   labels,
   projects,
@@ -116,6 +117,7 @@ describeEmbeddedPostgres("cases routes", () => {
     await db.delete(documents);
     await db.delete(assets);
     await db.delete(labels);
+    await db.delete(issueRelations);
     await db.delete(issues);
     await db.delete(heartbeatRuns);
     await db.delete(projects);
@@ -968,6 +970,33 @@ describeEmbeddedPostgres("cases routes", () => {
     expect(forIssue.body).toHaveLength(1);
     expect(forIssue.body[0]).toMatchObject({ role: "work" });
     expect(forIssue.body[0].case).toMatchObject({ id: child.body.id, identifier: child.body.identifier, status: child.body.status });
+  });
+  it("carries glyph-only blocker state on a blocked case task without blocker details (BUG-07)", async () => {
+    await enableCases();
+    const company = await seedCompany("WORK-BLOCKED");
+    const [work, blocker] = await db.insert(issues).values([
+      { companyId: company.id, title: "Blocked case work", identifier: `${company.issuePrefix}-1`, status: "blocked" },
+      { companyId: company.id, title: "Hidden case blocker", identifier: `${company.issuePrefix}-2`, status: "todo" },
+    ]).returning();
+    await db.insert(issueRelations).values({ companyId: company.id, issueId: blocker!.id, relatedIssueId: work!.id, type: "blocks" });
+    const [record] = await db.insert(cases).values({ companyId: company.id, caseNumber: 1, identifier: `${company.issuePrefix}-C1`,
+      caseType: "factory", title: "Blocked case", workIssueId: work!.id }).returning();
+    const detail = await request(app(boardActor)).get(`/api/cases/${record!.id}`).expect(200);
+    expect(detail.body.workIssue).toMatchObject({ id: work!.id, status: "blocked", blockerAttention: { state: "needs_attention", sampleBlockerIdentifier: null } });
+    expect(JSON.stringify(detail.body.workIssue)).not.toContain("Hidden case blocker");
+    expect(JSON.stringify(detail.body.workIssue)).not.toContain(blocker!.id);
+
+    // Related-task links and the activity feed row draw from the same state.
+    await db.insert(caseIssueLinks).values({ companyId: company.id, caseId: record!.id, issueId: work!.id, role: "reference" });
+    const withLink = await request(app(boardActor)).get(`/api/cases/${record!.id}`).expect(200);
+    expect(withLink.body.issueLinks[0].issue).toMatchObject({ id: work!.id, blockerAttention: { state: "needs_attention", sampleBlockerIdentifier: null } });
+
+    await db.insert(caseEvents).values({ companyId: company.id, caseId: record!.id, kind: "issue_linked",
+      actorType: "system", payload: { issueId: work!.id } });
+    const events = await request(app(boardActor)).get(`/api/cases/${record!.id}/events`).expect(200);
+    const linked = events.body.find((event: { kind: string }) => event.kind === "issue_linked");
+    expect(linked.issue).toMatchObject({ id: work!.id, status: "blocked", blockerAttention: { state: "needs_attention", sampleBlockerIdentifier: null } });
+    expect(JSON.stringify(linked.issue)).not.toContain("Hidden case blocker");
   });
   it("enriches case pages and detail with current work in bounded batch queries", async () => {
     await enableCases();

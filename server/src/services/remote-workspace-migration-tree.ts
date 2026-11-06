@@ -18,7 +18,7 @@ const rootOf = (workspace: Pick<Workspace, "cwd" | "providerRef">) => workspace.
 
 // Missing historical paths still resolve through their nearest surviving
 // parent, so a symlinked ancestor cannot hide an alias from the writer fence.
-async function physicalPath(value: string): Promise<string> {
+export async function physicalPath(value: string): Promise<string> {
   let current = path.resolve(value); const missing: string[] = [];
   for (;;) {
     try { return path.join(await fs.realpath(current), ...missing.reverse()); }

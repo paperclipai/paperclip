@@ -9,7 +9,7 @@ import { classifyNativeEvidence } from "./evidence-classifier.js";
 import { hasPendingNativeChildCompletion } from "./native-child-completion-delivery.js";
 import { resolveNativeReconciliationStatus, type NativeReconciliationFacts } from "./native-reconciliation-status.js";
 import { pendingNativeGovernance, resolveNativeFinalizerStatus } from "./native-run-finalizer.js";
-import { NATIVE_STATUS_ARBITER_POLICY_VERSION, type NativeAuthoritativeIssueStatus, type NativeStatusDecision } from "./status-arbiter.js";
+import { NATIVE_STATUS_ARBITER_POLICY_VERSION, supersedeStaleOwnerCompletion, type NativeAuthoritativeIssueStatus, type NativeStatusDecision } from "./status-arbiter.js";
 import { commitNativeStatusDecision, NativeStatusRaceError } from "./status-decision-committer.js";
 import { recordNativeWorkAssessment } from "./work-assessments.js";
 import { readPreservedNativeResultFinalization } from "./preserved-native-result-finalization.js";
@@ -233,6 +233,10 @@ export async function reassessNativeStatusFromSource(
     if (decision.statusAction === "done" && qualityReview?.satisfied === false) {
       decision = resolveNativeFinalizerStatus({ assessment: reassessment, terminalState: "succeeded", workspaceFinalizeStatus: "succeeded",
         requiredQualityReviewSatisfied: false, priorIssueStatus: row.issueStatus as NativeAuthoritativeIssueStatus, agentId: row.agentId });
+    }
+    // New evidence from a reassigned-away run cannot close the new owner's task.
+    if (currentIssue && !currentIssue.conversationAgentId) {
+      decision = supersedeStaleOwnerCompletion(decision, { ...currentIssue, status: row.issueStatus }, row.agentId);
     }
     let committed: Awaited<ReturnType<typeof commitNativeStatusDecision>>;
     try {

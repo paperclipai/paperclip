@@ -2,7 +2,7 @@ import type { Server } from "node:http";
 import express from "express";
 import request from "supertest";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { unprocessable } from "../errors.js";
+import { conflict, unprocessable } from "../errors.js";
 import { environmentRoutes } from "../routes/environments.js";
 import { errorHandler } from "../middleware/index.js";
 
@@ -33,6 +33,7 @@ const mockCloseWarmNativeSessionsForEnvironment = vi.hoisted(() =>
   vi.fn(async () => ({ closed: 0, busy: 0, failed: 0 })),
 );
 const mockInstanceSettingsService = vi.hoisted(() => ({
+  get: vi.fn(async () => ({ defaultEnvironmentId: null })),
   listCompanyIds: vi.fn(),
   getGeneral: vi.fn(),
   getExperimental: vi.fn(),
@@ -123,10 +124,13 @@ vi.mock("../services/execution-workspaces.js", () => ({
   executionWorkspaceService: () => mockExecutionWorkspaceService,
 }));
 
+const mockAssertAgentsReadyForEnvironmentChange = vi.hoisted(() => vi.fn(async () => {}));
+
 vi.mock("../services/plugin-environment-driver.js", () => ({
   // The runtime reads this published constant at import time. Mirror the real
   // value so the mocked module keeps the same reusable-lease method contract.
   REUSABLE_LEASE_WORKER_METHODS: ["environmentResumeLease", "environmentReleaseLease", "environmentDestroyLease"],
+  assertAgentsReadyForEnvironmentChange: mockAssertAgentsReadyForEnvironmentChange,
   listReadyPluginEnvironmentDrivers: mockListReadyPluginEnvironmentDrivers,
   resolvePluginSandboxProviderDriverByKey: mockResolvePluginSandboxProviderDriverByKey,
   resolvePluginSandboxProviderConfigSchema: async (input: { db: unknown; driverKey: string }) =>
@@ -2450,6 +2454,19 @@ describe("environment routes", () => {
     expect(res.status).toBe(403);
     expect(res.body.error).toContain("Board access required");
     expect(mockEnvironmentService.list).not.toHaveBeenCalled();
+  });
+
+  it("refuses a config change that gives active agents an unprepared plugin", async () => {
+    const environment = createEnvironment();
+    mockEnvironmentService.getById.mockResolvedValue(environment);
+    mockAssertAgentsReadyForEnvironmentChange.mockRejectedValueOnce(conflict("need setup first"));
+    const res = await request(createApp(localBoardActor()))
+      .patch(`/api/environments/${environment.id}?companyId=company-1`)
+      .send({ driver: "local", config: {} });
+    expect(res.status).toBe(409);
+    expect(mockAssertAgentsReadyForEnvironmentChange).toHaveBeenCalledWith(expect.anything(), environment,
+      expect.objectContaining({ driver: "local" }), expect.objectContaining({ environmentId: environment.id }));
+    expect(mockEnvironmentService.update).not.toHaveBeenCalled();
   });
 
   it("logs a redacted update summary instead of raw config or metadata", async () => {

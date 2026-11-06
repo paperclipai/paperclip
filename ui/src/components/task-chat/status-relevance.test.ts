@@ -130,3 +130,14 @@ it("removes run lifecycle diagnostics while retaining tool failures and pending 
   expect(withoutHistoricalRunStatus(items)).toEqual(retained);
   expect(items).toHaveLength(7);
 });
+
+it("keeps harness status chips in historical turns while dropping generic notices", () => {
+  const notice = (id: string, category: string): TaskChatItem => ({
+    id, kind: "protocol", surface: "provider_activity", family: "provider_notice", title: "Provider notice",
+    status: "informational", eventType: "provider.notice.recorded",
+    details: [{ label: "Severity", value: "info" }, { label: "Category", value: category }],
+    steps: [], links: [], children: [],
+  });
+  const kept = notice("compaction", "context_compaction");
+  expect(withoutHistoricalRunStatus([kept, notice("generic", "warning")])).toEqual([kept]);
+});

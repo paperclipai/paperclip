@@ -493,12 +493,13 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     return { companyId, agentId, issueId, runId, now };
   }
 
-  it.each(["resume", "paused", "Stop", "dependency"] as const)("bounds fresh remote workspace retries across restart and honors %s", async action => {
+  it.each(["remote_workspace_prepare_timeout", "reusable_sandbox_resume_failed", "remote_workspace_restore_failed"].flatMap(errorCode =>
+    (["resume", "paused", "Stop", "dependency"] as const).map(action => [errorCode, action] as const)))("bounds %s bootstrap retries across restart and honors %s", async (errorCode, action) => {
     const { companyId, agentId, issueId, runId, now } = await seedMaxTurnFixture();
     await db.update(agents).set({ adapterType: "paperclip_runner", adapterConfig: { provider: "codex", model: "gpt-6.1-sol" } })
       .where(eq(agents.id, agentId));
     const resultJson = { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } };
-    await db.update(heartbeatRuns).set({ errorCode: "remote_workspace_prepare_timeout", resultJson }).where(eq(heartbeatRuns.id, runId));
+    await db.update(heartbeatRuns).set({ errorCode, resultJson }).where(eq(heartbeatRuns.id, runId));
     let predecessor = runId;
     for (const attempt of [1, 2]) {
       const restarted = heartbeatService(db);
@@ -526,7 +527,7 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
         return;
       }
       predecessor = child.id;
-      await db.update(heartbeatRuns).set({ status: "failed", errorCode: "remote_workspace_prepare_timeout", resultJson, finishedAt: now })
+      await db.update(heartbeatRuns).set({ status: "failed", errorCode, resultJson, finishedAt: now })
         .where(eq(heartbeatRuns.id, predecessor));
     }
     expect(await heartbeatService(db).scheduleBoundedRetry(predecessor, { now })).toMatchObject({ outcome: "retry_exhausted" });

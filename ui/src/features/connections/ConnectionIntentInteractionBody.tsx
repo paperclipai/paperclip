@@ -238,7 +238,11 @@ export function ConnectionIntentInteractionBody({
     upstreamServiceName: interaction.payload.upstreamService?.name,
     serviceSlug: interaction.payload.serviceSlug.startsWith("connection:") ? undefined : interaction.payload.serviceSlug,
     configuredConnection: interaction.payload.serviceSlug.startsWith("connection:") ? setupQuery.data.existingConnections[0] : undefined,
-    requestedAgentId: setupQuery.data.requestedAgentId,
+    // Tool setup uses the same audience defaults and controls as Apps.
+    // Runtime authentication and inboxes still belong to the requesting agent.
+    requestedAgentId: interaction.payload.purpose ? setupQuery.data.requestedAgentId : undefined,
+    requiredAgentId: interaction.payload.purpose ? undefined : setupQuery.data.requestedAgentId,
+    setupAccess: setupQuery.data.interaction?.payload.setupAccess,
     aiConnection: setupQuery.data.aiConnection,
     interactionId: interaction.id,
     existingConnections: setupQuery.data.existingConnections,
@@ -481,7 +485,7 @@ export function ConnectionIntentInteractionBody({
                 ? "This task can’t run until the agent has a valid AI connection. Connect here and the task will resume automatically."
                 : isChatHandoff ? "Complete the human sign-in step in the saved setup. Your task continues when the connection is ready."
                 : isEmail ? "Connect AgentMail to create an email address for this agent."
-                : "Connect your identity or reuse an eligible connection. Access is added only for this agent."}
+                : "New connections default to all agents; you can choose fewer during setup. Reusing an account adds access for this agent."}
             </p>
           </div>
         </div>

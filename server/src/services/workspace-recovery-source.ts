@@ -7,7 +7,8 @@ import { readNativeWorkspaceSyncReference } from "./native-runtime/native-worksp
 import { SystemRecoveryFailure } from "./system-recovery-state.js";
 import type { NativeWorkspaceFinalizationOwnership } from "./native-runtime/native-workspace-finalization-ownership.js";
 import { readStopOnlyCleanup } from "./sandbox-stop-and-retain.js";
-import { ENVIRONMENT_LEASE_POLICIES, readRemoteWorkspaceAuthority, remoteWorkspaceRunReferenceSchema, type EnvironmentLeasePolicy,
+import { LEGACY_WORKSPACE_RECOVERY_SCHEMA } from "./workspace-restore-recovery-state.js";
+import { ENVIRONMENT_LEASE_POLICIES, EXECUTION_RECONCILIATION_CAUSES, readRemoteWorkspaceAuthority, remoteWorkspaceRunReferenceSchema, type EnvironmentLeasePolicy,
   type WorkspaceSourceVerificationFailure } from "@paperclipai/shared";
 
 export const workspaceExportCauses = ["native_workspace_sync_out_unrecoverable", "native_workspace_sync_out_retry_exhausted"];
@@ -81,6 +82,14 @@ export async function inspectWorkspaceRecoverySource(db: Db, input: WorkspaceRec
   if (!run) throw invalid("source_run_missing");
   if (!action) throw invalid("recovery_action_missing");
   if (action.evidence.runId !== run.id) throw invalid("recovery_action_run_mismatch");
+  // This file-preservation hold blocks every dispatch for the task until its
+  // recovery receipt completes (see getExecutionBlocker).
+  const restoreRecovery = action.evidence.workspaceRestoreRecovery as { schema?: unknown } | undefined;
+  const automaticRecovery = action.evidence.automaticRecovery as { replay?: unknown } | undefined;
+  const holdGatesTaskDispatch = restoreRecovery?.schema === LEGACY_WORKSPACE_RECOVERY_SCHEMA
+    && action.evidence.workspaceRestoreFailure !== "restore_unsafe_archive"
+    && (EXECUTION_RECONCILIATION_CAUSES as readonly string[]).includes(action.cause)
+    && (["active", "escalated"].includes(action.status) || automaticRecovery?.replay === "blocked");
   if (!terminalWorkspaceRunStates.includes(run.status)) throw invalid("source_run_not_terminal");
   if ((run.nativeIssueId ?? run.issueId ?? run.contextSnapshot?.issueId) !== input.issueId) throw invalid("source_issue_mismatch");
   const rawReference = run.runnerProfileJson?.nativeWorkspaceSync;
@@ -208,6 +217,12 @@ export async function inspectWorkspaceRecoverySource(db: Db, input: WorkspaceRec
           and a.evidence->>'runId' = ${run.id}
           and a.evidence#>>'{explicitUserContinuation,runId}' = ${heartbeatRuns.id}::text
           and a.evidence#>>'{explicitUserContinuation,readiness,mode}' = 'fresh_isolated_workspace')`,
+        // A never-started queued turn for this task cannot write: this hold
+        // gates its dispatch until recovery completes. Counting it as a writer
+        // would leave both waiting for each other.
+        holdGatesTaskDispatch ? sql`not coalesce(${heartbeatRuns.status} = 'queued' and ${heartbeatRuns.startedAt} is null
+          and ${heartbeatRuns.processPid} is null and ${heartbeatRuns.processGroupId} is null
+          and ${heartbeatRuns.contextSnapshot}->>'issueId' = ${input.issueId}, false)` : undefined,
         or(eq(heartbeatRuns.nativeIssueId, input.issueId), eq(heartbeatRuns.issueId, input.issueId),
           sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${input.issueId}`,
           sql`${heartbeatRuns.contextSnapshot}->>'executionWorkspaceId' = ${descriptor.workspaceId}`))).limit(1);

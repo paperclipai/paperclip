@@ -141,13 +141,29 @@ the latest agent that assigned it to them. If no assignment is available, it use
 the latest other commenter, or leaves the recipient empty. A manual recipient
 choice stays selected while task data refreshes.
 
+### Routine responsibility
+
+The routine Overview shows its responsible user beside Default agent. People with
+`tasks:assign` can select an active company member from the name's picker.
+The change creates a routine revision and applies to future automatic tasks.
+Existing tasks keep their responsibility. Manual runs use the person who starts
+them. Agents cannot transfer routine responsibility.
+
+
 ### Task collection creation filters
+
+Tasks opens All tasks for new users. A saved view or an explicit view in the URL
+takes precedence over this default.
+The task table orders rows by Last updated, newest first, without highlighting a
+column header. Selecting a column sort activates its header and direction arrow;
+explicit sort URLs retain that selection.
 
 The task Filters menu also offers **Routine tasks**. It selects tasks with
 `originKind=routine_execution`, including manually triggered routine runs, even
 when other automatic tasks are hidden. The routines list's **View all tasks**
 link opens `/issues?view=all&originKind=routine_execution&sortField=created&sortDir=desc` with that checkbox
 selected. The URL retains the selection across reloads and task navigation.
+Coordinator task labels use repeated `label` URL parameters so selected labels survive reloads and shared task-list links.
 Sort controls save `sortField` and `sortDir` in the URL. URL sorting overrides
 saved collection sorting, and the routines link opens newest-created tasks first.
 Shared sort links work across Coordinator, Streamlined UI, and Classic UI, including
@@ -371,17 +387,17 @@ allocation retains one selected number and individually enabled groups.
 
 See [iMessage Photon](connections/IMESSAGE-PHOTON.md) for the implementation
 contract, setup, recovery, boundaries, and qualification status.
-### Experimental persistent agent conversations
+### Persistent agent conversations
 
 Agents can deliver proactive task and routine results into their own chat with
 the task's responsible human. A morning PR digest arrives as an agent message
 with a source-task link and unread indicators, even before the first human
 message. The person can reply using the digest as context. Publishing a message
 and completing work are separate actions; sending never starts or interrupts a
-chat turn. Delivery obeys membership, run authority and task privacy, and stays
-behind the Agent Chat setting. This version delivers in-app only.
+chat turn. Delivery obeys membership, run authority and task privacy. This version delivers
+in-app only.
 
-Agent Chat is an opt-in core task presentation (`enableAgentChat`, off by default). Each person has one persistent task-backed conversation per agent and company, with ordinary company task visibility. The shared task composer, transcript, tools, files, and document panel remain the interaction surface. Agents clarify goals and hand substantial execution to linked, assigned tasks; a reply ends a turn without completing the conversation. `/new` starts fresh provider context in the same conversation while preserving visible history and artifacts. Healthy idle conversations wait for a message and do not count as unfinished execution work. See `doc/plans/2026-09-10-agent-chat.md` for the implementation contract.
+Coordinator is the standard workspace for everyone. Settings → Experimental offers a personal **Classic workspace** opt-in, off by default. Historical Coordinator experiment settings do not enable Classic. Agent Chat is available to everyone on new and existing instances. The retired `enableAgentChat` key remains accepted for compatibility; stored and managed off values are ignored. Each person has one persistent task-backed conversation per agent and company, with ordinary company task visibility. The shared task composer, transcript, tools, files, and document panel remain the interaction surface. Agents clarify goals and hand substantial execution to linked, assigned tasks; a reply ends a turn without completing the conversation. `/new` starts fresh provider context in the same conversation while preserving visible history and artifacts. Healthy idle conversations wait for a message and do not count as unfinished execution work. See `doc/plans/2026-09-10-agent-chat.md` for the implementation contract.
 
 ### Agent chat project handoff (2026-09-11)
 
@@ -417,13 +433,27 @@ with the task list's filters and a sort control. The agent's artifacts are a
 second card stack available from the panel's **+** menu. Both open in a new tab
 so the conversation stays open.
 
+### Coordinator Inbox and personal task views
+
+Coordinator navigation uses **Chat**, **Tasks**, and **Inbox**. Inbox uses the
+inbox icon and keeps the existing decision feed, its count, and decision history
+at `/decisions`. The previous Inbox destination under More is removed.
+
+Tasks defaults to **All tasks**, with a saved view per person and company. Mine uses
+the previous Inbox's personal participation rules, mixed attention items,
+read/unread title weights, keyboard shortcuts, archive and undo, mobile
+swipe-to-archive, grouping, and saved columns. Its existing preferences carry
+over. Unread, Recent, Blocked, and Everything are also task views. Organization
+views retain the task table and board. The table saves column selection and
+order per person and company. Old `/inbox/*` links redirect to their Tasks view.
+
 ### Combined Inbox + Task List
 
-An opt-in experimental setting (`enableCombinedInboxTasks`, off by default)
+In the Classic workspace, an opt-in setting (`enableCombinedInboxTasks`, off by default)
 folds Inbox into Tasks. The Inbox nav row goes away and its unread badge moves
 to Tasks. A Views menu on the task list covers the inbox views (Mine, Unread,
 Blocked, Recent, Everything) and the task-status views (All, Active, Backlog,
-Done). Bare `/issues` opens the last-used view, defaulting to Mine; links that
+Done). Bare `/issues` opens the last-used view, defaulting to All tasks; links that
 carry a task filter open All. Old `/inbox` links redirect to the matching view.
 
 ### CSV file previews

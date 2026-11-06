@@ -131,14 +131,32 @@ jobs:
             echo 'CI_NODE_TEST=--test' >> "$GITHUB_ENV"
           fi
 
-      - name: Block manual lockfile edits
-        if: >-
-          github.head_ref != 'chore/refresh-lockfile' &&
-          github.event.pull_request.user.login != 'dependabot[bot]'
+      # Only trusted environments write lock content: the lockfile refresh
+      # workflow, and Dependabot when the lockfile bytes come from a verified
+      # Dependabot commit. Run the policy from the base commit so a pull request
+      # cannot rewrite the check that judges it.
+      - name: Block untrusted lockfile edits
+        id: lockfile_writer
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          HEAD_REF: ${{ github.head_ref }}
         run: |
-          # Diff the PR branch against its merge base so recent base-branch commits
-          # do not masquerade as changes made by the PR itself.
-          changed="$(git diff --name-only "${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }}")"
+          policy="$RUNNER_TEMP/lockfile-trust.mjs"
+          if git show "$BASE_SHA:.github/scripts/lockfile-trust.mjs" > "$policy" 2>/dev/null; then
+            node "$policy" pr
+            exit 0
+          fi
+          # The base predates lockfile-trust.mjs: keep the earlier rule.
+          echo "writer=none" >> "$GITHUB_OUTPUT"
+          if [ "$HEAD_REF" = 'chore/refresh-lockfile' ] || [ "$PR_AUTHOR" = 'dependabot[bot]' ]; then
+            exit 0
+          fi
+          changed="$(git diff --name-only "$BASE_SHA...$HEAD_SHA")"
           if printf '%s\n' "$changed" | grep -qx 'pnpm-lock.yaml'; then
             echo "Do not commit pnpm-lock.yaml in pull requests. CI owns lockfile updates."
             exit 1
@@ -455,6 +473,9 @@ jobs:
       PAPERCLIP_CI_SELECTION_HASH: ${{ matrix.selection && fromJSON(needs.test_selection.outputs.plan).testSelection.hash || '' }}
       PAPERCLIP_CI_PROFILE: ${{ needs.gate.outputs.profile_ci }}
       PAPERCLIP_CI_PROFILE_JOB: General tests (${{ matrix.group_label }})
+      # The reporting-lock policy test skips a Dependabot lockfile, which the
+      # policy job verifies and the lockfile refresh admits after merge.
+      PAPERCLIP_CI_PR_AUTHOR: ${{ github.event.pull_request.user.login }}
 
     steps:
       - name: Checkout repository

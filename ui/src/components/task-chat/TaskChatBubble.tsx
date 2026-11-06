@@ -42,6 +42,7 @@ import {
   stripStandaloneImageEmbeds,
   type AttachmentRef,
 } from "./task-chat-attachments";
+import { TaskChatBubbleActions } from "./TaskChatBubbleActions";
 import { TaskChatSystemNotice } from "./TaskChatSystemNotice";
 import type { TaskChatMessageItem } from "./task-chat-model";
 
@@ -430,6 +431,17 @@ function TaskChatBubbleContent({
           data-testid="task-chat-bubble-attached-turn"
         >
           {attachedTurn}
+        </div>
+      ) : isOwnMessage ? (
+        <div className="group/message-toolbar flex items-center gap-1">
+          <span className="px-1 text-(length:--text-micro) text-muted-foreground">
+            {sentFromIMessage ? "Sent from iMessage" : null}
+            {sentFromIMessage && timestamp ? " · " : null}
+            {timestamp}
+          </span>
+          <div className="transition-opacity motion-reduce:transition-none sm:opacity-0 sm:group-hover/message-toolbar:opacity-100 sm:group-focus-within/message-toolbar:opacity-100 pointer-coarse:opacity-100">
+            <TaskChatBubbleActions copyText={item.text} />
+          </div>
         </div>
       ) : actions ? (
         streamlined ? (
