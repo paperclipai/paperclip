@@ -388,6 +388,7 @@ export interface ChatFlowInput {
   privateInputs?: ChatPrivateInputs;
   deadlineAt: number;
   restart: () => Promise<void>;
+  retireFailedAttempt?: (error: unknown) => Promise<void>;
   observe: (issue: ChatIssue, runs: ChatRun[]) => void;
   capture: (id: string, label: string, file: string) => Promise<void>;
   evidence: (name: string, data: unknown) => Promise<void>;

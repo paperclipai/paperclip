@@ -48,7 +48,7 @@ import { summarizeStartupReuse } from "../../packages/adapter-utils/src/startup-
 import { gitFinalizationEvidence, gitStreamingEvidence, setupGitStreamingWorkspace } from "./daytona-git-streaming.js";
 import { runsCompletionUpdateProbe, completionQualityControls, completionQualityStatus, judgeCompletionQuality, reserveCompletionQuality, type CompletionQualityRecord } from "./completion-quality.js";
 import { runNativeProviderLossFlow } from "./native-provider-loss-flow.js";
-import { mayAllocateRemoteResources, runCleanupWithObservers, verifyCleanupAssertions, type CleanupAssertion } from "./cleanup-verification.js";
+import { ownedActiveCleanupRunIds, mayAllocateRemoteResources, runCleanupWithObservers, verifyCleanupAssertions, type CleanupAssertion } from "./cleanup-verification.js";
 import { completionDelivery, type CompletionObservation } from "./completion-updates.js";
 import { runInstructionPersistenceFlow } from "./instruction-persistence.js";
 import { gradeApiResponsePaging, readResponseProof, responseEvidenceDescription } from "./api-response-reading.js";
@@ -773,13 +773,17 @@ for (const execution of executions) {
         setupProbeLeaseId: fixtures.setupProbe?.leaseId, setupLeaseIds: fixtures.setupLeases?.map(lease => lease.leaseId) });
     };
 
-    const cancelActiveRunsForCleanup = async () => {
+    const cancelActiveRunsForCleanup = async (budgetMs?: number) => {
       if (!issue && !(companyRunFlow && fixtures)) return;
       const cleanupIssueId = issue?.id;
+      const cleanupDeadline = budgetMs === undefined ? undefined : Date.now() + budgetMs;
+      const cleanupRequestOptions = () => cleanupDeadline === undefined ? undefined : { timeout: Math.max(1, cleanupDeadline - Date.now()) };
       const runs = await api.get<RunRecord[]>(
-        companyRunFlow && fixtures ? `/api/companies/${fixtures.company.id}/heartbeat-runs?limit=100` : `/api/issues/${cleanupIssueId}/runs`,
+        companyRunFlow && fixtures ? `/api/companies/${fixtures.company.id}/heartbeat-runs?limit=100` : `/api/issues/${cleanupIssueId}/runs`, cleanupRequestOptions(),
       );
-      const activeRunIds = [
+      const activeRunIds = companyRunFlow && fixtures
+        ? ownedActiveCleanupRunIds(runs, fixtures.company.id, TERMINAL_RUN_STATUSES)
+        : [
         ...new Set(
           runs
             .filter((run) => !TERMINAL_RUN_STATUSES.has(run.status))
@@ -791,14 +795,14 @@ for (const execution of executions) {
         ),
       ];
       for (const runId of activeRunIds) {
-        await api.post(`/api/heartbeat-runs/${runId}/cancel`);
+        await api.post(`/api/heartbeat-runs/${runId}/cancel`, undefined, cleanupRequestOptions());
       }
       if (activeRunIds.length === 0) return;
       const activeIds = new Set(activeRunIds);
       await pollUntil({
         label: `cleanup cancellation for issue ${cleanupIssueId}`,
-        deadlineAt: Date.now() + 45_000,
-        load: () => api.get<RunRecord[]>(companyRunFlow && fixtures ? `/api/companies/${fixtures.company.id}/heartbeat-runs?limit=100` : `/api/issues/${cleanupIssueId}/runs`),
+        deadlineAt: cleanupDeadline ?? Date.now() + 45_000,
+        load: () => api.get<RunRecord[]>(companyRunFlow && fixtures ? `/api/companies/${fixtures.company.id}/heartbeat-runs?limit=100` : `/api/issues/${cleanupIssueId}/runs`, cleanupRequestOptions()),
         accept: (currentRuns) =>
           currentRuns
             .filter((run) => activeIds.has(run.id))
@@ -807,8 +811,9 @@ for (const execution of executions) {
       });
     };
 
+    let catalogFailureCaptureAttempted = false;
     const captureFailureApiState = async () => {
-      if (!fixtures) return;
+      if (catalogFailureCaptureAttempted || !fixtures) return;
       if (execution.task.flow === "followup_stop_resume") {
         const captured = await captureFollowupStopFailureApiState({ api, companyId: fixtures.company.id,
           agentId: fixtures.agent.id, issueId: issue?.id,
@@ -1389,6 +1394,14 @@ for (const execution of executions) {
           page, api, fixtures, execution, nonce, workspacePath,
           deadlineAt: startedAtMs + deadlineMs,
           restart: () => restartChatServer(page, () => restartIsolatedPaperclipServer({ api, requestId: `chat-${nonce}`, deadlineAt: startedAtMs + deadlineMs })),
+          retireFailedAttempt: async error => {
+            catalogFailureCaptureAttempted = true;
+            primaryError ??= error;
+            try { await writeSanitizedJson(snapshotsDir, "failed-attempt-checkpoint.json", {
+              schema: "paperclip.runner-e2e.failed-attempt-checkpoint/v1", executionId: execution.id,
+              qualification: "unqualified", featureOutcome: "unknown", phase: "before_owned_retirement",
+            }, secrets); } finally { await cancelActiveRunsForCleanup(20_000); }
+          },
           observe: (chatIssue, chatRuns) => { issue = chatIssue; selectedRuns = chatRuns; },
           capture: ordinaryChatCapture(execution.suite.id, capturePrivateScreenshot, captureScreenshot),
           evidence: completionEvidence,
@@ -3247,9 +3260,12 @@ for (const execution of executions) {
         if (checks.some(check => !check.passed)) primaryError ??= new Error("Feedback persistence matcher failed");
       }
 
-      const traceReceipt = await trace?.export({ failed: Boolean(primaryError), runIds: selectedRuns.map(run => run.id),
-        cleanup, complaints: feedback.complaints, suggestions: feedback.suggestions });
-      await saveTrace();
+      let traceReceipt: Awaited<ReturnType<NonNullable<typeof trace>["export"]>> | undefined;
+      try {
+        traceReceipt = await trace?.export({ failed: Boolean(primaryError), runIds: selectedRuns.map(run => run.id),
+          cleanup, complaints: feedback.complaints, suggestions: feedback.suggestions });
+        await saveTrace();
+      } catch (error) { primaryError ??= error; }
       const finishedAtMs = Date.now();
       const runtimeUsage = fixtureRuntimeCostCoverage(buildRuntimeUsage({
         environmentId: execution.environment.id,

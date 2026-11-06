@@ -35,11 +35,12 @@ export async function runChatCatalogFlow(context: ChatCatalogContext) {
   let observation: unknown;
   let grade: ChatCatalogGrade | undefined;
   let failed = false;
+  let failure: unknown;
   let renderedQuery = scenario.query;
   let persistedQuery = scenario.query;
   let queryAttachments: ChatQueryAttachmentReceipt[] = [];
   let setupBoundary: ChatCatalogSetupBoundary = { humanCommentIds: [], runIds: [] };
-  async function conversation() {
+  async function conversation(persist = true) {
     await context.refreshIssue();
     const issue = context.issue();
     const runs = await context.allRuns();
@@ -56,7 +57,7 @@ export async function runChatCatalogFlow(context: ChatCatalogContext) {
       sourceId: issue.id, leadId: input.fixtures.agent.id, comments, runs, projects, activity,
     }) : [];
     const evidence = { issue, runs, comments, renderedLinks };
-    await input.evidence("chat-catalog-conversation.json", evidence);
+    if (persist) await input.evidence("chat-catalog-conversation.json", evidence);
     return evidence;
   }
   async function refresh() {
@@ -220,26 +221,65 @@ export async function runChatCatalogFlow(context: ChatCatalogContext) {
       leadId: input.fixtures.agent.id, observation });
   } catch (error) {
     failed = true;
+    failure = error;
     throw error;
   } finally {
-    try {
-      const finalConversation = await conversation();
-      if (state) await refresh();
-      const runs = await context.allRuns();
-      const runEvidence = await Promise.all(runs.map(run => collectChatRunEvidence(chatRunEvidenceApi(input), run)));
-      await input.evidence("chat-catalog-runs.json", runEvidence);
-      await input.evidence("api-state.json", { capturePhase: failed ? "failure" : "final",
-        ...finalConversation, runs, runEvidence });
-    } catch {
-      await input.evidence("chat-catalog-evidence-error.json", { incomplete: true, scenarioId: scenario.id });
-      if (!failed) throw new Error("Scenario evidence collection failed");
-    } finally {
+    if (failed) {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const failureSnapshot: Record<string, unknown> = { capturePhase: "failure" };
       try {
-        if (state) await implementation.cleanup?.(context, state);
-        await input.evidence("chat-catalog-cleanup.json", { scenarioId: scenario.id, caseCleanup: "complete", instanceCleanup: "owned by existing launcher" });
-      } catch (error) {
-        await input.evidence("chat-catalog-cleanup.json", { scenarioId: scenario.id, caseCleanup: "failed" });
-        if (!failed) throw error;
+        failureSnapshot.observation = observation === undefined ? null : structuredClone(observation);
+        await input.retireFailedAttempt?.(failure);
+        const collection = (async () => {
+          const finalConversation = await conversation(false);
+          Object.assign(failureSnapshot, finalConversation);
+          const interactions = finalConversation.issue ? await input.api.get(`/api/issues/${finalConversation.issue.id}/interactions`) : [];
+          failureSnapshot.interactions = interactions;
+          const runEvidence = await Promise.all(finalConversation.runs.map(run => collectChatRunEvidence(chatRunEvidenceApi(input), run)));
+          return { ...failureSnapshot, runEvidence };
+        })();
+        const evidence = await Promise.race([collection, new Promise<undefined>(resolve => {
+          timer = setTimeout(() => resolve(undefined), 5_000);
+        })]);
+        if (evidence) {
+          await input.evidence("chat-catalog-runs.json", evidence.runEvidence);
+          await input.evidence("api-state.json", evidence);
+        } else {
+          await input.evidence("api-state.json", structuredClone({ ...failureSnapshot, incomplete: true }));
+          await input.evidence("chat-catalog-evidence-error.json", { incomplete: true, scenarioId: scenario.id, reason: "failure_collection_deadline" });
+        }
+      } catch {
+        await input.evidence("api-state.json", structuredClone({ ...failureSnapshot, incomplete: true })).catch(() => {});
+        await input.evidence("chat-catalog-evidence-error.json", { incomplete: true, scenarioId: scenario.id }).catch(() => {});
+      } finally {
+        if (timer) clearTimeout(timer);
+        try {
+          if (state) await implementation.cleanup?.(context, state);
+          await input.evidence("chat-catalog-cleanup.json", { scenarioId: scenario.id, caseCleanup: "complete", instanceCleanup: "owned by existing launcher" });
+        } catch {
+          await input.evidence("chat-catalog-cleanup.json", { scenarioId: scenario.id, caseCleanup: "failed" }).catch(() => {});
+        }
+      }
+    } else {
+      try {
+        const finalConversation = await conversation();
+        if (state) await refresh();
+        const runs = await context.allRuns();
+        const runEvidence = await Promise.all(runs.map(run => collectChatRunEvidence(chatRunEvidenceApi(input), run)));
+        await input.evidence("chat-catalog-runs.json", runEvidence);
+        await input.evidence("api-state.json", { capturePhase: failed ? "failure" : "final",
+          ...finalConversation, runs, runEvidence });
+      } catch {
+        await input.evidence("chat-catalog-evidence-error.json", { incomplete: true, scenarioId: scenario.id });
+        if (!failed) throw new Error("Scenario evidence collection failed");
+      } finally {
+        try {
+          if (state) await implementation.cleanup?.(context, state);
+          await input.evidence("chat-catalog-cleanup.json", { scenarioId: scenario.id, caseCleanup: "complete", instanceCleanup: "owned by existing launcher" });
+        } catch (error) {
+          await input.evidence("chat-catalog-cleanup.json", { scenarioId: scenario.id, caseCleanup: "failed" });
+          if (!failed) throw error;
+        }
       }
     }
   }
