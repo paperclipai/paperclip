@@ -8,7 +8,6 @@ import { nativeWorkspaceFinalizationOwnerCanUpgrade } from "./native-workspace-f
 import { currentWorkspaceWorker, workspaceWorkerStopProofSupported } from "./native-workspace-platform-proof.js";
 import { isNativeRunnerOwnershipHeld } from "./native-runner-ownership.js";
 
-/** Observe the existing result/workspace recovery owners. This never claims a lease or stops a worker. */
 export async function readNativeFinalizationUpgradeReadiness(db: Db, input: {
   companyId: string; runId: string; controller: NativeControllerIdentity; supportedOutageMs: number;
 }): Promise<boolean> {
@@ -52,7 +51,6 @@ export async function readNativeFinalizationUpgradeReadiness(db: Db, input: {
       || coordinator.controllerProcessStartedAt?.getTime() !== input.controller.processStartedAt.getTime()
       || coordinator.controllerGeneration < 1
       || !["result_accepted", "workspace_finalizing", "retryable_failure", "committed"].includes(coordinator.phase)) return false;
-    // SIGTERM releases an accepted execution lease, but preserves an in-progress finalizer's lease.
     if (coordinator.leaseOwner?.startsWith("native-finalizer:") && coordinator.leaseExpiresAt
       && coordinator.leaseExpiresAt.getTime() > Date.now() + input.supportedOutageMs) return false;
     const profile = run.runnerProfileJson;

@@ -62,7 +62,6 @@ export type WorkspaceWorkerStopCheck =
   | { status: "pending" }
   | { status: "unsupported" };
 
-/** Configuration support is an observation, never proof that a worker stopped. */
 export function workspaceWorkerStopProofSupported(worker: WorkspaceWorker | undefined, env: NodeJS.ProcessEnv = process.env): boolean {
   const context = getCloudStackContext(env);
   if (!context?.stackId || !context.cloudOrigin || !env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN?.trim() || !validWorker(worker)) return false;

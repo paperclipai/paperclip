@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { eq, inArray } from "drizzle-orm";
-import { agents, companies, completionContracts, createDb, environmentLeases, environments, executionWorkspaces,
+import { agents, companies, completionContracts, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, environmentLeases, environments, executionWorkspaces,
   heartbeatRuns, issues, nativeRunFinalizations, nativeRunResults, statusDecisions, workAssessments, workspaceOperations } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import { DurablePrpControlPlane } from "../../vendor/paperclip-runner/index.js";
@@ -27,7 +27,7 @@ describe("post-result upgrade readiness", () => {
     for (const [key, value] of Object.entries({ RAILWAY_PROJECT_ID: "project", RAILWAY_ENVIRONMENT_ID: "environment",
       RAILWAY_SERVICE_ID: "service", RAILWAY_DEPLOYMENT_ID: "deployment", PAPERCLIP_CLOUD_STACK_ID: "stack",
       PAPERCLIP_CLOUD_API_ORIGIN: "https://cloud.example", PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN: "fixture-token" })) vi.stubEnv(key, value);
-  }, 60_000);
+  }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
   afterEach(async () => { if (runs.length) await db.update(heartbeatRuns).set({ status: "succeeded" }).where(inArray(heartbeatRuns.id, runs)); });
   afterAll(async () => { await db?.$client.end(); await database?.cleanup(); vi.unstubAllEnvs(); });
 
@@ -116,7 +116,7 @@ describe("post-result upgrade readiness", () => {
     }
     await expect(db.update(heartbeatRuns).set({ completionContractId: null }).where(eq(heartbeatRuns.id, f.runId)))
       .rejects.toMatchObject({ cause: { code: "23503" } });
-    expect((await f.probe()).ready).toBe(true); // PostgreSQL retains the accepted result's exact contract binding.
+    expect((await f.probe()).ready).toBe(true);
     for (const terminal of [null, {}, { runTerminalState: "active" }, { runTerminalState: "unknown" }]) {
       await db.update(nativeRunResults).set({ resultJson: { terminal } }).where(eq(nativeRunResults.id, f.resultId));
       expect((await f.probe()).ready).toBe(false);
@@ -209,7 +209,7 @@ describe("post-result upgrade readiness", () => {
     });
     try {
       expect((await f.probe()).ready).toBe(true);
-      expect(fetch).not.toHaveBeenCalled(); // Observation never acquires stop authority.
+      expect(fetch).not.toHaveBeenCalled();
       vi.stubEnv("RAILWAY_DEPLOYMENT_ID", "replacement");
       await db.update(heartbeatRuns).set({ runnerProfileJson: { ...run.runnerProfileJson,
         nativeWorkspaceFinalizationOwner: { ...owner, hostname: "previous-container", controllerBootId: "previous-boot" } } }).where(eq(heartbeatRuns.id, f.runId));

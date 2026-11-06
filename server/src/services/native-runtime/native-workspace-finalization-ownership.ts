@@ -76,7 +76,6 @@ function readOwner(value: unknown): Owner | null {
     ? owner as Owner : null;
 }
 
-/** Preflight can recognize this worker; replacement still needs the real stop proof and CAS below. */
 export function nativeWorkspaceFinalizationOwnerCanUpgrade(profile: Record<string, unknown> | null,
   identity: NativeControllerIdentity, worker: WorkspaceWorker | undefined): boolean {
   const raw = profile?.[OWNER_KEY];

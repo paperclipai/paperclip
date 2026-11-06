@@ -2,9 +2,6 @@ import { and, eq, gt, inArray, isNull, ne, not, or, sql } from "drizzle-orm";
 import { heartbeatRuns, issues, nativeRunFinalizations, nativeRunResults, type Db } from "@paperclipai/db";
 import { getNativeReviewAssignment } from "./native-review-participant.js";
 
-/** Both operator and platform recovery must still own the task's accepted work.
- * Authority callers lock coordinator -> issue -> run before takeover. A read-only
- * observation may inspect these facts; it cannot replace that locked recheck. */
 export async function currentNativeWorkspaceRecoveryResult(db: Db, input: {
   companyId: string;
   issue: Pick<typeof issues.$inferSelect, "id" | "companyId" | "status" | "executionRunId" | "checkoutRunId" | "assigneeAgentId">;
