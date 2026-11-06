@@ -24,6 +24,16 @@ branch-deletion receipts. PostgreSQL and real-file tests prove cold restoration
 of saved bytes, index state, and unpushed commits, including after pruning the
 old Git object store. Invalid or unavailable retained data still blocks import.
 
+Administrative migration can recover a missing empty task-directory payload only
+when storage confirms that its object is absent. The existing encrypted key
+envelope must authenticate the exact empty payload hash and length, company,
+workspace, restore-point ID, and generation. Metadata counters alone never
+establish emptiness. This path leaves the original reference and missing object
+unchanged and publishes the recovered bytes through the normal verified remote
+snapshot owner. Ordinary restoration remains unchanged. Expired checkpoints,
+nonempty or forged payloads, unreadable objects, and unknown object absence still
+block migration.
+
 An archived isolated checkout can be gone while its recorded deleted commit
 survives in the company/project Git cache. After validating the exact successful
 branch-deletion receipt, the importer can read immutable objects from that

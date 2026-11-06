@@ -321,7 +321,7 @@ export async function migrateRemoteWorkspace(input: {
         snapshotId: snapshot.id, targetPath: archivePath, signal: input.signal,
       }) : null;
       const sourceRoot = recovered ? null : retained ? await materializeTaskDirectorySnapshot({
-        payload: await loadTaskDirectoryRestorePoint({ storage: input.storage, workspace: reserved.workspace, ref: retained }),
+        payload: await loadTaskDirectoryRestorePoint({ storage: input.storage, workspace: reserved.workspace, ref: retained, recoverMissingEmpty: true, signal: input.signal }),
         target: path.join(scratch, "retained-source"), expectedDigest: retained.digest,
       }) : reserved.archivedGitSource ? await materializeArchivedGitMigrationSource({ db: input.db, storage: input.storage,
         workspace: reserved.workspace, source: reserved.archivedGitSource, scratch }) : reserved.workspace.cwd ?? reserved.workspace.providerRef!;

@@ -853,6 +853,26 @@ describe.skipIf(!support.supported)("remote workspace migration", () => {
     await restoreRemoteWorkspaceArchive({ archivePath, targetDir, expectedManifestDigest: ref!.manifestDigest });
     expect(await fs.readFile(path.join(targetDir, "saved.txt"), "utf8")).toBe("original saved work\n");
   });
+  it("migrates an exactly authenticated empty retained payload without rewriting its missing source", async () => {
+    const f = await seed(); await fs.rm(path.join(f.cwd, "saved.txt"));
+    const retained = await retainDirectory(f); await storage.deleteObject(f.companyId, retained.objectKey);
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, f.issueId));
+    const before = await workspace(f.workspaceId);
+    expect(await migrateRemoteWorkspace({ db, storage, ...f, apply: true })).toMatchObject({ applied: true });
+    const saved = await workspace(f.workspaceId), authority = readRemoteWorkspaceAuthority(saved.metadata)!;
+    expect(saved).toMatchObject({ status: "archived", closedAt: before.closedAt });
+    expect(saved.metadata?.isolatedTaskDirectoryRetention).toEqual(before.metadata?.isolatedTaskDirectoryRetention);
+    expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0]).toMatchObject({ status: "done", executionWorkspaceId: f.workspaceId });
+    expect(await fs.stat(f.cwd).catch(() => null)).toBeNull();
+    expect(await storage.headObject(f.companyId, retained.objectKey)).toMatchObject({ exists: false });
+    const ref = await getWorkspaceSnapshot(db, { ...f, snapshotId: authority.snapshotId! });
+    const archivePath = path.join(root, "recovered-empty.pcws"), targetDir = path.join(root, "recovered-empty");
+    await loadWorkspaceSnapshotArchive({ storage, reference: ref!, targetPath: archivePath });
+    await restoreRemoteWorkspaceArchive({ archivePath, targetDir, expectedManifestDigest: ref!.manifestDigest });
+    expect(await fs.readdir(targetDir)).toEqual([]);
+    expect(await migrateRemoteWorkspace({ db, storage, ...f, apply: true })).toMatchObject({ applied: true, replayed: true });
+    expect(readRemoteWorkspaceAuthority((await workspace(f.workspaceId)).metadata)?.snapshotId).toBe(authority.snapshotId);
+  });
   it.each(["missing", "expired", "corrupt"])("does not replace an unavailable retained directory with an empty workspace (%s)", async failure => {
     const f = await seed(), retained = await retainDirectory(f);
     if (failure === "missing") await storage.deleteObject(f.companyId, retained.objectKey);
