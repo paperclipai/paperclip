@@ -101,7 +101,7 @@ export async function readNativeFinalizationUpgradeReadiness(db: Db, input: {
       eq(environmentLeases.executionWorkspaceId, workspace.id), eq(environmentLeases.heartbeatRunId, run.id),
       eq(environmentLeases.issueId, issue.id), eq(environmentLeases.providerLeaseId, location.providerLeaseId),
       eq(environments.driver, "sandbox"), eq(environments.status, "active"),
-      sql`${environmentLeases.status} not in ('expired', 'failed', 'pending_cleanup')`,
+      eq(environmentLeases.status, "active"),
       sql`${environmentLeases.releasedAt} is null and ${environmentLeases.cleanupStatus} is null`,
       sql`(${environmentLeases.expiresAt} is null or ${environmentLeases.expiresAt} > clock_timestamp())`)).limit(1);
     return Boolean(lease);

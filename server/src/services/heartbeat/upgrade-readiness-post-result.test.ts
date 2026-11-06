@@ -132,7 +132,7 @@ describe("post-result upgrade readiness", () => {
       expect((await f.probe()).ready).toBe(false);
       await db.update(issues).set({ executionRunId: f.runId, checkoutRunId: f.runId, status: "in_progress", assigneeAgentId: f.agentId }).where(eq(issues.id, f.issueId));
     }
-    for (const patch of [{ cleanupStatus: "pending" }, { status: "expired" }, { expiresAt: new Date(0) },
+    for (const patch of [{ cleanupStatus: "pending" }, { status: "expired" }, { status: "released" }, { status: "unknown" }, { expiresAt: new Date(0) },
       { providerLeaseId: "another-sandbox" }, { heartbeatRunId: null }]) {
       await db.update(environmentLeases).set(patch).where(eq(environmentLeases.id, f.leaseId));
       expect((await f.probe()).ready).toBe(false);
