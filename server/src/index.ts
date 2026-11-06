@@ -1186,10 +1186,12 @@ async function startServerWithDatabaseTeardown(
   // additionally gates each entry on a live plugin worker (and archives the
   // row of a provider that did not come up).
   try {
-    const bundledPluginsStartup = (app as { locals?: { bundledPluginsStartup?: Promise<unknown> } })
-      .locals?.bundledPluginsStartup;
+    const appLocals = (app as {
+      locals?: { bundledPluginsStartup?: Promise<unknown>; managedBundledPluginKeys?: readonly string[] };
+    }).locals;
     const managedEnvironmentsResult = await applyManagedEnvironments(db as any, managedConfig, {
-      pluginsReady: bundledPluginsStartup,
+      pluginsReady: appLocals?.bundledPluginsStartup,
+      autoInstalledPluginKeys: appLocals?.managedBundledPluginKeys,
       workerManager: pluginWorkerManager,
     });
     if (managedEnvironmentsResult) {

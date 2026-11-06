@@ -428,7 +428,9 @@ describe("parseManagedConfigEnv plugin environment entries", () => {
     ...overrides,
   });
   const sandbox = { name: "Paperclip Sandbox", provider: "daytona", config: { target: "us" } };
-  const docWith = (environments: unknown[], autoInstall = ["daytona", PLUGIN_KEY]) =>
+  // `plugins.autoInstall` holds catalog keys; the computer plugin's key is
+  // "agent-computer", while the entry's `pluginKey` is its manifest id.
+  const docWith = (environments: unknown[], autoInstall = ["daytona", "agent-computer"]) =>
     envWith(validDoc({ plugins: { autoInstall }, environments }));
 
   it("exports the driver list Cloud detects by name", () => {
@@ -474,9 +476,8 @@ describe("parseManagedConfigEnv plugin environment entries", () => {
       .toThrow(/duplicates another plugin entry's pluginKey and driverKey/);
   });
 
-  it("refuses a plugin that plugins.autoInstall does not provision", () => {
-    expect(() => parseManagedConfigEnv(docWith([computer()], ["daytona"])))
-      .toThrow(/"environments\[0\].pluginKey" is "paperclip-cloud.plugin-agent-computer", which is not in "plugins.autoInstall"/);
+  it("does not compare the manifest id with autoInstall catalog keys (boot checks the catalog)", () => {
+    expect(parseManagedConfigEnv(docWith([computer()]))?.pluginEnvironments[0]?.pluginKey).toBe(PLUGIN_KEY);
   });
 
   it("refuses instanceDefault on two entries", () => {

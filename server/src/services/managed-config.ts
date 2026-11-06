@@ -100,7 +100,11 @@ export interface ManagedPluginEnvironmentSpec {
   /** Display name of the instance-level environment row (unique per instance). */
   name: string;
   description?: string;
-  /** The serving plugin's key; always one of `plugins.autoInstall`. */
+  /**
+   * The serving plugin's manifest id (for example
+   * `paperclip-cloud.plugin-agent-computer`). Boot requires a catalog entry
+   * whose `key` is in `plugins.autoInstall` to install this id.
+   */
   pluginKey: string;
   /** The plugin's environment driver key. */
   driverKey: string;
@@ -322,12 +326,11 @@ function parseManagedEnvironmentsSection(
       continue;
     }
 
+    // `pluginKey` is the plugin's manifest id (what the row's config stores),
+    // not a `plugins.autoInstall` catalog key, so this pure parser cannot map
+    // it. `applyManagedEnvironments` refuses startup when no auto-installed
+    // catalog entry installs this manifest id.
     const pluginKey = requireTrimmedString(entry.pluginKey, `${at}.pluginKey`);
-    if (!autoInstall.includes(pluginKey)) {
-      fail(
-        `"${at}.pluginKey" is "${pluginKey}", which is not in "plugins.autoInstall"; a managed plugin environment requires its plugin to be provisioned`,
-      );
-    }
     const driverKey = requireTrimmedString(entry.driverKey, `${at}.driverKey`);
     if (!PLUGIN_DRIVER_KEY_PATTERN.test(driverKey)) {
       fail(

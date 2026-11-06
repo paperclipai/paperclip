@@ -685,7 +685,7 @@ describe("applyManagedEnvironments plugin entries", () => {
     ...overrides,
   });
   const configWith = (environments: unknown[]) => parsedConfig({
-    plugins: { autoInstall: ["daytona", COMPUTER_PLUGIN_KEY] },
+    plugins: { autoInstall: ["daytona", "agent-computer"] },
     environments,
   });
   const readyPlugin = (status = "ready", declaresDriver = true) => vi.fn(async () => ({
@@ -710,6 +710,7 @@ describe("applyManagedEnvironments plugin entries", () => {
       environments,
       instanceSettings: instanceSettingsSeam(),
       resolveEnvironmentPlugin: readyPlugin(),
+      autoInstalledPluginKeys: [COMPUTER_PLUGIN_KEY],
       applyPluginInstanceDefault,
     });
 
@@ -755,9 +756,34 @@ describe("applyManagedEnvironments plugin entries", () => {
       instanceSettings: instanceSettingsSeam(),
       resolveSandboxProviderDriver: readyDriverResolver(),
       resolveEnvironmentPlugin: readyPlugin(),
+      autoInstalledPluginKeys: [COMPUTER_PLUGIN_KEY],
       applyPluginInstanceDefault: decided(),
     });
     expect(order).toEqual(["sandbox", "plugin"]);
+  });
+
+  it("refuses startup when no auto-installed catalog entry installs the entry's plugin", async () => {
+    const environments = environmentsSeam();
+    await expect(applyManagedEnvironments(noDb, configWith([computerEntry()]), {
+      env: {},
+      workerManager: workerManager(),
+      environments,
+      instanceSettings: instanceSettingsSeam(),
+      resolveEnvironmentPlugin: readyPlugin(),
+      autoInstalledPluginKeys: ["paperclip.daytona-sandbox-provider"],
+    })).rejects.toThrow(/uses plugin "paperclip-cloud.plugin-agent-computer", which no "plugins.autoInstall" catalog entry installs/);
+    expect(environments.ensureManagedPluginEnvironment).not.toHaveBeenCalled();
+  });
+
+  it("resolves the auto-installed manifest ids from the catalog when the caller passes none", async () => {
+    // "agent-computer" is not in this build's bundled catalog and the test
+    // image has no distribution catalog, so the catalog lookup refuses.
+    await expect(applyManagedEnvironments(noDb, configWith([computerEntry()]), {
+      env: { PAPERCLIP_BUNDLED_PLUGIN_ROOT: "/nonexistent-paperclip-catalog" },
+      workerManager: workerManager(),
+      environments: environmentsSeam(),
+      instanceSettings: instanceSettingsSeam(),
+    })).rejects.toThrow(/auto-install key "agent-computer" is not in the bundled catalog/);
   });
 
   it("does not evaluate an instance default for an entry without the flag", async () => {
@@ -768,6 +794,7 @@ describe("applyManagedEnvironments plugin entries", () => {
       environments: environmentsSeam(),
       instanceSettings: instanceSettingsSeam(),
       resolveEnvironmentPlugin: readyPlugin(),
+      autoInstalledPluginKeys: [COMPUTER_PLUGIN_KEY],
       applyPluginInstanceDefault,
     });
     expect(applyPluginInstanceDefault).not.toHaveBeenCalled();
@@ -780,6 +807,7 @@ describe("applyManagedEnvironments plugin entries", () => {
       environments: environmentsSeam(),
       instanceSettings: instanceSettingsSeam(),
       resolveEnvironmentPlugin: readyPlugin(),
+      autoInstalledPluginKeys: [COMPUTER_PLUGIN_KEY],
       applyPluginInstanceDefault: decided(),
     })).resolves.toMatchObject({ ensured: 1 });
   });
@@ -799,6 +827,7 @@ describe("applyManagedEnvironments plugin entries", () => {
       environments,
       instanceSettings: instanceSettingsSeam(),
       resolveEnvironmentPlugin: readyPlugin(),
+      autoInstalledPluginKeys: [COMPUTER_PLUGIN_KEY],
       applyPluginInstanceDefault,
     });
 
@@ -837,6 +866,7 @@ describe("applyManagedEnvironments plugin entries", () => {
         environments,
         instanceSettings: instanceSettingsSeam(),
         resolveEnvironmentPlugin,
+        autoInstalledPluginKeys: [COMPUTER_PLUGIN_KEY],
         applyPluginInstanceDefault: decided("pending"),
       });
       expect(result).toMatchObject({ ensured: 0, failed: 1 });
@@ -864,7 +894,7 @@ describe("applyManagedEnvironments plugin entries", () => {
     const getById = vi.fn().mockResolvedValue(pluginEnvironmentRow());
     // Stamp side: managed-sandbox-only declared, sandbox entry ensured.
     await applyManagedEnvironments(noDb, parsedConfig({
-      plugins: { autoInstall: ["daytona", COMPUTER_PLUGIN_KEY] },
+      plugins: { autoInstall: ["daytona", "agent-computer"] },
       features: { enableManagedSandboxOnly: true },
       environments: [{ name: "Daytona", provider: "daytona" }, computerEntry()],
     }), {
@@ -874,6 +904,7 @@ describe("applyManagedEnvironments plugin entries", () => {
       environments: environmentsSeam({ getById }),
       resolveSandboxProviderDriver: readyDriverResolver(),
       resolveEnvironmentPlugin: readyPlugin(),
+      autoInstalledPluginKeys: [COMPUTER_PLUGIN_KEY],
       applyPluginInstanceDefault: decided("already_decided"),
     });
     // Revert side: the mode is off and the sandbox row still carries a stale stamp.
@@ -888,6 +919,7 @@ describe("applyManagedEnvironments plugin entries", () => {
         ),
       }),
       resolveEnvironmentPlugin: readyPlugin(),
+      autoInstalledPluginKeys: [COMPUTER_PLUGIN_KEY],
       applyPluginInstanceDefault: decided("already_decided"),
     });
     expect(settings.update).not.toHaveBeenCalled();
@@ -902,6 +934,7 @@ describe("applyManagedEnvironments plugin entries", () => {
       }),
       instanceSettings: instanceSettingsSeam(),
       resolveEnvironmentPlugin: readyPlugin(),
+      autoInstalledPluginKeys: [COMPUTER_PLUGIN_KEY],
       applyPluginInstanceDefault: decided(),
     });
     expect(result).toMatchObject({ ensured: 0, failed: 1 });
@@ -912,6 +945,7 @@ describe("applyManagedEnvironments plugin entries", () => {
       environments: environmentsSeam(),
       instanceSettings: instanceSettingsSeam(),
       resolveEnvironmentPlugin: readyPlugin(),
+      autoInstalledPluginKeys: [COMPUTER_PLUGIN_KEY],
       applyPluginInstanceDefault: vi.fn().mockRejectedValue(new Error("db exploded")),
     });
     expect(defaultFailure).toMatchObject({ ensured: 1, failed: 0 });

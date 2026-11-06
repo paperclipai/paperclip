@@ -1027,7 +1027,7 @@ describe("environment routes", () => {
         mode: "cloud",
         catalogVersion: "2026.1106.0",
         features: {},
-        plugins: { autoInstall: [PLUGIN_KEY] },
+        plugins: { autoInstall: ["agent-computer"] },
         environments: [{
           name: "Paperclip Computer",
           description: "Runs the agent on its own computer",

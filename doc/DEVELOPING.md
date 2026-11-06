@@ -1890,8 +1890,8 @@ separate changes.
 The `environments` list in `PAPERCLIP_MANAGED_CONFIG` declares instance-level
 environments that boot provisions and tenants cannot edit. It holds at most one
 sandbox entry (no `driver`, or `driver: "sandbox"`) and any number of
-`driver: "plugin"` entries. A plugin entry names an auto-installed plugin and its
-environment driver:
+`driver: "plugin"` entries. A plugin entry names a plugin by its manifest id
+(`pluginKey`) and one of its environment drivers:
 
 ```json
 {
@@ -1905,10 +1905,12 @@ environment driver:
 }
 ```
 
-Names and `pluginKey`–`driverKey` pairs must be unique, `pluginKey` must be in
-`plugins.autoInstall`, `driverConfig` must not contain secret-like keys, and
-`instanceDefault` is allowed on at most one plugin entry. Any other key refuses
-startup. Boot validates the driver config through the plugin, marks the row
+Names and `pluginKey`–`driverKey` pairs must be unique, `driverConfig` must not
+contain secret-like keys, and `instanceDefault` is allowed on at most one plugin
+entry. Any other key refuses startup. `plugins.autoInstall` holds catalog keys
+(for example `agent-computer`), not manifest ids, so boot also refuses to start
+unless an auto-installed bundled or distribution catalog entry installs the
+entry's `pluginKey`. Boot validates the driver config through the plugin, marks the row
 `managedPluginEnvironment: "<pluginKey>:<driverKey>"`, and adopts an existing
 unmarked row for the same plugin and driver. While the plugin is down, the row is
 archived; it comes back when the worker is ready. Removing an entry never archives

@@ -35,7 +35,7 @@ function managedConfig(entry: Record<string, unknown> | null, sandbox = false) {
       mode: "cloud",
       catalogVersion: "2026.1106.0",
       features: {},
-      plugins: { autoInstall: ["daytona", PLUGIN_KEY] },
+      plugins: { autoInstall: ["daytona", "agent-computer"] },
       environments: environmentEntries,
     }),
   });
@@ -105,7 +105,7 @@ const support = await getEmbeddedPostgresTestSupport();
   });
 
   const boot = (config = managedConfig(computer())) =>
-    applyManagedEnvironments(db, config, { env: {}, workerManager });
+    applyManagedEnvironments(db, config, { env: {}, workerManager, autoInstalledPluginKeys: [PLUGIN_KEY] });
   const pluginRows = () => db.select().from(environments).where(eq(environments.driver, "plugin"));
   const instanceDefault = async () =>
     (await db.select().from(instanceSettings).where(eq(instanceSettings.singletonKey, "default")))[0]?.defaultEnvironmentId ?? null;

@@ -66,6 +66,7 @@ import type { ManagedResourceStockStatus } from "./managed-resource-drift.js";
 import { parseExecutionPolicyBootstrapEnv } from "./execution-policy-bootstrap.js";
 import { resolvePluginSandboxProviderDriverByKey } from "./plugin-environment-driver.js";
 import { pluginRegistryService } from "./plugin-registry.js";
+import { resolveBundledCatalogRoot, resolveBundledPluginInstalls } from "./bundled-plugins.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 import {
   applyManagedPluginInstanceDefault,
@@ -136,6 +137,14 @@ export interface ApplyManagedEnvironmentsOptions {
     pluginKey: string;
     driverKey: string;
   }) => Promise<{ plugin: { id: string; pluginKey: string; status: string }; declaresDriver: boolean } | null>;
+  /**
+   * Manifest ids (`pluginKey`) that the `plugins.autoInstall` catalog keys
+   * resolve to: `app.locals.managedBundledPluginKeys`, from
+   * `resolveBundledPluginInstalls` over the bundled and distribution
+   * catalogs. A plugin entry whose `pluginKey` is not in this list refuses
+   * startup. When omitted, the list is resolved here the same way.
+   */
+  autoInstalledPluginKeys?: readonly string[];
   /** Test seam: overrides the one-time instance default decision. */
   applyPluginInstanceDefault?: (input: {
     environment: { id: string; status: string } | null;
@@ -250,6 +259,23 @@ export async function applyManagedEnvironments(
     throw new Error(
       `PAPERCLIP_EXECUTION_MODE and the PAPERCLIP_MANAGED_CONFIG "environments" section are mutually exclusive: both manage the single instance sandbox environment`,
     );
+  }
+
+  // Coherence, fail closed like the parser: a plugin entry names its plugin by
+  // manifest id, and only `plugins.autoInstall` provisions plugins on a
+  // managed instance, so some auto-installed catalog entry must install it.
+  if (pluginSpecs.length > 0) {
+    const autoInstalledPluginKeys = opts.autoInstalledPluginKeys ?? resolveBundledPluginInstalls(
+      managedConfig.plugins.autoInstall,
+      { catalogRoot: resolveBundledCatalogRoot(env), env, enforceCatalogRoot: true },
+    ).map((install) => install.pluginKey);
+    for (const spec of pluginSpecs) {
+      if (!autoInstalledPluginKeys.includes(spec.pluginKey)) {
+        throw new Error(
+          `PAPERCLIP_MANAGED_CONFIG "environments" entry "${spec.name}" uses plugin "${spec.pluginKey}", which no "plugins.autoInstall" catalog entry installs; a managed plugin environment requires its plugin to be provisioned`,
+        );
+      }
+    }
   }
 
   // The heartbeat resumes queued runs right after this bootstrap step, and
