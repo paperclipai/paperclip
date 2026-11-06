@@ -89,6 +89,13 @@ I am researching the Facebook ads Granola uses (current task)
           because → We're building the #1 AI note-taking app to $1M MRR in 3 months
 ```
 
+Task properties show the responsible owner separately from the originating person.
+The current responsible owner and company or instance administrators can transfer
+ownership to an active user in the same company. Stop any active task run before
+transfer. The change applies to this task; it does not change the assignee,
+creator, past run identities, or child tasks. Each transfer records the previous
+and new owner in the task activity log.
+
 Tasks have parentage. Every task exists in service of a parent task, all the way up to the company goal. This is what keeps autonomous agents aligned — they can always answer "why am I doing this?"
 
 The current issue model includes stable issue identifiers, parent/sub-issues, blockers, a single assignee, comments, issue documents, attachments and work products, and review/approval handoffs. That structure keeps work inspectable by both the board and agents while still allowing agents to decompose work into smaller tasks.

@@ -283,6 +283,10 @@ function issueListSearchParams(filters?: IssueListFilters) {
 }
 
 export const issuesApi = {
+  responsibleOwnerAccess: (id: string) => api.get<{ canTransfer: boolean }>(`/issues/${id}/responsible-owner`),
+  transferResponsibleOwner: (id: string, responsibleUserId: string, expectedResponsibleUserId: string | null) =>
+    api.post<Issue>(`/issues/${id}/responsible-owner`, { responsibleUserId, expectedResponsibleUserId }),
+
   inboxMine: (companyId: string, options?: RequestOptions) => {
     const path = `/companies/${companyId}/inbox/mine`;
     detachInflightGet(path);

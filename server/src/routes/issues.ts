@@ -1,3 +1,4 @@
+import { canTransferIssueOwner, transferIssueOwner } from "../services/issue-owner-transfer.js";
 import { confirmMcpAttachmentCleanup, recordMcpAttachmentCleanup, type McpAttachmentCleanup } from "../services/public-mcp/upload-cleanup.js";
 import { notifyDeferredExecutionWork } from "../services/deferred-execution-notifications.js";
 import { notifyNativeRecoveryNotices } from "../services/native-recovery-notice-notifications.js";
@@ -14243,6 +14244,21 @@ export function issueRoutes(
       { code: "native_run_status_reported_by_finish", requestedStatus },
     );
   }
+
+  router.get("/issues/:id/responsible-owner", async (req, res) => {
+    const issue = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Issue not found");
+    if (!issue || !(await assertIssueReadAllowed(req, res, issue))) return;
+    res.json({ canTransfer: await canTransferIssueOwner(db, req.actor, issue) });
+  });
+
+  router.post("/issues/:id/responsible-owner", validate(z.object({
+    responsibleUserId: z.string().trim().min(1),
+    expectedResponsibleUserId: z.string().nullable(),
+  }).strict()), async (req, res) => {
+    const issue = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Issue not found");
+    if (!issue || !(await assertIssueReadAllowed(req, res, issue))) return;
+    res.json(await transferIssueOwner(db, req.actor, issue.id, req.body));
+  });
 
   router.patch(
     "/issues/:id",

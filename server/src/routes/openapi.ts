@@ -1427,6 +1427,7 @@ const browserUseOperations = [
 ] as const;
 
 const BOARD_ONLY_OPERATIONS = new Set([
+  "POST /api/issues/{id}/responsible-owner",
   "GET /api/agents/{id}/project-access",
   "POST /api/agents/{id}/project-access",
   "GET /api/issues/{id}/pending-questions",
@@ -1992,6 +1993,26 @@ registry.registerPath({
       },
     },
   },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/issues/{id}/responsible-owner",
+  tags: ["issues"],
+  summary: "Read task ownership transfer access",
+  request: { params: z.object({ id: z.string() }) },
+  responses: { 200: r.ok(z.object({ canTransfer: z.boolean() })), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+registry.registerPath({
+  method: "post",
+  path: "/api/issues/{id}/responsible-owner",
+  tags: ["issues"],
+  summary: "Transfer task ownership to an active company user",
+  request: {
+    params: z.object({ id: z.string() }),
+    body: jsonBody(z.object({ responsibleUserId: z.string().trim().min(1), expectedResponsibleUserId: z.string().nullable() }).strict()),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict, 422: r.unprocessable },
 });
 
 registry.registerPath({
