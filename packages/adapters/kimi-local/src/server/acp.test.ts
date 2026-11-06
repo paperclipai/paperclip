@@ -1,9 +1,35 @@
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   buildKimiAcpConfig,
   nodeVersionMeetsKimiAcpMinimum,
   resolveKimiExecutionEngine,
+  resolveKimiExecutionEngineForRun,
 } from "./acp.js";
+
+describe("resolveKimiExecutionEngineForRun on Windows", () => {
+  it("uses the configured PATHEXT to find the command on the configured PATH", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-kimi-acp-pathext-"));
+    const bin = path.join(root, "bin");
+    await fs.mkdir(bin, { recursive: true });
+    await fs.writeFile(path.join(bin, "kimi.ACP"), "", "utf8");
+    const originalPlatform = process.platform;
+    Object.defineProperty(process, "platform", { configurable: true, value: "win32" });
+    try {
+      await expect(
+        resolveKimiExecutionEngineForRun({
+          config: { env: { PATH: bin, PATHEXT: ".ACP" } },
+          executionTarget: null,
+        }),
+      ).resolves.toEqual({ engine: "acp", explicit: false });
+    } finally {
+      Object.defineProperty(process, "platform", { configurable: true, value: originalPlatform });
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+});
 
 describe("resolveKimiExecutionEngine", () => {
   it("defaults to ACP (non-explicit) when engine is unset", () => {

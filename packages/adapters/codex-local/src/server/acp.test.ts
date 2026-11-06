@@ -333,6 +333,33 @@ describe("codex_local ACP lane", () => {
     ).resolves.toMatchObject({ engine: "acp", explicit: true, unavailableReason: expect.stringContaining("Node") });
   });
 
+  it("finds a Windows codex-acp.exe on PATH for a bare command", async () => {
+    const root = await makeTempRoot("paperclip-codex-acp-pathext-");
+    const binDir = path.join(root, "bin");
+    await fs.mkdir(binDir, { recursive: true });
+    await fs.writeFile(path.join(binDir, "codex-acp.EXE"), "", "utf8");
+    setNodeVersion("v24.11.0");
+    const originalPlatform = process.platform;
+    const originalPath = process.env.PATH;
+    const originalPathExt = process.env.PATHEXT;
+    Object.defineProperty(process, "platform", { configurable: true, value: "win32" });
+    process.env.PATH = binDir;
+    process.env.PATHEXT = ".COM;.EXE;.BAT;.CMD";
+    try {
+      await expect(
+        resolveCodexExecutionEngineForRun({
+          config: { agentCommand: "codex-acp" },
+          executionTarget: null,
+        }),
+      ).resolves.toEqual({ engine: "acp", explicit: false });
+    } finally {
+      Object.defineProperty(process, "platform", { configurable: true, value: originalPlatform });
+      process.env.PATH = originalPath;
+      if (originalPathExt === undefined) delete process.env.PATHEXT;
+      else process.env.PATHEXT = originalPathExt;
+    }
+  });
+
   it("requires explicit CLI selection for local filesystem or network scope", async () => {
     await expect(
       resolveCodexExecutionEngineForRun({
