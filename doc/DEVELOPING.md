@@ -1939,6 +1939,12 @@ project with the same repository URL; publication locks and rechecks those sourc
 rows. Imports from mutable local folders still recapture and compare the
 current files; a saved upload does not permit later local edits to be discarded.
 
+When the verified Git source still exists, reconstruction also copies its local
+`info/exclude` rules into the private repository before applying a saved restore
+point. This keeps saved ignored files, including recovery receipts and bundles,
+in their original classification. The source ignore file stays unchanged.
+Symlinked, oversized, or changing source ignore files block reconstruction.
+
 Shared physical folders require Cloud's offline enrollment maintenance process.
 A task-level hold cannot fence another workspace record pointing at the same
 folder. Maintenance verifies that legacy deployments have stopped and that no
