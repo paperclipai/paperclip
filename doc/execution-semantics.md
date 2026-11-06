@@ -1887,7 +1887,10 @@ work (`issue_tree_resumed`, with `holdId` and `interruptedRunId` in the wake
 context), even without `wakeAgents`. The interrupted run must still be the task's
 latest run, assigned to the same agent, and executable; normal admission gates still
 apply. A compare-and-set claim on the interrupted run makes the resume happen at most
-once. A task that still needs execution reconciliation is not replayed: the release
+once. The claim is saved as `pending` and arms the execution-continuation queue in
+the same commit; the wake uses the stable idempotency key `tree-hold-resume:<runId>`.
+If the process stops before that wake is saved, the queue's sweep finds the stale
+claim, rechecks current state, and dispatches it once. A task that still needs execution reconciliation is not replayed: the release
 records `issue.tree_resume_wake_skipped`, the blocker stays visible, and the
 obligation stays unclaimed.
 

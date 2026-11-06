@@ -1266,23 +1266,6 @@ export function issueTreeControlService(db: Db) {
     return { issueId, agentId: run.agentId, interruptedRunId: run.id, holdId: hold.id };
   }
 
-  /** Compare-and-set claim on the interrupted run; only the winner wakes. */
-  async function claimPauseResume(companyId: string, runId: string, claim: Record<string, unknown>) {
-    const [claimed] = await db.update(heartbeatRuns).set({
-      resultJson: sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) || ${JSON.stringify({ treeHoldResume: claim })}::jsonb`,
-    }).where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.id, runId),
-      eq(heartbeatRuns.status, "cancelled"),
-      sql`not (coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) ? 'treeHoldResume')`))
-      .returning({ id: heartbeatRuns.id });
-    return Boolean(claimed);
-  }
-
-  /** Return an unused claim after a failed wake so a later release can retry. */
-  async function releasePauseResumeClaim(companyId: string, runId: string) {
-    await db.update(heartbeatRuns).set({ resultJson: sql`${heartbeatRuns.resultJson} - 'treeHoldResume'` })
-      .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.id, runId)));
-  }
-
   async function cancelUnclaimedWakeupsForTree(companyId: string, rootIssueId: string, reason: string) {
     const treeIssues = await listTreeIssues(companyId, rootIssueId);
     const issueIds = treeIssues.map((issue) => issue.id);
@@ -1331,8 +1314,6 @@ export function issueTreeControlService(db: Db) {
     getActivePauseHoldGate,
     releaseHold,
     findOwedPauseResume,
-    claimPauseResume,
-    releasePauseResumeClaim,
     cancelUnclaimedWakeupsForTree,
   };
 }

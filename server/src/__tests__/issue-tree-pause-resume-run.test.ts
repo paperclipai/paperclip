@@ -306,6 +306,45 @@ describeEmbeddedPostgres("subtree pause and release of an in-flight child run", 
     expect(runs[1]!.contextSnapshot).toMatchObject({ holdId: childHoldId, interruptedRunId });
   });
 
+  it("lets only one of two concurrent releases resume the interrupted work", async () => {
+    const fixture = await seedTree();
+    const { holdId } = await pauseWhilePreparing(fixture);
+    preparationGate.release?.();
+    await drainHeartbeatRunsToQuiescence(db, heartbeat);
+
+    const url = `/api/issues/${fixture.parentId}/tree-holds/${holdId}/release`;
+    const responses = await Promise.all([request(app).post(url).send({}), request(app).post(url).send({})]);
+    expect(responses.map((response) => response.status).sort()).toEqual([200, 409]);
+    await drainHeartbeatRunsToQuiescence(db, heartbeat);
+    const runs = await childRuns(fixture.childId);
+    expect(runs.map((run) => run.contextSnapshot?.wakeReason)).toEqual(["issue_assigned", "issue_tree_resumed"]);
+  });
+
+  it("finishes a resume whose wake was not saved before a restart, exactly once", async () => {
+    const fixture = await seedTree();
+    const { interruptedRunId, holdId } = await pauseWhilePreparing(fixture);
+    preparationGate.release?.();
+    await drainHeartbeatRunsToQuiescence(db, heartbeat);
+    // The release claimed the work, then the process stopped before the wake was saved.
+    const claimedAt = new Date(Date.now() - 5 * 60_000).toISOString();
+    await db.update(issueTreeHolds).set({ status: "released", releasedAt: new Date() }).where(eq(issueTreeHolds.id, holdId));
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, interruptedRunId));
+    await db.update(heartbeatRuns).set({ resultJson: { ...run!.resultJson, treeHoldResume: { holdId, state: "pending", claimedAt } } })
+      .where(eq(heartbeatRuns.id, interruptedRunId));
+
+    const { deliverPendingPauseResumes, hasPendingPauseResume } = await import("../services/issue-tree-resume.js");
+    expect(await hasPendingPauseResume(db)).toBe(true);
+    await deliverPendingPauseResumes(db, (agentId, opts) => heartbeat.wakeup(agentId, opts));
+    await drainHeartbeatRunsToQuiescence(db, heartbeat);
+    await deliverPendingPauseResumes(db, (agentId, opts) => heartbeat.wakeup(agentId, opts), new Date(Date.now() + 5 * 60_000));
+    await drainHeartbeatRunsToQuiescence(db, heartbeat);
+
+    const runs = await childRuns(fixture.childId);
+    expect(runs.map((row) => row.contextSnapshot?.wakeReason)).toEqual(["issue_assigned", "issue_tree_resumed"]);
+    expect(runs[1]).toMatchObject({ status: "succeeded" });
+    expect(await hasPendingPauseResume(db)).toBe(false);
+  });
+
   it("re-dispatches a queued child run that the pause cancelled before it started", async () => {
     const fixture = await seedTree();
     // Occupy the agent's only slot so the child's run stays queued.
