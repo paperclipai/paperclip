@@ -1,11 +1,12 @@
 import { lstat, mkdir, mkdtemp, readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
+import os from "node:os";
 import type { AdapterSandboxExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
 import { hasRemoteRecoveryAttachment } from "./remote-workspace-transport.js";
 import { LEGACY_WORKSPACE_RECOVERY_MIGRATION } from "./legacy-workspace-recovery-migration.js";
 import { and, eq, inArray, sql } from "drizzle-orm";
-import { executionWorkspaces, heartbeatRuns, workspaceOperations, type Db } from "@paperclipai/db";
-import { remoteWorkspaceRunReferenceSchema } from "@paperclipai/shared";
+import { executionWorkspaceSnapshots, executionWorkspaces, heartbeatRuns, workspaceOperations, type Db } from "@paperclipai/db";
+import { readRemoteWorkspaceAuthority, remoteWorkspaceRunReferenceSchema } from "@paperclipai/shared";
 import { readSnapshot, verifiedWorkspaceSnapshotReceipt } from "./workspace-recovery-snapshot.js";
 import { recoveryRunAncestry } from "./recovery-run-ancestry.js";
 import { immutableRemoteWorkspaceRecoveryAttachment } from "./workspace-recovery-receipt.js";
@@ -103,46 +104,51 @@ export async function attachPreservedRemoteWorkspaceSnapshots(input: {
 async function retainedRecoveryAttachmentProvenance(input: {
   db: Db; companyId: string; issueIds: string[]; sourceRunId: string; operationId: string;
   workspace: Pick<typeof executionWorkspaces.$inferSelect, "id" | "metadata">;
+  verifySelectedSnapshot: (operationId: string, provenance: string) => Promise<boolean>;
 }): Promise<string | null> {
   const [source] = await input.db.select().from(heartbeatRuns).where(and(
     eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.id, input.sourceRunId)));
   const issueId = source?.nativeIssueId ?? source?.issueId ?? source?.contextSnapshot?.issueId;
   if (!source || typeof issueId !== "string") return null;
-  if (!input.issueIds.includes(issueId)) {
-    // A committed workspace migration is the history owner for all related
-    // task attachments. Task relationships alone never authorize retention.
+  let historyAllowed = input.issueIds.includes(issueId);
+  if (!historyAllowed) {
+    // Committed migration history is a workspace-scoped proof, independent of
+    // task relationships. A verified saved workspace can prove the same path.
     const marker = record(input.workspace.metadata?.legacyWorkspaceRecoveryMigration);
     const sourceMarker = record(source.runnerProfileJson?.legacyWorkspaceRecoveryMigration
       ?? source.runnerProfileJson?.finalizedWorkspaceRecoveryMigration);
-    if (marker.schema !== LEGACY_WORKSPACE_RECOVERY_MIGRATION || typeof marker.operationId !== "string"
-      || sourceMarker.schema !== marker.schema || sourceMarker.operationId !== marker.operationId
-      || sourceMarker.workspaceId !== input.workspace.id) return null;
-    const [migration] = await input.db.select().from(workspaceOperations).where(and(
-      eq(workspaceOperations.companyId, input.companyId), eq(workspaceOperations.executionWorkspaceId, input.workspace.id),
-      eq(workspaceOperations.id, marker.operationId), eq(workspaceOperations.phase, "remote_workspace_migration"),
-      eq(workspaceOperations.status, "succeeded")));
-    const history = migration?.metadata?.legacyRecoverySources;
-    if (!Array.isArray(history) || !history.some(value => {
-      const entry = record(value); return entry.runId === source.id && entry.issueId === issueId;
-    })) return null;
+    if (marker.schema === LEGACY_WORKSPACE_RECOVERY_MIGRATION && typeof marker.operationId === "string"
+      && sourceMarker.schema === marker.schema && sourceMarker.operationId === marker.operationId
+      && sourceMarker.workspaceId === input.workspace.id) {
+      const [migration] = await input.db.select().from(workspaceOperations).where(and(
+        eq(workspaceOperations.companyId, input.companyId), eq(workspaceOperations.executionWorkspaceId, input.workspace.id),
+        eq(workspaceOperations.id, marker.operationId), eq(workspaceOperations.phase, "remote_workspace_migration"),
+        eq(workspaceOperations.status, "succeeded")));
+      const history = migration?.metadata?.legacyRecoverySources;
+      historyAllowed = Array.isArray(history) && history.some(value => {
+        const entry = record(value); return entry.runId === source.id && entry.issueId === issueId;
+      });
+    }
   }
   const [operation] = await input.db.select().from(workspaceOperations).where(and(
     eq(workspaceOperations.companyId, input.companyId), eq(workspaceOperations.issueId, issueId),
     eq(workspaceOperations.heartbeatRunId, source.id), eq(workspaceOperations.id, input.operationId),
     eq(workspaceOperations.status, "succeeded")));
+  let provenance: string | null = null;
   if (operation?.phase === "workspace_recovery_snapshot") {
     const saved = readSnapshot(operation.metadata, input.companyId, source.id);
     const proof = await verifiedWorkspaceSnapshotReceipt(input.db, { companyId: input.companyId, issueId,
       runId: source.id, actionId: saved.recoveryActionId, operationIds: [operation.id],
       leaseId: saved.leaseId, providerLeaseId: saved.providerLeaseId });
-    return proof ? JSON.stringify({ schema: saved.schema, operationId: operation.id, sourceRunId: source.id,
+    provenance = proof ? JSON.stringify({ schema: saved.schema, operationId: operation.id, sourceRunId: source.id,
       leaseId: saved.leaseId, sha256: saved.archive.sha256 }) : null;
+  } else if (operation?.phase === "workspace_recovery") {
+    const proof = await immutableRemoteWorkspaceRecoveryAttachment(input.db, source);
+    provenance = proof?.operationId === operation.id ? JSON.stringify({ schema: "paperclip.remote-workspace-recovery-attachment.v1",
+      operationId: proof.operationId, sourceRunId: source.id, workspaceId: proof.workspaceId,
+      snapshotId: proof.snapshotId, sha256: proof.sha256 }) : null;
   }
-  if (operation?.phase !== "workspace_recovery") return null;
-  const proof = await immutableRemoteWorkspaceRecoveryAttachment(input.db, source);
-  return proof?.operationId === operation.id ? JSON.stringify({ schema: "paperclip.remote-workspace-recovery-attachment.v1",
-    operationId: proof.operationId, sourceRunId: source.id, workspaceId: proof.workspaceId,
-    snapshotId: proof.snapshotId, sha256: proof.sha256 }) : null;
+  return provenance && (historyAllowed || await input.verifySelectedSnapshot(input.operationId, provenance)) ? provenance : null;
 }
 
 function record(value: unknown): Record<string, unknown> {
@@ -155,26 +161,57 @@ export async function retainRemoteRecoveryAttachments(input: {
   db: Db; workspace: Pick<typeof executionWorkspaces.$inferSelect, "id" | "companyId" | "sourceIssueId" | "metadata">;
   runId: string; remoteRoot: string; target: AdapterSandboxExecutionTarget; assertOwned?: () => Promise<void>;
   recoveredFiles: Array<{ operationId: string; sourceRunId: string; path: string; provenance: string }>;
+  storage?: StorageService;
 }) {
-  const retained = input.workspace.metadata?.remoteWorkspaceRecoveredFiles;
-  for (const value of Array.isArray(retained) ? retained : []) {
-    const item = record(value);
-    if (typeof item.operationId !== "string" || !/^[a-f0-9-]{36}$/.test(item.operationId)
-      || typeof item.sourceRunId !== "string" || item.path !== `.paperclip-recovered/${item.operationId}`)
-      throw new Error("remote_workspace_recovered_files_invalid");
-    if (input.recoveredFiles.some(current => current.operationId === item.operationId)) continue;
-    let provenance = typeof item.provenance === "string" ? item.provenance : null;
-    if (!provenance) {
-      const [writer] = await input.db.select().from(heartbeatRuns).where(and(
-        eq(heartbeatRuns.companyId, input.workspace.companyId), eq(heartbeatRuns.id, input.runId)));
-      const issueId = writer?.nativeIssueId ?? writer?.issueId ?? writer?.contextSnapshot?.issueId;
-      provenance = await retainedRecoveryAttachmentProvenance({ db: input.db, companyId: input.workspace.companyId,
-        workspace: input.workspace, issueIds: [issueId, input.workspace.sourceIssueId].filter((id): id is string => typeof id === "string"),
-        sourceRunId: item.sourceRunId, operationId: item.operationId });
-      if (!provenance) throw new Error("remote_workspace_recovery_receipt_invalid");
+  let snapshotScratch: string | null = null, snapshotFiles: string | null = null, snapshotLoaded = false;
+  const verifySelectedSnapshot = async (operationId: string, provenance: string) => {
+    if (!snapshotLoaded) {
+      snapshotLoaded = true;
+      const authority = readRemoteWorkspaceAuthority(input.workspace.metadata);
+      if (!authority?.snapshotId) return false;
+      const [receipt] = await input.db.select({ status: executionWorkspaceSnapshots.status }).from(executionWorkspaceSnapshots).where(and(
+        eq(executionWorkspaceSnapshots.companyId, input.workspace.companyId), eq(executionWorkspaceSnapshots.executionWorkspaceId, input.workspace.id),
+        eq(executionWorkspaceSnapshots.id, authority.snapshotId)));
+      if (!receipt || !["committed", "superseded"].includes(receipt.status)) return false;
+      const saved = await getWorkspaceSnapshot(input.db, { companyId: input.workspace.companyId,
+        workspaceId: input.workspace.id, snapshotId: authority.snapshotId });
+      if (!saved) return false;
+      await input.assertOwned?.();
+      snapshotScratch = await realpath(await mkdtemp(path.join(os.tmpdir(), "pc-retained-recovery-proof-")));
+      const archivePath = path.join(snapshotScratch, "archive.pcws");
+      await loadWorkspaceSnapshotArchive({ storage: input.storage ?? getStorageService(), reference: saved, targetPath: archivePath });
+      snapshotFiles = path.join(snapshotScratch, "files");
+      await restoreRemoteWorkspaceArchive({ archivePath, targetDir: snapshotFiles, expectedManifestDigest: saved.manifestDigest });
+      await input.assertOwned?.();
     }
-    await input.assertOwned?.();
-    if (await hasRemoteRecoveryAttachment({ target: input.target, remoteCwd: input.remoteRoot, operationId: item.operationId, provenance }))
-      input.recoveredFiles.push({ operationId: item.operationId, sourceRunId: item.sourceRunId, path: item.path, provenance });
-  }
+    if (!snapshotFiles) return false;
+    const directory = path.join(snapshotFiles, ".paperclip-recovered", operationId);
+    if (await realpath(directory).catch(() => null) !== directory) return false;
+    const file = path.join(directory, "provenance.json"), stat = await lstat(file).catch(() => null);
+    return Boolean(stat?.isFile() && !stat.isSymbolicLink() && stat.nlink === 1 && stat.size <= 16_384
+      && await readFile(file, "utf8") === provenance);
+  };
+  try {
+    const retained = input.workspace.metadata?.remoteWorkspaceRecoveredFiles;
+    for (const value of Array.isArray(retained) ? retained : []) {
+      const item = record(value);
+      if (typeof item.operationId !== "string" || !/^[a-f0-9-]{36}$/.test(item.operationId)
+        || typeof item.sourceRunId !== "string" || item.path !== `.paperclip-recovered/${item.operationId}`)
+        throw new Error("remote_workspace_recovered_files_invalid");
+      if (input.recoveredFiles.some(current => current.operationId === item.operationId)) continue;
+      let provenance = typeof item.provenance === "string" ? item.provenance : null;
+      if (!provenance) {
+        const [writer] = await input.db.select().from(heartbeatRuns).where(and(
+          eq(heartbeatRuns.companyId, input.workspace.companyId), eq(heartbeatRuns.id, input.runId)));
+        const issueId = writer?.nativeIssueId ?? writer?.issueId ?? writer?.contextSnapshot?.issueId;
+        provenance = await retainedRecoveryAttachmentProvenance({ db: input.db, companyId: input.workspace.companyId,
+          workspace: input.workspace, issueIds: [issueId, input.workspace.sourceIssueId].filter((id): id is string => typeof id === "string"),
+          sourceRunId: item.sourceRunId, operationId: item.operationId, verifySelectedSnapshot });
+        if (!provenance) throw new Error("remote_workspace_recovery_receipt_invalid");
+      }
+      await input.assertOwned?.();
+      if (await hasRemoteRecoveryAttachment({ target: input.target, remoteCwd: input.remoteRoot, operationId: item.operationId, provenance }))
+        input.recoveredFiles.push({ operationId: item.operationId, sourceRunId: item.sourceRunId, path: item.path, provenance });
+    }
+  } finally { if (snapshotScratch) await rm(snapshotScratch, { recursive: true, force: true }); }
 }

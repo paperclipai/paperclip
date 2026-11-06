@@ -518,7 +518,7 @@ export async function prepareRemoteWorkspace(input: {
     }
   }
   await retainRemoteRecoveryAttachments({ db: input.db, workspace: input.workspace, runId: input.runId,
-    remoteRoot, target, recoveredFiles, assertOwned: input.assertOwned });
+    remoteRoot, target, recoveredFiles, assertOwned: input.assertOwned, storage: input.storage });
   await input.assertOwned?.();
   const prepared = await input.db.transaction(async tx => {
     await lockWorkspaceRunParents(tx, input.workspace.companyId, input.runId);

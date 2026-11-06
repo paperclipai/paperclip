@@ -1951,6 +1951,40 @@ describe("automatic retained workspace recovery", () => {
               lease: childLease as EnvironmentLease, target: { ...target, leaseId: childLease.id, remoteCwd: cold.remoteRoot } }))
               .rejects.toThrow("remote_workspace_recovery_receipt_invalid");
             expect(await readFile(path.join(inherited.remoteRoot, newest!.path, "files", "ticks.log"), "utf8")).toBe(editedLog);
+            await db.update(workspaceOperations).set({ status: "succeeded" }).where(eq(workspaceOperations.id,
+              (olderPaths.find(item => item.sourceRunId === source.id))!.operationId));
+            await saveRemoteWorkspace({ db, storage, workspace: inherited.workspace, runId: childRun.id,
+              lease: childLease as EnvironmentLease, target: { ...target, leaseId: childLease.id, remoteCwd: inherited.remoteRoot },
+              assertOwned: async () => {} });
+            const [selectedSaved] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, inherited.workspace.id));
+            const [snapshotOnly] = await db.update(executionWorkspaces).set({ metadata: {
+              ...Object.fromEntries(Object.entries(selectedSaved.metadata!).filter(([key]) => key !== "legacyWorkspaceRecoveryMigration")),
+              remoteWorkspaceRecoveredFiles: olderPaths.map(({ operationId, sourceRunId, path }) => ({ operationId, sourceRunId, path })) } })
+              .where(eq(executionWorkspaces.id, inherited.workspace.id)).returning();
+            const snapshotReserved = await reserveRemoteWorkspace({ db, storage, companyId: f.companyId, issueId: child.id,
+              runId: childRun.id, agentId: agent.id, environmentId: f.lease.environmentId!, projectId: null,
+              projectWorkspaceId: null, existingWorkspaceId: snapshotOnly.id, source: { kind: "empty" } });
+            const snapshotRetained = await prepareRemoteWorkspace({ db, storage, workspace: snapshotReserved, runId: childRun.id,
+              lease: childLease as EnvironmentLease, target: { ...target, leaseId: childLease.id, remoteCwd: inherited.remoteRoot } });
+            expect(snapshotRetained.workspace.metadata?.remoteWorkspaceRecoveredFiles).toHaveLength(olderPaths.length);
+            expect(await readFile(path.join(snapshotRetained.remoteRoot, newest!.path, "files", "ticks.log"), "utf8")).toBe(editedLog);
+            const legacySnapshot = { ...snapshotRetained.workspace, metadata: { ...snapshotRetained.workspace.metadata,
+              remoteWorkspaceRecoveredFiles: olderPaths.map(({ operationId, sourceRunId, path }) => ({ operationId, sourceRunId, path })) } };
+            const authority = readRemoteWorkspaceAuthority(legacySnapshot.metadata)!;
+            await db.update(executionWorkspaceSnapshots).set({ status: "uploaded" }).where(eq(executionWorkspaceSnapshots.id, authority.snapshotId!));
+            await expect(prepareRemoteWorkspace({ db, storage, workspace: legacySnapshot, runId: childRun.id,
+              lease: childLease as EnvironmentLease, target: { ...target, leaseId: childLease.id, remoteCwd: inherited.remoteRoot } }))
+              .rejects.toThrow("remote_workspace_recovery_receipt_invalid");
+            await db.update(executionWorkspaceSnapshots).set({ status: "committed" }).where(eq(executionWorkspaceSnapshots.id, authority.snapshotId!));
+            await expect(prepareRemoteWorkspace({ db, storage, workspace: { ...legacySnapshot, metadata: { ...legacySnapshot.metadata,
+              remoteWorkspace: { ...authority, snapshotId: sourceReference.snapshotId } } }, runId: childRun.id,
+              lease: childLease as EnvironmentLease, target: { ...target, leaseId: childLease.id, remoteCwd: inherited.remoteRoot } }))
+              .rejects.toThrow("remote_workspace_recovery_receipt_invalid");
+            const unreadable = { ...storage, getObject: vi.fn().mockRejectedValue(new Error("fixture: selected snapshot unavailable")) };
+            await expect(prepareRemoteWorkspace({ db, storage: unreadable, workspace: legacySnapshot, runId: childRun.id,
+              lease: childLease as EnvironmentLease, target: { ...target, leaseId: childLease.id, remoteCwd: inherited.remoteRoot } }))
+              .rejects.toThrow("fixture: selected snapshot unavailable");
+            expect(await readFile(path.join(snapshotRetained.remoteRoot, newest!.path, "files", "ticks.log"), "utf8")).toBe(editedLog);
           }
           if (kind === "ordinary_followup") {
             await rm(path.join(cold.remoteRoot, newest!.path), { recursive: true });
