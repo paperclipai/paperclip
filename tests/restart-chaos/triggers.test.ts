@@ -1,3 +1,6 @@
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { isSocketTypeOfServiceRace, type ChaosApi } from "./api.js";
 import { parseCommand } from "./config.js";
@@ -22,7 +25,7 @@ const options: WaveOptions = { env: "local", adapters: ["codex", "claude", "open
 type Json = Record<string, unknown>;
 function scriptedApi(state: { runs: Json[]; issue: Json; retry?: Json }) {
   const api = {
-    async get(route: string) { return route.endsWith("/runs") ? state.runs : state.issue; },
+    async get(route: string) { return route.endsWith("/runs") ? state.runs : route.endsWith("/comments") ? [] : state.issue; },
     async post(route: string) {
       if (route.endsWith("/issues")) return { id: "i1", identifier: "CHA-1" };
       if (route.endsWith("/retry")) return state.retry ?? { accepted: true };
@@ -207,6 +210,30 @@ describe("ledger load", () => {
       [{ faultId: "f01", loadAvg1m: 12.5 }, { faultId: "f02", loadAvg1m: 21 }, { faultId: "f03", loadAvg1m: 40 }]);
     expect(line.maxLoadAvg1m).toBe(21);
     expect(ledgerLine(plan, record, grade, "sha", null).maxLoadAvg1m).toBeUndefined();
+  });
+});
+
+describe("pre-fault files", () => {
+  it("checks lost files in the workspace the snapshot was taken from, and records a move", async () => {
+    const before = await mkdtemp(path.join(os.tmpdir(), "restart-chaos-before-"));
+    const after = await mkdtemp(path.join(os.tmpdir(), "restart-chaos-after-"));
+    try {
+      await writeFile(path.join(before, "kept.txt"), "x");
+      await writeFile(path.join(before, "other-task.txt"), "x");
+      const state = { runs: [] as Json[], issue: { id: "i1", status: "in_progress", currentExecutionWorkspace: { cwd: before } } as Json };
+      const observer = new TaskObserver({ ...base, workload: "B5" }, scriptedApi(state), lab, new Timeline(null), ready);
+      await observer.launch();
+      await observer.poll(observer.record.createdAt! + 10);
+      await observer.snapshotBeforeFault();
+      await rm(path.join(before, "other-task.txt"));
+      state.issue = { id: "i1", status: "done", currentExecutionWorkspace: { cwd: after } };
+      await observer.collectArtifacts();
+      expect(observer.record.lostFiles).toEqual(["other-task.txt"]);
+      expect(observer.record.workspaceMovedTo).toBe(after);
+    } finally {
+      await rm(before, { recursive: true, force: true });
+      await rm(after, { recursive: true, force: true });
+    }
   });
 });
 

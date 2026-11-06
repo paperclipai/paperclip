@@ -206,7 +206,7 @@ export class TaskObserver {
     // One task's snapshot failure must not end the wave; R2 fails with the reason.
     try {
       const workspace = await this.workspacePath();
-      if (workspace) this.record.preFaultFiles = await listWorkspaceFiles(workspace);
+      if (workspace) { this.record.preFaultFiles = await listWorkspaceFiles(workspace); this.record.preFaultWorkspacePath = workspace; }
     } catch (error) {
       this.record.preFaultSnapshotError = error instanceof Error ? error.message : String(error);
       this.timeline.add("pre_fault_snapshot_failed", { taskId: this.plan.taskId, error: this.record.preFaultSnapshotError });
@@ -347,8 +347,10 @@ export class TaskObserver {
     }
     const comments = await this.api.get<Json[]>(`/api/issues/${issueId}/comments`).catch(() => []);
     const workspacePath = await this.workspacePath();
-    if (workspacePath && this.record.preFaultFiles) {
-      const present = new Set(await listWorkspaceFiles(workspacePath));
+    const snapshotPath = this.record.preFaultWorkspacePath ?? workspacePath;
+    if (snapshotPath && this.record.preFaultFiles) {
+      if (workspacePath && snapshotPath !== workspacePath) this.record.workspaceMovedTo = workspacePath;
+      const present = new Set(await listWorkspaceFiles(snapshotPath).catch(() => []));
       this.record.lostFiles = this.record.preFaultFiles.filter(file => !present.has(file));
     }
     const files: Record<string, string | null> = {};

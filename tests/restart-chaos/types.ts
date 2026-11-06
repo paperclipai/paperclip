@@ -180,6 +180,8 @@ export interface TaskRecord {
   sweep: RestSweep | null;
   /** Workspace files present just before the first fault that hit this task (R2). */
   preFaultFiles: string[] | null;
+  preFaultWorkspacePath?: string;
+  workspaceMovedTo?: string;
   /** Set when the pre-fault snapshot could not read the workspace; R2 then fails visibly. */
   preFaultSnapshotError?: string | null;
   /** Pre-fault files missing at rest; null when not checked. */
