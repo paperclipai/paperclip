@@ -13,6 +13,7 @@ on:
       - CI work benchmark
       - Incremental CI qualification
       - Backup checkpoint qualification
+      - PR review API access
     types: [completed]
   # External check providers and legacy commit statuses can finish after CI.
   check_run:
@@ -24,6 +25,7 @@ permissions:
   checks: read
   contents: read
   pull-requests: read
+  statuses: read
 
 jobs:
   notify:

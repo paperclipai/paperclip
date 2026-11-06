@@ -34,6 +34,12 @@ PR code or downloads PR artifacts or caches. It reacts to the repository's PR
 workflow completions, external check completions, and legacy commit statuses.
 When adding another PR verification workflow, add its name to `workflow_run`.
 
+The separate `PR review API access` workflow checks notifier changes using
+the real read-only Actions token. It has no private environment or webhook
+credentials and sends no webhook. Both workflows explicitly grant
+`actions`, `checks`, `contents`, `pull-requests`, and `statuses` read access.
+The GraphQL status rollup needs both check and commit-status permissions.
+
 The notifier reads the current PR's status rollup and branch rules. Both
 `ci / verify` and `ci / e2e`, plus any additional required checks, must succeed.
 Other checks must succeed or finish as skipped or neutral. Optional skipped or

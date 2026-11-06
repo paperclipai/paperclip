@@ -243,9 +243,21 @@ test("workflow uses read permissions, a protected environment, trusted checkout,
   assert.match(workflow, /ref: \$\{\{ github.sha \}\}/);
   assert.match(workflow, /persist-credentials: false/);
   assert.match(workflow, /continue-on-error: true/);
+  for (const permission of ["actions", "checks", "contents", "pull-requests", "statuses"]) {
+    assert.ok(workflow.includes(`  ${permission}: read`), `Missing ${permission}: read`);
+  }
   assert.doesNotMatch(workflow, /: write|download-artifact|restore@|pull_request_target:/);
   for (const name of ["PAPERCLIP_PR_REVIEW_WEBHOOK_URL", "PAPERCLIP_PR_REVIEW_WEBHOOK_TOKEN"]) {
     assert.ok(workflow.includes(`secrets.${name}`));
     assert.ok(!workflow.includes(`vars.${name}`));
   }
+});
+
+test("API probe uses the same read permissions without private webhook access", () => {
+  const probe = readFileSync(".github/workflows/pr-review-api-access.yml", "utf8");
+  for (const permission of ["actions", "checks", "contents", "pull-requests", "statuses"]) {
+    assert.ok(probe.includes(`  ${permission}: read`));
+  }
+  assert.match(probe, /snapshot\(Number\(process.env.PR_NUMBER\)\)/);
+  assert.doesNotMatch(probe, /\$\{\{ secrets\.|environment:|: write|deliver\(/);
 });
