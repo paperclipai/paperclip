@@ -2511,8 +2511,8 @@ describe("Codex ACPX runtime adapter", () => {
   });
 
   it.each([
-    { agent: "claude", admitted: true },
-    { agent: "codex", admitted: false },
+    { agent: "claude" as const, admitted: true },
+    { agent: "codex" as const, admitted: false },
   ])("bounds a 45 s cold $agent session handshake by the agent's admission budget", async ({ agent, admitted }) => {
     expect(acpxSessionHandshakeTimeoutMs(agent)).toBe(admitted ? 60_000 : 30_000);
     // Pi shares Claude's budget; its admission needs Pi-only options, so only the bound is checked here.
