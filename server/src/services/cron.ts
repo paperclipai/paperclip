@@ -79,6 +79,10 @@ function parseField(token: string, spec: FieldSpec): number[] {
       throw new Error(`Empty element in cron ${spec.name} field`);
     }
 
+    if (!/^(?:\*|\d+(?:-\d+)?)(?:\/\d+)?$/.test(trimmed)) {
+      throw new Error(`Invalid syntax "${trimmed}" in cron ${spec.name} field`);
+    }
+
     // Check for step syntax: "X/S" where X is "*" or a range or a number
     const slashIdx = trimmed.indexOf("/");
     if (slashIdx !== -1) {
