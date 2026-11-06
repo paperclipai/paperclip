@@ -99,11 +99,15 @@ describe("Codex CI sandbox trust boundary", () => {
 it("prepares the artifact oracle for exactly the stories that execute downloads", async () => {
   const workflow = await readFile(path.join(root, ".github/workflows/runner-full-stack-e2e.yml"), "utf8");
   const condition = workflow.match(/- name: Prepare pinned Python artifact oracle image\n\s+if: ([^\n]+)/)?.[1];
-  expect(condition).toContain("matrix.suiteId == 'everyday-workflows'");
+  // The everyday flow requires the oracle by case alone, so the gate must not
+  // also filter by suite: suites such as daytona-restart-continuity and
+  // rolling-web-deployment reuse recover-controller.
+  expect(condition).not.toContain("matrix.suiteId");
   const cases = new Set([...condition!.matchAll(/matrix\.caseId == '([^']+)'/g)].map((match) => match[1]));
-  for (const cell of runnerMatrix.filter((cell) => cell.suite.id === "everyday-workflows")) {
+  for (const cell of runnerMatrix) {
     expect(cases.has(cell.task.id), cell.id).toBe(requiresEverydayArtifactOracle(cell.task.id));
   }
+  expect(runnerMatrix.some((cell) => cell.id === "daytona-restart-continuity.runner-codex.daytona.recover-controller")).toBe(true);
   expect(requiresEverydayArtifactOracle("agent-review-handoff")).toBe(true);
   expect(requiresEverydayArtifactOracle("create-skill-studio")).toBe(false);
 });
