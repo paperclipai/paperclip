@@ -2039,6 +2039,13 @@ task with a run refused for that hold. That covers a task created under the tree
 after the snapshot, a task moved out before release, and a task whose work an
 overlapping pause refused and released while this one still covered it. The scheduled-retry gate holds the pause row while it saves its
 refusal, so a concurrent release either sees the refusal or the retry sees no pause.
+For an old workspace-wait retry without the JSON marker, a later saved user
+message can continue only when an exact system lifecycle warning records that
+pause refusal. An earlier Retry Now lifecycle record does not invalidate the
+warning. The released pause and its task membership must match.
+The parent must retain its host-issued pre-provider workspace-wait proof.
+Provider activity, retained execution, an unmatched pause, or an operator Stop
+keeps the old run held. The historical cancellation remains unchanged.
 The queued-run gate checks the hold again after saving its refusal and resumes the
 task itself if release already finished. A resume restores the assignee's
 execution only; like a wake that admission refuses during a hold, a non-assignee
