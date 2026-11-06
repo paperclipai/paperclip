@@ -1342,7 +1342,7 @@ async function startServerWithDatabaseTeardown(
     { queue: DELIVERY_QUEUES.executionStatus, run: () => deliverExecutionStatuses(db), next: executionSchedule.status },
     { queue: DELIVERY_QUEUES.executionDisposition, run: () => settleUnrecoverableExecutions(db), next: executionSchedule.disposition },
     ...(heartbeat ? [
-      { queue: DELIVERY_QUEUES.executionReplacement, run: () => reconcileSafeNativeReplacements(db, new Date(), { verifyStoppedSession: run => verifyStoppedNativeSessionForReplacement(db, run) }), next: executionSchedule.replacement, onSettled: () => invalidateNativeReplacementDiscovery(db) },
+      { queue: DELIVERY_QUEUES.executionReplacement, run: () => reconcileSafeNativeReplacements(db, new Date(), { verifyStoppedSession: run => verifyStoppedNativeSessionForReplacement(db, run) }), next: executionSchedule.replacement, onSettled: () => invalidateNativeReplacementDiscovery(db), settleEmptyWhilePaused: true },
       { queue: DELIVERY_QUEUES.executionContinuation, run: async () => {
         await deliverReconciledExecutions(db, heartbeat.wakeup);
         await deliverPendingPauseResumes(db, heartbeat.wakeup);

@@ -737,7 +737,10 @@ export async function reconcileSafeNativeReplacements(
       );
     }
   }
-  if (pendingFailures) throw new Error("native_replacement_decision_retry_required");
   settleReplacementDiscovery(discovery, selection.after, generation);
+  if (pendingFailures) {
+    discovery.complete = false; discovery.rescan = true;
+    throw new Error("native_replacement_decision_retry_required");
+  }
   return { scanned: selection.scanned, scheduled };
 }

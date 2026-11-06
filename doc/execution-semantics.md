@@ -3608,8 +3608,12 @@ recovery, and dispatch eligibility changes notify the existing replacement worke
 in their transactions. A cleared historical interaction only requests another
 proof check; it grants no new continuation authority. Source provider effects,
 task pause or cancellation, and the original authority checks still prevent replay.
-Temporary decision failures retain the existing worker's retry rather than marking
-the scan complete. Restart reconstructs the scan from durable records.
+Temporary decision failures retain the existing worker's retry and advance the
+bounded cursor, with a forced rescan of earlier failures. A failed page cannot
+hide later ready runs. During drain, the initialized replacement worker can read
+readiness once per notification generation to discharge an empty notification
+without starting replacement. Concrete pending work and changes arriving during
+that read remain outstanding. Restart reconstructs the scan from durable records.
 
 For legacy GitHub input without a saved App ID or its own response receipt,
 Task Retry may prove the endpoint's earlier non-null App claim from a processed

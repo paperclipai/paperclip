@@ -287,6 +287,41 @@ const support = externalDatabaseUrl
         expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, source.runId))).toHaveLength(1);
       } finally { unsubscribe(); await rm(workspace, { recursive: true, force: true }); }
     });
+    it("advances past a failed full page and retries it after later work progresses", async () => {
+      const workspace = await mkdtemp(join(tmpdir(), "paperclip-failed-page-"));
+      const sources: Awaited<ReturnType<typeof seed>>[] = [];
+      for (let index = 0; index < 26; index++) {
+        const source = await seed(); sources.push(source);
+        await db.update(heartbeatRuns).set({ runnerProfileJson: {
+          nativeExecutionInput: { provider: { kind: "codex" }, workspace: { cwd: workspace } },
+        } }).where(eq(heartbeatRuns.id, source.runId));
+        await db.update(nativeRunFinalizations).set({ failureCode: "provider_transport_failed" })
+          .where(eq(nativeRunFinalizations.runId, source.runId));
+      }
+      sources.sort((a, b) => a.runId.localeCompare(b.runId));
+      const later = sources.at(-1)!;
+      let failing = true;
+      const verifyStoppedSession = vi.fn(async (run: typeof heartbeatRuns.$inferSelect) => {
+        if (failing && run.id !== later.runId) throw new Error("Controlled stopped-session verifier failure");
+        return { evidence: {}, retire: () => true };
+      });
+      invalidateNativeReplacementDiscovery(db);
+      try {
+        await expect(reconcileSafeNativeReplacements(db, new Date(), { verifyStoppedSession }))
+          .rejects.toThrow("native_replacement_decision_retry_required");
+        expect(verifyStoppedSession).toHaveBeenCalledTimes(25);
+        expect(await executionControlSchedule(db).replacement()).not.toBeNull();
+        expect(await reconcileSafeNativeReplacements(db, new Date(), { verifyStoppedSession })).toMatchObject({ scheduled: 1 });
+        expect(verifyStoppedSession).toHaveBeenCalledTimes(26);
+        expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, later.runId))).toHaveLength(1);
+        failing = false;
+        expect(await reconcileSafeNativeReplacements(db, new Date(), { verifyStoppedSession })).toMatchObject({ scheduled: 25 });
+        expect(await reconcileSafeNativeReplacements(db, new Date(), { verifyStoppedSession })).toMatchObject({ scheduled: 0 });
+        expect(await executionControlSchedule(db).replacement()).toBeNull();
+        const successors = await db.select().from(heartbeatRuns).where(inArray(heartbeatRuns.retryOfRunId, sources.map(source => source.runId)));
+        expect(successors).toHaveLength(26);
+      } finally { await rm(workspace, { recursive: true, force: true }); }
+    }, 60_000);
     it.each(["unproven", "changed", "verified"] as const)("requires stopped-session proof through commit (%s)", async (mode) => {
       const source = await seed(2);
       await db.update(nativeRunFinalizations).set({ failureCode: "native_session_cleanup_quarantined" }).where(eq(nativeRunFinalizations.runId, source.runId));
