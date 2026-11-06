@@ -230,6 +230,15 @@ describe("isCodexTransientUpstreamError", () => {
     );
   });
 
+  it("extracts dated usage-limit reset times from stdout or stderr", () => {
+    const datedMessage = "You've hit your usage limit for GPT-5.3-Codex-Spark. Switch to another model now, or try again at Nov 5th, 2026 2:04 AM.";
+    const expected = new Date(2026, 10, 5, 2, 4).getTime();
+    for (const input of [{ stdout: datedMessage }, { stderr: datedMessage }]) {
+      expect(isCodexProviderQuotaError(input)).toBe(true);
+      expect(extractCodexRetryNotBefore(input)?.getTime()).toBe(expected);
+    }
+  });
+
   it.each([
     {
       description: "generic usage-limit message",
