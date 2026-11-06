@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
   applyUiBranding,
@@ -102,5 +105,47 @@ describe("ui branding", () => {
     const defaultHtml = applyUiBranding(TEMPLATE, {});
     expect(defaultHtml).toContain('href="/favicon.svg"');
     expect(defaultHtml).not.toContain('name="paperclip-worktree-name"');
+  });
+
+  it("gives each default favicon a fixed-colour URL per colour scheme", () => {
+    const links = renderFaviconLinks(getWorktreeUiBranding({})).split("\n");
+    expect(links).toHaveLength(4);
+    for (const link of links) {
+      expect(link).toMatch(/data-favicon-light="\/[^"]+"/);
+      expect(link).toMatch(/data-favicon-dark="\/[^"]+"/);
+    }
+    const joined = links.join("\n");
+    expect(joined).toContain('data-favicon-light="/favicon-light.svg" data-favicon-dark="/favicon-dark.svg"');
+    expect(joined).toContain('data-favicon-dark="/favicon-dark.ico"');
+    expect(joined).toContain('data-favicon-dark="/favicon-dark-32x32.png"');
+    expect(joined).toContain('data-favicon-dark="/favicon-dark-16x16.png"');
+  });
+
+  it("keeps the worktree favicon fixed so the scheme swap never touches it", () => {
+    const links = renderFaviconLinks(
+      getWorktreeUiBranding({
+        PAPERCLIP_IN_WORKTREE: "true",
+        PAPERCLIP_WORKTREE_NAME: "paperclip-pr-432",
+        PAPERCLIP_WORKTREE_COLOR: "#4f86f7",
+      }),
+    );
+    expect(links).not.toContain("data-favicon-light");
+    expect(links).not.toContain("data-favicon-dark");
+  });
+
+  it("matches the default favicon block shipped in ui/index.html", () => {
+    const repoRoot = resolve(fileURLToPath(new URL("../../..", import.meta.url)));
+    const html = readFileSync(resolve(repoRoot, "ui/index.html"), "utf8");
+    const block = html.slice(
+      html.indexOf("<!-- PAPERCLIP_FAVICON_START -->"),
+      html.indexOf("<!-- PAPERCLIP_FAVICON_END -->"),
+    );
+    const shipped = block
+      .split("\n")
+      .slice(1)
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .join("\n");
+    expect(shipped).toBe(renderFaviconLinks(getWorktreeUiBranding({})));
   });
 });
