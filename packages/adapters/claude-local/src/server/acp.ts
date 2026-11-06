@@ -325,7 +325,7 @@ async function prepareClaudeRemoteManagedHome(
   });
   // Repoint CLAUDE_CONFIG_DIR onto the in-sandbox config dir.
   env.CLAUDE_CONFIG_DIR = remoteClaudeConfigDir;
-  const restoreHostLocalSettings = bypassPermissions && !input.config.managedAiConnection
+  const localPermissionOverride = bypassPermissions && !input.config.managedAiConnection
     ? await overrideRemoteClaudeLocalPermissionMode({
       runId,
       target: executionTarget,
@@ -348,10 +348,11 @@ async function prepareClaudeRemoteManagedHome(
     env.CLAUDE_CODE_SHELL_PREFIX = remoteToolShellPrefixPath;
   }
   const syncBack = registerWorkspaceSyncBack(stagedRuntime);
-  const teardown: AcpxRemoteManagedHomeResult["teardown"] = restoreHostLocalSettings && syncBack
+  const teardown: AcpxRemoteManagedHomeResult["teardown"] = localPermissionOverride && syncBack
     ? async () => {
+      await localPermissionOverride.beforeRestore();
       const outcome = await syncBack();
-      await restoreHostLocalSettings();
+      await localPermissionOverride.afterRestore();
       return outcome;
     }
     : syncBack;
