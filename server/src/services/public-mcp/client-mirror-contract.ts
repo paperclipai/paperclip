@@ -1,3 +1,4 @@
+import { mcpClientMirrorPageFits } from "./client-mirror-wire.js";
 import { mcpDeviceStatusReferenceSchema,mcpDeviceStatusEntrySchema } from "./device-status-contract.js";
 import { createHash } from "node:crypto";
 import { z } from "zod";
@@ -20,7 +21,7 @@ export const mcpClientMirrorRequestSchema = z.discriminatedUnion("operation", [
   identity.extend({ operation: z.literal("append"), sequence: revision, changes: z.array(change).min(1).max(200) }).strict(),
   identity.extend({ operation: z.literal("append-device-status"),sequence:revision,entries:z.array(mcpDeviceStatusEntrySchema).min(1).max(200) }).strict(),
   identity.extend({ operation: z.literal("complete") }).strict(),
-]).refine(value => Buffer.byteLength(JSON.stringify(value),"utf8") <= 49_152,"MCP client mirror page is too large");
+]).refine(mcpClientMirrorPageFits,"MCP client mirror page is too large");
 export const mcpClientMirrorReceiptSchema = z.object({ version: z.literal(1), instanceId: z.string().min(1).max(200), origin, revision,authorizationOrigin:origin.optional(),
   deviceStatus:mcpDeviceStatusReferenceSchema.optional(),frontDoor:z.literal("tenant-personal-v1").optional(),enabled:z.boolean(),generation: z.string().regex(/^[a-f0-9]{64}$/) }).strict();
 export const mcpClientMirrorResponseSchema = z.discriminatedUnion("complete", [

@@ -1,5 +1,6 @@
+import { mcpClientMirrorClientPages, mcpClientMirrorDevicePages } from "./client-mirror-pages.js";
 import { getCloudRuntimeIdentity } from "../cloud-runtime-identity.js";
-import { mcpDeviceStatusEntrySchema,mcpDeviceStatusFingerprint,mcpDeviceStatusGeneration,mcpDeviceStatusKeyId,type McpDeviceStatusEntry } from "./device-status-contract.js";
+import { mcpDeviceStatusEntrySchema,mcpDeviceStatusFingerprint,mcpDeviceStatusGeneration,mcpDeviceStatusKeyId } from "./device-status-contract.js";
 import { deriveLocalEncryptedInstanceSecret } from "../../secrets/local-encrypted-provider.js";
 import { prepareMcpClientMutation } from "./client-mirror-mutations.js";
 import { installMcpDeviceCutover } from "./device-cutover.js";
@@ -117,27 +118,16 @@ export function startMcpClientMirrorSync(db: Db, coordinator: Pick<ReturnType<ty
                   return{clientId:row.clientId,change:{operation:"upsert" as const,client:mcpMirroredClientSchema.parse(client)}};
                 });
             if(!rows.length)break;
-            let page:McpClientMirrorChange[]=[];
-            const append=async()=>{
-              if(sequence>=resumeSequence)result=mcpClientMirrorResponseSchema.parse(await publishEnabled({...identity,operation:"append",sequence,changes:page}));
-              sequence++;sent+=page.length;page=[];
-            };
-            for(const row of rows){
-              const candidate={...identity,operation:"append",sequence,changes:[...page,row.change]};
-              if(Buffer.byteLength(JSON.stringify(candidate),"utf8")>49_152&&page.length)await append();
-              page.push(row.change);
+            for(const page of mcpClientMirrorClientPages(identity,sequence,rows.map(row=>row.change))){
+              if(sequence>=resumeSequence)result=mcpClientMirrorResponseSchema.parse(await publishEnabled(page));
+              sequence++;sent+=page.changes.length;
             }
-            if(page.length)await append();
             cursor=rows.at(-1)!.clientId;
             if(rows.length<200)break;
           }
-          let deviceSequence=0,page:McpDeviceStatusEntry[]=[];
-          const appendDevice=async()=>{if(deviceSequence>=resumeDeviceSequence)result=mcpClientMirrorResponseSchema.parse(await publishEnabled({...identity,operation:"append-device-status",sequence:deviceSequence,entries:page}));deviceSequence++;page=[];};
-          for(const entry of entries){
-            if(page.length&&(page.length===200||Buffer.byteLength(JSON.stringify({...identity,operation:"append-device-status",sequence:deviceSequence,entries:[...page,entry]}),"utf8")>49_152))await appendDevice();
-            page.push(entry);
+          for(const page of mcpClientMirrorDevicePages(identity,entries)){
+            if(page.sequence>=resumeDeviceSequence)result=mcpClientMirrorResponseSchema.parse(await publishEnabled(page));
           }
-          if(page.length)await appendDevice();
           signal.throwIfAborted();
           const [current]=await db.select({revision:state.revision}).from(state).where(eq(state.id,"public"));
           if(current&&Number.isSafeInteger(current.revision)&&current.revision>captured.revision){pending=true;return;}
