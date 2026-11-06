@@ -35,6 +35,7 @@ import { assertBoard, assertCompanyAccess, getAccessibleResource, getActorInfo }
 import { fetchAllQuotaWindows, fetchCompanyQuotaWindows, mergeQuotaWindowResults } from "../services/quota-windows.js";
 import { badRequest, forbidden } from "../errors.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
+import type { DeploymentMode } from "@paperclipai/shared";
 
 const reportDateSchema = z.union([z.iso.datetime({ offset: true }), z.iso.date()]);
 
@@ -68,7 +69,7 @@ export function parseCostLimit(query: Record<string, unknown>) {
 
 export function costRoutes(
   db: Db,
-  options: { pluginWorkerManager?: PluginWorkerManager } = {},
+  options: { pluginWorkerManager?: PluginWorkerManager; deploymentMode?: DeploymentMode } = {},
 ) {
   const router = Router();
   const heartbeat = heartbeatService(db, {
@@ -339,13 +340,16 @@ export function costRoutes(
       res.status(404).json({ error: "Company not found" });
       return;
     }
-    const [managed, adapterReported] = await Promise.all([
-      fetchCompanyQuotaWindows(db, companyId, getActorInfo(req).actorId),
-      fetchAllQuotaWindows(),
-    ]);
-    // Subscription accounts cover what the user connected centrally. Local
-    // adapters (kimi_local) report their own provider windows, which no
-    // managed connection can supply.
+    const managed = await fetchCompanyQuotaWindows(db, companyId, getActorInfo(req).actorId);
+    // Adapter-reported windows come from credentials on the host, so they are
+    // only meaningful where the host account is the operator's own account:
+    // local_trusted mode. In authenticated deployments they would leak one
+    // company's (or the host's) usage to every other company member.
+    if (options.deploymentMode !== "local_trusted") {
+      res.json(managed);
+      return;
+    }
+    const adapterReported = await fetchAllQuotaWindows(new Set(managed.map((result) => result.provider)));
     res.json(mergeQuotaWindowResults(managed, adapterReported));
   });
 

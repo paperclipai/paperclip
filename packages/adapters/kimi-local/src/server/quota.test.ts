@@ -33,6 +33,22 @@ describe("parseKimiUsage", () => {
     expect(windows[2]?.usedPercent).toBe(13.84);
   });
 
+  it("reports an unknown ratio as null instead of zero", () => {
+    // Number(null) is 0, so a missing used_ratio must not become "0% used".
+    const windows = parseKimiUsage({
+      usages: { limit_month_total: { used_ratio: null, reset_time: null } },
+    });
+    expect(windows).toHaveLength(1);
+    expect(windows[0]?.usedPercent).toBeNull();
+  });
+
+  it("reports a blank ratio as null instead of zero", () => {
+    const windows = parseKimiUsage({
+      usages: { limit_month_total: { used_ratio: "", reset_time: null } },
+    });
+    expect(windows[0]?.usedPercent).toBeNull();
+  });
+
   it("accepts a 0..100 scale when the provider stops sending a ratio", () => {
     const windows = parseKimiUsage({
       usages: { limit_month_total: { used_ratio: 42, reset_time: null } },

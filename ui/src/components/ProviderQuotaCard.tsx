@@ -135,7 +135,7 @@ export function ProviderQuotaCard({
   );
   const isClaudeQuotaPanel = provider === "anthropic";
   const isCodexQuotaPanel = provider === "openai" && quotaSource?.startsWith("codex-");
-  const supportsSubscriptionQuota = provider === "anthropic" || provider === "openai";
+  const supportsSubscriptionQuota = provider === "anthropic" || provider === "openai" || provider === "kimi";
   const showSubscriptionQuotaSection =
     supportsSubscriptionQuota && (quotaLoading || Boolean(quotaAccounts?.length) || quotaWindows.length > 0 || quotaError != null);
 
