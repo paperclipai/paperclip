@@ -1878,6 +1878,12 @@ Native runs retain final usage receipts during a bounded accounting-only drain
 after a governed wait cancels provider work. This does not accept late messages,
 tool calls, or new completion proposals. Missing or incomplete receipts continue
 to block budget admission.
+After native recovery reaches terminal failure, an incomplete receipt holds new
+work as recovering accounting; it does not open a hard-stop incident. When the
+run no longer records a provider process (recovery clears it only after a
+verified stop), no producer can deliver the receipt. Accounting then records
+its known part as an unpriced charge, so the unpriced-usage policy governs
+admission. A later receipt still posts through late-receipt reconciliation.
 A controller that detaches for server restart loses checkpoint and completion
 write authority. A closing event stream is not proof that the governed run
 finished; the replacement controller must adopt and settle the original run.

@@ -123,10 +123,16 @@ async function readObservedSpends(db: Db, policies: SpendPolicy[], now: Date): P
     const hasReservation = sql`exists (select 1 from ${budgetReservations}
       where ${budgetReservations.companyId} = ${heartbeatRuns.companyId}
         and ${budgetReservations.runId} = ${heartbeatRuns.id} and ${budgetReservations.state} = 'held')`;
+    // A terminal failure whose final receipt never closed is still recovering
+    // accounting: once its provider stop is verified, accounting settles the
+    // known part as unpriced. That window holds new work; it is not a hard stop.
+    const closingReceipt = sql`${usage}->>'accountingReceiptReady' = 'false'
+      and ${usage}->>'accountingCaptureFailed' is distinct from 'true'`;
     const recovering = sql`not (${lateReceiptDebt}) and exists (select 1 from ${nativeRunFinalizations}
       where ${nativeRunFinalizations.runId} = ${heartbeatRuns.id}
         and ${nativeRunFinalizations.companyId} = ${heartbeatRuns.companyId}
-        and ${nativeRunFinalizations.resultId} is null and ${nativeRunFinalizations.phase} <> 'terminal_failure')`;
+        and ${nativeRunFinalizations.resultId} is null
+        and (${nativeRunFinalizations.phase} <> 'terminal_failure' or (${closingReceipt})))`;
     ledgerPredicates.push(ledger); heldPredicates.push(held); runPredicates.push(run);
     ledgerColumns[`total${index}`] = sql`coalesce(sum(${costEvents.costCents}) filter (where ${ledger}), 0)::text`;
     ledgerColumns[`unpriced${index}`] = sql`count(*) filter (where ${ledger} and ${costEvents.costStatus} = 'unpriced' and ${costEvents.billingType} <> 'subscription_included')::int`;

@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
-  agents, budgetPolicies, budgetReservations, companies, costEvents, createDb, heartbeatRuns, issues,
+  agents, budgetIncidents, budgetPolicies, budgetReservations, companies, costEvents, createDb, heartbeatRuns, issues,
   nativeRunFinalizations, type Db,
 } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
@@ -73,7 +73,7 @@ const support = await getEmbeddedPostgresTestSupport();
 
   it("settles a stopped native terminal failure without a final receipt as unpriced usage", async () => {
     const f = await fixture();
-    expect(await f.block()).toMatchObject({ reason: "Company cannot start work while completed runs await accounting." });
+    expect(await f.block()).toMatchObject({ reason: "New work must wait while a native run recovers its unfinished accounting." });
 
     // The background reconciler must select this debt; it is not merely retryable by hand.
     expect(await reconcileRunCosts(db)).toMatchObject({ accounted: 1 });
@@ -107,6 +107,20 @@ const support = await getEmbeddedPostgresTestSupport();
     expect((await f.readRun()).costAccountingPending).toBe(true);
     expect(await f.charges()).toHaveLength(0);
     expect((await f.reservation()).state).toBe("held");
+  });
+
+  // Between a native terminal failure and the verified provider stop, the debt
+  // is closing, not over budget. A hard stop here paused the company and
+  // cancelled an unrelated running task in the live restart wave.
+  it("holds new work without a hard stop while a terminal native receipt is closing", async () => {
+    const f = await fixture({ processPid: 424242 });
+    await budgetService(db).evaluateAffectedScopes(f.companyId, f.agentId, null);
+    await flushBudgetEvaluationWork(db);
+    const [company] = await db.select().from(companies).where(eq(companies.id, f.companyId));
+    expect(company.status).toBe("active");
+    expect(company.pauseReason).toBeNull();
+    expect(await db.select().from(budgetIncidents).where(eq(budgetIncidents.companyId, f.companyId))).toHaveLength(0);
+    expect(await f.block()).toMatchObject({ reason: "New work must wait while a native run recovers its unfinished accounting." });
   });
 
   it("keeps the debt pending while native recovery can still produce a result", async () => {
