@@ -2998,6 +2998,7 @@ describe("AgentConfigForm environment selector", () => {
       "company-1",
       "codex_local",
       "resumed-session-1",
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
     expect(findButton(result.container, "Cancel")).toBeTruthy();
   });
@@ -3769,6 +3770,7 @@ describe("AgentConfigForm environment selector", () => {
     expect(mockAgentsApi.getClaudeSetupTokenLoginStatus).toHaveBeenCalledWith(
       "company-1",
       "resumed-claude-session-1",
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
     expect(findButton(result.container, "Cancel")).toBeTruthy();
   });

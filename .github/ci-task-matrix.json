@@ -158,13 +158,23 @@
       "task": "ci:runner-rust"
     },
     {
-      "lane_label": "vitest package",
-      "command": "test:typescript:vitest --shard=1/2",
+      "lane_label": "vitest package (1/3)",
+      "command": "test:typescript:vitest --package-lane=1/3",
+      "task": "ci:runner-vitest"
+    },
+    {
+      "lane_label": "vitest package (2/3)",
+      "command": "test:typescript:vitest --package-lane=2/3",
+      "task": "ci:runner-vitest"
+    },
+    {
+      "lane_label": "vitest package (3/3)",
+      "command": "test:typescript:vitest --package-lane=3/3",
       "task": "ci:runner-vitest"
     },
     {
       "lane_label": "vitest native server",
-      "command": "test:typescript:vitest --shard=2/2",
+      "command": "test:typescript:vitest --native-server",
       "release_crate": true,
       "task": "ci:runner-vitest"
     }
