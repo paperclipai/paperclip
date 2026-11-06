@@ -23,7 +23,7 @@ describe("canonical instruction revisions", () => {
   let companyId: string, agentId: string, userId: string, actorId: string, runId: string, root: string;
   let actor: AuthorizationActor;
   const entryFile = "policy/INSTRUCTIONS.txt";
-  const initial = "\\uFEFF# Original\r\n☃\0\n";
+  const initial = "\uFEFF# Original\r\n☃\0\n";
   beforeAll(async () => {
     home = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "instruction-revisions-")));
     process.env.PAPERCLIP_HOME = home;
