@@ -5752,7 +5752,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         expect(presentation?.providerFailure?.message).toContain("temporarily unavailable");
         const notices = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
         expect(notices.map(comment => (comment.presentation as { title?: string } | null)?.title))
-          .toContain("Sandbox provider was temporarily unavailable");
+          .toContain("Environment provider was temporarily unavailable");
         // No no-replay hold: provider work never started.
         expect(await getExecutionBlocker(db, companyId, issueId)).toBeNull();
 
