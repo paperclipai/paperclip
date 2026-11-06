@@ -74,6 +74,22 @@ describe("buildAnchorFromContainerSelection", () => {
     expect(verified.anchor?.selectedText).toBe("current markdown stack");
   });
 
+  it("anchors a selection that holds literal underscores and asterisks", () => {
+    const markdown = "Set the user_id field to 5 * 3 before **launch**.";
+    const container = document.createElement("div");
+    container.innerHTML = "<p>Set the user_id field to 5 * 3 before <strong>launch</strong>.</p>";
+    document.body.appendChild(container);
+    const offset = getContainerTextOffset(container, selectText(container, "user_id field to 5 * 3"));
+    expect(offset).not.toBeNull();
+
+    const anchor = buildAnchorFromContainerSelection({ markdown, containerOffset: offset! });
+
+    expect(anchor).not.toBeNull();
+    const verified = verifyDocumentAnchorSelector({ markdown, selector: anchor!.selector });
+    expect(verified.ok).toBe(true);
+    expect(verified.anchor?.selectedText).toBe("user_id field to 5 * 3");
+  });
+
   it("returns null for empty selections", () => {
     const container = makeContainer();
     const range = document.createRange();
