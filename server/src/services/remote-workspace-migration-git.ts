@@ -231,7 +231,7 @@ export async function materializeArchivedGitMigrationSource(input: {
   await git(cwd, ["symbolic-ref", "HEAD", `refs/heads/${workspace.branchName}`]);
   await git(cwd, ["config", "remote.origin.url", workspace.repoUrl]);
   if (source.recipe?.restorePoint) await applyGitRestorePointToWorktree({ storage: input.storage, workspace,
-    ref: source.recipe.restorePoint, repositoryCwd: cwd, worktreePath: cwd });
+    ref: source.recipe.restorePoint, repositoryCwd: cwd, worktreePath: cwd, preserveImportedHistory: true });
   const approvedLocalSources = new Set<string>();
   await restoreGitWorkspaceContents({ cwd, companyId: workspace.companyId, workspaceId: workspace.id,
     projectId: workspace.projectId, contents: source.recipe?.contents, storage: input.storage, resolveGitAuth, isolateRepositories: true,

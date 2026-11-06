@@ -661,10 +661,16 @@ describe.skipIf(!support.supported)("remote workspace migration", () => {
     const address = server.address(); if (!address || typeof address === "string") throw new Error("test server not bound");
     return { bare, repoUrl: `http://127.0.0.1:${address.port}/repository.git` };
   }
-  it.each(["present", "pruned", "retry", "source-excludes", "source-excludes-symlink", "missing-base", "missing-base-retry", "missing-base-uploaded-retry", "missing-base-changed-retry", "nested", "nested-linked", "nested-retry", "nested-source-changed-retry", "unapproved-nested", "missing", "expired", "corrupt"])("preserves archived Git edits or refuses an unavailable restore point (%s)", async state => {
+  it.each(["present", "root-history", "pruned", "retry", "source-excludes", "source-excludes-symlink", "missing-base", "missing-base-retry", "missing-base-uploaded-retry", "missing-base-changed-retry", "nested", "nested-linked", "nested-retry", "nested-source-changed-retry", "unapproved-nested", "missing", "expired", "corrupt"])("preserves archived Git edits or refuses an unavailable restore point (%s)", async state => {
     const remote = state.startsWith("missing-base") ? await serveRepository() : null;
     const f = await gitArchiveFixture(remote?.repoUrl);
     if (remote) { await git(remote.bare, "fetch", f.base, "main:refs/heads/main"); await git(remote.bare, "update-server-info"); }
+    let rootHistory: string | undefined;
+    if (state === "root-history") {
+      await fs.writeFile(path.join(f.cwd, "history-only.txt"), "saved root history\n");
+      await git(f.cwd, "add", "history-only.txt"); await git(f.cwd, "commit", "-qm", "root history");
+      rootHistory = await git(f.cwd, "rev-parse", "HEAD"); await git(f.cwd, "reset", "--hard", f.commit);
+    }
     await fs.writeFile(path.join(f.cwd, "saved.txt"), "staged edit\n"); await git(f.cwd, "add", "saved.txt");
     await fs.writeFile(path.join(f.cwd, "saved.txt"), "unstaged edit\n");
     if (state.startsWith("source-excludes")) {
@@ -676,6 +682,7 @@ describe.skipIf(!support.supported)("remote workspace migration", () => {
     }
     const sourceExcludes = state.startsWith("source-excludes") ? await fs.readFile(path.join(f.base, ".git", "info", "exclude")) : null;
     const captured = (await captureRestorePoint({ cwd: f.cwd, upstreamCommits: [f.upstream] }))!;
+    if (rootHistory) expect(captured.manifest.preserved).toContain(rootHistory);
     const id = randomUUID(), generation = 1, sealed = await sealRestorePoint(captured.payload,
       { companyId: f.companyId, workspaceId: f.workspaceId, restorePointId: id, generation });
     const objectKey = `${f.companyId}/git-restore-points/${f.workspaceId}/${generation}/${id}.pcrp`;
@@ -826,6 +833,10 @@ describe.skipIf(!support.supported)("remote workspace migration", () => {
     await loadWorkspaceSnapshotArchive({ storage, reference: ref!, targetPath: archivePath });
     await restoreRemoteWorkspaceArchive({ archivePath, targetDir, expectedManifestDigest: ref!.manifestDigest });
     expect(await git(targetDir, "rev-parse", "HEAD")).toBe(f.commit);
+    if (rootHistory) {
+      await git(targetDir, "reflog", "expire", "--expire=now", "--all"); await git(targetDir, "gc", "--prune=now");
+      expect(await git(targetDir, "show", `${rootHistory}:history-only.txt`)).toBe("saved root history");
+    }
     if (state === "nested-linked") {
       await fs.rm(contents!.checkouts[0]!.worktree!.base, { recursive: true });
       const nested = path.join(targetDir, ".paperclip-repositories", contents!.checkouts[0]!.name);

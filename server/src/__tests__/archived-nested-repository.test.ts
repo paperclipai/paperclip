@@ -11,7 +11,7 @@ import { captureRestorePoint, currentRestorePointSnapshot, sealRestorePoint } fr
 import { GIT_RESTORE_POINT_SCHEMA } from "../services/git-restore-point-storage.js";
 import { captureGitWorkspaceContents, readManagedCheckoutContents, restoreGitWorkspaceContents } from "../services/git-workspace-contents.js";
 import { managedProjectCheckoutName } from "../services/managed-project-checkout-name.js";
-import { addNestedRepositoryWorktree, nestedRepositoryBaseCandidates } from "../services/nested-repository-worktrees.js";
+import { addNestedRepositoryWorktree, nestedRepositoryBaseCandidates, restoreNestedRepositoryWorktree } from "../services/nested-repository-worktrees.js";
 import { captureRemoteWorkspaceDirectory, restoreRemoteWorkspaceArchive } from "../services/remote-workspace-snapshot-archive.js";
 
 let root: string;
@@ -34,7 +34,7 @@ afterEach(async () => {
   await fs.rm(root, { recursive: true, force: true });
 });
 
-it.each(["warm", "pruned", "missing-prerequisite"])("privately restores an archived linked checkout at a new path and keeps its files and extra history after cold restore (cache: %s)", async cache => {
+it.each(["warm", "pruned", "missing-prerequisite", "ordinary-pruned"])("privately restores an archived linked checkout at a new path and keeps its files and extra history after cold restore (cache: %s)", async cache => {
   const pruned = cache !== "warm";
   const identity = { companyId: randomUUID(), workspaceId: randomUUID() }, projectId = randomUUID();
   const remote = path.join(root, "remote"), old = path.join(root, "old");
@@ -54,6 +54,11 @@ it.each(["warm", "pruned", "missing-prerequisite"])("privately restores an archi
     git(remote, "add", "remote-advance.txt"); git(remote, "commit", "-qm", "advance remote");
     upstream = git(remote, "rev-parse", "HEAD");
   }
+  git(base!, "checkout", "-qb", "paperclip/another-task/private");
+  await fs.writeFile(path.join(base!, "other-task-only.txt"), "another task's private work\n");
+  git(base!, "add", "other-task-only.txt"); git(base!, "commit", "-qm", "other task");
+  const foreignCommit = git(base!, "rev-parse", "HEAD");
+  git(base!, "checkout", "-q", "main");
   const oldNested = path.join(old, ".paperclip-repositories", name);
   await fs.mkdir(path.dirname(oldNested), { recursive: true });
   await addNestedRepositoryWorktree({ base: base!, cwd: oldNested, repoUrl: source.repoUrl, repoRef: source.repoRef });
@@ -102,7 +107,13 @@ it.each(["warm", "pruned", "missing-prerequisite"])("privately restores an archi
   const restore = (isolateRepositories: boolean, authorizeSource = async () => {}, cwd = moved) => restoreGitWorkspaceContents({ cwd,
     ...identity, projectId, contents, storage, isolateRepositories,
     prepareLocalSource: async () => async () => {}, resolveGitAuth: async () => null, authorizeSource });
-  await expect(restore(false)).rejects.toThrow("could not be restored");
+  if (!pruned) await expect(restore(false)).rejects.toThrow("could not be restored");
+  else {
+    await fs.mkdir(path.join(moved, ".paperclip-repositories"), { recursive: true });
+    await expect(restoreNestedRepositoryWorktree({ base: base!, cwd: path.join(moved, ".paperclip-repositories", name),
+      commit: descriptor.commit, branchName: descriptor.branchName, repoRef: source.repoRef, afterAdd: async () => {} }))
+      .rejects.toThrow("unowned_nested_worktree_branch");
+  }
   await expect(restore(true, async () => { throw new Error("source_access_revoked"); })).rejects.toThrow("could not be restored");
   const recordedBase = contents.checkouts[0]!.worktree!.base;
   contents.checkouts[0]!.worktree!.base = remote;
@@ -115,12 +126,21 @@ it.each(["warm", "pruned", "missing-prerequisite"])("privately restores an archi
     expect(sourceState()).toEqual(before);
     return;
   }
+  if (cache === "ordinary-pruned") {
+    await restore(false, undefined, old);
+    expect((await fs.lstat(path.join(oldNested, ".git"))).isFile()).toBe(true);
+    expect(await currentRestorePointSnapshot(oldNested)).toEqual(expectedSnapshot);
+    expect(git(oldNested, "reflog", "show", "--format=%H", "HEAD").split("\n")).toContain(extra);
+    return;
+  }
   const other = path.join(root, "other-import"); await fs.mkdir(other);
   await Promise.all([restore(true), restore(true, undefined, other)]);
   expect(await currentRestorePointSnapshot(path.join(other, ".paperclip-repositories", name)))
     .toEqual(expectedSnapshot);
   const nested = path.join(moved, ".paperclip-repositories", name);
   expect((await fs.lstat(path.join(nested, ".git"))).isDirectory()).toBe(true);
+  expect(git(nested, "for-each-ref", "--format=%(refname)", "refs/remotes/origin/paperclip/another-task")).toBe("");
+  expect(() => git(nested, "cat-file", "-e", `${foreignCommit}^{commit}`)).toThrow();
   expect(await currentRestorePointSnapshot(nested)).toEqual(expectedSnapshot);
   expect(git(nested, "symbolic-ref", "--short", "HEAD")).toBe(descriptor.branchName);
   expect(await fs.readFile(path.join(nested, ".claude", "settings.local.json"), "utf8")).toBe(settings);
