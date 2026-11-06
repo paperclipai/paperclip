@@ -26,7 +26,7 @@ import { and, eq, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { companies, environments } from "@paperclipai/db";
 import type { PluginEnvironmentConfig } from "@paperclipai/shared";
-import { logActivity } from "./activity-log.js";
+import { logActivity, publishActivity, type ActivityPublication } from "./activity-log.js";
 import { normalizeEnvironmentConfig } from "./environment-config.js";
 import { validatePluginEnvironmentDriverConfig } from "./plugin-environment-driver.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
@@ -88,20 +88,34 @@ async function validatedDriverConfig(db: Db, input: ManagedPluginEnvironmentInpu
   });
 }
 
+/** Marker value of a row, or null when it has none (absent, or cleared to `null` / `false`). */
+function markerOf(row: Pick<EnvironmentRow, "metadata">): string | null {
+  const value = metadataOf(row)[MANAGED_PLUGIN_ENVIRONMENT_MARKER_KEY];
+  return typeof value === "string" ? value : null;
+}
+
+/**
+ * Record activity for every company inside the caller's transaction, so the
+ * entries commit (or roll back) with the row change. Live events go to
+ * `publications` and are published by the caller after commit.
+ */
 async function logForEveryCompany(
-  db: Db,
+  tx: Db,
+  publications: ActivityPublication[],
   input: { action: string; environmentId: string; details: Record<string, unknown> },
 ): Promise<void> {
-  const companyIds = await db.select({ id: companies.id }).from(companies).then((rows) => rows.map((row) => row.id));
-  await Promise.all(companyIds.map((companyId) => logActivity(db, {
-    companyId,
-    actorType: "system",
-    actorId: "managed-environment-reconciler",
-    action: input.action,
-    entityType: "environment",
-    entityId: input.environmentId,
-    details: input.details,
-  })));
+  const companyIds = await tx.select({ id: companies.id }).from(companies).then((rows) => rows.map((row) => row.id));
+  for (const companyId of companyIds) {
+    await logActivity(tx, {
+      companyId,
+      actorType: "system",
+      actorId: "managed-environment-reconciler",
+      action: input.action,
+      entityType: "environment",
+      entityId: input.environmentId,
+      details: input.details,
+    }, publications);
+  }
 }
 
 /**
@@ -117,16 +131,33 @@ export async function ensureManagedPluginEnvironment(
   const desiredConfig = { ...config } as Record<string, unknown>;
   const description = input.description ?? null;
 
+  const publications: ActivityPublication[] = [];
   const result = await db.transaction(async (tx): Promise<ManagedPluginEnvironmentRowResult> => {
+    const reconciled = await reconcile(tx);
+    if (reconciled.action !== "unchanged") {
+      await logForEveryCompany(tx as unknown as Db, publications, {
+        action: `environment.managed_plugin_${reconciled.action}`,
+        environmentId: reconciled.row.id,
+        details: { pluginKey: input.pluginKey, driverKey: input.driverKey, reconciliationAction: reconciled.action },
+      });
+    }
+    return reconciled;
+  });
+  publications.forEach(publishActivity);
+  return result;
+
+  async function reconcile(tx: Parameters<Parameters<Db["transaction"]>[0]>[0]): Promise<ManagedPluginEnvironmentRowResult> {
     // Lock every plugin row: concurrent ensures (the boot pass and a worker
     // recovery, or two builds in a rolling deploy) serialize here, so only one
     // of them can adopt or insert.
     const pluginRows = await tx.select().from(environments).where(eq(environments.driver, "plugin")).for("update");
-    let row = pluginRows.find((candidate) => metadataOf(candidate)[MANAGED_PLUGIN_ENVIRONMENT_MARKER_KEY] === marker) ?? null;
+    let row = pluginRows.find((candidate) => markerOf(candidate) === marker) ?? null;
     let adopted = false;
     if (!row) {
       const candidates = pluginRows
-        .filter((candidate) => servesPair(candidate, input) && metadataOf(candidate)[MANAGED_PLUGIN_ENVIRONMENT_MARKER_KEY] === undefined)
+        // A cleared marker (`null` / `false`, from the marker-clear request)
+        // counts as unmarked, so a cleared row is adopted again.
+        .filter((candidate) => servesPair(candidate, input) && markerOf(candidate) === null)
         .sort((left, right) =>
           Number(right.name === input.name) - Number(left.name === input.name)
           || Number(right.status === "active") - Number(left.status === "active")
@@ -206,16 +237,7 @@ export async function ensureManagedPluginEnvironment(
       .then((rows) => rows[0] ?? null);
     if (!updated) throw new Error("Managed plugin environment changed during reconciliation");
     return { row: updated, action: adopted ? "adopted" : "updated" };
-  });
-
-  if (result.action !== "unchanged") {
-    await logForEveryCompany(db, {
-      action: `environment.managed_plugin_${result.action}`,
-      environmentId: result.row.id,
-      details: { pluginKey: input.pluginKey, driverKey: input.driverKey, reconciliationAction: result.action },
-    });
   }
-  return result;
 }
 
 /**
@@ -228,22 +250,27 @@ export async function archiveManagedPluginEnvironment(
   input: { pluginKey: string; driverKey: string },
 ): Promise<EnvironmentRow | null> {
   const marker = managedPluginEnvironmentMarker(input);
-  const archived = await db
-    .update(environments)
-    .set({ status: "archived", updatedAt: new Date() })
-    .where(and(
-      eq(environments.driver, "plugin"),
-      eq(environments.status, "active"),
-      sql`${environments.metadata} ->> ${MANAGED_PLUGIN_ENVIRONMENT_MARKER_KEY} = ${marker}`,
-    ))
-    .returning()
-    .then((rows) => rows[0] ?? null);
-  if (!archived) return null;
-  await logForEveryCompany(db, {
-    action: "environment.managed_provider_unavailable_archived",
-    environmentId: archived.id,
-    details: { pluginKey: input.pluginKey, driverKey: input.driverKey },
+  const publications: ActivityPublication[] = [];
+  const archived = await db.transaction(async (tx) => {
+    const row = await tx
+      .update(environments)
+      .set({ status: "archived", updatedAt: new Date() })
+      .where(and(
+        eq(environments.driver, "plugin"),
+        eq(environments.status, "active"),
+        sql`${environments.metadata} ->> ${MANAGED_PLUGIN_ENVIRONMENT_MARKER_KEY} = ${marker}`,
+      ))
+      .returning()
+      .then((rows) => rows[0] ?? null);
+    if (!row) return null;
+    await logForEveryCompany(tx as unknown as Db, publications, {
+      action: "environment.managed_provider_unavailable_archived",
+      environmentId: row.id,
+      details: { pluginKey: input.pluginKey, driverKey: input.driverKey },
+    });
+    return row;
   });
+  publications.forEach(publishActivity);
   return archived;
 }
 

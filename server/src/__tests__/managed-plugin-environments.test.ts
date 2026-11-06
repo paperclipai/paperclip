@@ -118,6 +118,29 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(kept!.defaultEnvironmentId).toBe(handMade!.id);
   });
 
+  it("adopts a row again after its markers were cleared", async () => {
+    const first = await ensure();
+    // What the route's marker-clear request stores.
+    await db.update(environments)
+      .set({ metadata: { managedByPaperclip: null, managedPluginEnvironment: null } })
+      .where(eq(environments.id, first.environment.id));
+
+    const again = await ensure();
+    expect(again.action).toBe("adopted");
+    expect(again.environment.id).toBe(first.environment.id);
+    expect(await pluginRows()).toHaveLength(1);
+  });
+
+  it("lets several rows hold a cleared marker", async () => {
+    const config = { pluginKey: PLUGIN_KEY, driverKey: "other", driverConfig: {} };
+    await db.insert(environments).values([
+      { name: "Cleared one", driver: "plugin", status: "active", config, metadata: { managedPluginEnvironment: false } },
+      { name: "Cleared two", driver: "plugin", status: "active", config, metadata: { managedPluginEnvironment: false } },
+      { name: "Cleared three", driver: "plugin", status: "active", config, metadata: { managedPluginEnvironment: null } },
+    ]);
+    expect(await pluginRows()).toHaveLength(3);
+  });
+
   it("archives the active marked row and reactivates it on the next ensure", async () => {
     await ensure();
     const archived = await environmentService(db).archiveManagedPluginEnvironment({ pluginKey: PLUGIN_KEY, driverKey: "tasks" });

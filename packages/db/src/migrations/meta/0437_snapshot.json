@@ -1,5 +1,5 @@
 {
-  "id": "73b34efb-93b1-4681-bb01-edadb65bd9ad",
+  "id": "2c0cb580-67fc-45d3-9ca5-cce4148dd1a4",
   "prevId": "a80d63fe-5111-49e8-a39a-7a5589b3b31a",
   "version": "7",
   "dialect": "postgresql",
@@ -28995,7 +28995,7 @@
             }
           ],
           "isUnique": true,
-          "where": "(\"environments\".\"metadata\" ->> 'managedPluginEnvironment') IS NOT NULL",
+          "where": "jsonb_typeof(\"environments\".\"metadata\" -> 'managedPluginEnvironment') = 'string'",
           "concurrently": false,
           "method": "btree",
           "with": {}
