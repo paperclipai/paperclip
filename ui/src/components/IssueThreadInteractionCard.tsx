@@ -2132,17 +2132,12 @@ function RequestSecretProposalCard({
 
 /**
  * The single approval grammar shared by every plan / task-approval card
- * (PAP-418): **Approve · Revise… · Reject**. t("deep-ui:revise_62e1da") reveals an attached text
+ * (PAP-418): **Approve · Revise… · Reject**. "Revise…" reveals an attached text
  * field for the changes you want (the former "decline with a reason" path);
- * bare t("deep-ui:reject_ab604a") sends the work back with no note. These are the default words —
+ * bare "Reject" sends the work back with no note. These are the default words —
  * producers may still override the accept/reject labels for domain-specific
  * confirmations (e.g. "Delete selected"), but the shape stays consistent.
- */
-const CONFIRMATION_APPROVE_LABEL = t("deep-ui:approve_6007ac");
-const CONFIRMATION_REVISE_LABEL = t("deep-ui:revise_62e1da");
-const CONFIRMATION_REJECT_LABEL = t("deep-ui:reject_ab604a");
-
-/**
+ *
  * The one action control every confirmation card renders (PAP-418), collapsing
  * what used to be a two-button card plus a separate sticky Plan-pane bar into a
  * single consistent surface. Producer flags tune which affordances appear:
@@ -2154,7 +2149,7 @@ function ConfirmationActionRow({
   footerSlot,
   resetKey,
   approveLabel,
-  reviseLabel = CONFIRMATION_REVISE_LABEL,
+  reviseLabel,
   rejectLabel,
   approveVariant = "default",
   primaryActionOnRight = false,
@@ -2268,7 +2263,7 @@ function ConfirmationActionRow({
                 setRevising((current) => !current);
               }}
             >
-              {reviseLabel}
+              {reviseLabel ?? t("deep-ui:revise_62e1da")}
             </Button>
           ) : null}
           {!rejectRequiresReason ? (
@@ -2734,8 +2729,8 @@ function RequestConfirmationCard({
         <ConfirmationActionRow
           footerSlot={footerSlot}
           resetKey={`${interaction.id}:${interaction.status}`}
-          approveLabel={interaction.payload.acceptLabel ?? CONFIRMATION_APPROVE_LABEL}
-          rejectLabel={CONFIRMATION_REJECT_LABEL}
+          approveLabel={interaction.payload.acceptLabel ?? t("deep-ui:approve_6007ac")}
+          rejectLabel={t("deep-ui:reject_ab604a")}
           approveVariant={isPlan ? "cta" : "default"}
           primaryActionOnRight={primaryActionOnRight}
           allowRevise={allowRevise}
@@ -3152,8 +3147,8 @@ function RequestCheckboxConfirmationCard({
         <ConfirmationActionRow
           footerSlot={footerSlot}
           resetKey={`${interaction.id}:${interaction.status}`}
-          approveLabel={interaction.payload.acceptLabel ?? CONFIRMATION_APPROVE_LABEL}
-          rejectLabel={interaction.payload.rejectLabel ?? CONFIRMATION_REJECT_LABEL}
+          approveLabel={interaction.payload.acceptLabel ?? t("deep-ui:approve_6007ac")}
+          rejectLabel={interaction.payload.rejectLabel ?? t("deep-ui:reject_ab604a")}
           primaryActionOnRight={primaryActionOnRight}
           allowRevise={allowRevise}
           rejectRequiresReason={rejectRequiresReason}

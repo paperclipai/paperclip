@@ -874,6 +874,7 @@ export function transcriptToTaskChatItems(
             // Canonical runner data: the latest native name is authoritative.
             existing.name = toolDisplayName(entry.name);
             existing.rawName = entry.name ?? undefined;
+            delete existing.generatedName;
           } else if (!isGenericToolName(entry.name)) {
             if (isGenericToolName(existing.rawName)) {
               existing.name = toolDisplayName(entry.name);

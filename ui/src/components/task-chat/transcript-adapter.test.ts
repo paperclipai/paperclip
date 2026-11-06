@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { i18n } from "@/i18n";
+import { toolDisplayLabel } from "./task-chat-display";
 import type { TranscriptEntry } from "@/adapters";
 import type { HeartbeatRunEvent } from "@paperclipai/shared";
 import {
@@ -399,6 +401,33 @@ describe("toolDisplayName", () => {
 
 describe("transcriptToTaskChatItems tool_call updates", () => {
   const opts = { runId: "run-1", running: false };
+
+  it.each([true, false])("shows a late native tool name instead of the localized missing-name fallback (running=%s)", async (running) => {
+    const toolUseId = "late-native-name";
+    const initial: TranscriptEntry = { kind: "tool_call", ts: TS, name: "tool call", toolUseId, input: undefined };
+    await i18n.changeLanguage("en");
+    try {
+      const unnamed = transcriptToTaskChatItems([initial], { ...opts, running })[0];
+      if (unnamed.kind !== "tool") throw new Error("Expected a tool row");
+      expect(toolDisplayLabel(unnamed)).toBe("Unnamed tool");
+      await i18n.changeLanguage("zh-CN");
+      expect(toolDisplayLabel(unnamed)).toBe("未命名工具");
+      const items = transcriptToTaskChatItems([
+        initial,
+        { ...initial, name: "Read", detail: { operation: "read", target: "doc/plan.md", description: "RAW native detail" } },
+        { ...initial, detail: { operation: "read", durationMs: 12 } },
+        { kind: "tool_result", ts: TS, toolUseId, toolName: "tool call", content: "RAW output", isError: false },
+      ], { ...opts, running });
+      expect(items).toHaveLength(1);
+      const tool = items[0];
+      if (tool.kind !== "tool") throw new Error("Expected a tool row");
+      expect(toolDisplayLabel(tool)).toBe("Read");
+      expect(tool).toMatchObject({ rawName: "Read", status: "completed", target: "doc/plan.md", description: "RAW native detail", durationMs: 12, detail: "RAW output" });
+      expect(tool.generatedName).toBeUndefined();
+      await i18n.changeLanguage("en");
+      expect(toolDisplayLabel(tool)).toBe("Read");
+    } finally { await i18n.changeLanguage("en"); }
+  });
 
   function update(toolUseId: string, status: string): TranscriptEntry {
     // Mirrors what a persisted acpx tool_call_update line parses to: the

@@ -56,6 +56,51 @@ import {
 } from "../fixtures/issueThreadInteractionFixtures";
 
 let root: Root | null = null;
+it.each([
+  pendingRequestConfirmationInteraction,
+  pendingRequestCheckboxConfirmationInteraction,
+])("retranslates default actions on mounted and newly opened $kind cards", async (fixture) => {
+  const interaction = structuredClone(fixture);
+  interaction.payload.acceptLabel = undefined;
+  interaction.payload.rejectLabel = undefined;
+  interaction.payload.rejectRequiresReason = false;
+  interaction.payload.allowDeclineReason = true;
+  const accept = vi.fn();
+  const reject = vi.fn();
+  const props = { interaction, onAcceptInteraction: accept, onRejectInteraction: reject };
+  const labels = (host: HTMLElement) => [...host.querySelectorAll('[data-testid="confirmation-actions"] button')].map(button => button.textContent);
+  await act(async () => { await i18n.changeLanguage("en"); });
+  let host = renderCard(props);
+  try {
+    expect(labels(host)).toEqual(["Approve", "Revise…", "Reject"]);
+    await act(async () => { await i18n.changeLanguage("zh-CN"); });
+    expect(labels(host)).toEqual(["批准", "修改…", "拒绝"]);
+    await act(async () => { root?.unmount(); });
+    host.remove();
+    host = renderCard(props);
+    expect(labels(host)).toEqual(["批准", "修改…", "拒绝"]);
+    await act(async () => { await i18n.changeLanguage("en"); });
+    expect(labels(host)).toEqual(["Approve", "Revise…", "Reject"]);
+    expect(accept).not.toHaveBeenCalled();
+    expect(reject).not.toHaveBeenCalled();
+  } finally { await act(async () => { await i18n.changeLanguage("en"); }); }
+});
+it("preserves producer action labels while translating the default revision action", async () => {
+  const interaction = structuredClone(pendingRequestCheckboxConfirmationInteraction);
+  interaction.payload.acceptLabel = "Delete selected / RAW";
+  interaction.payload.rejectLabel = "Keep selected / RAW";
+  interaction.payload.allowDeclineReason = true;
+  const accept = vi.fn();
+  const reject = vi.fn();
+  const host = renderCard({ interaction, onAcceptInteraction: accept, onRejectInteraction: reject });
+  try {
+    await act(async () => { await i18n.changeLanguage("zh-CN"); });
+    const labels = [...host.querySelectorAll('[data-testid="confirmation-actions"] button')].map(button => button.textContent);
+    expect(labels).toEqual(["Delete selected / RAW", "修改…", "Keep selected / RAW"]);
+    expect(accept).not.toHaveBeenCalled();
+    expect(reject).not.toHaveBeenCalled();
+  } finally { await act(async () => { await i18n.changeLanguage("en"); }); }
+});
 it("localizes mounted checkbox count without submitting or losing selection", async () => {
   const accept = vi.fn();
   const element = renderCard({ interaction: pendingRequestCheckboxConfirmationInteraction, onAcceptInteraction: accept });
