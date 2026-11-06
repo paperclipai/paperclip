@@ -1,10 +1,11 @@
+import { notifyNativeEnvironmentSettlement } from "../services/native-environment-settlement-notifications.js";
 import { writeExecutionControl } from "../services/execution-control-notifications.js";
 import { reconcileSafeNativeReplacements } from "../services/native-runtime/native-safe-replacement.js";
 import { localAiLoginService } from "../services/local-ai-login.js";
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { eq, sql } from "drizzle-orm";
-import { agents, agentWakeupRequests, companies, createDb, heartbeatRuns, issues, issueRecoveryActions, nativeRunFinalizations, applyPendingMigrations } from "@paperclipai/db";
+import { agents, agentWakeupRequests, companies, createDb, heartbeatRuns, heartbeatRunEvents, issues, issueRecoveryActions, nativeRunFinalizations, applyPendingMigrations } from "@paperclipai/db";
 import { installDatabaseWorkSignals } from "../../../packages/db/src/work-signals.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
@@ -349,6 +350,57 @@ describe.skipIf(!support.supported)("execution-control durable work", () => {
     expect(await schedule.replacement()).toBeGreaterThan(Date.now());
     await db.update(nativeRunFinalizations).set({ failureDetail: { replacementDenied: "operator_reconciled" } }).where(eq(nativeRunFinalizations.runId, run.id));
     expect(await schedule.replacement()).toBeNull();
+  });
+  it("reconstructs a quota cooldown deadline on restart without polling before it", async () => {
+    const run = await runRow("failed"), due = new Date(Date.now() + 120_000);
+    await db.update(heartbeatRuns).set({ nativeIssueId: issueId }).where(eq(heartbeatRuns.id, run.id));
+    await db.insert(nativeRunFinalizations).values({ runId: run.id, companyId, issueId, phase: "terminal_failure",
+      failureCode: "native_provider_usage_limit", nextAttemptAt: due });
+    await db.insert(heartbeatRunEvents).values({ companyId, agentId, runId: run.id, seq: 1,
+      eventType: "ai_connection.quota_attributed", sourceEventId: `ai-connection-quota-attributed:${run.id}` });
+    const runDuty = vi.fn(async () => {
+      if (Date.now() >= due.getTime()) await db.update(nativeRunFinalizations)
+        .set({ failureDetail: { replacementDenied: "operator_reconciled" } }).where(eq(nativeRunFinalizations.runId, run.id));
+    });
+    const duty = { queue: DELIVERY_QUEUES.executionReplacement, run: runDuty, next: executionControlSchedule(observed).replacement };
+    const c = coordinator(db, undefined, error => { errors.push(error); });
+    await registerExecutionControlWork(c, [duty]).ready;
+    expect(c.nextWakeAt()).toBe(due.getTime());
+    await c.stop();
+    const restarted = coordinator(db, undefined, error => { errors.push(error); });
+    await registerExecutionControlWork(restarted, [duty]).ready;
+    expect(restarted.nextWakeAt()).toBe(due.getTime());
+    const before = calls, runs = runDuty.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(90_000);
+    expect(calls).toBe(before); expect(runDuty).toHaveBeenCalledTimes(runs);
+    await vi.advanceTimersByTimeAsync(30_000); await settle();
+    expect(runDuty).toHaveBeenCalledTimes(runs + 1); await quiet(restarted);
+  });
+  it("waits quietly for cleanup and resumes only after its committed lifecycle notification", async () => {
+    const run = await runRow("failed");
+    await db.update(heartbeatRuns).set({ nativeIssueId: issueId }).where(eq(heartbeatRuns.id, run.id));
+    await db.insert(nativeRunFinalizations).values({ runId: run.id, companyId, issueId, phase: "terminal_failure",
+      failureCode: "native_provider_usage_limit", failureDetail: { replacementWaitingForCleanup: true } });
+    await db.insert(heartbeatRunEvents).values({ companyId, agentId, runId: run.id, seq: 1,
+      eventType: "ai_connection.quota_attributed", sourceEventId: `ai-connection-quota-attributed:${run.id}` });
+    const runDuty = vi.fn(async () => {
+      const [current] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, run.id));
+      if (current?.failureDetail?.cleanupComplete) await db.update(nativeRunFinalizations)
+        .set({ failureDetail: { replacementDenied: "operator_reconciled" } }).where(eq(nativeRunFinalizations.runId, run.id));
+    });
+    const c = coordinator(db, undefined, error => { errors.push(error); });
+    await registerExecutionControlWork(c, [{ queue: DELIVERY_QUEUES.executionReplacement, run: runDuty,
+      next: executionControlSchedule(observed).replacement }]).ready;
+    await quiet(c);
+    const runs = runDuty.mock.calls.length;
+    await db.transaction(async tx => {
+      await notifyNativeEnvironmentSettlement(tx, { companyId, runId: run.id });
+      await tx.update(nativeRunFinalizations).set({ failureDetail: { replacementWaitingForCleanup: true, cleanupComplete: true } })
+        .where(eq(nativeRunFinalizations.runId, run.id));
+      await vi.advanceTimersByTimeAsync(1);
+      expect(runDuty).toHaveBeenCalledTimes(runs);
+    });
+    await settle(); expect(runDuty).toHaveBeenCalledTimes(runs + 1); await quiet(c);
   });
   it("a recovery-action producer wakes automatic disposition and leaves resolved history quiet", async () => {
     const run = await runRow("failed"); const c = coordinator(db, undefined, error => { errors.push(error); });

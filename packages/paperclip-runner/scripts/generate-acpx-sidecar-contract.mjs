@@ -13,6 +13,13 @@ const schema = JSON.parse(
 );
 const commands = schema.$defs.command.enum;
 const events = schema.$defs.eventType.enum;
+const preparationSchema = schema.$defs.providerPreparation;
+const quotaCapabilitySchema = schema.$defs.builtinQuotaPoolCapability;
+if (preparationSchema?.additionalProperties !== false || quotaCapabilitySchema?.additionalProperties !== false ||
+    preparationSchema.properties?.schema?.const !== "paperclip.acpx-provider-preparation.v1" ||
+    quotaCapabilitySchema.properties?.schema?.const !== "paperclip.native-quota-failover.v1") {
+  throw new Error("ACPX provider preparation and quota capability must be versioned closed contracts");
+}
 // The sidecar enforces exactly the schema's closed session.open parameter set.
 const openParamsSchema = schema.$defs.sessionOpenParams;
 if (openParamsSchema?.additionalProperties !== false || !openParamsSchema.properties) {
@@ -69,14 +76,14 @@ if (typescriptClassifier === typescriptWithAsciiLowercase) {
 const outputs = [
   [
     resolve(root, "src/drivers/acpx/generated-sidecar-contract.ts"),
-    typescriptClassifier,
+    typescriptClassifier + `\nexport const GENERATED_ACPX_PROVIDER_PREPARATION_SCHEMA = ${quote(preparationSchema.properties.schema.const)} as const;\nexport const GENERATED_ACPX_QUOTA_CAPABILITY_SCHEMA = ${quote(quotaCapabilitySchema.properties.schema.const)} as const;\n`,
   ],
   [
     resolve(
       root,
       "runner/crates/runner-core/src/generated_acpx_sidecar_contract.rs",
     ),
-    rust,
+    rust + `\npub const GENERATED_ACPX_PROVIDER_PREPARATION_SCHEMA: &str =\n    ${quote(preparationSchema.properties.schema.const)};\npub const GENERATED_ACPX_QUOTA_CAPABILITY_SCHEMA: &str = ${quote(quotaCapabilitySchema.properties.schema.const)};\n`,
   ],
 ];
 if (process.argv.includes("--check")) {

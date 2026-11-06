@@ -117,6 +117,7 @@ export async function claimNativeSessionResumptions(input: {
         isNull(heartbeatRuns.processGroupId),
         isNull(nativeRunFinalizations.resultId),
         eq(nativeRunFinalizations.phase, "retryable_failure"),
+        sql`${nativeRunFinalizations.failureDetail}->'bootstrapRunnerStop' is null`,
         or(
           isNull(nativeRunFinalizations.nextAttemptAt),
           lte(nativeRunFinalizations.nextAttemptAt, now),
@@ -155,6 +156,9 @@ export async function claimNativeSessionResumptions(input: {
         eq(heartbeatRuns.nativeIssueId, issue.id),
       )).for("update").limit(1);
       if (!run || !coordinator || run.runnerProfileJson?.legacyWorkspaceRecoveryMigration != null) return false;
+      // A quota bootstrap stop has an independent cleanup owner. Do not race
+      // its provider-lifetime proof or successor transaction with same-run resume.
+      if (record(coordinator.failureDetail).bootstrapRunnerStop != null) return false;
       if (await retireSupersededNativeRetry(tx as unknown as Db, {
         run, coordinator, issueExecutionRunId: issue.executionRunId, now,
       })) return false;
@@ -346,6 +350,7 @@ export async function claimNativeSessionResumptions(input: {
         eq(nativeRunFinalizations.issueId, candidate.issueId),
         eq(nativeRunFinalizations.runId, candidate.runId),
         eq(nativeRunFinalizations.phase, "retryable_failure"),
+        sql`${nativeRunFinalizations.failureDetail}->'bootstrapRunnerStop' is null`,
         isNull(nativeRunFinalizations.resultId),
         or(isNull(nativeRunFinalizations.nextAttemptAt), lte(nativeRunFinalizations.nextAttemptAt, now)),
         or(isNull(nativeRunFinalizations.leaseOwner), isNull(nativeRunFinalizations.leaseExpiresAt), lte(nativeRunFinalizations.leaseExpiresAt, now)),

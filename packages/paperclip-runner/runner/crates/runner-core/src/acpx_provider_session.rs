@@ -12,7 +12,7 @@ use crate::acpx_provider_state::{
 use crate::acpx_sidecar_transport::{AcpxSidecarTransport, AcpxSidecarTransportConfig};
 use crate::generated_acpx_sidecar_contract::{
     GeneratedAcpxSidecarCommand, GeneratedAcpxSidecarEventType,
-    GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,
+    GENERATED_ACPX_PROVIDER_PREPARATION_SCHEMA, GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,
 };
 use crate::local_runner::LocalRunnerError;
 use crate::provider_bridge::{
@@ -376,6 +376,22 @@ pub(crate) fn goal_is_dormant(projection: &Value) -> bool {
 
 impl AcpxProviderSession {
     pub fn start(config: &AcpxProviderSessionConfig) -> Result<Self, LocalRunnerError> {
+        Self::start_inner(config, None)
+    }
+
+    /// The callback must durably register the exact preparation before returning.
+    /// A failed callback never sends the command that starts the provider.
+    pub fn start_with_preparation(
+        config: &AcpxProviderSessionConfig,
+        register: &mut dyn FnMut(&AcpxProviderPreparation) -> Result<(), LocalRunnerError>,
+    ) -> Result<Self, LocalRunnerError> {
+        Self::start_inner(config, Some(register))
+    }
+
+    fn start_inner(
+        config: &AcpxProviderSessionConfig,
+        register: Option<&mut dyn FnMut(&AcpxProviderPreparation) -> Result<(), LocalRunnerError>>,
+    ) -> Result<Self, LocalRunnerError> {
         config.validate()?;
         let mut tool_bridge = ProviderToolBridge::default();
         tool_bridge
@@ -386,7 +402,7 @@ impl AcpxProviderSession {
         let reserved_tool_bridge = reserved_terminal_tool_bridge()?;
         let mut transport =
             AcpxSidecarTransport::start_for_agent(&config.transport, &config.agent)?;
-        let bootstrap = bootstrap(&mut transport, config);
+        let bootstrap = bootstrap(&mut transport, config, register);
         let (identity, state, turn_controls) = match bootstrap {
             Ok(value) => value,
             Err(error) => {
@@ -1309,7 +1325,7 @@ impl AcpxProviderSession {
             &restart_config.agent,
         )?;
         let (replacement_identity, _, turn_controls) =
-            match bootstrap(&mut replacement, &restart_config) {
+            match bootstrap(&mut replacement, &restart_config, None) {
                 Ok(value) => value,
                 Err(error) => {
                     return Err(self.reject_replacement(replacement, error));
@@ -1608,9 +1624,34 @@ fn initialize_params(config: &AcpxProviderSessionConfig) -> Value {
     params
 }
 
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AcpxProviderPreparation {
+    pub schema: String,
+    pub preparation_id: String,
+    pub normalized_session_id: String,
+    pub sidecar_pid: u32,
+    pub provider_lifetime_fence_candidates: [u16; 3],
+}
+
+impl AcpxProviderPreparation {
+    pub fn matches_session(&self, session_id: &str) -> bool {
+        let ports = self.provider_lifetime_fence_candidates;
+        self.schema == GENERATED_ACPX_PROVIDER_PREPARATION_SCHEMA
+            && uuid::Uuid::parse_str(&self.preparation_id).is_ok()
+            && self.normalized_session_id == session_id
+            && self.sidecar_pid > 1
+            && ports.iter().all(|port| *port >= 49_152)
+            && ports[0] != ports[1]
+            && ports[0] != ports[2]
+            && ports[1] != ports[2]
+    }
+}
+
 fn bootstrap(
     transport: &mut AcpxSidecarTransport,
     config: &AcpxProviderSessionConfig,
+    register: Option<&mut dyn FnMut(&AcpxProviderPreparation) -> Result<(), LocalRunnerError>>,
 ) -> Result<
     (
         AcpxProviderSessionIdentity,
@@ -1626,11 +1667,39 @@ fn bootstrap(
     )?;
     verify_initialize_response(&initialized, transport.process_id())?;
 
-    let opened = transport.request(
-        GeneratedAcpxSidecarCommand::SessionOpen,
-        session_open_params(config, &sidecar_tools),
-    )?;
+    let mut prepared_fence = None;
+    let opened = if let Some(register) = register {
+        let value = transport.request(
+            GeneratedAcpxSidecarCommand::SessionPrepare,
+            session_open_params(config, &sidecar_tools),
+        )?;
+        let preparation: AcpxProviderPreparation = serde_json::from_value(value)
+            .map_err(|_| LocalRunnerError::invalid("ACPX provider preparation is invalid"))?;
+        if !preparation.matches_session(&config.normalized_session_id)
+            || preparation.sidecar_pid != transport.process_id()
+        {
+            return Err(LocalRunnerError::invalid(
+                "ACPX provider preparation is invalid",
+            ));
+        }
+        prepared_fence = Some(preparation.provider_lifetime_fence_candidates);
+        register(&preparation)?;
+        transport.request(
+            GeneratedAcpxSidecarCommand::SessionCommit,
+            json!({ "preparationId": preparation.preparation_id }),
+        )?
+    } else {
+        transport.request(
+            GeneratedAcpxSidecarCommand::SessionOpen,
+            session_open_params(config, &sidecar_tools),
+        )?
+    };
     let identity = verify_open_response(&opened, transport.process_id(), config)?;
+    if prepared_fence.is_some_and(|ports| ports != identity.provider_lifetime_fence_candidates) {
+        return Err(LocalRunnerError::invalid(
+            "ACPX provider identity changed its prepared lifetime fence",
+        ));
+    }
     let turn_controls = verified_turn_controls(opened.get("turnControls"), &config.agent)?;
 
     let attached = transport.request(

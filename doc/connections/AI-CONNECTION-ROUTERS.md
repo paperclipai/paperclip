@@ -1,5 +1,21 @@
 # Experimental AI connection routers
 
+The built-in **Ordered failover pool** is available without a router plugin or
+the experimental router flag. It is configured with existing AI connections,
+ordered by preference and bound to a Paperclip Runner agent. On a confirmed
+account allowance exhaustion, Paperclip records a company-scoped cooldown for
+the credential and skips it until its reset time. A known provider reset is
+preserved; without one the default cooldown is one hour. Accounts sharing the
+same stored credential and epoch share a cooldown. Independently stored
+credentials are not assumed to represent the same external account.
+
+An automatic continuation must prove that the prior execution is stopped and
+that workspace, history and action outcomes are safe to continue. When that
+evidence is unavailable, the task remains held for recovery. A provider switch
+starts a separate provider conversation with bounded Paperclip task history;
+provider-private conversation state and full tool history are not transferred.
+The task's existing account sessions remain isolated by credential identity.
+
 AI routers are virtual, company-scoped connections owned by a capability-gated
 plugin (`ai.connections.route`). The instance flag `enableAiConnectionRouters`
 defaults to false. Pools also default to disabled. The host must implement this

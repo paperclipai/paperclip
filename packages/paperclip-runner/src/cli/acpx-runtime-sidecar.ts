@@ -80,7 +80,7 @@ import {
   type AcpxSidecarRequest,
   type AcpxSidecarResponse,
 } from "../drivers/acpx/sidecar-protocol.js";
-import { GENERATED_ACPX_SIDECAR_OPEN_PARAMS, GENERATED_ACPX_SIDECAR_PROVIDER_POLICY_FIELDS } from "../drivers/acpx/generated-sidecar-contract.js";
+import { GENERATED_ACPX_SIDECAR_OPEN_PARAMS, GENERATED_ACPX_SIDECAR_PROVIDER_POLICY_FIELDS, GENERATED_ACPX_PROVIDER_PREPARATION_SCHEMA } from "../drivers/acpx/generated-sidecar-contract.js";
 import { safeAcpxLocations } from "./acpx-sidecar-locations.js";
 import { createCopilotToolEvidence, type CopilotToolEvidence } from "../drivers/acpx/copilot-tool-evidence.js";
 import { createCursorToolEvidence, type CursorToolEvidence } from "../drivers/acpx/cursor-tool-evidence.js";
@@ -186,6 +186,14 @@ let bootstrapFailure: Error | null = null;
 let initializedAgent: QualifiedAcpxAgent | null = null;
 let initializedModel: string | null = null;
 let initializedCandidateAdmission: AcpxCandidateStartupAdmission | undefined;
+let preparedAdmission: {
+  id: string;
+  params: AcpxSidecarOpenParams;
+  controller: AbortController;
+  opening: Promise<AcpxRuntimeHost>;
+  commit(): void;
+  cancel(error: Error): void;
+} | null = null;
 let inputClosed = false;
 const tools = new Map<string, PendingTool>();
 const normalizingTools = new Set<string>();
@@ -218,6 +226,11 @@ process.once("SIGINT", () => {
 function requestShutdown(reason: string): void {
   if (shutdownRequested) return;
   shutdownRequested = true;
+  if (preparedAdmission) {
+    const error = new Error(reason);
+    preparedAdmission.controller.abort(error);
+    preparedAdmission.cancel(error);
+  }
   if (!inputClosed) lines.pause();
   pendingInput = enqueueAcpxSidecarInput(
     pendingInput,
@@ -297,7 +310,15 @@ async function dispatch(
       },
     };
   }
-  if (request.command === "session.open") {
+  if (request.command === "session.commit") {
+    const prepared = preparedAdmission;
+    if (!prepared || Object.keys(request.params).length !== 1 || request.params.preparationId !== prepared.id)
+      throw new Error("ACPX provider preparation does not match");
+    prepared.commit();
+    try { return await finishOpenedHost(await prepared.opening, prepared.params); }
+    finally { if (preparedAdmission === prepared) preparedAdmission = null; }
+  }
+  if (request.command === "session.open" || request.command === "session.prepare") {
     if (
       hasSidecarSessionOwnership(
         host,
@@ -316,7 +337,16 @@ async function dispatch(
     ) {
       throw new Error("ACPX session profile differs from its initialization");
     }
-    const openedHost = await AcpxRuntimeHost.open(
+    if (preparedAdmission) throw new Error("ACPX provider preparation is already pending");
+    const preparing = request.command === "session.prepare";
+    const controller = new AbortController();
+    let publish!: (value: readonly [number, number, number]) => void;
+    let commit!: () => void;
+    let cancel!: (error: Error) => void;
+    const ready = new Promise<readonly [number, number, number]>(resolve => { publish = resolve; });
+    const decision = new Promise<void>((resolve, reject) => { commit = resolve; cancel = reject; });
+    void decision.catch(() => undefined);
+    const opening = AcpxRuntimeHost.open(
       {
         candidateAdmission: params.candidateAdmission,
         runtimeDirectory: params.runtimeDirectory,
@@ -341,6 +371,7 @@ async function dispatch(
           MCP_TOOL_TIMEOUT: String(60 * 60 * 1_000),
         } : createAcpxSidecarHostEnvironment(process.env, params.agent, params.normalizedSessionId),
         expectedIdentity: params.expectedIdentity,
+        ...(preparing ? { signal: controller.signal } : {}),
         assignedMcpTransport: "prp",
         semanticTools: {
           tools: params.tools,
@@ -360,35 +391,26 @@ async function dispatch(
       {
         retainAdmissionCleanup: retainFailedAdmissionCleanup,
         reportRetainedCleanupFailure: reportRetainedAcpxCleanupFailure,
+        ...(preparing ? { beforeProviderStart: async (candidates: readonly [number, number, number]) => {
+          publish(candidates);
+          await decision;
+        } } : {}),
         openRuntime: (options) =>
           openCodexAcpxRuntime(options, {
             retainCleanup: retainFailedAdmissionCleanup,
           }),
       },
     );
-    const opened = await verifyOpenedAcpxSidecarHost(
-      openedHost,
-      sanitizeRuntimeStatus,
-      undefined,
-      retainFailedAdmissionCleanup,
-    );
-    host = openedHost;
-    openParams = params;
-    emit("runtime.process", {
-      role: "sidecar",
-      pid: process.pid,
-      processGroupId: null,
-      startedAt: new Date().toISOString(),
-    });
-    return {
-      identity: acpxProviderSessionIdentity(
-        openedHost.identity(),
-        openedHost.binding(),
-      ),
-      sidecarPid: process.pid,
-      status: opened.status,
-      turnControls: openedHost.steeringCapability() ?? { steering: false, queuedFollowUp: false },
-    };
+    if (preparing) {
+      const id = randomUUID();
+      preparedAdmission = { id, params, controller, opening, commit, cancel };
+      let candidates: readonly [number, number, number];
+      try { candidates = await Promise.race([ready, opening.then(() => { throw new Error("ACPX preparation bypassed its lifetime boundary"); })]); }
+      catch (error) { preparedAdmission = null; throw error; }
+      return { schema: GENERATED_ACPX_PROVIDER_PREPARATION_SCHEMA, preparationId: id,
+        normalizedSessionId: params.normalizedSessionId, sidecarPid: process.pid, providerLifetimeFenceCandidates: candidates };
+    }
+    return await finishOpenedHost(await opening, params);
   }
   if (request.command === "run.attach") {
     requireHost();
@@ -1777,6 +1799,15 @@ function redactSecrets(value: string): string {
   );
 }
 
+async function finishOpenedHost(openedHost: AcpxRuntimeHost, params: AcpxSidecarOpenParams) {
+  const opened = await verifyOpenedAcpxSidecarHost(openedHost, sanitizeRuntimeStatus, undefined, retainFailedAdmissionCleanup);
+  host = openedHost;
+  openParams = params;
+  emit("runtime.process", { role: "sidecar", pid: process.pid, processGroupId: null, startedAt: new Date().toISOString() });
+  return { identity: acpxProviderSessionIdentity(openedHost.identity(), openedHost.binding()), sidecarPid: process.pid,
+    status: opened.status, turnControls: openedHost.steeringCapability() ?? { steering: false, queuedFollowUp: false } };
+}
+
 function safeMessage(error: unknown): string {
   return safeText(error instanceof Error ? error.message : error);
 }
@@ -1786,9 +1817,18 @@ async function shutdown(reason: string): Promise<void> {
   closing = true;
   if (turnId) rejectTurnWaiters(turnId, reason);
   const cleanupOwners: Array<{
-    kind: "active_host" | "failed_admission";
+    kind: "active_host" | "failed_admission" | "prepared_host";
     cleanup: Promise<void>;
   }> = [];
+  if (preparedAdmission) {
+    const prepared = preparedAdmission;
+    preparedAdmission = null;
+    cleanupOwners.push({ kind: "prepared_host", cleanup: (async () => {
+      const opened = await prepared.opening.catch(() => null);
+      if (opened) await opened.close({ reason });
+      if (failedAdmissionCleanup) await failedAdmissionCleanup;
+    })() });
+  }
   if (activeHostCleanup) {
     // A timed-out close or suspension already owns sequential provider
     // cleanup. Join that exact owner; starting another host.close here would

@@ -1,5 +1,5 @@
 import { nextWorkspaceRecoveryAt } from "./system-recovery.js";
-import { and, asc, eq, isNotNull, sql } from "drizzle-orm";
+import { and, asc, eq, isNotNull, ne, sql } from "drizzle-orm";
 import { adapterAuthSessions, heartbeatRuns, issueRecoveryActions, nativeRunFinalizations, type Db } from "@paperclipai/db";
 import type { createDeliveryWorkCoordinator } from "./delivery-work-coordinator.js";
 import { type DeliveryQueue } from "./delivery-work-notifications.js";
@@ -74,10 +74,17 @@ export function executionControlSchedule(db: Db) {
       return at === null ? null : deadline([new Date(at)]);
     },
     async replacement() {
-      const rows = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns)
-        .innerJoin(nativeRunFinalizations, eq(nativeRunFinalizations.runId, heartbeatRuns.id))
-        .where(nativeReplacementPending()).limit(1);
-      return rows.length ? retry() : null;
+      const [legacy, quota] = await Promise.all([
+        db.select({ id: heartbeatRuns.id }).from(heartbeatRuns)
+          .innerJoin(nativeRunFinalizations, eq(nativeRunFinalizations.runId, heartbeatRuns.id))
+          .where(and(nativeReplacementPending(), ne(nativeRunFinalizations.failureCode, "native_provider_usage_limit"))).limit(1),
+        db.select({ at: nativeRunFinalizations.nextAttemptAt }).from(heartbeatRuns)
+          .innerJoin(nativeRunFinalizations, eq(nativeRunFinalizations.runId, heartbeatRuns.id))
+          .where(and(nativeReplacementPending(), eq(nativeRunFinalizations.failureCode, "native_provider_usage_limit"),
+            sql`coalesce(${nativeRunFinalizations.failureDetail}->>'replacementWaitingForCleanup', 'false') <> 'true'`)),
+      ]);
+      if (legacy.length || quota.some(row => row.at === null)) return retry();
+      return deadline(quota.map(row => row.at));
     },
     async continuation() {
       const rows = await db.select({ id: issueRecoveryActions.id }).from(issueRecoveryActions).where(and(

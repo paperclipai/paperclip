@@ -16,6 +16,14 @@ export const aiConnectionPools = pgTable("ai_connection_pools", {
   unique("ai_connection_pools_company_id_uq").on(table.companyId, table.id),
   foreignKey({ columns: [table.companyId, table.id], foreignColumns: [toolConnections.companyId, toolConnections.id], name: "ai_connection_pools_company_connection_fk" }).onDelete("cascade"),
 ]);
+export const aiConnectionQuotaCooldowns = pgTable("ai_connection_quota_cooldowns", {
+  companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+  credentialIdentity: text("credential_identity").notNull(),
+  retryAt: timestamp("retry_at", { withTimezone: true }).notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  uniqueIndex("ai_connection_quota_cooldowns_company_identity_uq").on(table.companyId, table.credentialIdentity),
+]);
 export const aiConnectionRouterCursors = pgTable("ai_connection_router_cursors", {
   poolId: uuid("pool_id").primaryKey().references(() => aiConnectionPools.id, { onDelete: "cascade" }),
   companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),

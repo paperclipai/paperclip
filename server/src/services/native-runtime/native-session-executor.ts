@@ -3011,6 +3011,14 @@ export function rebaseRetainedNativeCleanupProviderHome(
   }
 }
 
+/** A provider startup effect inventory is not yet available. */
+export async function withVerifiedQuotaBootstrapHandoff(_db: Db, _input: {
+  companyId: string; issueId: string; runId: string;
+  admit: (tx: Parameters<Parameters<Db["transaction"]>[0]>[0], run: typeof heartbeatRuns.$inferSelect) => Promise<boolean>;
+}): Promise<boolean> {
+  return false;
+}
+
 /** Physical cleanup for an explicitly authorized NEW conversation turn. Unlike
  * automatic replacement, this does not certify or replay the interrupted actions.
  * The caller holds the issue/controller/run locks and preserves their history.
@@ -8561,6 +8569,11 @@ export async function executePaperclipNativeSession(input: {
     },
   ) => Promise<unknown>;
 }): Promise<AdapterExecutionResult> {
+  // A saved experimental input must not start a provider until bootstrap
+  // termination, action inventory, and successor recovery are implemented.
+  if (input.execution.schema === "paperclip.native-execution-input.v11") {
+    throw new Error("native_quota_failover_unavailable");
+  }
   const agentKeyId = input.runnerEnvironment?.PAPERCLIP_AGENT_KEY_ID;
   if (agentKeyId) {
     // Recovered pre-upgrade inputs also need the current public identity marker
@@ -10813,6 +10826,7 @@ async function executePaperclipNativeSessionWithinScope(
               retryable: phase === "retryable_failure",
               failure: providerFailure,
               now,
+              managedAiCredentialIdentity: input.managedAiCredentialIdentity,
             })
           : null;
       const providerCooldownAt = startupRetry?.providerCooldownAt ?? null;
@@ -13676,6 +13690,7 @@ async function createRunnerdBackendWithinSessionClaim(
         } : undefined,
         ...(provider.kind === "codex" ? { disableCodexWebSearch: "webSearch" in provider && provider.webSearch === "disabled" } : {}),
         ...(provider.kind === "acpx" ? { acpxAgent: provider.agent,
+          ...(input.execution.schema === "paperclip.native-execution-input.v11" ? { builtinQuotaPoolCapability: input.execution.builtinQuotaPoolCapability } : {}),
           acpxCandidateProfile: provider.agent === "pi" ? undefined : resolveAcpxQualification(provider, process.env),
           acpxPermissionMode: provider.permissionMode, acpxMode: provider.mode, piThinkingLevel: provider.piThinkingLevel,
           claudeEffort: "claudeEffort" in provider ? provider.claudeEffort : undefined,

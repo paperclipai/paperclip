@@ -232,6 +232,8 @@ export interface AcpxRuntimeHostDependencies {
   /** Internal test seam for aborting credential acquisition. */
   stageCredential?: typeof stageManagedCodexCredential;
   openRuntime(options: AcpxRuntimePortOpenOptions): Promise<AcpxRuntimePort>;
+  /** Pause admission while the controller durably records this exact lease. */
+  beforeProviderStart?: (candidates: readonly [number, number, number]) => Promise<void>;
   /** Internal test seam for deterministic sandbox-admission scheduling. */
   prepareSandbox?: typeof prepareAcpxRuntimeSandbox;
   /** Internal test seam for the post-handshake admission deadline. */
@@ -657,6 +659,13 @@ export class AcpxRuntimeHost {
       const admittedLifetime = credential;
       if (admittedLifetime === null) {
         throw new Error("ACPX provider lifetime lease is unavailable");
+      }
+      if (dependencies.beforeProviderStart) {
+        await runAbortableAdmissionStage(
+          options.signal,
+          () => dependencies.beforeProviderStart!(admittedLifetime.lifetimeFenceCandidates),
+          dependencies.retainAdmissionCleanup,
+        );
       }
       admissionStage = "runtime";
       runtime = await acquireAbortableAdmissionResource({

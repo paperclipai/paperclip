@@ -1,3 +1,4 @@
+import { reopenNativeQuotaPoolWaits } from "../../native-runtime/native-quota-wake.js";
 import { notifyGitHubCredentialChange } from "../../github-connection-notifications.js";
 import type { ConnectionManagementContext } from "../../connection-management.js";
 import { connectionActorUserId } from "../actor.js";
@@ -152,6 +153,7 @@ replaceConnectionGrantMembers: async (
       ];
       const binding = actorBinding(actor);
       const members = await db.transaction(async (tx) => {
+        if (connection.connectionPurpose === "ai") await reopenNativeQuotaPoolWaits(tx as unknown as Db, { companyId: connection.companyId, connectionId: connection.id });
         // Serialize replacements before taking the current audience snapshot.
         // Otherwise a second replacement could read the old rows, wait behind
         // an in-flight replacement, and then miss locking a newly-added member.
@@ -439,33 +441,36 @@ replaceConnectionGrantMembers: async (
         connection.companyId,
         input.credentialSecretRefs ?? [],
       );
-      if (input.isDefault) {
-        await db
-          .update(connectionGrants)
-          .set({ isDefault: false, updatedAt: new Date() })
-          .where(
-            and(
-              eq(connectionGrants.connectionId, connection.id),
-              eq(connectionGrants.kind, "organization"),
-            ),
-          );
-      }
       const binding = actorBinding(actor);
-      const [grant] = await db
-        .insert(connectionGrants)
-        .values({
-          companyId: connection.companyId,
-          connectionId: connection.id,
-          kind: "organization",
-          providerTenant: input.providerTenant,
-          credentialSecretRefs: input.credentialSecretRefs ?? [],
-          status: "active",
-          isDefault: input.isDefault ?? false,
-          createdByAgentId:
-            binding.actorType === "agent" ? binding.actorId : null,
-          createdByUserId: connectionActorUserId(actor),
-        })
-        .returning();
+      const [grant] = await db.transaction(async (tx) => {
+        if (connection.connectionPurpose === "ai") await reopenNativeQuotaPoolWaits(tx as unknown as Db, { companyId: connection.companyId, connectionId: connection.id });
+        if (input.isDefault) {
+          await tx
+            .update(connectionGrants)
+            .set({ isDefault: false, updatedAt: new Date() })
+            .where(
+              and(
+                eq(connectionGrants.connectionId, connection.id),
+                eq(connectionGrants.kind, "organization"),
+              ),
+            );
+        }
+        return tx
+          .insert(connectionGrants)
+          .values({
+            companyId: connection.companyId,
+            connectionId: connection.id,
+            kind: "organization",
+            providerTenant: input.providerTenant,
+            credentialSecretRefs: input.credentialSecretRefs ?? [],
+            status: "active",
+            isDefault: input.isDefault ?? false,
+            createdByAgentId:
+              binding.actorType === "agent" ? binding.actorId : null,
+            createdByUserId: connectionActorUserId(actor),
+          })
+          .returning();
+      });
       if (!grant) throw new Error("Failed to create connection installation");
       await db.insert(toolAccessAuditEvents).values({
         companyId: connection.companyId,
@@ -538,6 +543,7 @@ replaceConnectionGrantMembers: async (
         providerRevocation = "local_only_shared_client";
       }
       const grant = await db.transaction(async (tx) => {
+        if (connection.connectionPurpose === "ai") await reopenNativeQuotaPoolWaits(tx as unknown as Db, { companyId: connection.companyId, connectionId: connection.id });
         await notifyGitHubCredentialChange(tx, connection);
         const [lockedGrant] = await tx.select({ id: connectionGrants.id }).from(connectionGrants)
           .where(and(eq(connectionGrants.id, grantId), eq(connectionGrants.companyId, connection.companyId), eq(connectionGrants.connectionId, connection.id)))

@@ -16,7 +16,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { appendHeartbeatRunEvent } from "../heartbeat-run-events.js";
 import { createNativeRunLogCoverageVerifier, formatNativeRunLogEvent } from "../native-runtime/native-run-log-export.js";
 import type { Db } from "@paperclipai/db";
-import { activityLog, agents, agentWakeupRequests, budgetReservations, caseHandoffs, cases, companies, completionContracts, costEvents, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRuns, heartbeatRunEvents, issueRecoveryActions, issues, nativeRunFinalizations } from "@paperclipai/db";
+import { activityLog, agents, agentWakeupRequests, aiConnectionPools, aiConnectionTaskPins, aiConnectionQuotaCooldowns, toolApplications, toolConnections, budgetReservations, caseHandoffs, cases, companies, completionContracts, costEvents, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRuns, heartbeatRunEvents, issueRecoveryActions, issues, nativeRunFinalizations } from "@paperclipai/db";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
@@ -39,13 +39,15 @@ import { createHeartbeatLifecycle, type HeartbeatLifecycleDependencies } from ".
 import { createHeartbeatRunPreparation, ConfigurationIncompleteFailure, classifyManagedProjectAuthFailure } from "./run-preparation.js";
 import { createHeartbeatRunState, getAdapterSessionCodec } from "./run-state.js";
 import { buildEffectiveRunSessionConfigMetadata } from "./workspaces.js";
-import { createHeartbeatRunCompletion, type CompleteHeartbeatRunInput, type FailHeartbeatRunInput, type HeartbeatRunCompletionDependencies } from "./run-completion.js";
+import { createHeartbeatRunCompletion, isConfirmedProviderQuotaFailure, recordVerifiedRouterQuotaCooldown, type CompleteHeartbeatRunInput, type FailHeartbeatRunInput, type HeartbeatRunCompletionDependencies } from "./run-completion.js";
 import { createHeartbeatAgentStatus } from "./agent-status.js";
 import { prepareNativeHeartbeatRun } from "../native-runtime/prepare-native-run.js";
 import { buildNativeCompletionContract } from "../native-runtime/completion-contracts.js";
 import { readPendingNativeRunStop } from "../native-runtime/native-cancellation-request.js";
 import { reserveRunBudget } from "../budget-reservations.js";
 import { hasAcknowledgedNativeReassignmentStopIntent } from "../acknowledged-native-stop.js";
+import { PROVIDER_LIMIT_DEFAULT_COOLDOWN_MS } from "../system-recovery-state.js";
+import { planNativeStartupRetry } from "../native-runtime/native-startup-retry.js";
 
 vi.mock("../live-events.js", () => ({ publishLiveEvent: vi.fn() }));
 
@@ -140,6 +142,13 @@ it("constructs completion handlers without querying or starting work", () => {
   for (const callback of Object.values(deps)) if (vi.isMockFunction(callback)) expect(callback).not.toHaveBeenCalled();
 });
 
+it("distinguishes Claude allowance exhaustion from ordinary rate limiting", () => {
+  const failure = { schema: "paperclip.provider-failure.v1", provider: "anthropic", phase: "turn", category: "rate_limit", retryability: "unknown" };
+  expect(isConfirmedProviderQuotaFailure({ ...failure, message: "You've hit your weekly limit" })).toBe(true);
+  expect(isConfirmedProviderQuotaFailure({ ...failure, message: "This request would exceed your account's rate limit." })).toBe(false);
+  expect(isConfirmedProviderQuotaFailure({ ...failure, provider: "other", message: "You've hit your weekly limit" })).toBe(false);
+});
+
 const support = await getEmbeddedPostgresTestSupport();
 describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)("heartbeat run completion boundary", () => {
   let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | undefined;
@@ -182,6 +191,94 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
     return { run, agent, wake, deps, controller, input, completion, failure, setup };
   }
   const read = (id: string) => db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, id)).then(rows => rows[0]!);
+
+  it("records quota only for the host credential and exact durable pool pin", async () => {
+    const f = await fixture();
+    const [app] = await db.insert(toolApplications).values({ companyId: f.run.companyId, name: "Quota", type: "rest_api" }).returning();
+    const [pool, account] = await db.insert(toolConnections).values(["pool", "account"].map(name => ({
+      companyId: f.run.companyId, applicationId: app.id, name, uid: name, transport: "rest_api" as const,
+    }))).returning();
+    const grantId = randomUUID();
+    const member = { id: randomUUID(), binding: { mode: "delegated" as const, provider: "openai" as const,
+      method: "api_key" as const, connectionId: account.id, grantId }, profile: { provider: "codex" as const, model: "gpt-5" } };
+    const selection = { poolId: pool.id, memberId: member.id, binding: member.binding, runtimeConfig: { provider: "codex", model: "gpt-5" }, notes: [] };
+    await db.insert(aiConnectionPools).values({ id: pool.id, companyId: f.run.companyId, pluginKey: "test",
+      config: { name: "pool", enabled: true, mode: "failover", thresholdPercent: 90, members: [member] } });
+    await db.insert(aiConnectionTaskPins).values({ companyId: f.run.companyId, agentId: f.run.agentId, poolId: pool.id,
+      taskKey: f.run.id, member, selection });
+    await db.update(agents).set({ runtimeConfig: { aiConnection: { mode: "router", connectionId: pool.id } } }).where(eq(agents.id, f.agent.id));
+    await db.update(heartbeatRuns).set({ contextSnapshot: { aiRouterTaskKey: f.run.id, aiRouterSelection: selection } }).where(eq(heartbeatRuns.id, f.run.id));
+    f.input.session.sessionConfigMetadata.aiCredentialIdentity = `${grantId}:shared:no-auth`;
+    const deadline = new Date(Date.now() + 120_000);
+    f.input.adapterResult = { exitCode: 1, signal: null, timedOut: false, errorCode: "native_provider_usage_limit",
+      resultJson: { providerFailure: { schema: "paperclip.provider-failure.v1", provider: "openai", phase: "turn",
+        category: "quota_exhausted", message: "quota", retryability: "unknown", retryAt: deadline.toISOString() } }, errorMessage: "quota" };
+    await f.completion.completeRun(f.input);
+    expect(await db.select().from(aiConnectionQuotaCooldowns)).toMatchObject([{ companyId: f.run.companyId, connectionId: account.id, retryAt: deadline }]);
+    const receiptId = `ai-connection-quota-attributed:${f.run.id}`;
+    const receipts = () => db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.sourceEventId, receiptId));
+    expect(await receipts()).toMatchObject([{ companyId: f.run.companyId, runId: f.run.id, agentId: f.agent.id,
+      eventType: "ai_connection.quota_attributed", payload: { runId: f.run.id, poolId: pool.id, taskKey: f.run.id,
+        memberId: member.id, connectionId: account.id, grantId, selection, retryAt: deadline.toISOString() } }]);
+    await db.delete(aiConnectionQuotaCooldowns);
+    const call = { runId: f.run.id, companyId: f.run.companyId, agentId: f.run.agentId, retryNotBefore: deadline.toISOString() };
+    expect(await recordVerifiedRouterQuotaCooldown(db, { ...call, credentialIdentity: `${grantId}:shared:no-auth` })).toBe(true);
+    expect(await receipts()).toHaveLength(1);
+    expect(await recordVerifiedRouterQuotaCooldown(db, { ...call, retryNotBefore: new Date(deadline.getTime() + 1_000).toISOString(), credentialIdentity: `${grantId}:shared:no-auth` })).toBe(false);
+    await db.delete(aiConnectionQuotaCooldowns);
+    expect(await recordVerifiedRouterQuotaCooldown(db, { ...call, credentialIdentity: `${randomUUID()}:shared:no-auth` })).toBe(false);
+    expect(await recordVerifiedRouterQuotaCooldown(db, { ...call, companyId: randomUUID(), credentialIdentity: `${grantId}:shared:no-auth` })).toBe(false);
+    await db.update(heartbeatRuns).set({ contextSnapshot: { aiRouterTaskKey: f.run.id,
+      aiRouterSelection: { ...selection, memberId: randomUUID() } } }).where(eq(heartbeatRuns.id, f.run.id));
+    expect(await recordVerifiedRouterQuotaCooldown(db, { ...call, credentialIdentity: `${grantId}:shared:no-auth` })).toBe(false);
+    await db.update(heartbeatRuns).set({ contextSnapshot: { aiRouterTaskKey: f.run.id, aiRouterSelection: selection } }).where(eq(heartbeatRuns.id, f.run.id));
+    await db.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.sourceEventId, receiptId));
+    const now = new Date();
+    await expect(db.transaction(async tx => {
+      expect(await recordVerifiedRouterQuotaCooldown(tx as unknown as Db, { ...call, retryNotBefore: null, now, credentialIdentity: `${grantId}:shared:no-auth` })).toBe(true);
+      throw new Error("rollback attribution");
+    })).rejects.toThrow("rollback attribution");
+    expect(await receipts()).toEqual([]);
+    expect(await db.select().from(aiConnectionQuotaCooldowns)).toEqual([]);
+    expect(await recordVerifiedRouterQuotaCooldown(db, { ...call, retryNotBefore: null, now, credentialIdentity: `${grantId}:shared:no-auth` })).toBe(true);
+    expect((await db.select().from(aiConnectionQuotaCooldowns))[0]!.retryAt).toEqual(new Date(now.getTime() + PROVIDER_LIMIT_DEFAULT_COOLDOWN_MS));
+    const distant = new Date(now.getTime() + 30 * 24 * 60 * 60_000);
+    await db.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.sourceEventId, receiptId));
+    expect(await recordVerifiedRouterQuotaCooldown(db, { ...call, retryNotBefore: distant.toISOString(), now, credentialIdentity: `${grantId}:shared:no-auth` })).toBe(true);
+    expect((await db.select().from(aiConnectionQuotaCooldowns))[0]!.retryAt).toEqual(distant);
+    const oldLimit = new Date(now.getTime() + 2 * 60 * 60_000);
+    await db.insert(heartbeatRuns).values({ companyId: f.run.companyId, agentId: f.run.agentId, status: "failed",
+      startedAt: now, finishedAt: now, errorCode: "provider_quota", resultJson: { retryNotBefore: oldLimit.toISOString() } });
+    const startup = { db, binding: { runId: f.run.id, companyId: f.run.companyId, agentId: f.run.agentId },
+      attempt: 1, retryable: true, failure: null, now };
+    expect((await planNativeStartupRetry({ ...startup, managedAiCredentialIdentity: `${grantId}:shared:no-auth` })).providerCooldownAt).toEqual(distant);
+    await db.delete(aiConnectionQuotaCooldowns);
+    expect((await planNativeStartupRetry({ ...startup, managedAiCredentialIdentity: `${grantId}:shared:no-auth` })).providerCooldownAt).toBeNull();
+    expect((await planNativeStartupRetry({ ...startup, managedAiCredentialIdentity: `${randomUUID()}:shared:no-auth` })).providerCooldownAt).toEqual(oldLimit);
+    await db.update(aiConnectionTaskPins).set({ taskKey: "other" }).where(eq(aiConnectionTaskPins.id, (await db.select().from(aiConnectionTaskPins))[0]!.id));
+    expect(await recordVerifiedRouterQuotaCooldown(db, { ...call, credentialIdentity: `${grantId}:shared:no-auth` })).toBe(false);
+    expect(await db.select().from(aiConnectionQuotaCooldowns)).toEqual([]);
+    await db.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.sourceEventId, receiptId));
+    const [issue] = await db.insert(issues).values({ companyId: f.run.companyId, title: "Quota task", identifier: "CMP-42" }).returning();
+    await db.update(heartbeatRuns).set({ scopeKind: "issue", issueId: issue.id,
+      contextSnapshot: { aiRouterTaskKey: issue.identifier, aiRouterSelection: selection } }).where(eq(heartbeatRuns.id, f.run.id));
+    await db.update(aiConnectionTaskPins).set({ taskKey: issue.identifier! }).where(eq(aiConnectionTaskPins.agentId, f.agent.id));
+    expect(await recordVerifiedRouterQuotaCooldown(db, { ...call, credentialIdentity: `${grantId}:shared:no-auth` }), "issue identifier").toBe(true);
+    await db.delete(aiConnectionQuotaCooldowns);
+    const [timerRun] = await db.insert(heartbeatRuns).values({ companyId: f.run.companyId, agentId: f.agent.id,
+      status: "failed", errorCode: "provider_quota", invocationSource: "timer",
+      contextSnapshot: { aiRouterTaskKey: "__heartbeat__", aiRouterSelection: selection, wakeSource: "timer" } }).returning();
+    await db.update(aiConnectionTaskPins).set({ taskKey: "__heartbeat__" }).where(eq(aiConnectionTaskPins.agentId, f.agent.id));
+    expect(await recordVerifiedRouterQuotaCooldown(db, { ...call, runId: timerRun.id, credentialIdentity: `${grantId}:shared:no-auth` }), "timer task").toBe(true);
+    await db.delete(aiConnectionQuotaCooldowns);
+    await db.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, timerRun.id));
+    const nativeFailure = { schema: "paperclip.provider-failure.v1", provider: "openai", phase: "turn",
+      category: "rate_limit", message: "limit", retryability: "unknown", httpStatus: 429 };
+    await db.update(heartbeatRuns).set({ errorCode: "native_provider_usage_limit", resultJson: { providerFailure: nativeFailure } }).where(eq(heartbeatRuns.id, timerRun.id));
+    expect(await recordVerifiedRouterQuotaCooldown(db, { ...call, runId: timerRun.id, credentialIdentity: `${grantId}:shared:no-auth` })).toBe(false);
+    await db.update(heartbeatRuns).set({ resultJson: { providerFailure: { ...nativeFailure, category: "quota_exhausted" } } }).where(eq(heartbeatRuns.id, timerRun.id));
+    expect(await recordVerifiedRouterQuotaCooldown(db, { ...call, runId: timerRun.id, credentialIdentity: `${grantId}:shared:no-auth` })).toBe(true);
+  });
 
   it.each(["ordinary", "stalled append", "object admission"] as const)("finishes accepted output before ordinary lease teardown without writing to a retired recorder (%s)", async mode => {
     const stalledAppend = mode === "stalled append", stalledAdmission = mode === "object admission";

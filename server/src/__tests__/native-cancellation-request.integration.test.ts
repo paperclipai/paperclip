@@ -4,7 +4,8 @@ import { and, eq, inArray, sql } from "drizzle-orm";
 import { agents, companies, createDb, heartbeatRuns, issues, nativeRunFinalizations } from "@paperclipai/db";
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
-import { rethrowNativeCancellationLockConflict, nativeRetryCancellationCommitCondition, cancellationIntentId, claimCancellationRequest, startupCancellationFence } from "../services/native-runtime/native-cancellation-request.js";
+import { rethrowNativeCancellationLockConflict, nativeRetryCancellationCommitCondition, cancellationIntentId, claimCancellationRequest, startupCancellationFence, fenceQuotaReplacementStop } from "../services/native-runtime/native-cancellation-request.js";
+import { heartbeatService } from "../services/heartbeat.js";
 
 describe("atomic caller cancellation request ownership", () => {
   let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | undefined;
@@ -65,6 +66,27 @@ describe("atomic caller cancellation request ownership", () => {
     await db.insert(nativeRunFinalizations).values({ runId: f.runId, companyId: f.companyId, issueId, phase, nextAttemptAt: new Date(Date.now() + 30_000) });
     return { ...f, issueId };
   }
+  it("fences quota continuation without claiming that the failed provider stopped", async () => {
+    const f = await retryFixture("terminal_failure"), id = randomUUID();
+    await db.update(nativeRunFinalizations).set({ failureCode: "native_provider_usage_limit" }).where(eq(nativeRunFinalizations.runId, f.runId));
+    const heartbeat = heartbeatService(db);
+    await expect(heartbeat.cancelRun(f.runId, "Stop", { cancellationRequestId: id,
+      cancellationRequestedByUserId: "board-user", resultJson: { cancelledByActorType: "user" } })).rejects.toMatchObject({ status: 409 });
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+    expect(run).toMatchObject({ status: "failed", resultJson: { executionCancellation: { state: "requested" }, startupCancellation: { cancellationRequestId: id } } });
+    expect(run.resultJson?.nativeCancellation).toBeUndefined();
+    await expect(fenceQuotaReplacementStop(db, run, id, "other-user")).rejects.toMatchObject({ status: 409 });
+  });
+  it("only follows a successor with matching company, agent and predecessor", async () => {
+    const f = await retryFixture("terminal_failure"), successorId = randomUUID();
+    await db.update(nativeRunFinalizations).set({ failureCode: "native_provider_usage_limit", failureDetail: { successorRunId: successorId } }).where(eq(nativeRunFinalizations.runId, f.runId));
+    await db.insert(heartbeatRuns).values({ id: successorId, companyId: f.companyId, agentId: f.agentId,
+      invocationSource: "automation", status: "scheduled_retry", retryOfRunId: f.runId });
+    const [source] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+    await expect(fenceQuotaReplacementStop(db, source)).resolves.toMatchObject({ kind: "successor", run: { id: successorId } });
+    await db.update(heartbeatRuns).set({ retryOfRunId: null }).where(eq(heartbeatRuns.id, successorId));
+    await expect(fenceQuotaReplacementStop(db, source)).rejects.toMatchObject({ status: 409 });
+  });
   it("admits a failed retry and recovers the same caller after audited native cancellation disables it", async () => {
     const f = await retryFixture(), id = randomUUID();
     await claimCancellationRequest(db, f.runId, f.companyId, id, "board-user");

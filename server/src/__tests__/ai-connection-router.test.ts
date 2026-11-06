@@ -5,10 +5,10 @@ import { mkdir } from "node:fs/promises";
 import { createIsolatedTestHome } from "./helpers/isolated-test-home.js";
 import path from "node:path";
 import { and, eq } from "drizzle-orm";
-import { createDb, closeRegisteredClients, companies, agents, authUsers, companyMemberships, connectionGrants, plugins, aiConnectionRouterCursors, aiConnectionTaskPins, toolConnections, companySecrets, heartbeatRuns, issues, dotAgentBindings, grokBotRoutines } from "@paperclipai/db";
+import { createDb, closeRegisteredClients, companies, agents, authUsers, companyMemberships, connectionGrants, plugins, aiConnectionQuotaCooldowns, aiConnectionRouterCursors, aiConnectionTaskPins, toolConnections, companySecrets, heartbeatRuns, issues, dotAgentBindings, grokBotRoutines } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "@paperclipai/db/test-embedded-postgres";
-import type { AiConnectionPoolMember, AiConnectionRouterRequest, AiConnectionRouterResult, PaperclipPluginManifestV1 } from "@paperclipai/shared";
-import { aiConnectionRouterService, AiConnectionPoolExhausted, poolMemberRuntimeConfig, applyAiConnectionRouterTaskSettings } from "../services/ai-connection-router.js";
+import { BUILTIN_AI_FAILOVER_ROUTER_KEY, type AiConnectionPoolMember, type AiConnectionRouterRequest, type AiConnectionRouterResult, type PaperclipPluginManifestV1 } from "@paperclipai/shared";
+import { aiConnectionRouterService, AiConnectionPoolExhausted, poolMemberRuntimeConfig, applyAiConnectionRouterTaskSettings, quotaIdentityFromSessionSnapshot } from "../services/ai-connection-router.js";
 import { aiConnectionSessionCompatibilityInputs } from "../services/ai-connection-session.js";
 import { projectPaperclipRunnerTaskConfig, resolvePaperclipRunnerNativeProviderInput } from "../services/native-runtime/provider-profile.js";
 import { aiConnectionService } from "../services/ai-connections.js";
@@ -53,6 +53,12 @@ const worker = { isRunning: () => true, call: proposal } as unknown as PluginWor
 const defaultProposal = proposal.getMockImplementation()!;
 const service = () => aiConnectionRouterService(db, worker);
 const resolve = (poolId: string, taskKey: string, extra = {}) => service().resolve({ companyId, poolId, agentId, userId: "alice", adapterType: "paperclip_runner", taskKey, ...extra });
+const identityFor = async (grantId: string) => {
+  const [grant] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, grantId));
+  const ref = grant!.credentialSecretRefs.find(r => r.configPath === "ai.credential")!;
+  const [secret] = await db.select().from(companySecrets).where(eq(companySecrets.id, ref.secretId));
+  return `secret:${ref.secretId}:${secret!.aiSessionEpoch}`;
+};
 const makePool = async (config = {}) => service().save(pluginKey, { companyId, config: { name: randomUUID(), enabled: true, mode: "round_robin", thresholdPercent: 90, members, ...config } }, "alice");
 beforeAll(async () => {
   isolatedHome = createIsolatedTestHome();
@@ -81,7 +87,120 @@ afterAll(async () => {
 });
 
 describe("durable, authorized connection routing", () => {
+  it("normalizes runtime snapshots without interpreting user identifiers", () => {
+    const grant = randomUUID(), secret = randomUUID();
+    expect(quotaIdentityFromSessionSnapshot(grant, `${grant}:user:with:colons:${secret}:4`)).toBe(`secret:${secret}:4`);
+    expect(quotaIdentityFromSessionSnapshot(grant, `${grant}:alice:no-auth`)).toBe(`grant:${grant}:no-auth`);
+    expect(quotaIdentityFromSessionSnapshot(grant, `${randomUUID()}:alice:${secret}:4`)).toBeNull();
+    expect(quotaIdentityFromSessionSnapshot(grant, `${grant}:alice:${secret}:invalid`)).toBeNull();
+  });
+  it("atomically moves only the expected builtin pin to the next eligible account", async () => {
+    const pool = await service().save(BUILTIN_AI_FAILOVER_ROUTER_KEY, { companyId, config: { name: randomUUID(), enabled: true, mode: "failover", thresholdPercent: 90, members } }, "alice");
+    const taskKey = randomUUID();
+    const first = await resolve(pool.id, taskKey);
+    await expect(resolve(pool.id, taskKey, { adapterType: "claude_local", persisted: first })).rejects.toThrow("requires the Paperclip runner");
+    if (first.binding.mode === "responsible_user") throw new Error("Expected an explicit pool account");
+    await service().recordQuotaCooldown(companyId, first.binding.connectionId, await identityFor(first.binding.grantId), new Date(Date.now() + 60_000));
+    const input = { companyId, poolId: pool.id, agentId, taskKey, expectedSelection: first, userId: "alice", adapterType: "paperclip_runner", attemptedMemberIds: [first.memberId] };
+    const result = await db.transaction(tx => aiConnectionRouterService(tx as unknown as typeof db, worker).transitionQuotaPin(input));
+    expect(result).toMatchObject({ kind: "selected", selection: { memberId: members[1]!.id } });
+    const [pin] = await db.select().from(aiConnectionTaskPins).where(and(eq(aiConnectionTaskPins.poolId, pool.id), eq(aiConnectionTaskPins.taskKey, taskKey)));
+    expect(pin?.selection.memberId).toBe(members[1]!.id);
+    expect(await db.transaction(tx => aiConnectionRouterService(tx as unknown as typeof db, worker).transitionQuotaPin(input))).toMatchObject({ kind: "unavailable" });
+  });
+  it("routes a built-in ordered pool without the plugin flag or worker", async () => {
+    await instanceSettingsService(db).updateExperimental({ enableAiConnectionRouters: false });
+    await db.delete(aiConnectionQuotaCooldowns).where(eq(aiConnectionQuotaCooldowns.companyId, companyId));
+    const builtin = aiConnectionRouterService(db);
+    const pool = await builtin.save(BUILTIN_AI_FAILOVER_ROUTER_KEY, { companyId, config: { name: "Built-in pool", enabled: true, mode: "failover", thresholdPercent: 90, members } }, "alice");
+    expect((await builtin.catalog()).find(entry => entry.aiConnectionRouter?.pluginKey === BUILTIN_AI_FAILOVER_ROUTER_KEY)?.availability?.available).toBe(true);
+    expect((await builtin.selectable(companyId, "alice")).some(entry => entry.id === pool.id)).toBe(true);
+    const input = { companyId, poolId: pool.id, agentId, userId: "alice", adapterType: "paperclip_runner", taskKey: randomUUID() };
+    expect((await builtin.resolve(input)).memberId).toBe(members[0]!.id);
+    await builtin.recordQuotaCooldown(companyId, members[0]!.binding.connectionId, await identityFor(members[0]!.binding.grantId), new Date(Date.now() + 60_000));
+    expect((await builtin.resolve({ ...input, taskKey: randomUUID() })).memberId).toBe(members[1]!.id);
+    await expect(builtin.save(BUILTIN_AI_FAILOVER_ROUTER_KEY, { companyId, config: { name: "Invalid", enabled: true, mode: "round_robin", thresholdPercent: 90, members } }, "alice")).rejects.toThrow("ordered failover");
+    await db.delete(aiConnectionQuotaCooldowns).where(eq(aiConnectionQuotaCooldowns.companyId, companyId));
+    await builtin.remove(companyId, pool.id, pool.revision, "alice");
+  });
+  it("persists account quota cooldowns across service instances without shortening them", async () => {
+    const member = members[0]!;
+    const later = new Date(Date.now() + 4 * 60 * 60_000);
+    const earlier = new Date(Date.now() + 60_000);
+    await service().recordQuotaCooldown(companyId, member.binding.connectionId, await identityFor(member.binding.grantId), later);
+    await service().recordQuotaCooldown(companyId, member.binding.connectionId, await identityFor(member.binding.grantId), earlier);
+    expect(await service().accountCooldown(companyId, member.binding.connectionId, await identityFor(member.binding.grantId))).toEqual(later);
+    expect(await service().accountCooldown(otherCompanyId, member.binding.connectionId, await identityFor(member.binding.grantId))).toBeNull();
+  });
+  it("scopes cooldown to the credential and epoch", async () => {
+    await db.delete(aiConnectionQuotaCooldowns).where(eq(aiConnectionQuotaCooldowns.companyId, companyId));
+    const member = members[0]!;
+    const identity = await identityFor(member.binding.grantId);
+    const retryAt = new Date(Date.now() + 60_000);
+    await service().recordQuotaCooldown(companyId, member.binding.connectionId, identity, retryAt);
+    expect(await service().accountCooldown(companyId, member.binding.connectionId, identity)).toEqual(retryAt);
+    expect(await service().accountCooldown(companyId, member.binding.connectionId, `secret:${randomUUID()}:0`)).toBeNull();
+    const [grant] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, member.binding.grantId));
+    const ref = grant!.credentialSecretRefs.find(r => r.configPath === "ai.credential")!;
+    const [secret] = await db.select().from(companySecrets).where(eq(companySecrets.id, ref.secretId));
+    await db.update(companySecrets).set({ aiSessionEpoch: secret!.aiSessionEpoch + 1 }).where(eq(companySecrets.id, ref.secretId));
+    try {
+      const pool = await service().save(BUILTIN_AI_FAILOVER_ROUTER_KEY, { companyId, config: { name: randomUUID(), enabled: true, mode: "failover", thresholdPercent: 90, members } }, "alice");
+      expect((await resolve(pool.id, randomUUID())).memberId).toBe(member.id);
+      expect(await service().accountCooldown(companyId, member.binding.connectionId, await identityFor(member.binding.grantId))).toBeNull();
+    } finally {
+      await db.update(companySecrets).set({ aiSessionEpoch: secret!.aiSessionEpoch }).where(eq(companySecrets.id, ref.secretId));
+      await db.delete(aiConnectionQuotaCooldowns).where(eq(aiConnectionQuotaCooldowns.companyId, companyId));
+    }
+  });
+  it("shares a cooldown across connections and grants using the same secret", async () => {
+    const [first] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, members[0]!.binding.grantId));
+    const [second] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, members[1]!.binding.grantId));
+    await db.update(connectionGrants).set({ credentialSecretRefs: first!.credentialSecretRefs }).where(eq(connectionGrants.id, second!.id));
+    try {
+      const pool = await service().save(BUILTIN_AI_FAILOVER_ROUTER_KEY, { companyId, config: { name: randomUUID(), enabled: true, mode: "failover", thresholdPercent: 90, members } }, "alice");
+      await service().recordQuotaCooldown(companyId, members[0]!.binding.connectionId, await identityFor(first!.id), new Date(Date.now() + 60_000));
+      await expect(resolve(pool.id, randomUUID())).rejects.toBeInstanceOf(AiConnectionPoolExhausted);
+    } finally {
+      await db.update(connectionGrants).set({ credentialSecretRefs: second!.credentialSecretRefs }).where(eq(connectionGrants.id, second!.id));
+      await db.delete(aiConnectionQuotaCooldowns).where(eq(aiConnectionQuotaCooldowns.companyId, companyId));
+    }
+  });
+  it("selects the first available account in a failover pool without probing a cooling account", async () => {
+    await instanceSettingsService(db).updateExperimental({ enableAiConnectionRouters: true });
+    try {
+      const pool = await service().save(BUILTIN_AI_FAILOVER_ROUTER_KEY, { companyId, config: { name: randomUUID(), enabled: true, mode: "failover", thresholdPercent: 90, members } }, "alice");
+      await service().recordQuotaCooldown(companyId, members[0]!.binding.connectionId, await identityFor(members[0]!.binding.grantId), new Date(Date.now() + 60_000));
+      const result = await resolve(pool.id, randomUUID());
+      expect(result.memberId).toBe(members[1]!.id);
+    } finally {
+      await instanceSettingsService(db).updateExperimental({ enableAiConnectionRouters: false });
+    }
+  });
+  it("does not assign the built-in failover policy to a plugin-owned pool", async () => {
+    await instanceSettingsService(db).updateExperimental({ enableAiConnectionRouters: true });
+    try { await expect(makePool({ mode: "failover" })).rejects.toThrow("requires the built-in pool"); }
+    finally { await instanceSettingsService(db).updateExperimental({ enableAiConnectionRouters: false }); }
+  });
+  it("does not reuse a pinned account for a session belonging to a different grant", async () => {
+    await instanceSettingsService(db).updateExperimental({ enableAiConnectionRouters: true });
+    try {
+      const pool = await makePool();
+      const taskKey = randomUUID();
+      const selected = await resolve(pool.id, taskKey);
+      if (selected.binding.mode === "responsible_user") throw new Error("Expected an explicit pool account");
+      const selectedGrantId = selected.binding.grantId;
+      const other = members.find(member => member.binding.grantId !== selectedGrantId)!;
+      await expect(resolve(pool.id, taskKey, { requireExisting: true, existingGrantId: other.binding.grantId }))
+        .rejects.toThrow("Reset this task session");
+    } finally {
+      await instanceSettingsService(db).updateExperimental({ enableAiConnectionRouters: false });
+    }
+  });
   it("defaults off and does not expose selectable pools before opt-in", async () => {
+    for (const pool of await service().list(companyId)) {
+      if (pool.pluginKey === BUILTIN_AI_FAILOVER_ROUTER_KEY) await service().remove(companyId, pool.id, pool.revision, "alice");
+    }
     expect((await instanceSettingsService(db).getExperimental()).enableAiConnectionRouters).toBe(false);
     expect((await service().catalog())[0]?.availability).toEqual({ available: false, reason: "Ask your instance operator to enable AI connection routing." });
     await expect(makePool()).rejects.toThrow("instance operator");
@@ -97,7 +216,7 @@ describe("durable, authorized connection routing", () => {
     try {
       expect((await service().catalog())[0]?.availability?.available).toBe(false);
       await db.update(plugins).set({ status: "uninstalled" }).where(eq(plugins.id, pluginId));
-      expect(await service().catalog()).toEqual([]);
+      expect((await service().catalog()).map(entry => entry.aiConnectionRouter?.pluginKey)).toEqual([BUILTIN_AI_FAILOVER_ROUTER_KEY]);
     } finally { await db.update(plugins).set({ status: "ready" }).where(eq(plugins.id, pluginId)); }
   });
   it("native connector removal retains durable pins and ordinary updates cannot bypass pool revisions", async () => {

@@ -27,7 +27,7 @@ export interface RunnerProviderLaunchRequirements {
   includeCollaborationModeInstructions: boolean;
   settings: Pick<CapabilityRunnerdCodexTransportOptions,
     "acpxAgent" | "acpxMode" | "acpxPermissionMode" | "acpxPermissionModePinned" |
-    "piThinkingLevel" | "claudeEffort" | "grokEffort" | "grokDisableWebSearch" | "managedProfile" | "agentCoreProfile" | "opencodePermissionMode" | "disableCodexWebSearch" | "disableCodexProjectInstructions">;
+    "piThinkingLevel" | "claudeEffort" | "grokEffort" | "grokDisableWebSearch" | "managedProfile" | "agentCoreProfile" | "opencodePermissionMode" | "disableCodexWebSearch" | "disableCodexProjectInstructions" | "builtinQuotaPoolCapability">;
   instructions: string;
   runtimeContext: NativeRuntimeContextSnapshot | null;
 }
@@ -51,6 +51,9 @@ export function runnerProviderLaunchRequirements(
   runtimeContext: NativeRuntimeContextSnapshot | null,
   instructions: string,
 ): RunnerProviderLaunchRequirements {
+  if (options.builtinQuotaPoolCapability &&
+      ((options.provider ?? "codex") !== "acpx" || options.builtinQuotaPoolCapability.runId !== identity.runId))
+    throw new Error("runner_quota_capability_binding_mismatch");
   const requirements: RunnerProviderLaunchRequirements = {
     schema: "paperclip.runner.launch-requirements.v1",
     identity, provider: options.provider ?? "codex",
@@ -60,6 +63,7 @@ export function runnerProviderLaunchRequirements(
       acpxAgent: options.acpxAgent, acpxMode: options.acpxMode,
       acpxPermissionMode: options.acpxPermissionMode,
       acpxPermissionModePinned: options.acpxPermissionModePinned,
+      builtinQuotaPoolCapability: options.builtinQuotaPoolCapability,
       piThinkingLevel: options.piThinkingLevel, claudeEffort: options.claudeEffort, grokEffort: options.grokEffort, grokDisableWebSearch: options.grokDisableWebSearch,
       managedProfile: options.managedProfile, agentCoreProfile: options.agentCoreProfile,
       opencodePermissionMode: options.opencodePermissionMode,
@@ -123,6 +127,7 @@ export function validatePreparedRunnerLaunch(
     || prepared.requirementsDigest !== runnerLaunchRequirementsDigest(requirements)
     || !prepared.provider || typeof prepared.provider !== "object") reject();
   const descriptor = prepared.provider;
+  if (JSON.stringify(descriptor.builtinQuotaPoolCapability ?? null) !== JSON.stringify(requirements.settings.builtinQuotaPoolCapability ?? null)) reject();
   if (!requirements.runtimeContext && descriptor.runtimeContext != null) reject();
   if (descriptor.kind !== requirements.provider || descriptor.model !== requirements.model) reject();
   if (requirements.provider === "codex" && (descriptor.approvalPolicy !== requirements.approvalPolicy
@@ -272,6 +277,7 @@ export function createRunnerProviderLaunch(
                 resolve(input.root, "acpx"),
               normalizedSessionId: identity.normalizedSessionId,
               runId: identity.runId,
+              ...(settings.builtinQuotaPoolCapability ? { builtinQuotaPoolCapability: settings.builtinQuotaPoolCapability } : {}),
               cwd: input.cwd,
               instructions: baseInstructions,
               providerPolicy: { readOnly: requirements.readOnly },

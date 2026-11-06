@@ -1,3 +1,5 @@
+import { reopenNativeQuotaPoolWaits } from "./native-runtime/native-quota-wake.js";
+import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { notifyLoginSessionChanged } from "./login-cleanup-notifications.js";
 import type { ConnectionManagementContext } from "./connection-management.js";
 import { WORKSPACE_RESTORE_LOCK_TIMEOUT_CODE } from "@paperclipai/adapter-utils/workspace-restore-merge";
@@ -622,7 +624,7 @@ export function aiConnectionService(db: Db) {
     )
       throw unprocessable("Reconnect cannot change providers");
     if (reconnect && !isDeepStrictEqual((reconnect.connection.config.ai as AiConnectionMetadata).routing, routing))
-      throw unprocessable("Reconnect must retain this connection’s routing. Create another connection to change its destination.");
+      throw unprocessable("Reconnect must retain this connectionâ€™s routing. Create another connection to change its destination.");
     if (
       reconnect &&
       ((reconnect.connection.config.ai as AiConnectionMetadata).method !==
@@ -635,6 +637,7 @@ export function aiConnectionService(db: Db) {
     const id = reconnect?.connection.id ?? randomUUID();
     const grantId = reconnect?.grant.id ?? randomUUID();
     const persist = () => withAccountHomeSecretMutationLock(undefined, companyId, () => db.transaction(async (tx) => {
+      await reopenNativeQuotaPoolWaits(tx as unknown as Db, { companyId, connectionId: id });
       await managementContext?.reauthorize();
       const secrets = secretService(tx);
       if (loginSession) {
@@ -706,6 +709,7 @@ export function aiConnectionService(db: Db) {
           : source?.name === `ai-${grantId}`;
         if (!privateSlot) secretId = undefined;
       }
+      await notifyDeliveryWork(tx, DELIVERY_QUEUES.executionReplacement, companyId);
       if (!verifiedCredential) { secretId = undefined; }
       else if (secretId)
         await secrets.rotate(
@@ -1070,6 +1074,7 @@ export function aiConnectionService(db: Db) {
     return withAccountHomeSecretMutationLock(undefined, input.companyId, async () => {
       let recovered = false;
       await db.transaction(async (tx) => {
+        await reopenNativeQuotaPoolWaits(tx as unknown as Db, { companyId: input.companyId, connectionId: input.attribution.connectionId });
         const { attribution } = input;
         const [grant] = await tx.select().from(connectionGrants).where(and(
           eq(connectionGrants.companyId, input.companyId),
@@ -1097,6 +1102,7 @@ export function aiConnectionService(db: Db) {
         // database commit. Save its working replacement instead of revoking it.
         recovered = await recoverQuotaCredentialInTransaction(tx as unknown as Db, { connection, grant }, value) !== null;
         if (recovered) return;
+        await notifyDeliveryWork(tx, DELIVERY_QUEUES.executionReplacement, input.companyId);
         await tx.update(connectionGrants).set({ status: "needs_reauthorization", updatedAt: new Date() })
           .where(eq(connectionGrants.id, grant.id));
         await tx.update(toolConnections).set({ healthStatus: "error", healthMessage: "Sign in again to restore this AI connection.", updatedAt: new Date() })

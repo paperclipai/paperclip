@@ -1,6 +1,6 @@
 import { notifyScheduledRetryCancellation } from "../scheduled-retry-cancellation-notifications.js";
 import { and, eq, sql } from "drizzle-orm";
-import { activityLog, budgetReservations, heartbeatRuns, nativeRunFinalizations, type Db } from "@paperclipai/db";
+import { activityLog, budgetReservations, heartbeatRuns, issues, nativeRunFinalizations, type Db } from "@paperclipai/db";
 import { badRequest, conflict } from "../../errors.js";
 import { nativeManualAdmissionHoldMatches } from "./native-runner-ownership.js";
 
@@ -73,6 +73,54 @@ export function assertCancellationRequest(result: unknown, requestId: string, al
     || (!allowUnclaimed && startup.cancellationRequestId !== requestId)) {
     throw conflict("Cancellation request conflicts with an earlier Stop");
   }
+}
+
+/** Serialize board Stop with quota replacement; no provider termination is inferred. */
+export async function fenceQuotaReplacementStop(db: Db, source: typeof heartbeatRuns.$inferSelect, requestId?: string, userId: string | null = null) {
+  if (source.runtimeMode !== "native" || source.status !== "failed" || !source.nativeIssueId) return null;
+  return db.transaction(async tx => {
+    const [issue] = await tx.select({ id: issues.id }).from(issues).where(and(
+      eq(issues.companyId, source.companyId), eq(issues.id, source.nativeIssueId!),
+    )).for("update");
+    if (!issue) return null;
+    const [owner] = await tx.select().from(nativeRunFinalizations).where(and(
+      eq(nativeRunFinalizations.runId, source.id), eq(nativeRunFinalizations.companyId, source.companyId),
+      eq(nativeRunFinalizations.issueId, source.nativeIssueId!),
+    )).for("update");
+    const [run] = await tx.select().from(heartbeatRuns).where(and(
+      eq(heartbeatRuns.id, source.id), eq(heartbeatRuns.companyId, source.companyId),
+    )).for("update");
+    if (!run || run.status !== "failed" || owner?.phase !== "terminal_failure"
+      || owner.failureCode !== "native_provider_usage_limit") return null;
+    const successorId = record(owner.failureDetail).successorRunId;
+    if (successorId !== undefined && successorId !== null) {
+      if (typeof successorId !== "string" || successorId === run.id) throw conflict("Invalid quota replacement lineage");
+      const [successor] = await tx.select().from(heartbeatRuns).where(and(
+        eq(heartbeatRuns.id, successorId), eq(heartbeatRuns.companyId, run.companyId),
+        eq(heartbeatRuns.agentId, run.agentId), eq(heartbeatRuns.retryOfRunId, run.id),
+      )).limit(1);
+      if (!successor) throw conflict("Quota replacement lineage changed");
+      return { kind: "successor" as const, run: successor };
+    }
+    const result = record(run.resultJson);
+    if (requestId) {
+      if (cancellationRequestId(requestId) !== requestId) throw badRequest("Invalid cancellationRequestId");
+      assertCancellationRequest(result, requestId, true);
+      const prior = record(result.startupCancellation);
+      const actor = record(prior.requestedBy);
+      if (prior.cancellationRequestId === requestId && (actor.type !== "board" || actor.userId !== userId)) {
+        throw conflict("Cancellation request belongs to another actor");
+      }
+    }
+    const requestedAt = new Date().toISOString();
+    const [fenced] = await tx.update(heartbeatRuns).set({ resultJson: { ...result,
+      executionCancellation: { state: "requested", requestedAt },
+      ...(requestId ? { startupCancellation: { requestedAt, beforeNativeSelection: false,
+        cancellationRequestId: requestId, requestedBy: { type: "board", userId } } }
+        : { startupCancellation: result.startupCancellation ?? { requestedAt, beforeNativeSelection: false } }),
+    } }).where(eq(heartbeatRuns.id, run.id)).returning();
+    return { kind: "fenced" as const, run: fenced! };
+  });
 }
 
 /** Evaluate only while both the run and coordinator are locked. A UUID alone

@@ -66,6 +66,34 @@ function deferral() {
   });
 }
 
+describe("quota failover evidence", () => {
+  const proven = {
+    errorFamily: "provider_quota", sourceStatus: "failed", stopRequested: false,
+    providerStopped: true, cleanupSettled: true, actionOutcomesSettled: true,
+    sessionSwitchSafe: true,
+  };
+
+  it("permits consideration only when every independent condition is proven", () => {
+    expect(extracted.evaluateQuotaFailoverEvidence(proven)).toEqual({ allowed: true });
+  });
+
+  it.each([
+    [{ errorFamily: "transient_upstream" }, "not_quota"],
+    [{ errorFamily: undefined }, "not_quota"],
+    [{ sourceStatus: "cancelled" }, "source_not_failed"],
+    [{ sourceStatus: "running" }, "source_not_failed"],
+    [{ stopRequested: true }, "stop_pending_or_unknown"],
+    [{ stopRequested: undefined }, "stop_pending_or_unknown"],
+    [{ providerStopped: false }, "provider_stop_unconfirmed"],
+    [{ providerStopped: undefined }, "provider_stop_unconfirmed"],
+    [{ cleanupSettled: undefined }, "cleanup_unsettled"],
+    [{ actionOutcomesSettled: undefined }, "action_outcomes_unsettled"],
+    [{ sessionSwitchSafe: undefined }, "session_switch_unconfirmed"],
+  ])("holds failover for %j", (override, reason) => {
+    expect(extracted.evaluateQuotaFailoverEvidence({ ...proven, ...override })).toEqual({ allowed: false, reason });
+  });
+});
+
 describe("heartbeat retry module callbacks", () => {
   it("preserves legacy helper and error-class identity", () => {
     expect(legacy.computeBoundedTransientHeartbeatRetrySchedule).toBe(extracted.computeBoundedTransientHeartbeatRetrySchedule);

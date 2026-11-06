@@ -7,6 +7,7 @@ use paperclip_runner_core::acpx_provider_session::{
 };
 use paperclip_runner_core::acpx_sidecar_transport::AcpxSidecarTransportConfig;
 use paperclip_runner_core::generated_acpx_sidecar_contract::GeneratedAcpxSidecarCommand as GoalCommand;
+use paperclip_runner_core::local_runner::LocalRunnerError;
 use paperclip_runner_core::provider_bridge::{
     authorized_tool_catalog_digest, AuthorizedTool, AuthorizedToolSet,
 };
@@ -89,6 +90,95 @@ fn start_error(config: &AcpxProviderSessionConfig) -> String {
         }
         Err(error) => error.to_string(),
     }
+}
+
+#[test]
+fn failed_preparation_registration_never_commits_the_provider() {
+    let journal = std::env::temp_dir().join(format!("acpx-prepare-{}.jsonl", uuid::Uuid::new_v4()));
+    let mut input = config("admission-tool");
+    input.transport.args.extend([
+        "--journal".to_owned(),
+        journal.to_string_lossy().into_owned(),
+    ]);
+    let mut observed = None;
+    let result = AcpxProviderSession::start_with_preparation(&input, &mut |preparation| {
+        observed = Some(preparation.clone());
+        Err(LocalRunnerError::invalid("durable registration failed"))
+    });
+    assert!(result.is_err());
+    let preparation = observed.expect("preparation was sent before registration");
+    assert_eq!(preparation.normalized_session_id, "session-1");
+    assert_eq!(
+        preparation.provider_lifetime_fence_candidates,
+        [60_001, 60_002, 60_003]
+    );
+    let requests = std::fs::read_to_string(&journal).unwrap();
+    assert!(requests.contains("session.prepare"));
+    assert!(!requests.contains("session.commit"));
+    let _ = std::fs::remove_file(journal);
+}
+
+#[test]
+fn preparation_registration_finishes_before_commit() {
+    use std::io::Write;
+    let id = uuid::Uuid::new_v4();
+    let journal = std::env::temp_dir().join(format!("acpx-prepare-{id}.jsonl"));
+    let receipt = std::env::temp_dir().join(format!("acpx-prepare-{id}.json"));
+    let mut input = config("admission-tool");
+    input.transport.args.extend([
+        "--journal".to_owned(),
+        journal.to_string_lossy().into_owned(),
+    ]);
+    let mut session = AcpxProviderSession::start_with_preparation(&input, &mut |preparation| {
+        let requests = std::fs::read_to_string(&journal)
+            .map_err(|error| LocalRunnerError::invalid(error.to_string()))?;
+        if requests.contains("session.commit") {
+            return Err(LocalRunnerError::invalid("provider committed early"));
+        }
+        let mut file = std::fs::File::create(&receipt)
+            .map_err(|error| LocalRunnerError::invalid(error.to_string()))?;
+        file.write_all(serde_json::to_string(preparation).unwrap().as_bytes())
+            .map_err(|error| LocalRunnerError::invalid(error.to_string()))?;
+        file.sync_all()
+            .map_err(|error| LocalRunnerError::invalid(error.to_string()))?;
+        Ok(())
+    })
+    .unwrap();
+    assert!(receipt.exists());
+    assert!(std::fs::read_to_string(&journal)
+        .unwrap()
+        .contains("session.commit"));
+    session.shutdown("preparation test complete").unwrap();
+    let _ = std::fs::remove_file(journal);
+    let _ = std::fs::remove_file(receipt);
+}
+
+#[cfg(unix)]
+#[test]
+fn startup_quota_after_provider_spawn_never_sends_a_turn() {
+    let journal =
+        std::env::temp_dir().join(format!("acpx-startup-quota-{}.jsonl", uuid::Uuid::new_v4()));
+    let mut input = config("admission-startup-quota");
+    input.transport.args.extend([
+        "--journal".to_owned(),
+        journal.to_string_lossy().into_owned(),
+    ]);
+    let error = match AcpxProviderSession::start_with_preparation(&input, &mut |_| Ok(())) {
+        Ok(mut session) => {
+            let _ = session.shutdown("unexpected");
+            panic!("startup quota was not rejected");
+        }
+        Err(error) => error,
+    };
+    assert_eq!(
+        error.provider_failure().unwrap()["category"],
+        "quota_exhausted"
+    );
+    let journal_contents = std::fs::read_to_string(&journal).unwrap();
+    assert!(journal_contents.contains("providerSpawned"));
+    assert!(journal_contents.contains("session.commit"));
+    assert!(!journal_contents.contains("turn.start"));
+    let _ = std::fs::remove_file(journal);
 }
 
 #[test]

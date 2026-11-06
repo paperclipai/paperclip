@@ -8,6 +8,8 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { and, eq } from "drizzle-orm";
 import { agents, agentConfigRevisions, activityLog, builtInManagedResources, companies, companyMemberships, connectionGrants, createDb, environments, toolConnections, toolConnectionInstalls } from "@paperclipai/db";
 import { agentRoutes } from "../routes/agents.js";
+import { aiConnectionRouterService } from "../services/ai-connection-router.js";
+import { BUILTIN_AI_FAILOVER_ROUTER_KEY } from "@paperclipai/shared";
 import { aiConnectionService } from "../services/ai-connections.js";
 import * as environmentTests from "../services/agent-environment-test.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
@@ -69,6 +71,18 @@ describePostgres("agent configuration save latency", () => {
   afterAll(async () => {
     await database?.cleanup(); vi.unstubAllEnvs();
     if (home) await rm(home, { recursive: true, force: true });
+  });
+
+  it("rejects the built-in pool for a legacy adapter with migration guidance", async () => {
+    const member = { id: randomUUID(), binding: { mode: "delegated" as const, provider: "openai" as const, method: "api_key" as const, ...account },
+      profile: { provider: "codex" as const, model: "gpt-5.6-sol" } };
+    const pool = await aiConnectionRouterService(db).save(BUILTIN_AI_FAILOVER_ROUTER_KEY, { companyId: agent.companyId,
+      config: { name: "Failover", enabled: true, mode: "failover", thresholdPercent: 90, members: [member] } }, userId);
+    await db.update(agents).set({ adapterType: "claude_local", adapterConfig: { model: "claude-sonnet-5" } }).where(eq(agents.id, agent.id));
+    const response = await request(app).patch(`/api/agents/${agent.id}`).send({ runtimeConfig: { aiConnection: { mode: "router", connectionId: pool.id } } });
+    expect(response.status, JSON.stringify(response.body)).toBe(422);
+    expect(response.body.error).toMatch(/migrate this agent to Paperclip Runner/i);
+    expect((await readAgent()).runtimeConfig.aiConnection).toBeUndefined();
   });
 
   it("saves an installed healthy account without allocating a computer or sending a prompt", async () => {

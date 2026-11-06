@@ -900,4 +900,6 @@ The agent performs authorized setup, reuses saved accounts and drafts, and hands
 
 Authorized policy administration includes user-requested changes that loosen the acting agent’s own tool controls. These writes remain bounded by management grants, resource scope and the responsible user’s current authority; they do not need an additional approval solely because the agent is a target. Subsequent tool calls obey the resulting policy. Agents cannot approve their own governed action requests or edit their own principal permission grants.
 
+An agent may use an ordered pool of authorized provider accounts to continue after a confirmed allowance limit. The control plane retains account-specific availability and session identity, and may start a successor only after establishing the execution and action boundaries needed for safe continuation. Unknown outcomes remain visible for recovery.
+
 The implementation, operation inventory, permission matrix and fixture qualification are recorded in [Agent API parity for connection configuration](plans/2026-10-13-connection-api-parity.md). Provider fixtures establish API behavior; they do not constitute live provider setup or an empirical agent-success claim.

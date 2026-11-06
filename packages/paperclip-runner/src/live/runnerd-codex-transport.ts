@@ -1261,6 +1261,8 @@ export interface CapabilityRunnerdCodexTransportOptions extends RunnerExecutionD
   recoveryLaunch?: { requirements: RunnerProviderLaunchRequirements };
   opencodePermissionMode?: NativeOpenCodePermissionMode;
   acpxAgent?: QualifiedAcpxAgent;
+  /** Host-authorized, run-bound opt-in for the built-in quota pool. */
+  builtinQuotaPoolCapability?: import("../contracts/native-execution.js").BuiltinQuotaPoolCapability;
   /** Explicit evaluation-only candidate selection, never derived from persisted session input. */
   acpxCandidateProfile?: "pi" | "cursor" | "copilot" | "kimi";
   /** Server/operator authority; never derived from persisted agent or provider input. */

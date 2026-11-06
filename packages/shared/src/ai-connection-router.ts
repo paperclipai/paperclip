@@ -2,6 +2,8 @@ import { z } from "zod";
 import { aiConnectionBindingSchema, type AiConnectionBinding } from "./ai-connections.js";
 import type { AiConnectionUsage } from "./ai-connection-usage.js";
 
+export const BUILTIN_AI_FAILOVER_ROUTER_KEY = "paperclip.builtin.ordered-failover";
+
 export const aiConnectionRouterBindingSchema = z.object({
   mode: z.literal("router"),
   connectionId: z.string().uuid(),
@@ -22,7 +24,7 @@ export const aiConnectionPoolMemberSchema = z.object({
 export const aiConnectionPoolConfigSchema = z.object({
   name: z.string().trim().min(1).max(160),
   enabled: z.boolean().default(false),
-  mode: z.enum(["round_robin", "usage_aware"]).default("round_robin"),
+  mode: z.enum(["round_robin", "usage_aware", "failover"]).default("round_robin"),
   thresholdPercent: z.number().int().min(1).max(100).default(90),
   members: z.array(aiConnectionPoolMemberSchema).min(1).max(100),
 }).strict().superRefine((v, ctx) => {

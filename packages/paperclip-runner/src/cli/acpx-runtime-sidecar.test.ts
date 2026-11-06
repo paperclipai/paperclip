@@ -126,7 +126,7 @@ describe("qualified ACPX runtime sidecar", () => {
     const baseHost = new URL("../test-support/acpx-blocked-output-host.mjs", import.meta.url).href;
     const capability = { version: 1, controlMethod: "_session/goal", actions: ["set", "clear"] as Array<"set" | "clear"> };
     const goal = { objective: mode === "oversized" ? "x".repeat(ACPX_SIDECAR_MAX_FRAME_BYTES) : "Retain the completed goal",
-      status: "paused" as const, iterations: 1, lastReason: "Unicode é🙂, quote \" and slash \\ and newline\n" };
+      status: "paused" as const, iterations: 1, lastReason: "Unicode Ã©ðŸ™‚, quote \" and slash \\ and newline\n" };
     if (mode.startsWith("payload-")) {
       const bytes = Buffer.byteLength(JSON.stringify({status:"completed", goalAtTerminal:{
         ...acpxGoalProjection(capability, goal, false), providerRevision:1 }}));
@@ -1465,6 +1465,15 @@ describe("qualified ACPX runtime sidecar", () => {
       error: { message: "ACPX working directory must be a non-root directory" } });
   });
 
+  it("rejects a commit without an owned provider preparation", async () => {
+    const sidecar = startSidecar();
+    sidecar.write(initializeRequest(1, "claude", "claude-sonnet-5"));
+    expect(await sidecar.next(frame => frame.id === 1, 20_000)).toMatchObject({ ok: true });
+    sidecar.write({ protocolVersion: ACPX_SIDECAR_PROTOCOL_VERSION, id: 2, command: "session.commit", params: { preparationId: "missing" } });
+    expect(await sidecar.next(frame => frame.id === 2)).toMatchObject({ ok: false,
+      error: { message: "ACPX provider preparation does not match" } });
+  }, 30_000);
+
   it.each(["off", "low", "high", "max"])(
     "accepts Pi thinking level %s through the actual session.open dispatcher",
     async (piThinkingLevel) => {
@@ -1665,8 +1674,8 @@ class SidecarProcess {
   constructor(options: {loader?:string;environment?:Record<string,string>} = {}) {
     this.#child = spawn(
       options.loader ? process.execPath : fileURLToPath(new URL("../../node_modules/.bin/tsx", import.meta.url)),
-      [...(options.loader ? ["--import","tsx","--import",options.loader] : []), fileURLToPath(new URL("./acpx-runtime-sidecar.ts", import.meta.url))],
-      { stdio: ["pipe", "pipe", "pipe"], env: { PATH: process.env.PATH, LANG: "C.UTF-8", ...options.environment } },
+      [...(options.loader ? ["--import", "tsx", "--import", options.loader] : []), fileURLToPath(new URL("./acpx-runtime-sidecar.ts", import.meta.url))],
+      { stdio: ["pipe", "pipe", "pipe"], env: { PATH: process.env.PATH, LANG: "C.UTF-8", ...(process.env.NODE_PATH ? { NODE_PATH: process.env.NODE_PATH } : {}), ...(process.env.PAPERCLIP_TEST_SIDECAR_ESBUILD ? { ESBUILD_BINARY_PATH: process.env.PAPERCLIP_TEST_SIDECAR_ESBUILD } : {}), ...options.environment } },
     );
     let stdout = "";
     this.#child.stdout.setEncoding("utf8");
@@ -1702,8 +1711,9 @@ class SidecarProcess {
 
   async next(
     predicate: (frame: Record<string, unknown>) => boolean,
+    timeoutMs = 5_000,
   ): Promise<Record<string, unknown>> {
-    const deadline = Date.now() + 5_000;
+    const deadline = Date.now() + timeoutMs;
     for (;;) {
       const index = this.#frames.findIndex(predicate);
       if (index >= 0) return this.#frames.splice(index, 1)[0]!;

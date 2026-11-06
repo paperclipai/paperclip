@@ -17,7 +17,7 @@ import { mkdtemp, realpath, rm, access, readFile, writeFile, stat } from "node:f
 import os from "node:os";
 import path from "node:path";
 import { and, eq, sql } from "drizzle-orm";
-import { createDb, companies, agents, agentTaskSessions, heartbeatRuns, companyMemberships, connectionGrants, toolApplications, connectionGrantDelegations, connectionGrantMembers, toolConnections, toolConnectionInstalls, aiConnectionDefaults, aiProviderDefaults, adapterAuthSessions, environments, plugins, issues, issueThreadInteractions, issueRecoveryActions, connectionIntentDeliveries, agentWakeupRequests, companySecrets, companySecretVersions, userSecretDefinitions, principalPermissionGrants } from "@paperclipai/db";
+import { createDb, companies, agents, agentTaskSessions, heartbeatRuns, nativeRunFinalizations, companyMemberships, connectionGrants, toolApplications, connectionGrantDelegations, connectionGrantMembers, toolConnections, toolConnectionInstalls, aiConnectionDefaults, aiProviderDefaults, adapterAuthSessions, environments, plugins, issues, issueThreadInteractions, issueRecoveryActions, connectionIntentDeliveries, agentWakeupRequests, companySecrets, companySecretVersions, userSecretDefinitions, principalPermissionGrants } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "@paperclipai/db/test-embedded-postgres";
 import { fetchCompanyQuotaWindows } from "../services/quota-windows.js";
 import { quotaCredentialRecoveryPath, quotaCredentialRecovery, quotaCredentialHash } from "../services/quota-credential-recovery.js";
@@ -78,6 +78,27 @@ beforeAll(async () => {
 afterAll(async () => { await database?.cleanup(); vi.unstubAllEnvs(); if (home) await rm(home, { recursive: true, force: true }); });
 
 describe("managed AI connections", () => {
+  it("signals replacement work when an AI account reconnects", async () => {
+    const saved = await create("alice", "Wake on reconnect");
+    const issueId = randomUUID(), runId = randomUUID(), deadline = new Date(Date.now() + 60_000);
+    await db.insert(issues).values({ id: issueId, companyId, title: "Quota wait", assigneeAgentId: agentId });
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, nativeIssueId: issueId, status: "failed" });
+    await db.insert(nativeRunFinalizations).values({ runId, companyId, issueId, phase: "terminal_failure", failureCode: "native_provider_usage_limit", nextAttemptAt: deadline });
+    const wake = vi.fn();
+    const unsubscribe = subscribeDeliveryWork(db, DELIVERY_QUEUES.executionReplacement, wake);
+    try {
+      await service.save(companyId, "alice", { provider: "anthropic", method: "api_key", ownership: "personal", name: "Wake on reconnect", apiKey: "fixture", agentIds: [], allAgents: true, connectionId: saved.connectionId }, "new-fixture");
+      expect(wake).toHaveBeenCalled();
+      expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, runId)))[0]?.nextAttemptAt).toBeNull();
+      await db.update(nativeRunFinalizations).set({ nextAttemptAt: deadline }).where(eq(nativeRunFinalizations.runId, runId));
+      await toolAccessService(db).updateConnection(saved.connectionId, { enabled: false });
+      expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, runId)))[0]?.nextAttemptAt).toBeNull();
+      await db.update(nativeRunFinalizations).set({ nextAttemptAt: deadline }).where(eq(nativeRunFinalizations.runId, runId));
+      const [grant] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, saved.grantId));
+      await secretService(db).rotate(grant!.credentialSecretRefs[0]!.secretId, { value: "generic-rotation" }, { userId: "alice" });
+      expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, runId)))[0]?.nextAttemptAt).toBeNull();
+    } finally { unsubscribe(); }
+  });
   it.each([
     { provider: "openrouter", envKey: "OPENROUTER_API_KEY", routed: false },
     { provider: "openrouter", envKey: "OPENROUTER_API_KEY", routed: true },

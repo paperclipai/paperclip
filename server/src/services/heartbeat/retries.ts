@@ -147,6 +147,27 @@ export const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS =
 
 const PROVIDER_QUOTA_RETRY_DELAYS_MS = [30_000, 60_000, 120_000, 60_000] as const;
 
+/** A policy decision only: callers must establish and recheck evidence under
+ * the same durable claim used to create the successor and transition its pin. */
+export function evaluateQuotaFailoverEvidence(input: {
+  errorFamily: string | null | undefined;
+  sourceStatus: string;
+  stopRequested: boolean | undefined;
+  providerStopped: boolean | undefined;
+  cleanupSettled: boolean | undefined;
+  actionOutcomesSettled: boolean | undefined;
+  sessionSwitchSafe: boolean | undefined;
+}): { allowed: true } | { allowed: false; reason: string } {
+  if (input.errorFamily !== "provider_quota") return { allowed: false, reason: "not_quota" };
+  if (input.sourceStatus !== "failed") return { allowed: false, reason: "source_not_failed" };
+  if (input.stopRequested !== false) return { allowed: false, reason: "stop_pending_or_unknown" };
+  if (input.providerStopped !== true) return { allowed: false, reason: "provider_stop_unconfirmed" };
+  if (input.cleanupSettled !== true) return { allowed: false, reason: "cleanup_unsettled" };
+  if (input.actionOutcomesSettled !== true) return { allowed: false, reason: "action_outcomes_unsettled" };
+  if (input.sessionSwitchSafe !== true) return { allowed: false, reason: "session_switch_unconfirmed" };
+  return { allowed: true };
+}
+
 export function failedRunRetryBudgetSpent(run: Parameters<typeof executionFailureRetryCount>[0] & { errorCode?: string | null; resultJson?: Record<string, unknown> | null }): boolean {
   return run.errorCode === RUNNER_REVISION_MISMATCH_CODE
     ? executionRetryAttemptCount(run, RUNNER_REVISION_WAIT_RETRY_REASON) >= RUNNER_REVISION_MISMATCH_RETRY.maxAttempts

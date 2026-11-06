@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowDown, ArrowUp, ExternalLink, Loader2, MoreHorizontal, Plus, Search, Trash2, X } from "lucide-react";
-import { aiConnectionRouterAppDefinition, type AiConnectionPool, type AiConnectionPoolConfig, type AiConnectionPoolMember, type AiManagedConnectionSummary, type ToolConnection } from "@paperclipai/shared";
+import { BUILTIN_AI_FAILOVER_ROUTER_KEY, aiConnectionRouterAppDefinition, type AiConnectionPool, type AiConnectionPoolConfig, type AiConnectionPoolMember, type AiManagedConnectionSummary, type ToolConnection } from "@paperclipai/shared";
 import { aiConnectionsApi } from "@/api/ai-connections";
 import { aiConnectionPoolsApi, type PoolInspection } from "@/api/ai-connection-pools";
 import { describeError } from "@/api/errors";
@@ -20,6 +20,7 @@ import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { AgentIdentity } from "@/components/AgentIdentity";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
+import { NativeSelect } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
@@ -53,7 +54,7 @@ function PoolConnector({ companyId, pluginKey, connection }: { companyId: string
   const poolsView = useQueryView(poolsQuery);
   const galleryView = useQueryView(galleryQuery);
   const [editing, setEditing] = useState<AiConnectionPool>();
-  const [draft, setDraft] = useState(emptyConfig);
+  const [draft, setDraft] = useState<AiConnectionPoolConfig>(() => ({ ...emptyConfig(), ...(pluginKey === BUILTIN_AI_FAILOVER_ROUTER_KEY ? { mode: "failover" as const } : {}) }));
   const [step, setStep] = useState(0);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [pickerMembers, setPickerMembers] = useState<AiConnectionPoolMember[]>([]);
@@ -147,7 +148,7 @@ function PoolConnector({ companyId, pluginKey, connection }: { companyId: string
     {connection ? <div className="flex items-start justify-between gap-4">
       <AppDetailHeader appName={draft.name} connection={connection} logoEntry={logoEntry} brandKey={logoEntry.slug} allowRemoteLogo canRename={!disabled} status={editing?.enabled ? { label: "Connected", tone: "connected" } : { label: "Paused", tone: "paused" }} actionCount={null} renaming={renaming} nameDraft={nameDraft} renamePending={disabled} onNameDraftChange={setNameDraft} onRenameStart={() => { if (!disabled) { setNameDraft(draft.name); setRenaming(true); } }} onRenameCancel={() => setRenaming(false)} onRenameSubmit={value => void save({ ...draft, name: value })} />
       <DropdownMenu><DropdownMenuTrigger asChild><Button variant="ghost" size="icon-sm" aria-label="Manage connection pool"><MoreHorizontal className="size-4" /></Button></DropdownMenuTrigger><DropdownMenuContent align="end"><DropdownMenuItem variant="destructive" disabled={busy || !canManage} onSelect={() => { setError(""); setRemoving(true); }}><Trash2 />Remove connection</DropdownMenuItem></DropdownMenuContent></DropdownMenu>
-    </div> : <StepHeader title="Add a connection pool" subtitle={step === 0 ? "Choose connections you already use." : "New tasks rotate in this order."} step="connect" activeIndex={step} labels={["Connections", "Order"]} appIdentity={{ name, logoUrl: logoEntry.branding.logoUrl }} />}
+    </div> : <StepHeader title="Add a connection pool" subtitle={step === 0 ? "Choose connections you already use." : "Choose how to use these connections and arrange their order."} step="connect" activeIndex={step} labels={["Connections", "Order"]} appIdentity={{ name, logoUrl: logoEntry.branding.logoUrl }} />}
     {unavailable && <p role="alert" className="text-sm text-destructive">{entry?.availability?.reason ?? "Enable the connection pool plugin in Plugins."}</p>}
     {!canManage && <p role="alert" className="text-sm text-muted-foreground">A connection manager can edit this pool.</p>}
     {error && !removing && <p role="alert" className="text-sm text-destructive">{error}</p>}
@@ -155,11 +156,18 @@ function PoolConnector({ companyId, pluginKey, connection }: { companyId: string
       {connection && <div className="flex items-center justify-between gap-3"><h2 className="text-sm font-semibold">Connections</h2><Button variant="outline" size="sm" disabled={disabled} onClick={() => { setPickerMembers(draft.members); setPickerOpen(true); }}><Plus className="size-4" />Add connections</Button></div>}
       {orderedMembers}
       <p className="text-xs text-muted-foreground">{connection ? "Order changes apply to new tasks." : "Created paused. Enable it when you’re ready."}</p>
+      {pluginKey !== BUILTIN_AI_FAILOVER_ROUTER_KEY && <label className="block space-y-2 text-sm font-medium">Routing mode
+        <NativeSelect aria-label="Routing mode" value={draft.mode} disabled={disabled} onChange={event => setDraft({ ...draft, mode: event.target.value as AiConnectionPoolConfig["mode"] })}>
+          <option value="round_robin">Rotate connections</option>
+          <option value="usage_aware">Rotate and skip connections near their usage limit</option>
+        </NativeSelect>
+      </label>}
+      <p className="text-xs text-muted-foreground">{draft.mode === "failover" ? "Use the first available connection in this order, then fall back to the next." : draft.mode === "usage_aware" ? "Rotate connections, skipping those near their usage limit." : "Rotate new tasks through connections in this order."}</p>
+      {draft.mode === "failover" && <p className="text-xs text-muted-foreground">Backup accounts may have their own usage limits and charges.</p>}
+      {draft.mode === "usage_aware" && <label className="flex items-center gap-3 text-sm">Skip at<Input className="w-20" aria-label="Usage threshold" type="number" min={1} max={100} step={1} value={draft.thresholdPercent} onChange={event => setDraft({ ...draft, thresholdPercent: Number(event.target.value) })} />% usage</label>}
       {connection && <>
         <label className="flex items-center gap-2 text-sm"><Checkbox checked={draft.enabled} disabled={disabled} onCheckedChange={checked => setDraft({ ...draft, enabled: checked === true })} />Enable this pool</label>
         <details className="rounded-lg border border-border"><summary className="cursor-pointer px-4 py-3 text-sm font-medium">Advanced</summary><fieldset disabled={disabled} className="space-y-4 border-t border-border p-4">
-          <label className="flex items-center gap-2 text-sm"><Checkbox checked={draft.mode === "usage_aware"} onCheckedChange={checked => setDraft({ ...draft, mode: checked ? "usage_aware" : "round_robin" })} />Skip connections near their usage limit</label>
-          {draft.mode === "usage_aware" && <label className="flex items-center gap-3 text-sm">Skip at<Input className="w-20" aria-label="Usage threshold" type="number" min={1} max={100} step={1} value={draft.thresholdPercent} onChange={event => setDraft({ ...draft, thresholdPercent: Number(event.target.value) })} />% usage</label>}
           {draft.members.map((member, index) => <div key={member.id} className="space-y-2"><p className="text-sm font-medium">{accounts.find(account => account.id === member.binding.connectionId)?.name ?? "Connection unavailable"}</p><div className="grid gap-3 sm:grid-cols-2"><label className="space-y-1 text-xs text-muted-foreground">Model<Input aria-label={`Model for connection ${index + 1}`} value={member.profile.model} onChange={event => setDraft({ ...draft, members: draft.members.map(row => row.id === member.id ? { ...row, profile: { ...row.profile, model: event.target.value } } : row) })} /></label><label className="space-y-1 text-xs text-muted-foreground">Effort (optional)<Input aria-label={`Effort for connection ${index + 1}`} value={member.profile.effort ?? ""} onChange={event => { const { effort: _old, ...profile } = member.profile; setDraft({ ...draft, members: draft.members.map(row => row.id === member.id ? { ...row, profile: { ...profile, ...(event.target.value.trim() ? { effort: event.target.value.trim() } : {}) } } : row) }); }} /></label></div></div>)}
         </fieldset></details>
         <section aria-labelledby="pool-used-by" className="space-y-3">

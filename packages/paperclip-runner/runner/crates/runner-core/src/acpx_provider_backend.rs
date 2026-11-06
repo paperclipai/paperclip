@@ -17,9 +17,9 @@ use sha2::{Digest, Sha256};
 
 use crate::acpx_provider_capabilities::{run_attachment_policy, RunAttachmentPolicy};
 use crate::acpx_provider_session::{
-    goal_is_dormant, AcpxPermissionMode, AcpxProviderRuntimePolicy, AcpxProviderSession,
-    AcpxProviderSessionConfig, AcpxProviderSessionIdentity, AcpxTurnControlCapabilities,
-    PiThinkingLevel,
+    goal_is_dormant, AcpxPermissionMode, AcpxProviderPreparation, AcpxProviderRuntimePolicy,
+    AcpxProviderSession, AcpxProviderSessionConfig, AcpxProviderSessionIdentity,
+    AcpxTurnControlCapabilities, PiThinkingLevel,
 };
 use crate::acpx_sidecar_transport::AcpxSidecarTransportConfig;
 #[cfg(test)]
@@ -29,7 +29,11 @@ use crate::durable::{
     AcpxLaunchProfile, Command, CommandExecution, CommandExecutor, DurableRunnerConfig,
     DurableRunnerError, EventPriority, PolledEvent, PROVIDER_STATE_INCOMPATIBLE,
 };
-use crate::generated_acpx_sidecar_contract::GeneratedAcpxSidecarCommand;
+#[cfg(test)]
+use crate::generated_acpx_sidecar_contract::GENERATED_ACPX_PROVIDER_PREPARATION_SCHEMA;
+use crate::generated_acpx_sidecar_contract::{
+    GeneratedAcpxSidecarCommand, GENERATED_ACPX_QUOTA_CAPABILITY_SCHEMA,
+};
 use crate::process_supervisor::{VerifiedProcessArgument, VerifiedProcessLaunch};
 use crate::provider_bridge::{
     authorized_tool_catalog_digest, AuthorizedToolSet, ToolResult, TOOL_SET_SCHEMA,
@@ -158,6 +162,8 @@ struct AcpxProviderDescriptor {
     runtime_directory: PathBuf,
     normalized_session_id: String,
     run_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    builtin_quota_pool_capability: Option<BuiltinQuotaPoolCapability>,
     cwd: String,
     #[serde(default)]
     instructions: String,
@@ -177,6 +183,19 @@ struct AcpxProviderDescriptor {
     provider_policy: Option<AcpxProviderRuntimePolicy>,
     #[serde(default)]
     runtime_context: Value,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct BuiltinQuotaPoolCapability {
+    schema: String,
+    company_id: String,
+    agent_id: String,
+    run_id: String,
+    issue_id: String,
+    pool_id: String,
+    task_key: String,
+    member_id: String,
 }
 
 // Only controller-authenticated run grants move between provider lifetimes.
@@ -297,6 +316,28 @@ impl AcpxProviderDescriptor {
         &self,
         context: &AcpxEventProjectionContext,
     ) -> Result<(), DurableRunnerError> {
+        if let Some(capability) = &self.builtin_quota_pool_capability {
+            if capability.schema != GENERATED_ACPX_QUOTA_CAPABILITY_SCHEMA
+                || capability.run_id != self.run_id
+                || [
+                    &capability.company_id,
+                    &capability.agent_id,
+                    &capability.run_id,
+                    &capability.issue_id,
+                    &capability.pool_id,
+                    &capability.task_key,
+                    &capability.member_id,
+                ]
+                .iter()
+                .any(|value| {
+                    value.is_empty() || value.len() > 240 || value.chars().any(char::is_control)
+                })
+            {
+                return Err(DurableRunnerError::invalid(
+                    "ACPX quota capability does not match the run",
+                ));
+            }
+        }
         let expected = acpx_release_profile(&self.agent).ok_or_else(|| {
             DurableRunnerError::invalid("ACPX agent must name a known immutable profile")
         })?;
@@ -581,6 +622,8 @@ struct AcpxDurableState {
     attempted_turn_controls: HashSet<String>,
     #[serde(default)]
     provider_exit_unconfirmed: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    bootstrap_preparation: Option<AcpxProviderPreparation>,
     #[serde(default)]
     semantic_result: Option<Value>,
     #[serde(default)]
@@ -615,6 +658,7 @@ impl AcpxDurableState {
             active_turn_id: None,
             attempted_turn_controls: HashSet::new(),
             provider_exit_unconfirmed: false,
+            bootstrap_preparation: None,
             semantic_result: None,
             goal_projection: Value::Null,
             turn_controls: AcpxTurnControlCapabilities::default(),
@@ -686,6 +730,13 @@ impl AcpxDurableState {
             || (self.provider_exit_unconfirmed
                 && (!matches!(self.lifecycle.as_str(), "prepared" | "closed")
                     || self.identity.is_none()))
+            || self
+                .bootstrap_preparation
+                .as_ref()
+                .is_some_and(|preparation| {
+                    self.descriptor.builtin_quota_pool_capability.is_none()
+                        || !preparation.matches_session(&self.descriptor.normalized_session_id)
+                })
             || self
                 .semantic_result
                 .as_ref()
@@ -1160,6 +1211,7 @@ impl AcpxCommandExecutor {
             .as_mut()
             .expect("ACPX state remains available during recovery");
         state.lifecycle = "session_open".to_owned();
+        state.bootstrap_preparation = None;
         state.turn_controls = turn_controls;
         state.push(NormalizedProviderEvent {
             event_type: "session.resumed".to_owned(),
@@ -1171,18 +1223,47 @@ impl AcpxCommandExecutor {
         self.save_state()
     }
 
-    fn start_session(&self, recovering: bool) -> Result<AcpxProviderSession, DurableRunnerError> {
+    fn start_session(
+        &mut self,
+        recovering: bool,
+    ) -> Result<AcpxProviderSession, DurableRunnerError> {
         let state = self
             .state
             .as_ref()
-            .ok_or_else(|| DurableRunnerError::invalid("ACPX provider has not been prepared"))?;
+            .ok_or_else(|| DurableRunnerError::invalid("ACPX provider has not been prepared"))?
+            .clone();
+        if state.bootstrap_preparation.is_some() {
+            return Err(DurableRunnerError::invalid(
+                "ACPX bootstrap lifetime cleanup is not yet proven",
+            ));
+        }
         let expected = recovering.then(|| state.identity.clone()).flatten();
         let config = state.descriptor.session_config(
             state.tool_set.clone(),
             expected,
             self.launch_profile.as_ref(),
         )?;
-        let mut session = AcpxProviderSession::start(&config).map_err(|error| {
+        let started = if state.descriptor.builtin_quota_pool_capability.is_some() {
+            AcpxProviderSession::start_with_preparation(&config, &mut |preparation| {
+                let current = self.state.as_mut().ok_or_else(|| {
+                    crate::local_runner::LocalRunnerError::invalid(
+                        "ACPX provider state is unavailable",
+                    )
+                })?;
+                if current.bootstrap_preparation.is_some() {
+                    return Err(crate::local_runner::LocalRunnerError::invalid(
+                        "ACPX bootstrap preparation is already retained",
+                    ));
+                }
+                current.bootstrap_preparation = Some(preparation.clone());
+                self.save_state().map_err(|error| {
+                    crate::local_runner::LocalRunnerError::invalid(error.to_string())
+                })
+            })
+        } else {
+            AcpxProviderSession::start(&config)
+        };
+        let mut session = started.map_err(|error| {
             DurableRunnerError::invalid(format!("failed to start ACPX provider: {error}"))
                 .with_provider_failure(error.provider_failure())
         })?;
@@ -1446,6 +1527,10 @@ impl AcpxCommandExecutor {
             .ok_or_else(|| DurableRunnerError::invalid("ACPX provider has not been prepared"))?;
         let mut durable_descriptor = descriptor.clone();
         durable_descriptor.run_id = state.descriptor.run_id.clone();
+        // This capability is scoped to the authenticated attachment, not the
+        // reusable provider session. Each new descriptor was validated above.
+        durable_descriptor.builtin_quota_pool_capability =
+            state.descriptor.builtin_quota_pool_capability.clone();
         // session/load reconnects MCP using this attachment's bindings. All
         // other context remains part of the immutable provider profile.
         let mut previous_descriptor = state.descriptor.clone();
@@ -1489,6 +1574,7 @@ impl AcpxCommandExecutor {
             .all(|event| event.event_type == "session.resumed");
         if state.lifecycle == "closed"
             || state.provider_exit_unconfirmed
+            || state.bootstrap_preparation.is_some()
             || state.identity.is_none()
             || state.active_turn_id.is_some()
             || !only_recovery_notice_pending
@@ -1570,6 +1656,7 @@ impl AcpxCommandExecutor {
             .as_mut()
             .ok_or_else(|| DurableRunnerError::invalid("ACPX provider has not been prepared"))?;
         state.identity = Some(identity.clone());
+        state.bootstrap_preparation = None;
         state.active_turn_id = None;
         state.lifecycle = "session_open".to_owned();
         state.turn_controls = turn_controls;
@@ -3160,6 +3247,64 @@ mod tests {
             .unwrap()
             .pending_runtime_requests
             .is_empty());
+    }
+
+    #[test]
+    fn retained_quota_preparation_blocks_a_new_provider_after_restart() {
+        let directory = temporary_directory("quota-preparation-fence");
+        let marker = directory.join("provider-started");
+        let command_path = directory.join("sidecar");
+        write_artifact(
+            &command_path,
+            format!("#!/bin/sh\ntouch '{}'\n", marker.display()).as_bytes(),
+            true,
+        );
+        let launch_profile = AcpxLaunchProfile {
+            candidate_admission: None,
+            authority_digest: format!("sha256:{}", "d".repeat(64)),
+            command: command_path.clone(),
+            args: Vec::new(),
+            artifacts: vec![artifact(&command_path)],
+        };
+        let mut value = descriptor("codex");
+        value["sidecarCommand"] = json!(command_path);
+        value["sidecarArgs"] = json!([]);
+        value["builtinQuotaPoolCapability"] = json!({
+            "schema": "paperclip.native-quota-failover.v1", "companyId": "company-1", "agentId": "agent-1",
+            "runId": "run-1", "issueId": "issue-1", "poolId": "pool-1", "taskKey": "issue-1", "memberId": "member-1"
+        });
+        let descriptor: AcpxProviderDescriptor = serde_json::from_value(value).unwrap();
+        let operations = Vec::new();
+        let mut state = AcpxDurableState::new(
+            descriptor,
+            AuthorizedToolSet {
+                schema: TOOL_SET_SCHEMA.into(),
+                schema_version: 1,
+                catalog_digest: authorized_tool_catalog_digest(&operations).unwrap(),
+                operations,
+            },
+            launch_profile.canonical_digest().unwrap(),
+        );
+        state.bootstrap_preparation = Some(AcpxProviderPreparation {
+            schema: GENERATED_ACPX_PROVIDER_PREPARATION_SCHEMA.into(),
+            preparation_id: "22222222-2222-4222-8222-222222222222".into(),
+            normalized_session_id: "session-1".into(),
+            sidecar_pid: 12345,
+            provider_lifetime_fence_candidates: [60_001, 60_002, 60_003],
+        });
+        let config = test_config(&directory, Some(launch_profile));
+        let mut original = AcpxCommandExecutor::with_runner_config(&directory, &config);
+        original.state = Some(state);
+        original.save_state().unwrap();
+        let mut restored = AcpxCommandExecutor::with_runner_config(&directory, &config);
+        restored.restore().unwrap();
+        assert!(restored
+            .open_session()
+            .unwrap_err()
+            .to_string()
+            .contains("bootstrap lifetime cleanup"));
+        assert!(!marker.exists());
+        fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]

@@ -1,3 +1,4 @@
+import { reopenNativeQuotaPoolWaits } from "../../native-runtime/native-quota-wake.js";
 import { notifyGitHubCredentialChange } from "../../github-connection-notifications.js";
 import { notifyVoiceChange } from "../../voice/voice-recovery-notifications.js";
 import { notifyChatEndpointWork } from "../../chat-work-notifications.js";
@@ -274,24 +275,27 @@ async function removeConnection(
       );
     const grantsToRevoke = grantRows.filter((row) => row.status !== "revoked");
     if (grantsToRevoke.length > 0) {
-      await db
-        .update(connectionGrants)
-        .set({
-          status: "revoked",
-          isDefault: false,
-          revokedAt: now,
-          revokedByAgentId:
-            binding.actorType === "agent" ? binding.actorId : null,
-          revokedByUserId:
-            binding.actorType === "user" ? binding.actorId : null,
-          updatedAt: now,
-        })
-        .where(
-          inArray(
-            connectionGrants.id,
-            grantsToRevoke.map((row) => row.id),
-          ),
-        );
+      await db.transaction(async (tx) => {
+        if (connection.connectionPurpose === "ai") await reopenNativeQuotaPoolWaits(tx as unknown as Db, { companyId: connection.companyId, connectionId: connection.id });
+        await tx
+          .update(connectionGrants)
+          .set({
+            status: "revoked",
+            isDefault: false,
+            revokedAt: now,
+            revokedByAgentId:
+              binding.actorType === "agent" ? binding.actorId : null,
+            revokedByUserId:
+              binding.actorType === "user" ? binding.actorId : null,
+            updatedAt: now,
+          })
+          .where(
+            inArray(
+              connectionGrants.id,
+              grantsToRevoke.map((row) => row.id),
+            ),
+          );
+      });
     }
     let externalCredentialCleanup: ToolConnectionRemovalSummary["externalCredentialCleanup"] =
       null;
@@ -545,6 +549,7 @@ async function removeConnection(
       if (connection.transport === "chat_sdk") await notifyChatEndpointWork(tx, connection.id, connection.companyId);
           if (connection.transport === "voice") await notifyVoiceChange(tx, { kind: "connection", id: connection.id });
       await notifyGitHubCredentialChange(tx, connection);
+      if (connection.connectionPurpose === "ai") await reopenNativeQuotaPoolWaits(tx as unknown as Db, { companyId: connection.companyId, connectionId: connection.id });
       await notifyToolConnectionHealth(tx, connection);
       await tx.select({ id: toolApplications.id }).from(toolApplications)
         .where(and(eq(toolApplications.id, connection.applicationId), eq(toolApplications.companyId, connection.companyId)))

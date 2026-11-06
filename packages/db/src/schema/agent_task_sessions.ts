@@ -8,6 +8,7 @@ import {
   bigint,
   index,
   uniqueIndex,
+  foreignKey,
 } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
 import { agents } from "./agents.js";
@@ -37,6 +38,7 @@ export const agentTaskSessions = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
+    idCompanyUniqueIdx: uniqueIndex("agent_task_sessions_id_company_uniq").on(table.id, table.companyId),
     companyAgentTaskUniqueIdx: uniqueIndex("agent_task_sessions_company_agent_adapter_task_uniq").on(
       table.companyId,
       table.agentId,
@@ -53,6 +55,26 @@ export const agentTaskSessions = pgTable(
       table.taskKey,
       table.updatedAt,
     ),
+  }),
+);
+
+export const agentAccountSessions = pgTable(
+  "agent_account_sessions",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    companyId: uuid("company_id").notNull().references(() => companies.id),
+    sessionId: uuid("session_id").notNull(),
+    sessionIdentity: text("session_identity").notNull(),
+    sessionParamsJson: jsonb("session_params_json").$type<Record<string, unknown>>(),
+    sessionDisplayId: text("session_display_id"),
+    lastRunId: uuid("last_run_id").references(() => heartbeatRuns.id),
+    lastError: text("last_error"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    parentCompanyFk: foreignKey({ columns: [table.sessionId, table.companyId], foreignColumns: [agentTaskSessions.id, agentTaskSessions.companyId] }).onDelete("cascade"),
+    identityUniqueIdx: uniqueIndex("agent_account_sessions_company_session_identity_uniq").on(table.companyId, table.sessionId, table.sessionIdentity),
   }),
 );
 

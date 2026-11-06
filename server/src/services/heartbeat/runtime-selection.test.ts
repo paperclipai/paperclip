@@ -4,7 +4,7 @@ import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { activityLog, agents, authUsers, companyMemberships, principalPermissionGrants, environments, environmentLeases, companies, completionContracts, createDb, applyPendingMigrations, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, executionWorkspaces, heartbeatRuns, issues, nativeRunFinalizations, workspaceOperations, type Db } from "@paperclipai/db";
+import { aiConnectionPools, aiConnectionTaskPins, toolApplications, toolConnections, activityLog, agents, authUsers, companyMemberships, principalPermissionGrants, environments, environmentLeases, companies, completionContracts, createDb, applyPendingMigrations, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, executionWorkspaces, heartbeatRuns, issues, nativeRunFinalizations, workspaceOperations, type Db } from "@paperclipai/db";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
@@ -86,6 +86,35 @@ describe.skipIf(!support.supported)("heartbeat runtime selection boundary", () =
   const read = (id: string) => db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, id)).then(rows => rows[0]!);
   const coordinators = (id: string) => db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, id));
   const sandbox = { kind: "remote" as const, transport: "sandbox" as const, remoteCwd: "/workspace", reusableLeaseConfigured: false };
+
+  it.each(["verified", "plugin", "wrong_pin", "wrong_account"])("issues a quota capability only for a verified builtin pin: %s", async variant => {
+    const { input, issue, run, agent } = await fixture();
+    input.agent = { ...agent, adapterConfig: { provider: "acpx", acpxAgent: "claude", model: "claude-sonnet-5" } };
+    input.nativeRuntimeResolution = resolveHeartbeatNativeRuntimeMode({ persisted: run, enabled: true, runtimeConfig: {},
+      adapterConfig: input.agent.adapterConfig, agent: input.agent, issue, target: null, workspaceId: null });
+    const poolId = randomUUID(), memberId = randomUUID(), connectionId = randomUUID(), grantId = randomUUID();
+    const binding = { mode: "delegated" as const, provider: "anthropic" as const, method: "subscription" as const, connectionId, grantId };
+    const member = { id: memberId, binding, profile: { provider: "acpx" as const, acpxAgent: "claude" as const, model: "claude-sonnet-5" } };
+    const selection = { poolId, memberId, binding, runtimeConfig: { provider: "acpx", acpxAgent: "claude", model: "claude-sonnet-5" }, notes: [] };
+    const [application] = await db.insert(toolApplications).values({ companyId: agent.companyId, applicationKey: randomUUID(), name: "Pool", type: "rest_api" }).returning();
+    await db.insert(toolConnections).values({ id: poolId, companyId: agent.companyId, applicationId: application!.id, name: "Pool", uid: poolId,
+      transport: "runtime_auth", connectionPurpose: "ai" });
+    await db.insert(aiConnectionPools).values({ id: poolId, companyId: agent.companyId,
+      pluginKey: variant === "plugin" ? "fixture.plugin" : "paperclip.builtin.ordered-failover",
+      config: { name: "Pool", enabled: true, mode: "failover", thresholdPercent: 90, members: [member] } });
+    await db.insert(aiConnectionTaskPins).values({ companyId: agent.companyId, agentId: agent.id, poolId, taskKey: issue.id,
+      member, selection: variant === "wrong_pin" ? { ...selection, memberId: randomUUID() } : selection });
+    input.task.context.aiRouterTaskKey = issue.id;
+    input.task.context.aiRouterSelection = selection;
+    input.config.managedAiRuntime = { attribution: { ...binding, connectionId: variant === "wrong_account" ? randomUUID() : connectionId } } as never;
+    const selected = await selectHeartbeatRuntime(db, input);
+    if (!selected.selected || !selected.nativeExecution) throw new Error("Expected native selection");
+    if (variant === "verified") {
+      expect(selected.nativeExecution).toMatchObject({ schema: "paperclip.native-execution-input.v11",
+        builtinQuotaPoolCapability: { companyId: agent.companyId, agentId: agent.id, runId: run.id, issueId: issue.id, poolId, taskKey: issue.id, memberId } });
+      expect((await read(run.id)).runnerProfileJson?.nativeExecutionInput).toMatchObject({ builtinQuotaPoolCapability: { memberId } });
+    } else expect(selected.nativeExecution).not.toHaveProperty("builtinQuotaPoolCapability");
+  });
 
   it("preserves preparation failure and skips runtime selection", async () => {
     const { input, run } = await fixture();

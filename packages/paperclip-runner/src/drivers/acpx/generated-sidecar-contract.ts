@@ -3,6 +3,8 @@
 export const GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION = 2 as const;
 export const GENERATED_ACPX_SIDECAR_COMMANDS = [
   "initialize",
+  "session.prepare",
+  "session.commit",
   "session.open",
   "run.attach",
   "turn.start",
@@ -99,3 +101,6 @@ export function classifyGeneratedAcpxToolOperation(
   }
   return normalized ? "execute" : "unknown";
 }
+
+export const GENERATED_ACPX_PROVIDER_PREPARATION_SCHEMA = "paperclip.acpx-provider-preparation.v1" as const;
+export const GENERATED_ACPX_QUOTA_CAPABILITY_SCHEMA = "paperclip.native-quota-failover.v1" as const;

@@ -1,7 +1,7 @@
 import { describeRunnerdMuseDriver } from "../drivers/muse/runnerd-muse-driver.js";
 import { createCodexTaskEnvelope } from "../contracts/codex.js";
 import { ACPX_CAPABILITY_PROFILES } from "../drivers/acpx/capability-profiles.js";
-import { NATIVE_EXECUTION_INPUT_SCHEMA, NATIVE_EXECUTION_INPUT_SCHEMA_V7, NATIVE_EXECUTION_INPUT_SCHEMA_V9, NATIVE_EXECUTION_INPUT_SCHEMA_V10 } from "../contracts/native-execution.js";
+import { NATIVE_EXECUTION_INPUT_SCHEMA, NATIVE_EXECUTION_INPUT_SCHEMA_V7, NATIVE_EXECUTION_INPUT_SCHEMA_V9, NATIVE_EXECUTION_INPUT_SCHEMA_V10, NATIVE_EXECUTION_INPUT_SCHEMA_V11 } from "../contracts/native-execution.js";
 import type { NativeExecutionInput } from "../contracts/native-execution.js";
 import type { PersistedHarnessSession } from "../contracts/harness-driver.js";
 import type {
@@ -127,7 +127,7 @@ function createTransportBackedNativeSessionBackend(
   const isCodex = input.provider.kind === "codex";
   const preparedContext = input.schema === NATIVE_EXECUTION_INPUT_SCHEMA
     || input.schema === NATIVE_EXECUTION_INPUT_SCHEMA_V7
-    || input.schema === NATIVE_EXECUTION_INPUT_SCHEMA_V9 || input.schema === NATIVE_EXECUTION_INPUT_SCHEMA_V10;
+    || input.schema === NATIVE_EXECUTION_INPUT_SCHEMA_V9 || input.schema === NATIVE_EXECUTION_INPUT_SCHEMA_V10 || input.schema === NATIVE_EXECUTION_INPUT_SCHEMA_V11;
   const supportsCollaborativePlanning =
     isCodex ||
     input.provider.kind === "opencode" ||
