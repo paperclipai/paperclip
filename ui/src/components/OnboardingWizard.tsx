@@ -1,3 +1,5 @@
+import type { AiConnectionLoginIntent } from "@paperclipai/shared";
+import { cancelAdapterLoginSession, cancelPendingAdapterLogin, matchesAdapterLoginTarget } from "./useAdapterLoginCancellation";
 import { useQueryView } from "@/components/QueryView";
 import type { AgentRunner, AgentRunnerChoice } from "@paperclipai/shared";
 import { needsClaudeSetupQualification, qualifyClaudeSetup } from "../lib/qualify-claude-setup";
@@ -1149,25 +1151,37 @@ function OnboardingWizardInner({
    * panel unmounted and the resumed session unreachable from this step. A 404
    * means no active session for the caller.
    */
+  const managedSubscriptionIntent: AiConnectionLoginIntent | undefined = managedSubscriptionProvider
+    ? { provider: managedSubscriptionProvider, method: "subscription", name: `My ${CONNECT_SOURCE_NAMES[adapterType] ?? managedProvider} subscription`, ownership: "personal", agentIds: [], allAgents: true }
+    : undefined;
+  const loginTarget = { environmentId: resolvedLoginEnvironmentId ?? "", aiConnection: managedSubscriptionIntent };
+  const dismissedLoginResumes = useRef(new Set<string>());
+  const loginResumeKey = JSON.stringify([createdCompanyId, adapterType]);
   const activeLoginSessionQuery = useQuery({
     queryKey: createdCompanyId
       ? queryKeys.agents.activeLoginSession(createdCompanyId, adapterType)
       : ["agents", "none", "active-login-session", adapterType],
-    queryFn: async () => {
+    queryFn: async ({ signal }) => {
       try {
-        return adapterCaps.login?.panelMode === "submitted_browser_code"
-          ? await agentsApi.getActiveClaudeSetupTokenLoginSession(createdCompanyId!)
-          : await agentsApi.getActiveAdapterAuthLoginSession(createdCompanyId!, adapterType);
+        const session = adapterCaps.login?.panelMode === "submitted_browser_code"
+          ? await agentsApi.getActiveClaudeSetupTokenLoginSession(createdCompanyId!, { signal })
+          : await agentsApi.getActiveAdapterAuthLoginSession(createdCompanyId!, adapterType, { signal });
+        if (session && dismissedLoginResumes.current.has(loginResumeKey)) {
+          if (matchesAdapterLoginTarget(session, loginTarget)) await cancelAdapterLoginSession(createdCompanyId!, adapterType,
+            adapterCaps.login?.panelMode === "submitted_browser_code", session.sessionId);
+          return null;
+        }
+        return session;
       } catch (error) {
         if (error instanceof ApiError && error.status === 404) return null;
         throw error;
       }
     },
     enabled:
-      Boolean(createdCompanyId) && effectiveOnboardingOpen && step === 4 && canShowAdapterLogin,
+      Boolean(createdCompanyId) && effectiveOnboardingOpen && step === 4 && canShowAdapterLogin && !dismissedLoginResumes.current.has(loginResumeKey),
   });
   useEffect(() => {
-    if (!activeLoginSessionQuery.data || credentialMode === "api" || savedSubscription || savedKeys.storedLogin.data) return;
+    if (dismissedLoginResumes.current.has(loginResumeKey) || !activeLoginSessionQuery.data || credentialMode === "api" || savedSubscription || savedKeys.storedLogin.data) return;
     // Re-derive the row's answer along with the sequence: a resumed session
     // implies a source was already picked, and the row stays a question
     // otherwise (see `sourcePicked` above).
@@ -1554,21 +1568,14 @@ function OnboardingWizardInner({
             // it has been answered the button has nothing to do.
             { label: "Next", icon: "arrow", disabled: true };
 
-  /**
-   * Back, on the connect step, unwinds the sign-in before it leaves the step.
-   *
-   * This hides the card; it does not cancel the login. Unmounting the panel
-   * does not release the server session — the session stays reachable for a
-   * later resume, the same read that restores it after a reload — so backing
-   * out and returning shows the sign-in still running, not a fresh one.
-   *
-   * Nothing releases it explicitly any more. The card carried a Cancel that
-   * did, sitting beside an instruction and directly above this step's own
-   * Back, and two ways out of one screen is one too many — the button went and
-   * the release went with it. What is left is the server deadline, which is
-   * the same thing that collects a session abandoned by closing the tab.
-   */
   function unwindConnectStep() {
+    localLogin.cancel();
+    dismissedLoginResumes.current.add(loginResumeKey);
+    if (createdCompanyId) {
+      void queryClient.cancelQueries({ queryKey: queryKeys.agents.activeLoginSession(createdCompanyId, adapterType) });
+      if (canShowAdapterLogin && credentialMode !== "api") void cancelPendingAdapterLogin(createdCompanyId, adapterType,
+        adapterCaps.login?.panelMode === "submitted_browser_code", loginTarget);
+    }
     connectAttemptRef.current++;
     hiringAgentRef.current = null;
     setLoading(false);
@@ -3242,11 +3249,6 @@ function OnboardingWizardInner({
                          in the connect step's chrome. It owns the session; the
                          step owns the sequence around it.
 
-                         Unmounting it is not the cancel: the session stays
-                         reachable for a later resume, so Back and a source
-                         switch only hide the card, and nothing here releases
-                         the session early — see `unwindConnectStep`.
-
                          No "Use saved login" control: the hire step already
                          applies a stored login on its own. */
                       <AdapterLoginPanel
@@ -3255,9 +3257,11 @@ function OnboardingWizardInner({
                         adapterType={adapterType}
                         environmentId={resolvedLoginEnvironmentId}
                         chrome="onboarding"
-                        aiConnection={managedProvider === "anthropic" || managedProvider === "openai" || managedProvider === "xai" ? { provider: managedProvider, method: "subscription", name: `My ${CONNECT_SOURCE_NAMES[adapterType] ?? managedProvider} subscription`, ownership: "personal", agentIds: [], allAgents: true } : undefined}
+                        aiConnection={managedSubscriptionIntent}
                         autoStart
+                        active={connectCardLive}
                         onPromptReady={(url) => {
+                          if (!connectCardLive) return;
                           setConnectAuthUrl(url);
                           // The prompt arriving is what ends the waiting beat.
                           if (url) setConnectPhase((p) => (p === "loading" ? "ready" : p));
