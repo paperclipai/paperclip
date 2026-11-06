@@ -434,10 +434,11 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
   ) {
     const preparation = parseObject(run.resultJson?.executionRecovery);
     if (typeof preparation.preparationSettledAt === "string" && await isInterruptedNativePreparation(db, run)) {
-      const [withheld] = await db.select().from(heartbeatRuns).where(and(
+      const children = await db.select().from(heartbeatRuns).where(and(
         eq(heartbeatRuns.companyId, run.companyId), eq(heartbeatRuns.agentId, run.agentId),
         eq(heartbeatRuns.retryOfRunId, run.id),
-      )).limit(1);
+      )).orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id)).limit(2);
+      const withheld = children.length === 1 ? children[0] : undefined;
       if (withheld && await isPreDispatchExecutionWaitVerified(db, withheld)) {
         // The first replacement was withheld before execution while files were
         // recovered. Preserve its history, budget and predecessor claim.
@@ -782,6 +783,7 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
                 eq(heartbeatRuns.retryOfRunId, run.id),
               ),
             )
+            .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id))
             .limit(1);
           if (existing)
             return {

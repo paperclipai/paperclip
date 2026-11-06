@@ -2598,6 +2598,9 @@ restart. A pending Retry or saved message owns its continuation instead of
 starting a competing automatic attempt. If a replacement was already withheld
 by the workspace gate before execution, continuation retains that cancelled row
 and uses its existing predecessor claim and remaining failure budget.
+Recovery adopts that withheld row only when it is the source's sole retry child.
+Multiple-child history reuses the newest existing child, ordered by creation time
+and run ID, without scheduling another replacement.
 Clearing the file hold records a pending continuation before enqueue. Restart
 reconstructs that obligation until a successor is recorded. Known admission
 gates defer it without a polling deadline; eligibility changes wake the existing

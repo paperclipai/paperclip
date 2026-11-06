@@ -2345,6 +2345,38 @@ describe("automatic retained workspace recovery", () => {
     } finally { await restarted.$client.end(); }
   }, 30_000);
 
+  it.each(["withheld_first", "successor_first"] as const)("reuses the newest retry child without replacing a withheld sibling (%s)", async order => {
+    const f = await interruptedRemotePreparation("process_lost");
+    const source = await run(f.runId);
+    const now = Date.now();
+    const addSuccessor = async () => (await db.insert(heartbeatRuns).values({
+      companyId: f.companyId, agentId: source.agentId, issueId: f.issueId, retryOfRunId: source.id,
+      status: "failed", runtimeMode: "native", nativeIssueId: f.issueId,
+      startedAt: new Date(now - 1000), finishedAt: new Date(now), createdAt: new Date(now - 1000),
+      errorCode: "native_provider_terminal_failed", contextSnapshot: { issueId: f.issueId },
+      scheduledRetryAttempt: 2, scheduledRetryReason: "transient_failure",
+    }).returning())[0];
+    const addWithheld = async () => {
+      const child = await withheldPreparationRetry(f);
+      await db.update(heartbeatRuns).set({ createdAt: new Date(now - 2000) }).where(eq(heartbeatRuns.id, child.id));
+      return child;
+    };
+    let successor: typeof heartbeatRuns.$inferSelect;
+    let withheld: typeof heartbeatRuns.$inferSelect;
+    if (order === "withheld_first") { withheld = await addWithheld(); successor = await addSuccessor(); }
+    else { successor = await addSuccessor(); withheld = await addWithheld(); }
+    await recoverRetainedWorkspace(f.input);
+    const heartbeat = heartbeatService(db);
+    await Promise.all([heartbeat.resumeRemoteStopComments(await run(f.runId)),
+      heartbeat.resumeRemoteStopComments(await run(f.runId))]);
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, withheld.id))).toHaveLength(0);
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, source.id))).toHaveLength(2);
+    expect(await run(successor!.id)).toEqual(successor!);
+    expect((await action(f.actionId)).evidence).toMatchObject({ bootstrapPreparationContinuation: "delivered",
+      bootstrapPreparationContinuationRunId: successor!.id });
+    expect(await nextWorkspaceRecoveryAt(db)).toBeNull();
+  }, 30_000);
+
   it.each([false, true])("continues a recovered lost preparation without an earlier retry (startup=%s)", async alreadyRecovered => {
     const f = await interruptedRemotePreparation("process_lost");
     if (alreadyRecovered) await recoverRetainedWorkspace(f.input);
