@@ -70,3 +70,17 @@ it("keeps secure-save acknowledgment acceptance dependent on a later current-per
  for(const change of [{createdAt:"2026-11-04T13:28:00Z"},{createdByUserId:"other"},{companyId:"other"},{key:"other_key"},{name:"Other secret"}])expect(companySecretSaveMatches({...saved,...change},binding,handoff)).toBe(false);
  expect(companySecretConfirmationHandoff({...card(),originCommentIds:["other"]},binding,guidance)).toBeUndefined();
 });
+
+it("keeps unrelated safety warnings outside save and acknowledgment negation",()=>{
+ const context="Use Settings > Secrets (`/RUN/company/settings/secrets`) for the deployment key so I can bind its reference to Morgan's environment. ";
+ for(const text of [
+  "Save the deployment key there. Never paste the value in chat. Then accept this card.",
+  "Never paste the key in chat, then save the deployment key there. Then accept this card.",
+  "After saving the deployment key in the secure Settings Secrets form, confirm here so I can bind its reference to Morgan's environment.",
+ ])expect(companySecretConfirmationHandoff({...card(),payload:{...card().payload,prompt:context+text}},binding,guidance),text).toBeDefined();
+ for(const text of [
+  "Save the deployment key there. Do not confirm yet. Then accept this card.",
+  "After saving your profile, confirm here that secure entry is complete.",
+  "Never save the deployment key there. Then accept this card.",
+ ])expect(companySecretConfirmationHandoff({...card(),payload:{...card().payload,prompt:context+text}},binding,guidance),text).toBeUndefined();
+});

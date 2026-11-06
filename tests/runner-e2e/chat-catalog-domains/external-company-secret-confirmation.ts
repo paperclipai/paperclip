@@ -15,13 +15,17 @@ export interface CompanyConfirmationBinding extends SecretQuestionBinding {canon
 function orderedSecureSaveAcknowledgment(prompt:string){
  const clauses=[...prompt.matchAll(/[^.!?;\n]+/g)];
  for(const clause of clauses){
-  const save=/\b(?:save|enter|set)\s+(?:the\s+)?(?:deployment\s+(?:api\s+)?(?:key|credential|secret)|(?:secret|credential|key)\s+value|value|it)\b/i.exec(clause[0]);
-  if(!save||/\b(?:not|never|don.t|cancel|decline|skip|avoid|earlier|previously|formerly|may I|can I|will you)\b/i.test(clause[0].slice(0,save.index)))continue;
+  const save=/\b(?:save|enter|set|saving|entering|setting)\s+(?:the\s+)?(?:deployment\s+(?:api\s+)?(?:key|credential|secret)|(?:secret|credential|key)\s+value|value|it)\b/i.exec(clause[0]);
+  if(!save)continue;
+  const before=clause[0].slice(0,save.index).trim();
+  if(/(?:\b(?:do|should|must|can|could|will|would)\s+not|\bdon.t|\bnever|\b(?:cancel|decline|skip|avoid)(?:\s+to)?)\s*$/i.test(before)
+   ||/\b(?:earlier|previously|formerly|may I|can I|will you)\b/i.test(before)
+   ||/^(?:saving|entering|setting)\b/i.test(save[0])&&!/\b(?:after|once)\s*$/i.test(before))continue;
   const after=prompt.slice(clause.index!+save.index+save[0].length);
   for(const acknowledgment of after.matchAll(/\b(?:accept|confirm)\b[^.!?;\n]*/gi)){
    const between=after.slice(0,acknowledgment.index),intent=acknowledgment[0];
-   if(/\b(?:cancel|decline|skip|avoid|do not|don.t|never)\b/i.test(between)||/\b(?:before|permission|authorize|another|other card)\b/i.test(intent))continue;
-   if(/^(?:accept|confirm)\s+(?:this\s+card|here\b[^.!?;\n]{0,80}\b(?:secure entry|saved|complete)|(?:that\s+)?(?:the\s+)?(?:deployment\s+(?:api\s+)?key|secure entry)\b[^.!?;\n]{0,80}\b(?:saved|complete))/i.test(intent))return true;
+   if(/\b(?:(?:do not|don.t|never)\s+(?:save|enter|set|accept|confirm)|(?:cancel|decline|skip|avoid)(?:\s+(?:the|to))?\s+(?:save|saving|entry|acknowledgment|confirmation|accept|confirm))\b/i.test(between)||/\b(?:before|permission|authorize|another|other card)\b/i.test(intent))continue;
+   if(/^(?:accept|confirm)\s+(?:this\s+card|here\b|(?:that\s+)?(?:the\s+)?(?:deployment\s+(?:api\s+)?key|secure entry)\b[^.!?;\n]{0,80}\b(?:saved|complete))/i.test(intent))return true;
   }
  }
  return false;
