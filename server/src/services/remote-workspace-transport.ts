@@ -62,7 +62,7 @@ const SETUP_FAILURE_CHECK = String.raw`const setupFailure=(prefix,stage,error)=>
  return prefix+': '+fields.join(' ');};`;
 const SANDBOX_SETUP_CAUSE = /^remote_workspace_(prepare|repository|restore)_failed: stage=[a-z_]{1,32}(?: (?:reason|archive|disk|git|code|exit|signal|syscall|killed|program|name)=[A-Za-z0-9_]{1,64}){0,16}$/;
 
-type RemoteWorkspaceOperation = "prepare" | "repository" | "archive_helper" | "capture" | "download" | "upload" | "restore" | "cleanup";
+type RemoteWorkspaceOperation = "prepare" | "repository" | "archive_helper" | "capture" | "download" | "upload" | "restore" | "cleanup" | "recovery_attachment";
 
 export class RemoteWorkspaceOperationTimeoutError extends Error {
   constructor(readonly operation: RemoteWorkspaceOperation, readonly timeoutMs: number) {
@@ -231,6 +231,35 @@ async function command(target: RemoteWorkspaceTarget, operation: RemoteWorkspace
     throw new RemoteWorkspaceOperationError(`remote_workspace_operation_failed: ${status}${cause ? `; ${cause}` : ""}`);
   }
   return result.stdout;
+}
+
+const RECOVERY_ATTACHMENT = String.raw`
+const fs=require('node:fs/promises'),path=require('node:path');
+(async()=>{
+ const [root,raw]=process.argv.slice(1),input=JSON.parse(raw);
+ if(!path.isAbsolute(root)||!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(input.operationId)
+  ||typeof input.provenance!=='string'||Buffer.byteLength(input.provenance)>16384)throw Error('invalid_attachment');
+ const inspect=async p=>{try{return await fs.lstat(p)}catch(e){if(e.code==='ENOENT')return null;throw e}};
+ const safeDirectory=async p=>{const s=await inspect(p);if(!s)return false;
+  if(!s.isDirectory()||s.isSymbolicLink()||await fs.realpath(p)!==p)throw Error('unsafe_attachment');return true};
+ if(!await safeDirectory(root))throw Error('missing_workspace');
+ const parent=path.join(root,'.paperclip-recovered'),destination=path.join(parent,input.operationId);
+ if(!await safeDirectory(parent)||!await safeDirectory(destination)){process.stdout.write('missing');return}
+ const proof=path.join(destination,'provenance.json'),s=await inspect(proof);
+ if(!s?.isFile()||s.isSymbolicLink()||s.nlink!==1||s.size>16384||await fs.readFile(proof,'utf8')!==input.provenance)
+  throw Error('attachment_proof_changed');
+ process.stdout.write('present');
+})().catch(()=>{process.stderr.write('remote_workspace_recovery_attachment_invalid');process.exitCode=1});`;
+
+/** Reuse a restored attachment only with its exact provenance. User edits to
+ * its files remain intact; unknown destinations are never overwritten. */
+export async function hasRemoteRecoveryAttachment(input: {
+  target: RemoteWorkspaceTarget; remoteCwd: string; operationId: string; provenance: string;
+}) {
+  const output = await command(input.target, "recovery_attachment", ["-e", RECOVERY_ATTACHMENT,
+    input.remoteCwd, JSON.stringify({ operationId: input.operationId, provenance: input.provenance })], undefined, 30_000);
+  if (output !== "present" && output !== "missing") throw new Error("remote_workspace_recovery_attachment_invalid");
+  return output === "present";
 }
 
 const PREPARE = String.raw`

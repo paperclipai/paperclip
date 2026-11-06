@@ -278,7 +278,7 @@ import {
 } from "./agent-conversations.js";
 import { withAdapterExecutionPhase } from "@paperclipai/adapter-utils/execution-phase";
 import {
-  recordNativeLocalProcessStop,
+  recordNativeLocalProcessStopInTransaction,
   settleNativeRunProcess,
 } from "./native-local-process-stop.js";
 
@@ -1968,7 +1968,7 @@ export function heartbeatService(
             )
             .returning()
             .then((rows) => rows[0] ?? null);
-          if (cleared) await recordNativeLocalProcessStop(tx as unknown as Db, run);
+          if (cleared) await recordNativeLocalProcessStopInTransaction(tx as unknown as Db, run);
           return cleared;
         });
         if (!cleared) {
@@ -4366,6 +4366,7 @@ export function heartbeatService(
         createNativeBatch: heartbeatQueue.createNativeStatusWakeBatch,
         schedulingSuppressed: async () => (await getSchedulingSuppression(true)).suppressed,
       }, () => canRun() && readTaskDrain(new Date()) === null),
+    readIdleWatchdogSchedule: taskWatchdogs.readIdleSchedule,
     registerIssueStateRecoveryWork: (coordinator: Parameters<typeof registerIssueRecoveryWork>[1], canRun: () => boolean) =>
       registerIssueRecoveryWork(db, coordinator, {
         stranded: scope => reconcileStrandedAssignedIssues({ ...scope, skipExternalConversationSettlement: true, skipRelatedRecovery: true }),
