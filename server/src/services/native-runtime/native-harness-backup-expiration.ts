@@ -22,6 +22,7 @@ import type { NativeHarnessBackupExpirationScope } from "../native-harness-backu
 import { deleteRetiredNativeHarnessBackup, durableNativeHarnessStorage } from "./native-harness-backup-storage.js";
 import { retireObsoleteNativeHarnessBackup } from "./native-harness-backup-retention.js";
 import type { StorageService } from "../../storage/types.js";
+import { releaseExpiredNativeProviderArtifactRun } from "./native-provider-artifacts.js";
 
 export const NATIVE_HARNESS_BACKUP_EXPIRATION_INTERVAL_MS = 60 * 60 * 1000;
 export const NATIVE_HARNESS_BACKUP_EXPIRATION_STARTUP_DELAY_MS = 2 * 60 * 1000;
@@ -392,7 +393,7 @@ export function nativeHarnessBackupExpirationService(
       checkpointCursor = candidate.runId;
       if (!candidate.sessionId) continue; // Unknown identity is never expiration evidence.
       try {
-        const expired = await db.transaction(async tx => {
+        const retirement = await db.transaction(async tx => {
           const blocker = await sessionRetentionBlocker(tx, {
             scopeDigest: null, checkpoint: true, closedBefore: options.closedBefore,
             identity: { runId: candidate.runId, normalizedSessionId: candidate.sessionId!, environmentLeaseId: null },
@@ -411,11 +412,29 @@ export function nativeHarnessBackupExpirationService(
           await tx.update(nativeRunFinalizations).set({
             controllerGeneration: sql`${nativeRunFinalizations.controllerGeneration} + 1`,
           }).where(inArray(nativeRunFinalizations.runId, blocker.runIds));
-          const rows = await tx.delete(nativeRunnerCheckpoints).where(and(
-            eq(nativeRunnerCheckpoints.companyId, blocker.companyId), eq(nativeRunnerCheckpoints.runId, candidate.runId),
-          )).returning({ part: nativeRunnerCheckpoints.part });
-          return rows.length > 0;
+          return { companyId: blocker.companyId, runIds: blocker.runIds };
         });
+        let expired = false;
+        if (retirement) {
+          const storage = defaults.storage ?? durableNativeHarnessStorage();
+          if (storage) for (const runId of retirement.runIds) await releaseExpiredNativeProviderArtifactRun({ db, storage,
+            companyId: retirement.companyId, runId, signal: AbortSignal.timeout(60_000) });
+          expired = await db.transaction(async tx => {
+            const blocker = await sessionRetentionBlocker(tx, { scopeDigest: null, checkpoint: true,
+              closedBefore: options.closedBefore, identity: { runId: candidate.runId,
+                normalizedSessionId: candidate.sessionId!, environmentLeaseId: null } });
+            if ("reason" in blocker) return false;
+            const [resume] = await tx.select({ id: agentTaskSessions.id }).from(agentTaskSessions).where(and(
+              eq(agentTaskSessions.companyId, blocker.companyId), eq(agentTaskSessions.agentId, blocker.agentId),
+              or(inArray(agentTaskSessions.lastRunId, blocker.runIds),
+                sql`${agentTaskSessions.sessionParamsJson}->>'sessionId' = ${candidate.sessionId}`),
+            )).limit(1);
+            if (resume) return false;
+            const rows = await tx.delete(nativeRunnerCheckpoints).where(and(eq(nativeRunnerCheckpoints.companyId, blocker.companyId),
+              eq(nativeRunnerCheckpoints.runId, candidate.runId))).returning({ part: nativeRunnerCheckpoints.part });
+            return rows.length > 0;
+          });
+        }
         if (expired) { removed++; result.expiredCheckpoints++; }
       } catch (err) {
         result.failed++;
