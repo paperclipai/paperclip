@@ -103,7 +103,7 @@ test('repair source metadata binds the corrected candidate and explicit changed 
   const repair = manifest.source.repairMetadata;
   assert.equal(repair.baseTargetSha, '3b66c3c144360ddf32714a0742fd774b8ceafb16');
   assert.equal(repair.previousTargetSha, 'ab2019e976076ec0eb60b026844f3d9211cb0208');
-  assert.equal(manifest.targetSha, '936c3bbe0e83ca15616254f23d9023b2065fc5fb');
+  assert.equal(manifest.targetSha, 'f5692c57dafaf9afbef479c25fcd277815932516');
   assert.equal(repair.definitionSourceSha, manifest.metadataSourceSha);
   assert.equal(repair.candidateDescriptorSnapshot, 'fixtures/chat-repair-candidate-descriptors.json');
   const descriptorBytes = readFileSync(new URL(repair.candidateDescriptorSnapshot, import.meta.url));
@@ -320,9 +320,30 @@ test('repair source metadata binds the corrected candidate and explicit changed 
     "questions-and-approvals.multi-part-question",
     "originalQuery"
   ],
-  ['secrets.configure-company-secret', 'maximumRuns'],
-  ['secrets.configure-company-secret', 'optionalCompanySecretBindingApproval'],
-  ['secrets.configure-company-secret', 'expectedHumanMessageCount']
+  [
+    "secrets.configure-company-secret",
+    "maximumRuns"
+  ],
+  [
+    "secrets.configure-company-secret",
+    "optionalCompanySecretBindingApproval"
+  ],
+  [
+    "secrets.configure-company-secret",
+    "expectedHumanMessageCount"
+  ],
+  [
+    "questions-and-approvals.multi-part-question",
+    "sourceFiles"
+  ],
+  [
+    "skills.review-update",
+    "oracleVersion"
+  ],
+  [
+    "teams.install-team",
+    "sourceFiles"
+  ]
 ]);
   for (const change of repair.changedFields) {
     assert.deepEqual(row(change.key)[change.field], change.current);
@@ -333,7 +354,7 @@ test('repair source metadata binds the corrected candidate and explicit changed 
   assert.equal(repair.runtimeConditions.multipart53QuestionClarification.unchangedOtherCatalogQueries, 243);
   assert.equal(repair.runtimeConditions.multipart53QuestionClarification.previousInventoryDigest, '0cf530c11449508e91b5ce664d9375fc8e76466fa908255a1af0ff55169d0220');
   assert.equal(repair.runtimeConditions.multipart53QuestionClarification.inventoryDigest, '814bb3633268cb0488563aed51fce2f987bd47650ddfb5a3302d0354292c2323');
-  assert.equal(repair.descriptorChanges.length, 52);
+  assert.equal(repair.descriptorChanges.length, 55);
   assert.equal(new Set(repair.descriptorChanges.map(change => change.key)).size, 33);
   assert.deepEqual([...new Set(repair.descriptorChanges.map(change => change.field))].sort(), ['expectedRunCount', 'minimumRunCount', 'optionalCompanySecretBindingApproval', 'oracleVersion', 'setupPolicy', 'sourceFiles']);
   for (const change of repair.descriptorChanges) {
