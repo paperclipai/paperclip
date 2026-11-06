@@ -2432,9 +2432,6 @@ describe("automatic retained workspace recovery", () => {
     const stopProof = { v: 1 as const, iss: "paperclip-cloud" as const, aud: "paperclip-workspace-worker-stop/v1" as const,
       sub: "test-stack", stopped: true as const, iat: Math.floor(Date.now() / 1000),
       exp: Math.floor(Date.now() / 1000) + 30, runId: f.runId, ownerToken: owner.token, worker: deploymentWorker };
-    // Model the already verified platform boundary. Persisting the receipt and
-    // releasing the owner still use the real recovery implementation. Its JWT
-    // expiry is acquisition authority; retained audit evidence does not expire.
     const proof = vi.spyOn(workerProof, "requestWorkspaceWorkerStopProof").mockResolvedValue({ status: "verified", proof: stopProof });
     await db.update(heartbeatRuns).set({ runnerProfileJson: {
       ...source.runnerProfileJson, nativeWorkspaceFinalizationOwner: owner,

@@ -17,9 +17,6 @@ function validWorker(worker: unknown): worker is WorkspaceWorker {
   return value.provider === "railway" && ["projectId", "environmentId", "serviceId", "deploymentId"].every(key =>
     typeof value[key] === "string" && value[key].length > 0 && value[key].length <= 200);
 }
-/** Shape of a host-persisted audit receipt, not current stop authority. The
- * signature and expiry are checked when ownership is acquired. Continuation
- * must independently verify no owner, stopped leases and saved-file receipts. */
 export function isRetainedWorkspaceWorkerStopProof(value: unknown, runId: string): value is WorkspaceWorkerStopProof {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const proof = value as Record<string, unknown>;
