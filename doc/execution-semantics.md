@@ -2476,7 +2476,7 @@ run stayed "Working" indefinitely. The 90-second bound exceeds the runner's own
 A stopped native run can keep its execution lease while its controller still
 waits on an unreachable runner. A queued turn of the same agent and task cannot
 start until that controller settles. The queued turn's projection names this
-wait ("Waiting for previous run to stop", cause `previous_run_settling`) while
+admission's pending-cleanup check holds a predecessor it checks. The ingress liveness
 the predecessor's finalization lease is held and unexpired. The ingress liveness
 bound above makes that controller settle, and its cleanup starts the queued turn.
 Such a stopped run can then settle as `failed` when its transport fails closed.
