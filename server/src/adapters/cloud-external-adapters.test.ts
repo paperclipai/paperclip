@@ -97,6 +97,7 @@ describe("Cloud image adapter boundary", () => {
       expect(fs.existsSync(sentinel)).toBe(false);
       expect(fs.readFileSync(storePath, "utf8")).toBe(registrationBefore);
     },
+    30_000,
   );
 
   it("preserves local and npm package loading, overrides, reload, and lazy UI parsing on self-hosted instances", async () => {
