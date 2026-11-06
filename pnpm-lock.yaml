@@ -60,8 +60,8 @@ importers:
         specifier: ^1.62.1
         version: 1.62.1
       agentmail:
-        specifier: ^0.5.31
-        version: 0.5.31
+        specifier: ^0.5.50
+        version: 0.5.50
       cross-env:
         specifier: ^10.1.0
         version: 10.1.0
@@ -5872,8 +5872,8 @@ packages:
     resolution: {integrity: sha512-MnA+YT8fwfJPgBx3m60MNqakm30XOkyIoH1y6huTQvC0PwZG7ki8NacLBcrPbNoo8vEZy7Jpuk7+jMO+CUovTQ==}
     engines: {node: '>= 14'}
 
-  agentmail@0.5.31:
-    resolution: {integrity: sha512-wBH5xwO2bIS8mhV+S/4ciwIhH0XFnrvfAubircTfWInCGSo/DP/i6/IZ+cYA4aZTStMEDecGxwhIkIAgzwKjpA==}
+  agentmail@0.5.50:
+    resolution: {integrity: sha512-cppotwvpr/5vALjzJjD5Y3Fa4BpZFlssu/Ss6vNomqGhdNWgivLHpcxHlexQ0VSp8EeUWctE59+tTBX7YpOQUA==}
     engines: {node: '>=18.0.0'}
     peerDependencies:
       '@x402/fetch': ^2
@@ -9288,6 +9288,18 @@ packages:
 
   ws@8.22.0:
     resolution: {integrity: sha512-Ydggc987+RO0AnWtZ/7Wq9FtNvcrL1b/RO0ud9mWjUPgDrsAAwQSF51sm2hm1XofbU/4jkpGEsLFsZZxU+1DOg==}
+    engines: {node: '>=10.0.0'}
+    peerDependencies:
+      bufferutil: ^4.0.1
+      utf-8-validate: '>=5.0.2'
+    peerDependenciesMeta:
+      bufferutil:
+        optional: true
+      utf-8-validate:
+        optional: true
+
+  ws@8.22.1:
+    resolution: {integrity: sha512-oyL6OPYme/CmiFvNuGzeoxCJ4nOrZE2O1FwM9MWM1AsGri6nLXB2pg+lNA8aLeXMSav0J6eIVS1j6vUPzUtK9g==}
     engines: {node: '>=10.0.0'}
     peerDependencies:
       bufferutil: ^4.0.1
@@ -13936,9 +13948,9 @@ snapshots:
 
   agent-base@7.1.4: {}
 
-  agentmail@0.5.31:
+  agentmail@0.5.50:
     dependencies:
-      ws: 8.22.0
+      ws: 8.22.1
     transitivePeerDependencies:
       - bufferutil
       - utf-8-validate
@@ -17759,6 +17771,8 @@ snapshots:
   wrappy@1.0.2: {}
 
   ws@8.22.0: {}
+
+  ws@8.22.1: {}
 
   wsl-utils@0.1.0:
     dependencies:
