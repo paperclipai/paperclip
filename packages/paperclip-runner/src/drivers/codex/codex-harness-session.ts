@@ -791,23 +791,32 @@ export class CodexHarnessSession
       const expectedTurn = turns.find(
         (turn) => text(turn.id) === expectedTurnId,
       );
-      if (expectedTurn === undefined) {
+      if (expectedTurn === undefined && this.result !== null && this.resultTurnId === expectedTurnId) {
+        // Provider history can lose a turn whose process was killed before its
+        // terminal was flushed. Paperclip already holds the semantic result this
+        // exact turn proposed, so that durable result is the turn's outcome:
+        // settle it rather than fail recovery and rerun finished work. Without
+        // such a result the outcome stays unknown and recovery fails closed.
+        reconciledTerminalTurnId = expectedTurnId;
+        mapTerminalTurn(this, { id: expectedTurnId, status: "completed", items: [] }, expectedTurnId, true);
+      } else if (expectedTurn === undefined) {
         throw new HarnessReconciliationError(
           `persisted active turn ${expectedTurnId} is missing from thread/read`,
         );
-      }
-      const status = text(expectedTurn.status);
-      if (status === "inProgress") {
-        this.activeTurnId = expectedTurnId;
-      } else if (
-        ["completed", "failed", "interrupted", "cancelled"].includes(status)
-      ) {
-        reconciledTerminalTurnId = expectedTurnId;
-        mapTerminalTurn(this, expectedTurn, expectedTurnId, true);
       } else {
-        throw new HarnessReconciliationError(
-          `persisted active turn ${expectedTurnId} has unreconcilable status ${status || "missing"}`,
-        );
+        const status = text(expectedTurn.status);
+        if (status === "inProgress") {
+          this.activeTurnId = expectedTurnId;
+        } else if (
+          ["completed", "failed", "interrupted", "cancelled"].includes(status)
+        ) {
+          reconciledTerminalTurnId = expectedTurnId;
+          mapTerminalTurn(this, expectedTurn, expectedTurnId, true);
+        } else {
+          throw new HarnessReconciliationError(
+            `persisted active turn ${expectedTurnId} has unreconcilable status ${status || "missing"}`,
+          );
+        }
       }
     }
 
