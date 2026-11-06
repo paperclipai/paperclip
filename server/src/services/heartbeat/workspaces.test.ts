@@ -158,6 +158,41 @@ describe("heartbeat workspace module", () => {
       { executionEnvironmentDriver: "plugin" })).rejects.toMatchObject({ code: "workspace_validation_failed" });
   });
 
+  it("explains a configured cwd the controller cannot create", async () => {
+    const remoteCwd = path.join(testRoot, "target-only-anchor");
+    const mkdir = vi.spyOn(fs, "mkdir").mockRejectedValue(
+      Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" }),
+    );
+    try {
+      await expect(createHeartbeatWorkspaceResolver(databaseWithResults().db).resolveWorkspaceForRun(
+        { ...agent(), adapterType: "codex_local", adapterConfig: { cwd: remoteCwd } },
+        {}, null,
+        { executionEnvironmentDriver: "ssh" },
+      )).rejects.toMatchObject({
+        code: "workspace_validation_failed",
+        message: expect.stringContaining("cannot be created on the controller"),
+        resultJson: { workspaceValidation: {
+          reason: "configured_workspace_unavailable",
+          resolvedCwd: remoteCwd,
+          environmentDriver: "ssh",
+        } },
+      });
+    } finally {
+      mkdir.mockRestore();
+    }
+  });
+
+  it("still creates a local anchor workspace", async () => {
+    const localCwd = path.join(testRoot, "local-anchor");
+    const result = await createHeartbeatWorkspaceResolver(databaseWithResults().db).resolveWorkspaceForRun(
+      { ...agent(), adapterType: "codex_local", adapterConfig: { cwd: localCwd } },
+      {}, null,
+      { executionEnvironmentDriver: "local" },
+    );
+    expect(result).toMatchObject({ cwd: localCwd, source: "task_session" });
+    expect((await fs.stat(localCwd)).isDirectory()).toBe(true);
+  });
+
   it("fails closed with workspace diagnostics when a configured directory is unavailable", async () => {
     const missingCwd = path.join(testRoot, "missing-configured-workspace");
     const database = databaseWithResults([workspace("selected", "project-one", missingCwd)]);
