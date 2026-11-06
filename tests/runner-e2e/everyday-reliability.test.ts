@@ -3,8 +3,8 @@ import { buildMatrixJobs, parseRunnerSelectors, selectRunnerExecutions } from ".
 import { everydayReliabilityFacadeProfileIds, runnerMatrix } from "./catalog.js";
 import { scheduledSelection } from "./scheduled-operations.js";
 import {
-  EVERYDAY_RELIABILITY_GROUP, everydayReliabilityCaseIds, everydayReliabilityExecutionIds, everydayReliabilitySignatures,
-  everydayReliabilityTasks, isEverydayReliabilityCase,
+  EVERYDAY_RELIABILITY_GROUP, RELIABILITY_PLAN_PROFILE_ID, everydayReliabilityCaseIds, everydayReliabilityExecutionIds,
+  everydayReliabilitySignatures, everydayReliabilityTasks, isEverydayReliabilityCase, reliabilityPlanEnvironments,
 } from "./everyday-reliability-cases.js";
 import {
   completeStepLines, concurrentExecutors, recoveredRunIds, gradeInterruptRedirect, gradeLongSilentCommand, gradeQueueSteer,
@@ -23,7 +23,8 @@ const run = (id: string, overrides: Partial<StoryRun> = {}): StoryRun => ({
 const carrying = (id: string, wake: string, overrides: Partial<StoryRun> = {}, history = "") =>
   run(id, { contextSnapshot: { issueId: "parent", wakeCommentIds: [wake] },
     runnerProfileJson: { nativeExecutionInput: { task: { prompt: `${history} ${wake}` } } }, ...overrides });
-const reliabilityCellCount = everydayReliabilityCaseIds.length + everydayReliabilityFacadeProfileIds.length;
+// Per case: one DeepSeek TestOps plan cell and one native Codex Daytona extra; facades for the silent command.
+const reliabilityCellCount = 2 * everydayReliabilityCaseIds.length + everydayReliabilityFacadeProfileIds.length;
 const failed = (checks: StoryCheck[]) => checks.filter(check => !check.passed).map(check => check.id);
 
 describe("reliability selection stays explicit", () => {
@@ -34,7 +35,8 @@ describe("reliability selection stays explicit", () => {
     expect(selected.map(execution => execution.id).sort())
       .toEqual(everydayReliabilityExecutionIds("everyday-workflows", everydayReliabilityFacadeProfileIds).sort());
     expect(selected).toHaveLength(reliabilityCellCount);
-    expect(selected.every(execution => execution.environment.id === "daytona")).toBe(true);
+    expect(selected.filter(execution => execution.environment.id !== "daytona").every(execution =>
+      execution.profile.id === RELIABILITY_PLAN_PROFILE_ID && reliabilityPlanEnvironments[execution.task.id as keyof typeof reliabilityPlanEnvironments] === "local")).toBe(true);
   });
 
   it("is excluded from --all, the plain suite, generic selectors and scheduled campaigns", () => {
@@ -50,25 +52,26 @@ describe("reliability selection stays explicit", () => {
 
   it("allows a single case or exact ID and keeps the cells discoverable in --list", () => {
     expect(selectRunnerExecutions(parseRunnerSelectors(["--suite", "everyday-workflows", "--case", "long-silent-command"]))
-      .map(execution => execution.profile.id).sort()).toEqual(["runner-codex", ...everydayReliabilityFacadeProfileIds].sort());
+      .map(execution => execution.profile.id).sort()).toEqual(["runner-codex", RELIABILITY_PLAN_PROFILE_ID, ...everydayReliabilityFacadeProfileIds].sort());
     expect(selectRunnerExecutions(parseRunnerSelectors(["--id", "everyday-workflows.runner-codex.daytona.queue-steer"]))).toHaveLength(1);
     expect(reliable(selectRunnerExecutions(parseRunnerSelectors(["--list"])))).toHaveLength(reliabilityCellCount);
     expect(selectRunnerExecutions(parseRunnerSelectors(["--suite", "everyday-workflows", "--group", "slow"]))
       .every(execution => execution.task.id === "long-silent-command")).toBe(true);
   });
 
-  it("uses one native Daytona profile per case and facades only for the silent command", () => {
+  it("uses one DeepSeek plan cell and one native Codex Daytona extra per case, and facades only for the silent command", () => {
     const cells = runnerMatrix.filter(execution => isEverydayReliabilityCase(execution.task.id));
     expect(cells).toHaveLength(reliabilityCellCount);
     for (const caseId of everydayReliabilityCaseIds) {
       const profiles = cells.filter(execution => execution.task.id === caseId).map(execution => execution.profile.id);
       expect(profiles).toContain("runner-codex");
-      expect(profiles.length).toBe(caseId === "long-silent-command" ? 1 + everydayReliabilityFacadeProfileIds.length : 1);
+      expect(profiles).toContain(RELIABILITY_PLAN_PROFILE_ID);
+      expect(profiles.length).toBe(caseId === "long-silent-command" ? 2 + everydayReliabilityFacadeProfileIds.length : 2);
     }
     expect(runnerMatrix.filter(execution => execution.suite.id === "everyday-workflows"
       && ["runner-acpx-grok", "runner-acpx-kimi", "runner-acpx-pi"].includes(execution.profile.id)
       && execution.task.id !== "long-silent-command")).toEqual([]);
-    const turnThree = cells.find(execution => execution.task.id === "three-turn-revise")!;
+    const turnThree = cells.find(execution => execution.id === "everyday-workflows.runner-codex.daytona.three-turn-revise")!;
     expect(turnThree.environment.configurationKey).toBeUndefined(); // Per-turn ephemeral lease, as in S49.
     expect(cells.find(execution => execution.task.id === "long-silent-command")!.groups).toContain("slow");
   });
