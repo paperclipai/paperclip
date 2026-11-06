@@ -190,6 +190,10 @@ import {
 import { trackAgentTaskCompleted } from "@paperclipai/shared/telemetry";
 import { getTelemetryClient } from "../telemetry.js";
 import { isUniqueViolation } from "../db-errors.js";
+import {
+  isRoutineExecutionConflict,
+  routineExecutionConflict,
+} from "../services/routine-execution-conflict.js";
 import type { StorageService } from "../storage/types.js";
 import { validate, validateIssueMutationBody } from "../middleware/validate.js";
 import * as serviceIndex from "../services/index.js";
@@ -15424,6 +15428,13 @@ export function issueRoutes(
           issue = await updateIssue();
         }
       } catch (err) {
+        if (isUniqueViolation(err, "issues_open_routine_execution_uq")) {
+          throw routineExecutionConflict({
+            issueId: id,
+            actorAgentId: actor.agentId ?? null,
+            actorRunId: actor.runId ?? null,
+          });
+        }
         if (err instanceof HttpError && err.status === 422) {
           logger.warn(
             {
@@ -16793,7 +16804,10 @@ export function issueRoutes(
           checkoutRunId,
         );
       } catch (error) {
-        if (isUniqueViolation(error, "issues_open_routine_execution_uq")) {
+        if (
+          isUniqueViolation(error, "issues_open_routine_execution_uq") ||
+          isRoutineExecutionConflict(error)
+        ) {
           res.status(409).json({
             error: "Another execution for this routine is already in progress",
           });
