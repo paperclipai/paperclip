@@ -12,7 +12,7 @@ T-oracle.
 
 ```sh
 pnpm install --frozen-lockfile
-pnpm --filter @paperclipai/paperclip-runner build:runner-binaries   # native runner (debug)
+pnpm --filter @paperclipai/paperclip-runner run build:runner-binaries   # native runner (debug)
 set -a; source ~/.secrets; set +a                                   # provider keys, process env only
 node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/main.ts --env local \
   --adapters codex,claude,opencode --concurrency 4 --tasks 8 --faults K1,K2,K4 --seed 42
