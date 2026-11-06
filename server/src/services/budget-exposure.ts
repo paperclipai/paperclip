@@ -139,7 +139,7 @@ async function readObservedSpends(db: Db, policies: SpendPolicy[], now: Date): P
     // any usage (a receipt lost with its stopped provider) is unknown, not
     // unpriced; it stays visible in Costs but does not trip the policy.
     ledgerColumns[`unpriced${index}`] = sql`count(*) filter (where ${ledger} and ${costEvents.costStatus} = 'unpriced' and ${costEvents.billingType} <> 'subscription_included'
-      and (${costEvents.inputTokens} + ${costEvents.cachedInputTokens} + ${costEvents.outputTokens}) > 0)::int`;
+      and (${costEvents.inputTokens} > 0 or ${costEvents.cachedInputTokens} > 0 or ${costEvents.outputTokens} > 0))::int`;
     runColumns[`live${index}`] = sql`coalesce(sum(${liveCost}) filter (where ${run} and ${inWindow}), 0)::text`;
     runColumns[`unreserved${index}`] = sql`coalesce(sum(${liveCost}) filter (where ${run} and not ${hasReservation}), 0)::text`;
     // Reservations carry over UTC windows. A reservation and its running
