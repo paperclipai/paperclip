@@ -470,13 +470,15 @@ export interface SandboxSyncFileMapping {
   targetPath: string;
   kind: "file" | "directory";
   mode?: number;
+  /** Directory glob patterns; literal root-relative paths when preserving source entries. */
   exclude?: string[];
   followSymlinks?: boolean;
   /**
    * Outbound directory transfers preserve source entry names, including `._*`
-   * and provider scratch-like names. Explicit `exclude` patterns still apply;
-   * providers omit only scratch paths created by this exact transfer. This does
-   * not relax archive member or symlink validation. Ignored for syncIn/files.
+   * and provider scratch-like names. In this mode `exclude` contains literal
+   * root-relative paths; providers omit only those paths and scratch paths
+   * created by this exact transfer. Archive member and symlink validation stay
+   * unchanged. Ignored for syncIn/files.
    */
   preserveSourceEntries?: boolean;
   /**

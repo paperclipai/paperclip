@@ -1032,7 +1032,8 @@ otherwise ordinary settings such as `pull.rebase`, `commit.gpgsign`, `fetch.prun
 `extensions.worktreeConfig`, and `remote.origin.mirror`.
 
 The directory transfer requests `preserveSourceEntries` to preserve ordinary
-filenames and permissions while honoring explicit exclusions. Daytona and
+filenames and permissions. Its exclusions are literal root-relative paths,
+including directory descendants; ordinary transfers keep glob exclusions. Daytona and
 Kubernetes implement and qualify this mapping contract. Other providers have not
 been qualified for this fallback; inventory verification still prevents a
 provider that omits or alters entries from publishing an incomplete save.

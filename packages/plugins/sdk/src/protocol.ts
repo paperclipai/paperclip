@@ -810,7 +810,7 @@ export interface PluginSyncFileMapping {
    * shows the bytes only to code that already runs in that sandbox.
    */
   mode?: number;
-  /** Glob patterns to exclude when `kind` is `"directory"`. */
+  /** Directory glob patterns; literal root-relative paths when preserving source entries. */
   exclude?: string[];
   /**
    * Symlink handling for `kind: "directory"` transfers. Falsy preserves symlinks
@@ -819,9 +819,10 @@ export interface PluginSyncFileMapping {
   followSymlinks?: boolean;
   /**
    * Outbound directory transfers preserve source entry names, including `._*`
-   * and provider scratch-like names. Explicit `exclude` patterns still apply;
-   * providers omit only scratch paths created by this exact transfer. This does
-   * not relax archive member or symlink validation. Ignored for syncIn/files.
+   * and provider scratch-like names. In this mode `exclude` contains literal
+   * root-relative paths; providers omit only those paths and scratch paths
+   * created by this exact transfer. Archive member and symlink validation stay
+   * unchanged. Ignored for syncIn/files.
    */
   preserveSourceEntries?: boolean;
   /**

@@ -852,9 +852,13 @@ async function syncOutDirectoryMapping(input: {
   const { exec, mapping, remoteDir, timeoutMs, maxOutputBytes } = input;
   assertConfinedSandboxPath(remoteDir, mapping.sourcePath, "source");
   return withHostTempDir(async (tmp) => {
-    const excludeFlags = [...(mapping.preserveSourceEntries ? [] : ["._*"]), ...(mapping.exclude ?? [])]
-      .map((entry) => `--exclude ${shQuote(entry)}`)
-      .join(" ");
+    // Preservation exclusions name literal source-relative paths. GNU tar's
+    // default basename/glob matching could silently omit unrelated user files.
+    const excludes = [...(mapping.preserveSourceEntries ? [] : ["._*"]), ...(mapping.exclude ?? [])];
+    const excludeFlags = (mapping.preserveSourceEntries ? "--anchored --no-wildcards " : "") +
+      (mapping.preserveSourceEntries
+        ? [...new Set(excludes.map(entry => entry.replace(/^(?:\.\/)+/, "").replace(/\/+$/, "")))].flatMap(entry => [entry, `./${entry}`])
+        : excludes).map(entry => `--exclude ${shQuote(entry)}`).join(" ");
     const script = [
       ...canonicalizerPreamble(shQuote(remoteDir)),
       // Confine the source dir through an open-then-verify pinned fd before taring.
@@ -885,7 +889,7 @@ async function syncOutDirectoryMapping(input: {
     });
     const bytesTransferred = (await fs.stat(localTar)).size;
     await extractHostTarball({ archivePath: localTar, localDir: mapping.targetPath, preserveSourceEntries: mapping.preserveSourceEntries });
-    const filesTransferred = await countHostFiles(mapping.targetPath, mapping.exclude);
+    const filesTransferred = await countHostFiles(mapping.targetPath, mapping.preserveSourceEntries ? undefined : mapping.exclude);
     return { filesTransferred, bytesTransferred };
   });
 }

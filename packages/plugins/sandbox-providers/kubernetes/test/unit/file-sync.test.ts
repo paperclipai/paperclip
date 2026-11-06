@@ -1,3 +1,4 @@
+import { createServer } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
 import { promises as fs } from "node:fs";
 import os from "node:os";
@@ -401,6 +402,34 @@ describe("kubernetes onEnvironmentSyncOut (native single-exec transfer)", () => 
     }
     expect((await fs.stat(path.join(hostOut, "nested"))).mode & 0o777).toBe(0o775);
     await expect(fs.stat(path.join(hostOut, "excluded.txt"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it.skipIf(process.platform !== "linux")("preserves literal excluded paths without excluding same basenames or glob matches", async () => {
+    const remoteDir = await makeTmp("k8s-literal-"), hostOut = await makeTmp("k8s-literal-out-");
+    await fs.mkdir(path.join(remoteDir, "nested"));
+    const socket = createServer();
+    await new Promise<void>((resolve, reject) => { socket.once("error", reject); socket.listen(path.join(remoteDir, "ipc"), resolve); });
+    try {
+      const names = ["nested/ipc", "nested/omit[ab]*?", "omitaZZx", "nested/skip[ab]*?/saved.txt"];
+      for (const name of names) {
+        await fs.mkdir(path.dirname(path.join(remoteDir, name)), { recursive: true });
+        await fs.writeFile(path.join(remoteDir, name), `literal work: ${name}`);
+      }
+      await fs.writeFile(path.join(remoteDir, "omit[ab]*?"), "excluded literal file");
+      await fs.mkdir(path.join(remoteDir, "skip[ab]*?"));
+      await fs.writeFile(path.join(remoteDir, "skip[ab]*?/excluded.txt"), "excluded subtree");
+      const { exec } = makeRealExec();
+      const result = await performSyncOut({ exec, remoteDir, timeoutMs: 30_000, operations: [{ operationId: "literal", files: [{
+        kind: "directory", sourcePath: remoteDir, targetPath: hostOut, preserveSourceEntries: true, exclude: ["ipc", "omit[ab]*?", "skip[ab]*?"],
+      }] }] });
+      expect(result.operations[0].filesTransferred).toBe(4);
+      for (const name of names) {
+        expect(await fs.readFile(path.join(hostOut, name), "utf8")).toBe(`literal work: ${name}`);
+        expect(await fs.readFile(path.join(remoteDir, name), "utf8")).toBe(`literal work: ${name}`);
+      }
+      for (const name of ["ipc", "omit[ab]*?", "skip[ab]*?"]) await expect(fs.lstat(path.join(hostOut, name))).rejects.toMatchObject({ code: "ENOENT" });
+      expect((await fs.lstat(path.join(remoteDir, "ipc"))).isSocket()).toBe(true);
+    } finally { await new Promise<void>(resolve => socket.close(() => resolve())); }
   });
 
   it.skipIf(process.platform !== "linux").each(["file", "directory"])("refuses preserved %s special modes before host writes", async kind => {

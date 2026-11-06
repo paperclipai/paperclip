@@ -1371,10 +1371,14 @@ async function syncOutDirectoryMapping(input: {
         ? [relative, `./${relative}`] : [];
     });
     const excludes = [...(mapping.preserveSourceEntries ? scratchPaths : ["._*", `${SCRATCH_PREFIX}*`]), ...(mapping.exclude ?? [])];
-    const excludeFlags = excludes
-      .flatMap((entry) => [entry, `${entry.replace(/\/$/, "")}/*`])
-      .map((entry) => `--exclude ${shellQuote(entry)}`)
-      .join(" ");
+    // Preservation exclusions are literal paths relative to this source, not
+    // basename patterns. Both archive naming forms occur in the repair path.
+    const literalExcludes = [...new Set(excludes.map(entry => entry.replace(/^(?:\.\/)+/, "").replace(/\/+$/, "")))];
+    const excludeFlags = (mapping.preserveSourceEntries ? "--anchored --no-wildcards " : "") +
+      (mapping.preserveSourceEntries
+        ? literalExcludes.flatMap(entry => [entry, `./${entry}`])
+        : excludes.flatMap(entry => [entry, `${entry.replace(/\/$/, "")}/*`]))
+        .map(entry => `--exclude ${shellQuote(entry)}`).join(" ");
     // Tar the source in-sandbox (naming top-level entries so no "." self-entry is
     // embedded), reproducing the `followSymlinks` → `-h` mapping, then stream the
     // single archive back over the native bulk channel.
@@ -1390,9 +1394,13 @@ async function syncOutDirectoryMapping(input: {
     // resolved targets remain inside this mapping. Nothing is deleted or
     // dereferenced. Host validation still checks the rebuilt archive, including
     // links changed by the sandbox between enumeration and tar creation.
-    const prunePaths = excludes.flatMap((entry) => [
-      `-path ${shellQuote(`./${entry}`)}`, `-path ${shellQuote(`*/${entry}`)}`,
-    ]).join(" -o ");
+    // find -path also interprets glob characters, even inside shell quotes.
+    // Pruning a literal directory already removes its complete subtree.
+    const prunePaths = (mapping.preserveSourceEntries
+      ? literalExcludes.map(entry => `-path ${shellQuote(`./${entry.replace(/[\\*?[\]]/g, "\\$&")}`)}`)
+      : excludes.flatMap(entry => [
+        `-path ${shellQuote(`./${entry}`)}`, `-path ${shellQuote(`*/${entry}`)}`,
+      ])).join(" -o ");
     const filterLinks = [
       ...canonicalizerPreamble(shellQuote(mapping.sourcePath)),
       'for _pc_link do',
@@ -1468,7 +1476,7 @@ async function syncOutDirectoryMapping(input: {
       // cleaned by withHostTempDir.
       await Promise.all([remoteTar, remoteList].map((file) => sandbox.fs.deleteFile(file).catch(() => undefined)));
     }
-    const filesTransferred = await countHostFiles(mapping.targetPath, mapping.exclude);
+    const filesTransferred = await countHostFiles(mapping.targetPath, mapping.preserveSourceEntries ? undefined : mapping.exclude);
     return { filesTransferred, bytesTransferred };
   });
 }
