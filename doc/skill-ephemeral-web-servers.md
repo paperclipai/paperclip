@@ -40,6 +40,30 @@ Native recovery resolves the version, reconstructs its v1 projection and require
 the admitted digest, manifest digest, file count and byte count to match. Adjacent
 compatible releases must preserve that projection contract.
 
+Older native inputs can contain immutable skill bundles without a version ID.
+Retained recovery obligations and current task sessions keep those bundles as
+local durability dependencies until the `runtime-assets` maintenance phase copies
+their authenticated files into the existing package store. The receipt binds the
+original run input, skill selection, native manifest and package content hash.
+Recovery restores the original bytes and read/execute modes, verifies the admitted
+digests, and preserves the null version ID. Package collection protects these
+receipts under the same row lock used by receipt publication.
+
+This conversion may run online, including for an active run: it only copies an
+immutable bundle under its publication/collection lock and appends an input-bound
+receipt. It does not claim provider or controller ownership, settle recovery,
+start a turn, change task intent or remove local data. Missing or changed sources
+remain blockers. Ordinary new admission without a completed execution input is
+not itself a local asset obligation. Both migration and replacement startup check
+the concrete retained asset obligations independently of installation eligibility.
+
+Run on the host retaining the original runtime asset files, and follow its cursor:
+
+```sh
+pnpm --filter @paperclipai/server exec tsx scripts/migrate-skill-packages.ts --phase=runtime-assets --company=<uuid> --limit=10
+pnpm --filter @paperclipai/server exec tsx scripts/migrate-skill-packages.ts --phase=runtime-assets --company=<uuid> --limit=10 --apply
+```
+
 Studio tests deliver the selected saved version through the same native Runner
 path, even without a permanent agent assignment. Their `skill_test` mode remains
 explicit in the execution input. The durable test row replaces ordinary agent
