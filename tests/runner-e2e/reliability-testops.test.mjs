@@ -199,6 +199,13 @@ function fakeTestOps({ existing = [], plan = null, assignments = [], standing = 
       return { id: 77 };
     }
     if (method === 'GET' && url.pathname === '/api/testplan/77') return state.plan;
+    if (method === 'PATCH' && url.pathname === '/api/testplan/77') {
+      state.plan = { ...state.plan, treeSelection: body.treeSelection, testCasesCount: body.treeSelection.leafsInclude.length }; return null;
+    }
+    if (method === 'POST' && url.pathname === '/api/testplan/77/jobparameter') {
+      state.assignments = state.assignments.map(row => row.job.id === body.jobId ? { ...row, job: { ...row.job, parameters: body.parameters } } : row);
+      return null;
+    }
     if (method === 'GET' && url.pathname === '/api/testplan/2/job') return standing;
     if (method === 'GET' && url.pathname === '/api/job/50') return { id: 50, type: 'github', url: workflowUrl };
     if (method === 'GET' && url.pathname === '/api/testplan/77/job') return state.assignments;
@@ -254,6 +261,29 @@ test('registration creates only missing cases, one plan on the standing job, and
   assert.equal(state.calls.filter(row => row.method !== 'GET').length, writes);
 });
 
+test('registration copies the standing plan job parameters and repairs a drifted plan selection once', async () => {
+  const parameters = [{ name: 'all', value: 'false' }];
+  const { api, state } = fakeTestOps({ standing: [{ job: { id: 50, type: 'github', url: workflowUrl, parameters }, testCasesCount: 20 }] });
+  const first = await registerReliability(api);
+  assert.equal(first.created.parameters, true);
+  assert.deepEqual(state.calls.filter(row => row.route === '/api/testplan/77/jobparameter').map(row => row.body),
+    [{ jobId: 50, parameters }]);
+  assert.deepEqual(state.assignments[0].job.parameters, parameters);
+  const writes = state.calls.filter(row => row.method !== 'GET').length;
+  assert.equal((await registerReliability(api)).created.parameters, false);
+  assert.equal(state.calls.filter(row => row.method !== 'GET').length, writes);
+  // A plan whose selection drifted is patched back to exactly the seven cases.
+  state.plan = { ...state.plan, treeSelection: { ...state.plan.treeSelection, leafsInclude: [first.caseIds['queue-steer']] }, testCasesCount: 1 };
+  await registerReliability(api);
+  assert.deepEqual(state.calls.filter(row => row.method === 'PATCH').map(row => row.route), ['/api/testplan/77']);
+  assert.deepEqual(state.plan.treeSelection.leafsInclude, reliabilityDefinitions.map(row => first.caseIds[row.name]));
+  // A parameter write that does not read back fails instead of leaving a plan that dispatches differently.
+  const stale = fakeTestOps({ standing: [{ job: { id: 50, type: 'github', url: workflowUrl, parameters }, testCasesCount: 20 }] });
+  const original = stale.api;
+  const ignoringParameters = async (route, method, body) => route.endsWith('/jobparameter') ? null : original(route, method, body);
+  await assert.rejects(registerReliability(ignoringParameters), /plan_job/);
+});
+
 test('registration refuses a standing plan without exactly one trusted job or a plan bound to another job', async () => {
   await assert.rejects(registerReliability(fakeTestOps({ standing: [] }).api), /standing_job/);
   await assert.rejects(registerReliability(fakeTestOps({ standing: [{ job: { id: 51, type: 'github', url: 'https://github.com/other/repo' } }] }).api), /standing_job/);
@@ -281,6 +311,15 @@ test('the workflows expose the reliability plan without new provider or reportin
   assert.deepEqual(Object.keys(registration.on), ['workflow_dispatch']);
   assert.equal(registration.jobs.register.environment, 'runner-e2e-testops-reporting');
   assert.deepEqual(registration.jobs.register.needs, 'authorize');
+  // The only gate in front of ALLURE_TOKEN: default branch plus the numeric actor allowlist.
+  const gate = registration.jobs.authorize.steps[0];
+  assert.equal(gate.env.ALLOWED_ACTOR_IDS, '${{ vars.RUNNER_E2E_ALLOWED_ACTOR_IDS }}');
+  assert.equal(gate.env.REF, '${{ github.ref }}');
+  assert.match(gate.run, /if \[ "\$REF" != "refs\/heads\/\$DEFAULT_BRANCH" \]; then/);
+  assert.match(gate.run, /type == "array" and length > 0 and all\(\.\[\]; type == "number"/);
+  assert.match(gate.run, /for candidate in "\$triggering_actor_id" "\$ACTOR_ID"; do/);
+  assert.equal(registration.jobs.authorize.environment, undefined);
+  assert.equal(JSON.stringify(registration.jobs.authorize).includes('secrets.'), false);
   const text = JSON.stringify(registration);
   assert.doesNotMatch(text, /secrets\.(OPENAI|OPENROUTER|ANTHROPIC|DAYTONA)/);
   assert.equal(registration.jobs.register.steps[0].with.ref, '${{ github.sha }}');

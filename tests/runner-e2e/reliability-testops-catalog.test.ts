@@ -41,6 +41,19 @@ it("binds every TestOps Reliability case to its existing explicit-only cell", ()
   for (const job of buildMatrixJobs(executions)) expect(job.timeoutMinutes).toBeGreaterThan(20);
 });
 
+it("keeps a case that steers an active turn on a steering-capable driver", async () => {
+  // queue-steer requires a 2xx same-turn steer. The OpenCode server driver
+  // declares steering false, so the route answers steering_unsupported there.
+  const { readFile } = await import("node:fs/promises");
+  const openCode = await readFile(new URL("../../packages/paperclip-runner/src/drivers/opencode/opencode-server-driver.ts", import.meta.url), "utf8");
+  const codex = await readFile(new URL("../../packages/paperclip-runner/src/drivers/codex/codex-app-server-driver-impl.ts", import.meta.url), "utf8");
+  expect(openCode).toMatch(/\n {2}steering: false,\n/);
+  expect(codex).toMatch(/\n {6}steering: true,\n/);
+  const steering = runnerMatrix.find(execution => execution.id === reliabilityDefinitions.find(row => row.name === "queue-steer")!.executionId)!;
+  expect(steering.profile.provider).toBe("codex");
+  expect(runnerMatrix.some(execution => execution.task.id === "queue-steer" && execution.profile.provider === "opencode")).toBe(false);
+});
+
 it("keeps the plan out of generic, scheduled and per-PR selections and adds no DeepSeek everyday cells", () => {
   const plan = new Set(reliabilityDefinitions.map(row => row.executionId));
   const select = (args: string[]) => {
