@@ -1,0 +1,7 @@
+# Sandbox providers stay out of the root workspace, and most of them must not
+# commit a lockfile: scripts/build-standalone-public-packages.mjs uses a frozen
+# install when one exists. This workspace pins their dependencies in one lockfile
+# for scripts/typecheck-test-programs.mjs, without changing how they are released.
+packages:
+  - ../../packages/plugins/sandbox-providers/*
+  - ../../packages/plugins/sandbox-providers/cloudflare/bridge-template

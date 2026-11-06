@@ -1,5 +1,5 @@
 import { readTaskListSortParams, taskListOrderToIssueSort, type TaskListSort } from "@/lib/task-list";
-import { useDeferredValue, useEffect, useRef, useState } from "react";
+import { useDeferredValue, useEffect, useRef, useState, type ReactNode } from "react";
 import { useWarmTaskDetailCode } from "@/hooks/useWarmTaskDetailCode";
 import { useInfiniteQuery, useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ListChecks, SearchX } from "lucide-react";
@@ -29,7 +29,7 @@ import { coordinatorAttentionTasksQueryKey } from "@/lib/coordinator-attention";
 import { createIssueDetailLocationState } from "@/lib/issueDetailBreadcrumb";
 import { defaultIssueFilterState, type IssueFilterState } from "@/lib/issue-filters";
 import { queryKeys } from "@/lib/queryKeys";
-import { useLocation, useSearchParams } from "@/lib/router";
+import { useLocation, useNavigate, useSearchParams } from "@/lib/router";
 import { loadTaskListView, saveTaskListView, taskListViews, taskListViewStorageKey, type TaskListView } from "@/lib/task-list-views";
 import { normalizeTaskViewKey, ORGANIZATION_SCOPED_PARAMS, taskView } from "@/lib/task-views";
 import type { Issue } from "@paperclipai/shared";
@@ -38,7 +38,7 @@ const pageSize = 200;
 
 /** Coordinator's existing IA and attention feed, rendered with the production
  * components reviewed in Design proposals / Pages / Tasks. */
-export function CoordinatorTasks() {
+export function CoordinatorTasks({ viewControl }: { viewControl?: ReactNode } = {}) {
   const { selectedCompanyId: companyId } = useCompany();
   const { userId, loaded: identitySettled } = useCoordinatorWorkspaceEnabled();
   const { openNewIssue } = useDialogActions();
@@ -46,16 +46,18 @@ export function CoordinatorTasks() {
   const client = useQueryClient();
   const listRef = useRef<HTMLElement>(null);
   const location = useLocation();
+  const navigate = useNavigate();
   const [params, setParams] = useSearchParams();
   const [layout, setLayout] = useState<"list" | "board">("list");
   const urlAssignee = JSON.stringify(params.getAll("assignee"));
   const urlStatuses = JSON.stringify(params.getAll("status"));
+  const urlLabels = JSON.stringify(params.getAll("label").filter(Boolean));
   const urlView = params.get("view");
   const viewStorageKey = taskListViewStorageKey("coordinator", userId ?? "local-board");
-  const [preference, setPreference] = useState(() => ({ key: viewStorageKey, view: loadTaskListView(viewStorageKey, undefined, "inbox") }));
-  const savedView = preference.key === viewStorageKey ? preference.view : loadTaskListView(viewStorageKey, undefined, "inbox");
+  const [preference, setPreference] = useState(() => ({ key: viewStorageKey, view: loadTaskListView(viewStorageKey) }));
+  const savedView = preference.key === viewStorageKey ? preference.view : loadTaskListView(viewStorageKey);
   const explicitView = urlView === "needs_attention" ? "blocked" : taskListViews.find(option => option.value === urlView)?.value;
-  const organizationScoped = [...ORGANIZATION_SCOPED_PARAMS, "workspaceId", "status", "sortField", "sortDir"].some(param => params.getAll(param).some(Boolean));
+  const organizationScoped = [...ORGANIZATION_SCOPED_PARAMS, "workspaceId", "status", "label", "sortField", "sortDir"].some(param => params.getAll(param).some(Boolean));
   const view: TaskListView = explicitView ?? (organizationScoped || normalizeTaskViewKey(urlView) ? "all" : savedView);
   useEffect(() => {
     if (!identitySettled) return;
@@ -89,7 +91,7 @@ export function CoordinatorTasks() {
   const normalizedView = normalizeTaskViewKey(urlView);
   const presetStatuses = normalizedView && taskView(normalizedView).surface === "issues" ? taskView(normalizedView).statuses ?? [] : [];
   const initialStatuses: string[] = params.has("status") ? params.getAll("status") : presetStatuses;
-  const previousUrlFilters = useRef({ assignee: urlAssignee, statuses: urlStatuses, view: urlView, routineTasksOnly });
+  const previousUrlFilters = useRef({ assignee: urlAssignee, statuses: urlStatuses, labels: urlLabels, view: urlView, routineTasksOnly });
   const needsAttention = view === "blocked";
   const query = params.get("q") ?? "";
   const deferredQuery = useDeferredValue(query.trim());
@@ -187,7 +189,7 @@ export function CoordinatorTasks() {
     workspaceIds.includes(issue.executionWorkspaceId ?? "") || workspaceIds.includes(issue.projectWorkspaceId ?? "")) : recordsWithContext;
   const items: TaskListItem[] = [...new Map(scopedRecords.map(issue => [issue.id, issue])).values()].map(issue => ({
     issue: { ...issue, project: issue.project ?? projectById.get(issue.projectId ?? "") },
-    unread: unreadIds.has(issue.id),
+    unread: unreadIds.has(issue.id) || issue.isUnreadForMe === true,
     createdBy: issue.createdByAgentId ? agentNames.get(issue.createdByAgentId) ?? "Unknown agent" : users.get(issue.createdByUserId ?? "") ?? "Board",
     assignee: issue.assigneeAgentId ? agentNames.get(issue.assigneeAgentId) ?? "Unknown agent" : users.get(issue.assigneeUserId ?? "") ?? null,
   }));
@@ -196,48 +198,49 @@ export function CoordinatorTasks() {
     searchMode: "server",
     liveIssueIds: collectLiveIssueIds(liveRuns.data, records),
     viewStorageKey,
-    initialFilters: { assignees: params.getAll("assignee"), statuses: initialStatuses, routineTasksOnly },
+    initialFilters: { labels: params.getAll("label").filter(Boolean), assignees: params.getAll("assignee"), statuses: initialStatuses, routineTasksOnly },
   });
   useEffect(() => {
     const previous = previousUrlFilters.current;
-    if (previous.assignee === urlAssignee && previous.view === urlView && previous.statuses === urlStatuses && previous.routineTasksOnly === routineTasksOnly) return;
-    previousUrlFilters.current = { assignee: urlAssignee, statuses: urlStatuses, view: urlView, routineTasksOnly };
+    if (previous.assignee === urlAssignee && previous.view === urlView && previous.statuses === urlStatuses && previous.labels === urlLabels && previous.routineTasksOnly === routineTasksOnly) return;
+    previousUrlFilters.current = { assignee: urlAssignee, statuses: urlStatuses, labels: urlLabels, view: urlView, routineTasksOnly };
     collection.updateFilters({
+      ...(previous.labels !== urlLabels ? { labels: params.getAll("label").filter(Boolean) } : {}),
       ...(previous.routineTasksOnly !== routineTasksOnly ? { routineTasksOnly } : {}),
       ...(previous.assignee !== urlAssignee ? { assignees: params.getAll("assignee") } : {}),
       ...(previous.view !== urlView || previous.statuses !== urlStatuses ? { statuses: initialStatuses } : {}),
     });
-  }, [urlAssignee, urlView, urlStatuses, initialStatuses, routineTasksOnly, collection.updateFilters]);
+  }, [urlAssignee, urlView, urlStatuses, urlLabels, initialStatuses, routineTasksOnly, collection.updateFilters]);
   const updateFilters = (patch: Partial<IssueFilterState>) => {
     collection.updateFilters(patch);
-    if (patch.assignees === undefined && patch.statuses === undefined && patch.routineTasksOnly === undefined) return;
-    setParams(current => {
-      const next = new URLSearchParams(current);
-      if (patch.routineTasksOnly !== undefined) {
-        if (patch.routineTasksOnly) next.set("originKind", "routine_execution");
-        else next.delete("originKind");
-      }
-      if (patch.assignees !== undefined) {
-        next.delete("assignee");
-        for (const id of patch.assignees) next.append("assignee", id);
-      }
-      if (patch.statuses !== undefined) {
-        next.delete("status");
-        for (const status of patch.statuses) next.append("status", status);
-        const preset = normalizeTaskViewKey(next.get("view"));
-        if (preset && taskView(preset).surface === "issues") next.set("view", "all");
-      }
-      return next;
-    }, { replace: true });
+    if (patch.assignees === undefined && patch.statuses === undefined && patch.labels === undefined && patch.routineTasksOnly === undefined) return;
+    const next = new URLSearchParams(params);
+    if (patch.routineTasksOnly !== undefined) {
+      if (patch.routineTasksOnly) next.set("originKind", "routine_execution");
+      else next.delete("originKind");
+    }
+    if (patch.labels !== undefined) {
+      next.delete("label");
+      for (const id of patch.labels) next.append("label", id);
+    }
+    if (patch.assignees !== undefined) {
+      next.delete("assignee");
+      for (const id of patch.assignees) next.append("assignee", id);
+    }
+    if (patch.statuses !== undefined) {
+      next.delete("status");
+      for (const status of patch.statuses) next.append("status", status);
+      const preset = normalizeTaskViewKey(next.get("view"));
+      if (preset && taskView(preset).surface === "issues") next.set("view", "all");
+    }
+    navigate({ search: next.toString(), hash: location.hash }, { replace: true });
   };
   const clearFilters = () => {
     collection.updateFilters(defaultIssueFilterState);
-    setParams(current => {
-      const next = new URLSearchParams(current);
-      for (const key of ["q", "assignee", "status", "originKind"]) next.delete(key);
-      if (next.get("view") !== "needs_attention") next.set("view", "all");
-      return next;
-    }, { replace: true });
+    const next = new URLSearchParams(params);
+    for (const key of ["q", "assignee", "status", "label", "originKind"]) next.delete(key);
+    if (next.get("view") !== "needs_attention") next.set("view", "all");
+    navigate({ search: next.toString(), hash: location.hash }, { replace: true });
   };
   const update = useMutation({ mutationFn: ({ id, data }: { id: string; data: Record<string, unknown> }) => issuesApi.update(id, data),
     onSuccess: () => { void client.invalidateQueries({ queryKey: queryKeys.issues.list(companyId!) }); void client.invalidateQueries({ queryKey: queryKeys.attention(companyId!) }); },
@@ -274,7 +277,7 @@ export function CoordinatorTasks() {
 
   if (!companyId) return <EmptyState icon={ListChecks} message="Select an organization to view tasks." />;
   return <FlyoutAppearanceProvider><TruncatedTextMarqueeProvider><section ref={listRef} className="coordinator-task-list task-row-design-preview flex min-w-0 flex-col gap-8" aria-label="Tasks">
-    <TaskListToolbar view={view} onViewChange={setView}
+    <TaskListToolbar view={view} onViewChange={setView} viewControl={viewControl}
       query={collection.query} onQueryChange={collection.setQuery} layout={collection.layout} onLayoutChange={collection.setLayout}
       allExpanded={collection.allExpanded} onToggleExpanded={collection.toggleExpanded} onNewTask={() => openNewIssue()}
       filters={{ enableRoutineTasksFilter: true, state: collection.filters, onChange: updateFilters, activeFilterCount: collection.activeFilterCount,
@@ -284,6 +287,7 @@ export function CoordinatorTasks() {
     {pending ? <p role="status" className="text-sm text-muted-foreground">Loading tasks…</p> : !error && <>
       <div hidden={collection.layout !== "list"} className="design-task-list-panel">{collection.matchingItems.length ? <TaskList key={companyId}
         items={(needsAttention ? collection.matchingItems : collection.visibleItems).map(enrichItem)} allItems={collection.companyItems.map(enrichItem)}
+        preferenceLocation={userId ? { companyId, collectionKey: `coordinator-tasks:${userId}` } : undefined}
         collectionKey={JSON.stringify([companyId, userId, needsAttention, deferredQuery, participantAgentId, workspaceIds, collection.view, collection.filters])}
         sort={sort} onSortChange={setSort}
         issueLinkState={issueLinkState} collapsedIds={collection.collapsedIds} onCollapsedIdsChange={collection.setCollapsedIds} /> : empty}</div>

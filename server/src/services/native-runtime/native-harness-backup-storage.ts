@@ -174,6 +174,10 @@ async function fence(tx: Parameters<Parameters<Db["transaction"]>[0]>[0], owner:
   }
 }
 
+export async function assertNativeHarnessBackupOwner(db: Db, owner: NativeRunnerCheckpointFenceOwner): Promise<void> {
+  await db.transaction(tx => fence(tx, owner));
+}
+
 export async function persistNativeHarnessBackup(input: {
   db: Db; storage: StorageService; owner: NativeRunnerCheckpointFenceOwner | OfflineOwner;
   scopeDigest: string; root: string; signal?: AbortSignal; maxArchiveBytes?: number;

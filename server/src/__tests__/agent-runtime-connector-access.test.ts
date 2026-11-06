@@ -66,15 +66,16 @@ describeDatabase("connector access runtime synchronization", () => {
     await service.replaceConnectionGrantMembers(connectionId, grant.id, []);
     expect(await events()).toHaveLength(before + 4);
   });
-  it.each(["uninstall", "permission save"] as const)("serializes %s with finalization or role changes before runtime locks", async change => {
+  it.each(["uninstall", "uninstall last", "permission save"] as const)("serializes %s with finalization or role changes before runtime locks", async change => {
     let first: (client: Db) => Promise<unknown>;
     let second: (client: Db) => Promise<unknown>;
     let memberId: string | undefined;
-    if (change === "uninstall") {
+    if (change !== "permission save") {
       await toolAccessService(db).putConnectionInstalls(connectionId, { installs: [{ targetType: "agent", targetId: agentId }] });
       expect((await toolAccessService(db).getConnection(connectionId, companyId)).config?.mcpAgentAccessConfigured).toBe(true);
-      first = client => toolAccessService(client).putConnectionInstalls(connectionId, { installs: [] });
-      second = client => toolAccessService(client).finishGalleryAppConnection(companyId, connectionId, { enabledCatalogEntryIds: [], askFirstCatalogEntryIds: [], access: "all_agents" });
+      const uninstall = (client: Db) => toolAccessService(client).putConnectionInstalls(connectionId, { installs: [] });
+      const finish = (client: Db) => toolAccessService(client).finishGalleryAppConnection(companyId, connectionId, { enabledCatalogEntryIds: [], askFirstCatalogEntryIds: [], access: "all_agents" });
+      [first, second] = change === "uninstall" ? [uninstall, finish] : [finish, uninstall];
     } else {
       const [member] = await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: "alice", status: "active", membershipRole: "member" }).returning();
       memberId = member.id;
@@ -112,8 +113,12 @@ describeDatabase("connector access runtime synchronization", () => {
     const results = await Promise.allSettled([initial, concurrent]);
     for (const result of results) if (result.status === "rejected") throw result.reason;
     expect(results.map(result => result.status)).toEqual(["fulfilled", "fulfilled"]);
-    if (change === "uninstall") {
-      expect(await db.select().from(toolConnectionInstalls).where(eq(toolConnectionInstalls.connectionId, connectionId))).toHaveLength(0);
+    if (change !== "permission save") {
+      // The last serialized audience mutation wins: a later permission save
+      // installs its selected audience, while a later uninstall removes it.
+      const installs = await db.select().from(toolConnectionInstalls).where(eq(toolConnectionInstalls.connectionId, connectionId));
+      if (change === "uninstall") expect(installs).toEqual([expect.objectContaining({ targetType: "company", targetId: companyId })]);
+      else expect(installs).toEqual([]);
       const bindings = await db.select().from(toolProfileBindings).where(eq(toolProfileBindings.companyId, companyId));
       expect(bindings.some(binding => binding.metadata?.source === "tool_connection_install")).toBe(false);
     } else {

@@ -1,8 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { expect, it, vi } from "vitest";
-import { heartbeatRuns, issues, issueComments } from "@paperclipai/db";
-import { instanceSettingsService } from "../services/instance-settings.js";
+import { agents, heartbeatRuns, issues, issueComments } from "@paperclipai/db";
 import { undeliveredConversationComments } from "../services/agent-conversations.js";
 import { DELIVERY_QUEUES, subscribeDeliveryWork } from "../services/delivery-work-notifications.js";
 import { issueService } from "../services/issues.js";
@@ -11,11 +10,10 @@ import { describeIssueRecovery, issueRecoveryFixture } from "./issue-recovery.te
 describeIssueRecovery("issue recovery production producers and conversations", () => {
   const state = issueRecoveryFixture();
   const { quiet, completed, savedConversation } = state;
-  it("dispatches a saved conversation only from the committed Agent Chat enable transition", async () => {
+  it("dispatches a saved conversation after agent resume despite retired Chat off values", async () => {
     const f = await savedConversation();
     expect(await undeliveredConversationComments(state.db, f.companyId, f.chat.id)).toHaveLength(1);
-    await f.settings.updateExperimental({ enableAgentChat: true });
-    expect(state.coordinator.nextWakeAt()).not.toBeNull();
+    await f.resume();
     await vi.waitFor(async () => expect(await state.db.select().from(heartbeatRuns)
       .where(eq(heartbeatRuns.companyId, f.companyId))).toHaveLength(1), { timeout: 40_000 });
     const run = await completed(f.chat.id);
@@ -32,14 +30,15 @@ describeIssueRecovery("issue recovery production producers and conversations", (
     finally { stop(); }
     expect(f.replies).toEqual([run.id]);
   });
-  it("keeps disabled saved conversations parked after rollback, unrelated flags and unchanged values", async () => {
+  it("keeps paused conversations parked after resume rollback and unrelated settings changes", async () => {
     const f = await savedConversation();
     await expect(state.db.transaction(async tx => {
-      await instanceSettingsService(tx as unknown as typeof state.db).updateExperimental({ enableAgentChat: true });
+      await f.resume(tx as unknown as typeof state.db);
       throw new Error("chat flag rollback");
     })).rejects.toThrow("chat flag rollback");
     await quiet();
-    expect((await f.settings.getExperimental()).enableAgentChat).toBe(false);
+    expect((await f.settings.getExperimental()).enableAgentChat).toBe(true);
+    expect((await state.db.select().from(agents).where(eq(agents.id, f.agentId)))[0].status).toBe("paused");
     let hints = 0;
     const stop = subscribeDeliveryWork(state.db, DELIVERY_QUEUES.strandedAssignments, () => { hints++; });
     try {
@@ -51,7 +50,7 @@ describeIssueRecovery("issue recovery production producers and conversations", (
     expect(await state.db.select().from(heartbeatRuns)).toEqual([]);
     expect(await undeliveredConversationComments(state.db, f.companyId, f.chat.id)).toHaveLength(1);
   });
-  it("does not dispatch an accepted saved message after Agent Chat is disabled", async () => {
+  it("keeps accepted saved input parked while its agent is paused despite retired Chat off values", async () => {
     const f = await savedConversation(false);
     await f.settings.updateExperimental({ enableAgentChat: true }); await quiet();
     state.draining = true;

@@ -125,6 +125,26 @@ describe.skipIf(!support.supported)("heartbeat environment selection boundary", 
     expect(result.persistedNativeExecutionInput?.binding.executionWorkspaceId).toBe(input.run.id);
   });
 
+  it.each(["preserved", "changed_binding", "changed_cwd"])("pins the verified Retry workspace during environment selection (%s)", async mode => {
+    const { input, issue, workspace } = await fixture();
+    const saved = await workspace();
+    await db.update(issues).set({ executionWorkspaceId: saved.id }).where(eq(issues.id, issue.id));
+    input.task.issueRef!.executionWorkspaceId = saved.id;
+    input.task.issueRef!.executionWorkspacePreference = null;
+    input.task.freshWorkspace = { mode: "resume_stopped_native_workspace", retryIntentId: randomUUID(),
+      sourceRunId: randomUUID(), workspaceId: saved.id, cwd: home };
+    if (mode === "changed_binding") input.task.issueRef!.executionWorkspaceId = (await workspace()).id;
+    if (mode === "changed_cwd") await executionWorkspaceService(db).update(saved.id, { cwd: join(home, "changed") });
+    if (mode !== "preserved") {
+      await expect(selectHeartbeatEnvironment(db, input)).rejects.toThrow("The saved Retry workspace binding changed.");
+      return;
+    }
+    const result = await selectHeartbeatEnvironment(db, input);
+    expect(result.requestedShouldReuseExisting).toBe(true);
+    expect(result.reusableExistingExecutionWorkspace).toMatchObject({ id: saved.id, cwd: home });
+    expect(result.nativeRecoveryExecutionWorkspaceId).toBeNull();
+  });
+
   it("does not make an archived issue workspace available for reuse", async () => {
     const { input, workspace } = await fixture();
     const saved = await workspace();

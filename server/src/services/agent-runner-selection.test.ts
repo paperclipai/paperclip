@@ -118,7 +118,11 @@ describe("server-owned Codex runner selection", () => {
     state.managedEnvironment.mockResolvedValue(null);
     await expect(resolveNewAgentRunnerForCompany({} as never, "company", {
       adapterType: "cursor_cloud", runner: "auto", setupOnly, adapterConfig: {},
-    })).rejects.toMatchObject({ status: 422, details: { code: "managed_sandbox_unavailable" } });
+    })).rejects.toMatchObject({
+      message: "The managed sandbox is unavailable. Restore Paperclip Sandbox and retry.",
+      status: 422,
+      details: { code: "managed_sandbox_unavailable" },
+    });
   });
   it("preserves an explicit Legacy choice on a held Cursor setup draft", async () => {
     state.settings = { experimental: { enableManagedSandboxOnly: true, enableNativeRunner: true } };
@@ -589,7 +593,7 @@ describe("server-owned Codex runner selection", () => {
     await expect(resolveNewAgentRunnerForCompany({} as never, "company", { adapterType: "codex_local", runner: "paperclip", defaultEnvironmentId: "sandbox" })).rejects.toMatchObject({ status: 422, details: { code: "agent_runner_unavailable" } });
   });
   it.each(["codex_local", "claude_local", "opencode_local"])("selects %s on a managed Cloud image without saved platform qualification", async adapterType => {
-    vi.stubEnv("PAPERCLIP_MANAGED_CONFIG", JSON.stringify({ ...managedCloudConfig, environments: [{ name: "Paperclip Computer", provider: "daytona", config: {} }] }));
+    vi.stubEnv("PAPERCLIP_MANAGED_CONFIG", JSON.stringify({ ...managedCloudConfig, environments: [{ name: "Paperclip Sandbox", provider: "daytona", config: {} }] }));
     state.getEnvironment.mockResolvedValue({ id: "sandbox", driver: "sandbox", status: "active",
       config: { provider: "daytona", snapshot: "replacement-snapshot" }, metadata: { managedByPaperclip: true } });
     state.resolveEnvironment.mockRejectedValue(new Error("Saved provider secret is unavailable."));
@@ -605,7 +609,7 @@ describe("server-owned Codex runner selection", () => {
   });
   it.each(["self-hosted", "custom-environment", "captured-template", "stale-marker"])("keeps qualification for a %s sandbox", async kind => {
     vi.stubEnv("PAPERCLIP_MANAGED_CONFIG", kind === "self-hosted" ? undefined : JSON.stringify({ ...managedCloudConfig,
-      environments: kind === "stale-marker" ? [] : [{ name: "Paperclip Computer", provider: "daytona", config: {} }] }));
+      environments: kind === "stale-marker" ? [] : [{ name: "Paperclip Sandbox", provider: "daytona", config: {} }] }));
     vi.stubEnv("PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN", undefined);
     state.getEnvironment.mockResolvedValue({ id: "sandbox", driver: "sandbox", status: "active",
       config: { provider: "daytona", snapshot: "custom-snapshot" },
@@ -616,7 +620,7 @@ describe("server-owned Codex runner selection", () => {
     expect(state.sandboxQualification).toHaveBeenCalled();
   });
   it("ignores a stale captured image and preserves a matching custom image without resolving credentials", async () => {
-    vi.stubEnv("PAPERCLIP_MANAGED_CONFIG", JSON.stringify({ ...managedCloudConfig, environments: [{ name: "Paperclip Computer", provider: "daytona", config: {} }] }));
+    vi.stubEnv("PAPERCLIP_MANAGED_CONFIG", JSON.stringify({ ...managedCloudConfig, environments: [{ name: "Paperclip Sandbox", provider: "daytona", config: {} }] }));
     const config = { provider: "daytona", snapshot: "replacement-snapshot", reuseLease: false, apiKey: "a6b9e7d0-f886-471a-b461-640dd03e8d0f" };
     state.getEnvironment.mockResolvedValue({ id: "sandbox", driver: "sandbox", status: "active", config, metadata: { managedByPaperclip: true } });
     state.resolveEnvironment.mockRejectedValue(new Error("Saved provider secret is unavailable."));
