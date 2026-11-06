@@ -141,10 +141,14 @@ export function nextNativeProviderAttempt(
  * any later recovery disposition still charges one.
  */
 export function suspendedByCleanDrain(coordinator: {
+  attempt: number;
   recoveryState: string | null;
   recoveryHistory: ReadonlyArray<{ disposition?: unknown }>;
 }): boolean {
-  return coordinator.recoveryState === "awaiting_runner_reattach" &&
+  // Attempt 0 means no execution has claimed the run yet. Its first provider
+  // start must still be counted, whatever interrupted preparation.
+  return coordinator.attempt > 0 &&
+    coordinator.recoveryState === "awaiting_runner_reattach" &&
     coordinator.recoveryHistory.at(-1)?.disposition === "restart_suspended";
 }
 
@@ -373,6 +377,8 @@ export function classifyNativeRunnerRecoveryEvidence(input: {
   checkpointFailed?: boolean;
   stagedAttachmentVerified?: boolean;
   providerAttempt?: number;
+  /** False when resuming keeps the current attempt (a clean drain). */
+  resumeChargesAttempt?: boolean;
 }): {
   claimKind: NativeRestartRecoveryClaim["kind"] | null;
   reason: string;
@@ -433,7 +439,8 @@ export function classifyNativeRunnerRecoveryEvidence(input: {
       reason: "live_provider_process_identity_unverifiable",
     };
   }
-  if ((input.providerAttempt ?? 0) >= 3)
+  // Continuing an attempt already counted needs no budget; a new one does.
+  if (input.resumeChargesAttempt !== false && (input.providerAttempt ?? 0) >= 3)
     return { claimKind: null, reason: "execution_recovery_budget_exhausted" };
   const checkpointIdentityMatches =
     input.checkpointIdentityMatches ?? input.hasCheckpoint;
@@ -1060,6 +1067,8 @@ export async function claimNativeRestartRecoveries(input: {
           companyId: row.run.companyId, issueId: row.coordinator.issueId, runId: row.run.id,
         }, { runnerInstanceId: row.run.runnerInstanceId!, normalizedSessionId: row.run.nativeSessionId! });
 
+      // Read before this claim appends its own history entry.
+      const cleanDrainSuspension = suspendedByCleanDrain(row.coordinator);
       const classification = classifyNativeRunnerRecoveryEvidence({
         remoteSandbox: remoteSandbox || Boolean(pluginTask && durableAuthority),
         unclaimedBootstrap,
@@ -1081,6 +1090,7 @@ export async function claimNativeRestartRecoveries(input: {
             ?.runTerminalState === "failed" &&
           nativeRestartInterruptedTurnId(checkpointRecord as unknown as PersistedNativeSession) === null,
         providerAttempt: row.coordinator.attempt,
+        resumeChargesAttempt: !cleanDrainSuspension,
       });
       if (stopCleanup && classification.claimKind !== "reattach_remote_runner") {
         return { kind: "blocked", runId: row.run.id, reason: "native_stop_requires_existing_remote_session" } as const;
@@ -1232,8 +1242,6 @@ export async function claimNativeRestartRecoveries(input: {
       const providerAttempt = failedRemoteRetry
         ? nextNativeProviderAttempt(row.coordinator.attempt)
         : row.coordinator.attempt;
-      // Read before this claim appends its own history entry.
-      const cleanDrainSuspension = suspendedByCleanDrain(row.coordinator);
       const generation = row.coordinator.controllerGeneration + 1;
       const leaseOwner = `${controller.bootId}:${generation}:${randomUUID()}`;
       const event = historyEntry({

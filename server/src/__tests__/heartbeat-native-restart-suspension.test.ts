@@ -4,7 +4,7 @@ import { authUsers, budgetReservations, companyMemberships, completionContracts,
 import { expect, it, vi } from "vitest";
 import { heartbeatService } from "../services/heartbeat.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
-import { currentNativeControllerIdentity, nextNativeProviderAttempt, type NativeRestartRecoveryClaim } from "../services/native-runtime/native-restart-recovery.js";
+import { classifyNativeRunnerRecoveryEvidence, currentNativeControllerIdentity, nextNativeProviderAttempt, type NativeRestartRecoveryClaim } from "../services/native-runtime/native-restart-recovery.js";
 import { PaperclipControlPlanePort } from "../services/native-runtime/paperclip-control-plane-port.js";
 import { CONTROL_PLANE_CONFORMANCE_OPEN, CONTROL_PLANE_CONFORMANCE_RESULT, CONTROL_PLANE_CONFORMANCE_TERMINAL } from "../vendor/paperclip-runner/testing.js";
 import { describeEmbeddedPostgres, nativeRestartFixture } from "./helpers/native-restart.js";
@@ -77,10 +77,16 @@ describeEmbeddedPostgres("heartbeat native recovery interrupted by graceful shut
     90_000,
   );
 
-  it("does not spend an execution recovery attempt on resuming a cleanly drained run", async () => {
+  it.each([
+    // Attempt 0: no execution claimed the run yet, so its first start is counted.
+    { drainedAttempt: 0, charges: true },
+    { drainedAttempt: 1, charges: false },
+    // The third attempt may continue after a drain; it does not start a fourth.
+    { drainedAttempt: 3, charges: false },
+  ])("charges a resume after a clean drain only for the first execution (attempt $drainedAttempt)", async ({ drainedAttempt, charges }) => {
     // RC-22: each graceful restart cost one of the three recovery attempts, so
     // infrastructure restarts the run did not cause exhausted its budget.
-    const f = await seedRecoverableRun("DRAIN-BUDGET");
+    const f = await seedRecoverableRun(`DRAIN-BUDGET-${drainedAttempt}`);
     let drained: unknown;
     const heartbeat = heartbeatService(f.db, {
       nativeSessionBackendFactory: vi.fn(() => { throw new Error("A suspended recovery must not open a provider session"); }),
@@ -95,21 +101,29 @@ describeEmbeddedPostgres("heartbeat native recovery interrupted by graceful shut
     } finally { await heartbeat.drainActiveRunExecutions(); }
     expect(drained).toMatchObject({ restartSuspendedRunIds: [f.runId] });
 
-    await f.db.update(nativeRunFinalizations).set({ controllerPid: 2_000_000_001 })
+    await f.db.update(nativeRunFinalizations).set({ controllerPid: 2_000_000_001, attempt: drainedAttempt })
       .where(eq(nativeRunFinalizations.runId, f.runId));
     const resumed = vi.fn(() => { throw new Error("next boot reached provider dispatch"); });
     const next = heartbeatService(f.db, { nativeSessionBackendFactory: resumed });
     let claim: NativeRestartRecoveryClaim | undefined;
     try {
       const { claims } = await next.recoverNativeRunsAfterRestart(new Date(), [f.runId]);
-      expect(claims).toEqual([expect.objectContaining({ runId: f.runId, chargesProviderAttempt: false })]);
+      expect(claims).toEqual([expect.objectContaining({ runId: f.runId, chargesProviderAttempt: charges })]);
       claim = claims[0];
     } finally { await next.drainActiveRunExecutions(); }
     expect(resumed).toHaveBeenCalledOnce();
     // The executor applies the claim's charge when it takes the execution lease.
-    expect(nextNativeProviderAttempt(2, claim!.kind, claim!.chargesProviderAttempt)).toBe(2);
-    expect(nextNativeProviderAttempt(2, claim!.kind)).toBe(3);
+    expect(nextNativeProviderAttempt(drainedAttempt, claim!.kind, claim!.chargesProviderAttempt))
+      .toBe(charges ? drainedAttempt + 1 : drainedAttempt);
   }, 90_000);
+
+  it("still refuses a fourth attempt after a crash", () => {
+    const evidence = { runnerPidAlive: false, runnerGroupAlive: false, processStartMatches: false,
+      hasCheckpoint: true, checkpointIdentityMatches: true, hasProviderEvidence: true, providerAttempt: 3 };
+    expect(classifyNativeRunnerRecoveryEvidence(evidence).reason).toBe("execution_recovery_budget_exhausted");
+    expect(classifyNativeRunnerRecoveryEvidence({ ...evidence, resumeChargesAttempt: false }).reason)
+      .not.toBe("execution_recovery_budget_exhausted");
+  });
 
   it("still settles a recovery whose claim merely expired without a shutdown suspension", async () => {
     const f = await seedRecoverableRun("EXPIRED-NOT-SUSPENDED");
