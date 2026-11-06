@@ -93,7 +93,12 @@ describe.skipIf(!support.supported)("persisted stopped-workspace projection", ()
     expect((await executionProjectionsForRuns(db, companyId, [successorRunId])).get(successorRunId)).toMatchObject({
       phase: "queued", label: "Waiting for previous run to stop", cause: "previous_run_settling", canStop: true,
     });
-    // Once the controller releases (or its lease lapses), the wait is ordinary.
+    // An expired lease still owned by a controller still holds admission.
+    await db.update(nativeRunFinalizations).set({ leaseExpiresAt: new Date(Date.now() - 60_000) })
+      .where(eq(nativeRunFinalizations.runId, stoppedRunId));
+    expect((await executionProjectionsForRuns(db, companyId, [successorRunId])).get(successorRunId)?.cause)
+      .toBe("previous_run_settling");
+    // Once the controller releases its claim, the wait is ordinary.
     await db.update(nativeRunFinalizations).set({ leaseOwner: null, leaseExpiresAt: null })
       .where(eq(nativeRunFinalizations.runId, stoppedRunId));
     expect((await executionProjectionsForRuns(db, companyId, [successorRunId])).get(successorRunId)).toMatchObject({

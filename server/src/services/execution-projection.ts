@@ -1,4 +1,4 @@
-import { and, desc, eq, gt, inArray, isNotNull, isNull, ne, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull, isNull, ne, sql } from "drizzle-orm";
 import {
   heartbeatRuns,
   dotAgentBindings,
@@ -177,7 +177,7 @@ export async function executionProjectionsForRuns(
       )));
     for (const row of offered) waitingByRun.set(row.runId, "openai_dot");
   }
-  // A queued turn cannot start while a live controller still holds an earlier
+  // A queued turn cannot start while a controller still owns an earlier
   // run of the same agent and task (for example a stopped run whose runner has
   // not released yet). Name that wait instead of an unexplained "Queued".
   const settlingPredecessorKeys = new Set<string>();
@@ -199,8 +199,9 @@ export async function executionProjectionsForRuns(
         inArray(heartbeatRuns.agentId, [...new Set(queuedRuns.map(run => run.agentId))]),
         inArray(issueKey, queuedIssueIds),
         ne(heartbeatRuns.status, "queued"),
+        // Admission's cleanup check treats any owned finalization as
+        // pending, expired or not, until a controller reconciles it.
         isNotNull(nativeRunFinalizations.leaseOwner),
-        gt(nativeRunFinalizations.leaseExpiresAt, now),
       )));
     for (const row of held) {
       for (const run of queuedRuns) {

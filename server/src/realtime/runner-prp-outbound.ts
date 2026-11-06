@@ -93,8 +93,18 @@ export class WsJsonWireConnection implements PrpWireConnection {
    */
   monitorLiveness(input: { intervalMs: number; timeoutMs: number }): () => void {
     this.#lastInboundAt = Date.now();
-    const intervalMs = Math.max(1, Math.min(input.intervalMs, input.timeoutMs));
+    // At least two pings fit inside the timeout, so a healthy peer always has
+    // a chance to answer before the deadline, whatever the caller passes.
+    const intervalMs = Math.max(1, Math.min(input.intervalMs, Math.floor(input.timeoutMs / 2)));
     let lastTickAt = Date.now();
+    const ping = () => {
+      try {
+        this.socket.ping();
+      } catch {
+        // A failing ping is itself a transport loss; ws reports it via close.
+      }
+    };
+    if (this.socket.readyState === WebSocket.OPEN) ping();
     const timer = setInterval(() => {
       if (this.#closeReason || this.socket.readyState !== WebSocket.OPEN) return;
       const now = Date.now();
@@ -108,11 +118,7 @@ export class WsJsonWireConnection implements PrpWireConnection {
         this.socket.terminate();
         return;
       }
-      try {
-        this.socket.ping();
-      } catch {
-        // A failing ping is itself a transport loss; ws reports it via close.
-      }
+      ping();
     }, intervalMs);
     timer.unref?.();
     const stop = () => clearInterval(timer);

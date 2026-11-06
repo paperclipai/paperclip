@@ -495,4 +495,45 @@ describe("runner provider-ingress WebSocket wire", () => {
       vi.useRealTimers();
     }
   });
+  it("does not blame the runner for a server event-loop stall", () => {
+    vi.useFakeTimers();
+    try {
+      const socket = new FakeSocket();
+      const wire = new WsJsonWireConnection(socket as unknown as WebSocket);
+      const stop = wire.monitorLiveness({ intervalMs: 10_000, timeoutMs: 30_000 });
+      expect(socket.ping).toHaveBeenCalledOnce();
+      // The server's own loop is blocked for 5 minutes: no timers fire and
+      // the runner's pongs sit unread. The next tick must restart the window.
+      vi.setSystemTime(Date.now() + 5 * 60_000);
+      vi.advanceTimersByTime(10_000);
+      expect(socket.terminate).not.toHaveBeenCalled();
+      expect(socket.ping).toHaveBeenCalledTimes(2);
+      // Genuine silence after the stall is still detected.
+      vi.advanceTimersByTime(30_000);
+      expect(socket.terminate).toHaveBeenCalledOnce();
+      stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("pings a healthy peer before any deadline, even with an interval longer than the timeout", () => {
+    vi.useFakeTimers();
+    try {
+      const socket = new FakeSocket();
+      socket.ping = vi.fn(() => { queueMicrotask(() => socket.emit("pong", Buffer.alloc(0))); });
+      const wire = new WsJsonWireConnection(socket as unknown as WebSocket);
+      const stop = wire.monitorLiveness({ intervalMs: 60_000, timeoutMs: 30_000 });
+      expect(socket.ping).toHaveBeenCalledOnce();
+      for (let i = 0; i < 20; i++) {
+        vi.advanceTimersByTime(15_000);
+        // Deliver the queued pong before the next tick, as a live peer would.
+        socket.emit("pong", Buffer.alloc(0));
+      }
+      expect(socket.terminate).not.toHaveBeenCalled();
+      stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
