@@ -1368,6 +1368,19 @@ Do not add a lockfile inside a provider.
 exists, which changes what a release resolves. Daytona already has one; the
 release build resolves it in place when it is stale.
 
+Daytona is the one exception: it commits its own lockfile, so the workspace
+leaves it out and the script installs it from that lockfile (`LOCKED_PROVIDERS`).
+The same rule applies to it: do not refresh or commit that lockfile. The script
+resolves a stale one in place for the run, and the lockfile refresh workflow
+commits the new one after merge.
+
+Dependabot updates the providers through this workspace (see
+`.github/dependabot.yml`), and Daytona through a second entry. Dependabot does
+not expand a workspace glob that starts with `../`, so
+`scripts/typecheck-sandbox-providers/pnpm-workspace.yaml` lists each provider by
+its full path. When you add a provider, add it there and to `SANDBOX_PROVIDERS`
+in `scripts/typecheck-test-programs.mjs`. A test checks that the two lists match.
+
 #### Sandbox provider tests
 
 `pnpm test:run` does not reach the sandbox providers, because they are outside the
