@@ -49,6 +49,8 @@ type FailedRunProbe = { id: string; agentId: string; issueId: string | null; cre
 
 const FAILED_RUN_PROBE_BATCH_SIZE = 1000;
 
+const UUID_TEXT = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 export async function listFailedRunsWithNewerRun(db: Db, companyId: string, failedRuns: FailedRunProbe[]) {
   const withNewerRun = new Set<string>();
   const keyed = failedRuns.filter(run => run.issueId !== null);
@@ -82,12 +84,52 @@ export async function listFailedRunsWithNewerRun(db: Db, companyId: string, fail
 
 async function listFailedRunBatchWithNewerRun(db: Db, companyId: string, failedRuns: FailedRunProbe[]) {
   if (failedRuns.length === 0) return [];
+  const uuidRuns: FailedRunProbe[] = [];
+  const fallbackRuns: FailedRunProbe[] = [];
+  for (const run of failedRuns) {
+    if (run.issueId !== null && UUID_TEXT.test(run.issueId)) {
+      uuidRuns.push(run);
+    } else {
+      fallbackRuns.push(run);
+    }
+  }
+  const withNewerRun = new Set<string>();
+  if (uuidRuns.length > 0) {
+    for (const id of await listFailedRunBatchIndexed(db, companyId, uuidRuns)) withNewerRun.add(id);
+  }
+  if (fallbackRuns.length > 0) {
+    for (const id of await listFailedRunBatchFallback(db, companyId, fallbackRuns)) withNewerRun.add(id);
+  }
+  return [...withNewerRun];
+}
+
+async function listFailedRunBatchIndexed(db: Db, companyId: string, failedRuns: FailedRunProbe[]) {
+  const failed = sql.join(
+    failedRuns.map((run) => sql`(${run.id}::uuid, ${run.agentId}::uuid, ${run.issueId}::uuid, ${new Date(run.createdAt.getTime() + 1).toISOString()}::timestamptz)`),
+    sql`, `,
+  );
+  const newerRunExists = (issueMatch: SQL) => sql`exists (
+    select 1 from ${heartbeatRuns}
+    where ${heartbeatRuns.companyId} = ${companyId}
+      and ${heartbeatRuns.agentId} = failed.agent_id
+      and ${heartbeatRuns.createdAt} >= failed.newer_from
+      and ${issueMatch}
+  )`;
+  const rows = await db.execute(sql`
+    select failed.id
+    from (values ${failed}) as failed (id, agent_id, issue_id, newer_from)
+    where ${newerRunExists(sql`${heartbeatRuns.issueId} = failed.issue_id`)}
+  `) as unknown as Array<{ id: string }>;
+  return rows.map((row) => row.id);
+}
+
+export async function listFailedRunBatchFallback(db: Db, companyId: string, failedRuns: FailedRunProbe[]) {
   const failed = sql.join(
     failedRuns.map((run) => sql`(${run.id}::uuid, ${run.agentId}::uuid, ${run.issueId}::text, ${new Date(run.createdAt.getTime() + 1).toISOString()}::timestamptz)`),
     sql`, `,
   );
-  const runIssueId = sql`(${heartbeatRuns.contextSnapshot} ->> 'issueId')`;
-  const runTaskId = sql`(${heartbeatRuns.contextSnapshot} ->> 'taskId')`;
+  const runIssueId = sql`${heartbeatRuns.contextSnapshot} ->> 'issueId'`;
+  const runTaskId = sql`${heartbeatRuns.contextSnapshot} ->> 'taskId'`;
   const newerRunExists = (match: SQL) => sql`exists (
     select 1 from ${heartbeatRuns}
     where ${heartbeatRuns.companyId} = ${companyId}
