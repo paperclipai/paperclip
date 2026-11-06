@@ -467,6 +467,30 @@ describe("qualified ACPX runtime sidecar", () => {
     }
   });
 
+  it("keeps a restored provider's restarted call ids distinct from earlier calls in the run", async () => {
+    // A restored session starts a new provider process whose MCP request ids
+    // restart. The controller keys calls by run and call id, so a reused id
+    // would be mistaken for an earlier, already answered call.
+    const raw = { reportedWorkDisposition: "done", summary: "Complete", evidence: [], verification: [],
+      completionClaim: { contractRevision: "1", objectiveSatisfied: true, criteria: [], remainingWork: [] } };
+    const tools = new Map<string, any>(), emitted: any[] = [];
+    const handler = loadWaitForTool({ tools, emitted, validate: validatePrpStructuredRunResult, callIdNamespace: "rgeneration1" });
+    const commands = loadActualToolCommands(tools);
+    const bridge = await startRunnerToolBridge({ handler, captureSemanticReceipt: () => () => {} });
+    try {
+      const response = fetch(bridge.url, { method: "POST", headers: { Authorization: `Bearer ${bridge.secret}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "paperclip_finish", arguments: raw } }) });
+      await vi.waitFor(() => expect(tools.has("rgeneration1:2")).toBe(true));
+      expect(emitted).toEqual([expect.objectContaining({ callId: "rgeneration1:2", operationId: "paperclip_finish" })]);
+      await commands.resolve({ callId: "rgeneration1:2", turnId: "test-turn", result: { accepted: true }, error: null });
+      const body = await (await response).json() as ToolCallResponseBody;
+      expect(body.result.isError).not.toBe(true);
+    } finally {
+      for (const pending of tools.values()) pending.cleanup();
+      await bridge.close();
+    }
+  });
+
   it.each([["monitor", true], ["monitor", false], ["same_agent", true], ["same_agent", false]] as const)("resolves an omitted continuation before the production sidecar validator with saved %s authority=%s", async (kind, eligible) => {
     const raw = { reportedWorkDisposition: "yielded", summary: "The review fix is published.", evidence: [], verification: [],
       completionClaim: { contractRevision: "1", objectiveSatisfied: false, criteria: [], remainingWork: [{ description: "Wait for checks.", blocksCompletion: true }] } };
@@ -1752,6 +1776,7 @@ function loadWaitForTool(input: {
   emitted: unknown[];
   validate?: typeof validatePrpStructuredRunResult;
   emit?: (eventType: string, payload: unknown) => boolean;
+  callIdNamespace?: string | null;
 }): (call: RunnerToolCall) => Promise<unknown> {
   const source = readFileSync(
     fileURLToPath(new URL("./acpx-runtime-sidecar.ts", import.meta.url)),
@@ -1764,7 +1789,7 @@ function loadWaitForTool(input: {
   const factory = new Function(
     "boundedIdentity", "tools", "turnId", "emit", "PRP_COMPLETION_TOOL_NAME",
     "PRP_BLOCK_TOOL_NAME", "validatePrpStructuredRunResult", "boundedSidecarValue", "record", "MAX_PENDING_TOOLS", "stringifyAcpxSidecarFrame",
-    "resolveCompletionContinuation", "runId", "normalizingTools", "randomUUID",
+    "resolveCompletionContinuation", "runId", "normalizingTools", "randomUUID", "callIdNamespace",
     `return (${functionSource});`,
   );
   return factory(
@@ -1786,6 +1811,7 @@ function loadWaitForTool(input: {
     "test-run",
     new Set<string>(),
     randomUUID,
+    input.callIdNamespace ?? null,
   );
 }
 

@@ -2104,7 +2104,8 @@ export function readRunnerdArtifactBinding(runnerBinaryPath: string): {
 export interface RetainedRunnerdCleanupProof {
   readonly binding: Readonly<NativeRunIdentity>;
   readonly identity: Readonly<DurableRecoveryIdentity>;
-  readonly backend: Readonly<{ kind: string; name: string }>;
+  /** Must match the quarantine domain, which every production backend builds with kind "runner". */
+  readonly backend: Readonly<{ kind: "runner"; name: string }>;
   readonly providerSessionId: string;
   readonly activationDirectory: string;
   readonly sourceFingerprint: string;
@@ -2400,7 +2401,7 @@ export interface RetainedRunnerdMaintenanceInput {
   requestId: string;
   binding: NativeRunIdentity;
   identity: DurableRecoveryIdentity;
-  backend: { kind: string; name: string };
+  backend: { kind: "runner"; name: string };
   stateDirectory: string;
   activationDirectory: string;
   sourceFingerprint: string;
@@ -8288,7 +8289,8 @@ export function resolveRunnerdCodexSkillInputs(
 
 /** Controller admission budget; ordinary command and turn deadlines are independent. */
 export function coldAdmissionTimeoutMs(provider: string | undefined, agent: string | undefined, coldProcess: boolean): number {
-  return coldProcess && provider === "acpx" && agent === "pi" ? 60_000 : 30_000;
+  if (!coldProcess) return 30_000;
+  return (provider === "acpx" && agent === "pi") || provider === "opencode" ? 60_000 : 30_000;
 }
 
 export interface RunnerCommandFailure extends Error {
