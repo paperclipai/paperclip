@@ -1291,6 +1291,13 @@ must bind the company, task, run, allocation, descriptor and final file digest.
 The original accepted result stays unchanged. A coordinator that is still
 committing, an active owner, or an unverified stop keeps its existing hold.
 
+If Retry retains a later selected workspace, preparation attaches the verified
+canonical snapshot from its admitted predecessor under `.paperclip-recovered/`.
+It preserves that workspace's own files and older recovery attachments. The
+provider receives the verified relative paths in its continuation context.
+Missing or invalid canonical recovery evidence blocks the import; it does not
+authorize an empty replacement or replay completed work.
+
 When a legacy turn admitted by an explicit user message fails or times out, a bounded transient retry needs its own durable continuation authorization. Initial admission binds the message's exact body digest and revision. Scheduling requires that original binding and revalidates the human author, source task, assignee, and execution ownership, then records the successor's receipt in the same transaction as its run. Historical receipts without a message binding cannot authorize automatic retries and are not backfilled. The parent receipt remains intact. Dispatch checks the exact successor, retry parent, and unchanged message binding again. Deleted or edited input, changed actors or ownership, superseded work, and duplicate successors cannot renew authority. One-run Retry and Interrupt intents retain their separate admission contracts; they are not renewable user-message authority. Other retry policies cannot borrow this receipt: their scheduling fails closed. Successful explicit turns do not create a prose-only missing-comment follow-up with spent authority.
 
 Explicit retry admission checks the local parent adapter controller and verified environment cleanup. The existing queue-first release policy may retain only its own terminal execution claim while that cleanup is pending; finalization and the periodic stale-lock sweep reconsider the same policy after cleanup. Generic terminal-lock cleanup and stale checkout adoption leave these claims for that settlement. New user input, reassignment, and a successor's claim take precedence. Exhausted retries and revoked or missing authorization release the terminal claim without requesting another retry. Pending or failed environment cleanup cannot mint a successor receipt.

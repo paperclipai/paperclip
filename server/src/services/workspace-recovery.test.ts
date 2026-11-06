@@ -22,6 +22,11 @@ import { adapterExecutionControls, createAdapterExecutionControl } from "./adapt
 import { resolveExternalTestDatabaseUrl } from "../__tests__/helpers/external-test-database.js";
 import { DELIVERY_QUEUES, subscribeDeliveryWork } from "./delivery-work-notifications.js";
 import { prepareHeartbeatWorkspace } from "./heartbeat/workspace-preparation.js";
+import { selectHeartbeatEnvironment } from "./heartbeat/environment-selection.js";
+import { attachPreservedRemoteWorkspaceSnapshots } from "./remote-workspace-recovery-attachments.js";
+import { Readable } from "node:stream";
+import { renderPaperclipWakePrompt } from "@paperclipai/adapter-utils/server-utils";
+import { buildEnvironmentLeaseContext } from "./environment-runtime.js";
 import { createHeartbeatWorkspaceResolver, resolveExecutionWorkspaceReuseRequestForIssue } from "./heartbeat/workspaces.js";
 import { environmentService } from "./environments.js";
 import * as agentStarts from "./agent-start-lock.js";
@@ -40,7 +45,7 @@ import { adoptSystemRecovery, updateSystemRecovery } from "./system-recovery.js"
 import { getStorageService } from "../storage/index.js";
 import * as storageBackend from "../storage/index.js";
 import { migrateRemoteWorkspace } from "./remote-workspace-migration.js";
-import { attachPreservedWorkspaceSnapshots, verifiedWorkspaceSnapshotReceipt } from "./workspace-recovery-snapshot.js";
+import { attachPreservedWorkspaceSnapshots, preserveWorkspaceSnapshot, verifiedWorkspaceSnapshotReceipt } from "./workspace-recovery-snapshot.js";
 import { adoptHistoricalWorkspaceRecoveries, historicalRecoveryCounts } from "./workspace-recovery-backfill.js";
 import { createSystemRecovery, failSystemRecovery, reserveSystemRecoveryAttempt, SystemRecoveryFailure } from "./system-recovery-state.js";
 import { requestTaskRetry } from "./task-retry.js";
@@ -1703,6 +1708,208 @@ describe("automatic retained workspace recovery", () => {
       snapshotId: remote.snapshotId });
     try { expect(await readFile(path.join(saved.root, "saved.txt"), "utf8")).toBe("finished work\n"); }
     finally { await saved.cleanup(); }
+  }, 30_000);
+
+  it("restores the newest recovered tick bytes when Retry follows a later empty workspace placeholder", async () => {
+    vi.stubEnv("DATABASE_URL", connectionString);
+    vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY", "62".repeat(32));
+    try {
+      const f = await failedRemotePreparation();
+      const tickLog = Array.from({ length: 12 }, (_, i) => `2026-11-06T07:${String(21 + i).padStart(2, "0")}:00Z\n`).join("");
+      await writeFile(path.join(f.remote, "ticks.log"), tickLog);
+      await recoverRetainedWorkspace(f.input);
+      const initial = await run(f.runId), oldRunId = randomUUID(), oldActionId = randomUUID();
+      await db.insert(heartbeatRuns).values({ id: oldRunId, companyId: f.companyId, issueId: f.issueId,
+        agentId: initial.agentId, status: "failed", contextSnapshot: { issueId: f.issueId },
+        createdAt: new Date(initial.createdAt.getTime() - 60_000), finishedAt: new Date(initial.createdAt.getTime() - 30_000) });
+      await db.insert(issueRecoveryActions).values({ id: oldActionId, companyId: f.companyId, sourceIssueId: f.issueId,
+        kind: "active_run_watchdog", status: "resolved", ownerType: "board", cause: "native_continuation_requires_reconciliation",
+        fingerprint: oldRunId, nextAction: "Historical preserved files", evidence: { runId: oldRunId } });
+      const oldRoot = path.join(root, oldRunId); await mkdir(oldRoot);
+      await writeFile(path.join(oldRoot, "ticks.log"), "2026-11-06T07:21:00Z\n");
+      const oldProviderId = randomUUID();
+      const [oldLease] = await db.insert(environmentLeases).values({ companyId: f.companyId, issueId: f.issueId,
+        heartbeatRunId: oldRunId, environmentId: f.lease.environmentId, provider: "daytona", providerLeaseId: oldProviderId,
+        status: "released", cleanupStatus: "success", releasedAt: new Date() }).returning();
+      await preserveWorkspaceSnapshot({ db, companyId: f.companyId, issueId: f.issueId, runId: oldRunId,
+        actionId: oldActionId, leaseId: oldLease.id, providerLeaseId: oldProviderId,
+        target: { ...targets.get(f.lease.id)!, leaseId: oldLease.id, remoteCwd: oldRoot }, assertHeld: async () => {} });
+      await db.update(heartbeatRuns).set({ runtimeMode: "native", nativeIssueId: f.issueId,
+        error: "native_remote_recovery_lease_mismatch", errorCode: "setup_failed", sessionIdBefore: randomUUID(),
+      }).where(eq(heartbeatRuns.id, f.runId));
+      await db.insert(nativeRunFinalizations).values({ companyId: f.companyId, issueId: f.issueId,
+        runId: f.runId, phase: "terminal_failure" });
+      const [placeholder] = await db.insert(executionWorkspaces).values({ companyId: f.companyId,
+        sourceIssueId: f.issueId, name: "Later empty placeholder", providerType: "cloud_sandbox",
+        mode: "isolated_workspace", strategyType: "project_primary", cwd: `/workspaces/${randomUUID()}`,
+        metadata: { remoteWorkspace: { schema: "paperclip.remote-workspace.v1", epoch: 1,
+          snapshotId: null, source: { kind: "empty" }, writerRunId: f.runId, dirty: false, location: null },
+          remoteWorkspaceRecoverySourceRunIds: [oldRunId],
+          remoteWorkspaceSnapshotRepositories: { snapshotId: randomUUID(), repositories: [] } },
+      }).returning();
+      await db.update(issues).set({ executionWorkspaceId: placeholder.id }).where(eq(issues.id, f.issueId));
+      const source = await run(f.runId);
+      expect(await hasVerifiedWorkspaceRepair(db, source)).toBe(true);
+      const sourceReference = source.runnerProfileJson!.remoteWorkspace as { snapshotId: string };
+      const savedSource = await createSavedWorkspaceLoader(db)({ companyId: f.companyId,
+        workspaceId: f.workspaceId, snapshotId: sourceReference.snapshotId });
+      try { expect(await readFile(path.join(savedSource.root, "ticks.log"), "utf8")).toBe(tickLog); }
+      finally { await savedSource.cleanup(); }
+      await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: source.agentId, status: "running" });
+      const receipt = await requestTaskRetry({ db, companyId: f.companyId, issueId: f.issueId,
+        actorId: "local-board", actorSource: "local_implicit", observedRunId: f.runId, idempotencyKey: randomUUID() });
+      expect(receipt.accepted).toBe(true);
+      await heartbeatService(db).resumeTaskRetry(f.companyId, receipt.requestId!);
+      const [successor] = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId),
+        sql`${heartbeatRuns.contextSnapshot}->>'taskRetryRequestId' = ${receipt.requestId}`));
+      expect(successor).toBeDefined();
+      const readiness = await readFreshWorkspaceReadiness(db, successor);
+      expect(readiness).toMatchObject({ mode: "resume_preserved_workspace" });
+      const [issue] = await db.select().from(issues).where(eq(issues.id, f.issueId));
+      const [agent] = await db.select().from(agents).where(eq(agents.id, source.agentId));
+      const selection = await selectHeartbeatEnvironment(db, {
+        run: successor, agent,
+        task: { issueRef: issue, issueContext: issue, issueId: f.issueId, context: successor.contextSnapshot!,
+          executionProjectId: issue.projectId, workspaceProjectContext: null, boundSourceWorkspace: null,
+          freshWorkspace: readiness, hasSelectedWorkspaceSource: false, taskWorkspaceIntent: null, responsibleUserId: "local-board" },
+        policy: { trustPreset: { kind: "standard", preset: "standard", boundary: null, sourcePresets: {} },
+          isolatedWorkspacesEnabled: true, requestedExecutionWorkspaceMode: "isolated_workspace",
+          projectExecutionWorkspacePolicy: null, issueExecutionWorkspaceSettings: null },
+        config: { config: {}, sourceWorkspaceConfig: {}, issueAssigneeOverrides: null },
+        services: { environmentsSvc: environmentService(db), executionWorkspacesSvc: executionWorkspaceService(db),
+          instanceSettings: instanceSettingsService(db), findSharedWorkspaceHolder: async () => null,
+          findExecutionWorkspaceHolder: async () => null },
+      });
+        await db.update(heartbeatRuns).set({ status: "running" }).where(eq(heartbeatRuns.id, successor.id));
+        const storage = { ...getStorageService(), provider: "s3" as const };
+        const reserved = await reserveRemoteWorkspace({ db, storage, companyId: f.companyId, issueId: f.issueId,
+          runId: successor.id, agentId: source.agentId, environmentId: f.lease.environmentId!,
+          projectId: null, projectWorkspaceId: null, existingWorkspaceId: selection.existingExecutionWorkspace?.id ?? null,
+          source: { kind: "empty" } });
+        const allocationPath = path.join(root, successor.id); await mkdir(allocationPath);
+        const allocation = await realpath(allocationPath);
+        const [lease] = await db.insert(environmentLeases).values({ companyId: f.companyId, issueId: f.issueId,
+          heartbeatRunId: successor.id, environmentId: f.lease.environmentId, provider: "daytona",
+          providerLeaseId: randomUUID(), status: "active" }).returning();
+        const target = { ...targets.get(f.lease.id)!, leaseId: lease.id, remoteCwd: allocation,
+          runner: { ...targets.get(f.lease.id)!.runner!, syncIn: async operations => {
+            for (const operation of operations) for (const file of operation.files) {
+              await mkdir(path.dirname(file.targetPath), { recursive: true });
+              await cp(file.sourcePath, file.targetPath, { recursive: true, dereference: false });
+            }
+            return { filesTransferred: 1, bytesTransferred: 0, operations: [] };
+          } } } satisfies AdapterSandboxExecutionTarget;
+        const prepared = await prepareRemoteWorkspace({ db, storage, workspace: reserved, runId: successor.id,
+          lease: lease as EnvironmentLease, target });
+        const recovered = prepared.workspace.metadata?.remoteWorkspaceRecoveredFiles as Array<{ path: string }> | undefined;
+        const contents = await Promise.all(["", ...(recovered ?? []).map(item => `${item.path}/files`)]
+          .map(relative => readFile(path.join(prepared.remoteRoot, relative, "ticks.log"), "utf8").catch(() => null)));
+        expect(contents).toContain("2026-11-06T07:21:00Z\n");
+        expect(contents).toContain(tickLog);
+        const continuation = await buildExecutionContinuation({ db, companyId: f.companyId, issueId: f.issueId,
+          agentId: agent.id, runId: successor.id, context: successor.contextSnapshot!, summary: null, exposeLowTrustRaw: false });
+        const providerContext: Record<string, unknown> = { ...successor.contextSnapshot,
+          executionContinuation: continuation, paperclipWake: { issue: { id: f.issueId }, executionContinuation: continuation } };
+        const workspaces = executionWorkspaceService(db);
+        const current = (await workspaces.getStoredById(f.companyId, placeholder.id))!;
+        const currentIssue = (await db.select().from(issues).where(eq(issues.id, f.issueId)))[0];
+        const environment = (await environmentService(db).getById(f.lease.environmentId!))!;
+        const orchestrator = environmentRunOrchestrator(db, { environmentRuntime: f.environmentRuntime });
+        const acquire = vi.spyOn(orchestrator, "acquireForRun").mockResolvedValue({ environment,
+          lease: prepared.lease, leaseContext: buildEnvironmentLeaseContext({ persistedExecutionWorkspace: current }), executionTransport: null });
+        const storageRead = vi.spyOn(storageBackend, "getStorageService").mockReturnValue(storage);
+        targets.set(lease.id, { ...target, remoteCwd: prepared.remoteRoot });
+        const localEnvironment = await environmentService(db).ensureLocalEnvironment(f.companyId);
+        try {
+          const boundary = await prepareHeartbeatWorkspace(db, { run: await run(successor.id), agent,
+            task: { issueRef: currentIssue, issueId: f.issueId, wasIssueAssignee: true,
+              context: providerContext, responsibleUserId: "local-board", previousSessionParams: null, freshWorkspace: readiness },
+            policy: { trustPreset: { kind: "standard", preset: "standard", boundary: null, sourcePresets: {} },
+              isolatedWorkspacesEnabled: true, effectiveExecutionWorkspaceMode: "isolated_workspace",
+              requestedExecutionWorkspaceMode: "isolated_workspace", useIsolatedTaskDirectory: true,
+              nativeChatWorkspaceScope: null, projectExecutionWorkspacePolicy: null, issueExecutionWorkspaceSettings: null,
+              environmentExecutionWorkspaceSettings: null, executionPolicy: { executionMode: "any" } },
+            environment: { selectedEnvironmentId: environment.id, localEnvironment, selectedEnvironmentForConfig: environment,
+              environmentResolution: { environmentId: environment.id, source: "agent" }, resolvedInstanceSettings: await instanceSettingsService(db).get() },
+            config: { mergedConfig: {}, configSnapshot: null, secretManifest: [] },
+            reuse: { ...selection, existingExecutionWorkspace: current, reusableExistingExecutionWorkspace: current,
+              requestedShouldReuseExisting: true, workspaceReuseRequest: resolveExecutionWorkspaceReuseRequestForIssue({
+                issueExecutionWorkspaceId: current.id, issueExecutionWorkspacePreference: "reuse_existing", existingExecutionWorkspaceStatus: current.status }),
+              runOptions: {} },
+            services: { envOrchestrator: orchestrator, executionWorkspacesSvc: workspaces, workspaceOperationsSvc: workspaceOperationService(db),
+              ...createHeartbeatWorkspaceResolver(db), appendRunEvent: vi.fn() },
+            controllerLease: { assertOwned: vi.fn(async () => {}) }, nativeRunnerPreparationSpans: [],
+          });
+          const paths = providerContext.recoveredWorkspaceFiles as Array<{ sourceRunId: string; path: string }>;
+          const newest = paths?.find(item => item.sourceRunId === source.id);
+          expect(newest).toBeDefined();
+          const prompt = renderPaperclipWakePrompt(providerContext.paperclipWake);
+          expect(prompt).toContain(newest!.path);
+          const readback = await new Promise<string>((resolve, reject) => execFile(process.execPath, ["-e",
+            "const fs=require('node:fs');const p=JSON.parse(process.argv[1]);const text=fs.readFileSync(require('node:path').join(p.cwd,p.path,'files/ticks.log'),'utf8');const lines=text.trimEnd().split('\\n');process.stdout.write(JSON.stringify({count:lines.length,first:lines[0],last:lines.at(-1)}));",
+            JSON.stringify({ cwd: boundary.executionWorkspace.cwd, path: newest!.path })],
+          (error, stdout) => error ? reject(error) : resolve(stdout)));
+          expect(JSON.parse(readback)).toEqual({ count: 12, first: "2026-11-06T07:21:00Z", last: "2026-11-06T07:32:00Z" });
+          expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0].executionWorkspaceId).toBe(placeholder.id);
+        } finally { acquire.mockRestore(); storageRead.mockRestore(); }
+      expect((await run(f.runId)).error).toBe("native_remote_recovery_lease_mismatch");
+    } finally { vi.unstubAllEnvs(); }
+  }, 30_000);
+
+  it.each(["missing_receipt", "missing_reference", "uncommitted", "foreign_snapshot", "wrong_lease", "missing_object", "corrupt_object", "wrong_company", "wrong_issue"])(
+    "refuses canonical recovery attachments with %s evidence", async fault => {
+    const f = await failedRemotePreparation();
+    await recoverRetainedWorkspace(f.input);
+    const source = await run(f.runId), remote = source.runnerProfileJson!.remoteWorkspace as { snapshotId: string };
+    const [writer] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: source.agentId,
+      issueId: f.issueId, status: "running", responsibleUserId: "local-board", contextSnapshot: { issueId: f.issueId } }).returning();
+    const destination = path.join(root, writer.id); await mkdir(destination);
+    const [receipt] = await db.select().from(workspaceOperations).where(and(eq(workspaceOperations.heartbeatRunId, f.runId),
+      eq(workspaceOperations.phase, "workspace_recovery"), eq(workspaceOperations.status, "succeeded")));
+    if (fault === "missing_receipt") await db.update(workspaceOperations).set({ status: "failed" }).where(eq(workspaceOperations.id, receipt.id));
+    if (fault === "missing_reference") await db.update(heartbeatRuns).set({ runnerProfileJson:
+      Object.fromEntries(Object.entries(source.runnerProfileJson!).filter(([key]) => key !== "remoteWorkspace")) }).where(eq(heartbeatRuns.id, source.id));
+    if (fault === "uncommitted") await db.update(executionWorkspaceSnapshots).set({ status: "uploaded" }).where(eq(executionWorkspaceSnapshots.id, remote.snapshotId));
+    if (fault === "foreign_snapshot") await db.update(heartbeatRuns).set({ runnerProfileJson: { ...source.runnerProfileJson,
+      remoteWorkspace: { ...source.runnerProfileJson!.remoteWorkspace as object, snapshotId: randomUUID() } } }).where(eq(heartbeatRuns.id, source.id));
+    if (fault === "wrong_lease") await db.update(workspaceOperations).set({ metadata: { ...receipt.metadata, leaseId: randomUUID() } })
+      .where(eq(workspaceOperations.id, receipt.id));
+    const storage = getStorageService(), getObject = storage.getObject.bind(storage);
+    const failingRead = ["missing_object", "corrupt_object"].includes(fault) ? vi.spyOn(storage, "getObject").mockImplementation(async (...args) => {
+      if (fault === "missing_object") throw new Error("fixture: object missing");
+      const object = await getObject(...args); object.stream.destroy();
+      return { ...object, stream: Readable.from([Buffer.from("corrupt")]) };
+    }) : undefined;
+    try {
+      await expect(attachPreservedRemoteWorkspaceSnapshots({ db,
+        companyId: fault === "wrong_company" ? randomUUID() : f.companyId,
+        issueId: fault === "wrong_issue" ? randomUUID() : f.issueId,
+        runId: writer.id, workspaceId: randomUUID(), sourceRunIds: [source.id], cwd: destination })).rejects.toThrow();
+      expect(await readdir(destination)).toEqual(fault === "missing_object" || fault === "corrupt_object" ? [".paperclip-recovered"] : []);
+      expect(await readFile(path.join(f.remote, "saved.txt"), "utf8")).toBe("finished work\n");
+    } finally { failingRead?.mockRestore(); }
+  }, 30_000);
+
+  it("deduplicates canonical sidecars without changing a later selected workspace or its files", async () => {
+    const f = await failedRemotePreparation(); await recoverRetainedWorkspace(f.input);
+    const source = await run(f.runId), destination = path.join(root, randomUUID()); await mkdir(destination);
+    await writeFile(path.join(destination, "later.txt"), "Later selected work\n");
+    const [selected] = await db.insert(executionWorkspaces).values({ companyId: f.companyId, sourceIssueId: f.issueId,
+      name: "Later selected workspace", cwd: destination, mode: "isolated_workspace", strategyType: "project_primary" }).returning();
+    await db.update(issues).set({ executionWorkspaceId: selected.id }).where(eq(issues.id, f.issueId));
+    const [writer] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: source.agentId,
+      issueId: f.issueId, status: "running", responsibleUserId: "local-board", contextSnapshot: { issueId: f.issueId } }).returning();
+    const scope = { db, companyId: f.companyId, issueId: f.issueId, runId: writer.id,
+      workspaceId: selected.id, sourceRunIds: [source.id, source.id], cwd: destination };
+    const first = await attachPreservedRemoteWorkspaceSnapshots(scope);
+    expect(first).toHaveLength(1);
+    expect(await readFile(path.join(first[0].path, "files", "saved.txt"), "utf8")).toBe("finished work\n");
+    await writeFile(path.join(first[0].path, "files", "saved.txt"), "User edited sidecar\n");
+    expect(await attachPreservedRemoteWorkspaceSnapshots(scope)).toEqual(first);
+    expect(await readFile(path.join(first[0].path, "files", "saved.txt"), "utf8")).toBe("User edited sidecar\n");
+    expect(await readFile(path.join(destination, "later.txt"), "utf8")).toBe("Later selected work\n");
+    expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0].executionWorkspaceId).toBe(selected.id);
+    expect(await readdir(path.join(destination, ".paperclip-recovered"))).toEqual([first[0].operationId]);
   }, 30_000);
 
   it("admits one HTTP Retry after a failed native preparation has verified saved work", async () => {
