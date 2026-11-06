@@ -15,6 +15,17 @@ describe.skipIf(!support.supported)("persisted stopped-workspace projection", ()
   }, 60_000);
   afterAll(async () => { await db?.$client.end(); await database?.cleanup(); });
 
+  it("reads the quota retry budget and accounting from persisted runs", async () => {
+    const companyId = randomUUID(), agentId = randomUUID(), runId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Quota projection", issuePrefix: "QPR" });
+    await db.insert(agents).values({ id: agentId, companyId, name: "Worker", adapterType: "claude_local" });
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, runtimeMode: "legacy", status: "scheduled_retry",
+      scheduledRetryAttempt: 4, scheduledRetryReason: "transient_failure", contextSnapshot: {
+        errorFamily: "provider_quota", executionRetryAccounting: { version: 1, failureRetries: 4, maxTurnContinuations: 0 },
+      } });
+    expect((await executionProjectionsForRuns(db, companyId, [runId])).get(runId)).toMatchObject({ attempt: 5, maxAttempts: 5 });
+  });
+
   it("reads recovered files on a cancelled run through the real batched query", async () => {
     const companyId = randomUUID(), agentId = randomUUID(), issueId = randomUUID(), runId = randomUUID();
     await db.insert(companies).values({ id: companyId, name: "Stopped workspace", issuePrefix: "SWP" });

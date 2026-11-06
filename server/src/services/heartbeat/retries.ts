@@ -458,7 +458,7 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
     const wakeReason =
       opts?.wakeReason ?? BOUNDED_TRANSIENT_HEARTBEAT_RETRY_WAKE_REASON;
     const transientRecovery =
-      retryReason === BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON
+      retryReason === BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON || retryReason === "execution_review_participant_recovery"
         ? readTransientRecoveryContractFromRun(run)
         : null;
     const quotaRetry = transientRecovery?.errorFamily === "provider_quota";

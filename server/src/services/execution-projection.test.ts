@@ -234,6 +234,10 @@ describe("execution truth projection", () => {
   it("includes the original legacy attempt in the displayed incident budget", () => {
     expect(projectExecution(run({ runtimeMode: "legacy", status: "scheduled_retry", scheduledRetryAttempt: 1 }), undefined, [], undefined, now)).toMatchObject({ attempt: 2, maxAttempts: 3 });
   });
+  it("shows the quota incident budget for failed and scheduled runs", () => {
+    expect(projectExecution(run({ runtimeMode: "legacy", status: "failed", errorCode: "provider_quota", scheduledRetryAttempt: 3 }), undefined, [], undefined, now)).toMatchObject({ attempt: 4, maxAttempts: 5 });
+    expect(projectExecution(run({ runtimeMode: "legacy", status: "scheduled_retry", errorCode: null, scheduledRetryAttempt: 4, contextSnapshot: { errorFamily: "provider_quota" } }), undefined, [], undefined, now)).toMatchObject({ attempt: 5, maxAttempts: 5 });
+  });
   it("shows pending interaction only after productive work has stopped", () => {
     expect(
       project(run(), coordinator(), [{ kind: "connection_intent" }]).phase,
