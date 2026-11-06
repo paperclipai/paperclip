@@ -1296,6 +1296,272 @@ describe("issue execution policy transitions", () => {
     });
   });
 
+  describe("stages with no eligible participant", () => {
+    const executorIssue = (policy: IssueExecutionPolicy, executionState: Record<string, unknown> | null = null) => ({
+      status: "in_progress",
+      assigneeAgentId: coderAgentId,
+      assigneeUserId: null,
+      executionPolicy: policy,
+      executionState,
+    });
+
+    function noEligibleParticipantError(policy: IssueExecutionPolicy, stageIndex: number) {
+      return expect.objectContaining({
+        status: 422,
+        details: {
+          code: "no_eligible_stage_participant",
+          stageId: policy.stages[stageIndex].id,
+          stageIndex,
+          reason: "only_return_assignee",
+        },
+      });
+    }
+
+    it.each(["review", "approval"] as const)(
+      "rejects the submit when a later %s stage has only the return assignee",
+      (laterStageType) => {
+        const policy = makePolicy([
+          { type: "review", participants: [{ type: "agent", agentId: qaAgentId }] },
+          { type: laterStageType, participants: [{ type: "agent", agentId: coderAgentId }] },
+        ]);
+
+        expect(() =>
+          applyIssueExecutionPolicyTransition({
+            issue: executorIssue(policy),
+            policy,
+            requestedStatus: "in_review",
+            requestedAssigneePatch: {},
+            actor: { agentId: coderAgentId },
+          }),
+        ).toThrow(noEligibleParticipantError(policy, 1));
+      },
+    );
+
+    it("names the stage and the cause in the message", () => {
+      const policy = makePolicy([
+        { type: "review", participants: [{ type: "agent", agentId: qaAgentId }] },
+        { type: "approval", participants: [{ type: "agent", agentId: coderAgentId }] },
+      ]);
+
+      expect(() =>
+        applyIssueExecutionPolicyTransition({
+          issue: executorIssue(policy),
+          policy,
+          requestedStatus: "done",
+          requestedAssigneePatch: {},
+          actor: { agentId: coderAgentId },
+        }),
+      ).toThrow(
+        "No eligible approval participant is configured for this issue: the only participant on stage 2 (approval) is the return assignee, who cannot approve it. Add another participant to this stage.",
+      );
+    });
+
+    it("rejects a first stage that has only the return assignee", () => {
+      const policy = makePolicy([
+        { type: "review", participants: [{ type: "agent", agentId: coderAgentId }] },
+      ]);
+
+      expect(() =>
+        applyIssueExecutionPolicyTransition({
+          issue: executorIssue(policy),
+          policy,
+          requestedStatus: "in_review",
+          requestedAssigneePatch: {},
+          actor: { agentId: coderAgentId },
+        }),
+      ).toThrow(
+        "No eligible review participant is configured for this issue: the only participant on stage 1 (review) is the return assignee, who cannot review it. Add another participant to this stage.",
+      );
+    });
+
+    it("names the approval stage that follows a skipped self-review stage", () => {
+      const policy = makePolicy([
+        { type: "review", participants: [{ type: "agent", agentId: coderAgentId }] },
+        { type: "approval", participants: [{ type: "agent", agentId: coderAgentId }] },
+      ]);
+
+      expect(() =>
+        applyIssueExecutionPolicyTransition({
+          issue: executorIssue(policy),
+          policy,
+          requestedStatus: "done",
+          requestedAssigneePatch: {},
+          actor: { agentId: coderAgentId },
+        }),
+      ).toThrow(noEligibleParticipantError(policy, 1));
+    });
+
+    it("rejects the resubmission after changes requested", () => {
+      const policy = makePolicy([
+        { type: "review", participants: [{ type: "agent", agentId: qaAgentId }] },
+        { type: "approval", participants: [{ type: "agent", agentId: coderAgentId }] },
+      ]);
+
+      expect(() =>
+        applyIssueExecutionPolicyTransition({
+          issue: executorIssue(policy, {
+            status: "changes_requested",
+            currentStageId: policy.stages[0].id,
+            currentStageIndex: 0,
+            currentStageType: "review",
+            currentParticipant: { type: "agent", agentId: qaAgentId },
+            returnAssignee: { type: "agent", agentId: coderAgentId },
+            completedStageIds: [],
+            lastDecisionId: null,
+            lastDecisionOutcome: "changes_requested",
+          }),
+          policy,
+          requestedStatus: "done",
+          requestedAssigneePatch: {},
+          actor: { agentId: coderAgentId },
+        }),
+      ).toThrow(noEligibleParticipantError(policy, 1));
+    });
+
+    it("rejects the resubmission when the stage after the one that requested changes has only the return assignee", () => {
+      const policy = makePolicy([
+        { type: "review", participants: [{ type: "agent", agentId: qaAgentId }] },
+        { type: "approval", participants: [{ type: "agent", agentId: ctoAgentId }] },
+        { type: "approval", participants: [{ type: "agent", agentId: coderAgentId }] },
+      ]);
+
+      expect(() =>
+        applyIssueExecutionPolicyTransition({
+          issue: executorIssue(policy, {
+            status: "changes_requested",
+            currentStageId: policy.stages[1].id,
+            currentStageIndex: 1,
+            currentStageType: "approval",
+            currentParticipant: { type: "agent", agentId: ctoAgentId },
+            returnAssignee: { type: "agent", agentId: coderAgentId },
+            completedStageIds: [policy.stages[0].id],
+            lastDecisionId: null,
+            lastDecisionOutcome: "changes_requested",
+          }),
+          policy,
+          requestedStatus: "done",
+          requestedAssigneePatch: {},
+          actor: { agentId: coderAgentId },
+        }),
+      ).toThrow(noEligibleParticipantError(policy, 2));
+    });
+
+    it("accepts the submit of an unassigned issue because no one is excluded yet", () => {
+      const policy = makePolicy([
+        { type: "review", participants: [{ type: "agent", agentId: qaAgentId }] },
+        { type: "approval", participants: [{ type: "agent", agentId: coderAgentId }] },
+      ]);
+
+      const result = applyIssueExecutionPolicyTransition({
+        issue: { status: "todo", assigneeAgentId: null, assigneeUserId: null, executionPolicy: policy, executionState: null },
+        policy,
+        requestedStatus: "in_review",
+        requestedAssigneePatch: {},
+        actor: { userId: boardUserId },
+      });
+
+      expect(result.patch).toMatchObject({
+        status: "in_review",
+        executionState: { status: "pending", currentStageId: policy.stages[0].id, returnAssignee: null },
+      });
+    });
+
+    it("does not check a later stage that is already completed", () => {
+      const policy = makePolicy([
+        { type: "review", participants: [{ type: "agent", agentId: qaAgentId }] },
+        { type: "approval", participants: [{ type: "agent", agentId: coderAgentId }] },
+      ]);
+
+      const result = applyIssueExecutionPolicyTransition({
+        issue: executorIssue(policy, {
+          status: "changes_requested",
+          currentStageId: policy.stages[0].id,
+          currentStageIndex: 0,
+          currentStageType: "review",
+          currentParticipant: { type: "agent", agentId: qaAgentId },
+          returnAssignee: { type: "agent", agentId: coderAgentId },
+          completedStageIds: [policy.stages[1].id],
+          lastDecisionId: null,
+          lastDecisionOutcome: "changes_requested",
+        }),
+        policy,
+        requestedStatus: "done",
+        requestedAssigneePatch: {},
+        actor: { agentId: coderAgentId },
+      });
+
+      expect(result.patch).toMatchObject({
+        status: "in_review",
+        executionState: { status: "pending", currentParticipant: { type: "agent", agentId: qaAgentId } },
+      });
+    });
+
+    it("names the next stage when an approval reaches it with no eligible participant", () => {
+      const policy = makePolicy([
+        { type: "review", participants: [{ type: "agent", agentId: qaAgentId }] },
+        { type: "approval", participants: [{ type: "agent", agentId: coderAgentId }] },
+      ]);
+
+      expect(() =>
+        applyIssueExecutionPolicyTransition({
+          issue: {
+            status: "in_review",
+            assigneeAgentId: qaAgentId,
+            assigneeUserId: null,
+            executionPolicy: policy,
+            executionState: {
+              status: "pending",
+              currentStageId: policy.stages[0].id,
+              currentStageIndex: 0,
+              currentStageType: "review",
+              currentParticipant: { type: "agent", agentId: qaAgentId },
+              returnAssignee: { type: "agent", agentId: coderAgentId },
+              completedStageIds: [],
+              lastDecisionId: null,
+              lastDecisionOutcome: null,
+            },
+          },
+          policy,
+          requestedStatus: "done",
+          requestedAssigneePatch: {},
+          actor: { agentId: qaAgentId },
+          commentBody: "Looks good",
+        }),
+      ).toThrow(noEligibleParticipantError(policy, 1));
+    });
+
+    it("names the active stage when it has no stored participant and no eligible one", () => {
+      const policy = makePolicy([
+        { type: "review", participants: [{ type: "agent", agentId: coderAgentId }] },
+      ]);
+
+      expect(() =>
+        applyIssueExecutionPolicyTransition({
+          issue: {
+            status: "in_review",
+            assigneeAgentId: coderAgentId,
+            assigneeUserId: null,
+            executionPolicy: policy,
+            executionState: {
+              status: "pending",
+              currentStageId: policy.stages[0].id,
+              currentStageIndex: 0,
+              currentStageType: "review",
+              currentParticipant: null,
+              returnAssignee: { type: "agent", agentId: coderAgentId },
+              completedStageIds: [],
+              lastDecisionId: null,
+              lastDecisionOutcome: null,
+            },
+          },
+          policy,
+          requestedAssigneePatch: {},
+          actor: { userId: boardUserId },
+        }),
+      ).toThrow(noEligibleParticipantError(policy, 0));
+    });
+  });
+
   describe("final stage completion terminates the policy (#7893)", () => {
     function threeStagePolicy() {
       return makePolicy([

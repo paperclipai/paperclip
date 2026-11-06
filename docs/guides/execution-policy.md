@@ -149,6 +149,8 @@ Executor finishes → approver signs off → done.
 **Multiple reviewers/approvers:**
 Each stage supports multiple participants. The runtime selects one to act, excluding the original executor to prevent self-review.
 
+If the original executor (the return assignee) is the only participant of a stage, nobody can act on that stage. Each time an issue is submitted for review (`in_review` or `done`), including a resubmission after changes were requested, the runtime checks every stage that is still ahead. If one of them has no eligible participant, the submit fails with `422` and nothing changes. The error `details` name the stage: `code` is `no_eligible_stage_participant`, `stageId` and the zero-based `stageIndex` identify it, and `reason` is `only_return_assignee`. To continue, add another participant to that stage or cancel the issue. A review stage at the start of the cycle whose only participant is the executor is still skipped when the issue is marked `done`.
+
 ## Comment Required Backstop
 
 Independent of review stages, every issue-bound agent run must leave a comment. This is enforced at the runtime level:
