@@ -79,16 +79,22 @@ export function logShowsRunnerLoss(log) {
 /** Classifies one failed job. Logs are read only when annotations are inconclusive. */
 export async function classifyJob(job, { annotations, readLog }) {
   const failures = annotations.filter((annotation) => annotation.annotation_level === "failure");
-  const match = failures.find((annotation) => RUNNER_LOSS_PATTERN.test(annotation.message ?? ""));
+  const isRunnerLoss = (annotation) => RUNNER_LOSS_PATTERN.test(annotation.message ?? "");
+  // A step can fail for a real reason before the runner is lost (for example a
+  // test failure, then a loss during an always() upload step). Any failure
+  // annotation other than runner loss or cancellation marks a real failure.
+  const real = failures.find((annotation) => !isRunnerLoss(annotation) && annotation.message !== CANCELLED_MESSAGE);
+  if (real) return { lost: false, evidence: firstLine(real.message) };
+  const match = failures.find(isRunnerLoss);
   if (match) return { lost: true, evidence: firstLine(match.message) };
-  if (failures.length > 0 && failures.every((annotation) => annotation.message === CANCELLED_MESSAGE)) {
+  // Only cancellations are left: the shutdown signal, if any, is in the log.
+  if (failures.length > 0) {
     if (logShowsRunnerLoss(await readLog(job))) {
       return { lost: true, evidence: "job log: runner received a shutdown signal or lost communication" };
     }
     return { lost: false, evidence: `${CANCELLED_MESSAGE} (no runner-loss error in the job log)` };
   }
-  const real = failures.find((annotation) => annotation.message !== CANCELLED_MESSAGE);
-  return { lost: false, evidence: real ? firstLine(real.message) : "no failure annotation" };
+  return { lost: false, evidence: "no failure annotation" };
 }
 
 function firstLine(message) {

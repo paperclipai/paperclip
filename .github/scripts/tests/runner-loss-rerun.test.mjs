@@ -250,6 +250,40 @@ test("classification is conservative about cancelled jobs", async () => {
   assert.equal(logShowsRunnerLoss(fixture(MIXED).logs["128078674151"]), true);
 });
 
+test("a real failure before the runner was lost is not counted as runner loss", async () => {
+  const lostMessage = "The self-hosted runner lost communication with the server. Verify the machine is running.";
+  const noLog = async () => { throw new Error("log must not be read"); };
+  // A test fails, then the runner is lost during an always() upload step.
+  const testThenLost = await classifyJob({ id: 1 }, {
+    annotations: [
+      { annotation_level: "failure", message: "Error: Test timed out in 15000ms." },
+      { annotation_level: "failure", message: "Process completed with exit code 1." },
+      { annotation_level: "failure", message: lostMessage },
+    ],
+    readLog: noLog,
+  });
+  assert.equal(testThenLost.lost, false);
+  assert.match(testThenLost.evidence, /Test timed out/);
+  // The order of the annotations does not matter.
+  const lostThenExit = await classifyJob({ id: 1 }, {
+    annotations: [
+      { annotation_level: "failure", message: lostMessage },
+      { annotation_level: "failure", message: "Process completed with exit code 1." },
+    ],
+    readLog: noLog,
+  });
+  assert.equal(lostThenExit.lost, false);
+  // Runner loss with a cancellation only is still runner loss.
+  const lostAndCancelled = await classifyJob({ id: 1 }, {
+    annotations: [
+      { annotation_level: "failure", message: lostMessage },
+      { annotation_level: "failure", message: "The operation was canceled." },
+    ],
+    readLog: noLog,
+  });
+  assert.equal(lostAndCancelled.lost, true);
+});
+
 test("summary cells cannot break the table", () => {
   const summary = renderSummary({
     runId: 1, attempt: 1, rerun: false, reason: "test",
