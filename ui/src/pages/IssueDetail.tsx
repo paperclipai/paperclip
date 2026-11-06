@@ -362,6 +362,7 @@ import {
   Flag,
   FileCode2,
   ListTree,
+  Mail,
   MessageSquare,
   MoreHorizontal,
   MoreVertical,
@@ -4543,6 +4544,24 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     },
   });
 
+  const markIssueUnread = useAccountBoundMutation({
+    mutationFn: (id: string) => issuesApi.markUnread(id),
+    onMutate: (id) => {
+      if (readReceiptRef.current?.issueId === id) readReceiptRef.current.confirmed = true;
+    },
+    onSuccess: () => {
+      invalidateIssueCollections();
+      pushToast({ title: "Marked as unread", tone: "success" });
+    },
+    onError: (error) => {
+      pushToast({
+        title: "Mark as unread failed",
+        body: error instanceof Error ? error.message : undefined,
+        tone: "error",
+      });
+    },
+  });
+
   const updateIssueMutation = useUpdateIssueMutation({
     companyId: selectedCompanyId,
     onSuccess: ({
@@ -7971,6 +7990,19 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
                       </button>
                     ) : null}
                   </>
+                ) : null}
+                {issue?.id && !issue.conversationAgentId ? (
+                  <button
+                    className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-xs hover:bg-accent/50 disabled:opacity-50"
+                    disabled={markIssueUnread.isPending || pendingReadReceiptsRef.current.has(issue.id)}
+                    onClick={() => {
+                      markIssueUnread.mutate(issue.id);
+                      setMoreOpen(false);
+                    }}
+                  >
+                    <Mail className="h-3 w-3" />
+                    Mark as unread
+                  </button>
                 ) : null}
                 {privacyMenuItems}
                 <TaskTreeControlMenuItems
