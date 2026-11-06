@@ -94,8 +94,7 @@ export async function inspectReliability(api) {
   if (candidates.length !== 1 || !positive(candidates[0].job.id)) fail('standing_job');
   const job = await api(`/api/job/${candidates[0].job.id}`);
   if (job?.id !== candidates[0].job.id || job.type !== 'github' || !workflowUrls.has(job.url)) fail('standing_job');
-  const assignments = plan ? await api(`/api/testplan/${plan.id}/job`) : [];
-  if (!Array.isArray(assignments)) fail('plan_job');
+  const assignments = plan ? jobAssignments(await api(`/api/testplan/${plan.id}/job`)) : [];
   return { caseIds: Object.fromEntries(found), plan, jobId: job.id,
     standingParameters: Array.isArray(candidates[0].job.parameters) ? candidates[0].job.parameters : [], assignments };
 }
@@ -134,8 +133,8 @@ export async function registerReliability(api) {
     plan = await api(`/api/testplan/${plan.id}`);
   }
   assertPlan(plan, ids);
-  let assignments = await api(`/api/testplan/${plan.id}/job`);
-  if (!Array.isArray(assignments) || assignments.length > 1 || assignments.some(row => row?.job?.id !== before.jobId)) fail('plan_job_conflict');
+  let assignments = jobAssignments(await api(`/api/testplan/${plan.id}/job`));
+  if (assignments.length > 1 || assignments.some(row => row?.job?.id !== before.jobId)) fail('plan_job_conflict');
   if (!assignments.length) {
     await api(`/api/testplan/${plan.id}/assign`, 'POST', { jobId: before.jobId, selection: { inverted: false, manual: false, leafsInclude: ids } });
     created.assignment = true;
@@ -145,11 +144,19 @@ export async function registerReliability(api) {
     await api(`/api/testplan/${plan.id}/jobparameter`, 'POST', { jobId: before.jobId, parameters: before.standingParameters });
     created.parameters = true;
   }
-  assignments = await api(`/api/testplan/${plan.id}/job`);
-  if (!Array.isArray(assignments) || assignments.length !== 1 || assignments[0]?.job?.id !== before.jobId
+  assignments = jobAssignments(await api(`/api/testplan/${plan.id}/job`));
+  if (assignments.length !== 1 || assignments[0]?.job?.id !== before.jobId
       || assignments[0].testCasesCount !== ids.length
       || (before.standingParameters.length && !same(assignments[0].job.parameters ?? [], before.standingParameters))) fail('plan_job');
   return { caseIds, plan, jobId: before.jobId, created };
+}
+
+// TestOps lists a plan's cases that no job covers as a job-less row, e.g.
+// `[{ testCasesCount: 7 }]` for a freshly created plan. That row is not a job
+// assignment; only rows naming a job are.
+function jobAssignments(rows) {
+  if (!Array.isArray(rows)) fail('plan_job');
+  return rows.filter(row => row?.job != null);
 }
 
 export function registrationReceipt(operation, state, env) {
