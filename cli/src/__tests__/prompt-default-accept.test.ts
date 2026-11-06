@@ -147,6 +147,33 @@ describe("promptDatabase accepts defaults", () => {
   });
 });
 
+describe("promptServer keeps the sign-up settings", () => {
+  it.each([
+    [["loopback"]],
+    [["lan"]],
+    [["custom", "authenticated", "public"]],
+  ])("keeps a restricted sign-up mode through the %j flow", async (selects) => {
+    queueSelects(selects);
+
+    const { auth } = await promptServer({
+      currentServer: { host: "0.0.0.0", port: 8443 },
+      currentAuth: { baseUrlMode: "explicit", publicBaseUrl: "https://paperclip.example.com", signUp: "invite", disableSignUp: true },
+    });
+
+    expect(auth.signUp).toBe("invite");
+    expect(auth.disableSignUp).toBe(true);
+  });
+
+  it("adds no sign-up mode when none was set", async () => {
+    queueSelects(["loopback"]);
+
+    const { auth } = await promptServer();
+
+    expect(auth).not.toHaveProperty("signUp");
+    expect(auth.disableSignUp).toBe(false);
+  });
+});
+
 describe("promptServer accepts defaults", () => {
   it("accepts the default port in the loopback flow", async () => {
     queueSelects(["loopback"]);
