@@ -6,6 +6,7 @@ import { type DeliveryQueue } from "./delivery-work-notifications.js";
 import { EXECUTION_RECONCILIATION_INTERVAL_MS } from "./execution-control-deadline.js";
 import { obsoleteExecutionConversationHold, unresolvedExecutionDispositions } from "./execution-recovery-resolution.js";
 import { nativeReplacementPending } from "./native-runtime/native-safe-replacement.js";
+import { nextAbandonedNativeOwnerReleaseAt } from "./native-runtime/native-failed-run-owner-release.js";
 
 export function registerExecutionControlWork(
   coordinator: ReturnType<typeof createDeliveryWorkCoordinator>,
@@ -58,13 +59,14 @@ export function executionControlSchedule(db: Db) {
   };
   return {
     async finalization() {
-      const [native, legacy] = await Promise.all([
+      const [native, legacy, abandonedOwner] = await Promise.all([
         db.select({ at: nativeRunFinalizations.controlDeadlineAt }).from(nativeRunFinalizations)
           .where(isNotNull(nativeRunFinalizations.controlDeadlineAt)).orderBy(asc(nativeRunFinalizations.controlDeadlineAt)).limit(1),
         db.select({ at: heartbeatRuns.executionControlDeadlineAt }).from(heartbeatRuns)
           .where(isNotNull(heartbeatRuns.executionControlDeadlineAt)).orderBy(asc(heartbeatRuns.executionControlDeadlineAt)).limit(1),
+        nextAbandonedNativeOwnerReleaseAt(db),
       ]);
-      return deadline([native[0]?.at, legacy[0]?.at]);
+      return deadline([native[0]?.at, legacy[0]?.at, abandonedOwner]);
     },
     async workspaceRecovery() {
       const at = await nextWorkspaceRecoveryAt(db);
