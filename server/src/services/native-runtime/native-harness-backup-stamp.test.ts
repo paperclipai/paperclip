@@ -5,8 +5,6 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createNativeHarnessBackupStamp, verifyNativeHarnessBackupStampAsync } from "./native-harness-backup-stamp.js";
 
-// Abort the verification signal after a backup file opens, which is the
-// window between the verifier's last cancellation check and its read stream.
 const hooks = vi.hoisted(() => ({ afterOpen: undefined as (() => void) | undefined }));
 vi.mock("node:fs/promises", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs/promises")>();
