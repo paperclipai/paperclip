@@ -1631,11 +1631,12 @@ On startup and on the periodic recovery loop, Paperclip performs the following r
 4. scan silent active runs only for source-aware terminal folding and legacy cleanup; API reads classify ordinary output silence for the board UI
 
 The orphan reap normally waits until a `running` run has been unchanged for five
-minutes. A legacy run whose controller lease belongs to an earlier server boot,
-has expired, and has no recorded process is recovered when that lease expires
-instead. The expired lease proves that the earlier owner is gone, and no process
-can still be running. A live lease, a lease of the current boot, or a recorded
-process keeps the five-minute guard.
+minutes. A legacy run whose controller lease belongs to an earlier server boot
+and has expired, which was still preparing (before adapter dispatch), and which
+has no recorded process is recovered when that lease expires instead. The
+expired lease proves that the earlier owner is gone, and no provider work
+started. A live lease, a lease of the current boot, a dispatched adapter, or a
+recorded process keeps the five-minute guard.
 
 The stranded-work pass closes the gap where issue state survives a crash but the wake/run path does not. The silent-run scan covers the separate case where a live process exists but has stopped producing observable output.
 

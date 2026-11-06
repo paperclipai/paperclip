@@ -322,7 +322,7 @@ describe("residual recovery production matrix", () => {
     }, { timeout: 45_000 });
     await quiet();
   });
-  it("keeps the stale-age guard for an expired lease of this boot or a run with a recorded process", async () => {
+  it("keeps the stale-age guard for this boot, a recorded process, or a dispatched adapter", async () => {
     const f = await fixture(), now = Date.now(), expired = new Date(now - 1_000);
     const [sameBoot] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agent.id, status: "running",
       runtimeMode: "legacy", responsibleUserId: f.actorId, controllerBootId: legacyControllerBootId, controllerLeaseExpiresAt: expired,
@@ -330,9 +330,14 @@ describe("residual recovery production matrix", () => {
     const [withProcess] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agent.id, status: "running",
       runtimeMode: "legacy", responsibleUserId: f.actorId, controllerBootId: randomUUID(), controllerLeaseExpiresAt: expired,
       executionStage: "dispatching", processPid: 2 ** 22 + 17, updatedAt: new Date(now), startedAt: new Date(now) }).returning();
+    // A dispatched adapter may hold remote work without a local process.
+    const [dispatched] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agent.id, status: "running",
+      runtimeMode: "legacy", responsibleUserId: f.actorId, controllerBootId: randomUUID(), controllerLeaseExpiresAt: expired,
+      executionStage: "dispatching", updatedAt: new Date(now), startedAt: new Date(now) }).returning();
     await start(); await advance(4 * 60_000);
     expect((await getRun(sameBoot.id)).status).toBe("running");
     expect((await getRun(withProcess.id)).status).toBe("running");
+    expect((await getRun(dispatched.id)).status).toBe("running");
   });
   it.each(["confirmed", "already_retired", "missing_terminal", "unproven_terminal", "ack_failure", "late_terminal"] as const)(
     "settles an API-only Stop after deferred controller retirement without inventing proof: %s", async mode => {
