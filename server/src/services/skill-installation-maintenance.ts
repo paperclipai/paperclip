@@ -140,16 +140,15 @@ export function skillInstallationMaintenance(db: Db, storage?: StorageService) {
             throw new Error("Final snapshot is not independently recoverable from object storage");
           }
           let originVersionId = typeof skill.metadata?.originVersionId === "string" ? skill.metadata.originVersionId : null;
-          if (catalogOrigin && origin && skillSnapshotHash(origin) !== skillSnapshotHash(files)) {
-            originVersionId = (await companySkillService(db).createVersion(skill.companyId, skill.id,
-              { label: "Original catalog package" }, { type: "system" }, {
-                fileInventory: origin, updateCurrentVersion: false, skipInventoryRefresh: true,
-              })).id;
-          }
+          const originCandidate = catalogOrigin && origin && skillSnapshotHash(origin) !== skillSnapshotHash(files)
+            ? await content.prepare(skill.companyId, origin, options.signal) : null;
+          if (originCandidate && !originCandidate.packageSnapshotId) throw new Error("Catalog origin is not durably available");
           const markdown = files.find(file => file.path === "SKILL.md")!.content;
           const parsed = parseFrontmatterMarkdown(markdown);
           const { missingSource: _missing, ...metadata } = skill.metadata ?? {};
-          const result = await content.publish(skill, candidate, {
+          // Object preparation is private. Hold the shared cache lock only for
+          // publication so new run pinning does not wait for network uploads.
+          const result = await withSkillVersionCacheLock(db, skill.companyId, () => content.publish(skill, candidate, {
             ...(legacyManaged(skill) ? { sourceType: "managed", sourceLocator: null } : {}), markdown,
             name: typeof parsed.frontmatter.name === "string" ? parsed.frontmatter.name : skill.name,
             description: typeof parsed.frontmatter.description === "string" ? parsed.frontmatter.description : skill.description,
@@ -176,15 +175,22 @@ export function skillInstallationMaintenance(db: Db, storage?: StorageService) {
                 || (await legacyFiles(originSource, options.signal).then(value => value ? skillSnapshotHash(value) : null))
                   !== (origin ? skillSnapshotHash(origin) : null)))
                 throw conflict("Catalog origin changed during conversion. Retry the operation.");
+              if (origin && originCandidate?.packageSnapshotId) {
+                originVersionId = (await companySkillService(db).createVersion(skill.companyId, skill.id,
+                  { label: "Original catalog package" }, { type: "system" }, {
+                    database: tx, fileInventory: origin, packageSnapshotId: originCandidate.packageSnapshotId,
+                    packageFileMap: originCandidate.packageFileMap, updateCurrentVersion: false, skipInventoryRefresh: true,
+                  })).id;
+              }
             },
             afterPublish: async (tx, row, version) => {
-              if (catalogOrigin && !originVersionId) await tx.update(companySkills)
-                .set({ metadata: { ...row.metadata, originVersionId: version.id } }).where(eq(companySkills.id, row.id));
+              if (catalogOrigin) await tx.update(companySkills)
+                .set({ metadata: { ...row.metadata, originVersionId: originVersionId ?? version.id } }).where(eq(companySkills.id, row.id));
             },
-          });
+          }));
           return { skillId: skill.id, companyId: skill.companyId, status: "converted", versionId: result.version.id };
         };
-        results.push(options.apply ? await withSkillVersionCacheLock(db, skill.companyId, convert) : await convert());
+        results.push(await convert());
       } catch (error) {
         results.push({ skillId: skill.id, companyId: skill.companyId, status: "blocked", reason: error instanceof Error ? error.message : "Conversion failed" });
       }

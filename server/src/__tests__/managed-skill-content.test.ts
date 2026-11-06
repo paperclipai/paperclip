@@ -1,6 +1,8 @@
 import { createServer } from "node:http";
 import { createS3StorageProvider } from "../storage/s3-provider.js";
 import { skillInstallationMaintenance } from "../services/skill-installation-maintenance.js";
+import { withSkillVersionCacheLock } from "../services/skill-version-cache.js";
+import { skillPackageStore } from "../services/skill-package-store.js";
 import { removeRuntimeAssetTree } from "../services/native-runtime/runtime-asset-retention.js";
 import { eq } from "drizzle-orm";
 import { writePaperclipSkillSyncPreference } from "@paperclipai/adapter-utils/server-utils";
@@ -471,6 +473,82 @@ describe.skipIf(!support.supported)("managed skills use committed versions", () 
       .toEqual([expect.objectContaining({ status: "blocked" })]);
     expect((await db.select().from(companySkills).where(eq(companySkills.id, skill.id)))[0]).toEqual(skill);
     expect(await fs.readFile(original, "utf8")).toBe("# Shared source");
+  });
+
+  it("allows new durable skill pinning while an installation upload is blocked", async () => {
+    const companyId = await company(), directory = path.join(root, `pinning-during-copy-${randomUUID()}`);
+    await fs.mkdir(directory);
+    await fs.writeFile(path.join(directory, "SKILL.md"), "# Old selection");
+    const [skill] = await db.insert(companySkills).values({ companyId, key: "online-pinning", slug: "online-pinning", name: "Pinning",
+      markdown: "# Old selection", sourceType: "local_path", sourceLocator: directory,
+      fileInventory: [{ path: "SKILL.md", kind: "skill" }], metadata: { sourceKind: "managed_local" } }).returning();
+    const version = await companySkillService(db).createVersion(companyId, skill.id);
+    await fs.writeFile(path.join(directory, "SKILL.md"), `# Current local files ${randomUUID()}`);
+    const [agent] = await db.insert(agents).values({ companyId, name: "New work" }).returning();
+    const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId: agent.id, status: "queued" }).returning();
+    const storage = storageModule.getStorageService(), put = storage.putFile.bind(storage);
+    let release!: () => void, ready!: () => void, blocked = false;
+    const barrier = new Promise<void>(resolve => { release = resolve; }), uploading = new Promise<void>(resolve => { ready = resolve; });
+    const upload = vi.spyOn(storage, "putFile").mockImplementation(async input => {
+      if (!blocked) { blocked = true; ready(); await barrier; }
+      return put(input);
+    });
+    const conversion = skillInstallationMaintenance(db, storage).installations({ id: skill.id, apply: true });
+    try {
+      await uploading;
+      // This uses the real nonblocking PostgreSQL owner, not a timing assertion.
+      await withSkillVersionCacheLock(db, companyId, async () => {
+        await db.update(heartbeatRuns).set({ status: "running", contextSnapshot: { skillVersions: { [skill.key]: version.id } } })
+          .where(eq(heartbeatRuns.id, run.id));
+      }, true);
+    } finally { release(); await conversion; upload.mockRestore(); }
+    expect((await conversion).results).toEqual([expect.objectContaining({ status: "converted" })]);
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id)))[0])
+      .toMatchObject({ status: "running", contextSnapshot: { skillVersions: { [skill.key]: version.id } } });
+    expect((await db.select().from(companySkillVersions).where(eq(companySkillVersions.id, version.id)))[0]).toBeDefined();
+  });
+
+  it.each([true, false])("keeps catalog history unchanged on rejection and preserves its reset version (concurrent edit: %s)", async concurrentEdit => {
+    const companyId = await company(), directory = path.join(root, `catalog-copy-${randomUUID()}`), origin = `${directory}-original`;
+    await fs.mkdir(directory); await fs.mkdir(origin);
+    await fs.writeFile(path.join(directory, "SKILL.md"), "# Installed edit");
+    await fs.writeFile(path.join(origin, "SKILL.md"), "# Original package");
+    const [skill] = await db.insert(companySkills).values({ companyId, key: "catalog-copy", slug: "catalog-copy", name: "Catalog",
+      markdown: "# Installed edit", sourceType: "catalog", sourceLocator: directory,
+      fileInventory: [{ path: "SKILL.md", kind: "skill" }], metadata: {
+        sourceKind: "catalog", originSnapshotLocator: origin, userModifiedAt: new Date().toISOString(),
+      } }).returning();
+    const [version] = await db.insert(companySkillVersions).values({ companyId, companySkillId: skill.id, revisionNumber: 1,
+      fileInventory: [{ path: "SKILL.md", kind: "skill", content: "# Installed edit" }] }).returning();
+    await db.update(companySkills).set({ currentVersionId: version.id }).where(eq(companySkills.id, skill.id));
+    const storage = storageModule.getStorageService(), put = storage.putFile.bind(storage);
+    let changed = false;
+    const upload = vi.spyOn(storage, "putFile").mockImplementation(async input => {
+      const saved = await put(input);
+      if (!changed) {
+        changed = true;
+        if (concurrentEdit) await fs.writeFile(path.join(origin, "SKILL.md"), "# Concurrent original edit");
+      }
+      return saved;
+    });
+    try {
+      expect((await skillInstallationMaintenance(db, storage).installations({ id: skill.id, apply: true })).results)
+        .toEqual([expect.objectContaining({ status: concurrentEdit ? "blocked" : "converted" })]);
+      expect(changed).toBe(true);
+      const history = await db.select().from(companySkillVersions).where(eq(companySkillVersions.companySkillId, skill.id));
+      expect(history).toHaveLength(concurrentEdit ? 1 : 2);
+      expect(history.find(row => row.id === version.id)).toMatchObject({ fileInventory: version.fileInventory });
+      const [current] = await db.select().from(companySkills).where(eq(companySkills.id, skill.id));
+      if (concurrentEdit) expect(current.metadata?.originVersionId).toBeUndefined();
+      else {
+        const original = history.find(row => row.id !== version.id)!;
+        expect(current.metadata?.originVersionId).toBe(original.id);
+        const store = skillPackageStore(db, storage), saved = await store.version(companyId, skill.id, original.id);
+        expect((await store.versionFiles(saved!)).find(file => file.path === "SKILL.md")?.content).toBe("# Original package");
+      }
+      expect(await fs.readFile(path.join(origin, "SKILL.md"), "utf8"))
+        .toBe(concurrentEdit ? "# Concurrent original edit" : "# Original package");
+    } finally { upload.mockRestore(); }
   });
 
   it("reports an unrecoverable legacy installation and leaves linked sources alone", async () => {
