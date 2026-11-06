@@ -1,5 +1,7 @@
 import { RUNNER_REVISION_WAIT_RETRY_REASON } from "./runner-revision-mismatch.js";
 
+export const PROVIDER_QUOTA_RETRY_DELAYS_MS = [30_000, 60_000, 120_000, 60_000] as const;
+
 type RetryRun = {
   scheduledRetryAttempt?: number | null;
   scheduledRetryReason?: string | null;

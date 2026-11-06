@@ -24,7 +24,7 @@ import { readRunCancellation } from "./run-cancellation.js";
 import { hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
 import { issueRecoveryActionService } from "./issue-recovery-actions.js";
 import { parseIssueExecutionState } from "./issue-execution-policy.js";
-import { executionFailureRetryCount } from "./execution-recovery-attempt.js";
+import { executionFailureRetryCount, PROVIDER_QUOTA_RETRY_DELAYS_MS } from "./execution-recovery-attempt.js";
 import { logActivity } from "./activity-log.js";
 import { isSupersededConversationRun } from "./agent-conversations.js";
 import { issueService } from "./issues.js";
@@ -88,6 +88,10 @@ export function legacyExecutionNeedsReconciliation(
       || run.errorCode === REMOTE_WORKSPACE_RESTORE_FAILED_CODE || run.errorCode === PLUGIN_WORKER_UNAVAILABLE_CODE
       || run.errorCode === RUNNER_REVISION_MISMATCH_CODE || run.errorCode === ENVIRONMENT_PROVIDER_UNAVAILABLE_CODE) &&
       evidence?.kind === "bootstrap" && evidence.providerWorkStarted === false) return false;
+  if ((run.errorCode === "provider_quota" || run.resultJson?.errorFamily === "provider_quota") &&
+      evidence?.kind === "bootstrap" && evidence.providerWorkStarted === false) {
+    return executionFailureRetryCount(run) >= PROVIDER_QUOTA_RETRY_DELAYS_MS.length;
+  }
   if (executionFailureRetryCount(run) >= 2) return true;
   return !(
     evidence?.kind === "bootstrap" && evidence.providerWorkStarted === false

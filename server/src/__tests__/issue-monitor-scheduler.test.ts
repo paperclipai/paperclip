@@ -485,7 +485,7 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
     await db.insert(heartbeatRuns).values({
       id: sourceRunId, companyId, agentId, status: "failed", errorCode: "provider_quota",
       finishedAt: new Date("2026-04-11T12:00:00.000Z"), contextSnapshot: { issueId },
-      scheduledRetryAttempt: kind === "exhausted" ? 2 : 0,
+      scheduledRetryAttempt: kind === "exhausted" ? 4 : 0,
       resultJson: kind === "exhausted" ? { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } } : null,
     });
     await heartbeatService(db).tickTimers(new Date("2026-04-11T12:31:00.000Z"));
@@ -545,6 +545,7 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
     await db.insert(heartbeatRuns).values({
       id: sourceRunId, companyId, agentId: participantAgentId, status: "failed",
       errorCode: "provider_quota", finishedAt: new Date("2026-04-11T12:00:00.000Z"),
+      scheduledRetryAttempt: 2, scheduledRetryReason: "transient_failure",
       contextSnapshot: { issueId },
       resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } },
     });
@@ -560,7 +561,7 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
       reason: "execution_review_participant_recovery",
     });
     const [scheduled] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, sourceRunId));
-    expect(scheduled).toMatchObject({ status: "scheduled_retry", scheduledRetryAttempt: 1 });
+    expect(scheduled).toMatchObject({ status: "scheduled_retry", scheduledRetryAttempt: 3 });
     expect(await heartbeat.promoteDueScheduledRetries(scheduled.scheduledRetryAt!)).toMatchObject({ promoted: 1 });
     await heartbeat.resumeQueuedRuns();
     await waitForHeartbeatIdle();
