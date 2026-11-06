@@ -77,3 +77,12 @@ it.each(["pending","declined","historical save","foreign owner","wrong runtime",
  if(fault==="effect")Object.assign(input.interactions[0]!.payload,{toolAction:{toolName:"deploy"}});
  expect(verifyChatCatalogHumanQuestionAnswer(input as never)).toBeUndefined();
 });
+
+it.each(["Save your personal credential. Then cancel the save. Then confirm here.", "Save your personal credential. Do not confirm yet. Then confirm here."])("rejects an intervening save or acknowledgement cancellation: %s", ending => {
+ const row=card();row.payload.prompt=row.payload.prompt.replace("When you have saved it, confirm this card so the requirement is recorded.",ending);
+ expect(personalSecretConfirmationHandoff(row,binding,personalSecretGuidance)).toBeUndefined();
+});
+it("allows an unrelated no-chat warning between secure save and confirmation",()=>{
+ const row=card();row.payload.prompt=row.payload.prompt.replace("When you have saved it, confirm this card so the requirement is recorded.","Save your personal credential. Never paste the value in chat. Then confirm here.");
+ expect(personalSecretConfirmationHandoff(row,binding,personalSecretGuidance)).toBeDefined();
+});

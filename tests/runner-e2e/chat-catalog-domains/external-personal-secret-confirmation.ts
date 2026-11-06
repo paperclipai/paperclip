@@ -22,6 +22,7 @@ export function personalSecretConfirmationHandoff(value: unknown, b: PersonalCon
   const saveThenConfirm = !!saveThen && !/(?:\b(?:do|should|must|can|could|will|would)\s+not|\bdon.t|\bnever|\b(?:skip|avoid))\s*$/i.test(actionText.slice(0, saveThen.index));
   const confirmsAfter = (tail: string) => [...tail.matchAll(/\bconfirm\b[^.!?]*/gi)].some(match =>
     !/(?:\b(?:do|should|must)\s+not|\bdon.t|\bnever|\b(?:skip|avoid))\s*$/i.test(tail.slice(0, match.index))
+    && !/\b(?:(?:do not|don.t|never)\s+(?:save|enter|set|accept|confirm)|(?:cancel|decline|skip|avoid)(?:\s+(?:the|to))?\s+(?:save|saving|entry|acknowledgment|confirmation|accept|confirm))\b/i.test(tail.slice(0, match.index))
     && !/\b(?:before|permission|authorize)\b/i.test(match[0]));
   const confirmsSavedEntry = /\bconfirm\b/i.test(text) && (completedQuestion
     || saveThenConfirm && confirmsAfter(actionText.slice(saveThen!.index))
