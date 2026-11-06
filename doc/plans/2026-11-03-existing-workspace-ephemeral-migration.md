@@ -146,6 +146,14 @@ recovery source validation and company boundaries.
 
 ## Queued turns during offline enrollment
 
+Offline workspace import preserves a pending repository request when preparation
+has never published a target directory, commit, branch or failure. The request
+stays pending in the database. It is excluded from the saved snapshot's materialized
+repository descriptors, so the next authorized sandbox admission can acquire it
+normally. Existing targets, preparation in progress, repair states, unreadable
+paths and live imports remain blocked. Publication rechecks the request and
+materialized source before transferring file authority.
+
 The task drain stops new executions. It does not consume queued turns. After
 Cloud has stopped every application deployment, offline maintenance preserves
 never-started queued run and wake rows unchanged. Workspace, instruction-file,

@@ -4,6 +4,7 @@ import { buildNativeHarnessBackupManifest, verifyNativeHarnessBackup } from "./n
 import { createHash, randomUUID } from "node:crypto";
 import { execFile, spawn } from "node:child_process";
 import net from "node:net";
+import { createServer } from "node:http";
 import { promisify } from "node:util";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -12,7 +13,7 @@ import { pathToFileURL } from "node:url";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { and, eq, sql } from "drizzle-orm";
 import { activityLog, agents, agentTaskSessions, agentWakeupRequests, applyPendingMigrations, closeRegisteredClients, companies, createDb, environmentLeases, environments,
-  executionWorkspaces, executionWorkspaceSnapshots, heartbeatRunEvents, heartbeatRuns, issueRecoveryActions, issues, livenessDb, nativeRunFinalizations, projects, projectWorkspaces, workspaceOperations } from "@paperclipai/db";
+  executionWorkspaceRepositories, executionWorkspaces, executionWorkspaceSnapshots, heartbeatRunEvents, heartbeatRuns, issueRecoveryActions, issues, livenessDb, nativeRunFinalizations, projects, projectWorkspaces, workspaceOperations } from "@paperclipai/db";
 import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
 import type { CommandManagedRuntimeRunner } from "@paperclipai/adapter-utils/command-managed-runtime";
 import { buildProjectMentionHref, type Environment, type EnvironmentLease } from "@paperclipai/shared";
@@ -681,6 +682,63 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
     expect(verifyNativeHarnessBackup({ root: backupRoot, execution: { ...successor, workspace: { ...successor.workspace,
       cwd: prepared.remoteRoot } }, runnerInstanceId })).toBeNull();
     expect(await fs.readFile(path.join(current, "runner", "state.json"), "utf8")).toBe("unchanged opaque provider state");
+  }, 60_000);
+
+  it("cold restores a workspace while keeping a pending repository eligible for sandbox preparation", async () => {
+    const original = path.join(root, "pending-original"), origin = path.join(root, "pending-origin.git");
+    await fs.mkdir(original); await fs.mkdir(origin);
+    await fs.writeFile(path.join(original, "saved.txt"), "saved before repository request\n");
+    const git = (cwd: string, ...args: string[]) => exec("git", ["-C", cwd, "-c", "user.name=Pending fixture",
+      "-c", "user.email=pending@example.invalid", ...args]);
+    await git(origin, "init", "--initial-branch=main");
+    await fs.writeFile(path.join(origin, "code.txt"), "acquired on next admission\n");
+    await git(origin, "add", "."); await git(origin, "commit", "-m", "Pending baseline");
+    await git(origin, "update-server-info");
+    const server = createServer(async (request, response) => {
+      const target = path.resolve(root, new URL(request.url!, "http://localhost").pathname.slice(1));
+      if (!target.startsWith(`${origin}/.git/`)) { response.writeHead(403).end(); return; }
+      try { response.end(await fs.readFile(target)); } catch { response.writeHead(404).end(); }
+    });
+    await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+    try {
+      const address = server.address(); if (!address || typeof address === "string") throw new Error("test server not bound");
+      const repoUrl = `http://127.0.0.1:${address.port}/pending-origin.git/.git`, relativePath = ".paperclip-repositories/pending";
+      await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, ids.run));
+      const [local] = await db.insert(executionWorkspaces).values({ companyId: ids.company, sourceIssueId: ids.issue,
+        mode: "isolated_workspace", strategyType: "project_primary", providerType: "local_fs", name: "Pending request",
+        cwd: original, providerRef: original }).returning();
+      await db.update(issues).set({ executionWorkspaceId: local.id }).where(eq(issues.id, ids.issue));
+      const [repository] = await db.insert(executionWorkspaceRepositories).values({ companyId: ids.company,
+        executionWorkspaceId: local.id, requestedByIssueId: ids.issue, repoUrl, repositoryIdentity: repoUrl,
+        relativePath, requestedRef: "HEAD", requestKey: "pending-request", requestKeys: ["pending-request"] }).returning();
+      vi.stubEnv("PAPERCLIP_EPHEMERAL_MIGRATION", "true");
+      await migrateRemoteWorkspace({ db, storage, companyId: ids.company, workspaceId: local.id, apply: true, writersStopped: true });
+      expect(readRemoteWorkspaceAuthority((await workspace(local.id)).metadata)!.source).toEqual({ kind: "empty" });
+      expect(await db.select().from(executionWorkspaceRepositories).where(eq(executionWorkspaceRepositories.id, repository.id)))
+        .toEqual([repository]);
+      await fs.rm(original, { recursive: true });
+      vi.stubEnv("PAPERCLIP_EPHEMERAL_MIGRATION", "false");
+      const nextRun = randomUUID(), nextLease = randomUUID();
+      await db.insert(heartbeatRuns).values({ id: nextRun, companyId: ids.company, agentId: ids.agent, nativeIssueId: ids.issue,
+        responsibleUserId: "local-board", runtimeMode: "native", status: "running" });
+      const [allocated] = await db.insert(environmentLeases).values({ id: nextLease, companyId: ids.company, environmentId: ids.environment,
+        heartbeatRunId: nextRun, issueId: ids.issue, provider: "daytona", providerLeaseId: `allocation-${nextLease}`, status: "active" }).returning();
+      const reserved = await reserveRemoteWorkspace({ db, storage, companyId: ids.company, issueId: ids.issue, runId: nextRun,
+        agentId: ids.agent, environmentId: ids.environment, projectId: null, projectWorkspaceId: null,
+        existingWorkspaceId: local.id, source: { kind: "empty" } });
+      const remote = await target("pending-restored-sandbox");
+      const restored = await prepareRemoteWorkspace({ db, storage, workspace: reserved, runId: nextRun,
+        lease: allocated as EnvironmentLease, target: remote });
+      expect(await fs.readFile(path.join(restored.remoteRoot, "saved.txt"), "utf8")).toBe("saved before repository request\n");
+      const prepared = await prepareRemoteWorkspaceRepository({ db, storage, workspace: restored.workspace,
+        runId: nextRun, lease: restored.lease, target: remote,
+        repository: { id: repository.id, repoUrl, relativePath, ref: null }, resolveGitAuth: async () => null });
+      expect(prepared).toMatchObject({ cwd: path.join(restored.remoteRoot, relativePath),
+        pinnedCommit: (await git(origin, "rev-parse", "HEAD")).stdout.trim() });
+      expect(await fs.readFile(path.join(restored.remoteRoot, relativePath, "code.txt"), "utf8")).toBe("acquired on next admission\n");
+      expect(await db.select().from(executionWorkspaceRepositories).where(eq(executionWorkspaceRepositories.id, repository.id)))
+        .toEqual([repository]);
+    } finally { await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())); }
   }, 60_000);
 
   it.each(["path", "file-url"] as const)("cold restores an imported secondary %s repository and acquires only a new descriptor", async sourceKind => {
