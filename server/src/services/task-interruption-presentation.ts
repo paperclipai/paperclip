@@ -28,6 +28,9 @@ const resourceWaitRetryReasons = new Set<string>([WORKSPACE_BUSY_RETRY_REASON, A
 
 // A due same-run resume dispatches within seconds; past this, offer Retry.
 const NATIVE_RESUME_DISPATCH_GRACE_MS = 2 * 60_000;
+// A queued-message Interrupt waits for the stopped run's cleanup before its
+// successor starts. Past this, a hand-off that never started offers Retry.
+const QUEUED_INTERRUPT_HANDOFF_GRACE_MS = 5 * 60_000;
 
 type ProjectionIssue = Pick<typeof issues.$inferSelect, "id" | "companyId" | "status" | "assigneeAgentId" | "projectId">;
 type ProjectionRun = Pick<typeof heartbeatRuns.$inferSelect,
@@ -38,7 +41,9 @@ type ProjectionRun = Pick<typeof heartbeatRuns.$inferSelect,
   nativeResumeAt?: Date | null;
 };
 type ProjectionWait = { id: string; requestedAt: Date; sourceRunId?: string | null; executionWaitReason?: string | null;
-  preparationStatus?: string | null; preparationRetryAt?: number | string | null };
+  preparationStatus?: string | null; preparationRetryAt?: number | string | null;
+  /** When the user pressed Interrupt to deliver this queued message now. */
+  queuedInterruptRequestedAt?: string | null };
 type ProjectionState = {
   run?: ProjectionRun;
   action?: typeof issueRecoveryActions.$inferSelect;
@@ -121,6 +126,14 @@ export function projectTaskInterruption(issue: ProjectionIssue, input: Projectio
   // physical containment and pending cleanup keep their execution-side gates.
   if (!wait && run.runtimeMode === "native" && run.companyId === issue.companyId && run.nativeIssueId === issue.id
       && isAcknowledgedNativeStop({ ...run, companyId: run.companyId, nativeIssueId: run.nativeIssueId })) return base;
+  // A queued-message Interrupt stops this run to deliver that exact message.
+  // The stop is the user's intent and the message starts next, so show the
+  // hand-off as working, not as a failed attempt.
+  const interruptAt = Date.parse(wait?.queuedInterruptRequestedAt ?? "");
+  if (wait && run.status === "cancelled" && run.resultJson?.queuedCommentInterruptQueueId === wait.id
+      && Number.isFinite(interruptAt) && now - interruptAt < QUEUED_INTERRUPT_HANDOFF_GRACE_MS
+      && !(retryWait?.sourceRunId === run.id && retryWait.preparationStatus) && system?.state !== "exhausted")
+    return { ...base, state: "working" };
   if (["running", "queued"].includes(run.status)) return { ...base, state: "working" };
   const deniedProject = deniedProjectId(issue, run);
   let projectAccess: TaskInterruptionPresentation["projectAccess"];
@@ -237,6 +250,7 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
         'projectAccessDenied', ${heartbeatRuns.resultJson}->'projectAccessDenied',
         'cancelledByActorType', ${boundedJsonString(sql`${heartbeatRuns.resultJson}->'cancelledByActorType'`, 32)},
         'cancelledByUserId', ${boundedJsonString(sql`${heartbeatRuns.resultJson}->'cancelledByUserId'`, 160)},
+        'queuedCommentInterruptQueueId', ${boundedJsonString(sql`${heartbeatRuns.resultJson}->'queuedCommentInterruptQueueId'`, 160)},
         'nativeCancellation', jsonb_build_object(
           'schema', ${boundedJsonString(sql`${heartbeatRuns.resultJson}->'nativeCancellation'->'schema'`, 64)},
           'runId', ${boundedJsonString(sql`${heartbeatRuns.resultJson}->'nativeCancellation'->'runId'`, 160)},
@@ -259,6 +273,7 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
     db.selectDistinctOn([wakeIssue, isRetryWait], { issueId: wakeIssue, id: agentWakeupRequests.id, requestedAt: agentWakeupRequests.requestedAt,
       sourceRunId: boundedJsonString(sql`${agentWakeupRequests.payload}#>'{taskRetry,sourceRunId}'`, 160),
       executionWaitReason: boundedJsonString(sql`${agentWakeupRequests.payload}#>'{executionWait,reason}'`, 80),
+      queuedInterruptRequestedAt: boundedJsonString(sql`${agentWakeupRequests.payload}#>'{queuedCommentInterrupt,requestedAt}'`, 40),
       preparationStatus: chatActions.status, preparationRetryAt: chatActionDeadline("failed_run_retry") })
       .from(agentWakeupRequests).leftJoin(chatActions, and(eq(chatActions.companyId, agentWakeupRequests.companyId),
         eq(chatActions.id, canonicalExecutionUuid(sql`${agentWakeupRequests.payload}#>>'{taskRetry,chatActionId}'`)),
