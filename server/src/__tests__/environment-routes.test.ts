@@ -1022,6 +1022,20 @@ describe("environment routes", () => {
 
     describe("managed plugin environment rows", () => {
       const PLUGIN_KEY = "example.remote-host-plugin";
+      const MANAGED_CONFIG_WITH_PLUGIN_ENTRY = JSON.stringify({
+        v: 1,
+        mode: "cloud",
+        catalogVersion: "2026.1106.0",
+        features: {},
+        plugins: { autoInstall: ["remote-host"] },
+        environments: [{
+          name: "Remote Host",
+          driver: "plugin",
+          pluginKey: PLUGIN_KEY,
+          driverKey: "tasks",
+          driverConfig: {},
+        }],
+      });
       const pluginRow = () => ({
         ...createPlatformSandboxEnvironment(),
         id: "env-plugin-1",
@@ -1058,20 +1072,46 @@ describe("environment routes", () => {
         expect(res.body.details).toMatchObject({ code: "environment_platform_managed" });
       });
 
-      it("allows the marker clear while no managed-config entry can own the row", async () => {
-        // Nothing provisions marked plugin rows yet, so a marker is stale and
-        // stays recoverable. The managed-config plugin entry PR refuses this
-        // while the document declares the row's entry.
-        const row = pluginRow();
-        mockEnvironmentService.getById.mockResolvedValue(row);
-        mockEnvironmentService.update.mockResolvedValue({ ...row, metadata: {} });
+      it("refuses a marker clear while the document declares the entry", async () => {
+        process.env.PAPERCLIP_MANAGED_CONFIG = MANAGED_CONFIG_WITH_PLUGIN_ENTRY;
+        try {
+          mockEnvironmentService.getById.mockResolvedValue(pluginRow());
+          const app = createApp(ownerAdminActor);
 
-        const res = await request(createApp(ownerAdminActor))
-          .patch("/api/environments/env-plugin-1")
-          .send({ metadata: { managedByPaperclip: null, managedPluginEnvironment: null } });
+          for (const metadata of [
+            { managedByPaperclip: false },
+            { managedPluginEnvironment: null },
+            { managedByPaperclip: null, managedPluginEnvironment: null },
+          ]) {
+            const res = await request(app).patch("/api/environments/env-plugin-1").send({ metadata });
+            expect(res.status).toBe(403);
+            expect(res.body.details).toMatchObject({ code: "environment_platform_managed" });
+          }
+          expect(mockEnvironmentService.update).not.toHaveBeenCalled();
+        } finally {
+          delete process.env.PAPERCLIP_MANAGED_CONFIG;
+        }
+      });
 
-        expect(res.status).toBe(200);
-        expect(mockEnvironmentService.update).toHaveBeenCalled();
+      it("allows the marker clear once the entry left the document", async () => {
+        process.env.PAPERCLIP_MANAGED_CONFIG = JSON.stringify({
+          ...JSON.parse(MANAGED_CONFIG_WITH_PLUGIN_ENTRY),
+          environments: [],
+        });
+        try {
+          const row = pluginRow();
+          mockEnvironmentService.getById.mockResolvedValue(row);
+          mockEnvironmentService.update.mockResolvedValue({ ...row, metadata: {} });
+
+          const res = await request(createApp(ownerAdminActor))
+            .patch("/api/environments/env-plugin-1")
+            .send({ metadata: { managedByPaperclip: null, managedPluginEnvironment: null } });
+
+          expect(res.status).toBe(200);
+          expect(mockEnvironmentService.update).toHaveBeenCalled();
+        } finally {
+          delete process.env.PAPERCLIP_MANAGED_CONFIG;
+        }
       });
 
       it("refuses a client that stamps the plugin marker on its own row", async () => {

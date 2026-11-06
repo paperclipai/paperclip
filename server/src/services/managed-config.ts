@@ -9,11 +9,22 @@
  *     "mode": "cloud",
  *     "catalogVersion": "2026.720.0",
  *     "features": { "<feature-key>": true | false, ... },
- *     "plugins":  { "autoInstall": ["daytona", "kubernetes"] },
+ *     "plugins":  { "autoInstall": ["daytona", "remote-host"] },
  *     "environments": [
- *       { "name": "Daytona", "provider": "daytona", "config": { "target": "us" } }
+ *       { "name": "Daytona", "provider": "daytona", "config": { "target": "us" } },
+ *       {
+ *         "name": "Remote Host",
+ *         "driver": "plugin",
+ *         "pluginKey": "example.remote-host-plugin",
+ *         "driverKey": "tasks",
+ *         "driverConfig": {}
+ *       }
  *     ]
  *   }
+ *
+ * An `environments` entry without `driver` is the single sandbox entry; any
+ * number of `driver: "plugin"` entries may sit beside it (see
+ * `MANAGED_ENVIRONMENT_DRIVERS`).
  *
  * Parsing follows the `execution-policy-bootstrap.ts` doctrine: a pure
  * function over `Record<string, string | undefined>`, strict, and fail
@@ -54,8 +65,47 @@ export interface ManagedInstanceConfig {
     readonly workerEnv?: Readonly<Record<string, readonly string[]>>;
     readonly enabledCompanies?: Readonly<Record<string, readonly string[]>>;
   };
-  /** Sandbox environments the control plane provisions at boot (empty when the section is absent). */
+  /**
+   * The sandbox entry of the `environments` section: zero or one, since it
+   * provisions the single Paperclip-managed sandbox slot (empty when the
+   * section is absent or declares only plugin entries).
+   */
   environments: readonly ManagedEnvironmentSpec[];
+  /** The `driver: "plugin"` entries of the `environments` section (empty when none are declared). */
+  pluginEnvironments: readonly ManagedPluginEnvironmentSpec[];
+}
+
+/**
+ * The environment drivers a managed-config `environments` entry may declare.
+ * An entry without `driver` is the sandbox entry, so documents written
+ * before plugin entries existed parse unchanged.
+ */
+export const MANAGED_ENVIRONMENT_DRIVERS = ["sandbox", "plugin"] as const;
+export type ManagedEnvironmentDriver = (typeof MANAGED_ENVIRONMENT_DRIVERS)[number];
+
+/**
+ * One declared managed plugin environment: an instance-level `plugin`-driver
+ * environment row served by an auto-installed plugin's environment driver.
+ * The row is
+ * identified by its `pluginKey`–`driverKey` pair, which boot stamps on the
+ * row as `metadata.managedPluginEnvironment`.
+ */
+export interface ManagedPluginEnvironmentSpec {
+  driver: "plugin";
+  /** Display name of the instance-level environment row (unique per instance). */
+  name: string;
+  description?: string;
+  /**
+   * The serving plugin's manifest id (for example
+   * `example.remote-host-plugin`), not its `plugins.autoInstall` catalog key.
+   * Boot requires a catalog entry
+   * whose `key` is in `plugins.autoInstall` to install this id.
+   */
+  pluginKey: string;
+  /** The plugin's environment driver key. */
+  driverKey: string;
+  /** Driver config, validated by the plugin at ensure time; never carries secrets. */
+  driverConfig: Readonly<Record<string, unknown>>;
 }
 
 /**
@@ -140,6 +190,154 @@ function describeJsonValue(value: unknown): string {
   if (value === null) return "null";
   if (Array.isArray(value)) return "an array";
   return `${JSON.stringify(value)}`;
+}
+
+const SANDBOX_ENTRY_KEYS = ["name", "description", "driver", "provider", "config"] as const;
+const PLUGIN_ENTRY_KEYS = [
+  "name",
+  "description",
+  "driver",
+  "pluginKey",
+  "driverKey",
+  "driverConfig",
+] as const;
+/** Same rule as the plugin environment config schema in `environment-config.ts`. */
+const PLUGIN_DRIVER_KEY_PATTERN = /^[a-z0-9][a-z0-9._-]*$/;
+
+function requireTrimmedString(value: unknown, path: string): string {
+  if (typeof value !== "string" || value.length === 0 || value.trim() !== value) {
+    fail(`"${path}" must be a non-empty string without surrounding whitespace (got ${describeJsonValue(value)})`);
+  }
+  return value;
+}
+
+function readOptionalDescription(value: unknown, path: string): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string" || value.trim().length === 0) {
+    fail(`"${path}" must be a non-empty string when present (got ${describeJsonValue(value)})`);
+  }
+  return value;
+}
+
+function readSecretFreeObject(value: unknown, path: string): Record<string, unknown> {
+  if (value === undefined) return {};
+  if (!isPlainObject(value)) {
+    fail(`"${path}" must be an object (got ${describeJsonValue(value)})`);
+  }
+  const secretLikeKey = findSecretLikeConfigKey(value, "");
+  if (secretLikeKey) {
+    fail(
+      `"${path}" key "${secretLikeKey}" looks secret-bearing; credentials are delivered to managed instances as process environment variables (the provider's documented env fallback), never in the managed-config document`,
+    );
+  }
+  return { ...value };
+}
+
+/**
+ * Parse the `environments` section: at most one sandbox entry (no `driver`,
+ * or `driver: "sandbox"`) plus any number of `driver: "plugin"` entries.
+ * Names are unique across the section, and plugin entries are unique by
+ * their `pluginKey`–`driverKey` pair.
+ */
+function parseManagedEnvironmentsSection(
+  raw: unknown,
+  autoInstall: readonly string[],
+): { sandbox: ManagedEnvironmentSpec[]; plugin: ManagedPluginEnvironmentSpec[] } {
+  const sandbox: ManagedEnvironmentSpec[] = [];
+  const plugin: ManagedPluginEnvironmentSpec[] = [];
+  if (raw === undefined) return { sandbox, plugin };
+  if (!Array.isArray(raw)) {
+    fail(`"environments" must be an array of environment objects (got ${describeJsonValue(raw)})`);
+  }
+  const names = new Set<string>();
+  const pluginDrivers = new Set<string>();
+  for (const [index, entry] of raw.entries()) {
+    const at = `environments[${index}]`;
+    if (!isPlainObject(entry)) {
+      fail(`"${at}" must be an object (got ${describeJsonValue(entry)})`);
+    }
+    const driver = entry.driver ?? "sandbox";
+    if (!(MANAGED_ENVIRONMENT_DRIVERS as readonly unknown[]).includes(driver)) {
+      fail(
+        `"${at}.driver" must be one of ${MANAGED_ENVIRONMENT_DRIVERS.map((value) => JSON.stringify(value)).join(", ")} when present (got ${describeJsonValue(entry.driver)})`,
+      );
+    }
+    const allowedKeys: readonly string[] = driver === "plugin" ? PLUGIN_ENTRY_KEYS : SANDBOX_ENTRY_KEYS;
+    for (const key of Object.keys(entry)) {
+      if (!allowedKeys.includes(key)) {
+        fail(`"${at}" has unknown key "${key}" (allowed for a ${driver} entry: ${allowedKeys.join(", ")})`);
+      }
+    }
+    const name = requireTrimmedString(entry.name, `${at}.name`);
+    if (names.has(name)) {
+      fail(`"${at}.name" duplicates another entry's name "${name}"; environment names are unique per instance`);
+    }
+    names.add(name);
+    const description = readOptionalDescription(entry.description, `${at}.description`);
+
+    if (driver === "sandbox") {
+      // The DB enforces at most ONE Paperclip-managed sandbox row per instance
+      // (partial unique index `environments_managed_sandbox_idx`); every
+      // sandbox entry provisions that row, so a second one can never be
+      // satisfied.
+      if (sandbox.length > 0) {
+        fail(
+          `"environments" supports at most one sandbox entry: each sandbox entry provisions the single Paperclip-managed sandbox environment (DB invariant environments_managed_sandbox_idx)`,
+        );
+      }
+      const provider = requireTrimmedString(entry.provider, `${at}.provider`);
+      // Coherence: on a managed instance the control plane is the only plugin
+      // install path, so an environment whose provider plugin is not
+      // auto-installed could never serve a lease. Catch the skew at parse time.
+      if (!autoInstall.includes(provider)) {
+        fail(
+          `"${at}.provider" is "${provider}", which is not in "plugins.autoInstall"; a managed environment requires its provider plugin to be provisioned`,
+        );
+      }
+      if (isPlainObject(entry.config) && entry.config.provider !== undefined) {
+        fail(`"${at}.config" must not set "provider"; it is forced from the entry's provider key`);
+      }
+      const config = readSecretFreeObject(entry.config, `${at}.config`);
+      sandbox.push(
+        Object.freeze({
+          name,
+          ...(description !== undefined ? { description } : {}),
+          provider,
+          config: Object.freeze(config),
+        }) as ManagedEnvironmentSpec,
+      );
+      continue;
+    }
+
+    // `pluginKey` is the plugin's manifest id (what the row's config stores),
+    // not a `plugins.autoInstall` catalog key, so this pure parser cannot map
+    // it. `applyManagedEnvironments` refuses startup when no auto-installed
+    // catalog entry installs this manifest id.
+    const pluginKey = requireTrimmedString(entry.pluginKey, `${at}.pluginKey`);
+    const driverKey = requireTrimmedString(entry.driverKey, `${at}.driverKey`);
+    if (!PLUGIN_DRIVER_KEY_PATTERN.test(driverKey)) {
+      fail(
+        `"${at}.driverKey" must start with a lowercase letter or digit and contain only lowercase letters, digits, dots, hyphens, or underscores (got ${describeJsonValue(driverKey)})`,
+      );
+    }
+    const pair = `${pluginKey}:${driverKey}`;
+    if (pluginDrivers.has(pair)) {
+      fail(`"${at}" duplicates another plugin entry's pluginKey and driverKey ("${pair}"); each plugin environment driver is declared once`);
+    }
+    pluginDrivers.add(pair);
+    const driverConfig = readSecretFreeObject(entry.driverConfig, `${at}.driverConfig`);
+    plugin.push(
+      Object.freeze({
+        driver: "plugin",
+        name,
+        ...(description !== undefined ? { description } : {}),
+        pluginKey,
+        driverKey,
+        driverConfig: Object.freeze(driverConfig),
+      }) as ManagedPluginEnvironmentSpec,
+    );
+  }
+  return { sandbox, plugin };
 }
 
 /**
@@ -320,79 +518,10 @@ export function parseManagedConfigEnv(env: ManagedConfigEnv): ManagedInstanceCon
   // absence is not a dropped security control — it simply declares no managed
   // environments. When present, the section is validated fail-closed like
   // everything else.
-  const environmentSpecs: ManagedEnvironmentSpec[] = [];
-  if (doc.environments !== undefined) {
-    if (!Array.isArray(doc.environments)) {
-      fail(`"environments" must be an array of environment objects (got ${describeJsonValue(doc.environments)})`);
-    }
-    // The DB enforces at most ONE Paperclip-managed sandbox row per instance
-    // (partial unique index `environments_managed_sandbox_idx`); every entry
-    // here provisions that row, so a longer list can never be satisfied.
-    if (doc.environments.length > 1) {
-      fail(
-        `"environments" supports at most one entry: each entry provisions the single Paperclip-managed sandbox environment (DB invariant environments_managed_sandbox_idx)`,
-      );
-    }
-    for (const [index, entry] of doc.environments.entries()) {
-      if (!isPlainObject(entry)) {
-        fail(`"environments[${index}]" must be an object (got ${describeJsonValue(entry)})`);
-      }
-      const allowedEntryKeys = new Set(["name", "description", "provider", "config"]);
-      for (const key of Object.keys(entry)) {
-        if (!allowedEntryKeys.has(key)) {
-          fail(`"environments[${index}]" has unknown key "${key}" (allowed: name, description, provider, config)`);
-        }
-      }
-      if (typeof entry.name !== "string" || entry.name.length === 0 || entry.name.trim() !== entry.name) {
-        fail(
-          `"environments[${index}].name" must be a non-empty string without surrounding whitespace (got ${describeJsonValue(entry.name)})`,
-        );
-      }
-      if (
-        entry.description !== undefined
-        && (typeof entry.description !== "string" || entry.description.trim().length === 0)
-      ) {
-        fail(`"environments[${index}].description" must be a non-empty string when present (got ${describeJsonValue(entry.description)})`);
-      }
-      if (typeof entry.provider !== "string" || entry.provider.length === 0 || entry.provider.trim() !== entry.provider) {
-        fail(
-          `"environments[${index}].provider" must be a non-empty string without surrounding whitespace (got ${describeJsonValue(entry.provider)})`,
-        );
-      }
-      // Coherence: on a managed instance the control plane is the only plugin
-      // install path, so an environment whose provider plugin is not
-      // auto-installed could never serve a lease. Catch the skew at parse time.
-      if (!autoInstall.includes(entry.provider)) {
-        fail(
-          `"environments[${index}].provider" is "${entry.provider}", which is not in "plugins.autoInstall"; a managed environment requires its provider plugin to be provisioned`,
-        );
-      }
-      const config: Record<string, unknown> = {};
-      if (entry.config !== undefined) {
-        if (!isPlainObject(entry.config)) {
-          fail(`"environments[${index}].config" must be an object (got ${describeJsonValue(entry.config)})`);
-        }
-        if (entry.config.provider !== undefined) {
-          fail(`"environments[${index}].config" must not set "provider"; it is forced from the entry's provider key`);
-        }
-        const secretLikeKey = findSecretLikeConfigKey(entry.config, "");
-        if (secretLikeKey) {
-          fail(
-            `"environments[${index}].config" key "${secretLikeKey}" looks secret-bearing; credentials are delivered to managed instances as process environment variables (the provider's documented env fallback), never in the managed-config document`,
-          );
-        }
-        Object.assign(config, entry.config);
-      }
-      environmentSpecs.push(
-        Object.freeze({
-          name: entry.name,
-          ...(entry.description !== undefined ? { description: entry.description } : {}),
-          provider: entry.provider,
-          config: Object.freeze(config),
-        }) as ManagedEnvironmentSpec,
-      );
-    }
-  }
+  const { sandbox: environmentSpecs, plugin: pluginEnvironmentSpecs } = parseManagedEnvironmentsSection(
+    doc.environments,
+    autoInstall,
+  );
 
   return Object.freeze({
     v: SUPPORTED_MANAGED_CONFIG_VERSION,
@@ -405,6 +534,7 @@ export function parseManagedConfigEnv(env: ManagedConfigEnv): ManagedInstanceCon
       ...(enabledCompanies ? { enabledCompanies: Object.freeze(enabledCompanies) } : {}),
     }),
     environments: Object.freeze(environmentSpecs),
+    pluginEnvironments: Object.freeze(pluginEnvironmentSpecs),
   }) as ManagedInstanceConfig;
 }
 
