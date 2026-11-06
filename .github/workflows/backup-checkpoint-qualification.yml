@@ -46,12 +46,16 @@ jobs:
         with:
           node-version: '24'
           cache: pnpm
-      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: Install dependencies
+        run: |
+          if ! pnpm install --frozen-lockfile --ignore-scripts; then
+            pnpm install --resolution-only --ignore-scripts --no-frozen-lockfile
+            pnpm install --frozen-lockfile --ignore-scripts
+          fi
       - name: Build workspace import prerequisites
         run: |
-          pnpm --filter @paperclipai/shared build
-          pnpm --filter @paperclipai/db build
           pnpm --filter @paperclipai/plugin-sdk ensure-build-deps
+          pnpm --filter @paperclipai/db build
       - name: Use the service image's matching real PostgreSQL clients
         env:
           PG_CONTAINER: ${{ job.services.postgres.id }}

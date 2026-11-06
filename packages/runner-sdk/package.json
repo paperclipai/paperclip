@@ -1,0 +1,40 @@
+{
+  "name": "@paperclipai/runner-sdk",
+  "version": "0.3.1",
+  "description": "Provider-neutral contracts and process host for native Paperclip harness packages",
+  "license": "MIT",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/paperclipai/paperclip",
+    "directory": "packages/runner-sdk"
+  },
+  "exports": {
+    ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" },
+    "./contracts": { "types": "./dist/index.d.ts", "import": "./dist/index.js" },
+    "./host": { "types": "./dist/host.d.ts", "import": "./dist/host.js" },
+    "./testing": { "types": "./dist/testing.d.ts", "import": "./dist/testing.js" }
+  },
+  "publishConfig": {
+    "access": "public",
+    "exports": {
+      ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" },
+      "./contracts": { "types": "./dist/index.d.ts", "import": "./dist/index.js" },
+      "./host": { "types": "./dist/host.d.ts", "import": "./dist/host.js" },
+      "./testing": { "types": "./dist/testing.d.ts", "import": "./dist/testing.js" }
+    },
+    "main": "./dist/index.js",
+    "types": "./dist/index.d.ts"
+  },
+  "files": ["dist", "protocol", "README.md"],
+  "scripts": {
+    "build": "node ../../scripts/ensure-plugin-build-deps.mjs --sdk-only",
+    "typecheck": "node ../../scripts/ensure-plugin-build-deps.mjs --sdk-only && tsc -p tsconfig.json --noEmit",
+    "test": "node --test test/*.test.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^7.0.2"
+  },
+  "engines": { "node": ">=24.11.0" }
+}

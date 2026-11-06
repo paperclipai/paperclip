@@ -1,0 +1,102 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://paperclip.dev/schemas/harness/v1/message.schema.json",
+  "title": "Paperclip native harness process protocol v1",
+  "oneOf": [{ "$ref": "#/$defs/request" }, { "$ref": "#/$defs/response" }, { "$ref": "#/$defs/event" }],
+  "$defs": {
+    "schema": { "const": "paperclip.harness.v1" },
+    "positiveInteger": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+    "text": { "type": "string", "minLength": 1, "maxLength": 160, "pattern": "^(?=\\s*\\S)[^\\u0000-\\u001f\\u007f]+$" },
+    "sha256": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+    "identity": {
+      "type": "object",
+      "required": ["harnessId", "packageName", "version", "integrity", "protocolVersion", "runtimeDigest"],
+      "properties": {
+        "harnessId": { "type": "string", "maxLength": 240, "pattern": "^[a-z0-9][a-z0-9._-]*/[a-z][a-z0-9_-]{0,95}$" },
+        "packageName": { "type": "string", "maxLength": 214, "pattern": "^(?:@[a-z0-9][a-z0-9._-]*/)?[a-z0-9][a-z0-9._-]*$" },
+        "version": { "type": "string", "maxLength": 100, "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-[0-9A-Za-z.-]+)?(?:\\+[0-9A-Za-z.-]+)?$" },
+        "integrity": { "type": "string", "pattern": "^(?:sha256-[A-Za-z0-9+/]{43}=|sha512-[A-Za-z0-9+/]{86}==)$" },
+        "protocolVersion": { "const": 1 },
+        "runtimeDigest": { "$ref": "#/$defs/sha256" }
+      },
+      "additionalProperties": false
+    },
+    "providerSessionIdentity": {
+      "type": "object", "required": ["providerSessionId", "backendSessionId"],
+      "properties": { "providerSessionId": { "$ref": "#/$defs/text" }, "backendSessionId": { "$ref": "#/$defs/text" } },
+      "additionalProperties": false
+    },
+    "checkpoint": {
+      "type": "object", "required": ["schema", "identity", "normalizedSessionId", "model", "config", "providerState", "processGroup"],
+      "properties": {
+        "schema": { "const": "paperclip.harness-checkpoint.v1" }, "identity": { "$ref": "#/$defs/identity" },
+        "normalizedSessionId": { "$ref": "#/$defs/text" }, "model": { "type": "string", "minLength": 1, "maxLength": 512 },
+        "config": { "type": "object" }, "providerState": { "type": "object" },
+        "cwd": { "type": "string", "minLength": 2, "maxLength": 4096 },
+        "runtimeDirectory": { "type": "string", "minLength": 2, "maxLength": 4096 },
+        "accountIdentity": { "type": "string", "minLength": 1, "maxLength": 1024 },
+        "credentialIdentity": { "type": "string", "minLength": 1, "maxLength": 1024 },
+        "providerSessionIdentity": { "$ref": "#/$defs/providerSessionIdentity" },
+        "processGroup": { "type": ["integer", "null"], "minimum": 1, "maximum": 4294967295 }
+      },
+      "additionalProperties": false
+    },
+    "command": {
+      "type": "object",
+      "required": ["schema", "commandId", "controllerSeq", "type", "issuedAt", "payload"],
+      "properties": {
+        "schema": { "enum": ["paperclip.prp.command.v1", "paperclip.prp.command.v2", "paperclip.prp.command.v3"] },
+        "commandId": { "$ref": "#/$defs/text" },
+        "controllerSeq": { "$ref": "#/$defs/positiveInteger" },
+        "type": { "$ref": "#/$defs/text" },
+        "issuedAt": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "deadlineAt": { "type": ["string", "null"], "minLength": 1, "maxLength": 100 },
+        "precondition": { "type": ["object", "null"] },
+        "payload": { "type": "object" }
+      },
+      "additionalProperties": false
+    },
+    "request": {
+      "type": "object",
+      "required": ["schema", "id", "method", "params"],
+      "properties": {
+        "schema": { "$ref": "#/$defs/schema" }, "id": { "$ref": "#/$defs/positiveInteger" },
+        "method": { "enum": ["initialize", "execute", "snapshot", "close"] }, "params": { "type": "object" }
+      },
+      "additionalProperties": false,
+      "allOf": [{
+        "if": { "properties": { "method": { "const": "execute" } } },
+        "then": { "properties": { "params": {
+          "type": "object", "required": ["command"], "properties": { "command": { "$ref": "#/$defs/command" } }, "additionalProperties": false
+        } } }
+      }]
+    },
+    "response": {
+      "type": "object", "required": ["schema", "id", "ok"],
+      "properties": {
+        "schema": { "$ref": "#/$defs/schema" }, "id": { "$ref": "#/$defs/positiveInteger" }, "ok": { "type": "boolean" },
+        "result": { "type": "object" },
+        "error": {
+          "type": "object", "required": ["code", "message", "retryable"],
+          "properties": { "code": { "$ref": "#/$defs/text" }, "message": { "type": "string", "minLength": 1, "maxLength": 8192, "pattern": "^(?=\\s*\\S)[^\\u0000-\\u001f\\u007f]+$" }, "retryable": { "type": "boolean" } },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false,
+      "oneOf": [
+        { "required": ["result"], "properties": { "ok": { "const": true }, "error": false } },
+        { "required": ["error"], "properties": { "ok": { "const": false }, "result": false } }
+      ]
+    },
+    "event": {
+      "type": "object", "required": ["schema", "sequence", "eventType", "priority", "payload"],
+      "properties": {
+        "schema": { "$ref": "#/$defs/schema" }, "sequence": { "$ref": "#/$defs/positiveInteger" },
+        "eventType": { "$ref": "#/$defs/text" }, "priority": { "enum": ["p0", "p1", "p2"] },
+        "turnId": { "anyOf": [{ "$ref": "#/$defs/text" }, { "type": "null" }] },
+        "itemId": { "anyOf": [{ "$ref": "#/$defs/text" }, { "type": "null" }] }, "payload": { "type": "object" }
+      },
+      "additionalProperties": false
+    }
+  }
+}

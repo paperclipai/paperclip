@@ -112,7 +112,7 @@
     "check:runner": "pnpm run typecheck:rust && pnpm run test:rust && pnpm run check:conformance-parity && pnpm run check:replay-parity",
     "check:all": "pnpm run check:eval-kernel && pnpm run check:protocol && pnpm run check:runner && pnpm run check:api-authority",
     "check:all-without-vitest": "pnpm run check:eval-kernel && pnpm run check:protocol-without-vitest && pnpm run check:runner && pnpm run check:api-authority",
-    "check:static": "pnpm run check:eval-kernel && pnpm run check:protocol-without-vitest && pnpm run check:api-authority",
+    "check:static": "node ../../scripts/check-runner-dependency-boundary.mjs && node --test ../../scripts/check-runner-dependency-boundary.test.mjs && pnpm --filter @paperclipai/runner-sdk build && pnpm --filter @paperclipai/runner-sdk test && pnpm run check:eval-kernel && pnpm run check:protocol-without-vitest && pnpm run check:api-authority",
     "check:api-authority": "node scripts/check-api-authority.mjs",
     "generate:replay-goldens": "pnpm run build:typescript && node scripts/generate-replay-goldens.mjs",
     "check:replay-goldens": "pnpm run build:typescript && node scripts/generate-replay-goldens.mjs --check",

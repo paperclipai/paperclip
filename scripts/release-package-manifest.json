@@ -173,5 +173,10 @@
     "dir": "ui",
     "name": "@paperclipai/ui",
     "publishFromCi": true
+  },
+  {
+    "dir": "packages/runner-sdk",
+    "name": "@paperclipai/runner-sdk",
+    "publishFromCi": true
   }
 ]

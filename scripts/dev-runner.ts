@@ -515,10 +515,9 @@ async function maybePreflightMigrations(options: { interactive?: boolean; autoAp
   await refreshPendingMigrations();
 }
 
-async function buildPluginSdk() {
-  console.log("[paperclip] building plugin sdk...");
+async function ensureWorkspaceBuildDependencies() {
   const result = await runPnpm(
-    ["--filter", "@paperclipai/plugin-sdk", "build"],
+    ["--filter", "@paperclipai/plugin-sdk", "ensure-build-deps"],
     { stdio: "inherit" },
   );
   if (result.signal) {
@@ -526,7 +525,7 @@ async function buildPluginSdk() {
     return;
   }
   if (result.code !== 0) {
-    console.error("[paperclip] plugin sdk build failed");
+    console.error("[paperclip] workspace dependency build failed");
     process.exit(result.code);
   }
 }
@@ -713,8 +712,8 @@ async function stopChildForRestart() {
 }
 
 async function startServerChild() {
+  await ensureWorkspaceBuildDependencies();
   await buildPaperclipRunner();
-  await buildPluginSdk();
 
   const serverScript = mode === "watch" ? "dev:watch" : "dev";
   child = spawn(
@@ -887,6 +886,9 @@ process.on("SIGINT", () => {
 process.on("SIGTERM", () => {
   void shutdown("SIGTERM");
 });
+
+// Migration schemas and the UI import compiled workspace contracts.
+await ensureWorkspaceBuildDependencies();
 
 // The managed runtime readiness window is tight, so reuse a fresh bundle
 // when possible and overlap a needed rebuild with the migration preflight.
