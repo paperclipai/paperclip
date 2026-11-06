@@ -339,7 +339,7 @@ export async function reapSetupTokenLeases(
   let failed = 0;
   for (const record of records) {
     try {
-      await deps.leases.releaseById(record.leaseId);
+      if (record.leaseId.trim()) await deps.leases.releaseById(record.leaseId);
       await deps.store.remove({
         sessionId: record.sessionId,
         companyId: record.companyId,
