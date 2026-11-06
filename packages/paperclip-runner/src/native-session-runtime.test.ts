@@ -1,3 +1,4 @@
+import { validatePrpStructuredRunResult } from "./protocol/replay-contract.js";
 import { createHash } from "node:crypto";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -505,6 +506,47 @@ describe("executeNativeSession recovery", () => {
     expect(events.filter(event => event.eventType === "turn.failed")).toHaveLength(1);
     expect(events.filter(event => event.eventType === "run.terminal")).toHaveLength(1);
     expect(checkpoints.some(snapshot => snapshot.terminalTurns?.some(turn => turn.turnId === "turn-recovery"))).toBe(true);
+  });
+
+  it("never continues task work when a restart loses a compaction turn", async () => {
+    const failure = { code: "provider_turn_lost_on_restore", recoverable: true };
+    const checkpoint: PersistedNativeSession = {
+      backendKind: "runner", driverKind: "codex_app_server", sessionId: "thread-recovery", identity,
+      providerSessionId: "provider-recovery", cursor: "0", activeTurnId: "turn-recovery",
+      terminalTurns: [], semanticResult: null, pendingRuntimeRequests: [], lineage: [],
+    };
+    const interrupted: PersistedNativeSession = {
+      ...checkpoint, activeTurnId: null,
+      terminalTurns: [{ turnId: "turn-recovery", fingerprint: JSON.stringify({ terminalState: "failed", error: failure, result: null }) }],
+    };
+    const startTurn = vi.fn<NativeSession["startTurn"]>(async () => ({ turnId: "turn-continuation" }));
+    const session: NativeSession = {
+      identity: () => identity,
+      async capabilities() { return { resume: true, typedEvents: true, steering: false, interruption: true, structuredResult: true }; },
+      async *events() { yield runnerEvent(1, "turn.failed", { status: "failed", error: failure }); },
+      startTurn,
+      async result() { return null; },
+      async snapshot() { return structuredClone(interrupted); },
+      async close() {},
+    };
+    const backend: NativeSessionBackend = {
+      async descriptor() { return { kind: "runner", name: "restart", version: "1", capabilities: await session.capabilities() }; },
+      async openSession() { throw new Error("must preserve the provider session"); },
+      async recoverSession() { return { recovered: true, session }; },
+    };
+    const port: ControlPlanePort = {
+      async openRun() {},
+      async checkpointSession() {},
+      async appendEvent(event: PrpEvent) { return { cursor: event.sourceSeq, highestContiguousSourceSeq: event.sourceSeq, disposition: "committed" }; },
+      async replayEvents() { return { events: [], highestContiguousSourceSeq: 0 }; },
+      async completeRun() {},
+    };
+    await expect(executeNativeSession({
+      input, backend, controlPlane: port, persistedSession: checkpoint,
+      runnerInstanceId: "runner-recovery", controlPlaneInstanceId: "control-recovery",
+      resumeInterruptedTurn: true, sessionCompaction: { requestId: "compact-1" },
+    })).rejects.toMatchObject({ code: "native_provider_terminal_failed" });
+    expect(startTurn).not.toHaveBeenCalled();
   });
 
   it.each([undefined, 0, 7 * 24 * 60 * 60 * 1000, 30 * 24 * 60 * 60 * 1000])(
@@ -1189,6 +1231,189 @@ describe("executeNativeSession recovery", () => {
     expect(completed.result).toMatchObject({
       reportedWorkDisposition: recoveryOnly && !cleared ? "done" : "yielded",
       completionClaim: { objectiveSatisfied: recoveryOnly && !cleared },
+    });
+  });
+
+  describe("context compaction", () => {
+    const capabilities = {
+      resume: true,
+      typedEvents: true,
+      steering: false,
+      interruption: true,
+      structuredResult: true,
+    };
+    const port: ControlPlanePort = {
+      async openRun() {},
+      async checkpointSession() {},
+      async appendEvent(event: PrpEvent) {
+        return { cursor: event.sourceSeq, highestContiguousSourceSeq: event.sourceSeq, disposition: "committed" };
+      },
+      async replayEvents() {
+        return { events: [], highestContiguousSourceSeq: 0 };
+      },
+      async completeRun() {},
+    };
+    function compactingSession(startTurn: NativeSession["startTurn"], activeTurnId: string | null = null): NativeSession {
+      return {
+        identity: () => identity,
+        async capabilities() {
+          return capabilities;
+        },
+        async *events() {
+          yield runnerEvent(1, "turn.started");
+          yield runnerEvent(2, "context.compacted", {
+            schema: "paperclip.context.compacted.v1",
+            compactionId: "compaction-1",
+            reason: "provider",
+            preTokens: null,
+            postTokens: null,
+            sameSession: true,
+          });
+          yield runnerEvent(3, "turn.completed");
+        },
+        startTurn,
+        async result() {
+          return null;
+        },
+        async snapshot() {
+          return {
+            backendKind: "mock",
+            sessionId: "driver-recovery",
+            identity,
+            providerSessionId: "provider-recovery",
+            cursor: null,
+            activeTurnId,
+            pendingRuntimeRequests: [],
+            lineage: [],
+          };
+        },
+        close: vi.fn(async () => {}),
+      };
+    }
+    const persistedSession: PersistedNativeSession = {
+      backendKind: "mock",
+      sessionId: "driver-recovery",
+      identity,
+      providerSessionId: "provider-recovery",
+      cursor: null,
+      activeTurnId: null,
+      pendingRuntimeRequests: [],
+      lineage: [],
+    };
+
+    it("compacts a resumed session and settles without task work", async () => {
+      const startTurn = vi.fn(async () => ({ turnId: "turn-recovery" }));
+      const session = compactingSession(startTurn);
+      const backend: NativeSessionBackend = {
+        async descriptor() {
+          return { kind: "mock", name: "compaction", version: "1", capabilities };
+        },
+        async openSession() {
+          throw new Error("fresh session must not be opened");
+        },
+        async recoverSession() {
+          return { recovered: true, session };
+        },
+      };
+      const completed = await executeNativeSession({
+        input,
+        backend,
+        controlPlane: port,
+        runnerInstanceId: "runner-recovery",
+        controlPlaneInstanceId: "control-recovery",
+        persistedSession,
+        requireSessionCloseBeforeReturn: true,
+        sessionCompaction: { requestId: "compact-1" },
+      });
+      expect(startTurn).toHaveBeenCalledTimes(1);
+      expect(startTurn).toHaveBeenCalledWith(expect.objectContaining({ compact: true, continuation: true }));
+      expect(completed.result).toMatchObject({
+        reportedWorkDisposition: "yielded",
+        summary: "Context compacted on request.",
+        completionClaim: { objectiveSatisfied: false, remainingWork: [] },
+      });
+      expect(completed.result.continuation).toMatchObject({ kind: "same_agent" });
+      expect(validatePrpStructuredRunResult(completed.result)).toMatchObject({ ok: true });
+    });
+
+    it("keeps waiting on its own compaction turn after a restart", async () => {
+      const startTurn = vi.fn(async () => ({ turnId: "turn-recovery" }));
+      const session = compactingSession(startTurn, "turn-recovery");
+      const backend: NativeSessionBackend = {
+        async descriptor() {
+          return { kind: "mock", name: "compaction", version: "1", capabilities };
+        },
+        async openSession() {
+          throw new Error("fresh session must not be opened");
+        },
+        async recoverSession() {
+          return { recovered: true, session };
+        },
+      };
+      const completed = await executeNativeSession({
+        input,
+        backend,
+        controlPlane: port,
+        runnerInstanceId: "runner-recovery",
+        controlPlaneInstanceId: "control-recovery",
+        persistedSession: { ...persistedSession, activeTurnId: "turn-recovery" },
+        requireSessionCloseBeforeReturn: true,
+        sessionCompaction: { requestId: "compact-1" },
+      });
+      expect(startTurn).not.toHaveBeenCalled();
+      expect(completed.result).toMatchObject({ summary: "Context compacted on request." });
+    });
+
+    it("never compacts over another run's checkpoint", async () => {
+      const startTurn = vi.fn(async () => ({ turnId: "turn-recovery" }));
+      const session = compactingSession(startTurn, "turn-recovery");
+      const backend: NativeSessionBackend = {
+        async descriptor() {
+          return { kind: "mock", name: "compaction", version: "1", capabilities };
+        },
+        async openSession() {
+          throw new Error("fresh session must not be opened");
+        },
+        async recoverSession() {
+          return { recovered: true, session };
+        },
+      };
+      await expect(executeNativeSession({
+        input,
+        backend,
+        controlPlane: port,
+        runnerInstanceId: "runner-recovery",
+        controlPlaneInstanceId: "control-recovery",
+        persistedSession: {
+          ...persistedSession,
+          identity: { ...identity, runId: "run-earlier" },
+          activeTurnId: "turn-recovery",
+        },
+        sessionCompaction: { requestId: "compact-1" },
+      })).rejects.toThrow("native_session_checkpoint_binding_mismatch");
+      expect(startTurn).not.toHaveBeenCalled();
+    });
+
+    it("refuses to compact a fresh session that has no prior context", async () => {
+      const startTurn = vi.fn(async () => ({ turnId: "turn-recovery" }));
+      const session = compactingSession(startTurn);
+      const backend: NativeSessionBackend = {
+        async descriptor() {
+          return { kind: "mock", name: "compaction", version: "1", capabilities };
+        },
+        async openSession() {
+          return session;
+        },
+      };
+      await expect(executeNativeSession({
+        input,
+        backend,
+        controlPlane: port,
+        runnerInstanceId: "runner-recovery",
+        controlPlaneInstanceId: "control-recovery",
+        sessionCompaction: { requestId: "compact-1" },
+      })).rejects.toThrow("native_context_compaction_unavailable");
+      expect(startTurn).not.toHaveBeenCalled();
     });
   });
 
@@ -4741,6 +4966,51 @@ describe("executeNativeSession recovery", () => {
     expect(resolveGovernedWait).toHaveBeenCalledOnce();
     expect(close).toHaveBeenCalled();
     expect(lifecycle).toEqual(["closed"]);
+  });
+
+  it("settles an intentional governed park through the actual Codex session facade", async () => {
+    const transport = new FakeCodexTransport();
+    const request = transport.request.bind(transport);
+    transport.request = async (method, params) => {
+      const response = await request(method, params);
+      if (method === "turn/interrupt") setImmediate(() => transport.push("turn/completed", {
+        threadId: "thread-1", turn: { id: "turn-1", status: "interrupted", error: null, items: [] },
+      }));
+      return response;
+    };
+    const executionInput = { ...input, workspace: { ...input.workspace, cwd: WORKSPACE } };
+    const backend = createCodexNativeSessionBackend(executionInput, {
+      runnerInstanceId: "runner-recovery", transportFactory: () => transport,
+    });
+    const events: PrpEvent[] = [];
+    const deferredEventTypes: string[] = [];
+    const completeRun = vi.fn(async () => undefined);
+    const execution = executeNativeSession({ input: executionInput, backend,
+      runnerInstanceId: "runner-recovery", controlPlaneInstanceId: "control-recovery", timeoutMs: 5_000,
+      controlPlane: {
+        async openRun() {}, async checkpointSession() {}, completeRun,
+        async appendEvent(event: PrpEvent, options) {
+          if (options?.deferPostCommitObservers) deferredEventTypes.push(event.eventType);
+          events.push(structuredClone(event)); return {
+          cursor: events.length, highestContiguousSourceSeq: event.sourceSeq, disposition: "committed",
+        }; },
+        async replayEvents() { return { events: [], highestContiguousSourceSeq: 0 }; },
+      },
+      resolveGovernedWait: ({ event }) => event.eventType === "item.completed"
+        && event.payload.kind === "agentMessage" ? yieldedResult : null,
+    });
+    const outcome = expect(execution).resolves.toMatchObject({ result: yieldedResult,
+      terminal: { runTerminalState: "succeeded", reportedWorkDisposition: "yielded" } });
+    await vi.waitFor(() => expect(transport.calls.some(call => call.method === "turn/start")).toBe(true));
+    transport.push("turn/started", { threadId: "thread-1", turn: { id: "turn-1", status: "inProgress" } });
+    transport.push("item/completed", { threadId: "thread-1", turnId: "turn-1",
+      item: { id: "waiting-message", type: "agentMessage", channel: "final", text: "The human-only question is saved." } });
+    await outcome;
+    expect(events.find(event => event.eventType === "turn.interrupted")?.payload).toMatchObject({ error: null, status: "interrupted" });
+    expect(deferredEventTypes).toEqual(["turn.interrupted"]);
+    expect(events.some(event => event.eventType === "item.completed")).toBe(true);
+    expect(completeRun).toHaveBeenCalledOnce();
+    expect(transport.calls.filter(call => call.method === "turn/start")).toHaveLength(1);
   });
 
   it("commits a proved governed wait without waiting for abort-insensitive provider cleanup", async () => {

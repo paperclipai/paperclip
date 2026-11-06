@@ -56,9 +56,14 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
   }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
   afterAll(async () => { await db?.$client.end({ timeout: 1 }); await database?.cleanup(); });
 
+  // Issue prefixes are unique across companies. About a hundred fixtures share
+  // this database, so seven random hex digits alone could collide; the
+  // sequence keeps each prefix in this run distinct within the ten characters
+  // an issue mention allows.
+  let companySequence = 0;
   async function fixture() {
     const companyId = randomUUID(), endpointId = randomUUID(), agentId = randomUUID(), applicationId = randomUUID(), connectionId = randomUUID(), issueId = randomUUID(), conversationId = randomUUID(), callerId = randomUUID();
-    await db.insert(companies).values({ id: companyId, name: "Voice test", issuePrefix: `V${companyId.slice(0, 7).toUpperCase()}` });
+    await db.insert(companies).values({ id: companyId, name: "Voice test", issuePrefix: `V${(++companySequence).toString(36).padStart(3, "0")}${companyId.slice(0, 6)}`.toUpperCase() });
     await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: callerId, status: "active", membershipRole: "member" });
     await db.insert(agents).values({ id: agentId, companyId, name: "Existing agent", role: "operator", status: "idle", adapterType: "paperclip_runner" });
     await db.insert(issues).values({ id: issueId, companyId, title: "Existing task", assigneeAgentId: agentId, status: "in_progress" });

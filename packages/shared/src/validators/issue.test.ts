@@ -716,6 +716,18 @@ describe("persisted canonical question initial text", () => {
       expect(paperclipQuestionSetPayloadSchema.safeParse(input({ initialText })).success).toBe(codePoints === 100_000);
     }
   });
+  it("bounds question text by the string length the Runner parser enforces", () => {
+    const within = paperclipQuestionSetPayloadSchema.safeParse(input({ prompt: "😀".repeat(2000) }));
+    expect(within.success).toBe(true);
+    for (const payload of [
+      input({ prompt: "😀".repeat(2000) + "x" }),
+      input({ id: "😀".repeat(81) }),
+      { ...input({}), title: "😀".repeat(501) },
+      { ...input({}), submitLabel: "😀".repeat(101) },
+    ]) {
+      expect(paperclipQuestionSetPayloadSchema.safeParse(payload).success).toBe(false);
+    }
+  });
   it("rejects non-text modes and unbounded or nonstring defaults", () => {
     for (const initialText of [null, 1, "x".repeat(100_001), "a".repeat(100_000) + "😀"]) {
       expect(paperclipQuestionSetPayloadSchema.safeParse(input({ initialText })).success).toBe(false);

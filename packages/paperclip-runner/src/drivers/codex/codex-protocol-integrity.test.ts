@@ -1112,6 +1112,43 @@ describe("Codex protocol integrity propagation", () => {
     await expect(session.startTurn({ message: { role: "user", text: "Work" } })).rejects.toMatchObject({ code: "native_provider_terminal_failed", providerCode: "thread_binding_mismatch", recoverable: false });
     await session.close({ reason: "test complete" });
   });
+  it("keeps the redacted, bounded transport cause on the terminal failure", async () => {
+    // A host-side supervision loss (here, a stopped sandbox plugin worker)
+    // closed the notification stream. The run's terminal error must explain
+    // it instead of a bare "failed closed" that reads like a provider fault.
+    const transport = new FakeCodexTransport();
+    const session = await makeDriver([transport]).openSession({
+      runId: "run-cause",
+      normalizedSessionId: "session-cause",
+      workingDirectory: WORKSPACE,
+    });
+    const events: PrpEvent[] = [];
+    const consumed = (async () => {
+      for await (const event of session.events()) events.push(event);
+    })();
+    try {
+      await session.startTurn({ message: { role: "user", text: "Work." } });
+      transport.queue.fail(new Error(
+        `runner_process_termination_unconfirmed: runnerd process supervision failed: Cannot call "environmentExecute" — worker for "plugin-1" is stopped token=sandbox-secret ${"x".repeat(4_000)}`,
+      ));
+      await consumed;
+      const failed = events.filter((event) => event.eventType === "session.failed");
+      expect(failed).toHaveLength(1);
+      const message = String(failed[0]!.payload.message);
+      expect(failed[0]!.payload).toMatchObject({ code: "notification_transport_failed", recoverable: false });
+      expect(message).toMatch(/^Notification transport failed closed: /);
+      expect(message).toContain("runner_process_termination_unconfirmed");
+      expect(message).toContain('worker for "plugin-1" is stopped');
+      expect(message).not.toContain("Error: ");
+      expect(message).not.toContain("sandbox-secret");
+      expect(message.length).toBeLessThanOrEqual(1_200);
+      const turnFailed = events.find((event) => event.eventType === "turn.failed");
+      expect((turnFailed?.payload.error as { message?: string } | undefined)?.message).toBe(message);
+    } finally {
+      await session.close({ reason: "test cleanup" });
+      await consumed;
+    }
+  });
   it("does not promote a message-and-field lookalike transport error", async () => {
     const transport = new FakeCodexTransport();
     const session = await makeDriver([transport]).openSession({

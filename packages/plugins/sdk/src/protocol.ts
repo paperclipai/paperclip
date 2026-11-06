@@ -618,6 +618,12 @@ export interface PluginEnvironmentProbeResult {
   metadata?: Record<string, unknown>;
 }
 
+export interface PluginEnvironmentWorkspaceAllocationFiles {
+  providerLeaseId: string;
+  remoteCwd: string;
+  files: Array<{ relativePath: string; sha256: string }>;
+}
+
 export interface PluginEnvironmentLease {
   providerLeaseId: string | null;
   metadata?: Record<string, unknown>;
@@ -892,11 +898,13 @@ export interface PluginSyncOperation {
 export interface PluginEnvironmentSyncInParams extends PluginEnvironmentDriverBaseParams {
   lease: PluginEnvironmentLease;
   operations: PluginSyncOperation[];
+  minimumTimeoutMs?: number;
 }
 
 export interface PluginEnvironmentSyncOutParams extends PluginEnvironmentDriverBaseParams {
   lease: PluginEnvironmentLease;
   operations: PluginSyncOperation[];
+  minimumTimeoutMs?: number;
 }
 
 /** Per-operation transfer accounting returned by a sync hook, for observability. */

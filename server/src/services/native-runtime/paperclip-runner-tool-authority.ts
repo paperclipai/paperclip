@@ -1,8 +1,11 @@
+import { budgetServiceInTransaction } from "../budgets.js";
+import { resolveTaskWatchdogMutationScope, taskWatchdogScopeAllowsIssueMutation } from "../task-watchdog-scope.js";
+import { resolveNewTaskParent } from "../issue-hierarchy.js";
 import { DOWNLOAD_ARTIFACT, DOWNLOAD_ARTIFACT_DEFINITION, downloadArtifactSchema, createArtifactInstaller, type ArtifactInstaller } from "./artifact-transfer.js";
 import { notifyStatusCardIssueChange } from "../status-card-notifications.js";
 import { nativeRunKeyScope, nativeSkillTestToolAllowed, assertNativeSkillTestTool } from "./native-skill-test-scope.js";
 import { notifyAttentionRetentionWork } from "../retention-work-notifications.js";
-import { requiredQualityReviewSchema } from "@paperclipai/shared";
+import { requiredQualityReviewSchema, type RequestCheckboxConfirmationOption } from "@paperclipai/shared";
 import { priorRecoveryApiReceipt } from "../recovery-effect-receipts.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "../delivery-work-notifications.js";
 import { caseHandoffService } from "../case-handoffs.js";
@@ -96,6 +99,7 @@ import { approvalService } from "../approvals.js";
 import { documentService } from "../documents.js";
 import { issueService } from "../issues.js";
 import { issueThreadInteractionService } from "../issue-thread-interactions.js";
+import { readPersistedConfirmationDecision } from "../confirmation-decision.js";
 import { getNativeReviewAssignment, readNativeReviewAssignmentContext, type NativeReviewAssignmentContext } from "./native-review-participant.js";
 import { childReviewOutcomes } from "./child-review-outcomes.js";
 import { logActivity, persistActivity, publishActivity } from "../activity-log.js";
@@ -1500,8 +1504,8 @@ export class PaperclipRunnerToolAuthority {
       throw new Error("paperclip_runner_tool_binding_not_authorized");
     }
     const [company] = await this.db.select().from(companies).where(eq(companies.id, this.binding.companyId));
-    if (company?.status !== "active" || (company.budgetMonthlyCents > 0 && company.spentMonthlyCents >= company.budgetMonthlyCents)
-      || (row.actor.budgetMonthlyCents > 0 && row.actor.spentMonthlyCents >= row.actor.budgetMonthlyCents)) throw forbidden("Company or budget authority unavailable");
+    if (company?.status !== "active"
+      || await budgetServiceInTransaction(this.db).getInvocationBlock(this.binding.companyId, this.binding.agentId, { issueId: this.binding.issueId })) throw forbidden("Company or budget authority unavailable");
     if (this.binding.nativeReview) {
       const admitted = readNativeReviewAssignmentContext(row.run.contextSnapshot);
       if (!admitted || admitted.nativeReviewInteractionId !== this.binding.nativeReview.nativeReviewInteractionId
@@ -1696,19 +1700,81 @@ export class PaperclipRunnerToolAuthority {
     const inputFingerprint = createHash("sha256")
       .update(canonicalJson(input))
       .digest("hex");
+    /** Why this run may not add a child under `parent`, or null when it may. */
+    const parentWriteDenial = async (tx: Db, run: typeof heartbeatRuns.$inferSelect, parent: typeof issues.$inferSelect) => {
+      for (const action of ["issue:read", "issue:mutate"] as const) {
+        const decision = await authorizationService(tx).decide({ actor: this.#privacyActor(run), action, resource: {
+          type: "issue", companyId: this.binding.companyId, issueId: parent.id, projectId: parent.projectId,
+          parentIssueId: parent.parentId, assigneeAgentId: parent.assigneeAgentId, assigneeUserId: parent.assigneeUserId, status: parent.status,
+        }, scope: { issueId: parent.id, projectId: parent.projectId, parentIssueId: parent.parentId } });
+        if (!decision.allowed) return decision.explanation;
+      }
+      return null;
+    };
     const authorizeCreate = async (tx: Db, context: {
       run: typeof heartbeatRuns.$inferSelect;
       issue: typeof issues.$inferSelect;
       actor: typeof agents.$inferSelect;
     }) => {
-      const parentIssueId = context.issue.conversationAgentId ? null : context.issue.id;
-      const projectId = nullableProviderId(input.projectId) ?? (parentIssueId ? context.issue.projectId : null);
+      // Default parent: the current task, or none from a conversation. An
+      // explicit parentTaskId names another task the run may read and change
+      // (for example a top-level task this conversation just created).
+      let parentIssueId = context.issue.conversationAgentId ? null : context.issue.id;
+      let parentProjectId = parentIssueId ? context.issue.projectId : null;
+      const requestedParentId = nullableProviderId(input.parentTaskId);
+      const watchdogScope = await resolveTaskWatchdogMutationScope(tx, {
+        type: "agent", agentId: this.binding.agentId, runId: this.binding.runId, companyId: this.binding.companyId,
+      });
+      if (requestedParentId && requestedParentId !== parentIssueId) {
+        const [parent] = await tx.select().from(issues).where(and(
+          eq(issues.id, requestedParentId), eq(issues.companyId, this.binding.companyId),
+        ));
+        if (!parent) throw new Error("paperclip_runner_task_not_found");
+        if (parent.conversationAgentId) {
+          throw forbidden("A conversation cannot be a parent; omit parentTaskId to create a top-level task");
+        }
+        const denied = await parentWriteDenial(tx, context.run, parent);
+        if (denied) throw forbidden(denied);
+        // A watchdog run may only add work inside its watched subtree, as on the
+        // issues route.
+        if (watchdogScope.kind !== "none") {
+          const allowed = await taskWatchdogScopeAllowsIssueMutation(tx, watchdogScope, { id: parent.id, companyId: parent.companyId });
+          if (allowed.kind === "invalid") throw forbidden(allowed.detail);
+        }
+        parentIssueId = parent.id;
+        parentProjectId = parent.projectId;
+      }
+      // Place the edge the way createChild will, and authorize the parent that
+      // is actually written. Active watchdog runs keep their requested parent.
+      const parentDepthPolicy = watchdogScope.kind === "watchdog" ? "allow_nested" as const : "flatten" as const;
+      let placedParentId = parentIssueId;
+      // Set when the structural parent is dropped; the follow-up still works in
+      // the requester's workspace.
+      let workspaceSourceIssueId: string | null = null;
+      if (parentIssueId) {
+        placedParentId = (await resolveNewTaskParent(tx, this.binding.companyId, parentIssueId, parentDepthPolicy)).effectiveParentId;
+        if (placedParentId && placedParentId !== parentIssueId) {
+          const [placed] = await tx.select().from(issues).where(and(
+            eq(issues.id, placedParentId), eq(issues.companyId, this.binding.companyId),
+          ));
+          const denied = placed ? await parentWriteDenial(tx, context.run, placed) : "Parent issue not found";
+          if (denied) {
+            // A named parent fails closed; the implicit current-task default
+            // falls back to standalone work, as the issues route does.
+            if (requestedParentId) throw forbidden(denied);
+            workspaceSourceIssueId = parentIssueId;
+            parentIssueId = null;
+            placedParentId = null;
+          }
+        }
+      }
+      const projectId = nullableProviderId(input.projectId) ?? parentProjectId;
       if (this.binding.museRuntime && projectId) {
         const access = await authorizationService(tx).decide({ actor: this.#privacyActor(context.run), action: "project:read",
           resource: { type: "project", companyId: this.binding.companyId, projectId } });
         if (!access.allowed) throw forbidden("Project is unavailable to this Muse run");
       }
-      const scope = { projectId, parentIssueId, assigneeAgentId, assigneeUserId };
+      const scope = { projectId, parentIssueId: placedParentId, assigneeAgentId, assigneeUserId };
       const decision = await authorizationService(tx).decide({
         actor: this.#privacyActor(context.run),
         action: "tasks:assign",
@@ -1726,12 +1792,11 @@ export class PaperclipRunnerToolAuthority {
         run: { companyId: this.binding.companyId, executionPolicy: context.run.contextSnapshot?.executionPolicy },
       });
       if (trust.kind === "denied") throw forbidden(trust.detail);
-      return { projectId, trust };
+      return { projectId, trust, parentIssueId, placedParentId, parentDepthPolicy, workspaceSourceIssueId };
     };
     let publication: Awaited<ReturnType<typeof persistActivity>>["publication"] | null = null;
     const result = await this.#withMutationReceipt("create_task", idempotencyKey, input, async (tx, context) => {
-      const { projectId, trust } = await authorizeCreate(tx, context);
-      const conversation = Boolean(context.issue.conversationAgentId);
+      const { projectId, trust, parentIssueId, placedParentId, parentDepthPolicy, workspaceSourceIssueId } = await authorizeCreate(tx, context);
       const existingChild = await tx.select().from(issues).where(and(
         eq(issues.companyId, this.binding.companyId),
         eq(issues.originId, durableIdempotencyKey),
@@ -1785,6 +1850,10 @@ export class PaperclipRunnerToolAuthority {
         assigneeUserId,
         blockedByIssueIds,
         blockParentUntilDone: false,
+        // Placement was authorized above; reject the write if the tree changed since.
+        parentDepthPolicy,
+        ...(parentIssueId ? { expectedParentId: placedParentId } : {}),
+        ...(workspaceSourceIssueId ? { inheritExecutionWorkspaceFromIssueId: workspaceSourceIssueId } : {}),
         createdByAgentId: this.binding.agentId,
         originKind: "manual" as const,
         originId: durableIdempotencyKey,
@@ -1797,9 +1866,9 @@ export class PaperclipRunnerToolAuthority {
         idempotencyKey: durableIdempotencyKey,
         onDeduplicated: () => { deduplicated = true; },
       };
-      const child = conversation
-        ? await issueService(tx).create(this.binding.companyId, createInput)
-        : (await issueService(tx).createChild(this.binding.issueId, createInput)).issue;
+      const child = parentIssueId
+        ? (await issueService(tx).createChild(parentIssueId, createInput)).issue
+        : await issueService(tx).create(this.binding.companyId, createInput);
       if (deduplicated && child.originFingerprint !== inputFingerprint) {
         throw new Error("paperclip_runner_tool_idempotency_conflict");
       }
@@ -1824,7 +1893,8 @@ export class PaperclipRunnerToolAuthority {
           agentId: this.binding.agentId, runId: this.binding.runId, issueId: child.id,
           action: "issue.created", entityType: "issue", entityId: child.id,
           details: { identifier: child.identifier, title: child.title, parentId: child.parentId,
-            assigneeAgentId: child.assigneeAgentId, assigneeUserId: child.assigneeUserId, status: childStatus, source: "paperclip_runner_protocol" },
+            assigneeAgentId: child.assigneeAgentId, assigneeUserId: child.assigneeUserId, status: childStatus, source: "paperclip_runner_protocol",
+            ...("parentAdjusted" in child && child.parentAdjusted ? { parentAdjusted: child.parentAdjusted } : {}) },
         });
         publication = activity.publication;
       }
@@ -2467,6 +2537,7 @@ export class PaperclipRunnerToolAuthority {
     revisionId: string;
     revisionNumber: number;
     markdown: string;
+    approvedOptions?: RequestCheckboxConfirmationOption[];
   } | null> {
     const acceptedTarget = record(
       record(record(contextSnapshot).planReviewInteraction).acceptedTargetRevision,
@@ -2474,7 +2545,8 @@ export class PaperclipRunnerToolAuthority {
     let revisionId = typeof acceptedTarget.revisionId === "string"
       ? acceptedTarget.revisionId
       : null;
-    if (!revisionId) revisionId = await this.#latestAcceptedPlanRevisionId();
+    const approval = await this.#latestAcceptedPlanApproval(revisionId);
+    if (!revisionId) revisionId = approval?.revisionId ?? null;
     if (!revisionId) return null;
 
     const [revision] = await this.db.select({
@@ -2495,33 +2567,42 @@ export class PaperclipRunnerToolAuthority {
         eq(documentRevisions.companyId, this.binding.companyId),
       ))
       .limit(1);
-    if (!revision || !this.binding.museRuntime) return revision ?? null;
+    if (!revision) return null;
+    const acceptedRevision = { ...revision, ...(approval?.approvedOptions ? { approvedOptions: approval.approvedOptions } : {}) };
+    if (!this.binding.museRuntime) return acceptedRevision;
     const document = await documentService(this.db).getIssueDocumentByKey(this.binding.issueId, "plan");
     const [visible] = await this.#projectMuseDocumentContent(issue, [{
       id: revision.revisionId, documentId: revision.documentId, body: revision.markdown,
     }], document ? [document] : []);
-    return { ...revision, markdown: visible!.body };
+    return { ...acceptedRevision, markdown: visible!.body };
   }
 
-  async #latestAcceptedPlanRevisionId(): Promise<string | null> {
-    const rows = await this.db.select({ payload: issueThreadInteractions.payload })
+  async #latestAcceptedPlanApproval(revisionId: string | null): Promise<{
+    revisionId: string;
+    approvedOptions: RequestCheckboxConfirmationOption[] | null;
+  } | null> {
+    const rows = await this.db.select({ payload: issueThreadInteractions.payload, kind: issueThreadInteractions.kind,
+      status: issueThreadInteractions.status, result: issueThreadInteractions.result, resolvedAt: issueThreadInteractions.resolvedAt })
       .from(issueThreadInteractions)
       .where(and(
         eq(issueThreadInteractions.companyId, this.binding.companyId),
         eq(issueThreadInteractions.issueId, this.binding.issueId),
-        eq(issueThreadInteractions.kind, "request_confirmation"),
+        inArray(issueThreadInteractions.kind, ["request_confirmation", "request_checkbox_confirmation"]),
         eq(issueThreadInteractions.status, "accepted"),
+        revisionId ? sql`${issueThreadInteractions.payload}->'target'->>'revisionId' = ${revisionId}` : undefined,
       ))
       .orderBy(desc(issueThreadInteractions.resolvedAt), desc(issueThreadInteractions.createdAt));
     for (const row of rows) {
-      const target = record(record(row.payload).target);
+      const decision = readPersistedConfirmationDecision(row);
+      if (!decision) continue;
+      const target = decision.target;
       if (
-        target.type === "issue_document"
+        target?.type === "issue_document"
         && (target.issueId === undefined || target.issueId === this.binding.issueId)
         && target.key === "plan"
         && typeof target.revisionId === "string"
         && target.revisionId.length > 0
-      ) return target.revisionId;
+      ) return { revisionId: target.revisionId, approvedOptions: decision.approvedOptions };
     }
     return null;
   }

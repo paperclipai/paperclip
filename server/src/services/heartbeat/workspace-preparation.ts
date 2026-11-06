@@ -1020,12 +1020,12 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
           || error.writer.lastActivityAt.getTime() < Date.now() - WORKSPACE_BUSY_HOLDER_STALE_AFTER_MS) throw error;
         throw new WorkspaceBusyDeferral({ holder: error.writer, executionWorkspaceId: error.workspaceId,
           deferralAttempt: run.scheduledRetryReason === WORKSPACE_BUSY_RETRY_REASON ? run.scheduledRetryAttempt ?? 0 : 0,
-          wasIssueAssignee: input.task.wasIssueAssignee });
+          wasIssueAssignee: input.task.wasIssueAssignee, holderEnded: error.writer.ended === true });
       });
       persistedExecutionWorkspace = await executionWorkspacesSvc.getStoredById(agent.companyId, reserved.id);
       if (!persistedExecutionWorkspace?.cwd) throw new Error("remote_workspace_reservation_missing");
       persistedExecutionWorkspace = await executionWorkspacesSvc.update(reserved.id, {
-        metadata: { ...nextExecutionWorkspaceMetadata, ...reserved.metadata,
+        metadata: { ...reserved.metadata, ...nextExecutionWorkspaceMetadata,
           remoteWorkspace: reserved.metadata?.remoteWorkspace },
       });
       if (!persistedExecutionWorkspace?.cwd) throw new Error("remote_workspace_reservation_missing");
@@ -1447,10 +1447,13 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
       && !(executionTarget?.kind === "remote" && (executionTarget.transport === "ssh"
         || (executionTarget.transport === "sandbox" && executionTarget.runnerTask)))) {
     const workspaceId = persistedNativeExecutionInput?.binding.executionWorkspaceId ?? nativeRecoveryExecutionWorkspaceId!;
+    // Runtime selection persists the native input before it prepares the
+    // sandbox sync, and commits this reference before any provider dispatch.
+    // An absent reference therefore means preparation was interrupted (for
+    // example by a server restart) before the sandbox received this run's work.
+    // There is no remote copy-back to protect, so recovery re-admits the host
+    // workspace that the fresh sync preparation will seed from.
     const reference = readNativeWorkspaceSyncReference(parseObject(run.runnerProfileJson).nativeWorkspaceSync);
-    if (!reference && executionTarget?.kind === "remote" && executionTarget.transport === "sandbox") {
-      throw new Error("native_workspace_sync_descriptor_binding_missing");
-    }
     const cwd = reference
       ? await readNativeWorkspaceSyncLocalCwd({ companyId: agent.companyId, runId: run.id, workspaceId, reference })
       : nativeExecutionUsesTaskWorkspace(persistedNativeExecutionInput)

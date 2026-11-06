@@ -404,6 +404,51 @@ describe("Codex app-server Codex driver", () => {
     expect(await session.usage!()).toMatchObject({ runDeltaComplete: false });
   });
 
+  it("keeps usage reported between runs in the next run's delta so totals stay exact", async () => {
+    const transport = new FakeCodexTransport();
+    const session = await makeDriver([transport]).openSession({
+      runId: "run-first", normalizedSessionId: "normalized-between-runs", workingDirectory: WORKSPACE,
+    });
+    const first = await session.startTurn({ message: { role: "user", text: "First." } });
+    transport.push("turn/started", { threadId: "thread-1", turn: { id: first.turnId, status: "inProgress" } });
+    transport.push("thread/tokenUsage/updated", { threadId: "thread-1", turnId: first.turnId, tokenUsage: { total: { inputTokens: 100, outputTokens: 10 } } });
+    transport.push("turn/completed", { threadId: "thread-1", turn: { id: first.turnId, status: "completed", items: [] } });
+    await collectUntilTerminal(session.events());
+    // The first run's charge is final at 100; this report arrives after it.
+    transport.push("thread/tokenUsage/updated", { threadId: "thread-1", turnId: first.turnId, tokenUsage: { total: { inputTokens: 130, outputTokens: 10 } } });
+    await new Promise(resolve => setImmediate(resolve));
+    await session.attachRun!({ runId: "run-second" });
+    transport.turnStartResponse = Promise.resolve({ turn: { id: "turn-2", status: "inProgress", items: [] } });
+    const second = await session.startTurn({ message: { role: "user", text: "Second." } });
+    transport.push("turn/started", { threadId: "thread-1", turn: { id: second.turnId, status: "inProgress" } });
+    transport.push("thread/tokenUsage/updated", { threadId: "thread-1", turnId: second.turnId, tokenUsage: { total: { inputTokens: 150, outputTokens: 16 } } });
+    for await (const event of session.events()) if (event.payload.kind === "usage") break;
+    expect(await session.usage!()).toMatchObject({ runDelta: { inputTokens: 50, outputTokens: 6 } });
+  });
+
+  it("carries uncharged usage across a run that reports no usage", async () => {
+    const transport = new FakeCodexTransport();
+    const session = await makeDriver([transport]).openSession({
+      runId: "run-first", normalizedSessionId: "normalized-three-runs", workingDirectory: WORKSPACE,
+    });
+    const first = await session.startTurn({ message: { role: "user", text: "First." } });
+    transport.push("turn/started", { threadId: "thread-1", turn: { id: first.turnId, status: "inProgress" } });
+    transport.push("thread/tokenUsage/updated", { threadId: "thread-1", turnId: first.turnId, tokenUsage: { total: { inputTokens: 100, outputTokens: 10 } } });
+    transport.push("turn/completed", { threadId: "thread-1", turn: { id: first.turnId, status: "completed", items: [] } });
+    await collectUntilTerminal(session.events());
+    transport.push("thread/tokenUsage/updated", { threadId: "thread-1", turnId: first.turnId, tokenUsage: { total: { inputTokens: 130, outputTokens: 10 } } });
+    await new Promise(resolve => setImmediate(resolve));
+    // The second run attaches and ends without any usage report of its own.
+    await session.attachRun!({ runId: "run-second" });
+    await session.attachRun!({ runId: "run-third" });
+    transport.turnStartResponse = Promise.resolve({ turn: { id: "turn-3", status: "inProgress", items: [] } });
+    const third = await session.startTurn({ message: { role: "user", text: "Third." } });
+    transport.push("turn/started", { threadId: "thread-1", turn: { id: third.turnId, status: "inProgress" } });
+    transport.push("thread/tokenUsage/updated", { threadId: "thread-1", turnId: third.turnId, tokenUsage: { total: { inputTokens: 150, outputTokens: 16 } } });
+    for await (const event of session.events()) if (event.payload.kind === "usage") break;
+    expect(await session.usage!()).toMatchObject({ runDelta: { inputTokens: 50, outputTokens: 6 } });
+  });
+
   it("accepts a thread usage snapshot replayed before a resumed turn starts", async () => {
     const transport = new FakeCodexTransport();
     const session = await makeDriver([transport]).openSession({
@@ -571,6 +616,64 @@ describe("Codex app-server Codex driver", () => {
     expect(pick("agentMessage", "final")?.payload).toMatchObject({
       providerPhase: "final_answer",
     });
+  });
+
+  it("requests reasoning summaries and keeps each summary part as its own section", async () => {
+    const transport = new FakeCodexTransport();
+    const session = await makeDriver([transport]).openSession({
+      runId: "run-reasoning-summary",
+      normalizedSessionId: "normalized-reasoning-summary",
+      workingDirectory: WORKSPACE,
+    });
+    const turn = await session.startTurn({
+      message: { role: "user", text: "Think it through." },
+    });
+    expect(transport.calls.find((call) => call.method === "turn/start")?.params).toMatchObject({ summary: "auto" });
+    transport.push("turn/started", {
+      threadId: "thread-1",
+      turn: { id: turn.turnId, status: "inProgress" },
+    });
+    transport.push("item/started", {
+      threadId: "thread-1",
+      turnId: turn.turnId,
+      item: { id: "reason-1", type: "reasoning", summary: [], content: [] },
+    });
+    for (const [summaryIndex, delta] of [[0, "**Tracing the retry path**"], [1, "**Verifying edge cases**"]] as const) {
+      transport.push("item/reasoning/summaryPartAdded", {
+        threadId: "thread-1", turnId: turn.turnId, itemId: "reason-1", summaryIndex,
+      });
+      transport.push("item/reasoning/summaryTextDelta", {
+        threadId: "thread-1", turnId: turn.turnId, itemId: "reason-1", summaryIndex, delta,
+      });
+    }
+    transport.push("item/completed", {
+      threadId: "thread-1",
+      turnId: turn.turnId,
+      item: {
+        id: "reason-1",
+        type: "reasoning",
+        summary: ["**Tracing the retry path**", "**Verifying edge cases**"],
+        content: [],
+      },
+    });
+    transport.push("turn/completed", {
+      threadId: "thread-1",
+      turn: { id: turn.turnId, status: "completed", items: [] },
+    });
+
+    const events = await collectUntilTerminal(session.events());
+    const reasoningDeltas = events.filter(
+      (event) => event.eventType === "item.delta" && event.payload.kind === "reasoning",
+    );
+    expect(reasoningDeltas.map((event) => [event.payload.providerMethod, event.payload.text])).toEqual([
+      ["item/reasoning/summaryTextDelta", "**Tracing the retry path**"],
+      ["item/reasoning/summaryPartAdded", "\n\n"],
+      ["item/reasoning/summaryTextDelta", "**Verifying edge cases**"],
+    ]);
+    expect(reasoningDeltas.every((event) => event.payload.channel === "summary")).toBe(true);
+    expect(
+      events.find((event) => event.eventType === "item.completed" && event.payload.kind === "reasoning")?.payload,
+    ).toMatchObject({ channel: "summary", text: "**Tracing the retry path**\n\n**Verifying edge cases**" });
   });
 
   it("orders turn.accepted before a terminal event even when the provider notifies the terminal turn ahead of the turn/start response", async () => {

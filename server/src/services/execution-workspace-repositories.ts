@@ -1,5 +1,5 @@
 import { measureRunTransaction } from "./execution-transaction-timing.js";
-import { prepareRemoteWorkspaceRepository, readRemoteWorkspaceAuthority } from "./remote-workspaces.js";
+import { prepareRemoteWorkspaceRepository, saveRemoteWorkspace, readRemoteWorkspaceAuthority } from "./remote-workspaces.js";
 import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
 import type { EnvironmentLease } from "@paperclipai/shared";
 import { beginRunPhase, measureRunPhase } from "./execution-preparation-timing.js";
@@ -9,7 +9,7 @@ import { promisify } from "node:util";
 import fs from "node:fs/promises";
 import { constants as fsConstants } from "node:fs";
 import path from "node:path";
-import { and, eq, or, sql } from "drizzle-orm";
+import { and, eq, isNull, or, sql } from "drizzle-orm";
 import { activityLog, agents, heartbeatRuns, projects, projectWorkspaces, executionWorkspaceRepositories, executionWorkspaces, issues, type Db } from "@paperclipai/db";
 import { prepareWorkspaceRepositorySchema, type PrepareWorkspaceRepository, type ProjectRepository } from "@paperclipai/shared";
 import { withDirectoryPublicationLock } from "@paperclipai/adapter-utils/workspace-restore-merge";
@@ -22,7 +22,7 @@ import { captureRunIdentity } from "./run-identity.js";
 import { toolAccessService } from "./tool-access.js";
 import { normalizeProjectRepositoryUrl } from "./project-repositories.js";
 import { buildGitAuthInvocation, createGitRemoteAuthProvider } from "./git-credentials.js";
-import { materializeManagedProjectWorkspace, ensureManagedRepositoriesIgnored } from "./managed-repository-checkout.js";
+import { materializeManagedProjectWorkspace, ensureManagedRepositoriesIgnored, RepositoryRefNotFoundError } from "./managed-repository-checkout.js";
 import { requiresAnonymousRepositoryAcquisition, taskRepositoryRunColumns } from "./task-repository-acquisition.js";
 
 import { canonicalRepositoryRoot } from "./execution-workspace-source-roots.js";
@@ -32,6 +32,8 @@ const execFile = promisify(execFileCallback);
 type RepositoryRow = typeof executionWorkspaceRepositories.$inferSelect;
 type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
 const controllerAcquisitionMessage = "New controller repository acquisition requires a trusted task. Existing verified public checkouts remain available.";
+const REPOSITORY_REF_NOT_FOUND = "repository_ref_not_found";
+const repositoryRetryConflictMessage = "Repository preparation conflicts with an existing receipt. A different ref requires a separate workspace; existing files are never switched automatically.";
 const lowTrustRepositoryMessage = "Low-trust repository reuse permits anonymous public URLs only; new acquisition is unavailable. Use an authorized configured source for private repositories.";
 
 function withRepositoryPublication<T>(cwd: string, work: () => Promise<T>): Promise<T> {
@@ -73,6 +75,21 @@ function resolveAcquisitionSource(request: PrepareWorkspaceRepository["repositor
   return resolveTaskRepository(request, anonymousOnly ? [] : available);
 }
 
+/**
+ * A receipt whose requested ref was proven absent can take a corrected ref only
+ * while nothing was ever published for it. Published files are never switched.
+ */
+async function refCorrectionAllowed(row: RepositoryRow, workspace: Pick<typeof executionWorkspaces.$inferSelect, "cwd" | "metadata">) {
+  if (row.state !== "needs_repair" || row.failureCode !== REPOSITORY_REF_NOT_FOUND || row.pinnedCommit) return false;
+  // A remote checkout cannot be inspected from the control plane; keep it immutable.
+  if (!workspace.cwd || readRemoteWorkspaceAuthority(workspace.metadata)) return false;
+  // Only proven absence allows correction; an unreadable path keeps the receipt.
+  return !await fs.lstat(path.join(workspace.cwd, row.relativePath)).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  });
+}
+
 function assertAcquisitionReceipt(row: Pick<RepositoryRow, "catalogRepositoryId">, anonymousOnly: boolean) {
   if (anonymousOnly && row.catalogRepositoryId) throw forbidden(lowTrustRepositoryMessage);
 }
@@ -91,7 +108,7 @@ export function taskRepositoryRelativePath(identity: string) {
 
 export function assertRepositoryRetryMatches(row: Pick<RepositoryRow, "repositoryIdentity" | "requestedRef">, identity: string, ref: string) {
   if (row.repositoryIdentity !== identity || row.requestedRef !== ref) {
-    throw conflict("Repository preparation conflicts with an existing receipt. A different ref requires a separate workspace; existing files are never switched automatically.");
+    throw conflict(repositoryRetryConflictMessage);
   }
 }
 
@@ -163,10 +180,20 @@ export function executionWorkspaceRepositoryService(db: Db) {
       if (!workspace.cwd) throw conflict("The task workspace has no directory for repository preparation");
       if (anonymousOnly) throw forbidden(controllerAcquisitionMessage);
       const existing = await measureRunPhase("workspace.sources.inventory", async () => tx.select().from(executionWorkspaceRepositories).where(and(eq(executionWorkspaceRepositories.companyId, input.companyId), eq(executionWorkspaceRepositories.executionWorkspaceId, workspace.id), or(eq(executionWorkspaceRepositories.repositoryIdentity, source.repositoryIdentity), sql`${executionWorkspaceRepositories.requestKeys} ? ${parsed.requestKey}`))));
-      for (const row of existing) {
-        assertAcquisitionReceipt(row, anonymousOnly);
-        assertRepositoryRetryMatches(row, source.repositoryIdentity, requestedRef);
+      for (const row of existing) assertAcquisitionReceipt(row, anonymousOnly);
+      if (existing.length === 1 && existing[0].repositoryIdentity === source.repositoryIdentity && existing[0].requestedRef !== requestedRef
+        && await refCorrectionAllowed(existing[0], workspace)) {
+        const row = existing[0];
+        const [corrected] = await measureRunPhase("workspace.write", () => tx.update(executionWorkspaceRepositories).set({
+          requestedRef, state: "pending", failureCode: null, updatedAt: new Date(),
+          requestKeys: row.requestKeys.includes(parsed.requestKey) ? row.requestKeys : [...row.requestKeys, parsed.requestKey],
+        }).where(and(eq(executionWorkspaceRepositories.id, row.id), eq(executionWorkspaceRepositories.state, "needs_repair"),
+          eq(executionWorkspaceRepositories.requestedRef, row.requestedRef), isNull(executionWorkspaceRepositories.pinnedCommit))).returning());
+        if (!corrected) throw conflict(repositoryRetryConflictMessage);
+        await measureRunPhase("workspace.write", () => tx.insert(activityLog).values({ companyId: input.companyId, actorType: input.actor.type === "agent" ? "agent" : "user", actorId: input.actor.agentId ?? input.actor.userId ?? "local-board", action: "workspace.repository.ref_corrected", entityType: "execution_workspace", entityId: workspace.id, runId: input.actor.runId ?? null, responsibleUserId: userId, details: { repositoryId: row.id, issueId: input.issueId, previousRef: row.requestedRef, requestedRef, applies: "next_normal_admission" } }));
+        return corrected;
       }
+      for (const row of existing) assertRepositoryRetryMatches(row, source.repositoryIdentity, requestedRef);
       if (existing[0]) {
         const row = existing[0];
         if (!row.requestKeys.includes(parsed.requestKey)) {
@@ -339,6 +366,8 @@ export function executionWorkspaceRepositoryService(db: Db) {
       const resolveAuth = createGitRemoteAuthProvider(db, input.companyId, { issueId: input.issueId, heartbeatRunId: input.runId,
         agentId: input.agentId, responsibleUserId: input.responsibleUserId });
       const prepared: Array<{ id: string; cwd: string; repoUrl: string; relativePath: string; pinnedCommit: string; branchName: string | null }> = [];
+      let requiresSave = false;
+      const verifications: Array<() => Promise<void>> = [];
       for (const row of rows) {
         assertAcquisitionReceipt(row, acquisitionRestricted);
         const source = resolveAcquisitionSource(row.catalogRepositoryId ? { kind: "catalog", id: row.catalogRepositoryId }
@@ -365,19 +394,38 @@ export function executionWorkspaceRepositoryService(db: Db) {
             repository: { id: row.id, relativePath: row.relativePath, repoUrl: row.repoUrl,
               ref: row.requestedRef === "HEAD" ? null : row.requestedRef,
               ...(row.pinnedCommit ? { pinnedCommit: row.pinnedCommit } : {}) },
-            assertOwned: verify, verifyOnly: acquisitionRestricted,
+            assertOwned: verify, verifyOnly: acquisitionRestricted, deferSave: true,
             resolveGitAuth: source.catalogRepositoryId ? resolveAuth : async () => anonymous,
           });
           await verify();
-          await db.update(executionWorkspaceRepositories).set({ state: "ready", pinnedCommit: result.pinnedCommit,
-            branchName: result.branchName, failureCode: null, updatedAt: new Date() })
-            .where(and(eq(executionWorkspaceRepositories.id, row.id), eq(executionWorkspaceRepositories.companyId, input.companyId)));
+          requiresSave ||= result.requiresSave;
+          verifications.push(verify);
           prepared.push({ ...result, id: row.id, repoUrl: row.repoUrl, relativePath: row.relativePath });
         } catch (error) {
           await db.update(executionWorkspaceRepositories).set({ state: "needs_repair", failureCode: "repository_preparation_failed", updatedAt: new Date() })
             .where(and(eq(executionWorkspaceRepositories.id, row.id), eq(executionWorkspaceRepositories.companyId, input.companyId)));
           throw error;
         }
+      }
+      for (const verify of verifications) await verify();
+      if (requiresSave) {
+        try {
+          await saveRemoteWorkspace({ db, workspace, runId: input.runId, lease: input.remoteLease,
+            target: input.remoteTarget, boundary: `repositories:${prepared.map(row => `${row.id}:${row.pinnedCommit}`).sort().join(",")}`,
+            repositories: prepared.map(row => ({ id: row.id, relativePath: row.relativePath, repoUrl: row.repoUrl,
+              ref: rows.find(source => source.id === row.id)!.requestedRef, pinnedCommit: row.pinnedCommit })),
+            assertOwned: async () => { for (const verify of verifications) await verify(); } });
+        } catch (error) {
+          for (const result of prepared) await db.update(executionWorkspaceRepositories)
+            .set({ state: "needs_repair", failureCode: "repository_preparation_failed", updatedAt: new Date() })
+            .where(and(eq(executionWorkspaceRepositories.id, result.id), eq(executionWorkspaceRepositories.companyId, input.companyId)));
+          throw error;
+        }
+      }
+      for (const result of prepared) {
+        await db.update(executionWorkspaceRepositories).set({ state: "ready", pinnedCommit: result.pinnedCommit,
+          branchName: result.branchName, failureCode: null, updatedAt: new Date() })
+          .where(and(eq(executionWorkspaceRepositories.id, result.id), eq(executionWorkspaceRepositories.companyId, input.companyId)));
       }
       return prepared;
     }
@@ -426,11 +474,18 @@ export function executionWorkspaceRepositoryService(db: Db) {
       return stagingParent;
     });
     const prepared: Array<{ id: string; cwd: string; repoUrl: string; relativePath: string; pinnedCommit: string; branchName: string | null }> = [];
-    for (const [index, row] of rows.entries()) {
+    for (const [index, listedRow] of rows.entries()) {
       const source = sources[index];
-      if (source.repositoryIdentity !== row.repositoryIdentity || row.relativePath !== taskRepositoryRelativePath(row.repositoryIdentity)) throw conflict("Repository preparation receipt does not match its source");
-      const cwd = path.join(root, row.relativePath);
+      if (source.repositoryIdentity !== listedRow.repositoryIdentity || listedRow.relativePath !== taskRepositoryRelativePath(listedRow.repositoryIdentity)) throw conflict("Repository preparation receipt does not match its source");
+      const cwd = path.join(root, listedRow.relativePath);
       await withRepositoryPublication(cwd, async () => {
+        // A ref correction can commit after the receipts were listed. Use the
+        // current receipt so admission never checks out a discarded ref.
+        const [row] = await measureRunPhase("workspace.repository.receipts", () => db.select().from(executionWorkspaceRepositories)
+          .where(and(eq(executionWorkspaceRepositories.id, listedRow.id), eq(executionWorkspaceRepositories.companyId, input.companyId))));
+        if (!row || row.repositoryIdentity !== listedRow.repositoryIdentity || row.relativePath !== listedRow.relativePath) {
+          throw conflict("Repository preparation receipt changed during admission");
+        }
         const existing = await measureRunPhase("workspace.repository.checkout_identity", async () => {
           const existing = await fs.lstat(cwd).catch(() => null);
           if (existing && (!existing.isDirectory() || existing.isSymbolicLink() || await fs.realpath(cwd) !== cwd)) throw conflict("Repository checkout path is not a contained directory");
@@ -444,7 +499,13 @@ export function executionWorkspaceRepositoryService(db: Db) {
         });
         const anonymous = buildGitAuthInvocation({ token: "", source: "managed_connection", secretName: null });
         anonymous.env = { ...anonymous.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_SYSTEM: "/dev/null" };
-        if (!acquisitionRestricted) await measureRunPhase("workspace.repository.state_write", () => db.update(executionWorkspaceRepositories).set({ state: "preparing", catalogRepositoryId: source.catalogRepositoryId, failureCode: null, updatedAt: new Date() }).where(eq(executionWorkspaceRepositories.id, row.id)));
+        if (!acquisitionRestricted) {
+          // Claim the receipt at the ref this admission uses. Correction only
+          // applies to needs_repair receipts, so it cannot change a claimed ref.
+          const [claimed] = await measureRunPhase("workspace.repository.state_write", () => db.update(executionWorkspaceRepositories).set({ state: "preparing", catalogRepositoryId: source.catalogRepositoryId, failureCode: null, updatedAt: new Date() })
+            .where(and(eq(executionWorkspaceRepositories.id, row.id), eq(executionWorkspaceRepositories.requestedRef, row.requestedRef))).returning({ id: executionWorkspaceRepositories.id }));
+          if (!claimed) throw conflict("Repository preparation receipt changed during admission");
+        }
         try {
           const ownershipPath = path.join(cwd, ".git", "paperclip-workspace-owner.json");
           const readOwnership = () => measureRunPhase("workspace.repository.ownership_read", async () => {
@@ -521,7 +582,8 @@ export function executionWorkspaceRepositoryService(db: Db) {
           await measureRunPhase("workspace.repository.state_write", () => db.update(executionWorkspaceRepositories).set({ state: "ready", pinnedCommit, branchName, failureCode: null, updatedAt: new Date() }).where(eq(executionWorkspaceRepositories.id, row.id)));
           prepared.push({ id: row.id, cwd, repoUrl: row.repoUrl, relativePath: row.relativePath, pinnedCommit, branchName });
         } catch (error) {
-          await measureRunPhase("workspace.repository.state_write", () => db.update(executionWorkspaceRepositories).set({ state: "needs_repair", failureCode: "repository_preparation_failed", updatedAt: new Date() }).where(eq(executionWorkspaceRepositories.id, row.id)));
+          const failureCode = error instanceof RepositoryRefNotFoundError ? REPOSITORY_REF_NOT_FOUND : "repository_preparation_failed";
+          await measureRunPhase("workspace.repository.state_write", () => db.update(executionWorkspaceRepositories).set({ state: "needs_repair", failureCode, updatedAt: new Date() }).where(eq(executionWorkspaceRepositories.id, row.id)));
           throw error;
         }
       });

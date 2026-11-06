@@ -97,16 +97,61 @@ export async function prepareHistoricalSandboxStopVerification(db: Db, lease: ty
 export async function prepareStoppedSandboxForRecovery(db: Db, lease: typeof environmentLeases.$inferSelect) {
   if (!hasRemoteTerminationReceipt(lease) || lease.status !== "released"
     || (lease.metadata?.remoteExecutionTermination as { state?: string })?.state !== "stopped") return null;
-  return prepareStopAndRetain(db, lease, "released");
+  const { remoteExecutionTermination, sandboxStopAndRetainReceipt } = lease.metadata!;
+  return prepareStopAndRetain(db, lease, "released", { priorStop: { remoteExecutionTermination,
+    ...(sandboxStopAndRetainReceipt === undefined ? {} : { sandboxStopAndRetainReceipt }) } });
 }
 
-async function prepareStopAndRetain(db: Db, lease: Lease, fromStatus: "active" | "released") {
+export async function confirmSandboxRecoveryRestart(db: Db, lease: typeof environmentLeases.$inferSelect, options: { attemptId: string }) {
+  if (!suspendedSandboxStop(lease)) return lease;
+  const [updated] = await db.update(environmentLeases).set({ updatedAt: new Date(),
+    metadata: sql`jsonb_set(${environmentLeases.metadata}, '{sandboxStopAndRetain}', (${environmentLeases.metadata}->'sandboxStopAndRetain') - 'priorStop')`,
+  }).where(stopOnlyAttempt(lease, options.attemptId)).returning();
+  return updated ?? null;
+}
+
+export async function restoreSandboxStopAfterFailedRestart(db: Db, lease: typeof environmentLeases.$inferSelect, options: { attemptId: string }) {
+  const prior = suspendedSandboxStop(lease);
+  if (!prior) return null;
+  const restored = { remoteExecutionTermination: prior.remoteExecutionTermination,
+    ...(prior.sandboxStopAndRetainReceipt === undefined ? {} : { sandboxStopAndRetainReceipt: prior.sandboxStopAndRetainReceipt }) };
+  if ((restored.remoteExecutionTermination as { state?: unknown } | undefined)?.state !== "stopped"
+    || !hasRemoteTerminationReceipt({ ...lease, status: "released", cleanupStatus: "success", metadata: { ...lease.metadata, ...restored } })) return null;
+  const now = new Date();
+  const [updated] = await writeEnvironmentCleanup(db, async tx => {
+    await notifyRetainedNativeSessionCleanup(tx, { companyId: lease.companyId, runId: lease.heartbeatRunId! });
+    return tx.update(environmentLeases).set({
+      status: "released", cleanupStatus: "success", failureReason: null, updatedAt: now,
+      metadata: sql`(${environmentLeases.metadata} - 'remoteExecutionTermination' - 'sandboxStopAndRetain' - 'sandboxStopAndRetainReceipt') || ${JSON.stringify({
+        ...restored, pendingCleanupInFlight: false, pendingCleanupLeaseExpiresAtMs: 0,
+      })}::jsonb`,
+    }).where(stopOnlyAttempt(lease, options.attemptId)).returning();
+  }, { companyId: lease.companyId, runId: lease.heartbeatRunId ?? undefined });
+  return updated ?? null;
+}
+
+function suspendedSandboxStop(lease: typeof environmentLeases.$inferSelect) {
+  if (hasNativeWorkspaceExportResume(lease) || !readStopOnlyCleanup(lease)) return null;
+  const prior = (lease.metadata![SANDBOX_STOP_AND_RETAIN_KEY] as Record<string, unknown>).priorStop;
+  return prior && typeof prior === "object" && !Array.isArray(prior) ? prior as Record<string, unknown> : null;
+}
+
+function stopOnlyAttempt(lease: Lease, attemptId: string) {
+  return and(eq(environmentLeases.id, lease.id), eq(environmentLeases.companyId, lease.companyId),
+    eq(environmentLeases.heartbeatRunId, lease.heartbeatRunId!), eq(environmentLeases.provider, lease.provider!),
+    eq(environmentLeases.providerLeaseId, lease.providerLeaseId!), eq(environmentLeases.status, "pending_cleanup"),
+    sql`${environmentLeases.metadata}->>'pendingCleanupAttemptId' = ${attemptId}`,
+    sql`${environmentLeases.metadata}->'sandboxStopAndRetain' = ${JSON.stringify(lease.metadata?.[SANDBOX_STOP_AND_RETAIN_KEY])}::jsonb`,
+    sql`${environmentLeases.metadata}->>'pluginId' is not distinct from ${readStopOnlyCleanup(lease)?.pluginId ?? null}`);
+}
+
+async function prepareStopAndRetain(db: Db, lease: Lease, fromStatus: "active" | "released", recovery: Record<string, unknown> = {}) {
   const requestId = randomUUID(), now = new Date();
   const intent = { schema: "paperclip.sandbox-stop-and-retain.v1", requestId,
     companyId: lease.companyId, runId: lease.heartbeatRunId, leaseId: lease.id,
     provider: lease.provider, providerLeaseId: lease.providerLeaseId,
     ...(lease.provider && isBuiltinSandboxProvider(lease.provider) && !lease.metadata?.sandboxProviderPlugin && lease.metadata?.pluginId == null
-      ? { builtinProvider: lease.provider } : { pluginId: lease.metadata?.pluginId }) };
+      ? { builtinProvider: lease.provider } : { pluginId: lease.metadata?.pluginId }), ...recovery };
   const [updated] = await writeEnvironmentCleanup(db, tx => tx.update(environmentLeases).set({
     status: "pending_cleanup", cleanupStatus: "failed", failureReason: "sandbox_stop_pending", releasedAt: now, updatedAt: now,
     metadata: sql`(coalesce(${environmentLeases.metadata}, '{}'::jsonb) - 'remoteExecutionTermination' - 'sandboxStopAndRetainReceipt') || ${JSON.stringify({
@@ -147,13 +192,7 @@ export async function settleStopOnlyCleanup(db: Db, lease: Lease, options: { att
         } } : {}),
         pendingCleanupInFlight: false, pendingCleanupLeaseExpiresAtMs: 0,
       })}::jsonb`,
-    }).where(and(eq(environmentLeases.id, lease.id), eq(environmentLeases.companyId, lease.companyId),
-      eq(environmentLeases.heartbeatRunId, lease.heartbeatRunId!), eq(environmentLeases.provider, lease.provider!),
-      eq(environmentLeases.providerLeaseId, lease.providerLeaseId!), eq(environmentLeases.status, "pending_cleanup"),
-      sql`${environmentLeases.metadata}->>'pendingCleanupAttemptId' = ${options.attemptId}`,
-      sql`${environmentLeases.metadata}->'sandboxStopAndRetain' = ${JSON.stringify(lease.metadata?.[SANDBOX_STOP_AND_RETAIN_KEY])}::jsonb`,
-      sql`${environmentLeases.metadata}->>'pluginId' is not distinct from ${intent.pluginId}`,
-    )).returning();
+    }).where(stopOnlyAttempt(lease, options.attemptId)).returning();
   }, { companyId: lease.companyId, runId: lease.heartbeatRunId ?? undefined });
   return updated ?? null;
 }

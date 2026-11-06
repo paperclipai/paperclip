@@ -55,8 +55,9 @@ test("installed Kimi setup is self-contained, rejects corrupt assets and cancels
   const kill = setTimeout(() => cancelled.kill("SIGKILL"), 5_000);
   try {
     for (let attempt = 0; attempt < 100; attempt++) {
-      try { await readFile(ready); break; }
-      catch (error) { if (error.code !== "ENOENT") throw error; await delay(10); }
+      try { if (await readFile(ready, "utf8") === "ready") break; }
+      catch (error) { if (error.code !== "ENOENT") throw error; }
+      await delay(10);
     }
     assert.equal(await readFile(ready, "utf8"), "ready");
     cancelled.kill("SIGTERM");

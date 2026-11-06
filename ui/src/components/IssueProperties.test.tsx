@@ -36,6 +36,7 @@ const mockExecutionWorkspacesApi = vi.hoisted(() => ({
 
 const mockIssuesApi = vi.hoisted(() => ({
   list: vi.fn(),
+  getContextUsage: vi.fn(),
   getDocument: vi.fn(),
   listAcceptedPlanDecompositions: vi.fn(),
   listAttachments: vi.fn(),
@@ -113,6 +114,7 @@ vi.mock("../api/instanceSettings", () => ({
 
 vi.mock("../context/ToastContext", () => ({
   useToastActions: () => ({ pushToast: vi.fn() }),
+  useOptionalToastActions: () => ({ pushToast: vi.fn() }),
 }));
 
 vi.mock("../hooks/useProjectOrder", () => ({
@@ -642,6 +644,7 @@ describe("IssueProperties", () => {
     mockExecutionWorkspacesApi.list.mockResolvedValue([]);
     mockExecutionWorkspacesApi.controlRuntimeCommands.mockReset();
     mockIssuesApi.list.mockResolvedValue([]);
+    mockIssuesApi.getContextUsage.mockResolvedValue(null);
     mockIssuesApi.getDocument.mockResolvedValue(null);
     mockIssuesApi.listAcceptedPlanDecompositions.mockResolvedValue([]);
     mockIssuesApi.listAttachments.mockResolvedValue([]);

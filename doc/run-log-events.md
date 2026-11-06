@@ -105,6 +105,12 @@ that an ACPX startup rejection keeps Runner's closed rejection text and its
 classification. Startup receipts retain the cause across controller restart before
 any provider turn exists.
 
+When a failed ACPX control closes the session before polling, the resulting
+`turn.failed` event retains that control's closed-code error. A later closed-session
+check does not replace it, and a closed code does not infer a provider explanation.
+The terminal still reports `recoverable: false` and no observed provider terminal;
+it does not prove termination or authorize replay.
+
 Every ACPX session ensure rejection carries a startup cause. When the provider
 returned no ACP error, the cause keeps the rejection's own redacted message with
 category `unknown`. A provider can type the failure with ACP's
@@ -120,6 +126,19 @@ status describes completion of the tool call, not success of the command or the
 native run. Metadata adds an exit only when it is an integer. Conflicting supplied
 legacy exits stay unknown. Existing numeric `state.exit` values remain supported;
 metadata on other tools cannot add process-exit proof.
+
+An edit tool call can carry `fileChanges` on its `tool.execution.*` payload.
+Each entry names one workspace-relative `path`, its `operation` (`create`,
+`modify`, `delete` or `rename`), `previousPath`, `additions`, `deletions`, a
+unified `diff` and `diffTruncated`. The runner drops paths outside the working
+directory, redacts secrets in each patch, and bounds a patch to 32 KiB and one
+call to 32 files. Counts cover the whole patch even when the patch is shortened.
+Codex `fileChange` items produce these rows. Claude Edit and Write calls produce
+them from the ACP `diff` content. Codex `turn/diff/updated` also records the
+whole-turn diff as `workspace.change.updated` (`paperclip.workspace.diff.v1`).
+The task chat shows each patch under its edit row. It ends the turn with the
+change set, or with one built from the edit rows when the harness reports no
+whole-turn diff.
 
 `auth.credentials.updated` is a runner-produced PRP event for a change to a
 supported credential store, including account identity changes and later token
@@ -140,8 +159,18 @@ that restores a released task execution binding. The claim locks the task,
 coordinator, and original run in that order. It preserves the assignee and checks
 current execution/checkout owners, other live work, dependencies, pause holds,
 and stop/successor records before restoring the binding. Attachment authorization
-keeps its existing requirement for that exact binding. Skipped retry candidates
-wait 30 seconds before recheck so they cannot fill every bounded claim batch.
+keeps its existing requirement for that exact binding. Remote retry claims also
+require the exact saved controller authority and reject a newer task run. The
+event does not prove that a remote provider survived or permit provider replay.
+Skipped local retry candidates wait 30 seconds before recheck. Remote admission
+holds use the existing bounded system-recovery backoff independently of provider
+attempts. Permanent ineligibility or policy exhaustion records the terminal
+automatic recovery disposition and board action without releasing the retained
+execution binding, provider, or checkpoint. These settled holds schedule no
+further retry. Repeated blocked visits record only a changed hold reason.
+The same durable hold prevents background stale-lock cleanup and queue release
+from clearing either task binding until the remote termination receipt contract
+is satisfied. A terminal heartbeat status is not a provider-stop receipt.
 Undated retries sort first. A failed candidate cannot discard earlier committed
 claims. Queued waiters do not block the original execution owner from recovery;
 they still wait for that owner to settle before normal queue promotion.
@@ -284,8 +313,13 @@ create a task warning, recovery action, Telemetry event, or OpenTelemetry export
 
 ## Native Restart Recovery Run-Log Event
 
-Paperclip writes a `native.recovery.transition` event for every native restart
-classification and for graceful restart suspension. This immutable run-log
+Paperclip writes a `native.recovery.transition` event for native restart
+classifications and for graceful restart suspension. A blocked remote retry
+records a changed hold reason once; repeated visits with the same hold reason,
+an existing future deadline, or a live lease do not append another transition.
+Exhausting the automatic admission policy records its terminal disposition even
+when the underlying hold reason remains the same.
+This immutable run-log
 record lets operators reconstruct recovery decisions without exporting data to
 Paperclip Telemetry or OpenTelemetry.
 
@@ -336,6 +370,16 @@ before the new PID callback. Continuation admission accepts only the latest
 server-authored event among these three types; provider
 source events cannot supply stop authority. These records stay in the local run
 log and do not add Telemetry or OpenTelemetry data.
+
+Explicit continuation writes `native.stopped_conversation_verified` after it
+verifies the retained worker and provider processes stopped. Its payload binds
+the requesting `runId`, retained `ownerRunId`, native session, runner instance,
+process IDs, retained-state fingerprint, successor run, Retry receipt, and local
+workspace identity. The owner can be a preceding terminal
+run when the requesting attempt failed before launch with the same process
+identity. The server checks host-bound process birth and independent provider
+receipts before retiring cleanup ownership. The event does not settle uncertain
+actions or authorize replay of the old session.
 
 ## Verified Local Codex Replacement Evidence
 
@@ -516,7 +560,9 @@ Cancelled runs retain `resultJson.cancellation`: a closed `source` label
 the initiator, reason, and recording time. Recorded stop intent survives adapter
 completion. `controller_lease` means the host stopped its own legacy adapter
 after it lost the durable controller lease; the reason names a closed cause
-(`renewal_rejected`, `renewal_deadline`, or `renewal_error`).
+(`renewal_rejected`, `renewal_deadline`, or `renewal_error`). The watchdog
+retries a failed renewal until the lease deadline, so `renewal_error` means the
+attempts still failed with an error when the deadline passed.
 A lease lost during run setup (for example a rejected renewal while preparing
 the workspace) settles the run `failed` with error code `controller_lease_lost`,
 the same `controller_lease` cancellation evidence, and
@@ -530,11 +576,14 @@ initiator IDs or reason text.
 A lease loss also records `resultJson.controllerLeaseLoss`, including a loss
 during setup that fails the run before adapter dispatch. It holds the closed
 cause and the watchdog timings in milliseconds: `sinceRenewalMs` (since the
-last successful renewal), `renewalPendingMs` (age of a renewal query still in
-flight, or `null`), `deadlineLateMs` (how late the deadline callback ran, for
-`renewal_deadline` only), and `renewalCount`. A long `renewalPendingMs` points
-at a stalled database query; a long `deadlineLateMs` points at a blocked event
-loop. Failure reports carry these bounded numbers and the cause label only.
+last successful renewal), `renewalPendingMs` (age of a renewal operation still
+in progress, including its retries and retry waits, or `null`), `deadlineLateMs`
+(how late the deadline callback ran, when the lease deadline ended the run,
+otherwise `null`), and `renewalCount`. A long `renewalPendingMs` can mean a
+stalled database query or repeated failed attempts with retry waits; the cause
+label tells them apart (`renewal_deadline` or `renewal_error`). A long
+`deadlineLateMs` points at a blocked event loop. Failure reports carry these
+bounded numbers and the cause label only.
 Historical ambiguous cancellations stay `unknown` and do not authorize replay.
 
 Provider tool-definition validation failures use
@@ -551,6 +600,32 @@ method and expected/received thread and turn identifiers. Account updates, skill
 changes, and unrelated thread information do not create a provider notice in
 chat. Chat also omits the matching notice stored by older runners. Real provider
 warnings and errors remain visible.
+
+Provider rate-limit windows use `provider.notice.recorded` with category
+`provider.rate_limits` and scope `account`. Codex sends them as
+`account/rateLimits/updated`. Claude sends them as `usage_update` metadata
+(`_claude/rateLimit`) when it uses a subscription sign-in. The runner merges
+sparse Codex updates and records a notice only when the windows change. The
+notice has one `rateLimits` detail: a JSON snapshot with schema
+`paperclip.provider.rate_limits.v1` (windows with used percent and reset time,
+credits, and the reached window). Chat does not show the notice. The server
+keeps the latest snapshot in the agent's runtime state under
+`providerRateLimits`, and the task properties pane shows it as the assignee's
+**Usage limit**. The snapshot is display data. It does not hold or start work;
+the provider-limit wait reads typed run failures.
+
+Harness status notices use `provider.notice.recorded` with a status category.
+Codex `error` notifications read `error.message`. A notification with
+`willRetry: true` becomes a recoverable `provider_retry` notice. A final error
+keeps category `error`. The `CodexErrorInfo` kind, the HTTP status, and the
+reconnect attempt count become notice details. Claude compaction, model
+fallback, and SDK informational banners arrive as ACP message text without a
+message identity. The ACPX layer records them as `context_compaction`,
+`model_fallback`, or `provider_informational` notices instead of answer text.
+Compaction start and end share one notice identity and carry a `Phase` detail.
+The task chat shows these notices as inline status chips. A retry chip fades
+after later provider work. A final provider error shows the real provider
+message. Generic warnings stay out of chat as before.
 
 Recovery lifecycle events retain the original structured failure code, retry attempt, next retry time, and predecessor/successor identifiers. Durable status delivery uses an idempotency marker; delivery grants no provider authority. Failed publication is retried without repeating provider work. These records are not first-party Telemetry.
 
@@ -725,6 +800,17 @@ telemetry-read authorization. Ordinary PRP reads/live delivery retain run-secret
 and current-user redaction. The task page uses one history read on mount/reconnect
 and the existing live transcript stream, then makes a bounded plugin readiness
 check. No panel discovery timer scans runs or provider state while connected.
+
+## Post-result failure diagnostics
+
+`native.post_result_failure` records `stage: post_result_execution`, a closed
+`category` (`io_not_found`, `io_permission_denied`, `io_failure`, or
+`execution_failure`), and `resultAlreadyAccepted: true`. It requires an accepted
+selected result and exact current, unexpired controller authority. A busy diagnostic
+row lock is skipped. Reporting is best effort under the existing 60-second control
+bound; the sink can finish later and emit a late event. The `native_session_lease_lost`
+control classification stays unchanged. The labels grant no recovery, result,
+Stop, provider-work or payment authority and do not establish a hosted failure cause.
 
 ## Payload storage
 

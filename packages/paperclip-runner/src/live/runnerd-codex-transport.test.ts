@@ -405,6 +405,68 @@ it("preserves the cause when a replacement runner's health cannot be verified", 
   }
 }, 15_000);
 
+it("retries a replacement whose staging failed before any process launched", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "runnerd-replacement-staging-"));
+  const stagingError = new Error("runtime context upload: no space left on device");
+  const children: ReturnType<typeof spawn>[] = [];
+  const exits: Promise<void>[] = [];
+  const launch = vi.fn((spec: durableControlPlane.RunnerProcessLaunchSpec) => {
+    // The first replacement fails during staging: nothing was dispatched.
+    if (launch.mock.calls.length === 2) return {
+      child: { pid: undefined, exitCode: null, kill: () => false },
+      completion: Promise.reject(stagingError),
+      isExitConfirmed: (): boolean => true,
+    };
+    const child = spawn(spec.command, [...spec.args], { cwd: spec.cwd, env: spec.environment, stdio: "ignore" });
+    children.push(child);
+    exits.push(new Promise(resolveExit => child.once("exit", () => resolveExit())));
+    return {
+      child,
+      completion: new Promise<durableControlPlane.RunnerProcessResult>((resolveExit, rejectExit) => {
+        child.once("error", rejectExit);
+        child.once("exit", (code, signal) => resolveExit({ code, signal, stdout: "", stderr: "" }));
+      }),
+      isExitConfirmed: () => child.exitCode !== null || child.signalCode !== null,
+    };
+  });
+  const bundle = createCapabilityRunnerdCodexTransport({
+    runnerBinary: defaultCapabilityRunnerdBinary(), codexCommand: fakeCodex,
+    codexArgs: fakeCodexArgs(directory), stateDirectory: directory,
+    lifecyclePolicy: { mode: "warm", idleTimeoutMs: 60_000 },
+    runnerReconnectGraceMs: 5_000, runnerProcessLauncher: launch,
+  });
+  try {
+    const opened = await bundle.transport.request("thread/start", { cwd: directory }) as { thread: { id: string } };
+    let failure: unknown = null;
+    const pump = (async () => {
+      for await (const _event of bundle.transport.notifications()) {}
+    })().catch(error => { failure = error; });
+    children[0]!.kill("SIGKILL");
+    // Recovery reports restoration only after the replacement authenticates
+    // as the single active connection to the durable PRP authority.
+    await vi.waitFor(
+      () => expect(bundle.evidence().diagnostics).toContain("runner process restored its durable PRP session"),
+      { timeout: 4_000 },
+    );
+    expect(launch).toHaveBeenCalledTimes(3);
+    expect(children).toHaveLength(2);
+    expect(bundle.evidence().runnerPid).toBe(children[1]!.pid);
+    expect(failure).toBeNull();
+    // The restored runner still serves the same provider thread.
+    const resumed = await bundle.transport.request("thread/resume", { threadId: opened.thread.id }) as { thread: { id: string } };
+    expect(resumed.thread.id).toBe(opened.thread.id);
+    expect(failure).toBeNull();
+    void pump;
+  } finally {
+    const providerPid = bundle.evidence().codexPid;
+    if (providerPid) { try { process.kill(providerPid, "SIGKILL"); } catch {} }
+    await bundle.transport.detachControllerForRestart!();
+    for (const child of children) child.kill("SIGKILL");
+    await Promise.all(exits);
+    await rm(directory, { recursive: true, force: true });
+  }
+}, 15_000);
+
 it.each(["alive", "pending_liveness", "pending_registration"] as const)(
   "bounds adopted runner authentication at its exact deadline with %s evidence",
   async (mode) => {
@@ -1111,7 +1173,7 @@ it("installs required accounting acceptance before the Runner acknowledgement ca
   }
 });
 
-it("uses the same API result envelope for live dispatch and recovered receipts", async () => {
+it.each([false, true])("uses the same API result envelope and fences handler publication (owner changed: %s)", async changedOwner => {
   const stateDirectory = await mkdtemp(join(tmpdir(), "runnerd-recovered-api-"));
   const OriginalCore = durableControlPlane.DurablePrpControlPlane;
   let callbacks!: ConstructorParameters<typeof OriginalCore>[0];
@@ -1123,17 +1185,31 @@ it("uses the same API result envelope for live dispatch and recovered receipts",
   let outcome: { result: unknown; isError?: boolean } | null = {
     result: { ok: true, apiOperationId: "POST /api/example", data: { saved: true } }, isError: false,
   };
+  let owner: string | undefined;
   const bundle = createCapabilityRunnerdCodexTransport({
+    get authorityRunId() { return owner; },
     runnerBinary: defaultCapabilityRunnerdBinary(), codexCommand: fakeCodex,
     codexArgs: fakeCodexArgs(stateDirectory), stateDirectory,
     recoverSemanticToolInput: async () => outcome,
   });
-  bundle.transport.setServerRequestHandler(async () => ({ success: !outcome?.isError,
-    contentItems: [{ type: "inputText", text: JSON.stringify(outcome?.result) }] }));
+  const handler = vi.fn(async () => ({ success: !outcome?.isError,
+    contentItems: [{ type: "inputText" as const, text: JSON.stringify(outcome?.result) }] }));
+  if (!changedOwner) bundle.transport.setServerRequestHandler(handler);
   try {
     await bundle.transport.request("thread/start", { cwd: tmpdir() });
     const call = { callId: "recovered-api", operationId: "call_api", input: { operationId: "POST /api/example" },
       sourceEventId: "saved-event", sourceEventType: "semantic_tool.input", correlation: core.store.state.identity };
+    if (changedOwner) {
+      owner = core.store.state.identity.runId;
+      const pending = callbacks.onSemanticToolInput!(call);
+      await new Promise<void>(resolveTurn => setImmediate(resolveTurn));
+      owner = "replacement-owner";
+      bundle.transport.setServerRequestHandler(handler);
+      await expect(pending).rejects.toBeInstanceOf(durableControlPlane.SemanticToolNotDispatchedError);
+      expect(handler).not.toHaveBeenCalled();
+      expect(await callbacks.recoverSemanticToolInput!(call)).toBeNull();
+      return;
+    }
     const live = await callbacks.onSemanticToolInput!(call);
     expect(live).toMatchObject({ isError: false, result: { ok: true, operationId: "call_api", callId: call.callId, result: outcome!.result } });
     expect(await callbacks.recoverSemanticToolInput!(call)).toMatchObject({ result: live.result, isError: live.isError });
@@ -1987,17 +2063,22 @@ it.each([false, true])("binds a vendored source server to its pnpm dependency ro
     expect(runnerdLaunchProfileInternals.acpxProviderPackageAuthority(
       join(server, "dist/vendor/paperclip-runner/cli/acpx-runtime-sidecar.cjs"),
     )).toEqual({ root: selfRooted ? server : workspace, manifest: join(server, "package.json") });
-    for (const agent of ["pi", "antigravity"] as const) {
+    for (const agent of ["cursor", "copilot", "pi", "kimi", "antigravity"] as const) {
       expect(runnerdLaunchProfileInternals.acpxProviderPackageAuthority(
         join(server, "dist/vendor/paperclip-runner/cli/acpx-runtime-sidecar.cjs"), workspace, agent,
       )).toEqual({ root: server, manifest: join(server, "package.json") });
+    }
+    for (const agent of ["claude", "codex", "grok"] as const) {
+      expect(runnerdLaunchProfileInternals.acpxProviderPackageAuthority(
+        join(server, "dist/vendor/paperclip-runner/cli/acpx-runtime-sidecar.cjs"), workspace, agent,
+      )).toEqual({ root: selfRooted ? server : workspace, manifest: join(server, "package.json") });
     }
   } finally {
     await rm(workspace, { recursive: true, force: true });
   }
 });
 
-it.each((["copilot", "pi", "antigravity"] as const).flatMap(agent =>
+it.each((["cursor", "copilot", "pi", "kimi", "antigravity"] as const).flatMap(agent =>
   ["source", "scoped-npm", "deployment"].map(layout => ({ agent, layout }))))(
   "admits the controller-selected $agent package authority in a $layout layout",
   async ({ agent, layout }) => {
@@ -2660,7 +2741,7 @@ it.each(["reuse", "large-instructions", "rotated-recovery", "removed-context", "
     await expect(stat(join(root, "runtime-context.json"))).rejects.toHaveProperty("code", "ENOENT");
     await transport.close();
     if (mode === "removed-context") {
-      const rotated = create(5_000, "run-prepared-removed");
+      const rotated = create(undefined, "run-prepared-removed");
       try {
         await expect(rotated.transport.request("thread/read", { threadId: (opened.thread as { id: string }).id }))
           .rejects.toThrow("cannot change the durable Codex provider profile");
@@ -2677,7 +2758,11 @@ it.each(["reuse", "large-instructions", "rotated-recovery", "removed-context", "
     }
     if (mode === "rotated-recovery" || mode === "omitted-context") {
       for (let attempt = 0; attempt < 2; attempt++) {
-        const rotated = create(5_000, "run-prepared-rotated");
+        // Close settlement is bounded by the close grace and must prove the
+        // provider drain. A recovered successor needs several drain receipts,
+        // each a runner round trip, so keep the production close budget here.
+        // A shortened budget fails closed on a loaded CI runner.
+        const rotated = create(undefined, "run-prepared-rotated");
         try {
           await rotated.transport.request("thread/read", { threadId: (opened.thread as { id: string }).id });
           expect(requestedRun).toBe("run-prepared-rotated");
@@ -2688,7 +2773,7 @@ it.each(["reuse", "large-instructions", "rotated-recovery", "removed-context", "
       }
       return;
     }
-    const resumed = create(mode === "timeout-attachment" ? 500 : 5_000);
+    const resumed = create(mode === "timeout-attachment" ? 500 : undefined);
     try {
       await resumed.transport.request("thread/read", { threadId: (opened.thread as { id: string }).id });
       expect(recovered).toBe(true);
@@ -2745,7 +2830,9 @@ it.each(["reuse", "large-instructions", "rotated-recovery", "removed-context", "
     materialize.mockRestore(); discover.mockRestore();
     await rm(root, { recursive: true, force: true });
   }
-}, 30_000);
+  // Up to three closes run under the 10s production close budget. Keep a close
+  // regression visible as its settlement error, not as a bare test timeout.
+}, 60_000);
 
 it("rejects an environment-prepared policy change before registration or process launch", async () => {
   const root = await mkdtemp(join(tmpdir(), "runner-environment-policy-"));
@@ -3019,6 +3106,20 @@ it("rehydrates normalized usage with the opened driver binding", () => {
       runDelta: { inputTokens: 3 },
     },
   });
+});
+
+it("keeps reported context-window occupancy on rehydrated usage", () => {
+  const base = { cumulative: { inputTokens: 10 }, runDelta: { inputTokens: 3 }, runDeltaAvailable: true };
+  const params = rehydrateRunnerdUsageNotification(
+    { ...base, context: { usedTokens: 26672, windowTokens: 258400 } },
+    "opened-thread-1",
+    "active-turn-1",
+  );
+  expect(params.tokenUsage).toMatchObject({ context: { usedTokens: 26672, windowTokens: 258400 } });
+  for (const context of [undefined, { usedTokens: -1, windowTokens: 10 }, { usedTokens: 1, windowTokens: 0 }]) {
+    const rehydrated = rehydrateRunnerdUsageNotification({ ...base, context }, "opened-thread-1", "active-turn-1");
+    expect(rehydrated.tokenUsage).not.toHaveProperty("context");
+  }
 });
 
 it("rehydrates durable cumulative usage for a cold thread read", () => {
@@ -3799,7 +3900,7 @@ it.each(["admission-only", "admission-only-mismatched-model", "complete", "api-k
     } else {
       await expect(probe).rejects.toThrow(mode === "missing-runtime" ? /ENOENT|unavailable|cleanup/i : mode === "admission-only-mismatched-model" || mode === "mismatched-model" || mode === "remote-mismatched-model" || mode === "model-refresh-error" || mode === "model-cleanup-error" || mode === "missing-model" ? /observed model|mismatched provider model/i : /timed out|cleanup|suspension/i);
       if (mode === "late-remote-release-error") {
-        expect(registrationReleased).toBe(true); expect(cleanupConfirmed).toBe(false);
+        await vi.waitFor(() => expect(registrationReleased).toBe(true)); expect(cleanupConfirmed).toBe(false);
         expect((await stat(runtimeDirectory)).isDirectory()).toBe(true);
       }
       if (mode === "model-refresh-error") {
@@ -5774,6 +5875,15 @@ it.each([undefined, "medium", "minimal", "xhigh", null])("rejects non-exact Pi t
 
 it("rejects Pi thinking settings on a different transport provider", () => {
   expect(() => createCapabilityRunnerdCodexTransport({ provider: "codex", piThinkingLevel: "low" })).toThrow(/only supported/);
+});
+
+describe("runnerd compaction turn payload", () => {
+  it("asks Codex for its own compaction and Claude for its /compact command", async () => {
+    const { runnerdCompactionTurnPayload } = await import("./runnerd-codex-transport.js");
+    expect(runnerdCompactionTurnPayload("codex")).toEqual({ compact: true });
+    expect(runnerdCompactionTurnPayload("acpx")).toEqual({ text: "/compact" });
+    expect(() => runnerdCompactionTurnPayload("opencode")).toThrow("not supported");
+  });
 });
 
 describe("cold process admission budget", () => {
