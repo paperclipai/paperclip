@@ -282,6 +282,13 @@ describe("runner E2E Daytona image contract", () => {
     );
     expect(workflow).not.toContain("e2e-git-${{ github.sha }}");
     expect(workflow).toContain("cosign sign --yes");
+    // An existing content tag is reused only when its signature verifies; an
+    // unsigned tag left by an interrupted run is rebuilt, pushed and signed.
+    const reuse = daytonaImageJob.indexOf('if verify_signed "$existing"');
+    expect(reuse).toBeGreaterThan(-1);
+    expect(daytonaImageJob.indexOf('if [ -z "$digest" ]; then')).toBeGreaterThan(reuse);
+    expect(daytonaImageJob.indexOf("cosign sign --yes")).toBeGreaterThan(reuse);
+    expect(daytonaImageJob).not.toMatch(/imagetools inspect "\$IMAGE_TAG" >\/dev\/null 2>&1; then\n\s*digest=/);
     expect(workflow).toContain("docker logout ghcr.io");
     expect(workflow).toContain(`docker buildx imagetools inspect "$immutable"`);
     expect(workflow).toContain(`--format '{{json .Image}}'`);
