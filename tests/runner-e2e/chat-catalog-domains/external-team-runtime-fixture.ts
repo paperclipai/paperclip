@@ -10,7 +10,11 @@ import { reviewedChatExecutionIds } from "../chat-runtime-profile.js";
 const selectedIds = reviewedChatExecutionIds("teams.install-team");
 export const teamRuntimeCatalogRoot = (temporaryRoot: string) => path.join(temporaryRoot, "team-runtime-catalog");
 
-/** Only the disposable installer fixture uses this catalog and native default. */
+/** Only the disposable installer fixture uses this catalog and native default.
+ * One-shot supervisor setup: server.ts constructs this environment once, and its
+ * child-server restarts reuse it. Recreating the supervisor in the same attempt
+ * root is unsupported and fails closed rather than replacing a normalized copy.
+ */
 export async function teamRuntimeCatalogServerEnvironment(input: { executionIds: string[]; temporaryRoot: string; repositoryRoot: string }) {
   if (!input.executionIds.some(id => selectedIds.includes(id))) return {};
   if (input.executionIds.length !== 1) throw new Error("Team runtime catalog requires its isolated execution");
@@ -20,7 +24,7 @@ export async function teamRuntimeCatalogServerEnvironment(input: { executionIds:
   return { PAPERCLIP_TEAMS_CATALOG_DIR: target, PAPERCLIP_TEAMS_CATALOG_DEFAULT_ADAPTER_TYPE: "paperclip_runner" };
 }
 
-/** Add runtime/account metadata only; all shipped team files remain byte-identical. */
+/** Add runtime/account metadata only; preserve other file bytes and non-runtime sidecar fields. */
 export async function normalizeTeamRuntimeCatalog(input: { temporaryRoot: string; repositoryRoot: string; team: CatalogTeam; adapters: Record<string, { adapterType: string; adapterConfig: Record<string, unknown> }> }) {
   const packageDir = teamRuntimeCatalogRoot(input.temporaryRoot);
   const original = JSON.parse(await readFile(path.join(input.repositoryRoot, "packages/teams-catalog/generated/catalog.json"), "utf8"));
@@ -52,5 +56,13 @@ export async function normalizeTeamRuntimeCatalog(input: { temporaryRoot: string
   const withoutRuntime = (team: CatalogTeam) => ({ ...team, contentHash: "", fileCount: 0, files: team.files.filter(file => file.path !== ".paperclip.yaml") });
   if (!isDeepStrictEqual(withoutRuntime(effective), withoutRuntime(source)) || effective.contentHash === source.contentHash || built.manifest.teams.some(team => team.id !== source.id && !isDeepStrictEqual(team, original.teams.find((row: CatalogTeam) => row.id === team.id)))) throw new Error("Derived catalog changed non-runtime team metadata");
   await writeFile(path.join(packageDir, "generated/catalog.json"), JSON.stringify(built.manifest, null, 2) + "\n");
-  return { originalContentHash: source.contentHash, effectiveContentHash: effective.contentHash, originalFilesUnchanged: true, team: effective };
+  return {
+    originalPackage: { id: source.id, key: source.key, packageName: original.packageName, version: original.packageVersion, contentHash: source.contentHash },
+    effectivePackage: { id: effective.id, key: effective.key, packageName: built.manifest.packageName, version: built.manifest.packageVersion, contentHash: effective.contentHash },
+    originalContentHash: source.contentHash,
+    effectiveContentHash: effective.contentHash,
+    nonRuntimeFilesUnchanged: true,
+    nonRuntimeSidecarFieldsUnchanged: true,
+    team: effective,
+  };
 }
