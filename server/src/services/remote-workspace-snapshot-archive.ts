@@ -558,6 +558,30 @@ export function captureRemoteWorkspaceDirectory(input: { cwd: string; archivePat
   return workspaceArchive({ ...input, kind: "capture" });
 }
 
+export async function readRemoteWorkspaceArchiveDirectories(archivePath: string, expectedManifestDigest: string) {
+  const fs = await import("node:fs/promises");
+  const crypto = await import("node:crypto");
+  const archive = await fs.open(archivePath, "r");
+  try {
+    const header = Buffer.alloc(10);
+    if ((await archive.read(header, 0, 10, 0)).bytesRead !== 10 || header.subarray(0, 6).toString() !== "PCWS1\n") {
+      throw new Error("remote_workspace_archive_invalid_header");
+    }
+    const size = header.readUInt32BE(6);
+    if (size > 64 * 1024 * 1024) throw new Error("remote_workspace_archive_manifest_too_large");
+    const bytes = Buffer.alloc(size);
+    if ((await archive.read(bytes, 0, size, 10)).bytesRead !== size) throw new Error("remote_workspace_archive_truncated");
+    if (crypto.createHash("sha256").update(bytes).digest("hex") !== expectedManifestDigest) {
+      throw new Error("remote_workspace_archive_manifest_mismatch");
+    }
+    const manifest = JSON.parse(bytes.toString()) as { schema: string; entries: Array<{ type: string; path: string }> };
+    if (manifest.schema !== "paperclip.remote-workspace-archive.v1" || !Array.isArray(manifest.entries)) {
+      throw new Error("remote_workspace_archive_manifest_mismatch");
+    }
+    return new Set(manifest.entries.filter(entry => entry.type === "directory").map(entry => entry.path));
+  } finally { await archive.close(); }
+}
+
 export function restoreRemoteWorkspaceArchive(input: { archivePath: string; targetDir: string; expectedManifestDigest: string; signal?: AbortSignal; maxEntries?: number; maxManifestBytes?: number }) {
   return workspaceArchive({ ...input, kind: "restore" });
 }

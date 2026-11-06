@@ -6,7 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { captureRemoteWorkspaceDirectory, remoteWorkspaceArchiveScript, remoteWorkspaceCaptureFailureMessage, restoreRemoteWorkspaceArchive } from "./remote-workspace-snapshot-archive.js";
+import { captureRemoteWorkspaceDirectory, readRemoteWorkspaceArchiveDirectories, remoteWorkspaceArchiveScript, remoteWorkspaceCaptureFailureMessage, restoreRemoteWorkspaceArchive } from "./remote-workspace-snapshot-archive.js";
 
 const archiveIo = vi.hoisted(() => ({
   afterChmod: undefined as ((target: string, mode: number) => void) | undefined,
@@ -54,6 +54,25 @@ describe("portable remote workspace archives", () => {
     }
     return JSON.stringify(entries);
   }
+  it("reads captured directory coverage and rejects a different manifest digest", async () => {
+    const cwd = await source();
+    await fs.mkdir(path.join(cwd, "checkout"));
+    await fs.writeFile(path.join(cwd, "checkout", "file.txt"), "saved");
+    const snapshot = await capture(cwd);
+    expect(await readRemoteWorkspaceArchiveDirectories(snapshot.archivePath, snapshot.manifestDigest))
+      .toEqual(new Set(["checkout"]));
+    await expect(readRemoteWorkspaceArchiveDirectories(snapshot.archivePath, "0".repeat(64)))
+      .rejects.toThrow("manifest_mismatch");
+  });
+
+  it("rejects oversized coverage manifests before reading their body", async () => {
+    const archivePath = path.join(root, "oversized.pcws"), header = Buffer.alloc(10);
+    header.write("PCWS1\n"); header.writeUInt32BE(64 * 1024 * 1024 + 1, 6);
+    await fs.writeFile(archivePath, header);
+    await expect(readRemoteWorkspaceArchiveDirectories(archivePath, "0".repeat(64)))
+      .rejects.toThrow("manifest_too_large");
+  });
+
   it("keeps every serialized capture validation reason in the closed diagnostic contract", () => {
     const script = remoteWorkspaceArchiveScript(), start = script.indexOf("const archive = ");
     const restore = script.indexOf("if (!input.targetDir", start);
