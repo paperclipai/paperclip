@@ -25,6 +25,13 @@ export type CloudInstanceHealthStatus = {
   cloudBaseUrl: string | null;
 };
 
+/** An environment-configured generic OIDC provider is available for sign-in. */
+export type OidcHealthStatus = {
+  enabled: true;
+  providerId: string;
+  displayName: string;
+};
+
 export type HealthStatus = {
   status: "ok" | "starting";
   version?: string;
@@ -44,6 +51,7 @@ export type HealthStatus = {
   serverInfo?: ServerInfoSnapshot;
   devServer?: DevServerHealthStatus;
   cloud?: CloudInstanceHealthStatus;
+  oidc?: OidcHealthStatus;
   /**
    * Settings surfaces hidden by the hosting operator (keys from the shared
    * settings-visibility registry). Absent when nothing is hidden.
