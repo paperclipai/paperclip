@@ -3,6 +3,7 @@ import { environmentLeases, heartbeatRuns, issues, nativeRunFinalizations, nativ
 import { logger } from "../../middleware/logger.js";
 import { adapterExecutionControls } from "../adapter-execution-control.js";
 import { logActivity, publishActivity, type ActivityPublication } from "../activity-log.js";
+import { DELIVERY_QUEUES, notifyDeliveryWork } from "../delivery-work-notifications.js";
 import { notifyExecutionRunWork } from "../execution-control-notifications.js";
 import { readProcessStartedAt } from "../hot-restart.js";
 import { notifyNativeFinalizationWork } from "../native-finalization-notifications.js";
@@ -150,6 +151,8 @@ async function settleFailedRunOwner(db: Db, release: Release, now: Date): Promis
     const scope = { companyId: run.companyId, agentId: run.agentId, runId: run.id, issueId: coordinator.issueId };
     await notifyExecutionRunWork(tx, scope);
     await notifyNativeFinalizationWork(tx, scope);
+    // A result-less `observed` owner holds pending cost accounting; settlement releases it.
+    await notifyDeliveryWork(tx, DELIVERY_QUEUES.accounting, run.companyId);
     const [updated] = await tx.update(nativeRunFinalizations).set({
       phase: "terminal_failure",
       leaseOwner: null,

@@ -13,9 +13,12 @@ import {
   heartbeatRuns,
   issues,
   nativeRunFinalizations,
+  subscribeDatabaseWork,
 } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import { agentExecutionsHaveStopped } from "../agent-execution-stop.js";
+import { DELIVERY_QUEUES } from "../delivery-work-notifications.js";
+import { environmentService } from "../environments.js";
 import { executionControlSchedule } from "../execution-control-work.js";
 import { reconcileAbandonedExecutionControl } from "../execution-control-reconciliation.js";
 import { claimNativeSessionResumptions } from "./native-finalization-reconciler.js";
@@ -184,6 +187,37 @@ describe("failed native run owner release", () => {
     }
     await expect(releaseAbandonedNativeOwners(db)).resolves.toBe(1);
     expect(await coordinator(runId)).toMatchObject({ phase: "terminal_failure", leaseOwner: null });
+  });
+
+  /** Records committed wake signals for one delivery queue while `work` runs. */
+  async function committedWakes(topic: string, work: () => Promise<unknown>) {
+    const events: string[] = [];
+    const unsubscribe = subscribeDatabaseWork(db, topic, event => { events.push(event); });
+    try { await work(); } finally { unsubscribe(); }
+    return events.filter(event => event === "settled").length;
+  }
+
+  it("wakes cost accounting when it settles an owner", async () => {
+    const { runId } = await nativeRun({ status: "failed", errorCode: "adapter_failed",
+      coordinator: { leaseOwner: `default:resume:${randomUUID()}`, leaseExpiresAt: new Date(0) } });
+    await db.update(heartbeatRuns).set({ costAccountingPending: true }).where(eq(heartbeatRuns.id, runId));
+    expect(await committedWakes(DELIVERY_QUEUES.accounting, () => releaseAbandonedNativeOwners(db))).toBeGreaterThan(0);
+    expect(await coordinator(runId)).toMatchObject({ phase: "terminal_failure", leaseOwner: null });
+  });
+
+  it("wakes the finalization queue when the run's environment lease settles", async () => {
+    const leaseOwner = `default:resume:${randomUUID()}`;
+    const { runId, issueId } = await nativeRun({ status: "failed", errorCode: "adapter_failed",
+      coordinator: { leaseOwner, leaseExpiresAt: new Date(0) } });
+    const [lease] = await db.insert(environmentLeases).values({ companyId, issueId, heartbeatRunId: runId,
+      provider: "test", providerLeaseId: `lease-${runId}`, status: "active" }).returning();
+    // Blocked and unscheduled while the sandbox lease is unsettled.
+    expect(await nextAbandonedNativeOwnerReleaseAt(db)).toBeNull();
+    expect(await committedWakes(DELIVERY_QUEUES.executionFinalization,
+      () => environmentService(db).releaseLease(lease!.id, "released", { cleanupStatus: "success" }))).toBeGreaterThan(0);
+    expect(await nextAbandonedNativeOwnerReleaseAt(db)).not.toBeNull();
+    await expect(releaseAbandonedNativeOwners(db)).resolves.toBe(1);
+    expect(await agentExecutionsHaveStopped(db, [agentId])).toBe(true);
   });
 
   it("leaves cancelled runs and pending Stops to their own stop-proof paths", async () => {
