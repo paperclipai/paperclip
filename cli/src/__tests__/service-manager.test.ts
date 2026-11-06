@@ -371,6 +371,35 @@ describe("launchd lifecycle", () => {
     await expect(fs.access(manager.definitionPath)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
+  it.each(["symlink", "directory"] as const)(
+    "refuses to stop a loaded system daemon with a %s source plist",
+    async (kind) => {
+      const home = await temporaryDirectory();
+      const daemonDir = path.join(home, "LaunchDaemons");
+      const name = "ing.paperclip.paperclipai.team-a";
+      const source = path.join(daemonDir, `${name}.plist`);
+      await fs.mkdir(daemonDir, { recursive: true });
+      if (kind === "symlink") {
+        const target = path.join(home, "real.plist");
+        await fs.writeFile(target, "system definition");
+        await fs.symlink(target, source);
+      } else {
+        await fs.mkdir(source);
+      }
+      const calls: string[][] = [];
+      const runner: CommandRunner = async (command, args) => {
+        calls.push([command, ...args]);
+        if (command === "launchctl" && args[0] === "print") {
+          return { stdout: `system/${name} = {\n pid = 4321\n}`, stderr: "" };
+        }
+        return { stdout: "", stderr: "" };
+      };
+      const manager = new LaunchdServiceManager("team-a", runner, path.join(home, ".paperclip"), "/bin/echo", home, daemonDir);
+      await expect(manager.stop()).rejects.toThrow("Cannot safely stop system LaunchDaemon");
+      expect(calls).not.toContainEqual(["sudo", "-n", "launchctl", "bootout", `system/${name}`]);
+    },
+  );
+
   it("never bootstraps a symlinked system plist as root", async () => {
     const home = await temporaryDirectory();
     const daemonDir = path.join(home, "LaunchDaemons");

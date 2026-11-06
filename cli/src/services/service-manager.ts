@@ -335,11 +335,15 @@ export class LaunchdServiceManager implements ServiceManager {
     return await this.jobLoaded(this.domain) ? this.domain : "system";
   }
 
-  private async bootstrapSystemJob(): Promise<void> {
+  private async assertReloadableSystemPlist(): Promise<void> {
     const stat = await fs.lstat(this.systemDefinitionPath);
     if (!stat.isFile() || stat.isSymbolicLink()) {
       throw new Error(`Cannot load unsafe system LaunchDaemon plist ${this.systemDefinitionPath}.`);
     }
+  }
+
+  private async bootstrapSystemJob(): Promise<void> {
+    await this.assertReloadableSystemPlist();
     await this.launchctlAction("system", "bootstrap", "system", this.systemDefinitionPath);
   }
 
@@ -409,8 +413,15 @@ export class LaunchdServiceManager implements ServiceManager {
   }
   async stop(): Promise<void> {
     const domain = await this.activeDomain();
-    if (domain === "system" && !(await this.systemJobConfigured())) {
-      throw new Error(`System LaunchDaemon ${this.serviceName} is loaded, but its source plist is not at ${this.systemDefinitionPath}. The CLI cannot safely unload it because it cannot reload an unknown plist. To manage it manually, run sudo launchctl bootout system/${this.serviceName}, then sudo launchctl bootstrap system <path-to-system-plist> to start it again.`);
+    if (domain === "system") {
+      if (!(await this.systemJobConfigured())) {
+        throw new Error(`System LaunchDaemon ${this.serviceName} is loaded, but its source plist is not at ${this.systemDefinitionPath}. The CLI cannot safely unload it because it cannot reload an unknown plist. To manage it manually, run sudo launchctl bootout system/${this.serviceName}, then sudo launchctl bootstrap system <path-to-system-plist> to start it again.`);
+      }
+      try {
+        await this.assertReloadableSystemPlist();
+      } catch (error) {
+        throw new Error(`Cannot safely stop system LaunchDaemon ${this.serviceName}: its source plist at ${this.systemDefinitionPath} cannot be reloaded. Restore a regular plist or manage the daemon manually; the CLI has not unloaded it.`, { cause: error });
+      }
     }
     await this.launchctlAction(domain, "bootout", `${domain}/${this.serviceName}`);
   }
