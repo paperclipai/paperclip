@@ -3778,7 +3778,10 @@ Only a persisted Agent Chat `/new` authored by the requesting user retains the
 conversation-reset exception. Ordinary follow-ups still wait for an accepted
 result to finish committing, even after workspace export recovery clears its
 execution blocker. Committed successful results no longer create continuation
-waits from recovered-export history. Applied conversation resets retire older
+waits from recovered-export history. A saved Send intent can also continue a task
+that this result marked `done`. Admission reopens that task in the same transaction
+that creates its successor and consumes the queue. Automatic stale input and
+cancelled tasks keep their existing status gates. Applied conversation resets retire older
 non-workspace holds; active workspace holds remain authoritative across the
 boundary. Workspace recovery holds still block the reset. Queue authorization
 is read again at dispatch for both cancelled and failed native predecessors.

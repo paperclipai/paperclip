@@ -143,7 +143,7 @@ import {
   evaluateIssueRewakeThrottle,
   isThrottleCandidateIssueRewake,
 } from "../issue-rewake-throttle.js";
-import { logActivity } from "../activity-log.js";
+import { logActivity, publishActivity, type ActivityPublication } from "../activity-log.js";
 import {
   ISSUE_BLOCKERS_RESOLVED_WAKE_REASON,
   isIssueBlockersResolvedWakePayload,
@@ -183,7 +183,7 @@ import type { createHeartbeatRunState } from "./run-state.js";
 import type { createHeartbeatRunPreparation } from "./run-preparation.js";
 import type { HeartbeatRetryDependencies } from "./retries.js";
 import type { HeartbeatRecoveryDependencies, createHeartbeatRecovery } from "./recovery.js";
-import type { issueService } from "../issues.js";
+import { executeIssuePostCommitActions, type IssuePostCommitAction, type issueService } from "../issues.js";
 import type { issueTreeControlService } from "../issue-tree-control.js";
 import type { budgetService } from "../budgets.js";
 import type { instanceSettingsService } from "../instance-settings.js";
@@ -206,7 +206,7 @@ export interface HeartbeatQueueDependencies extends Pick<HeartbeatRetryDependenc
   Pick<HeartbeatRecoveryDependencies, "setRunStatus"> {
   sweepPendingCleanupLeases: ReturnType<typeof createHeartbeatRecovery>["sweepPendingCleanupLeases"];
   options: Pick<HeartbeatServiceOptions, "beforeChatControlRecoveryCheck">;
-  issuesSvc: Pick<ReturnType<typeof issueService>, "getDependencyReadiness" | "listDependencyReadiness">;
+  issuesSvc: Pick<ReturnType<typeof issueService>, "getDependencyReadiness" | "listDependencyReadiness" | "updateForCompany">;
   treeControlSvc: Pick<ReturnType<typeof issueTreeControlService>, "getActivePauseHoldGate">;
   budgets: Pick<ReturnType<typeof budgetService>, "getInvocationBlock">;
   instanceSettings: Pick<ReturnType<typeof instanceSettingsService>, "getExperimental">;
@@ -2828,6 +2828,8 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       const agentNameKey = normalizeAgentNameKey(agent.name);
 
       const cancelledRunsToEmit: (typeof heartbeatRuns.$inferSelect)[] = [];
+      const issueActivityPublications: ActivityPublication[] = [];
+      const issuePostCommitActions: IssuePostCommitAction[] = [];
 
       const outcome = await db
         .transaction(withDurableChatAdmission(durableRequest, async (tx) => {
@@ -4257,6 +4259,19 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
             enrichedContextSnapshot.explicitUserContinuation = explicitContinuation;
           }
 
+          if (opts.queuedCommentInterruptId && issue.status === "done") {
+            // The exact saved Send receipt passed ordinary admission above.
+            // Reopen with the successor, so dispatch can consume that input.
+            const reopened = await issuesSvc.updateForCompany(issue.id, issue.companyId,
+              { status: "todo", executionState: null }, tx, issueActivityPublications, issuePostCommitActions);
+            if (!reopened) throw conflict("The task changed before its saved message could start");
+            await logActivity(tx as unknown as Db, {
+              companyId: issue.companyId, actorType: "user", actorId: opts.requestedByActorId!,
+              action: "issue.updated", entityType: "issue", entityId: issue.id,
+              details: { status: "todo", previousStatus: "done", source: "queued_comment_send", queueId: opts.queuedCommentInterruptId },
+            }, issueActivityPublications);
+          }
+
           const wakeupValues = {
             ...durableReceiptFields,
             companyId: agent.companyId,
@@ -4448,6 +4463,9 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
             return { kind: "deferred" as const };
           throw error;
         });
+
+      for (const publication of issueActivityPublications) publishActivity(publication);
+      await executeIssuePostCommitActions(db, issuePostCommitActions);
 
       // Telemetry for the cancelled runs is best-effort background work.
       // Fire it here and never await it: none of the lifecycle work below,
