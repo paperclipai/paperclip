@@ -72,7 +72,8 @@ command.
 
 ```sh
 npx paperclipai agent list
-npx paperclipai agent get <agent-id>
+npx paperclipai agent get <agent-id-or-shortname> [--company-id <company-id>]
+npx paperclipai agent wake <agent-id-or-shortname> [--company-id <company-id>] [--reason "..."]
 ```
 
 ## Skills Commands
