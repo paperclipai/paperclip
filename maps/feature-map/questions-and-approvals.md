@@ -163,6 +163,11 @@ failure, and restart with a scripted process agent and local MCP provider:
 pnpm exec playwright test -c tests/e2e/connection-reviews.config.ts
 ```
 
+[Approval replay regressions](../../server/src/__tests__/tool-gateway-approval-replay.test.ts)
+exercise missing or malformed stored results after approval with PostgreSQL and
+a local MCP provider. Result recovery errors must preserve the completed action
+and must not repeat its external effect.
+
 Manual: dismiss and reopen a review, decide it from each entry point using fresh
 requests, and inspect the continuation's useful result. Always allow must show
 its scope; a future action with changed arguments should obey the saved rule.

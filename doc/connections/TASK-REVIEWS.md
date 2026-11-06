@@ -65,6 +65,14 @@ minutes is marked failed with `tool_execution_outcome_unknown`. Its external
 outcome is uncertain: inspect the provider before retrying. It is never
 automatically replayed. This grace period exceeds the current approved-call timeout.
 
+Repeating a completed approved call reuses its stored result without executing the
+provider action again. If that result summary is missing or cannot be parsed as
+JSON, the gateway returns HTTP 409 with `tool_result_unavailable`, the invocation
+ID, `replayed: true`, and `executionStatus: "succeeded"`. The action remains
+completed. Do not repeat it to recover the missing output. A dedicated GitHub
+publication receipt can still supply the result when its audit summary is
+unavailable. This check does not restore truncated output or add raw result storage.
+
 Migration 0249 adds the outbox and a partial unique wake-idempotency index.
 The index is built transactionally; migration can briefly block wake-table writes
 while PostgreSQL scans an existing large table. No external payload is added to the
