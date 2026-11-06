@@ -45,6 +45,8 @@ background. Live runs and uncached projections still wait for hydration. Cache
 reuse does not remove reconnect or retry reads. Return navigation also exercises
 cached question editors: a scroll event queued before their layout grows must
 retain bottom-follow, while an upward gesture and Back reading anchors still win.
+Mounted rows survive query-cache eviction. Expanding a cached preview restores
+the full projection before catch-up, including older rows and late events.
 
 ### Local comparison, 2026-11-06
 

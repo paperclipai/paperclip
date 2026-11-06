@@ -63,8 +63,7 @@ export function useNativeRunTranscripts(runs: readonly NativeRunTranscriptSource
     return saved;
   }, [queryClient, options.companyId, options.enabled, nativeRuns]);
   const [eventsByRun, setEventsByRun] = useState<Map<string, HeartbeatRunEvent[]>>(new Map());
-  const eventsByRunRef = useRef(eventsByRun);
-  eventsByRunRef.current = eventsByRun;
+  const persistedEventsByRunRef = useRef(new Map<string, HeartbeatRunEvent[]>());
   const [errorsByRun, setErrorsByRun] = useState<Map<string, NativeRunTranscriptError>>(new Map());
   const [hydratedRunIds, setHydratedRunIds] = useState<ReadonlySet<string>>(new Set());
   const [hydratedStatusByRun, setHydratedStatusByRun] = useState(new Map<string, string>());
@@ -91,6 +90,7 @@ export function useNativeRunTranscripts(runs: readonly NativeRunTranscriptSource
     previousCompanyRef.current = options.companyId;
     setEventsByRun(new Map()); setErrorsByRun(new Map()); setHydratedRunIds(new Set()); setHydratedStatusByRun(new Map());
     projectionCacheRef.current.clear(); cursorByRunRef.current.clear(); conversationOnlyByRunRef.current.clear();
+    persistedEventsByRunRef.current.clear();
     sequencesRef.current.clear(); gapPendingRef.current.clear(); interruptedReadsRef.current.clear();
   }, [options.companyId]);
   const stream = useTranscriptLiveStream(nativeRuns.filter(run => isLive(run.status)).map(run => run.id), options, event => {
@@ -121,7 +121,12 @@ export function useNativeRunTranscripts(runs: readonly NativeRunTranscriptSource
     const changedModes = new Set<string>();
     for (const run of nativeRuns) {
       const mode = Boolean(run.conversationOnly);
-      if (conversationOnlyByRunRef.current.get(run.id) !== mode) { changedModes.add(run.id); cursorByRunRef.current.delete(run.id); sequencesRef.current.delete(run.id); }
+      if (conversationOnlyByRunRef.current.get(run.id) !== mode) {
+        changedModes.add(run.id); cursorByRunRef.current.delete(run.id); sequencesRef.current.delete(run.id);
+      }
+      if (changedModes.has(run.id) || !persistedEventsByRunRef.current.has(run.id)) {
+        persistedEventsByRunRef.current.set(run.id, savedHistory.get(run.id)?.events ?? []);
+      }
       conversationOnlyByRunRef.current.set(run.id, mode);
     }
     let cancelled = false;
@@ -134,7 +139,16 @@ export function useNativeRunTranscripts(runs: readonly NativeRunTranscriptSource
       const next = new Map([...previous].filter(([id]) => retainedIds.has(id)));
       return next.size === previous.size ? previous : next;
     };
-    setEventsByRun(retainMap);
+    setEventsByRun(previous => {
+      let next = retainMap(previous);
+      for (const [id, saved] of savedHistory) {
+        if (!next.has(id) || changedModes.has(id)) {
+          if (next === previous) next = new Map(next);
+          next.set(id, mergeRunEvents(saved.events, next.get(id) ?? []));
+        }
+      }
+      return next;
+    });
     setErrorsByRun(retainMap);
     setHydratedStatusByRun(retainMap);
     setHydratedRunIds((previous) => {
@@ -145,6 +159,9 @@ export function useNativeRunTranscripts(runs: readonly NativeRunTranscriptSource
       if (!retainedIds.has(id)) {
         cursorByRunRef.current.delete(id); sequencesRef.current.delete(id); gapPendingRef.current.delete(id);
       }
+    }
+    for (const id of persistedEventsByRunRef.current.keys()) {
+      if (!retainedIds.has(id)) persistedEventsByRunRef.current.delete(id);
     }
 
     const refreshRun = async (run: NativeRunTranscriptSource) => {
@@ -186,12 +203,13 @@ export function useNativeRunTranscripts(runs: readonly NativeRunTranscriptSource
           next.set(run.id, mergeRunEvents(previous.get(run.id) ?? saved?.events ?? [], incoming));
           return next;
         });
+        const previousEvents = persistedEventsByRunRef.current.get(run.id) ?? [];
+        const persistedEvents = incoming.length ? mergeRunEvents(previousEvents, incoming) : previousEvents;
+        persistedEventsByRunRef.current.set(run.id, persistedEvents);
         if (!failed && !isLive(run.status) && queryClient && options.companyId) {
           const key = historyKey(options.companyId, run);
-          const previous = queryClient.getQueryData<SavedNativeHistory>(key);
           queryClient.setQueryData<SavedNativeHistory>(key, {
-            events: mergeRunEvents(previous?.events ?? (changedModes.has(run.id)
-              ? saved?.events : eventsByRunRef.current.get(run.id)) ?? [], incoming),
+            events: persistedEvents,
             cursor: coveredCursor,
           });
         }
