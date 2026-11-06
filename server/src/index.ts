@@ -82,8 +82,7 @@ import { setSentryRunLinkResolver } from "./sentry-links.js";
 import { createSentryRunLinkResolver } from "./services/sentry-run-links.js";
 import { waitForPendingRunFailureReports } from "./services/run-failure-report.js";
 import { verifyStoppedNativeSessionForReplacement } from "./services/native-runtime/native-session-executor.js";
-import { onNativeSessionCleanupSettled } from "./vendor/paperclip-runner/index.js";
-import { notifyDeferredExecutionWork } from "./services/deferred-execution-notifications.js";
+import { registerNativeCleanupReleaseWake } from "./services/native-runtime/native-cleanup-release-wake.js";
 import { embeddedPostgresOwnerPort } from "./embedded-postgres-owner.js";
 import { deliverExecutionStatuses } from "./services/execution-status-delivery.js";
 import { deliverReconciledExecutions, settleUnrecoverableExecutions } from "./services/execution-recovery-resolution.js";
@@ -1361,11 +1360,8 @@ async function startServerWithDatabaseTeardown(
   server.on("close", unsubscribeLocalLoginCleanup);
   // A retained native session close holds task input in process memory. When
   // it is released, wake deferred execution so held Retries re-evaluate.
-  const unsubscribeNativeCleanupSettled = onNativeSessionCleanupSettled(({ companyId }) => {
-    if (!companyId) return;
-    void notifyDeferredExecutionWork(db, { companyId }).catch((error: unknown) => {
-      logger.warn({ err: error, companyId }, "native cleanup release could not wake deferred execution");
-    });
+  const unsubscribeNativeCleanupSettled = registerNativeCleanupReleaseWake(db, (error, companyId) => {
+    logger.warn({ err: error, companyId }, "native cleanup release could not wake deferred execution");
   });
   server.on("close", unsubscribeNativeCleanupSettled);
   registerExecutionControlWork(deliveryWork, [

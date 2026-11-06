@@ -142,7 +142,14 @@ export function nativeSessionCleanupBlock(input: {
   let block: "operator_required" | "pending" | null = null;
   for (const entry of quarantinedSessionCleanups) {
     if (!matches(entry.domain)) continue;
-    if (entry.operatorRecoveryRequired) return "operator_required";
+    // An entry whose bounded automatic close budget is spent has no further
+    // scheduled attempt. Waiting would never end, so it needs the same
+    // stopped-process recovery as an unrecoverable close.
+    const automaticRecoveryExhausted =
+      !entry.attempt && !entry.recovery && !entry.timer &&
+      entry.automaticAttempts >= MAX_QUARANTINED_SESSION_AUTOMATIC_CLOSE_ATTEMPTS;
+    if (entry.operatorRecoveryRequired || automaticRecoveryExhausted)
+      return "operator_required";
     block = "pending";
   }
   for (const domain of failedSessionCleanupOwners.values()) {

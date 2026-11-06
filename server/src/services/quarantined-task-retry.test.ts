@@ -20,6 +20,8 @@ import { PROCESS_IDENTITY_RECORDED, PROCESS_START_REQUESTED } from "./native-loc
 import { nativeSha256 } from "./native-runtime/canonical.js";
 import { verifyStoppedNativeSessionForContinuation } from "./native-runtime/native-session-executor.js";
 import { requestTaskRetry } from "./task-retry.js";
+import { DELIVERY_QUEUES, subscribeDeliveryWork } from "./delivery-work-notifications.js";
+import { registerNativeCleanupReleaseWake } from "./native-runtime/native-cleanup-release-wake.js";
 
 describe("task Retry after inherited native cleanup quarantine", () => {
   let postgres: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
@@ -254,6 +256,11 @@ describe("task Retry after inherited native cleanup quarantine", () => {
       await db.update(heartbeatRuns).set({ errorCode: "provider_transport_failed" }).where(eq(heartbeatRuns.id, f.sourceId));
       const settled = vi.fn();
       const unsubscribe = onNativeSessionCleanupSettled(settled);
+      // The production release wake, observed on the delivery queue it signals.
+      const wakeFailure = vi.fn();
+      const unregisterWake = registerNativeCleanupReleaseWake(db, wakeFailure);
+      const deferredWake = vi.fn();
+      const unsubscribeDeferred = subscribeDeliveryWork(db, DELIVERY_QUEUES.deferredExecutionReceipts, deferredWake);
       const pendingClose = new Promise<void>(resolve => { releaseClose = resolve; });
       const identity = { runId: randomUUID(), sessionId: "retained-close-session", companyId: f.companyId, issueId: f.issueId, agentId: f.agentId };
       const capabilities = { resume: true, typedEvents: true, steering: false, interruption: false, structuredResult: true };
@@ -300,8 +307,13 @@ describe("task Retry after inherited native cleanup quarantine", () => {
       // The close settles by itself; its release wakes the held Retry, which then starts.
       releaseClose();
       await vi.waitFor(() => expect(settled).toHaveBeenCalledWith({ companyId: f.companyId, issueIds: [f.issueId] }));
+      await vi.waitFor(() => expect(deferredWake).toHaveBeenCalled());
+      expect(wakeFailure).not.toHaveBeenCalled();
       expect(nativeSessionCleanupBlock({ companyId: f.companyId, issueId: f.issueId })).toBeNull();
       unsubscribe();
+      unregisterWake();
+      unsubscribeDeferred();
+      // The deferred-execution worker runs this pass on that wake.
       await heartbeat.resumeTaskRetry(f.companyId, receipt.requestId!);
       expect(await queued()).toHaveLength(1);
     } finally {

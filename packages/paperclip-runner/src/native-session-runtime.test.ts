@@ -41,6 +41,7 @@ import {
   executeNativeSession,
   completeTerminatedRemoteNativeSessionCleanup,
   completeTerminatedLocalNativeSessionCleanup,
+  nativeSessionCleanupBlock,
   type ExecuteNativeSessionOptions,
 } from "./native-session-runtime.js";
 
@@ -2385,11 +2386,17 @@ describe("executeNativeSession recovery", () => {
 
       expect(admissionAttempt).toBe(3);
       expect(scheduledAttempt).toBe(0);
+      const block = { companyId: lifetimeIdentity.companyId, issueId: input.binding.issueId };
+      // Automatic recovery is still scheduled: the server may hold input.
+      expect(nativeSessionCleanupBlock(block)).toBe("pending");
       await vi.advanceTimersByTimeAsync(180_000);
       expect(scheduledAttempt).toBe(3);
       await vi.advanceTimersByTimeAsync(300_000);
       expect(scheduledAttempt).toBe(3);
       expect(openSession).toHaveBeenCalledOnce();
+      // The automatic budget is spent and nothing else is scheduled: waiting
+      // would never end, so the task needs stopped-process recovery.
+      expect(nativeSessionCleanupBlock(block)).toBe("operator_required");
     } finally {
       vi.useRealTimers();
     }
