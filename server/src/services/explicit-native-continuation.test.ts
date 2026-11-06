@@ -1302,7 +1302,7 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
       eq(heartbeatRuns.status, "queued")))).toHaveLength(1);
   });
 
-  async function seedHistoricalPausedWorkspaceRetry(parentHold = false) {
+  async function seedHistoricalPausedWorkspaceRetry(parentHold = false, retryNow = false) {
     const f = await seedCancelledWorkspaceWaitRetry();
     const dueAt = new Date("2026-09-11T10:00:00Z");
     const pauseRootIssueId = parentHold ? randomUUID() : f.issueId;
@@ -1320,9 +1320,21 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
     await db.update(heartbeatRuns).set({ status: "scheduled_retry", errorCode: null,
       finishedAt: null, resultJson: null, scheduledRetryAt: dueAt, scheduledRetryAttempt: 1,
     }).where(eq(heartbeatRuns.id, f.sourceRunId));
-    expect(await createPostgresRunDispatchAdapter(db).promoteOrCancelDueRetry({
-      companyId: f.companyId, runId: f.sourceRunId, now: dueAt,
-    })).toMatchObject({ outcome: "gate_suppressed", errorCode: "issue_paused" });
+    if (retryNow) {
+      expect(await heartbeatService(db).retryScheduledRetryNow({ issueId: f.issueId,
+        actor: { actorType: "user", actorId: "board" }, now: dueAt })).toMatchObject({ outcome: "gate_suppressed" });
+      const events = await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, f.sourceRunId))
+        .orderBy(heartbeatRunEvents.seq);
+      expect(events).toMatchObject([
+        { seq: 1, eventType: "lifecycle", stream: "system", level: "info", message: "Scheduled retry was requested to run now" },
+        { seq: 2, eventType: "lifecycle", stream: "system", level: "warn",
+          message: "Scheduled retry suppressed because the issue is held by an active subtree pause hold" },
+      ]);
+    } else {
+      expect(await createPostgresRunDispatchAdapter(db).promoteOrCancelDueRetry({
+        companyId: f.companyId, runId: f.sourceRunId, now: dueAt,
+      })).toMatchObject({ outcome: "gate_suppressed", errorCode: "issue_paused" });
+    }
     // Old scheduler builds wrote the same suppression event but no JSON marker.
     await db.update(heartbeatRuns).set({ resultJson: null }).where(eq(heartbeatRuns.id, f.sourceRunId));
     await issueTreeControlService(db).releaseHold(f.companyId, pauseRootIssueId, pause.id,
@@ -1330,8 +1342,11 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
     return { ...f, pauseId: pause.id, dueAt };
   }
 
-  it.each([false, true])("resumes saved input after a historical pause suppressed an unclaimed workspace retry (parent hold: %s)", async parentHold => {
-    const f = await seedHistoricalPausedWorkspaceRetry(parentHold);
+  it.each([
+    { parentHold: false, retryNow: false }, { parentHold: true, retryNow: false },
+    { parentHold: false, retryNow: true }, { parentHold: true, retryNow: true },
+  ])("resumes saved input after a historical pause suppressed an unclaimed workspace retry (parent hold: $parentHold, retry now: $retryNow)", async ({ parentHold, retryNow }) => {
+    const f = await seedHistoricalPausedWorkspaceRetry(parentHold, retryNow);
     await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, status: "running" });
     const [wake] = await db.insert(agentWakeupRequests).values({ companyId: f.companyId, agentId: f.agentId,
       source: "on_demand", reason: "issue_commented", requestedByActorType: "user", requestedByActorId: "board",
@@ -1349,6 +1364,15 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
       .toMatchObject({ status: "coalesced", runId: successors[0].id });
     expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.sourceRunId)))[0])
       .toMatchObject({ status: "cancelled", startedAt: null, errorCode: "issue_paused", resultJson: null });
+  });
+
+  it("holds a Retry Now pause history that also contains provider execution evidence", async () => {
+    const f = await seedHistoricalPausedWorkspaceRetry(false, true);
+    await appendHeartbeatRunEvent(db, { companyId: f.companyId, agentId: f.agentId, runId: f.sourceRunId,
+      eventType: "turn.started", stream: "system", level: "info" });
+    expect(await admit(f)).toBeNull();
+    expect(await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId),
+      eq(heartbeatRuns.status, "queued")))).toHaveLength(0);
   });
 
   it.each(["missing_event", "wrong_event", "missing_member", "active_pause", "late_pause", "early_release",

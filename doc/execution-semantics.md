@@ -2009,8 +2009,9 @@ after the snapshot, a task moved out before release, and a task whose work an
 overlapping pause refused and released while this one still covered it. The scheduled-retry gate holds the pause row while it saves its
 refusal, so a concurrent release either sees the refusal or the retry sees no pause.
 For an old workspace-wait retry without the JSON marker, a later saved user
-message can continue only when the first system lifecycle event records that
-exact pause refusal. The released pause and its task membership must match.
+message can continue only when an exact system lifecycle warning records that
+pause refusal. An earlier Retry Now lifecycle record does not invalidate the
+warning. The released pause and its task membership must match.
 The parent must retain its host-issued pre-provider workspace-wait proof.
 Provider activity, retained execution, an unmatched pause, or an operator Stop
 keeps the old run held. The historical cancellation remains unchanged.

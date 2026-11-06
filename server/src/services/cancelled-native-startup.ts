@@ -176,8 +176,9 @@ async function isCancelledUnclaimedWorkspaceWaitRetry(db: Db, run: Run): Promise
   const systemCancellation = run.errorCode === "cancelled" && run.resultJson?.stopReason === "cancelled"
     && cancellation?.source === "control_plane" && cancellation.expected === true && cancellation.initiator.type === "system";
   // Older retry schedulers persisted the pause refusal only in the run log.
-  // Its first event certifies a scheduled retry was refused before promotion;
-  // a released, company-scoped hold and membership bind that event to this task.
+  // The exact warning certifies a scheduled retry was refused before promotion.
+  // Retry Now can record a harmless lifecycle event before this warning.
+  // A released, company-scoped hold and membership bind that event to this task.
   const pausedBeforePromotion = run.errorCode === "issue_paused" && run.resultJson === null && run.finishedAt
     ? await db.select({ id: heartbeatRunEvents.id }).from(heartbeatRunEvents)
       .innerJoin(issueTreeHolds, and(eq(issueTreeHolds.companyId, run.companyId),
@@ -187,7 +188,7 @@ async function isCancelledUnclaimedWorkspaceWaitRetry(db: Db, run: Run): Promise
         eq(issueTreeHoldMembers.holdId, issueTreeHolds.id), eq(issueTreeHoldMembers.issueId, issueId),
         eq(issueTreeHoldMembers.skipped, false)))
       .where(and(eq(heartbeatRunEvents.companyId, run.companyId), eq(heartbeatRunEvents.runId, run.id),
-        eq(heartbeatRunEvents.seq, 1), eq(heartbeatRunEvents.eventType, "lifecycle"),
+        eq(heartbeatRunEvents.eventType, "lifecycle"),
         eq(heartbeatRunEvents.stream, "system"), eq(heartbeatRunEvents.level, "warn"),
         eq(heartbeatRunEvents.message, "Scheduled retry suppressed because the issue is held by an active subtree pause hold"),
         sql`${heartbeatRunEvents.payload}->>'issueId' = ${issueId}`,
