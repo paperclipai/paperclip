@@ -2310,7 +2310,7 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
         contract: { revision: "1", objective: "Restart bootstrap", criteria: [{ id: "result", requirement: "Complete work" }] } },
     });
     const root = resolve(runtimeRoot, `marker-${fixture.runId}`);
-    await mkdir(resolve(root, "control-plane"), { recursive: true, mode: 0o700 });
+    await mkdir(root, { recursive: true, mode: 0o700 });
     const writeMarker = (runId: string) => writeFile(resolve(root, "control-plane", "control-plane-state.json"), JSON.stringify({
       schema: "paperclip.runner.external-control-plane-state.v1",
       identity: { runnerInstanceId: fixture.native.runnerInstanceId, environmentLeaseId: fixture.runId, runId,
@@ -2320,6 +2320,15 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
       controllerGeneration: 2, providerAttempt: 1, restartKind: "hard" as const, recoveryRequestId: null };
     const target = { kind: "remote", transport: "sandbox", remoteCwd: "/workspace" } as AdapterExecutionTarget;
     try {
+      // RC-29b: preparation may leave an empty session root before any
+      // controller state exists. It carries no evidence and must not block.
+      await restoreRemoteBootstrapCheckpointForRecovery({ db: fixture.db, execution, root,
+        restartRecovery: undefined, runnerExecutionTarget: target });
+      expect(existsSync(root)).toBe(true);
+      await restoreRemoteBootstrapCheckpointForRecovery({ db: fixture.db, execution, root,
+        restartRecovery: claim, runnerExecutionTarget: target });
+      expect(existsSync(root)).toBe(false);
+      await mkdir(resolve(root, "control-plane"), { recursive: true, mode: 0o700 });
       await writeMarker(fixture.runId);
       expect(runnerdStateProvesIncompleteBootstrap(root)).toBe(false);
       // Only a bootstrap recovery on a classic sandbox restores the checkpoint.
@@ -2355,6 +2364,73 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
     const fixture = await seedClaimedRemoteBootstrap(label.replace(/\W+/g, "-"), options);
     expect(await claimNativeRestartRecoveries({ db: fixture.db, controller: successor,
       restartKind: "hard", runIds: [fixture.runId] })).toEqual([{ kind: "blocked", runId: fixture.runId, reason }]);
+  });
+
+  // RC-29b: a restart while the executor was still preparing a claimed Daytona
+  // run, before it asked for a runner process. The executor records
+  // native.process_start_requested (and only then may a backend spawn or a
+  // controller checkpoint exist), so its absence proves nothing reached a runner.
+  async function seedUnlaunchedRemoteClaim(label: string, options: {
+    attempt?: number; leaseExpired?: boolean; liveController?: boolean;
+    event?: { eventType: string; sourceEventId?: string };
+    run?: Partial<typeof heartbeatRuns.$inferInsert>;
+  } = {}) {
+    const fixture = await seedRun(`REMOTE-UNLAUNCHED-${label}`);
+    await fixture.db.update(heartbeatRuns).set({
+      runnerProfileJson: { ...fixture.preparedProfile, nativeWorkspaceSync: remotePreparedWorkspace() },
+      ...options.run,
+    }).where(eq(heartbeatRuns.id, fixture.runId));
+    if (options.event) await fixture.db.insert(heartbeatRunEvents).values({ companyId, runId: fixture.runId, agentId,
+      seq: 900, stream: "system", level: "info", ...options.event });
+    const current = await currentNativeControllerIdentity();
+    await fixture.db.update(nativeRunFinalizations).set({
+      attempt: options.attempt ?? 1, controllerGeneration: 1,
+      controllerBootId: options.liveController ? current.bootId : randomUUID(),
+      controllerPid: options.liveController ? current.pid : 2_000_000_001,
+      controllerProcessStartedAt: options.liveController ? current.processStartedAt : new Date(Date.now() - 60_000),
+      leaseOwner: `previous:${randomUUID()}`,
+      leaseExpiresAt: new Date(Date.now() + (options.leaseExpired ? -1_000 : 20 * 60_000)),
+    }).where(eq(nativeRunFinalizations.runId, fixture.runId));
+    return fixture;
+  }
+
+  it.each([false, true])("restarts a claimed remote run that never requested a runner (lease expired=%s)", async (leaseExpired) => {
+    const fixture = await seedUnlaunchedRemoteClaim(`PROVEN-${leaseExpired}`, { leaseExpired });
+    expect(await claimNativeRestartRecoveries({ db: fixture.db, controller: successor,
+      restartKind: "hard", runIds: [fixture.runId] })).toEqual([expect.objectContaining({
+      kind: "bootstrap_incomplete", runId: fixture.runId, providerAttempt: 1, controllerGeneration: 2 })]);
+    const [coordinator] = await fixture.db.select().from(nativeRunFinalizations)
+      .where(eq(nativeRunFinalizations.runId, fixture.runId));
+    expect(coordinator).toMatchObject({ phase: "observed", recoveryState: "bootstrap_incomplete", failureCode: null });
+    expect(coordinator.recoveryHistory.at(-1)).toMatchObject({ disposition: "bootstrap_incomplete",
+      reason: "remote_runner_never_launched" });
+    const [run] = await fixture.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.runId));
+    expect(run).toMatchObject({ status: "running", errorCode: null });
+    expect(await fixture.db.select().from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, fixture.issueId))).toHaveLength(0);
+  });
+
+  it.each<[string, Parameters<typeof seedUnlaunchedRemoteClaim>[1], { kind: string; reason: string }]>([
+    ["a runner process start was requested", { event: { eventType: "native.process_start_requested" } },
+      { kind: "blocked", reason: "ambiguous_remote_recovery_evidence" }],
+    ["a runner process identity was recorded", { event: { eventType: "native.process_identity_recorded" } },
+      { kind: "blocked", reason: "ambiguous_remote_recovery_evidence" }],
+    ["the adapter was invoked", { event: { eventType: "adapter.invoke" } },
+      { kind: "blocked", reason: "ambiguous_remote_recovery_evidence" }],
+    ["a runner event was committed", { event: { eventType: "item.updated", sourceEventId: "runner-event-1" } },
+      { kind: "blocked", reason: "ambiguous_remote_recovery_evidence" }],
+    ["a process pid is recorded", { run: { processPid: 443 } },
+      { kind: "blocked", reason: "ambiguous_remote_recovery_evidence" }],
+    ["a provider session is recorded", { run: { sessionIdAfter: "provider-session" } },
+      { kind: "blocked", reason: "ambiguous_remote_recovery_evidence" }],
+    ["the bootstrap budget is spent", { attempt: 3 },
+      { kind: "blocked", reason: "execution_recovery_budget_exhausted" }],
+    ["the claiming controller is still alive", { liveController: true },
+      { kind: "awaiting_evidence", reason: "controller_still_alive" }],
+  ])("keeps a claimed unlaunched remote run held when %s", async (label, options, expected) => {
+    const fixture = await seedUnlaunchedRemoteClaim(label.replace(/\W+/g, "-"), options);
+    expect(await claimNativeRestartRecoveries({ db: fixture.db, controller: successor,
+      restartKind: "hard", runIds: [fixture.runId] })).toEqual([expect.objectContaining({ runId: fixture.runId, ...expected })]);
   });
 
   it.each([

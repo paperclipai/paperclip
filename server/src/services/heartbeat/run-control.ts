@@ -817,7 +817,8 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
           }, commentIds),
       requestedByActorType: "user", requestedByActorId: actorId,
       ...(interrupted ? { queuedCommentInterruptId: queueId } : { queuedCommentRequestId: queueId }),
-      issueStateGuard: { assigneeAgentId: wake.agentId, statuses: ["todo", "in_progress", "in_review", "blocked"] },
+      issueStateGuard: { assigneeAgentId: wake.agentId,
+        statuses: ["todo", "in_progress", "in_review", "blocked", ...(interrupted ? ["done"] : [])] },
       idempotencyKey: `queued-comment-${interrupted ? "interrupt" : "delivery"}:${queueId}`,
     }, queueId);
   }

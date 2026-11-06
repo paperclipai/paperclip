@@ -39,6 +39,7 @@ import {
 } from "../lib/remark-workspace-file-refs";
 import { remarkSoftBreaks } from "../lib/remark-soft-breaks";
 import { StatusIcon } from "./StatusIcon";
+import { taskStatusIconProps } from "../lib/task-status-presentation";
 import { WorkspaceFileLink } from "./WorkspaceFileLink";
 import { ExternalObjectStatusIcon } from "./ExternalObjectStatusIcon";
 import {
@@ -193,6 +194,9 @@ function MarkdownIssueLink({
   const identifier = data?.identifier ?? issuePathId;
   const title = data?.title ?? identifier;
   const status = data?.status;
+  // Same presentation inputs as every task view, so a covered blocked task is
+  // the blue in-queue glyph here too, not the red blocked one (BUG-07).
+  const statusIconProps = data && status ? taskStatusIconProps({ ...data, status }) : null;
   const issueLabel = title !== identifier ? `Issue ${identifier}: ${title}` : `Issue ${identifier}`;
 
   // Until the fetch settles we don't yet know whether this viewer can read the
@@ -222,8 +226,8 @@ function MarkdownIssueLink({
       title={title}
       aria-label={issueLabel}
     >
-      {status ? (
-        <StatusIcon status={status} size="md" className="relative -top-px mr-1 inline-block h-4 w-4 align-middle" />
+      {statusIconProps ? (
+        <StatusIcon {...statusIconProps} size="md" className="relative -top-px mr-1 inline-block h-4 w-4 align-middle" />
       ) : null}
       {children}
     </Link>
