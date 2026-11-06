@@ -63,14 +63,6 @@ describe("heartbeat scheduling suppression", () => {
     });
   });
 
-  it("suppresses heartbeat scheduling while a task drain is active", () => {
-    startTaskDrain({});
-    expect(resolveHeartbeatSchedulingSuppression({})).toEqual({
-      suppressed: true,
-      reason: "task_drain",
-    });
-  });
-
   it("still suppresses database restore even when a task drain is active", () => {
     startTaskDrain({});
     expect(

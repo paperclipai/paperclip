@@ -2,7 +2,7 @@ import { and, eq, inArray } from "drizzle-orm";
 import { type Db, toolConnections, companySecretBindings, connectionGrants, companySecrets, userSecretDefinitions } from "@paperclipai/db";
 import type { ToolCredentialSecretRef } from "@paperclipai/shared";
 import { secretService } from "./secrets.js";
-function credentialRefConfigPath(ref: { name: string }): string { return ref.name.startsWith("credentials.") ? ref.name : `credentials.${ref.name}`; }
+import { connectionCredentialConfigPath as credentialRefConfigPath } from "./connection-credentials.js";
 export async function syncConnectionCredentialBindings(
     db: Db | Parameters<Parameters<Db["transaction"]>[0]>[0],
     connection: typeof toolConnections.$inferSelect,

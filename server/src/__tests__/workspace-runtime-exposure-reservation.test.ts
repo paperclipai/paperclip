@@ -39,6 +39,7 @@
  * real instance on this host.
  */
 import { randomUUID } from "node:crypto";
+import type { Dirent } from "node:fs";
 import fs from "node:fs/promises";
 import net from "node:net";
 import os from "node:os";
@@ -101,7 +102,9 @@ let NEXT_HMR_PORT: number;
  * must be read before that happens. Mirrors the default in
  * `resolvePaperclipHomeDir`.
  */
-const REAL_PAPERCLIP_HOME = process.env.PAPERCLIP_HOME?.trim() || path.join(os.homedir(), ".paperclip");
+const REAL_PAPERCLIP_HOME = process.env.PAPERCLIP_TEST_HOST_HOME?.trim()
+  || process.env.PAPERCLIP_HOME?.trim()
+  || path.join(os.homedir(), ".paperclip");
 
 /**
  * Every port a local Paperclip instance's on-disk service registry currently
@@ -115,7 +118,7 @@ const REAL_PAPERCLIP_HOME = process.env.PAPERCLIP_HOME?.trim() || path.join(os.h
 async function readLocallyLeasedPorts(): Promise<Set<number>> {
   const leased = new Set<number>();
   const instancesDir = path.join(REAL_PAPERCLIP_HOME, "instances");
-  let instanceEntries: Awaited<ReturnType<typeof fs.readdir>>;
+  let instanceEntries: Dirent[];
   try {
     instanceEntries = await fs.readdir(instancesDir, { withFileTypes: true });
   } catch {
@@ -124,7 +127,7 @@ async function readLocallyLeasedPorts(): Promise<Set<number>> {
   for (const instanceEntry of instanceEntries) {
     if (!instanceEntry.isDirectory()) continue;
     const registryDir = path.join(instancesDir, instanceEntry.name, "runtime-services");
-    let recordEntries: Awaited<ReturnType<typeof fs.readdir>>;
+    let recordEntries: Dirent[];
     try {
       recordEntries = await fs.readdir(registryDir, { withFileTypes: true });
     } catch {
@@ -446,6 +449,7 @@ const GUEST_COMMAND =
           strategy: "project_primary" as const,
           cwd: workspaceRoot,
           branchName: "test",
+          branchCreatedByRuntime: false,
           worktreePath: null,
           warnings: [],
           created: false,

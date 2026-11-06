@@ -1,9 +1,14 @@
 // @vitest-environment jsdom
 
-import { act, forwardRef, useImperativeHandle, type ForwardedRef } from "react";
+import { act, forwardRef, useImperativeHandle, useState, type ForwardedRef } from "react";
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+vi.mock("@/hooks/useCoordinatorWorkspaceEnabled", () => ({
+  useCoordinatorWorkspaceEnabled: () => ({ enabled: false, loaded: true }),
+}));
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { IssueDocument } from "@paperclipai/shared";
 import type {
   IssueThreadInteraction,
@@ -13,11 +18,16 @@ import { ThemeProvider } from "@/context/ThemeContext";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import {
   expiredSecretProposalInteraction,
+  pendingToolActionLongProposalInteraction,
   pendingAskUserQuestionsInteraction,
   pendingRequestCheckboxConfirmationInteraction,
   pendingRequestItemVerdictsInteraction,
 } from "@/fixtures/issueThreadInteractionFixtures";
 import { TaskChatInteractionCard } from "./TaskChatInteractionCard";
+vi.mock("@/lib/router", async importOriginal => ({
+  ...await importOriginal<typeof import("@/lib/router")>(),
+  Link: ({ to, children }: { to: string; children: React.ReactNode }) => <a href={to}>{children}</a>,
+}));
 import { TaskChatThreadView } from "./TaskChatThreadView";
 import type { TaskChatInteractionItem } from "./task-chat-model";
 
@@ -51,6 +61,8 @@ vi.mock("@/components/MarkdownEditor", () => ({
     );
   }),
 }));
+
+(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 function createRequestConfirmation(
   overrides: Partial<RequestConfirmationInteraction> = {},
@@ -112,6 +124,40 @@ describe("TaskChatInteractionCard", () => {
   afterEach(() => {
     flushSync(() => root.unmount());
     container.remove();
+  });
+
+  it("opens the real tool review and reveals the proposal tail before approval", async () => {
+    const accept = vi.fn();
+    const reject = vi.fn();
+    const interaction = structuredClone(pendingToolActionLongProposalInteraction);
+    function ReviewSurface() {
+      const [reviewing, setReviewing] = useState(false);
+      return <TaskChatInteractionCard item={interactionItem(interaction)}
+        presentation={reviewing ? "takeover" : "timeline"}
+        onReviewRequest={() => setReviewing(true)}
+        onAcceptInteraction={accept} onRejectInteraction={reject} />;
+    }
+    flushSync(() => root.render(<TooltipProvider><ThemeProvider><ReviewSurface /></ThemeProvider></TooltipProvider>));
+    expect(container.textContent).not.toContain("November 8, 2030");
+    await act(async () => {
+      Array.from(container.querySelectorAll("button")).find(button => button.textContent === "Review request")!.click();
+    });
+    const details = container.querySelector("details")!;
+    expect(details).not.toBeNull();
+    expect(details.open).toBe(false);
+    expect(container.querySelector("pre")?.textContent).toBe(interaction.payload.toolAction!.argumentsSummaryJson);
+    expect(details.textContent).toContain("November 8, 2030");
+    expect(details.textContent).toContain("[redacted]");
+    expect(details.textContent).toContain(interaction.payload.toolAction!.argumentsHash);
+    await act(async () => details.querySelector("summary")!.click());
+    expect(details.open).toBe(true);
+    expect(accept).not.toHaveBeenCalled();
+    expect(reject).not.toHaveBeenCalled();
+    await act(async () => {
+      Array.from(container.querySelectorAll("button")).find(button => button.textContent === "Approve & run")!.click();
+    });
+    expect(accept).toHaveBeenCalledExactlyOnceWith(interaction, undefined, undefined, false);
+    expect(reject).not.toHaveBeenCalled();
   });
 
   it("does not render a pending confirmation in the timeline", () => {
@@ -302,6 +348,40 @@ describe("TaskChatInteractionCard", () => {
     );
   });
 
+  it.each([createRequestConfirmation(), pendingRequestCheckboxConfirmationInteraction])(
+    "enables $kind acceptance when preparation clears on the same mounted card",
+    async (fixture) => {
+      const onAcceptInteraction = vi.fn();
+      const onRejectInteraction = vi.fn();
+      const render = (preparing: boolean) => flushSync(() => root.render(
+        <TooltipProvider><ThemeProvider>
+          <TaskChatInteractionCard
+            item={interactionItem({ ...fixture, acceptanceBlocker: preparing ? "workspace_sync_pending" : undefined })}
+            presentation="takeover"
+            onAcceptInteraction={onAcceptInteraction}
+            onRejectInteraction={onRejectInteraction}
+          />
+        </ThemeProvider></TooltipProvider>,
+      ));
+      const approve = () => [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) =>
+        button.textContent === (fixture.payload.acceptLabel ?? "Approve"),
+      )!;
+      render(true);
+      expect(container.querySelector('[role="status"]')?.textContent).toContain("Preparing approval…");
+      expect(approve().disabled).toBe(true);
+      await act(async () => approve().click());
+      expect(onAcceptInteraction).not.toHaveBeenCalled();
+      expect([...container.querySelectorAll<HTMLButtonElement>("button")].find((button) =>
+        button.textContent === (fixture.payload.rejectLabel ?? "Reject"),
+      )?.disabled).toBe(false);
+      render(false);
+      expect(container.textContent).not.toContain("Preparing approval…");
+      expect(approve().disabled).toBe(false);
+      await act(async () => approve().click());
+      expect(onAcceptInteraction).toHaveBeenCalledTimes(1);
+    },
+  );
+
   it("puts the primary CTA at the right edge of the compact action row", () => {
     flushSync(() => {
       root.render(
@@ -334,6 +414,145 @@ describe("TaskChatInteractionCard", () => {
     expect(
       container.querySelector('[data-testid="interaction-status-badge"]'),
     ).toBeNull();
+  });
+
+  it.each([
+    ["confirmation", "pending"],
+    ["confirmation", "accepted"],
+    ["checkbox", "pending"],
+    ["checkbox", "accepted"],
+  ] as const)("renders Markdown in %s prompts when %s", (kind, status) => {
+    const interaction = structuredClone(kind === "confirmation"
+      ? createRequestConfirmation()
+      : pendingRequestCheckboxConfirmationInteraction);
+    interaction.status = status;
+    interaction.payload.prompt = "Review the [two screenshots](/PAP/issues/PAP-42#document-preview).\n\nSelect **Accept** to keep this design.\n\n- Check `preview.png`\n- Keep the layout\n\n![Review image](https://provider.invalid/review.png)\n\n```mermaid\nflowchart LR\n  A --> B\n```";
+    if (status === "accepted") interaction.result = { version: 1, outcome: "accepted" };
+    const accept = vi.fn();
+    const reject = vi.fn();
+
+    flushSync(() => root.render(
+      <QueryClientProvider client={new QueryClient()}><TooltipProvider><ThemeProvider>
+        <TaskChatInteractionCard item={interactionItem(interaction)}
+          presentation={status === "pending" ? "takeover" : "timeline"}
+          onAcceptInteraction={accept} onRejectInteraction={reject} />
+      </ThemeProvider></TooltipProvider></QueryClientProvider>,
+    ));
+
+    const link = container.querySelector('a[href="/issues/PAP-42#document-preview"]');
+    expect(link?.textContent).toBe("two screenshots");
+    const prompt = link?.closest(".paperclip-markdown");
+    expect(prompt?.querySelector("strong")?.textContent).toBe("Accept");
+    expect(prompt?.querySelector("code")?.textContent).toBe("preview.png");
+    expect(prompt?.querySelector("img")).toBeNull();
+    expect(prompt?.querySelectorAll("p")).toHaveLength(3);
+    expect(prompt?.querySelector("[data-markdown-image-reference]")?.textContent)
+      .toContain("Image: Review image (https://provider.invalid/review.png)");
+    expect(prompt?.querySelector("pre code.language-mermaid")?.textContent)
+      .toContain("flowchart LR");
+    expect(prompt?.querySelector(".paperclip-mermaid")).toBeNull();
+    expect(prompt?.querySelectorAll("li")).toHaveLength(2);
+    expect(prompt?.textContent).not.toContain("[two screenshots]");
+    expect(accept).not.toHaveBeenCalled();
+    expect(reject).not.toHaveBeenCalled();
+    if (kind === "checkbox" && status === "pending") {
+      const group = container.querySelector('[role="group"]');
+      const label = document.getElementById(group?.getAttribute("aria-labelledby") ?? "");
+      expect(label?.contains(prompt ?? null)).toBe(true);
+      expect(label?.textContent).toContain("two screenshots");
+      expect(label?.textContent).not.toContain("[two screenshots]");
+      expect(label?.textContent).not.toContain("**Accept**");
+      expect(group?.getAttribute("aria-label")).toBeNull();
+    }
+  });
+
+  it("stacks the confirmation prompt full-width and hides unlabeled custom target keys", () => {
+    const render = (target: RequestConfirmationInteraction["payload"]["target"]) =>
+      flushSync(() => {
+        root.render(
+          <TooltipProvider>
+            <ThemeProvider>
+              <TaskChatInteractionCard
+                item={interactionItem(
+                  createRequestConfirmation({
+                    payload: {
+                      version: 1,
+                      prompt: "The change is open as PR #16.\n\nMay the PR merge?",
+                      target,
+                    },
+                  }),
+                )}
+                presentation="takeover"
+              />
+            </ThemeProvider>
+          </TooltipProvider>,
+        );
+      });
+
+    render({ type: "custom", key: "github:paperclipai/paperclip-desktop:pull:16" });
+    expect(container.textContent).not.toContain("github:paperclipai");
+    const prompt = Array.from(container.querySelectorAll("p")).find((node) =>
+      node.textContent?.startsWith("The change is open"),
+    );
+    expect(prompt?.className).not.toContain("flex-1");
+    expect(prompt?.closest(".paperclip-markdown")?.querySelectorAll("p")).toHaveLength(2);
+    expect(prompt?.parentElement?.className).not.toContain("justify-between");
+
+    render({
+      type: "custom",
+      key: "github:paperclipai/paperclip-desktop:pull:16",
+      label: "PR #16",
+      href: "https://github.com/paperclipai/paperclip-desktop/pull/16",
+    });
+    const link = container.querySelector(
+      'a[href="https://github.com/paperclipai/paperclip-desktop/pull/16"]',
+    );
+    expect(link?.textContent).toBe("PR #16");
+    expect(container.textContent).not.toContain("github:paperclipai");
+  });
+
+  it("stacks the checkbox confirmation prompt full-width and hides unlabeled custom target keys", () => {
+    const render = (target: RequestConfirmationInteraction["payload"]["target"]) =>
+      flushSync(() => {
+        root.render(
+          <TooltipProvider>
+            <ThemeProvider>
+              <TaskChatInteractionCard
+                item={interactionItem({
+                  ...pendingRequestCheckboxConfirmationInteraction,
+                  payload: {
+                    ...pendingRequestCheckboxConfirmationInteraction.payload,
+                    prompt: "Pick the drafts to delete.\n\nUnchecked drafts stay.",
+                    target,
+                  },
+                })}
+                presentation="takeover"
+              />
+            </ThemeProvider>
+          </TooltipProvider>,
+        );
+      });
+
+    render({ type: "custom", key: "github:paperclipai/paperclip-desktop:pull:16" });
+    expect(container.textContent).not.toContain("github:paperclipai");
+    const prompt = Array.from(container.querySelectorAll("p")).find((node) =>
+      node.textContent?.startsWith("Pick the drafts"),
+    );
+    expect(prompt?.className).not.toContain("flex-1");
+    expect(prompt?.closest(".paperclip-markdown")?.querySelectorAll("p")).toHaveLength(2);
+    expect(prompt?.parentElement?.className).not.toContain("justify-between");
+
+    render({
+      type: "custom",
+      key: "github:paperclipai/paperclip-desktop:pull:16",
+      label: "PR #16",
+      href: "https://github.com/paperclipai/paperclip-desktop/pull/16",
+    });
+    const link = container.querySelector(
+      'a[href="https://github.com/paperclipai/paperclip-desktop/pull/16"]',
+    );
+    expect(link?.textContent).toBe("PR #16");
+    expect(container.textContent).not.toContain("github:paperclipai");
   });
 
   it("keeps the plan revision in the header and hides the prompt while requesting changes", async () => {
@@ -681,6 +900,63 @@ describe("TaskChatInteractionCard", () => {
         otherText: "3",
       },
     ]);
+  });
+
+  it.each(["canonical_text", "canonical_custom", "legacy_custom"])("preserves the %s answer mapping", async (mode) => {
+    const submit = vi.fn();
+    const interaction = structuredClone(pendingAskUserQuestionsInteraction);
+    interaction.payload.questions = [{
+      id: "draft", prompt: "Edit", selectionMode: "single", required: true,
+      options: [{ id: "preset", label: "Preset" }, { id: "other", label: "Custom answer", freeText: true }],
+    }];
+    interaction.payload.questionSet = mode === "legacy_custom" ? undefined : {
+      schema: "paperclip.question_set.v1",
+      questions: [mode === "canonical_text"
+        ? { id: "draft", prompt: "Edit", required: true, answerMode: "text", initialText: "Provider draft" }
+        : { id: "draft", prompt: "Edit", required: true, answerMode: "single_select", options: [{ id: "preset", label: "Preset" }], customAnswer: { enabled: true, label: "Custom answer" } }],
+    };
+    await act(async () => root.render(
+      <TooltipProvider><ThemeProvider>
+        <TaskChatInteractionCard item={interactionItem(interaction)} presentation="takeover" onSubmitInteractionAnswers={submit} />
+      </ThemeProvider></TooltipProvider>,
+    ));
+    if (mode !== "canonical_text") {
+      await act(async () => Array.from(container.querySelectorAll("button")).find(button => button.textContent?.includes("Custom answer"))!.click());
+    }
+    const edited = "\n  Operator 漢字 edit\nLiteral \\n stays literal.  \n";
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(container.querySelector("textarea")!, edited);
+      container.querySelector("textarea")!.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => Array.from(container.querySelectorAll("button")).find(button => button.textContent?.trim() === "Send answers" || button.textContent?.trim() === "Submit answers")!.click());
+    expect(submit).toHaveBeenCalledExactlyOnceWith(interaction, [{
+      questionId: "draft", optionIds: [], otherText: mode === "canonical_text" ? edited : edited.trim(),
+    }]);
+  });
+
+  it("opens a compact attachment item through the authenticated file endpoint", () => {
+    const interaction = { ...pendingRequestItemVerdictsInteraction, payload: { ...pendingRequestItemVerdictsInteraction.payload,
+      items: [{ id: "file", label: "Reviewed file", target: { type: "issue_attachment" as const, attachmentId: "immutable-file", assetId: "asset", sha256: "hash" } }],
+    } };
+    flushSync(() => root.render(<TooltipProvider><ThemeProvider><TaskChatInteractionCard item={interactionItem(interaction)} presentation="takeover" onSubmitInteractionVerdicts={() => undefined} /></ThemeProvider></TooltipProvider>));
+    expect(container.querySelector('a[href="/api/attachments/immutable-file/content"]')?.getAttribute("target")).toBe("_blank");
+  });
+
+  it.each([undefined, "/stale-display-link"])("opens a compact confirmation's bound attachment when href is %s", href => {
+    const interaction = createRequestConfirmation({ payload: { version: 1, prompt: "Review the attached copy", target: {
+      type: "issue_attachment", attachmentId: "immutable-file", assetId: "asset", sha256: "hash", href,
+    } } });
+    flushSync(() => root.render(<TooltipProvider><ThemeProvider><TaskChatInteractionCard item={interactionItem(interaction)} presentation="takeover" onAcceptInteraction={() => undefined} /></ThemeProvider></TooltipProvider>));
+    expect(container.querySelector('a[href="/api/attachments/immutable-file/content"]')?.getAttribute("target")).toBe("_blank");
+  });
+
+  it("opens the bound output revision from a compact review item", () => {
+    const interaction = { ...pendingRequestItemVerdictsInteraction, payload: { ...pendingRequestItemVerdictsInteraction.payload,
+      items: [{ id: "copy", label: "Reviewed copy", target: { type: "issue_document" as const, issueId: "owner", key: "copy", revisionId: "reviewed-v1" } }],
+    } };
+    flushSync(() => root.render(<TooltipProvider><ThemeProvider><TaskChatInteractionCard item={interactionItem(interaction)} presentation="takeover" onSubmitInteractionVerdicts={() => undefined} /></ThemeProvider></TooltipProvider>));
+    expect(container.querySelector('a[href*="document-copy&revision=reviewed-v1"]')?.getAttribute("href"))
+      .toBe(`/issues/owner#document-copy&revision=reviewed-v1&interaction=${interaction.id}`);
   });
 
   it("paginates item verdicts instead of expanding the whole review set", async () => {

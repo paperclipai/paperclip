@@ -61,7 +61,10 @@ describe("TaskChatProtocolActivityRow", () => {
     const row = container.querySelector<HTMLButtonElement>('[data-testid="task-chat-protocol-activity-row"] button');
     expect(container.querySelector("article")).toBeNull();
     expect(row?.textContent).toContain("Searched the web");
-    expect(row?.textContent).toContain("smoked pork shoulder");
+    expect(row?.textContent).toContain("“site:nextjs.org/docs/app/api-reference/config/eslint");
+    const strip = container.querySelector('[data-testid="task-chat-research-sources"]');
+    expect([...strip!.querySelectorAll("a")].map((link) => link.textContent)).toEqual(["nextjs.org"]);
+    expect(strip?.textContent).toContain("+5 more");
     expect(
       row
         ?.querySelector('[data-testid="task-chat-protocol-activity-icon"]')
@@ -69,7 +72,7 @@ describe("TaskChatProtocolActivityRow", () => {
     ).toBe(true);
     expect(
       row?.querySelector(".task-chat-collapsed-line-fade")?.textContent,
-    ).toContain("smoked pork shoulder");
+    ).toContain("site:nextjs.org");
     expect(row?.getAttribute("aria-expanded")).toBe("false");
     expect(row?.getAttribute("aria-controls")).toMatch(/^task-chat-protocol-activity-/);
 
@@ -231,4 +234,22 @@ describe("TaskChatProtocolActivityRow", () => {
     expect(row?.querySelector("details")).toBeNull();
     expect(row?.querySelector('[aria-expanded]')).toBeNull();
   });
+  it.each([
+    ["info", "informational", "Provider update", "lucide-info"],
+    ["warning", "informational", "Warning", "lucide-triangle-alert"],
+    ["error", "failed", "Error", "lucide-triangle-alert"],
+    ["error", "informational", "Error", "lucide-triangle-alert"],
+    ["info", "failed", "Error", "lucide-triangle-alert"],
+  ] as const)("renders %s/%s notice severity without hiding its summary", (severity, status, label, icon) => {
+    const summary = "Pi estimates this turn at $0.000617. Billing cost is unverified.";
+    render({
+      id: "notice", kind: "protocol", surface: "provider_activity", family: "provider_notice",
+      eventType: "provider.notice.recorded", status, title: "Provider notice", summary,
+      details: [{ label: "Severity", value: severity }], steps: [], links: [], children: [],
+    });
+    expect(container.textContent).toContain(label);
+    expect(container.querySelector("p")?.textContent).toBe(summary);
+    expect(container.querySelector('[data-testid="task-chat-protocol-activity-icon"]')?.classList.contains(icon)).toBe(true);
+  });
+
 });

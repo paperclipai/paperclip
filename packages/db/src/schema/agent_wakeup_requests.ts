@@ -46,6 +46,9 @@ export const agentWakeupRequests = pgTable(
       .defaultNow(),
   },
   (table) => ({
+    taskRetryIdempotencyUq: uniqueIndex("agent_wakeup_requests_task_retry_idempotency_uq")
+      .on(table.companyId, table.idempotencyKey)
+      .where(sql`${table.idempotencyKey} LIKE 'task-retry:%'`),
     companyAgentStatusIdx: index(
       "agent_wakeup_requests_company_agent_status_idx",
     ).on(table.companyId, table.agentId, table.status),
@@ -75,12 +78,24 @@ export const agentWakeupRequests = pgTable(
     )
       .on(table.companyId, table.idempotencyKey)
       .where(sql`(${table.idempotencyKey} LIKE 'question-response:%' OR ${table.idempotencyKey} LIKE 'interaction:%') AND ${table.status} NOT IN ('skipped', 'failed', 'cancelled')`),
+    // Sleep checks also need failed/cancelled/skipped receipts, which the
+    // delivery idempotency fence deliberately excludes.
+    questionResponseHistoryIdx: index("agent_wakeup_requests_question_response_history_idx")
+      .on(table.companyId, table.idempotencyKey)
+      .concurrently()
+      .where(sql`${table.idempotencyKey} LIKE 'question-response:%'`),
     connectionIntentDeliveryIdempotencyUq: uniqueIndex("agent_wakeup_requests_connection_intent_delivery_idempotency_uq")
       .on(table.companyId, table.idempotencyKey)
       .where(sql`${table.idempotencyKey} LIKE 'connection-intent:%' AND ${table.status} NOT IN ('skipped', 'failed', 'cancelled')`),
     toolActionDeliveryIdempotencyUq: uniqueIndex("agent_wakeup_requests_tool_action_delivery_uq")
       .on(table.companyId, table.idempotencyKey)
       .where(sql`${table.idempotencyKey} LIKE 'tool-action-response:%' AND ${table.status} NOT IN ('skipped', 'failed', 'cancelled')`),
+    // A subtree pause owes its interrupted run one resume wake, ever. A stale
+    // dispatcher that saves late must not repeat work a takeover already ran.
+    treeHoldResumeIdempotencyUq: uniqueIndex("agent_wakeup_requests_tree_hold_resume_uq")
+      .on(table.companyId, table.idempotencyKey)
+      .concurrently()
+      .where(sql`${table.idempotencyKey} LIKE 'tree-hold-resume:%' AND ${table.status} <> 'skipped'`),
     chatCompletionIdempotencyUq: uniqueIndex("agent_wakeup_requests_chat_completion_uq")
       .on(table.companyId, table.idempotencyKey)
       .where(sql`${table.idempotencyKey} LIKE 'chat-completion:%'`),

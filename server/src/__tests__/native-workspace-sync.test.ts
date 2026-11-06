@@ -13,6 +13,7 @@ import {
   classifyNativeWorkspaceInbound,
   nativeWorkspaceSyncInternals,
   readNativeWorkspaceSyncReference,
+  readNativeWorkspaceSyncLocalCwd,
   resumeNativeWorkspaceSync,
   prepareNativeWorkspaceSync,
   cleanupNativeWorkspaceSync,
@@ -185,6 +186,9 @@ describe("native workspace sync durable metadata", () => {
     const recovered = await nativeWorkspaceSyncInternals.readDescriptor({ runId, reference });
     expect(recovered.baseline.entries.get("private-filename-雪")).toMatchObject({ kind: "file" });
     await disposeDirectorySnapshot(recovered.baseline);
+    await expect(readNativeWorkspaceSyncLocalCwd({ runId, companyId: "company", workspaceId: "workspace", reference })).resolves.toBe(workspace);
+    await expect(readNativeWorkspaceSyncLocalCwd({ runId, companyId: "other-company", workspaceId: "workspace", reference })).rejects.toThrow(/binding_mismatch/);
+    await expect(readNativeWorkspaceSyncLocalCwd({ runId, companyId: "company", workspaceId: "other-workspace", reference })).rejects.toThrow(/binding_mismatch/);
     if (tamper === "corrupt") {
       await appendFile(serialized.entries.filePath, "corrupt");
     } else if (tamper === "symlink") {

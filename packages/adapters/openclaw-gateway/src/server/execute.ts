@@ -10,6 +10,7 @@ import {
   buildRuntimeToolsEnv,
   parseObject,
   readPaperclipIssueWorkModeFromContext,
+  hydrateFreshSessionHandoff,
   selectPaperclipPromptSections,
   selectInitialCommunicationGuidance,
   joinPromptSections,
@@ -1106,6 +1107,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const paperclipEnv = buildPaperclipEnvForWake(ctx, wakePayload);
   // No heartbeat prompt template is sent over the gateway, so the wake prompt
   // must carry the execution contract itself.
+  await hydrateFreshSessionHandoff(ctx, { resumedSession: Boolean(ctx.runtime?.sessionId) });
   const { taskContextNote, wakePrompt: structuredWakePrompt } = selectPaperclipPromptSections(ctx.context, {
     resumedSession: Boolean(ctx.runtime?.sessionId),
     includeExecutionContract: true,

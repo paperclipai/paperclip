@@ -1,12 +1,12 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::OnceLock;
 
-use serde_json::Value;
+use serde_json::{json, Value};
 
 use crate::acpx_event_scope::AcpxEventScope;
 use crate::acpx_sidecar_transport::AcpxSidecarEvent;
 use crate::durable::{
-    redact_sensitive_text_values, redact_text, sanitize_semantic_tool_input, sanitize_value,
+    redact_sensitive_text_values, redact_text, sanitize_value, validate_semantic_tool_input,
 };
 use crate::generated_acpx_sidecar_contract::{
     classify_generated_acpx_tool_operation, GeneratedAcpxSidecarEventType,
@@ -61,6 +61,7 @@ pub enum AcpxEventPayload {
         details: Value,
     },
     InputRequested {
+        tool_call_id: Option<String>,
         request_id: String,
         question_set: Value,
         origin: Option<Value>,
@@ -124,7 +125,22 @@ pub fn decode_acpx_event(
             validate_question_set(&question_set)?;
             let question_set = sanitize_question_set(question_set)?;
             let origin = optional_object(&event.payload, "origin", "input request origin")?;
+            // Native methods are interpreted by the provider adapter. This
+            // transport validates the opaque reference under the event scope.
+            let tool_call_id = if event.payload.get("toolCallId").is_some() {
+                let id =
+                    required_id_with_limit(&event.payload, "toolCallId", "input parent tool", 240)?;
+                if id.len() > 240 || sanitize_value(&json!(id)) != json!(id) {
+                    return Err(LocalRunnerError::invalid(
+                        "ACPX input parent tool identity is invalid",
+                    ));
+                }
+                Some(id)
+            } else {
+                None
+            };
             Ok(AcpxEventPayload::InputRequested {
+                tool_call_id,
                 request_id: required_id_with_limit(
                     &event.payload,
                     "requestId",
@@ -147,7 +163,7 @@ pub fn decode_acpx_event(
             // the event feed. Use the same declared-prose policy as native
             // semantic_tool.input before any generic diagnostic scrub can
             // irreversibly change the task's requirements.
-            let safe_input = sanitize_semantic_tool_input(&operation_id, &input)
+            let safe_input = validate_semantic_tool_input(&operation_id, &input)
                 .map_err(|error| LocalRunnerError::invalid(error.to_string()))?;
             Ok(AcpxEventPayload::ToolCalled {
                 call_id: required_id(&event.payload, "callId", "tool call")?,
@@ -206,6 +222,7 @@ pub fn decode_acpx_event(
 fn rich_event_schema(event_type: &str) -> Option<&'static str> {
     Some(match event_type {
         "plan.updated" => "plan",
+        "plan.proposed" => "planProposal",
         "tool.execution.started" | "tool.execution.progressed" | "tool.execution.completed" => {
             "toolExecution"
         }
@@ -227,6 +244,21 @@ fn rich_event_schema(event_type: &str) -> Option<&'static str> {
     })
 }
 
+/// Workspace change sets carry complete bounded patches. Validate them against
+/// their exact schema so durable storage keeps the patch instead of a preview.
+fn workspace_diff_validator() -> Option<&'static jsonschema::Validator> {
+    static VALIDATOR: OnceLock<Option<jsonschema::Validator>> = OnceLock::new();
+    VALIDATOR
+        .get_or_init(|| {
+            let schema: Value = serde_json::from_str(include_str!(
+                "../../../../protocol/schemas/workspace-diff.schema.json"
+            ))
+            .ok()?;
+            jsonschema::validator_for(&schema).ok()
+        })
+        .as_ref()
+}
+
 fn rich_event_validators(
 ) -> Result<&'static BTreeMap<String, jsonschema::Validator>, LocalRunnerError> {
     static VALIDATORS: OnceLock<Result<BTreeMap<String, jsonschema::Validator>, String>> =
@@ -246,7 +278,7 @@ fn rich_event_validators(
         if !internal_refs(&schema) { return Err("provider-event schema may use only internal references".to_owned()); }
         let definitions = schema.get("$defs").and_then(Value::as_object).ok_or_else(|| "provider-event schema has no definitions".to_owned())?;
         let mut validators = BTreeMap::new();
-        for name in ["plan", "toolExecution", "research", "delegation", "modelRoute", "modelVerification", "contextCompacted", "artifactViewed", "artifactGenerated", "reviewMode", "hook", "memoryCitation", "safetyReview", "terminalInput", "wait", "providerNotice"] {
+        for name in ["plan", "planProposal", "toolExecution", "research", "delegation", "modelRoute", "modelVerification", "contextCompacted", "artifactViewed", "artifactGenerated", "reviewMode", "hook", "memoryCitation", "safetyReview", "terminalInput", "wait", "providerNotice"] {
             if !definitions.contains_key(name) { return Err("provider-event schema is missing an admitted definition".to_owned()); }
             let selected = serde_json::json!({"$schema":"https://json-schema.org/draft/2020-12/schema", "$ref":format!("#/$defs/{name}"), "$defs":definitions});
             let validator = jsonschema::validator_for(&selected).map_err(|_| "embedded provider-event schema cannot compile".to_owned())?;
@@ -353,6 +385,14 @@ fn decode_rich_event(value: &Value) -> Result<AcpxEventPayload, LocalRunnerError
 // Durable storage uses this same exact schema gate before lifting diagnostic
 // preview limits. This does not admit an event or grant mutation authority.
 pub(crate) fn has_bounded_rich_display_shape(event_type: &str, payload: &Value) -> bool {
+    if matches!(
+        event_type,
+        "workspace.change.updated" | "workspace.diff.recorded"
+    ) {
+        return serde_json::to_vec(payload)
+            .is_ok_and(|bytes| bytes.len() <= MAX_EVENT_PAYLOAD_BYTES)
+            && workspace_diff_validator().is_some_and(|validator| validator.is_valid(payload));
+    }
     let Some(schema) = rich_event_schema(event_type) else {
         return false;
     };
@@ -380,7 +420,7 @@ fn sanitize_question_set(mut value: Value) -> Result<Value, LocalRunnerError> {
             };
             // IDs, answer modes, and validation patterns are protocol values:
             // changing them would break response correlation or semantics.
-            redact_object_text(question, &["header", "prompt", "helpText"]);
+            redact_object_text(question, &["header", "prompt", "helpText", "initialText"]);
             if let Some(options) = question.get_mut("options").and_then(Value::as_array_mut) {
                 for option in options {
                     if let Some(option) = option.as_object_mut() {
@@ -469,6 +509,13 @@ fn decode_runtime_event(payload: &Value) -> Result<AcpxEventPayload, LocalRunner
             )?;
             let title = bounded_optional_text(payload, "title", 4_000, "runtime tool title")?;
             bounded_optional_text(payload, "status", 100, "runtime tool status")?;
+            // Display lineage only: the delegation (subagent) call that made this one.
+            bounded_optional_text(
+                payload,
+                "parentToolCallId",
+                MAX_RUNTIME_ITEM_ID_CHARS,
+                "runtime tool parent",
+            )?;
             if let Some(locations) = optional_array(payload, "locations", "runtime tool locations")?
             {
                 if locations.len() > 2_000 {
@@ -484,6 +531,9 @@ fn decode_runtime_event(payload: &Value) -> Result<AcpxEventPayload, LocalRunner
                     }
                     bounded_optional_text(location, "path", 4_000, "runtime tool path")?;
                 }
+            }
+            if let Some(detail) = payload.get("toolDetail").filter(|value| !value.is_null()) {
+                validate_tool_detail(detail)?;
             }
             tool_operation = Some(match payload.get("toolOperation") {
                 Some(Value::String(operation)) => {
@@ -523,6 +573,19 @@ fn decode_runtime_event(payload: &Value) -> Result<AcpxEventPayload, LocalRunner
         "provider_notice" => {
             bounded_nonempty_text(payload, "category", 160, "provider notice category")?;
             bounded_nonempty_text(payload, "summary", 4_000, "provider notice summary")?;
+            bounded_optional_text(payload, "severity", 16, "provider notice severity")?;
+            bounded_optional_text(payload, "noticeKey", 160, "provider notice key")?;
+            if let Some(details) = optional_array(payload, "details", "provider notice details")? {
+                if details.len() > 64 {
+                    return Err(LocalRunnerError::invalid(
+                        "ACPX provider notice details exceed their bound",
+                    ));
+                }
+                for detail in details {
+                    bounded_nonempty_text(detail, "name", 160, "provider notice detail name")?;
+                    bounded_optional_text(detail, "value", 4_000, "provider notice detail value")?;
+                }
+            }
             AcpxRuntimeEventKind::ProviderNotice
         }
         "error" => {
@@ -615,6 +678,15 @@ pub(crate) fn validate_question_set(value: &Value) -> Result<(), LocalRunnerErro
         if !ids.insert(id) {
             return Err(LocalRunnerError::invalid(
                 "ACPX input question ids must be unique",
+            ));
+        }
+        if question
+            .get("initialText")
+            .and_then(Value::as_str)
+            .is_some_and(|text| text.chars().count() > 100_000)
+        {
+            return Err(LocalRunnerError::invalid(
+                "ACPX initial text exceeds its Unicode code-point bound",
             ));
         }
         let mut option_ids = BTreeSet::new();
@@ -733,6 +805,46 @@ fn optional_object(
         )));
     }
     Ok(Some(field.clone()))
+}
+
+/// Sidecar-derived tool facts. Every field is optional display data with the
+/// same bounds as the canonical tool-execution schema.
+fn validate_tool_detail(detail: &Value) -> Result<(), LocalRunnerError> {
+    let Some(object) = detail.as_object() else {
+        return Err(LocalRunnerError::invalid(
+            "ACPX runtime tool detail must be an object",
+        ));
+    };
+    for (key, value) in object {
+        match key.as_str() {
+            "toolName" => {
+                bounded_optional_text(detail, "toolName", 240, "runtime tool name")?;
+            }
+            "subject" | "description" | "blockedReason" => {
+                bounded_optional_text(detail, key, 4_000, "runtime tool detail")?;
+            }
+            "exitCode" => {
+                if !value.is_i64() {
+                    return Err(LocalRunnerError::invalid(
+                        "ACPX runtime tool exit code must be an integer",
+                    ));
+                }
+            }
+            "durationMs" => {
+                if !value.is_u64() {
+                    return Err(LocalRunnerError::invalid(
+                        "ACPX runtime tool duration must be a non-negative integer",
+                    ));
+                }
+            }
+            _ => {
+                return Err(LocalRunnerError::invalid(
+                    "ACPX runtime tool detail has an unknown field",
+                ))
+            }
+        }
+    }
+    Ok(())
 }
 
 fn optional_array<'a>(

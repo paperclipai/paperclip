@@ -106,21 +106,32 @@ describe("Docker Rust dependency cache", () => {
 });
 
 
-describe("Cloud remote provider pack", () => {
-  it("ships a build-owned pack without provisioning Grok on the controller", () => {
-    const pack = stageBody(dockerfile, "cloud-provider-pack");
-    const cloud = stageBody(dockerfile, "cloud");
+describe("Standard image remote provider pack", () => {
+  it("ships the build-owned pack in the production base used by downstream images", () => {
+    const pack = stageBody(dockerfile, "runner-provider-pack");
+    const production = stageBody(dockerfile, "production");
+    expect(pack).toContain("FROM build AS runner-provider-pack");
     expect(pack).toContain('PAPERCLIP_RUNNER_SOURCE_REVISION="${PAPERCLIP_BUILD_COMMIT}"');
     expect(pack).toContain("build-provider-pack.mjs /provider-pack");
     expect(pack).toContain('if [ -n "${PAPERCLIP_BUILD_COMMIT}" ]; then');
     expect(pack).toContain("mkdir -p /provider-pack");
     expect(pack).toContain("Skipping remote provider pack");
-    expect(cloud).toContain("--from=cloud-provider-pack /provider-pack /opt/paperclip-runner/provider-pack");
-    expect(cloud).not.toContain("--chown=node:node --from=cloud-provider-pack");
-    expect(cloud).toContain("chmod -R a+rX /opt/paperclip-runner/provider-pack");
-    expect(cloud).toContain("gosu 65534:65534 node");
-    expect(cloud).toContain("Object.values(manifest.payload.artifacts)");
-    expect(cloud).toContain("PAPERCLIP_RUNNER_REMOTE_PROVIDER_PACK_PATH=/opt/paperclip-runner/provider-pack");
+    expect(production).toContain("--from=runner-provider-pack /provider-pack /opt/paperclip-runner/provider-pack");
+    expect(production).not.toContain("--chown=node:node --from=runner-provider-pack");
+    expect(production).toContain("chmod -R a+rX /opt/paperclip-runner/provider-pack");
+    expect(production).toContain("gosu 65534:65534 node");
+    expect(production).toContain("Object.values(manifest.payload.artifacts)");
+    expect(production).toContain("PAPERCLIP_RUNNER_REMOTE_PROVIDER_PACK_PATH=/opt/paperclip-runner/provider-pack");
+    expect(workflow).toMatch(/^\s*target: production$/m);
     expect(dockerfile).not.toContain("provision-grok.mjs");
+  });
+
+  it("lets explicit cloud preview builds inherit the same pack and configuration", () => {
+    const cloud = stageBody(dockerfile, "cloud");
+    expect(cloud).toContain("FROM production AS cloud");
+    expect(cloud).not.toContain("/opt/paperclip-runner/provider-pack");
+    expect(cloud).not.toContain("PAPERCLIP_RUNNER_REMOTE_PROVIDER_PACK_PATH");
+    expect(dockerfile.match(/build-provider-pack\.mjs \/provider-pack/g)).toHaveLength(1);
+    expect(previewWorkflow).toMatch(/^\s*target: cloud$/m);
   });
 });

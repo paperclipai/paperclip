@@ -1,5 +1,6 @@
 import { useState, type ReactNode } from "react";
 import { cn } from "@/lib/utils";
+import { TaskChatRunHealthBanner } from "./TaskChatRunHealthBanner";
 import { useStreamlinedTaskChatPresentation } from "./presentation-mode";
 import { Check, ChevronRight, X } from "lucide-react";
 import { MarkdownBody } from "@/components/MarkdownBody";
@@ -88,7 +89,7 @@ export function TaskChatTurn({
         data-testid="task-chat-turn"
         data-settled={item.settled ? "true" : "false"}
       >
-        <div
+        {item.agentName || !item.historical ? <div
           className="flex min-h-8 w-full min-w-0 items-center gap-2 pb-1 pt-1.5 text-sm text-muted-foreground"
           data-testid="task-chat-turn-summary"
           data-turn-position="identity"
@@ -99,15 +100,16 @@ export function TaskChatTurn({
               agentIcon={item.agentIcon} agent={item.agent}
             />
           ) : null}
-          <span className="min-w-0 truncate">
+          {!item.historical ? <span className="min-w-0 truncate">
             {item.continuedAfterSteering ? "Continued after steering · " : ""}
             {item.summary.durationLabel
               ? `${item.summary.failed ? "Stopped" : "Worked"} for ${item.summary.durationLabel}`
               : item.summary.failed
                 ? "Stopped"
                 : "Worked"}
-          </span>
-        </div>
+          </span> : null}
+        </div> : null}
+        <TaskChatRunHealthBanner failures={item.mcpStartupFailures ?? []} />
         {item.items.length > 0 ? (
           <div
             className="flex min-w-0 flex-col gap-2 py-1"
@@ -179,7 +181,8 @@ export function TaskChatTurn({
   const folded = (item.settled || parentRow) && !open;
   const SummaryIcon = item.summary.failed ? X : Check;
 
-  const header = item.settled ? (
+  const showSettledHeader = item.settled && (!item.historical || expandable);
+  const header = showSettledHeader ? (
     <button
       type="button"
       onClick={() => setOpen((o) => !o)}
@@ -201,11 +204,11 @@ export function TaskChatTurn({
           </span>
         </>
       ) : null}
-      {!item.standaloneHeader ? (
+      {!item.standaloneHeader && !item.historical ? (
         <SummaryIcon className="h-3.5 w-3.5 shrink-0" />
       ) : null}
       <span>
-        {item.standaloneHeader && item.summary.durationLabel
+        {item.historical ? "Activity" : item.standaloneHeader && item.summary.durationLabel
           ? `${item.summary.failed ? "Stopped" : "Worked"} for ${item.summary.durationLabel}`
           : item.summary.failed
             ? "Stopped"
@@ -266,6 +269,7 @@ export function TaskChatTurn({
       ) : (
         header
       )}
+      <TaskChatRunHealthBanner failures={item.mcpStartupFailures ?? []} />
       <div
         className="tc-turn-fold"
         data-folded={folded ? "true" : "false"}

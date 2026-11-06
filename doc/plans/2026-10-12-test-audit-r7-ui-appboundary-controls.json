@@ -1,0 +1,137 @@
+{
+  "audit": {
+    "file": "ui/src/components/AppErrorBoundary.test.tsx",
+    "base": "c39262305b6b48a5decd564af8369083cd972b33",
+    "originalSha256": "1cc53b4a6978c3c5e98761467208d8e2e9a165163956a64a33bb84cea2778327",
+    "candidateSha256": "51fce35eb3b3b2dd0e1aacdd09f14dcd208e2e6b557ab0e4de9a16606fa3b778",
+    "allOtherProgramAstUnchanged": true,
+    "allOtherSourceBytesUnchanged": true,
+    "newHelpers": 0,
+    "registeredInvocationsRemoved": 1,
+    "rootRendersRemoved": 1,
+    "netTestLinesRemoved": 20,
+    "migrations": [
+      {
+        "retired": "renders a reload prompt instead of a blank page when the shell throws in render",
+        "keeper": "reports one captured error and keeps the reload prompt",
+        "setupAstEqual": true,
+        "setupBindingNormalization": null,
+        "guards": [
+          "expect(container.textContent).toContain(\"Paperclip hit an error\");",
+          "expect(container.textContent).toContain(\"Maximum update depth exceeded\");"
+        ],
+        "registeredInvocationsRemoved": 1
+      }
+    ]
+  },
+  "verifierSha256": "0f1b173c8a399bb8c3e831edac6805634304a749faffcfff7b8b1900da3d34a3",
+  "mutationVerifierSha256": "a05f5ba9071c0ce7ce8eac1bc0f6c7dd83401c4e720816389d779f8919312064",
+  "runs": [
+    {
+      "kind": "baseline",
+      "jsonSha256": "c1a2a5f2da21b5a730f174b628b23c1b01e682b2b8cc10ab8f332dbcede339bd",
+      "logSha256": "475145ce3b58595c9e76cbed628598ecc97a3d5cc835b1e374a10507e72ba9f7",
+      "total": 6,
+      "passed": 6,
+      "failed": 0,
+      "skipped": 0
+    },
+    {
+      "kind": "candidate",
+      "jsonSha256": "b27bec00f8765cc28254633e2752f96f15d6f0734cd59b4e0c10267ba138ff46",
+      "logSha256": "bba83ddd4f7aae20381ef90bfd2f17f6b44818e71994c5f716ea17df8c10c057",
+      "total": 5,
+      "passed": 5,
+      "failed": 0,
+      "skipped": 0
+    }
+  ],
+  "mutations": [
+    {
+      "slug": "title",
+      "owner": "ui/src/components/AppErrorBoundary.tsx",
+      "sourceSha256": "72bfc237fd0760e8432a9948e3423b6cab6881507f28815240f585f46e3ceb7c",
+      "title": "reports one captured error and keeps the reload prompt",
+      "mutation": {
+        "before": "Paperclip hit an error",
+        "after": "Unexpected title",
+        "replacementCount": 1,
+        "additionalPreClosingTagReplacement": false
+      },
+      "intendedGuard": "expect(container.textContent).toContain(\"Paperclip hit an error\")",
+      "restoredByteForByte": true,
+      "positive": {
+        "exit": 0,
+        "jsonSha256": "85d36ca8369f85ceb5e9173db5670b2d5ccf3c843cf26b3b1fb0ddb73a59a029",
+        "logSha256": "088a6c3c7dafb9546d8c32db0829797a2917cba4ce2e78c0215529c99d9096f2",
+        "caseStatus": "passed"
+      },
+      "negative": {
+        "exit": 1,
+        "jsonSha256": "b82c5bc57625cae251acafe46aa64021129848550e43cb66c19996b10f7ced0f",
+        "logSha256": "5f8f8ad95575b5920ae4574c4c04d7d7a6b3db3262c293973953b4f56f2f6604",
+        "caseStatus": "failed",
+        "intendedFailureMessages": [
+          "AssertionError: expected 'Unexpected titleSomething went wrong \u2026' to contain 'Paperclip hit an error'\n    at /Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/ui/src/components/AppErrorBoundary.test.tsx:53:35\n    at file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/run.BTlFXlnv.js:1628:35\n    at file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/run.BTlFXlnv.js:2783:26\n    at file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/run.BTlFXlnv.js:3321:20\n    at new Promise (<anonymous>)\n    at runWithCancel (file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/run.BTlFXlnv.js:3316:10)\n    at file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/run.BTlFXlnv.js:3301:20\n    at new Promise (<anonymous>)\n    at runWithTimeout (file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/run.BTlFXlnv.js:3259:10)\n    at file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/run.BTlFXlnv.js:3882:64"
+        ]
+      }
+    },
+    {
+      "slug": "detail",
+      "owner": "ui/src/components/AppErrorBoundary.tsx",
+      "sourceSha256": "72bfc237fd0760e8432a9948e3423b6cab6881507f28815240f585f46e3ceb7c",
+      "title": "reports one captured error and keeps the reload prompt",
+      "mutation": {
+        "before": "{error.message}",
+        "after": "{\"hidden detail\"}",
+        "replacementCount": 1,
+        "additionalPreClosingTagReplacement": false
+      },
+      "intendedGuard": "expect(container.textContent).toContain(\"Maximum update depth exceeded\")",
+      "restoredByteForByte": true,
+      "positive": {
+        "exit": 0,
+        "jsonSha256": "a11dcafca2602e4baed9feff4925dcca4c09ceb46a36b5baf782742274fe467d",
+        "logSha256": "23301c06f7a3c46599867040f2fe947f36fe6bf9c33c66e6c0d465c9b7a97746",
+        "caseStatus": "passed"
+      },
+      "negative": {
+        "exit": 1,
+        "jsonSha256": "3d0fdd9f0f6fa788decca2bdf816bee3bcbe4f2d5836ba6582e8e2860369d974",
+        "logSha256": "31c8775a1049760ef218a4d1bb14df2dde621652cd58f1b53c24651a4dfa0d3a",
+        "caseStatus": "failed",
+        "intendedFailureMessages": [
+          "AssertionError: expected 'Paperclip hit an errorSomething went \u2026' to contain 'Maximum update depth exceeded'\n    at /Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/ui/src/components/AppErrorBoundary.test.tsx:54:35\n    at file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/run.BTlFXlnv.js:1628:35\n    at file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/run.BTlFXlnv.js:2783:26\n    at file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/run.BTlFXlnv.js:3321:20\n    at new Promise (<anonymous>)\n    at runWithCancel (file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/run.BTlFXlnv.js:3316:10)\n    at file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/run.BTlFXlnv.js:3301:20\n    at new Promise (<anonymous>)\n    at runWithTimeout (file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/run.BTlFXlnv.js:3259:10)\n    at file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/run.BTlFXlnv.js:3882:64"
+        ]
+      }
+    }
+  ],
+  "priorEvidenceUnchanged": [
+    {
+      "file": "doc/plans/2026-10-12-test-audit-r7-ui-appdetail-controls.json",
+      "sha256": "7906fde0d62e14a7511b5cf45f864c9386a4c377922333eefc7f7e703c832f6a"
+    },
+    {
+      "file": "doc/plans/2026-10-12-test-audit-r7-ui-appdetail.md",
+      "sha256": "715f23cd27502c92d0f5d1b83b91bcac03f254c73ab63b44181ae76939805229"
+    },
+    {
+      "file": "doc/plans/2026-10-12-test-audit-r7-ui-controls.json",
+      "sha256": "0d445f6f066032f2d9cd724525a8d7d2290246cbfeee1f6ab4b44818467af2a7"
+    },
+    {
+      "file": "doc/plans/2026-10-12-test-audit-r7-ui-transcript-controls.json",
+      "sha256": "9e4dbdc33806d6fcc912dc3aacc8691a77939e2ce2403032b2a8127c0e407e94"
+    },
+    {
+      "file": "doc/plans/2026-10-12-test-audit-r7-ui-transcript.md",
+      "sha256": "9e4ac8c92a3a9eca727c29a77ae428702d19ecdee0cab0e3dfcda0a36bf004db"
+    },
+    {
+      "file": "doc/plans/2026-10-12-test-audit-r7-ui.md",
+      "sha256": "896b9928af85a4c7d588dfca93484980aadb238bd79d8142e671c62f0b191fa8"
+    }
+  ],
+  "ownerRestoredToBaseGitBytes": true,
+  "productionLinesChanged": 0
+}

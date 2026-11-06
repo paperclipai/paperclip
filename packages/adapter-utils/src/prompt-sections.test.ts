@@ -3,13 +3,14 @@ import { selectPaperclipPromptSections as selectSections } from "./server-utils.
 import { createPromptContextFixture } from "./test-fixtures/prompt-context.js";
 
 describe("task and event section ownership", () => {
-  it("lets a separate instruction carrier own the execution contract on a resumed turn", () => {
+  it("preserves resumed wake data without reintroducing generic procedures", () => {
     const context = createPromptContextFixture();
-    const sections = selectSections(context, { resumedSession: true, includeExecutionContract: false });
-    expect(sections.taskContextNote).toBe(context.paperclipTaskMarkdownAssignmentCompact);
-    expect(sections.wakePrompt).toContain('"id":"comment-second"');
-    expect(sections.wakePrompt).not.toContain("Execution contract:");
-    expect(selectSections(context, { resumedSession: true }).wakePrompt).toContain("Execution contract:");
+    for (const includeExecutionContract of [undefined, false, true]) {
+      const sections = selectSections(context, { resumedSession: true, includeExecutionContract });
+      expect(sections.taskContextNote).toBe(context.paperclipTaskMarkdownAssignmentCompact);
+      expect(sections.wakePrompt).toContain('"id":"comment-second"');
+      expect(sections.wakePrompt).not.toContain("Execution contract:");
+    }
   });
 
   it("preserves user repetition and distinct same-body comments under their source owners", () => {

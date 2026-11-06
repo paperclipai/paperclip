@@ -1,3 +1,7 @@
+import { parseAcpxCandidateAdmission } from "../drivers/acpx/candidate-admission.js";
+import { ACPX_CAPABILITY_PROFILES } from "../drivers/acpx/capability-profiles.js";
+import { resolvePiThinkingLevel } from "../drivers/acpx/pi-thinking.js";
+import { normalizeProviderNotice } from "../drivers/provider-notices.js";
 import { liveRunResultFeedback } from "./run-result-feedback.js";
 import { createHash, randomUUID } from "node:crypto";
 import { resolve } from "node:path";
@@ -133,6 +137,7 @@ export interface CapabilityLiveSessionConfigSnapshot {
   driver?: "codex_app_server" | "opencode_server" | "claude_managed_agents_api" | "aws_agentcore_harness_api" | "acpx_runtime";
   providerVersion?: string | null;
   acpxAgent?: QualifiedAcpxAgent;
+  piThinkingLevel?: "off" | "low" | "high" | "max";
   acpxProfile?: QualifiedAcpxProfile;
   managedProfile?: {
     profileId: string;
@@ -323,6 +328,7 @@ export interface CreateCapabilityLiveSessionInput {
   workingDirectory?: string;
   provider?: "codex" | "opencode" | "claude_managed" | "aws_agentcore" | "acpx";
   acpxAgent?: QualifiedAcpxAgent;
+  piThinkingLevel?: "off" | "low" | "high" | "max";
   requestedModel?: string;
   managedProfile?: CapabilityLiveSessionConfigSnapshot["managedProfile"];
   agentCoreProfile?: CapabilityLiveSessionConfigSnapshot["agentCoreProfile"];
@@ -647,6 +653,7 @@ export function assertCapabilityLiveSessionSnapshot(
   } else if (provider === "opencode" || provider === "claude_managed" || provider === "aws_agentcore" || provider === "acpx") {
     throw new Error(`capability_live_checkpoint_corrupt: missing ${provider === "opencode" ? "OpenCode" : provider === "claude_managed" ? "Claude Agent" : provider === "aws_agentcore" ? "AWS AgentCore" : "ACPX"} model`);
   }
+  resolvePiThinkingLevel(provider === "acpx" ? String(config.acpxAgent) : "", config.piThinkingLevel);
   if (provider === "acpx") {
     const agent = config.acpxAgent;
     if (agent !== "pi" && agent !== "claude" && agent !== "codex" && agent !== "grok" && agent !== "cursor" && agent !== "copilot") {
@@ -900,9 +907,14 @@ export class CapabilityLiveSessionService {
   }
 
   async create(input: CreateCapabilityLiveSessionInput = {}): Promise<CapabilityLiveSession> {
+    resolvePiThinkingLevel(input.provider === "acpx" ? input.acpxAgent ?? "codex" : "", input.piThinkingLevel);
+    if (this.#transportOptions.acpxCandidateAdmission) {
+      parseAcpxCandidateAdmission(this.#transportOptions.acpxCandidateAdmission, { companyId: input.companyId ?? "", agent: input.acpxAgent ?? "", model: input.requestedModel ?? "" });
+    }
     if (input.provider === "acpx" && input.acpxAgent !== undefined
-      && ["pi", "cursor", "copilot"].includes(input.acpxAgent)
-      && this.#transportOptions.acpxCandidateProfile !== input.acpxAgent) {
+      && ACPX_CAPABILITY_PROFILES[input.acpxAgent].qualification === "pending"
+      && this.#transportOptions.acpxCandidateProfile !== input.acpxAgent
+      && !(input.acpxAgent === "antigravity" && this.#transportOptions.acpxCandidateAdmission)) {
       throw new Error("The candidate ACPX profile requires explicit evaluation opt-in");
     }
     if (input.provider === "claude_managed" && !input.managedProfile) {
@@ -965,7 +977,7 @@ export class CapabilityLiveSessionService {
               ? "aws_agentcore_harness_api"
           : input.provider === "acpx" ? "acpx_runtime" : "codex_app_server",
         providerVersion: input.provider === "opencode"
-          ? "1.18.32"
+          ? "1.18.34"
           : input.provider === "claude_managed"
             ? input.managedProfile!.agentVersion
             : input.provider === "aws_agentcore"
@@ -973,6 +985,7 @@ export class CapabilityLiveSessionService {
           : input.provider === "acpx" ? acpxProfile!.acpxVersion : null,
         ...(acpxProfile === null ? {} : {
           acpxAgent: acpxProfile.agent,
+          ...(acpxProfile.agent === "pi" ? { piThinkingLevel: resolvePiThinkingLevel("pi", input.piThinkingLevel) } : {}),
           acpxProfile: structuredClone(acpxProfile),
         }),
         ...(input.managedProfile === undefined
@@ -1506,7 +1519,7 @@ export class CapabilityLiveSession {
   async sendMessage(
     message: string,
     /** Launch-only diagnostics may opt out; qualification campaigns must not. */
-    options: { allowMissingUsage?: boolean } = {},
+    options: { allowMissingUsage?: boolean; reasoningMode?: "default" | "disabled" } = {},
   ): Promise<CapabilityLiveTurnResult> {
     const value = message.trim();
     if (value.length === 0) throw new Error("Capability live messages cannot be empty");
@@ -1609,6 +1622,7 @@ export class CapabilityLiveSession {
         permissions: CODEX_PERMISSION_PROFILE,
         runtimeWorkspaceRoots: [this.#config.workingDirectory],
         input: [userInput(value)],
+        ...(options.reasoningMode === undefined ? {} : { reasoningMode: options.reasoningMode }),
       });
     } catch (error) {
       if (this.#pendingTurnAdmission !== admission) {
@@ -1828,7 +1842,7 @@ export class CapabilityLiveSession {
     const candidate = this.#config.acpxAgent;
     if (missingTokens && this.#config.provider === "acpx"
       && (candidate === "pi" || candidate === "cursor" || candidate === "copilot")
-      && this.#transportOptions.acpxCandidateProfile === candidate) {
+      && (candidate === "cursor" || this.#transportOptions.acpxCandidateProfile === candidate)) {
       // Native candidate wrappers can complete a turn without a usage receipt,
       // including entitlement-denied turns. Retain the actual result for the
       // oracle without inventing tokens, charges, or a successful model call.
@@ -2383,6 +2397,7 @@ export class CapabilityLiveSession {
         : {}),
       ...(provider === "acpx" && this.#config.acpxAgent ? {
         acpxAgent: this.#config.acpxAgent,
+        ...(this.#config.acpxAgent === "pi" ? { piThinkingLevel: this.#config.piThinkingLevel } : {}),
       } : {}),
       ...(provider === "claude_managed" && this.#config.managedProfile
         ? {
@@ -2479,7 +2494,7 @@ export class CapabilityLiveSession {
         config: createSkilllessCodexThreadConfig(this.#config.workingDirectory),
         permissions: CODEX_PERMISSION_PROFILE,
         runtimeWorkspaceRoots: [this.#config.workingDirectory],
-        baseInstructions,
+        ...(provider === "codex" ? { developerInstructions: baseInstructions } : { baseInstructions }),
         persistExtendedHistory: true,
       });
       const resumedThread = record(resumed.thread);
@@ -2504,7 +2519,7 @@ export class CapabilityLiveSession {
         permissions: CODEX_PERMISSION_PROFILE,
         runtimeWorkspaceRoots: [this.#config.workingDirectory],
         approvalPolicy: "never",
-        baseInstructions,
+        ...(provider === "codex" ? { developerInstructions: baseInstructions } : { baseInstructions }),
         completionContract: LIVE_COMPLETION_CONTRACT,
         dynamicTools: [...semanticTools, ...codexSemanticToolSpecs()],
         experimentalRawEvents: true,
@@ -2757,6 +2772,28 @@ export class CapabilityLiveSession {
 
   async #handleNotification(notification: CodexRpcNotification): Promise<void> {
     const params = notification.params;
+    if (notification.method === "paperclip/canonicalProviderEvent"
+      && params.eventType === "provider.notice.recorded") {
+      const notice = normalizeProviderNotice(params, {
+        provider: this.#config.provider, agent: this.#config.acpxAgent,
+        threadId: this.#providerThreadId, turnId: this.#activeTurnId,
+      });
+      if (notice && !this.#evidence.some(entry => entry.turnId === this.#activeTurnId
+        && entry.kind === "provider_event" && entry.data.canonical === true
+        && record(entry.data.payload).category === record(notice.payload).category)) {
+        this.#appendEvidence("provider_event", this.#activeTurnId, {
+          canonicalEventType: notice.eventType, itemId: notice.itemId, payload: notice.payload,
+        });
+        try {
+          await this.#persist();
+        } catch {
+          // These counters are optional diagnostics. Keep the evidence in the
+          // snapshot so #persist's recovered queue can retry on the next state
+          // transition. Authoritative terminal saves must still succeed.
+        }
+      }
+      return;
+    }
     const turn = record(params.turn);
     const item = record(params.item);
     const turnId = text(params.turnId, text(turn.id));

@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import type { HeartbeatRunEvent } from "@paperclipai/shared";
 import { nativeRunEventsToTranscript } from "./native-run-events";
+import { buildTurnTimelineRows, paperclipRunnerFinalResponse, paperclipRunnerTimelineItems, settledRunChildren, transcriptToTaskChatItems } from "../task-chat/transcript-adapter";
 
 const RUN_ID = "10000000-0000-4000-8000-000000000001";
 
@@ -73,6 +74,31 @@ function runResult(summary: string): Record<string, unknown> {
 }
 
 describe("provider notice presentation", () => {
+  it("omits unrelated information from saved chat without removing warnings or responses", () => {
+    const legacyNotice = {
+      schema: "paperclip.provider.notice.v1",
+      noticeId: "codex-warning",
+      severity: "warning",
+      category: "warning",
+      summary: "ignored unrelated provider information",
+      userActionable: true,
+    };
+    const entries = nativeRunEventsToTranscript([
+      event(1, "provider.notice.recorded", legacyNotice),
+      event(2, "harness.diagnostic", { code: "codex_unrelated_information" }),
+      event(3, "provider.notice.recorded", { ...legacyNotice, summary: "Repository is not trusted" }),
+      event(4, "provider.notice.recorded", { ...legacyNotice, severity: "error" }),
+      event(5, "provider.notice.recorded", { ...legacyNotice, category: "configWarning" }),
+      event(6, "item.completed", { kind: "agentMessage", channel: "final", text: "Here is the answer." }),
+    ]);
+    expect(entries).toMatchObject([
+      { kind: "provider_activity", summary: "Repository is not trusted" },
+      { kind: "provider_activity", status: "failed", summary: legacyNotice.summary },
+      { kind: "provider_activity", summary: legacyNotice.summary },
+      { kind: "assistant", text: "Here is the answer." },
+    ]);
+  });
+
   it("preserves notice text as a notice rather than a synthetic tool call", () => {
     const entries = nativeRunEventsToTranscript([
       event(1, "provider.notice.recorded", {
@@ -89,6 +115,167 @@ describe("provider notice presentation", () => {
       { kind: "provider_activity", family: "provider_notice", status: "failed", summary: "Provider connection failed" },
     ]);
     expect(entries.some((entry) => entry.kind === "tool_call")).toBe(false);
+  });
+});
+
+describe("native plan presentation", () => {
+  it("keeps plan snapshots as plan activity so the turn plan card can read their steps", () => {
+    const plan = (seq: number, statuses: string[]) => event(seq, "plan.updated", {
+      schema: "paperclip.plan.updated.v1",
+      planId: "turn-1",
+      revision: 1,
+      explanation: null,
+      steps: statuses.map((status, index) => ({ stepId: `step-${index + 1}`, body: `Step ${index + 1}`, status })),
+      complete: statuses.every((status) => status === "completed"),
+      syncStatus: "not_applicable",
+      documentRevision: null,
+    });
+    const transcript = nativeRunEventsToTranscript([
+      plan(1, ["in_progress", "pending"]),
+      plan(2, ["completed", "completed"]),
+    ]);
+    expect(transcript).toEqual([
+      expect.objectContaining({ kind: "provider_activity", family: "plan", status: "running", title: "Plan" }),
+      expect.objectContaining({ kind: "provider_activity", family: "plan", status: "completed" }),
+    ]);
+    const items = transcriptToTaskChatItems(transcript, { runId: RUN_ID, agentName: "Claude", running: true });
+    const plans = items.filter((item) => item.kind === "protocol" && item.surface === "provider_activity" && item.family === "plan");
+    expect(plans).toHaveLength(1);
+    expect(plans[0]).toMatchObject({ steps: [
+      { label: "Step 1", status: "completed" },
+      { label: "Step 2", status: "completed" },
+    ] });
+  });
+
+  it("keeps a blocked plan blocked in settled history instead of marking it interrupted", () => {
+    const transcript = nativeRunEventsToTranscript([event(1, "plan.updated", {
+      schema: "paperclip.plan.updated.v1",
+      planId: "turn-1",
+      revision: 1,
+      explanation: null,
+      steps: [
+        { stepId: "step-1", body: "Inspect", status: "completed" },
+        { stepId: "step-2", body: "Run tests", status: "blocked" },
+      ],
+      complete: false,
+      syncStatus: "not_applicable",
+      documentRevision: null,
+    })]);
+    expect(transcript[0]).toMatchObject({ kind: "provider_activity", family: "plan", status: "failed" });
+    const settled = transcriptToTaskChatItems(transcript, { runId: RUN_ID, agentName: "Claude", running: false });
+    const plan = settled.find((item) => item.kind === "protocol" && item.surface === "provider_activity" && item.family === "plan");
+    expect(plan).toMatchObject({ status: "failed" });
+    expect(JSON.stringify(plan)).not.toContain("Interrupted before completion");
+  });
+});
+
+describe("native proposed-plan presentation", () => {
+  it("streams Codex plan-item deltas into one live proposal and settles on the completed document", () => {
+    const transcript = nativeRunEventsToTranscript([
+      itemEvent(1, "item.started", "plan-item-1", { kind: "plan", channel: "detail", text: "" }),
+      itemEvent(2, "item.delta", "plan-item-1", { kind: "plan", channel: "detail", text: "<proposed_plan>\n# Stop duplicates\n" }),
+      itemEvent(3, "item.delta", "plan-item-1", { kind: "plan", channel: "detail", text: "\n1. Add a unique index" }),
+      event(4, "plan.proposed", {
+        schema: "paperclip.plan.proposed.v1",
+        proposalId: "plan-item-1",
+        status: "completed",
+        markdown: "# Stop duplicates\n\n1. Add a unique index\n2. Upsert",
+        source: "codex_plan_item",
+      }),
+    ]);
+    const proposals = transcript.filter((entry) => entry.kind === "provider_activity" && entry.family === "plan_proposal");
+    expect(proposals).toEqual([
+      expect.objectContaining({ status: "running", payload: expect.objectContaining({ markdown: "# Stop duplicates" }) }),
+      expect.objectContaining({ status: "running", payload: expect.objectContaining({ markdown: "# Stop duplicates\n\n1. Add a unique index" }) }),
+      expect.objectContaining({ status: "completed", summary: "Proposed a plan" }),
+    ]);
+
+    const live = transcriptToTaskChatItems(transcript.slice(0, -1), { runId: RUN_ID, agentName: "Codex", running: true })
+      .filter((item) => item.kind === "protocol" && item.surface === "provider_activity" && item.family === "plan_proposal");
+    expect(live).toHaveLength(1);
+    expect(live[0]).toMatchObject({ status: "running", output: "# Stop duplicates\n\n1. Add a unique index" });
+
+    const settled = transcriptToTaskChatItems(transcript, { runId: RUN_ID, agentName: "Codex", running: false })
+      .filter((item) => item.kind === "protocol" && item.surface === "provider_activity" && item.family === "plan_proposal");
+    expect(settled).toHaveLength(1);
+    expect(settled[0]).toMatchObject({ status: "completed", output: "# Stop duplicates\n\n1. Add a unique index\n2. Upsert" });
+  });
+
+  it("shows a Codex message's <proposed_plan> block only through the proposal card", () => {
+    const transcript = nativeRunEventsToTranscript([
+      itemEvent(1, "item.completed", "msg-1", {
+        kind: "agentMessage",
+        channel: "final",
+        text: "The plan is ready for your approval.\n<proposed_plan>\n# Fix\n1. Ship\n</proposed_plan>",
+      }),
+      event(2, "plan.proposed", {
+        schema: "paperclip.plan.proposed.v1",
+        proposalId: "msg-1",
+        status: "completed",
+        markdown: "# Fix\n1. Ship",
+        source: "codex_plan_item",
+      }),
+    ]);
+    expect(transcript).toEqual([
+      expect.objectContaining({ kind: "assistant", text: "The plan is ready for your approval." }),
+      expect.objectContaining({ kind: "provider_activity", family: "plan_proposal", status: "completed" }),
+    ]);
+  });
+
+  it("keeps a message's plan text when no proposal was recorded for it", () => {
+    const text = "Draft plan below.\n<proposed_plan>\n# Fix\n1. Ship\n</proposed_plan>";
+    const transcript = nativeRunEventsToTranscript([
+      itemEvent(1, "item.completed", "msg-old", { kind: "agentMessage", channel: "final", text }),
+    ]);
+    expect(transcript).toEqual([expect.objectContaining({ kind: "assistant", text })]);
+  });
+
+  it("hides the cut-off remainder of a proposal in a shortened message preview", () => {
+    const transcript = nativeRunEventsToTranscript([
+      itemEvent(1, "item.completed", "msg-1", {
+        kind: "agentMessage",
+        channel: "final",
+        text: "Plan ready.\n<proposed_plan>\n# Fix\n1. Ship…[truncated]",
+      }),
+      event(2, "plan.proposed", {
+        schema: "paperclip.plan.proposed.v1", proposalId: "msg-1", status: "completed",
+        markdown: "# Fix\n1. Ship\n2. Verify", source: "codex_plan_item",
+      }),
+    ]);
+    expect(transcript[0]).toMatchObject({ kind: "assistant", text: "Plan ready." });
+
+    const fenced = "Format:\n```\n<proposed_plan>\n# Plan…[truncated]";
+    const fencedTranscript = nativeRunEventsToTranscript([
+      itemEvent(1, "item.completed", "msg-2", { kind: "agentMessage", channel: "final", text: fenced }),
+      event(2, "plan.proposed", {
+        schema: "paperclip.plan.proposed.v1", proposalId: "msg-2", status: "completed",
+        markdown: "# Other", source: "codex_plan_item",
+      }),
+    ]);
+    expect(fencedTranscript[0]).toMatchObject({ kind: "assistant", text: fenced });
+  });
+
+  it("shows a completed proposal's example tags unchanged on its card", () => {
+    const markdown = "# Plan\n\n1. Format: `<proposed_plan>x</proposed_plan>`";
+    const transcript = nativeRunEventsToTranscript([event(1, "plan.proposed", {
+      schema: "paperclip.plan.proposed.v1", proposalId: "p-1", status: "completed", markdown, source: "claude_exit_plan_mode",
+    })]);
+    expect(transcript[0]).toMatchObject({ family: "plan_proposal", payload: expect.objectContaining({ markdown }) });
+  });
+
+  it("keeps a Claude ExitPlanMode proposal out of the turn checklist", () => {
+    const transcript = nativeRunEventsToTranscript([event(1, "plan.proposed", {
+      schema: "paperclip.plan.proposed.v1",
+      proposalId: "toolu_plan",
+      status: "completed",
+      markdown: "# Plan\n\n1. Ship it",
+      source: "claude_exit_plan_mode",
+    })]);
+    expect(transcript).toEqual([
+      expect.objectContaining({ kind: "provider_activity", family: "plan_proposal", status: "completed" }),
+    ]);
+    const items = transcriptToTaskChatItems(transcript, { runId: RUN_ID, agentName: "Claude", running: false });
+    expect(items.some((item) => item.kind === "protocol" && item.surface === "provider_activity" && item.family === "plan")).toBe(false);
   });
 });
 
@@ -280,6 +467,16 @@ describe("nativeRunEventsToTranscript", () => {
     ]);
     expect(transcript.filter((entry) => entry.kind === "run_result")).toHaveLength(1);
     expect(transcript.filter((entry) => entry.kind === "run_terminal")).toHaveLength(1);
+  });
+
+  it("preserves buffered output tails when a native turn ends", () => {
+    const transcript = nativeRunEventsToTranscript([
+      event(1, "item.delta", { itemId: "reasoning-1", kind: "reasoning", text: "Thinking" }),
+      event(2, "turn.completed", { status: "completed", outputTails: [
+        { itemId: "reasoning-1", payload: { kind: "reasoning", text: "-" } },
+      ] }),
+    ]);
+    expect(transcript.filter(entry => entry.kind === "thinking").map(entry => "text" in entry ? entry.text : "").join("")).toBe("Thinking-");
   });
 
   it("projects provider-neutral messages, tools, usage, and the final reply", () => {
@@ -490,6 +687,50 @@ describe("nativeRunEventsToTranscript", () => {
     ]);
   });
 
+  it("keeps retained stopped output as progress without fabricating a final response", () => {
+    const fixture = JSON.parse(readFileSync(
+      new URL("./fixtures/stopped-native-progress.json", import.meta.url),
+      "utf8",
+    )) as { run: { id: string; status: string }; events: HeartbeatRunEvent[] };
+    const entries = nativeRunEventsToTranscript(fixture.events);
+    const parsed = transcriptToTaskChatItems(entries, { runId: fixture.run.id, running: false });
+
+    expect(fixture.run.status).toBe("cancelled");
+    expect(paperclipRunnerFinalResponse(parsed, { allowFallback: true })).toBeUndefined();
+    expect(parsed.filter((item) => item.kind === "message")).toEqual([
+      expect.objectContaining({
+        channel: "progress",
+        interstitial: true,
+        text: "I'll use the native Write tool once for the exact path, leaving the permission request pending.",
+      }),
+    ]);
+    const children = settledRunChildren(parsed);
+    expect(children.filter((item) => item.kind === "activity_phase" && item.interstitial)).toHaveLength(1);
+    expect(children.filter((item) => item.kind === "protocol" && item.surface === "runtime_request")).toEqual([
+      expect.objectContaining({ status: "cancelled" }),
+    ]);
+  });
+
+  it.each([
+    ["final", "progress", "final"],
+    ["progress", "final", "progress"],
+    ["unknown", "final", "unknown"],
+    ["unknown", "invalid", "unknown"],
+    ["unknown", null, "unknown"],
+    [undefined, "progress", "progress"],
+  ] as const)("preserves outer channel %s with nested channel %s", (outer, nested, expected) => {
+    expect(nativeRunEventsToTranscript([
+      itemEvent(1, "item.delta", "message-1", {
+        kind: "agentMessage",
+        ...(outer === undefined ? {} : { channel: outer }),
+        text: "Provider message.",
+        update: { channel: nested },
+      }),
+    ])).toEqual([
+      expect.objectContaining({ kind: "assistant", channel: expected }),
+    ]);
+  });
+
   it("streams deltas until a loss-resistant completed item is available", () => {
     expect(nativeRunEventsToTranscript([
       event(1, "item.delta", { itemId: "message-1", kind: "agentMessage", text: "Still " }),
@@ -665,18 +906,13 @@ describe("nativeRunEventsToTranscript", () => {
     ]);
   });
 
-  it("uses the structured run summary when no agent message was emitted", () => {
+  it("retains a report without manufacturing a provider final message", () => {
     expect(nativeRunEventsToTranscript([
       event(1, "run.result.proposed", runResult("Recovered final reply.")),
     ])).toEqual([
       expect.objectContaining({
         kind: "run_result",
         summary: "Recovered final reply.",
-      }),
-      expect.objectContaining({
-        kind: "assistant",
-        text: "Recovered final reply.",
-        channel: "final",
       }),
     ]);
   });
@@ -747,39 +983,142 @@ describe("nativeRunEventsToTranscript", () => {
         kind: "run_result",
         summary: "The implementation is ready.",
       }),
-      expect.objectContaining({
-        kind: "assistant",
-        text: "The implementation is ready.",
-        channel: "final",
-      }),
     ]);
   });
 
-  it("projects provider-neutral activity without exposing provider envelopes", () => {
-    expect(nativeRunEventsToTranscript([
+  it("keeps web research as a provider activity with its sources", () => {
+    const transcript = nativeRunEventsToTranscript([
       event(1, "research.started", {
         schema: "paperclip.research.v1",
         researchId: "research-1",
+        action: "search",
         query: "current behavior",
         status: "running",
+        sources: [],
       }),
       event(2, "research.completed", {
         schema: "paperclip.research.v1",
         researchId: "research-1",
+        action: "search",
         query: "current behavior",
         status: "completed",
+        sources: [{ sourceId: "s1", url: "https://example.com/a", title: "A", snippet: null }],
+      }),
+    ]);
+    expect(transcript).toEqual([
+      expect.objectContaining({ kind: "provider_activity", family: "research", status: "running", summary: "current behavior" }),
+      expect.objectContaining({
+        kind: "provider_activity",
+        family: "research",
+        status: "completed",
+        payload: expect.objectContaining({ sources: [expect.objectContaining({ url: "https://example.com/a" })] }),
+      }),
+    ]);
+    expect(transcript.some((entry) => entry.kind === "tool_call" || entry.kind === "tool_result")).toBe(false);
+    const items = transcriptToTaskChatItems(transcript, { runId: RUN_ID, running: false });
+    const research = items.filter((item) => item.kind === "protocol" && item.surface === "provider_activity");
+    expect(research).toHaveLength(1);
+    expect(research[0]).toEqual(expect.objectContaining({
+      status: "completed",
+      links: [expect.objectContaining({ href: "https://example.com/a" })],
+      startedAt: "2026-08-25T18:00:01.000Z",
+    }));
+  });
+
+  it("does not invent a subject for a search the provider reported without a query", () => {
+    expect(nativeRunEventsToTranscript([
+      event(1, "research.completed", {
+        schema: "paperclip.research.v1",
+        researchId: "research-2",
+        action: "other",
+        query: null,
+        url: null,
+        pattern: null,
+        status: "completed",
+        sources: [],
+      }),
+    ])).toEqual([expect.objectContaining({ kind: "provider_activity", family: "research", summary: "" })]);
+  });
+
+  it("keeps model reroutes and waits as provider activity with their payload", () => {
+    const transcript = nativeRunEventsToTranscript([
+      event(1, "model.route.changed", {
+        schema: "paperclip.model.route_changed.v1",
+        routeId: "turn-1",
+        provider: "openai",
+        requestedModel: "gpt-a",
+        fromModel: "gpt-a",
+        effectiveModel: "gpt-b",
+        reason: "capacity",
+      }),
+      event(2, "wait.started", {
+        schema: "paperclip.wait.v1",
+        waitId: "sleep-1",
+        reason: "timer",
+        status: "running",
+        plannedDurationMs: 30000,
+        elapsedDurationMs: null,
+      }),
+    ]);
+    expect(transcript).toEqual([
+      expect.objectContaining({ kind: "provider_activity", family: "model_identity", status: "completed", payload: expect.objectContaining({ effectiveModel: "gpt-b" }) }),
+      expect.objectContaining({ kind: "provider_activity", family: "wait", status: "running", payload: expect.objectContaining({ plannedDurationMs: 30000 }) }),
+    ]);
+  });
+
+  it("projects the runner's verification items as check activity", () => {
+    const transcript = nativeRunEventsToTranscript([
+      itemEvent(1, "item.completed", "result:verification:1", {
+        kind: "verification",
+        text: "passed: node --test",
+        verification: { commandOrCheck: "node --test", status: "passed", detail: "6 tests passed" },
+      }),
+      itemEvent(2, "item.completed", "result:verification:2", {
+        kind: "verification",
+        text: "failed: pnpm typecheck",
+        verification: { commandOrCheck: "pnpm typecheck", status: "failed" },
+      }),
+      itemEvent(3, "item.completed", "result:verification:3", { kind: "verification", text: "malformed" }),
+      itemEvent(4, "item.completed", "result:verification:4", {
+        kind: "verification",
+        text: "not_run: pnpm test:e2e",
+        verification: { commandOrCheck: "pnpm test:e2e", status: "not_run", reasonCode: "policy_restricted", detail: "x".repeat(300) },
+      }),
+    ]);
+    expect(transcript).toEqual([
+      expect.objectContaining({
+        kind: "provider_activity",
+        family: "verification",
+        status: "completed",
+        summary: "node --test",
+        payload: expect.objectContaining({ verificationId: "result:verification:1", status: "passed", detail: "6 tests passed" }),
+      }),
+      expect.objectContaining({ kind: "provider_activity", family: "verification", status: "failed", summary: "pnpm typecheck" }),
+      expect.objectContaining({ family: "verification", status: "informational", payload: expect.objectContaining({ reasonCode: "policy_restricted" }) }),
+    ]);
+    const checks = transcriptToTaskChatItems(transcript, { runId: RUN_ID, running: false })
+      .filter((item) => item.kind === "protocol" && item.surface === "provider_activity");
+    expect(checks).toHaveLength(3);
+    const skipped = checks[2];
+    expect(skipped.kind === "protocol" && skipped.surface === "provider_activity" && skipped.details).toEqual(expect.arrayContaining([
+      { label: "Reason Code", value: "policy_restricted", mono: true },
+      { label: "Detail", value: "x".repeat(300), mono: false },
+    ]));
+  });
+
+  it("leaves families owned by other surfaces on the generic activity path", () => {
+    expect(nativeRunEventsToTranscript([
+      event(1, "memory.citation.referenced", {
+        schema: "paperclip.memory.citation.v1",
+        citationId: "citation-1",
+        messageItemId: "message-1",
+        label: "Decision log",
+        available: false,
+        reference: null,
       }),
     ])).toEqual([
-      expect.objectContaining({
-        kind: "tool_call",
-        name: "research",
-        toolUseId: "research:research-1",
-      }),
-      expect.objectContaining({
-        kind: "tool_result",
-        toolUseId: "research:research-1",
-        content: "current behavior",
-      }),
+      expect.objectContaining({ kind: "tool_call", toolUseId: "memory:citation-1" }),
+      expect.objectContaining({ kind: "tool_result", toolUseId: "memory:citation-1" }),
     ]);
   });
 
@@ -795,8 +1134,9 @@ describe("nativeRunEventsToTranscript", () => {
         }),
       ])).toEqual([
         expect.objectContaining({
-          kind: "tool_call",
-          toolUseId: "artifact:artifact-1",
+          kind: "provider_activity",
+          family: "artifact",
+          status: "running",
         }),
       ]);
     },
@@ -957,5 +1297,217 @@ describe("nativeRunEventsToTranscript", () => {
         reportedWorkDisposition: "done",
       }),
     ])).toEqual([]);
+  });
+});
+
+describe("context compaction", () => {
+  function usage(seq: number, usedTokens: number) {
+    return itemEvent(seq, "item.completed", `turn-1:usage:${seq}`, {
+      kind: "usage",
+      usage: { total: { inputTokens: 1 }, context: { usedTokens, windowTokens: 258_400 } },
+    });
+  }
+
+  it("sizes a compaction from the usage reported before and after it", () => {
+    const transcript = nativeRunEventsToTranscript([
+      usage(1, 229_500),
+      event(2, "context.compacted", {
+        schema: "paperclip.context.compacted.v1",
+        compactionId: "compaction-1",
+        reason: "provider",
+        preTokens: null,
+        postTokens: null,
+        sameSession: true,
+      }),
+      usage(3, 38_200),
+    ]);
+    const compaction = transcript.find((entry) => entry.kind === "provider_activity");
+    expect(compaction).toMatchObject({
+      eventType: "context.compacted",
+      payload: { preTokens: 229_500, postTokens: 38_200 },
+    });
+    const items = transcriptToTaskChatItems(transcript, { runId: RUN_ID, agentName: "Codex", running: false });
+    const flat = JSON.stringify(items);
+    expect(flat).toContain('"variant":"context_compacted"');
+    expect(flat).toContain("230k → 38k tokens");
+    // The live runner turn keeps the divider as its own timeline row.
+    const rows = buildTurnTimelineRows(paperclipRunnerTimelineItems(items), true);
+    expect(rows).toEqual(
+      expect.arrayContaining([expect.objectContaining({ kind: "marker", variant: "context_compacted" })]),
+    );
+  });
+
+  it("keeps every compaction in a run even when the provider reuses its id", () => {
+    const compacted = (seq: number) => event(seq, "context.compacted", {
+      schema: "paperclip.context.compacted.v1",
+      compactionId: "thread-1",
+      reason: "provider",
+      preTokens: null,
+      postTokens: null,
+      sameSession: true,
+    });
+    const transcript = nativeRunEventsToTranscript([
+      usage(1, 230_000),
+      compacted(2),
+      compacted(3),
+      usage(4, 40_000),
+      usage(5, 235_000),
+      compacted(6),
+      usage(7, 36_000),
+    ]);
+    const items = transcriptToTaskChatItems(transcript, { runId: RUN_ID, agentName: "Codex", running: false });
+    const markers = items.filter((item) => item.kind === "marker" && item.variant === "context_compacted");
+    expect(markers.map((item) => item.kind === "marker" ? item.detail : null)).toEqual([
+      "230k → 40k tokens",
+      "235k → 36k tokens",
+    ]);
+  });
+
+  it("keeps the divider when the provider reports no sizes", () => {
+    const transcript = nativeRunEventsToTranscript([
+      event(1, "context.compacted", {
+        schema: "paperclip.context.compacted.v1",
+        compactionId: "compaction-2",
+        reason: "provider",
+        preTokens: null,
+        postTokens: null,
+        sameSession: true,
+      }),
+    ]);
+    const items = transcriptToTaskChatItems(transcript, { runId: RUN_ID, agentName: "Claude", running: false });
+    const flat = JSON.stringify(items);
+    expect(flat).toContain('"label":"Context compacted"');
+    expect(flat).not.toContain("tokens");
+  });
+});
+
+describe("tool execution facts", () => {
+  const tool = (seq: number, eventType: string, fields: Record<string, unknown>) =>
+    event(seq, eventType, {
+      schema: "paperclip.tool.execution.v1",
+      executionId: "toolu_bash",
+      transport: "builtin",
+      operation: "execute",
+      name: "Bash",
+      target: null,
+      status: "running",
+      durationMs: null,
+      exitCode: null,
+      output: null,
+      outputBytes: 0,
+      outputTruncated: false,
+      outputDigest: null,
+      ...fields,
+    });
+
+  it("carries the refined command, exit code, duration and refusal into the task-chat row", () => {
+    const transcript = nativeRunEventsToTranscript([
+      tool(1, "tool.execution.started", { name: "Terminal" }),
+      tool(2, "tool.execution.progressed", { subject: "node --test", description: "Run the unit tests" }),
+      tool(3, "tool.execution.completed", {
+        subject: "node --test", description: "Run the unit tests", status: "failed", exitCode: 1, durationMs: 1840,
+        output: "not ok 2", outputBytes: 8,
+      }),
+      event(4, "tool.execution.completed", {
+        schema: "paperclip.tool.execution.v1", executionId: "toolu_rm", transport: "builtin", operation: "execute",
+        name: "Bash", target: null, status: "failed", durationMs: 3, exitCode: null, subject: "rm -rf build",
+        blockedReason: "Denied by rule", output: null, outputBytes: 0, outputTruncated: false, outputDigest: null,
+      }),
+      event(5, "tool.execution.completed", {
+        schema: "paperclip.tool.execution.v1", executionId: "exec-read", transport: "process", operation: "read",
+        name: "/bin/zsh -lc 'cat src/db.ts'", target: "src/db.ts", subject: "cat src/db.ts", status: "completed",
+        durationMs: 19, exitCode: 0, output: "", outputBytes: 0, outputTruncated: false, outputDigest: null,
+      }),
+    ]);
+    const tools = transcriptToTaskChatItems(transcript, { runId: RUN_ID, running: false }).filter((item) => item.kind === "tool");
+    expect(tools).toEqual([
+      expect.objectContaining({
+        rawName: "Bash", target: "node --test", description: "Run the unit tests", status: "failed", exitCode: 1, durationMs: 1840,
+      }),
+      expect.objectContaining({ rawName: "Bash", target: "rm -rf build", blockedReason: "Denied by rule" }),
+      expect.objectContaining({ rawName: "Read", operation: "read", target: "src/db.ts", exitCode: 0, durationMs: 19 }),
+    ]);
+  });
+});
+
+describe("edit diffs", () => {
+  const execution = (status: string, fileChanges?: unknown[]) => ({
+    schema: "paperclip.tool.execution.v1",
+    executionId: "edit-1",
+    transport: "builtin",
+    operation: "edit",
+    name: "Edit",
+    target: null,
+    status,
+    output: "",
+    outputBytes: 0,
+    outputTruncated: false,
+    outputDigest: null,
+    ...(fileChanges ? { fileChanges } : {}),
+  });
+  const change = (diff: string, additions: number, deletions: number) => ({
+    path: "src/price.js",
+    operation: "modify",
+    previousPath: null,
+    additions,
+    deletions,
+    diff,
+    diffTruncated: false,
+  });
+
+  it("attaches the latest patch of an edit call to its row", () => {
+    const entries = nativeRunEventsToTranscript([
+      event(1, "tool.execution.started", execution("running", [change("@@ -1 +1 @@\n-a\n+optimistic\n", 1, 1)])),
+      event(2, "tool.execution.completed", execution("completed", [change("@@ -3,2 +3,2 @@\n ctx\n-a\n+b\n", 1, 1)])),
+    ]);
+    expect(entries.find((entry) => entry.kind === "tool_call")).toMatchObject({
+      toolUseId: "edit-1",
+      input: { path: "src/price.js" },
+    });
+    expect(entries.filter((entry) => entry.kind === "diff")).toEqual([
+      expect.objectContaining({ changeType: "file_header", text: "src/price.js", toolUseId: "edit-1" }),
+      expect.objectContaining({ changeType: "hunk", text: "@@ -3,2 +3,2 @@" }),
+      expect.objectContaining({ changeType: "context", text: "ctx" }),
+      expect.objectContaining({ changeType: "remove", text: "a" }),
+      expect.objectContaining({ changeType: "add", text: "b" }),
+    ]);
+
+    const [tool] = transcriptToTaskChatItems(entries, { runId: RUN_ID, running: false });
+    expect(tool).toMatchObject({ kind: "tool", target: "src/price.js", diff: { path: "src/price.js", added: 1, removed: 1 } });
+  });
+
+  it("attaches an edit's patch once when later events refine the call", () => {
+    const entries = nativeRunEventsToTranscript([
+      event(1, "tool.execution.started", execution("running", [change("@@ -1 +1 @@\n-a\n+b\n", 1, 1)])),
+      event(2, "tool.execution.progressed", { ...execution("running"), subject: "edit price" }),
+      event(3, "tool.execution.completed", { ...execution("completed", [change("@@ -1 +1 @@\n-a\n+b\n", 1, 1)]), durationMs: 40 }),
+    ]);
+    expect(entries.filter((entry) => entry.kind === "tool_call").length).toBeGreaterThan(1);
+    expect(entries.filter((entry) => entry.kind === "diff" && entry.changeType === "file_header")).toHaveLength(1);
+  });
+
+  it("projects the harness change set and ends the turn with it", () => {
+    const entries = nativeRunEventsToTranscript([
+      event(1, "workspace.change.updated", {
+        schema: "paperclip.workspace.diff.v1",
+        changeSetId: "turn-1:workspace",
+        revision: 1,
+        source: "harness_reported",
+        complete: false,
+        files: [
+          { path: "a.js", operation: "create", previousPath: null, additions: 2, deletions: 0, binary: false, diff: "@@ -0,0 +1,2 @@\n+x\n+y\n" },
+          { path: "huge.js", operation: "modify", previousPath: null, additions: 0, deletions: 0, binary: false, diff: null, diffTruncated: true },
+        ],
+        totals: { files: 1, additions: 2, deletions: 0 },
+        patchArtifactRef: null,
+      }),
+      event(2, "tool.execution.completed", execution("completed", [change("@@ -1 +1 @@\n-a\n+b\n", 1, 1)])),
+    ]);
+    const items = transcriptToTaskChatItems(entries, { runId: RUN_ID, running: false });
+    expect(items.at(-1)).toMatchObject({ surface: "workspace_change", complete: true, totals: { files: 2, additions: 2 } });
+    const card = items.at(-1);
+    if (card?.kind !== "protocol" || card.surface !== "workspace_change") throw new Error("expected changes");
+    expect(card.files[1]).toMatchObject({ path: "huge.js", diff: null, diffTruncated: true });
+    expect(items.filter((item) => item.kind === "protocol" && item.surface === "workspace_change")).toHaveLength(1);
   });
 });

@@ -1,0 +1,6 @@
+{
+  "inputSha256": "14049cb20d48f448b6f24e5445a75bf8d22ed3052fe9ff885f4c127775d958d3",
+  "outputSha256": "14049cb20d48f448b6f24e5445a75bf8d22ed3052fe9ff885f4c127775d958d3",
+  "patchSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "basis": "Admitted by the trusted master lockfile refresh after a verified Dependabot lockfile merged. No correction is needed."
+}

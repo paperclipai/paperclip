@@ -500,6 +500,32 @@ describeEmbeddedPostgres("companyArtifactsService", () => {
     expect(afterPrimaryCursor.artifacts.map((artifact) => artifact.title)).toEqual(["notes.txt"]);
   });
 
+  it("filters every artifact source by the agent it is attributed to", async () => {
+    const { companyId } = await seedArtifacts();
+    const writerId = "21212121-2121-4121-8121-212121212121";
+    await db.insert(agents).values({ id: writerId, companyId, name: "Writer", role: "engineer" });
+    await db.update(documents).set({ createdByAgentId: writerId })
+      .where(eq(documents.id, "cccccccc-cccc-4ccc-8ccc-cccccccccccc"));
+    const storage = createStorageService({ "notes.txt": Buffer.from("notes") });
+
+    const writer = await companyArtifactsService(db, storage).list(companyId, { agentId: writerId, limit: 20 });
+    expect(writer.artifacts.map((artifact) => artifact.title)).toEqual(["Review Notes"]);
+
+    const original = await companyArtifactsService(db, storage).list(companyId, {
+      agentId: "33333333-3333-4333-8333-333333333333",
+      limit: 20,
+    });
+    expect(original.artifacts.map((artifact) => artifact.title)).toEqual(["direct-video.mp4", "Primary Cut", "notes.txt"]);
+    expect(new Set(original.artifacts.map((artifact) => artifact.createdByAgent?.id)))
+      .toEqual(new Set(["33333333-3333-4333-8333-333333333333"]));
+
+    const foreign = await companyArtifactsService(db, storage).list(companyId, {
+      agentId: "44444444-4444-4444-8444-444444444444",
+      limit: 20,
+    });
+    expect(foreign.artifacts).toEqual([]);
+  });
+
   it("deduplicates work product attachments beyond the work product fetch window", async () => {
     const { companyId, projectId, issueId } = await seedArtifacts();
     const dedupedAttachmentId = "abababab-abab-4bab-8bab-abababababab";

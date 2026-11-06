@@ -1,13 +1,38 @@
 # AgentMail email connections
 
-AgentMail is an experimental **channel** connection. Enable experimental chat
-connections, open Apps → AgentMail, select which humans and agents may use the
-credential, then enter an API key. In the saved connection’s Permissions page,
-choose **Give an agent an email address**. The three-step wizard selects an agent,
-creates or attaches an address, and reviews the setup. Selecting an agent outside
-the current allowed list adds that agent when setup completes. Every provider thread in that inbox has one Paperclip task. Subjects are
-not identifiers. The same email delivered to two connected inboxes creates two
-independent tasks.
+AgentMail is a default **channel** connection. Open Connectors → AgentMail;
+no experimental setting is required. Setup has two steps: pick the agent, then
+pick its email address and create it. For a new connection, the first step also
+suggests an accessible saved AgentMail account key, or asks for a new API key.
+New credentials default to company-wide human access and only the selected agent.
+Reusing a key preserves its grants and other agent installs. The domain dropdown sits
+beside the email name and defaults to the first verified custom domain, falling
+back to `agentmail.to`. An explicit choice is preserved across reloads. Receiving
+mode, sender guidance, and trust settings are under **Advanced options**; an
+existing low-trust agent still needs its required work boundary and runtime.
+There is no separate review or Permissions detour. Each provider thread in the
+inbox becomes one Paperclip task. Subjects are not identifiers. The same email
+delivered to two connected inboxes creates two independent tasks.
+
+**Add connection** starts a fresh setup identity, so an earlier unfinished key
+or address cannot silently replace the new form. **Finish setup** on a draft row
+resumes that exact inbox with its saved account and request ID, including an
+address already allocated before a later provider failure. Cancel and Done
+return to Connectors; Email settings opens the inbox settings. The email step
+groups the task/thread explanation under **How it Works**.
+
+After allocation, the address is shown as text with **Finish connecting**.
+**Choose a different address** restores the editable name and domain fields with
+a new setup identity. The previous inbox stays in AgentMail, and its draft can
+still be resumed from Connectors. Retrying never silently creates a replacement.
+Changing accounts also opens a new setup URL after saving the replacement key
+and retiring the empty draft, so refresh preserves the new account and request.
+
+Get API keys from [AgentMail's API-key page](https://console.agentmail.to/dashboard/api-keys).
+When an agent requests AgentMail in a chat or task, an inline card asks only for
+the key. It defaults to company-wide human access and this agent only, then
+creates an address (or connects the existing address for an inbox-scoped key).
+The agent resumes only after its inbox is usable. Access can be adjusted later on the saved connection’s Permissions page.
 
 Setup accepts an AgentMail API key or the saved company credential from another
 AgentMail connection. Organization and pod keys create an inbox-scoped runtime
@@ -15,23 +40,78 @@ key. An existing inbox-scoped key can connect only its own inbox. Credentials
 are vaulted and resolved by the server; they are not passed to agents. An inbox
 can have only one non-archived Paperclip endpoint across the instance.
 
+The shared API-key field offers labeled saved credentials and an explicit new-key
+choice. The server filters suggestions by company, provider, active secret, and
+current-user grants. Scope metadata is saved during key validation; legacy keys
+are checked with bounded concurrency under a shared three-second deadline.
+No secret values are returned. Use still rechecks authorization and the key.
+Organization/pod keys are preferred over inbox-only keys. The same picker is used
+by the inline card. Unrelated or unbound secrets are not suggested.
+
+An inbox-only key is caught on the agent/key step before the email form. Choose
+an account key to type a new name and pick a domain, or explicitly choose
+**Use the existing inbox instead**. Old locked drafts recover at this key choice.
+The selected credential or explicit new-key choice survives refresh without
+storing the key text. Failed inline setup offers **Change API key** before any
+address is allocated; it retires an empty draft and preserves the replacement
+request identity across refresh.
+Switching preserves the agent and starts a new setup request. Agent dropdowns
+use the shared avatar-aware selector for both options and the selected value.
+An already allocated inbox must finish its original setup before changing accounts.
+
 Verified custom domains are selectable after checking the API key. Complete DNS
 setup in [AgentMail](https://docs.agentmail.to/custom-domains). Paperclip does not
 register domains or manage DNS.
 
-The setup and Permissions page warn that an unrestricted inbox can receive mail
-from anyone. Configure sender allowlists in AgentMail; Paperclip does not manage
+Debounced address checks search the account's visible inbox list (up to 100
+entries), rather than requesting a not-yet-created inbox by ID. Live testing
+found that AgentMail retains negative inbox lookups: an address checked before
+creation could return 404 during access-key creation even after the inbox was
+created successfully. Listing avoids this failure. A match is taken; absence is
+unknown because the address may be outside the returned page or credential scope.
+Final creation still handles global address conflicts.
+
+Failed provider requests retain their HTTP status, a fixed operation name, and
+an allowlisted [AgentMail error code](https://docs.agentmail.to/errors). For
+example, `create_inbox` with `missing_permission` differs from `limit_exceeded`.
+An HTTP 403 alone does not establish the cause. Missing or unrecognized codes
+appear as `unknown`. Error-body inspection is limited to 8 KiB and one second;
+malformed, larger, or stalled responses keep the original HTTP failure. Provider
+messages, suggested fixes, URLs, inbox identifiers, and credentials are excluded
+from these diagnostics. These diagnostics do not retry or suppress failures.
+
+Advanced options and the Permissions page explain that an unrestricted inbox can
+receive mail from anyone. Configure sender allowlists in AgentMail; Paperclip does not manage
 or verify them. AgentMail controls new-message and reply lists separately. The
-wizard recommends Paperclip’s existing **Low-trust review** preset and lets the
-operator configure a project or root-task boundary. Incoming tasks are placed
+setup lets the operator review the agent’s trust settings and configure a project
+or root-task boundary for **Low-trust review**. Incoming tasks are placed
 inside that boundary. Low-trust execution also requires isolated workspaces and an active sandbox
 environment selected for the agent; setup rejects an unavailable runtime. New
 inbound tasks request isolated execution. The trust preset itself does not
 sandbox filesystem or network access. Standard agents remain selectable with a warning.
 
+A boundary project without a configured workspace can process email in a private
+task directory inside the selected sandbox. It does not need a Git repository.
+An explicitly configured workspace strategy still applies and must be usable.
+
 Removing the assigned agent’s saved-connection access or revoking its credential
 grant stops receiving and sending. Connection creation saves the vaulted binding,
 human grants, and agent access in one database transaction.
+The catalog's **Remove connection** action uses the email inbox control API for
+AgentMail, including unfinished drafts. It preserves provider inboxes and task
+history while disconnecting Paperclip and removing its owned runtime credentials.
+
+Each inbox has distinct **Settings**, **Access**, **Conversations**, and
+**Activity** views. Access reuses the saved account's credential and agent controls,
+so changes apply to every inbox using that account. Conversations links email
+threads to their tasks; Activity shows the shared delivery and publication feed.
+Settings leads with the agent’s email address: click it to copy with confirmation,
+or use **View inbox** to open that inbox in AgentMail’s console. It also explains
+how email becomes tasks.
+Receiving mode, last mail check, and Pause/Resume are grouped below. Reconnect
+credentials live in an expandable section, followed by a separate Disconnect
+action. Inbox lifecycle controls use the email API, and reconnect opens inbox Settings.
+Unconfirmed email delivery is resolved in its task rather than through chat replay.
 
 ## Receiving and task lifecycle
 
@@ -98,6 +178,7 @@ All paths below are relative to `/api`:
 | --- | --- |
 | Save credential and human/agent access | `POST /companies/:companyId/email/connections` |
 | Inspect a saved credential | `POST /companies/:companyId/email/connections/:connectionId/inspect` |
+| Check an address without creating an inbox (connection manager) | `POST /companies/:companyId/email/connections/:connectionId/check-address` |
 | List authorized inboxes | `GET /companies/:companyId/email/inboxes` |
 | Inspect setup credentials (connection manager) | `POST /companies/:companyId/email/inspect` |
 | Create or attach an inbox (connection manager) | `POST /companies/:companyId/email/inboxes` |
@@ -178,9 +259,44 @@ show publication failures and uncertain delivery resolution. Delivery admission,
 message processing and agent wakeup are separate from provider delivery and model
 startup; live latency measurements must distinguish those stages.
 
+Setup reads only allowlisted, documented provider error codes from a bounded
+response body. An inbox-creation `resource_taken` or `already_exists` error,
+including HTTP 403, appears beside the email field as “This email address is
+already in use.” Other 403 errors retain permission guidance. Provider messages,
+fixes, and links are never forwarded. Existing addresses visible to the saved
+account are flagged before submission. The initial name and subsequent edits
+trigger a read-only check after a 350 ms pause; changing the name or domain
+aborts the previous request and ignores its result. Checks use the saved credential
+behind the same company, connection-management, and connector-feature gates.
+Taken addresses show clickable alternatives, excluding known conflicts. A failed
+creation also remembers that address in the non-secret setup draft.
+
+[AgentMail's `not_found` response](https://docs.agentmail.to/errors#not_found)
+also hides inboxes outside the credential's scope, so a lookup cannot prove
+global availability. Missing addresses show that availability is confirmed on
+creation and offer alternatives without claiming they are free. Lookup failures
+are visible and leave creation available for its authoritative check; known
+conflicts and pending checks disable creation. Other taken addresses are reported
+when creation is attempted, without leaving the address step.
+
+Browser refresh preserves non-secret draft fields and the setup request ID;
+API keys are never saved in browser storage. Retrying the same setup resumes any
+inbox already created before the failure. Drafts are scoped to the agent requested
+by the setup link. Once an inbox has been allocated, its agent and address stay
+fixed during recovery. A failed progress lookup can be retried in place.
+
+When the account and inbox share a setup request ID, completion replaces the
+account’s untouched initial agent access with the final selected agent. That
+default applies only once and only while the original install rows are unchanged.
+Later permission edits and retries preserve existing agent or company installs.
+Reusing an account from another setup also preserves its existing installs. Both paths use the email
+setup permission (`tools:manage_connections`), without an additional agent-edit
+permission.
+
 ## Verification and live qualification
 
 Deterministic coverage lives in `server/src/__tests__/agentmail-api.test.ts`,
+`server/src/__tests__/email-routes-provider-errors.test.ts`,
 `server/src/__tests__/email-channels.integration.test.ts`, and
 `tests/e2e/agentmail.spec.ts`. It exercises real database transactions with a fake
 provider, plus browser setup and explicit task email actions.

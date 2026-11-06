@@ -17,9 +17,11 @@ import {
   asString,
   buildPaperclipEnv,
   buildRuntimeToolsEnv,
+  isForbiddenConfigEnvKey,
   joinPromptSections,
   parseObject,
   readPaperclipIssueWorkModeFromContext,
+  hydrateFreshSessionHandoff,
   selectPaperclipPromptSections,
   selectInitialCommunicationGuidance,
   isPaperclipRecoveryWakePayload,
@@ -58,6 +60,7 @@ function asStringEnvMap(value: unknown): Record<string, string> {
   const parsed = parseObject(value);
   const env: Record<string, string> = {};
   for (const [key, entry] of Object.entries(parsed)) {
+    if (isForbiddenConfigEnvKey(key)) continue;
     if (typeof entry === "string") {
       env[key] = entry;
     } else if (typeof entry === "object" && entry !== null && !Array.isArray(entry)) {
@@ -107,7 +110,9 @@ function buildWakeEnv(ctx: AdapterExecutionContext, configEnv: Record<string, st
   const { runId, agent, context, authToken } = ctx;
   const env: Record<string, string> = {
     ...configEnv,
-    ...buildPaperclipEnv(agent),
+    // The selected managed cloud host is trusted with this persistent identity,
+    // just like a managed local host (see doc/AGENT-IDENTITY.md).
+    ...buildPaperclipEnv(agent, ctx.agentIdentity),
     ...buildRuntimeToolsEnv(ctx.runtimeTools),
     PAPERCLIP_RUN_ID: runId,
   };
@@ -415,6 +420,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     context,
   };
   const instructions = await buildInstructionsPrefix(config, onLog);
+  await hydrateFreshSessionHandoff(ctx, { resumedSession: canReuseSession });
   const { taskContextNote, wakePrompt } = selectPaperclipPromptSections(context, {
     resumedSession: canReuseSession,
     includeCommunicationGuidance: false,

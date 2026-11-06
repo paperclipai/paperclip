@@ -33,6 +33,58 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  source_verification:
+    name: Watch exact-source verification
+    if: github.repository == 'paperclipai/paperclip' && github.repository_id == '1170821064' && github.ref == 'refs/heads/master'
+    runs-on: ${{ vars.AWS_POST_MERGE_CI_ENABLED == 'true' && github.run_attempt >= 1 && github.repository == 'paperclipai/paperclip' && github.repository_id == '1170821064' && github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && 'runs-on/fleet=paperclip-post-merge-x64/env=public-ci' || 'ubuntu-latest' }}
+    timeout-minutes: 44
+    permissions:
+      contents: read
+      actions: write
+    outputs:
+      verified: ${{ steps.watch.outputs.verified }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24
+      - name: Stop images when source checks fail and report runner waits
+        id: watch
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/watch-release-source.mjs
+
+  reuse_canary_image:
+    if: github.repository == 'paperclipai/paperclip' && github.repository_id == '1170821064' && startsWith(github.ref, 'refs/tags/canary/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
+      attestations: read
+    outputs:
+      reused: ${{ steps.reuse.outputs.reused }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Reuse the verified master image when present
+        id: reuse
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/reuse-canary-image.mjs
+
   # Multi-arch by native runner, not QEMU.
   #
   # This was one job building linux/amd64,linux/arm64 together on an x86
@@ -56,6 +108,8 @@ jobs:
   # digest; `merge` assembles the manifest list. Both architectures remain
   # available to self-hosted installations and downstream image composers.
   build-and-push:
+    needs: [reuse_canary_image]
+    if: ${{ !cancelled() && (needs.reuse_canary_image.result == 'skipped' || (needs.reuse_canary_image.result == 'success' && needs.reuse_canary_image.outputs.reused == 'false')) }}
     strategy:
       # Independent legs: one architecture failing should still publish
       # nothing, but it must not also hide the other's logs behind a
@@ -69,11 +123,10 @@ jobs:
           - platform: linux/arm64
             runner: ubuntu-24.04-arm
             arch: arm64
-    runs-on: ${{ matrix.runner }}
-    # Native builds land well inside this; it is a backstop, not a budget.
-    # (The interim fix while this PR landed raised the single QEMU job's cap
-    # to 120 minutes; native per-arch legs make that headroom unnecessary.)
-    timeout-minutes: 60
+    runs-on: ${{ vars.CORE_RELEASE_AWS_ENABLED == 'true' && github.repository == 'paperclipai/paperclip' && github.repository_id == '1170821064' && github.ref == 'refs/heads/master' && format('runs-on/fleet=paperclip-core-image-{0}/env=public-ci', matrix.arch == 'amd64' && 'x64' || 'arm64') || matrix.runner }}
+    # Stop before the AWS worker's 45-minute maximum lifetime. Hosted tag
+    # builds retain their existing limit.
+    timeout-minutes: ${{ vars.CORE_RELEASE_AWS_ENABLED == 'true' && github.repository == 'paperclipai/paperclip' && github.repository_id == '1170821064' && github.ref == 'refs/heads/master' && 40 || 60 }}
     permissions:
       contents: read
       packages: write
@@ -84,6 +137,9 @@ jobs:
           # Full history and tags so `git describe` below can compute the
           # release version to stamp into the image.
           fetch-depth: 0
+          # Keep the version's full commit graph without downloading blobs
+          # from every historical revision of this large repository.
+          filter: blob:none
 
       # `.git` is dockerignored, so a running image cannot derive its own
       # version and otherwise reports the source package.json placeholder in
@@ -152,6 +208,7 @@ jobs:
           echo "Using refreshed pnpm-lock.yaml in the Docker build context."
 
       - name: Free runner disk
+        if: ${{ !(vars.CORE_RELEASE_AWS_ENABLED == 'true' && github.repository == 'paperclipai/paperclip' && github.repository_id == '1170821064' && github.ref == 'refs/heads/master') }}
         run: |
           set -euo pipefail
           echo "Disk before cleanup:"
@@ -183,6 +240,10 @@ jobs:
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
+        with:
+          buildkitd-config-inline: |
+            [registry."docker.io"]
+              mirrors = ["mirror.gcr.io"]
 
       # Deployment tooling reads these labels from the registry to verify an
       # image's schema expectations against a migrator before deploying it,
@@ -269,15 +330,40 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+  # Wait for proof on ephemeral verification capacity. Publication runners do
+  # only registry/signing work. Each Spot observer stays below its 45m lifetime.
+  publication_verification:
+    name: Require exact-source verification
+    if: ${{ !cancelled() && github.repository == 'paperclipai/paperclip' && github.repository_id == '1170821064' && github.ref == 'refs/heads/master' && needs.build-and-push.result == 'success' && needs.source_verification.result == 'success' && needs.source_verification.outputs.verified != 'true' }}
+    needs: [build-and-push, source_verification]
+    runs-on: ${{ vars.AWS_POST_MERGE_CI_ENABLED == 'true' && github.run_attempt >= 1 && github.repository == 'paperclipai/paperclip' && github.repository_id == '1170821064' && github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && 'runs-on/fleet=paperclip-post-merge-x64/env=public-ci' || 'ubuntu-latest' }}
+    timeout-minutes: 44
+    permissions:
+      contents: read
+      actions: write # restart only exact-source producers deferred before admission
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24
+      - name: Require source proof and migrator admission before publication
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/watch-release-source.mjs --require-proof
+
   # Names the per-architecture digests as one manifest list under the real
   # tags. Nothing is publicly tagged until this runs, so a half-published
   # multi-arch image is not a state anything can pull.
   merge-and-push:
-    needs: build-and-push
-    runs-on: ubuntu-latest
+    if: ${{ !cancelled() && needs.build-and-push.result == 'success' && (needs.source_verification.result == 'success' || needs.source_verification.result == 'skipped') && (needs.publication_verification.result == 'success' || (needs.publication_verification.result == 'skipped' && (github.repository != 'paperclipai/paperclip' || github.repository_id != '1170821064' || github.ref != 'refs/heads/master' || needs.source_verification.outputs.verified == 'true'))) }}
+    needs: [build-and-push, source_verification, publication_verification]
+    runs-on: ${{ github.repository == 'paperclipai/paperclip' && github.repository_id == '1170821064' && github.ref == 'refs/heads/master' && (vars.CORE_PUBLICATION_RUNNER || 'cloud-release-32') || 'ubuntu-latest' }}
     timeout-minutes: 20
     permissions:
       contents: read
+      actions: read
       packages: write
       id-token: write
       attestations: write
@@ -286,8 +372,6 @@ jobs:
       # script the verification step pipes in.
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          fetch-depth: 0
 
       - name: Download digests
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
@@ -338,6 +422,19 @@ jobs:
           labels: |
             io.github.paperclipai.schema.last-migration=${{ steps.schema.outputs.last }}
             io.github.paperclipai.schema.migration-count=${{ steps.schema.outputs.count }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24
+
+      # Revalidate the latest attempt after runner assignment without waiting
+      # here. A concurrent source retry must invalidate the earlier proof.
+      - name: Revalidate exact-source proof before publication
+        if: github.repository == 'paperclipai/paperclip' && github.repository_id == '1170821064' && github.ref == 'refs/heads/master'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/watch-release-source.mjs --check-proof
 
       - name: Create manifest list and push
         working-directory: /tmp/digests
@@ -403,11 +500,8 @@ jobs:
   # promotion is gated on its own completed pushes). Every interleaving
   # converges the Docker channel onto the npm channel.
   promote_canary_channel:
-    if: startsWith(github.ref, 'refs/tags/canary/v')
-    # merge-and-push, not build-and-push: the per-arch legs push untagged
-    # digests, and the production `sha-*` tags this promotion retags only
-    # exist once the manifest merge has named them.
-    needs: [merge-and-push]
+    if: ${{ !cancelled() && startsWith(github.ref, 'refs/tags/canary/v') && (needs.merge-and-push.result == 'success' || (needs.reuse_canary_image.result == 'success' && needs.reuse_canary_image.outputs.reused == 'true')) }}
+    needs: [reuse_canary_image, merge-and-push]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:

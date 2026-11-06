@@ -1,4 +1,5 @@
 import WebSocket from "ws";
+import { REMOTE_RUNNER_RECONNECT_GRACE_MS } from "../services/native-runtime/native-runner-recovery-contract.js";
 import type { RunnerIngressEndpoint } from "@paperclipai/adapter-utils/runner-connectivity";
 import type {
   DurablePrpControlPlane,
@@ -7,13 +8,21 @@ import type {
 } from "../vendor/paperclip-runner/index.js";
 
 const DEFAULT_STARTUP_DEADLINE_MS = 60_000;
-const DEFAULT_RECOVERY_GRACE_MS = 120_000;
+const DEFAULT_RECOVERY_GRACE_MS = REMOTE_RUNNER_RECONNECT_GRACE_MS;
 const MAX_FRAME_BYTES = 4 * 1024 * 1024;
 const RECONNECT_DELAYS_MS = [250, 500, 1_000, 2_000, 5_000] as const;
+// A runner can legitimately stay silent for many minutes while its provider
+// waits on a long foreground tool call. Protocol pings distinguish that quiet
+// but live runner from a half-open connection (for example a preview proxy that
+// drops the route without a FIN), which otherwise never emits `close` and leaves
+// the run "running" forever. runnerd answers every ping with a pong.
+const DEFAULT_LIVENESS_INTERVAL_MS = 20_000;
+const DEFAULT_LIVENESS_TIMEOUT_MS = 90_000;
 
 export type RunnerIngressFailureCode =
   | "runner_ingress_unavailable"
-  | "runner_ingress_auth_failed";
+  | "runner_ingress_auth_failed"
+  | "runner_connection_lease_expired";
 
 export class RunnerIngressConnectionError extends Error {
   constructor(
@@ -31,9 +40,14 @@ export class WsJsonWireConnection implements PrpWireConnection {
   #onClose = new Set<(reason: TransportCloseReason) => void>();
   #pendingJson: unknown[] = [];
   #closeReason: TransportCloseReason | null = null;
+  #lastInboundAt = Date.now();
 
   constructor(readonly socket: WebSocket) {
+    socket.on("pong", () => {
+      this.#lastInboundAt = Date.now();
+    });
     socket.on("message", (data, isBinary) => {
+      this.#lastInboundAt = Date.now();
       if (isBinary) {
         this.close(1003);
         return;
@@ -70,6 +84,47 @@ export class WsJsonWireConnection implements PrpWireConnection {
     ) {
       this.socket.close(code);
     }
+  }
+
+  /**
+   * Ping the runner and terminate the socket when nothing at all (frame or
+   * pong) arrives within the timeout. Termination emits `close`, so the PRP
+   * authority and the reconnect loop observe an ordinary transport loss and
+   * the fixed recovery grace applies. Returns a stop function.
+   */
+  monitorLiveness(input: { intervalMs: number; timeoutMs: number }): () => void {
+    this.#lastInboundAt = Date.now();
+    // At least two pings fit inside the timeout, so a healthy peer always has
+    // a chance to answer before the deadline, whatever the caller passes.
+    const intervalMs = Math.max(1, Math.min(input.intervalMs, Math.floor(input.timeoutMs / 2)));
+    let lastTickAt = Date.now();
+    const ping = () => {
+      try {
+        this.socket.ping();
+      } catch {
+        // A failing ping is itself a transport loss; ws reports it via close.
+      }
+    };
+    if (this.socket.readyState === WebSocket.OPEN) ping();
+    const timer = setInterval(() => {
+      if (this.#closeReason || this.socket.readyState !== WebSocket.OPEN) return;
+      const now = Date.now();
+      // A blocked server event loop delays our own timers and the runner's
+      // queued pongs alike. That silence is not runner evidence; restart the
+      // window instead of terminating a live runner.
+      if (now - lastTickAt > intervalMs * 2) this.#lastInboundAt = now;
+      lastTickAt = now;
+      if (now - this.#lastInboundAt >= input.timeoutMs) {
+        clearInterval(timer);
+        this.socket.terminate();
+        return;
+      }
+      ping();
+    }, intervalMs);
+    timer.unref?.();
+    const stop = () => clearInterval(timer);
+    this.onClose(stop);
+    return stop;
   }
 
   onJson(listener: (value: unknown) => void): void {
@@ -167,9 +222,19 @@ async function awaitWithinDeadline<T>(input: {
   }
 }
 
+async function closeOwnedWire(wire: WsJsonWireConnection): Promise<void> {
+  const closed = wire.socket.readyState === WebSocket.CLOSED
+    ? Promise.resolve()
+    : new Promise<void>((resolve) => wire.socket.once("close", () => resolve()));
+  wire.close(1001);
+  wire.socket.terminate();
+  await closed;
+}
+
 async function openEndpoint(input: {
   endpoint: RunnerIngressEndpoint;
   signal: AbortSignal;
+  onWire: (wire: WsJsonWireConnection) => void;
 }): Promise<{ wire: WsJsonWireConnection; statusCode: number | null }> {
   validateEndpoint(input.endpoint);
   return await new Promise((resolve, reject) => {
@@ -211,6 +276,7 @@ async function openEndpoint(input: {
       input.signal.removeEventListener("abort", onAbort);
       reject(Object.assign(error, { statusCode }));
     });
+    input.onWire(wire);
   });
 }
 
@@ -251,6 +317,10 @@ export function connectRunnerPrpIngress(input: {
   endpoint: RunnerIngressEndpoint;
   startupDeadlineMs?: number;
   recoveryGraceMs?: number;
+  /** How often to ping an authenticated runner connection. */
+  livenessIntervalMs?: number;
+  /** Silence after which an authenticated connection is treated as lost. */
+  livenessTimeoutMs?: number;
   random?: () => number;
   onStateChange?: (
     state: "connecting" | "authenticated" | "reconnecting" | "failed" | "closed",
@@ -258,7 +328,7 @@ export function connectRunnerPrpIngress(input: {
   ) => void;
 }): RunnerPrpOutboundHandle {
   const abort = new AbortController();
-  let activeWire: WsJsonWireConnection | null = null;
+  const ownedWires = new Set<WsJsonWireConnection>();
   let endpoint = input.endpoint;
   const startupDeadline =
     Date.now() + (input.startupDeadlineMs ?? DEFAULT_STARTUP_DEADLINE_MS);
@@ -285,11 +355,23 @@ export function connectRunnerPrpIngress(input: {
   const loop = (async () => {
     let attempt = 0;
     let recoveryDeadline = startupDeadline;
+    // A runner whose connection lease lapsed exits without another
+    // authenticated frame. Keep the authority's reason so the run log and the
+    // terminal error name it instead of a generic transport loss.
+    let leaseFailureCode: RunnerIngressFailureCode | null = null;
     while (!abort.signal.aborted) {
       try {
         input.onStateChange?.(attempt === 0 ? "connecting" : "reconnecting");
-        const opened = await openEndpoint({ endpoint, signal: abort.signal });
-        activeWire = opened.wire;
+        if (abort.signal.aborted) return;
+        const opened = await openEndpoint({
+          endpoint,
+          signal: abort.signal,
+          onWire: (wire) => {
+            ownedWires.add(wire);
+            wire.socket.once("close", () => ownedWires.delete(wire));
+          },
+        });
+        if (abort.signal.aborted) return;
         const attachment = input.authority.attachWireConnection(opened.wire);
         const authenticated = await waitForPrpReady({
           isAuthenticated: attachment.isAuthenticated,
@@ -310,11 +392,23 @@ export function connectRunnerPrpIngress(input: {
         }
         input.onStateChange?.("authenticated");
         attempt = 0;
-        await socketClosed(opened.wire);
-        activeWire = null;
+        leaseFailureCode = null;
+        const stopLiveness = opened.wire.monitorLiveness({
+          intervalMs: input.livenessIntervalMs ?? DEFAULT_LIVENESS_INTERVAL_MS,
+          timeoutMs: input.livenessTimeoutMs ?? DEFAULT_LIVENESS_TIMEOUT_MS,
+        });
+        try {
+          await socketClosed(opened.wire);
+        } finally {
+          stopLiveness();
+        }
         recoveryDeadline = Date.now() + recoveryGraceMs;
+        const leaseFailure = input.authority.connectionLeaseFailure ?? null;
+        if (leaseFailure) {
+          leaseFailureCode = "runner_connection_lease_expired";
+          input.onStateChange?.("reconnecting", leaseFailureCode);
+        }
       } catch (error) {
-        activeWire = null;
         // close() owns intentional shutdown. openEndpoint rejects its pending
         // handshake when the abort signal fires, but that cancellation is not
         // an active-run transport failure and must not reject the long-lived
@@ -348,8 +442,16 @@ export function connectRunnerPrpIngress(input: {
           }
         }
         if (Date.now() >= recoveryDeadline) {
+          // A lapsed lease is the root cause even when a later reconnect
+          // fails authentication; keep that failure as the cause.
           const terminal =
-            failure instanceof RunnerIngressConnectionError
+            leaseFailureCode !== null
+              ? new RunnerIngressConnectionError(
+                  leaseFailureCode,
+                  "The runner's connection lease expired before it was renewed.",
+                  { cause: failure },
+                )
+              : failure instanceof RunnerIngressConnectionError
               ? failure
               : new RunnerIngressConnectionError(
                   statusCode === 401 || statusCode === 403
@@ -380,7 +482,7 @@ export function connectRunnerPrpIngress(input: {
     failure,
     async close() {
       abort.abort();
-      activeWire?.close(1001);
+      await Promise.all([...ownedWires].map(closeOwnedWire));
       await loop;
       await endpoint.close();
       input.onStateChange?.("closed");

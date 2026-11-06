@@ -1,16 +1,18 @@
 import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
+import { cachedAgentFileManifest, checkpointSnapshot, type AgentFileManifest } from "./agent-file-checkpoints.js";
 import { constants } from "node:fs";
 import { Readable } from "node:stream";
 import path from "node:path";
-import { and, eq } from "drizzle-orm";
-import { agents, activityLog, agentInstructionHeads, agentInstructionRevisions, type Db } from "@paperclipai/db";
+import { and, desc, eq, isNull, sql } from "drizzle-orm";
+import { agents, activityLog, agentInstructionHeads, agentInstructionRevisions, resourceLifecycleEvents, fileStorageDb, type Db } from "@paperclipai/db";
 import { captureDirectorySnapshot, mergeDirectoryWithBaseline, type DirectorySnapshot } from "@paperclipai/adapter-utils/workspace-restore-merge";
 import { HttpError, conflict, notFound, unprocessable } from "../errors.js";
 import { authorizeInstructionCommit, authorizeInstructionRead } from "./agent-instruction-authorization.js";
 import { assertInstructionPathSafe, instructionPath, instructionBytes, materializeInstructionBytes, readInstructionBytes, MAX_INSTRUCTION_BYTES } from "./agent-instruction-files.js";
 import { agentInstructionsBundleMode, deriveBundleState, resolveManagedInstructionsRoot } from "./agent-instructions.js";
 import type { AuthorizationActor } from "./authorization.js";
+import { durableAgentFilesEnabled, invalidateAgentFileProjection, persistDurableAgentFiles, restoreDurableAgentFiles } from "./agent-file-durability.js";
 
 type Tx = Parameters<Parameters<Db["transaction"]>[0]>[0];
 type Agent = typeof agents.$inferSelect;
@@ -59,11 +61,17 @@ export function agentFileTokenFromHash(h: string): string {
   return `${h.slice(0, 8)}-${h.slice(8, 12)}-8${h.slice(13, 16)}-a${h.slice(17, 20)}-${h.slice(20, 32)}`;
 }
 
-/** Call under the agent row lock. Import deployed revision heads once, then the
- * directory is authoritative. The adoption marker lives OUTSIDE agent files. */
+/** Call under the agent row lock. Restore shared authority first; legacy local
+ * adoption is allowed only on the server that actually owns the old directory. */
 export async function adoptAgentFiles(tx: Tx, agent: Agent): Promise<string> {
   if (agentInstructionsBundleMode(agent) === "external") throw unprocessable("External instructions must be migrated to managed storage first");
   const root = resolveManagedInstructionsRoot(agent);
+  if (await restoreDurableAgentFiles(tx, agent, root)) return root;
+  const storedRoot = agent.adapterConfig.instructionsRootPath;
+  if (durableAgentFilesEnabled() && typeof storedRoot === "string"
+    && (path.resolve(storedRoot) !== root || !await readInstructionBytes(root, deriveBundleState(agent).entryFile))) {
+    throw new HttpError(503, "Migrate managed agent files on their current server before replacing its filesystem", { code: "AGENT_FILES_MIGRATION_REQUIRED" });
+  }
   const markerRoot = path.join(path.dirname(root), "file-sync");
   const marker = "adopted.json";
   await assertInstructionPathSafe(root, deriveBundleState(agent).entryFile);
@@ -75,6 +83,7 @@ export async function adoptAgentFiles(tx: Tx, agent: Agent): Promise<string> {
   });
   if (adopted !== null) {
     if (JSON.parse(adopted).schema !== AGENT_FILES_CONTRACT) throw new Error("Unsupported agent file contract");
+    await persistDurableAgentFiles(tx, agent, root, true);
     return root;
   }
   const legacy = await tx.select({ entryFile: agentInstructionHeads.entryFile, contentBase64: agentInstructionRevisions.contentBase64 })
@@ -82,6 +91,7 @@ export async function adoptAgentFiles(tx: Tx, agent: Agent): Promise<string> {
     .where(and(eq(agentInstructionHeads.companyId, agent.companyId), eq(agentInstructionHeads.agentId, agent.id)));
   for (const entry of legacy) await materializeInstructionBytes(root, entry.entryFile, Buffer.from(entry.contentBase64, "base64"));
   await materializeInstructionBytes(markerRoot, marker, Buffer.from(JSON.stringify({ schema: AGENT_FILES_CONTRACT })));
+  await persistDurableAgentFiles(tx, agent, root, true);
   return root;
 }
 
@@ -160,7 +170,24 @@ export async function snapshotAgentFiles(root: string, enforceLimits = true): Pr
   return (await inspectAgentDirectory(root, enforceLimits)).snapshot;
 }
 
+export async function isAgentFileSaveRecorded(tx: Tx, agent: Agent, relative: string, contentHash: string | null): Promise<boolean> {
+  if (agent.status === "pending_approval" || agent.status === "terminated") return true;
+  const [latest] = await tx.select({ id: resourceLifecycleEvents.id }).from(resourceLifecycleEvents)
+    .where(and(eq(resourceLifecycleEvents.companyId, agent.companyId), eq(resourceLifecycleEvents.resourceType, "agent_runtime"), eq(resourceLifecycleEvents.resourceId, agent.id)))
+    .orderBy(desc(resourceLifecycleEvents.id)).limit(1);
+  if (!latest) return false;
+  const hash = sql<string>`${activityLog.details}->>'contentHash'`;
+  const [recorded] = await tx.select({ id: activityLog.id }).from(activityLog)
+    .innerJoin(resourceLifecycleEvents, and(eq(resourceLifecycleEvents.id, latest.id), eq(activityLog.createdAt, resourceLifecycleEvents.createdAt))).where(and(
+    eq(activityLog.companyId, agent.companyId), eq(activityLog.entityType, "agent"), eq(activityLog.entityId, agent.id), eq(activityLog.action, "agent.files_updated"),
+    eq(sql<string>`${activityLog.details}->>'agentRuntimeRevision'`, String(latest.id)),
+    eq(sql<string>`${activityLog.details}->>'path'`, relative), contentHash === null ? isNull(hash) : eq(hash, contentHash),
+  )).limit(1);
+  return Boolean(recorded);
+}
+
 export function agentFileStore(db: Db) {
+  db = fileStorageDb(db);
   async function locked<T>(companyId: string, agentId: string, actor: AuthorizationActor, write: boolean,
     fn: (tx: Tx, agent: Agent, root: string, bound: AuthorizationActor) => Promise<T>) {
     return db.transaction(async tx => {
@@ -168,7 +195,10 @@ export function agentFileStore(db: Db) {
       if (!agent) throw notFound("Agent not found");
       const bound = write ? await authorizeInstructionCommit(tx, actor, agent) : await authorizeInstructionRead(tx, actor, agent);
       const root = await adoptAgentFiles(tx, agent);
-      return fn(tx, agent, root, bound);
+      if (write) await invalidateAgentFileProjection(root);
+      const result = await fn(tx, agent, root, bound);
+      if (write) await persistDurableAgentFiles(tx, agent, root);
+      return result;
     });
   }
   async function audit(tx: Tx, agent: Agent, actor: AuthorizationActor, details: Record<string, unknown>) {
@@ -202,7 +232,10 @@ export function agentFileStore(db: Db) {
         const previous = await inspectAgentFile(root, relative);
         const currentHash = previous?.hash ?? null;
         const incomingHash = input.bytes === null ? null : fileHash(input.bytes);
-        if (currentHash === incomingHash) return { contentHash: currentHash, changed: false };
+        if (currentHash === incomingHash) {
+          if (!await isAgentFileSaveRecorded(tx, agent, relative, incomingHash)) await audit(tx, agent, bound, { path: relative, contentHash: incomingHash });
+          return { contentHash: currentHash, changed: false };
+        }
         if (currentHash !== input.baseHash) throw conflict("This file changed since it was read. Reload before saving.", { code: "AGENT_FILE_CONFLICT", path: relative, currentHash });
         if (input.bytes === null && relative === deriveBundleState(agent).entryFile) throw unprocessable("The configured instruction entry cannot be deleted");
         if (input.bytes !== null) {
@@ -219,16 +252,20 @@ export function agentFileStore(db: Db) {
         await audit(tx, agent, bound, { path: relative, contentHash: incomingHash });
         return { contentHash: incomingHash, changed: true };
       }),
-    apply: (input: { companyId: string; agentId: string; sourceDir: string; baseline: DirectorySnapshot }, actor: AuthorizationActor) =>
+    apply: (input: { companyId: string; agentId: string; sourceDir: string; baseline: DirectorySnapshot; checkpoint?: AgentFileManifest }, actor: AuthorizationActor) =>
       locked(input.companyId, input.agentId, actor, true, async (tx, agent, root, bound) => {
-        const incoming = await snapshotAgentFiles(input.sourceDir);
-        const entry = await readInstructionBytes(input.sourceDir, deriveBundleState(agent).entryFile);
-        if (entry === null) throw unprocessable("The configured instruction entry cannot be deleted");
-        instructionBytes(entry);
+        const incoming = input.checkpoint ? checkpointSnapshot(input.checkpoint) : await snapshotAgentFiles(input.sourceDir);
+        const entryPath = deriveBundleState(agent).entryFile;
+        if (incoming.entries.get(entryPath)?.kind !== "file") throw unprocessable("The configured instruction entry cannot be deleted");
+        if (!input.checkpoint || JSON.stringify(incoming.entries.get(entryPath)) !== JSON.stringify(input.baseline.entries.get(entryPath))) {
+          const entry = await readInstructionBytes(input.sourceDir, entryPath);
+          if (entry === null) throw unprocessable("The configured instruction entry cannot be deleted");
+          instructionBytes(entry);
+        }
         // Previously saved/imported bytes must remain readable, including when
         // over quota. Enforce limits on the incoming and resulting tree so a
         // run can delete files to recover instead of being locked out forever.
-        const current = await snapshotAgentFiles(root, false);
+        const current = input.checkpoint ? checkpointSnapshot(await cachedAgentFileManifest(root)) : await snapshotAgentFiles(root, false);
         // Rebase only the run's changed paths onto the current tree. This makes
         // same-file edits/deletions last-sync-wins while untouched files retain
         // changes from other runs. Ancestors may need recreating after a writer
@@ -274,7 +311,8 @@ export function agentFileStore(db: Db) {
           total += size;
         }
         assertDirectorySize(total, finalEntries.size);
-        await mergeDirectoryWithBaseline({ ...input, baseline: applyBaseline, targetDir: root });
+        await mergeDirectoryWithBaseline({ ...input, baseline: applyBaseline, targetDir: root,
+          ...(input.checkpoint ? { snapshots: { source: incoming, current } } : {}) });
         await audit(tx, agent, bound, { sourceRunId: actor.runId, contract: AGENT_FILES_CONTRACT });
         return { storageWarning: storageWarning(total, finalEntries.size, fullFile) };
       }),

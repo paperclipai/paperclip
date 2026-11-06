@@ -19,7 +19,11 @@ export interface CodexAppServerDriverOptions {
   model?: string;
   /** Per-run reasoning effort sent with each Codex turn, including resumed turns. */
   reasoningEffort?: string;
+  /** Saved hosted-search restriction for the default process transport. */
+  disableWebSearch?: boolean;
   approvalPolicy?: "never" | "on-request" | "untrusted";
+  /** Paperclip runtime instructions. Codex receives these as additive developer
+   * instructions; the historical option name remains compatible with callers. */
   baseInstructions?: string;
   includeSkillInstructions?: boolean;
   /** Private instruction directory registered by the control plane for this run. */
@@ -57,6 +61,7 @@ export interface CodexAppServerDriverOptions {
   /** Current server constraints; does not commit task status before the turn ends. */
   completionFeedback?: (result: import("../../protocol/replay-contract.js").PrpStructuredRunResult) => Promise<string>;
   environment?: NodeJS.ProcessEnv;
+  observability?: import("../agent-observability.js").ProviderObservabilityLaunch;
   /** Filesystem that authoritatively admits the workspace path. */
   workingDirectoryAuthority?: CodexWorkingDirectoryAuthority;
   now?: () => Date;
@@ -75,6 +80,7 @@ export interface CodexAppServerDriverOptions {
     usage: boolean;
     reconciliation: boolean;
     dynamicTools: boolean;
+    toolRefreshOnResume: boolean;
     runtimeRequestResolution: boolean;
     goals: boolean;
     threadLineage: boolean;

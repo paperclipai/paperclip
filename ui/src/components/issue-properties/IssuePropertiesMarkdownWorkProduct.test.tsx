@@ -13,7 +13,7 @@ import { RichWorkProductCard } from "@/components/task-chat/RichWorkProductCard"
 
 const mockIssuesApi = vi.hoisted(() => ({
   listAttachments: vi.fn(async (): Promise<unknown[]> => []),
-  listWorkProducts: vi.fn(async (): Promise<unknown[]> => []),
+  listWorkProducts: vi.fn(async (_issueId: string, _options?: { refreshPullRequests?: boolean }): Promise<unknown[]> => []),
   ensureWorkProductReviewDocument: vi.fn(async (): Promise<unknown> => ({})),
 }));
 vi.mock("@/api/issues", () => ({ issuesApi: mockIssuesApi }));
@@ -26,6 +26,7 @@ const mockUseIssueDocuments = vi.hoisted(() =>
   vi.fn((): { data: IssueDocument[] } => ({ data: [] })),
 );
 vi.mock("@/hooks/useIssueDocuments", () => ({ useIssueDocuments: mockUseIssueDocuments }));
+vi.mock("@/hooks/useArtifactsV1Enabled", () => ({ useArtifactsV1Enabled: () => ({ enabled: false, loaded: true }) }));
 vi.mock("@/lib/router", () => ({
   Link: ({ to, children, ...props }: { to: string; children: React.ReactNode }) => <a href={to} {...props}>{children}</a>,
   useLocation: () => ({ hash: "" }),
@@ -223,6 +224,23 @@ describe("markdown work product review row", () => {
     expect(download?.getAttribute("href")).toBe(`/api/attachments/${ATTACHMENT_ID}/content?download=1`);
   });
 
+  it("shows saved artifacts while the first PR refresh is stalled", async () => {
+    const saved = makeMarkdownWorkProduct({
+      type: "pull_request", provider: "github", title: "Saved PR during refresh",
+      url: "https://github.com/example/repo/pull/42", metadata: {},
+    });
+    let finishRefresh!: (products: unknown[]) => void;
+    const refresh = new Promise<unknown[]>((resolve) => { finishRefresh = resolve; });
+    mockIssuesApi.listWorkProducts.mockImplementation(async (_id, options) => options?.refreshPullRequests ? refresh : [saved]);
+    await renderTab({}, saved.title);
+    await waitForAssertion(() => {
+      expect(mockIssuesApi.listWorkProducts).toHaveBeenCalledWith(issue.id, expect.objectContaining({ refreshPullRequests: true }));
+      expect(container.querySelector(`a[href="${saved.url}"]`)).not.toBeNull();
+    });
+    finishRefresh([{ ...saved, metadata: { state: "merged" } }]);
+    await waitForAssertion(() => expect(container.textContent?.toLowerCase()).toContain("merged"));
+  });
+
   it("expands into the existing document surface without a server call when the document exists", async () => {
     mockUseIssueDocuments.mockReturnValue({ data: [makeReviewDocument()] });
     await renderTab();
@@ -398,7 +416,7 @@ describe("markdown work product review row", () => {
     expect(container.querySelector("button[aria-expanded]")).toBeNull();
   });
 
-  it.each(["image/png", "application/octet-stream"])("renders %s media tiles without duplicates or user uploads", async (contentType) => {
+  it.each(["image/png", "application/octet-stream"])("renders %s media tiles with user uploads and without promoted duplicates", async (contentType) => {
     const image = { ...makeMarkdownAttachment(), contentType, originalFilename: "cover.png" };
     const looseImage = { ...image, id: "loose-image", contentPath: "/api/attachments/loose-image/content" };
     const video = { ...makeMarkdownAttachment(), id: "loose-video", contentType: "application/octet-stream", originalFilename: "clip.mp4", contentPath: "/api/attachments/loose-video/content" };
@@ -410,11 +428,11 @@ describe("markdown work product review row", () => {
     await renderTab({}, "Cover artwork");
     await waitForAssertion(() => {
       const buttons = container.querySelectorAll('button[aria-label^="View image:"], button[aria-label^="Open video:"]');
-      expect(buttons).toHaveLength(3);
+      expect(buttons).toHaveLength(4);
       expect(container.querySelectorAll("img")).toHaveLength(2);
-      expect(container.querySelectorAll("article")).toHaveLength(3);
+      expect(container.querySelectorAll("article")).toHaveLength(4);
       expect(container.querySelector("video")?.getAttribute("src")).toBe(video.contentPath);
-      expect(container.querySelectorAll("video")).toHaveLength(1);
+      expect(container.querySelectorAll("video")).toHaveLength(2);
     });
   });
 

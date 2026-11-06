@@ -206,6 +206,43 @@ describe("TaskChatProtocolCard", () => {
     expect(document.querySelector('[role="dialog"]')).toBeNull();
   });
 
+  it("shows a branch summary and lets users inspect a work product without a remote URL", () => {
+    flushSync(() => root.render(
+      <RichWorkProductCard
+        workProduct={workProduct({
+          type: "branch",
+          provider: "git",
+          title: "Company skill update entrypoint",
+          summary: "Uncommitted implementation changes are in the execution working tree on branch company-skill-update-entrypoint.",
+          url: null,
+          metadata: null,
+          status: "active",
+        })}
+        href={null}
+      />,
+    ));
+    expect(container.textContent).not.toContain("Uncommitted implementation changes");
+    expect(container.textContent).toContain("Branch · no remote link");
+    expect(container.querySelector("strong")?.className).toContain("line-clamp-2");
+    expect(container.querySelector("a")).toBeNull();
+    const button = container.querySelector<HTMLButtonElement>('button[aria-label^="Show details:"]');
+    expect(button?.getAttribute("aria-expanded")).toBe("false");
+    flushSync(() => button!.click());
+    const savedDescription = container.querySelector<HTMLDetailsElement>("details");
+    expect(savedDescription?.open).toBe(false);
+    expect(savedDescription?.textContent).toContain("Uncommitted implementation changes");
+    flushSync(() => savedDescription!.querySelector("summary")!.click());
+    expect(savedDescription?.open).toBe(true);
+    flushSync(() => savedDescription!.querySelector("summary")!.click());
+    expect(container.textContent).toContain("git · active · Updated");
+    expect(container.querySelector('button[aria-label^="Hide details:"]')?.getAttribute("aria-expanded")).toBe("true");
+    expect(container.querySelector("strong")?.className).not.toContain("line-clamp-2");
+    flushSync(() => container.querySelector<HTMLButtonElement>('button[aria-label^="Hide details:"]')!.click());
+    expect(container.querySelector("details")).toBeNull();
+    expect(container.textContent).toContain("Branch · no remote link");
+    expect(container.querySelector('button[aria-label^="Show details:"]')?.getAttribute("aria-expanded")).toBe("false");
+  });
+
   it.each(["text/html", "application/zip"])("labels %s artifact links as downloads", (contentType) => {
     const contentPath = "/api/attachments/file/content";
     flushSync(() => root.render(
@@ -291,12 +328,17 @@ describe("TaskChatProtocolCard", () => {
     });
   });
 
-  it("shows an unhealthy active runtime as unhealthy", () => {
+  it.each([
+    ["active", "unhealthy", ["Unhealthy"], ["Running"]],
+    ["active", "unknown", [], ["Running", "Unhealthy"]],
+    ["open", "unhealthy", ["Unhealthy"], ["Running"]],
+    ["closed", "unhealthy", ["Stopped"], ["Unhealthy"]],
+  ] as const)("renders %s runtime with %s health", (status, healthStatus, visible, absent) => {
     const product = workProduct({
       type: "runtime_service",
       provider: "paperclip",
-      status: "active",
-      healthStatus: "unhealthy",
+      status,
+      healthStatus,
       title: "Storybook",
       metadata: { service: "storybook", port: 6006 },
     });
@@ -306,85 +348,13 @@ describe("TaskChatProtocolCard", () => {
       surface: "resource",
       resourceKind: "deliverable",
       title: product.title,
-      subtitle: "runtime service · active",
+      subtitle: `runtime service · ${status}`,
       href: product.url,
       workProduct: product,
     });
 
-    expect(container.textContent).toContain("Unhealthy");
-    expect(container.textContent).not.toContain("Running");
-  });
-
-  it("does not show running for an active runtime with unknown health", () => {
-    const product = workProduct({
-      type: "runtime_service",
-      provider: "paperclip",
-      status: "active",
-      healthStatus: "unknown",
-      title: "Storybook",
-      metadata: { service: "storybook", port: 6006 },
-    });
-    renderCard(root, {
-      id: "resource:deliverable:work-product-1",
-      kind: "protocol",
-      surface: "resource",
-      resourceKind: "deliverable",
-      title: product.title,
-      subtitle: "runtime service · active",
-      href: product.url,
-      workProduct: product,
-    });
-
-    expect(container.textContent).not.toContain("Running");
-    expect(container.textContent).not.toContain("Unhealthy");
-  });
-
-  it("shows an unhealthy runtime with a non-standard open status as unhealthy", () => {
-    const product = workProduct({
-      type: "runtime_service",
-      provider: "paperclip",
-      status: "open",
-      healthStatus: "unhealthy",
-      title: "Storybook",
-      metadata: { service: "storybook", port: 6006 },
-    });
-    renderCard(root, {
-      id: "resource:deliverable:work-product-1",
-      kind: "protocol",
-      surface: "resource",
-      resourceKind: "deliverable",
-      title: product.title,
-      subtitle: "runtime service · open",
-      href: product.url,
-      workProduct: product,
-    });
-
-    expect(container.textContent).toContain("Unhealthy");
-    expect(container.textContent).not.toContain("Running");
-  });
-
-  it("shows a closed runtime as stopped even when its last health check failed", () => {
-    const product = workProduct({
-      type: "runtime_service",
-      provider: "paperclip",
-      status: "closed",
-      healthStatus: "unhealthy",
-      title: "Storybook",
-      metadata: { service: "storybook", port: 6006 },
-    });
-    renderCard(root, {
-      id: "resource:deliverable:work-product-1",
-      kind: "protocol",
-      surface: "resource",
-      resourceKind: "deliverable",
-      title: product.title,
-      subtitle: "runtime service · closed",
-      href: product.url,
-      workProduct: product,
-    });
-
-    expect(container.textContent).toContain("Stopped");
-    expect(container.textContent).not.toContain("Unhealthy");
+    for (const label of visible) expect(container.textContent).toContain(label);
+    for (const label of absent) expect(container.textContent).not.toContain(label);
   });
 
   it("renders provider plan steps and status", () => {
@@ -452,7 +422,26 @@ describe("TaskChatProtocolCard", () => {
     }
   });
 
-  it("opens a workspace diff review dialog", async () => {
+  it("says when a change set counts more files than it lists", () => {
+    renderCard(root, {
+      id: "workspace-large",
+      kind: "protocol",
+      surface: "workspace_change",
+      changeSetId: "changes-large",
+      revision: 1,
+      source: "harness_reported",
+      complete: true,
+      files: [
+        { path: "a.ts", operation: "modify", previousPath: null, additions: 1, deletions: 0, binary: false, diff: null, diffTruncated: true },
+      ],
+      totals: { files: 40, additions: 120, deletions: 3 },
+      patchArtifactRef: null,
+    });
+    expect(container.textContent).toContain("40 files changed");
+    expect(container.querySelector('[data-testid="task-chat-workspace-change-omitted"]')?.textContent).toContain("39 more files changed.");
+  });
+
+  it("lists the turn's changed files and opens each diff in place", async () => {
     renderCard(root, {
       id: "workspace",
       kind: "protocol",
@@ -469,24 +458,22 @@ describe("TaskChatProtocolCard", () => {
           additions: 1,
           deletions: 1,
           binary: false,
-          diff: "-old\n+new",
+          diff: "@@ -1 +1 @@\n-old\n+new\n",
         },
       ],
       totals: { files: 1, additions: 1, deletions: 1 },
       patchArtifactRef: null,
     });
-    const button = Array.from(container.querySelectorAll("button")).find(
-      (candidate) => candidate.textContent === "Review diff",
-    );
-    expect(button).not.toBeUndefined();
-    expect(container.textContent).toContain("1 file changed · +1 −1");
-    await act(async () => button?.click());
-    expect(document.querySelector('[role="dialog"]')?.textContent).toContain(
-      "ui/src/App.tsx",
-    );
-    expect(document.querySelector('[role="dialog"]')?.textContent).toContain(
-      "old",
-    );
+    expect(container.textContent).toContain("Changed in this turn");
+    expect(container.textContent).toContain("1 file changed");
+    expect(container.querySelector('[data-testid="task-chat-diff-view"]')).toBeNull();
+    const row = container.querySelector<HTMLButtonElement>('[data-testid="task-chat-workspace-change-file"] button');
+    expect(row?.textContent).toContain("ui/src/App.tsx");
+    await act(async () => row?.click());
+    const diff = container.querySelector('[data-testid="task-chat-diff-view"]');
+    expect(diff?.textContent).toContain("Line 1");
+    expect(diff?.textContent).toContain("old");
+    expect(diff?.textContent).toContain("new");
   });
 
   it("opens a bounded file preview", async () => {
@@ -979,6 +966,9 @@ describe("TaskChatProtocolCard", () => {
       container.querySelectorAll<HTMLButtonElement>("button"),
     ).find((button) => button.getAttribute("aria-label") === "Next question");
     expect(next?.disabled).toBe(false);
+    expect(container.textContent).not.toContain("Enter a custom answer.");
+    const submitNext = Array.from(container.querySelectorAll("button")).find(button => button.textContent?.trim() === "Next");
+    await act(async () => submitNext?.click());
     expect(container.textContent).toContain("Enter a custom answer.");
 
     const textarea = container.querySelector("textarea")!;

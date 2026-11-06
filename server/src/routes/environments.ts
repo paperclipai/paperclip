@@ -52,11 +52,13 @@ import { secretService } from "../services/secrets.js";
 import {
   listReadyPluginEnvironmentDrivers,
   type ReadyPluginWorkerRecovery,
+  assertAgentsReadyForEnvironmentChange,
 } from "../services/plugin-environment-driver.js";
 import { getConfiguredSecretProvider } from "../secrets/configured-provider.js";
 import { assertBoardOrgAccess, getActorInfo } from "./authz.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import { environmentService } from "../services/environments.js";
+import { SANDBOX_PLATFORM_PROBE_METADATA_KEY } from "../services/environment-custom-image-runtime.js";
 import { environmentRuntimeService } from "../services/environment-runtime.js";
 import { executionWorkspaceService } from "../services/execution-workspaces.js";
 import { closeWarmNativeSessionsForEnvironment } from "../services/native-runtime/native-session-executor.js";
@@ -311,6 +313,9 @@ async function assertPlatformProvisionedEnvironmentWritable(
  * Clearing (null/false) is allowed so stale markers can be removed.
  */
 function assertNoClientPlatformProvisionedMarkers(metadata: unknown): void {
+  if (isPlainRecord(metadata) && Object.prototype.hasOwnProperty.call(metadata, SANDBOX_PLATFORM_PROBE_METADATA_KEY)) {
+    throw unprocessable("Sandbox platform qualification is recorded only by an explicit environment probe.", { code: "environment_platform_probe_reserved" });
+  }
   if (!isCloudManagedInstance() || !isPlainRecord(metadata)) return;
   for (const key of PLATFORM_PROVISIONED_MARKER_KEYS) {
     if (metadata[key] !== undefined && metadata[key] !== null && metadata[key] !== false) {
@@ -396,6 +401,10 @@ export function environmentRoutes(
     envVars?: Record<string, unknown> | null;
     metadata: Record<string, unknown> | null;
   }>(req: Request, environment: T): T {
+    if (environment.metadata) {
+      const { [SANDBOX_PLATFORM_PROBE_METADATA_KEY]: _probe, ...metadata } = environment.metadata;
+      environment = { ...environment, metadata };
+    }
     // Floor: on cloud-managed instances, platform-provisioned rows use the
     // floored view — credential-shaped config keys are never echoed to any
     // reader, structural config stays visible, and tenant env vars on the
@@ -1208,6 +1217,11 @@ export function environmentRoutes(
     // Persist the config change and its binding rows atomically: a binding
     // ref that fails validation (e.g. a deleted secret) must roll the whole
     // save back instead of leaving the config re-pointed with stale bindings.
+    if (patch.config !== undefined || patch.driver !== undefined) {
+      const instanceDefault = (await instanceSettingsService(db).get()).defaultEnvironmentId;
+      await assertAgentsReadyForEnvironmentChange(db, existing, { driver: nextDriver, config: patch.config ?? existing.config },
+        { environmentId: existing.id, inheritsDefault: instanceDefault === existing.id });
+    }
     const environment = await db.transaction(async (tx) => {
       const updated = await svc.update(existing.id, patch, { db: tx });
       if (!updated) return null;

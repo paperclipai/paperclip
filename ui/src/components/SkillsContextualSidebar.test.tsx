@@ -97,6 +97,7 @@ describe("SkillsContextualSidebar", () => {
     expect(sidebarNavItemMock.mock.calls.map(([props]) => props.to)).toEqual([
       "/skills",
       "/skills?tab=discover",
+      "/skills/sources",
       "/skills/studio",
     ]);
 

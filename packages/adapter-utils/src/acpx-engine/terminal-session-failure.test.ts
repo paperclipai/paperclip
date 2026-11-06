@@ -1,7 +1,27 @@
 import { describe, expect, it } from "vitest";
-import { formatTerminalSessionFailure, sanitizeTerminalSessionFailure } from "./terminal-session-failure.js";
+import { classifyToolDefinitionFailure, formatTerminalSessionFailure, sanitizeTerminalSessionFailure } from "./terminal-session-failure.js";
 
 describe("terminal session failure diagnostics", () => {
+  it.each([
+    "API Error: 400 tools.17.custom.name: String should have at most 128 characters",
+    "tools[0].input_schema: invalid schema",
+    "Invalid schema for function 'read-file': unsupported type",
+  ])("rejects unchanged tool definitions: %s", (details) => {
+    const failure = { category: "service", details };
+    expect(classifyToolDefinitionFailure(failure)).toEqual({
+      errorCode: "provider_tool_definition_invalid", errorFamily: "configuration",
+    });
+    // Classification precedes arbitrary short-secret redaction.
+    expect(sanitizeTerminalSessionFailure(failure, { SECRET: "128" }).details).not.toContain("128");
+  });
+  it.each([
+    "HTTP 503 service unavailable",
+    "tool call arguments are invalid: name must be a string",
+    "prompt is too long",
+    "tools.0.arguments.name: String should have at most 128 characters",
+  ])("keeps unrelated errors on their existing recovery path: %s", (details) => {
+    expect(classifyToolDefinitionFailure({ category: "service", details })).toBeNull();
+  });
   it("keeps the provider category, message, request id and stack", () => {
     const failure = {
       category: "service",

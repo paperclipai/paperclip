@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -72,6 +72,13 @@ vi.mock("@paperclipai/adapter-utils/execution-target", async () => {
 });
 
 import { testEnvironment } from "./test.js";
+import { discoverOpenCodeModels, ensureOpenCodeModelConfiguredAndAvailable } from "./models.js";
+
+vi.mock("./models.js", async () => ({
+  ...await vi.importActual<typeof import("./models.js")>("./models.js"),
+  discoverOpenCodeModels: vi.fn().mockRejectedValue(new Error("catalog should not be needed")),
+  ensureOpenCodeModelConfiguredAndAvailable: vi.fn().mockRejectedValue(new Error("catalog should not be needed")),
+}));
 
 describe("opencode remote environment diagnostics", () => {
   const configHomes: string[] = [];
@@ -87,6 +94,56 @@ describe("opencode remote environment diagnostics", () => {
     vi.unstubAllEnvs();
     await rm(configHome, { recursive: true, force: true });
     await Promise.all(configHomes.splice(0).map(dir => rm(dir, { recursive: true, force: true })));
+  });
+
+  it.each(["passed", "auth_required", "model_unavailable", "timed_out"])(
+    "validates a native model with the real probe path and no catalog scan (%s)", async outcome => {
+      const successfulProbe = await runAdapterExecutionTargetProcess.getMockImplementation()!();
+      runAdapterExecutionTargetProcess.mockResolvedValueOnce(outcome === "passed" ? successfulProbe : {
+        ...successfulProbe, exitCode: 1, stdout: "", timedOut: outcome === "timed_out",
+        stderr: outcome === "auth_required" ? "invalid API key" : "ProviderModelNotFoundError",
+      });
+      const result = await testEnvironment({ companyId: "company-1", adapterType: "paperclip_runner",
+        config: { model: "openrouter/deepseek/deepseek-v4-flash-0731", env: { XDG_CONFIG_HOME: configHome } } });
+      expect(discoverOpenCodeModels).not.toHaveBeenCalled();
+      expect(ensureOpenCodeModelConfiguredAndAvailable).not.toHaveBeenCalled();
+      expect(runAdapterExecutionTargetProcess).toHaveBeenCalledExactlyOnceWith(
+        expect.any(String), null, "opencode", ["run", "--format", "json", "--model", "openrouter/deepseek/deepseek-v4-flash-0731"],
+        expect.objectContaining({ stdin: "Respond with hello." }),
+      );
+      expect(result.status).toBe(outcome === "passed" ? "pass" : "warn");
+      expect(result.checks).toContainEqual(expect.objectContaining({ code: `opencode_hello_probe_${outcome}` }));
+      const call = runAdapterExecutionTargetProcess.mock.calls[0] as unknown as [unknown, unknown, unknown, unknown, { cwd: string }];
+      expect(path.basename(call[4].cwd)).toMatch(/^paperclip-opencode-native-probe-/);
+      await expect(stat(call[4].cwd)).rejects.toMatchObject({ code: "ENOENT" });
+    },
+  );
+
+  it("rejects a malformed native model before starting the probe", async () => {
+    const result = await testEnvironment({ companyId: "company-1", adapterType: "paperclip_runner",
+      config: { model: "missing-provider", env: { XDG_CONFIG_HOME: configHome } } });
+    expect(result.status).toBe("fail");
+    expect(runAdapterExecutionTargetProcess).not.toHaveBeenCalled();
+    expect(discoverOpenCodeModels).not.toHaveBeenCalled();
+  });
+
+  it("preserves an explicitly configured native probe directory", async () => {
+    await testEnvironment({ companyId: "company-1", adapterType: "paperclip_runner",
+      config: { model: "provider/model", cwd: configHome, env: { XDG_CONFIG_HOME: configHome } } });
+    const call = runAdapterExecutionTargetProcess.mock.calls[0] as unknown as [unknown, unknown, unknown, unknown, { cwd: string }];
+    expect(call[4].cwd).toBe(configHome);
+    expect((await stat(configHome)).isDirectory()).toBe(true);
+  });
+
+  it("keeps catalog validation for the legacy local adapter", async () => {
+    vi.mocked(discoverOpenCodeModels).mockResolvedValueOnce([{ id: "provider/model", label: "Model" }]);
+    vi.mocked(ensureOpenCodeModelConfiguredAndAvailable).mockResolvedValueOnce([{ id: "provider/model", label: "Model" }]);
+    const result = await testEnvironment({ companyId: "company-1", adapterType: "opencode_local",
+      config: { model: "provider/model", env: { XDG_CONFIG_HOME: configHome } } });
+    expect(result.status).toBe("pass");
+    expect(discoverOpenCodeModels).toHaveBeenCalledOnce();
+    expect(ensureOpenCodeModelConfiguredAndAvailable).toHaveBeenCalledOnce();
+    expect(runAdapterExecutionTargetProcess).toHaveBeenCalledOnce();
   });
 
   it.each([false, true])("stages remote runtime config assets for sandbox hello probes (managed=%s)", async (managed) => {

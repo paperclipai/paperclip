@@ -68,6 +68,26 @@ afterEach(async () => {
 const begin = { companyId: "co1", agentId: "ag1", runId: "run1" };
 
 describe("createDurableRunLogStore", () => {
+  it.each([false, true])("reads a complete long final record from a compact tail (S3 fallback: %s)", async (remote) => {
+    const { provider, objects, calls } = createMemoryProvider();
+    const store = createDurableRunLogStore({ basePath: baseDir, s3: { provider } });
+    const handle = await store.begin(begin);
+    await store.append(handle, { stream: "stdout", chunk: "older tool output ".repeat(100_000), ts: "t1" });
+    const answer = "Complete report 中文🧪\n".repeat(8_000);
+    await store.append(handle, { stream: "stdout", chunk: answer, ts: "t2" });
+    await store.finalize(handle);
+    const bytes = objects.get(handle.logRef)!;
+    // Cut inside a multibyte character to exercise byte alignment, not just
+    // ASCII JSON reconstruction. The earlier large record must stay omitted.
+    const offset = bytes.lastIndexOf(Buffer.from("🧪"), bytes.length - 32_000) + 1;
+    if (remote) await fs.rm(baseDir, { recursive: true, force: true });
+    const result = await store.read(handle, { offset, limitBytes: bytes.length - offset, alignStartToRecord: true });
+    expect(result.content.trim().split("\n").map((line) => JSON.parse(line).chunk)).toEqual([answer]);
+    expect(result.nextOffset).toBe(bytes.length);
+    expect(await store.read(handle, { offset: result.nextOffset })).toMatchObject({ content: "" });
+    expect(calls.get).toBeLessThan(12);
+  });
+
   it("keeps store id 'local_file' so downstream coupling (feedback, casts) is unchanged", async () => {
     const { provider } = createMemoryProvider();
     const store = createDurableRunLogStore({ basePath: baseDir, s3: { provider } });
@@ -83,6 +103,114 @@ describe("createDurableRunLogStore", () => {
     const res = await store.read(handle);
     expect(res.content).toContain("hello");
     expect(calls.get).toBe(0); // local file present -> no S3 read
+  });
+
+  it.each([false, true])("retains every attempt across retry (pod restart: %s)", async (restart) => {
+    const { provider, objects } = createMemoryProvider();
+    let store = createDurableRunLogStore({ basePath: baseDir, s3: { provider } });
+    const attempts: string[] = [];
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      if (restart && attempt > 1) {
+        await fs.rm(baseDir, { recursive: true, force: true });
+        store = createDurableRunLogStore({ basePath: baseDir, s3: { provider } });
+      }
+      const handle = await store.begin(begin);
+      attempts.push(handle.attemptId!);
+      await store.append(handle, { stream: "stderr", chunk: `attempt-${attempt}`, ts: "same-time", seq: attempt });
+      const summary = await store.finalize(handle);
+      const saved = objects.get(handle.logRef)!;
+      const lines = saved.toString().trim().split("\n").map((line) => JSON.parse(line));
+      expect(lines.map((line) => line.chunk)).toEqual(Array.from({length: attempt}, (_, i) => `attempt-${i + 1}`));
+      expect(lines.map((line) => line.attemptId)).toEqual(attempts);
+      expect(new Set(attempts).size).toBe(attempt);
+      expect(summary.bytes).toBe(saved.length);
+      expect(summary.sha256).toBe(createHash("sha256").update(saved).digest("hex"));
+    }
+  });
+
+  it("never replaces concurrent appends when two stores restore the same missing log", async () => {
+    const { provider, objects } = createMemoryProvider();
+    const firstStore = createDurableRunLogStore({ basePath: baseDir, s3: { provider } });
+    const secondStore = createDurableRunLogStore({ basePath: baseDir, s3: { provider } });
+    const original = await firstStore.begin(begin);
+    await firstStore.append(original, { stream: "stderr", chunk: "original", ts: "t0" });
+    await firstStore.finalize(original);
+    const prefix = Buffer.from(objects.get(original.logRef)!);
+    await fs.rm(baseDir, { recursive: true, force: true });
+    let reached!: () => void, release!: () => void;
+    const restoring = new Promise<void>((resolve) => { reached = resolve; });
+    const barrier = new Promise<void>((resolve) => { release = resolve; });
+    const spy = vi.spyOn(provider, "getObject").mockImplementationOnce(async () => ({
+      stream: Readable.from((async function* () {
+        yield prefix;
+        reached();
+        await barrier;
+      })()),
+      contentLength: prefix.length,
+    }));
+    const slow = firstStore.begin(begin);
+    try {
+      await restoring;
+      const fast = await secondStore.begin(begin);
+      await secondStore.append(fast, { stream: "stderr", chunk: "fast attempt", ts: "t1" });
+      release();
+      const late = await slow;
+      await firstStore.append(late, { stream: "stderr", chunk: "slow attempt", ts: "t2" });
+      await firstStore.finalize(late);
+      const saved = objects.get(original.logRef)!;
+      expect(saved).toEqual(await fs.readFile(path.join(baseDir, original.logRef)));
+      expect(saved.toString().trim().split("\n").map((line) => JSON.parse(line).chunk))
+        .toEqual(["original", "fast attempt", "slow attempt"]);
+    } finally {
+      release();
+      await slow.catch(() => undefined);
+      spy.mockRestore();
+    }
+  });
+
+  it.each(["stream_failure", "short_read"])("preserves the durable prefix when restore fails (%s)", async (fault) => {
+    const { provider, objects, calls } = createMemoryProvider();
+    const store = createDurableRunLogStore({ basePath: baseDir, s3: { provider } });
+    const handle = await store.begin(begin);
+    await store.append(handle, { stream: "stderr", chunk: "original failure evidence", ts: "t1" });
+    await store.finalize(handle);
+    const prefix = Buffer.from(objects.get(handle.logRef)!);
+    await fs.rm(baseDir, { recursive: true, force: true });
+    const spy = vi.spyOn(provider, "getObject").mockResolvedValueOnce({
+      stream: Readable.from((async function* () {
+        yield prefix.subarray(0, 10);
+        if (fault === "stream_failure") throw new Error("storage connection lost");
+      })()),
+      contentLength: prefix.length,
+    });
+    try {
+      await expect(store.begin(begin)).rejects.toThrow(
+        fault === "stream_failure" ? "storage connection lost" : "incomplete prefix",
+      );
+      await expect(fs.stat(path.join(baseDir, handle.logRef))).rejects.toMatchObject({ code: "ENOENT" });
+      expect(objects.get(handle.logRef)).toEqual(prefix);
+      expect(calls.put).toBe(1);
+      const next = await store.begin(begin);
+      expect(await fs.readFile(path.join(baseDir, next.logRef))).toEqual(prefix);
+    } finally { spy.mockRestore(); }
+  });
+
+  it("skips the durable restore request only for a proven-new run", async () => {
+    const { provider, objects, calls } = createMemoryProvider();
+    const store = createDurableRunLogStore({ basePath: baseDir, s3: { provider } });
+    const fresh = await store.begin({ ...begin, newRun: true });
+    expect(calls).toMatchObject({ head: 0, get: 0 });
+    await store.append(fresh, { stream: "stdout", chunk: "first attempt", ts: "t1" });
+    await store.finalize(fresh);
+
+    // Lose local state, then begin again without the proof: the prefix restores.
+    await fs.rm(baseDir, { recursive: true, force: true });
+    const recovered = await store.begin(begin);
+    expect(calls).toMatchObject({ head: 1, get: 1 });
+    await store.append(recovered, { stream: "stdout", chunk: "second attempt", ts: "t2" });
+    await store.finalize(recovered);
+    expect(objects.get(fresh.logRef)!.toString().trim().split("\n").map((line) => JSON.parse(line).chunk))
+      .toEqual(["first attempt", "second attempt"]);
   });
 
   it("uploads the complete log to S3 on finalize", async () => {
@@ -133,7 +261,7 @@ describe("createDurableRunLogStore", () => {
       expect(summary.sha256).toBe(createHash("sha256").update(local).digest("hex"));
       expect(objects.get(handle.logRef)).toEqual(local);
       expect(local.toString()).toBe(outcome === "fails" ? "" : JSON.stringify({
-        ts: "t1", stream: "stderr", chunk: "late diagnostic",
+        ts: "t1", attemptId: handle.attemptId, stream: "stderr", chunk: "late diagnostic",
       }) + "\n");
     } finally {
       release();

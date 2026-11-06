@@ -1,5 +1,5 @@
 import { readCodexThreadState, readCodexTurnMetadata, readCodexTurnItems } from "./codex-history.js";
-import { codexRunUsage, observeCodexUsage } from "./codex-usage-baseline.js";
+import { codexRunUsage, codexUsageBaselineForNextRun, observeCodexUsage } from "./codex-usage-baseline.js";
 import { randomUUID } from "node:crypto";
 import { NativeProviderTerminalFailure } from "../../contracts/native-session-backend.js";
 
@@ -23,6 +23,7 @@ import {
   parseHarnessRuntimeRequestResolution,
 } from "../../contracts/harness-driver.js";
 import type { NativeUserMessage } from "../../contracts/types.js";
+import type { NativeRunRuntimeGrant } from "../../contracts/runtime-context.js";
 import {
   CODEX_RESULT_OUTPUT_SCHEMA,
   type CodexModelContextSnapshot,
@@ -55,21 +56,41 @@ import {
 } from "./codex-session-terminal.js";
 import { boundedText, record, text, userInput } from "./codex-driver-values.js";
 
+/** TurnStartParams.summary: provider-written reasoning summaries for every turn. */
+export const CODEX_REASONING_SUMMARY = "auto";
+
 export class CodexHarnessSession
   extends CodexSessionState
   implements HarnessSession
 {
+  #deferredNotificationPump = false;
+
   constructor(input: CodexSessionStateInput) {
     super(input);
     this.transport.setServerRequestHandler((request) =>
       handleServerRequest(this, request),
     );
-    initializeCodexSessionEvents(this, input);
+    const restored = this.transport.takeRestoredRuntimeRequests?.() ?? [];
+    const restoredIds = new Set(restored.map(request => String(request.id)));
+    initializeCodexSessionEvents(this, {
+      ...input,
+      stalePendingRuntimeRequests: input.stalePendingRuntimeRequests?.filter(request => !restoredIds.has(request.requestId)),
+    });
+    for (const request of restored) {
+      void handleServerRequest(this, request, { restored: true }).catch(error => this.failProtocol(
+        "runtime_request_recovery_failed", error instanceof Error ? error.message : String(error),
+      ));
+    }
     if (this.terminal) {
+      this.#deferredNotificationPump = true;
       this.eventQueue.close();
     } else {
       void pumpNotifications(this);
     }
+  }
+
+  supportsTurnReasoning(): boolean {
+    return this.transport.supportsTurnReasoning?.() === true;
   }
 
   turnControlCapabilities() {
@@ -87,51 +108,64 @@ export class CodexHarnessSession
     };
   }
 
-  async attachRun(input: { runId: string }): Promise<void> {
+  async attachRun(input: { runId: string; currentRunGrant?: NativeRunRuntimeGrant }): Promise<void> {
     this.assertProtocolIntegrity();
     const transportOwnsQuiescence = this.transport.attachRun !== undefined;
     if (
-      this.turnStartPending ||
+      this.turnStartPending || this.pendingRunAttachment !== null ||
       (!transportOwnsQuiescence &&
         (this.activeTurnId !== null || this.pendingRuntimeRequestMap.size > 0))
     ) {
       throw new Error("codex_run_attach_busy");
     }
     if (!input.runId) throw new Error("codex_run_attach_invalid");
-    await this.transport.attachRun?.({
-      runId: input.runId,
-      turnId: `turn_attachment_${randomUUID().replaceAll("-", "")}`,
-      itemId: `item_attachment_${randomUUID().replaceAll("-", "")}`,
-    });
-    this.assertProtocolIntegrity();
-    if (transportOwnsQuiescence) {
-      // Runnerd's attachment contract performs two durable readiness probes,
-      // drains the settled provider tail, and rotates authority atomically.
-      // Its proof supersedes host reducer state that can remain stale when a
-      // semantic-result consumer stops before the interrupt terminal arrives.
-      // Drop only the prior run's already-proven-settled buffered suffix.
-      this.activeTurnId = null;
-      this.pendingRuntimeRequestMap.clear();
-      this.eventQueue.clear();
+    let settle!: () => void;
+    this.pendingRunAttachment = { runId: input.runId, settled: new Promise<void>(resolve => { settle = resolve; }) };
+    try {
+      await this.transport.attachRun?.({
+        runId: input.runId,
+        turnId: `turn_attachment_${randomUUID().replaceAll("-", "")}`,
+        itemId: `item_attachment_${randomUUID().replaceAll("-", "")}`,
+        ...(input.currentRunGrant ? { currentRunGrant: structuredClone(input.currentRunGrant) } : {}),
+      });
+      this.assertProtocolIntegrity();
+      if (transportOwnsQuiescence) {
+        // Runnerd's attachment contract performs two durable readiness probes,
+        // drains the settled provider tail, and rotates authority atomically.
+        // Its proof supersedes host reducer state that can remain stale when a
+        // semantic-result consumer stops before the interrupt terminal arrives.
+        // Drop only the prior run's already-proven-settled buffered suffix.
+        this.activeTurnId = null;
+        this.pendingRuntimeRequestMap.clear();
+        this.eventQueue.clear();
+      }
+      if (this.codexUsageBaseline && input.runId !== this.runId) {
+        this.codexUsageBaseline = codexUsageBaselineForNextRun(this.codexUsageBaseline);
+        this.usageSnapshot = codexRunUsage(this.codexUsageBaseline);
+      }
+      this.runId = input.runId;
+      this.result = null;
+      this.resultFingerprint = null;
+      this.resultCallId = null;
+      this.resultTurnId = null;
+      this.dispositionOnlyRecoveryConsumed = false;
+      this.dispositionOnlyRecoveryTurnId = null;
+      this.terminal = false;
+      this.terminalTurns.clear();
+      this.turnStarted = false;
+      this.protocolFailed = false;
+      this.protocolFailureCode = null;
+      this.protocolFailureMessage = null;
+      if (this.#deferredNotificationPump) {
+        this.eventQueue.reopen();
+        this.#deferredNotificationPump = false;
+        void pumpNotifications(this);
+      }
+      this.emit("run.attached", { runId: input.runId, sameSession: true });
+    } finally {
+      this.pendingRunAttachment = null;
+      settle();
     }
-    if (this.codexUsageBaseline && input.runId !== this.runId) {
-      this.codexUsageBaseline = { baseline: { ...this.codexUsageBaseline.latest }, latest: { ...this.codexUsageBaseline.latest } };
-      this.usageSnapshot = codexRunUsage(this.codexUsageBaseline);
-    }
-    this.runId = input.runId;
-    this.result = null;
-    this.resultFingerprint = null;
-    this.resultCallId = null;
-    this.resultTurnId = null;
-    this.dispositionOnlyRecoveryConsumed = false;
-    this.dispositionOnlyRecoveryTurnId = null;
-    this.terminal = false;
-    this.terminalTurns.clear();
-    this.turnStarted = false;
-    this.protocolFailed = false;
-    this.protocolFailureCode = null;
-    this.protocolFailureMessage = null;
-    this.emit("run.attached", { runId: input.runId, sameSession: true });
   }
 
   contextSnapshot(): CodexModelContextSnapshot {
@@ -147,11 +181,28 @@ export class CodexHarnessSession
     /** Set by orchestration only after successful provider-session recovery. */
     continuation?: true;
     requestedCollaborationMode?: "default" | "plan";
+    /** OpenCode/OpenRouter only. Applies to this turn, never subsequent turns. */
+    reasoningMode?: "default" | "disabled";
+    /** Run the provider's context compaction as this turn. */
+    compact?: true;
+    /** Last context occupancy recorded before a compaction turn. */
+    contextTokensBefore?: number;
   }): Promise<{
     turnId: string;
     effectiveCollaborationMode: "default" | "plan";
   }> {
     this.assertProtocolIntegrity();
+    if (input.compact === true && (input.reasoningMode !== undefined || this.dispositionOnlyRecoveryAvailable)) {
+      throw this.unsupported("context compaction", "compaction cannot combine with reasoning or disposition recovery");
+    }
+    // A compaction-only run resumes the session without a fresh usage report;
+    // seed the "before" size the divider shows from Paperclip's last reading.
+    if (input.compact === true && input.contextTokensBefore !== undefined) {
+      this.lastContextUsedTokens ??= input.contextTokensBefore;
+    }
+    if (input.reasoningMode !== undefined && !this.supportsTurnReasoning()) {
+      throw new Error("Per-turn reasoning is not supported by this provider");
+    }
     if (this.protocolFailed && this.protocolFailureCode) {
       throw new NativeProviderTerminalFailure(this.protocolFailureCode, false, this.protocolFailureMessage ?? undefined);
     }
@@ -202,8 +253,8 @@ export class CodexHarnessSession
     }
     // The submitted text is part of the canonical record so a tracer can show
     // the operator's own message without keeping shadow state next to the
-    // reducer.
-    this.emit("turn.submitted", {
+    // reducer. A compaction turn submits no message.
+    if (input.compact !== true) this.emit("turn.submitted", {
       envelopeSchema: this.taskEnvelope.schema,
       text: input.message.text,
       ...(turnSkills.length ? { skillInputs: turnSkills } : {}),
@@ -219,9 +270,18 @@ export class CodexHarnessSession
     let response: Record<string, unknown>;
     const requestedMode = this.opened.context.collaborationMode;
     try {
-      response = await this.transport.request("turn/start", {
+      // Compaction runs as the provider's own turn. Codex's response carries
+      // no turn; the runnerd transport binds it and answers like turn/start.
+      response = input.compact === true
+        ? await this.transport.request("thread/compact/start", { threadId: this.opened.threadId })
+        : await this.transport.request("turn/start", {
         threadId: this.opened.threadId,
+        ...(input.reasoningMode === undefined ? {} : { reasoningMode: input.reasoningMode }),
         ...(this.reasoningEffort ? { effort: this.reasoningEffort } : {}),
+        // Codex resolves an unset summary from the model, and current models
+        // resolve it to "none": reasoning items then carry no text at all.
+        // Request provider-written summaries so the task chat can show them.
+        ...(this.driverKind === "codex_app_server" ? { summary: CODEX_REASONING_SUMMARY } : {}),
         cwd: this.opened.context.workingDirectory,
         permissions:
           text(record(record(this.opened.context.sandbox).permissionProfile).id) || (requestedMode === "plan"
@@ -276,7 +336,9 @@ export class CodexHarnessSession
     }
     this.assertProtocolIntegrity();
     const turn = record(response.turn);
-    const turnId = text(turn.id);
+    // A direct Codex app-server answers thread/compact/start with `{}`; its
+    // compaction turn is known only from a turn/started that already arrived.
+    const turnId = text(turn.id) || (input.compact === true ? (this.activeTurnId ?? "") : "");
     if (turnId.length === 0) {
       // A start notification is only optimistic until the response validates.
       // Clear it before released semantic/terminal waiters can observe an
@@ -404,6 +466,7 @@ export class CodexHarnessSession
       await this.transport.request("turn/interrupt", {
         threadId: this.opened.threadId,
         turnId,
+        ...(reason ? { reason: boundedText(reason) } : {}),
       });
       if (this.activeTurnId !== turnId) {
         throw new HarnessOperationAlreadyTerminalError("interruption");
@@ -464,12 +527,12 @@ export class CodexHarnessSession
         `request ${input.requestId} is already settling`,
       );
     }
-    pending.settlingResolution = structuredClone(resolution);
     const response = runtimeRequestResponse(
       pending.request,
       resolution,
       pending.responseContext,
     );
+    pending.settlingResolution = structuredClone(resolution);
     try {
       await this.transport.resolveRuntimeRequest?.({
         requestId: input.requestId,
@@ -699,6 +762,9 @@ export class CodexHarnessSession
           reconciledUsage.total,
           false,
         );
+        // Only an active turn's report belongs to this run. An idle thread read
+        // can include late usage that no run has been charged for yet.
+        if (this.activeTurnId !== null) this.codexUsageBaseline.accounted = { ...this.codexUsageBaseline.latest };
         this.usageSnapshot = {
           ...reconciledUsage,
           ...codexRunUsage(this.codexUsageBaseline),
