@@ -102,9 +102,12 @@ export function issueTreeControlRoutes(
     // once, under current admission gates; never replay uncertain actions.
     const hold = await treeControlSvc.getHold(root.companyId, holdId);
     if (!hold || hold.mode !== "pause") return [];
+    // The pause gate also covered tasks created under the tree after its
+    // snapshot, so work it refused there is owed too.
+    const currentTree = await treeControlSvc.listTreeIssues(root.companyId, hold.rootIssueId);
     return resumeInterruptedWork(db, {
       companyId: root.companyId,
-      issueIds: (hold.members ?? []).map((member) => member.issueId),
+      issueIds: [...(hold.members ?? []).map((member) => member.issueId), ...currentTree.map((issue) => issue.id)],
       rootIssueId: root.id,
       actor,
       wakeup: (agentId, opts) => heartbeat.wakeup(agentId, opts),

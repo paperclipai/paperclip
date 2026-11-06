@@ -52,7 +52,9 @@ import { issueService } from "../../../services/issues.js";
 import {
   issueTreeControlService,
   isVerifiedIssueTreeControlInteractionWake,
+  ISSUE_PAUSED_ERROR_CODE,
   ISSUE_TREE_CONTROL_INTERACTION_WAKE_REASONS,
+  pauseSuppressionResult,
 } from "../../../services/issue-tree-control.js";
 import {
   continuationSummaryParksExecutor,
@@ -752,6 +754,11 @@ export function createPostgresRunDispatchAdapter(
     await notifyScheduledRetryCancellation(tx, { companyId: input.companyId, runId: input.runId });
     await notifyUnsafeWorkspaceExportRecovery(tx, { companyId: input.companyId, issueId: input.issueId ?? undefined });
     await notifyChatRunMilestones(tx, { companyId: input.companyId, issueId: input.issueId ?? undefined, runId: input.runId });
+    // A retry a pause refused is owed one re-dispatch when that pause is released.
+    const pauseHoldId = input.errorCode === ISSUE_PAUSED_ERROR_CODE ? readNonEmptyString(input.details.holdId) : null;
+    const pauseSuppression = pauseHoldId ? pauseSuppressionResult({
+      holdId: pauseHoldId, rootIssueId: readNonEmptyString(input.details.rootIssueId),
+    }) : null;
     const [row] = await tx
       .update(heartbeatRuns)
       .set({
@@ -759,6 +766,9 @@ export function createPostgresRunDispatchAdapter(
         finishedAt: input.now,
         error: input.reason,
         errorCode: input.errorCode,
+        ...(pauseSuppression ? {
+          resultJson: sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) || ${JSON.stringify(pauseSuppression)}::jsonb`,
+        } : {}),
         updatedAt: input.now,
       })
       .where(
