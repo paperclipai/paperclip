@@ -2239,7 +2239,7 @@ impl CodexProvider {
     /// its own turn, but `thread/compact/start` answers `{}`, so the turn
     /// identity is bound from the `turn/started` notification that follows.
     /// Messages read while waiting stay buffered for normal event delivery.
-    pub(crate) fn start_compaction_turn(&mut self) -> Result<Value, LocalRunnerError> {
+    pub fn start_compaction_turn(&mut self) -> Result<Value, LocalRunnerError> {
         if self.config.provider != "codex" {
             return Err(LocalRunnerError::invalid(
                 "on-demand context compaction requires Codex",
