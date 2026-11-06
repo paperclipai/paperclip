@@ -33,7 +33,7 @@ import { workspaceOperationService } from "./workspace-operations.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { projectTaskInterruption, taskInterruptionPresentation } from "./task-interruption-presentation.js";
 import * as nativeWorkspaceSync from "./native-runtime/native-workspace-sync.js";
-import { registerCancelledWorkspacePreservationWork } from "./native-runtime/native-failed-workspace-recovery.js";
+import { registerCancelledWorkspacePreservationWork, preserveTaskRemoteWorkspaceWriter, preserveOrphanedNativeWorkspace } from "./native-runtime/native-failed-workspace-recovery.js";
 import { GitShallowMetadataError } from "@paperclipai/adapter-utils/git-workspace-sync";
 import { readSystemRecovery } from "./system-recovery-state.js";
 import { adoptSystemRecovery, updateSystemRecovery } from "./system-recovery.js";
@@ -974,6 +974,126 @@ describe("automatic retained workspace recovery", () => {
     return { ...f, ...(sourceLayout === "published" ? { remote: remoteCwd } : {}), source, workspaceId, resultId, git, commit };
   }
 
+  async function exhaustedAcceptedRemoteWriter(leasePolicy: "ephemeral" | "reuse_by_environment" = "ephemeral") {
+    const f = await acceptedRemoteExport();
+    await db.update(issueRecoveryActions).set({ status: "cancelled", cause: "native_workspace_sync_out_failed",
+      evidence: { runId: f.runId, automaticRecovery: { replay: "blocked", actionOutcome: "unknown" } },
+    }).where(eq(issueRecoveryActions.id, f.actionId));
+    await db.update(heartbeatRuns).set({ errorCode: "native_workspace_sync_out_retry_exhausted" })
+      .where(eq(heartbeatRuns.id, f.runId));
+    const [lease] = await db.update(environmentLeases).set({ leasePolicy })
+      .where(eq(environmentLeases.id, f.lease.id)).returning();
+    const stopping = (await prepareStoppedSandboxForRecovery(db, lease))!;
+    const stopped = (await settleStopOnlyCleanup(db, stopping, {
+      attemptId: String(stopping.metadata!.pendingCleanupAttemptId),
+      receipt: { providerLeaseId: f.providerLeaseId, state: "stopped" },
+    }))!;
+    const source = await run(f.runId);
+    const [preparation] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: source.agentId,
+      issueId: f.issueId, runtimeMode: "legacy", status: "failed", executionStage: "preparing",
+      startedAt: new Date(), finishedAt: new Date(), errorCode: "setup_failed",
+      error: "The workspace still has an unfinished writer or save operation.",
+      contextSnapshot: { issueId: f.issueId, executionWorkspaceId: f.workspaceId },
+      runnerProfileJson: { adapterDispatch: { adapterType: "paperclip_runner" } },
+      resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } },
+    }).returning();
+    return { ...f, stopped, preparation };
+  }
+
+  it.each(["bound writer", "orphaned lease", "reusable writer"] as const)("retains an exhausted accepted remote copy-back through its %s", async entry => {
+    const f = await exhaustedAcceptedRemoteWriter(entry === "reusable writer" ? "reuse_by_environment" : "ephemeral");
+    const [result] = await db.select().from(nativeRunResults).where(eq(nativeRunResults.id, f.resultId));
+    const [task] = await db.select().from(issues).where(eq(issues.id, f.issueId));
+    const historical = await action(f.actionId);
+    if (entry === "orphaned lease") expect(await preserveOrphanedNativeWorkspace(db, f.stopped)).toBe(true);
+    else await preserveTaskRemoteWorkspaceWriter(db, f.companyId, f.issueId);
+    expect((await run(f.runId)).resultJson).toMatchObject({ workspaceRestoreFailure: "restore_failed",
+      workspaceRestoreRecovery: { leaseIds: [f.lease.id] } });
+    expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId)))[0])
+      .toMatchObject({ phase: "terminal_failure", resultId: result.id, leaseOwner: null });
+    expect((await db.select().from(nativeRunResults).where(eq(nativeRunResults.id, f.resultId)))[0]).toEqual(result);
+    expect(await action(f.actionId)).toEqual(historical);
+    expect(await run(f.preparation.id)).toEqual(f.preparation);
+    expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0]).toEqual(task);
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, f.companyId))).toHaveLength(2);
+    expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId))).toHaveLength(0);
+    expect(await readFile(path.join(f.remote, "saved.txt"), "utf8")).toBe("finished work\n");
+  }, 30_000);
+
+  it.each(["active-finalizer", "retryable", "other-failure", "live-controller", "unfinished-run", "missing-stop",
+    "rejected-result", "new-writer", "saved-workspace", "wrong-epoch", "native-sync", "source-binding"] as const)(
+    "keeps accepted remote copy-back held when its %s proof changes", async gate => {
+    const f = await exhaustedAcceptedRemoteWriter();
+    const source = await run(f.runId);
+    if (gate === "active-finalizer") await db.update(nativeRunFinalizations).set({ leaseOwner: "live-finalizer" })
+      .where(eq(nativeRunFinalizations.runId, f.runId));
+    if (gate === "retryable") await db.update(nativeRunFinalizations).set({ phase: "retryable_failure" })
+      .where(eq(nativeRunFinalizations.runId, f.runId));
+    if (gate === "other-failure") await db.update(nativeRunFinalizations).set({ failureCode: "native_workspace_sync_out_unsafe_archive" })
+      .where(eq(nativeRunFinalizations.runId, f.runId));
+    if (gate === "live-controller") await db.update(heartbeatRuns).set({ controllerLeaseExpiresAt: new Date(Date.now() + 60_000) })
+      .where(eq(heartbeatRuns.id, f.runId));
+    if (gate === "unfinished-run") await db.update(heartbeatRuns).set({ finishedAt: null }).where(eq(heartbeatRuns.id, f.runId));
+    if (gate === "missing-stop") await db.update(environmentLeases).set({ metadata: { ...f.stopped.metadata,
+      remoteExecutionTermination: null } }).where(eq(environmentLeases.id, f.lease.id));
+    if (gate === "rejected-result") await db.update(nativeRunResults).set({ schemaStatus: "rejected" })
+      .where(eq(nativeRunResults.id, f.resultId));
+    if (gate === "new-writer" || gate === "saved-workspace") {
+      const [workspace] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, f.workspaceId));
+      const authority = readRemoteWorkspaceAuthority(workspace.metadata)!;
+      await db.update(executionWorkspaces).set({ metadata: { ...workspace.metadata, remoteWorkspace: { ...authority,
+        writerRunId: gate === "new-writer" ? randomUUID() : null, dirty: gate === "new-writer" } } })
+        .where(eq(executionWorkspaces.id, f.workspaceId));
+    }
+    if (gate === "wrong-epoch") await db.update(heartbeatRuns).set({ runnerProfileJson: { ...source.runnerProfileJson,
+      remoteWorkspace: { ...(source.runnerProfileJson!.remoteWorkspace as object), epoch: 99 } } }).where(eq(heartbeatRuns.id, f.runId));
+    if (gate === "native-sync") await db.update(heartbeatRuns).set({ runnerProfileJson: { ...source.runnerProfileJson,
+      nativeWorkspaceSync: { schema: "paperclip.native-workspace-sync/v3" } } }).where(eq(heartbeatRuns.id, f.runId));
+    if (gate === "source-binding") await db.update(environmentLeases).set({ metadata: { ...f.stopped.metadata, remoteCwd: "/other" } })
+      .where(eq(environmentLeases.id, f.lease.id));
+    const [lease] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.lease.id));
+    const [result] = await db.select().from(nativeRunResults).where(eq(nativeRunResults.id, f.resultId));
+    await preserveTaskRemoteWorkspaceWriter(db, f.companyId, f.issueId);
+    expect((await run(f.runId)).resultJson).not.toHaveProperty("workspaceRestoreRecovery");
+    expect((await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.lease.id)))[0]).toEqual(lease);
+    expect((await db.select().from(nativeRunResults).where(eq(nativeRunResults.id, f.resultId)))[0]).toEqual(result);
+    expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.companyId, f.companyId))).toHaveLength(1);
+    expect(await readFile(path.join(f.remote, "saved.txt"), "utf8")).toBe("finished work\n");
+  }, 30_000);
+
+  it("repairs an older accepted remote writer before one HTTP Retry continues a newer failed preparation", async () => {
+    const f = await exhaustedAcceptedRemoteWriter();
+    const [result] = await db.select().from(nativeRunResults).where(eq(nativeRunResults.id, f.resultId));
+    await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.preparation.agentId, status: "running" });
+    const receipt = (await request(receiptOnlyRecoveryApp()).post(`/api/issues/${f.issueId}/retry`)
+      .send({ observedRunId: f.preparation.id, idempotencyKey: randomUUID() }).expect(202)).body;
+    expect((await run(f.runId)).resultJson).toHaveProperty("workspaceRestoreRecovery");
+    const records = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.companyId, f.companyId));
+    const preservation = records.find(record => record.id !== f.actionId && record.evidence.runId === f.runId
+      && record.evidence.workspaceRestoreRecovery)!;
+    expect(preservation).toBeDefined();
+    const input = { ...f.input, actionId: preservation.id };
+    await adoptSystemRecovery(db, input);
+    await recoverRetainedWorkspace(input);
+    expect(readWorkspaceRecovery((await action(preservation.id)).evidence)?.status).toBe("recovered");
+    const heartbeat = heartbeatService(db);
+    await Promise.all([heartbeat.resumeTaskRetry(f.companyId, receipt.requestId),
+      heartbeat.resumeTaskRetry(f.companyId, receipt.requestId)]);
+    const successors = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId),
+      sql`${heartbeatRuns.contextSnapshot}->>'taskRetryRequestId' = ${receipt.requestId}`));
+    expect(successors).toHaveLength(1);
+    expect(successors[0]).toMatchObject({ status: "queued", contextSnapshot: { previousRunId: f.preparation.id } });
+    const recovered = await run(f.runId), reference = recovered.runnerProfileJson!.remoteWorkspace as { snapshotId: string };
+    const saved = await createSavedWorkspaceLoader(db)({ companyId: f.companyId, workspaceId: f.workspaceId,
+      snapshotId: reference.snapshotId });
+    try { expect(await readFile(path.join(saved.root, "saved.txt"), "utf8")).toBe("finished work\n"); }
+    finally { await saved.cleanup(); }
+    expect((await db.select().from(nativeRunResults).where(eq(nativeRunResults.id, f.resultId)))[0]).toEqual(result);
+    expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId)))[0])
+      .toMatchObject({ phase: "terminal_failure", resultId: result.id });
+    expect(await run(f.preparation.id)).toEqual(f.preparation);
+  }, 30_000);
+
   async function pressuredToolCache(pressure: "transfer" | "sandbox-write" = "transfer") {
     const f = await acceptedRemoteExport();
     const runner = path.join(f.remote, ".paperclip-runtime", "paperclip-runner");
@@ -998,6 +1118,7 @@ describe("automatic retained workspace recovery", () => {
     } }).where(eq(heartbeatRuns.id, f.runId));
     const target = targets.get(f.lease.id)!, syncOut = target.runner!.syncOut!, execute = target.runner!.execute;
     let transfers = 0, sandboxWriteFailures = 0;
+    const readonlyExports: Array<Parameters<typeof syncOut>[0][number]["files"][number]> = [];
     if (pressure === "sandbox-write") target.runner!.execute = async input => {
       const fault = `(()=>{const fs=require('node:fs/promises'),sync=require('node:fs');
         const full=()=>${JSON.stringify([path.join(pack, "node_modules"), path.join(pack, "provider-assets")])}.some(p=>sync.existsSync(p));
@@ -1015,13 +1136,21 @@ describe("automatic retained workspace recovery", () => {
       return response;
     };
     target.runner!.syncOut = async operations => {
+      const mappings = operations.flatMap(operation => operation.files);
+      if (mappings.some(mapping => mapping.kind === "directory")) {
+        // These regressions isolate journaled cache reclamation after BOTH
+        // export paths fail. Directory-export recovery has its own real-provider
+        // coverage; this boundary explicitly cannot perform that alternative.
+        readonlyExports.push(...mappings);
+        throw new Error("cache-reclaim fixture directory export unavailable");
+      }
       transfers++;
       if (pressure === "transfer" && (await Promise.all(["node_modules", "provider-assets"].map(name =>
         lstat(path.join(pack, name)).then(() => true, () => false)))).some(Boolean))
         throw new Error(REMOTE_WORKSPACE_SANDBOX_DISK_FULL);
       return syncOut(operations);
     };
-    return { ...f, runner, pack, sessions, digest, transfers: () => transfers,
+    return { ...f, runner, pack, sessions, digest, transfers: () => transfers, readonlyExports,
       sandboxWriteFailures: () => sandboxWriteFailures };
   }
 
@@ -1069,6 +1198,9 @@ describe("automatic retained workspace recovery", () => {
     await recoverRetainedWorkspace(f.input);
     expect(readWorkspaceRecovery((await action(f.actionId)).evidence)?.status).toBe("recovered");
     expect(f.transfers()).toBe(2);
+    expect(f.readonlyExports).toEqual([{ kind: "directory", sourcePath: await realpath(f.remote),
+      targetPath: expect.stringMatching(/[/]source$/), followSymlinks: false, preserveSourceEntries: true,
+      exclude: [".paperclip-runtime"] }]);
     await expect(lstat(path.join(f.pack, "node_modules"))).rejects.toMatchObject({ code: "ENOENT" });
     await expect(lstat(path.join(f.pack, "provider-assets"))).rejects.toMatchObject({ code: "ENOENT" });
     expect(JSON.parse(await readFile(path.join(f.pack, "provider-pack.json"), "utf8")).digest).toBe(f.digest);
@@ -1144,6 +1276,9 @@ describe("automatic retained workspace recovery", () => {
     const f = await pressuredToolCache(), target = targets.get(f.lease.id)!, syncOut = target.runner!.syncOut!;
     let transfers = 0;
     target.runner!.syncOut = async operations => {
+      // Fail the second sealed-archive transfer, after cache cleanup, rather
+      // than consuming this fault on the earlier read-only directory fallback.
+      if (operations.some(operation => operation.files.some(mapping => mapping.kind === "directory"))) return syncOut(operations);
       if (++transfers === 2) throw new Error("controlled later transfer failure");
       return syncOut(operations);
     };

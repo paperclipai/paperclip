@@ -278,6 +278,10 @@ export function IssueMonitorBanner({
   const copy = useMonitorSurfaceCopy(issue, reviews.length);
   if (!copy) return null;
 
+  // A busy workspace is a transient system wait the user cannot act on. It stays
+  // a quiet status (composer strip, properties row), never a pinned notice.
+  if (copy.workspaceWait) return null;
+
   const canCancel = onCancelMonitor && deriveMonitorState(issue).source === "monitor";
 
   return (

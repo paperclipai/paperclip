@@ -12,6 +12,7 @@ export async function notifyRunDispatch(transaction: object, scope?: RunDispatch
   await notifyIssueRecovery(transaction, scope ? { companyId: scope.companyId } : undefined);
   const hint = scope ? JSON.stringify({ companyId: scope.companyId }) : "*";
   await notifyDeliveryWork(transaction, DELIVERY_QUEUES.nativeProcessSessions, hint);
+  await notifyDeliveryWork(transaction, DELIVERY_QUEUES.executionReplacement, hint);
   await notifyQueuedRunDispatch(transaction, scope);
 }
 
