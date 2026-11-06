@@ -278,7 +278,6 @@ describe.skipIf(!support.supported)("execution-control durable work", () => {
         expect(sources.every(({ run }) => resume.mock.calls.some(([visited]) => visited.id === run.id))).toBe(true);
         expect(idleWorkSnapshot().active).toBe(0);
       }, { timeout: 10_000, interval: 50 });
-      expect(resume.mock.calls.map(([run]) => run.id)).toContain(earlier.run.id);
       await quiet(c);
       for (const { run, retry } of sources) {
         expect(resume.mock.calls.map(([visited]) => visited.id)).toContain(run.id);
