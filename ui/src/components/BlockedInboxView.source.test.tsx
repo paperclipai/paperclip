@@ -248,4 +248,36 @@ describe("BlockedInboxView source grouping", () => {
     expect(unreadRequests).toBe(2);
     act(() => root.unmount());
   });
+
+  it("retries the failed group mark-read from the notice", async () => {
+    const blockedIssues = [
+      { ...makeIssue("work-unread", "PAP-1", "Work unread", attention()), originKind: "manual" } as Issue,
+    ];
+    mockIssuesApi.list.mockResolvedValue(blockedIssues);
+    mockIssuesApi.markRead.mockRejectedValueOnce(new Error("mark read failed")).mockResolvedValue(undefined);
+
+    const { root } = renderWithClient(
+      <BlockedInboxView {...blockedViewProps} groupBy="source" />,
+      container,
+    );
+    await waitFor(() => container.querySelector('button[aria-label="Mark all in Work as read"]') !== null);
+    act(() => container.querySelector<HTMLButtonElement>('button[aria-label="Mark all in Work as read"]')!.click());
+    await waitFor(() => document.body.textContent?.includes("Mark all in Work as read?") ?? false);
+    const confirm = Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="dialog"] button'))
+      .find((button) => button.textContent === "Mark all as read");
+    act(() => confirm!.click());
+
+    await waitFor(() => container.querySelector('[data-testid="blocked-inbox-unread-error"]') !== null);
+    expect(container.textContent).toContain("Couldn't mark the group as read.");
+    expect(mockIssuesApi.markRead).toHaveBeenCalledTimes(1);
+
+    const retry = Array.from(
+      container.querySelectorAll<HTMLButtonElement>('[data-testid="blocked-inbox-unread-error"] button'),
+    ).find((button) => button.textContent === "Try again");
+    act(() => retry!.click());
+
+    await waitFor(() => container.querySelector('[data-testid="blocked-inbox-unread-error"]') === null);
+    expect(mockIssuesApi.markRead.mock.calls.map(([id]) => id)).toEqual(["work-unread", "work-unread"]);
+    act(() => root.unmount());
+  });
 });
