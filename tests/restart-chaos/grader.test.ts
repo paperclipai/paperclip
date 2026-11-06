@@ -96,6 +96,19 @@ describe("R1–R6 grading on fixture timelines", () => {
       run("r2", "succeeded", 50_000, 80_000, { wakeCommentIds: ["c1"] }),
     ])];
     expect(gradeR4(record(twice)).detail).toMatch(/comment_consumed_twice: c1/);
+    // Two active runs that are not both running also fail.
+    expect(gradeR4(record([sample(10_000, "in_progress", [run("r1", "queued", 1_000), run("r2", "scheduled_retry", 5_000)])])).detail).toMatch(/concurrent_runs/);
+    // A failed run's comment may be served again by the retry; a successful one may not.
+    const retried = [sample(90_000, "done", [
+      run("r1", "failed", 1_000, 40_000, { wakeCommentIds: ["c1"] }),
+      run("r2", "succeeded", 50_000, 80_000, { wakeCommentIds: ["c1"], retryOfRunId: "r1" }),
+    ])];
+    expect(gradeR4(record(retried)).verdict).toBe("pass");
+    const afterSuccess = [sample(90_000, "done", [
+      run("r1", "succeeded", 1_000, 40_000, { wakeCommentIds: ["c1"] }),
+      run("r2", "failed", 50_000, 80_000, { wakeCommentIds: ["c1"] }),
+    ])];
+    expect(gradeR4(record(afterSuccess)).detail).toMatch(/comment_consumed_twice: c1 by r1,r2/);
   });
 
   it("fails R5 on a silent stall longer than three minutes after ready, but not during outages or named waits", () => {
@@ -149,10 +162,13 @@ describe("T-oracles", () => {
 
   it("grades B5 against the deterministic bench result", () => {
     const base: OracleArtifacts = { issueStatus: "done", documents: {}, agentComments: [], workspacePath: "/tmp/ws", commands: {},
+      benchProgressObserved: 6,
       files: { "bench-result-abcd1234.txt": `${BENCH_EXPECTED}\n`, ".bench/run-abcd1234.txt": `started=1000 finished=1241 result=${BENCH_EXPECTED}\n` } };
     expect(BENCH_EXPECTED).toBe("BENCH_RESULT=4636840");
     expect(parseBenchRecord(base.files[".bench/run-abcd1234.txt"])).toEqual({ seconds: 241, result: BENCH_EXPECTED });
     expect(workloadDefinitions.B5.grade("abcd1234", base).verdict).toBe("pass");
+    // A forged record without harness-observed progress does not pass.
+    expect(workloadDefinitions.B5.grade("abcd1234", { ...base, benchProgressObserved: 1 }).checks.find(c => c.name === "bench_progress_observed")?.ok).toBe(false);
     expect(workloadDefinitions.B5.grade("abcd1234", { ...base, files: { ...base.files, "bench-result-abcd1234.txt": "BENCH_RESULT=1" } }).verdict).toBe("fail");
     // A computed answer without a bench.sh run, or a too-short run, does not pass.
     expect(workloadDefinitions.B5.grade("abcd1234", { ...base, files: { "bench-result-abcd1234.txt": BENCH_EXPECTED } }).checks.find(c => c.name === "bench_actually_ran")?.ok).toBe(false);

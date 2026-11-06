@@ -97,25 +97,28 @@ export function gradeR3(record: TaskRecord): RuleResult {
   return { verdict: "pass", detail: "one Retry started a run that completed the task" };
 }
 
+/**
+ * R4: at most one active run (queued, running or scheduled_retry) per issue in
+ * any sample, and no comment consumed twice. A wake comment may be reused only
+ * by a run that follows a run which did not succeed (an explicit retry or
+ * continuation after a failure); reuse after a successful run is a replay.
+ */
 export function gradeR4(record: TaskRecord): RuleResult {
   for (const sample of reachable(record.samples)) {
-    const running = (sample.runs ?? []).filter(run => run.status === "running");
-    if (running.length > 1) return { verdict: "fail", detail: `concurrent_runs: ${running.map(run => run.id).join(",")}` };
+    const active = (sample.runs ?? []).filter(run => ACTIVE_RUN_STATUSES.has(run.status));
+    if (active.length > 1) return { verdict: "fail", detail: `concurrent_runs: ${active.map(run => `${run.id}(${run.status})`).join(",")}` };
   }
-  const consumed = new Map<string, Set<string>>();
-  const finalRuns = new Map<string, { status: string; wakeCommentIds: string[] }>();
+  const finalRuns = new Map<string, NonNullable<TaskSample["runs"]>[number]>();
   for (const sample of reachable(record.samples)) for (const run of sample.runs ?? []) finalRuns.set(run.id, run);
-  for (const [runId, run] of finalRuns) {
-    if (run.status !== "succeeded") continue;
-    for (const commentId of run.wakeCommentIds) {
-      const runs = consumed.get(commentId) ?? new Set<string>();
-      runs.add(runId);
-      consumed.set(commentId, runs);
-    }
+  const begun = [...finalRuns.values()].filter(run => run.startedAt)
+    .sort((a, b) => (ms(a.createdAt) || 0) - (ms(b.createdAt) || 0));
+  const consumers = new Map<string, typeof begun>();
+  for (const run of begun) for (const commentId of run.wakeCommentIds) consumers.set(commentId, [...(consumers.get(commentId) ?? []), run]);
+  for (const [commentId, runs] of consumers) {
+    const replayed = runs.findIndex((_run, index) => index > 0 && runs.slice(0, index).some(prior => prior.status === "succeeded"));
+    if (replayed > 0) return { verdict: "fail", detail: `comment_consumed_twice: ${commentId} by ${runs.slice(0, replayed + 1).map(run => run.id).join(",")}` };
   }
-  const duplicate = [...consumed].find(([, runs]) => runs.size > 1);
-  if (duplicate) return { verdict: "fail", detail: `comment_consumed_twice: ${duplicate[0]} by ${[...duplicate[1]].join(",")}` };
-  return { verdict: "pass", detail: "at most one running run per sample; no comment consumed twice" };
+  return { verdict: "pass", detail: "at most one active run per sample; no comment consumed after a successful run" };
 }
 
 function namedWait(sample: TaskSample): boolean {

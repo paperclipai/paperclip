@@ -54,7 +54,16 @@ are wired (see the TODO in `seed.ts`).
 - A task is restart-crossing when a run overlaps a fault window or the task was
   not yet at rest when the fault started. Non-crossing tasks are still graded.
 - R2 also checks that workspace files present before the first fault still exist at rest.
-- B5 passes only when `bench.sh` wrote its own completion record showing it ran.
+- B5 passes only when `bench.sh` wrote its own completion record showing it
+  ran, and the harness itself saw at least three `.bench/progress` values
+  while polling. This is best-effort against a deliberately adversarial agent.
+- R4 allows at most one active (queued, running or scheduled-retry) run per
+  sample. A wake comment may be served again only after a run that did not
+  succeed.
+- T-oracle commands (B1 tests and CLI) run agent-editable code. They run under
+  a macOS Seatbelt sandbox with a scratch `HOME`, no network and no read access
+  to the operator's home directory. On other platforms they are refused unless
+  `RESTART_CHAOS_ALLOW_UNSANDBOXED_ORACLE=1` is set inside a disposable VM.
 - R1 allows the workload budget plus outage time. When a Retry was needed R1 is
   `n/a` and R3 decides; a task that rests unfinished with no Retry fails both.
 - Faults are serialized; each one hits every task running at that moment.

@@ -20,7 +20,8 @@ export function redactKnownSecrets(text: string, secrets: readonly string[]): st
 }
 
 export function knownSecretValues(env: NodeJS.ProcessEnv = process.env): string[] {
-  return Object.entries(env).filter(([key, value]) => value && /(?:API_KEY|TOKEN|SECRET|PASSWORD)$/.test(key)).map(([, value]) => value!);
+  // Any *KEY, *TOKEN, *SECRET or *PASSWORD name, including PAPERCLIP_AGENT_PRIVATE_KEY and AWS_SECRET_ACCESS_KEY.
+  return Object.entries(env).filter(([key, value]) => value && /(?:KEY|TOKEN|SECRET|PASSWORD)$/.test(key)).map(([, value]) => value!);
 }
 
 async function lastEvents(api: ChaosApi, runId: string): Promise<Json[]> {

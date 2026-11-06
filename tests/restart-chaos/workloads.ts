@@ -28,6 +28,8 @@ const benchFile = (nonce: string) => `bench-result-${nonce}.txt`;
 const benchRecord = (nonce: string) => `.bench/run-${nonce}.txt`;
 /** bench.sh must have actually run: at least this long between start and finish. */
 export const BENCH_MIN_SECONDS = 200;
+/** B5: distinct progress values the harness must have observed itself while polling. */
+export const BENCH_MIN_OBSERVED_PROGRESS = 3;
 
 /** Parse bench.sh's own completion record: `started=<epoch> finished=<epoch> result=<line>`. */
 export function parseBenchRecord(text: string | null | undefined) {
@@ -154,6 +156,9 @@ export const workloadDefinitions: Record<WorkloadId, WorkloadDefinition> = {
         { name: "bench_result_file", ok: content === BENCH_EXPECTED, detail: JSON.stringify(content) },
         { name: "bench_actually_ran", ok: record !== null && record.result === BENCH_EXPECTED && record.seconds >= BENCH_MIN_SECONDS,
           detail: record ? `ran ${record.seconds}s, ${record.result}` : "no completion record from bench.sh" },
+        // The record is agent-writable; the harness's own progress observations are not.
+        { name: "bench_progress_observed", ok: (artifacts.benchProgressObserved ?? 0) >= BENCH_MIN_OBSERVED_PROGRESS,
+          detail: `observed ${artifacts.benchProgressObserved ?? 0} progress values` },
       ]);
     },
   },

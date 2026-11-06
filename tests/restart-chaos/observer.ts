@@ -1,8 +1,6 @@
-import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
-import { promisify } from "node:util";
 import { ChaosApiError, type ChaosApi } from "./api.js";
 import { ACTIVE_RUN_STATUSES, isStalledSample, STALL_LIMIT_MS } from "./grader.js";
 import type { ChaosLab } from "./seed.js";
@@ -10,6 +8,7 @@ import type { Timeline } from "./timeline.js";
 import type {
   InterruptionSample, OracleArtifacts, RestSweep, RetryAttempt, RunSample, ScheduledFault, TaskPlan, TaskRecord, TaskSample,
 } from "./types.js";
+import { runOracleCommand } from "./oracle-sandbox.js";
 import { taskFaultSchedule } from "./scheduler.js";
 import { workloadDefinitions } from "./workloads.js";
 
@@ -33,7 +32,6 @@ export async function listWorkspaceFiles(root: string): Promise<string[]> {
   return out.sort();
 }
 
-const execFileAsync = promisify(execFile);
 /** Rest must hold for this long before the observer acts on it. */
 export const REST_CONFIRM_MS = 12_000;
 /** Extra time granted after a Retry click before R3 is graded as timed out. */
@@ -127,11 +125,30 @@ export class TaskObserver {
     return fault;
   }
 
+  /**
+   * B5: read bench.sh's progress file while the task is live. The harness sees
+   * the values change over minutes, which a computed answer cannot produce.
+   */
+  private async observeBenchProgress(): Promise<void> {
+    if (this.plan.workload !== "B5") return;
+    const cwd = (this.issue?.currentExecutionWorkspace as Json | null | undefined)?.cwd;
+    if (typeof cwd !== "string") return;
+    const value = (await readFile(path.join(cwd, ".bench", "progress"), "utf8").catch(() => "")).trim();
+    if (!value) return;
+    const seen = this.record.benchProgressSeen ??= [];
+    if (!seen.includes(value)) seen.push(value);
+  }
+
   /** R2: remember which workspace files existed before the first fault hit this task. */
   async snapshotBeforeFault(): Promise<void> {
     if (this.record.preFaultFiles !== null || this.done) return;
-    const workspace = await this.workspacePath().catch(() => null);
-    if (workspace) this.record.preFaultFiles = await listWorkspaceFiles(workspace);
+    // One task's snapshot failure must not end the wave: R2 then reports "not checked".
+    try {
+      const workspace = await this.workspacePath();
+      if (workspace) this.record.preFaultFiles = await listWorkspaceFiles(workspace);
+    } catch (error) {
+      this.timeline.add("pre_fault_snapshot_failed", { taskId: this.plan.taskId, error: error instanceof Error ? error.message : String(error) });
+    }
   }
 
   noteFault(faultId: string) { if (!this.record.faultIds.includes(faultId)) this.record.faultIds.push(faultId); }
@@ -143,6 +160,7 @@ export class TaskObserver {
     if (this.done || !this.record.issueId) return;
     const sample = await this.sample(now);
     this.record.samples.push(sample);
+    await this.observeBenchProgress();
     if (await this.maybeFollowUp(sample, now)) {
       // The comment response is not the agent's answer: require fresh samples.
       this.restCandidateSince = null;
@@ -276,23 +294,15 @@ export class TaskObserver {
       for (const relative of definition.collect.files(this.plan.nonce)) {
         files[relative] = await readFile(path.join(workspacePath, relative), "utf8").catch(() => null);
       }
-      for (const command of definition.collect.commands) {
-        try {
-          const { stdout, stderr } = await execFileAsync(command.argv[0]!, command.argv.slice(1), { cwd: workspacePath, timeout: 60_000,
-            env: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: process.env.HOME ?? "/tmp", PYTHONDONTWRITEBYTECODE: "1" } });
-          commands[command.name] = { exitCode: 0, stdout, stderr: stderr.slice(-4_000) };
-        } catch (error) {
-          const failure = error as { code?: number; stdout?: string; stderr?: string };
-          commands[command.name] = { exitCode: typeof failure.code === "number" ? failure.code : null,
-            stdout: failure.stdout ?? "", stderr: (failure.stderr ?? String(error)).slice(-4_000) };
-        }
-      }
+      // Agent-editable code: run it sandboxed, away from the operator's home directory.
+      for (const command of definition.collect.commands) commands[command.name] = await runOracleCommand(command.argv, workspacePath);
     }
     return {
       issueStatus: issue?.status ?? this.record.finalStatus,
       documents,
       agentComments: (comments ?? []).filter(comment => comment.authorAgentId).map(comment => String(comment.body ?? "")),
       files, commands, workspacePath,
+      ...(this.plan.workload === "B5" ? { benchProgressObserved: this.record.benchProgressSeen?.length ?? 0 } : {}),
     };
   }
 

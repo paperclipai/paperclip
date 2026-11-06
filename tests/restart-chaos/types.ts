@@ -134,6 +134,8 @@ export interface OracleArtifacts {
   files: Record<string, string | null>;
   commands: Record<string, { exitCode: number | null; stdout: string; stderr: string }>;
   workspacePath: string | null;
+  /** B5: distinct `.bench/progress` values the harness itself saw while the task was live. */
+  benchProgressObserved?: number;
 }
 
 export interface OracleResult { verdict: Exclude<Verdict, "n/a">; checks: Array<{ name: string; ok: boolean; detail?: string }> }
@@ -164,6 +166,8 @@ export interface TaskRecord {
   preFaultFiles: string[] | null;
   /** Pre-fault files missing at rest; null when not checked. */
   lostFiles: string[] | null;
+  /** B5: distinct bench progress values the observer read during polling. */
+  benchProgressSeen?: string[];
 }
 
 export interface TaskGrade {

@@ -74,6 +74,16 @@ describe("TaskObserver", () => {
     expect(sweep.error).toMatch(/timeout/);
   });
 
+  it("leaves R2 unchecked instead of failing the wave when the pre-fault snapshot cannot read the workspace", async () => {
+    const { api } = fakeApi({ "/api/issues/i1": route => route.endsWith("/runs") ? []
+      : { id: "i1", status: "in_progress", currentExecutionWorkspace: { cwd: "/nonexistent/restart-chaos-workspace" } } });
+    const observer = new TaskObserver({ ...plan, workload: "B1", followUpAfterMs: null }, api, lab, new Timeline(null), ready);
+    await observer.launch();
+    await observer.poll(observer.record.createdAt! + 1_000);
+    await expect(observer.snapshotBeforeFault()).resolves.toBeUndefined();
+    expect(observer.record.preFaultFiles).toBeNull();
+  });
+
   it("fires the planned fault once, after its offset", async () => {
     const { api } = fakeApi();
     const observer = new TaskObserver({ ...plan, fireAfterMs: 5_000 }, api, lab, new Timeline(null), ready);
