@@ -32,10 +32,10 @@ export async function hasVerifiedPreparationLog(run: PreparationLog): Promise<bo
     })]);
     if (!result || result.nextOffset !== undefined || Buffer.byteLength(result.content) !== run.logBytes
       || createHash("sha256").update(result.content).digest("hex") !== run.logSha256) return false;
-    const record = JSON.parse(result.content);
+    const record = JSON.parse(result.content) as Record<string, unknown> | null;
     if (!record || Array.isArray(record) || typeof record !== "object"
       || Object.keys(record).some(key => !["ts", "attemptId", "stream", "chunk", "seq"].includes(key))
-      || record.ts !== run.lastOutputAt.toISOString() || !isUuidLike(record.attemptId)
+      || record.ts !== run.lastOutputAt.toISOString() || typeof record.attemptId !== "string" || !isUuidLike(record.attemptId)
       || record.seq !== 1 || record.stream !== "stdout" || typeof record.chunk !== "string"
       || record.chunk !== run.stdoutExcerpt) return false;
     const prefix = "[paperclip] Enabled run-scoped skills from issue mentions: ";
