@@ -56,7 +56,7 @@ With combined Inbox/Tasks enabled, open the corresponding Tasks view instead.
 
 ### `board-approval`
 
-Open Approvals → Pending or All (`/approvals/pending`, `/approvals/all`). Use the
+Open Approvals → Pending or All (`/approvals/pending`, `/approvals/all`). Unprefixed approval list and detail links redirect into the selected company and preserve query and fragment values. Use the
 card action or open `/approvals/:approvalId` for details, comments, revision
 request, and resubmission. These are formal approvals, not ordinary questions.
 
