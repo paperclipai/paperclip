@@ -3559,6 +3559,8 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
   --announcement-available-width: calc(100vw - var(--spacing) * 6);
   --announcement-image-height: 8.5rem;
   --announcement-image-mobile-height: 6rem;
+  /* Docked in the sidebar: the navigation keeps at least half the height. */
+  --announcement-sidebar-max-height: 50dvh;
   --announcement-mobile-bottom: calc(var(--spacing) * 19 + env(safe-area-inset-bottom, 0px));
   --announcement-max-height: calc(100dvh - var(--spacing) * 6);
   --announcement-mobile-max-height: calc(100dvh - var(--announcement-mobile-bottom) - var(--spacing) * 3);

@@ -1,4 +1,4 @@
-import { test, expect, type APIResponse, type Locator, type Page } from "@playwright/test";
+import { test, expect, type APIRequestContext, type APIResponse, type Locator, type Page } from "@playwright/test";
 
 /**
  * N-17: a new user's first task view must stay usable while the in-app
@@ -53,9 +53,9 @@ async function box(locator: Locator, name: string): Promise<Box> {
   return value!;
 }
 
-async function serveConnectorsAnnouncement(page: Page) {
+async function serveConnectorsAnnouncement(page: Page, announcement: object = CONNECTORS_ANNOUNCEMENT) {
   await page.route("**/api/announcements/current", (route) =>
-    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(CONNECTORS_ANNOUNCEMENT) }),
+    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(announcement) }),
   );
   await page.route(`**/api/announcements/${CONNECTORS_ANNOUNCEMENT.id}/image`, (route) =>
     route.fulfill({ status: 200, contentType: "image/png", body: PIXEL_PNG }),
@@ -65,27 +65,30 @@ async function serveConnectorsAnnouncement(page: Page) {
   );
 }
 
+async function firstTask(request: APIRequestContext, name: string) {
+  const company = await json(await request.post("/api/companies", { data: { name: `${name} ${Date.now()}` } }));
+  const lead = await json(
+    await request.post(`/api/companies/${company.id}/agents`, {
+      data: {
+        name: "Team Lead",
+        role: "ceo",
+        adapterType: "process",
+        adapterConfig: { command: process.execPath, args: ["-e", "console.log('ok')"], env: { NODE_OPTIONS: "" } },
+        runtimeConfig: { heartbeat: { enabled: false, wakeOnDemand: false } },
+      },
+    }),
+  );
+  const issue = await json(
+    await request.post(`/api/companies/${company.id}/issues`, {
+      data: { title: "Paperclip onboarding", status: "backlog", assigneeAgentId: lead.id },
+    }),
+  );
+  return { company, issue };
+}
+
 test.describe("Announcement placement on a new company's first task", () => {
   test("the announcement does not cover the task thread or composer", async ({ page, request }, testInfo) => {
-    const company = await json(
-      await request.post("/api/companies", { data: { name: `Announcement Placement ${Date.now()}` } }),
-    );
-    const lead = await json(
-      await request.post(`/api/companies/${company.id}/agents`, {
-        data: {
-          name: "Team Lead",
-          role: "ceo",
-          adapterType: "process",
-          adapterConfig: { command: process.execPath, args: ["-e", "console.log('ok')"], env: { NODE_OPTIONS: "" } },
-          runtimeConfig: { heartbeat: { enabled: false, wakeOnDemand: false } },
-        },
-      }),
-    );
-    const issue = await json(
-      await request.post(`/api/companies/${company.id}/issues`, {
-        data: { title: "Paperclip onboarding", status: "backlog", assigneeAgentId: lead.id },
-      }),
-    );
+    const { company, issue } = await firstTask(request, "Announcement Placement");
     await serveConnectorsAnnouncement(page);
 
     for (const viewport of VIEWPORTS) {
@@ -122,5 +125,36 @@ test.describe("Announcement placement on a new company's first task", () => {
       await expect.soft(page.getByRole("dialog", { name: "Account" })).toBeVisible();
       await page.keyboard.press("Escape");
     }
+  });
+
+  test("a long announcement docked in a narrow sidebar keeps navigation and the account menu usable", async ({ page, request }) => {
+    const { company, issue } = await firstTask(request, "Announcement Long");
+    const long = {
+      ...CONNECTORS_ANNOUNCEMENT,
+      title: "Give your agents the access they need to finish real work across every tool your team uses daily",
+      description: "Connect Gmail, GitHub, Notion, and more. ".repeat(10).slice(0, 400).trim(),
+    };
+    await serveConnectorsAnnouncement(page, long);
+    // The narrowest supported sidebar width on a short laptop window.
+    await page.addInitScript(() => localStorage.setItem("paperclip.sidebar.width", "208"));
+    const viewport = { width: 1280, height: 720 };
+    await page.setViewportSize(viewport);
+    await page.goto(`/${company.issuePrefix}/issues/${issue.identifier}`);
+
+    const announcement = page.getByRole("complementary", { name: "Paperclip announcements" });
+    await expect(announcement.getByRole("heading", { name: long.title })).toBeVisible({ timeout: 30_000 });
+    await page.waitForTimeout(500);
+
+    const card = await box(announcement, "announcement");
+    expect.soft(card.height, "docked card keeps at most half the window height").toBeLessThanOrEqual(viewport.height / 2 + 1);
+    await expect.soft(page.getByLabel("Workspace navigation").getByRole("link", { name: "Tasks" })).toBeInViewport();
+    const accountTrigger = page.getByRole("button", { name: "Open account menu" });
+    await expect.soft(accountTrigger).toBeInViewport();
+    expect.soft(overlapArea(card, await box(accountTrigger, "account menu trigger"))).toBe(0);
+    // The card scrolls, so its actions stay reachable.
+    const action = announcement.getByRole("link", { name: "Explore connectors" });
+    await action.scrollIntoViewIfNeeded();
+    await expect.soft(action).toBeInViewport();
+    expect.soft(overlapArea(await box(action, "announcement action"), card)).toBeGreaterThan(0);
   });
 });
