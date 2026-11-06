@@ -13,6 +13,7 @@ import {
   type IssueFilterWorkspaceContext,
 } from "./issue-filters";
 import { formatAssigneeUserLabel } from "./assignees";
+import { ISSUE_SOURCE_GROUP_LABELS, ISSUE_SOURCE_GROUP_ORDER, issueSourceGroup, type IssueSourceGroup } from "./issue-source";
 
 export const RECENT_ISSUES_LIMIT = 100;
 export const ACTIONABLE_APPROVAL_STATUSES = new Set(["pending", "revision_requested"]);
@@ -34,7 +35,7 @@ export type InboxCategoryFilter =
   | "failed_runs"
   | "alerts";
 export type InboxApprovalFilter = "all" | "actionable" | "resolved";
-export type InboxWorkItemGroupBy = "none" | "type" | "assignee" | "project" | "workspace";
+export type InboxWorkItemGroupBy = "none" | "type" | "source" | "assignee" | "project" | "workspace";
 export const inboxIssueColumns = [
   "status",
   "id",
@@ -391,7 +392,7 @@ export function saveInboxIssueColumns(columns: InboxIssueColumn[]) {
 export function loadInboxWorkItemGroupBy(): InboxWorkItemGroupBy {
   try {
     const raw = localStorage.getItem(INBOX_GROUP_BY_KEY);
-    return raw === "type" || raw === "assignee" || raw === "project" || raw === "workspace" ? raw : "none";
+    return raw === "type" || raw === "source" || raw === "assignee" || raw === "project" || raw === "workspace" ? raw : "none";
   } catch {
     return "none";
   }
@@ -932,6 +933,38 @@ function groupInboxWorkItemsByIssueGroup(
     }));
 }
 
+// Source groups keep a fixed order (Work, Routines, System, Chat) so a
+// person's own work stays on top; other inbox items follow by kind.
+function groupInboxWorkItemsBySource(items: InboxWorkItem[]): InboxWorkItemGroup[] {
+  const issuesBySource = new Map<IssueSourceGroup, InboxWorkItem[]>();
+  const otherByKind = new Map<InboxWorkItem["kind"], InboxWorkItem[]>();
+  for (const item of items) {
+    if (item.kind === "issue") {
+      const source = issueSourceGroup(item.issue.originKind);
+      const existing = issuesBySource.get(source) ?? [];
+      existing.push(item);
+      issuesBySource.set(source, existing);
+    } else {
+      const existing = otherByKind.get(item.kind) ?? [];
+      existing.push(item);
+      otherByKind.set(item.kind, existing);
+    }
+  }
+
+  const orderedGroups: InboxWorkItemGroup[] = [];
+  for (const source of ISSUE_SOURCE_GROUP_ORDER) {
+    const groupItems = issuesBySource.get(source);
+    if (!groupItems?.length) continue;
+    orderedGroups.push({ key: `source:${source}`, label: ISSUE_SOURCE_GROUP_LABELS[source], items: groupItems });
+  }
+  for (const kind of inboxWorkItemKindOrder) {
+    const groupItems = otherByKind.get(kind);
+    if (!groupItems?.length) continue;
+    orderedGroups.push({ key: `kind:${kind}`, label: inboxWorkItemKindLabels[kind], items: groupItems });
+  }
+  return orderedGroups;
+}
+
 export function groupInboxWorkItems(
   items: InboxWorkItem[],
   groupBy: InboxWorkItemGroupBy,
@@ -951,6 +984,10 @@ export function groupInboxWorkItems(
 
   if (groupBy === "project") {
     return groupInboxWorkItemsByIssueGroup(items, (issue) => resolveIssueProjectGroup(issue, options));
+  }
+
+  if (groupBy === "source") {
+    return groupInboxWorkItemsBySource(items);
   }
 
   const groups = new Map<InboxWorkItem["kind"], InboxWorkItem[]>();
