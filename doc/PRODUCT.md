@@ -150,6 +150,9 @@ submits.
 
 Tasks opens All tasks for new users. A saved view or an explicit view in the URL
 takes precedence over this default.
+The task table orders rows by Last updated, newest first, without highlighting a
+column header. Selecting a column sort activates its header and direction arrow;
+explicit sort URLs retain that selection.
 
 The task Filters menu also offers **Routine tasks**. It selects tasks with
 `originKind=routine_execution`, including manually triggered routine runs, even
@@ -432,7 +435,7 @@ Coordinator navigation uses **Chat**, **Tasks**, and **Inbox**. Inbox uses the
 inbox icon and keeps the existing decision feed, its count, and decision history
 at `/decisions`. The previous Inbox destination under More is removed.
 
-Tasks defaults to **Mine**, with a saved view per person and company. Mine uses
+Tasks defaults to **All tasks**, with a saved view per person and company. Mine uses
 the previous Inbox's personal participation rules, mixed attention items,
 read/unread title weights, keyboard shortcuts, archive and undo, mobile
 swipe-to-archive, grouping, and saved columns. Its existing preferences carry

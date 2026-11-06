@@ -5,6 +5,7 @@ import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { beforeEach, expect, it, vi } from "vitest";
 import { Issues } from "./Issues";
 import { Inbox } from "./Inbox";
+import { taskListViewStorageKey } from "../lib/task-list-views";
 
 const mountedRoutes = vi.hoisted(() => ({ organization: [] as string[] }));
 
@@ -69,21 +70,29 @@ it.each(["mine", "blocked", "recent", "everything"])("keeps shared %s label link
   } finally { cleanup(); }
 });
 
-it("defaults Tasks to Mine and remembers a deliberate organization view", async () => {
+it("defaults Tasks to All tasks and remembers a deliberate personal view", async () => {
   const first = render("/ORG/issues");
   try {
-    await vi.waitFor(() => expect(first.host.querySelector("output")?.textContent).toBe("/ORG/issues?view=mine"));
-    expect(first.host.textContent).toContain("Tasks Inbox owner:mine");
+    await vi.waitFor(() => expect(first.host.querySelector("output")?.textContent).toBe("/ORG/issues?view=all"));
+    expect(first.host.textContent).toContain("Coordinator tasks");
   } finally { first.cleanup(); }
-  const selected = render("/ORG/issues?view=done");
+  const selected = render("/ORG/issues?view=mine");
   try {
-    await vi.waitFor(() => expect(localStorage.getItem(JSON.stringify(["paperclip:coordinator-task-view:v2", "company", "viewer"]))).toBe("done"));
+    await vi.waitFor(() => expect(localStorage.getItem(JSON.stringify(["paperclip:coordinator-task-view:v2", "company", "viewer"]))).toBe("mine"));
   } finally { selected.cleanup(); }
   const returned = render("/ORG/issues");
   try {
-    await vi.waitFor(() => expect(returned.host.querySelector("output")?.textContent).toBe("/ORG/issues?view=done"));
-    expect(returned.host.textContent).toContain("Coordinator tasks");
+    await vi.waitFor(() => expect(returned.host.querySelector("output")?.textContent).toBe("/ORG/issues?view=mine"));
+    expect(returned.host.textContent).toContain("Tasks Inbox owner:mine");
   } finally { returned.cleanup(); }
+});
+
+it.each([["inbox", "mine"], ["blocked", "needs_attention"], ["all", "all"]])("preserves a saved %s view from the previous task picker", async (previous, view) => {
+  localStorage.setItem(taskListViewStorageKey("coordinator", "viewer"), previous);
+  const { host, cleanup } = render("/ORG/issues");
+  try {
+    await vi.waitFor(() => expect(host.querySelector("output")?.textContent).toBe(`/ORG/issues?view=${view}`));
+  } finally { cleanup(); }
 });
 
 it.each(["mine", "blocked", "recent", "everything"])("normalizes a filtered %s link before mounting its task collection", async view => {
