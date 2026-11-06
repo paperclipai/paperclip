@@ -128,6 +128,13 @@ describe("heartbeat retry module callbacks", () => {
     expect(database.access).not.toHaveBeenCalled();
   });
 
+  it("keeps the quota retry budget until four attempts while ordinary failures stop at two", () => {
+    const run = { scheduledRetryReason: "transient_failure", scheduledRetryAttempt: 2, errorCode: "provider_quota" };
+    expect(extracted.failedRunRetryBudgetSpent(run)).toBe(false);
+    expect(extracted.failedRunRetryBudgetSpent({ ...run, scheduledRetryAttempt: 4 })).toBe(true);
+    expect(extracted.failedRunRetryBudgetSpent({ ...run, errorCode: "adapter_failed" })).toBe(true);
+  });
+
   it("leaves successor work to the committed case handoff without retry escalation", async () => {
     const database = guardedDatabase();
     const deps = callbacks();
