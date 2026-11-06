@@ -855,7 +855,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
       <>
         {threadHeader}
         {liveWorkLinks ? (
-          <TaskChatLiveWorkLinks liveWork={liveWorkLinks} placement="top" />
+          <TaskChatLiveWorkLinks liveWork={liveWorkLinks} placement="top" companyId={companyId} />
         ) : blockerLinks ? (
           <TaskChatBlockerLinks
             directBlocker={blockerLinks.directBlocker}
@@ -2544,7 +2544,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     !streamlinedUiEnabled || shouldRepeatTaskChatBlockers(items);
   const bottomBlockerLinks = repeatBlockersAtBottom ? (
     liveWorkLinks ? (
-      <TaskChatLiveWorkLinks liveWork={liveWorkLinks} placement="bottom" />
+      <TaskChatLiveWorkLinks liveWork={liveWorkLinks} placement="bottom" companyId={companyId} />
     ) : blockerLinks ? (
       <TaskChatBlockerLinks
         directBlocker={blockerLinks.directBlocker}
