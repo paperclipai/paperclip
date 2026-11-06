@@ -405,6 +405,7 @@ import {
   retainedNativeCleanupJournalMatches,
   nativeProviderUsageLimitFromEvent,
   nativeProviderQuotaFailureFromEvent,
+  nativeProviderAuthenticationFailureFromEvent,
   nativeSessionFailureSourceCode,
   nativeSessionRecoveryProjection,
   nativeGovernedWaitResult,
@@ -12965,6 +12966,20 @@ describe("native session bounded recovery", () => {
     });
   });
 
+  it("normalizes only authoritative exact provider authentication failures", () => {
+    const event = { sourceKind: "runner" as const, eventType: "turn.failed" as const,
+      payload: { status: "failed", error: { codexErrorInfo: "unauthorized", message: "Private account metadata" } } };
+    expect(nativeProviderAuthenticationFailureFromEvent(event)).toMatchObject({ category: "authentication", providerCode: "unauthorized" });
+    expect(nativeProviderAuthenticationFailureFromEvent({ ...event, sourceKind: "control_plane" })).toBeNull();
+    expect(nativeProviderAuthenticationFailureFromEvent({ ...event, eventType: "tool.execution.completed" })).toBeNull();
+    for (const code of ["model_not_found", "invalid_request", "unknown"]) expect(nativeProviderAuthenticationFailureFromEvent({
+      ...event, payload: { status: "failed", error: { codexErrorInfo: code, message: "unauthorized" } } })).toBeNull();
+    expect(nativeProviderAuthenticationFailureFromEvent({ ...event, payload: { status: "failed", error: { message: "unauthorized" } } })).toBeNull();
+    expect(nativeSessionFailureDisposition(1, new Date(), "native_provider_auth_failed").phase).toBe("terminal_failure");
+    expect(nativeSessionFailureDisposition(1, new Date(), "native_runner_process_exited").phase).toBe("retryable_failure");
+    expect(nativeSessionFailureDisposition(2, new Date(), "native_runner_process_exited").phase).toBe("retryable_failure");
+    expect(nativeSessionFailureDisposition(3, new Date(), "native_runner_process_exited")).toMatchObject({ phase: "terminal_failure", failureCode: "native_provider_runner_failed" });
+  });
   it("stops retries only for an authenticated provider usage-limit terminal", () => {
     const event = {
       sourceKind: "runner" as const,

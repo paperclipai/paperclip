@@ -1,5 +1,6 @@
+import { DEFINITIVE_NATIVE_RUNNER_FAILURE_CODES } from "../native-runtime/native-pool-failure.js";
 import { and, eq, isNull, sql } from "drizzle-orm";
-import { agents, heartbeatRunEvents, heartbeatRuns, issues, type Db } from "@paperclipai/db";
+import { agents, agentWakeupRequests, aiConnectionTaskPins, heartbeatRunEvents, heartbeatRuns, issues, type Db } from "@paperclipai/db";
 import { readProviderFailure, type AiConnectionRouterSelection } from "@paperclipai/shared";
 import { isDeepStrictEqual } from "node:util";
 import { parseObject } from "../../adapters/utils.js";
@@ -21,8 +22,14 @@ export function poolConversationHandoff(run: Run): string {
     ["```json", evidence, "```"].join("\n")].join("\n\n");
 }
 
-export function poolFailureKind(run: Pick<Run, "status" | "errorCode" | "resultJson" | "contextSnapshot"> & Partial<Pick<Run, "runnerProfileJson">>): PoolFailureKind | null {
+export function poolFailureKind(run: Pick<Run, "status" | "errorCode" | "resultJson" | "contextSnapshot"> & Partial<Pick<Run, "runtimeMode">> & Partial<Pick<Run, "runnerProfileJson">>): PoolFailureKind | null {
   if (run.status !== "failed" || !parseObject(run.contextSnapshot?.aiRouterSelection).poolId) return null;
+  if (run.runtimeMode === "native") {
+    const failure = readProviderFailure(run.resultJson?.providerFailure);
+    if (run.errorCode === "native_provider_usage_limit" && ["quota_exhausted", "rate_limit"].includes(failure?.category ?? "")) return "quota";
+    if (run.errorCode === "native_provider_auth_failed" && failure?.category === "authentication") return "auth";
+    return DEFINITIVE_NATIVE_RUNNER_FAILURE_CODES.includes(String(run.errorCode)) ? "runner" : null;
+  }
   const family = run.resultJson?.errorFamily;
   const failure = readProviderFailure(run.resultJson?.providerFailure);
   const preparationFailure = parseObject(parseObject(run.runnerProfileJson?.adapterDispatch).poolPreparationFailure);
@@ -102,4 +109,60 @@ export async function switchFailedPoolPin(db: Db, input: {
     adapterType: agent.adapterType, attemptedMemberIds: [], failureKind: kind,
     sourceAdapterConfig: { ...parseObject(agent.adapterConfig), ...parseObject(parseObject(task?.assigneeAdapterOverrides).adapterConfig) },
     allowCoolingSelection: true });
+}
+
+/** Reconsider a waiting allocation before any adapter admission, under Stop's locks. */
+export async function reselectUnstartedPoolSuccessor(db: Db, candidate: Run, userId: string | null) {
+  const hint = parseObject(candidate.contextSnapshot?.aiPoolFailover);
+  if (!candidate.retryOfRunId || hint.sourceRunId !== candidate.retryOfRunId) return;
+  return db.transaction(async tx => {
+    const [task] = candidate.issueId ? await tx.select().from(issues).where(and(
+      eq(issues.companyId, candidate.companyId), eq(issues.id, candidate.issueId))).for("update") : [];
+    const [source] = await tx.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, candidate.companyId),
+      eq(heartbeatRuns.agentId, candidate.agentId), eq(heartbeatRuns.id, candidate.retryOfRunId!))).for("update");
+    const [run] = await tx.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, candidate.companyId),
+      eq(heartbeatRuns.agentId, candidate.agentId), eq(heartbeatRuns.id, candidate.id))).for("update");
+    if (!source || !run || !["queued", "scheduled_retry"].includes(run.status) || run.retryOfRunId !== source.id ||
+        run.startedAt || run.finishedAt || run.runtimeModeResolvedAt || run.executionStage || run.controllerBootId ||
+        run.processPid || run.processGroupId || run.processStartedAt || run.runnerInstanceId || run.nativeSessionId ||
+        run.sessionIdBefore || run.sessionIdAfter || Object.keys(parseObject(run.runnerProfileJson)).length ||
+        run.resultJson?.executionCancellation || run.resultJson?.startupCancellation || run.resultJson?.legacyQuotaStopRequested ||
+        run.scopeKind !== source.scopeKind || run.issueId !== source.issueId || !hasSettledPoolContinuation(source)) return;
+    const context = parseObject(run.contextSnapshot), original = parseObject(source.contextSnapshot);
+    const failover = parseObject(context.aiPoolFailover), kind = poolFailureKind(source);
+    const taskKey = original.aiRouterTaskKey, selection = original.aiRouterSelection as AiConnectionRouterSelection;
+    if (!kind || failover.reason !== kind || failover.sourceRunId !== source.id || context.previousRunId !== source.id ||
+        context.forceFreshSession !== true || context.aiRouterTaskKey !== taskKey || typeof taskKey !== "string" || !selection ||
+        (run.scopeKind === "issue" ? !task || (taskKey !== task.id && taskKey !== task.identifier) ||
+          task.assigneeAgentId !== run.agentId || task.assigneeUserId || !["todo", "in_progress", "in_review"].includes(task.status) ||
+          task.executionRunId !== run.id || (task.checkoutRunId && task.checkoutRunId !== run.id) :
+          !(await hasCompanyPoolAffinity(tx as unknown as Db, run, taskKey)))) return;
+    const [wake] = run.wakeupRequestId ? await tx.select().from(agentWakeupRequests).where(and(
+      eq(agentWakeupRequests.id, run.wakeupRequestId), eq(agentWakeupRequests.companyId, run.companyId),
+      eq(agentWakeupRequests.agentId, run.agentId), eq(agentWakeupRequests.runId, run.id))).for("share") : [];
+    if (!wake || wake.source !== "automation" || wake.requestedByActorType !== "system" ||
+        wake.payload?.retryOfRunId !== source.id) return;
+    const [receipt] = await tx.select().from(heartbeatRunEvents).where(and(eq(heartbeatRunEvents.companyId, run.companyId),
+      eq(heartbeatRunEvents.runId, source.id), eq(heartbeatRunEvents.agentId, run.agentId), isNull(heartbeatRunEvents.sourceInstanceId),
+      eq(heartbeatRunEvents.eventType, `ai_connection.${kind}_attributed`),
+      eq(heartbeatRunEvents.sourceEventId, `ai-connection-${kind}-attributed:${source.id}`)));
+    const proof = parseObject(receipt?.payload);
+    if (proof.schema !== `paperclip.ai-connection-${kind}-attribution.v1` || proof.taskKey !== taskKey ||
+        !isDeepStrictEqual(proof.selection, selection)) return;
+    const [agent] = await tx.select().from(agents).where(and(eq(agents.companyId, run.companyId), eq(agents.id, run.agentId))).for("share");
+    const configured = parseObject(agent?.runtimeConfig?.aiConnection);
+    if (!agent || ["paused", "terminated"].includes(agent.status) || configured.mode !== "router" || configured.connectionId !== selection.poolId) return;
+    const [pin] = await tx.select().from(aiConnectionTaskPins).where(and(eq(aiConnectionTaskPins.companyId, run.companyId),
+      eq(aiConnectionTaskPins.poolId, selection.poolId), eq(aiConnectionTaskPins.agentId, run.agentId), eq(aiConnectionTaskPins.taskKey, taskKey)));
+    if (!pin || !isDeepStrictEqual(pin.selection, context.aiRouterSelection)) return;
+    const next = await aiConnectionRouterService(tx as unknown as Db).transitionQuotaPin({ companyId: run.companyId,
+      poolId: selection.poolId, agentId: run.agentId, taskKey, expectedSelection: pin.selection, userId,
+      adapterType: agent.adapterType, attemptedMemberIds: [], failureKind: kind,
+      sourceAdapterConfig: { ...parseObject(agent.adapterConfig), ...parseObject(parseObject(task?.assigneeAdapterOverrides).adapterConfig) } });
+    if (next.kind !== "selected") return;
+    const updated = { ...context, aiRouterSelection: next.selection,
+      aiPoolFailover: { ...failover, waitingUntil: undefined } };
+    await tx.update(heartbeatRuns).set({ contextSnapshot: updated, updatedAt: new Date() }).where(eq(heartbeatRuns.id, run.id));
+    return updated;
+  });
 }

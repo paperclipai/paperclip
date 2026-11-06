@@ -251,6 +251,47 @@ const support = externalDatabaseUrl
       expect(foreign?.nextAttemptAt).toEqual(deadline);
       expect(foreign?.failureDetail?.replacementWaitingForCleanup).toBe(true);
     });
+    it("continues through five authorized members without reusing an exhausted account", async () => {
+      const source = await seed();
+      const userId = `five-${randomUUID()}`;
+      await db.insert(authUsers).values({ id: userId, name: "Five", email: `${userId}@example.test`, createdAt: new Date(), updatedAt: new Date() });
+      await db.insert(companyMemberships).values({ companyId: source.companyId, principalId: userId, principalType: "user", status: "active", membershipRole: "member" });
+      const accounts = aiConnectionService(db);
+      const saved = await Promise.all(Array.from({ length: 5 }, (_, i) => accounts.save(source.companyId, userId, {
+        provider: "openai", method: "api_key", ownership: "personal", name: `Account ${i}`, apiKey: `fixture-${i}`, agentIds: [], allAgents: true,
+      }, randomUUID())));
+      const members = saved.map(account => ({ id: randomUUID(), binding: { mode: "delegated" as const,
+        provider: "openai" as const, method: "api_key" as const, ...account }, profile: { provider: "codex" as const, model: "gpt-5" } }));
+      const router = aiConnectionRouterService(db);
+      const pool = await router.save(BUILTIN_AI_FAILOVER_ROUTER_KEY, { companyId: source.companyId,
+        config: { name: "Five accounts", enabled: true, mode: "failover", thresholdPercent: 90, members } }, userId);
+      await db.update(agents).set({ runtimeConfig: { aiConnection: { mode: "router", connectionId: pool.id } } }).where(eq(agents.id, source.agentId));
+      let selection = await router.resolve({ companyId: source.companyId, poolId: pool.id, agentId: source.agentId,
+        userId, adapterType: "paperclip_runner", taskKey: source.issueId });
+      let currentId: string = source.runId;
+      for (let i = 0; i < 4; i++) {
+        await db.update(heartbeatRuns).set({ scopeKind: "issue", issueId: source.issueId, runtimeMode: "native", nativeIssueId: source.issueId,
+          status: "failed", errorCode: "native_provider_auth_failed", responsibleUserId: userId,
+          resultJson: { providerFailure: { schema: "paperclip.provider-failure.v1", provider: "openai", phase: "turn", category: "authentication", message: "Unauthorized", retryability: "requires_action" } },
+          runnerProfileJson: { recoveryEventInventoryVersion: 1, nativeExecutionInput: { provider: { kind: "codex" }, workspace: { cwd: tmpdir() } } },
+          contextSnapshot: { issueId: source.issueId, aiRouterTaskKey: source.issueId, aiRouterSelection: selection } }).where(eq(heartbeatRuns.id, currentId));
+        if (i === 0) await db.update(nativeRunFinalizations).set({ failureCode: "native_provider_auth_failed" }).where(eq(nativeRunFinalizations.runId, currentId));
+        else await db.insert(nativeRunFinalizations).values({ runId: currentId, companyId: source.companyId, issueId: source.issueId,
+          phase: "terminal_failure", failureCode: "native_provider_auth_failed", attempt: 1 });
+        const [grant] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, saved[i].grantId));
+        const ref = grant.credentialSecretRefs.find(item => item.configPath === "ai.credential")!;
+        const [secret] = await db.select().from(companySecrets).where(eq(companySecrets.id, ref.secretId));
+        expect(await recordVerifiedRouterQuotaCooldown(db, { runId: currentId, companyId: source.companyId, agentId: source.agentId,
+          credentialIdentity: `${grant.id}:${userId}:${secret.id}:${secret.aiSessionEpoch}`, retryNotBefore: null, failureKind: "auth" })).toBe(true);
+        expect((await reconcileSafeNativeReplacements(db, new Date(), { verifyStoppedSession: async run => run.id === currentId ? { evidence: {}, retire: () => true } : null })).scheduled).toBe(1);
+        const [next] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, currentId));
+        expect(next.contextSnapshot?.aiRouterSelection).toMatchObject({ memberId: members[i + 1].id });
+        expect(next.contextSnapshot?.aiPoolFailover).toEqual({ sourceRunId: currentId, reason: "auth" });
+        selection = next.contextSnapshot!.aiRouterSelection as typeof selection;
+        currentId = next.id;
+      }
+      expect(selection.memberId).toBe(members[4].id);
+    });
     it("atomically commits the quota successor and pin and rolls both back on failure", async () => {
       const source = await seed();
       const userId = `quota-${randomUUID()}`;

@@ -1,3 +1,5 @@
+import { notifyExecutionRunWork } from "../execution-control-notifications.js";
+import { nativePoolFailureKind } from "../native-runtime/native-pool-failure.js";
 import { preserveAcceptedRunUsageProjectionSql } from "../usage-receipts.js";
 import { isContextCompactionRun } from "../context-compaction.js";
 import { providerFailureFromError } from "../../vendor/paperclip-runner/index.js";
@@ -109,6 +111,14 @@ export async function recordVerifiedRouterQuotaCooldown(db: Db, input: {
     if (!run || run.scopeKind !== candidate.scopeKind || run.issueId !== candidate.issueId || run.status !== "failed" ||
       !(input.failureKind ? poolFailureKind(run) === input.failureKind : readHeartbeatRunErrorFamily(run) === "provider_quota" ||
         (run.errorCode === "native_provider_usage_limit" && isConfirmedProviderQuotaFailure(run.resultJson?.providerFailure)))) return false;
+    if (run.runtimeMode === "native") {
+      if ((input.failureKind ?? "quota") === "quota" && !isConfirmedProviderQuotaFailure(run.resultJson?.providerFailure)) return false;
+      const [owner] = await tx.select().from(nativeRunFinalizations).where(and(eq(nativeRunFinalizations.companyId, run.companyId),
+        eq(nativeRunFinalizations.runId, run.id)));
+      if (!owner || owner.phase !== "terminal_failure" || owner.leaseOwner || owner.resultId ||
+          nativePoolFailureKind(owner.failureCode) !== (input.failureKind ?? "quota") ||
+          (input.failureKind === "runner" && owner.failureDetail?.originalFailureCode !== run.errorCode)) return false;
+    }
     const context = parseObject(run.contextSnapshot);
     const selection = parseObject(context.aiRouterSelection);
     const binding = parseObject(selection.binding);
@@ -132,8 +142,7 @@ export async function recordVerifiedRouterQuotaCooldown(db: Db, input: {
         sql`(${aiConnectionTaskPins.selection} - 'runtimeConfig' - 'notes' - 'adapterType') =
           (${JSON.stringify(selection)}::jsonb - 'runtimeConfig' - 'notes' - 'adapterType')`,
         sql`${aiConnectionTaskPins.member}->>'id' = ${selection.memberId ?? ""}`,
-        sql`${aiConnectionTaskPins.member}->'binding' = ${JSON.stringify(binding)}::jsonb`,
-        sql`${aiConnectionPools.config}->'members' @> jsonb_build_array(${aiConnectionTaskPins.member})`)).for("update");
+        sql`${aiConnectionTaskPins.member}->'binding' = ${JSON.stringify(binding)}::jsonb`)).for("update");
     if (!pin) return false;
     const kind = input.failureKind ?? "quota";
     const eventId = `ai-connection-${kind}-attributed:${run.id}`;
@@ -151,6 +160,7 @@ export async function recordVerifiedRouterQuotaCooldown(db: Db, input: {
         sql`${heartbeatRunEvents.payload} = ${JSON.stringify(payload)}::jsonb`)).limit(1);
       if (!matches) return false;
     } else {
+      await notifyExecutionRunWork(tx, { companyId: run.companyId });
       const seq = await allocateHeartbeatRunEventSeq(tx as unknown as Db, run.id);
       await tx.insert(heartbeatRunEvents).values({ companyId: run.companyId, runId: run.id, agentId: run.agentId, seq,
         eventType: `ai_connection.${kind}_attributed`, stream: "system", level: "info", sourceEventId: eventId, payload });
@@ -1319,10 +1329,11 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
     }
 
     const failedRun = failedRunWrite.run;
-    if (failedRun && failureOutcome === "failed" && nativeTerminalFailureCode === "native_provider_usage_limit" && isConfirmedProviderQuotaFailure(providerFailure)) {
+    const nativePoolFailure = nativePoolFailureKind(nativeTerminalFailureCode);
+    if (failedRun && failureOutcome === "failed" && nativePoolFailure) {
       await recordVerifiedRouterQuotaCooldown(db, { runId: failedRun.id, companyId: failedRun.companyId,
         agentId: failedRun.agentId, credentialIdentity: sessionConfigMetadata.aiCredentialIdentity,
-        retryNotBefore: providerQuotaRetryAt(providerFailure) }).catch(error => logger.warn({ err: error, runId: run.id }, "failed to record router quota cooldown"));
+        retryNotBefore: providerQuotaRetryAt(readProviderFailure(failedRun.resultJson?.providerFailure)), failureKind: nativePoolFailure }).catch(error => logger.warn({ err: error, runId: run.id }, "failed to record router quota cooldown"));
     }
     const settleAgent = () => finalizeAgentStatus(agent.id, "failed", message, {
       wasFirstHeartbeat: timerClaimWasFirstHeartbeat(run),

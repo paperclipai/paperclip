@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { and, desc, eq, gte, inArray, ne, or, sql } from "drizzle-orm";
-import { aiConnectionTaskPins, aiConnectionPools, aiConnectionQuotaCooldowns, heartbeatRuns, type Db } from "@paperclipai/db";
+import { aiConnectionTaskPins, aiConnectionQuotaCooldowns, heartbeatRuns, type Db } from "@paperclipai/db";
 import { readProviderFailure, type ProviderFailure } from "@paperclipai/shared";
 import { logger } from "../../middleware/logger.js";
 import { infrastructureRetryDelayMs, PROVIDER_LIMIT_DEFAULT_COOLDOWN_MS } from "../system-recovery-state.js";
@@ -101,9 +101,9 @@ async function routedAccountCooldown(input: {
   binding: { companyId: string; agentId: string; runId: string };
   failure: ProviderFailure | null;
   now: Date;
-  managedAiCredentialIdentity?: string;
+  managedAiAccountIdentity?: string;
 }): Promise<{ matched: boolean; cooldown: Date | null }> {
-  if (!input.managedAiCredentialIdentity) return { matched: false, cooldown: null };
+  if (!input.managedAiAccountIdentity) return { matched: false, cooldown: null };
   const [routed] = await input.db
     .select({ grantId: sql<string>`${aiConnectionTaskPins.selection}->'binding'->>'grantId'` })
     .from(heartbeatRuns)
@@ -114,17 +114,14 @@ async function routedAccountCooldown(input: {
       sql`${aiConnectionTaskPins.selection} = ${heartbeatRuns.contextSnapshot}->'aiRouterSelection'`,
       sql`${aiConnectionTaskPins.member}->'binding' = ${aiConnectionTaskPins.selection}->'binding'`,
       sql`${aiConnectionTaskPins.member}->>'id' = ${aiConnectionTaskPins.selection}->>'memberId'`))
-    .innerJoin(aiConnectionPools, and(eq(aiConnectionPools.companyId, aiConnectionTaskPins.companyId),
-      eq(aiConnectionPools.id, aiConnectionTaskPins.poolId),
-      sql`${aiConnectionPools.config}->'members' @> jsonb_build_array(${aiConnectionTaskPins.member})`))
     .where(and(eq(heartbeatRuns.id, input.binding.runId), eq(heartbeatRuns.companyId, input.binding.companyId),
       eq(heartbeatRuns.agentId, input.binding.agentId),
-      sql`${input.managedAiCredentialIdentity} LIKE (${aiConnectionTaskPins.selection}->'binding'->>'grantId') || ':%'`,
+      sql`${input.managedAiAccountIdentity} LIKE (${aiConnectionTaskPins.selection}->'binding'->>'grantId') || ':%'`,
       sql`((${heartbeatRuns.scopeKind} = 'issue' and (${heartbeatRuns.issueId}::text = ${aiConnectionTaskPins.taskKey}
           or exists (select 1 from issues where issues.id = ${heartbeatRuns.issueId} and issues.company_id = ${heartbeatRuns.companyId} and issues.identifier = ${aiConnectionTaskPins.taskKey})))
         or (${heartbeatRuns.scopeKind} <> 'issue' and (${heartbeatRuns.id}::text = ${aiConnectionTaskPins.taskKey}
           or (${aiConnectionTaskPins.taskKey} = '__heartbeat__' and ${heartbeatRuns.invocationSource} = 'timer' and ${heartbeatRuns.contextSnapshot}->>'wakeSource' = 'timer'))))`)).limit(1);
-  const identity = routed ? quotaIdentityFromSessionSnapshot(routed.grantId, input.managedAiCredentialIdentity) : null;
+  const identity = routed ? quotaIdentityFromSessionSnapshot(routed.grantId, input.managedAiAccountIdentity) : null;
   if (!identity) return { matched: false, cooldown: null };
   const [account] = await input.db.select({ retryAt: aiConnectionQuotaCooldowns.retryAt }).from(aiConnectionQuotaCooldowns)
     .where(and(eq(aiConnectionQuotaCooldowns.companyId, input.binding.companyId),
@@ -146,7 +143,7 @@ export async function planNativeStartupRetry(input: {
   retryable: boolean;
   failure: ProviderFailure | null;
   now: Date;
-  managedAiCredentialIdentity?: string;
+  managedAiAccountIdentity?: string;
 }): Promise<{ nextAttemptAt: Date | null; providerCooldownAt: Date | null }> {
   // Limit evidence only refines the schedule. A failed read must not stop the
   // failure from settling, so the retry falls back to plain backoff.

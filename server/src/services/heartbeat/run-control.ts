@@ -1,3 +1,4 @@
+import { nativePoolFailureKind } from "../native-runtime/native-pool-failure.js";
 import { instanceSettingsService } from "../instance-settings.js";
 import { acknowledgeLegacyQuotaPrestartStop, fenceLegacyQuotaPrestartStop, isLegacyQuotaPrestartStopCandidate } from "./quota-prestart-fence.js";
 import { writeDeferredExecutionWait } from "../deferred-execution-wait.js";
@@ -1251,7 +1252,7 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
       }
       if (quotaStop?.kind === "fenced") {
         // The source remains failed; no provider stop or cancellation receipt was established.
-        throw conflict("Automatic quota continuation was stopped; the original run remains failed", { runId });
+        throw conflict("Automatic provider continuation was stopped; the original run remains failed", { runId });
       }
     }
 
@@ -1274,7 +1275,7 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
           eq(heartbeatRuns.companyId, run!.companyId))).for("update");
         if (!current || (options.expectedStatus && current.status !== options.expectedStatus)) return false;
         run = current;
-        // Quota failure can commit after the initial read. Release these locks
+        // Provider failure can commit after the initial read. Release these locks
         // and retry through the quota fence, which takes issue -> coordinator ->
         // run locks and also observes any already-committed successor.
         if (!options.expectedStatus && options.resultJson?.cancelledByActorType === "user" && isLegacyQuotaPrestartStopCandidate(current))
@@ -1286,7 +1287,7 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
             .from(nativeRunFinalizations).where(and(eq(nativeRunFinalizations.runId, runId),
               eq(nativeRunFinalizations.companyId, current.companyId), eq(nativeRunFinalizations.issueId, current.nativeIssueId)))
             .for("update", { noWait: true }).limit(1);
-          if (owner?.phase === "terminal_failure" && owner.failureCode === "native_provider_usage_limit") return "quota_recheck" as const;
+          if (owner?.phase === "terminal_failure" && nativePoolFailureKind(owner.failureCode)) return "quota_recheck" as const;
         }
         if (options.cancellationRequestId) {
           run = await claimCancellationRequest(tx as unknown as Db, runId, run!.companyId, options.cancellationRequestId,

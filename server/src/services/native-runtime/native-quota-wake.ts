@@ -17,7 +17,7 @@ export async function reopenNativeQuotaPoolWaits(
     : sql`true`;
   const rows = await tx.execute<{ run_id: string }>(sql`update native_run_finalizations f set next_attempt_at = null
     from heartbeat_runs r where f.run_id = r.id and f.company_id = ${input.companyId} and r.company_id = ${input.companyId}
-      and f.phase = 'terminal_failure' and f.failure_code = 'native_provider_usage_limit'
+      and f.phase = 'terminal_failure' and f.failure_code in ('native_provider_usage_limit', 'native_provider_auth_failed', 'native_provider_runner_failed')
       and f.result_id is null and coalesce(f.failure_detail->>'successorRunId', '') = ''
       and coalesce(f.failure_detail->>'replacementDenied', '') = '' and f.next_attempt_at is not null
       and ${pool} returning f.run_id`);

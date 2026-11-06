@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { and, eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
-  agents,
+  agents, aiConnectionPools, aiConnectionTaskPins, aiConnectionQuotaCooldowns, toolApplications, toolConnections,
   companies,
   completionContracts,
   createDb,
@@ -210,7 +210,7 @@ describe("native provider startup retry", () => {
   async function failStartup(
     seeded: Seeded,
     failure: Error,
-    options: { leaseOwner?: string; beforeFailure?: () => Promise<void> } = {},
+    options: { leaseOwner?: string; beforeFailure?: () => Promise<void>; managedAiCredentialIdentity?: string; managedAiAccountIdentity?: string } = {},
   ) {
     provider.execute.mockReset().mockImplementation(async () => {
       await options.beforeFailure?.();
@@ -222,6 +222,7 @@ describe("native provider startup retry", () => {
         db,
         execution: seeded.execution,
         runnerInstanceId: seeded.runnerInstanceId,
+        managedAiCredentialIdentity: options.managedAiCredentialIdentity, managedAiAccountIdentity: options.managedAiAccountIdentity,
         ...(options.leaseOwner ? { leaseOwner: options.leaseOwner } : {}),
         backend: {
           descriptor: async () => {
@@ -431,6 +432,30 @@ describe("native provider startup retry", () => {
     }
   });
 
+  it("uses the admitted account identity instead of a hashed revision or another account's quota", async () => {
+    const agentId = await createAgent(), seeded = await seedRun(agentId);
+    const [app] = await db.insert(toolApplications).values({ companyId, name: "Startup accounts", type: "rest_api" }).returning();
+    const [pool, account] = await db.insert(toolConnections).values(["pool", "account"].map(name => ({ companyId,
+      applicationId: app.id, name, uid: randomUUID(), transport: "rest_api" as const }))).returning();
+    const grantId = randomUUID(), member = { id: randomUUID(), binding: { mode: "delegated" as const,
+      provider: "openai" as const, method: "api_key" as const, connectionId: account.id, grantId }, profile: { provider: "codex" as const, model: "gpt-5" } };
+    const selection = { poolId: pool.id, memberId: member.id, binding: member.binding, runtimeConfig: { provider: "codex", model: "gpt-5" }, notes: [] };
+    await db.insert(aiConnectionPools).values({ id: pool.id, companyId, pluginKey: "startup-test",
+      config: { name: "Pool", enabled: true, mode: "failover", thresholdPercent: 90, members: [member] } });
+    await db.insert(aiConnectionTaskPins).values({ companyId, agentId, poolId: pool.id, taskKey: seeded.issueId, member, selection });
+    await db.update(heartbeatRuns).set({ scopeKind: "issue", issueId: seeded.issueId,
+      contextSnapshot: { issueId: seeded.issueId, aiRouterTaskKey: seeded.issueId, aiRouterSelection: selection } }).where(eq(heartbeatRuns.id, seeded.runId));
+    const now = new Date(), accountDeadline = new Date(now.getTime() + 8 * 60_000), oldDeadline = new Date(now.getTime() + 6 * 60 * 60_000);
+    await db.insert(aiConnectionQuotaCooldowns).values({ companyId, credentialIdentity: `grant:${grantId}:no-auth`, retryAt: accountDeadline });
+    await db.insert(heartbeatRuns).values({ companyId, agentId, status: "failed", errorCode: "provider_quota", startedAt: now,
+      finishedAt: now, resultJson: { retryNotBefore: oldDeadline.toISOString() } });
+    await failStartup(seeded, sessionOpenFailure(), { managedAiCredentialIdentity: `sha256:${"a".repeat(64)}`,
+      managedAiAccountIdentity: `${grantId}:user:no-auth` });
+    const { coordinator } = await read(seeded);
+    expect(coordinator.failureDetail?.providerCooldownAt).toBe(accountDeadline.toISOString());
+    expect(coordinator.nextAttemptAt!.getTime()).toBeGreaterThan(accountDeadline.getTime());
+    expect(coordinator.nextAttemptAt!.getTime()).toBeLessThan(accountDeadline.getTime() + 60_000);
+  });
   it("retries a rejected session.open with growing backoff instead of blocking the task", async () => {
     const seeded = await seedRun(await createAgent());
 

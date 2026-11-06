@@ -1,3 +1,4 @@
+import { nativePoolFailureKind } from "./native-pool-failure.js";
 import { notifyScheduledRetryCancellation } from "../scheduled-retry-cancellation-notifications.js";
 import { and, eq, sql } from "drizzle-orm";
 import { activityLog, budgetReservations, heartbeatRuns, issues, nativeRunFinalizations, type Db } from "@paperclipai/db";
@@ -91,7 +92,7 @@ export async function fenceQuotaReplacementStop(db: Db, source: typeof heartbeat
       eq(heartbeatRuns.id, source.id), eq(heartbeatRuns.companyId, source.companyId),
     )).for("update");
     if (!run || run.status !== "failed" || owner?.phase !== "terminal_failure"
-      || owner.failureCode !== "native_provider_usage_limit") return null;
+      || !nativePoolFailureKind(owner.failureCode)) return null;
     const successorId = record(owner.failureDetail).successorRunId;
     if (successorId !== undefined && successorId !== null) {
       if (typeof successorId !== "string" || successorId === run.id) throw conflict("Invalid quota replacement lineage");

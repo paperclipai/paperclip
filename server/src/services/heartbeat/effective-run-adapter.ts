@@ -5,6 +5,7 @@ import { applyAiConnectionRouterTaskSettings, poolExecutionAdapterType, aiConnec
 import { BUILTIN_AI_FAILOVER_ROUTER_KEY, type AiConnectionRouterSelection } from "@paperclipai/shared";
 import { HttpError } from "../../errors.js";
 import { deriveTaskKeyWithHeartbeatFallback, shouldResetTaskSessionForWake } from "./run-state.js";
+import { reselectUnstartedPoolSuccessor } from "./pool-failover.js";
 import type { PluginWorkerManager } from "../plugin-worker-manager.js";
 
 export async function preparePoolAdapterClaim(db: Db, run: typeof heartbeatRuns.$inferSelect,
@@ -15,7 +16,7 @@ export async function preparePoolAdapterClaim(db: Db, run: typeof heartbeatRuns.
   const binding = parseObject(parseObject(agent.runtimeConfig).aiConnection);
   if (run.startedAt || binding.mode !== "router" || typeof binding.connectionId !== "string" || !LOCAL_POOL_ADAPTERS.includes(agent.adapterType))
     return { adapterDispatch, context: {} };
-  const context = parseObject(run.contextSnapshot);
+  const context: Record<string, unknown> = await reselectUnstartedPoolSuccessor(db, run, userId) ?? parseObject(run.contextSnapshot);
   const taskKey = typeof context.aiRouterTaskKey === "string" && context.aiRouterTaskKey.trim()
     ? context.aiRouterTaskKey : deriveTaskKeyWithHeartbeatFallback(context, null) ?? run.id;
   if (context.aiRouterTaskKey !== taskKey) {

@@ -1,5 +1,6 @@
+import { NATIVE_POOL_FAILURE_CODES } from "./native-runtime/native-pool-failure.js";
 import { nextWorkspaceRecoveryAt } from "./system-recovery.js";
-import { and, asc, eq, isNotNull, sql } from "drizzle-orm";
+import { inArray, and, asc, eq, isNotNull, sql } from "drizzle-orm";
 import { adapterAuthSessions, heartbeatRuns, issueRecoveryActions, nativeRunFinalizations, type Db } from "@paperclipai/db";
 import type { createDeliveryWorkCoordinator } from "./delivery-work-coordinator.js";
 import { type DeliveryQueue } from "./delivery-work-notifications.js";
@@ -91,7 +92,7 @@ export function executionControlSchedule(db: Db) {
         hasPendingNativeReplacements(db),
         db.select({ at: nativeRunFinalizations.nextAttemptAt }).from(heartbeatRuns)
           .innerJoin(nativeRunFinalizations, eq(nativeRunFinalizations.runId, heartbeatRuns.id))
-          .where(and(nativeReplacementPending(), eq(nativeRunFinalizations.failureCode, "native_provider_usage_limit"),
+          .where(and(nativeReplacementPending(), inArray(nativeRunFinalizations.failureCode, NATIVE_POOL_FAILURE_CODES),
             sql`coalesce(${nativeRunFinalizations.failureDetail}->>'replacementWaitingForCleanup', 'false') <> 'true'`)),
       ]);
       if (legacy || quota.some(row => row.at === null)) return retry();

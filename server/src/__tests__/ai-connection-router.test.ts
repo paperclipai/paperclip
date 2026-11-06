@@ -265,7 +265,17 @@ describe("durable, authorized connection routing", () => {
       expect((await heartbeat.getRun(run!.id))?.error).toContain("manual affinity fixture");
     } finally { await heartbeat.drainActiveRunExecutions(); unregisterServerAdapter("codex_local"); }
   }, 30_000);
-  it("continues a quota-interrupted Claude turn on Codex through the public heartbeat lifecycle", async () => {
+  it.each([false, true])("continues a quota-interrupted Claude turn on Codex through the public heartbeat lifecycle (reconnect=%s)", async reconnect => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Isolated continuation", issuePrefix: `C${companyId.slice(0, 6)}` });
+    await db.insert(companyMemberships).values({ companyId, principalId: "alice", principalType: "user", status: "active", membershipRole: "member" });
+    const accounts = aiConnectionService(db);
+    const codex = await accounts.save(companyId, "alice", { provider: "openai", method: "api_key", ownership: "personal", name: "Codex", apiKey: "fixture", agentIds: [], allAgents: true }, "continuation-codex");
+    const claude = await accounts.save(companyId, "alice", { provider: "anthropic", method: "subscription", ownership: "personal", name: "Claude", loginSessionId: "fixture", agentIds: [], allAgents: true }, "continuation-claude");
+    const members: AiConnectionPoolMember[] = [
+      { id: randomUUID(), binding: { mode: "delegated", provider: "openai", method: "api_key", ...codex }, profile: { provider: "codex", model: "gpt-5.6-sol", effort: "low" } },
+      { id: randomUUID(), binding: { mode: "delegated", provider: "anthropic", method: "subscription", ...claude }, profile: { provider: "acpx", acpxAgent: "claude", model: "claude-sonnet-5" } },
+    ];
     await db.delete(aiConnectionQuotaCooldowns).where(eq(aiConnectionQuotaCooldowns.companyId, companyId));
     await instanceSettingsService(db).updateExperimental({ enableWorktreeRunExecution: true });
     const pool = await service().save(BUILTIN_AI_FAILOVER_ROUTER_KEY, { companyId, config: {
@@ -283,6 +293,8 @@ describe("durable, authorized connection routing", () => {
       await ctx.onDispatch?.();
       await writeFile(path.join(sourceCwd, "completed-marker.txt"), "completed exactly once");
       await ctx.onLog("stdout", "Completed marker file. Quota interrupted the remaining work.\n");
+      if (reconnect) await service().recordQuotaCooldown(companyId, members[0]!.binding.connectionId,
+        await identityFor(members[0]!.binding.grantId), new Date(Date.now() + 3 * 60 * 60_000));
       return { exitCode: 1, signal: null, timedOut: false, errorCode: "provider_quota", errorFamily: "provider_quota", errorMessage: "Provider quota exhausted",
         sessionId: randomUUID(), summary: "Completed marker file. Remaining work needs another turn.",
         executionSettlement: { providerStopped: true, workspaceSettled: true, actionOutcomes: "unknown" } };
@@ -308,7 +320,15 @@ describe("durable, authorized connection routing", () => {
       await heartbeat.drainActiveRunExecutions();
       await expect.poll(async () => (await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, source!.id))).length, { timeout: 20_000 }).toBe(1);
       const [successor] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, source!.id));
-      expect(successor?.contextSnapshot).toMatchObject({ previousRunId: source!.id, forceFreshSession: true, aiRouterSelection: { adapterType: "codex_local", memberId: members[0]!.id } });
+      expect(successor?.contextSnapshot).toMatchObject({ previousRunId: source!.id, forceFreshSession: true, aiRouterSelection: { adapterType: reconnect ? "claude_local" : "codex_local", memberId: members[reconnect ? 1 : 0]!.id } });
+      if (reconnect) {
+        expect(successor!.scheduledRetryAt!.getTime()).toBeGreaterThan(Date.now() + 60_000);
+        await aiConnectionService(db).save(companyId, "alice", { connectionId: members[0]!.binding.connectionId,
+          provider: "openai", method: "api_key", ownership: "personal", name: "Codex", apiKey: "reconnected-fixture",
+          agentIds: [], allAgents: true }, "reconnected-fixture");
+        const reopened = await heartbeat.getRun(successor!.id);
+        expect(reopened!.scheduledRetryAt!.getTime()).toBeLessThanOrEqual(Date.now());
+      }
       await heartbeat.promoteDueScheduledRetries();
       await heartbeat.resumeQueuedRunsAfterDrain({ companyId });
       await heartbeat.drainActiveRunExecutions();

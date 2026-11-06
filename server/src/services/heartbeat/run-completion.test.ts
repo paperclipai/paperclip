@@ -251,10 +251,10 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
       startedAt: now, finishedAt: now, errorCode: "provider_quota", resultJson: { retryNotBefore: oldLimit.toISOString() } });
     const startup = { db, binding: { runId: f.run.id, companyId: f.run.companyId, agentId: f.run.agentId },
       attempt: 1, retryable: true, failure: null, now };
-    expect((await planNativeStartupRetry({ ...startup, managedAiCredentialIdentity: `${grantId}:shared:no-auth` })).providerCooldownAt).toEqual(distant);
+    expect((await planNativeStartupRetry({ ...startup, managedAiAccountIdentity: `${grantId}:shared:no-auth` })).providerCooldownAt).toEqual(distant);
     await db.delete(aiConnectionQuotaCooldowns);
-    expect((await planNativeStartupRetry({ ...startup, managedAiCredentialIdentity: `${grantId}:shared:no-auth` })).providerCooldownAt).toBeNull();
-    expect((await planNativeStartupRetry({ ...startup, managedAiCredentialIdentity: `${randomUUID()}:shared:no-auth` })).providerCooldownAt).toEqual(oldLimit);
+    expect((await planNativeStartupRetry({ ...startup, managedAiAccountIdentity: `${grantId}:shared:no-auth` })).providerCooldownAt).toBeNull();
+    expect((await planNativeStartupRetry({ ...startup, managedAiAccountIdentity: `${randomUUID()}:shared:no-auth` })).providerCooldownAt).toEqual(oldLimit);
     await db.update(aiConnectionTaskPins).set({ taskKey: "other" }).where(eq(aiConnectionTaskPins.id, (await db.select().from(aiConnectionTaskPins))[0]!.id));
     expect(await recordVerifiedRouterQuotaCooldown(db, { ...call, credentialIdentity: `${grantId}:shared:no-auth` })).toBe(false);
     expect(await db.select().from(aiConnectionQuotaCooldowns)).toEqual([]);

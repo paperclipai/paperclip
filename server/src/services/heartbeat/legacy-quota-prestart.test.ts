@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { and, eq } from "drizzle-orm";
-import { agentTaskSessions, agentWakeupRequests, agents, aiConnectionTaskPins, authUsers, companies, companyMemberships, companySecrets, connectionGrants, createDb, heartbeatRunEvents, heartbeatRuns, issues, type Db } from "@paperclipai/db";
+import { agentTaskSessions, agentWakeupRequests, agents, aiConnectionPools, aiConnectionQuotaCooldowns, aiConnectionTaskPins, authUsers, companies, companyMemberships, companySecrets, connectionGrants, createDb, heartbeatRunEvents, heartbeatRuns, issues, type Db } from "@paperclipai/db";
 import { BUILTIN_AI_FAILOVER_ROUTER_KEY } from "@paperclipai/shared";
 import { startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import { aiConnectionService } from "../ai-connections.js";
@@ -12,6 +12,7 @@ import { aiConnectionRouterService } from "../ai-connection-router.js";
 import { AI_CONNECTION_POOL_WAIT_RETRY_REASON } from "../../modules/run-dispatch/index.js";
 import { createHeartbeatRetries, type HeartbeatRetryDependencies } from "./retries.js";
 import { fenceLegacyQuotaPrestartStop, switchUnstartedLegacyQuotaPin } from "./quota-prestart-fence.js";
+import { preparePoolAdapterClaim } from "./effective-run-adapter.js";
 import { recordVerifiedRouterQuotaCooldown } from "./run-completion.js";
 import { reopenNativeQuotaPoolWaits } from "../native-runtime/native-quota-wake.js";
 
@@ -134,6 +135,61 @@ describe("legacy quota prestart retry", () => {
     expect(await recordVerifiedRouterQuotaCooldown(db, { companyId: f.companyId, agentId: f.agent.id, runId: f.source.id,
       credentialIdentity: f.credentialIdentity, retryNotBefore: null })).toBe(true);
     expect((await f.schedule()).outcome).toBe("scheduled");
+  }, 30_000);
+  it("attributes and switches after editing only the pool member model and effort", async () => {
+    const f = await fixture(true);
+    await db.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, f.source.id));
+    await db.update(aiConnectionPools).set({ config: { name: f.pool.name, enabled: f.pool.enabled, mode: f.pool.mode, thresholdPercent: f.pool.thresholdPercent, members: f.members.map(member => ({
+      ...member, profile: { ...member.profile, model: "claude-opus-5", effort: "high" },
+    })) } }).where(eq(aiConnectionPools.id, f.pool.id));
+    expect(await recordVerifiedRouterQuotaCooldown(db, { companyId: f.companyId, agentId: f.agent.id,
+      runId: f.source.id, credentialIdentity: f.credentialIdentity, retryNotBefore: null })).toBe(true);
+    expect((await f.schedule()).outcome).toBe("scheduled");
+    const [successor] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, f.source.id));
+    expect(successor.contextSnapshot?.aiRouterSelection).toMatchObject({ memberId: f.members[1].id,
+      runtimeConfig: { model: "claude-opus-5" } });
+  }, 30_000);
+  it.each(["binding", "revoked", "removed"])("retains source attribution but refuses changed successor authority (%s)", async change => {
+    const f = await fixture(true);
+    if (change === "binding") await db.update(aiConnectionPools).set({ config: { name: f.pool.name, enabled: f.pool.enabled, mode: f.pool.mode, thresholdPercent: f.pool.thresholdPercent,
+      members: [{ ...f.members[0], binding: f.members[1].binding }, f.members[1]] } }).where(eq(aiConnectionPools.id, f.pool.id));
+    else if (change === "removed") await db.update(aiConnectionPools).set({ config: { name: f.pool.name, enabled: f.pool.enabled, mode: f.pool.mode, thresholdPercent: f.pool.thresholdPercent, members: [f.members[1]] } }).where(eq(aiConnectionPools.id, f.pool.id));
+    else await db.update(connectionGrants).set({ status: "revoked" }).where(eq(connectionGrants.id, f.members[0].binding.grantId));
+    if (change !== "revoked") {
+      await db.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, f.source.id));
+      expect(await recordVerifiedRouterQuotaCooldown(db, { companyId: f.companyId, agentId: f.agent.id,
+        runId: f.source.id, credentialIdentity: f.credentialIdentity, retryNotBefore: null })).toBe(true);
+      expect(await f.router.accountCooldown(f.companyId, f.members[0].binding.connectionId, `secret:${f.credentialIdentity.split(":").slice(-2).join(":")}`)).toBeInstanceOf(Date);
+    }
+    expect((await f.schedule()).outcome).toBe("not_scheduled");
+  }, 30_000);
+  it.each(["stop", "started", "claim", "lineage", "receipt", "race"])("reselects only an unstarted authorized successor (%s)", async condition => {
+    const f = await fixture(true);
+    // Cool every current credential, then reconnect only the other account.
+    for (const member of f.members) {
+      const [grant] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, member.binding.grantId));
+      const ref = grant.credentialSecretRefs[0];
+      const [secret] = await db.select().from(companySecrets).where(eq(companySecrets.id, ref.secretId));
+      await aiConnectionRouterService(db).recordQuotaCooldown(f.companyId, member.binding.connectionId,
+        `secret:${secret.id}:${secret.aiSessionEpoch}`, new Date(Date.now() + (member.id === f.members[0].id ? 2 : 3) * 60 * 60_000));
+    }
+    expect((await f.schedule()).outcome).toBe("scheduled");
+    let [successor] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, f.source.id));
+    expect(successor.contextSnapshot?.aiRouterSelection).toMatchObject({ memberId: f.members[0].id });
+    await aiConnectionService(db).save(f.companyId, f.userId, { connectionId: f.members[1].binding.connectionId,
+      provider: "anthropic", method: "subscription", ownership: "personal", name: "Second", loginSessionId: "fixture", agentIds: [], allAgents: true }, "reconnected");
+    if (condition === "stop") await fenceLegacyQuotaPrestartStop(db, { companyId: f.companyId, runId: f.source.id, issueId: f.issue.id });
+    if (condition === "started") await db.update(heartbeatRuns).set({ startedAt: new Date() }).where(eq(heartbeatRuns.id, successor.id));
+    if (condition === "claim") await db.update(heartbeatRuns).set({ runnerProfileJson: { adapterDispatch: { adapterType: "claude_local" } } }).where(eq(heartbeatRuns.id, successor.id));
+    if (condition === "lineage") await db.update(heartbeatRuns).set({ retryOfRunId: null }).where(eq(heartbeatRuns.id, successor.id));
+    if (condition === "receipt") await db.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, f.source.id));
+    [successor] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, successor.id));
+    if (condition === "race") {
+      const prepared = await Promise.all([preparePoolAdapterClaim(db, successor, f.agent, f.userId), preparePoolAdapterClaim(db, successor, f.agent, f.userId)]);
+      expect(prepared.every(result => result.context.aiRouterSelection?.memberId === f.members[1].id)).toBe(true);
+    } else await preparePoolAdapterClaim(db, successor, f.agent, f.userId);
+    const [pin] = await db.select().from(aiConnectionTaskPins).where(eq(aiConnectionTaskPins.poolId, f.pool.id));
+    expect(pin.selection.memberId).toBe(f.members[condition === "race" ? 1 : 0].id);
   }, 30_000);
   it.each(["auth", "runner"] as const)("uses the backup after a confirmed %s failure", async failureKind => {
     const f = await fixture(true);
