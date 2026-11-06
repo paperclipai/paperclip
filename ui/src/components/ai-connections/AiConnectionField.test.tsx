@@ -4,7 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { ComponentProps } from "react";
-import type { AiManagedConnectionSummary } from "@paperclipai/shared";
+import type { AiConnectionPool, AiManagedConnectionSummary, AiRuntimeConnectionBinding } from "@paperclipai/shared";
 import { AiConnectionField, aiProviderForAdapter } from "./AiConnectionField";
 import { ApiError } from "@/api/client";
 import type { AiConnectionCredentialStep } from "./AiConnectionCredentialStep";
@@ -234,4 +234,59 @@ it("shows readable copy with a retry when connections cannot be loaded", async (
   expect(mocks.list).toHaveBeenCalledTimes(2);
   expect(document.body.textContent).toContain("Reconnect account");
   expect(document.body.textContent).not.toContain("Retry connections");
+});
+
+const mixedPool = (overrides: Partial<AiConnectionPool> = {}): AiConnectionPool => ({
+  id: "00000000-0000-4000-8000-000000000010", companyId: "company", pluginKey: "pool", revision: 1,
+  name: "Mixed backup pool", enabled: true, mode: "failover", thresholdPercent: 90,
+  members: [{ id: "member", binding: { mode: "shared", provider: "openai", method: "subscription", connectionId: "codex-account", grantId: "codex-grant" }, profile: { provider: "codex", model: "gpt-5.6-sol" } }],
+  ...overrides,
+});
+
+async function mountPoolField(pools: AiConnectionPool[], value: AiRuntimeConnectionBinding, adapterType = "claude_local") {
+  mocks.list.mockResolvedValue({ currentUserId: "owner", connections: [account({ status: "connected" })], pools, canManageConnections: true });
+  const render = (binding: AiRuntimeConnectionBinding) => flushSync(() => root.render(<QueryClientProvider client={client}>
+    <AiConnectionField companyId="company" agentId="agent" agentName="Nova" adapterType={adapterType} value={binding} onChange={onChange} />
+  </QueryClientProvider>));
+  render(value);
+  await settle();
+  return render;
+}
+
+it.each(["claude_local", "codex_local", "grok_local", "opencode_local"])("offers a Codex-only pool to a %s agent and preserves its individual account", async adapterType => {
+  const saved: AiRuntimeConnectionBinding = { mode: "delegated", provider: "anthropic", method: "subscription", connectionId: "old-connection", grantId: "old-grant" };
+  const pool = mixedPool();
+  const render = await mountPoolField([pool], saved, adapterType);
+  const select = container.querySelector("select")!;
+  expect([...select.options].map(option => option.text)).toEqual(["Individual account", "Mixed backup pool"]);
+  flushSync(() => { select.value = pool.id; select.dispatchEvent(new Event("change", { bubbles: true })); });
+  expect(onChange).toHaveBeenLastCalledWith({ mode: "router", connectionId: pool.id });
+  render({ mode: "router", connectionId: pool.id });
+  flushSync(() => { select.value = ""; select.dispatchEvent(new Event("change", { bubbles: true })); });
+  expect(onChange).toHaveBeenLastCalledWith(saved);
+});
+
+it("retains an unavailable saved pool and explains why it cannot be used", async () => {
+  const pool = mixedPool({ enabled: false });
+  await mountPoolField([pool], { mode: "router", connectionId: pool.id });
+  expect(container.querySelector("select")?.value).toBe(pool.id);
+  expect(container.querySelector('[role="alert"]')?.textContent).toContain("This pool is unavailable for this agent");
+  expect(onChange).not.toHaveBeenCalled();
+});
+
+it("keeps unsupported local harnesses from choosing pools", async () => {
+  await mountPoolField([mixedPool()], { mode: "responsible_user", provider: "google", method: "api_key" }, "gemini_local");
+  expect(container.querySelector("select")).toBeNull();
+});
+
+it("shows connection-load failures for a saved pool with a retry", async () => {
+  mocks.list.mockRejectedValue(new ApiError("Request failed: 500", 500, { error: "internal_error" }));
+  flushSync(() => root.render(<QueryClientProvider client={client}>
+    <AiConnectionField companyId="company" agentId="agent" agentName="Nova" adapterType="claude_local" value={{ mode: "router", connectionId: mixedPool().id }} onChange={onChange} />
+  </QueryClientProvider>));
+  await settle();
+  expect(container.querySelector('[role="alert"]')?.textContent).toContain("An unexpected error occurred");
+  await click("Retry connections");
+  await settle();
+  expect(mocks.list).toHaveBeenCalledTimes(2);
 });

@@ -74,6 +74,7 @@ export function AiConnectionField({
 }) {
   const provider = aiProviderForAdapter(adapterType);
   const returnFocus = useRef<HTMLElement | null>(null);
+  const individualBinding = useRef(value?.mode !== "router" ? value : undefined);
   const restoreFocus = (event: Event) => { event.preventDefault(); returnFocus.current?.focus(); };
   const [adopting, setAdopting] = useState(false);
   const [pendingAdoption, setPendingAdoption] = useState<AiRuntimeConnectionBinding>();
@@ -124,7 +125,10 @@ export function AiConnectionField({
   const method: AiAuthMethod = (value && value.mode !== "router" && value.mode !== "responsible_user" ? value.method : undefined)
     ?? accounts.data?.connections.find((account) => account.provider === provider && account.isDefault)?.method
     ?? (provider === "openrouter" || provider === "google" || provider === "github" ? "api_key" : "subscription");
-  const compatiblePools = agentId ? accounts.data?.pools?.filter(pool => pool.enabled && pool.members.some(member => isAiConnectionCompatible(member.binding, routerAdapterType ?? adapterType, member.profile.model, member.profile.provider, member.profile.acpxAgent))) ?? [] : [];
+  const poolAdapterType = routerAdapterType ?? adapterType;
+  const supportsPools = ["paperclip_runner", "claude_local", "codex_local", "grok_local", "opencode_local"].includes(poolAdapterType);
+  const compatiblePools = agentId && supportsPools ? accounts.data?.pools?.filter(pool => pool.enabled) ?? [] : [];
+  const selectedPoolUnavailable = value?.mode === "router" && accounts.isSuccess && !compatiblePools.some(pool => pool.id === value.connectionId);
   if (!provider) return null;
   if (legacy && !value && !adopting)
     return (
@@ -144,15 +148,19 @@ export function AiConnectionField({
       {(compatiblePools.length > 0 || value?.mode === "router") && <label className="block space-y-1 text-sm">
         AI connection
         <select className="block w-full rounded-md border bg-background px-3 py-2" disabled={readOnly} value={value?.mode === "router" ? value.connectionId : ""} onChange={event => {
-          if (event.target.value) changeBinding({ mode: "router", connectionId: event.target.value });
-          else changeBinding({ mode: "responsible_user", provider, method });
+          if (event.target.value) {
+            if (value?.mode !== "router") individualBinding.current = value;
+            changeBinding({ mode: "router", connectionId: event.target.value });
+          } else changeBinding(individualBinding.current ?? { mode: "responsible_user", provider, method });
         }}>
           <option value="">Individual account</option>
-          {compatiblePools.map(pool => <option key={pool.id} value={pool.id}>{pool.name} · Experimental pool</option>)}
+          {compatiblePools.map(pool => <option key={pool.id} value={pool.id}>{pool.name}</option>)}
           {value?.mode === "router" && !compatiblePools.some(pool => pool.id === value.connectionId) && <option value={value.connectionId}>Pool unavailable — enable routing and the pool</option>}
         </select>
-        {value?.mode === "router" && <span className="text-muted-foreground">New tasks rotate. Existing tasks keep their account.</span>}
+        {value?.mode === "router" && <span className="text-muted-foreground">The pool selects an account and its model. Existing tasks keep their account until a backup is needed.</span>}
       </label>}
+      {selectedPoolUnavailable && <p role="alert" className="text-sm text-destructive">This pool is unavailable for this agent. Enable the pool or choose another connection before saving.</p>}
+      {value?.mode === "router" && accountsView.kind === "error" && <p role="alert" className="text-sm text-destructive">{describeError(accounts.error).body} <Button variant="ghost" size="sm" onClick={accountsView.retry}>Retry connections</Button></p>}
       {value?.mode !== "router" && <AiConnectionSelect
         adapterType={adapterType}
           model={model}
