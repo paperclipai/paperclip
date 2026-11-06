@@ -726,7 +726,9 @@ describe("executeNativeSession recovery", () => {
       async openSession() { return session; },
     }, controlPlane: {
       async openRun() {}, async checkpointSession() {},
-      async appendEvent(event) { events.push(event); return { cursor: event.sourceSeq,
+      async appendEvent(event) {
+        if (!("sourceSeq" in event)) throw new Error("Expected provider PRP event");
+        events.push(event); return { cursor: event.sourceSeq,
         highestContiguousSourceSeq: event.sourceSeq, disposition: replayed ? "duplicate" : "committed" }; },
       async replayEvents() { return { events: [], highestContiguousSourceSeq: 0 }; }, completeRun,
     }, runnerInstanceId: "runner-recovery", controlPlaneInstanceId: "control-recovery" });
@@ -782,7 +784,9 @@ describe("executeNativeSession recovery", () => {
       async openSession() { return session; },
     }, controlPlane: {
       async openRun() {}, async checkpointSession() {},
-      async appendEvent(event) { return { cursor: event.sourceSeq, highestContiguousSourceSeq: event.sourceSeq, disposition: "committed" }; },
+      async appendEvent(event) {
+        if (!("sourceSeq" in event)) throw new Error("Expected provider PRP event");
+        return { cursor: event.sourceSeq, highestContiguousSourceSeq: event.sourceSeq, disposition: "committed" }; },
       async replayEvents() { return { events: [], highestContiguousSourceSeq: 0 }; }, completeRun,
     }, runnerInstanceId: "runner-recovery", controlPlaneInstanceId: "control-recovery" });
     let settled = false;
