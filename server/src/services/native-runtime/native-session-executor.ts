@@ -10707,11 +10707,13 @@ async function executePaperclipNativeSessionWithinScope(
       error = identityRedactor.redact(error);
     }
     // A closed runtime API listener means this process is shutting down; it
-    // closes HTTP admission before it drains runs. Keep the claim for the
-    // drain to suspend, so the next controller adopts the run without spending
-    // a failure or a same-run retry.
+    // closes HTTP admission before it drains runs. For a local Runner, keep the
+    // claim for the drain to suspend: the next controller proves the Runner
+    // process identity and adopts the run without spending a failure or a
+    // same-run retry. A remote Runner has no process evidence on this host, so
+    // it keeps the bootstrap retry below.
     if (nativeRunsDetachingForRestart.has(input.execution.binding.runId)
-      || error instanceof LocalRuntimeApiListenerClosedError) {
+      || (error instanceof LocalRuntimeApiListenerClosedError && input.runnerExecutionTarget?.kind !== "remote")) {
       await leaseRenewal.stop().catch(() => undefined);
       liveQuestions.close();
       activeNativeSessions.delete(input.execution.binding.runId);
