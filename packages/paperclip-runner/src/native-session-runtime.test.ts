@@ -1208,7 +1208,7 @@ describe("executeNativeSession recovery", () => {
       },
       async completeRun() {},
     };
-    function compactingSession(startTurn: NativeSession["startTurn"]): NativeSession {
+    function compactingSession(startTurn: NativeSession["startTurn"], activeTurnId: string | null = null): NativeSession {
       return {
         identity: () => identity,
         async capabilities() {
@@ -1237,7 +1237,7 @@ describe("executeNativeSession recovery", () => {
             identity,
             providerSessionId: "provider-recovery",
             cursor: null,
-            activeTurnId: null,
+            activeTurnId,
             pendingRuntimeRequests: [],
             lineage: [],
           };
@@ -1289,6 +1289,64 @@ describe("executeNativeSession recovery", () => {
       });
       expect(completed.result.continuation).toMatchObject({ kind: "same_agent" });
       expect(validatePrpStructuredRunResult(completed.result)).toMatchObject({ ok: true });
+    });
+
+    it("keeps waiting on its own compaction turn after a restart", async () => {
+      const startTurn = vi.fn(async () => ({ turnId: "turn-recovery" }));
+      const session = compactingSession(startTurn, "turn-recovery");
+      const backend: NativeSessionBackend = {
+        async descriptor() {
+          return { kind: "mock", name: "compaction", version: "1", capabilities };
+        },
+        async openSession() {
+          throw new Error("fresh session must not be opened");
+        },
+        async recoverSession() {
+          return { recovered: true, session };
+        },
+      };
+      const completed = await executeNativeSession({
+        input,
+        backend,
+        controlPlane: port,
+        runnerInstanceId: "runner-recovery",
+        controlPlaneInstanceId: "control-recovery",
+        persistedSession: { ...persistedSession, activeTurnId: "turn-recovery" },
+        requireSessionCloseBeforeReturn: true,
+        sessionCompaction: { requestId: "compact-1" },
+      });
+      expect(startTurn).not.toHaveBeenCalled();
+      expect(completed.result).toMatchObject({ summary: "Context compacted on request." });
+    });
+
+    it("never compacts over another run's checkpoint", async () => {
+      const startTurn = vi.fn(async () => ({ turnId: "turn-recovery" }));
+      const session = compactingSession(startTurn, "turn-recovery");
+      const backend: NativeSessionBackend = {
+        async descriptor() {
+          return { kind: "mock", name: "compaction", version: "1", capabilities };
+        },
+        async openSession() {
+          throw new Error("fresh session must not be opened");
+        },
+        async recoverSession() {
+          return { recovered: true, session };
+        },
+      };
+      await expect(executeNativeSession({
+        input,
+        backend,
+        controlPlane: port,
+        runnerInstanceId: "runner-recovery",
+        controlPlaneInstanceId: "control-recovery",
+        persistedSession: {
+          ...persistedSession,
+          identity: { ...identity, runId: "run-earlier" },
+          activeTurnId: "turn-recovery",
+        },
+        sessionCompaction: { requestId: "compact-1" },
+      })).rejects.toThrow("native_session_checkpoint_binding_mismatch");
+      expect(startTurn).not.toHaveBeenCalled();
     });
 
     it("refuses to compact a fresh session that has no prior context", async () => {

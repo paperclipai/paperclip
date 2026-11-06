@@ -2633,7 +2633,10 @@ export async function executeNativeSession(
               eventCount: 0,
               highestContiguousSourceSeq:
                 replayedDisposition === null ? 0 : recoveryTerminal.sourceSeq,
-              governedResult: null,
+              // A restarted compaction run adopts its completed compaction turn.
+              governedResult: options.sessionCompaction && recoveryTerminal.eventType === "turn.completed"
+                ? sessionCompactionResult(input, options.sessionCompaction.requestId)
+                : null,
             });
       // Event consumption must begin before startTurn so an eager provider cannot
       // outrun us. Observe its rejection immediately, though: if startTurn or
@@ -2651,12 +2654,16 @@ export async function executeNativeSession(
         if (options.sessionCompaction) {
           // Compaction summarizes existing provider context. A new session or
           // one that is still running a turn has nothing safe to compact.
-          if (!recovered || !shouldStartFreshTurn) {
+          // A restart of this same compaction run keeps waiting on (or adopts)
+          // the compaction turn it already started instead of starting another.
+          const resumingThisCompaction = recovered && !shouldStartFreshTurn &&
+            persistedSession?.identity.runId === input.binding.runId;
+          if (!recovered || (!shouldStartFreshTurn && !resumingThisCompaction)) {
             throw new Error(
               "native_context_compaction_unavailable: the agent has no idle resumed session to compact",
             );
           }
-          await session.startTurn({
+          if (shouldStartFreshTurn) await session.startTurn({
             message: { role: "user", text: "" },
             continuation: true,
             compact: true,

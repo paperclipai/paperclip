@@ -28,10 +28,10 @@ afterEach(() => {
   document.body.innerHTML = "";
 });
 
-function render(assigneeAgentId: string | null = "agent-1") {
+function render(assigneeAgentId: string | null = "agent-1", issueStatus = "in_progress") {
   flushSync(() => root.render(
     <QueryClientProvider client={client}>
-      <IssueContextUsageRow issueId="issue-1" assigneeAgentId={assigneeAgentId} hasActiveRun={false} />
+      <IssueContextUsageRow issueId="issue-1" assigneeAgentId={assigneeAgentId} issueStatus={issueStatus} hasActiveRun={false} />
     </QueryClientProvider>,
   ));
 }
@@ -103,6 +103,16 @@ describe("IssueContextUsageRow", () => {
     const button = openCard();
     expect(button?.disabled).toBe(true);
     expect(document.body.textContent).toContain("Available when the agent finishes its current run.");
+  });
+
+  it("refreshes Compact now when the task status changes", async () => {
+    api.getContextUsage
+      .mockResolvedValueOnce({ ...reading, compaction: { status: "available", reasonCode: null, reason: null } })
+      .mockResolvedValue({ ...reading, compaction: { status: "unavailable", reasonCode: "task_closed", reason: "Available while the task is open." } });
+    render("agent-1", "in_progress"); await settle();
+    render("agent-1", "done"); await settle();
+    expect(api.getContextUsage).toHaveBeenCalledTimes(2);
+    expect(openCard()?.disabled).toBe(true);
   });
 
   it("shows a compaction already in progress", async () => {

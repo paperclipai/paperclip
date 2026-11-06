@@ -51,11 +51,14 @@ export function contextCompactState(
 export function IssueContextUsageRow({
   issueId,
   assigneeAgentId,
+  issueStatus,
   hasActiveRun,
 }: {
   issueId: string;
   /** The reading belongs to the assignee's session, so a reassignment refetches it. */
   assigneeAgentId: string | null;
+  /** Compact now depends on the task being open, so a status change refreshes it. */
+  issueStatus?: string;
   hasActiveRun: boolean;
 }) {
   const query = useQuery({
@@ -93,6 +96,11 @@ export function IssueContextUsageRow({
     if (wasActive.current && !hasActiveRun) void refetch();
     wasActive.current = hasActiveRun;
   }, [hasActiveRun, refetch]);
+  const previousStatus = useRef(issueStatus);
+  useEffect(() => {
+    if (previousStatus.current !== issueStatus) void refetch();
+    previousStatus.current = issueStatus;
+  }, [issueStatus, refetch]);
 
   if (view.data) {
     return (

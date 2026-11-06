@@ -83,6 +83,7 @@ type WakeupFn = (
     requestedByActorType: "user";
     requestedByActorId: string;
     contextSnapshot: Record<string, unknown>;
+    allowRunCoalescing: false;
   },
 ) => Promise<{ id: string } | null>;
 
@@ -171,6 +172,8 @@ export function contextCompactionService(db: Db, deps: { wakeup?: WakeupFn } = {
       idempotencyKey: `${CONTEXT_COMPACTION_WAKE_REASON}:${requestId}`,
       requestedByActorType: "user",
       requestedByActorId: input.userId,
+      // A compaction never joins, or absorbs, another run's work.
+      allowRunCoalescing: false,
       contextSnapshot: {
         issueId: input.issue.id,
         taskKey: input.issue.id,
