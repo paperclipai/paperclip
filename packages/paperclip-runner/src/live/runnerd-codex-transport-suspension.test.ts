@@ -211,6 +211,7 @@ it("does not retry a real memoized transport close whose suspension proof is una
       normalizedSessionId: identity.sessionId,
       driverKind: "codex_app_server",
       protocolVersion: 1,
+      lifecyclePolicy: { mode: "per_turn", idleTimeoutMs: null },
     },
     provider: { kind: "codex", model: null },
     completionContract: {
@@ -499,7 +500,7 @@ it.each([
       message: { role: "user", text: "Keep working until interrupted." },
     });
     if (label === "interrupted") {
-      await session.interrupt({
+      await session.interrupt!({
         turnId: turn.turnId,
         reason: "Stopped by the user",
       });
@@ -525,7 +526,7 @@ it.each([
       },
     });
   } finally {
-    await session.close().catch(() => undefined);
+    await session.close({ reason: "test complete" }).catch(() => undefined);
     await rm(stateDirectory, {
       recursive: true,
       force: true,

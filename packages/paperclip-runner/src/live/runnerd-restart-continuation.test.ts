@@ -15,7 +15,7 @@ it.each(["none", "before-start", "after-start"] as const)("completes after the r
   const execution: NativeExecutionInputV1 = {
     schema: "paperclip.native-execution-input.v1",
     binding: { runId: identity.runId, companyId: identity.companyId, issueId: identity.issueId, agentId: identity.agentId, executionWorkspaceId: "workspace-restart" },
-    session: { normalizedSessionId: identity.sessionId, driverKind: "codex_app_server", protocolVersion: 1 },
+    session: { normalizedSessionId: identity.sessionId, driverKind: "codex_app_server", protocolVersion: 1, lifecyclePolicy: { mode: "per_turn", idleTimeoutMs: null } },
     task: { identifier: "TEST-1", title: "Finish checks", description: null, prompt: "Watch the already running checks and finish the request.", workMode: "standard" },
     workspace: { cwd: root, repoUrl: null, repoRef: null, branchName: null },
     provider: { kind: "codex", model: null },
@@ -88,7 +88,7 @@ it.each(["none", "before-start", "after-start"] as const)("completes after the r
             throw interruptedController;
           }
         },
-        async appendEvent(event) { events.push(event); durableEvents.push(event); return { cursor: durableEvents.length, highestContiguousSourceSeq: event.sourceSeq, disposition: "committed" }; },
+        async appendEvent(event) { if (!("sourceSeq" in event)) throw new Error("Expected a durable PRP event"); events.push(event); durableEvents.push(event); return { cursor: durableEvents.length, highestContiguousSourceSeq: event.sourceSeq, disposition: "committed" }; },
         async replayEvents(request) {
           const source = durableEvents.filter(event => event.sourceInstanceId === request.sourceInstanceId);
           return { events: source.filter(event => event.sourceSeq > request.afterSourceSeq), highestContiguousSourceSeq: source.at(-1)?.sourceSeq ?? 0 };

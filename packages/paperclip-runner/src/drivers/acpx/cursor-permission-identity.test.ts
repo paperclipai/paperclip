@@ -1,3 +1,4 @@
+/// <reference lib="es2024.promise" />
 import { spawn, type ChildProcess } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -43,7 +44,7 @@ it.each(["tool-first", "permission-first"])("real ACPX streams Cursor tool origi
   const evidence = createCursorToolEvidence({ sessionId: "native", turnId: "turn", workingDirectory: cwd, active: () => true,
     emit: event => { validateAcpxRichEvent(event); fields.push(Object.fromEntries((event.payload.details as Array<{ name: string; value: string }>).map(field => [field.name, field.value]))); },
   });
-  const runtime = createAcpRuntime({ cwd, agentRegistry: createAgentRegistry({ overrides: { cursor: "fixture" } }), sessionStore: createRuntimeStore({ stateDir: join(cwd, "state") }), permissionMode: "approve-reads", authPolicy: "skip",
+  const runtime = createAcpRuntime({ cwd, agentRegistry: createAgentRegistry({ overrides: { cursor: "fixture" } }), sessionStore: createRuntimeStore({ stateDir: join(cwd, "state") }), permissionMode: "approve-reads",
     spawnAgent: () => { const child = spawn(process.execPath, ["-e", peer], { cwd, env: { ORDER: order }, stdio: ["pipe", "pipe", "pipe"] }); children.push(child); return child; },
     onAcpMessage: (direction, value) => {
       const message = value as { id?: number; result?: { outcome?: unknown } };

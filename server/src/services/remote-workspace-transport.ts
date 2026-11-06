@@ -400,8 +400,26 @@ export async function cleanupRemoteWorkspaceArchive(input: {
   await command(input.target, "cleanup", ["-e", script, input.remoteCwd, input.operationId], undefined, 10_000);
 }
 
+/**
+ * Wall-clock milliseconds for each save phase, filled in as each phase ends so a
+ * failed save still reports the phases it finished. It holds only durations and
+ * archive counts, never paths or provider text.
+ */
+export type RemoteWorkspaceSavePhaseTiming = {
+  /** Archive helper install plus in-sandbox capture. */
+  captureMs?: number;
+  /** Provider download of the captured archive. */
+  transferMs?: number;
+  /** Server-side re-hash of the downloaded archive. */
+  verifyMs?: number;
+  byteSize?: number;
+  entries?: number;
+};
+
+const elapsedSince = (started: number) => Math.max(0, Math.round(performance.now() - started));
+
 export async function captureRemoteWorkspaceArchive(input: {
-  target: RemoteWorkspaceTarget; remoteCwd: string; operationId: string;
+  target: RemoteWorkspaceTarget; remoteCwd: string; operationId: string; timing?: RemoteWorkspaceSavePhaseTiming;
 }) {
   try { return await captureSandboxWorkspaceArchive(input); }
   catch (error) {
@@ -468,8 +486,10 @@ async function captureReadOnlyWorkspaceArchive(input: {
 }
 
 async function captureSandboxWorkspaceArchive(input: {
-  target: RemoteWorkspaceTarget; remoteCwd: string; operationId: string;
+  target: RemoteWorkspaceTarget; remoteCwd: string; operationId: string; timing?: RemoteWorkspaceSavePhaseTiming;
 }) {
+  const timing = input.timing ?? {};
+  const captureStarted = performance.now();
   const staged = await installArchiveHelper(input.target, input.remoteCwd, input.operationId);
   // Publish the archive and receipt as one immutable directory. Concurrent
   // invocations own separate attempts; no invocation unlinks another's archive.
@@ -513,14 +533,20 @@ async function captureSandboxWorkspaceArchive(input: {
   };
   if (!["legacy", "captured"].includes(layout) || !/^[a-f0-9]{64}$/.test(receipt.manifestDigest) || !/^[a-f0-9]{64}$/.test(receipt.sha256)
     || !Number.isSafeInteger(receipt.byteSize) || receipt.byteSize <= 0) throw new Error("remote_workspace_capture_receipt_invalid");
+  timing.captureMs = elapsedSince(captureStarted); timing.byteSize = receipt.byteSize;
+  if (Number.isSafeInteger(receipt.entries) && receipt.entries >= 0) timing.entries = receipt.entries;
   const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-workspace-upload-"));
   const archivePath = path.join(root, "workspace.pcws");
   try {
+    const transferStarted = performance.now();
     await transferArchive(input.target, "syncOut", [{ operationId: input.operationId,
       files: [{ kind: "file", sourcePath: layout === "captured" ? path.posix.join(staged.directory, "captured", "workspace.pcws") : staged.archive, targetPath: archivePath }],
     }], receipt.byteSize);
+    timing.transferMs = elapsedSince(transferStarted);
+    const verifyStarted = performance.now();
     const hash = createHash("sha256"); let bytes = 0;
     for await (const chunk of createReadStream(archivePath)) { hash.update(chunk); bytes += chunk.length; }
+    timing.verifyMs = elapsedSince(verifyStarted);
     if (hash.digest("hex") !== receipt.sha256 || bytes !== receipt.byteSize) throw new Error("remote_workspace_capture_transfer_mismatch");
     return { ...receipt, archivePath, cleanup: () => rm(root, { recursive: true, force: true }) };
   } catch (error) {
