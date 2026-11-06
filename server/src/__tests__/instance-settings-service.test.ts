@@ -18,6 +18,22 @@ describe("instance settings service", () => {
     expect(applyExperimentalSettingsPatch(saved, { enableCases: true }).enableLegacyComposerSubmit).toBe(true);
     expect(applyExperimentalSettingsPatch(saved, { enableLegacyComposerSubmit: false }).enableLegacyComposerSubmit).toBe(false);
   });
+  it("keeps Agent Chat on for new and existing people, ignoring stored and managed off values", () => {
+    expect(instanceExperimentalSettingsSchema.parse({}).enableAgentChat).toBe(true);
+    expect(INSTANCE_FEATURE_CATALOG.enableAgentChat).toMatchObject({ cloudDefault: true, selfHostedDefault: true });
+    for (const stored of [undefined, null, {}, { enableAgentChat: false }, { enableAgentChat: false, enableCases: "invalid" }]) {
+      expect(normalizeExperimentalSettings(stored).enableAgentChat).toBe(true);
+    }
+    expect(applyExperimentalSettingsPatch({}, { enableAgentChat: false }).enableAgentChat).toBe(true);
+    const config: ManagedInstanceConfig = {
+      v: 1, mode: "cloud", catalogVersion: "test", plugins: { autoInstall: [] }, environments: [],
+      features: { enableAgentChat: false },
+    };
+    const result = applyManagedExperimentalOverlay(normalizeExperimentalSettings({ enableAgentChat: false }), config);
+    expect(result.experimental.enableAgentChat).toBe(true);
+    expect(result.managedKeys.enableAgentChat).toBeUndefined();
+  });
+
   it("defaults remote workspace enrollment on while preserving explicit operator choices", () => {
     expect(instanceExperimentalSettingsSchema.parse({}).remoteWorkspaceStorageEnabled).toBe(true);
     expect(INSTANCE_FEATURE_CATALOG.remoteWorkspaceStorageEnabled).toMatchObject({ cloudDefault: true, selfHostedDefault: true });
@@ -112,7 +128,7 @@ describe("instance settings service", () => {
       enableStreamlinedUi: true,
       enableApps: true,
     enableMcpAggregators: true,
-      enableAgentChat: false,
+      enableAgentChat: true,
       enablePublicMcp: false,
       enableOpenAiDot: false,
       enableMuse: false,

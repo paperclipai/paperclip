@@ -1804,7 +1804,17 @@ describe("automatic retained workspace recovery", () => {
         }
         return { filesTransferred: operations.reduce((count, operation) => count + operation.files.length, 0), bytesTransferred: 0, operations: [] };
       };
-      const executeCommand = oldTarget.runner!.execute;
+      const filesystemExecute = oldTarget.runner!.execute;
+      const fixtureCodex = "/opt/paperclip-fixture/bin/codex";
+      const executeCommand: typeof filesystemExecute = async input => {
+        if (input.command === "sh" && input.args?.some(arg => arg.includes("command -v codex"))) {
+          return { exitCode: 0, signal: null, timedOut: false, pid: null, startedAt: new Date().toISOString(), stdout: `${fixtureCodex}\n`, stderr: "" };
+        }
+        if (input.command === fixtureCodex && input.args?.[0] === "--version") {
+          return { exitCode: 0, signal: null, timedOut: false, pid: null, startedAt: new Date().toISOString(), stdout: "codex-cli 0.160.0\n", stderr: "" };
+        }
+        return filesystemExecute(input);
+      };
       const runtime = environmentRuntimeService(db, { drivers: [{ driver: "sandbox",
         acquireRunLease: async input => {
           const lease = await environment.acquireLease({ companyId: input.companyId, environmentId: input.environment.id,
