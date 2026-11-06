@@ -1,0 +1,66 @@
+import type { Meta, StoryObj } from "@storybook/react-vite";
+import { expect, within, userEvent } from "storybook/test";
+import { DocumentCard } from "@/components/artifacts/RichArtifactCards";
+import { TextAttachmentPreview } from "@/components/task-side-panel/TaskAttachmentPanel";
+import { FileContentViewer } from "@/components/FileViewerSheet";
+import { MarkdownBody } from "@/components/MarkdownBody";
+import { patchContent, patchMarkdown, patchText } from "../../support/patch-preview";
+
+const meta = {
+  id: "documents-patch-preview",
+  title: "Tasks and conversations/Documents, attachments, and work products/Patch previews",
+  parameters: {
+    layout: "fullscreen",
+    paperclip: {
+      capabilities: ["documents-artifacts/attachments", "documents-artifacts/documents"],
+      status: "current",
+      implementation: "production",
+      boundary: "fixtures",
+      notes: "Production document cards, attachment and workspace source views, and Markdown. Static patch data includes long unbroken lines, multiple files, and literal HTML. No live file fetch or save.",
+    },
+  },
+  decorators: [(Story) => <main className="min-h-screen bg-background p-4 text-foreground"><Story /></main>],
+} satisfies Meta;
+export default meta;
+type Story = StoryObj<typeof meta>;
+
+const card = {
+  title: "Preview layout fix", summary: "Contain long patch lines in the document preview.",
+  author: "Engineer", updatedAt: "Just now", filename: "preview-layout.patch", body: patchText,
+};
+
+export const InlinePatch: Story = {
+  render: () => <div className="w-full max-w-md"><DocumentCard {...card} /></div>,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvasElement.querySelector('[data-patch-line="add"]')).not.toBeNull();
+    await userEvent.click(canvas.getByRole("button", { name: "Read document" }));
+    const dialog = within(canvasElement.ownerDocument.body).getByRole("dialog");
+    await expect(dialog.querySelector("pre")?.textContent).toBe(patchText);
+    await userEvent.click(within(dialog).getByRole("button", { name: "Close" }));
+  },
+};
+
+export const MarkdownCard: Story = {
+  render: () => <div className="w-full max-w-md"><DocumentCard {...card} filename="review.md" body={patchMarkdown} /></div>,
+};
+
+export const AttachmentTab: Story = {
+  render: () => <div className="h-screen min-w-0 max-w-3xl"><TextAttachmentPreview title="preview-layout.patch" text={patchText} markdown={false} downloadUrl="data:text/x-patch,fixture" /></div>,
+};
+
+export const WorkspaceTab: Story = {
+  render: () => <div className="flex h-screen min-w-0 max-w-3xl flex-col"><FileContentViewer content={patchContent} highlightedLine={8} /></div>,
+};
+
+export const Document: Story = {
+  render: () => <div className="min-w-0 max-w-3xl"><MarkdownBody>{patchMarkdown}</MarkdownBody></div>,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const source = canvasElement.querySelector("pre code");
+    await expect(source?.textContent).toBe(patchText);
+    await userEvent.click(canvas.getByRole("button", { name: "Wrap lines" }));
+    await expect(canvas.getByRole("button", { name: "Unwrap lines" })).toHaveAttribute("aria-pressed", "true");
+    await expect(source?.textContent).toBe(patchText);
+  },
+};

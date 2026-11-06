@@ -6,6 +6,8 @@ import { Button } from "@/components/ui/button";
 import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { CsvPreview } from "@/components/CsvPreview";
 import { isCsvFile } from "@/lib/csv-preview";
+import { PatchLines } from "@/components/PatchLines";
+import { isPatchFile } from "@/lib/patch";
 import { MarkdownBody } from "@/components/MarkdownBody";
 import { HtmlArtifactPreview } from "@/components/HtmlArtifactPreview";
 import { FilePreviewModeToggle, type FilePreviewMode } from "@/components/FilePreviewModeToggle";
@@ -41,12 +43,13 @@ export async function readTextPreview(response: Response) {
   }
 }
 
-export function TextAttachmentPreview({ title, text, markdown, html = false, csv = false, downloadUrl }: {
+export function TextAttachmentPreview({ title, text, markdown, html = false, csv = false, patch = isPatchFile(title), downloadUrl }: {
   title: string;
   text: string;
   markdown: boolean;
   html?: boolean;
   csv?: boolean;
+  patch?: boolean;
   downloadUrl: string;
 }) {
   const [mode, setMode] = useState<FilePreviewMode>("rendered");
@@ -54,20 +57,21 @@ export function TextAttachmentPreview({ title, text, markdown, html = false, csv
   const renderCsv = csv && mode === "rendered" && text.length > 0;
   const renderHtml = html && mode === "rendered" && text.length > 0;
   return (
-    <div className="flex h-full min-h-0 flex-col">
-      <header className="flex items-center gap-2 border-b border-border px-3 py-2">
+    <div className="flex h-full min-h-0 min-w-0 max-w-full flex-col">
+      <header className="flex min-w-0 items-center gap-2 border-b border-border px-3 py-2">
         <h2 className="min-w-0 flex-1 truncate text-sm font-medium" title={title}>{title}</h2>
         {markdown || html || csv ? <FilePreviewModeToggle mode={mode} onChange={setMode} label={html ? "HTML view" : csv ? "CSV view" : "Markdown view"} /> : null}
         <Button asChild variant="ghost" size="icon-sm">
           <a href={downloadUrl} download aria-label={`Download ${title}`} title={`Download ${title}`}><Download aria-hidden /></a>
         </Button>
       </header>
-      <div className={renderHtml || renderCsv ? "flex min-h-0 flex-1 flex-col overflow-hidden" : "min-h-0 flex-1 overflow-auto p-4"}>
+      <div className={renderHtml || renderCsv ? "flex min-h-0 flex-1 flex-col overflow-hidden" : "min-h-0 min-w-0 flex-1 overflow-auto p-4"}>
         {text.length === 0 ? <p className="text-sm text-muted-foreground">File is empty.</p>
           : renderCsv ? <CsvPreview text={text} title={title} />
           : renderHtml ? <HtmlArtifactPreview html={text} title={title} />
           : markdown && mode === "rendered" ? <MarkdownBody mediaMode="reference">{text}</MarkdownBody>
-          : <pre className="whitespace-pre-wrap break-words font-mono text-sm" aria-label={`${title} raw text`}>{text}</pre>}
+          : patch ? <pre className="paperclip-patch-source m-0 min-w-0 whitespace-pre-wrap wrap-anywhere font-mono text-sm" aria-label={`${title} patch`}><code><PatchLines text={text} /></code></pre>
+          : <pre className="whitespace-pre-wrap wrap-anywhere font-mono text-sm" aria-label={`${title} raw text`}>{text}</pre>}
       </div>
     </div>
   );
@@ -115,5 +119,5 @@ export function TaskAttachmentPanel({ issueId, attachmentId }: { issueId: string
     );
   }
   if (content.data === undefined) return <p className="p-4 text-sm" role="status">Loading file…</p>;
-  return <TextAttachmentPreview key={attachment.id} title={attachment.originalFilename ?? attachment.id} text={content.data} csv={isCsvFile(attachment.originalFilename ?? "", attachment.contentType)} markdown={isMarkdownAttachment(attachment)} html={isHtmlPreview(attachment.contentType, attachment.originalFilename)} downloadUrl={downloadUrl} />;
+  return <TextAttachmentPreview key={attachment.id} title={attachment.originalFilename ?? attachment.id} text={content.data} patch={isPatchFile(attachment.originalFilename, attachment.contentType)} csv={isCsvFile(attachment.originalFilename ?? "", attachment.contentType)} markdown={isMarkdownAttachment(attachment)} html={isHtmlPreview(attachment.contentType, attachment.originalFilename)} downloadUrl={downloadUrl} />;
 }
