@@ -68,3 +68,33 @@ describe("host-owned legacy process settlement", () => {
     expect(await recordLegacyProcessSettlement(failed.db, run, () => false)).toBe(false);
   });
 });
+
+describe("claimed preparation host settlement", () => {
+  function preparing() {
+    return { ...source(), processPid: null, processGroupId: null, processStartedAt: null,
+      startedAt, executionStage: "preparing", legacyProcessSettlement: null as unknown };
+  }
+  function proof() {
+    const run = preparing();
+    return { schema: "paperclip.legacy-preparation-settlement.v1", runId: run.id, companyId: run.companyId, agentId: run.agentId,
+      runtimeMode: "legacy", targetKind: "not-dispatched", adapterDispatched: false, controllerBootId: run.controllerBootId,
+      processPid: null, processGroupId: null, processStartedAt: null, executionStage: "preparing",
+      startedAt: startedAt.toISOString(), finishedAt: finishedAt.toISOString(), status: "failed" };
+  }
+  it("requires exact positive host proof for a claimed source with no process metadata", () => {
+    const run = preparing(); expect(legacySourceProcessSettled(run)).toBe(false);
+    expect(legacySourceProcessSettled({ ...run, legacyProcessSettlement: proof() })).toBe(true);
+    for (const value of [null, {}, [], "bootstrap", source().legacyProcessSettlement, { ...proof(), extra: true }])
+      expect(legacySourceProcessSettled({ ...run, legacyProcessSettlement: value })).toBe(false);
+  });
+  it("binds no-dispatch proof to every claimed generation and refuses current dispatch or process ownership", () => {
+    const run = { ...preparing(), legacyProcessSettlement: proof() };
+    for (const [key, value] of Object.entries(proof()))
+      expect(legacySourceProcessSettled({ ...run, legacyProcessSettlement: { ...proof(), [key]: typeof value === "boolean" ? true : "foreign" } })).toBe(false);
+    for (const patch of [{ controllerBootId: "new-claim" }, { controllerLeaseExpiresAt: new Date(0) },
+      { startedAt: new Date(0) }, { finishedAt: new Date(0) }, { executionStage: "dispatching" },
+      { processPid: 42 }, { processGroupId: 42 }, { processStartedAt: startedAt }, { runtimeMode: "native" },
+      { status: "running" }, { status: "cancelled" }, { status: "interrupted" }])
+      expect(legacySourceProcessSettled({ ...run, ...patch })).toBe(false);
+  });
+});

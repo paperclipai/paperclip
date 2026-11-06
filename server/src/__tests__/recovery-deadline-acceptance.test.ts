@@ -1,3 +1,4 @@
+import { preparationFailureFixture, drivePreparationFailure } from "./helpers/recovery-preparation-failure.js";
 import { controlledOrdinaryBootstrapProtocol, controlledOrdinaryBootstrapResult, controlledOrdinaryBootstrapScript } from "./helpers/recovery-deadline-ordinary-bootstrap.js";
 import { controlledCompanyBootstrapResult, controlledCompanyBootstrapScript } from "./helpers/recovery-deadline-bootstrap.js";
 import * as legacySettlement from "../services/heartbeat/legacy-process-settlement.js";
@@ -13,7 +14,7 @@ import { registerDeadlineWork } from "../services/deadline-work.js";
 import { DELIVERY_QUEUES } from "../services/delivery-work-notifications.js";
 import { taskWatchdogService } from "../services/task-watchdogs.js";
 import { processAdapter } from "../adapters/process/index.js";
-import { registerServerAdapter, unregisterServerAdapter } from "../adapters/index.js";
+import { getServerAdapter, registerServerAdapter, unregisterServerAdapter } from "../adapters/index.js";
 import { issueService } from "../services/issues.js";
 import { randomUUID } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
@@ -476,6 +477,124 @@ describe.skipIf(!fixtureUrl)("recovery deadline producer, proof and resumed exec
       expect((await run(scheduled.run.id)).status).toBe("cancelled");
     } finally { failedWrite.mockRestore(); }
   }, 30_000);
+
+  async function claimedPreparationFailure(optionalWriteFailure = false) {
+    const f = await fixture({ retainedSourceLock: false });
+    const control = await preparationFailureFixture(db, f.agent.id);
+    const entered = vi.spyOn(getServerAdapter("recovery_deadline_process"), "execute");
+    const persisted = vi.spyOn(legacySettlement, "recordLegacyPreparationSettlement");
+    if (optionalWriteFailure) persisted.mockRejectedValueOnce(new Error("controlled preparation receipt persistence failure"));
+    heartbeat = heartbeatService(db, { environmentRuntime: control.runtime });
+    try { await start(); await settled(); }
+    catch (error) { control.unblock(); entered.mockRestore(); persisted.mockRestore(); await control.dispose(); throw error; }
+    return { ...f, control, entered, persisted };
+  }
+
+  async function disposePreparation(f: Awaited<ReturnType<typeof claimedPreparationFailure>>) {
+    f.control.unblock();
+    try { await worker?.stop(); await coordinator?.stop(); await heartbeat.drainActiveRunExecutions(); }
+    finally { f.entered.mockRestore(); f.persisted.mockRestore(); await f.control.dispose(); }
+  }
+
+  it("certifies actual never-dispatched preparation only after owned cleanup and cold-reconstructs its saved retry", async () => {
+    const f = await claimedPreparationFailure();
+    const jitter = vi.spyOn(Math, "random").mockReturnValue(0.5);
+    try {
+      const failed = await drivePreparationFailure({ db, heartbeat, control: f.control, entered: f.entered, persisted: f.persisted,
+        companyId: f.companyId, agentId: f.agent.id, issueId: f.issue.id, run, owner: worker!.retries.reconciliationSnapshot }); jitter.mockRestore(); await settled();
+      expect(failed.controllerLeaseExpiresAt).toBeNull(); expect(failed.processPid).toBeNull();
+      expect(f.persisted).toHaveBeenCalledTimes(1); expect(legacySettlement.legacySourceProcessSettled(failed)).toBe(true);
+      expect(failed.legacyProcessSettlement).toMatchObject({ schema: "paperclip.legacy-preparation-settlement.v1",
+        targetKind: "not-dispatched", adapterDispatched: false, runId: failed.id, controllerBootId: failed.controllerBootId });
+      const [retry] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, failed.id));
+      expect(retry).toMatchObject({ status: "scheduled_retry", scheduledRetryReason: "transient_failure", issueId: f.issue.id,
+        startedAt: null, finishedAt: null }); expect(retry.scheduledRetryAt).toBeInstanceOf(Date);
+      const dueAt = retry.scheduledRetryAt!;
+      const [wake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, retry.wakeupRequestId!));
+      expect(wake).toMatchObject({ runId: retry.id, status: "queued", companyId: f.companyId, agentId: f.agent.id });
+      const scheduled = await db.select().from(heartbeatRunEvents).where(and(eq(heartbeatRunEvents.runId, failed.id),
+        sql`${heartbeatRunEvents.message} LIKE 'Scheduled bounded retry %'`));
+      expect(scheduled).toHaveLength(1); expect(scheduled[0].payload).toMatchObject({ delayMs: 30_000, baseDelayMs: 30_000,
+        retryRunId: retry.id, scheduledRetryAt: dueAt.toISOString() });
+      expect((await readIdleRetrySchedule(db, Date.now(), worker!.retries.reconciliationSnapshot)).blocked).toBe(false);
+      expect((await proof()).backgroundWork).not.toBe("none");
+      for (const patch of [{ controllerBootId: randomUUID() }, { controllerLeaseExpiresAt: new Date(0) },
+        { startedAt: new Date(0) }, { executionStage: "dispatching" }, { costAccountingPending: true },
+        { nativeIssueId: f.issue.id }, { processPid: 42 }, { processStartedAt: new Date() },
+        { resultJson: { ...failed.resultJson, cancellation: {} } }]) {
+        const rollback = new Error("preparation current SQL fence rollback");
+        await expect(db.transaction(async tx => {
+          await tx.update(heartbeatRuns).set({ ...patch, legacyProcessSettlement: null }).where(eq(heartbeatRuns.id, failed.id));
+          expect(await legacySettlement.recordLegacyPreparationSettlement(tx as unknown as Db, failed, () => true)).toBe(false);
+          const [current] = await tx.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, failed.id));
+          expect(current.legacyProcessSettlement).toBeNull();
+          throw rollback;
+        })).rejects.toThrow(rollback.message);
+      }
+      const cleanupRollback = new Error("preparation pending cleanup SQL rollback");
+      await expect(db.transaction(async tx => {
+        await tx.update(heartbeatRuns).set({ legacyProcessSettlement: null }).where(eq(heartbeatRuns.id, failed.id));
+        await tx.insert(environmentLeases).values({ companyId: f.companyId, heartbeatRunId: failed.id,
+          provider: "local", status: "pending_cleanup", cleanupStatus: "failed" });
+        expect(await legacySettlement.recordLegacyPreparationSettlement(tx as unknown as Db, failed, () => true)).toBe(false);
+        const [current] = await tx.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, failed.id));
+        expect(current.legacyProcessSettlement).toBeNull(); throw cleanupRollback;
+      })).rejects.toThrow(cleanupRollback.message);
+      expect((await run(failed.id)).legacyProcessSettlement).toEqual(failed.legacyProcessSettlement);
+      await f.control.useLocalEnvironment();
+      await worker!.stop(); await coordinator!.stop();
+      expect((await readIdleRetrySchedule(db, Date.now(), worker!.retries.reconciliationSnapshot)).blocked).toBe(true);
+      heartbeat = heartbeatService(db, { environmentRuntime: f.control.runtime }); await start(); await settled();
+      expect(coordinator!.nextWakeAt()).toBe(dueAt.getTime());
+      await new Promise(resolve => setTimeout(resolve, Math.max(0, dueAt.getTime() - Date.now())));
+      await finish(retry.id);
+      expect(f.entered).toHaveBeenCalledTimes(1);
+      expect((await run(failed.id)).processPid).toBeNull();
+      expect((await run(failed.id)).legacyProcessSettlement).toEqual(failed.legacyProcessSettlement);
+      expect(await db.select().from(heartbeatRunEvents).where(and(eq(heartbeatRunEvents.runId, retry.id),
+        eq(heartbeatRunEvents.message, "run started")))).toHaveLength(1);
+      expect(await heartbeat.promoteDueScheduledRetries()).toEqual({ promoted: 0, runIds: [] });
+    } finally { jitter.mockRestore(); await disposePreparation(f); }
+  }, 60_000);
+
+  it("leaves a failed optional preparation receipt blocked while normal cleanup and retry ownership complete", async () => {
+    const f = await claimedPreparationFailure(true); const jitter = vi.spyOn(Math, "random").mockReturnValue(0.5);
+    try {
+      const failed = await drivePreparationFailure({ db, heartbeat, control: f.control, entered: f.entered, persisted: f.persisted,
+        companyId: f.companyId, agentId: f.agent.id, issueId: f.issue.id, run, owner: worker!.retries.reconciliationSnapshot }); jitter.mockRestore(); await settled();
+      expect(f.persisted).toHaveBeenCalledTimes(1); expect(failed.legacyProcessSettlement).toBeNull();
+      expect(failed.controllerLeaseExpiresAt).toBeNull(); expect(f.entered).not.toHaveBeenCalled();
+      const [retry] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, failed.id));
+      expect(retry).toMatchObject({ status: "scheduled_retry" }); expect(retry.scheduledRetryAt).toBeInstanceOf(Date);
+      expect((await readIdleRetrySchedule(db, Date.now(), worker!.retries.reconciliationSnapshot)).blocked).toBe(true);
+      await heartbeat.cancelRun(retry.id, "controlled failed preparation proof cleanup", { suppressImmediateRecovery: true });
+      expect((await run(retry.id)).status).toBe("cancelled");
+    } finally { jitter.mockRestore(); await disposePreparation(f); }
+  }, 60_000);
+
+  it("never certifies an adapter that was entered without publishing a process identity", async () => {
+    const f = await fixture({ retainedSourceLock: false });
+    const execution = vi.spyOn(getServerAdapter("recovery_deadline_process"), "execute").mockResolvedValueOnce({
+      exitCode: 75, signal: null, timedOut: false, errorCode: "codex_transient_upstream", errorFamily: "transient_upstream",
+      executionRecovery: { kind: "bootstrap", providerWorkStarted: false } });
+    const jitter = vi.spyOn(Math, "random").mockReturnValue(0.5);
+    try {
+      await start(); await settled();
+      const admitted = await heartbeat.wakeup(f.agent.id, { source: "on_demand", reason: "manual", requestedByActorType: "system",
+        contextSnapshot: { issueId: f.issue.id, taskId: f.issue.id } });
+      if (!admitted) throw new Error("Adapter-entry negative was not admitted");
+      await heartbeat.drainActiveRunExecutions(); await settled();
+      const failed = await run(admitted.id);
+      expect(execution).toHaveBeenCalledTimes(1); expect(failed).toMatchObject({ status: "failed", processPid: null,
+        processGroupId: null, processStartedAt: null, legacyProcessSettlement: null });
+      expect(failed.controllerBootId).toEqual(expect.any(String)); expect(failed.controllerLeaseExpiresAt).toBeNull();
+      expect(legacySettlement.legacySourceProcessSettled(failed)).toBe(false);
+      const [retry] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, failed.id));
+      expect(retry).toMatchObject({ status: "scheduled_retry" });
+      expect((await readIdleRetrySchedule(db, Date.now(), worker!.retries.reconciliationSnapshot)).blocked).toBe(true);
+      await heartbeat.cancelRun(retry.id, "controlled entered-adapter cleanup", { suppressImmediateRecovery: true });
+    } finally { jitter.mockRestore(); execution.mockRestore(); }
+  }, 60_000);
 
   it("keeps company cancellation and first producer during drain fenced", async () => {
     const f = await fixture({ companyScope: true }); await start(); await settled();
