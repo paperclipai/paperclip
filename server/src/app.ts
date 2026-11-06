@@ -201,6 +201,10 @@ import {
   createPluginWorkerManager,
   type PluginWorkerManager,
 } from "./services/plugin-worker-manager.js";
+import {
+  createPluginStreamBus,
+  publishWorkerStreamNotification,
+} from "./services/plugin-stream-bus.js";
 import { createPluginJobScheduler } from "./services/plugin-job-scheduler.js";
 import { pluginJobStore } from "./services/plugin-job-store.js";
 import { createPluginToolDispatcher } from "./services/plugin-tool-dispatcher.js";
@@ -559,6 +563,10 @@ export async function createApp(
   app.use(runtimeConnectionIntentRoutes(db));
   app.use(nativeRunMcpRoutes());
   const hostServicesDisposers = new Map<string, () => void>();
+  const streamBus = createPluginStreamBus();
+  workerManager.setStreamNotificationHandler((pluginId, method, params) =>
+    publishWorkerStreamNotification(streamBus, pluginId, method, params),
+  );
   let lifecyclePluginsReady = false;
   const agentLifecycle = startAgentLifecycle(db, createLifecycleDriver(db, workerManager), () => lifecyclePluginsReady && !isWarmStandby() && !isIdleTaskDrainActive());
   const connectionIntentHeartbeat = heartbeatService(db, {
@@ -986,7 +994,7 @@ export async function createApp(
       { scheduler, jobStore },
       { workerManager },
       { toolDispatcher },
-      { workerManager },
+      { workerManager, streamBus },
       { toolGateway },
     ),
   );
