@@ -100,6 +100,8 @@ import { companyRoutes } from "./routes/companies.js";
 import { companySkillRoutes } from "./routes/company-skills.js";
 import { companySkillPolicyRoutes } from "./routes/company-skill-policy.js";
 import { inboxAgentPolicyRoutes } from "./routes/inbox-agent-policy.js";
+import { userDelegateRoutes } from "./routes/user-delegates.js";
+import { userDelegateActorMiddleware } from "./middleware/user-delegate.js";
 import { builtInAgentRoutes } from "./routes/built-in-agents.js";
 import { folderRoutes } from "./routes/folders.js";
 import { summarySlotRoutes } from "./routes/summary-slots.js";
@@ -604,6 +606,9 @@ export async function createApp(
   // REPLACES whatever actor the request otherwise resolved to, and only on
   // the one endpoint it authorizes (see the middleware for the contract).
   app.use(cloudControlMiddleware());
+  // After actor resolution: a named delegate agent may act as its person on
+  // allowlisted person-only routes, only when it marks the request.
+  app.use(userDelegateActorMiddleware(db));
   app.use(connectionEventWakeRoutes(db));
   app.use(skillAccessRequestContext);
   app.use("/api/auth", authRoutes(db));
@@ -699,6 +704,7 @@ export async function createApp(
   api.use(companySkillRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(companySkillPolicyRoutes(db));
   api.use(inboxAgentPolicyRoutes(db));
+  api.use(userDelegateRoutes(db));
   api.use(agentCommentaryRoutes(db));
   api.use(agentChatMessageRoutes(db));
   api.use(builtInAgentRoutes(db));

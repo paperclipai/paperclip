@@ -86,6 +86,7 @@ export type AuthorizationActor =
       | "mcp_oauth"
       | "cloud_tenant"
       | "cloud_control"
+      | "delegate"
       | "none";
   };
 

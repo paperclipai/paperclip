@@ -207,6 +207,7 @@ import {
   evaluateSkillPolicySchema,
   replaceSkillPolicySchema,
   updateInboxAgentPolicySchema,
+  setUserDelegateSchema,
   // Issue tree
   createIssueTreeHoldSchema,
   previewIssueTreeControlSchema,
@@ -9042,6 +9043,57 @@ registry.registerPath({
     403: r.forbidden,
     422: r.unprocessable,
   },
+});
+
+// ─── User delegates ──────────────────────────────────────────────────────────
+
+const userDelegateDescription =
+  "A person names 1 agent as their delegate in a company. The delegate acts as the person on the listed "
+  + "person-only actions by sending X-Paperclip-Delegate-For: <userId> and X-Paperclip-Delegate-Reason: <why> "
+  + "(or the delegateFor and delegateReason query parameters). Each action is logged as user_delegate.acted "
+  + "with the delegate, the person and the reason before it runs. Only the person can name or turn off their delegate.";
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/users/me/delegate",
+  tags: ["companies"],
+  summary: "Get the current user's delegate agent and the actions it may do",
+  description: userDelegateDescription,
+  request: { params: z.object({ companyId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
+});
+
+registry.registerPath({
+  method: "put",
+  path: "/api/companies/{companyId}/users/me/delegate",
+  tags: ["companies"],
+  summary: "Name the current user's delegate agent (replaces any earlier delegate)",
+  description: userDelegateDescription,
+  request: {
+    params: z.object({ companyId: z.string() }),
+    body: jsonBody(setUserDelegateSchema),
+  },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict, 422: r.unprocessable },
+});
+
+registry.registerPath({
+  method: "delete",
+  path: "/api/companies/{companyId}/users/me/delegate",
+  tags: ["companies"],
+  summary: "Turn off the current user's delegate agent",
+  description: userDelegateDescription,
+  request: { params: z.object({ companyId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/user-delegations/mine",
+  tags: ["companies"],
+  summary: "List the people who named the calling agent as their delegate",
+  description: userDelegateDescription,
+  request: { params: z.object({ companyId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
 });
 
 // ─── Execution workspaces ─────────────────────────────────────────────────────
