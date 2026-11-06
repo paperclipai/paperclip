@@ -312,11 +312,14 @@ export function agentFileStore(db: Db) {
           total += size;
         }
         assertDirectorySize(total, finalEntries.size);
+        const entryBefore = changed.includes(entryPath) ? await readInstructionBytes(root, entryPath) : null;
         await mergeDirectoryWithBaseline({ ...input, baseline: applyBaseline, targetDir: root,
           ...(input.checkpoint ? { snapshots: { source: incoming, current } } : {}) });
-        // A run that changed the instruction entry saved it: name the entry and
-        // its resulting bytes so instruction history can show this save.
-        const entry = changed.includes(entryPath) ? await readInstructionBytes(root, entryPath) : null;
+        // A run that changed the saved instruction entry saved it: name the entry
+        // and its resulting bytes so instruction history can show this save.
+        // Bytes another writer already saved stay credited to that writer.
+        const entryAfter = changed.includes(entryPath) ? await readInstructionBytes(root, entryPath) : null;
+        const entry = entryAfter && !(entryBefore && entryBefore.equals(entryAfter)) ? entryAfter : null;
         await audit(tx, agent, bound, { sourceRunId: actor.runId, contract: AGENT_FILES_CONTRACT,
           ...(entry ? { path: entryPath, contentHash: fileHash(entry), byteLength: entry.length } : {}) });
         return { storageWarning: storageWarning(total, finalEntries.size, fullFile) };
