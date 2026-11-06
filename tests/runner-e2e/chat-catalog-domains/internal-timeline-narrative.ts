@@ -132,7 +132,7 @@ export function truthfulTimelineAccount(input: {
   });
   const handoffs = clauses.flatMap(({ text, at }) => handoffMatches(text).map(match => ({ at: at + match.index })));
   const repairGap = "(?:\\s+|\\s*[,:—–-]\\s*)";
-  const repairModifier = "(?:then|later|now|personally|explicitly|actually|had|has|have|also|who|successfully|finally|subsequently|after\\s+the\\s+handoff)";
+  const repairModifier = "(?:then|later|now|personally|explicitly|actually|had|has|have|also|who|successfully|automatically|autonomously|finally|subsequently|after\\s+the\\s+handoff)";
   const repairVerb = [
     "repair(?:ed)?|fix(?:ed)?",
     "edited\\s+(?:[a-z0-9_.-]+|(?:the\\s+)?(?:saved\\s+)?(?:file|page|artifact))\\s+to\\s+add\\s+(?:(?:a|the|missing|real|email|input|proper|accessible)\\s+){0,5}label",
@@ -209,7 +209,7 @@ export function truthfulTimelineAccount(input: {
       && causedByRepair.test(prefix.slice(success.index + success[0].length)));
   }).map(match => ({ at: at + match.index
     + (new RegExp(`^${successorOwnership.source}`, "i").test(match[0]) ? match[0].indexOf(",") + 1 : 0),
-    claim: text.slice(match.index), clause: text })));
+    clause: text })));
   const pauseCausedByFailure = new RegExp(`\\b(?:after|because)\\s+(?:(?:the|his|her|their|its|${escape(firstWorker)}['’]s)\\s+)?${commandTail}`, "i");
   const failureAfterPause = new RegExp(`\\bafter\\s+(?:(?:the|his|her|their|its|a)\\s+)?(?:task|work|it|${escape(firstWorker)})(?:\\s+(?:was|got|had been|has been))?\\s*$`, "i");
   const pauseBetween = (failure: typeof failures[number], end: number) =>
@@ -230,11 +230,11 @@ export function truthfulTimelineAccount(input: {
     if (!taskReference.test(paragraph.text.split("\n")[0]!)
       || new RegExp(assignment, "i").test(paragraph.text) || new RegExp(successorOwnership.source, "i").test(paragraph.text)
       || new RegExp(`${taskSubject}\\s+(?:was\\s+)?(?:(?:automatically|autonomously)\\s+(?:recovered|resumed)|(?:recovered|resumed)\\s+(?:automatically|autonomously))\\b`, "i").test(paragraph.text)
+      || /\bself[- ](?:assigned|assignment|takeover)\b/i.test(paragraph.text)
       || taskNamespace && paragraph.text.split("\n")[0]!.match(taskNamespace)?.[0]?.toLowerCase() !== input.taskIdentifier!.toLowerCase()) return false;
     return failures.some(failure => failure.at >= paragraph.start && failure.at < paragraph.end
       && mentions(body.slice(paragraph.start, failure.at), firstWorker)
       && repairs.some(repair => repair.at > failure.at && repair.at < paragraph.end && pauseBetween(failure, repair.at)
-        && !/\b(?:automatically|autonomously|self-assigned)\b/i.test(repair.claim.split(/\b(?:and|then|while)\b/i)[0]!)
         && !/\b(?:another|different|other)\s+(?:task|issue|work)\b/i.test(repair.clause)
         && (!taskNamespace || [...repair.clause.matchAll(taskNamespace)].every(match => match[0].toLowerCase() === input.taskIdentifier!.toLowerCase()))));
   });

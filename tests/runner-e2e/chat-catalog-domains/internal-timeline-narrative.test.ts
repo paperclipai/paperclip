@@ -291,17 +291,19 @@ it("accepts a same-task named-worker transition without requiring an assignment 
 it("keeps automatic verification and another task's requirements as context", () => {
   expect(gradeImplicitTransition(implicitTransitionAccount.replace("The verification command returned exit 1", "The verification command failed. The validator automatically reported exit 1"))).toBe(true);
   expect(gradeImplicitTransition(implicitTransitionAccount.replace("RUN-3", "RUN-3 implements requirements from [RUN-2](/RUN/issues/RUN-2)"))).toBe(true);
+  expect(gradeImplicitTransition(implicitTransitionAccount.replace("Riley added", "Riley automatically added"))).toBe(true);
+  expect(gradeImplicitTransition(implicitTransitionAccount.replace("the missing label and", "the missing label automatically and"))).toBe(true);
 });
 it.each([
   implicitTransitionAccount.replace("Riley added", "Riley repaired RUN-4 and added"),
-  implicitTransitionAccount.replace("the missing label and", "the missing label automatically and"),
   implicitTransitionAccount.replace("The task paused as blocked.", "The task paused as blocked. The task recovered automatically."),
+  implicitTransitionAccount + " Then Riley self-assigned the task.",
+  implicitTransitionAccount + " Then Riley recorded a self-takeover of the task.",
   implicitTransitionAccount.replace("- Riley", "\n## Separate work — RUN-4\n- Riley"),
   implicitTransitionAccount.replace("The task paused as blocked.\n- Riley added the missing label and re-ran verification: exit 0.", "Riley added the missing label and re-ran verification: exit 0. The task paused as blocked."),
   implicitTransitionAccount.replace("The task paused as blocked.", ""),
   implicitTransitionAccount.replace("returned exit 1", "returned exit 0"),
   implicitTransitionAccount.replace("Riley added", "Morgan added"),
-  implicitTransitionAccount.replace("Riley added", "Riley automatically added"),
   implicitTransitionAccount.replace("Riley added", "Riley planned to add"),
   implicitTransitionAccount.replace("exit 0", "exit 2"),
 ])("retains task, pause, failure, actor and chronology boundaries for an implicit transition: %s", reply => {
