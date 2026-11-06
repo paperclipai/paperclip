@@ -1,5 +1,7 @@
 import { expect, it } from "vitest";
 import { stripTypeScriptTypes } from "node:module";
+import { createHash } from "node:crypto";
+import { startOpenCodeMcpBridge } from "../drivers/opencode/mcp-bridge.js";
 import { readFile } from "node:fs/promises";
 import { createOpenCodeFinishDiagnosticForwarder } from "./opencode-proxy-finish-diagnostics.js";
 import { createOpenCodeProxyOutput } from "./opencode-proxy-output.js";
@@ -75,4 +77,23 @@ it("keeps healthy open and success silent", () => {
   forward.diagnostic(JSON.stringify(offered));forward.bind("healthy-session");
   output.send({method:"turn/completed",params:{threadId:"healthy-session",turn:{status:"completed"}}});
   expect(frames).toEqual([{method:"turn/completed",params:{threadId:"healthy-session",turn:{status:"completed"}}}]);
+});
+
+it("retains the actual MCP producer's offered schema and rejected shape records", async () => {
+  const frames:Array<{params:{message:string}}>=[];
+  const forward=createOpenCodeFinishDiagnosticForwarder(frame=>frames.push(frame));
+  const bridge=await startOpenCodeMcpBridge({handler:async()=>({accepted:true}),onDiagnostic:forward.diagnostic});
+  const rpc=async(id:number,method:string,params?:unknown)=>(await fetch(bridge.url,{method:"POST",headers:{Authorization:`Bearer ${bridge.secret}`,"Content-Type":"application/json"},body:JSON.stringify({jsonrpc:"2.0",id,method,params})})).json() as Promise<{result:{tools:Array<{name:string;inputSchema:unknown}>;isError?:boolean}}>;
+  try {
+    expect(frames).toEqual([]);forward.bind("actual-session");expect(frames).toEqual([]);
+    const tools=await rpc(1,"tools/list"),schema=tools.result.tools.find((tool:{name:string})=>tool.name==="paperclip_finish")!.inputSchema;
+    const report={reportedWorkDisposition:"done",summary:"Synthetic complete response",completionClaim:{contractRevision:"1",objectiveSatisfied:true,criteria:[],remainingWork:[]},evidence:[],verification:[]};
+    const result=await rpc(2,"tools/call",{name:"paperclip_finish",arguments:{...report,continuation:"SYNTHETIC_PRIVATE_INPUT"}});
+    expect(result.result.isError).toBe(true);
+    expect(frames).toHaveLength(2);
+    const [actualOffered,actualRejected]=frames.map(frame=>JSON.parse(frame.params.message));
+    expect(actualOffered).toEqual({...offered,schemaSha256:createHash("sha256").update(JSON.stringify(schema)).digest("hex")});
+    expect(actualRejected).toEqual({...actualOffered,stage:"input_rejected",callIdSha256:createHash("sha256").update("2").digest("hex"),validationCategory:"continuation",rootShape:"object",continuationShape:"string"});
+    expect(JSON.stringify(frames)).not.toContain("SYNTHETIC_PRIVATE_INPUT");
+  } finally {await bridge.close();}
 });
