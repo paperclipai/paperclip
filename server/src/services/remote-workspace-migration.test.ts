@@ -660,12 +660,20 @@ describe.skipIf(!support.supported)("remote workspace migration", () => {
     const address = server.address(); if (!address || typeof address === "string") throw new Error("test server not bound");
     return { bare, repoUrl: `http://127.0.0.1:${address.port}/repository.git` };
   }
-  it.each(["present", "pruned", "retry", "missing-base", "missing-base-retry", "missing-base-uploaded-retry", "missing-base-changed-retry", "nested", "nested-retry", "nested-source-changed-retry", "unapproved-nested", "missing", "expired", "corrupt"])("preserves archived Git edits or refuses an unavailable restore point (%s)", async state => {
+  it.each(["present", "pruned", "retry", "source-excludes", "source-excludes-symlink", "missing-base", "missing-base-retry", "missing-base-uploaded-retry", "missing-base-changed-retry", "nested", "nested-retry", "nested-source-changed-retry", "unapproved-nested", "missing", "expired", "corrupt"])("preserves archived Git edits or refuses an unavailable restore point (%s)", async state => {
     const remote = state.startsWith("missing-base") ? await serveRepository() : null;
     const f = await gitArchiveFixture(remote?.repoUrl);
     if (remote) { await git(remote.bare, "fetch", f.base, "main:refs/heads/main"); await git(remote.bare, "update-server-info"); }
     await fs.writeFile(path.join(f.cwd, "saved.txt"), "staged edit\n"); await git(f.cwd, "add", "saved.txt");
     await fs.writeFile(path.join(f.cwd, "saved.txt"), "unstaged edit\n");
+    if (state.startsWith("source-excludes")) {
+      await fs.appendFile(path.join(f.base, ".git", "info", "exclude"), "\n/.paperclip/recovered-runs/\n");
+      const recovered = path.join(f.cwd, ".paperclip", "recovered-runs", "saved");
+      await fs.mkdir(recovered, { recursive: true });
+      await fs.writeFile(path.join(recovered, "repair-receipt.json"), '{"preserved":true}\n');
+      await fs.writeFile(path.join(recovered, "source-delta.bundle"), Buffer.from([0, 255, 17, 128]));
+    }
+    const sourceExcludes = state.startsWith("source-excludes") ? await fs.readFile(path.join(f.base, ".git", "info", "exclude")) : null;
     const captured = (await captureRestorePoint({ cwd: f.cwd, upstreamCommits: [f.upstream] }))!;
     const id = randomUUID(), generation = 1, sealed = await sealRestorePoint(captured.payload,
       { companyId: f.companyId, workspaceId: f.workspaceId, restorePointId: id, generation });
@@ -697,6 +705,15 @@ describe.skipIf(!support.supported)("remote workspace migration", () => {
         gitBranchOwnershipVersion: 1, verifiedAt: new Date().toISOString(), restorePoint, contents },
     } }).where(eq(executionWorkspaces.id, f.workspaceId));
     await git(f.base, "worktree", "remove", "--force", f.cwd); await git(f.base, "branch", "-D", f.branchName);
+    if (state === "source-excludes-symlink") {
+      const outside = path.join(root, "private-ignore.txt"); await fs.writeFile(outside, "/outside-private-pattern/\n");
+      await fs.rm(path.join(f.base, ".git", "info", "exclude"));
+      await fs.symlink(outside, path.join(f.base, ".git", "info", "exclude"));
+      await expect(migrateRemoteWorkspace({ db, storage, ...f, apply: true })).rejects.toThrow("remote_workspace_migration_archived_git_source_unavailable");
+      expect(readRemoteWorkspaceAuthority((await workspace(f.workspaceId)).metadata)).toBeNull();
+      expect(await fs.readFile(outside, "utf8")).toBe("/outside-private-pattern/\n");
+      return;
+    }
     if (state.startsWith("missing-base")) await fs.rm(f.base, { recursive: true });
     if (state === "unapproved-nested") {
       await expect(migrateRemoteWorkspace({ db, storage, ...f, apply: true })).rejects.toThrow();
@@ -784,6 +801,7 @@ describe.skipIf(!support.supported)("remote workspace migration", () => {
       expect(operations[0]).toMatchObject({ id: interrupted.id, status: "succeeded" });
     }
     const authority = readRemoteWorkspaceAuthority((await workspace(f.workspaceId)).metadata)!;
+    if (sourceExcludes) expect(await fs.readFile(path.join(f.base, ".git", "info", "exclude"))).toEqual(sourceExcludes);
     await fs.rm(f.base, { recursive: true, force: true }); await fs.rm(path.join(root, "nested-source"), { recursive: true, force: true }); await storage.deleteObject(f.companyId, objectKey);
     const ref = await getWorkspaceSnapshot(db, { ...f, snapshotId: authority.snapshotId! });
     const archivePath = path.join(root, "retained-git.pcws"), targetDir = path.join(root, "restored-retained-git");
@@ -797,6 +815,13 @@ describe.skipIf(!support.supported)("remote workspace migration", () => {
     }
     expect(await git(targetDir, "show", ":saved.txt")).toBe("staged edit");
     expect(await fs.readFile(path.join(targetDir, "saved.txt"), "utf8")).toBe("unstaged edit\n");
+    if (state === "source-excludes") {
+      const recovered = path.join(targetDir, ".paperclip", "recovered-runs", "saved");
+      expect(await fs.readFile(path.join(recovered, "repair-receipt.json"), "utf8")).toBe('{"preserved":true}\n');
+      expect(await fs.readFile(path.join(recovered, "source-delta.bundle"))).toEqual(Buffer.from([0, 255, 17, 128]));
+      expect(await git(targetDir, "check-ignore", ".paperclip/recovered-runs/saved/repair-receipt.json"))
+        .toBe(".paperclip/recovered-runs/saved/repair-receipt.json");
+    }
   });
   async function retainDirectory(f: Awaited<ReturnType<typeof seed>>) {
     const captured = await captureTaskDirectorySnapshot(f.cwd), id = randomUUID(), generation = 1;
