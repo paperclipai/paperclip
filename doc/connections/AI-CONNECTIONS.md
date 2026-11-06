@@ -10,13 +10,20 @@ homes. Managed default/shared accounts are additional choices in that same
 selector. Selecting “Sign in to another account” survives background refreshes;
 Claude authorization paste keeps upstream's immediate Connecting feedback.
 The onboarding sign-in link and footer use the same action. Either opens the
-provider in a new tab and disables the footer with Waiting for code…. The code
-field stays available. A Claude code entered without a paste event can be sent
+provider in a new tab and disables the footer with Waiting for auth… for OpenAI
+or Waiting for code… for Claude. The Claude code field stays available. A Claude code entered without a paste event can be sent
 with Submit code in the footer or Enter in the field. These actions submit to
 the current login session and do not open another provider window.
 Failed or expired sign-ins show a short message and a Retry sign-in footer
 button. Retry releases the old session before starting a fresh sign-in. It keeps
 the onboarding setup and clears the old code.
+
+Returning from Review to Connect can change the existing agent's connection.
+Connect verifies and saves the current selection before returning to Review;
+it does not create another agent. A new API account selected in onboarding becomes
+the user's provider default, so a previous subscription does not override that
+choice. A failed default selection can retry the saved account without creating
+another connection. Failed verification or saving keeps the user on Connect.
 
 New-agent Connect offers three persistent tiles: the provider's subscription,
 the provider's API key, and Advanced. All three stay visible while the selected

@@ -2,7 +2,7 @@ import { useQueryView } from "@/components/QueryView";
 import type { AgentRunner, AgentRunnerChoice } from "@paperclipai/shared";
 import { needsClaudeSetupQualification, qualifyClaudeSetup } from "../lib/qualify-claude-setup";
 import { runOnboardingConnectionTest } from "../lib/onboarding-connection-test";
-import { agentHarnessType } from "@paperclipai/shared";
+import { agentHarnessType, agentRunner } from "@paperclipai/shared";
 import { adaptersApi, type AdapterInfo } from "../api/adapters";
 import { AgentRunnerSelect } from "./AgentRunnerSelect";
 import { healthApi } from "@/api/health";
@@ -737,7 +737,7 @@ function OnboardingWizardInner({
    * customer on the step to try again — and without this each press would store
    * another copy of the same credential.
    */
-  const apiKeySecretRef = useRef<{ key: string; companyId: string; envKey: string; binding?: Awaited<ReturnType<typeof storeProviderApiKey>>["binding"]; aiConnection?: AiConnectionBinding } | null>(null);
+  const apiKeySecretRef = useRef<{ key: string; companyId: string; envKey: string; grantId?: string; binding?: Awaited<ReturnType<typeof storeProviderApiKey>>["binding"]; aiConnection?: AiConnectionBinding } | null>(null);
   const managedSubscriptionRef = useRef<{ companyId: string; binding: AiConnectionBinding } | null>(null);
   const managedProvider = aiProviderForAdapter(adapterType);
   const managedSubscriptionProvider = managedProvider === "anthropic" || managedProvider === "openai" || managedProvider === "xai" ? managedProvider : undefined;
@@ -764,6 +764,11 @@ function OnboardingWizardInner({
   );
   const connectionModels = connectionModelState.connectionModels;
   const hasGatewaySelection = credentialMode === "api" && gatewayConnection?.companyId === createdCompanyId && gatewayConnection.adapterType === adapterType;
+  const connectionSelection = JSON.stringify([createdCompanyId, adapterType, runner, model, command, args, url, credentialMode, apiKey, selectedSavedKey, gatewayConnection]);
+  const connectedSelectionRef = useRef<{ agentId: string; selection: string } | null>(null);
+  if (createdAgentId && connectedSelectionRef.current?.agentId !== createdAgentId) {
+    connectedSelectionRef.current = { agentId: createdAgentId, selection: connectionSelection };
+  }
   const gatewayLookupFailed = hasGatewaySelection && !connectionModelState.refreshing
     && Boolean(connectionModelState.error || (!connectionModels && !connectionModelState.loading));
   const connectionModelReady = (!hasGatewaySelection && !connectionModels) || Boolean(connectionModels
@@ -1975,18 +1980,25 @@ function OnboardingWizardInner({
    * a stop: there is deliberately no path that hands the raw key back, because
    * the only thing left to do with it would be to embed it.
    */
-  async function storeApiKeyUserSecret(companyId: string): Promise<boolean> {
+  async function storeApiKeyUserSecret(companyId: string, isCurrent = () => true): Promise<boolean> {
     const key = apiKey.trim();
     const envKey = apiKeyEnvKeyFor(adapterType);
-    if (apiKeySecretRef.current?.key === key && apiKeySecretRef.current.companyId === companyId && apiKeySecretRef.current.envKey === envKey) return true;
+    const stored = apiKeySecretRef.current?.key === key && apiKeySecretRef.current.companyId === companyId && apiKeySecretRef.current.envKey === envKey
+      ? apiKeySecretRef.current : null;
+    if (stored?.binding || stored?.aiConnection) return true;
     try {
       if (managedProvider) {
-        await aiConnectionsApi.create(companyId, { provider: managedProvider, method: "api_key", name: `My ${CONNECT_SOURCE_NAMES[adapterType] ?? managedProvider} API`, ownership: "personal", apiKey: key, agentIds: [], allAgents: true });
-        apiKeySecretRef.current = { key, companyId, envKey, aiConnection: { provider: managedProvider, method: "api_key", mode: "responsible_user" } };
+        const grantId = stored?.grantId ?? (await aiConnectionsApi.create(companyId, { provider: managedProvider, method: "api_key", name: `My ${CONNECT_SOURCE_NAMES[adapterType] ?? managedProvider} API`, ownership: "personal", apiKey: key, agentIds: [], allAgents: true })).grantId;
+        apiKeySecretRef.current = { key, companyId, envKey, grantId };
+        if (!isCurrent()) return false;
+        await aiConnectionsApi.setDefault(companyId, grantId);
+        if (!isCurrent()) return false;
+        apiKeySecretRef.current = { key, companyId, envKey, grantId, aiConnection: { provider: managedProvider, method: "api_key", mode: "responsible_user" } };
+        void queryClient.invalidateQueries({ queryKey: ["ai-connections", companyId] });
         return true;
       }
-      const stored = await storeProviderApiKey(companyId, envKey, key);
-      apiKeySecretRef.current = { key, companyId, envKey, binding: stored.binding };
+      const legacyStored = await storeProviderApiKey(companyId, envKey, key);
+      apiKeySecretRef.current = { key, companyId, envKey, binding: legacyStored.binding };
       return true;
     } catch (err) {
       setError(
@@ -1998,11 +2010,12 @@ function OnboardingWizardInner({
     }
   }
 
-  function buildAdapterConfig(bindApiKey = false, setupRunner?: AgentRunner): Record<string, unknown> {
+  function buildAdapterConfig(bindApiKey = false, setupRunner?: AgentRunner, existingAgent?: Agent): Record<string, unknown> {
     const adapter = getUIAdapter(adapterType);
-    const savedConfig = restoredSetup?.companyId === createdCompanyId
-      && agentHarnessType(restoredSetup.adapterType, restoredSetup.adapterConfig) === agentHarnessType(adapterType)
-      ? restoredSetup.adapterConfig : {};
+    const savedAgent = existingAgent ?? restoredSetup;
+    const savedConfig = savedAgent?.companyId === createdCompanyId
+      && agentHarnessType(savedAgent.adapterType, savedAgent.adapterConfig) === agentHarnessType(adapterType)
+      ? savedAgent.adapterConfig : {};
     const builtConfig = adapter.buildAdapterConfig({
       ...defaultCreateValues,
       adapterType,
@@ -2030,6 +2043,10 @@ function OnboardingWizardInner({
           : defaultCreateValues.dangerouslyBypassSandbox
     });
     const savedEnv = { ...((savedConfig.env as Record<string, unknown>) ?? {}) };
+    if (adapterType === "codex_local" && (existingAgent || managedBindingForStep())) {
+      if (credentialMode === "api" || managedBindingForStep()) delete savedEnv.CODEX_HOME;
+      if (credentialMode === "subscription" || managedBindingForStep()) delete savedEnv.OPENAI_API_KEY;
+    }
     if (adapterType === "claude_local") {
       if (credentialMode === "api" || managedBindingForStep()) delete savedEnv[CLAUDE_OAUTH_TOKEN_ENV_KEY];
       if (credentialMode === "subscription" || managedBindingForStep()) {
@@ -2082,10 +2099,11 @@ function OnboardingWizardInner({
     return config;
   }
 
-  function buildSetupRuntimeConfig(heartbeatEnabled: boolean) {
-    const { aiConnection: _savedBinding, ...runtimeConfig } = restoredSetup?.companyId === createdCompanyId ? restoredSetup.runtimeConfig : {};
+  function buildSetupRuntimeConfig(heartbeatEnabled: boolean, existingAgent?: Agent) {
+    const savedAgent = existingAgent ?? restoredSetup;
+    const { aiConnection: _savedBinding, ...runtimeConfig } = savedAgent?.companyId === createdCompanyId ? savedAgent.runtimeConfig : {};
     const binding = managedBindingForStep();
-    return { ...runtimeConfig, ...buildNewAgentRuntimeConfig({ heartbeatEnabled }), ...(binding ? { aiConnection: binding } : {}) };
+    return { ...runtimeConfig, ...(!existingAgent ? buildNewAgentRuntimeConfig({ heartbeatEnabled }) : {}), ...(binding ? { aiConnection: binding } : {}) };
   }
 
   const setupSnapshot = step === 4 && setupPrepared && setupAgentId && !createdAgentId && !loading
@@ -2116,6 +2134,7 @@ function OnboardingWizardInner({
     appliedStoredClaudeLoginBinding = false,
     isCurrent = () => true,
     onQualifiedConfig?: (config: Record<string, unknown>, adapters: AdapterInfo[], environmentId: string | null) => void,
+    existingAgent?: Agent,
   ): Promise<AdapterEnvironmentTestResult | null> {
     if (!runnerDiscoveryReady) return null;
     if (!createdCompanyId) {
@@ -2125,6 +2144,9 @@ function OnboardingWizardInner({
       return null;
     }
     const selection = adapterSetupSelectionRef.current;
+    const savedAgent = existingAgent ?? restoredSetup;
+    const testRunner = existingAgent && runner === "auto" && agentHarnessType(existingAgent.adapterType, existingAgent.adapterConfig) === adapterType
+      ? agentRunner(existingAgent.adapterType) : runner;
     const selectionIsCurrent = () => isCurrent() && adapterSetupSelectionRef.current === selection;
     adapterEnvErrorSelectionRef.current = null;
     setAdapterEnvLoading(true);
@@ -2166,7 +2188,7 @@ function OnboardingWizardInner({
         // resolver throws when no managed sandbox is available, which the outer
         // catch surfaces as a fail-closed error rather than a local host probe.
         const environmentId = resolveAdapterTestEnvironmentId({
-          agentDefaultEnvironmentId: restoredSetup?.companyId === createdCompanyId ? restoredSetup.defaultEnvironmentId : null,
+          agentDefaultEnvironmentId: savedAgent?.companyId === createdCompanyId ? savedAgent.defaultEnvironmentId : null,
           instanceDefaultEnvironmentId: settings?.defaultEnvironmentId ?? null,
           localDefaultEnvironmentId: resolveLocalDefaultEnvironmentId(environmentList),
           managedSandboxOnly,
@@ -2237,8 +2259,8 @@ function OnboardingWizardInner({
           adapterType,
           {
             adapterConfig: testedConfig,
-            ...(restoredSetup?.companyId === createdCompanyId ? { agentId: restoredSetup.id } : {}),
-            ...(["codex_local", "claude_local", "opencode_local", "pi_local"].includes(adapterType) && runner !== "auto" ? { runner } : {}),
+            ...(savedAgent?.companyId === createdCompanyId ? { agentId: savedAgent.id } : {}),
+            ...(["codex_local", "claude_local", "opencode_local", "pi_local"].includes(adapterType) && testRunner !== "auto" ? { runner: testRunner } : {}),
             ...(managedBindingForStep() ? { aiConnection: managedBindingForStep() } : {}),
             environmentId,
           },
@@ -2313,7 +2335,7 @@ function OnboardingWizardInner({
       setError("Choose a model for this gateway connection before connecting your agent.");
       return;
     }
-    if (createdAgentId) {
+    if (createdAgentId && connectedSelectionRef.current?.selection === connectionSelection) {
       setStep(5);
       return;
     }
@@ -2383,7 +2405,7 @@ function OnboardingWizardInner({
       // hire rather than falling through to a configuration with no credential.
       let apiKeyStored = false;
       if (credentialMode === "api" && !selectedApiKey && apiKey.trim()) {
-        apiKeyStored = await storeApiKeyUserSecret(createdCompanyId);
+        apiKeyStored = await storeApiKeyUserSecret(createdCompanyId, isCurrent);
         if (!apiKeyStored || !isCurrent()) return;
       }
       if (credentialMode !== "api" && canUseLocalLogin && managedProvider && !managedBindingForStep() && !savedSubscription && !savedKeys.storedLogin.data) {
@@ -2392,7 +2414,11 @@ function OnboardingWizardInner({
         managedSubscriptionRef.current = { companyId: createdCompanyId, binding: { provider: managedProvider, method: "subscription", mode: "responsible_user" } };
       }
       const managedBinding = managedBindingForStep();
-      const baseAdapterConfig = buildAdapterConfig(apiKeyStored);
+      const existingAgent = createdAgentId ? await agentsApi.get(createdAgentId, createdCompanyId) : undefined;
+      if (!isCurrent()) return;
+      const existingRunner = existingAgent && runner === "auto" && agentHarnessType(existingAgent.adapterType, existingAgent.adapterConfig) === adapterType
+        ? agentRunner(existingAgent.adapterType) : undefined;
+      const baseAdapterConfig = buildAdapterConfig(apiKeyStored, existingRunner, existingAgent);
       let storedClaudeLogin: ClaudeOAuthTokenStatusResponse | null = null;
       if (
         !managedBinding && adapterType === "claude_local" &&
@@ -2437,7 +2463,7 @@ function OnboardingWizardInner({
         const result =
           cachedUsable ??
           (await runAdapterEnvironmentTest(hireAdapterConfig, shouldApplyStoredClaudeLogin, isCurrent,
-            (config, adapters, environmentId) => { hireAdapterConfig = config; qualifiedDiscovery = { adapters, environmentId }; }));
+            (config, adapters, environmentId) => { hireAdapterConfig = config; qualifiedDiscovery = { adapters, environmentId }; }, existingAgent));
         if (!result || !isCurrent()) return;
         // Block the hire on a failed environment test. Also block it on a
         // pass or a warn result that reports missing authentication — the
@@ -2462,6 +2488,22 @@ function OnboardingWizardInner({
       if (!agentRole || !isCurrent()) return;
 
       const hireName = agentName.trim() || AGENT_ROLE_LABELS[agentRole];
+      if (createdAgentId && existingAgent) {
+        await setupSave.current.catch(() => {});
+        if (!isCurrent()) return;
+        await agentsApi.update(createdAgentId, {
+          adapterType,
+          adapterConfig: hireAdapterConfig,
+          ...(["codex_local", "claude_local", "opencode_local", "pi_local"].includes(adapterType) && (runner !== "auto" || existingRunner) ? { runner: existingRunner ?? runner } : {}),
+          runtimeConfig: buildSetupRuntimeConfig(true, existingAgent),
+        }, createdCompanyId);
+        if (!isCurrent()) return;
+        connectedSelectionRef.current = { agentId: createdAgentId, selection: connectionSelection };
+        void queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(createdCompanyId) });
+        void queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(createdAgentId) });
+        setStep(5);
+        return;
+      }
 
       // The company may already hold this agent. A wizard that reopens on the
       // agent step after the hire — the dashboard's agentless offer on a stale
@@ -2533,6 +2575,7 @@ function OnboardingWizardInner({
 
       if (!isCurrent()) return;
       setCreatedAgentId(agent.id);
+      connectedSelectionRef.current = { agentId: agent.id, selection: connectionSelection };
       // Advance to the Review step — the lead is now online. The user drives
       // strategy + hiring from the planning chat after "Get started".
       setStep(5);
@@ -3108,6 +3151,7 @@ function OnboardingWizardInner({
                           }}
                           onSubmit={() => handleConnectStepPrimary()}
                         />}
+                        {managedProvider && !selectedApiKey && !hasGatewaySelection && !connectionModels && <p className="text-xs text-muted-foreground">This will be your default {CONNECT_SOURCE_NAMES[adapterType] ?? managedProvider} account.</p>}
                         {hasGatewaySelection && (gatewayLookupFailed ? <>
                           <p role="alert" className="text-sm text-destructive">Your saved gateway connection could not be loaded. Retry to choose a model and connect your agent.</p>
                           <Button type="button" variant="outline" disabled={loading || adapterEnvLoading} onClick={() => { void connectionModelState.refresh(); }}>
