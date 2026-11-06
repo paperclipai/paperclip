@@ -253,6 +253,27 @@ test("workflow uses read permissions, a protected environment, trusted checkout,
   }
 });
 
+test("workflow skips non-final events before runner allocation and collapses bursts per PR head", () => {
+  const workflow = readFileSync(".github/workflows/pr-merge-review.yml", "utf8");
+  const triggers = workflow.slice(workflow.indexOf("\non:"), workflow.indexOf("\npermissions:"));
+  // Exactly these trigger kinds; check_run and status cannot be filtered at the trigger level.
+  assert.deepEqual([...triggers.matchAll(/^ {2}([a-z_]+):/gm)].map((match) => match[1]),
+    ["workflow_run", "check_run", "status"]);
+  assert.match(triggers, /check_run:\n {4}types: \[completed\]/);
+  const job = workflow.slice(workflow.indexOf("\n  notify:"));
+  const condition = job.slice(job.indexOf("    if: >-"), job.indexOf("\n    concurrency:"));
+  // GitHub Actions check runs arrive through workflow_run; only other providers schedule a job.
+  assert.match(condition, /github\.event_name == 'check_run' &&\s+github\.event\.check_run\.app\.id != 15368/);
+  assert.match(condition, /fromJSON\('\["success","skipped","neutral"\]'\), github\.event\.check_run\.conclusion/);
+  assert.match(condition, /fromJSON\('\["success","skipped","neutral"\]'\), github\.event\.workflow_run\.conclusion/);
+  assert.match(condition, /github\.event_name == 'status' && github\.event\.state == 'success'/);
+  assert.match(condition, /github\.event\.workflow_run\.event == 'pull_request'/);
+  assert.match(condition, /github\.repository == 'paperclipai\/paperclip'/);
+  // Job-level concurrency: a skipped event must not cancel a scheduled notifier.
+  assert.doesNotMatch(workflow.slice(0, workflow.indexOf("\njobs:")), /concurrency:/);
+  assert.match(job, /\n {4}concurrency:\n {6}group: pr-merge-review-\$\{\{ github\.event\.workflow_run\.head_sha \|\| github\.event\.check_run\.head_sha \|\| github\.event\.sha \}\}\n {6}cancel-in-progress: true\n/);
+});
+
 test("API probe uses the same read permissions without private webhook access", () => {
   const probe = readFileSync(".github/workflows/pr-review-api-access.yml", "utf8");
   for (const permission of ["actions", "checks", "contents", "pull-requests", "statuses"]) {
