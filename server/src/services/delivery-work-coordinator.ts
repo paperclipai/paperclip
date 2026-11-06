@@ -25,7 +25,7 @@ export function createDeliveryWorkCoordinator(input: {
       // do not postpone the obligation indefinitely.
       coalesceMs?: number;
       run: (signal: AbortSignal) => Promise<unknown>;
-      hasPending: () => Promise<boolean>;
+      hasPending: (runAllowed?: boolean) => Promise<boolean>;
       // Scoped hints belong to the outer transaction, including uncertainty recovery.
       onSettled?: (hints?: ReadonlySet<string>) => void;
       // Optional maintenance/retry deadline restored from durable state.
@@ -75,7 +75,7 @@ export function createDeliveryWorkCoordinator(input: {
         let runFailed = false;
         controller = attempt;
         running = withDatabaseOperation(`delivery.${queue}`, () => Promise.resolve().then(() => reconcileDatabaseWork(input.owner, queue))
-          .then(() => workerStopped || !(input.canRun() || (task.runDuringDrain && input.canReconcile?.())) ? undefined : task.run(attempt.signal).catch(error => { runFailed = true; throw error; })).then(() => workerStopped ? false : task.hasPending()).then(pending => {
+          .then(() => workerStopped || !(input.canRun() || (task.runDuringDrain && input.canReconcile?.())) ? undefined : task.run(attempt.signal).catch(error => { runFailed = true; throw error; })).then(() => workerStopped ? false : task.hasPending(input.canRun() || Boolean(task.runDuringDrain && input.canReconcile?.()))).then(pending => {
           pendingWork = pending || databaseWorkPending(input.owner, queue);
           if (pendingWork) schedule(task.retryMs);
           else { finishIntent?.(); finishIntent = undefined; }

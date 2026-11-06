@@ -3633,6 +3633,34 @@ re-read dependency readiness, since new dependencies need not change the
 displayed task status. Old blocked rows without a receipt remain held; no
 historical status backfill is performed.
 
+Older native executors recorded the local callback-listener startup guard as
+`native_session_interrupted`. A saved exact guard outcome can enter the same
+bounded safe-replacement path after restart. This requires the first attempt,
+an unused provider-session identity, matching saved execution bindings, no
+provider events, checkpoint, admission receipt, tool call, or cancellation, and
+the existing current snapshot and confirmed stop receipts. A generic error or
+a pending provider-pack receipt alone grants no recovery authority. The same
+transaction can retire that run's completed file-preservation hold only when
+its bound recovery and finalization receipts prove completion. Unrelated holds,
+later task blocks, normal dispatch admission, and the three-attempt budget remain
+effective.
+
+Historical replacement discovery reads at most 100 candidates per pass and
+keeps a cursor only for the remaining scan. A work notification preserves forward
+progress and requests a final rescan, so held earlier rows cannot hide a later
+eligible run. Completed scans of held history become quiet. Final snapshot
+publication, verified lease cleanup, local process-stop proof, completed workspace
+recovery, and dispatch eligibility changes notify the existing replacement worker
+in their transactions. A cleared historical interaction only requests another
+proof check; it grants no new continuation authority. Source provider effects,
+task pause or cancellation, and the original authority checks still prevent replay.
+Temporary decision failures retain the existing worker's retry and advance the
+bounded cursor, with a forced rescan of earlier failures. A failed page cannot
+hide later ready runs. During drain, the initialized replacement worker can read
+readiness once per notification generation to discharge an empty notification
+without starting replacement. Concrete pending work and changes arriving during
+that read remain outstanding. Restart reconstructs the scan from durable records.
+
 For legacy GitHub input without a saved App ID or its own response receipt,
 Task Retry may prove the endpoint's earlier non-null App claim from a processed
 response ledger created before that input. The proof stays within the same
