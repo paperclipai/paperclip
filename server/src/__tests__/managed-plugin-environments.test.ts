@@ -19,7 +19,9 @@ import {
   createManagedEnvironmentRecovery,
   registerManagedPluginInstanceDefaultRetry,
   retryManagedPluginInstanceDefault,
+  startManagedPluginInstanceDefault,
 } from "../services/managed-environments.js";
+import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
 import {
   applyManagedPluginInstanceDefault,
   cancelPendingManagedEnvironmentDefault,
@@ -311,7 +313,8 @@ const support = await getEmbeddedPostgresTestSupport();
           // Left pending for the coordinator's retry.
         }
       };
-      registerManagedPluginInstanceDefaultRetry({
+      // The same entry point `index.ts` awaits after the boot pass.
+      await startManagedPluginInstanceDefault({
         db,
         managedConfig: config,
         deliveryWork: {
@@ -562,10 +565,42 @@ const support = await getEmbeddedPostgresTestSupport();
       expect(await retryManagedPluginInstanceDefault(db, managedConfig([remoteHostEntry]), workerManager)).toBe("nothing_to_do");
     });
 
+    it("decides at boot even while the real delivery coordinator is paused (warm standby)", async () => {
+      // Warm standby: the coordinator neither runs nor reconciles until a claim.
+      let claimed = false;
+      const coordinator = createDeliveryWorkCoordinator({
+        owner: db,
+        canRun: () => claimed,
+        canReconcile: () => claimed,
+        onError: () => {},
+      });
+      try {
+        const config = managedConfig([defaultEntry]);
+        await applyManagedEnvironments(db, config, { env: {}, workerManager, autoInstalledPluginKeys: [PLUGIN_KEY] });
+        await startManagedPluginInstanceDefault({
+          db, managedConfig: config, deliveryWork: coordinator, workerManager, recovery: createManagedEnvironmentRecovery(),
+        });
+        // Before any claim (and so before any agent can be created), the
+        // empty instance already has its default.
+        const [row] = await pluginRows();
+        expect(await instanceDefault()).toBe(row!.id);
+        expect(await readManagedEnvironmentDefaultDecision(db)).toMatchObject({ status: "applied", reason: "no_agents" });
+
+        // An agent created right after the claim cannot change that.
+        claimed = true;
+        await agent(await company(), null);
+        expect(await readManagedEnvironmentDefaultDecision(db)).toMatchObject({ status: "applied" });
+      } finally {
+        await coordinator.stop();
+      }
+    });
+
     it("keeps retrying when every attempt times out while the worker keeps running", async () => {
       await boot([remoteHostEntry]);
-      // The boot ensure, its immediate recovery attempt, and the worker's
-      // startup attempt all time out; the worker stays up throughout.
+      // The boot ensure, its immediate recovery attempt, the inline boot
+      // decision attempt, and the worker's first run after registration all
+      // time out; the worker stays up throughout.
+      call.mockRejectedValueOnce(new Error("environmentValidateConfig timed out"));
       call.mockRejectedValueOnce(new Error("environmentValidateConfig timed out"));
       call.mockRejectedValueOnce(new Error("environmentValidateConfig timed out"));
       call.mockRejectedValueOnce(new Error("environmentValidateConfig timed out"));

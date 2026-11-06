@@ -784,7 +784,7 @@ export async function applyManagedEnvironments(
  * | State                        | Next attempt comes from                    |
  * | ---------------------------- | ------------------------------------------ |
  * | final (applied / declined)   | nothing; attempts exit after one read      |
- * | server just started          | the worker's startup attempt               |
+ * | server just started          | the boot attempt (inline, before `ready`)  |
  * | waiting for the plugin       | a worker `ready` (`onWorkerReady`)         |
  * | config rejected by plugin    | a new boot (the document must change)      |
  * | attempt threw (timeout, db)  | the delivery coordinator's retry (60 s)    |
@@ -929,11 +929,16 @@ export function registerManagedPluginInstanceDefaultRetry(input: {
   };
   workerManager?: Pick<PluginWorkerManager, "isRunning" | "call" | "onWorkerReady">;
   recovery: ManagedEnvironmentRecovery;
+  /**
+   * Start with one requested attempt (default). `startManagedPluginInstanceDefault`
+   * passes false after its inline boot attempt succeeded.
+   */
+  requested?: boolean;
   retryMs?: number;
 }): { requestRetry(): void } | null {
   if (!instanceDefaultSpec(input.managedConfig)) return null;
-  // One attempt from saved state at startup (see above).
-  let requestedGeneration = 1;
+  // One attempt from saved state at startup (see above), unless boot made it.
+  let requestedGeneration = input.requested === false ? 0 : 1;
   let handledGeneration = 0;
   const worker = input.deliveryWork.register(DELIVERY_QUEUES.managedEnvironmentDefault, {
     retryMs: input.retryMs ?? 60_000,
@@ -952,4 +957,28 @@ export function registerManagedPluginInstanceDefaultRetry(input: {
   const unsubscribe = input.workerManager?.onWorkerReady?.(() => requestRetry());
   if (unsubscribe) input.recovery.onStop(unsubscribe);
   return { requestRetry };
+}
+
+/**
+ * Boot entry point for the one-time `instanceDefault` decision, awaited in
+ * `index.ts` right after `applyManagedEnvironments` and before the server
+ * reports ready. The first attempt runs inline, through the same
+ * `retryManagedPluginInstanceDefault`, so it completes before any request is
+ * admitted, including a warm-standby claim and the agent creation that
+ * follows it, and whether the delivery coordinator is running does not
+ * matter. Then the retry worker is registered for later attempts; it starts
+ * with a pending request only when the boot attempt threw.
+ */
+export async function startManagedPluginInstanceDefault(
+  input: Omit<Parameters<typeof registerManagedPluginInstanceDefaultRetry>[0], "requested">,
+): Promise<{ requestRetry(): void } | null> {
+  if (!instanceDefaultSpec(input.managedConfig)) return null;
+  let bootAttemptFailed = false;
+  try {
+    await retryManagedPluginInstanceDefault(input.db, input.managedConfig, input.workerManager);
+  } catch (err) {
+    bootAttemptFailed = true;
+    logger.error({ err }, "managed plugin environment instance default failed at boot; retrying in the background");
+  }
+  return registerManagedPluginInstanceDefaultRetry({ ...input, requested: bootAttemptFailed });
 }

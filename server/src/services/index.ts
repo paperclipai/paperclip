@@ -149,6 +149,7 @@ export {
   applyManagedEnvironments,
   createManagedEnvironmentRecovery,
   registerManagedPluginInstanceDefaultRetry,
+  startManagedPluginInstanceDefault,
   retryManagedPluginInstanceDefault,
 } from "./managed-environments.js";
 export { buildExportFidelityReport, collectExportFidelityCounts } from "./export-fidelity.js";
