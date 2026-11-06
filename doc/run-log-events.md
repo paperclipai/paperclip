@@ -362,7 +362,10 @@ its fence quorum and the same conversation is restored. Otherwise its
 After an ACPX restore, the controller can still deliver results for semantic
 calls of the lost turn. Runnerd acknowledges each one as `retired` without
 sending it to the restored provider, so the calls settle and live semantic
-dispatch resumes for the continuation.
+dispatch resumes for the continuation. A restored ACPX provider is a new process
+whose MCP request ids restart, so its semantic `callId` values carry a
+per-process prefix (`r<hex>:<id>`). They never reuse an earlier call's id in
+the same run.
 
 ## Native Local Process Stop Evidence
 
