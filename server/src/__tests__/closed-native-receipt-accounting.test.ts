@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
-  agents, budgetIncidents, budgetPolicies, budgetReservations, companies, costEvents, createDb, heartbeatRuns, issues,
+  agents, budgetIncidents, budgetPolicies, budgetReservations, companies, costEvents, createDb, heartbeatRunEvents, heartbeatRuns, issues,
   nativeRunFinalizations, type Db,
 } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
@@ -33,6 +33,8 @@ const support = await getEmbeddedPostgresTestSupport();
     unpricedUsagePolicy?: "block" | "allow";
     phase?: string;
     processPid?: number | null;
+    stopEvidence?: boolean;
+    failureCode?: string;
   } = {}) {
     const companyId = randomUUID(), agentId = randomUUID(), otherAgentId = randomUUID(), sourceId = randomUUID();
     await db.insert(companies).values({ id: companyId, name: "Chaos Lab", issuePrefix: "CHA" });
@@ -55,11 +57,19 @@ const support = await getEmbeddedPostgresTestSupport();
       usageJson: { accountingReceiptOwner: "native_producer", accountingReceiptSourceId: sourceId,
         accountingReceiptSequence: 1, accountingReceiptReady: false, provider: "anthropic", biller: "anthropic",
         model: "claude-sonnet-5", billingType: "metered_api", costStatus: "unpriced", costUsd: null,
-        inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, usageSource: "per_run",
+        inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, cacheWriteTokens: 0, usageSource: "per_run",
         budgetExposure: { sourceId, sequence: 1, costCents: "0.0000000" },
         ledgerScope: { issueId: issue.id, projectId: null, billingCode: null } } }).returning();
     await db.insert(nativeRunFinalizations).values({ companyId, issueId: issue.id, runId: run.id,
-      phase: options.phase ?? "terminal_failure", attempt: 3, failureCode: "native_provider_terminal_failed" });
+      phase: options.phase ?? "terminal_failure", attempt: 3, failureCode: options.failureCode ?? "native_provider_terminal_failed" });
+    // Server-authored process trail: launch, recorded identity, then the
+    // verified local stop recovery writes before clearing the identity.
+    await db.insert(heartbeatRunEvents).values([
+      { companyId, runId: run.id, agentId, seq: 1, eventType: "native.process_start_requested", stream: "system" },
+      { companyId, runId: run.id, agentId, seq: 2, eventType: "native.process_identity_recorded", stream: "system" },
+      ...(options.stopEvidence === false ? [] : [
+        { companyId, runId: run.id, agentId, seq: 3, eventType: "native.local_process_stopped", stream: "system" }]),
+    ]);
     await db.insert(budgetReservations).values({ companyId, runId: run.id, agentId, amountCents: "0",
       state: "held", providerStartedAt: new Date() });
     const readRun = async () => (await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id)))[0];
@@ -91,13 +101,26 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(await f.block()).toBeNull();
   });
 
-  it("lets a blocking unpriced-usage policy name the real reason", async () => {
+  // Chaos wave: under the default blocking policy, a lost zero-token receipt
+  // opened a hard stop at 0 of 500 cents and blocked every task.
+  it("does not hard-stop a blocking policy for a lost receipt with no usage", async () => {
     const f = await fixture({ unpricedUsagePolicy: "block" });
     expect(await accountRunCost(db, f.run.id)).toBe(true);
+    await budgetService(db).evaluateAffectedScopes(f.companyId, f.agentId, null);
     await flushBudgetEvaluationWork(db);
-    const block = await f.block();
-    expect(block?.reason).not.toMatch(/await accounting/);
-    expect(block?.reason).toMatch(/no reliable price|budget hard-stop/);
+    expect(await f.charges()).toMatchObject([{ costStatus: "unpriced" }]);
+    const [company] = await db.select().from(companies).where(eq(companies.id, f.companyId));
+    expect(company).toMatchObject({ status: "active", pauseReason: null });
+    expect(await f.block()).toBeNull();
+  });
+
+  it("keeps a blocking policy for lost-receipt usage that has tokens but no price", async () => {
+    const f = await fixture({ unpricedUsagePolicy: "block" });
+    await db.update(heartbeatRuns).set({ usageJson: sql`${heartbeatRuns.usageJson} || '{"inputTokens":1200,"outputTokens":80}'::jsonb` })
+      .where(eq(heartbeatRuns.id, f.run.id));
+    expect(await accountRunCost(db, f.run.id)).toBe(true);
+    await flushBudgetEvaluationWork(db);
+    expect((await f.block())?.reason).toMatch(/no reliable price|budget hard-stop/);
   });
 
   it("keeps the debt pending while the provider process identity is still recorded", async () => {
@@ -147,6 +170,17 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(await f.block()).toMatchObject({ reason: "Company cannot start work while completed runs await accounting." });
   });
 
+  it.each([
+    ["no verified stop event", { stopEvidence: false }],
+    ["a finalization deadline that only asks a person to verify the stop", { failureCode: "execution_finalization_deadline_exceeded" }],
+  ] as const)("keeps the debt pending with %s", async (_label, options) => {
+    const f = await fixture(options);
+    expect(await reconcileRunCosts(db)).toMatchObject({ accounted: 0 });
+    expect(await accountRunCost(db, f.run.id)).toBe(false);
+    expect((await f.readRun()).costAccountingPending).toBe(true);
+    expect(await f.charges()).toHaveLength(0);
+  });
+
   it("keeps the debt pending while native recovery can still produce a result", async () => {
     const f = await fixture({ phase: "observed" });
     expect(await reconcileRunCosts(db)).toMatchObject({ accounted: 0 });
@@ -165,6 +199,20 @@ const support = await getEmbeddedPostgresTestSupport();
     const late = await f.readRun();
     expect(late.costAccountingPending).toBe(true);
     expect(late.usageJson).toMatchObject({ accountingLateReceiptPending: true });
+  });
+
+  it("does not reopen the hold for a later receipt the rate card could price but that carries no price", async () => {
+    const f = await fixture();
+    expect(await accountRunCost(db, f.run.id)).toBe(true);
+    await persistUsageReceipt(db, { schema: "paperclip/accounting-receipt/v1", id: randomUUID(),
+      companyId: f.companyId, runId: f.run.id, adapterType: "paperclip_runner", sourceId: f.sourceId, sequence: 2,
+      receivedAt: new Date().toISOString(),
+      producerEvent: { sourceEventId: randomUUID(), eventType: "turn.completed" },
+      receipt: { complete: true, usageBasis: "per_run", provider: "anthropic", biller: "anthropic",
+        model: "claude-sonnet-5", billingType: "metered_api",
+        usage: { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, cacheWriteTokens: 0 } } });
+    expect((await f.readRun()).costAccountingPending).toBe(false);
+    expect(await f.block()).toBeNull();
   });
 
   it("does not reopen the hold for a later complete receipt that adds no price or usage", async () => {

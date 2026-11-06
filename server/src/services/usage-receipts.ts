@@ -128,10 +128,12 @@ export async function persistUsageReceiptInTransaction(tx: Db, raw: UsageReceipt
       && !["rate_card", "unknown"].includes(envelope.receipt.pricingProvenance.source);
     const rateCardOnly = envelope.producerEvent && envelope.receipt.pricingProvenance?.source === "rate_card";
     // A charge settled without its final receipt accepts a complete receipt's
-    // price, including a rate-card price, as a correction. A receipt with no
-    // price adds no evidence; token changes are detected below as usual.
+    // own price, including a rate-card price, as a correction. Reconciliation
+    // can only post a receipt that carries its price; token changes are
+    // detected below as usual.
+    const ownPrice = envelope.receipt.cacheAdjustedCostUsd ?? envelope.receipt.costUsdExact ?? envelope.receipt.costUsd;
     const unavailableClosed = previous.accountingReceiptUnavailable === true && envelope.receipt.complete === true
-      && incomingMoney !== null;
+      && ownPrice != null && envelope.receipt.costStatus !== "unpriced" && envelope.receipt.usageBasis !== "session_cumulative";
     const changed = unavailableClosed || envelope.lateDelta !== undefined
       || (envelope.producerEvent?.eventType === "usage.reported" && !envelope.receipt.usage)
       || envelope.receipt.usageBasis === "session_cumulative"
@@ -139,7 +141,10 @@ export async function persistUsageReceiptInTransaction(tx: Db, raw: UsageReceipt
         const value = envelope.receipt[key as keyof typeof envelope.receipt];
         return value !== undefined && value !== null && value !== previous[key];
       }) || Object.entries(envelope.receipt.usage ?? {}).some(([key, value]) => previous[key] !== value)
-      || (!rateCardOnly && incomingMoney !== null && (acceptedMoney === null || compareCents(incomingMoney, acceptedMoney) !== 0))
+      // A projection alone cannot be posted against a charge settled without
+      // its receipt; only the receipt's own price (above) can correct it.
+      || (!rateCardOnly && incomingMoney !== null && (previous.accountingReceiptUnavailable !== true || ownPrice != null)
+        && (acceptedMoney === null || compareCents(incomingMoney, acceptedMoney) !== 0))
       || (!rateCardOnly && envelope.receipt.costStatus !== undefined && envelope.receipt.costStatus !== comparison.costStatus)
       || (authoritative
         && receiptFingerprint(envelope.receipt.pricingProvenance) !== receiptFingerprint(comparison.pricingProvenance ?? null));

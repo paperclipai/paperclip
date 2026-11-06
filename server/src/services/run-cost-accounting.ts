@@ -1,7 +1,7 @@
 import { notifyStrandedAgentStatus } from "./live-run-recovery-notifications.js";
 import { usdToUnits, unitsToCents } from "@paperclipai/shared";
 import { and, asc, eq, inArray, or, sql } from "drizzle-orm";
-import { budgetReservations, agents, heartbeatRuns, nativeRunFinalizations, issues, projects, decisionInvocations, promptInjectionInvocations, type Db } from "@paperclipai/db";
+import { budgetReservations, agents, heartbeatRunEvents, heartbeatRuns, nativeRunFinalizations, issues, projects, decisionInvocations, promptInjectionInvocations, type Db } from "@paperclipai/db";
 import { withOperationAccountingTransaction } from "./accounting-transaction.js";
 import { withBudgetSpan } from "./budget-tracing.js";
 import { conflict } from "../errors.js";
@@ -39,23 +39,31 @@ async function readAccountingClosure(db: Db, runId: string) {
   return closure;
 }
 
-/** A failed native run's receipt source is closed when recovery reached
- * terminal failure and the run no longer records a provider process identity:
- * recovery clears it only after verifying that process stopped. A cancelled
- * run keeps its accounting drain: Stop recovery can still deliver the final
- * receipt through the original or a reattached recorder. */
+/** A failed native run's receipt source is closed only with positive stop
+ * evidence: recovery ended in terminal failure (not a finalization deadline,
+ * which only asks a person to verify the stop), the run no longer records a
+ * process identity, and its latest server-authored process event is the
+ * verified local stop. Missing identity alone is not proof. A cancelled run
+ * keeps its accounting drain: Stop recovery can still deliver the final
+ * receipt through the original or a reattached recorder. Remote runs keep
+ * their debt until a receipt arrives. One predicate serves the reconciler
+ * scan and settlement so they cannot disagree. */
 const closedNativeReceiptSource = sql`${heartbeatRuns.runtimeMode} = 'native' and ${heartbeatRuns.status} = 'failed'
   and ${heartbeatRuns.processPid} is null and ${heartbeatRuns.processGroupId} is null
   and exists (select 1 from ${nativeRunFinalizations} where ${nativeRunFinalizations.runId} = ${heartbeatRuns.id}
     and ${nativeRunFinalizations.companyId} = ${heartbeatRuns.companyId}
-    and ${nativeRunFinalizations.resultId} is null and ${nativeRunFinalizations.phase} = 'terminal_failure')`;
+    and ${nativeRunFinalizations.resultId} is null and ${nativeRunFinalizations.phase} = 'terminal_failure'
+    and ${nativeRunFinalizations.failureCode} is distinct from 'execution_finalization_deadline_exceeded')
+  and (select process_event.event_type from ${heartbeatRunEvents} process_event
+    where process_event.company_id = ${heartbeatRuns.companyId} and process_event.run_id = ${heartbeatRuns.id}
+      and process_event.source_event_id is null
+      and process_event.event_type in ('native.process_start_requested', 'native.process_identity_recorded', 'native.local_process_stopped')
+    order by process_event.seq desc limit 1) = 'native.local_process_stopped'`;
 
-async function nativeReceiptSourceClosed(db: Db, run: Pick<typeof heartbeatRuns.$inferSelect,
-  "id" | "companyId" | "runtimeMode" | "status" | "processPid" | "processGroupId">) {
-  if (run.runtimeMode !== "native" || run.status !== "failed" || run.processPid !== null || run.processGroupId !== null) return false;
-  const [coordinator] = await db.select({ phase: nativeRunFinalizations.phase, resultId: nativeRunFinalizations.resultId })
-    .from(nativeRunFinalizations).where(and(eq(nativeRunFinalizations.runId, run.id), eq(nativeRunFinalizations.companyId, run.companyId)));
-  return coordinator?.phase === "terminal_failure" && coordinator.resultId === null;
+async function nativeReceiptSourceClosed(db: Db, runId: string) {
+  const [row] = await db.select({ closed: sql<boolean>`${closedNativeReceiptSource}` }).from(heartbeatRuns)
+    .where(eq(heartbeatRuns.id, runId));
+  return row?.closed === true;
 }
 
 /** The run's persisted usage is a durable receipt. Ledger, reservation handoff
@@ -125,7 +133,7 @@ export async function accountRunCost(db: Db, runId: string, hooks: BudgetService
     // deliver it: settle the known part as unpriced usage. A later receipt
     // still posts through late-receipt reconciliation.
     const receiptUnavailable = !preProviderFailure && object(run.usageJson).accountingReceiptReady === false;
-    if (receiptUnavailable && !(await nativeReceiptSourceClosed(tx, run))) return false;
+    if (receiptUnavailable && !(await nativeReceiptSourceClosed(tx, run.id))) return false;
     if (!preProviderFailure) await ensureRuntimeAccountingBaseline(tx, run.companyId, run.agentId);
     // Acknowledgement is part of the same transaction. Budget checks inside
     // this transaction must not mistake this receipt for missing accounting.

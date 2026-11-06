@@ -135,7 +135,11 @@ async function readObservedSpends(db: Db, policies: SpendPolicy[], now: Date): P
         and (${nativeRunFinalizations.phase} <> 'terminal_failure' or (${closingReceipt})))`;
     ledgerPredicates.push(ledger); heldPredicates.push(held); runPredicates.push(run);
     ledgerColumns[`total${index}`] = sql`coalesce(sum(${costEvents.costCents}) filter (where ${ledger}), 0)::text`;
-    ledgerColumns[`unpriced${index}`] = sql`count(*) filter (where ${ledger} and ${costEvents.costStatus} = 'unpriced' and ${costEvents.billingType} <> 'subscription_included')::int`;
+    // "Usage with no reliable price" needs usage. A charge recorded without
+    // any usage (a receipt lost with its stopped provider) is unknown, not
+    // unpriced; it stays visible in Costs but does not trip the policy.
+    ledgerColumns[`unpriced${index}`] = sql`count(*) filter (where ${ledger} and ${costEvents.costStatus} = 'unpriced' and ${costEvents.billingType} <> 'subscription_included'
+      and (${costEvents.inputTokens} + ${costEvents.cachedInputTokens} + ${costEvents.outputTokens}) > 0)::int`;
     runColumns[`live${index}`] = sql`coalesce(sum(${liveCost}) filter (where ${run} and ${inWindow}), 0)::text`;
     runColumns[`unreserved${index}`] = sql`coalesce(sum(${liveCost}) filter (where ${run} and not ${hasReservation}), 0)::text`;
     // Reservations carry over UTC windows. A reservation and its running
