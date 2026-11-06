@@ -212,8 +212,10 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 
 /**
  * Decode one stream-json event line into transcript entries.
- * Returns null when the line is not a JSON event, so the caller falls through
- * to the quiet-mode patterns.
+ * Returns null when the line is not a recognized stream-json event, so the
+ * caller falls through to the quiet-mode patterns. That matters for answers
+ * that are themselves JSON ({"status":"done"}): they are content, not
+ * events, and must stay visible.
  */
 function parseStreamJsonEvent(trimmed: string, ts: string): TranscriptEntry[] | null {
   if (!trimmed.startsWith("{")) return null;
@@ -249,8 +251,14 @@ function parseStreamJsonEvent(trimmed: string, ts: string): TranscriptEntry[] | 
   }
   // init, thinking deltas and the terminal result event carry no transcript
   // content of their own; the adapter logs the session id and the ledger
-  // totals itself. Unknown JSON lines are dropped rather than shown raw.
-  return [];
+  // totals itself.
+  if (type === "system" || type === "result" || (type === "assistant" && event.subtype === "thinking")) {
+    return [];
+  }
+  // Anything else is not a stream-json event we know: an assistant answer can
+  // itself be JSON, and unknown future event types are safer visible than
+  // dropped. Fall through to the quiet-mode patterns.
+  return null;
 }
 
 export function parseHermesStdoutLine(
