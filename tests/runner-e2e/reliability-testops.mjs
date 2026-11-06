@@ -13,7 +13,7 @@ export const reliabilityPlanName = 'Reliability — staging soak';
 export const reliabilitySuite = 'everyday-workflows';
 export const reliabilityProfile = 'runner-opencode-deepseek-1017';
 export const reliabilityModel = 'openrouter/deepseek/deepseek-v4.1-flash-1017';
-const steeringProfile = ['runner-codex', 'gpt-5.6-sol'];
+const steeringProfile = ['runner-codex', 'gpt-6.1-sol'];
 
 // Daytona only where the soak failure was a sandbox lease failure (S49, S52/S52b,
 // S55). The catalog test binds this table to everyday-reliability-cases.ts.
