@@ -1,3 +1,4 @@
+import type { AdapterRuntimeMcpServer } from "@paperclipai/adapter-utils";
 import { isOpenRouterUrl, openRouterAttributionHeaders } from "@paperclipai/adapter-utils/openrouter-attribution";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -161,6 +162,115 @@ export async function preparePiRuntimeConfig(input: {
     agentConfigDir,
     cleanup: async () => {
       await fs.rm(agentConfigDir, { recursive: true, force: true });
+    },
+  };
+}
+
+type PreparedPiMcpConfig = {
+  agentConfigDir: string | null;
+  notes: string[];
+  cleanup: () => Promise<void>;
+};
+
+const PI_MCP_FILE = "mcp.json";
+const PI_MCP_MIN_VERSION = [0, 99, 0] as const;
+
+export function piVersionSupportsMcp(versionOutput: string): boolean | null {
+  const match = versionOutput.match(/(\d+)\.(\d+)\.(\d+)/);
+  if (!match) return null;
+  const version = match.slice(1, 4).map(Number);
+  for (let i = 0; i < PI_MCP_MIN_VERSION.length; i += 1) {
+    if (version[i] !== PI_MCP_MIN_VERSION[i]) return version[i]! > PI_MCP_MIN_VERSION[i]!;
+  }
+  return true;
+}
+
+export function piMcpUnsupportedNote(versionOutput: string, serverCount: number): string {
+  return `Pi ${versionOutput.trim()} has no MCP support (needs ${PI_MCP_MIN_VERSION.join(".")} or later); ${serverCount} Paperclip MCP server(s) were not delivered. Upgrade @earendil-works/pi-coding-agent to use them.`;
+}
+
+function buildPiMcpServers(servers: AdapterRuntimeMcpServer[]): Record<string, unknown> {
+  const mcpServers: Record<string, unknown> = {};
+  const taken = new Set<string>();
+  const key = (name: string) => name.replace(/-/g, "_");
+  for (const server of servers) {
+    const base = server.name.toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "") || "mcp";
+    let name = taken.has(key(base)) ? `${base}-${server.connectionId.slice(0, 8)}` : base;
+    for (let suffix = 2; taken.has(key(name)); suffix += 1) {
+      name = `${base}-${server.connectionId.slice(0, 8)}-${suffix}`;
+    }
+    taken.add(key(name));
+    mcpServers[name] = {
+      url: server.url,
+      headers: { Authorization: `Bearer ${server.token}` },
+      description: `${server.name} (Paperclip connection)`,
+    };
+  }
+  return mcpServers;
+}
+
+async function readMcpServers(file: string): Promise<Record<string, unknown>> {
+  try {
+    const parsed = JSON.parse(await fs.readFile(file, "utf8"));
+    return isPlainObject(parsed) && isPlainObject(parsed.mcpServers) ? parsed.mcpServers : {};
+  } catch {
+    return {};
+  }
+}
+
+export async function preparePiMcpConfig(input: {
+  servers: AdapterRuntimeMcpServer[];
+  env: Record<string, string>;
+  managedAgentConfigDir: string | null;
+  cwd: string;
+}): Promise<PreparedPiMcpConfig> {
+  if (input.servers.length === 0) {
+    return { agentConfigDir: null, notes: [], cleanup: async () => {} };
+  }
+  const runtimeServers = buildPiMcpServers(input.servers);
+  const note = `Injected Paperclip MCP server(s) into Pi mcp.json: ${Object.keys(runtimeServers).join(", ")}.`;
+
+  if (input.managedAgentConfigDir) {
+    await fs.writeFile(
+      path.join(input.managedAgentConfigDir, PI_MCP_FILE),
+      `${JSON.stringify({ mcpServers: runtimeServers }, null, 2)}\n`,
+      { encoding: "utf8", mode: 0o600 },
+    );
+    return { agentConfigDir: input.managedAgentConfigDir, notes: [note], cleanup: async () => {} };
+  }
+
+  const home = input.env.HOME || process.env.HOME || os.homedir();
+  const configuredDir = input.env.PI_CODING_AGENT_DIR || process.env.PI_CODING_AGENT_DIR;
+  const sourceDir = path.resolve(
+    input.cwd,
+    configuredDir
+      ? configuredDir === "~" || configuredDir.startsWith("~/")
+        ? path.join(home, configuredDir.slice(1))
+        : configuredDir
+      : path.join(home, ".pi", "agent"),
+  );
+  const overlayDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-pi-agent-mcp-"));
+  try {
+    const entries = await fs.readdir(sourceDir).catch(() => [] as string[]);
+    for (const entry of entries) {
+      if (entry === PI_MCP_FILE) continue;
+      await fs.symlink(path.join(sourceDir, entry), path.join(overlayDir, entry));
+    }
+    const mcpServers = { ...(await readMcpServers(path.join(sourceDir, PI_MCP_FILE))), ...runtimeServers };
+    await fs.writeFile(
+      path.join(overlayDir, PI_MCP_FILE),
+      `${JSON.stringify({ mcpServers }, null, 2)}\n`,
+      { encoding: "utf8", mode: 0o600 },
+    );
+  } catch (err) {
+    await fs.rm(overlayDir, { recursive: true, force: true }).catch(() => undefined);
+    throw err;
+  }
+  return {
+    agentConfigDir: overlayDir,
+    notes: [note],
+    cleanup: async () => {
+      await fs.rm(overlayDir, { recursive: true, force: true });
     },
   };
 }
