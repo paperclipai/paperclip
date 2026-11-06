@@ -150,7 +150,7 @@ The preview shows:
 - **Env inputs** — Environment variables that may need values after import
 - **Warnings** — Potential issues like missing skills or unresolved references
 
-Imported agents always land with timer heartbeats disabled. Assignment/on-demand wake behavior from the package is preserved, but scheduled runs stay off until a board operator re-enables them.
+Imported agents always land with timer heartbeats disabled. Assignment/on-demand wake behavior from the package is preserved, but scheduled runs stay off until a board operator re-enables them. Exports write `heartbeat.enabled: false` in `.paperclip.yaml` for each agent whose timer heartbeat is off.
 
 Imports can additionally request `pauseAutomations` (the default in the app's Import page) so imported agents and routines land fully paused. Use the post-import activation panel — or resume the agents and activate the routines individually — when you are ready for them to run.
 
