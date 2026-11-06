@@ -106,6 +106,7 @@ import {
   defaultGenericMcpName,
   endpointHost,
   genericConnectGuidance,
+  genericAuthModeTakesHeaders,
   genericConnectPayload,
   newCustomHeaderRow,
   oauthCallbackUrlForBrowser,
@@ -3407,7 +3408,7 @@ function LinkConnectStep({
   onConnect: () => void;
 }) {
   const host = endpointHost(link);
-  const headerError = authMode === "custom_headers" ? customHeaderError(headers) : null;
+  const headerError = genericAuthModeTakesHeaders(authMode) ? customHeaderError(headers, authMode) : null;
   const draft: GenericConnectDraft = {
     link,
     name,
@@ -3500,8 +3501,14 @@ function LinkConnectStep({
               {GENERIC_AUTH_MODE_OPTIONS.find((option) => option.mode === authMode)?.hint}
             </p>
 
-            {authMode === "custom_headers" ? (
+            {genericAuthModeTakesHeaders(authMode) ? (
               <div className="space-y-3">
+                {authMode === "oauth" ? (
+                  <p className="text-xs text-muted-foreground">
+                    Additional headers (optional), sent alongside sign-in. Values are stored as Paperclip secrets and
+                    can&rsquo;t be read back.
+                  </p>
+                ) : null}
                 {headers.map((row) => (
                   <div key={row.id} className="flex items-start gap-2">
                     <Input
