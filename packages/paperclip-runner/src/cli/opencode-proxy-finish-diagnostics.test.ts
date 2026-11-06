@@ -11,6 +11,7 @@ it("retains closed diagnostics through normal warning output before an empty-res
   forward.diagnostic(JSON.stringify(offered));
   expect(frames).toEqual([]);
   expect(forward.bind("actual-session")).toBe(true);
+  expect(frames).toEqual([]);
   forward.diagnostic(JSON.stringify(rejected));
   output.send({ method: "turn/completed", params: { threadId: "actual-session", turn: { status: "failed", error: { code: "opencode_empty_response" } } } });
   expect(frames).toEqual([
@@ -33,7 +34,7 @@ it("rejects unbound rejections, foreign binding/schema, unknown fields and arbit
   expect(forward.bind("actual-session")).toBe(true);
   expect(forward.bind("foreign-session")).toBe(false);
   for (const invalid of [{ ...rejected, schemaSha256: "c".repeat(64) }, { ...rejected, input: "private" }, { ...rejected, rootShape: {} }, { ...rejected, rootShape: ["object"] }, { ...rejected, continuationShape: "invalid" }]) forward.diagnostic(JSON.stringify(invalid));
-  expect(frames).toHaveLength(1);
+  expect(frames).toHaveLength(0);
   for (let i = 0; i < 12; i++) forward.diagnostic(JSON.stringify(rejected));
   forward.diagnostic(JSON.stringify(offered));
   expect(frames).toHaveLength(9);
@@ -58,6 +59,7 @@ it("forwards from the actual proxy open callback instead of losing normal semant
     return open({model:"provider/model",cwd:"/synthetic"},false);
   `);
   await invoke(Driver,createOpenCodeFinishDiagnosticForwarder,output.send,{env:{},cwd:()=>"/synthetic",stderr:{write:(message:string)=>stderr.push(message)}});
+  expect(frames).toEqual([]);
   diagnostic(JSON.stringify(rejected));
   diagnostic("unrelated private diagnostic");
   output.send({method:"turn/completed",params:{threadId:"actual-session",turn:{status:"failed",error:{code:"opencode_empty_response"}}}});
@@ -65,4 +67,12 @@ it("forwards from the actual proxy open callback instead of losing normal semant
   expect(frames.slice(0,2)).toEqual([offered,rejected].map(value=>({method:"warning",params:{threadId:"actual-session",message:JSON.stringify(value)}})));
   expect(stderr).toHaveLength(3);
   expect(JSON.stringify(frames)).not.toContain("unrelated private diagnostic");
+});
+
+it("keeps healthy open and success silent", () => {
+  const frames:unknown[]=[],output=createOpenCodeProxyOutput(frame=>frames.push(frame));
+  const forward=createOpenCodeFinishDiagnosticForwarder(output.send);
+  forward.diagnostic(JSON.stringify(offered));forward.bind("healthy-session");
+  output.send({method:"turn/completed",params:{threadId:"healthy-session",turn:{status:"completed"}}});
+  expect(frames).toEqual([{method:"turn/completed",params:{threadId:"healthy-session",turn:{status:"completed"}}}]);
 });

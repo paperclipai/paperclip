@@ -11,7 +11,6 @@ export function createOpenCodeFinishDiagnosticForwarder(send: (frame: Warning) =
     bind(id: string) {
       if (!id || id.length > 512 || threadId) return false;
       threadId = id;
-      if (offered) emit(offered);
       return true;
     },
     diagnostic(message: string) {
@@ -25,7 +24,6 @@ export function createOpenCodeFinishDiagnosticForwarder(send: (frame: Warning) =
       if (value.stage === "offered") {
         if (offered || keys !== "schema,schemaSha256,stage") return;
         offered = value;
-        emit(value);
       } else if (value.stage === "input_rejected") {
         if (!threadId || !offered || rejections >= 8 || value.schemaSha256 !== offered.schemaSha256
           || keys !== "callIdSha256,continuationShape,rootShape,schema,schemaSha256,stage,validationCategory"
@@ -34,6 +32,7 @@ export function createOpenCodeFinishDiagnosticForwarder(send: (frame: Warning) =
           || !["root", "continuation", "other"].includes(String(value.validationCategory))
           || !["object", "array", "string", "number", "boolean", "null", "omitted"].includes(String(value.rootShape))
           || !["object", "array", "string", "number", "boolean", "null", "omitted"].includes(String(value.continuationShape))) return;
+        if (rejections === 0) emit(offered);
         rejections += 1;
         emit(value);
       }
