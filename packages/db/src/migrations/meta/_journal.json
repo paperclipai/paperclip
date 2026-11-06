@@ -3039,6 +3039,13 @@
       "when": 1793937048235,
       "tag": "0435_premium_puff_adder",
       "breakpoints": true
+    },
+    {
+      "idx": 436,
+      "version": "7",
+      "when": 1793952565204,
+      "tag": "0436_legal_reavers",
+      "breakpoints": true
     }
   ]
 }

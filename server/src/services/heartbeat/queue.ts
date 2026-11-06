@@ -145,9 +145,12 @@ import {
 } from "../issue-rewake-throttle.js";
 import { logActivity } from "../activity-log.js";
 import { ISSUE_BLOCKERS_RESOLVED_WAKE_REASON } from "../issue-dependency-wakeups.js";
+import { resumeIfPauseAlreadyReleased } from "../issue-tree-resume.js";
 import {
+  ISSUE_PAUSED_ERROR_CODE,
   ISSUE_TREE_CONTROL_INTERACTION_WAKE_REASONS,
   isVerifiedIssueTreeControlInteractionWake,
+  pauseSuppressionResult,
 } from "../issue-tree-control.js";
 import {
   buildExecutionWorkspaceAdapterConfig,
@@ -219,7 +222,8 @@ export interface HeartbeatQueueDependencies extends Pick<HeartbeatRetryDependenc
   releaseIssueExecutionAndPromote: (run: Pick<HeartbeatRun, "id" | "companyId">, options?: { suppressImmediateRecovery?: boolean; resumeStrandedQueue?: boolean; deferredPostCommitEffects?: WakeQueuePostCommitEffect[] }) => Promise<unknown>;
   applyWakeQueuePostCommitEffects: (effects: WakeQueuePostCommitEffect[]) => Promise<void>;
   publishRunLifecyclePluginEvent: (run: HeartbeatRun) => void;
-  cancelRunInternal: (runId: string, reason?: string, options?: { errorCode?: string }) => Promise<unknown>;
+  cancelRunInternal: (runId: string, reason?: string,
+    options?: { errorCode?: string; resultJson?: Record<string, unknown> }) => Promise<unknown>;
   cancelActiveForAgentInternal: (agentId: string, reason: string) => Promise<unknown>;
   resumeExecutionWaitComments: (scope?: DeferredReceiptRecoveryOptions) => Promise<unknown>;
   resumeQueuedCommentInterrupt: (companyId: string, queueId: string) => Promise<unknown>;
@@ -799,6 +803,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     run: typeof heartbeatRuns.$inferSelect,
     companyAgents?: AgentOrgRow[],
     deferredPostCommitEffects?: WakeQueuePostCommitEffect[],
+    deferredCancellations?: Array<() => Promise<void>>,
   ) {
     if (run.status !== "queued") return run;
     const [caseHandoffReceipt] = run.wakeupRequestId ? await db.select().from(caseHandoffs).where(and(
@@ -952,32 +957,43 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
           contextSnapshot: context,
         }));
       if (activePauseHold && !treeHoldInteractionWake) {
-        await cancelRunInternal(
-          run.id,
-          "Cancelled because issue is held by an active subtree pause hold",
-        );
-        await logActivity(db, {
-          companyId: run.companyId,
-          actorType: "system",
-          actorId: "system",
-          agentId: run.agentId,
-          runId: run.id,
-          action: "issue.tree_hold_run_interrupted",
-          entityType: "heartbeat_run",
-          entityId: run.id,
-          issueId: issueId,
-          details: {
-            issueId,
-            holdId: activePauseHold.holdId,
-            rootIssueId: activePauseHold.rootIssueId,
-            source: "heartbeat.claim_queued_run",
-            securityPrinciples: [
-              "Complete Mediation",
-              "Fail Securely",
-              "Secure Defaults",
-            ],
-          },
-        });
+        const refuse = async () => {
+          // Record the covering hold so its release re-dispatches this work once.
+          await cancelRunInternal(
+            run.id,
+            "Cancelled because issue is held by an active subtree pause hold",
+            { errorCode: ISSUE_PAUSED_ERROR_CODE, resultJson: pauseSuppressionResult(activePauseHold) },
+          );
+          await logActivity(db, {
+            companyId: run.companyId,
+            actorType: "system",
+            actorId: "system",
+            agentId: run.agentId,
+            runId: run.id,
+            action: "issue.tree_hold_run_interrupted",
+            entityType: "heartbeat_run",
+            entityId: run.id,
+            issueId: issueId,
+            details: {
+              issueId,
+              holdId: activePauseHold.holdId,
+              rootIssueId: activePauseHold.rootIssueId,
+              source: "heartbeat.claim_queued_run",
+              securityPrinciples: [
+                "Complete Mediation",
+                "Fail Securely",
+                "Secure Defaults",
+              ],
+            },
+          });
+          // A release that committed before this refusal did not see it.
+          await resumeIfPauseAlreadyReleased(db, { companyId: run.companyId, issueId,
+            holdId: activePauseHold.holdId, wakeup: (agentId, opts) => trackWakeup(agentId, opts) });
+        };
+        // Cancellation promotes the agent's next queued run under the agent
+        // start lock, so a caller holding that lock settles it after release.
+        if (deferredCancellations) deferredCancellations.push(refuse);
+        else await refuse();
         return null;
       }
 
@@ -1906,6 +1922,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     // agent's next queued run, which takes this same lock.
     const rejectedClaims: Array<{ run: typeof heartbeatRuns.$inferSelect; err: HttpError }> = [];
     const deferredPostCommitEffects: WakeQueuePostCommitEffect[] = [];
+    const deferredCancellations: Array<() => Promise<void>> = [];
     let cancellationReason: string | undefined;
 
     return withAgentStartLock(agentId, async () => {
@@ -2018,7 +2035,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
         if (claimedRuns.length >= availableSlots) break;
         let claimed: typeof heartbeatRuns.$inferSelect | null;
         try {
-          claimed = await claimQueuedRun(queuedRun, companyAgents, deferredPostCommitEffects);
+          claimed = await claimQueuedRun(queuedRun, companyAgents, deferredPostCommitEffects, deferredCancellations);
         } catch (err) {
           if (isPermanentClaimRejection(err)) {
             rejectedClaims.push({ run: queuedRun, err });
@@ -2061,6 +2078,10 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       } finally {
         if (cancellationReason) await cancelActiveForAgentInternal(agentId, cancellationReason);
         await cancelRejectedQueuedRuns(rejectedClaims);
+        for (const cancel of deferredCancellations) {
+          await cancel().catch((err) => logger.warn({ err, agentId },
+            "queued heartbeat run refused by a pause hold could not be cancelled; the next claim retries it"));
+        }
       }
     });
   }

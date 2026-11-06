@@ -1919,7 +1919,22 @@ future execution until Resume, and missing stop proof still blocks continuation.
 
 A run interrupted by a pause is an operator hold, not a failure. The pause's member
 snapshot names each interrupted run, and that work is owed one re-dispatch once no
-pause covers the task. The obligation belongs to the run, so overlapping pauses keep
+pause covers the task. Work a dispatch gate refused because a pause covered the task
+is owed the same way: a scheduled retry that came due during the hold, or a queued
+run that reached its claim during the hold. The gate cancels that run with
+`issue_paused` and records the covering hold as `treeHoldSuppression.holdId`.
+Release revisits the hold's snapshot members, the tree's current tasks, and every
+task with a run refused for that hold. That covers a task created under the tree
+after the snapshot, a task moved out before release, and a task whose work an
+overlapping pause refused and released while this one still covered it. The scheduled-retry gate holds the pause row while it saves its
+refusal, so a concurrent release either sees the refusal or the retry sees no pause.
+The queued-run gate checks the hold again after saving its refusal and resumes the
+task itself if release already finished. A resume restores the assignee's
+execution only; like a wake that admission refuses during a hold, a non-assignee
+reply or review run refused by a pause is not replayed. Among runs refused before
+gates recorded the hold, only scheduled retries carry `issue_paused`, so only those
+fall back to a snapshot pause that was active when they were cancelled. The
+obligation belongs to the run, so overlapping pauses keep
 it until the last covering release. Releasing or resuming a hold re-dispatches owed
 work (`issue_tree_resumed`, with `holdId` and `interruptedRunId` in the wake
 context), even without `wakeAgents`. The interrupted run must still be the task's
