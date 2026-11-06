@@ -6,7 +6,7 @@ import { useCompany } from "@/context/CompanyContext";
 import { useDialogActions } from "@/context/DialogContext";
 import { useCoordinatorWorkspaceEnabled } from "@/hooks/useCoordinatorWorkspaceEnabled";
 import { loadTaskListView, taskListViewStorageKey } from "@/lib/task-list-views";
-import { ORGANIZATION_SCOPED_PARAMS, normalizeTaskViewKey, resolveInitialTaskView, taskView, type TaskViewKey } from "@/lib/task-views";
+import { DEFAULT_TASK_VIEW, ORGANIZATION_SCOPED_PARAMS, normalizeTaskViewKey, resolveInitialTaskView, taskView, type TaskViewKey } from "@/lib/task-views";
 import { Navigate, useLocation, useNavigate, useSearchParams } from "@/lib/router";
 import { CoordinatorTasks } from "./CoordinatorTasks";
 import { Inbox } from "./Inbox";
@@ -15,10 +15,10 @@ function loadView(key: string, userId: string | null): TaskViewKey {
   try {
     const saved = normalizeTaskViewKey(localStorage.getItem(key));
     if (saved) return saved;
-    const previous = userId ? loadTaskListView(taskListViewStorageKey("coordinator", userId), undefined, "inbox") : "inbox";
+    const previous = userId ? loadTaskListView(taskListViewStorageKey("coordinator", userId)) : DEFAULT_TASK_VIEW;
     return previous === "inbox" ? "mine" : previous === "blocked" ? "needs_attention" : previous;
   } catch {
-    return "mine";
+    return DEFAULT_TASK_VIEW;
   }
 }
 

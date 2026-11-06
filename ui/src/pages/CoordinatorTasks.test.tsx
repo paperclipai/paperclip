@@ -69,16 +69,20 @@ describe("Coordinator tasks using the proposed table", () => {
     flushSync(() => root.render(<QueryClientProvider client={client}><MemoryRouter initialEntries={[url]}><CoordinatorTasks /></MemoryRouter></QueryClientProvider>));
     await vi.waitFor(() => expect(host.textContent).not.toContain("Loading tasks"));
   }
-  it("starts new users in Inbox and keeps contextual parents of their created or assigned tasks", async () => {
+  it.each([
+    { url: "/issues", view: "all", ids: ["parent", "mine", "assigned", "unrelated"] },
+    { url: "/issues?view=inbox", view: "inbox", ids: ["parent", "mine", "assigned"] },
+  ])("opens $url in $view, retaining parent context for Inbox", async ({ url, view, ids }) => {
     mocks.list.mockResolvedValue([
       createIssue({ id: "parent", companyId: "company", parentId: null, createdByUserId: "other" }),
       createIssue({ id: "mine", companyId: "company", parentId: "parent", createdByUserId: "person" }),
       createIssue({ id: "assigned", companyId: "company", parentId: null, assigneeUserId: "person" }),
       createIssue({ id: "unrelated", companyId: "company", parentId: null, createdByUserId: "other" }),
     ]);
-    await mount("/issues");
-    expect(host.querySelector("[data-selected-view]")?.textContent).toBe("inbox");
-    expect([...host.querySelectorAll("[data-task-id]")].map(row => row.getAttribute("data-task-id"))).toEqual(["parent", "mine", "assigned"]);
+    await mount(url);
+    expect(host.querySelector("[data-selected-view]")?.textContent).toBe(view);
+    expect([...host.querySelectorAll("[data-task-id]")].map(row => row.getAttribute("data-task-id"))).toEqual(ids);
+    expect(host.querySelector("output")?.textContent).toBe(`?view=${view}`);
   });
   it.each(taskListViews)("remembers $label when leaving Tasks and returning without a view URL", async ({ value, label }) => {
     await mount("/issues");
@@ -94,7 +98,7 @@ describe("Coordinator tasks using the proposed table", () => {
     mocks.list.mockResolvedValue([createIssue({ id: "local", companyId: "company", parentId: null, createdByUserId: "local-board" })]);
     await mount("/issues");
     expect(host.querySelector('[data-task-id="local"]')).not.toBeNull();
-    expect(localStorage.getItem(taskListViewStorageKey("coordinator", "local-board"))).toBe("inbox");
+    expect(localStorage.getItem(taskListViewStorageKey("coordinator", "local-board"))).toBe("all");
   });
   it.each(["inbox", "unread"])("keeps %s selected when applying a status filter", async view => {
     const mine = createIssue({ id: "mine-running", companyId: "company", parentId: null, createdByUserId: "person", status: "in_progress" });
@@ -131,16 +135,16 @@ describe("Coordinator tasks using the proposed table", () => {
   });
   it("waits for the viewer identity before resolving their saved view", async () => {
     const key = taskListViewStorageKey("coordinator", "person");
-    localStorage.setItem(key, "all");
+    localStorage.setItem(key, "inbox");
     mocks.realFilters = false; mocks.labels = [];
     mocks.identity = { userId: null, settled: false };
     await mount("/issues");
-    expect(localStorage.getItem(key)).toBe("all");
+    expect(localStorage.getItem(key)).toBe("inbox");
     mocks.realFilters = false; mocks.labels = [];
     mocks.identity = { userId: "person", settled: true };
     await mount("/issues");
-    expect(host.querySelector("[data-selected-view]")?.textContent).toBe("all");
-    expect(localStorage.getItem(key)).toBe("all");
+    expect(host.querySelector("[data-selected-view]")?.textContent).toBe("inbox");
+    expect(localStorage.getItem(key)).toBe("inbox");
   });
   it("loads the task index without descriptions or historical diagnostics", async () => {
     await mount("/issues?view=all");

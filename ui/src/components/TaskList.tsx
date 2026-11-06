@@ -59,7 +59,7 @@ export function TaskList({ items, allItems = items, initialColumns = defaultTask
   const localKey = useId();
   const { columns, order: columnOrder, setColumns, setOrder: setColumnOrder } = useTaskListColumnPreferences(preferenceLocation, initialColumns);
   const [localSort, setLocalSort] = useState<TaskListSort>();
-  const sort = controlledSort ?? (onSortChange ? undefined : localSort) ?? defaultTaskListSort;
+  const sort = controlledSort ?? (onSortChange ? undefined : localSort);
   const setSort = (next: TaskListSort | undefined) => {
     setLocalSort(next);
     onSortChange?.(next);

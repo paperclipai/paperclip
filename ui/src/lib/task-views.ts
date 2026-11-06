@@ -76,7 +76,7 @@ const VIEWS_BY_KEY = new Map<TaskViewKey, TaskView>(
   TASK_VIEW_GROUPS.flatMap((group) => group.views.map((view) => [view.key, view] as const)),
 );
 
-export const DEFAULT_TASK_VIEW: TaskViewKey = "mine";
+export const DEFAULT_TASK_VIEW: TaskViewKey = "all";
 export const TASK_VIEW_PARAM = "view";
 export const TASK_LAST_VIEW_KEY = "paperclip:tasks:last-view";
 

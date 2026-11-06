@@ -148,6 +148,12 @@ submits.
 
 ### Task collection creation filters
 
+Tasks opens All tasks for new users. A saved view or an explicit view in the URL
+takes precedence over this default.
+The task table orders rows by Last updated, newest first, without highlighting a
+column header. Selecting a column sort activates its header and direction arrow;
+explicit sort URLs retain that selection.
+
 The task Filters menu also offers **Routine tasks**. It selects tasks with
 `originKind=routine_execution`, including manually triggered routine runs, even
 when other automatic tasks are hidden. The routines list's **View all tasks**
@@ -429,7 +435,7 @@ Coordinator navigation uses **Chat**, **Tasks**, and **Inbox**. Inbox uses the
 inbox icon and keeps the existing decision feed, its count, and decision history
 at `/decisions`. The previous Inbox destination under More is removed.
 
-Tasks defaults to **Mine**, with a saved view per person and company. Mine uses
+Tasks defaults to **All tasks**, with a saved view per person and company. Mine uses
 the previous Inbox's personal participation rules, mixed attention items,
 read/unread title weights, keyboard shortcuts, archive and undo, mobile
 swipe-to-archive, grouping, and saved columns. Its existing preferences carry
@@ -443,7 +449,7 @@ In the Classic workspace, an opt-in setting (`enableCombinedInboxTasks`, off by 
 folds Inbox into Tasks. The Inbox nav row goes away and its unread badge moves
 to Tasks. A Views menu on the task list covers the inbox views (Mine, Unread,
 Blocked, Recent, Everything) and the task-status views (All, Active, Backlog,
-Done). Bare `/issues` opens the last-used view, defaulting to Mine; links that
+Done). Bare `/issues` opens the last-used view, defaulting to All tasks; links that
 carry a task filter open All. Old `/inbox` links redirect to the matching view.
 
 ### CSV file previews
