@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray, isNotNull, isNull, lte, or, sql } from "drizzle-orm";
+import { and, asc, eq, gt, inArray, isNotNull, isNull, lte, or, sql } from "drizzle-orm";
 import { environmentLeases, heartbeatRuns, issues, nativeRunFinalizations, nativeRunResults, type Db } from "@paperclipai/db";
 import { logger } from "../../middleware/logger.js";
 import { adapterExecutionControls } from "../adapter-execution-control.js";
@@ -105,8 +105,18 @@ async function recordedProcessMayBeLive(pid: number | null, startedAt: Date | nu
 async function executionMayBeLive(run: Run, coordinator: Coordinator, now: Date): Promise<boolean> {
   if (adapterExecutionControls.has(run.id) || activeNativeExecutionRunIds.has(run.id)) return true;
   if (run.controllerLeaseExpiresAt && run.controllerLeaseExpiresAt > now) return true;
-  if (run.processGroupId && !processAbsent(-run.processGroupId)) return true;
-  if (await recordedProcessMayBeLive(run.processPid, run.processStartedAt)) return true;
+  // Same process identity rule as `agentExecutionsHaveStopped`: a recorded PID
+  // that now has another start time was recycled, and so was its own group.
+  let processAlive = Boolean(run.processPid && !processAbsent(run.processPid));
+  let groupAlive = Boolean(run.processGroupId && !processAbsent(-run.processGroupId));
+  if (processAlive && run.processStartedAt) {
+    const observed = await readProcessStartedAt(run.processPid!).catch(() => null);
+    if (observed && new Date(observed).getTime() !== run.processStartedAt.getTime()) {
+      processAlive = false;
+      if (run.processGroupId === run.processPid) groupAlive = false;
+    }
+  }
+  if (processAlive || groupAlive) return true;
   if (isCurrentNativeControllerProcess(coordinator)) return false;
   // A previous boot of this process can share its PID, but cannot be its controller.
   if (coordinator.controllerPid === process.pid) return false;
@@ -217,28 +227,34 @@ export async function settleUnstartedNativeSessionResume(db: Db, claim: {
  * controller may still be running. Cancelled runs keep their own stop-proof path
  * in `agentExecutionsHaveStopped`.
  */
-export async function releaseAbandonedNativeOwners(db: Db, now = new Date(), limit = 50): Promise<number> {
-  const candidates = await db.select({
-    runId: nativeRunFinalizations.runId,
-    leaseOwner: nativeRunFinalizations.leaseOwner,
-    attempt: nativeRunFinalizations.attempt,
-    controllerGeneration: nativeRunFinalizations.controllerGeneration,
-  }).from(nativeRunFinalizations)
-    .innerJoin(heartbeatRuns, and(eq(heartbeatRuns.id, nativeRunFinalizations.runId),
-      eq(heartbeatRuns.companyId, nativeRunFinalizations.companyId)))
-    .where(and(abandonedOwnerCondition(), lte(nativeRunFinalizations.leaseExpiresAt, now)))
-    .orderBy(asc(nativeRunFinalizations.leaseExpiresAt), asc(nativeRunFinalizations.runId))
-    .limit(limit);
+export async function releaseAbandonedNativeOwners(db: Db, now = new Date(), pageSize = 50): Promise<number> {
   let released = 0;
-  for (const candidate of candidates) {
-    try {
-      if (await settleFailedRunOwner(db, { kind: "expired_owner", runId: candidate.runId,
-        leaseOwner: candidate.leaseOwner!, attempt: candidate.attempt,
-        controllerGeneration: candidate.controllerGeneration }, now)) released += 1;
-    } catch (error) {
-      logger.warn({ err: error, runId: candidate.runId },
-        "Abandoned native owner release remains pending; continuing with other runs");
+  // Page by run id so rows that stay held by a live process cannot starve later ones.
+  let after: string | null = null;
+  for (;;) {
+    const candidates = await db.select({
+      runId: nativeRunFinalizations.runId,
+      leaseOwner: nativeRunFinalizations.leaseOwner,
+      attempt: nativeRunFinalizations.attempt,
+      controllerGeneration: nativeRunFinalizations.controllerGeneration,
+    }).from(nativeRunFinalizations)
+      .innerJoin(heartbeatRuns, and(eq(heartbeatRuns.id, nativeRunFinalizations.runId),
+        eq(heartbeatRuns.companyId, nativeRunFinalizations.companyId)))
+      .where(and(abandonedOwnerCondition(), lte(nativeRunFinalizations.leaseExpiresAt, now),
+        after ? gt(nativeRunFinalizations.runId, after) : undefined))
+      .orderBy(asc(nativeRunFinalizations.runId))
+      .limit(pageSize);
+    for (const candidate of candidates) {
+      try {
+        if (await settleFailedRunOwner(db, { kind: "expired_owner", runId: candidate.runId,
+          leaseOwner: candidate.leaseOwner!, attempt: candidate.attempt,
+          controllerGeneration: candidate.controllerGeneration }, now)) released += 1;
+      } catch (error) {
+        logger.warn({ err: error, runId: candidate.runId },
+          "Abandoned native owner release remains pending; continuing with other runs");
+      }
     }
+    if (candidates.length < pageSize) return released;
+    after = candidates[candidates.length - 1]!.runId;
   }
-  return released;
 }

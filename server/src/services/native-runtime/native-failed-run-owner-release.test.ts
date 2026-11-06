@@ -220,6 +220,44 @@ describe("failed native run owner release", () => {
     expect(await agentExecutionsHaveStopped(db, [agentId])).toBe(true);
   });
 
+  it("ignores a recorded process and group whose PID now belongs to another process", async () => {
+    const { runId } = await nativeRun({ status: "failed", errorCode: "adapter_failed",
+      coordinator: { leaseOwner: `default:resume:${randomUUID()}`, leaseExpiresAt: new Date(0) } });
+    // A detached child leads its own group, as a local native runner does.
+    const unrelated = spawn(process.execPath, ["-e", "setInterval(() => {}, 1_000)"], { stdio: "ignore", detached: true });
+    await once(unrelated, "spawn");
+    try {
+      await db.update(heartbeatRuns).set({ processPid: unrelated.pid!, processGroupId: unrelated.pid!,
+        processStartedAt: new Date("2020-01-01T00:00:00.000Z") }).where(eq(heartbeatRuns.id, runId));
+      await expect(releaseAbandonedNativeOwners(db)).resolves.toBe(1);
+      expect(await coordinator(runId)).toMatchObject({ phase: "terminal_failure", leaseOwner: null });
+    } finally {
+      const exited = once(unrelated, "exit");
+      unrelated.kill("SIGKILL");
+      await exited;
+    }
+  });
+
+  it("keeps paging past owners that a live controller still holds", async () => {
+    const runs = await Promise.all([0, 1, 2].map(() => nativeRun({ status: "failed", errorCode: "adapter_failed",
+      coordinator: { leaseOwner: `default:resume:${randomUUID()}`, leaseExpiresAt: new Date(0) } })));
+    const [held, ...free] = [...runs].sort((left, right) => left.runId.localeCompare(right.runId));
+    const controller = spawn(process.execPath, ["-e", "setInterval(() => {}, 1_000)"], { stdio: "ignore" });
+    await once(controller, "spawn");
+    try {
+      // The first page holds only the row a live controller still owns.
+      await db.update(nativeRunFinalizations).set({ controllerPid: controller.pid!, controllerBootId: randomUUID() })
+        .where(eq(nativeRunFinalizations.runId, held!.runId));
+      await expect(releaseAbandonedNativeOwners(db, new Date(), 1)).resolves.toBe(2);
+      expect(await coordinator(held!.runId)).toMatchObject({ phase: "observed", leaseOwner: expect.any(String) });
+      for (const { runId } of free) expect(await coordinator(runId)).toMatchObject({ phase: "terminal_failure", leaseOwner: null });
+    } finally {
+      const exited = once(controller, "exit");
+      controller.kill("SIGKILL");
+      await exited;
+    }
+  });
+
   it("leaves cancelled runs and pending Stops to their own stop-proof paths", async () => {
     const { runId: cancelledRunId } = await nativeRun({ status: "cancelled",
       coordinator: { leaseOwner: `default:resume:${randomUUID()}`, leaseExpiresAt: new Date(0) } });
