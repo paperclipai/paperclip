@@ -2773,21 +2773,19 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     input.kind === "durable"
       ? Boolean(input.interaction.dismissedAt) || dismissedInputIds.has(input.interaction.id) || dismissedInputIds.has(input.key)
       : dismissedInputIds.has(input.key), [dismissedInputIds]);
-  const pendingReminderInputs = useMemo(() => pendingComposerInputs.filter(input =>
-    !isInputDismissed(input) && !(input.kind === "durable" && input.interaction.kind === "ask_user_questions")),
-  [pendingComposerInputs, isInputDismissed]);
   const [dismissError, setDismissError] = useState<string | null>(null);
   const latestUserComment = useMemo(() => comments
     .filter(comment => !comment.deletedAt && comment.authorUserId && !comment.authorAgentId && !comment.createdByRunId)
     .reduce<(typeof comments)[number] | null>((latest, comment) =>
       !latest || toMs(comment.createdAt) >= toMs(latest.createdAt) ? comment : latest, null), [comments]);
   const latestUserCommentId = latestUserComment?.id ?? null;
-  // A later message leaves a question answerable in history, without reopening
-  // its form on every render or reload. Explicit selection can still reopen it.
   const currentPendingInputs = useMemo(() => pendingComposerInputs.filter(input =>
-    !isInputDismissed(input) && !(input.kind === "durable" && input.interaction.kind === "ask_user_questions"
+    !isInputDismissed(input) && !(input.kind === "durable"
       && latestUserComment && toMs(input.interaction.createdAt) < toMs(latestUserComment.createdAt))),
   [pendingComposerInputs, isInputDismissed, latestUserComment]);
+  const pendingReminderInputs = useMemo(() => currentPendingInputs.filter(input =>
+    !(input.kind === "durable" && input.interaction.kind === "ask_user_questions")),
+  [currentPendingInputs]);
   const currentPendingKeys = useMemo(() => new Set(currentPendingInputs.map(input => input.key)), [currentPendingInputs]);
   const [takeoverMode, setTakeoverMode] = useState<"open" | "normal">("open");
   const [selectedPendingKey, setSelectedPendingKey] = useState<string | null>(
@@ -2807,17 +2805,18 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     lastInputUserCommentRef.current = latestUserCommentId;
     knownPendingKeysRef.current = currentKeys;
     setSelectedPendingKey((current) => {
+      if (hasNewInput) return currentPendingInputs[0]?.key ?? null;
       const currentInput = pendingComposerInputs.find(input => input.key === current);
-      const questionMovedOn = movedOn && currentInput?.kind === "durable"
-        && currentInput.interaction.kind === "ask_user_questions" && !currentPendingKeys.has(currentInput.key);
+      const requestMovedOn = movedOn && currentInput?.kind === "durable"
+        && !isInputDismissed(currentInput) && !currentPendingKeys.has(currentInput.key);
       return current && currentKeys.has(current)
         && (currentPendingKeys.has(current) || explicitlyOpenedInputRef.current === current)
-        && !questionMovedOn
+        && !requestMovedOn
         ? current
         : (currentPendingInputs[0]?.key ?? null);
     });
     if (hasNewInput) setTakeoverMode("open");
-  }, [pendingComposerInputs, latestUserCommentId, currentPendingInputs, currentPendingKeys]);
+  }, [pendingComposerInputs, latestUserCommentId, currentPendingInputs, currentPendingKeys, isInputDismissed]);
   const selectedPendingInput =
     pendingComposerInputs.find((input) => input.key === selectedPendingKey) ??
     currentPendingInputs[0] ??
@@ -2867,19 +2866,22 @@ export function TaskChatThread(props: TaskChatThreadProps) {
         agentId: args[2].assigneeAgentId,
         agent: agentMap?.get(args[2].assigneeAgentId ?? ""),
       } : undefined);
+      const previouslyOpenedInput = explicitlyOpenedInputRef.current;
+      explicitlyOpenedInputRef.current = null;
+      setTakeoverMode("normal");
       try {
         await onAdd(...args);
-        if (selectedPendingInput?.kind === "durable" && selectedPendingInput.interaction.kind === "ask_user_questions") {
-          dismissInput(selectedPendingInput.interaction.id);
-          setSelectedPendingKey(null);
-          setTakeoverMode("normal");
-        }
+        dismissInput(pendingComposerInputs.map(input => input.kind === "durable" ? input.interaction.id : input.key));
       } catch (error) {
+        if (selectedPendingInputKeyRef.current === selectedPendingInput?.key) {
+          explicitlyOpenedInputRef.current = previouslyOpenedInput;
+          setTakeoverMode(takeoverMode);
+        }
         rejectSubmission(attempt, error);
         throw error;
       }
     },
-    [beginSubmission, rejectSubmission, onAdd, selectedPendingInput, dismissInput, agentMap],
+    [beginSubmission, rejectSubmission, onAdd, pendingComposerInputs, selectedPendingInput, dismissInput, agentMap, takeoverMode],
   );
   const optimisticRunnerStartup =
     hasAgentAssignee &&

@@ -3950,6 +3950,82 @@ describe.each([true, false])("Unanswered question history (conversationMode=%s)"
     expect(container.querySelector('[data-testid="task-chat-unanswered-question"]')).not.toBeNull();
   });
 
+  it.each(["request_confirmation", "request_checkbox_confirmation"] as const)("immediately closes %s while a new message is sending and keeps it reopenable", async kind => {
+    const fixtures = await import("@/fixtures/issueThreadInteractionFixtures");
+    const request = kind === "request_confirmation"
+      ? fixtures.genericPendingRequestConfirmationInteraction
+      : fixtures.pendingRequestCheckboxConfirmationInteraction;
+    let finishSend!: () => void;
+    const onAdd = vi.fn(() => new Promise<void>(resolve => { finishSend = resolve; }));
+    const onAcceptInteraction = vi.fn();
+    const onRejectInteraction = vi.fn();
+    const show = () => render(<TaskChatThread {...props} comments={[]} interactions={[request]}
+      onAdd={onAdd} onAcceptInteraction={onAcceptInteraction} onRejectInteraction={onRejectInteraction} />);
+    show();
+    expect(takeover()).not.toBeNull();
+    await act(async () => editorCallbacks.change("Let's discuss something else first."));
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="task-chat-composer-send"]')!.click());
+    expect(onAdd).toHaveBeenCalledTimes(1);
+    expect(takeover()).toBeNull();
+    await act(async () => finishSend());
+    expect(pendingIndicator()).toBeNull();
+    flushSync(() => root!.unmount());
+    root = createRoot(container);
+    show();
+    expect(takeover()).toBeNull();
+    await act(async () => container.querySelector<HTMLButtonElement>(`[aria-label="Open request: ${request.title}"]`)!.click());
+    expect(takeover()).not.toBeNull();
+    expect(request.status).toBe("pending");
+    expect(onAcceptInteraction).not.toHaveBeenCalled();
+    expect(onRejectInteraction).not.toHaveBeenCalled();
+    await act(async () => editorCallbacks.change("Keep the review for later."));
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="task-chat-composer-send"]')!.click());
+    expect(takeover()).toBeNull();
+    await act(async () => finishSend());
+    expect(takeover()).toBeNull();
+  });
+
+  it("leaves an earlier confirmation in history after a newer user message, including on reload", async () => {
+    const request = { ...genericPendingRequestConfirmationInteraction, createdAt: old.createdAt };
+    const show = (comments = movedOn.slice(0, 0)) => render(<TaskChatThread {...props} comments={comments} interactions={[request]} />);
+    show();
+    expect(takeover()).not.toBeNull();
+    await act(async () => show(movedOn));
+    expect(takeover()).toBeNull();
+    expect(pendingIndicator()).toBeNull();
+    flushSync(() => root!.unmount());
+    root = createRoot(container);
+    show(movedOn);
+    expect(takeover()).toBeNull();
+    await act(async () => container.querySelector<HTMLButtonElement>(`[aria-label="Open request: ${request.title}"]`)!.click());
+    expect(takeover()).not.toBeNull();
+  });
+
+  it("keeps a new confirmation open when an earlier message finishes sending", async () => {
+    const request = genericPendingRequestConfirmationInteraction;
+    const next = { ...request, id: "new-review", title: "New review", createdAt: new Date("2026-11-06T12:00:00Z") };
+    let finishSend!: () => void;
+    const onAdd = vi.fn(() => new Promise<void>(resolve => { finishSend = resolve; }));
+    const show = (interactions = [request]) => render(<TaskChatThread {...props} comments={[]} interactions={interactions} onAdd={onAdd} />);
+    show();
+    await act(async () => editorCallbacks.change("Let's discuss something else first."));
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="task-chat-composer-send"]')!.click());
+    expect(takeover()).toBeNull();
+    await act(async () => show([request, next]));
+    expect(takeover()?.textContent).toContain("New review");
+    await act(async () => finishSend());
+    expect(takeover()?.textContent).toContain("New review");
+  });
+
+  it("restores the confirmation when sending a separate message fails", async () => {
+    render(<TaskChatThread {...props} comments={[]} interactions={[genericPendingRequestConfirmationInteraction]}
+      onAdd={vi.fn().mockRejectedValue(new Error("Message not sent"))} />);
+    await act(async () => editorCallbacks.change("Let's discuss something else first."));
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="task-chat-composer-send"]')!.click());
+    expect(takeover()).not.toBeNull();
+    expect(container.querySelector('[data-testid="mock-editor"]')?.textContent).toContain("Let's discuss something else first.");
+  });
+
   it.each(["Cancel", "dismiss"])("leaves only the history card after %s on a fresh question", async action => {
     render(<TaskChatThread {...props} comments={[]} interactions={[old]} />);
     await click("Yes");

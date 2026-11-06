@@ -576,6 +576,10 @@ behavior for review cards. Its dismissal save and decisions are simulated;
 server persistence and permission boundaries have separate regression tests.
 The demo uses real thread/form components with fixture response callbacks.
 The Agent Chat stories share the same component fixture.
+The **Send instead of confirming** and **Reopen skipped confirmation** stories
+exercise sending a separate message while a completion review is open, then
+opening that unchanged request from the feed. These use the production thread
+with simulated message saves and decision callbacks.
 
 Use **Composer → New task** to review task creation through the production
 `TaskChatComposer`. The editor, file menu, work modes, assignee/model picker,
