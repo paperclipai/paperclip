@@ -37,7 +37,6 @@ describeEmbeddedPostgres("reportRunFailure low-trust project denials", () => {
   }, 20_000);
 
   beforeEach(async () => {
-    // Keep redaction inputs independent of the developer/CI environment.
     inheritedEnv = process.env;
     process.env = Object.fromEntries(
       ["PATH", "HOME", "USER", "USERNAME", "LOGNAME", "USERPROFILE", "TMPDIR", "TEMP", "TMP"]
@@ -80,7 +79,6 @@ describeEmbeddedPostgres("reportRunFailure low-trust project denials", () => {
     await tempDb?.cleanup();
   });
 
-  // Matches the setup failure run-completion records for ProjectAccessDeniedError.
   function projectAccessDeniedRun(
     overrides: Partial<typeof heartbeatRuns.$inferSelect> = {},
   ): typeof heartbeatRuns.$inferSelect {

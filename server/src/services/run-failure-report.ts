@@ -174,7 +174,6 @@ function isPluginRunnerAiConnectionRequiredBlocker(run: HeartbeatRun, options: R
     recovery?.kind === "bootstrap" && recovery.providerWorkStarted === false;
 }
 
-/** A low-trust agent's task project is outside its allowed scope; the task notice links the access repair. */
 function isProjectAccessDenialBlocker(run: HeartbeatRun, options: RunFailureReportOptions): boolean {
   if (
     run.status !== "failed" || run.errorCode !== PROJECT_ACCESS_DENIED ||
