@@ -20,8 +20,6 @@ function compilerInputs(args) {
 
 it("omits co-located tests from the build while retaining source typecheck coverage", () => {
   const { scripts } = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
-  // Exercise the compiler command selected by the real build script without
-  // running its asset-copy or vendor-install steps.
   const command = scripts.build.split("&&").map((part) => part.trim())
     .find((part) => part.startsWith("node ../scripts/run-tsc.mjs"));
   expect(command).toBeDefined();
