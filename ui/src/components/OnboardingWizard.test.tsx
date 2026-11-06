@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
 import { act, StrictMode } from "react";
+import { ONBOARDING_CONNECTION_TEST_TIMEOUT_MS } from "../lib/onboarding-connection-test";
 import { buildClaudeLocalConfig } from "../../../packages/adapters/claude-local/src/ui/build-config";
 import { buildCodexRunnerConfig } from "../adapters/codex-local/config-fields";
 import type { CreateConfigValues } from "@paperclipai/adapter-utils";
@@ -2211,7 +2212,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
         const binding = { provider: "openai", method: "api_key", mode: "delegated", connectionId: "managed-connection", grantId: "managed-grant" };
         expect(mockAgentsApi.testEnvironment).toHaveBeenCalledExactlyOnceWith("company-new", "codex_local", expect.objectContaining({
           environmentId: "env-sandbox-1", aiConnection: binding, adapterConfig: expect.objectContaining({ model: "gpt-5.4-mini" }),
-        }));
+        }), expect.objectContaining({ signal: expect.any(AbortSignal) }));
         expect(mockAgentsApi.hire).toHaveBeenCalledExactlyOnceWith("company-new", expect.objectContaining({
           runtimeConfig: expect.objectContaining({ aiConnection: binding }), adapterConfig: expect.objectContaining({ model: "gpt-5.4-mini" }),
         }));
@@ -2255,7 +2256,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
         expect(mockEnvironmentsApi.probe).not.toHaveBeenCalled();
         await pickSource(/Claude/);
         expect(calls).toEqual(["discovery-before", "platform", "discovery-after", "adapter", "hire"]);
-        expect(mockEnvironmentsApi.probe).toHaveBeenCalledExactlyOnceWith("env-sandbox-1", "company-new");
+        expect(mockEnvironmentsApi.probe).toHaveBeenCalledExactlyOnceWith("env-sandbox-1", "company-new", expect.objectContaining({ signal: expect.any(AbortSignal) }));
         const tested = (mockAgentsApi.testEnvironment.mock.calls[0] as unknown[])[2] as { adapterConfig: Record<string, unknown> };
         const saved = (mockAgentsApi.hire.mock.calls[0] as unknown[])[1] as { adapterConfig: Record<string, unknown> };
         expect(saved).not.toHaveProperty("runner");
@@ -2288,7 +2289,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
         await flushReact();
         await pressArcPrimary();
         expect(managedApi.create).toHaveBeenCalledExactlyOnceWith("company-new", expect.objectContaining({ provider: "anthropic", method: "api_key", apiKey: key }));
-        expect(mockEnvironmentsApi.probe).toHaveBeenCalledExactlyOnceWith("env-sandbox-1", "company-new");
+        expect(mockEnvironmentsApi.probe).toHaveBeenCalledExactlyOnceWith("env-sandbox-1", "company-new", expect.objectContaining({ signal: expect.any(AbortSignal) }));
         expect(mockAgentsApi.testEnvironment).toHaveBeenCalledTimes(1);
         expect(mockAgentsApi.hire).toHaveBeenCalledTimes(1);
         const tested = (mockAgentsApi.testEnvironment.mock.calls[0] as unknown[])[2] as { adapterConfig: object };
@@ -2715,7 +2716,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
         pauseReason: "setup", defaultEnvironmentId: "saved-environment" } as never);
       const { root } = await openStep4({ adapterType: "claude_local", setupAgentId: setupId });
       await pickSource(/Claude/);
-      expect(mockAgentsApi.testEnvironment).toHaveBeenCalledWith("company-new", "claude_local", expect.objectContaining({ environmentId: "saved-environment" }));
+      expect(mockAgentsApi.testEnvironment).toHaveBeenCalledWith("company-new", "claude_local", expect.objectContaining({ environmentId: "saved-environment" }), expect.objectContaining({ signal: expect.any(AbortSignal) }));
       expect(mockAgentsApi.hire).toHaveBeenCalledWith("company-new", expect.objectContaining({ defaultEnvironmentId: "saved-environment" }));
       await act(async () => root.unmount());
     });
@@ -2755,7 +2756,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       await pressArcPrimary();
       expect(mockAgentsApi.testEnvironment).toHaveBeenCalledWith("company-new", "codex_local", expect.objectContaining({ agentId: setupId,
         adapterConfig: expect.objectContaining({ env: expect.objectContaining({ CODEX_HOME: { type: "plain", value: "***REDACTED***" } }) }),
-      }));
+      }), expect.objectContaining({ signal: expect.any(AbortSignal) }));
       await act(async () => root.unmount());
     });
 
@@ -3960,8 +3961,8 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
           await pickSource(/OpenAI/);
           expect(calls).toEqual(["discovery-before", "platform", "discovery-after", "adapter", "hire"]);
           expect(handles.queryClient.getQueryData(queryKeys.adapters.availability("company-new", "env-sandbox-1"))).toEqual(discovery(defaultRunner));
-          expect(mockEnvironmentsApi.probe).toHaveBeenCalledExactlyOnceWith("env-sandbox-1", "company-new");
-          expect(mockAgentsApi.testEnvironment).toHaveBeenCalledWith("company-new", "codex_local", expect.objectContaining({ environmentId: "env-sandbox-1", aiConnection: { provider: "openai", method: "subscription", mode: "responsible_user" } }));
+          expect(mockEnvironmentsApi.probe).toHaveBeenCalledExactlyOnceWith("env-sandbox-1", "company-new", expect.objectContaining({ signal: expect.any(AbortSignal) }));
+          expect(mockAgentsApi.testEnvironment).toHaveBeenCalledWith("company-new", "codex_local", expect.objectContaining({ environmentId: "env-sandbox-1", aiConnection: { provider: "openai", method: "subscription", mode: "responsible_user" } }), expect.objectContaining({ signal: expect.any(AbortSignal) }));
           expect((mockAgentsApi.testEnvironment.mock.calls[0] as unknown[])[2]).not.toHaveProperty("runner");
           expect((mockAgentsApi.hire.mock.calls[0] as unknown[])[1]).not.toHaveProperty("runner");
           expect(managedApi.connectLocal).not.toHaveBeenCalled();
@@ -4429,6 +4430,37 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
           expect(managedApi.connectLocal).toHaveBeenCalledTimes(1);
           expect(document.body.textContent).toContain("is ready to work!");
         } finally { await act(async () => root.unmount()); }
+      });
+
+      it("releases a hung test, ignores its late result, and retries with the saved login", async () => {
+        let finish!: (result: typeof passed) => void;
+        mockAgentsApi.testEnvironment.mockReturnValueOnce(new Promise(resolve => { finish = resolve; }));
+        const timerSpy = vi.spyOn(globalThis, "setTimeout");
+        const { root } = await openStep4({ adapterType: "claude_local" });
+        try {
+          await pickSource(/Claude/);
+          await detected();
+          expectTesting();
+          const deadline = timerSpy.mock.calls.find(([, ms]) => ms === ONBOARDING_CONNECTION_TEST_TIMEOUT_MS);
+          expect(deadline).toBeDefined();
+          const options = (mockAgentsApi.testEnvironment.mock.calls[0] as unknown[])[3] as { signal: AbortSignal };
+          await act(async () => (deadline![0] as () => void)());
+          await settle();
+          expect(options.signal.aborted).toBe(true);
+          expect(document.body.textContent).toContain("The connection test took too long.");
+          expect(button("Connect").disabled).toBe(false);
+          await act(async () => finish(passed));
+          await settle();
+          expect(mockAgentsApi.hire).not.toHaveBeenCalled();
+          await click("Connect");
+          expect(mockAgentsApi.testEnvironment).toHaveBeenCalledTimes(2);
+          expect(managedApi.connectLocal).toHaveBeenCalledTimes(1);
+          expect(mockAgentsApi.hire).toHaveBeenCalledTimes(1);
+          expect(document.body.textContent).toContain("is ready to work!");
+        } finally {
+          timerSpy.mockRestore();
+          await act(async () => root.unmount());
+        }
       });
 
       it.each(providers)("keeps Connect usable when %s detection has not completed", async (adapterType, _provider, label) => {
