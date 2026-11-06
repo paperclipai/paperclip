@@ -3,7 +3,8 @@ import type {
   IssueRelationIssueSummary,
 } from "@paperclipai/shared";
 import { useMemo } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQueries } from "@tanstack/react-query";
+import { ISSUE_SUMMARIES_MAX_IDS } from "@paperclipai/shared";
 import { issuesApi } from "@/api/issues";
 import { useCoordinatorWorkspaceEnabled } from "@/hooks/useCoordinatorWorkspaceEnabled";
 import { createIssueDetailPath } from "@/lib/issueDetailBreadcrumb";
@@ -147,14 +148,25 @@ function useLiveWorkStatusPresentation(
   blockers: LiveWorkBlocker[],
 ): (blocker: LiveWorkBlocker) => TaskStatusPresentationInput {
   const { userId } = useCoordinatorWorkspaceEnabled();
-  const ids = useMemo(() => [...new Set(blockers.map((blocker) => blocker.id))].sort(), [blockers]);
-  const { data } = useQuery({
-    queryKey: queryKeys.issues.summaryBatch(companyId ?? "__none__", userId, ids),
-    queryFn: ({ signal }) => issuesApi.summaries(companyId!, ids, { signal }),
-    enabled: Boolean(companyId) && ids.length > 0,
+  // The summaries endpoint accepts at most ISSUE_SUMMARIES_MAX_IDS per request.
+  const batches = useMemo(() => {
+    const ids = [...new Set(blockers.map((blocker) => blocker.id))].sort();
+    const chunks: string[][] = [];
+    for (let index = 0; index < ids.length; index += ISSUE_SUMMARIES_MAX_IDS) {
+      chunks.push(ids.slice(index, index + ISSUE_SUMMARIES_MAX_IDS));
+    }
+    return chunks;
+  }, [blockers]);
+  const results = useQueries({
+    queries: batches.map((ids) => ({
+      queryKey: queryKeys.issues.summaryBatch(companyId ?? "__none__", userId, ids),
+      queryFn: ({ signal }: { signal: AbortSignal }) => issuesApi.summaries(companyId!, ids, { signal }),
+      enabled: Boolean(companyId),
+    })),
   });
+  const summaries = results.flatMap((result) => result.data ?? []);
   return (blocker) => {
-    const summary = data?.find((candidate) => candidate.id === blocker.id);
+    const summary = summaries.find((candidate) => candidate.id === blocker.id);
     if (summary) return taskStatusIconProps(summary);
     if ("status" in blocker) return taskStatusIconProps(blocker);
     // A sampled terminal blocker carries no status; it is only listed while live.
@@ -275,6 +287,7 @@ export function TaskChatLiveWorkLinks({
       ) : (
         <div key={blocker.id} className="flex min-w-0 items-center gap-1.5 whitespace-nowrap">
           <span className="shrink-0 font-medium">Now running</span>
+          <LiveWorkGlyph presentation={presentationFor(blocker)} />
           <LiveWorkLink blocker={blocker} presentation={presentationFor(blocker)} />
         </div>
       ))}
