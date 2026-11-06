@@ -6,6 +6,7 @@ import { appendHeartbeatRunEvent } from "./heartbeat-run-events.js";
 import { nativeSessionProviderEvidence } from "./native-runtime/native-session-resume.js";
 import { hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
 import os from "node:os";
+import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 
 export const PROCESS_START_REQUESTED = "native.process_start_requested";
 export const PROCESS_IDENTITY_RECORDED = "native.process_identity_recorded";
@@ -26,12 +27,13 @@ function absent(pid: number): boolean {
  * the original host, process birth, and launch event before accepting it. */
 export async function recordedLocalExecutionStopped(db: Db, run: Pick<typeof heartbeatRuns.$inferSelect,
   "id" | "companyId" | "processPid" | "processGroupId" | "processStartedAt">) {
-  const [identity] = await db.select({ payload: heartbeatRunEvents.payload }).from(heartbeatRunEvents).where(and(
+  const [identity] = await db.select({ eventType: heartbeatRunEvents.eventType, payload: heartbeatRunEvents.payload }).from(heartbeatRunEvents).where(and(
     eq(heartbeatRunEvents.companyId, run.companyId), eq(heartbeatRunEvents.runId, run.id),
-    eq(heartbeatRunEvents.eventType, PROCESS_IDENTITY_RECORDED), isNull(heartbeatRunEvents.sourceEventId),
+    inArray(heartbeatRunEvents.eventType, [PROCESS_START_REQUESTED, PROCESS_IDENTITY_RECORDED]),
+    isNull(heartbeatRunEvents.sourceEventId),
   )).orderBy(desc(heartbeatRunEvents.seq)).limit(1);
   const recorded = identity?.payload;
-  if (recorded?.targetKind !== "local" || recorded.hostname !== os.hostname() ||
+  if (identity?.eventType !== PROCESS_IDENTITY_RECORDED || recorded?.targetKind !== "local" || recorded.hostname !== os.hostname() ||
       recorded.processPid !== run.processPid || recorded.processGroupId !== run.processGroupId ||
       !run.processStartedAt || recorded.processStartedAt !== run.processStartedAt.toISOString()) return false;
   return Boolean(run.processPid && absent(run.processPid) &&
@@ -55,6 +57,8 @@ export async function recordNativeLocalProcessStop(db: Db, run: Pick<typeof hear
   if (leases.some(lease => lease.provider !== "local")) return false;
   if ((run.processPid && !absent(run.processPid)) ||
       (run.processGroupId && !absent(-run.processGroupId))) return false;
+  await notifyDeliveryWork(db, DELIVERY_QUEUES.executionReplacement,
+    JSON.stringify({ companyId: run.companyId, runId: run.id }));
   await appendHeartbeatRunEvent(db, {
     companyId: run.companyId,
     runId: run.id,

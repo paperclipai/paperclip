@@ -83,7 +83,7 @@ export async function richLoadingFixture(request: APIRequestContext): Promise<Ri
   const db = createDb(databaseUrl);
   const base = Date.now() - 30 * 24 * 3600_000;
   const comments = Array.from({ length: 200 }, (_, index) => ({
-    id: randomUUID(), companyId: company.id, issueId: issue.id, authorType: "agent", authorAgentId: agent.id,
+    id: randomUUID(), companyId: company.id, issueId: issue.id, authorType: "agent" as const, authorAgentId: agent.id,
     body: `## ${index === 199 ? "Latest investigation findings" : `Investigation update ${index}`}\n\n` +
       "Verified the saved workspace, inspected the reported behavior, and checked that the evidence still matches the current revision. ".repeat(index === 199 ? 12 : 5) +
       (index === 199 ? "\n\n[Read the saved analysis](#document-analysis) and [verification results](#document-verification).\n\n| Check | Result |\n|---|---|\n| Saved evidence | Complete |\n| Review | Waiting for your decision |" : ""),

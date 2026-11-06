@@ -185,8 +185,8 @@ export interface AdapterSandboxExecutionTarget extends AdapterExecutionTargetWor
   kind: "remote";
   transport: "sandbox";
   providerKey?: string | null;
-  /** Host-bound plugin task RPC. Both sides validate the wire contract. */
-  runnerTask?: (operation: unknown, context?: { executionContext?: unknown }) => Promise<unknown>;
+  /** Host-bound plugin task RPC. expectedTaskId pins an owner to its physical task after startup. */
+  runnerTask?: (operation: unknown, context?: { executionContext?: unknown; expectedTaskId?: string }) => Promise<unknown>;
   runnerTaskProjectIds?: readonly string[];
   /** Private Core-issued identity for a bounded, tool-free setup probe. */
   runnerTaskProbe?: { runId: string; sessionId: string };

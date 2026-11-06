@@ -5,6 +5,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { ToolConnection } from "@paperclipai/shared";
+import type { ConnectionSetupFlowProps } from "../ConnectionSetupFlow";
 import { ApiError } from "@/api/client";
 import { toolsApi } from "@/api/tools";
 import { RemoteMcpProductionSetup } from "./RemoteMcpProductionSetup";
@@ -33,10 +34,10 @@ let root: Root;
 let container: HTMLDivElement;
 let client: QueryClient;
 
-function render() {
+function render(props: Partial<ConnectionSetupFlowProps> & { connection?: ToolConnection } = {}) {
   act(() => root.render(
     <QueryClientProvider client={client}>
-      <RemoteMcpProductionSetup providerId="composio" connection={connection} />
+      <RemoteMcpProductionSetup providerId="composio" connection={connection} {...props} />
     </QueryClientProvider>,
   ));
 }
@@ -47,6 +48,15 @@ beforeEach(() => {
   document.body.append(container);
   root = createRoot(container);
   client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+});
+
+it("restores a task's saved draft audience before installations exist", async () => {
+  vi.mocked(toolsApi.getConnectionInstalls).mockResolvedValue({ installs: [] } as never);
+  render({ connection: { ...connection, status: "draft" }, interactionId: "intent", requiredAgentId: "agent-1",
+    setupAccess: { connectionId: connection.id, access: { agentIds: ["agent-1"] } } });
+  await vi.waitFor(() => expect(container.querySelector('[data-testid="remote-mcp-setup"]')?.textContent).toBe("agent-1"));
+  await act(async () => { await client.invalidateQueries(); });
+  expect(container.querySelector('[data-testid="remote-mcp-setup"]')?.textContent).toBe("agent-1");
 });
 afterEach(() => {
   act(() => root.unmount());

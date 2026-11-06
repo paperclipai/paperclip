@@ -109,7 +109,7 @@ for (const journey of [
     });
     try {
       const port = await listenOnFetchAllowedPort(fixture);
-      const env = {
+      const env: NodeJS.ProcessEnv = {
         ...process.env,
         PAPERCLIP_RECOVERY_CEO_LINEAGE: journey === "ceo_lineage" ? "1" : "0",
         IN_FEED_FIXTURE_KEY: "not-a-real-model-key",

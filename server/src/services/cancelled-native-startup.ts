@@ -1,6 +1,6 @@
 import { isPreDispatchReviewWait } from "./pre-dispatch-review-wait.js";
 import { createHash } from "node:crypto";
-import { and, eq, inArray, isNotNull, or } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, isNull, lte, or, sql } from "drizzle-orm";
 import { environmentLeases, heartbeatRunEvents, heartbeatRuns, nativeRunFinalizations, nativeRunResults, type Db } from "@paperclipai/db";
 import { isUuidLike } from "@paperclipai/shared";
 import { claimedAdapterType } from "./conversation-continuation.js";
@@ -11,6 +11,7 @@ import { legacyControllerBootId } from "./legacy-controller-lease.js";
 import { hasRequiredWorkspaceRecovery } from "./workspace-restore-recovery-state.js";
 import { hasVerifiedWorkspaceRepair } from "./workspace-recovery-receipt.js";
 import { readFailedPreparationSettlement } from "./failed-preparation-settlement.js";
+import { executionStartedEventPredicate, noRetainedExecutionPredicate } from "./pre-dispatch-execution-evidence.js";
 
 type Run = Pick<typeof heartbeatRuns.$inferSelect,
   "id" | "companyId" | "status" | "startedAt" | "finishedAt" | "runtimeMode" |
@@ -30,7 +31,7 @@ export async function isFailedNativePreparationRetryAncestor(db: Db, run: Run, c
 }
 
 async function failedNativePreparation(db: Db, run: Run, coordinator: Coordinator | undefined, historicalRetryAncestor: boolean) {
-  if (run.status === "interrupted") return !historicalRetryAncestor && !coordinator && isInterruptedNativePreparation(db, run);
+  if (!historicalRetryAncestor && !coordinator && await isInterruptedNativePreparation(db, run)) return true;
   const recovery = run.resultJson?.executionRecovery as Record<string, unknown> | undefined;
   const preparationFailure = run.errorCode === "setup_failed" || historicalRetryAncestor && run.errorCode === "adapter_failed";
   if (run.status !== "failed" || !run.finishedAt || run.runtimeMode !== "legacy" || run.runtimeModeResolvedAt
@@ -102,14 +103,18 @@ function hasOnlyPreparationAccountingContext(usage: unknown, issueId: unknown): 
  * stopped leases, and any saved-file obligation below. */
 export function isInterruptedNativePreparationCandidate(run: Run): boolean {
   const cancellation = readRunCancellation(run.resultJson);
+  const recovery = run.resultJson?.executionRecovery as Record<string, unknown> | undefined;
+  // Restart recovery records this certificate only after revoking a preparing
+  // controller. A generic process-lost error cannot establish safe replay.
+  const lostPreparation = run.status === "failed" && run.errorCode === "process_lost"
+    && recovery?.kind === "bootstrap" && recovery.providerWorkStarted === false;
   // Older shutdown records predate structured cancellation. Current records
   // identify unexpected system interruption without relying on an error label.
   const systemInterruption = cancellation
     ? cancellation.initiator.type === "system" && cancellation.source !== "operator" &&
       (cancellation.source === "shutdown" || cancellation.expected === false)
-    : run.errorCode === "server_shutdown_interrupted";
-  const recovery = run.resultJson?.executionRecovery as Record<string, unknown> | undefined;
-  return Boolean(systemInterruption && run.status === "interrupted" && run.finishedAt
+    : run.errorCode === "server_shutdown_interrupted" || lostPreparation;
+  return Boolean(systemInterruption && (run.status === "interrupted" || lostPreparation) && run.finishedAt
     && run.runtimeMode === "legacy" && !run.runtimeModeResolvedAt && run.executionStage === "preparing"
     && claimedAdapterType(run) === "paperclip_runner" && !run.processPid && !run.processGroupId
     && !run.processStartedAt && !run.sessionIdAfter && !run.nativeIssueId && !run.nativeSessionId
@@ -152,6 +157,63 @@ export async function canRetryStoppedRun(db: Db, run: Run): Promise<boolean> {
   return isCancelledNativeStartup(db, run, coordinator);
 }
 
+function noProviderOutputPredicate() {
+  return and(...[
+    heartbeatRuns.runtimeModeResolverVersion, heartbeatRuns.runtimeModeReason, heartbeatRuns.runnerInstanceId,
+    heartbeatRuns.nativePhase, heartbeatRuns.driverKind, heartbeatRuns.driverVersion,
+    heartbeatRuns.completionContractId, heartbeatRuns.completionContractSha256, heartbeatRuns.externalRunId,
+    heartbeatRuns.logStore, heartbeatRuns.logRef, heartbeatRuns.logBytes, heartbeatRuns.logSha256,
+    heartbeatRuns.stdoutExcerpt, heartbeatRuns.stderrExcerpt, heartbeatRuns.lastOutputAt,
+    heartbeatRuns.lastOutputStream, heartbeatRuns.lastOutputBytes, heartbeatRuns.exitCode, heartbeatRuns.signal,
+  ].map(column => isNull(column)), eq(heartbeatRuns.lastOutputSeq, 0), eq(heartbeatRuns.logCompressed, false));
+}
+
+async function isCancelledUnclaimedWorkspaceWaitRetry(db: Db, run: Run): Promise<boolean> {
+  const cancellation = readRunCancellation(run.resultJson);
+  const issueId = run.issueId ?? run.contextSnapshot?.issueId;
+  if (run.runtimeMode !== "legacy" || run.startedAt !== null || run.executionStage !== null
+    || run.runnerProfileJson !== null || typeof issueId !== "string" || !isUuidLike(issueId)
+    || run.errorCode !== "cancelled" || run.resultJson?.stopReason !== "cancelled"
+    || cancellation?.source !== "control_plane" || cancellation.expected !== true || cancellation.initiator.type !== "system") return false;
+  const [source] = await db.select({ agentId: heartbeatRuns.agentId, createdAt: heartbeatRuns.createdAt,
+    retryOfRunId: heartbeatRuns.retryOfRunId,
+  }).from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, run.companyId), eq(heartbeatRuns.id, run.id),
+    eq(heartbeatRuns.scheduledRetryReason, "workspace_busy"),
+    sql`${heartbeatRuns.contextSnapshot}->>'retryReason' = 'workspace_busy'`,
+    sql`${heartbeatRuns.contextSnapshot}->>'retryOfRunId' = ${heartbeatRuns.retryOfRunId}::text`,
+    sql`(${heartbeatRuns.resultJson} - array['stopReason', 'cancellation', 'startupCancellation',
+      'timeoutFired', 'timeoutSource', 'timeoutConfigured', 'effectiveTimeoutSec']) = '{}'::jsonb`,
+    noRetainedExecutionPredicate(), noProviderOutputPredicate(), isNull(heartbeatRuns.runnerProfileJson),
+    isNull(heartbeatRuns.usageJson)));
+  if (!source?.retryOfRunId) return false;
+  const [parent] = await db.select({ id: heartbeatRuns.id, usageJson: heartbeatRuns.usageJson }).from(heartbeatRuns).where(and(
+    eq(heartbeatRuns.companyId, run.companyId), eq(heartbeatRuns.agentId, source.agentId), eq(heartbeatRuns.id, source.retryOfRunId),
+    sql`coalesce(${heartbeatRuns.issueId}::text, ${heartbeatRuns.contextSnapshot}->>'issueId') = ${issueId}`,
+    eq(heartbeatRuns.runtimeMode, "legacy"), eq(heartbeatRuns.status, "cancelled"), eq(heartbeatRuns.errorCode, "workspace_busy"),
+    eq(heartbeatRuns.executionStage, "settled"), isNotNull(heartbeatRuns.finishedAt), lte(heartbeatRuns.finishedAt, source.createdAt),
+    isNull(heartbeatRuns.runtimeModeResolvedAt), isNull(heartbeatRuns.controllerLeaseExpiresAt),
+    ...[heartbeatRuns.processPid, heartbeatRuns.processGroupId, heartbeatRuns.processStartedAt,
+      heartbeatRuns.nativeIssueId, heartbeatRuns.nativeSessionId, heartbeatRuns.sessionIdAfter].map(column => isNull(column)),
+    noProviderOutputPredicate(),
+    sql`${heartbeatRuns.runnerProfileJson} #>> '{adapterDispatch,adapterType}' = 'paperclip_runner'`,
+    sql`(${heartbeatRuns.runnerProfileJson} - 'adapterDispatch' - 'chatControlRecoveryAdmission') = '{}'::jsonb`,
+    sql`${heartbeatRuns.resultJson}->'executionRecovery'->>'kind' = 'workspace_wait'`,
+    sql`${heartbeatRuns.resultJson}->'executionRecovery'->'providerWorkStarted' = 'false'::jsonb`,
+    sql`(${heartbeatRuns.resultJson} - 'cancellation' - 'workspaceBusy' - 'executionRecovery') = '{}'::jsonb`,
+    sql`not exists (select 1 from ${environmentLeases} where ${environmentLeases.companyId} = ${heartbeatRuns.companyId}
+      and ${environmentLeases.heartbeatRunId} = ${heartbeatRuns.id})`,
+    sql`not exists (select 1 from ${nativeRunFinalizations} where ${nativeRunFinalizations.companyId} = ${heartbeatRuns.companyId}
+      and ${nativeRunFinalizations.runId} = ${heartbeatRuns.id})`,
+    sql`not exists (select 1 from ${heartbeatRunEvents} where ${and(eq(heartbeatRunEvents.companyId, heartbeatRuns.companyId),
+      eq(heartbeatRunEvents.runId, heartbeatRuns.id), executionStartedEventPredicate())})`,
+  ));
+  if (!parent || !hasOnlyPreparationAccountingContext(parent.usageJson, issueId)) return false;
+  const [result] = await db.select({ id: nativeRunResults.id }).from(nativeRunResults).where(and(
+    eq(nativeRunResults.companyId, run.companyId), inArray(nativeRunResults.runId, [run.id, parent.id]),
+  )).limit(1);
+  return !result;
+}
+
 /** Caller holds the coordinator and run locks when using this proof to admit
  * work. Attempt zero is a durable never-claimed receipt: every native executor
  * commits its first claim before it can start or attach a provider. */
@@ -170,7 +232,8 @@ export async function isCancelledNativeStartup(db: Db, run: Run, coordinator: Co
     Boolean(run.controllerBootId && run.controllerBootId !== legacyControllerBootId &&
       run.controllerLeaseExpiresAt && run.controllerLeaseExpiresAt <= new Date());
   const beforeReviewDispatch = isPreDispatchReviewWait(run) && !coordinator;
-  const beforeSelection = beforeReviewDispatch || historicalBeforeSelection || run.runtimeMode === "legacy" && !run.runtimeModeResolvedAt &&
+  const unclaimedWorkspaceRetry = !coordinator && await isCancelledUnclaimedWorkspaceWaitRetry(db, run);
+  const beforeSelection = beforeReviewDispatch || unclaimedWorkspaceRetry || historicalBeforeSelection || run.runtimeMode === "legacy" && !run.runtimeModeResolvedAt &&
     !run.nativeSessionId && !coordinator && claimedAdapterType(run) === "paperclip_runner" &&
     cancellation?.beforeNativeSelection === true;
   const neverClaimed = run.runtimeMode === "native" && coordinator &&
@@ -179,7 +242,7 @@ export async function isCancelledNativeStartup(db: Db, run: Run, coordinator: Co
     !coordinator.controllerPid && !coordinator.leaseOwner && !coordinator.leaseExpiresAt &&
     !coordinator.resultId && !coordinator.failureDetail?.successorRunId;
   if (!beforeSelection && !neverClaimed) return false;
-  const settled = beforeReviewDispatch || typeof run.resultJson?.startupPreparationSettledAt === "string";
+  const settled = beforeReviewDispatch || unclaimedWorkspaceRetry || typeof run.resultJson?.startupPreparationSettledAt === "string";
   // The old preparer can still be unwinding even though the run is terminal.
   if (!settled && run.controllerLeaseExpiresAt && run.controllerLeaseExpiresAt > new Date()) return false;
   const leases = await db.select().from(environmentLeases).where(and(

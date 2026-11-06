@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
 import { act, StrictMode } from "react";
+import { ONBOARDING_CONNECTION_TEST_TIMEOUT_MS } from "../lib/onboarding-connection-test";
 import { buildClaudeLocalConfig } from "../../../packages/adapters/claude-local/src/ui/build-config";
 import { buildCodexRunnerConfig } from "../adapters/codex-local/config-fields";
 import type { CreateConfigValues } from "@paperclipai/adapter-utils";
@@ -397,6 +398,12 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
     mockAgentsApi.getActiveAdapterAuthLoginSession.mockRejectedValue(
       new ApiError("Not found", 404, null),
     );
+    for (const mock of [mockAgentsApi.startClaudeSetupTokenLogin, mockAgentsApi.getClaudeSetupTokenLoginStatus,
+      mockAgentsApi.getClaudeSetupTokenLoginPrompt, mockAgentsApi.cancelClaudeSetupTokenLogin,
+      mockAgentsApi.submitClaudeSetupTokenBrowserCode, mockAgentsApi.completeClaudeSetupTokenLogin,
+      mockAgentsApi.startAdapterAuthLogin, mockAgentsApi.getAdapterAuthLoginStatus, mockAgentsApi.cancelAdapterAuthLogin]) {
+      mock.mockReset();
+    }
     mockAgentsApi.getActiveClaudeSetupTokenLoginSession.mockReset();
     mockAgentsApi.getActiveClaudeSetupTokenLoginSession.mockRejectedValue(
       new ApiError("Not found", 404, null),
@@ -2132,6 +2139,31 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       return { root, queryClient };
     }
 
+    // N-16: the gateway is an advanced route, not the next thing after the key.
+    // It sat directly under the API key field, inside the key card; it belongs
+    // in the step's Advanced disclosure, hidden until that is opened.
+    it.each([["Claude API", "claude_local", /Claude.*API/], ["Codex API", "codex_local", /OpenAI.*API/]] as const)("keeps Use a custom gateway in the closed Advanced disclosure on the %s key step", async (_path, adapterType, source) => {
+      const handles = await openStep4({ adapterType, runner: "paperclip", credentialMode: "api" });
+      try {
+        await pickSource(source);
+        const keyField = document.body.querySelector('input[type="password"]') as HTMLInputElement;
+        expect(keyField, "the API key field should be showing").toBeTruthy();
+        const gateway = () => [...document.body.querySelectorAll("button")].find(entry => entry.textContent?.trim() === "Use a custom gateway");
+        expect(gateway(), "the custom gateway control should still exist").toBeTruthy();
+        expect(document.body.querySelector('[aria-label="Runner"]')).toBeNull();
+        const advanced = gateway()!.closest("details");
+        expect(advanced, "Use a custom gateway should live inside the Advanced disclosure").toBeTruthy();
+        expect(advanced!.querySelector(":scope > summary")?.textContent?.trim()).toBe("Advanced");
+        expect(advanced!.open, "Advanced should start closed").toBe(false);
+        expect(advanced!.contains(keyField), "the key field stays outside Advanced").toBe(false);
+        await act(async () => { advanced!.open = true; });
+        await flushReact();
+        await act(async () => gateway()!.click());
+        await flushReact();
+        expect(document.querySelector('input[aria-label="Provider URL"]'), "the gateway dialog should still open from Advanced").toBeTruthy();
+      } finally { await act(async () => handles.root.unmount()); }
+    });
+
     it.each([["successful refresh", false], ["failed refresh and retry", true]] as const)("saves a custom gateway without probing, then explicitly tests and hires with its selected model: %s", async (_scenario, failRefresh) => {
       const gatewayAccounts: import("@paperclipai/shared").AiConnectionList = {
         currentUserId: "user-1", canManageConnections: true, connections: [],
@@ -2205,7 +2237,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
         const binding = { provider: "openai", method: "api_key", mode: "delegated", connectionId: "managed-connection", grantId: "managed-grant" };
         expect(mockAgentsApi.testEnvironment).toHaveBeenCalledExactlyOnceWith("company-new", "codex_local", expect.objectContaining({
           environmentId: "env-sandbox-1", aiConnection: binding, adapterConfig: expect.objectContaining({ model: "gpt-5.4-mini" }),
-        }));
+        }), expect.objectContaining({ signal: expect.any(AbortSignal) }));
         expect(mockAgentsApi.hire).toHaveBeenCalledExactlyOnceWith("company-new", expect.objectContaining({
           runtimeConfig: expect.objectContaining({ aiConnection: binding }), adapterConfig: expect.objectContaining({ model: "gpt-5.4-mini" }),
         }));
@@ -2249,7 +2281,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
         expect(mockEnvironmentsApi.probe).not.toHaveBeenCalled();
         await pickSource(/Claude/);
         expect(calls).toEqual(["discovery-before", "platform", "discovery-after", "adapter", "hire"]);
-        expect(mockEnvironmentsApi.probe).toHaveBeenCalledExactlyOnceWith("env-sandbox-1", "company-new");
+        expect(mockEnvironmentsApi.probe).toHaveBeenCalledExactlyOnceWith("env-sandbox-1", "company-new", expect.objectContaining({ signal: expect.any(AbortSignal) }));
         const tested = (mockAgentsApi.testEnvironment.mock.calls[0] as unknown[])[2] as { adapterConfig: Record<string, unknown> };
         const saved = (mockAgentsApi.hire.mock.calls[0] as unknown[])[1] as { adapterConfig: Record<string, unknown> };
         expect(saved).not.toHaveProperty("runner");
@@ -2282,7 +2314,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
         await flushReact();
         await pressArcPrimary();
         expect(managedApi.create).toHaveBeenCalledExactlyOnceWith("company-new", expect.objectContaining({ provider: "anthropic", method: "api_key", apiKey: key }));
-        expect(mockEnvironmentsApi.probe).toHaveBeenCalledExactlyOnceWith("env-sandbox-1", "company-new");
+        expect(mockEnvironmentsApi.probe).toHaveBeenCalledExactlyOnceWith("env-sandbox-1", "company-new", expect.objectContaining({ signal: expect.any(AbortSignal) }));
         expect(mockAgentsApi.testEnvironment).toHaveBeenCalledTimes(1);
         expect(mockAgentsApi.hire).toHaveBeenCalledTimes(1);
         const tested = (mockAgentsApi.testEnvironment.mock.calls[0] as unknown[])[2] as { adapterConfig: object };
@@ -2709,7 +2741,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
         pauseReason: "setup", defaultEnvironmentId: "saved-environment" } as never);
       const { root } = await openStep4({ adapterType: "claude_local", setupAgentId: setupId });
       await pickSource(/Claude/);
-      expect(mockAgentsApi.testEnvironment).toHaveBeenCalledWith("company-new", "claude_local", expect.objectContaining({ environmentId: "saved-environment" }));
+      expect(mockAgentsApi.testEnvironment).toHaveBeenCalledWith("company-new", "claude_local", expect.objectContaining({ environmentId: "saved-environment" }), expect.objectContaining({ signal: expect.any(AbortSignal) }));
       expect(mockAgentsApi.hire).toHaveBeenCalledWith("company-new", expect.objectContaining({ defaultEnvironmentId: "saved-environment" }));
       await act(async () => root.unmount());
     });
@@ -2749,7 +2781,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       await pressArcPrimary();
       expect(mockAgentsApi.testEnvironment).toHaveBeenCalledWith("company-new", "codex_local", expect.objectContaining({ agentId: setupId,
         adapterConfig: expect.objectContaining({ env: expect.objectContaining({ CODEX_HOME: { type: "plain", value: "***REDACTED***" } }) }),
-      }));
+      }), expect.objectContaining({ signal: expect.any(AbortSignal) }));
       await act(async () => root.unmount());
     });
 
@@ -2873,6 +2905,131 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       await act(async () => root.unmount());
     });
 
+    it.each([
+      ["claude_local", /Claude/, "claude.ai", "link"],
+      ["claude_local", /Claude/, "claude.ai", "button"],
+      ["codex_local", /OpenAI/, "auth.openai.com", "link"],
+      ["codex_local", /OpenAI/, "auth.openai.com", "button"],
+    ] as const)("shows the provider waiting state after the %s %s %s %s opens sign-in", async (adapterType, source, host, control) => {
+      mockAgentsApi.getAdapterAuthSignal.mockResolvedValue({ status: "absent" });
+      const { root } = await openStep4({ adapterType });
+      await pickSource(source);
+      const open = vi.spyOn(window, "open").mockImplementation(() => null);
+      try {
+        const link = document.body.querySelector(`a[href*="${host}"]`) as HTMLAnchorElement;
+        expect(link.target).toBe("_blank");
+        await act(async () => {
+          if (control === "link") link.click();
+          else [...document.body.querySelectorAll("button")].at(-1)!.click();
+        });
+        expect(open).toHaveBeenCalledExactlyOnceWith(link.href, "_blank", "noreferrer,noopener");
+        const primary = [...document.body.querySelectorAll("button")].at(-1)!;
+        expect(primary.textContent?.trim()).toBe(adapterType === "codex_local" ? "Waiting for auth…" : "Waiting for code…");
+        expect(primary.disabled).toBe(true);
+        await act(async () => primary.click());
+        await act(async () => document.querySelector('[data-testid="onboarding-wizard"]')!.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", metaKey: true, bubbles: true, cancelable: true })));
+        expect(open).toHaveBeenCalledTimes(1);
+        await act(async () => link.click());
+        expect(open).toHaveBeenNthCalledWith(2, link.href, "_blank", "noreferrer,noopener");
+        expect(primary.textContent?.trim()).toBe(adapterType === "codex_local" ? "Waiting for auth…" : "Waiting for code…");
+        expect(primary.disabled).toBe(true);
+        if (adapterType === "claude_local") expect((document.querySelector('input[aria-label="Authorization code"]') as HTMLInputElement).disabled).toBe(false);
+        expect(mockAgentsApi.hire).not.toHaveBeenCalled();
+        expect(adapterType === "claude_local" ? mockAgentsApi.startClaudeSetupTokenLogin : mockAgentsApi.startAdapterAuthLogin).toHaveBeenCalledTimes(1);
+      } finally {
+        open.mockRestore();
+        await act(async () => root.unmount());
+      }
+    });
+
+    it.each([false, true])("submits a code inserted without a paste event from the footer (opened link: %s)", async openedLink => {
+      mockAgentsApi.getAdapterAuthSignal.mockResolvedValue({ status: "absent" });
+      const { root } = await openStep4({ adapterType: "claude_local" });
+      await pickSource(/Claude/);
+      const open = vi.spyOn(window, "open").mockImplementation(() => null);
+      try {
+        if (openedLink) await act(async () => (document.body.querySelector('a[href*="claude.ai"]') as HTMLAnchorElement).click());
+        open.mockClear();
+        const field = document.body.querySelector('input[aria-label="Authorization code"]') as HTMLInputElement;
+        await act(async () => setControlledValue(field, "authorization-code"));
+        expect(mockAgentsApi.submitClaudeSetupTokenBrowserCode).not.toHaveBeenCalled();
+        const primary = [...document.body.querySelectorAll("button")].at(-1)!;
+        expect(primary.textContent?.trim()).toBe("Submit code");
+        expect(primary.disabled).toBe(false);
+        await act(async () => { primary.click(); primary.click(); });
+        expect(mockAgentsApi.submitClaudeSetupTokenBrowserCode).toHaveBeenCalledExactlyOnceWith("company-new", "claude-session-1", "authorization-code");
+        expect(open).not.toHaveBeenCalled();
+        expect([...document.body.querySelectorAll("button")].at(-1)!.textContent?.trim()).toBe("Connecting");
+        expect(mockAgentsApi.startClaudeSetupTokenLogin).toHaveBeenCalledTimes(1);
+        expect(mockAgentsApi.hire).not.toHaveBeenCalled();
+      } finally {
+        open.mockRestore();
+        await act(async () => root.unmount());
+      }
+    });
+
+    it.each([{}, { metaKey: true }, { ctrlKey: true }])("submits the code once with Enter from its field (%j)", async modifier => {
+      mockAgentsApi.getAdapterAuthSignal.mockResolvedValue({ status: "absent" });
+      const { root } = await openStep4({ adapterType: "claude_local" });
+      await pickSource(/Claude/);
+      const open = vi.spyOn(window, "open").mockImplementation(() => null);
+      try {
+        open.mockClear();
+        const field = document.body.querySelector('input[aria-label="Authorization code"]') as HTMLInputElement;
+        await act(async () => setControlledValue(field, "authorization-code"));
+        await act(async () => field.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true, ...modifier })));
+        expect(mockAgentsApi.submitClaudeSetupTokenBrowserCode).toHaveBeenCalledExactlyOnceWith("company-new", "claude-session-1", "authorization-code");
+        expect(open).not.toHaveBeenCalled();
+        expect(mockAgentsApi.hire).not.toHaveBeenCalled();
+      } finally {
+        open.mockRestore();
+        await act(async () => root.unmount());
+      }
+    });
+
+    it.each([{ metaKey: true }, { ctrlKey: true }])("submits the code with the wizard shortcut while waiting (%j)", async modifier => {
+      mockAgentsApi.getAdapterAuthSignal.mockResolvedValue({ status: "absent" });
+      const { root } = await openStep4({ adapterType: "claude_local" });
+      await pickSource(/Claude/);
+      const open = vi.spyOn(window, "open").mockImplementation(() => null);
+      try {
+        await act(async () => (document.body.querySelector('a[href*="claude.ai"]') as HTMLAnchorElement).click());
+        open.mockClear();
+        const field = document.body.querySelector('input[aria-label="Authorization code"]') as HTMLInputElement;
+        await act(async () => setControlledValue(field, "authorization-code"));
+        const wizard = document.querySelector('[data-testid="onboarding-wizard"]')!;
+        await act(async () => wizard.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true, ...modifier })));
+        expect(mockAgentsApi.submitClaudeSetupTokenBrowserCode).toHaveBeenCalledExactlyOnceWith("company-new", "claude-session-1", "authorization-code");
+        expect(open).not.toHaveBeenCalled();
+        expect(mockAgentsApi.hire).not.toHaveBeenCalled();
+      } finally {
+        open.mockRestore();
+        await act(async () => root.unmount());
+      }
+    });
+
+    it("withdraws the footer submit action when the code is cleared or the card is closed", async () => {
+      mockAgentsApi.getAdapterAuthSignal.mockResolvedValue({ status: "absent" });
+      const { root } = await openStep4({ adapterType: "claude_local" });
+      await pickSource(/Claude/);
+      const field = document.body.querySelector('input[aria-label="Authorization code"]') as HTMLInputElement;
+      await act(async () => (document.body.querySelector('a[href*="claude.ai"]') as HTMLAnchorElement).click());
+      await act(async () => setControlledValue(field, "authorization-code"));
+      const primary = () => [...document.body.querySelectorAll("button")].at(-1)!;
+      expect(primary().textContent?.trim()).toBe("Submit code");
+      await act(async () => setControlledValue(field, ""));
+      expect(primary().textContent?.trim()).toBe("Waiting for code…");
+      expect(primary().disabled).toBe(true);
+      await act(async () => setControlledValue(field, "authorization-code"));
+      const back = [...document.body.querySelectorAll("button")].find(button => button.textContent?.trim().startsWith("Back"))!;
+      await act(async () => back.click());
+      for (let i = 0; i < 10; i++) await flushReact();
+      expect(primary().textContent?.trim()).toBe("Next");
+      expect(primary().disabled).toBe(true);
+      expect(mockAgentsApi.submitClaudeSetupTokenBrowserCode).not.toHaveBeenCalled();
+      await act(async () => root.unmount());
+    });
+
     it("submits the browser code on the paste, not on the first keystroke", async () => {
       mockAgentsApi.getAdapterAuthSignal.mockResolvedValue({ status: "absent" });
       const { root } = await openStep4({ adapterType: "claude_local" });
@@ -2986,11 +3143,155 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       for (let i = 0; i < 8; i++) await flushReact();
 
       expect(mockAgentsApi.submitClaudeSetupTokenBrowserCode).toHaveBeenCalledTimes(1);
-      expect(document.body.textContent).toContain("That authorization code was not accepted.");
-      expect(cta()).toBe("Sign in to Claude");
+      expect(document.body.textContent).toContain("Sign-in didn’t finish");
+      expect(document.body.textContent).not.toContain("That authorization code was not accepted.");
+      expect(cta()).toBe("Retry sign-in");
       expect(mockAgentsApi.hire).not.toHaveBeenCalled();
 
       await act(async () => root.unmount());
+    });
+
+    it.each(["code", "start", "lookup", "prompt", "status", "failed", "timed_out", "gone", "completion"] as const)("retries Claude sign-in after a %s failure", async failure => {
+      mockAgentsApi.getAdapterAuthSignal.mockResolvedValue({ status: "absent" });
+      if (failure === "code") mockAgentsApi.submitClaudeSetupTokenBrowserCode.mockRejectedValueOnce(new Error("Private provider detail"));
+      if (failure === "start") mockAgentsApi.startClaudeSetupTokenLogin.mockRejectedValueOnce(new Error("Sandbox unavailable"));
+      if (failure === "lookup") mockAgentsApi.getActiveClaudeSetupTokenLoginSession.mockRejectedValue(new Error("Lookup unavailable"));
+      if (failure === "gone" || failure === "status") mockAgentsApi.getClaudeSetupTokenLoginStatus.mockRejectedValueOnce(new ApiError("Session unavailable", failure === "gone" ? 404 : 503, {}));
+      if (failure === "prompt") mockAgentsApi.getClaudeSetupTokenLoginPrompt.mockRejectedValueOnce(new ApiError("Sandbox unavailable", 503, {}));
+      if (failure === "failed" || failure === "timed_out" || failure === "completion") {
+        mockAgentsApi.getClaudeSetupTokenLoginStatus.mockResolvedValueOnce({
+          sessionId: "claude-session-1", status: failure === "completion" ? "authenticated" : failure,
+          expiresAt: new Date(Date.now() + 600_000).toISOString(),
+        });
+      }
+      if (failure === "completion") mockAgentsApi.completeClaudeSetupTokenLogin.mockRejectedValueOnce(new Error("Completion unavailable"));
+      const { root } = await openStep4({ adapterType: "claude_local" });
+      try {
+        await pickSource(/Claude/);
+        if (failure === "code") {
+          const field = document.querySelector('input[aria-label="Authorization code"]') as HTMLInputElement;
+          await act(async () => {
+            field.dispatchEvent(new Event("paste", { bubbles: true }));
+            setControlledValue(field, "expired-code");
+          });
+        }
+        for (let i = 0; i < 8; i++) await flushReact();
+        const primary = () => [...document.body.querySelectorAll("button")].at(-1)!;
+        expect(document.body.textContent).toContain(failure === "timed_out" ? "This sign-in expired" : "Sign-in didn’t finish");
+        expect(document.querySelector('[role="alert"]')?.className).not.toContain("text-destructive");
+        expect(document.body.textContent).toContain("Retry sign-in to get a fresh code. Your setup is saved.");
+        expect(document.body.textContent).not.toContain("Private provider detail");
+        expect(document.querySelector('a[href*="claude.ai"]')).toBeNull();
+        expect(document.querySelector('input[aria-label="Authorization code"]')).toBeNull();
+        expect(primary().textContent?.trim()).toBe("Retry sign-in");
+        expect(primary().disabled).toBe(false);
+        const startsBeforeRetry = mockAgentsApi.startClaudeSetupTokenLogin.mock.calls.length;
+        let release: () => void = () => {};
+        if (failure !== "start" && failure !== "lookup") mockAgentsApi.cancelClaudeSetupTokenLogin.mockImplementationOnce(() => new Promise(resolve => { release = () => resolve({}); }));
+        mockAgentsApi.getActiveClaudeSetupTokenLoginSession.mockRejectedValue(new ApiError("Not found", 404, null));
+        mockAgentsApi.startClaudeSetupTokenLogin.mockResolvedValueOnce({
+          sessionId: "claude-session-2", status: "pending", expiresAt: new Date(Date.now() + 600_000).toISOString(),
+        });
+        mockAgentsApi.getClaudeSetupTokenLoginStatus.mockResolvedValue({
+          sessionId: "claude-session-2", status: "pending", expiresAt: new Date(Date.now() + 600_000).toISOString(),
+        });
+        mockAgentsApi.getClaudeSetupTokenLoginPrompt.mockResolvedValue({ authorizationUrl: "https://claude.ai/oauth/authorize?attempt=2", transportAdvisory: null });
+        await act(async () => { primary().click(); primary().click(); });
+        if (failure !== "start" && failure !== "lookup") {
+          expect(mockAgentsApi.cancelClaudeSetupTokenLogin).toHaveBeenCalledExactlyOnceWith("company-new", "claude-session-1");
+          expect(mockAgentsApi.startClaudeSetupTokenLogin).toHaveBeenCalledTimes(startsBeforeRetry);
+          expect(primary().disabled).toBe(true);
+          await act(async () => release());
+        }
+        for (let i = 0; i < 12; i++) await flushReact();
+        expect(mockAgentsApi.startClaudeSetupTokenLogin).toHaveBeenCalledTimes(startsBeforeRetry + 1);
+        expect(primary().textContent?.trim()).toBe("Sign in to Claude");
+        const field = document.querySelector('input[aria-label="Authorization code"]') as HTMLInputElement;
+        expect(field.value).toBe("");
+        expect(document.querySelector('[role="alert"]')).toBeNull();
+        await act(async () => setControlledValue(field, "fresh-code"));
+        await act(async () => primary().click());
+        expect(mockAgentsApi.submitClaudeSetupTokenBrowserCode).toHaveBeenLastCalledWith("company-new", "claude-session-2", "fresh-code");
+        expect(mockAgentsApi.hire).not.toHaveBeenCalled();
+      } finally {
+        await act(async () => root.unmount());
+      }
+    });
+
+    it.each(["claude_local", "codex_local"] as const)("keeps a missing resumed %s session retryable", async adapterType => {
+      mockAgentsApi.getAdapterAuthSignal.mockResolvedValue({ status: "absent" });
+      const claude = adapterType === "claude_local";
+      const active = {
+        sessionId: claude ? "claude-session-1" : "codex-session-1", environmentId: "env-sandbox-1",
+        status: "waiting_for_user", expiresAt: null, failure: null,
+        aiConnection: { provider: claude ? "anthropic" : "openai", method: "subscription", ownership: "personal", agentIds: [], allAgents: true },
+        panelMode: claude ? "submitted_browser_code" : "displayed_code",
+        prompt: claude ? { authorizationUrl: "https://claude.ai/oauth/authorize?code=true" } : { url: "https://auth.openai.com/codex/device", code: "OLD-CODE" },
+      };
+      const activeApi = claude ? mockAgentsApi.getActiveClaudeSetupTokenLoginSession : mockAgentsApi.getActiveAdapterAuthLoginSession;
+      activeApi.mockResolvedValue(active);
+      const statusApi = claude ? mockAgentsApi.getClaudeSetupTokenLoginStatus : mockAgentsApi.getAdapterAuthLoginStatus;
+      statusApi.mockRejectedValueOnce(new ApiError("Session gone", 404, {}));
+      const { root } = await openStep4({ adapterType });
+      try {
+        for (let i = 0; i < 10; i++) await flushReact();
+        const primary = () => [...document.body.querySelectorAll("button")].at(-1)!;
+        expect(primary().textContent?.trim()).toBe("Retry sign-in");
+        expect(document.body.textContent).toContain("Sign-in didn’t finish");
+        activeApi.mockRejectedValue(new ApiError("Not found", 404, null));
+        await act(async () => primary().click());
+        for (let i = 0; i < 12; i++) await flushReact();
+        expect(primary().textContent?.trim()).toBe(claude ? "Sign in to Claude" : "Sign in to OpenAI");
+        expect(mockAgentsApi.hire).not.toHaveBeenCalled();
+      } finally {
+        await act(async () => root.unmount());
+      }
+    });
+
+    it("keeps retry available after cancellation fails, and accepts an already-removed session", async () => {
+      mockAgentsApi.getAdapterAuthSignal.mockResolvedValue({ status: "absent" });
+      mockAgentsApi.getClaudeSetupTokenLoginStatus.mockResolvedValueOnce({ sessionId: "claude-session-1", status: "failed", expiresAt: new Date(Date.now() + 600_000).toISOString() });
+      mockAgentsApi.cancelClaudeSetupTokenLogin.mockRejectedValueOnce(new Error("Temporary error"))
+        .mockRejectedValueOnce(new ApiError("Session gone", 404, {}));
+      const { root } = await openStep4({ adapterType: "claude_local" });
+      try {
+        await pickSource(/Claude/);
+        const primary = () => [...document.body.querySelectorAll("button")].at(-1)!;
+        await act(async () => primary().click());
+        for (let i = 0; i < 8; i++) await flushReact();
+        expect(primary().textContent?.trim()).toBe("Retry sign-in");
+        expect(mockAgentsApi.startClaudeSetupTokenLogin).toHaveBeenCalledTimes(1);
+        mockAgentsApi.startClaudeSetupTokenLogin.mockResolvedValueOnce({ sessionId: "claude-session-2", status: "pending", expiresAt: new Date(Date.now() + 600_000).toISOString() });
+        await act(async () => primary().click());
+        for (let i = 0; i < 12; i++) await flushReact();
+        expect(mockAgentsApi.startClaudeSetupTokenLogin).toHaveBeenCalledTimes(2);
+        expect(primary().textContent?.trim()).toBe("Sign in to Claude");
+      } finally {
+        await act(async () => root.unmount());
+      }
+    });
+
+    it.each(["timed_out", "gone"] as const)("retries OpenAI sign-in after the session is %s", async failure => {
+      mockAgentsApi.getAdapterAuthSignal.mockResolvedValue({ status: "absent" });
+      if (failure === "gone") mockAgentsApi.getAdapterAuthLoginStatus.mockRejectedValueOnce(new ApiError("Session gone", 404, {}));
+      else mockAgentsApi.getAdapterAuthLoginStatus.mockResolvedValueOnce({ sessionId: "codex-session-1", status: "timed_out", prompt: { url: "https://auth.openai.com/codex/device", code: "OLD-CODE" } });
+      const { root } = await openStep4({ adapterType: "codex_local" });
+      try {
+        await pickSource(/OpenAI/);
+        const primary = () => [...document.body.querySelectorAll("button")].at(-1)!;
+        expect(primary().textContent?.trim()).toBe("Retry sign-in");
+        mockAgentsApi.startAdapterAuthLogin.mockResolvedValueOnce({ sessionId: "codex-session-2", status: "pending" });
+        mockAgentsApi.getAdapterAuthLoginStatus.mockResolvedValue({ sessionId: "codex-session-2", status: "pending", prompt: { url: "https://auth.openai.com/codex/device", code: "FRESH-CODE" } });
+        await act(async () => { primary().click(); primary().click(); });
+        for (let i = 0; i < 12; i++) await flushReact();
+        expect(mockAgentsApi.cancelAdapterAuthLogin).toHaveBeenCalledExactlyOnceWith("company-new", "codex_local", "codex-session-1");
+        expect(mockAgentsApi.startAdapterAuthLogin).toHaveBeenCalledTimes(2);
+        expect(primary().textContent?.trim()).toBe("Sign in to OpenAI");
+        expect(document.body.textContent).toContain("FRESH-CODE");
+        expect(mockAgentsApi.hire).not.toHaveBeenCalled();
+      } finally {
+        await act(async () => root.unmount());
+      }
     });
 
     it("does not reopen the card when a pasted code fails after Back", async () => {
@@ -3301,7 +3602,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
           {
             code: "environment_identity",
             level: "info",
-            message: 'Environment test identity for "Paperclip Computer".',
+            message: 'Environment test identity for "Paperclip Sandbox".',
             detail: "paperclipLeaseId=ff9e58e9; provider=daytona",
           },
         ],
@@ -3451,7 +3752,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       await pickSource(/OpenAI/);
 
       expect(mockAgentsApi.startAdapterAuthLogin).not.toHaveBeenCalled();
-      expect(document.body.textContent).toContain("Paperclip is temporarily unavailable");
+      expect(document.body.textContent).toContain("Sign-in didn’t finish");
 
       await act(async () => root.unmount());
     });
@@ -3467,7 +3768,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       await pickSource(/Claude/);
 
       expect(mockAgentsApi.startClaudeSetupTokenLogin).not.toHaveBeenCalled();
-      expect(document.body.textContent).toContain("Paperclip is temporarily unavailable");
+      expect(document.body.textContent).toContain("Sign-in didn’t finish");
 
       await act(async () => root.unmount());
     });
@@ -3685,8 +3986,8 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
           await pickSource(/OpenAI/);
           expect(calls).toEqual(["discovery-before", "platform", "discovery-after", "adapter", "hire"]);
           expect(handles.queryClient.getQueryData(queryKeys.adapters.availability("company-new", "env-sandbox-1"))).toEqual(discovery(defaultRunner));
-          expect(mockEnvironmentsApi.probe).toHaveBeenCalledExactlyOnceWith("env-sandbox-1", "company-new");
-          expect(mockAgentsApi.testEnvironment).toHaveBeenCalledWith("company-new", "codex_local", expect.objectContaining({ environmentId: "env-sandbox-1", aiConnection: { provider: "openai", method: "subscription", mode: "responsible_user" } }));
+          expect(mockEnvironmentsApi.probe).toHaveBeenCalledExactlyOnceWith("env-sandbox-1", "company-new", expect.objectContaining({ signal: expect.any(AbortSignal) }));
+          expect(mockAgentsApi.testEnvironment).toHaveBeenCalledWith("company-new", "codex_local", expect.objectContaining({ environmentId: "env-sandbox-1", aiConnection: { provider: "openai", method: "subscription", mode: "responsible_user" } }), expect.objectContaining({ signal: expect.any(AbortSignal) }));
           expect((mockAgentsApi.testEnvironment.mock.calls[0] as unknown[])[2]).not.toHaveProperty("runner");
           expect((mockAgentsApi.hire.mock.calls[0] as unknown[])[1]).not.toHaveProperty("runner");
           expect(managedApi.connectLocal).not.toHaveBeenCalled();
@@ -3855,6 +4156,8 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
           }));
           await pickSource(source);
           await settle();
+          expect(document.body.querySelector('[aria-label="Runner"]')).toBeNull();
+          expect([...document.body.querySelectorAll("summary")].some(summary => summary.textContent === "Advanced")).toBe(false);
           expect(button("Connect").disabled).toBe(true);
           await act(async () => button("Connect").dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", metaKey: true, bubbles: true })));
           await settle();
@@ -4156,6 +4459,37 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
         } finally { await act(async () => root.unmount()); }
       });
 
+      it("releases a hung test, ignores its late result, and retries with the saved login", async () => {
+        let finish!: (result: typeof passed) => void;
+        mockAgentsApi.testEnvironment.mockReturnValueOnce(new Promise(resolve => { finish = resolve; }));
+        const timerSpy = vi.spyOn(globalThis, "setTimeout");
+        const { root } = await openStep4({ adapterType: "claude_local" });
+        try {
+          await pickSource(/Claude/);
+          await detected();
+          expectTesting();
+          const deadline = timerSpy.mock.calls.find(([, ms]) => ms === ONBOARDING_CONNECTION_TEST_TIMEOUT_MS);
+          expect(deadline).toBeDefined();
+          const options = (mockAgentsApi.testEnvironment.mock.calls[0] as unknown[])[3] as { signal: AbortSignal };
+          await act(async () => (deadline![0] as () => void)());
+          await settle();
+          expect(options.signal.aborted).toBe(true);
+          expect(document.body.textContent).toContain("The connection test took too long.");
+          expect(button("Connect").disabled).toBe(false);
+          await act(async () => finish(passed));
+          await settle();
+          expect(mockAgentsApi.hire).not.toHaveBeenCalled();
+          await click("Connect");
+          expect(mockAgentsApi.testEnvironment).toHaveBeenCalledTimes(2);
+          expect(managedApi.connectLocal).toHaveBeenCalledTimes(1);
+          expect(mockAgentsApi.hire).toHaveBeenCalledTimes(1);
+          expect(document.body.textContent).toContain("is ready to work!");
+        } finally {
+          timerSpy.mockRestore();
+          await act(async () => root.unmount());
+        }
+      });
+
       it.each(providers)("keeps Connect usable when %s detection has not completed", async (adapterType, _provider, label) => {
         const { root } = await openStep4({ adapterType });
         try {
@@ -4281,6 +4615,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
         expiresAt: null,
         failure: null,
         panelMode: "submitted_browser_code",
+        aiConnection: { provider: "anthropic", method: "subscription", ownership: "personal", agentIds: [], allAgents: true },
         prompt: { authorizationUrl: "https://claude.ai/oauth/authorize?code=true" },
       });
       const { root } = await openStep4({ adapterType: "claude_local" });

@@ -69,6 +69,7 @@ import {
   toolProfiles,
 } from "@paperclipai/db";
 import { HttpError } from "../../errors.js";
+import { isAiConnectionIncompatible } from "../ai-connection-runtime.js";
 import type { ReviewedChatBindingDenialReason } from "../reviewed-chat-binding-diagnostics.js";
 import { filterResolvedGitHubConnectionsForRun } from "../git-credentials.js";
 import type {
@@ -160,6 +161,13 @@ export class ConfigurationIncompleteFailure extends Error {
     this.name = "ConfigurationIncompleteFailure";
     this.resultJson = resultJson;
   }
+}
+
+export function classifyManagedProjectAuthFailure(error: unknown, agentId: string): unknown {
+  if (!isAiConnectionIncompatible(error)) return error;
+  return new ConfigurationIncompleteFailure(error.message, {
+    configurationIncomplete: { reason: "ai_connection_incompatible", actionUrl: `/agents/${agentId}/runtime` },
+  });
 }
 
 const ISSUE_RESPONSIBLE_USER_WAKE_REASONS = new Set([
