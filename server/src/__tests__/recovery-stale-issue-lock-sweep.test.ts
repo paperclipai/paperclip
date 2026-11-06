@@ -481,10 +481,12 @@ describeEmbeddedPostgres("recovery sweepStaleIssueLocks", () => {
   it.each(["renew", "replace", "claim"])("fences a legacy controller %s between the orphan check and terminal write", async (change) => {
     const { companyId, agentId, runningRunId } = await seed();
     const bootId = randomUUID();
+    const staleAt = new Date(Date.now() - 15 * 60_000);
     await db.update(heartbeatRuns).set({
       runtimeMode: "legacy", processPid: 2_000_000_000,
       controllerBootId: change === "claim" ? null : bootId,
-      controllerLeaseExpiresAt: new Date(Date.now() - 60_000),
+      controllerLeaseExpiresAt: staleAt,
+      updatedAt: staleAt,
     }).where(eq(heartbeatRuns.id, runningRunId));
     await db.insert(issues).values({
       id: randomUUID(), companyId, title: "Controller changed during sweep", status: "in_progress",
@@ -504,6 +506,71 @@ describeEmbeddedPostgres("recovery sweepStaleIssueLocks", () => {
     expect(await db.select({ status: heartbeatRuns.status }).from(heartbeatRuns)
       .where(eq(heartbeatRuns.id, runningRunId))).toEqual([{ status: "running" }]);
     expect(mockTelemetryClient.track).not.toHaveBeenCalled();
+  });
+
+  it("leaves a recently live leased legacy run to the orphan reaper", async () => {
+    const { companyId, agentId, runningRunId } = await seed();
+    await db.update(heartbeatRuns).set({
+      runtimeMode: "legacy", processPid: 2_000_000_000,
+      controllerBootId: randomUUID(),
+      controllerLeaseExpiresAt: new Date(Date.now() - 30_000),
+    }).where(eq(heartbeatRuns.id, runningRunId));
+    await db.insert(issues).values({
+      id: randomUUID(), companyId, title: "Recently live orphan", status: "in_progress",
+      assigneeAgentId: agentId, executionRunId: runningRunId, checkoutRunId: runningRunId,
+    });
+    const result = await recoveryService(db, { enqueueWakeup: vi.fn() }).sweepStaleIssueLocks();
+    expect(result).toEqual({ cleared: 0, issueIds: [], terminalizedRunIds: [] });
+    expect(await db.select({ status: heartbeatRuns.status }).from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runningRunId))).toEqual([{ status: "running" }]);
+    expect(await db.select({ executionRunId: issues.executionRunId }).from(issues)
+      .where(eq(issues.executionRunId, runningRunId))).toEqual([{ executionRunId: runningRunId }]);
+    expect(mockTelemetryClient.track).not.toHaveBeenCalled();
+  });
+
+  it("still terminalizes a leased legacy run past the orphan reaper handoff window", async () => {
+    const { companyId, agentId, runningRunId } = await seed();
+    const staleAt = new Date(Date.now() - 15 * 60_000);
+    await db.update(heartbeatRuns).set({
+      runtimeMode: "legacy", processPid: 2_000_000_000,
+      controllerBootId: randomUUID(),
+      controllerLeaseExpiresAt: staleAt,
+      updatedAt: staleAt,
+    }).where(eq(heartbeatRuns.id, runningRunId));
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId, companyId, title: "Stale leased orphan", status: "in_progress",
+      assigneeAgentId: agentId, executionRunId: runningRunId, checkoutRunId: runningRunId,
+    });
+    const result = await recoveryService(db, { enqueueWakeup: vi.fn() }).sweepStaleIssueLocks();
+    expect(result.terminalizedRunIds).toEqual([runningRunId]);
+    expect(result.cleared).toBe(1);
+    expect(await db.select({ status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode })
+      .from(heartbeatRuns).where(eq(heartbeatRuns.id, runningRunId)))
+      .toEqual([{ status: "interrupted", errorCode: "orphaned_running_run" }]);
+    expect(await db.select({ executionRunId: issues.executionRunId }).from(issues)
+      .where(eq(issues.id, issueId))).toEqual([{ executionRunId: null }]);
+  });
+
+  it("still terminalizes a recently live leased legacy run when its issue is terminal", async () => {
+    const { companyId, agentId, runningRunId } = await seed();
+    await db.update(heartbeatRuns).set({
+      runtimeMode: "legacy", processPid: 2_000_000_000,
+      controllerBootId: randomUUID(),
+      controllerLeaseExpiresAt: new Date(Date.now() - 30_000),
+    }).where(eq(heartbeatRuns.id, runningRunId));
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId, companyId, title: "Terminal issue with a recently live run", status: "done",
+      assigneeAgentId: agentId, executionRunId: runningRunId, checkoutRunId: runningRunId,
+    });
+    const result = await recoveryService(db, { enqueueWakeup: vi.fn() }).sweepStaleIssueLocks();
+    expect(result.terminalizedRunIds).toEqual([runningRunId]);
+    expect(result.cleared).toBe(1);
+    expect(await db.select({ status: heartbeatRuns.status }).from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runningRunId))).toEqual([{ status: "succeeded" }]);
+    expect(await db.select({ executionRunId: issues.executionRunId }).from(issues)
+      .where(eq(issues.id, issueId))).toEqual([{ executionRunId: null }]);
   });
 
   it("preserves a process-less native run while same-run resumption owns its retry", async () => {
