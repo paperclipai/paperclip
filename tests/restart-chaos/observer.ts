@@ -141,7 +141,7 @@ export class TaskObserver {
   private noteTriggerMissed(fault: ScheduledFault) {
     const trigger = fault.trigger ?? "time";
     (this.record.triggerMissed ??= []).push(trigger);
-    this.timeline.add("trigger_missed", { taskId: this.plan.taskId, trigger, kind: fault.kind });
+    this.timeline.add("trigger_missed", { taskId: this.plan.taskId, trigger, fault: fault.kind });
   }
 
   /**

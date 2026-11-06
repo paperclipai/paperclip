@@ -165,6 +165,12 @@ describe("trigger firing", () => {
   });
 });
 
+describe("timeline", () => {
+  it("keeps the event kind when event data has a kind field", () => {
+    expect(new Timeline(null).add("fault_started", { kind: "K1" }).kind).toBe("fault_started");
+  });
+});
+
 describe("K6 crash loop", () => {
   it("kills in recovering (or ready when recovering was skipped), then just after ready", () => {
     expect(crashLoopShouldFire("recovering", "starting")).toBe(false);

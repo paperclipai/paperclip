@@ -252,7 +252,7 @@ export class ChaosSupervisor {
     };
     this.faultInProgress = true;
     this.serverReady = false;
-    this.timeline.add("fault_started", { faultId: receipt.faultId, kind, signal: receipt.signal, holdMs, requestedBy, previousPid: previous?.pid });
+    this.timeline.add("fault_started", { faultId: receipt.faultId, fault: kind, signal: receipt.signal, holdMs, requestedBy, previousPid: previous?.pid });
     this.log.write(`\n[restart-chaos] ${receipt.faultId} ${kind} ${receipt.signal} hold=${holdMs}ms requestedBy=${requestedBy} at ${new Date().toISOString()}\n`);
     try {
       if (!previous?.pid || this.exited(previous)) throw new Error("No live Paperclip server to fault");

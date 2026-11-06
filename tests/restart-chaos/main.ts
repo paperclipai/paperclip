@@ -117,7 +117,7 @@ async function main(): Promise<number> {
         const exposed = active.filter(candidate => !candidate.done);
         await Promise.all(exposed.map(candidate => candidate.snapshotBeforeFault()));
         const trigger = due.trigger && due.trigger !== "time" ? { trigger: due.trigger, delayMs: due.delayMs ?? 0 } : undefined;
-        if (trigger) timeline.add("trigger_fired", { taskId: observer.plan.taskId, kind: due.kind, ...trigger });
+        if (trigger) timeline.add("trigger_fired", { taskId: observer.plan.taskId, fault: due.kind, ...trigger });
         faultWork.push(supervisor.fault(due.kind, due.holdMs, observer.plan.taskId, trigger).then(receipt => {
           faults.push(receipt);
           for (const candidate of exposed) { candidate.noteFault(receipt.faultId); candidate.extendDeadline((receipt.readyAt ?? Date.now()) - receipt.startedAt); }
