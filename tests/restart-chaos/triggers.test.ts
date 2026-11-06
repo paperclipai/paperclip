@@ -15,7 +15,7 @@ import { ledgerLine } from "./ledger.js";
 import type { TaskGrade, TaskPlan, TaskRecord, TaskSample, WaveOptions, WavePlan } from "./types.js";
 
 process.env.RESTART_CHAOS_QUIET = "1";
-const lab: ChaosLab = { companyId: "c1", environmentId: "e1", projectId: "p1", fixtureRepositoryPath: "/tmp/none",
+const lab: ChaosLab = { companyId: "c1", environmentId: "e1", environmentKind: "local", projectId: "p1", fixtureRepositoryPath: "/tmp/none",
   agents: { codex: { id: "a1", name: "Chaos codex" }, claude: { id: "a2", name: "Chaos claude" }, opencode: { id: "a3", name: "Chaos opencode" } } };
 const ready = { serverReady: true, faultInProgress: false };
 const base: TaskPlan = { taskId: "t01", index: 0, workload: "A1", adapter: "codex", fault: "K1", fireAfterMs: 999_999,

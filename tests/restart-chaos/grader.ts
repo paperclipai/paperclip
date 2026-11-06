@@ -179,6 +179,7 @@ export function gradeR6(record: TaskRecord): RuleResult {
     ...(sweep.activeRuns.length ? [`active_runs=${sweep.activeRuns.join(",")}`] : []),
     ...(sweep.runningWorkspaceOperations.length ? [`running_workspace_operations=${sweep.runningWorkspaceOperations.join(",")}`] : []),
     ...(sweep.activeRecoveryAction ? ["active_recovery_action"] : []),
+    ...(sweep.daytonaLeaks ?? []),
   ];
   return leaks.length ? { verdict: "fail", detail: `leak: ${leaks.join("; ")}` } : { verdict: "pass", detail: "clean rest" };
 }
