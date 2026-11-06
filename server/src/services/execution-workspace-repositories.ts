@@ -409,11 +409,18 @@ export function executionWorkspaceRepositoryService(db: Db) {
       }
       for (const verify of verifications) await verify();
       if (requiresSave) {
-        await saveRemoteWorkspace({ db, workspace, runId: input.runId, lease: input.remoteLease,
-          target: input.remoteTarget, boundary: `repositories:${prepared.map(row => `${row.id}:${row.pinnedCommit}`).sort().join(",")}`,
-          repositories: prepared.map(row => ({ id: row.id, relativePath: row.relativePath, repoUrl: row.repoUrl,
-            ref: rows.find(source => source.id === row.id)!.requestedRef, pinnedCommit: row.pinnedCommit })),
-          assertOwned: async () => { for (const verify of verifications) await verify(); } });
+        try {
+          await saveRemoteWorkspace({ db, workspace, runId: input.runId, lease: input.remoteLease,
+            target: input.remoteTarget, boundary: `repositories:${prepared.map(row => `${row.id}:${row.pinnedCommit}`).sort().join(",")}`,
+            repositories: prepared.map(row => ({ id: row.id, relativePath: row.relativePath, repoUrl: row.repoUrl,
+              ref: rows.find(source => source.id === row.id)!.requestedRef, pinnedCommit: row.pinnedCommit })),
+            assertOwned: async () => { for (const verify of verifications) await verify(); } });
+        } catch (error) {
+          for (const result of prepared) await db.update(executionWorkspaceRepositories)
+            .set({ state: "needs_repair", failureCode: "repository_preparation_failed", updatedAt: new Date() })
+            .where(and(eq(executionWorkspaceRepositories.id, result.id), eq(executionWorkspaceRepositories.companyId, input.companyId)));
+          throw error;
+        }
       }
       for (const result of prepared) {
         await db.update(executionWorkspaceRepositories).set({ state: "ready", pinnedCommit: result.pinnedCommit,

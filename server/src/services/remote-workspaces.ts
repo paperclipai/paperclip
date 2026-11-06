@@ -32,7 +32,7 @@ import {
 import {
   beginWorkspaceSnapshot, getWorkspaceSnapshot, loadWorkspaceSnapshotArchive, uploadWorkspaceSnapshot,
 } from "./remote-workspace-snapshot-storage.js";
-import { restoreRemoteWorkspaceArchive } from "./remote-workspace-snapshot-archive.js";
+import { restoreRemoteWorkspaceArchive, readRemoteWorkspaceArchiveDirectories } from "./remote-workspace-snapshot-archive.js";
 import { removeTaskDirectoryTree } from "./isolated-task-directory-snapshot.js";
 import { attachPreservedWorkspaceSnapshots } from "./workspace-recovery-snapshot.js";
 import { notifyRemoteWorkspaceSnapshots } from "./remote-workspace-snapshot-retention.js";
@@ -694,6 +694,7 @@ export async function saveRemoteWorkspace(input: {
     return created!;
   });
   let captured: Awaited<ReturnType<typeof captureRemoteWorkspaceArchive>> | null = null;
+  let publicationScratch: string | undefined;
   let failure: { code: string; cause?: string } | undefined;
   try {
     const snapshot = await beginWorkspaceSnapshot(input.db, { companyId: input.workspace.companyId, workspaceId: input.workspace.id,
@@ -710,6 +711,13 @@ export async function saveRemoteWorkspace(input: {
       companyId: input.workspace.companyId, workspaceId: input.workspace.id, archivePath: captured?.archivePath ?? "",
       manifestDigest: existingUpload?.manifestDigest ?? captured!.manifestDigest });
     await input.assertOwned();
+    let publicationArchive = captured?.archivePath;
+    if (!publicationArchive) {
+      publicationScratch = await mkdtemp(path.join(os.tmpdir(), "pc-workspace-publication-"));
+      publicationArchive = path.join(publicationScratch, "workspace.pcws");
+      await loadWorkspaceSnapshotArchive({ storage: input.storage ?? getStorageService(), reference: saved, targetPath: publicationArchive });
+    }
+    const capturedDirectories = await readRemoteWorkspaceArchiveDirectories(publicationArchive, saved.manifestDigest);
     const at = new Date();
     await input.db.transaction(async tx => {
       await lockWorkspaceRunParents(tx, input.workspace.companyId, input.runId, operation.issueId);
@@ -732,7 +740,8 @@ export async function saveRemoteWorkspace(input: {
         ? remoteWorkspaceSourceSchema.parse({ kind: "empty", repositories: receipt.repositories }).repositories ?? [] : [];
       const repositories = [...new Map([
         ...priorRepositories, ...(expected.source.repositories ?? []), ...(input.repositories ?? []),
-      ].map(repository => [repository.id, repository])).values()];
+      ].map(repository => [repository.id, repository])).values()]
+        .filter(repository => !repository.readOnly && capturedDirectories.has(repository.relativePath));
       await tx.update(executionWorkspaces).set({ metadata: { ...workspace.metadata, remoteWorkspace: authority,
         remoteWorkspaceSnapshotRepositories: { snapshotId: saved.id, repositories },
       }, updatedAt: at }).where(eq(executionWorkspaces.id, workspace.id));
@@ -754,6 +763,7 @@ export async function saveRemoteWorkspace(input: {
   } finally {
     // Every upload/capture promise has settled before its durable token clears.
     // Missing completion evidence remains pinned; cleanup never masks the save error.
+    if (publicationScratch) await rm(publicationScratch, { recursive: true, force: true }).catch(() => undefined);
     try { await captured?.cleanup(); }
     catch { logger.warn({ runId: input.runId, operationId: operation.id }, "Remote workspace local archive cleanup failed"); }
     try {

@@ -4631,4 +4631,6 @@ allows admission without another archive upload. New repositories and legacy
 repositories without that receipt require one workspace snapshot for the admission
 batch. Repository ready receipts publish after the snapshot commits. An upload
 failure remains retryable even when the clone directory already exists. Later
-workspace saves retain the repository coverage receipt for the new snapshot.
+workspace saves retain repository coverage only for directories present in the
+captured archive. Deleted checkouts lose coverage and can be acquired again.
+A failed batch upload marks the affected repository rows as needing repair.

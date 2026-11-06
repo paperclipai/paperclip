@@ -853,6 +853,14 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
     expect(readRemoteWorkspaceAuthority((await workspace(local.id)).metadata)!.snapshotId)
       .toBe(readRemoteWorkspaceAuthority(afterBatch.metadata)!.snapshotId);
     expect(resolveGitAuth).toHaveBeenCalledOnce();
+    await fs.rm(path.join(restored.remoteRoot, "wrapper-new"), { recursive: true });
+    await saveRemoteWorkspace({ ...admission, workspace: await workspace(local.id), boundary: "after-checkout-removal",
+      assertOwned: async () => undefined });
+    const removed = await workspace(local.id);
+    expect((removed.metadata?.remoteWorkspaceSnapshotRepositories as { repositories: Array<{ id: string }> }).repositories)
+      .not.toEqual(expect.arrayContaining([expect.objectContaining({ id: newRepository.id })]));
+    await expect(prepareRemoteWorkspaceRepository({ ...admission, workspace: removed, repository: newRepository }))
+      .resolves.toMatchObject({ cwd: path.join(restored.remoteRoot, "wrapper-new") });
     expect(await fs.readFile(path.join(restored.remoteRoot, "wrapper-new", "new.txt"), "utf8")).toBe("newly acquired work\n");
     expect(readRemoteWorkspaceAuthority((await workspace(local.id)).metadata)!.source).toEqual(source);
   }, 60_000);
