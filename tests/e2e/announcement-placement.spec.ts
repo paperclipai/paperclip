@@ -113,6 +113,14 @@ test.describe("Announcement placement on a new company's first task", () => {
       expect.soft(card.y + card.height, `${label}: announcement is clipped`).toBeLessThanOrEqual(viewport.height);
       await expect.soft(announcement.getByRole("button", { name: "Dismiss announcement" })).toBeInViewport();
       await expect.soft(announcement.getByRole("link", { name: "Explore connectors" })).toBeInViewport();
+
+      // The account menu stays reachable while the card shows.
+      const accountTrigger = page.getByRole("button", { name: "Open account menu" });
+      const accountBox = await box(accountTrigger, "account menu trigger");
+      expect.soft(overlapArea(card, accountBox), `${label}: announcement overlaps account menu`).toBe(0);
+      await accountTrigger.click();
+      await expect.soft(page.getByRole("dialog", { name: "Account" })).toBeVisible();
+      await page.keyboard.press("Escape");
     }
   });
 });
