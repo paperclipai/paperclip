@@ -211,16 +211,30 @@ export function truthfulTimelineAccount(input: {
     + (new RegExp(`^${successorOwnership.source}`, "i").test(match[0]) ? match[0].indexOf(",") + 1 : 0) })));
   const pauseCausedByFailure = new RegExp(`\\b(?:after|because)\\s+(?:(?:the|his|her|their|its|${escape(firstWorker)}['’]s)\\s+)?${commandTail}`, "i");
   const failureAfterPause = new RegExp(`\\bafter\\s+(?:(?:the|his|her|their|its|a)\\s+)?(?:task|work|it|${escape(firstWorker)})(?:\\s+(?:was|got|had been|has been))?\\s*$`, "i");
-  const ordered = failures.some(failure => handoffs.some(handoff => handoff.at > failure.at
-    && [...body.slice(failure.clauseAt, handoff.at).matchAll(/\b(?:paused|blocked|stopped)\b/gi)].some(pause => {
+  const pauseBetween = (failure: typeof failures[number], end: number) =>
+    [...body.slice(failure.clauseAt, end).matchAll(/\b(?:paused|blocked|stopped)\b/gi)].some(pause => {
       const pauseAt = failure.clauseAt + pause.index;
       // Wording order can differ from event order, but an earlier pause needs
       // an explicit causal link to this failure, not just the same clause.
       return pauseAt < failure.at
         ? pauseCausedByFailure.test(body.slice(pauseAt + pause[0].length, failure.at))
         : !failureAfterPause.test(body.slice(failure.end, pauseAt));
-    })
-    && repairs.some(repair => repair.at > handoff.at)));
+    });
+  const explicitTransition = failures.some(failure => handoffs.some(handoff => handoff.at > failure.at
+    && pauseBetween(failure, handoff.at) && repairs.some(repair => repair.at > handoff.at)));
+  const taskReference = input.taskIdentifier && new RegExp(`\\b${escape(input.taskIdentifier)}\\b`, "i");
+  const taskNamespace = input.taskIdentifier && /\d+$/.test(input.taskIdentifier)
+    ? new RegExp(`\\b${escape(input.taskIdentifier.replace(/\d+$/, ""))}\\d+\\b`, "gi") : null;
+  const implicitTransition = !!taskReference && paragraphs.some(paragraph => {
+    if (!taskReference.test(paragraph.text.split("\n")[0]!)
+      || new RegExp(assignment, "i").test(paragraph.text) || new RegExp(successorOwnership.source, "i").test(paragraph.text)
+      || /\b(?:automatically|autonomously|self-assigned)\b|\b(?:another|different|other)\s+(?:task|issue|work)\b/i.test(paragraph.text)
+      || taskNamespace && [...paragraph.text.matchAll(taskNamespace)].some(match => match[0].toLowerCase() !== input.taskIdentifier!.toLowerCase())) return false;
+    return failures.some(failure => failure.at >= paragraph.start && failure.at < paragraph.end
+      && mentions(body.slice(paragraph.start, failure.at), firstWorker)
+      && repairs.some(repair => repair.at > failure.at && repair.at < paragraph.end && pauseBetween(failure, repair.at)));
+  });
+  const ordered = explicitTransition || implicitTransition;
   const nativeFailure = /\b(?:native|runner|execution)\s+runs?\s+(?:(?:themselves|were|was|had|also|both|[a-z]+ly)\s+){0,3}(?:failed|failures?|unsuccessful)\b|\b(?:native|runner|execution)\s+runs?\s+(?:ended|finished)\s+(?:in|with)\s+(?:a\s+)?failure\b|\bfailed\s+(?:native|runner|execution)\s+runs?\b/i;
   const falseNativeFailure = clauses.some(({ text }) => {
     const match = nativeFailure.exec(text);

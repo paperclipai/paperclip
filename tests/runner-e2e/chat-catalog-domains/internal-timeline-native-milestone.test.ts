@@ -430,3 +430,15 @@ it.each([
   const o = fixture(); o.reply = reply;
   expect(gradeWorkTimeline(o).passed).toBe(false);
 });
+
+it("corroborates a same-task implicit worker transition with the saved handoff and inspection links", () => {
+  const o = fixture();
+  o.reply = "## Signup implementation — RUN-3\nMorgan built the page. The verification command failed with exit 1 and the task paused as blocked. Riley added the missing label and verification exited 0.";
+  expect(gradeWorkTimeline(o).passed).toBe(true);
+  const withoutHandoff = { ...o, timelineEvents: o.timelineEvents.filter(event => event.id !== "handoff") };
+  expect(gradeWorkTimeline(withoutHandoff).passed).toBe(false);
+  const wrongAssignee = { ...o, timelineEvents: o.timelineEvents.map(event => event.id === "handoff"
+    ? { ...event, details: { assigneeAgentId: "morgan" } } : event) };
+  expect(gradeWorkTimeline(wrongAssignee).passed).toBe(false);
+  expect(gradeWorkTimeline({ ...o, links: [] }).passed).toBe(false);
+});

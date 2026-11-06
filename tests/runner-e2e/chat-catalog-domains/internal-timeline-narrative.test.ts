@@ -279,3 +279,25 @@ it.each([
 ])("does not borrow omitted command subjects across a material boundary: %s", reply => {
   expect(gradeBulletCommand(reply)).toBe(false);
 });
+
+const implicitTransitionAccount = `## Signup implementation — RUN-3
+- Morgan built the page. The verification command returned exit 1. The task paused as blocked.
+- Riley added the missing label and re-ran verification: exit 0.`;
+const gradeImplicitTransition = (reply: string) => truthfulTimelineAccount({ reply, firstWorker: "Morgan", repairWorker: "Riley", taskIdentifier: "RUN-3" });
+it("accepts a same-task named-worker transition without requiring an assignment phrase", () => {
+  expect(gradeImplicitTransition(implicitTransitionAccount)).toBe(true);
+  expect(gradeImplicitTransition(implicitTransitionAccount.replace("## Signup implementation — RUN-3", "2. **Signup implementation — RUN-3**"))).toBe(true);
+});
+it.each([
+  implicitTransitionAccount.replace("Riley added", "Riley repaired RUN-4 and added"),
+  implicitTransitionAccount.replace("- Riley", "\n## Separate work — RUN-4\n- Riley"),
+  implicitTransitionAccount.replace("The task paused as blocked.\n- Riley added the missing label and re-ran verification: exit 0.", "Riley added the missing label and re-ran verification: exit 0. The task paused as blocked."),
+  implicitTransitionAccount.replace("The task paused as blocked.", ""),
+  implicitTransitionAccount.replace("returned exit 1", "returned exit 0"),
+  implicitTransitionAccount.replace("Riley added", "Morgan added"),
+  implicitTransitionAccount.replace("Riley added", "Riley automatically added"),
+  implicitTransitionAccount.replace("Riley added", "Riley planned to add"),
+  implicitTransitionAccount.replace("exit 0", "exit 2"),
+])("retains task, pause, failure, actor and chronology boundaries for an implicit transition: %s", reply => {
+  expect(gradeImplicitTransition(reply)).toBe(false);
+});
