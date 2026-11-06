@@ -164,6 +164,8 @@ export interface RunnerTaskFixture {
   expectedRunCount: number;
   /** Optional lower bound; expectedRunCount remains the maximum/cost estimate. */
   minimumExpectedRunCount?: number;
+  expectedHumanMessageCount?: number;
+  optionalCompanySecretBindingApproval?: true;
   /** Admit only the first attempt, including provider or infrastructure failures. */
   automaticRetryPolicy?: "single_attempt";
   attemptTimeoutMs: Readonly<Record<RunnerEnvironmentId, number>>;

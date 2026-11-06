@@ -90,6 +90,7 @@ export const chatCatalogTasks: readonly RunnerTaskFixture[] = chatCatalogCases.m
     requiredCredentials: implementation.requiredCredentials,
     id: scenario.id, label: scenario.id, groups: ["chat"], flow: "agent_chat", workMode: "standard",
     expectedRunCount: implementation.expectedRunCount, minimumExpectedRunCount: implementation.minimumRunCount,
+    ...(implementation.optionalCompanySecretBindingApproval===true?{expectedHumanMessageCount:implementation.expectedHumanMessageCount,optionalCompanySecretBindingApproval:true as const}:{}),
     automaticRetryPolicy: "single_attempt", turnTimeoutMs: CHAT_NATIVE_TIMEOUT_POLICY.effectiveNativeTurnTimeoutMs,
     attemptTimeoutMs: { local: implementation.attemptTimeoutMs, daytona: implementation.attemptTimeoutMs },
     expectedTerminalState: { issue: "in_review", run: "succeeded" },

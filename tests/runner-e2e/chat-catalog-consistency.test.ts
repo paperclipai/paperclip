@@ -1,3 +1,4 @@
+import { chatCatalogTasks } from "./chat-feature-cases.js";
 import { expect, it, vi } from "vitest";
 import { validateChatCatalogConsistency } from "./chat-catalog-consistency.js";
 import { chatCatalogCases } from "./chat-catalog-registry.js";
@@ -33,4 +34,18 @@ it("preserves the effective one-human limit when optional declaration defaults a
     expect(chatCatalogHumanHistoryMatches({ ...history, implementation, human: [] })).toBe(false);
     expect(chatCatalogHumanHistoryMatches({ ...history, implementation, human: [...history.human, { id: "extra", body: "Hidden nudge" }] })).toBe(false);
   }
+});
+
+it("declares company approval as a static optional extra action without invoking callbacks",async()=>{
+ const descriptor=chatCatalogCases.find(row=>row.scenarioId==="secrets.configure-company-secret")!;
+ expect(descriptor).toMatchObject({expectedRunCount:3,minimumRunCount:2,expectedHumanMessageCount:2,optionalCompanySecretBindingApproval:true});
+ expect(chatCatalogTasks.find(t=>t.id===descriptor.scenarioId)).toMatchObject({expectedRunCount:3,minimumExpectedRunCount:2,expectedHumanMessageCount:2,optionalCompanySecretBindingApproval:true});
+ expect(chatCatalogTasks.filter(t=>t.optionalCompanySecretBindingApproval).map(t=>t.id)).toEqual([descriptor.scenarioId]);
+ const callback=vi.fn(()=>{throw new Error("No fixture or proof callback during declaration validation");});
+ const runtime={...descriptor,setup:callback,observe:callback,grade:callback,verifyResult:callback,expectedCompanySecretBindingApproval:callback};
+ const importer=async()=>({[descriptor.exportName]:[runtime]});
+ await expect(validateChatCatalogConsistency([descriptor],importer)).resolves.toMatchObject({fixtureCallbacksInvoked:0});
+ await expect(validateChatCatalogConsistency([{...descriptor,optionalCompanySecretBindingApproval:undefined}],importer)).rejects.toThrow("Runtime descriptor drift");
+ expect(validChatCatalogHumanCounts({...descriptor,scenarioId:"secrets.personal-secret"})).toBe(false);
+ expect(callback).not.toHaveBeenCalled();
 });

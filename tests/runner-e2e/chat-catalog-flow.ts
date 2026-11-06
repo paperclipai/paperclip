@@ -12,7 +12,7 @@ import { expect } from "@playwright/test";
 import { pollUntil } from "./api.js";
 import { collectChatRunEvidence, sendChatMessage } from "./chat-flow.js";
 import { prepareNativeStopCanonicalBoundary } from "./chat-native-stop-boundary.js";
-import { chatCatalogHumanHistoryMatches, chatCatalogAllowsHumanQuestionAnswer, verifyChatCatalogHumanQuestionAnswer, type ChatCatalogHumanQuestionAudit, validateChatCatalogGrade, type ChatCatalogSetupBoundary, type ChatCatalogContext, type ChatCatalogGrade } from "./chat-catalog-contract.js";
+import { collectChatCatalogCompanySecretApprovalActivity, verifyChatCatalogCompanySecretBindingApproval, chatCatalogHumanHistoryMatches, chatCatalogAllowsHumanQuestionAnswer, verifyChatCatalogHumanQuestionAnswer, type ChatCatalogHumanQuestionAudit, validateChatCatalogGrade, type ChatCatalogSetupBoundary, type ChatCatalogContext, type ChatCatalogGrade } from "./chat-catalog-contract.js";
 import { findChatCatalogCase, loadChatCatalogImplementation } from "./chat-catalog-registry.js";
 import { chatCatalogInventoryDigest } from "./chat-catalog-inventory.js";
 import { resolveChatCatalogQuery } from "./chat-query-bindings.js";
@@ -26,6 +26,7 @@ export async function runChatCatalogFlow(context: ChatCatalogContext) {
   const fingerprint = chatCatalogCaseFingerprint(descriptor, normalizedChatCatalogExecution(input.execution));
   assertSdkCanaryFingerprintMatches(input.execution, fingerprint);
   const implementation = await loadChatCatalogImplementation(descriptor);
+  if (implementation.optionalCompanySecretBindingApproval===true && (input.execution.task.optionalCompanySecretBindingApproval!==true || input.execution.task.expectedHumanMessageCount!==2)) throw new Error("Company governed approval task metadata is missing");
   if (implementation.companionSurface) return runScopedCompanionSurface(context, implementation, fingerprint);
   const slack = implementation.journeyKind === "native-slack-thread";
   const deadlineAt = Date.now() + implementation.attemptTimeoutMs - 30_000;
@@ -78,8 +79,21 @@ export async function runChatCatalogFlow(context: ChatCatalogContext) {
         issueId: evidence.issue.id, agentId: input.fixtures.agent.id, canonicalComment: canonicalHuman,
         interactions, activity, companySecrets, personalSecrets, runs: evidence.runs });
     }
-    const humanAccounting = { basis: expectedAnswer?.personalSecretConfirmation ? "comments_and_declared_personal_secure_confirmation" : expectedAnswer ? "comments_and_declared_credential_question_answer" : "comments", rawHumanCommentCount: human.length, verifiedHumanQuestionAnswerCount: questionAnswer ? 1 : 0,
-      accountedHumanActionCount: human.length + (questionAnswer ? 1 : 0), declaredHumanActionCount: implementation!.expectedHumanMessageCount ?? 1,
+    const expectedApproval=scenario.id==="secrets.configure-company-secret"&&implementation!.optionalCompanySecretBindingApproval===true?implementation!.expectedCompanySecretBindingApproval?.(observation):undefined;
+    let secretApproval:ReturnType<typeof verifyChatCatalogCompanySecretBindingApproval>;
+    if(expectedApproval&&evidence.issue&&canonicalHuman){
+      const [interactions,proposals,activity,secrets,usage]=await Promise.all([
+        input.api.get<Parameters<typeof verifyChatCatalogCompanySecretBindingApproval>[0]["interactions"]>(`/api/issues/${evidence.issue.id}/interactions`),
+        input.api.get<Parameters<typeof verifyChatCatalogCompanySecretBindingApproval>[0]["proposals"]>(`/api/companies/${input.fixtures.company.id}/secret-proposals`),
+        collectChatCatalogCompanySecretApprovalActivity(input.api,input.fixtures.company.id,evidence.issue.id),
+        input.api.get<Parameters<typeof verifyChatCatalogCompanySecretBindingApproval>[0]["secrets"]>(`/api/companies/${input.fixtures.company.id}/secrets`),
+        input.api.get<{bindings:Parameters<typeof verifyChatCatalogCompanySecretBindingApproval>[0]["bindings"]}>(`/api/secrets/${expectedApproval.secretId}/usage`),
+      ]);
+      secretApproval=verifyChatCatalogCompanySecretBindingApproval({scenarioId:scenario.id,expected:expectedApproval,companyId:input.fixtures.company.id,issueId:evidence.issue.id,agentId:input.fixtures.agent.id,interactions,proposals,activity,secrets,bindings:usage.bindings,comments:evidence.comments as unknown as Parameters<typeof verifyChatCatalogCompanySecretBindingApproval>[0]["comments"],runs:evidence.runs});
+    }
+    const humanAccounting = { basis: secretApproval ? "comments_and_verified_company_binding_approval" : expectedAnswer?.personalSecretConfirmation ? "comments_and_declared_personal_secure_confirmation" : expectedAnswer ? "comments_and_declared_credential_question_answer" : "comments", rawHumanCommentCount: human.length, verifiedHumanQuestionAnswerCount: questionAnswer ? 1 : 0,
+      accountedHumanActionCount: human.length + (questionAnswer ? 1 : 0) + (secretApproval ? 1 : 0), declaredHumanActionCount: (implementation!.expectedHumanMessageCount ?? 1) + (secretApproval ? 1 : 0),
+      declaredMinimumHumanActionCount: implementation!.expectedHumanMessageCount ?? 1, declaredMaximumHumanActionCount:(implementation!.expectedHumanMessageCount ?? 1)+(implementation!.optionalCompanySecretBindingApproval===true?1:0), verifiedCompanySecretApprovalCount:secretApproval?1:0, companySecretApproval:secretApproval??null, expectedCompanySecretApprovalVerified:expectedApproval?!!secretApproval:null,
       questionAnswer: questionAnswer ?? null, expectedQuestionAnswerVerified: expectedAnswer ? !!questionAnswer : null };
 
     const attachmentsValid = !queryAttachments.length || !!canonicalHuman && await verifyChatQueryAttachments(context, queryAttachments, canonicalHuman);
@@ -88,8 +102,8 @@ export async function runChatCatalogFlow(context: ChatCatalogContext) {
     const checks = [...grade.checks,
       { id: "catalog-complete-conditions", passed: !implementation!.coverageGaps?.length,
         detail: implementation!.coverageGaps?.length ? `Missing conditions: ${implementation!.coverageGaps.join(", ")}` : "No known catalog condition is omitted." },
-      { id: "catalog-original-human-query", passed: (!expectedAnswer || !!questionAnswer) && chatCatalogHumanHistoryMatches({ implementation: implementation!, human, questionAnswer, runIds: evidence.runs.map(run => run.id), boundary: setupBoundary, renderedQuery: persistedQuery }),
-        detail: "The original query/setup history is unchanged. Human actions are raw comments, plus one independently verified bound UI answer only for opted-in credential cases." },
+      { id: "catalog-original-human-query", passed: (!expectedAnswer || !!questionAnswer) && (!expectedApproval||!!secretApproval) && chatCatalogHumanHistoryMatches({ implementation: implementation!, human, questionAnswer, secretApproval, runIds: evidence.runs.map(run => run.id), boundary: setupBoundary, renderedQuery: persistedQuery }),
+        detail: "The original query/setup history is unchanged. Human actions are raw comments, plus independently verified bound UI answers and an optional executed company binding approval only for its opted-in case." },
       { id: "catalog-query-attachment-receipts", passed: attachmentsValid,
         detail: "Only declared production attachment suffixes are allowed, backed by same-source human receipts and independently retrieved matching bytes." },
       ...(slack ? [slackNativeRunCheck(context, evidence.runs, state)] : []),
@@ -138,6 +152,7 @@ export async function runChatCatalogFlow(context: ChatCatalogContext) {
       savedAgentTimeoutSec: savedLead.adapterConfig?.timeoutSec });
     await input.evidence("chat-catalog-setup.json", { nativeTimeoutPolicy, scenario, state, inventoryDigest: chatCatalogInventoryDigest,
       oracleVersion: implementation.oracleVersion, expectedRunCount: implementation.expectedRunCount,
+      ...(implementation.optionalCompanySecretBindingApproval===true?{optionalCompanySecretBindingApproval:true,declaredMinimumHumanActionCount:2,declaredMaximumHumanActionCount:3}:{}),
       minimumRunCount: implementation.minimumRunCount, effectiveNativeTurnTimeoutMs: input.execution.task.turnTimeoutMs,
       authoredLegacyTurnTimeoutMs: implementation.turnTimeoutMs,
       attemptTimeoutMs: implementation.attemptTimeoutMs });

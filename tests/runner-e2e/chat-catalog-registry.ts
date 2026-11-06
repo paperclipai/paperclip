@@ -64,7 +64,10 @@ export async function loadChatCatalogImplementation(
   if (selected.length !== 1) throw new Error(`Missing or duplicate runtime case: ${descriptor.scenarioId}`);
   const implementation = selected[0] as ChatCatalogCase;
   assertExpectedWorkerCancellation(implementation);
-  for (const key of ["sourceFiles", "oracleVersion", "expectedRunCount", "minimumRunCount", "expectedHumanMessageCount", "setupHumanMessageCount", "turnTimeoutMs", "attemptTimeoutMs", "coverageGaps", "journeyKind", "authentication", "setupPolicy", "runPolicy", "queryOutcome", "queryBindings", "queryAttachments", "requiredCredentials", "externalInput", "installedSource", "browserTimezone", "respondingAgent", "companionSurface", "slackIngress", "canonicalBoundary"] as const) {
+  if (implementation.optionalCompanySecretBindingApproval === true
+    ? !validChatCatalogHumanCounts(implementation) || implementation.scenarioId!=="secrets.configure-company-secret" || implementation.expectedRunCount!==3 || implementation.minimumRunCount!==2 || typeof implementation.expectedCompanySecretBindingApproval!=="function"
+    : implementation.expectedCompanySecretBindingApproval!==undefined) throw new Error("Invalid optional governed company approval declaration");
+  for (const key of ["sourceFiles", "oracleVersion", "expectedRunCount", "minimumRunCount", "expectedHumanMessageCount", "optionalCompanySecretBindingApproval", "setupHumanMessageCount", "turnTimeoutMs", "attemptTimeoutMs", "coverageGaps", "journeyKind", "authentication", "setupPolicy", "runPolicy", "queryOutcome", "queryBindings", "queryAttachments", "requiredCredentials", "externalInput", "installedSource", "browserTimezone", "respondingAgent", "companionSurface", "slackIngress", "canonicalBoundary"] as const) {
     if (JSON.stringify(implementation[key]) !== JSON.stringify(descriptor[key])) throw new Error(`Runtime descriptor drift: ${descriptor.scenarioId}.${key}`);
   }
   if ((descriptor.companionSurface || descriptor.journeyKind === "scoped-external-assistant") && (!validCompanionDeclaration(implementation) || typeof implementation.runCompanionSurface !== "function" || implementation.act)) throw new Error("Missing actual finite scoped assistant driver");
@@ -100,7 +103,7 @@ export async function loadIdentityBoundaryImplementation(descriptor: ChatCatalog
   const selected = Array.isArray(rows) ? rows.filter(row => row.scenarioId === descriptor.scenarioId) : [];
   if (selected.length !== 1) throw new Error("Missing or duplicate browser boundary implementation");
   const implementation = selected[0] as IdentityBoundaryCase;
-  for (const key of ["sourceFiles", "oracleVersion", "expectedRunCount", "minimumRunCount", "expectedHumanMessageCount", "setupHumanMessageCount", "turnTimeoutMs", "attemptTimeoutMs", "coverageGaps", "journeyKind", "boundaryTarget", "authentication", "setupPolicy", "runPolicy", "queryOutcome", "queryBindings", "queryAttachments", "requiredCredentials", "externalInput", "installedSource"] as const) {
+  for (const key of ["sourceFiles", "oracleVersion", "expectedRunCount", "minimumRunCount", "expectedHumanMessageCount", "optionalCompanySecretBindingApproval", "setupHumanMessageCount", "turnTimeoutMs", "attemptTimeoutMs", "coverageGaps", "journeyKind", "boundaryTarget", "authentication", "setupPolicy", "runPolicy", "queryOutcome", "queryBindings", "queryAttachments", "requiredCredentials", "externalInput", "installedSource"] as const) {
     if (JSON.stringify(implementation[key]) !== JSON.stringify(descriptor[key])) throw new Error(`Runtime boundary descriptor drift: ${descriptor.scenarioId}.${key}`);
   }
   if ([implementation.run, implementation.grade, implementation.cleanup].some(value => typeof value !== "function") || descriptor.queryBindings?.length || descriptor.queryAttachments?.length

@@ -4891,6 +4891,7 @@
     "scenarioId": "secrets.configure-company-secret",
     "sourceFiles": [
       "chat-catalog-domains/external-company-secret.ts",
+      "chat-catalog-domains/external-secret-proposal.ts",
       "chat-catalog-domains/external-secret-question.ts",
       "chat-catalog-domains/external-secret-route.ts",
       "chat-catalog-domains/external-company-secret-menu.ts",
@@ -4909,9 +4910,11 @@
       "chat-flow.ts",
       "chat-scenarios/secrets.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.company-secret-controller-baseline.v11",
-    "expectedRunCount": 2,
+    "oracleVersion": "paperclip.chat-catalog.company-secret-controller-baseline.v12",
+    "expectedRunCount": 3,
+    "minimumRunCount": 2,
     "expectedHumanMessageCount": 2,
+    "optionalCompanySecretBindingApproval": true,
     "turnTimeoutMs": 120000,
     "attemptTimeoutMs": 480000,
     "authentication": "human-session",

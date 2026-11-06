@@ -239,6 +239,26 @@ Domain descriptors declare real setup/actions/independent grading and exact boun
 
 Only `steering.preserve-draft` and `tasks.attachment-brief` may currently declare one `queryAttachments` receipt. The canonical typed query remains unchanged; the production composer appends its exact attachment reference. Before and after send, the harness independently reads the public same-source receipt and actual bytes, verifies SHA-256 and human attribution, and binds it to the real canonical comment. Extra markdown, text changes, foreign receipts and hidden followups fail. Attachment fingerprints pin both production composer source hashes as data, without importing the UI graph.
 
+### Company secret governed approval alternative
+
+`secrets.configure-company-secret` v12 declares `expectedRunCount: 3`,
+`minimumRunCount: 2`, `expectedHumanMessageCount: 2`, and
+`optionalCompanySecretBindingApproval: true` in static discovery metadata.
+The base remains exactly two human actions and two native runs. Only this case
+may add one actual human UI acceptance and one native continuation for its
+current, exact governed binding proposal. The flow reports raw human comments,
+verified question answers and the verified binding approval separately; it
+never inserts a comment or counts a pending or unexecuted card.
+
+The extra action requires the new human-saved secret, exact Morgan/environment
+target, immutable payload, real current-person acceptance and executed result,
+proposal/mutation audits, and exactly one successful approval-bound native
+continuation. The final configuration and visible confirmation remain required.
+The existing operator-directed and authorized direct-binding paths remain two
+runs/two actions. Query, model and 480000 ms budget are unchanged. Original v11
+result 5057 remains FAILED after a real secure save and an unanswered pending
+binding proposal; v12 is unrun until fresh native evidence qualifies it.
+
 ### Authored skill inspection
 
 `skills.author-skill` v4 follows the normal library card to the exact saved skill.

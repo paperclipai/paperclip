@@ -1,5 +1,6 @@
+import { isDeepStrictEqual } from "node:util";
 import { createHash } from "node:crypto";
-import { askUserQuestionsPayloadSchema } from "../../packages/shared/src/validators/issue.js";
+import { requestConfirmationPayloadSchema, askUserQuestionsPayloadSchema } from "../../packages/shared/src/validators/issue.js";
 import type { RequestConfirmationInteraction, AskUserQuestionsInteraction } from "../../packages/shared/src/types/issue.js";
 import type { ChatFlowInput, ChatIssue, ChatRun } from "./chat-flow.js";
 import type { CredentialName } from "./types.js";
@@ -201,6 +202,8 @@ export interface ChatCatalogCase {
   /** Persisted human comments; explicit followups must be declared before execution. */
   expectedHumanMessageCount?: number;
   expectedHumanQuestionAnswer?(observation: unknown): ChatCatalogExpectedHumanQuestionAnswer | undefined;
+  optionalCompanySecretBindingApproval?: true;
+  expectedCompanySecretBindingApproval?(observation: unknown): ChatCatalogExpectedCompanySecretBindingApproval | undefined;
   /** Genuine persisted human setup turns before the canonical query; included in the total above. */
   setupHumanMessageCount?: number;
   minimumRunCount?: number;
@@ -229,22 +232,25 @@ export function validateChatCatalogGrade(grade: ChatCatalogGrade): ChatCatalogGr
 }
 
 export interface ChatCatalogSetupBoundary { humanCommentIds: string[]; runIds: string[] }
-export function validChatCatalogHumanCounts(implementation: Pick<ChatCatalogCase, "setupHumanMessageCount" | "expectedHumanMessageCount" | "queryOutcome">): boolean {
+export function validChatCatalogHumanCounts(implementation: Pick<ChatCatalogCase, "setupHumanMessageCount" | "expectedHumanMessageCount" | "queryOutcome"> & Partial<Pick<ChatCatalogCase,"scenarioId"|"optionalCompanySecretBindingApproval">>): boolean {
   const setup = implementation.setupHumanMessageCount ?? 0, total = implementation.expectedHumanMessageCount ?? 1;
-  return Number.isSafeInteger(setup) && setup >= 0 && Number.isSafeInteger(total)
+  return (!implementation.optionalCompanySecretBindingApproval || implementation.scenarioId==="secrets.configure-company-secret"&&total===2&&setup===0)
+    && Number.isSafeInteger(setup) && setup >= 0 && Number.isSafeInteger(total)
     && total >= setup + (implementation.queryOutcome === "rejected" ? 0 : 1);
 }
 export function chatCatalogAllowsHumanQuestionAnswer(scenarioId: string): boolean {
   return ["secrets.personal-secret", "secrets.configure-company-secret"].includes(scenarioId);
 }
 export function chatCatalogHumanHistoryMatches(input: {
-  implementation: Pick<ChatCatalogCase, "setupHumanMessageCount" | "expectedHumanMessageCount" | "queryOutcome"> & Partial<Pick<ChatCatalogCase, "scenarioId">>;
+  implementation: Pick<ChatCatalogCase, "setupHumanMessageCount" | "expectedHumanMessageCount" | "queryOutcome"> & Partial<Pick<ChatCatalogCase, "scenarioId" | "optionalCompanySecretBindingApproval">>;
   questionAnswer?: ChatCatalogVerifiedHumanQuestionAnswer;
+  secretApproval?: ChatCatalogVerifiedCompanySecretBindingApproval;
   human: Array<{ id: string; body: string }>; runIds: string[];
   boundary: ChatCatalogSetupBoundary; renderedQuery: string;
 }): boolean {
   const count = input.implementation.setupHumanMessageCount ?? 0;
-  return (!input.questionAnswer || chatCatalogAllowsHumanQuestionAnswer(input.implementation.scenarioId ?? ""))
+  return (!input.secretApproval || input.implementation.scenarioId === "secrets.configure-company-secret" && input.implementation.optionalCompanySecretBindingApproval === true)
+    && (!input.questionAnswer || chatCatalogAllowsHumanQuestionAnswer(input.implementation.scenarioId ?? ""))
     && (!input.questionAnswer?.personalSecretConfirmation || input.implementation.scenarioId === "secrets.personal-secret")
     && (!(input.questionAnswer?.companyEnvironmentNameAnswer||input.questionAnswer?.companySavedSecretNameAnswer) || input.implementation.scenarioId === "secrets.configure-company-secret")
     && validChatCatalogHumanCounts(input.implementation)
@@ -353,4 +359,58 @@ export function verifyChatCatalogHumanQuestionAnswer(input: {
     || run.runtimeMode !== "native" || run.status !== "succeeded" || run.contextSnapshot?.issueId !== input.issueId
     || !Number.isFinite(Date.parse(run.startedAt ?? "")) || Date.parse(run.startedAt!) < resolvedAt) return;
   return { ...b, continuationRunId: run.id, resolvedAt: new Date(resolvedAt).toISOString() };
+}
+
+export interface ChatCatalogExpectedCompanySecretBindingApproval {
+ interactionId:string;proposalId:string;sourceRunId:string;initialRunId:string;userId:string;secretId:string;targetAgentId:string;configPath:string;payloadHash:string;humanInputId:string;humanInputKind:"comment"|"question";
+}
+export interface ChatCatalogVerifiedCompanySecretBindingApproval extends ChatCatalogExpectedCompanySecretBindingApproval {continuationRunId:string;resolvedAt:string}
+export function verifyChatCatalogCompanySecretBindingApproval(input:{
+ scenarioId:string;expected:ChatCatalogExpectedCompanySecretBindingApproval;companyId:string;issueId:string;agentId:string;
+ interactions:Array<Partial<RequestConfirmationInteraction|AskUserQuestionsInteraction>>;proposals:Array<Partial<import("../../packages/shared/src/types/secrets.js").SecretProposalView>>;activity:Array<ChatCatalogHumanQuestionAudit&{createdAt?:string}>;
+ comments:Array<{id:string;companyId?:string;issueId?:string;authorUserId?:string;authorAgentId?:string;createdByRunId?:string;createdAt:string}>;
+ secrets:Array<{id:string;companyId:string;scope:string;status:string;createdByUserId?:string|null;createdAt:string}>;
+ bindings:Array<{secretId:string;targetType:string;targetId:string;configPath:string;versionSelector:string|number}>;
+ runs:Array<{id:string;companyId?:string;agentId:string;status:string;runtimeMode?:string;startedAt?:string|null;contextSnapshot?:Record<string,unknown>|null}>;
+}):ChatCatalogVerifiedCompanySecretBindingApproval|undefined {
+ const b=input.expected,row=input.interactions.find(q=>q.id===b.interactionId) as Partial<RequestConfirmationInteraction>|undefined,proposal=input.proposals.find(q=>q.id===b.proposalId),payload=row?.payload?.secretProposal;
+ const first=input.runs.find(r=>r.id===b.initialRunId),source=input.runs.find(r=>r.id===b.sourceRunId),secret=input.secrets.find(r=>r.id===b.secretId);
+ const human=b.humanInputKind==="comment"?input.comments.find(r=>r.id===b.humanInputId):undefined,question=b.humanInputKind==="question"?input.interactions.find(r=>r.id===b.humanInputId):undefined;
+ const inputAt=Date.parse(String(human?.createdAt??question?.resolvedAt)),resolvedAt=Date.parse(String(row?.resolvedAt));
+ const initialHuman=input.comments.find(c=>c.id===first?.contextSnapshot?.commentId),sourceAt=Date.parse(String(source?.startedAt)),cardAt=Date.parse(String(row?.createdAt)),firstAt=Date.parse(String(first?.startedAt));
+ if(input.scenarioId!=="secrets.configure-company-secret"||![sourceAt,cardAt,firstAt,Date.parse(String(payload?.expiresAt))].every(Number.isFinite)||!requestConfirmationPayloadSchema.safeParse(row?.payload).success||!row||input.interactions.filter(q=>q.id===row.id).length!==1||row.kind!=="request_confirmation"||row.status!=="accepted"
+  ||row.companyId!==input.companyId||row.issueId!==input.issueId||row.sourceRunId!==b.sourceRunId||row.createdByAgentId!==input.agentId||row.createdByUserId||row.addresseeAgentId||(row.addresseeUserId&&row.addresseeUserId!==b.userId)
+  ||row.requestedResolverPolicy!=="human_only"||row.effectiveResolverPolicy!=="human_only"||row.continuationPolicy!=="wake_assignee"||row.idempotencyKey!==`secret-proposal:${b.proposalId}`
+  ||row.resolvedByUserId!==b.userId||row.resolvedByAgentId||row.result?.outcome!=="accepted"||row.result?.secretProposal?.status!=="executed"||row.result.secretProposal.errorCode
+  ||!payload||payload.proposalId!==b.proposalId||payload.targetAgentId!==b.targetAgentId||payload.configPath!==b.configPath||payload.targetAgentName!=="Morgan"||!/^env\.[_A-Za-z][_A-Za-z0-9]*$/.test(b.configPath)
+  ||createHash("sha256").update(JSON.stringify(row.payload)).digest("hex")!==b.payloadHash||!Number.isFinite(resolvedAt)||resolvedAt<Date.parse(String(row.createdAt))||resolvedAt>Date.parse(payload.expiresAt)
+  ||!proposal||input.proposals.filter(p=>p.id===b.proposalId).length!==1||proposal.companyId!==input.companyId||proposal.kind!=="binding"||proposal.status!=="approved"||proposal.secretId!==b.secretId||proposal.secretProposalId
+  ||proposal.targetType!=="agent"||proposal.target?.id!==b.targetAgentId||proposal.configPath!==b.configPath||proposal.appliedBindingConfigPath!==b.configPath||proposal.originIssue?.id!==input.issueId||proposal.originRunId!==b.sourceRunId||proposal.proposedBy?.id!==input.agentId||proposal.resolvedByUserId!==b.userId
+  ||!initialHuman||initialHuman.authorUserId!==b.userId||initialHuman.authorAgentId||initialHuman.createdByRunId||initialHuman.companyId!==input.companyId||initialHuman.issueId!==input.issueId||!first||first.companyId!==input.companyId||first.agentId!==input.agentId||first.status!=="succeeded"||first.runtimeMode!=="native"||first.contextSnapshot?.issueId!==input.issueId
+  ||!secret||secret.companyId!==input.companyId||secret.scope!=="company"||secret.status!=="active"||secret.createdByUserId!==b.userId||!first||Date.parse(secret.createdAt)<=Date.parse(String(first.startedAt))||Date.parse(secret.createdAt)>=inputAt
+  ||!Number.isFinite(inputAt)||(human?(human.companyId!==input.companyId||human.issueId!==input.issueId||human.authorUserId!==b.userId||!!human.authorAgentId||!!human.createdByRunId):!question||question.kind!=="ask_user_questions"||question.sourceRunId!==b.initialRunId||question.createdByAgentId!==input.agentId||question.status!=="answered"||question.resolvedByUserId!==b.userId||question.companyId!==input.companyId||question.issueId!==input.issueId)
+  ||!source||source.id===first.id||source.companyId!==input.companyId||source.agentId!==input.agentId||source.runtimeMode!=="native"||source.status!=="succeeded"||source.contextSnapshot?.issueId!==input.issueId
+  ||source.contextSnapshot[b.humanInputKind==="comment"?"commentId":"interactionId"]!==b.humanInputId||Date.parse(String(source.startedAt))<inputAt||Date.parse(String(row.createdAt))<Date.parse(String(source.startedAt)))return;
+ const continuations=input.runs.filter(r=>r.contextSnapshot?.interactionId===b.interactionId),run=continuations[0];
+ const accepted=input.activity.filter(a=>a.action==="issue.thread_interaction_accepted"&&a.details?.interactionId===b.interactionId);
+ const approved=input.activity.filter(a=>a.action==="secret.proposal.approved"&&a.entityId===b.proposalId);
+ const mutations=input.activity.filter(a=>/^agent\.(?:updated|config_updated|created|deleted)$/.test(a.action??"")&&Date.parse(String(a.createdAt))>=inputAt);
+ if(!mutations.length||mutations.some(a=>a.companyId!==input.companyId||a.entityId!==b.targetAgentId||a.actorType!=="user"||a.actorId!==b.userId||a.details?.proposalId!==b.proposalId||a.details?.configPath!==b.configPath||Date.parse(String(a.createdAt))<resolvedAt)
+  ||input.runs.length!==3||continuations.length!==1||!run||run.id===source.id||run.companyId!==input.companyId||run.agentId!==input.agentId||run.runtimeMode!=="native"||run.status!=="succeeded"||run.contextSnapshot?.issueId!==input.issueId||Date.parse(String(run.startedAt))<resolvedAt
+  ||accepted.length!==1||accepted[0]?.companyId!==input.companyId||accepted[0].entityId!==input.issueId||accepted[0].actorType!=="user"||accepted[0].actorId!==b.userId
+  ||approved.length!==1||approved[0]?.companyId!==input.companyId||approved[0].actorType!=="user"||approved[0].actorId!==b.userId||approved[0].details?.appliedBindingConfigPath!==b.configPath
+  ||input.bindings.length!==1||input.bindings[0]?.secretId!==b.secretId||input.bindings[0].targetType!=="agent"||input.bindings[0].targetId!==b.targetAgentId||input.bindings[0].configPath!==b.configPath||input.bindings[0].versionSelector!=="latest")return;
+ return {...b,continuationRunId:run.id,resolvedAt:String(row.resolvedAt)};
+}
+
+export async function collectChatCatalogCompanySecretApprovalActivity(api:Pick<ChatFlowInput["api"],"get">,companyId:string,issueId:string){
+ const [issue,company]=await Promise.all([api.get<Array<ChatCatalogHumanQuestionAudit&{id:string;createdAt:string}>>(`/api/issues/${issueId}/activity`),api.get<Array<ChatCatalogHumanQuestionAudit&{id:string;createdAt:string}>>(`/api/companies/${companyId}/activity?limit=1000`)]);
+ const rows=new Map<string,ChatCatalogHumanQuestionAudit&{id:string;createdAt:string}>();
+ for(const row of [...issue,...company]){
+  if(!row.id||row.companyId!==companyId)throw new Error("Company approval audit scope mismatch");
+  const before=rows.get(row.id),project=(v:typeof row)=>({companyId:v.companyId,entityId:v.entityId,action:v.action,actorType:v.actorType,actorId:v.actorId,createdAt:v.createdAt,details:v.details});
+  if(before&&!isDeepStrictEqual(project(before),project(row)))throw new Error("Company approval audit identity changed");
+  rows.set(row.id,row);
+ }
+ return [...rows.values()];
 }

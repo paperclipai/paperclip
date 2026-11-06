@@ -136,6 +136,7 @@ export function normalizedChatCatalogExecution(execution: MatrixExecution) {
     profile: { id: execution.profile.id, provider: execution.profile.provider, model: execution.profile.model, credential: execution.profile.credential },
     environment: execution.environment.id, databaseLane: databaseFingerprintIdentity(), requiredCredentialNames: execution.requiredCredentials, task: { expectedRunCount: execution.task.expectedRunCount,
       minimumExpectedRunCount: execution.task.minimumExpectedRunCount, turnTimeoutMs: execution.task.turnTimeoutMs,
+      ...(execution.task.optionalCompanySecretBindingApproval===true?{expectedHumanMessageCount:execution.task.expectedHumanMessageCount,optionalCompanySecretBindingApproval:true}:{}),
       attemptTimeoutMs: execution.task.attemptTimeoutMs } };
 }
 export function legacyChatFeatureFingerprint(execution: MatrixExecution) {
