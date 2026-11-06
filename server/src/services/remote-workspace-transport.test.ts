@@ -6,6 +6,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { deflateSync } from "node:zlib";
+import net from "node:net";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CommandManagedRuntimeRunner } from "@paperclipai/adapter-utils/command-managed-runtime";
 import {
@@ -18,6 +19,7 @@ import {
   type RemoteWorkspaceTarget,
 } from "./remote-workspace-transport.js";
 import { classifyNativeWorkspaceFailure } from "./native-runtime/native-workspace-failure.js";
+import { restoreRemoteWorkspaceArchive } from "./remote-workspace-snapshot-archive.js";
 
 const exec = promisify(execFile);
 
@@ -468,6 +470,58 @@ describe("remote workspace transport safety with real sandbox commands", () => {
       .rejects.toThrow(/^remote_workspace_operation_timed_out: archive_helper \(configured timeout 300000ms\)$/);
   });
 
+  it.each(["helper", "archive"])("saves a full sandbox through read-only transfer when the %s cannot write", async failureStage => {
+    await git(workspace, "init", "--initial-branch=main");
+    await fs.writeFile(path.join(workspace, "result.txt"), "committed result\n");
+    await git(workspace, "add", "."); await git(workspace, "commit", "-m", "Saved work");
+    const head = (await git(workspace, "rev-parse", "HEAD")).stdout;
+    await fs.writeFile(path.join(workspace, "result.txt"), "staged result\n");
+    await git(workspace, "add", "result.txt");
+    await fs.writeFile(path.join(workspace, "notes.txt"), "untracked result\n");
+    await fs.symlink("notes.txt", path.join(workspace, "notes-link"));
+    const preload = path.join(scratch, "full-sandbox.cjs");
+    const failing = failureStage === "helper" ? String.raw`/archive\.cjs\.[^/]+\.tmp$/` : String.raw`/workspace\.pcws$/`;
+    await fs.writeFile(preload, String.raw`const fs=require('node:fs/promises'),failing=${failing};
+      const fail=()=>{throw Object.assign(new Error('No space left on device'),{code:'ENOSPC'});};
+      const writeFile=fs.writeFile,open=fs.open;fs.writeFile=async(file,...args)=>{
+        if(failing.test(String(file)))fail();return writeFile(file,...args);};
+      fs.open=async(file,...args)=>{const handle=await open(file,...args);if(failing.test(String(file)))handle.writeFile=async()=>fail();return handle;};
+      require('node:module').syncBuiltinESMExports();`);
+    const { remote, execute } = target();
+    const run = execute.getMockImplementation()!;
+    execute.mockImplementation(input => run({ ...input, env: { ...input.env, NODE_OPTIONS: `--require ${preload}` } }));
+    const transfer = remote.runner!.syncOut!;
+    remote.runner!.syncOut = async (operations, options) => {
+      for (const operation of operations) for (const file of operation.files) {
+        if (file.kind === "directory") {
+          expect(file.followSymlinks).toBe(false);
+          expect(file.exclude).toContain(".paperclip-runtime");
+          await fs.cp(file.sourcePath, file.targetPath, { recursive: true, verbatimSymlinks: true,
+            filter: source => !file.exclude!.some(excluded => {
+              const relative = path.relative(file.sourcePath, source).split(path.sep).join("/");
+              return relative === excluded || relative.startsWith(`${excluded}/`);
+            }) });
+        } else return transfer(operations, options);
+      }
+      return { operations: operations.map(operation => ({ operationId: operation.operationId,
+        filesTransferred: operation.files.length, bytesTransferred: 0 })) };
+    };
+    const saved = await captureRemoteWorkspaceArchive({ target: remote, remoteCwd: workspace, operationId: randomUUID() });
+    try {
+      expect(await fs.readFile(path.join(workspace, "result.txt"), "utf8")).toBe("staged result\n");
+      expect(await fs.readFile(path.join(workspace, "notes.txt"), "utf8")).toBe("untracked result\n");
+      await fs.rm(workspace, { recursive: true });
+      const restored = path.join(scratch, "restored");
+      await restoreRemoteWorkspaceArchive({ archivePath: saved.archivePath, targetDir: restored,
+        expectedManifestDigest: saved.manifestDigest });
+      expect((await git(restored, "rev-parse", "HEAD")).stdout).toBe(head);
+      expect((await git(restored, "show", ":result.txt")).stdout).toBe("staged result\n");
+      expect(await fs.readFile(path.join(restored, "notes.txt"), "utf8")).toBe("untracked result\n");
+      expect(await fs.readlink(path.join(restored, "notes-link"))).toBe("notes.txt");
+      await git(restored, "fsck", "--full");
+    } finally { await saved.cleanup(); }
+  });
+
   it.each([
     { step: "helper install", failing: String.raw`/archive\.cjs\.[^/]+\.tmp$/`, outputMode: "split" as const },
     { step: "archive write", failing: String.raw`/workspace\.pcws$/`, outputMode: "split" as const },
@@ -489,6 +543,7 @@ describe("remote workspace transport safety with real sandbox commands", () => {
     const { remote, execute } = target({}, outputMode);
     const run = execute.getMockImplementation()!;
     execute.mockImplementation(input => run({ ...input, env: { ...input.env, NODE_OPTIONS: `--require ${preload}` } }));
+    remote.runner!.syncOut = async () => { throw new Error("synthetic transfer unavailable"); };
     const operationId = randomUUID();
     await expect(captureRemoteWorkspaceArchive({ target: remote, remoteCwd: workspace, operationId }))
       .rejects.toThrow(/^remote_workspace_sandbox_disk_full: the sandbox disk is full; free space in the sandbox before saving the workspace$/);
@@ -496,6 +551,79 @@ describe("remote workspace transport safety with real sandbox commands", () => {
     const leftovers = await fs.readdir(directory).catch(() => []);
     expect(leftovers.filter(name => name !== "archive.cjs")).toEqual([]);
     expect(await fs.readFile(path.join(workspace, "result.txt"), "utf8")).toBe("synthetic saved result\n");
+  });
+
+  it("preserves work beside a socket and records its exclusion during full-disk recovery", async () => {
+    await fs.writeFile(path.join(workspace, "saved.txt"), "retained work\n");
+    const socket = path.join(workspace, "ipc"), server = net.createServer();
+    await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(socket, resolve); });
+    let saved: Awaited<ReturnType<typeof captureRemoteWorkspaceArchive>> | undefined;
+    try {
+      const { remote, execute } = target();
+      execute.mockResolvedValueOnce({ exitCode: 1, stdout: "", stderr: "remote_workspace_sandbox_disk_full: the sandbox disk is full; free space in the sandbox before saving the workspace",
+        timedOut: false, signal: null, pid: process.pid, startedAt: new Date().toISOString() });
+      remote.runner!.syncOut = async operations => {
+        const mapping = operations[0]!.files[0]!;
+        await fs.cp(mapping.sourcePath, mapping.targetPath, { recursive: true, verbatimSymlinks: true,
+          filter: file => !mapping.exclude!.includes(path.relative(mapping.sourcePath, file)) });
+        return { operations: [] };
+      };
+      saved = await captureRemoteWorkspaceArchive({ target: remote, remoteCwd: workspace, operationId: randomUUID() });
+      const bytes = await fs.readFile(saved.archivePath), length = bytes.readUInt32BE(6);
+      expect(JSON.parse(bytes.subarray(10, 10 + length).toString()).excluded).toContain("ipc");
+      const restored = path.join(scratch, "restored");
+      await restoreRemoteWorkspaceArchive({ archivePath: saved.archivePath, targetDir: restored, expectedManifestDigest: saved.manifestDigest });
+      expect(await fs.readdir(restored)).toEqual(["saved.txt"]);
+      expect((await fs.lstat(socket)).isSocket()).toBe(true);
+    } finally {
+      await saved?.cleanup();
+      await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+    }
+  });
+
+  it.each(["source changed", "copy changed", "extra file"])("rejects a read-only fallback when %s", async fault => {
+    await fs.writeFile(path.join(workspace, "saved.txt"), "retained work\n");
+    const { remote, execute } = target();
+    execute.mockResolvedValueOnce({ exitCode: 1, stdout: "", stderr: "remote_workspace_sandbox_disk_full: the sandbox disk is full; free space in the sandbox before saving the workspace",
+      timedOut: false, signal: null, pid: process.pid, startedAt: new Date().toISOString() });
+    let copiedRoot: string | undefined;
+    remote.runner!.syncOut = async operations => {
+      const file = operations[0]!.files[0]!; copiedRoot = path.dirname(file.targetPath);
+      await fs.cp(file.sourcePath, file.targetPath, { recursive: true, verbatimSymlinks: true });
+      if (fault === "source changed") await fs.writeFile(path.join(workspace, "saved.txt"), "newer work\n");
+      else await fs.writeFile(path.join(file.targetPath, fault === "extra file" ? "extra.txt" : "saved.txt"), "wrong copy\n");
+      return { operations: [] };
+    };
+    await expect(captureRemoteWorkspaceArchive({ target: remote, remoteCwd: workspace, operationId: randomUUID() }))
+      .rejects.toMatchObject({ message: "remote_workspace_sandbox_disk_full: the sandbox disk is full; free space in the sandbox before saving the workspace",
+        cause: { message: "remote_workspace_readonly_capture_failed: stage=verify reason=source_changed transport=provider_error" } });
+    expect(await fs.readFile(path.join(workspace, "saved.txt"), "utf8")).toBe(fault === "source changed" ? "newer work\n" : "retained work\n");
+    expect(copiedRoot).toBeDefined();
+    await expect(fs.access(copiedRoot!)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it.each(["worktree pointer", "alternate store", "config include", "core worktree"])("retains a full sandbox with a %s instead of resolving controller paths", async fault => {
+    const outside = path.join(scratch, "outside"); await fs.mkdir(outside);
+    await fs.writeFile(path.join(outside, "sentinel"), "must stay outside\n");
+    await fs.writeFile(path.join(workspace, "saved.txt"), "retained work\n");
+    if (fault === "worktree pointer") await fs.writeFile(path.join(workspace, ".git"), `gitdir: ${outside}\n`);
+    else {
+      await git(workspace, "init", "--initial-branch=main");
+      if (fault === "alternate store") await fs.writeFile(path.join(workspace, ".git", "objects", "info", "alternates"), `${outside}\n`);
+      if (fault === "config include") await git(workspace, "config", "include.path", path.join(outside, "sentinel"));
+      if (fault === "core worktree") await git(workspace, "config", "core.worktree", outside);
+    }
+    const { remote, execute } = target();
+    execute.mockResolvedValueOnce({ exitCode: 1, stdout: "", stderr: "remote_workspace_sandbox_disk_full: the sandbox disk is full; free space in the sandbox before saving the workspace",
+      timedOut: false, signal: null, pid: process.pid, startedAt: new Date().toISOString() });
+    const transfer = remote.runner!.syncOut!;
+    const syncOut = vi.fn(transfer); remote.runner!.syncOut = syncOut;
+    await expect(captureRemoteWorkspaceArchive({ target: remote, remoteCwd: workspace, operationId: randomUUID() }))
+      .rejects.toThrow(/^remote_workspace_sandbox_disk_full:/);
+    if (["worktree pointer", "alternate store"].includes(fault)) expect(syncOut).not.toHaveBeenCalled();
+    expect(await fs.readFile(path.join(workspace, "saved.txt"), "utf8")).toBe("retained work\n");
+    expect(await fs.readdir(outside)).toEqual(["sentinel"]);
+    expect(await fs.readFile(path.join(outside, "sentinel"), "utf8")).toBe("must stay outside\n");
   });
 
   it("keeps the full-disk diagnostic exact", async () => {
@@ -507,13 +635,14 @@ describe("remote workspace transport safety with real sandbox commands", () => {
       .rejects.toThrow(/^remote_workspace_operation_failed: operation=[a-z_]+ exit=1$/);
   });
 
-  it.each(["split", "one-shot"] as const)("preserves a Git child disk failure with %s output without its private text", async outputMode => {
+  it.each(["split", "one-shot"] as const)("preserves a Git child disk failure with %s output when read-only download is unavailable", async outputMode => {
     await git(workspace, "init", "--initial-branch=main");
     await fs.writeFile(path.join(workspace, "saved.txt"), "retained source bytes\n");
     const bin = path.join(scratch, "controlled-bin"); await fs.mkdir(bin);
     const gitWrapper = path.join(bin, "git");
     await fs.writeFile(gitWrapper, "#!/bin/sh\nprintf '%s' 'No space left on device: SYNTHETIC_PRIVATE_GIT_PATH' >&2\nexit 2\n", { mode: 0o700 });
     const { remote } = target({ PATH: `${bin}${path.delimiter}${process.env.PATH}` }, outputMode);
+    remote.runner!.syncOut = async () => { throw new Error("synthetic transfer unavailable"); };
     await expect(captureRemoteWorkspaceArchive({ target: remote, remoteCwd: workspace, operationId: randomUUID() }))
       .rejects.toThrow(/^remote_workspace_sandbox_disk_full: the sandbox disk is full; free space in the sandbox before saving the workspace$/);
     expect(await fs.readFile(path.join(workspace, "saved.txt"), "utf8")).toBe("retained source bytes\n");
@@ -567,6 +696,7 @@ describe("remote workspace transport safety with real sandbox commands", () => {
     const diskFull = "remote_workspace_sandbox_disk_full: the sandbox disk is full; free space in the sandbox before saving the workspace";
     execute.mockResolvedValueOnce({ exitCode: 1, stdout: diskFull, stderr: "remote_workspace_archive_fs_enoent",
       timedOut: false, signal: null, pid: process.pid, startedAt: new Date().toISOString() });
+    remote.runner!.syncOut = async () => { throw new Error("synthetic transfer unavailable"); };
     await expect(captureRemoteWorkspaceArchive({ target: remote, remoteCwd: workspace, operationId: randomUUID() }))
       .rejects.toThrow(diskFull);
   });

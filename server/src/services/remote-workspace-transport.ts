@@ -1,11 +1,12 @@
 import { createHash, randomUUID } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { mkdtemp, rm, stat } from "node:fs/promises";
+import { mkdtemp, realpath, rm, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
 import type { RemoteWorkspaceSource } from "@paperclipai/shared";
-import { remoteWorkspaceArchiveScript, remoteWorkspaceCaptureFailureMessage, remoteWorkspaceFailureDetail } from "./remote-workspace-snapshot-archive.js";
+import { captureRemoteWorkspaceDirectory, remoteWorkspaceArchiveScript, remoteWorkspaceCaptureFailureMessage, remoteWorkspaceFailureDetail } from "./remote-workspace-snapshot-archive.js";
+import { readWorkspaceInventory, readonlyWorkspaceInventoryScript } from "./remote-workspace-readonly-inventory.js";
 import type { GitRemoteAuthProvider } from "./git-credentials.js";
 import { classifyWorkspaceRestoreFailure } from "@paperclipai/adapter-utils/workspace-restore-merge";
 import { MAX_SANDBOX_SYNC_TIMEOUT_MS, type SandboxSyncOperation } from "@paperclipai/adapter-utils/sandbox-managed-runtime";
@@ -399,6 +400,68 @@ export async function cleanupRemoteWorkspaceArchive(input: {
 }
 
 export async function captureRemoteWorkspaceArchive(input: {
+  target: RemoteWorkspaceTarget; remoteCwd: string; operationId: string;
+}) {
+  try { return await captureSandboxWorkspaceArchive(input); }
+  catch (error) {
+    if (!(error instanceof Error) || error.message !== REMOTE_WORKSPACE_SANDBOX_DISK_FULL) throw error;
+    // Disk exhaustion cannot be repaired by writing another archive to the
+    // same sandbox. Transfer a verified standalone source without writing to
+    // it, then normalize and seal it on the controller. Failed verification
+    // retains the original disk-full failure and never permits source cleanup.
+    try { return await captureReadOnlyWorkspaceArchive(input); }
+    catch (cause) { throw new Error(error.message, { cause }); }
+  }
+}
+
+async function captureReadOnlyWorkspaceArchive(input: {
+  target: RemoteWorkspaceTarget; remoteCwd: string; operationId: string;
+}) {
+  if (!/^[a-f0-9-]{36}$/.test(input.operationId)) throw new Error("remote_workspace_operation_identity_invalid");
+  const inspect = async () => {
+    const value = JSON.parse(await command(input.target, "capture", ["-e", readonlyWorkspaceInventoryScript(), input.remoteCwd])) as Awaited<ReturnType<typeof readWorkspaceInventory>>;
+    if (!/^[a-f0-9]{64}$/.test(value.sha256) || !Number.isSafeInteger(value.byteSize) || value.byteSize < 0
+      || !Number.isSafeInteger(value.entries) || value.entries < 0 || !Array.isArray(value.exclude)
+      || value.exclude.length > 4096 || !value.exclude.every(item => typeof item === "string" && item.length > 0
+        && !/[\\\u0000-\u001f\u007f]/u.test(item) && !path.posix.isAbsolute(item)
+        && item.split("/").every(part => part !== "" && part !== "." && part !== ".."))
+      || !value.exclude.includes(".paperclip-runtime")) throw new Error("remote_workspace_readonly_capture_unsafe");
+    return value;
+  };
+  let root: string | undefined;
+  let stage: "inspect" | "transfer" | "verify" | "archive" = "inspect";
+  try {
+    const before = await inspect();
+    root = await mkdtemp(path.join(os.tmpdir(), "paperclip-workspace-readonly-"));
+    root = await realpath(root);
+    const copy = path.join(root, "source"), archivePath = path.join(root, "workspace.pcws");
+    stage = "transfer";
+    await transferArchive(input.target, "syncOut", [{ operationId: input.operationId,
+      files: [{ kind: "directory", sourcePath: input.remoteCwd, targetPath: copy,
+        followSymlinks: false, exclude: before.exclude }] }], Math.max(1, before.byteSize));
+    stage = "verify";
+    const received = await readWorkspaceInventory(copy, true);
+    const same = (observed: typeof before) => observed.sha256 === before.sha256
+      && observed.byteSize === before.byteSize && observed.entries === before.entries;
+    if (!same(received) || !same(await inspect())) throw new Error("remote_workspace_readonly_capture_changed");
+    stage = "archive";
+    const receipt = await captureRemoteWorkspaceDirectory({ cwd: copy, archivePath, exclude: before.exclude });
+    stage = "verify";
+    if (!same(await inspect())) throw new Error("remote_workspace_readonly_capture_changed");
+    // Only the sealed portable archive remains a candidate for durable upload.
+    await rm(copy, { recursive: true, force: true });
+    const savedRoot = root;
+    return { ...receipt, archivePath, cleanup: () => rm(savedRoot, { recursive: true, force: true }) };
+  } catch (error) {
+    if (root) await rm(root, { recursive: true, force: true });
+    const reason = error instanceof Error && error.message === "remote_workspace_readonly_capture_unsafe" ? "unsafe_source"
+      : error instanceof Error && error.message === "remote_workspace_readonly_capture_changed" ? "source_changed" : "operation_failed";
+    const { label, code } = sandboxProviderFailureLabel(error);
+    throw new Error(`remote_workspace_readonly_capture_failed: stage=${stage} reason=${reason} transport=${label}${code ? ` code=${code}` : ""}`);
+  }
+}
+
+async function captureSandboxWorkspaceArchive(input: {
   target: RemoteWorkspaceTarget; remoteCwd: string; operationId: string;
 }) {
   const staged = await installArchiveHelper(input.target, input.remoteCwd, input.operationId);

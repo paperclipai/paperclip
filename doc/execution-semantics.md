@@ -1009,8 +1009,17 @@ does not repack an already dissociated mirror. Each streamed file must match its
 recorded hash, size and mode and retain its filesystem identity while read.
 Capture rechecks the complete source inventory and Git state before returning a
 receipt. A changed source or cancelled capture removes its incomplete archive;
-an existing archive remains untouched. Temporary space must still hold the
-normalized Git metadata and the complete archive together.
+an existing archive remains untouched. Temporary sandbox space normally holds
+the normalized Git metadata and the complete archive together. An exact disk-full
+failure invokes one read-only export fallback. It fingerprints a standalone
+source, transfers its files through the provider's existing bulk channel, and
+checks the received inventory and the source again before sealing a portable
+archive on the controller. It rechecks the source after sealing. No source files
+or provider caches are removed. Linked Git worktrees, alternate object stores,
+and controller-specific Git includes or worktree paths cannot use this fallback.
+They remain retained if their normal archive cannot be saved. Transfer failures
+or changed files retain the original disk-full error and do not produce a
+preservation receipt.
 
 Shallow and partial Git checkouts retain their available object files instead
 of asking a mirror clone to transfer promised or index-only objects. Capture
