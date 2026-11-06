@@ -1265,7 +1265,10 @@ describe("TaskChatThread draft pass-through", () => {
       createdAt: w.createdAt, updatedAt: w.updatedAt, byteSize: 2048,
     })) as unknown as NonNullable<Props["attachments"]>;
     const comments = workProducts.map((w, n) => ({ ...comment(`receipt-${n}`, wording === "original" ? `Prepared ${w.title} for this response.` : `Image ready: ${w.title}`, "images-run"),
-      createdAt: new Date(new Date(w.createdAt).getTime() + 100), metadata: { version: 1 as const, sections: [], authorizationReason: "paperclip_runner_protocol" },
+      createdAt: new Date(new Date(w.createdAt).getTime() + 100),
+      metadata: { version: 1 as const, sections: [], authorizationReason: "paperclip_runner_protocol",
+        ...(wording === "changed" ? { attachmentPreparation: { attachmentId: String(w.metadata!.attachmentId) } } : {}),
+      },
     }));
     const props: Props = { comments, workProducts, attachments, onAdd: async () => {}, issueStatus: "done" };
     render(<TaskChatThread {...props} />);
@@ -1276,8 +1279,8 @@ describe("TaskChatThread draft pass-through", () => {
     // The same words written by a person are conversation and must remain.
     render(<TaskChatThread {...props} comments={[...comments, { ...comment("human-receipt-words", "Prepared Screen 1 for this response."), authorAgentId: null, authorType: "user", authorUserId: "viewer" }]} />);
     expect(container.textContent).toContain("Prepared Screen 1 for this response.");
-    // Attachment links alone must not hide an authored agent message.
-    render(<TaskChatThread {...props} comments={[{ ...comments[0], body: "Keep this image context", metadata: null }, comments[1]]} />);
+    // Native progress messages share the protocol marker and can have attachments.
+    render(<TaskChatThread {...props} comments={[{ ...comments[0], body: "Keep this image context", metadata: { ...comments[0].metadata, attachmentPreparation: undefined } }, comments[1]]} />);
     expect(container.textContent).toContain("Keep this image context");
   });
 

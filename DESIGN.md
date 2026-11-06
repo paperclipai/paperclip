@@ -101,8 +101,9 @@ video, and authored messages retain their chronological positions and separate
 image batches. Open thumbnails in the existing gallery, with keyboard navigation
 and downloads. Images without an originating run stay separate. Generated native
 image preparation receipts are redundant with those tiles; identify them by the
-protocol marker and links to the image, author, and originating run, independent
-of receipt wording or image title.
+attachment-preparation marker and links to the image, author, and originating run,
+independent of receipt wording or image title. Older receipts use their exact
+historical preparation sentence as a fallback. Authored progress text stays visible.
 
 ## Contextual feedback
 

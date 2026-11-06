@@ -8,18 +8,24 @@ export function imagePreparationReceiptIds(
   comments: readonly IssueChatComment[], attachments: readonly IssueAttachment[], products: readonly IssueWorkProduct[],
 ): Set<string> {
   const commentsById = new Map(comments.map(comment => [comment.id, comment]));
-  const imageRunsByAttachment = new Map<string, string | null>();
+  const imagesByAttachment = new Map<string, IssueWorkProduct>();
   for (const product of products) {
     const source = fileRowSourceFromWorkProduct(product);
     if (source?.attachmentId && isImageLikeOutput(source.contentType, source.filename)) {
-      imageRunsByAttachment.set(source.attachmentId, product.createdByRunId);
+      imagesByAttachment.set(source.attachmentId, product);
     }
   }
   const ids = new Set<string>();
   for (const attachment of attachments) {
     const comment = attachment.issueCommentId ? commentsById.get(attachment.issueCommentId) : undefined;
+    const image = imagesByAttachment.get(attachment.id);
+    const receiptAttachmentId = comment?.metadata?.attachmentPreparation?.attachmentId;
+    // Older receipts predate the marker. Keep their exact historical format as
+    // a compatibility fallback; new receipts do not depend on wording or title.
+    const isPreparation = receiptAttachmentId === attachment.id ||
+      (receiptAttachmentId == null && image && comment?.body === `Prepared ${image.title} for this response.`);
     if (comment && comment.authorType === "agent" && attachment.originatingRunId &&
-      imageRunsByAttachment.get(attachment.id) === attachment.originatingRunId &&
+      image?.createdByRunId === attachment.originatingRunId && isPreparation &&
       (comment.runId ?? comment.createdByRunId) === attachment.originatingRunId &&
       comment.authorAgentId === attachment.createdByAgentId &&
       comment.metadata?.authorizationReason === "paperclip_runner_protocol") ids.add(comment.id);

@@ -1216,6 +1216,8 @@ export interface IssueCommentMetadata {
   };
   /** Producer-classified diagnostics; task interruption UI owns system repair. */
   recoveryResponsibility?: "system" | "user";
+  /** Generated file-preparation receipt; presentation only, never authorization. */
+  attachmentPreparation?: { attachmentId: string };
   /** Inbound channel attribution; never an authorization input. */
   sourceChannel?: ChatProvider;
   sourceRunId?: string | null;
