@@ -12,8 +12,8 @@ use sha2::{Digest, Sha256};
 use crate::stable_identity::{is_stable_id, DURABLE_STABLE_ID_CHARS, SHORT_STABLE_ID_CHARS};
 
 pub use runner::{
-    run_durable_runner, CommandExecution, CommandExecutor, PolledEvent,
-    TerminalDeliveryReconciliation,
+    run_durable_runner, run_durable_runner_with_host_control, CommandExecution, CommandExecutor,
+    PolledEvent, TerminalDeliveryReconciliation,
 };
 pub(crate) use state::{
     create_private_temporary_file, open_private_regular_file, redact_sensitive_text_values,

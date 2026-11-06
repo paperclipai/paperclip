@@ -14,9 +14,18 @@ import { expect, it, vi } from "vitest";
 import { DurablePrpControlPlane } from "../control-plane/durable-prp-control-plane.js";
 import * as durableControlPlane from "../control-plane/durable-prp-control-plane.js";
 import { createCapabilityRunnerdCodexTransport, readRunnerdArtifactBinding } from "./runnerd-codex-transport.js";
-import { defaultCapabilityRunnerdBinary, fakeCodex, fakeCodexArgs } from "../../test/support/runnerd-transport.js";
+import { committableStore, defaultCapabilityRunnerdBinary, fakeCodex, fakeCodexArgs } from "../../test/support/runnerd-transport.js";
 
-it.each([
+type WarmAttachRecoveryCase = {
+  lossPoint: string;
+  routed: boolean;
+  recoveryFault: string;
+  executionPrepared?: boolean;
+  externalArtifact?: boolean;
+  ordinaryFollowup?: boolean | string;
+};
+
+it.each<WarmAttachRecoveryCase>([
   ...[
     "before-result",
     "after-result",
@@ -84,8 +93,10 @@ it.each([
     "wrong_thread",
     "callback_failure",
     "callback_async_failure",
+    "callback_checkpoint_failure",
+    "callback_checkpoint_owner_change",
   ].map((ordinaryFollowup) => ({
-    lossPoint: "after-confirmation",
+    lossPoint: ordinaryFollowup.startsWith("callback_") ? "after-result" : "after-confirmation",
     routed: true,
     recoveryFault: "none",
     ordinaryFollowup,
@@ -116,6 +127,7 @@ it.each([
     let recovering = false;
     let recoveryClaimCurrent = true;
     let recoveryFenceActive = true;
+    let recoveredOwner: string;
     const completionSnapshotIds: string[] = [];
     let rejectHeldCompletion: ((error: Error) => void) | undefined;
     let markHeldCompletionEntered!: () => void;
@@ -183,6 +195,26 @@ it.each([
       ) {
         const core = new OriginalCore(options);
         cores.push(core);
+        if (recovering && (ordinaryFollowup === "callback_checkpoint_failure" || ordinaryFollowup === "callback_checkpoint_owner_change")) {
+          const getCommand = core.getCommand.bind(core);
+          let injected = false;
+          vi.spyOn(core, "getCommand").mockImplementation(id => {
+            const command = getCommand(id);
+            if (!injected && command?.type === "session.snapshot" && command.status === "completed") {
+              injected = true;
+              if (ordinaryFollowup === "callback_checkpoint_failure") {
+                vi.spyOn(core, "flushCheckpoint").mockRejectedValueOnce(new Error("fixture recovery completion callback failed"));
+              } else {
+                const flush = core.flushCheckpoint.bind(core);
+                vi.spyOn(core, "flushCheckpoint").mockImplementationOnce(async () => {
+                  await flush();
+                  recoveredOwner = "replacement-owner";
+                });
+              }
+            }
+            return command;
+          });
+        }
         if (recovering && snapshotFault) {
           const getCommand = core.getCommand.bind(core);
           snapshotObserverSpy = vi
@@ -455,14 +487,15 @@ it.each([
           ).toBe(false);
         return;
       }
-      const commit = core.store.commit.bind(core.store);
+      const store = committableStore(core);
+      const commit = store.commit.bind(store);
       let lossObserved = false;
       let signalLoss!: () => void;
       const loss = new Promise<void>((resolveLoss) => {
         signalLoss = resolveLoss;
       });
       commitSpy = vi
-        .spyOn(core.store, "commit")
+        .spyOn(store, "commit")
         .mockImplementation((candidate) => {
           // The selected process-crash boundary stays unavailable until the
           // exact owned runner is joined. A later replay must not silently
@@ -694,8 +727,10 @@ it.each([
       const beforeProviderBytes = await readFile(
         join(stateDirectory, "runner", "codex-provider-state.json"),
       );
+      recoveredOwner = desired.runId;
       resumed = createCapabilityRunnerdCodexTransport({
         ...options,
+        get authorityRunId() { return ordinaryFollowup ? recoveredOwner : undefined; },
         ...(externalArtifact ? {
           runnerBinary: "/controller-missing-runner",
           runnerArtifact: readRunnerdArtifactBinding(options.runnerBinary),
@@ -891,7 +926,9 @@ it.each([
       if (
         snapshotFault ||
         ordinaryFollowup === "callback_failure" ||
-        ordinaryFollowup === "callback_async_failure"
+        ordinaryFollowup === "callback_async_failure" ||
+        ordinaryFollowup === "callback_checkpoint_failure" ||
+        ordinaryFollowup === "callback_checkpoint_owner_change"
       ) {
         const firstRead = within(resumed.transport.request("thread/read", {}));
         void firstRead.catch(() => undefined);
@@ -932,10 +969,10 @@ it.each([
             ? ordinaryFollowup === "rejected_snapshot"
               ? "snapshot observation rejected"
               : "completion_unproven"
-            : "recovery completion callback failed",
+            : ordinaryFollowup === "callback_checkpoint_owner_change" ? "source_attachment_pending" : "recovery completion callback failed",
         );
         expect(recoveryFenceActive).toBe(true);
-        expect(completionSnapshotIds).toHaveLength(snapshotFault ? 0 : 1);
+        expect(completionSnapshotIds).toHaveLength(snapshotFault || ordinaryFollowup === "callback_checkpoint_failure" || ordinaryFollowup === "callback_checkpoint_owner_change" ? 0 : 1);
         const beforeDeniedWork = cores[1]!.store.state.commands.map(
           (command) => command.commandId,
         );
@@ -962,18 +999,21 @@ it.each([
           beforeDeniedProviderCalls,
         );
         snapshotObserverSpy?.mockRestore();
+        recoveredOwner = desired.runId;
         const providerCallsBeforeRetry = await readFile(callsPath, "utf8");
         expect(
           (await within(resumed.transport.request("thread/read", {}))).thread,
         ).toMatchObject(thread);
         expect(recoveryFenceActive).toBe(false);
-        expect(completionSnapshotIds).toHaveLength(snapshotFault ? 1 : 2);
+        expect(completionSnapshotIds).toHaveLength(snapshotFault || ordinaryFollowup === "callback_checkpoint_failure" || ordinaryFollowup === "callback_checkpoint_owner_change" ? 1 : 2);
         expect(new Set(completionSnapshotIds).size).toBe(
           completionSnapshotIds.length,
         );
         expect(await readFile(callsPath, "utf8")).toBe(
           providerCallsBeforeRetry,
         );
+        await within(resumed.transport.request("turn/start", { input: [{ type: "text", text: "Work after completion retry" }] }));
+        for await (const event of resumed.transport.notifications()) if (event.method === "turn/completed") break;
         return;
       }
       const read = await within(
@@ -1016,6 +1056,7 @@ it.each([
           (await within(resumed.transport.request("thread/read", {}))).thread,
         ).toMatchObject(thread);
         const thirdRunId = randomUUID();
+        recoveredOwner = thirdRunId;
         await within(
           resumed.transport.attachRun!({
             runId: thirdRunId,
