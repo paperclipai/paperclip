@@ -186,8 +186,8 @@ function MarkdownIssueLink({
   }
 
   if (documentLink) {
-    return <SidebarDocumentLink href={href} onPointerEnter={() => setEngaged(true)} onFocus={() => setEngaged(true)}>
-      <span className="min-w-0 truncate text-foreground underline underline-offset-4">{children}</span>
+    return <SidebarDocumentLink href={href} variant="inline" onPointerEnter={() => setEngaged(true)} onFocus={() => setEngaged(true)}>
+      <span className="underline underline-offset-4">{children}</span>
     </SidebarDocumentLink>;
   }
 
@@ -872,8 +872,8 @@ function MarkdownBodyImpl({
       const documentHash = href?.includes("#") ? href.slice(href.indexOf("#")) : null;
       const documentLink = Boolean(coordinator && documentHash && parseDocumentAnnotationHash(documentHash));
       if (documentLink && href?.startsWith("#")) {
-        return <SidebarDocumentLink href={href}>
-          <span className="min-w-0 truncate text-foreground underline underline-offset-4">{linkChildren}</span>
+        return <SidebarDocumentLink href={href} variant="inline">
+          <span className="underline underline-offset-4">{linkChildren}</span>
         </SidebarDocumentLink>;
       }
       if (issueRef) {
