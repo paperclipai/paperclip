@@ -2088,7 +2088,10 @@ first, right after its ensure; then, under `enableManagedSandboxOnly`, the
 managed sandbox fills. So a new instance gets the plugin environment, and an
 existing instance keeps the default it already has. If the plugin is down at a
 new instance's first boot, the managed sandbox fills the default instead, and the
-plugin environment does not replace it later. Recovery after boot never fills. The fill locks the default row and rechecks it, so a
+plugin environment does not replace it later. Recovery after boot never fills.
+Like an admin's default write, the plugin fill declines while an active agent
+that follows the default has not been prepared by that plugin; the managed
+sandbox then fills as usual. The fill locks the default row and rechecks it, so a
 concurrent boot or admin write is never overwritten. A filled default is an
 ordinary set value: nothing reverts it when the mode is later turned off, and an
 admin can change it in instance settings.

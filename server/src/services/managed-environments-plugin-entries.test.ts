@@ -447,6 +447,23 @@ describe("applyManagedEnvironments plugin entries", () => {
       expect(fillInstanceDefault.mock.calls.map(([environmentId]) => environmentId)).toEqual(["plugin-env", "env-1"]);
     });
 
+    it("lets the sandbox fill when the plugin fill declines because agents need setup", async () => {
+      const fillInstanceDefault = vi.fn(async (environmentId: string) => environmentId === "plugin-env"
+        ? { filled: false, previousDefaultEnvironmentId: null, declined: "agents_need_setup" as const }
+        : { filled: true, previousDefaultEnvironmentId: null });
+      await applyManagedEnvironments(noDb, sandboxAndComputer(), {
+        env: {},
+        workerManager: workerManager(),
+        fillInstanceDefault,
+        environments: environmentsSeam(),
+        resolveSandboxProviderDriver: readyDriverResolver(),
+        resolveEnvironmentPlugin: readyPlugin(),
+        autoInstalledPluginKeys: [PLUGIN_KEY],
+      });
+      expect(fillInstanceDefault.mock.calls.map(([environmentId]) => environmentId)).toEqual(["plugin-env", "env-1"]);
+      expect(await fillInstanceDefault.mock.results[1]!.value).toMatchObject({ filled: true });
+    });
+
     it("does not fill with the plugin row when its plugin is down, and recovery never fills", async () => {
       const { handle, fireReady } = recoveryHandle();
       const fillInstanceDefault = vi.fn(async () => ({ filled: true, previousDefaultEnvironmentId: null }));

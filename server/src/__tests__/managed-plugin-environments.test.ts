@@ -276,9 +276,10 @@ const support = await getEmbeddedPostgresTestSupport();
       }).returning();
       return row!.id;
     };
-    const agent = async (companyId: string, defaultEnvironmentId: string | null) => {
+    const agent = async (companyId: string, defaultEnvironmentId: string | null,
+      lifecycle: Partial<Pick<typeof agents.$inferInsert, "lifecycleState" | "lifecycleRequiredPluginIds">> = {}) => {
       const id = randomUUID();
-      await db.insert(agents).values({ id, companyId, name: `Agent ${id}`, adapterType: "process", defaultEnvironmentId });
+      await db.insert(agents).values({ id, companyId, name: `Agent ${id}`, adapterType: "process", defaultEnvironmentId, ...lifecycle });
       return id;
     };
 
@@ -318,6 +319,37 @@ const support = await getEmbeddedPostgresTestSupport();
       await vi.waitFor(async () => expect((await pluginRows())[0]?.status).toBe("active"));
       await boot();
       expect(await instanceDefault()).toBe(sandboxId);
+    });
+
+    it("declines an admin-cleared default while an active agent that follows it lacks the plugin's setup", async () => {
+      await setInstanceDefault(null);
+      await agent(await company(), null);
+      await boot();
+      expect(await instanceDefault()).toBeNull();
+      // The same boot's managed sandbox fill still fills it.
+      const sandboxId = await sandboxRow();
+      expect(await fillUnsetInstanceDefault(db, sandboxId)).toMatchObject({ filled: true });
+      expect(await instanceDefault()).toBe(sandboxId);
+    });
+
+    it("declines a local default the same way", async () => {
+      const [local] = await db.insert(environments).values({ name: "Local", driver: "local", status: "active", config: {} }).returning();
+      await setInstanceDefault(local!.id);
+      await agent(await company(), null, { lifecycleState: "verifying" });
+      await boot();
+      expect(await instanceDefault()).toBe(local!.id);
+    });
+
+    it("fills when no active agent following the default needs the plugin's setup", async () => {
+      const companyId = await company();
+      const sandboxId = await sandboxRow();
+      await agent(companyId, null, { lifecycleState: "paused" });
+      await agent(companyId, null, { lifecycleRequiredPluginIds: [pluginId] });
+      await agent(companyId, sandboxId);
+      await setInstanceDefault(null);
+      await boot();
+      const [row] = await pluginRows();
+      expect(await instanceDefault()).toBe(row!.id);
     });
 
     it("does nothing without the flag", async () => {

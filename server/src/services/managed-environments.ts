@@ -338,6 +338,8 @@ export async function applyManagedEnvironments(
    * row right after a successful boot ensure, through the same locked fill:
    * only an unset, local or deleted default is replaced, and a set default
    * (an existing instance's managed sandbox, an admin's choice) never is.
+   * Like an admin's write, the fill declines while active agents following
+   * the default lack the plugin's setup; the sandbox fill then runs as usual.
    * Recovery after boot never fills. Best-effort, like the sandbox fill.
    */
   const fillPluginInstanceDefault = async (
@@ -346,7 +348,13 @@ export async function applyManagedEnvironments(
   ): Promise<void> => {
     if (!spec.instanceDefault) return;
     try {
-      const { filled, previousDefaultEnvironmentId } = await fillInstanceDefault(environmentId);
+      const { filled, previousDefaultEnvironmentId, declined } = await fillInstanceDefault(environmentId);
+      if (declined) {
+        logger.warn(
+          { environmentId, name: spec.name, previousDefaultEnvironmentId, declined },
+          "kept the instance default: agents that follow it need setup for the managed plugin environment first",
+        );
+      }
       if (!filled) return;
       logger.info(
         { environmentId, name: spec.name, previousDefaultEnvironmentId },
