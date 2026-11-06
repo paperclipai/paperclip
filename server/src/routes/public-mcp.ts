@@ -156,8 +156,8 @@ export function publicMcpIngressRoutes(oauth: PublicMcpOAuth, execute: ReturnTyp
       try {
         let result: Record<string, unknown>;
         switch (method) {
-          case "server/discover": result = { supportedVersions: ["2026-07-28"], capabilities: { tools: {}, ...(events ? { events: {} } : {}) } }; break;
-          case "tools/list": result = await listTools(); break;
+          case "server/discover": result = { supportedVersions: ["2026-07-28"], capabilities: { tools: {}, ...(events ? { events: {} } : {}) }, ttlMs: 0, cacheScope: "private" }; break;
+          case "tools/list": result = { ...await listTools(), ttlMs: 0, cacheScope: "private" }; break;
           case "tools/call": result = await callTool(CallToolRequestSchema.parse(envelope.data)); break;
           case "events/list":
             if (!events) { fail(-32601, "Events are unavailable."); return; }
