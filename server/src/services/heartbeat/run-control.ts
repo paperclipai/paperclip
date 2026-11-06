@@ -339,6 +339,10 @@ function runCancellationFenceSql(input: {
     jsonb_build_object('startupCancellation', ${startupFence})`;
 }
 
+// Task states in which a saved or interrupting comment can still be delivered.
+const SAVED_COMMENT_DELIVERY_STATUSES: readonly string[] = ["todo", "in_progress", "in_review", "blocked"];
+const TERMINAL_TASK_STATUSES: readonly string[] = ["done", "cancelled"];
+
 /** Run control binds cancellation, resource release, and saved-input resumption. */
 export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunControlDependencies) {
   const {
@@ -745,6 +749,29 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
       inArray(heartbeatRuns.status, ["running", "queued", "scheduled_retry"]),
     )).limit(1);
     if (active) return;
+    // Delivery below is admitted only for these task states and this assignee.
+    // Check first: the interrupt sweep revisits a parked queue every tick, and
+    // a refused admission writes an issue_state_guard_mismatch receipt while the
+    // queue stays parked, so a terminal task would add one receipt per tick
+    // forever (#18408). A terminal task settles the interrupt intent once; the
+    // saved comment itself is kept. Other undeliverable states keep the queue
+    // parked without writing a receipt.
+    const [task] = await db.select({ status: issues.status, assigneeAgentId: issues.assigneeAgentId })
+      .from(issues).where(and(eq(issues.companyId, companyId), eq(issues.id, issueId)));
+    if (!task || task.assigneeAgentId !== wake.agentId || !SAVED_COMMENT_DELIVERY_STATUSES.includes(task.status)) {
+      if (interrupted && task && TERMINAL_TASK_STATUSES.includes(task.status)) {
+        const now = new Date();
+        await db.update(agentWakeupRequests).set({
+          status: "cancelled", finishedAt: now, updatedAt: now,
+          error: "Queued comment interrupt no longer applies to a terminal task",
+        }).where(and(
+          eq(agentWakeupRequests.id, queueId), eq(agentWakeupRequests.companyId, companyId),
+          eq(agentWakeupRequests.status, "deferred_issue_execution"),
+          sql`${agentWakeupRequests.payload}->'queuedCommentInterrupt' is not null`,
+        ));
+      }
+      return;
+    }
     if (interrupted && opts?.retryCleanup) {
       // Only the HTTP click grants an extra cleanup attempt. Periodic retries
       // reuse the intent to deliver, never a fresh provider teardown budget.
@@ -817,7 +844,7 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
           }, commentIds),
       requestedByActorType: "user", requestedByActorId: actorId,
       ...(interrupted ? { queuedCommentInterruptId: queueId } : { queuedCommentRequestId: queueId }),
-      issueStateGuard: { assigneeAgentId: wake.agentId, statuses: ["todo", "in_progress", "in_review", "blocked"] },
+      issueStateGuard: { assigneeAgentId: wake.agentId, statuses: [...SAVED_COMMENT_DELIVERY_STATUSES] },
       idempotencyKey: `queued-comment-${interrupted ? "interrupt" : "delivery"}:${queueId}`,
     }, queueId);
   }
