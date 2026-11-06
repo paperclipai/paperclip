@@ -1,4 +1,5 @@
 import { instanceSettingsService } from "../instance-settings.js";
+import { acknowledgeLegacyQuotaPrestartStop, fenceLegacyQuotaPrestartStop, isLegacyQuotaPrestartStopCandidate } from "./quota-prestart-fence.js";
 import { writeDeferredExecutionWait } from "../deferred-execution-wait.js";
 import type { DeferredReceiptRecoveryOptions } from "../deferred-execution-notifications.js";
 import { observeStoppedWorkspaceRecovery } from "../workspace-recovery.js";
@@ -1218,6 +1219,22 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
 
     if (!committedBudgetCancellation && !options.expectedStatus && options.resultJson?.cancelledByActorType === "user") {
       if (quotaLineage.has(runId) || quotaLineage.size >= 100) throw conflict("Invalid quota replacement lineage");
+      if (run.issueId && run.status === "cancelled" && run.errorCode === "ai_connection_pool_exhausted") {
+        const actor = options.cancellationRequestedByUserId ?? (typeof options.resultJson?.cancelledByUserId === "string" ? options.resultJson.cancelledByUserId : null);
+        const correlation = { companyId: run.companyId, runId, requestId: options.cancellationRequestId, userId: actor };
+        const legacyStop = await fenceLegacyQuotaPrestartStop(db, { ...correlation, issueId: run.issueId });
+        if (legacyStop?.kind === "successor") {
+          quotaLineage.add(runId);
+          const { cancellationRequestId: _requestId, cancellationRequestedByUserId: _userId, ...successorOptions } = options;
+          const stopped = await cancelRun(legacyStop.run.id, reason, successorOptions, false, quotaLineage);
+          if (stopped && isHeartbeatRunTerminalStatus(stopped.status) &&
+              (!stopped.startedAt || parseObject(stopped.resultJson?.executionCancellation).state === "acknowledged" ||
+                parseObject(stopped.resultJson?.nativeCancellation).dispatchState === "acknowledged"))
+            await acknowledgeLegacyQuotaPrestartStop(db, correlation);
+          return stopped;
+        }
+        if (legacyStop?.kind === "fenced") return await getRun(runId);
+      }
       const quotaStop = await fenceQuotaReplacementStop(db, run, options.cancellationRequestId,
         options.cancellationRequestedByUserId ?? null);
       if (quotaStop?.kind === "successor") {
@@ -1252,6 +1269,8 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
         // Quota failure can commit after the initial read. Release these locks
         // and retry through the quota fence, which takes issue -> coordinator ->
         // run locks and also observes any already-committed successor.
+        if (!options.expectedStatus && options.resultJson?.cancelledByActorType === "user" && isLegacyQuotaPrestartStopCandidate(current))
+          return "quota_recheck" as const;
         if (!options.expectedStatus && options.resultJson?.cancelledByActorType === "user"
           && current.runtimeMode === "native" && current.status === "failed" && current.nativeIssueId) {
           if (current.nativeIssueId !== handoffIssueId) return "quota_recheck" as const;

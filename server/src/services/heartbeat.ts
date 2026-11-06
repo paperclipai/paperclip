@@ -25,6 +25,7 @@ import { writeExecutionControl } from "./execution-control-notifications.js";
 import { readFreshWorkspaceReadiness } from "./fresh-workspace-continuation.js";
 import { promptInjectionPreventionService } from "./prompt-injection-prevention.js";
 import { createHeartbeatAgentStatus } from "./heartbeat/agent-status.js";
+import { consumeLegacyQuotaPrestartFence } from "./heartbeat/quota-prestart-fence.js";
 import { heartbeatExternalProvider, nativeRuntimeHasInstructionFilesystem } from "./heartbeat/external-provider.js";
 import { pendingCaseHandoffForRun, recordCaseHandoffExecutionReleased, recordLegacyCaseHandoffCleanupIntent, recordLegacyCaseHandoffCleanupVerified } from "./heartbeat/case-handoff-lifecycle.js";
 import { hasStoppedLocalProcessTree, legacyAdapterNeedsLocalProcessSettlement } from "./heartbeat/process-settlement.js";
@@ -771,6 +772,8 @@ export type HeartbeatEnvironmentRuntime = ReturnType<
 export interface HeartbeatServiceOptions {
   /** Test seam before the atomic native runtime handoff. */
   beforeNativeRuntimeSelection?: (runId: string) => Promise<void>;
+  /** Test seam for a concurrent quota observation before legacy provider preparation. */
+  afterLegacyPoolSelection?: (runId: string, selection: AiConnectionRouterSelection) => Promise<void>;
   /** Test seam immediately before the durable chat-control admission check. */
   beforeChatControlRecoveryCheck?: (input: {
     runId: string;
@@ -2557,7 +2560,8 @@ export function heartbeatService(
           }
           context.aiRouterTaskKey = routerTaskKey;
           const savedIdentity = taskSession?.sessionParamsJson?.paperclipAiCredentialIdentity;
-          const selection = await aiConnectionRouterService(db, options.pluginWorkerManager).resolve({
+          const router = aiConnectionRouterService(db, options.pluginWorkerManager);
+          const selection = await router.resolve({
             companyId: agent.companyId, poolId: requestedAiBinding.connectionId, agentId: agent.id,
             userId: responsibleUserId, adapterType: agent.adapterType, taskKey: String(context.aiRouterTaskKey),
             overrides: issueAssigneeOverrides?.adapterConfig ?? {},
@@ -2565,6 +2569,12 @@ export function heartbeatService(
             requireExisting: Boolean(taskSession?.sessionDisplayId) && !shouldResetTaskSessionForWake(context),
             persisted: routerHasPersistedInput ? context.aiRouterSelection as AiConnectionRouterSelection | undefined : undefined,
           });
+          context.aiRouterSelection = selection;
+          if (agent.adapterType === "claude_local") {
+            await options.afterLegacyPoolSelection?.(run.id, selection);
+            await router.recheckLegacyPinnedPoolAccount({ companyId: agent.companyId, agentId: agent.id,
+              userId: responsibleUserId, taskKey: String(context.aiRouterTaskKey), selection });
+          }
           aiBinding = selection.binding;
           // Provider-specific fields from the configured harness must not leak into the selected member.
           config = applyAiConnectionRouterTaskSettings(config, selection);
@@ -2603,6 +2613,9 @@ export function heartbeatService(
           throw new ConfigurationIncompleteFailure(error instanceof Error ? error.message : "Configure this connection pool", { configurationIncomplete: { reason: "ai_connection_unavailable", companyId: agent.companyId, agentId: agent.id, responsibleUserId, actionUrl: `/agents/${agent.id}/runtime`, fingerprint: `ai-router:${requestedAiBinding.connectionId}` } });
         }
       }
+      // No provider-capable preparation may cross this durable boundary while
+      // the first-claim prestart evidence remains in its preparing state.
+      if (agent.adapterType === "claude_local") await consumeLegacyQuotaPrestartFence(db, run);
       if (isConversation(issueContext)) {
         delete context.resumeSessionParams;
         delete context.resumeSessionDisplayId;

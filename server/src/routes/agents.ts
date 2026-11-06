@@ -3213,7 +3213,7 @@ export function agentRoutes(
           if (!(error instanceof HttpError && [403, 422].includes(error.status))) throw error;
         }
       }
-      if (!compatible) throw unprocessable("This pool has no compatible harness");
+      if (!compatible) throw unprocessable("This pool has no compatible harness", { code: "ai_connection_pool_no_eligible_member" });
       if (!memberConnectionIds.size) throw unprocessable("Install or repair a compatible pool member for this agent.", { code: "ai_connection_pool_no_eligible_member" });
       return { connectionId: pool.id, ...(newAgent ? { memberConnectionIds: [...memberConnectionIds] } : {}) };
     }

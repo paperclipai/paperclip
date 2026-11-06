@@ -1118,6 +1118,9 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
                 else '{}'::jsonb end)
               || (case when ${heartbeatRuns.runnerProfileJson} ? 'adapterDispatch'
                 then jsonb_build_object('adapterDispatch', ${heartbeatRuns.runnerProfileJson}->'adapterDispatch')
+                else '{}'::jsonb end)
+              || (case when ${heartbeatRuns.runnerProfileJson} ? 'legacyQuotaPrestartFence'
+                then jsonb_build_object('legacyQuotaPrestartFence', ${heartbeatRuns.runnerProfileJson}->'legacyQuotaPrestartFence')
                 else '{}'::jsonb end) || ${JSON.stringify(providerTraceRequested ? { providerTrace: { mode: "raw", traceId: providerTraceCapture?.metadata.id ?? null, maxBytes: PROVIDER_TRACE_MAX_BYTES } } : {})}::jsonb`,
         updatedAt: new Date(),
       })

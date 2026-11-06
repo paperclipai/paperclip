@@ -2,6 +2,7 @@ import { notifyAttentionRetentionWork } from "../retention-work-notifications.js
 import { normalizeAgentNameKey } from "../agent-name-key.js";
 import { notifyStatusCardIssueChange } from "../status-card-notifications.js";
 import { notifyScheduledRetryDispatch } from "../run-dispatch-notifications.js";
+import { switchUnstartedLegacyQuotaPin } from "./quota-prestart-fence.js";
 import { deriveTaskKeyWithHeartbeatFallback } from "./run-state.js";
 import { infrastructureRetryDelayMs } from "../system-recovery-state.js";
 import {
@@ -769,6 +770,7 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
             | "issue_terminal_status"
             | "issue_not_in_progress"
             | "continuation_user_authorization_missing"
+            | "legacy_quota_stopped"
             | "issue_execution_lock_changed";
           issueId: string | null;
           details: Record<string, unknown>;
@@ -789,6 +791,13 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
           await tx.execute(
             sql`select id from heartbeat_runs where company_id = ${run.companyId} and id = ${run.id} for update`,
           );
+          if (retryReason === AI_CONNECTION_POOL_WAIT_RETRY_REASON) {
+            const [current] = await tx.select({ resultJson: heartbeatRuns.resultJson }).from(heartbeatRuns)
+              .where(and(eq(heartbeatRuns.companyId, run.companyId), eq(heartbeatRuns.id, run.id)));
+            if (current?.resultJson?.legacyQuotaStopRequested) return {
+              outcome: "not_scheduled", reason: "The pending pool retry was stopped", errorCode: "legacy_quota_stopped", issueId, details: {},
+            };
+          }
           const [existing] = await tx
             .select()
             .from(heartbeatRuns)
@@ -1046,6 +1055,16 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
           }
         }
 
+        if (retryReason === AI_CONNECTION_POOL_WAIT_RETRY_REASON && issueId && !sessionBefore && agent.adapterType === "claude_local") {
+          const selected = await switchUnstartedLegacyQuotaPin(tx as unknown as Db, { companyId: run.companyId,
+            runId: run.id, issueId, agentId: run.agentId, userId: responsibleUserId });
+          if (selected) {
+            schedule.dueAt = now;
+            schedule.delayMs = 0;
+            retryContextSnapshot.aiRouterSelection = selected;
+            retryContextSnapshot.scheduledRetryAt = now.toISOString();
+          }
+        }
         const scheduledRunId = randomUUID();
         if (contextSnapshot.explicitUserContinuation) {
           const continuation = issueId && (retryReason === "transient_failure" || retryReason === RUNNER_REVISION_WAIT_RETRY_REASON) ? await admitExplicitContinuationRetry({

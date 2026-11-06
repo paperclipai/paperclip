@@ -206,14 +206,15 @@ export function aiConnectionRouterService(db: Db, workerManager?: PluginWorkerMa
     });
     return { ok: true };
   }
-  async function quotaIdentity(selection: Awaited<ReturnType<ReturnType<typeof aiConnectionService>["select"]>>, companyId: string, client = db): Promise<string | null> {
+  async function quotaIdentity(selection: Awaited<ReturnType<ReturnType<typeof aiConnectionService>["select"]>>, companyId: string, client = db, lock = false): Promise<string | null> {
     const ref = selection.grant.credentialSecretRefs.find((r) => r.configPath === "ai.credential");
     if (!ref) {
       const metadata = aiConnectionMetadataSchema.safeParse(selection.connection.config.ai);
       return metadata.success && metadata.data.routing?.auth === "none" ? `grant:${selection.grant.id}:no-auth` : null;
     }
-    const [secret] = await client.select({ epoch: companySecrets.aiSessionEpoch }).from(companySecrets)
+    const query = client.select({ epoch: companySecrets.aiSessionEpoch }).from(companySecrets)
       .where(and(eq(companySecrets.companyId, companyId), eq(companySecrets.id, ref.secretId)));
+    const [secret] = await (lock ? query.for("share") : query);
     return secret ? `secret:${ref.secretId.toLowerCase()}:${secret.epoch}` : null;
   }
   async function usageCacheKey(member: AiConnectionPoolMember, companyId: string) {
@@ -381,7 +382,7 @@ export function aiConnectionRouterService(db: Db, workerManager?: PluginWorkerMa
           if (cooldown) return { retry: true };
         }
         const authorized = await validateSelection(selected, tx as unknown as Db);
-        if (await quotaIdentity(authorized, input.companyId, tx as unknown as Db) !== identities.get(candidate.member.id)) return { retry: true };
+        if (await quotaIdentity(authorized, input.companyId, tx as unknown as Db, true) !== identities.get(candidate.member.id)) return { retry: true };
         await tx.insert(aiConnectionTaskPins).values({ companyId: input.companyId, poolId: row.id, agentId: input.agentId, taskKey: input.taskKey, selection: selected, member: candidate.member });
         await tx.update(aiConnectionRouterCursors).set({ lastMemberId: candidate.member.id, version: sql`${aiConnectionRouterCursors.version} + 1` }).where(eq(aiConnectionRouterCursors.poolId, row.id));
         await logActivity(tx as unknown as Db, { companyId: input.companyId, actorType: "system", actorId: "system", agentId: input.agentId, action: "ai_connection.pool_selected", entityType: "tool_connection", entityId: row.id, details: { memberId: candidate.member.id, connectionId: candidate.member.binding.connectionId, taskKey: input.taskKey } });
@@ -407,11 +408,26 @@ export function aiConnectionRouterService(db: Db, workerManager?: PluginWorkerMa
       eq(aiConnectionTaskPins.companyId, input.companyId), eq(aiConnectionTaskPins.poolId, input.poolId),
       eq(aiConnectionTaskPins.agentId, input.agentId), eq(aiConnectionTaskPins.taskKey, input.taskKey),
     )).for("update");
-    if (input.adapterType !== "paperclip_runner" || !cursor || !row || row.connectionStatus === "archived" || !row.pool.config.enabled ||
+    if (!["paperclip_runner", "claude_local"].includes(input.adapterType) || !cursor || !row || row.connectionStatus === "archived" || !row.pool.config.enabled ||
         row.pool.pluginKey !== BUILTIN_AI_FAILOVER_ROUTER_KEY || row.pool.config.mode !== "failover" ||
-        !pin || !isDeepStrictEqual(pin.selection, input.expectedSelection)) return { kind: "unavailable" };
+        !pin || !isDeepStrictEqual(pin.selection, input.expectedSelection) || pin.member.id !== pin.selection.memberId ||
+        !isDeepStrictEqual(pin.member.binding, pin.selection.binding) || !row.pool.config.members.some(member => isDeepStrictEqual(member, pin.member))) return { kind: "unavailable" };
     const members = row.pool.config.members.filter((member) => !input.attemptedMemberIds.includes(member.id));
     const memberIdentities = new Map<string, string>();
+    let legacySourceIdentity: string | null = null;
+    if (input.adapterType === "claude_local") {
+      if (!input.attemptedMemberIds.includes(pin.member.id)) return { kind: "unavailable" };
+      try {
+        const config = poolMemberRuntimeConfig(pin.member, input.adapterType);
+        const selected = await aiConnectionService(db).select({ companyId: input.companyId, agentId: input.agentId, userId: input.userId,
+          adapterType: input.adapterType, binding: pin.member.binding, model: config.config.model,
+          runnerProvider: config.config.provider, acpxAgent: config.config.acpxAgent });
+        legacySourceIdentity = await quotaIdentity(selected, input.companyId);
+      } catch (error) {
+        if (!(error instanceof HttpError && [400, 401, 403, 404, 409, 422].includes(error.status))) throw error;
+      }
+      if (!legacySourceIdentity) return { kind: "unavailable" };
+    }
     for (const member of members) {
       try {
         const effective = poolMemberRuntimeConfig(member, input.adapterType);
@@ -424,8 +440,21 @@ export function aiConnectionRouterService(db: Db, workerManager?: PluginWorkerMa
         if (!(error instanceof HttpError && [400, 401, 403, 404, 409, 422].includes(error.status))) throw error;
       }
     }
-    for (const identity of [...new Set(memberIdentities.values())].sort()) {
+    for (const identity of [...new Set([...memberIdentities.values(), ...(legacySourceIdentity ? [legacySourceIdentity] : [])])].sort()) {
       await db.execute(sql`select pg_advisory_xact_lock(hashtextextended(${input.companyId + ":" + identity}, 0))`);
+    }
+    if (legacySourceIdentity) {
+      try {
+        const config = poolMemberRuntimeConfig(pin.member, input.adapterType);
+        const selected = await aiConnectionService(db).select({ companyId: input.companyId, agentId: input.agentId, userId: input.userId,
+          adapterType: input.adapterType, binding: pin.member.binding, model: config.config.model,
+          runnerProvider: config.config.provider, acpxAgent: config.config.acpxAgent });
+        if (await quotaIdentity(selected, input.companyId, db, true) !== legacySourceIdentity ||
+            !(await accountCooldown(input.companyId, pin.member.binding.connectionId, legacySourceIdentity))) return { kind: "unavailable" };
+      } catch (error) {
+        if (error instanceof HttpError && [400, 401, 403, 404, 409, 422].includes(error.status)) return { kind: "unavailable" };
+        throw error;
+      }
     }
     const cooling: Date[] = [];
     for (const member of members) {
@@ -435,7 +464,7 @@ export function aiConnectionRouterService(db: Db, workerManager?: PluginWorkerMa
         const authorized = await aiConnectionService(db).select({ companyId: input.companyId, agentId: input.agentId, userId: input.userId,
           adapterType: input.adapterType, binding: member.binding, model: effective.config.model,
           runnerProvider: effective.config.provider, acpxAgent: effective.config.acpxAgent });
-        const identity = await quotaIdentity(authorized, input.companyId);
+        const identity = await quotaIdentity(authorized, input.companyId, db, true);
         if (!identity || identity !== memberIdentities.get(member.id)) continue;
         const cooldown = await accountCooldown(input.companyId, member.binding.connectionId, identity);
         if (cooldown) { cooling.push(cooldown); continue; }
@@ -454,5 +483,19 @@ export function aiConnectionRouterService(db: Db, workerManager?: PluginWorkerMa
     if (cooling.length) return { kind: "cooldown", retryAt: new Date(Math.min(...cooling.map(date => date.getTime()))) };
     return { kind: "unavailable" };
   }
-  return { catalog, list, selectable, inspect, save, remove, resolve, recordQuotaCooldown, accountCooldown, transitionQuotaPin };
+  async function recheckLegacyPinnedPoolAccount(input: { companyId: string; agentId: string; userId: string | null; taskKey: string; selection: AiConnectionRouterSelection }) {
+    const [row] = await db.select().from(aiConnectionPools).where(and(eq(aiConnectionPools.companyId, input.companyId), eq(aiConnectionPools.id, input.selection.poolId)));
+    if (!row || row.pluginKey !== BUILTIN_AI_FAILOVER_ROUTER_KEY) return;
+    const [pin] = await db.select().from(aiConnectionTaskPins).where(and(eq(aiConnectionTaskPins.companyId, input.companyId),
+      eq(aiConnectionTaskPins.poolId, input.selection.poolId), eq(aiConnectionTaskPins.agentId, input.agentId), eq(aiConnectionTaskPins.taskKey, input.taskKey)));
+    if (!pin || !isDeepStrictEqual(pin.selection, input.selection)) throw conflict("The task pool selection changed before provider start");
+    const selected = await aiConnectionService(db).select({ companyId: input.companyId, agentId: input.agentId, userId: input.userId,
+      adapterType: "claude_local", binding: pin.selection.binding, model: pin.selection.runtimeConfig.model,
+      runnerProvider: pin.selection.runtimeConfig.provider, acpxAgent: pin.selection.runtimeConfig.acpxAgent });
+    const identity = await quotaIdentity(selected, input.companyId);
+    if (!identity) throw unprocessable("The task account identity changed before provider start");
+    const retryAt = await accountCooldown(input.companyId, pin.member.binding.connectionId, identity);
+    if (retryAt) throw new AiConnectionPoolExhausted(retryAt.toISOString(), row.id);
+  }
+  return { catalog, list, selectable, inspect, save, remove, resolve, recordQuotaCooldown, accountCooldown, transitionQuotaPin, recheckLegacyPinnedPoolAccount };
 }

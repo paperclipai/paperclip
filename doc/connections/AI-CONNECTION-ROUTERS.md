@@ -21,6 +21,11 @@ changed by this check.
 Legacy `claude_local` agents can select only Claude accounts from a pool;
 Codex and other providers require Paperclip Runner. This supports selection
 before a task starts, not automatic takeover of an interrupted Claude run.
+If a selected account becomes unavailable before provider startup, Paperclip
+can atomically choose another Claude account and schedule a fresh attempt only
+when the original run's durable prestart fence, task history, session and
+current ownership checks all permit it. Otherwise it retains the existing
+account and waits for its cooldown. User Stop is serialized with that retry.
 
 An automatic continuation must prove that the prior execution is stopped and
 that workspace, history and action outcomes are safe to continue. When that
