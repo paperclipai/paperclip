@@ -1569,12 +1569,11 @@ it.each(["before", "after"] as const)(
         JSON.stringify(controlPlaneState),
       );
       await expect(
-        runnerdRecoveryInternals.rotateExternalAuthorityEpoch(
+        runnerdRecoveryInternals.rotateAuthorityEpoch(
           root,
           controlPlaneState,
           desiredIdentity,
-          readRunnerState,
-          archiveRunnerState,
+          { read: readRunnerState, archive: archiveRunnerState },
         ),
       ).rejects.toThrow(`crashed ${crashPoint} remote archive`);
       await expect(stat(join(root, "control-plane"))).rejects.toMatchObject({
@@ -1582,12 +1581,11 @@ it.each(["before", "after"] as const)(
       });
 
       await expect(
-        runnerdRecoveryInternals.rotateExternalAuthorityEpoch(
+        runnerdRecoveryInternals.rotateAuthorityEpoch(
           root,
           controlPlaneState,
           desiredIdentity,
-          readRunnerState,
-          archiveRunnerState,
+          { read: readRunnerState, archive: archiveRunnerState },
         ),
       ).resolves.toEqual(controlPlaneState);
       expect(readCount).toBe(1);
@@ -1602,34 +1600,59 @@ it.each(["before", "after"] as const)(
   },
 );
 
-it.each(["identical", "different"] as const)(
-  "resumes external authority rotation when the prior controller state is restored as an %s copy",
-  async (restoredCopy) => {
+describe("authority rotation after the prior controller state is restored", () => {
+  const priorIdentity = {
+    runnerInstanceId: "runner-restored-rotation",
+    environmentLeaseId: "lease-restored-rotation",
+    runId: "run-restored-rotation-prior",
+    normalizedSessionId: "session-restored-rotation",
+    turnId: "turn-restored-rotation-prior",
+    itemId: "item-restored-rotation-prior",
+  };
+  const desiredIdentity = {
+    ...priorIdentity,
+    runId: "run-restored-rotation-next",
+    turnId: "turn-restored-rotation-next",
+    itemId: "item-restored-rotation-next",
+  };
+  // The live controller state carries fields that a server checkpoint
+  // restore does not reproduce, so a restored copy can differ in bytes.
+  const controlPlaneState = {
+    schema: "paperclip.runner.durable.control-plane-state.v1",
+    identity: priorIdentity,
+    ackedSourceSeq: 7,
+  };
+  const suspendedRunnerState = {
+    schema: "paperclip.runner.durable.state.v1",
+    ...priorIdentity,
+    lifecycle: "suspended",
+  };
+  const restoredCopies = {
+    "byte-identical": JSON.stringify(controlPlaneState),
+    "re-serialized": JSON.stringify(
+      { schema: controlPlaneState.schema, identity: priorIdentity },
+      null,
+      2,
+    ),
+    "other-authority": JSON.stringify({
+      ...controlPlaneState,
+      identity: { ...priorIdentity, turnId: "turn-restored-rotation-other" },
+    }),
+  } as const;
+  type RestoredCopy = keyof typeof restoredCopies;
+  const cases = Object.keys(restoredCopies) as RestoredCopy[];
+
+  async function restoreControlPlane(root: string, copy: RestoredCopy) {
+    await mkdir(join(root, "control-plane"), { recursive: true });
+    await writeFile(
+      join(root, "control-plane", "control-plane-state.json"),
+      restoredCopies[copy],
+    );
+  }
+
+  it.each(cases)("external rotation: %s restored copy", async (copy) => {
     const root = await mkdtemp(join(tmpdir(), "runner-external-rotation-restore-"));
-    const priorIdentity = {
-      runnerInstanceId: "runner-external-restore",
-      environmentLeaseId: "lease-external-restore",
-      runId: "run-external-restore-prior",
-      normalizedSessionId: "session-external-restore",
-      turnId: "turn-external-restore-prior",
-      itemId: "item-external-restore-prior",
-    };
-    const desiredIdentity = {
-      ...priorIdentity,
-      runId: "run-external-restore-next",
-      turnId: "turn-external-restore-next",
-      itemId: "item-external-restore-next",
-    };
-    const controlPlaneState = {
-      schema: "paperclip.runner.durable.control-plane-state.v1",
-      identity: priorIdentity,
-    };
-    const controlPlaneBytes = JSON.stringify(controlPlaneState);
-    let activeRunnerState: Record<string, unknown> | null = {
-      schema: "paperclip.runner.durable.state.v1",
-      ...priorIdentity,
-      lifecycle: "suspended",
-    };
+    let activeRunnerState: Record<string, unknown> | null = suspendedRunnerState;
     let archivedRunnerState: Record<string, unknown> | null = null;
     let readCount = 0;
     const readRunnerState = async () => {
@@ -1648,61 +1671,139 @@ it.each(["identical", "different"] as const)(
       }
       return archivedRunnerState;
     };
-    const activeStatePath = join(root, "control-plane", "control-plane-state.json");
+    const rotate = () =>
+      runnerdRecoveryInternals.rotateAuthorityEpoch(
+        root,
+        controlPlaneState,
+        desiredIdentity,
+        { read: readRunnerState, archive: archiveRunnerState },
+      );
     try {
       await mkdir(join(root, "control-plane"), { recursive: true });
-      await writeFile(activeStatePath, controlPlaneBytes);
-      // The first attempt completes both archives, then fails after rotation.
-      await expect(
-        runnerdRecoveryInternals.rotateExternalAuthorityEpoch(
-          root,
-          controlPlaneState,
-          desiredIdentity,
-          readRunnerState,
-          archiveRunnerState,
-        ),
-      ).resolves.toEqual(controlPlaneState);
+      await writeFile(
+        join(root, "control-plane", "control-plane-state.json"),
+        JSON.stringify(controlPlaneState),
+      );
+      // The first attempt completes both archives, then fails before the
+      // new Runner starts.
+      await expect(rotate()).resolves.toEqual(controlPlaneState);
       await expect(stat(join(root, "control-plane"))).rejects.toMatchObject({
         code: "ENOENT",
       });
 
-      // Before the retry, the server restores the prior run's controller
-      // checkpoint into the root. The archived epoch still exists.
-      await mkdir(join(root, "control-plane"), { recursive: true });
-      await writeFile(
-        activeStatePath,
-        restoredCopy === "identical"
-          ? controlPlaneBytes
-          : JSON.stringify({ ...controlPlaneState, revision: 2 }),
-      );
-      const retry = runnerdRecoveryInternals.rotateExternalAuthorityEpoch(
-        root,
-        controlPlaneState,
-        desiredIdentity,
-        readRunnerState,
-        archiveRunnerState,
-      );
-      if (restoredCopy === "different") {
-        await expect(retry).rejects.toThrow(
+      // Retry preparation restores the prior run's controller checkpoint.
+      await restoreControlPlane(root, copy);
+      if (copy === "other-authority") {
+        await expect(rotate()).rejects.toThrow(
           "native_runner_authority_archive_conflict",
         );
-        // A contradictory copy is left in place for operator recovery.
-        await expect(stat(activeStatePath)).resolves.toBeDefined();
+        // Contradictory state stays in place for operator recovery.
+        await expect(
+          stat(join(root, "control-plane", "control-plane-state.json")),
+        ).resolves.toBeDefined();
         return;
       }
-      await expect(retry).resolves.toEqual(controlPlaneState);
+      // The retry resumes from the archived snapshot, not the restored copy.
+      await expect(rotate()).resolves.toEqual(controlPlaneState);
       await expect(stat(join(root, "control-plane"))).rejects.toMatchObject({
         code: "ENOENT",
       });
       expect(readCount).toBe(1);
-      expect(archivedRunnerState).toEqual(
-        expect.objectContaining(priorIdentity),
-      );
+      expect(archivedRunnerState).toEqual(suspendedRunnerState);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
-  },
-);
+  });
+
+  it.each(cases)("local rotation: %s restored copy", async (copy) => {
+    const root = await mkdtemp(join(tmpdir(), "runner-local-rotation-restore-"));
+    const rotate = () =>
+      runnerdRecoveryInternals.rotateAuthorityEpoch(
+        root,
+        controlPlaneState,
+        desiredIdentity,
+        runnerdRecoveryInternals.localRunnerStateArchive(root),
+      );
+    try {
+      await mkdir(join(root, "control-plane"), { recursive: true });
+      await mkdir(join(root, "runner"), { recursive: true });
+      await writeFile(
+        join(root, "control-plane", "control-plane-state.json"),
+        JSON.stringify(controlPlaneState),
+      );
+      await writeFile(
+        join(root, "runner", "runner-state.json"),
+        JSON.stringify(suspendedRunnerState),
+      );
+      await expect(rotate()).resolves.toEqual(controlPlaneState);
+      await expect(stat(join(root, "control-plane"))).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+      await expect(
+        stat(join(root, "runner", "runner-state.json")),
+      ).rejects.toMatchObject({ code: "ENOENT" });
+
+      await restoreControlPlane(root, copy);
+      if (copy === "other-authority") {
+        await expect(rotate()).rejects.toThrow("native_runner_authority_archive_conflict");
+        await expect(
+          stat(join(root, "control-plane", "control-plane-state.json")),
+        ).resolves.toBeDefined();
+        return;
+      }
+      await expect(rotate()).resolves.toEqual(controlPlaneState);
+      await expect(stat(join(root, "control-plane"))).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each(["identical", "different"] as const)(
+    "local rotation: %s duplicate runner state",
+    async (duplicate) => {
+      const root = await mkdtemp(join(tmpdir(), "runner-local-rotation-runner-state-"));
+      const runnerStatePath = join(root, "runner", "runner-state.json");
+      const rotate = () =>
+        runnerdRecoveryInternals.rotateAuthorityEpoch(
+          root,
+          controlPlaneState,
+          desiredIdentity,
+          runnerdRecoveryInternals.localRunnerStateArchive(root),
+        );
+      try {
+        await mkdir(join(root, "control-plane"), { recursive: true });
+        await mkdir(join(root, "runner"), { recursive: true });
+        await writeFile(
+          join(root, "control-plane", "control-plane-state.json"),
+          JSON.stringify(controlPlaneState),
+        );
+        await writeFile(runnerStatePath, JSON.stringify(suspendedRunnerState));
+        await expect(rotate()).resolves.toEqual(controlPlaneState);
+
+        // A settled Runner state reappears beside its archived snapshot.
+        await writeFile(
+          runnerStatePath,
+          duplicate === "identical"
+            ? JSON.stringify(suspendedRunnerState)
+            : JSON.stringify({ ...suspendedRunnerState, outbox: [] }),
+        );
+        if (duplicate === "different") {
+          await expect(rotate()).rejects.toThrow("native_runner_authority_archive_conflict");
+          await expect(stat(runnerStatePath)).resolves.toBeDefined();
+          return;
+        }
+        await expect(rotate()).resolves.toEqual(controlPlaneState);
+        await expect(stat(runnerStatePath)).rejects.toMatchObject({
+          code: "ENOENT",
+        });
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+  );
+});
 
 it("quiesces the control route before checkpoint and containment regardless of process completion", async () => {
   const settledSteps: string[] = [];

@@ -417,6 +417,7 @@ import {
   resolveNativeBilling,
   parseRemoteRunnerProcessIdentity,
   REMOTE_RUNNER_CHILD_LAUNCH_SCRIPT,
+  REMOTE_RUNNER_AUTHORITY_ARCHIVE_SCRIPT,
   verifyRemoteRunnerReattachment,
   readRemoteProviderPackManifest,
   prepareRemoteProviderPackOnTarget,
@@ -15160,6 +15161,41 @@ describe("runnerd provider runtime wiring", () => {
       vi.stubEnv("OTEL_EXPORTER_OTLP_ENDPOINT", endpoint);
       trace.disable();
       await provider.shutdown();
+    }
+  });
+
+  it.each([
+    ["moves live state into a new archive", "live", null, 0, "live"],
+    ["returns state that is already archived", null, "archived", 0, "archived"],
+    ["drops a byte-identical live copy beside the archive", "same", "same", 0, "same"],
+    ["keeps a different live copy beside the archive", "live", "archived", 1, null],
+    ["fails when no state exists", null, null, 1, null],
+  ] as const)("remote authority archive script %s", async (_name, live, archived, exitCode, printed) => {
+    const root = await mkdtemp(join(tmpdir(), "paperclip-authority-archive-script-"));
+    try {
+      const source = join(root, "runner", "runner-state.json");
+      const archiveDirectory = join(root, "authority-epochs", "epoch-aaaaaaaaaaaaaaaaaaaaaaaa");
+      const target = join(archiveDirectory, "runner-state.json");
+      await mkdir(dirname(source), { recursive: true });
+      if (live !== null) await writeFile(source, live);
+      if (archived !== null) {
+        await mkdir(archiveDirectory, { recursive: true, mode: 0o700 });
+        await writeFile(target, archived);
+      }
+      const result = spawnSync("sh", ["-c", REMOTE_RUNNER_AUTHORITY_ARCHIVE_SCRIPT,
+        "paperclip-runner-authority-archive", source, archiveDirectory, target], { encoding: "utf8" });
+      expect(result.status).toBe(exitCode);
+      if (printed === null) {
+        // A refused archive leaves both sides untouched.
+        if (live !== null) expect(await readFile(source, "utf8")).toBe(live);
+        if (archived !== null) expect(await readFile(target, "utf8")).toBe(archived);
+        return;
+      }
+      expect(Buffer.from(result.stdout.replace(/\s+/g, ""), "base64").toString("utf8")).toBe(printed);
+      expect(await readFile(target, "utf8")).toBe(printed);
+      await expect(lstat(source)).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      await rm(root, { recursive: true, force: true });
     }
   });
 

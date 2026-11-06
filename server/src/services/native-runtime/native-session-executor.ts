@@ -12506,6 +12506,20 @@ const REMOTE_RUNNER_PROCESS_FINGERPRINT_SCRIPT =
 const REMOTE_RUNNER_IDENTITY_CHECK_SCRIPT =
   'set -eu; identity_path=$1; expected_nonce=$2; expected_runner_id=$3; expected_pid=$4; test -f "$identity_path" && test ! -L "$identity_path" || exit 3; { IFS= read -r nonce; IFS= read -r pid; IFS= read -r started_at; IFS= read -r runner_id; } < "$identity_path"; test "$nonce" = "$expected_nonce" && test "$runner_id" = "$expected_runner_id" && test "$pid" = "$expected_pid" && test -n "$started_at" || exit 4; kill -0 "$pid" 2>/dev/null || exit 3; if test -r "/proc/$pid/cmdline"; then command_line=$(tr "\\000" "\\n" < "/proc/$pid/cmdline"); printf "%s\\n" "$command_line" | grep -Fqx -- "--runner-id" || exit 4; printf "%s\\n" "$command_line" | grep -Fqx -- "$expected_runner_id" || exit 4; fi';
 
+/**
+ * Move the remote Runner state ($1) into its epoch archive directory ($2) as
+ * $3, then print the archived snapshot. A retry succeeds when the state is
+ * already archived, and when a byte-identical live copy sits beside the
+ * archive (the same rules as the controller and the computer Launcher). Any
+ * other live copy, or a host without `cmp`, fails closed.
+ */
+export const REMOTE_RUNNER_AUTHORITY_ARCHIVE_SCRIPT =
+  'set -eu; if test -L "$2" || { test -e "$2" && test ! -d "$2"; }; then exit 1; fi; ' +
+  'if test -f "$1" && test ! -L "$1" && test ! -e "$3" && test ! -L "$3"; then umask 077; install -d -m 0700 "$2"; mv -- "$1" "$3"; ' +
+  'elif test ! -e "$1" && test ! -L "$1" && test -f "$3" && test ! -L "$3"; then :; ' +
+  'elif test -f "$1" && test ! -L "$1" && test -f "$3" && test ! -L "$3" && command -v cmp >/dev/null 2>&1 && cmp -s "$1" "$3"; then rm -f -- "$1"; ' +
+  'else exit 1; fi; base64 < "$3"';
+
 export const REMOTE_RUNNER_CHILD_LAUNCH_SCRIPT =
   'set -eu; identity_path=$1; identity_nonce=$2; runner_instance_id=$3; diagnostics_directory=$4; shift 4; umask 077; test ! -L "$diagnostics_directory"; if test -e "$diagnostics_directory"; then test -d "$diagnostics_directory"; else mkdir -p -- "$diagnostics_directory"; fi; chmod 0700 "$diagnostics_directory"; started_at=$(date -u +"%Y-%m-%dT%H:%M:%S.%3NZ"); pid=$$; process_fingerprint=""; if ' +
   REMOTE_RUNNER_PROCESS_FINGERPRINT_SCRIPT +
@@ -14787,7 +14801,7 @@ async function createRunnerdBackendWithinSessionClaim(
             command: "sh",
             args: [
               "-c",
-              'set -eu; if test -L "$2" || { test -e "$2" && test ! -d "$2"; }; then exit 1; fi; if test -f "$1" && test ! -L "$1" && test ! -e "$3" && test ! -L "$3"; then umask 077; install -d -m 0700 "$2"; mv -- "$1" "$3"; elif test ! -e "$1" && test ! -L "$1" && test -f "$3" && test ! -L "$3"; then :; else exit 1; fi; base64 < "$3"',
+              REMOTE_RUNNER_AUTHORITY_ARCHIVE_SCRIPT,
               "paperclip-runner-authority-archive",
               sourcePath,
               archiveDirectory,
