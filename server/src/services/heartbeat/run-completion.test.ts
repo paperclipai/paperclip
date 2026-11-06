@@ -184,10 +184,10 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
   const read = (id: string) => db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, id)).then(rows => rows[0]!);
 
   it("replays saved user intent through normal Retry after a first-attempt retained runner failure", async () => {
-    for (const mode of ["unattached", "archive_failed", "provider_started", "system_wake", "stopped"] as const) {
-      const f = await fixture({ runtimeMode: "native" }, `CMP${randomUUID().slice(0, 6)}`);
+    for (const mode of ["unattached", "archive_failed", "provider_started", "system_wake", "stopped", "stopped_failed", "promoted"] as const) {
+      const f = await fixture({ runtimeMode: mode === "promoted" ? "legacy" : "native" }, `CMP${randomUUID().slice(0, 6)}`);
       const failureMessage = mode === "archive_failed" ? "runner_continuity_break_archive_failed" : "runner_remote_process_identity_unavailable";
-      const retryExpected = mode === "unattached" || mode === "archive_failed";
+      const retryExpected = mode === "unattached" || mode === "archive_failed" || mode === "promoted";
       const [issue] = await db.insert(issues).values({ companyId: f.run.companyId, title: "Continue saved work",
         assigneeAgentId: f.agent.id, status: "in_progress" }).returning();
       const [comment] = await db.insert(issueComments).values({ companyId: f.run.companyId, issueId: issue.id,
@@ -195,23 +195,26 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
       await db.update(agentWakeupRequests).set({ runId: f.run.id, reason: "issue_reopened_via_comment",
         requestedByActorType: mode === "system_wake" ? "system" : "user", requestedByActorId: "local-board",
         payload: { issueId: issue.id, commentId: comment.id } }).where(eq(agentWakeupRequests.id, f.wake.id));
-      const [run] = await db.update(heartbeatRuns).set({ nativeIssueId: issue.id, responsibleUserId: "local-board",
+      const [run] = await db.update(heartbeatRuns).set({ runtimeMode: "native", nativeIssueId: issue.id, responsibleUserId: "local-board",
         contextSnapshot: { issueId: issue.id, wakeReason: "issue_reopened_via_comment", wakeCommentId: comment.id } })
         .where(eq(heartbeatRuns.id, f.run.id)).returning();
       await db.insert(nativeRunFinalizations).values({ companyId: run.companyId, issueId: issue.id, runId: run.id,
         phase: "terminal_failure", failureCode: nativeSessionFailureSourceCode(new Error(failureMessage)) });
       if (mode === "provider_started") await appendHeartbeatRunEvent(db, { companyId: run.companyId, runId: run.id,
         agentId: run.agentId, eventType: "turn.started", stream: "system", level: "info", message: "Provider started" });
-      if (mode === "stopped") f.controller.abort();
-      await f.completion.failRun({ ...f.failure(new Error(failureMessage)), run,
+      if (mode === "stopped_failed") await db.update(heartbeatRuns).set({ status: "failed", finishedAt: new Date(),
+        error: failureMessage, errorCode: nativeSessionFailureSourceCode(new Error(failureMessage)) }).where(eq(heartbeatRuns.id, run.id));
+      if (mode === "stopped" || mode === "stopped_failed") f.controller.abort();
+      const observedRun = mode === "promoted" ? { ...run, runtimeMode: f.run.runtimeMode } : run;
+      await f.completion.failRun({ ...f.failure(new Error(failureMessage)), run: observedRun,
         issueId: issue.id, requiredWorkspaceRestoreEvidence: {}, legacyAdapterEntered: false });
       const requests = await db.select().from(agentWakeupRequests).where(and(eq(agentWakeupRequests.companyId, run.companyId),
         eq(agentWakeupRequests.reason, "task_retry")));
-      expect(requests).toHaveLength(retryExpected ? 1 : 0);
-      if (retryExpected) expect(requests[0]).toMatchObject({ status: "deferred_issue_execution",
+      expect.soft(requests, mode).toHaveLength(retryExpected ? 1 : 0);
+      if (retryExpected && requests[0]) expect(requests[0]).toMatchObject({ status: "deferred_issue_execution",
         requestedByActorType: "user", requestedByActorId: "local-board", payload: { taskRetry: { sourceRunId: run.id } } });
     }
-  });
+  }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
 
   it.each(["ordinary", "stalled append", "object admission"] as const)("finishes accepted output before ordinary lease teardown without writing to a retired recorder (%s)", async mode => {
     const stalledAppend = mode === "stalled append", stalledAdmission = mode === "object admission";

@@ -3344,11 +3344,12 @@ can then recover through the same exact process-identity checks as an active tur
 
 A provider checkpoint copied from a completed run retains conversation history;
 its normalized current run ID does not prove that the current controller attached.
-Fenced Runner recovery requires a matching durable controller checkpoint or a
-valid staged attachment for the target run before selecting exact-checkpoint
-resume. If the first attachment finds the retained runner gone, or replacement
-cannot archive its remote state before the new turn starts, ordinary failure
-settlement requests one normal Retry under the
+Fenced remote Runner recovery requires a matching database controller checkpoint
+or a valid staged attachment for the target run before selecting exact-checkpoint
+resume. Local Runner recovery keeps its existing local controller checks.
+If the first attachment finds the retained runner gone, or replacement cannot
+archive its remote state before the new turn starts, ordinary failure settlement
+requests one normal Retry under the
 original user's saved wake and comment authority. Current authorization, Stop,
 provider-turn settlement, workspace preservation and cleanup gates still apply.
 The same request remains idempotent, and an automatic successor does not request

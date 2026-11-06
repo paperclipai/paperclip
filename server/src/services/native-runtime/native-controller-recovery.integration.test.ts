@@ -3,7 +3,7 @@ import { nativeProviderRecoveryEvidence, nativeSessionFailureSourceCode, verifyR
 import { readRemoteRunnerRecoveryError } from "./remote-runner-recovery-diagnostics.js";
 import { nativeToolContractFingerprintForTarget, rebindNativeSessionCheckpoint } from "./native-session-resume.js";
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { eq } from "drizzle-orm";
@@ -154,7 +154,7 @@ describe.skipIf(!recoveryPostgresSupport.supported)("native controller durable d
     expect(nativeSessionFailureSourceCode(failure)).toBe("native_session_interrupted");
     await expect(verifyRemoteRunnerReattachment({ claim: { ...sourceClaim, runId }, target: target as never,
       identity, runId, normalizedSessionId: fixture.scope.normalizedSessionId })).rejects.toThrow("native_remote_recovery_lease_mismatch");
-    const recovery = await nativeProviderRecoveryEvidence({ db, runId, sourceFailureCode: nativeSessionFailureSourceCode(failure) });
+    const recovery = await nativeProviderRecoveryEvidence({ db, runId, executionTargetKind: target.kind, sourceFailureCode: nativeSessionFailureSourceCode(failure) });
     expect(recovery).toMatchObject({ providerSessionEstablished: true, providerEventsExist: false, checkpointExists: true });
     expect(recovery.recoveryMode).toBe("ambiguous_state");
     const currentOwner = { companyId, issueId: fixture.scope.issueId, runId, authorityRunId: runId,
@@ -168,18 +168,25 @@ describe.skipIf(!recoveryPostgresSupport.supported)("native controller durable d
     core.setCheckpointPersistence(nativeRunnerCheckpointWriter(db, currentOwner));
     try {
       await core.flushCheckpoint();
-      expect(await nativeProviderRecoveryEvidence({ db, runId, sourceFailureCode: nativeSessionFailureSourceCode(failure) }))
+      expect(await nativeProviderRecoveryEvidence({ db, runId, executionTargetKind: target.kind, sourceFailureCode: nativeSessionFailureSourceCode(failure) }))
         .toMatchObject({ recoveryMode: "exact_checkpoint_resume", providerSessionEstablished: true, providerEventsExist: false });
       for (const field of ["nativeSessionId", "runnerInstanceId"] as const) {
         await db.update(heartbeatRuns).set({ [field]: randomUUID() }).where(eq(heartbeatRuns.id, runId));
-        expect((await nativeProviderRecoveryEvidence({ db, runId, sourceFailureCode: nativeSessionFailureSourceCode(failure) })).recoveryMode)
+        expect((await nativeProviderRecoveryEvidence({ db, runId, executionTargetKind: target.kind, sourceFailureCode: nativeSessionFailureSourceCode(failure) })).recoveryMode)
           .toBe("ambiguous_state");
         await db.update(heartbeatRuns).set({ [field]: currentRun[field] }).where(eq(heartbeatRuns.id, runId));
       }
     } finally { await core.stop(); }
     await db.update(nativeRunnerCheckpoints).set({ material: { invalid: true } }).where(eq(nativeRunnerCheckpoints.runId, runId));
-    expect((await nativeProviderRecoveryEvidence({ db, runId, sourceFailureCode: nativeSessionFailureSourceCode(failure) })).recoveryMode)
+    expect((await nativeProviderRecoveryEvidence({ db, runId, executionTargetKind: target.kind, sourceFailureCode: nativeSessionFailureSourceCode(failure) })).recoveryMode)
       .toBe("ambiguous_state");
+    await db.delete(nativeRunnerCheckpoints).where(eq(nativeRunnerCheckpoints.runId, runId));
+    expect(await nativeProviderRecoveryEvidence({ db, runId, metadataOnly: true,
+      sourceFailureCode: nativeSessionFailureSourceCode(failure) })).toMatchObject({ recoveryMode: "exact_checkpoint_resume" });
+    expect(JSON.parse(await readFile(join(root, runId, "current-controller", "control-plane-state.json"), "utf8")))
+      .toMatchObject({ identity: { runId, normalizedSessionId: fixture.scope.normalizedSessionId, runnerInstanceId: currentRun.runnerInstanceId } });
+    expect(await nativeProviderRecoveryEvidence({ db, runId, sourceFailureCode: nativeSessionFailureSourceCode(failure),
+      executionTargetKind: "local" })).toMatchObject({ recoveryMode: "exact_checkpoint_resume", providerSessionEstablished: true });
   });
 
   it("uses the database clock when an import finds an expired owner", async () => {
