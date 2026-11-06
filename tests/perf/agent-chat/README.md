@@ -38,6 +38,45 @@ visible recent conversation at its intended position with an editable composer,
 not the loading shell. Retain per-frame geometry and server timings alongside
 sample medians/ranges; do not treat fewer transcript requests as latency proof.
 
+Terminal native transcripts read during a visit are retained in the application's
+query cache by company, run, status and projection. A cached return can reveal
+those rows immediately while the normal cursor-based catch-up read runs in the
+background. Live runs and uncached projections still wait for hydration. Cache
+reuse does not remove reconnect or retry reads. Return navigation also exercises
+cached question editors: a scroll event queued before their layout grows must
+retain bottom-follow, while an upward gesture and Back reading anchors still win.
+
+### Local comparison, 2026-11-06
+
+Compared baseline `523818ea9bf81f96abf4e6b73e81c2ce87518c07` with the
+terminal-history cache and scroll-event fix using production assets, Chromium
+151.0.7922.34, a 1440×900 viewport and the same retained 600-message/300-run
+fixture (with the rig's saved live replies). Five alternating pairs per profile;
+no CPU throttling, profiling, builds or this task's test suites during samples.
+Other worktrees remained active on the shared host. Browser contexts had fresh
+HTTP/application caches for direct opens; in-app entry started from a freshly
+loaded task collection; return reused that visit's application cache.
+
+Times are median milliseconds, with min–max in parentheses. Readiness means a
+revealed conversation at the bottom with an editable composer.
+
+| Network | Journey | Baseline | Candidate | Median paired saving |
+| --- | --- | --- | --- | --- |
+| Loopback | Direct open | 439 (420–489) | 425 (409–474) | 10 |
+| Loopback | In-app entry | 277 (268–284) | 279 (271–285) | −3 |
+| Loopback | Cached return | 115 (106–120) | 118 (113–120) | −4 |
+| 150 ms latency | Direct open | 3586 (3573–3597) | 3575 (3418–3595) | 10 |
+| 150 ms latency | In-app entry | 1956 (1930–1959) | 1958 (1955–1961) | −4 |
+| 150 ms latency | Cached return | 547 (538–553) | 131 (120–137) | 416 |
+
+Only the slower-network cached return establishes a reliable speed improvement:
+all five paired deltas are positive. Direct opens and uncached navigation remain
+unchanged. The unchanged server's issue-read timing medians were 18.2 vs 16.9 ms
+on the latency profile (20 reads per variant). Baseline and candidate entry assets
+were `index-8fGouAl3.js` and `index-BVkn60XK.js`. This is local synthetic proof,
+not a claim about deployed staging latency. The cached-question reproduction went
+from a persistent 198-pixel bottom gap to zero.
+
 The chat's pending task questions use the attention service's scoped question
 projection. It keeps current access, audience, dismissal, queue, snooze and archive
 rules without constructing the company feed. Ranks are relative to the returned
