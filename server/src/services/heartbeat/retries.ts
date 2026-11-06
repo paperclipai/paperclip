@@ -17,6 +17,7 @@ import {
 import { legacyExecutionNeedsReconciliationWithEvidence } from "../legacy-execution-recovery.js";
 import {
   executionFailureRetryCount,
+  PROVIDER_QUOTA_RETRY_DELAYS_MS,
   executionRetryAttemptCount,
   accountingForScheduledRetry,
 } from "../execution-recovery-attempt.js";
@@ -144,8 +145,6 @@ export function isTransientWorkspacePreparationCode(code: string | null | undefi
 
 export const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS =
   BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS.length;
-
-const PROVIDER_QUOTA_RETRY_DELAYS_MS = [30_000, 60_000, 120_000, 60_000] as const;
 
 export function failedRunRetryBudgetSpent(run: Parameters<typeof executionFailureRetryCount>[0] & { errorCode?: string | null; resultJson?: Record<string, unknown> | null }): boolean {
   return run.errorCode === RUNNER_REVISION_MISMATCH_CODE

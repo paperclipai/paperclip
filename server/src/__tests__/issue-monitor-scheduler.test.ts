@@ -485,7 +485,7 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
     await db.insert(heartbeatRuns).values({
       id: sourceRunId, companyId, agentId, status: "failed", errorCode: "provider_quota",
       finishedAt: new Date("2026-04-11T12:00:00.000Z"), contextSnapshot: { issueId },
-      scheduledRetryAttempt: kind === "exhausted" ? 2 : 0,
+      scheduledRetryAttempt: kind === "exhausted" ? 4 : 0,
       resultJson: kind === "exhausted" ? { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } } : null,
     });
     await heartbeatService(db).tickTimers(new Date("2026-04-11T12:31:00.000Z"));
