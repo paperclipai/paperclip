@@ -20,6 +20,7 @@ import {
   NativeSessionCloseUnrecoverableError,
   NativeSessionCleanupQuarantinedError,
   NativeSessionProtocolIntegrityError,
+  nativeRestartInterruptedTurnId,
 } from "./contracts/native-session-backend.js";
 import { PROVIDER_STATE_INCOMPATIBLE } from "./contracts/harness-driver.js";
 import type {
@@ -506,6 +507,71 @@ describe("executeNativeSession recovery", () => {
     expect(events.filter(event => event.eventType === "turn.failed")).toHaveLength(1);
     expect(events.filter(event => event.eventType === "run.terminal")).toHaveLength(1);
     expect(checkpoints.some(snapshot => snapshot.terminalTurns?.some(turn => turn.turnId === "turn-recovery"))).toBe(true);
+  });
+
+  it.each(["acpx_runtime", "opencode_server"] as const)("continues a restart-lost %s turn once in the same conversation", async (driverKind) => {
+    const qualified = resolveQualifiedAcpxProfile("claude", "claude-sonnet-5");
+    const acpxInput: NativeExecutionInputV1 = (driverKind === "acpx_runtime" ? {
+      ...input,
+      session: { ...input.session, driverKind },
+      provider: { kind: "acpx", agent: "claude", model: "claude-sonnet-5", permissionPolicy: "interactive", profile: {
+        driverKind: qualified.driverKind, protocolVersion: qualified.protocolVersion, acpxVersion: qualified.acpxVersion,
+        agent: qualified.agent, agentProfileVersion: qualified.agentProfileVersion,
+        agentServerPackage: qualified.agentServerPackage, agentServerVersion: qualified.agentServerVersion,
+        agentRuntimePackage: qualified.agentRuntimePackage, agentRuntimeVersion: qualified.agentRuntimeVersion,
+        commandDigest: qualified.commandDigest,
+      } },
+    } : {
+      ...input,
+      session: { ...input.session, driverKind },
+      provider: { kind: "opencode", model: "openrouter/deepseek/deepseek-v4-flash-0731" },
+    }) as NativeExecutionInputV1;
+    const failure = { code: "provider_turn_lost_on_restore", recoverable: true };
+    const checkpoint: PersistedNativeSession = {
+      backendKind: "runner", driverKind, sessionId: "record-recovery", identity,
+      providerSessionId: "provider-recovery", cursor: "0", activeTurnId: "turn-recovery",
+      terminalTurns: [], semanticResult: null, pendingRuntimeRequests: [], lineage: [],
+    };
+    const interrupted: PersistedNativeSession = {
+      ...checkpoint, activeTurnId: null,
+      terminalTurns: [{ turnId: "turn-recovery", fingerprint: JSON.stringify({ terminalState: "failed", error: failure, result: null }) }],
+    };
+    const startTurn = vi.fn<NativeSession["startTurn"]>(async () => ({ turnId: "turn-continuation" }));
+    const session: NativeSession = {
+      identity: () => identity,
+      async capabilities() { return { resume: true, typedEvents: true, steering: false, interruption: true, structuredResult: true }; },
+      async *events() {
+        yield runnerEvent(1, "turn.failed", { status: "failed", error: failure });
+        if (!startTurn.mock.calls.length) return;
+        yield { ...runnerEvent(2, "turn.completed", { status: "completed" }), turnId: "turn-continuation" };
+      },
+      startTurn,
+      async result() { return startTurn.mock.calls.length ? { result, terminal, turnId: "turn-continuation" } : null; },
+      async snapshot() { return structuredClone(interrupted); },
+      async close() {},
+    };
+    const backend: NativeSessionBackend = {
+      async descriptor() { return { kind: "runner", name: "restart", version: "1", capabilities: await session.capabilities() }; },
+      async openSession() { throw new Error("must preserve the provider session"); },
+      async recoverSession() { return { recovered: true, session }; },
+    };
+    const port: ControlPlanePort = {
+      async openRun() {},
+      async checkpointSession() {},
+      async appendEvent(event: PrpEvent) { return { cursor: event.sourceSeq, highestContiguousSourceSeq: event.sourceSeq, disposition: "committed" }; },
+      async replayEvents() { return { events: [], highestContiguousSourceSeq: 0 }; },
+      async completeRun() {},
+    };
+    await expect(executeNativeSession({
+      input: acpxInput, backend, controlPlane: port, persistedSession: checkpoint,
+      runnerInstanceId: "runner-recovery", controlPlaneInstanceId: "control-recovery",
+      resumeInterruptedTurn: true,
+    })).resolves.toMatchObject({ result, turnId: "turn-continuation" });
+    expect(startTurn).toHaveBeenCalledOnce();
+    const submitted = startTurn.mock.calls[0]![0] as Parameters<NativeSession["startTurn"]>[0];
+    expect(submitted.continuation).toBe(true);
+    expect(submitted.message.text).toContain("Reconcile any unfinished tool or command");
+    expect(nativeRestartInterruptedTurnId(interrupted)).toBe("turn-recovery");
   });
 
   it("never continues task work when a restart loses a compaction turn", async () => {

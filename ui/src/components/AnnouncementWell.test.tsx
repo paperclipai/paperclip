@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { HealthStatus } from "@/api/health";
 import { AnnouncementWell } from "./AnnouncementWell";
@@ -18,6 +19,7 @@ vi.mock("@/hooks/useAnnouncement", () => ({ useAnnouncement: (options: { enabled
   state.hook(options);
   return { announcement: options.enabled ? announcementPreview : null, dismiss: state.dismiss };
 } }));
+vi.mock("@/api/issues", () => ({ issuesApi: { list: vi.fn().mockResolvedValue([]) } }));
 vi.mock("./AnnouncementCard", () => ({ AnnouncementCard: ({ onDismiss }: { onDismiss: () => void }) => <button onClick={onDismiss}>Dismiss fixture</button> }));
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -25,12 +27,16 @@ describe("announcement placement gates", () => {
   let container: HTMLDivElement;
   let root: Root;
   let health: HealthStatus;
-  const render = async () => { await act(async () => root.render(<AnnouncementWell health={health} />)); };
+  let client: QueryClient;
+  const render = async () => { await act(async () => root.render(<QueryClientProvider client={client}><AnnouncementWell health={health} /></QueryClientProvider>)); };
   const visible = () => Boolean(container.querySelector('[aria-label="Paperclip announcements"]'));
   beforeEach(() => {
     Object.assign(state, { userId: "alice", settled: true, companyId: "company", loading: false, onboardingOpen: false, toasts: [] });
     vi.clearAllMocks();
     health = { deploymentMode: "authenticated" } as HealthStatus;
+    // Onboarding is finished (no open first task); onboarding gating is covered in AnnouncementWell.onboarding.test.tsx.
+    client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+    client.setQueryData(["issues", "company", "onboarding-first-task"], []);
     container = document.createElement("div"); document.body.append(container); root = createRoot(container);
   });
   afterEach(async () => { await act(async () => root.unmount()); container.remove(); });
@@ -44,7 +50,7 @@ describe("announcement placement gates", () => {
     expect(state.hook).toHaveBeenLastCalledWith(expect.objectContaining({ userId: "local-board", enabled: true }));
   });
   it("docks in normal flow for the sidebar and floats only when asked", async () => {
-    await act(async () => root.render(<AnnouncementWell health={health} placement="sidebar" />));
+    await act(async () => root.render(<QueryClientProvider client={client}><AnnouncementWell health={health} placement="sidebar" /></QueryClientProvider>));
     const docked = container.querySelector('[aria-label="Paperclip announcements"]')!;
     expect(docked.getAttribute("data-placement")).toBe("sidebar");
     expect(docked.className).not.toMatch(/\bfixed\b/);
