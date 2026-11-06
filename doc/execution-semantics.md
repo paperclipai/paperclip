@@ -1054,6 +1054,9 @@ Fallback inventory is limited to 100,000 entries, 64 standalone repositories,
 1 MiB of configuration, 1,024 settings and 256 refspec/merge entries. Controller
 verification and archive normalization share a two-minute cancellation deadline.
 These limits reject excessive work before publication and keep the source retained.
+Inventory rechecks cancellation after file identity validation and before opening
+the read stream. An expired deadline rejects the capture without an unhandled
+stream error or a successful preservation receipt.
 
 Shallow and partial Git checkouts retain their available object files instead
 of asking a mirror clone to transfer promised or index-only objects. Capture
