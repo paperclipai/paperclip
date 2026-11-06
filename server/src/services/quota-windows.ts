@@ -153,6 +153,19 @@ function providerSlugForAdapterType(type: string): string {
  * Individual adapter failures are caught and returned as error results rather than
  * letting one provider's outage block the entire response.
  */
+/**
+ * Merge centrally connected subscription accounts with adapter-reported
+ * windows. A connected account stays authoritative for its provider; an
+ * adapter only contributes providers that no connection reports.
+ */
+export function mergeQuotaWindowResults(
+  managed: ProviderQuotaResult[],
+  adapterReported: ProviderQuotaResult[],
+): ProviderQuotaResult[] {
+  const reported = new Set(managed.map((result) => result.provider));
+  return [...managed, ...adapterReported.filter((result) => !reported.has(result.provider))];
+}
+
 export async function fetchAllQuotaWindows(): Promise<ProviderQuotaResult[]> {
   const adapters = listServerAdapters().filter((a) => a.getQuotaWindows != null);
 
