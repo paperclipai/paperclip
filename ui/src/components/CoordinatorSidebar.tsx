@@ -4,6 +4,7 @@ import { Inbox, Boxes, ChevronRight, CircleCheck, FolderOpen, History, LayoutDas
 import type { Project } from "@paperclipai/shared";
 import { useCoordinatorAttentionCount } from "@/hooks/useCoordinatorAttentionCount";
 import { issuesApi } from "@/api/issues";
+import { instanceSettingsApi } from "@/api/instanceSettings";
 import { projectsApi } from "@/api/projects";
 import { useAgentChatNavigation } from "@/hooks/useAgentChatNavigation";
 import { useRecentTasks } from "@/hooks/useRecentTasks";
@@ -66,9 +67,16 @@ export function CoordinatorSidebar({ children }: { children?: ReactNode }) {
   const { companyId, userId, agents, chats, session } = useAgentChatNavigation();
   const unreadChatCount = chats.data?.filter(chat => chat.isUnreadForMe).length ?? 0;
   const pinnedNavigation = usePinnedNavigation(userId);
+  const { data: experimental } = useQuery({
+    queryKey: queryKeys.instance.experimentalSettings,
+    queryFn: () => instanceSettingsApi.getExperimental(),
+  });
+  const destinations = experimental?.enableCases
+    ? [...moreDestinations, { label: "Cases", to: "/cases", icon: Boxes }]
+    : moreDestinations;
   const [moreOpen, setMoreOpen] = useState(false);
   const moreContentRef = useRef<HTMLDivElement>(null);
-  const pinnedDestinations = pinnedNavigation.pins.flatMap(to => moreDestinations.filter(item => item.to === to));
+  const pinnedDestinations = pinnedNavigation.pins.flatMap(to => destinations.filter(item => item.to === to));
   const { entries: recentTasks } = useRecentTasks({ companyId, userId });
   const { collapsed, peeking, isMobile, setSidebarOpen } = useSidebar();
   const rail = collapsed && !peeking;
@@ -126,7 +134,7 @@ export function CoordinatorSidebar({ children }: { children?: ReactNode }) {
         <Flyout open={moreOpen} onOpenChange={setMoreOpen}>
           <FlyoutTrigger asChild><button type="button" aria-label="More workspace pages" className="design-sidebar-item flex w-auto items-center gap-2.5 rounded-lg py-1.5 text-left transition-colors focus-visible:ring-2 focus-visible:ring-ring"><MoreHorizontal className="size-4 shrink-0" /><span className={rail ? SIDEBAR_RAIL_HIDDEN_LABEL : undefined}>More</span></button></FlyoutTrigger>
           <FlyoutContent ref={moreContentRef} tabIndex={-1} onOpenAutoFocus={(event) => { event.preventDefault(); moreContentRef.current?.focus(); }} side={isMobile ? "bottom" : "right"} align="start" className="w-56 p-1" aria-label="More workspace pages">
-            {moreDestinations.map(({ label, to, icon: Icon }, index) => {
+            {destinations.map(({ label, to, icon: Icon }, index) => {
               const pinned = pinnedNavigation.pins.includes(to);
               const PinIcon = pinned ? PinOff : Pin;
               return <div key={to}>

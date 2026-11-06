@@ -236,6 +236,9 @@ test.describe("Board send delivery refresh", () => {
           }),
           "create linked task in another organization",
         );
+        await page.route("**/api/workspace-preferences/me", route => fulfill(route, {
+          userId: "local-board", coordinatorWorkspaceEnabled: !classic, updatedAt: null,
+        }));
         await page.route("**/api/instance/settings/experimental", (route) =>
           fulfill(route, {
             enableChatConnectors: true,
