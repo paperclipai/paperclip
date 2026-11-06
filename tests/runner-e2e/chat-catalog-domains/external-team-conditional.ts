@@ -206,7 +206,7 @@ function negatedTeamRecovery(before: string): boolean {
   return /\b(?:not|never|isn.t|aren.t|wasn.t|weren.t|hasn.t|haven.t)\s+(?:(?:be|been|get|yet|currently|still|successfully|fully|completely)\s+){0,2}$/i.test(before.replace(/[*_`]+\s*$/, ""));
 }
 function teamSkillSubject(skill: Pick<CatalogSkill, "slug" | "name">): string {
-  return "[*_`]*(?:" + [skill.slug, skill.slug.replaceAll("-", " "), skill.name].map(name => name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|") + ")[*_`]*";
+  return "[*_`]*(?:" + [skill.slug, skill.slug.replaceAll("-", " "), skill.name].map(name => name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|") + ")[*_`]*(?:\\s+(?:(?:required|catalog|imported|bundled)\\s+){1,3}skill)?";
 }
 function historicalTeamSkillClause(clause: string, skill: Pick<CatalogSkill, "slug" | "name">): boolean {
   const subject = new RegExp(teamSkillSubject(skill), "i").exec(clause);

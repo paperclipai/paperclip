@@ -534,3 +534,19 @@ it("rejects a current unattached claim when independent saved recovery is proven
     expect(gradeTeamConditions(o, phase === 0 ? "initial" : "complete").passed).toBe(false);
   }
 });
+
+it("binds ordinary skill qualifiers to the exact required skill across missing and recovery checks",()=>{
+ const target={slug:"doc-maintenance",name:"doc-maintenance"};
+ for(const qualifier of ["catalog","required catalog","imported","bundled"]){
+  const partial="The `doc-maintenance` "+qualifier+" skill is unresolved because a company-owned skill already uses that slug; I preserved the existing skill.";
+  expect(truthfulTeamPartial(partial,target,true),partial).toBe(true);
+  expect(truthfulTeamPartial(partial+" The doc-maintenance "+qualifier+" skill is now installed.",target,true)).toBe(false);
+  expect(truthfulTeamPartial("A different "+qualifier+" skill is unresolved because its slug conflicts.",target,true)).toBe(false);
+  expect(truthfulTeamPartial("Earlier, the doc-maintenance "+qualifier+" skill was unresolved because its slug conflicted.",target,true)).toBe(false);
+  for(const phase of [0,1]){
+   const {o}=recovered();
+   o.phaseReplies[phase]!.body="The existing CTO was preserved and the new role renamed CTO 2. Launch Checklist "+qualifier+" skill is still missing.";
+   expect(gradeTeamConditions(o,phase===0?"initial":"complete").passed).toBe(false);
+  }
+ }
+});
