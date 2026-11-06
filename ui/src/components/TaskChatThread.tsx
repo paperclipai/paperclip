@@ -68,6 +68,7 @@ import {
   paperclipRunnerAcceptedResponseWake,
   paperclipRunnerTimelineItems,
   prependIssueBrief,
+  settledCompactionMarkers,
   settledRunChildren,
   splitTranscriptAtAnchors,
   transcriptToTaskChatItems,
@@ -1713,6 +1714,10 @@ export function TaskChatThread(props: TaskChatThreadProps) {
         continue;
       }
       previousExecutionWaitKey = null;
+      const compactionMarkers = settledCompactionMarkers(entries, source.id);
+      for (const marker of compactionMarkers) {
+        entriesWithFailures.push({ id: marker.id, ms: toMs(marker.createdAtIso), order: 3, item: marker });
+      }
       const acceptedSummary = acceptedSemanticResultSummary(meta?.resultJson);
       const parsedSource = transcriptToTaskChatItems(entries, {
         runId: source.id,
@@ -2163,8 +2168,11 @@ export function TaskChatThread(props: TaskChatThreadProps) {
           rest: partitionRunHealthItems(timelineItemsBySegment[segmentIndex] ?? []).rest,
         };
         const children = settledRunChildren(runHealth.rest);
-        if (children.length === 0 && !finalResponse && !sourceIsPaperclipRunner)
+        // A compaction-only run is fully shown by its divider.
+        if (children.length === 0 && !finalResponse && (!sourceIsPaperclipRunner || compactionMarkers.length > 0)) {
+          if (compactionMarkers.length > 0) settledRunIds.add(source.id);
           continue;
+        }
         settledRunIds.add(source.id);
         if (finalResponse) settledReplyRunIds.add(source.id);
         const segmented = timelineAnchors.length > 0;

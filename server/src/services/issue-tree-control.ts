@@ -34,6 +34,7 @@ import {
 import { conflict, notFound, unprocessable } from "../errors.js";
 import type { IssuePostCommitAction } from "./issues.js";
 import { notifyTerminalWorkspaceWork } from "./terminal-workspace-work.js";
+import { readRunCancellation } from "./run-cancellation.js";
 
 type IssueRow = typeof issues.$inferSelect;
 type HoldRow = typeof issueTreeHolds.$inferSelect;
@@ -1208,9 +1209,12 @@ export function issueTreeControlService(db: Db) {
         releaseMetadata: input.metadata ?? null,
         updatedAt: new Date(),
       })
-      .where(and(eq(issueTreeHolds.id, holdId), eq(issueTreeHolds.companyId, companyId)))
+      .where(and(eq(issueTreeHolds.id, holdId), eq(issueTreeHolds.companyId, companyId),
+        eq(issueTreeHolds.status, "active")))
       .returning();
     });
+    // A concurrent release won; it alone owns the resumed work.
+    if (!updated) throw conflict("Issue tree hold is already released");
 
     const members = await db
       .select()
@@ -1219,6 +1223,47 @@ export function issueTreeControlService(db: Db) {
       .orderBy(asc(issueTreeHoldMembers.depth), asc(issueTreeHoldMembers.createdAt), asc(issueTreeHoldMembers.issueId));
 
     return toHold(updated, members);
+  }
+
+  /**
+   * A pause interrupts runs as an operator hold, not as a failure. A pause
+   * hold's member snapshot names each run it interrupted, and that pending work
+   * is owed one re-dispatch once no pause covers the task. The obligation
+   * belongs to the run, so overlapping holds keep it until the last release.
+   * Current state governs: the interrupted run must still be the task's latest
+   * run, the task must be executable by the same agent, and the claim marker
+   * makes the resume happen at most once. Execution blockers are the caller's.
+   */
+  async function findOwedPauseResume(companyId: string, issueId: string) {
+    const [issue] = await db.select({
+      status: issues.status, assigneeAgentId: issues.assigneeAgentId, assigneeUserId: issues.assigneeUserId,
+    }).from(issues).where(and(eq(issues.companyId, companyId), eq(issues.id, issueId)));
+    if (!issue?.assigneeAgentId || issue.assigneeUserId
+      || !ISSUE_TREE_RESUME_EXECUTABLE_STATUSES.includes(issue.status)) return null;
+    const [run] = await db.select({
+      id: heartbeatRuns.id, agentId: heartbeatRuns.agentId, status: heartbeatRuns.status,
+      finishedAt: heartbeatRuns.finishedAt, resultJson: heartbeatRuns.resultJson,
+    }).from(heartbeatRuns).where(and(
+      eq(heartbeatRuns.companyId, companyId),
+      sql`coalesce(${heartbeatRuns.issueId}::text, ${heartbeatRuns.contextSnapshot}->>'issueId') = ${issueId}`,
+    )).orderBy(sql`${heartbeatRuns.createdAt} desc`).limit(1);
+    if (!run || run.status !== "cancelled" || !run.finishedAt || run.agentId !== issue.assigneeAgentId
+      || run.resultJson?.treeHoldResume !== undefined
+      || readRunCancellation(run.resultJson)?.source !== "operator") return null;
+    // Only a Stop recorded while a pause naming this run was active is owed.
+    const [hold] = await db.select({ id: issueTreeHolds.id }).from(issueTreeHoldMembers)
+      .innerJoin(issueTreeHolds, eq(issueTreeHolds.id, issueTreeHoldMembers.holdId))
+      .where(and(
+        eq(issueTreeHoldMembers.companyId, companyId), eq(issueTreeHoldMembers.issueId, issueId),
+        eq(issueTreeHoldMembers.activeRunId, run.id), eq(issueTreeHoldMembers.skipped, false),
+        eq(issueTreeHolds.companyId, companyId), eq(issueTreeHolds.mode, "pause"),
+        sql`${issueTreeHolds.createdAt} <= ${run.finishedAt.toISOString()}::timestamptz`,
+        or(isNull(issueTreeHolds.releasedAt),
+          sql`${issueTreeHolds.releasedAt} >= ${run.finishedAt.toISOString()}::timestamptz`),
+      )).orderBy(asc(issueTreeHolds.createdAt)).limit(1);
+    if (!hold) return null;
+    if (await getActivePauseHoldGate(companyId, issueId)) return null;
+    return { issueId, agentId: run.agentId, interruptedRunId: run.id, holdId: hold.id };
   }
 
   async function cancelUnclaimedWakeupsForTree(companyId: string, rootIssueId: string, reason: string) {
@@ -1268,6 +1313,7 @@ export function issueTreeControlService(db: Db) {
     listHolds,
     getActivePauseHoldGate,
     releaseHold,
+    findOwedPauseResume,
     cancelUnclaimedWakeupsForTree,
   };
 }

@@ -144,6 +144,12 @@ that arrive during the final status read and keeps them queued for delivery.
 As with Codex, a prepared session can continue or be cleaned up. This handoff
 requires a completed turn. Suspended sessions use their usual recovery path.
 
+Before B attaches, Runner saves the events it already received from A's sidecar.
+The readiness snapshot stays blocked until Core acknowledges those events.
+Another turn within A also keeps its buffered events without waiting for an ACK.
+ACPX still replaces the sidecar at the next turn or run attachment. The saved
+provider identity continues through that replacement.
+
 ## Host park eligibility
 
 `CommandExecutor::host_park_ready` defaults to false. Native Codex opts in only
@@ -151,12 +157,20 @@ for the existing process that completed the current turn. An eligibility check
 never selects or restores a provider. A restored process must complete its own
 authoritative turn before it can be eligible. Reconstructing an accepted finish
 during recovery preserves result delivery but does not qualify that process.
-ACPX remains ineligible in this slice, including after qualified recovery.
 Active turns, goals, startup attempts, tool calls, pending credentials, and
 unsettled events block parking. Known helper threads also block it: their
 diagnostic lineage does not prove that their work finished. The bounded
 completed-turn tail drain retains late accounting and goal changes for durable
 state and normal event delivery.
+
+Claude and Codex through ACPX also need a successful turn in the live sidecar.
+Runner checks its qualified profile, session identity and source run A. It gives
+that sidecar 100 ms to report its goal and session state. If the sidecar is slow
+or declines, Runner stays attached. Runner keeps at most one unanswered read and
+recognizes its late reply. Events received during that read still belong to A
+and are delivered before B attaches. The existing policy still replaces the
+sidecar at the next turn or run attachment; the saved provider identity continues.
+
 The check also inspects the live provider
 after that drain, so a late active-goal notification cannot be hidden by the
 older executor journal. This hook does not detach a controller, stop a process,

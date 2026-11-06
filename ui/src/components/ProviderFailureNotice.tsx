@@ -14,7 +14,7 @@ export function ProviderFailureNotice({ failure, actions, children, className }:
   failure: ProviderFailure; actions?: ReactNode; children?: ReactNode; className?: string;
 }) {
   useTranslation("task-components");
-  const provider = ({ anthropic: "Claude", openai: "OpenAI" } as Record<string, string>)[failure.provider] ?? failure.provider;
+  const provider = ({ anthropic: "Claude", openai: "OpenAI", sandbox: t("final-components-b:Sandbox_provider") } as Record<string, string>)[failure.provider] ?? failure.provider;
   return (
     <InlineBanner tone="danger" title={`${provider}: ${Object.hasOwn(labels, failure.category) ? labels[failure.category] : failure.category}`} actions={actions} className={className}>
       <div className="flex flex-col gap-2">

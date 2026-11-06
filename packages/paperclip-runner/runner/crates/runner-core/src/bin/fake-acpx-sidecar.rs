@@ -124,9 +124,47 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     "pendingToolCount":if fault == "tool" || source_pending_completion.is_some() {1} else {0}, "pendingInputCount":0,
                     "pendingRuntimeRequests":[]});
             }
+            if command == "session.snapshot" && fault == "foreign-snapshot" {
+                response["result"]["identity"]["agentSessionId"] = json!("foreign-session");
+            }
             if command == "session.goal.get" {
                 source_goal_revision += 1;
                 response["result"]["providerRevision"] = json!(source_goal_revision);
+            }
+            if command == "session.goal.get"
+                && matches!(fault.as_str(), "read-diagnostic" | "read-burst")
+            {
+                let count = if fault == "read-burst" { 200 } else { 1 };
+                for _ in 0..count {
+                    write_json(
+                        &mut stdout,
+                        &json!({"protocolVersion":GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,
+                        "sequence":next_sequence,"eventType":"runtime.diagnostic","runId":source_run,"turnId":null,
+                        "payload":{"code":"ordinary_read_tail","message":"Retained before an ordinary turn."}}),
+                    )?;
+                    next_sequence += 1;
+                }
+            }
+            if command == "session.goal.get" && fault == "read-invalid-tail" {
+                write_turn_event(
+                    &mut stdout,
+                    next_sequence,
+                    "runtime.event",
+                    &source_run,
+                    "unbound-old-turn",
+                    json!({"type":"text_delta","text":"Rejected stale tail."}),
+                )?;
+                next_sequence += 1;
+            }
+            if command == "session.snapshot" && fault == "slow-snapshot" {
+                std::thread::sleep(std::time::Duration::from_secs(1));
+                write_json(
+                    &mut stdout,
+                    &json!({"protocolVersion":GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,
+                    "sequence":next_sequence,"eventType":"runtime.diagnostic","runId":source_run,"turnId":null,
+                    "payload":{"code":"slow_park_observation","message":"Retained after a slow read."}}),
+                )?;
+                next_sequence += 1;
             }
             if command == "session.snapshot" && fault == "goal-during-snapshot" {
                 source_goal_revision += 1;
@@ -146,6 +184,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     "lastReason":null,"createdAt":null,"updatedAt":null,"completedAt":null,"workingNow":false});
                 response["result"]["sessionGoals"] = json!({"availability":"available", "actions":["set","pause","resume","clear"],
                     "autonomousUpdates":true,"persistentAcrossResume":true,"maxObjectiveChars":4000,"tokenBudgetControl":false,"usageReporting":false});
+            }
+            if (command == "session.goal.get" && fault == "reject-goal")
+                || (command == "session.snapshot" && fault == "reject-snapshot")
+            {
+                response = json!({"protocolVersion":GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,"id":id,"ok":false,
+                    "error":{"code":"temporarily_unavailable","message":"Optional read is temporarily unavailable.","retryable":true}});
             }
             write_json(&mut stdout, &response)?;
             if command == "turn.start" {

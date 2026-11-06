@@ -15,11 +15,11 @@ import type { StorageService } from "../storage/types.js";
 import { persistActivity, publishActivity } from "./activity-log.js";
 import { withExecutionWorkspaceLifecycleLock } from "./execution-workspace-lifecycle-lock.js";
 import { captureRemoteWorkspaceDirectory, restoreRemoteWorkspaceArchive } from "./remote-workspace-snapshot-archive.js";
-import { beginWorkspaceSnapshot, loadWorkspaceSnapshotArchive, uploadWorkspaceSnapshot } from "./remote-workspace-snapshot-storage.js";
+import { beginWorkspaceSnapshot, loadWorkspaceSnapshotArchive, recoverWorkspaceSnapshotArchive, uploadWorkspaceSnapshot } from "./remote-workspace-snapshot-storage.js";
 import { notifyRemoteWorkspaceSnapshots } from "./remote-workspace-snapshot-retention.js";
 import { materializeTaskDirectorySnapshot, removeTaskDirectoryTree } from "./isolated-task-directory-snapshot.js";
 import { loadTaskDirectoryRestorePoint, mayBeIsolatedTaskDirectoryWorkspace, readTaskDirectoryRetention, validateTaskDirectoryRestorePointRef } from "./isolated-task-directory-retention.js";
-import { inspectArchivedGitMigrationSource, materializeArchivedGitMigrationSource, type ArchivedGitMigrationSource } from "./remote-workspace-migration-git.js";
+import { inspectArchivedGitMigrationSource, lockArchivedGitMigrationSources, materializeArchivedGitMigrationSource, type ArchivedGitMigrationSource } from "./remote-workspace-migration-git.js";
 import { readNativeWorkspaceSyncReference } from "./native-runtime/native-workspace-sync.js";
 import { isLegacyWorkspaceTaskRelated, readLegacyWorkspaceRecoveryAllocations, LEGACY_WORKSPACE_RECOVERY_MIGRATION, type LegacyWorkspaceRecoverySource } from "./legacy-workspace-recovery-migration.js";
 import { offlineWorkspaceMigrationBlockers, prepareNestedWorkspaceImports, validateImportedWorkspaceChildren, workspaceMigrationLayoutBlockers } from "./remote-workspace-migration-tree.js";
@@ -315,8 +315,13 @@ export async function migrateRemoteWorkspace(input: {
     try {
       input.signal?.throwIfAborted();
       const retained = reserved.retainedDirectory?.restorePoint;
-      const sourceRoot = retained ? await materializeTaskDirectorySnapshot({
-        payload: await loadTaskDirectoryRestorePoint({ storage: input.storage, workspace: reserved.workspace, ref: retained }),
+      const archivePath = path.join(scratch, "workspace.pcws");
+      const recovered = reserved.archivedGitSource ? await recoverWorkspaceSnapshotArchive({
+        db: input.db, storage: input.storage, companyId: input.companyId, workspaceId: input.workspaceId,
+        snapshotId: snapshot.id, targetPath: archivePath, signal: input.signal,
+      }) : null;
+      const sourceRoot = recovered ? null : retained ? await materializeTaskDirectorySnapshot({
+        payload: await loadTaskDirectoryRestorePoint({ storage: input.storage, workspace: reserved.workspace, ref: retained, recoverMissingEmpty: true, signal: input.signal }),
         target: path.join(scratch, "retained-source"), expectedDigest: retained.digest,
       }) : reserved.archivedGitSource ? await materializeArchivedGitMigrationSource({ db: input.db, storage: input.storage,
         workspace: reserved.workspace, source: reserved.archivedGitSource, scratch }) : reserved.workspace.cwd ?? reserved.workspace.providerRef!;
@@ -338,16 +343,17 @@ export async function migrateRemoteWorkspace(input: {
         operation = saved;
       }
       const exclude = nested.map(child => child.relativePath);
-      const archivePath = path.join(scratch, "workspace.pcws");
-      const captured = await captureRemoteWorkspaceDirectory({ cwd: sourceRoot, archivePath, exclude, signal: input.signal });
+      const captured = recovered ?? await captureRemoteWorkspaceDirectory({ cwd: sourceRoot!, archivePath, exclude, signal: input.signal });
       const ref = await uploadWorkspaceSnapshot({ db: input.db, storage: input.storage, snapshotId: snapshot.id,
         companyId: input.companyId, workspaceId: input.workspaceId, archivePath, manifestDigest: captured.manifestDigest, signal: input.signal });
       const restoredArchive = path.join(scratch, "verified.pcws"), restored = path.join(scratch, "restored");
       await loadWorkspaceSnapshotArchive({ storage: input.storage, reference: ref, targetPath: restoredArchive, signal: input.signal });
       await restoreRemoteWorkspaceArchive({ archivePath: restoredArchive, targetDir: restored, expectedManifestDigest: ref.manifestDigest, signal: input.signal });
-      const currentArchive = path.join(scratch, "current.pcws");
-      const current = await captureRemoteWorkspaceDirectory({ cwd: sourceRoot, archivePath: currentArchive, exclude, signal: input.signal });
-      if (current.manifestDigest !== captured.manifestDigest) throw new Error("remote_workspace_migration_source_changed");
+      if (!recovered) {
+        const currentArchive = path.join(scratch, "current.pcws");
+        const current = await captureRemoteWorkspaceDirectory({ cwd: sourceRoot!, archivePath: currentArchive, exclude, signal: input.signal });
+        if (current.manifestDigest !== captured.manifestDigest) throw new Error("remote_workspace_migration_source_changed");
+      }
       if (nested.length) {
         const verifyScratch = path.join(scratch, "verify-nested"); await fs.mkdir(verifyScratch);
         const verified = await prepareNestedWorkspaceImports({ ...input, workspace: reserved.workspace, scratch: verifyScratch, recordedChildren: nested });
@@ -385,6 +391,7 @@ export async function migrateRemoteWorkspace(input: {
         if (Boolean(validation.retainedDirectory) !== Boolean(reserved.retainedDirectory)) throw new Error("remote_workspace_migration_source_changed");
         if (canonical(gitSourceProof(validation.archivedGitSource)) !== canonical(gitSourceProof(reserved.archivedGitSource))) throw new Error("remote_workspace_migration_source_changed");
         if (validation.reasons.length) throw new Error(`remote_workspace_migration_blocked:${validation.reasons.join(",")}`);
+        if (reserved.archivedGitSource) await lockArchivedGitMigrationSources(tx as unknown as Db, workspace, reserved.archivedGitSource);
         const [uploaded] = await tx.select().from(executionWorkspaceSnapshots).where(and(eq(executionWorkspaceSnapshots.companyId, workspace.companyId),
           eq(executionWorkspaceSnapshots.executionWorkspaceId, workspace.id), eq(executionWorkspaceSnapshots.id, ref.id))).for("update");
         if (!uploaded || uploaded.status !== "uploaded" || uploaded.sourceOperationId !== operation.id) throw new Error("remote_workspace_migration_snapshot_changed");

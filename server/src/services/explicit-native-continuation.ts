@@ -370,7 +370,9 @@ export async function admitExplicitNativeContinuation(input: {
       const snapshotSettled = completedResult && freshIntent && action.id && recovery?.state === "complete"
         && await verifiedWorkspaceSnapshotReceipt(db, { companyId, issueId, runId: run.id,
           actionId: action.id, operationIds: recovery.preservationOperationIds });
-      if (completedResult && !(freshIntent && snapshotSettled))
+      const repairedTerminal = completedResult && coordinator.phase === "terminal_failure"
+        && await hasVerifiedWorkspaceRepair(db, run);
+      if (completedResult && !repairedTerminal && !(freshIntent && snapshotSettled))
         return blocked("finalizing_saved_result", "Paperclip is finishing the saved result.");
     }
     // A repaired export no longer blocks execution. Its machine receipt still

@@ -12,7 +12,7 @@ import { notifyInstructionCollection } from "../../../services/instruction-colle
 import { notifyScheduledRetryCancellation } from "../../../services/scheduled-retry-cancellation-notifications.js";
 import { readClaimedNativeStopRecovery } from "../../../services/native-runtime/native-cancellation-request.js";
 import { hasConversationContinuationPolicy } from "../../../services/conversation-continuation.js";
-import { userStopBoundaryAt } from "../../../services/run-cancellation.js";
+import { recordedUserStop, userStopBoundaryAt } from "../../../services/run-cancellation.js";
 import { getExecutionBlocker } from "../../../services/execution-blocker.js";
 import { validateReconstructedWorkspaceDispatch } from "../../../services/native-runtime/native-workspace-reconstruction.js";
 import { getNativeReviewAssignment } from "../../../services/native-runtime/native-review-participant.js";
@@ -996,10 +996,12 @@ export function createPostgresRunDispatchAdapter(
     )).for("update");
     const [source] = preservation ? await tx.select().from(heartbeatRuns).where(and(
       eq(heartbeatRuns.companyId, run.companyId), eq(heartbeatRuns.agentId, run.agentId),
-      eq(heartbeatRuns.nativeIssueId, issueId), eq(heartbeatRuns.runtimeMode, "native"), eq(heartbeatRuns.status, "cancelled"),
+      eq(heartbeatRuns.nativeIssueId, issueId), eq(heartbeatRuns.runtimeMode, "native"), inArray(heartbeatRuns.status, ["cancelled", "failed"]),
       sql`${heartbeatRuns.id}::text = ${preservation.evidence.runId}`,
     )) : [];
-    if (!preservation || !source) return null;
+    // A user-stopped run can settle as failed when its unreachable runner's
+    // transport fails closed. Only that recorded Stop makes a failed source eligible.
+    if (!preservation || !source || (source.status === "failed" && !recordedUserStop(source))) return null;
     const baseline = readNativeWorkspaceSyncReference(source.runnerProfileJson?.nativeWorkspaceSync);
     // Copyback from a native baseline replays the saved turn. Without one, only
     // a message sent after the Stop is saved; admission still applies all gates.

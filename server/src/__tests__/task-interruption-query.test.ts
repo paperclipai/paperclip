@@ -92,6 +92,33 @@ describe.skipIf(!support.supported)("task interruption latest run query", () => 
     } finally { vi.unstubAllEnvs(); }
   });
 
+  it("redacts a scheduled retry's predecessor provider explanation with the predecessor's registry", async () => {
+    vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY", "a".repeat(64));
+    try {
+      const f = await seedInterruptionFixture(db, { selected: 1, history: 1, unrelated: 0, payloadBytes: 0 });
+      const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, f.companyId));
+      const predecessorId = randomUUID();
+      const secret = `private-predecessor-value-${randomUUID()}`;
+      const providerFailure = { schema: "paperclip.provider-failure.v1", provider: "daytona", phase: "startup",
+        category: "overloaded", message: `Sandbox refused lease for ${secret}.`, httpStatus: 502, retryability: "transient" };
+      await db.insert(heartbeatRuns).values({ id: predecessorId, companyId: f.companyId, agentId: run!.agentId,
+        status: "failed", errorCode: "environment_provider_unavailable", resultJson: { providerFailure },
+        createdAt: new Date(run!.createdAt.getTime() - 60_000) });
+      await db.update(heartbeatRuns).set({ status: "scheduled_retry", retryOfRunId: predecessorId, resultJson: {},
+        scheduledRetryAt: new Date(Date.now() + 30_000), scheduledRetryAttempt: 1 }).where(eq(heartbeatRuns.id, run!.id));
+      await createRunSecretRedactionRegistry(db).register(f.companyId, predecessorId, secret);
+      const list = await taskInterruptionPresentations(db, f.companyId, f.input);
+      const detail = await taskInterruptionPresentation(db, f.input[0]!);
+      for (const presentation of [list.get(f.input[0]!.id), detail]) {
+        expect(presentation?.observedRunId).toBe(run!.id);
+        expect(presentation?.providerFailure).toMatchObject({ httpStatus: 502 });
+        expect(presentation?.providerFailure?.message).toContain("Sandbox refused lease");
+        expect(presentation?.providerFailure?.message).toContain("REDACTED");
+        expect(JSON.stringify(presentation)).not.toContain(secret);
+      }
+    } finally { vi.unstubAllEnvs(); }
+  });
+
   it.each(["decryption failure", "expanded message"])("keeps task reads available after provider display %s", async scenario => {
     vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY", "a".repeat(64));
     try {

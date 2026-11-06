@@ -425,6 +425,101 @@ describe("portable remote workspace archives", () => {
     expect(await sourceBytes(cwd)).toBe(bytes);
     await expect(fs.access(path.join(root, "snapshot.pcws"))).rejects.toMatchObject({ code: "ENOENT" });
   });
+  it("rejects a damaged Git entry with a closed reason instead of a raw command error", async () => {
+    const cwd = await source(); await fs.mkdir(path.join(cwd, ".git"));
+    await fs.writeFile(path.join(cwd, "work.txt"), "unsaved\n");
+    const bytes = await sourceBytes(cwd);
+    const failure = await capture(cwd).then(() => null, (error: Error) => error);
+    expect(failure?.message).toBe("remote_workspace_archive_invalid_git_repository");
+    expect(remoteWorkspaceCaptureFailureMessage(failure)).toBe("remote_workspace_archive_invalid_git_repository");
+    expect(await sourceBytes(cwd)).toBe(bytes);
+    await expect(fs.access(path.join(root, "snapshot.pcws"))).rejects.toMatchObject({ code: "ENOENT" });
+    const helper = path.join(root, "archive.cjs"); await fs.writeFile(helper, remoteWorkspaceArchiveScript());
+    await expect(execute(process.execPath, [helper, "capture", cwd, path.join(root, "remote.pcws")], { env }))
+      .rejects.toMatchObject({ code: 1, stdout: "", stderr: "remote_workspace_archive_invalid_git_repository" });
+  });
+  it("rejects a damaged Git entry before checking whether node_modules is tracked", async () => {
+    const cwd = await source(); await fs.mkdir(path.join(cwd, ".git"));
+    await fs.writeFile(path.join(cwd, "package.json"), "{}\n");
+    await fs.mkdir(path.join(cwd, "node_modules", "dependency"), { recursive: true });
+    await fs.writeFile(path.join(cwd, "node_modules", "dependency", "index.js"), "module.exports = 1;\n");
+    await expect(capture(cwd)).rejects.toThrow(/^remote_workspace_archive_invalid_git_repository$/u);
+    await expect(fs.access(path.join(root, "snapshot.pcws"))).rejects.toMatchObject({ code: "ENOENT" });
+    const helper = path.join(root, "archive.cjs"); await fs.writeFile(helper, remoteWorkspaceArchiveScript());
+    await expect(execute(process.execPath, [helper, "capture", cwd, path.join(root, "remote.pcws")], { env }))
+      .rejects.toMatchObject({ code: 1, stdout: "", stderr: "remote_workspace_archive_invalid_git_repository" });
+  });
+  it("keeps a full-disk Git failure distinct from a damaged Git entry", async () => {
+    const cwd = await source(); await git(cwd, "init", "-q", "-b", "main");
+    const bin = path.join(root, "full-disk-bin"); await fs.mkdir(bin);
+    await fs.writeFile(path.join(bin, "git"), "#!/bin/sh\nprintf '%s' 'No space left on device' >&2\nexit 2\n", { mode: 0o700 });
+    const helper = path.join(root, "archive.cjs"); await fs.writeFile(helper, remoteWorkspaceArchiveScript());
+    await expect(execute(process.execPath, [helper, "capture", cwd, path.join(root, "remote.pcws")],
+      { env: { ...env, PATH: `${bin}${path.delimiter}${process.env.PATH ?? ""}` } }))
+      .rejects.toMatchObject({ code: 1, stdout: "", stderr: "remote_workspace_sandbox_disk_full: the sandbox disk is full; free space in the sandbox before saving the workspace" });
+  });
+  it("keeps a failing Git program distinct from a damaged Git entry", async () => {
+    const cwd = await source(); await git(cwd, "init", "-q", "-b", "main");
+    const bin = path.join(root, "failing-bin"); await fs.mkdir(bin);
+    await fs.writeFile(path.join(bin, "git"), "#!/bin/sh\nprintf '%s' 'fatal: SYNTHETIC_PRIVATE_GIT_PATH' >&2\nexit 128\n", { mode: 0o700 });
+    const helper = path.join(root, "archive.cjs"); await fs.writeFile(helper, remoteWorkspaceArchiveScript());
+    await expect(execute(process.execPath, [helper, "capture", cwd, path.join(root, "remote.pcws")],
+      { env: { ...env, PATH: `${bin}${path.delimiter}${process.env.PATH ?? ""}` } }))
+      .rejects.toMatchObject({ code: 1, stdout: "", stderr: "remote_workspace_archive_failed: exit=128 program=git" });
+  });
+  it("recognizes a damaged Git entry whatever wording the installed Git uses", async () => {
+    const cwd = await source(); await fs.writeFile(path.join(cwd, ".git"), "gitdir: missing\n");
+    const real = path.join(await git(cwd, "--exec-path"), "git");
+    const bin = path.join(root, "reworded-bin"); await fs.mkdir(bin);
+    await fs.writeFile(path.join(bin, "git"), `#!/bin/sh\ncase " $* " in *" --show-toplevel "*) printf '%s' 'fatal: SYNTHETIC_REWORDED_REJECTION' >&2; exit 128;; esac\nexec '${real}' "$@"\n`, { mode: 0o700 });
+    const helper = path.join(root, "archive.cjs"); await fs.writeFile(helper, remoteWorkspaceArchiveScript());
+    await expect(execute(process.execPath, [helper, "capture", cwd, path.join(root, "remote.pcws")],
+      { env: { ...env, PATH: `${bin}${path.delimiter}${process.env.PATH ?? ""}` } }))
+      .rejects.toMatchObject({ code: 1, stdout: "", stderr: "remote_workspace_archive_invalid_git_repository" });
+  });
+  it("keeps a refused read of a valid repository distinct from a damaged Git entry", async () => {
+    const cwd = await source(); await git(cwd, "init", "-q", "-b", "main");
+    const real = path.join(await git(cwd, "--exec-path"), "git");
+    const bin = path.join(root, "dubious-bin"); await fs.mkdir(bin);
+    await fs.writeFile(path.join(bin, "git"), `#!/bin/sh\ncase " $* " in *" --show-toplevel "*) printf '%s' 'fatal: detected dubious ownership in repository' >&2; exit 128;; esac\nexec '${real}' "$@"\n`, { mode: 0o700 });
+    const helper = path.join(root, "archive.cjs"); await fs.writeFile(helper, remoteWorkspaceArchiveScript());
+    await expect(execute(process.execPath, [helper, "capture", cwd, path.join(root, "remote.pcws")],
+      { env: { ...env, PATH: `${bin}${path.delimiter}${process.env.PATH ?? ""}` } }))
+      .rejects.toMatchObject({ code: 1, stdout: "", stderr: "remote_workspace_archive_failed: exit=128 program=git" });
+  });
+  it("names a repository with an empty HEAD as a damaged Git entry", async () => {
+    const cwd = await source(); await git(cwd, "init", "-q", "-b", "main");
+    await fs.writeFile(path.join(cwd, ".git", "HEAD"), "");
+    await expect(capture(cwd)).rejects.toThrow(/^remote_workspace_archive_invalid_git_repository$/u);
+    await expect(fs.access(path.join(root, "snapshot.pcws"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+  it.skipIf(process.platform === "win32")("does not wait on a named pipe while checking a rejected Git entry", async () => {
+    const cwd = await source(), gitDir = path.join(cwd, ".git");
+    await fs.mkdir(path.join(gitDir, "objects"), { recursive: true }); await fs.mkdir(path.join(gitDir, "refs"));
+    await fs.writeFile(path.join(gitDir, "HEAD"), "ref: refs/heads/main\n");
+    await execute("mkfifo", [path.join(gitDir, "commondir")]);
+    const bin = path.join(root, "rejecting-bin"); await fs.mkdir(bin);
+    await fs.writeFile(path.join(bin, "git"), "#!/bin/sh\nprintf '%s' 'fatal: SYNTHETIC_REJECTION' >&2\nexit 128\n", { mode: 0o700 });
+    const helper = path.join(root, "archive.cjs"); await fs.writeFile(helper, remoteWorkspaceArchiveScript());
+    await expect(execute(process.execPath, [helper, "capture", cwd, path.join(root, "remote.pcws")],
+      { env: { ...env, PATH: `${bin}${path.delimiter}${process.env.PATH ?? ""}` }, timeout: 4000 }))
+      .rejects.toMatchObject({ code: 1, stdout: "", stderr: "remote_workspace_archive_invalid_git_repository" });
+  });
+  it.each([["an empty directory", "directory"], ["a gitfile for a removed worktree", "gitfile"]])(
+    "does not save an enclosing repository's state for %s",
+    async (_name, kind) => {
+      const parent = await source(); await git(parent, "init", "-q", "-b", "main");
+      await fs.writeFile(path.join(parent, "tracked.txt"), "parent\n"); await git(parent, "add", "."); await git(parent, "commit", "-qm", "parent");
+      const cwd = path.join(parent, ".paperclip", "worktrees", "task"); await fs.mkdir(cwd, { recursive: true });
+      if (kind === "directory") await fs.mkdir(path.join(cwd, ".git"));
+      else await fs.writeFile(path.join(cwd, ".git"), `gitdir: ${path.join(parent, ".git", "worktrees", "task")}\n`);
+      const status = await git(parent, "status", "--porcelain=v2", "--untracked-files=all"), head = await git(parent, "rev-parse", "HEAD");
+      await expect(capture(cwd)).rejects.toThrow(/^remote_workspace_archive_invalid_git_repository$/u);
+      await expect(fs.access(path.join(root, "snapshot.pcws"))).rejects.toMatchObject({ code: "ENOENT" });
+      expect(await git(parent, "status", "--porcelain=v2", "--untracked-files=all")).toBe(status);
+      expect(await git(parent, "rev-parse", "HEAD")).toBe(head);
+    },
+  );
   it("rejects an external symlink before creating an archive", async () => {
     const cwd = await source(); await fs.symlink("../outside", path.join(cwd, "unsafe"));
     await expect(capture(cwd)).rejects.toThrow("unsafe_symlink");

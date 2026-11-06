@@ -1,4 +1,5 @@
 import { notifyScheduledRetryDispatch } from "../run-dispatch-notifications.js";
+import { isContextCompactionRun } from "../context-compaction.js";
 import { notifyNativeEnvironmentSettlement } from "../native-environment-settlement-notifications.js";
 import { notifyExternalAgentSettlement } from "../../modules/external-agents/index.js";
 import { notifyNativeStatusReassessment } from "../native-status-reassessment-notifications.js";
@@ -10,6 +11,7 @@ import { boundRunIssueId } from "../run-task-binding.js";
 import { REMOTE_WORKSPACE_PREPARATION_TIMEOUT_CODE, REMOTE_WORKSPACE_RESTORE_FAILED_CODE } from "../remote-workspace-transport.js";
 import { REUSABLE_SANDBOX_RESUME_FAILED_CODE } from "../reusable-sandbox-resume-error.js";
 import { PLUGIN_WORKER_UNAVAILABLE_CODE } from "../plugin-worker-unavailable-error.js";
+import { ENVIRONMENT_PROVIDER_UNAVAILABLE_CODE } from "../environment-provider-unavailable-error.js";
 import { RUNNER_REVISION_MISMATCH_CODE } from "../runner-revision-mismatch.js";
 import { recoveryRunContextColumn, recoveryRunVersionColumn } from "./run-context-read.js";
 import { recoveryRunResultColumn } from "./run-result-read.js";
@@ -562,6 +564,7 @@ const NON_RETRYABLE_CONTINUATION_ERROR_CODES = new Set<string>([
   REUSABLE_SANDBOX_RESUME_FAILED_CODE,
   REMOTE_WORKSPACE_RESTORE_FAILED_CODE,
   PLUGIN_WORKER_UNAVAILABLE_CODE,
+  ENVIRONMENT_PROVIDER_UNAVAILABLE_CODE,
   RUNNER_REVISION_MISMATCH_CODE,
   "low_trust_isolation_unavailable",
   "low_trust_requires_isolated_workspace",
@@ -3791,6 +3794,7 @@ export function recoveryService(
         activeExecution: state.hasActiveExecutionPath || latest?.id !== (dispatchRunId ?? run.id),
         ownedLifecycle: run.issueCommentStatus === "retry_queued" || run.issueCommentStatus === "retry_exhausted" ||
           Boolean(readNonEmptyString(context.goalControlRequestId)) || context.resumeSessionGoalHeartbeat === true ||
+          isContextCompactionRun(context) ||
           isPluginManagedIssueLifecycle(issue) || routine.length > 0 || workspaceChildren.length > 0 ||
           Boolean(goal[0]?.status && goal[0].status !== "complete") || Boolean(active && !ownsRepair),
         conversation: Boolean(issue.conversationAgentId) || isWaitingConversation(issue),

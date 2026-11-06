@@ -30,6 +30,16 @@ it("localizes provider category/phase only while preserving diagnostics and unkn
  expect(host.textContent).toContain("OpenAI: 已达到速率限制"); expect(host.textContent).toContain("工作开始前失败"); expect(host.textContent).toContain(failure.message); expect(host.textContent).toContain("RATE_LIMIT"); expect(JSON.stringify(failure)).toBe(snapshot);
  act(() => root.render(<ProviderFailureNotice failure={{...failure, provider:"vendor-X",category:"constructor"} as any} />)); expect(host.textContent).toContain("vendor-X: constructor");
 });
+it("keeps the upstream sandbox provider label reactive without changing failure details", async () => {
+ const failure = { schema:"paperclip.provider-failure.v1", provider:"sandbox", category:"timeout", phase:"startup", message:"RAW lease refusal", retryability:"transient" } as const;
+ act(() => root.render(<ProviderFailureNotice failure={failure} />));
+ expect(host.textContent).toContain("Sandbox provider: Provider timed out");
+ await act(async () => { await i18n.changeLanguage("zh-CN"); });
+ expect(host.textContent).toContain("沙箱提供商: 提供商超时");
+ expect(host.textContent).toContain(failure.message);
+ await act(async () => { await i18n.changeLanguage("en"); });
+ expect(host.textContent).toContain("Sandbox provider: Provider timed out");
+});
 it("localizes known badge enums without changing aliases, glyphs, CSS or explicit/unknown labels", async () => {
  act(() => root.render(<><AgentStatusBadge status="active"/><IssueStatusBadge status="in_progress" displayStatus="monitoring"/><StatusBadge status="pending_approval"/><StatusBadge status="vendor_RAW"/><StatusBadge status="failed" label="Failed original"/></>));
  const icons = host.querySelector("svg")?.outerHTML; const styles = [...host.querySelectorAll("[style]")].map(x=>x.getAttribute("style"));

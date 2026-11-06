@@ -16,6 +16,7 @@ const mockTreeControlService = vi.hoisted(() => ({
   getHold: vi.fn(),
   getActivePauseHoldGate: vi.fn(),
   releaseHold: vi.fn(),
+  listPauseInterruptedResumeTargets: vi.fn(),
   cancelUnclaimedWakeupsForTree: vi.fn(),
 }));
 
@@ -79,6 +80,7 @@ describe("issue tree control routes", () => {
       companyId: "company-2",
     });
     mockTreeControlService.cancelUnclaimedWakeupsForTree.mockResolvedValue([]);
+    mockTreeControlService.listPauseInterruptedResumeTargets.mockResolvedValue([]);
     mockTreeControlService.cancelIssueStatusesForHold.mockResolvedValue({
       updatedIssueIds: [],
       updatedIssues: [],

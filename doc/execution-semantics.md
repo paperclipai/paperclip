@@ -535,10 +535,13 @@ in its stopped sandbox. When the run used a reusable (warm) sandbox, the stop
 leaves that lease `released` under its reusable policy with a stop-and-retain
 receipt. Cancelled-workspace preservation admits that stopped source, as it does
 an active or ephemeral one. It records the save obligation for the exact writer
-run while the workspace is still bound to that writer. Paperclip's workspace
-recovery then saves those files, which releases the hold. It never replays the
-stopped run. While that save is in progress, its last progress counts as the
-ended writer's activity for the holder cutoff. A waiter keeps waiting instead of
+run while the workspace is still bound to that writer. A Stop during an
+accepted result's copy-back retries ends that copy-back, and no finalization
+exports those files afterwards. Preservation admits that writer as well and
+leaves the accepted result uncommitted. Other accepted results keep their own
+export repair path. Paperclip's workspace recovery then saves those files, which
+releases the hold. It never replays the stopped run. While that save is in
+progress, its last progress counts as the ended writer's activity for the holder cutoff. A waiter keeps waiting instead of
 failing setup. The save's retry budget bounds that wait. A save that exhausts
 its retries is handed to the board as a named recovery action. After that hand-off,
 the cutoff no longer advances.
@@ -1105,6 +1108,19 @@ replacement. The run records the refusal by closed labels only (cause label, HTT
 status, errno-style code), never by provider text. On exhaustion, the task gets a
 specific recovery notice, and generic recovery does not grant another budget.
 
+An environment provider that refuses a new lease with a transient status (HTTP
+408, 425, 429, 500, 502, 503 or 504, or a closed connection errno) before provider
+dispatch uses the same bounded bootstrap budget (`environment_provider_unavailable`).
+The status comes only from structured fields: the worker's validated acquisition
+envelope or the in-process error's status; message text is never parsed, and
+other statuses stay `setup_failed`. Each retry is a new creation attempt with its
+own durable creation record and provider name. A provisional allocation whose
+cleanup could not be confirmed stays owned by its own record, which the creation
+reconciler settles; a retry neither reuses nor abandons it. The task shows the
+provider failure as the reason, retries automatically, and on exhaustion becomes
+`blocked` with a specific recovery notice and a Retry. Because no provider work
+started, no execution-reconciliation hold is created.
+
 A saved workspace that cannot be restored into a new allocation before provider
 dispatch fails with `remote_workspace_restore_failed`. The run error names the
 server step (`snapshot_lookup`, `snapshot_download`, or `sandbox_restore`) and,
@@ -1207,6 +1223,12 @@ An explicit recovery action is a typed liveness repair path for a source issue. 
 
 A terminal native failure can retain a result accepted before checkpoint or cleanup failed. That result is historical evidence, not a live controller. New user input may start a fresh turn after the controller and execution environment have stopped and ordinary admission checks pass. Preserve the failed run, its result, and its recovery budget. Do not commit the old result, infer action outcomes, or replay the failed turn. A message saved while cleanup is pending must be reconsidered after verified cleanup and delivered once. External chat messages retain their original inbound action, wake receipt and actor. Cleanup delegates reconsideration to the live inbound owner, which revalidates the endpoint, conversation generation, principal and exact saved source before normal admission. The existing stranded-queue sweep uses the same owner after a lost callback or restart; it cannot substitute a generic assignment wake. A rejected source must not prevent other saved messages from being reconsidered. Admission must consume its deferred receipt in the same transaction that creates the new run, including in agent chat, where later messages keep their separate turns. Completing that run must not promote the consumed receipt again. Workspace-export repair retains its separate saved-result recovery path.
 
+A host-verified workspace copy-back receipt also permits new user input after
+a native coordinator reaches terminal failure with a retained result. The receipt
+must bind the company, task, run, allocation, descriptor and final file digest.
+The original accepted result stays unchanged. A coordinator that is still
+committing, an active owner, or an unverified stop keeps its existing hold.
+
 When a legacy turn admitted by an explicit user message fails or times out, a bounded transient retry needs its own durable continuation authorization. Initial admission binds the message's exact body digest and revision. Scheduling requires that original binding and revalidates the human author, source task, assignee, and execution ownership, then records the successor's receipt in the same transaction as its run. Historical receipts without a message binding cannot authorize automatic retries and are not backfilled. The parent receipt remains intact. Dispatch checks the exact successor, retry parent, and unchanged message binding again. Deleted or edited input, changed actors or ownership, superseded work, and duplicate successors cannot renew authority. One-run Retry and Interrupt intents retain their separate admission contracts; they are not renewable user-message authority. Other retry policies cannot borrow this receipt: their scheduling fails closed. Successful explicit turns do not create a prose-only missing-comment follow-up with spent authority.
 
 Explicit retry admission checks the local parent adapter controller and verified environment cleanup. The existing queue-first release policy may retain only its own terminal execution claim while that cleanup is pending; finalization and the periodic stale-lock sweep reconsider the same policy after cleanup. Generic terminal-lock cleanup and stale checkout adoption leave these claims for that settlement. New user input, reassignment, and a successor's claim take precedence. Exhausted retries and revoked or missing authorization release the terminal claim without requesting another retry. Pending or failed environment cleanup cannot mint a successor receipt.
@@ -1226,6 +1248,22 @@ explain its wait without a page reload or idle polling.
 Newer saved input keeps its own receipt while the existing Retry explanation stays
 visible. Terminal waits direct the user to send new input and hide the Retry action
 that cannot continue that attempt.
+
+A remote native run can lose its original runner or sandbox before reattachment.
+This happens after a server restart, and for a same-run retry after a turn ends
+without a semantic result. The reattachment then fails with
+`native_remote_recovery_lease_mismatch`, `native_plugin_recovery_lease_mismatch`
+or `runner_remote_process_identity_unavailable`. The server requests the task
+Retry itself, once per run, under the authority of the user who sent the message,
+assigned the task, or clicked Retry. It does this only when the run recorded no
+provider turn or its last provider turn is settled. Activity records the request
+as `restart-recovery` on behalf of that user. Admission keeps every gate: saved-work
+recovery, stop proof, approvals, pauses, budget and ownership. A Retry that the
+server requested gets no second automatic attempt. System wakes and runs with an
+in-flight provider turn do not continue automatically. For these failed runs, a
+recovered workspace hold offers Retry (`canRetry`) and says "Retry or send a
+message to continue." An intentional Stop keeps "send a message" as its only
+continuation.
 
 When a native attempt fails before launch because its predecessor's session is
 quarantined, explicit task Retry verifies the retained journal's actual owner.
@@ -1879,6 +1917,30 @@ interrupt. A verified native stop must not become an unexplained failure simply
 because it came from a subtree action. The explicit pause hold still prevents
 future execution until Resume, and missing stop proof still blocks continuation.
 
+A run interrupted by a pause is an operator hold, not a failure. The pause's member
+snapshot names each interrupted run, and that work is owed one re-dispatch once no
+pause covers the task. The obligation belongs to the run, so overlapping pauses keep
+it until the last covering release. Releasing or resuming a hold re-dispatches owed
+work (`issue_tree_resumed`, with `holdId` and `interruptedRunId` in the wake
+context), even without `wakeAgents`. The interrupted run must still be the task's
+latest run, assigned to the same agent, and executable; normal admission gates still
+apply. A compare-and-set claim on the interrupted run makes the resume happen at most
+once. The claim is saved as `pending` and arms the execution-continuation queue in
+the same commit; the wake uses the stable idempotency key `tree-hold-resume:<runId>`.
+If the process stops before that wake is saved, the queue's sweep finds the stale
+claim, rechecks current state, and dispatches it once. A task that still needs execution reconciliation is not replayed: the release
+records `issue.tree_resume_wake_skipped`, the blocker stays visible, and the
+obligation stays unclaimed.
+
+A legacy run stopped before its gated dispatch entered the adapter has no provider
+actions to reconcile. Once its executor confirms no process, session, run-owned lease
+or execution event, it records bootstrap evidence and resolves that run's
+reconciliation hold as a false positive, including an automatic no-replay
+disposition. It restores a `blocked` status only when that disposition made the
+change (`legacyCancellationBlock` receipt). The executor then re-dispatches owed work
+if the pause was already released. The automatic disposition waits while a legacy
+executor still holds its controller lease. A hold can be released only once.
+
 ### Late provider usage
 
 Each run measures its usage from the total the previous run accounted for, whether
@@ -2423,6 +2485,26 @@ an already dispatched process stopped.
 A runner receipt that its reconnect grace expired ends that incident. The
 transport recognizes both the coded error and the runner's plain-text message.
 It must not open another recovery window after that receipt.
+
+An authenticated provider-ingress WebSocket is pinged every 20 seconds. Any
+frame or pong counts as liveness, so a runner that stays quiet through a long
+foreground tool call remains attached. When nothing arrives for 90 seconds the
+server terminates the socket. A half-open route, such as a preview proxy that
+drops the connection without a close, then follows the ordinary reconnect grace
+and fails the transport if the runner cannot be reached. Without this, such a
+run stayed "Working" indefinitely. The 90-second bound exceeds the runner's own
+60-second connection lease, which already requires it to read and renew.
+
+A stopped native run can keep its execution lease while its controller still
+waits on an unreachable runner. A queued turn of the same agent and task cannot
+start until that controller settles. The queued turn's projection names this
+wait ("Waiting for previous run to stop", cause `previous_run_settling`) while
+admission's pending-cleanup check holds a predecessor it checks. The ingress liveness
+bound above makes that controller settle, and its cleanup starts the queued turn.
+Such a stopped run can then settle as `failed` when its transport fails closed.
+Its recorded user Stop still marks later messages as new direction. When the
+dispatch gate withholds the queued turn behind saved-work recovery, it saves
+that message for the deferred-receipt worker, as it does for a cancelled source.
 
 A bounded transport close can return before artifact staging settles. That
 return does not prove cleanup completed or release the retained-state obligation.
@@ -4071,8 +4153,8 @@ and no result has been accepted. Unknown, legacy and accepted-result states
 remain ineligible. Grok failed retries keep their existing external Stop contract
 and do not gain this action; a pre-assignment failed retry is not supported by
 that endpoint. Existing Grok running/queued Stop and assignment fences stay in
-place. A false or absent hint does not remove the existing queued
-or running Cancel action. This presentation hint grants no permission; the existing
+place. Every queued or running run also projects `canStop: true`, so API
+readers see the same Stop that the run detail and task composer offer. This presentation hint grants no permission; the existing
 company, actor and locked cancellation checks remain authoritative. A changed
 retry can reject Stop, which the run detail displays without claiming cleanup.
 Failed-native Stop keeps its request identity by company, run and current board

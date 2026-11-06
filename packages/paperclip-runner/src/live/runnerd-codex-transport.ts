@@ -1646,6 +1646,20 @@ class NotificationQueue implements AsyncIterable<CodexRpcNotification> {
   }
 }
 
+/** Internal marker: a thread/compact/start mapped onto the turn.start path. */
+const COMPACTION_TURN = "paperclipCompactionTurn";
+
+/**
+ * Compaction runs as a provider turn so it keeps the normal turn binding.
+ * Codex compacts through app-server `thread/compact/start`; Claude's ACP agent
+ * compacts when prompted with its `/compact` command.
+ */
+export function runnerdCompactionTurnPayload(provider: string): Record<string, unknown> {
+  if (provider === "codex") return { compact: true };
+  if (provider === "acpx") return { text: "/compact" };
+  throw new Error(`Context compaction is not supported by the ${provider} provider`);
+}
+
 function record(value: unknown): Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -3900,6 +3914,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         : { data: [] };
     }
     if (method === "turn/start") return this.#startTurn(params);
+    if (method === "thread/compact/start") return this.#startTurn({ threadId: params.threadId, [COMPACTION_TURN]: true });
     if (method === "turn/steer") {
       const input = Array.isArray(params.input) ? params.input.map(record) : [];
       const text = input
@@ -6627,6 +6642,8 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       throw new Error("turnStartTimeoutMs must be a positive safe integer");
     }
     const commandDeadline = Date.now() + turnStartTimeoutMs;
+    const compactionTurn = params[COMPACTION_TURN] === true;
+    const compactionPayload = compactionTurn ? runnerdCompactionTurnPayload(this.options.provider ?? "codex") : null;
     const input = Array.isArray(params.input) ? params.input.map(record) : [];
     const message = input
       .filter((item) => item.type !== "skill")
@@ -6673,7 +6690,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       const startResult = await this.#commandResult(
         "turn.start",
         {
-          text: message,
+          ...(compactionPayload ?? { text: message }),
           ...(this.options.recordTimingReceipt ? {performance:true} : {}),
           ...((this.options.provider ?? "codex") === "codex" && params.effort !== undefined ? { effort: params.effort } : {}),
           ...(reasoningMode === undefined ? {} : { reasoningMode }),

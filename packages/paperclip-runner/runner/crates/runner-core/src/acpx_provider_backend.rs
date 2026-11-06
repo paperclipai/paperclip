@@ -1439,6 +1439,7 @@ impl AcpxCommandExecutor {
             None
         };
         let tool_set = authorized_tool_set(payload)?;
+        self.retain_buffered_provider_events()?;
         let state = self
             .state
             .as_ref()
@@ -1728,6 +1729,14 @@ impl AcpxCommandExecutor {
             return Err(DurableRunnerError::invalid(
                 "turn.start payload.turnId is invalid",
             ));
+        }
+        // Retain the old sidecar's read tail before its MCP receipt epoch changes.
+        if self
+            .session
+            .as_ref()
+            .is_some_and(|session| session.state().has_settled_turns())
+        {
+            self.retain_buffered_provider_events()?;
         }
         if self.session.is_none() {
             return Err(DurableRunnerError::invalid("ACPX session is not open"));
@@ -2294,7 +2303,33 @@ impl AcpxCommandExecutor {
         {
             return Ok(());
         }
-        for _ in 0..MAX_EVENTS_PER_POLL {
+        self.poll_provider_events(MAX_EVENTS_PER_POLL, disconnected)
+    }
+
+    fn retain_buffered_provider_events(&mut self) -> Result<(), DurableRunnerError> {
+        if let Some(session) = self.session.as_mut() {
+            session.settle_park_observation().map_err(|error| {
+                DurableRunnerError::invalid(format!("ACPX observation settlement failed: {error}"))
+            })?;
+        }
+        loop {
+            let count = self
+                .session
+                .as_ref()
+                .map_or(0, AcpxProviderSession::buffered_event_count);
+            if count == 0 {
+                return Ok(());
+            }
+            self.poll_provider_events(count.min(MAX_EVENTS_PER_POLL), false)?;
+        }
+    }
+
+    fn poll_provider_events(
+        &mut self,
+        count: usize,
+        disconnected: bool,
+    ) -> Result<(), DurableRunnerError> {
+        for _ in 0..count {
             let events = self
                 .session
                 .as_mut()
@@ -2486,6 +2521,59 @@ fn goal_terminal_disposition<'a>(
 }
 
 impl CommandExecutor for AcpxCommandExecutor {
+    fn host_park_ready(&mut self) -> Result<bool, DurableRunnerError> {
+        self.ensure_persistence_healthy()?;
+        let Some(state) = self.state.as_ref() else {
+            return Ok(false);
+        };
+        if !matches!(state.descriptor.agent.as_str(), "codex" | "claude")
+            || self.session.is_none()
+            || state.lifecycle != "session_open"
+            || state.provider_exit_unconfirmed
+            || state.descriptor.run_id != self.context.run_id
+            || state.identity.is_none()
+            || state.active_turn_id.is_some()
+            || !state.pending_events.is_empty()
+            || !state.pending_runtime_requests.is_empty()
+            || (!state.goal_projection.is_null() && !goal_is_dormant(&state.goal_projection))
+            || !state.descriptor.names_qualified_release()
+            || self.candidate_admission().is_some()
+            || !acpx_release_profile(&state.descriptor.agent)
+                .is_some_and(|profile| !profile.qualification_pending)
+        {
+            return Ok(false);
+        }
+        state.validate(&self.context, &self.launch_profile_digest()?)?;
+        let session = self
+            .session
+            .as_mut()
+            .expect("checked surviving ACPX session");
+        if state.identity.as_ref() != Some(session.identity()) {
+            return Ok(false);
+        }
+        let event_sequence = session.observed_event_sequence();
+        let ready = session
+            .host_park_ready(std::time::Instant::now() + Duration::from_millis(100))
+            .map_err(|error| {
+                DurableRunnerError::invalid(format!("ACPX parking observation failed: {error}"))
+            })?;
+        // Commit new provider observations through the ordinary event path.
+        // A retained prefix must be delivered and ACKed before a later park.
+        self.poll_provider(false)?;
+        Ok(ready
+            && self
+                .session
+                .as_ref()
+                .is_some_and(|session| session.observed_event_sequence() == event_sequence)
+            && self.state.as_ref().is_some_and(|state| {
+                state.pending_events.is_empty()
+                    && state.lifecycle == "session_open"
+                    && state.active_turn_id.is_none()
+                    && !state.provider_exit_unconfirmed
+                    && (state.goal_projection.is_null() || goal_is_dormant(&state.goal_projection))
+            }))
+    }
+
     fn execute(&mut self, command: &Command) -> Result<CommandExecution, DurableRunnerError> {
         self.restore()?;
         if self
@@ -2543,7 +2631,12 @@ impl CommandExecutor for AcpxCommandExecutor {
             {
                 self.snapshot_live_requests()
             }
-            "session.snapshot" => self.snapshot(),
+            "session.snapshot" => {
+                if command.payload.get("quiesceForWarmAttach") == Some(&Value::Bool(true)) {
+                    self.retain_buffered_provider_events()?;
+                }
+                self.snapshot()
+            }
             "session.close" | "session.destroy" => self.close_session(&command.command_type),
             "runner.suspend" => self.suspend(),
             "runner.shutdown" => {

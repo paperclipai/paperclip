@@ -24,6 +24,16 @@ branch-deletion receipts. PostgreSQL and real-file tests prove cold restoration
 of saved bytes, index state, and unpushed commits, including after pruning the
 old Git object store. Invalid or unavailable retained data still blocks import.
 
+Administrative migration can recover a missing empty task-directory payload only
+when storage confirms that its object is absent. The existing encrypted key
+envelope must authenticate the exact empty payload hash and length, company,
+workspace, restore-point ID, and generation. Metadata counters alone never
+establish emptiness. This path leaves the original reference and missing object
+unchanged and publishes the recovered bytes through the normal verified remote
+snapshot owner. Ordinary restoration remains unchanged. Expired checkpoints,
+nonempty or forged payloads, unreadable objects, and unknown object absence still
+block migration.
+
 An archived isolated checkout can be gone while its recorded deleted commit
 survives in the company/project Git cache. After validating the exact successful
 branch-deletion receipt, the importer can read immutable objects from that
@@ -31,6 +41,17 @@ namespace- and origin-checked cache. It reconstructs only the recorded commit,
 never today's working tree. Ordinary private-checkout and restore-point
 validation stays strict. Missing/revoked receipts, foreign caches and changed
 origins still block publication.
+Archived reconstruction of a saved nested linked checkout uses a private
+standalone repository at the new path. It reads only the saved commit and
+bundle prerequisites from the verified shared cache, and imports authenticated
+restore-point history into private refs. Other tasks' branch refs and unrelated
+objects do not enter the archive. Missing prerequisites use the approved remote
+or block restoration. Root and nested private copies retain all saved extra
+commits after portable capture and garbage collection. Ordinary linked recovery
+keeps its path-owned branch check and its existing worktree history owner.
+Verified local ignore rules preserve the saved classification of recovery files;
+unsafe or changed exclude files block import without changing the source cache.
+
 The next slice adds leaf-first offline migration of overlapping folders, verified
 nested snapshot dependencies, interruption recovery, and dependency retention.
 Recovery-obligation reconciliation remains a separate gap; these slices do not
