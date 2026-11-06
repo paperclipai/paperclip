@@ -71,6 +71,9 @@ copy is behind, the run fails with `native_event_replay_conflict` and automatic
 recovery stops. No files are copied to the sandbox. Resuming that copy would make
 Runner reject the controller's acknowledgement, and it could repeat work the
 controller already accepted.
+When a controller is registered, the comparison uses its current live cursor.
+The local marker written for external checkpoint storage does not replace that
+authority.
 
 An hourly background sweep expires the copy once the session can only resume by
 reopening closed work. It checks at most 200 sessions and expires at most 50 per
