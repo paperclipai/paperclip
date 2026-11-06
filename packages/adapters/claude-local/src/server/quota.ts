@@ -183,9 +183,21 @@ async function readClaudeTokenFromKeychain(service: string): Promise<string | nu
  * consulted — never the unsuffixed item that holds the server operator's
  * machine-level login. Returns null off macOS.
  */
-export async function readIsolatedClaudeKeychainToken(loginHome: string): Promise<string | null> {
+export async function readIsolatedClaudeKeychainCredential(loginHome: string): Promise<string | null> {
   if (process.platform !== "darwin") return null;
-  return readClaudeTokenFromKeychain(isolatedKeychainService(loginHome));
+  try {
+    const { stdout } = await execFileAsync("/usr/bin/security", ["find-generic-password", "-s", isolatedKeychainService(loginHome), "-w"], { timeout: 10000, maxBuffer: 1024 * 1024 });
+    return parseClaudeCredentialToken(stdout) ? stdout : null;
+  } catch (error) {
+    // An absent item permits file fallback. An ACL failure must not select a stale file.
+    if ((error as { code?: unknown }).code === 44) return null;
+    throw new Error("The isolated Claude Keychain credential could not be read");
+  }
+}
+
+export async function readIsolatedClaudeKeychainToken(loginHome: string): Promise<string | null> {
+  const raw = await readIsolatedClaudeKeychainCredential(loginHome).catch(() => null);
+  return raw ? parseClaudeCredentialToken(raw) : null;
 }
 
 export async function readClaudeToken(options: { allowKeychain?: boolean } = {}): Promise<string | null> {
