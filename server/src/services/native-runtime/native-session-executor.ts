@@ -7059,6 +7059,35 @@ export function verifyNativeHarnessBackup(input: {
   return null;
 }
 
+export function nativeHarnessBackupCursorConflict(input: {
+  backupRoot: string;
+  stateRoot: string;
+  controllerState?: { schema: string; identity: { runnerInstanceId: string }; ackedSourceSeq: number };
+}): string | null {
+  const read = (path: string, maxBytes: number) => {
+    try {
+      return existsSync(path)
+        ? record(JSON.parse(readBoundedNativeFile(path, maxBytes, "runner_durable_identity_too_large").toString("utf8")))
+        : null;
+    } catch {
+      return null;
+    }
+  };
+  const control = input.controllerState ?? read(resolve(input.stateRoot, "control-plane", "control-plane-state.json"),
+    NATIVE_CONTROL_PLANE_STATE_MAX_BYTES);
+  if (!control || !RUNNERD_CONTROL_PLANE_STATE_SCHEMAS.has(String(control.schema))) return null;
+  const runner = read(resolve(input.backupRoot, "runner", "runner-state.json"), NATIVE_RUNNER_STATE_MAX_BYTES);
+  if (!runner) return null;
+  const acked = control.ackedSourceSeq;
+  const next = runner.nextSourceSeq;
+  if (!Number.isSafeInteger(acked) || !Number.isSafeInteger(next) || (next as number) < 1 ||
+      record(control.identity).runnerInstanceId !== runner.runnerInstanceId) return null;
+  const produced = (next as number) - 1;
+  return (acked as number) > produced
+    ? `native_event_replay_conflict: failover backup is behind the controller cursor (backup produced ${produced}, controller acknowledged ${acked as number})`
+    : null;
+}
+
 function nativeSessionCheckpointDirectory(): string {
   const directory = resolve(
     resolvePaperclipInstanceRoot(),
@@ -7466,6 +7495,9 @@ export function nativeSessionFailureSourceCode(
   ) {
     return "provider_transport_failed";
   }
+  if (/native_event_replay_conflict/i.test(message)) {
+    return "native_event_replay_conflict";
+  }
   if (
     /native_runner_process_exited|runnerd exited|runner process failed/i.test(
       message,
@@ -7475,9 +7507,6 @@ export function nativeSessionFailureSourceCode(
   }
   if (/planning_mode_unsupported/i.test(message)) {
     return "planning_mode_unsupported";
-  }
-  if (/native_event_replay_conflict/i.test(message)) {
-    return "native_event_replay_conflict";
   }
   if (message.toLowerCase().includes(NATIVE_CURRENT_WAKE_COMMENTS_CHANGED_AFTER_READ.toLowerCase())) {
     return NATIVE_CURRENT_WAKE_COMMENTS_CHANGED_AFTER_READ;
@@ -14452,6 +14481,9 @@ async function createRunnerdBackendWithinSessionClaim(
       runnerInstanceId: input.runnerInstanceId,
     });
     if (!backup) throw new Error("runner_harness_backup_unavailable");
+    const cursorConflict = nativeHarnessBackupCursorConflict({ backupRoot: backup.root, stateRoot: root,
+      controllerState: runnerControlPlane?.store.state });
+    if (cursorConflict) throw new Error(cursorConflict);
     await measureNativeRunnerSpan(
       input.trace,
       "harness_state.failover_restore",

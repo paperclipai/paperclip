@@ -386,6 +386,19 @@ it("accepts marked whole-run usage through the runtime standalone event validato
   expect(result).toMatchObject({ ok: true });
 });
 
+it("rejects an event without normalizedSessionId, which the schemas leave optional", async () => {
+  const fixture = await readFixture();
+  const event = (fixture.events as Array<Record<string, unknown>>)[0]!;
+  expect(validatePrpEvent(event)).toMatchObject({ ok: true });
+
+  const { normalizedSessionId: _omitted, ...withoutSession } = event;
+  expect(validatePrpEvent(withoutSession)).toEqual({
+    ok: false,
+    event: null,
+    issues: [{ code: "schema_validation", path: "/normalizedSessionId", message: "event normalizedSessionId is required" }],
+  });
+});
+
 it("declares required incomplete reconciliation evidence in the strict usage contract", () => {
   const validate = new Ajv2020({ strict: true, allErrors: true }).compile(usageSchema);
   const measurement = { inputTokens: 120, outputTokens: 12, cacheReadTokens: 0, cacheWriteTokens: 0, activeSeconds: 0, requests: 0, providerCostUsd: 0 };
