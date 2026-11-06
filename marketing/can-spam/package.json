@@ -1,0 +1,12 @@
+{
+  "name": "can-spam-compliance",
+  "version": "1.0.0",
+  "private": true,
+  "description": "CAN-SPAM opt-out endpoint + global suppression list for K-247 Day-1 send",
+  "main": "suppression.cjs",
+  "scripts": {
+    "test": "node tests/e2e.test.cjs",
+    "start": "node server.cjs",
+    "check": "node check-suppression.cjs"
+  }
+}
