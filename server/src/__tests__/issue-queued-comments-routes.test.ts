@@ -690,7 +690,11 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
       payload: { version: 1, serviceName: "Slack" }, result: { version: 1, outcome: "declined" } },
   ] as const;
 
-  async function seedDeliveredReceipt(c: (typeof deliveredReceiptCases)[number], delivering: "succeeded" | "running" | null) {
+  async function seedDeliveredReceipt(
+    c: (typeof deliveredReceiptCases)[number],
+    delivering: "succeeded" | "running" | "failed" | "cancelled" | null,
+    runContext: "response" | "card_creation" = "response",
+  ) {
     const seeded = await seedQueue();
     await db.delete(agentWakeupRequests).where(eq(agentWakeupRequests.id, seeded.wakeId));
     const interactionId = randomUUID();
@@ -712,8 +716,12 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
         id: deliveringRunId, companyId: seeded.companyId, agentId: seeded.agentId,
         invocationSource: "automation", triggerDetail: "system", status: delivering, runtimeMode: "native",
         startedAt: new Date("2026-08-22T15:05:01.000Z"),
-        finishedAt: delivering === "succeeded" ? new Date("2026-08-22T15:06:00.000Z") : null,
-        contextSnapshot: { ...context, source: "issue.interaction.respond", wakeReason: "issue_commented" },
+        finishedAt: delivering === "running" ? null : new Date("2026-08-22T15:06:00.000Z"),
+        // The card-creation wake carries the same interaction id while the
+        // card is still pending, without a resolved status.
+        contextSnapshot: runContext === "card_creation"
+          ? { issueId: seeded.issueId, interactionId, interactionKind: c.kind, wakeReason: "interaction_pending" }
+          : { ...context, source: "issue.interaction.respond", wakeReason: "issue_commented" },
       });
     }
     // The redundant continuation, still deferred behind the issue's active run.
@@ -747,6 +755,19 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
       source: { kind: "interaction", interactionId: seeded.interactionId, interactionKind: c.kind, summary: c.label },
       canEdit: false, canDiscard: false,
     });
+  });
+
+  it.each([
+    { delivering: "failed", runContext: "response" },
+    { delivering: "cancelled", runContext: "response" },
+    { delivering: "succeeded", runContext: "card_creation" },
+    { delivering: "running", runContext: "card_creation" },
+  ] as const)("keeps a receipt owed after a $delivering $runContext run", async ({ delivering, runContext }) => {
+    const seeded = await seedDeliveredReceipt(deliveredReceiptCases[0], delivering, runContext);
+    const queue = await request(app(seeded.companyId)).get(`/api/issues/${seeded.issueId}/queued-comments`).expect(200);
+    expect(queue.body.entries.map((entry: { source?: { summary?: string } }) => entry.source?.summary))
+      .toEqual(["Answered: Questions"]);
+    expect(await hasQueuedInteractionResponse(db, seeded.companyId, seeded.issueId, seeded.agentId)).toBe(true);
   });
 
   it("shows a later undelivered receipt instead of an earlier delivered one", async () => {
