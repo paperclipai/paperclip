@@ -263,13 +263,23 @@ describe("IssueMonitorBanner / IssueMonitorComposerStrip rendering", () => {
     } finally { flushSync(() => root.unmount()); }
   });
 
-  it("explains automatic workspace waiting without promising that a reply bypasses the lock", () => {
+  it("does not raise a pinned banner for a workspace wait the user cannot act on (N-14)", () => {
+    const issue = {
+      status: "todo", scheduledRetry: { status: "scheduled_retry", scheduledRetryReason: "workspace_busy", scheduledRetryAt: NOW.toISOString() },
+    } as Issue;
+    const root = createRoot(container);
+    flushSync(() => root.render(<IssueMonitorBanner issue={issue} onCheckNow={vi.fn()} />));
+    expect(container.textContent).toBe("");
+    flushSync(() => root.unmount());
+  });
+
+  it("keeps the workspace wait as a quiet composer status without promising that a reply bypasses the lock", () => {
     const issue = {
       status: "todo", scheduledRetry: { status: "scheduled_retry", scheduledRetryReason: "workspace_busy", scheduledRetryAt: NOW.toISOString() },
     } as Issue;
     const root = createRoot(container);
     flushSync(() => root.render(<><IssueMonitorBanner issue={issue} onCheckNow={vi.fn()} /><IssueMonitorComposerStrip issue={issue} onCheckNow={vi.fn()} /></>));
-    expect(container.textContent).toContain("Waiting for workspace");
+    expect(container.querySelector('[data-testid="issue-monitor-composer-strip"]')?.textContent).toContain("Waiting for workspace");
     expect(container.textContent).toContain("You can keep sending instructions while the agent waits.");
     expect(container.textContent).not.toContain("wakes the agent now");
     expect(container.querySelector("button")).toBeNull();

@@ -3157,15 +3157,6 @@ function OnboardingWizardInner({
                           onChange={setModel} open={modelOpen} onOpenChange={setModelOpen}
                           allowDefault={false} required groupByProvider={false}
                           creatable={connectionModels.models.length === 0} presentation="native" />}
-                        {createdCompanyId && (adapterType === "codex_local" || adapterType === "claude_local") && <OnboardingGatewaySetup
-                          companyId={createdCompanyId} agentId={setupAgentId ?? undefined} environmentId={resolvedLoginEnvironmentId ?? undefined}
-                          adapterType={adapterType} disabled={loading || adapterEnvLoading}
-                          onComplete={binding => {
-                            setGatewayConnection({ companyId: createdCompanyId, adapterType, binding });
-                            setApiKey("");
-                            setModel("");
-                            setError(null);
-                          }} />}
                         {(hasGatewaySelection || connectionModels) && <Button type="button" variant="ghost" disabled={loading || adapterEnvLoading} onClick={() => {
                           setGatewayConnection(undefined);
                           setSelectedSavedKey({ companyId: createdCompanyId!, envKey: apiKeyEnvKeyFor(adapterType), id: "" });
@@ -3280,6 +3271,22 @@ function OnboardingWizardInner({
 
                   {sourceSelected && ["codex_local", "claude_local", "opencode_local", "pi_local"].includes(adapterType) && <details className="space-y-3">
                     <summary className="cursor-pointer text-sm text-muted-foreground">Advanced</summary>
+                    {/* The gateway is an alternative route, not the next
+                        thing after the key, so it waits here rather than
+                        sitting under the API key field (N-16). Same gates as
+                        the key card it used to live in. */}
+                    {connectCardLive && connectCardMounted && !connectProgress && credentialMode === "api" && createdCompanyId && (adapterType === "codex_local" || adapterType === "claude_local") && <OnboardingGatewaySetup
+                      companyId={createdCompanyId} agentId={setupAgentId ?? undefined} environmentId={resolvedLoginEnvironmentId ?? undefined}
+                      adapterType={adapterType} disabled={loading || adapterEnvLoading}
+                      // Ghost padding pulled back so the label lines up with
+                      // the Advanced summary above it.
+                      className="-ml-3"
+                      onComplete={binding => {
+                        setGatewayConnection({ companyId: createdCompanyId, adapterType, binding });
+                        setApiKey("");
+                        setModel("");
+                        setError(null);
+                      }} />}
                     <AgentRunnerSelect value={runner} disabled={loading || adapterEnvLoading}
                       pending={runnerDiscovery.isFetching} error={runnerDiscovery.error ? describeError(runnerDiscovery.error).body : undefined} onRetry={() => { void runnerDiscovery.refetch(); }}
                       defaultRunner={runnerDiscovery.data?.find(item => item.type === adapterType)?.defaultRunner}

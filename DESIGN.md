@@ -153,7 +153,7 @@ results in place; keep failures actionable inline. Notifications for other work
 remain useful. Repeated delivery of the same run outcome must refresh cached state
 without repeating its toast, including after reconnecting. A terminal outcome
 delivered more than five minutes after the run finished is historical and should
-refresh state silently. Expected cancellation is neutral gray, not an error. The composer's Stop action stops the current response and leaves the composer available for a new message. Pause work is a separate explicit task or subtree action. A paused task replaces the composer with an amber takeover. It says “Task is
+refresh state silently. Expected cancellation is neutral gray, not an error. A busy workspace is a transient system wait with no user action. Show it only as a quiet status in the composer strip and the Workspace property row, never as a pinned banner, conversation notice or toast. The composer's Stop action stops the current response and leaves the composer available for a new message. Pause work is a separate explicit task or subtree action. A paused task replaces the composer with an amber takeover. It says “Task is
 paused.” and “Resume this task to send a message.” with a “Resume task” action.
 Subtrees use “Subtree is paused.” and “Resume subtree.” The takeover cannot be
 dismissed, retains drafts, and hides message inputs until the pause is released.

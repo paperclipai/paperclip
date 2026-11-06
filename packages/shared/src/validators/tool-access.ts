@@ -191,7 +191,8 @@ export const createToolConnectionSchema = z.object({
   status: toolConnectionStatusSchema.optional(),
   connectionKind: toolConnectionKindSchema.default("managed"),
   config: toolTransportConfigSchema.optional(),
-  transportConfig: toolTransportConfigSchema.default({}),
+  // No default: when the caller omits it, the service stores `config` here.
+  transportConfig: toolTransportConfigSchema.optional(),
   credentialRefs: z.array(mcpConnectionCredentialRefSchema).optional(),
   credentialSecretRefs: z.array(toolCredentialSecretRefSchema).default([]),
   enabled: z.boolean().optional(),
