@@ -42,6 +42,7 @@ import {
 } from "@paperclipai/adapter-utils/server-utils";
 import {
   materializeRemoteClaudeConfig,
+  overrideRemoteClaudeLocalPermissionMode,
   prepareClaudeConfigSeed,
   prepareSandboxClaudeProbeRuntime,
   resolveRemoteClaudeToolShellPrefixPath,
@@ -324,13 +325,37 @@ async function prepareClaudeRemoteManagedHome(
   });
   // Repoint CLAUDE_CONFIG_DIR onto the in-sandbox config dir.
   env.CLAUDE_CONFIG_DIR = remoteClaudeConfigDir;
+  const restoreHostLocalSettings = bypassPermissions && !input.config.managedAiConnection
+    ? await overrideRemoteClaudeLocalPermissionMode({
+      runId,
+      target: executionTarget,
+      workspaceLocalDir: input.workspaceLocalDir,
+      workspaceRemoteDir: stagedRuntime.workspaceRemoteDir ?? input.workspaceLocalDir,
+      defaultMode: "bypassPermissions",
+      options: {
+        cwd: stagedRuntime.workspaceRemoteDir ?? input.workspaceLocalDir,
+        env,
+        timeoutSec: Math.max(input.timeoutSec, 15),
+        graceSec: 20,
+        onLog,
+      },
+    })
+    : null;
   if (bypassPermissions && !input.config.managedAiConnection) {
     Object.assign(env, claudeSandboxPermissionEnv({ dangerouslySkipPermissions: true, targetIsSandbox: true }));
   }
   if (toolShellPrefixInstalled && remoteToolShellPrefixPath) {
     env.CLAUDE_CODE_SHELL_PREFIX = remoteToolShellPrefixPath;
   }
-  return { stagedRuntime, teardown: registerWorkspaceSyncBack(stagedRuntime) };
+  const syncBack = registerWorkspaceSyncBack(stagedRuntime);
+  const teardown: AcpxRemoteManagedHomeResult["teardown"] = restoreHostLocalSettings && syncBack
+    ? async () => {
+      const outcome = await syncBack();
+      await restoreHostLocalSettings();
+      return outcome;
+    }
+    : syncBack;
+  return { stagedRuntime, teardown };
 }
 
 export function classifyClaudeTerminalSessionFailure(
