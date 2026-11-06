@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import {
   MANAGED_SHIM_MARKER,
+  managedPathExport,
   readInstallManifest,
   resolveInstallStorePaths,
   type InstallStorePaths,
@@ -137,7 +138,7 @@ export function managedInstallChecks(
           name: "Managed install PATH",
           status: "warn",
           message: `${shimDirectory} is not on PATH`,
-          repairHint: 'Run `export PATH="$HOME/.local/bin:$PATH"` and add it to your shell startup file',
+          repairHint: `Run \`export PATH="${managedPathExport(paths)}:$PATH"\` and add it to your shell startup file`,
         },
   );
 
