@@ -4978,6 +4978,8 @@
     "sourceFiles": [
       "../../packages/paperclip-runner/src/protocol-actions/request-human-input.ts",
       "chat-catalog-domains/external-personal-secret.ts",
+      "chat-catalog-domains/external-personal-secret-menu.ts",
+      "../../ui/src/pages/secrets/MyUserSecretsTab.tsx",
       "chat-catalog-domains/external-personal-secret-confirmation.ts",
       "chat-catalog-contract.ts",
       "chat-catalog-flow.ts",
@@ -5006,7 +5008,7 @@
       "../../ui/src/pages/secrets/SetMyUserSecretDialog.tsx",
       "chat-scenarios/secrets.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.personal-secret.v13",
+    "oracleVersion": "paperclip.chat-catalog.personal-secret.v14",
     "expectedRunCount": 3,
     "expectedHumanMessageCount": 2,
     "minimumRunCount": 3,

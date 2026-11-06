@@ -1,3 +1,4 @@
+import {personalSecretMenuNavigation,type PersonalSecretMenuNavigation} from "./external-personal-secret-menu.js";
 import { personalSecretConfirmationHandoff, acceptPersonalSecretConfirmation, confirmThenStartPersonalConsumer, readVisiblePersonalSecretConfirmation } from "./external-personal-secret-confirmation.js";
 import type {Page} from "@playwright/test";
 import {visibleSecretSettingsURL} from "./external-secret-route.js";
@@ -92,9 +93,12 @@ export async function provePersonalSecretMissingBoundary(ctx: ChatCatalogContext
   await ctx.input.evidence("personal-secret-missing-binding-prerequisite.json", { agentId: agent.id, definitionId: state.definitionId, responsibleUserId: state.currentPersonId, status: 422, code: "user_secret_missing", unchangedWorkerConfiguration: true, controllerReady: true, prospectiveResolutionOnly: true });
 }
 
-export async function personalSecretSetupURL(page:Page,reply:{body:string;commentId?:string},origin:string,prefix:string,definitionId:string,timeout:number){
+export async function personalSecretSetupURL(page:Page,reply:{body:string;commentId?:string},origin:string,prefix:string,definitionId:string,timeout:number,onMenu?:(proof:PersonalSecretMenuNavigation)=>void){
  if(!personalSecretGuidance(reply.body))return;
- return visibleSecretSettingsURL(page,reply,origin,prefix,timeout,definitionId);
+ const deadline=Date.now()+timeout;
+ const route=await visibleSecretSettingsURL(page,reply,origin,prefix,timeout,definitionId);if(route)return route;
+ if(Date.now()>=deadline)return;
+ const menu=await personalSecretMenuNavigation(page,reply,origin,prefix,definitionId,deadline-Date.now());if(menu){onMenu?.(menu);return menu.observedNavigationRoute;}
 }
 export function personalSecretGuidance(reply: string) {
   return (
@@ -458,7 +462,7 @@ export const personalSecretExternalCases = [
         if (!o.state.initialQuestionId) return;
         return { interactionId: String(o.state.initialQuestionId), sourceRunId: String(o.state.initialRunId), userId: String(o.state.currentPersonId) };
       },
-      oracleVersion: "paperclip.chat-catalog.personal-secret.v13",
+      oracleVersion: "paperclip.chat-catalog.personal-secret.v14",
       setupPolicy: { readiness: "preserve-scenario", invariantCheckIds: ["current-owner-missing-required-personal-value"] },
       expectedRunCount: 3,
       minimumRunCount: 3,
@@ -467,6 +471,8 @@ export const personalSecretExternalCases = [
       sourceFiles: [
         "../../packages/paperclip-runner/src/protocol-actions/request-human-input.ts",
         "chat-catalog-domains/external-personal-secret.ts",
+        "chat-catalog-domains/external-personal-secret-menu.ts",
+        "../../ui/src/pages/secrets/MyUserSecretsTab.tsx",
         "chat-catalog-domains/external-personal-secret-confirmation.ts",
         "chat-catalog-contract.ts",
         "chat-catalog-flow.ts",
@@ -619,20 +625,21 @@ export const personalSecretExternalCases = [
             "Current person's value was created before secure human entry",
           );
         const path = `/${ctx.input.fixtures.company.issuePrefix}/company/settings/secrets`,
-          link = commentHandoff ? await personalSecretSetupURL(ctx.input.page,reply!,initial.origin,String(ctx.input.fixtures.company.issuePrefix),String(state.definitionId),remaining()) : undefined;
+          link = commentHandoff ? await personalSecretSetupURL(ctx.input.page,reply!,initial.origin,String(ctx.input.fixtures.company.issuePrefix),String(state.definitionId),remaining(),proof=>{state.personalMenuNavigation=proof;}) : undefined;
         if (!link && !question && !confirmation)
           throw new Error(
             "Actual reply must direct the supported own-value settings path for this definition",
           );
+        if(state.personalMenuNavigation)await ctx.input.evidence("personal-secret-menu-navigation.json",state.personalMenuNavigation);
         const url = new URL(question || confirmation ? path : link!, initial.origin);
-        if (!question && !confirmation) url.searchParams.set("definition", String(state.definitionId));
+        if (!question && !confirmation && !state.personalMenuNavigation) url.searchParams.set("definition", String(state.definitionId));
         const receipt = await privateBrowserEntry({
           mode: "personal-secret-create",
           companyId: ctx.input.fixtures.company.id,
           personal: {
             definitionId: String(state.definitionId),
             userId: String(state.currentPersonId),
-            viaMySecrets: !!question || !!confirmation,
+            viaMySecrets: !!question || !!confirmation || !!state.personalMenuNavigation,
           },
           baseURL: initial.origin,
           setupURL: url.href,

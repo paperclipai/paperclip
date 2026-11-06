@@ -474,3 +474,13 @@ UI answer, model and 300000ms attempt unchanged. Result 5172 remains its origina
 PASSED result for the earlier persistence/continuation scope, with the recorded
 confusing duplicate-form and inaccurate walkthrough metadata limitations. It is
 not retroactively regraded, and no new native result is claimed.
+
+Personal secret v14 admits the measured result 5169's safe My secrets/definition
+menu directions with a noncanonical inline code hint. The hint is retained as an
+advertised hint, never rewritten into a trusted URL. Actual visible Account →
+Settings → Secrets hrefs must independently match the current company, and the
+My secrets control must expose the required own-value entry. Foreign links,
+other paths, hidden navigation and mismatched definitions remain inadmissible.
+The private worker still independently verifies the responsible person and exact
+definition before entering the value. Result 5169 remains FAILED; this local
+observer correction does not qualify the unexercised save, consumer or final reply.
