@@ -56,10 +56,10 @@ jobs:
         uses: actions/setup-node@v7
         with:
           node-version: 24
-          cache: pnpm
+          package-manager-cache: false
 
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        uses: ./.github/actions/setup-ci-dependencies
 
       - name: Install Playwright Chromium
         run: npx playwright install --with-deps chromium
