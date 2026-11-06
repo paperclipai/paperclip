@@ -114,6 +114,7 @@ vi.mock("../api/instanceSettings", () => ({
 
 vi.mock("../context/ToastContext", () => ({
   useToastActions: () => ({ pushToast: vi.fn() }),
+  useOptionalToastActions: () => ({ pushToast: vi.fn() }),
 }));
 
 vi.mock("../hooks/useProjectOrder", () => ({

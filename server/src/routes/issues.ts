@@ -229,6 +229,8 @@ import {
   RunnerGoalActionError,
   RunnerGoalConflictError,
 } from "../services/runner-goals.js";
+import { ContextCompactionError, contextCompactionService } from "../services/context-compaction.js";
+import { issueContextUsage } from "../services/issue-context-usage.js";
 import { queueLiveRunnerPrpCommand } from "../realtime/runner-prp-ws.js";
 import { questionResponseDeliveryService } from "../services/question-response-delivery.js";
 import { emitAgentTaskRunById } from "../services/agent-task-run-telemetry.js";
@@ -3533,6 +3535,9 @@ export function issueRoutes(
     heartbeat,
     resolveNativeQuestion: (interaction) =>
       deliverNativeQuestionResponse(db, interaction),
+  });
+  const contextCompaction = contextCompactionService(db, {
+    wakeup: (agentId, options) => heartbeat.wakeup(agentId, options),
   });
   const runnerGoals = runnerGoalService(db, {
     enqueueOfflineControl: async ({ issueId, agentId, requestId, control }) => {
@@ -9289,6 +9294,60 @@ export function issueRoutes(
       }
     },
   );
+
+  router.post("/issues/:id/context/compact", async (req, res) => {
+    assertBoard(req);
+    if (!req.actor.userId) throw forbidden("Board user context required");
+    const issue = await getAccessibleResource(
+      req,
+      res,
+      getIssueById(req, req.params.id as string),
+      "Issue not found",
+    );
+    if (!issue) return;
+    const decision = await decideIssueAccess(req, issue, "issue:mutate");
+    if (!decision.allowed) throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
+    // An Agent Chat run starts only for the conversation's owner.
+    if (issue.conversationAgentId) {
+      if (!(await instanceSettings.getExperimental()).enableAgentChat) throw notFound("Agent Chat is disabled");
+      if (req.actor.userId !== issue.conversationUserId)
+        throw forbidden("Only the conversation owner can compact a chat agent's context");
+    }
+    try {
+      const reading = await issueContextUsage(db, issue.companyId, issue);
+      const accepted = await contextCompaction.request({
+        companyId: issue.companyId,
+        issue,
+        userId: req.actor.userId,
+        contextTokensBefore: reading?.usedTokens ?? null,
+      });
+      const actor = getActorInfo(req);
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "issue.context_compaction_requested",
+        entityType: "issue",
+        entityId: issue.id,
+        issueId: issue.id,
+        details: {
+          requestId: accepted.requestId,
+          compactionRunId: accepted.runId,
+          assigneeAgentId: issue.assigneeAgentId,
+        },
+      });
+      res.status(202).json(accepted);
+    } catch (error) {
+      if (error instanceof ContextCompactionError) {
+        const status = error.code === "agent_busy" || error.code === "already_pending" ? 409 : 422;
+        res.status(status).json({ error: error.message, code: error.code });
+        return;
+      }
+      throw error;
+    }
+  });
 
   router.get("/issues/:id/heartbeat-context", async (req, res) => {
     const id = req.params.id as string;
