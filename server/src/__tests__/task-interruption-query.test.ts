@@ -120,6 +120,12 @@ describe.skipIf(!support.supported)("task interruption latest run query", () => 
       expect(presentation).toMatchObject({ state: "working", canRetry: false, intentId: wake.id });
     }
     expect(captureTaskInterruptionFailure).not.toHaveBeenCalled();
+    // A newer queued message does not hide the wake the run was stopped for.
+    await db.insert(agentWakeupRequests).values({
+      companyId, agentId, source: "on_demand", status: "deferred_issue_execution", requestedByActorType: "user",
+      requestedAt: new Date(Date.now() - 30_000), payload: { issueId: issue.id },
+    });
+    expect(await taskInterruptionPresentation(db, issue)).toMatchObject({ state: "working", canRetry: false, intentId: wake.id });
     // A run stopped for a different queue is not this hand-off.
     await db.update(heartbeatRuns).set({ resultJson: { operatorInterrupted: true, cancelledByActorType: "user",
       cancelledByUserId: userId, queuedCommentInterruptQueueId: randomUUID() } }).where(eq(heartbeatRuns.id, runId));

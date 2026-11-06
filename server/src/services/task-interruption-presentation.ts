@@ -49,6 +49,8 @@ type ProjectionState = {
   action?: typeof issueRecoveryActions.$inferSelect;
   wait?: ProjectionWait;
   retryWait?: ProjectionWait;
+  /** The pending queued message this run was interrupted for, if any. */
+  interruptWait?: ProjectionWait;
   agent?: Pick<typeof agents.$inferSelect, "status" | "pauseReason">;
   projectAccessAllowed?: boolean;
   projectAccessProjectId?: string | null;
@@ -129,11 +131,13 @@ export function projectTaskInterruption(issue: ProjectionIssue, input: Projectio
   // A queued-message Interrupt stops this run to deliver that exact message.
   // The stop is the user's intent and the message starts next, so show the
   // hand-off as working, not as a failed attempt.
-  const interruptAt = Date.parse(wait?.queuedInterruptRequestedAt ?? "");
-  if (wait && run.status === "cancelled" && run.resultJson?.queuedCommentInterruptQueueId === wait.id
+  // Newer queued input can follow it, so match the recorded queue, not the latest wait.
+  const interruptWait = input.interruptWait ?? wait;
+  const interruptAt = Date.parse(interruptWait?.queuedInterruptRequestedAt ?? "");
+  if (interruptWait && run.status === "cancelled" && run.resultJson?.queuedCommentInterruptQueueId === interruptWait.id
       && Number.isFinite(interruptAt) && now - interruptAt < QUEUED_INTERRUPT_HANDOFF_GRACE_MS
       && !(retryWait?.sourceRunId === run.id && retryWait.preparationStatus) && system?.state !== "exhausted")
-    return { ...base, state: "working" };
+    return { ...base, intentId: interruptWait.id, state: "working" };
   if (["running", "queued"].includes(run.status)) return { ...base, state: "working" };
   const deniedProject = deniedProjectId(issue, run);
   let projectAccess: TaskInterruptionPresentation["projectAccess"];
@@ -273,7 +277,6 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
     db.selectDistinctOn([wakeIssue, isRetryWait], { issueId: wakeIssue, id: agentWakeupRequests.id, requestedAt: agentWakeupRequests.requestedAt,
       sourceRunId: boundedJsonString(sql`${agentWakeupRequests.payload}#>'{taskRetry,sourceRunId}'`, 160),
       executionWaitReason: boundedJsonString(sql`${agentWakeupRequests.payload}#>'{executionWait,reason}'`, 80),
-      queuedInterruptRequestedAt: boundedJsonString(sql`${agentWakeupRequests.payload}#>'{queuedCommentInterrupt,requestedAt}'`, 40),
       preparationStatus: chatActions.status, preparationRetryAt: chatActionDeadline("failed_run_retry") })
       .from(agentWakeupRequests).leftJoin(chatActions, and(eq(chatActions.companyId, agentWakeupRequests.companyId),
         eq(chatActions.id, canonicalExecutionUuid(sql`${agentWakeupRequests.payload}#>>'{taskRetry,chatActionId}'`)),
@@ -331,6 +334,19 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
       }));
     }
   }
+  // A queued-message Interrupt records its queue on the stopped run. Newer
+  // input can hide that wake from the latest-wait read, so load it by id.
+  const interruptQueueId = (run: typeof runs[number]) => {
+    const id = run.status === "cancelled" ? run.resultJson?.queuedCommentInterruptQueueId : null;
+    return typeof id === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(id) ? id : null;
+  };
+  const interruptQueueIds = runs.flatMap(run => interruptQueueId(run) ?? []);
+  const interruptWaits = interruptQueueIds.length ? await db.select({ issueId: wakeIssue, id: agentWakeupRequests.id,
+    requestedAt: agentWakeupRequests.requestedAt,
+    queuedInterruptRequestedAt: boundedJsonString(sql`${agentWakeupRequests.payload}#>'{queuedCommentInterrupt,requestedAt}'`, 40) })
+    .from(agentWakeupRequests).where(and(eq(agentWakeupRequests.companyId, companyId), inArray(agentWakeupRequests.id, interruptQueueIds),
+      eq(agentWakeupRequests.status, "deferred_issue_execution"), eq(agentWakeupRequests.requestedByActorType, "user"))) : [];
+  const interruptWaitById = new Map(interruptWaits.map(wait => [wait.id, wait]));
   const runIds = runs.map(run => run.id);
   const actions = runIds.length ? await db.selectDistinctOn([issueRecoveryActions.sourceIssueId]).from(issueRecoveryActions).where(and(
     eq(issueRecoveryActions.companyId, companyId), inArray(issueRecoveryActions.sourceIssueId, ids),
@@ -369,6 +385,11 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
     projectIds.forEach((projectId, index) => currentAccess.set(`${agentId}:${projectId}`, decisions[index]?.allowed === true));
   }
   const actionMap = new Map(actions.map(action => [action.sourceIssueId, action]));
+  const interruptWaitFor = (issueId: string) => {
+    const run = runMap.get(issueId);
+    const wait = run ? interruptWaitById.get(interruptQueueId(run) ?? "") : undefined;
+    return wait?.issueId === issueId ? wait : undefined;
+  };
   const agentMap = new Map(agentRows.map(agent => [agent.id, agent]));
   const projectMap = new Map(projectRows.map(project => [project.id, project]));
   const pauses = new Set(pauseRows.map(row => row.issueId)), approvalsSet = new Set(approvalRows.map(row => row.issueId));
@@ -377,6 +398,7 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
     const denied = required?.projectIds.filter(projectId => currentAccess.get(`${issue.assigneeAgentId}:${projectId}`) !== true);
     const presentation = projectTaskInterruption(issue, {
       run: runMap.get(issue.id), action: actionMap.get(issue.id), wait: waitMap.get(issue.id), retryWait: retryWaitMap.get(issue.id),
+      interruptWait: interruptWaitFor(issue.id),
       projectAccessAllowed: denied?.length === 0,
       projectAccessProjectId: denied?.includes(issue.projectId ?? "") ? issue.projectId : null,
       workspaceSelectionAvailable: required?.available ?? false,
