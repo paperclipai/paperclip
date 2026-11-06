@@ -1,122 +1,18 @@
 import { describe, expect, it, vi } from "vitest";
-import type { Db } from "@paperclipai/db";
-import { MANAGED_CONFIG_ENV_KEY, parseManagedConfigEnv } from "./managed-config.js";
+import { applyManagedEnvironments } from "./managed-environments.js";
 import {
-  applyManagedEnvironments,
-  type ApplyManagedEnvironmentsOptions,
-} from "./managed-environments.js";
-
-const noDb = null as unknown as Db;
-
-function parsedConfig(overrides: Record<string, unknown> = {}) {
-  const config = parseManagedConfigEnv({
-    [MANAGED_CONFIG_ENV_KEY]: JSON.stringify({
-      v: 1,
-      mode: "cloud",
-      catalogVersion: "2026.720.0",
-      features: {},
-      plugins: { autoInstall: ["daytona"] },
-      ...overrides,
-    }),
-  });
-  if (!config) throw new Error("expected a parsed managed config");
-  return config;
-}
-
-function environmentRow(overrides: Record<string, unknown> = {}) {
-  const now = new Date();
-  return {
-    id: "env-1",
-    name: "Daytona",
-    description: null,
-    driver: "sandbox",
-    status: "active",
-    config: {},
-    envVars: {},
-    metadata: {},
-    createdAt: now,
-    updatedAt: now,
-    ...overrides,
-  };
-}
-
-function reconciliationResult(
-  overrides: Record<string, unknown> = {},
-) {
-  return {
-    environment: environmentRow(),
-    action: "added" as const,
-    stockStatus: "missing" as const,
-    updateAvailable: false,
-    stockHash: "sha256:stock",
-    ...overrides,
-  };
-}
-
-function readyDriverResolver(status = "ready") {
-  return vi.fn(async () => ({
-    plugin: { id: "plugin-1", pluginKey: "sandbox-providers/daytona", status },
-  }));
-}
-
-function runningWorkerManager(running = true) {
-  return { isRunning: vi.fn(() => running), getWorker: vi.fn(() => undefined) };
-}
-
-type WorkerManagerSeam = NonNullable<ApplyManagedEnvironmentsOptions["workerManager"]>;
-type RecoveryHandle = NonNullable<ReturnType<WorkerManagerSeam["getWorker"]>>;
-
-/** A worker handle fake that records `ready` listeners so tests can fire them. */
-function recoveryHandle() {
-  const readyListeners: Array<(payload: { pluginId: string }) => void> = [];
-  const handle: RecoveryHandle = {
-    on: vi.fn((_event, listener) => {
-      readyListeners.push(listener);
-    }),
-    off: vi.fn((_event, listener) => {
-      const at = readyListeners.indexOf(listener);
-      if (at !== -1) readyListeners.splice(at, 1);
-    }),
-  };
-  return {
-    handle,
-    fireReady: () => {
-      for (const listener of [...readyListeners]) listener({ pluginId: "plugin-1" });
-    },
-  };
-}
-
-/** Lets the fire-and-forget recovery ensure settle. */
-function tick() {
-  return new Promise((resolve) => setImmediate(resolve));
-}
-
-type EnvironmentsSeam = NonNullable<ApplyManagedEnvironmentsOptions["environments"]>;
-type InstanceSettingsSeam = NonNullable<ApplyManagedEnvironmentsOptions["instanceSettings"]>;
-
-function environmentsSeam(overrides: Partial<EnvironmentsSeam> = {}): EnvironmentsSeam {
-  return {
-    ensureManagedSandboxEnvironment:
-      overrides.ensureManagedSandboxEnvironment ?? vi.fn().mockResolvedValue(reconciliationResult()),
-    archiveManagedSandboxEnvironment:
-      overrides.archiveManagedSandboxEnvironment ?? vi.fn().mockResolvedValue(null),
-    getById: overrides.getById ?? vi.fn().mockResolvedValue(null),
-    update: overrides.update ?? vi.fn().mockResolvedValue(environmentRow()),
-    findManagedSandboxEnvironment:
-      overrides.findManagedSandboxEnvironment ?? vi.fn().mockResolvedValue(null),
-  };
-}
-
-function instanceSettingsSeam(overrides: Partial<InstanceSettingsSeam> = {}): InstanceSettingsSeam {
-  return {
-    get:
-      overrides.get ??
-      (vi.fn().mockResolvedValue({ defaultEnvironmentId: null }) as InstanceSettingsSeam["get"]),
-    update:
-      overrides.update ??
-      (vi.fn().mockResolvedValue({ defaultEnvironmentId: "env-1" }) as InstanceSettingsSeam["update"]),
-  };
-}
+  environmentRow,
+  environmentsSeam,
+  instanceSettingsSeam,
+  noDb,
+  parsedConfig,
+  readyDriverResolver,
+  reconciliationResult,
+  recoveryHandle,
+  runningWorkerManager,
+  tick,
+  type InstanceSettingsSeam,
+} from "./managed-environments.test-support.js";
 
 describe("applyManagedEnvironments", () => {
   it("no-ops for self-hosted instances and for documents without environments", async () => {
