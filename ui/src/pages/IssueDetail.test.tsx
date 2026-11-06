@@ -106,6 +106,7 @@ const mockIssuesApi = vi.hoisted(() => ({
   deleteAttachment: vi.fn(),
   upsertDocument: vi.fn(),
   getDocument: vi.fn(),
+  acceptInteraction: vi.fn(),
   rejectInteraction: vi.fn(),
 }));
 
@@ -6314,6 +6315,28 @@ describe("IssueDetail", () => {
     expect(mockIssueChatThreadRender.mock.calls.at(-1)?.[0]).toMatchObject({
       issueWorkMode: "planning",
     });
+  });
+
+  it.each(["accept", "reject"] as const)("refreshes the request after a superseded %s response", async action => {
+    const pending = (await import("@/fixtures/issueThreadInteractionFixtures")).genericPendingRequestConfirmationInteraction;
+    const expired = { ...pending, status: "expired", result: { version: 1, outcome: "superseded_by_newer_request" } };
+    mockIssuesApi.get.mockResolvedValue(createIssue());
+    mockIssuesApi.listInteractions.mockResolvedValue([pending]);
+    const error = new ApiError("Interaction has been superseded", 409, { details: { code: "interaction_superseded" } });
+    mockIssuesApi.acceptInteraction.mockRejectedValue(error);
+    mockIssuesApi.rejectInteraction.mockRejectedValue(error);
+    await act(async () => renderIssueView());
+    await flushReact();
+    const props = mockIssueChatThreadRender.mock.calls.at(-1)?.[0];
+    const reads = mockIssuesApi.listInteractions.mock.calls.length;
+    mockIssuesApi.listInteractions.mockResolvedValue([expired]);
+    await act(async () => {
+      const resolve = action === "accept" ? props.onAcceptInteraction : props.onRejectInteraction;
+      await expect(resolve(pending)).rejects.toBe(error);
+    });
+    await flushReact();
+    expect(mockIssuesApi.listInteractions.mock.calls.length).toBeGreaterThan(reads);
+    expect(queryClient.getQueryData(queryKeys.issues.interactions("PAP-1"))).toEqual([expired]);
   });
 
   it("reports the selected continuation action after rejecting completion", async () => {

@@ -1,4 +1,20 @@
 import type { IssueThreadInteraction } from "@/lib/issue-thread-interactions";
+import type { IssueDocument } from "@paperclipai/shared";
+
+export function isOutdatedPlanConfirmation(
+  interaction: IssueThreadInteraction,
+  plan: IssueDocument | null | undefined,
+): boolean {
+  if (!plan || interaction.status !== "pending" || interaction.kind !== "request_confirmation") return false;
+  const target = interaction.payload.target;
+  if (target?.type !== "issue_document" || target.key !== "plan") return false;
+  if (interaction.companyId !== plan.companyId || (target.issueId ?? interaction.issueId) !== plan.issueId) return false;
+  if (target.revisionId && target.revisionId === plan.latestRevisionId) return false;
+  if ((!target.documentId || target.documentId === plan.id) && target.revisionNumber != null) {
+    return target.revisionNumber < plan.latestRevisionNumber;
+  }
+  return new Date(plan.updatedAt).getTime() > new Date(interaction.createdAt).getTime();
+}
 
 /**
  * Thread-ordering + visibility rules for issue-thread interaction cards

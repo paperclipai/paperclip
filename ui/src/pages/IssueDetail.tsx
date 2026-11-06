@@ -77,7 +77,7 @@ import { ApiError } from "../api/client";
 import { issuesApi } from "../api/issues";
 import { classifySendFailure } from "../lib/pending-send";
 import { useUpdateIssueMutation } from "../hooks/useUpdateIssueMutation";
-import { interactionResolutionErrorMessage } from "../lib/interaction-resolution-error";
+import { describeInteractionResolutionFailure, interactionResolutionErrorMessage } from "../lib/interaction-resolution-error";
 import { approvalsApi } from "../api/approvals";
 import { activityApi, type RunForIssue } from "../api/activity";
 import {
@@ -5268,6 +5268,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
       });
     },
     onError: (err) => {
+      if (describeInteractionResolutionFailure(err).kind === "settled") invalidateIssueDetail();
       pushToast({
         title: "Accept failed",
         body: interactionResolutionErrorMessage(err),
@@ -5297,6 +5298,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
       });
     },
     onError: (err) => {
+      if (describeInteractionResolutionFailure(err).kind === "settled") invalidateIssueDetail();
       pushToast({
         title: "Reject failed",
         body: interactionResolutionErrorMessage(err),
