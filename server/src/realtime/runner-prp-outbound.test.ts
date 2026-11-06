@@ -26,6 +26,7 @@ vi.mock("ws", async (importOriginal) => {
 class FakeSocket extends EventEmitter {
   readyState: number = WebSocket.OPEN;
   send = vi.fn();
+  ping = vi.fn();
   terminate = vi.fn(() => {
     this.readyState = WebSocket.CLOSED;
     this.emit("close", 1006, Buffer.alloc(0));
@@ -392,5 +393,106 @@ describe("runner provider-ingress WebSocket wire", () => {
 
     expect(failureObserver).not.toHaveBeenCalled();
     expect(endpoint.close).toHaveBeenCalledOnce();
+  });
+  it("detects a half-open authenticated ingress and fails the run within a bounded window", async () => {
+    vi.useFakeTimers();
+    const halfOpen = new FakeSocket();
+    const create = sockets.create;
+    let opens = 0;
+    // The first socket authenticates and then goes silent without a FIN, as a
+    // preview proxy that drops the connection does. Reconnects cannot reach a
+    // runner whose process already exited.
+    sockets.create = () => {
+      opens += 1;
+      if (opens === 1) return openingSocket(halfOpen);
+      const refused = new FakeSocket();
+      refused.readyState = WebSocket.CONNECTING;
+      queueMicrotask(() => {
+        refused.readyState = WebSocket.CLOSED;
+        refused.emit("error", new Error("fixture runner gone"));
+      });
+      return refused;
+    };
+    const endpoint = {
+      kind: "authenticated_websocket" as const,
+      websocketUrl: "wss://preview.invalid/api/runner/v1/connect/run-half-open",
+      secretHeaders: [],
+      generation: "generation-half-open",
+      refresh: vi.fn(async () => endpoint),
+      close: vi.fn(async () => undefined),
+    };
+    const states: string[] = [];
+    const handle = connectRunnerPrpIngress({
+      authority: {
+        attachWireConnection: vi.fn(() => ({ isAuthenticated: () => true })),
+        activeRunnerConnectionCount: () => 0,
+      } as unknown as DurablePrpControlPlane,
+      endpoint,
+      recoveryGraceMs: 60_000,
+      livenessIntervalMs: 10_000,
+      livenessTimeoutMs: 30_000,
+      onStateChange: (state) => states.push(state),
+    });
+    const failure = vi.fn();
+    void handle.failure.catch(failure);
+    try {
+      await vi.advanceTimersByTimeAsync(0);
+      await handle.ready;
+      await vi.advanceTimersByTimeAsync(29_000);
+      expect(halfOpen.terminate).not.toHaveBeenCalled();
+      expect(halfOpen.ping).toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(11_000);
+      expect(halfOpen.terminate).toHaveBeenCalledOnce();
+      expect(states).toContain("reconnecting");
+      await vi.advanceTimersByTimeAsync(61_000);
+      expect(failure).toHaveBeenCalledWith(
+        expect.objectContaining({ code: "runner_ingress_unavailable" }),
+      );
+    } finally {
+      await handle.close();
+      sockets.create = create;
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps a quiet but live runner attached through a long silent tool call", async () => {
+    vi.useFakeTimers();
+    const live = new FakeSocket();
+    // A live runnerd answers protocol pings even while its provider is
+    // blocked on a minutes-long foreground command that prints nothing.
+    live.ping = vi.fn(() => {
+      queueMicrotask(() => live.emit("pong", Buffer.alloc(0)));
+    });
+    const create = sockets.create;
+    sockets.create = () => openingSocket(live);
+    const endpoint = {
+      kind: "authenticated_websocket" as const,
+      websocketUrl: "wss://preview.invalid/api/runner/v1/connect/run-quiet",
+      secretHeaders: [],
+      generation: "generation-quiet",
+      refresh: vi.fn(async () => endpoint),
+      close: vi.fn(async () => undefined),
+    };
+    const attachWireConnection = vi.fn(() => ({ isAuthenticated: () => true }));
+    const handle = connectRunnerPrpIngress({
+      authority: { attachWireConnection, activeRunnerConnectionCount: () => 1 } as unknown as DurablePrpControlPlane,
+      endpoint,
+      livenessIntervalMs: 10_000,
+      livenessTimeoutMs: 30_000,
+    });
+    const failure = vi.fn();
+    void handle.failure.catch(failure);
+    try {
+      await vi.advanceTimersByTimeAsync(0);
+      await handle.ready;
+      await vi.advanceTimersByTimeAsync(20 * 60_000);
+      expect(live.terminate).not.toHaveBeenCalled();
+      expect(attachWireConnection).toHaveBeenCalledOnce();
+      expect(failure).not.toHaveBeenCalled();
+    } finally {
+      await handle.close();
+      sockets.create = create;
+      vi.useRealTimers();
+    }
   });
 });

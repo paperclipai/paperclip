@@ -11,6 +11,13 @@ const DEFAULT_STARTUP_DEADLINE_MS = 60_000;
 const DEFAULT_RECOVERY_GRACE_MS = REMOTE_RUNNER_RECONNECT_GRACE_MS;
 const MAX_FRAME_BYTES = 4 * 1024 * 1024;
 const RECONNECT_DELAYS_MS = [250, 500, 1_000, 2_000, 5_000] as const;
+// A runner can legitimately stay silent for many minutes while its provider
+// waits on a long foreground tool call. Protocol pings distinguish that quiet
+// but live runner from a half-open connection (for example a preview proxy that
+// drops the route without a FIN), which otherwise never emits `close` and leaves
+// the run "running" forever. runnerd answers every ping with a pong.
+const DEFAULT_LIVENESS_INTERVAL_MS = 20_000;
+const DEFAULT_LIVENESS_TIMEOUT_MS = 90_000;
 
 export type RunnerIngressFailureCode =
   | "runner_ingress_unavailable"
@@ -32,9 +39,14 @@ export class WsJsonWireConnection implements PrpWireConnection {
   #onClose = new Set<(reason: TransportCloseReason) => void>();
   #pendingJson: unknown[] = [];
   #closeReason: TransportCloseReason | null = null;
+  #lastInboundAt = Date.now();
 
   constructor(readonly socket: WebSocket) {
+    socket.on("pong", () => {
+      this.#lastInboundAt = Date.now();
+    });
     socket.on("message", (data, isBinary) => {
+      this.#lastInboundAt = Date.now();
       if (isBinary) {
         this.close(1003);
         return;
@@ -71,6 +83,41 @@ export class WsJsonWireConnection implements PrpWireConnection {
     ) {
       this.socket.close(code);
     }
+  }
+
+  /**
+   * Ping the runner and terminate the socket when nothing at all (frame or
+   * pong) arrives within the timeout. Termination emits `close`, so the PRP
+   * authority and the reconnect loop observe an ordinary transport loss and
+   * the fixed recovery grace applies. Returns a stop function.
+   */
+  monitorLiveness(input: { intervalMs: number; timeoutMs: number }): () => void {
+    this.#lastInboundAt = Date.now();
+    const intervalMs = Math.max(1, Math.min(input.intervalMs, input.timeoutMs));
+    let lastTickAt = Date.now();
+    const timer = setInterval(() => {
+      if (this.#closeReason || this.socket.readyState !== WebSocket.OPEN) return;
+      const now = Date.now();
+      // A blocked server event loop delays our own timers and the runner's
+      // queued pongs alike. That silence is not runner evidence; restart the
+      // window instead of terminating a live runner.
+      if (now - lastTickAt > intervalMs * 2) this.#lastInboundAt = now;
+      lastTickAt = now;
+      if (now - this.#lastInboundAt >= input.timeoutMs) {
+        clearInterval(timer);
+        this.socket.terminate();
+        return;
+      }
+      try {
+        this.socket.ping();
+      } catch {
+        // A failing ping is itself a transport loss; ws reports it via close.
+      }
+    }, intervalMs);
+    timer.unref?.();
+    const stop = () => clearInterval(timer);
+    this.onClose(stop);
+    return stop;
   }
 
   onJson(listener: (value: unknown) => void): void {
@@ -263,6 +310,10 @@ export function connectRunnerPrpIngress(input: {
   endpoint: RunnerIngressEndpoint;
   startupDeadlineMs?: number;
   recoveryGraceMs?: number;
+  /** How often to ping an authenticated runner connection. */
+  livenessIntervalMs?: number;
+  /** Silence after which an authenticated connection is treated as lost. */
+  livenessTimeoutMs?: number;
   random?: () => number;
   onStateChange?: (
     state: "connecting" | "authenticated" | "reconnecting" | "failed" | "closed",
@@ -330,7 +381,15 @@ export function connectRunnerPrpIngress(input: {
         }
         input.onStateChange?.("authenticated");
         attempt = 0;
-        await socketClosed(opened.wire);
+        const stopLiveness = opened.wire.monitorLiveness({
+          intervalMs: input.livenessIntervalMs ?? DEFAULT_LIVENESS_INTERVAL_MS,
+          timeoutMs: input.livenessTimeoutMs ?? DEFAULT_LIVENESS_TIMEOUT_MS,
+        });
+        try {
+          await socketClosed(opened.wire);
+        } finally {
+          stopLiveness();
+        }
         recoveryDeadline = Date.now() + recoveryGraceMs;
       } catch (error) {
         // close() owns intentional shutdown. openEndpoint rejects its pending

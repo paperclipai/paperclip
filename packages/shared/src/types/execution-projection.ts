@@ -28,6 +28,7 @@ export interface ExecutionBlocker {
 
 /** Presentation of existing execution records, not a second task status machine. */
 export interface ExecutionProjection {
+  /** The board can Stop this run now: any queued or running run, or a failed native run whose retry is still pending. */
   canStop?: boolean;
   phase:
     | "working"
