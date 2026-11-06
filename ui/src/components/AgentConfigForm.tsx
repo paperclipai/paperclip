@@ -3,7 +3,6 @@ import { useConnectionModels } from "./ai-connections/useConnectionModels";
 import { agentHarnessType, agentRunner, paperclipRunnerProfileForHarness, normalizeClaudeRunnerOptions, type AgentRunnerChoice } from "@paperclipai/shared";
 import { adaptersApi } from "../api/adapters";
 import { canQualifyRunnerEnvironment, qualifyRunnerEnvironment } from "../lib/qualify-claude-setup";
-import { AgentRunnerSelect } from "./AgentRunnerSelect";
 import { aiRoutingHarness } from "@paperclipai/shared";
 import { AiConnectionField } from "./ai-connections/AiConnectionField";
 import { aiConnectionBindingSchema, aiRuntimeConnectionBindingSchema } from "@paperclipai/shared";
@@ -1125,6 +1124,11 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const [runPolicyAdvancedOpen, setRunPolicyAdvancedOpen] = useState(false);
   const [configurationAdvancedOpen, setConfigurationAdvancedOpen] = useState(false);
   const configSchema = useConfigSchema(adapterType);
+  const hasLocalAdvancedFields = isLocal && (!isRunnerHarness || fieldsAdapterType !== "paperclip_runner");
+  const hasConfigurationAdvancedFields = hasLocalAdvancedFields
+    || adapterType === "process"
+    || (adapterType === "claude_local" && !hideHostPaths && (isCreate ? props.values.claudeEngine : eff("adapterConfig", "engine", config.engine)) === "acp")
+    || (fieldsAdapterType !== "paperclip_runner" && configSchema?.fields.some((field) => schemaFieldSection(field.key) === "advanced"));
   const renderAdapterFields = (section: AdapterConfigSection) => (
     <>
       {adapterType === "claude_local" && <ClaudeLocalAdvancedFields {...adapterFieldProps} section={section} />}
@@ -1887,6 +1891,11 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             </Field>
           )}
 
+          {isRunnerHarness && runnerDiscoveryView.kind === "error" && (
+            <QueryErrorState size="inline" error={runnerDiscoveryView.error}
+              action="load agent setup data" retrying={runnerDiscoveryView.isFetching}
+              onRetry={runnerDiscoveryView.retry} />
+          )}
           {!isExternalRunner && !isCreate && selectedCompanyId && <AiConnectionField companyId={selectedCompanyId} agentId={props.agent.id} agentName={props.agent.name} adapterType={aiRoutingHarness(adapterType, eff("adapterConfig", "provider", config.provider), eff("adapterConfig", "acpxAgent", config.acpxAgent))}
             routerAdapterType={adapterType} value={aiRuntimeConnectionBindingSchema.safeParse((overlay.runtime.runtimeConfig as Record<string, unknown> | undefined)?.aiConnection ?? runtimeConfig.aiConnection).data}
             model={String(eff("adapterConfig", "model", config.model) ?? "")} environmentId={currentDefaultEnvironmentId || undefined} legacy
@@ -2081,19 +2090,14 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 </>
               )}
               {renderAdapterFields("configuration")}
-              {(isLocal || adapterType === "process" || configSchema?.fields.some((field) => schemaFieldSection(field.key) === "advanced")) && (
+              {hasConfigurationAdvancedFields && (
               <CollapsibleSection
                 title="Advanced"
                 open={configurationAdvancedOpen}
                 onToggle={() => setConfigurationAdvancedOpen(!configurationAdvancedOpen)}
               >
                 <div className="space-y-3">
-                  {isRunnerHarness && <AgentRunnerSelect value={runner}
-                    pending={runnerDiscovery.isFetching} error={runnerDiscovery.error ? describeError(runnerDiscovery.error).body : undefined} onRetry={() => { void runnerDiscovery.refetch(); }}
-                    defaultRunner={runnerAvailability?.defaultRunner}
-                    supportedRunners={runnerAvailability?.supportedRunners}
-                    onChange={next => isCreate ? set!({ runner: next }) : setOverlay(prev => ({ ...prev, runner: next }))} />}
-                  {isLocal && (!isRunnerHarness || fieldsAdapterType !== "paperclip_runner") && (<>              {/*
+                  {hasLocalAdvancedFields && (<>              {/*
                 The command names a binary on the execution host, so the
                 managed-sandbox-only policy hides it: the platform-managed image
                 owns the binary. Hiding is presentation only. A stored

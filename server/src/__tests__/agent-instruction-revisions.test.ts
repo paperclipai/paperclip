@@ -7,6 +7,7 @@ import { and, eq, sql } from "drizzle-orm";
 import { agents, agentApiKeys, companies, authUsers, companyMemberships, principalPermissionGrants, heartbeatRuns,
   agentInstructionRevisions, agentInstructionHeads, issueThreadInteractions, issues, createDb } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
+import { agentFileStore } from "../services/agent-file-store.js";
 import { agentInstructionRevisionService } from "../services/agent-instruction-revisions.js";
 import { agentInstructionWorkingCopyService } from "../services/agent-instruction-working-copies.js";
 import { instructionBytes, instructionPath, materializeInstructionBytes, readInstructionBytes } from "../services/agent-instruction-files.js";
@@ -64,6 +65,31 @@ describe("canonical instruction revisions", () => {
   async function save(content: string, baseRevisionId: string | null) {
     return service.commit({ ...target(), entryFile, content, baseRevisionId, source: "cleanup" }, actor);
   }
+  it("exposes recorded creation dates and update dates for root and supporting files", async () => {
+    const files = agentFileStore(db);
+    const instructions = agentInstructionsService(db);
+    const [agent] = await db.select().from(agents).where(eq(agents.id, agentId));
+    const supporting = "NOTES.md";
+    const created = await files.write({ ...target(), path: supporting, bytes: Buffer.from("first"), baseHash: null }, actor);
+    const first = await instructions.readFile(agent!, supporting);
+    expect(Number.isFinite(Date.parse(first.createdAt!))).toBe(true);
+    expect(first.updatedAt).toBeUndefined();
+    await files.write({ ...target(), path: supporting, bytes: Buffer.from("second"), baseHash: created.contentHash }, actor);
+    // The file-storage pool has two connections. Concurrent locked reads must
+    // reuse their transactions for metadata rather than wait on a third lease.
+    const [updated] = await Promise.all([
+      instructions.readFile(agent!, supporting), instructions.getBundle(agent!),
+      instructions.readFile(agent!, supporting), instructions.getBundle(agent!),
+    ]);
+    expect(updated.createdAt).toBeUndefined();
+    expect(Date.parse(updated.updatedAt!)).toBeGreaterThanOrEqual(Date.parse(first.createdAt!));
+    // The root file uses the revision-compatible API, with the same recorded dates.
+    await fs.unlink(path.join(root, entryFile));
+    const rootCreated = await save("new root", null);
+    expect(await instructions.getFileDates(agent!, entryFile, rootCreated.revision.contentHash)).toHaveProperty("createdAt");
+    const rootUpdated = await save("updated root", rootCreated.revision.id);
+    expect(await instructions.getFileDates(agent!, entryFile, rootUpdated.revision.contentHash)).toHaveProperty("updatedAt");
+  });
   it("reads peer instructions with read-only agent and responsible-user grants but denies saves", async () => {
     await db.delete(principalPermissionGrants).where(eq(principalPermissionGrants.companyId, companyId));
     await db.insert(principalPermissionGrants).values([

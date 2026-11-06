@@ -132,11 +132,26 @@ Current implementation status:
 
 ## Dependency Lockfile Policy
 
-GitHub Actions owns `pnpm-lock.yaml`.
+GitHub Actions owns every managed pnpm lockfile:
 
-- Do not commit `pnpm-lock.yaml` in pull requests.
-- Pull request CI validates dependency resolution when manifests change.
-- Pushes to `master` regenerate `pnpm-lock.yaml` with `pnpm install --lockfile-only --no-frozen-lockfile`, commit it back if needed, and then run verification with `--frozen-lockfile`.
+- `pnpm-lock.yaml` at the repository root
+- `scripts/typecheck-sandbox-providers/pnpm-lock.yaml`, for the sandbox providers
+- `packages/plugins/sandbox-providers/daytona/pnpm-lock.yaml`
+
+`LOCKFILES` in `.github/scripts/lockfile-trust.mjs` lists them.
+
+- Do not commit any of them in pull requests. Only the lockfile refresh workflow
+  and verified Dependabot commits may change them.
+- Pull request CI validates dependency resolution when manifests change. A stale
+  lockfile is resolved in place for that run.
+- Pushes to `master` run `.github/workflows/refresh-lockfile.yml`. It regenerates
+  each lockfile with `pnpm install --resolution-only --ignore-scripts --no-frozen-lockfile`
+  and opens one `chore/refresh-lockfile` pull request for all of them. See
+  `doc/RELEASE-AUTOMATION-SETUP.md` for when the bot merges it.
+
+The Pi and Kimi distribution lockfiles under `packages/paperclip-runner/scripts/`
+are not on this list. They hold attested provider pins, so change them by hand
+(see `rules/acpx-profile-identity.mdc`).
 
 ## Trusted PR Workflow
 
@@ -506,6 +521,16 @@ pnpm build-storybook
 ```
 
 These run the `@paperclipai/ui` Storybook on port `6006` and build the static output to `ui/storybook-static/`.
+
+**Inline links** mounts the shared Markdown renderer with GitHub repository,
+pull request, and issue references, custom labels, connected status metadata,
+generic URL fallbacks, and streaming playback. Pasted GitHub resource URLs use compact labels;
+the exact destination, query, and fragment stay intact. The presentation makes
+no remote metadata requests. Run its light/dark desktop/mobile checks with:
+
+```sh
+STORYBOOK_TEST_BASE_URL=http://localhost:6006 pnpm exec playwright test inline-links.spec.ts --config=tests/storybook-visual/playwright.config.ts --project=stories
+```
 
 **Task chat → Failure notices** covers compact run errors and adjacent recovery
 notices in both presentation modes, with expanded details, fixture retry
@@ -1054,6 +1079,44 @@ defines synchronization, permissions and evidence. After map edits, run
 `node scripts/check-maps.mjs` for structural/reference checks; it does not start an
 instance or qualify access as an agent.
 
+### Agent worktree preflight
+
+Prepare a new or updated agent worktree with one command:
+
+```sh
+node scripts/agent-preflight.mjs
+```
+
+It does what `pnpm install --frozen-lockfile`, the Runner's `ensure:eval-build-deps`,
+`build:rust`, `build` and `build:runner-binaries` did, and skips work whose inputs
+are unchanged:
+
+- **install** is skipped when the lockfile, every `package.json`, `patches/`, Node
+  and pnpm match this worktree's last install.
+- **Runner build** is skipped when the Runner's build stamp is current. When another
+  worktree built the same inputs (the build-input digest described under
+  "Reused Runner build in the server build", plus the compiler), the Runner and eval
+  kernel `dist` are cloned from the shared cache. A restore skips the build's lint
+  checks; CI runs them.
+- **Runner debug binaries** (`runner/target/debug`) are reused the same way, keyed
+  by every file the Rust build reads.
+- A worktree without `runner/target` starts from a clone of a shared cargo seed
+  that holds only third-party crates, so cargo compiles only the Runner crate.
+
+The cache lives in `~/.cache/paperclip/agent-build` (`PAPERCLIP_AGENT_CACHE_DIR`
+moves it, `PAPERCLIP_AGENT_CACHE=0` or `--no-cache` turns it off). Entries are
+keyed by content and toolchain, never by path or mtime, are written once with an
+atomic rename, and are restored as APFS clones, so concurrent worktrees can share
+them. The seed never holds the Runner crate: cargo records its out-of-package
+includes by absolute path, so units from another checkout cannot be trusted. Keep
+the cache on the worktrees' volume so clones stay cheap. `--explain` prints each
+step's decision; `--skip-rust-debug` skips the debug binaries.
+
+Do not share `CARGO_TARGET_DIR` between worktrees: cargo serializes builds on its
+lock, and the Runner crate's absolute-path dependency records would make one
+worktree's freshness check read another's files. The preflight disables the cache
+when `CARGO_TARGET_DIR` is set.
+
 ### Incremental local verification
 
 Use the local verification entry point for ordinary issue work:
@@ -1343,15 +1406,49 @@ To add a test directory, add it to the `include` of the package's
 Sandbox providers are outside the root workspace, so the root install has none of
 their SDKs. `scripts/typecheck-sandbox-providers` is a small workspace that lists
 them and holds one lockfile. Its install replaces any standalone `node_modules` in
-those providers. After changing a provider's `package.json`, refresh that lockfile:
+those providers. After you change a provider's `package.json`, do not refresh or
+commit that lockfile. `typecheck:test-programs` resolves a stale lockfile in place
+for the run, and the lockfile refresh workflow commits the new one after merge (see
+[Dependency Lockfile Policy](#dependency-lockfile-policy)).
+
+Do not add a lockfile inside a provider.
+`scripts/build-standalone-public-packages.mjs` uses a frozen install when one
+exists, which changes what a release resolves. Daytona already has one; the
+release build resolves it in place when it is stale.
+
+Daytona is the one exception: it commits its own lockfile, so the workspace
+leaves it out and the script installs it from that lockfile (`LOCKED_PROVIDERS`).
+The same rule applies to it: do not refresh or commit that lockfile. The script
+resolves a stale one in place for the run, and the lockfile refresh workflow
+commits the new one after merge.
+
+Dependabot updates the providers through this workspace (see
+`.github/dependabot.yml`), and Daytona through a second entry. Dependabot does
+not expand a workspace glob that starts with `../`, so
+`scripts/typecheck-sandbox-providers/pnpm-workspace.yaml` lists each provider by
+its full path. When you add a provider, add it there and to `SANDBOX_PROVIDERS`
+in `scripts/typecheck-test-programs.mjs`. A test checks that the two lists match.
+
+#### Sandbox provider tests
+
+`pnpm test:run` does not reach the sandbox providers, because they are outside the
+root workspace. `scripts/test-sandbox-providers.mjs` installs them the same way as
+the typecheck above, then runs every provider's `pnpm test`, four at a time:
 
 ```sh
-pnpm -C scripts/typecheck-sandbox-providers install --ignore-scripts --lockfile-only
+node scripts/test-sandbox-providers.mjs
 ```
 
-Do not commit a lockfile inside a provider.
-`scripts/build-standalone-public-packages.mjs` uses a frozen install when one
-exists, which changes what a release resolves.
+The required `Sandbox provider tests` job runs it when a pull request changes a
+provider, the plugin SDK, or `packages/shared`, which the SDK imports. Those paths
+are the `//#ci:sandbox-providers` inputs in `turbo.json`. Global CI inputs, such as
+`scripts/**` or a `package.json`, select every job. If the SDK gets a new workspace
+dependency, add that package to the inputs. A test in
+`.github/scripts/tests/ci-plan.test.mjs` fails until you do.
+
+Some Daytona file-sync tests need GNU `tar` and coreutils. They skip on macOS
+unless those tools are on `PATH`, so they run only on Linux. The job turns off
+core dumps: a core file in an exported directory changes the transferred file count.
 
 #### Reused Runner build in the server build
 
@@ -1361,7 +1458,7 @@ build. It used to run the Runner's full `build` every time. Now the Runner's
 `build` brackets itself with `scripts/record-build-inputs.mjs`: `--begin`, its
 first step, forgets the previous stamp and records a digest of the build's
 inputs (every file under `packages/paperclip-runner` except `dist`,
-`dist-browser`, `runner/target`, `node_modules` and dot-directories; every
+`dist-browser`, `runner/target`, `provider-assets` (written by the build), `node_modules` and dot-directories; every
 file under `packages/paperclip-eval-kernel` except `dist` and `node_modules`;
 every file under the root `patches` directory, which the acpx profile check
 hashes and the provider entrypoint bundler copies into `dist`; and the root
@@ -1918,6 +2015,37 @@ These are prerequisites for shared storage and secrets. They do not establish
 that the whole web server is disposable or that all execution and recovery paths
 survive web-server replacement. Run-log/trace storage and producer retention are
 separate changes.
+
+### Managed environments
+
+The `environments` list in `PAPERCLIP_MANAGED_CONFIG` declares instance-level
+environments that boot provisions and tenants cannot edit. It holds at most one
+sandbox entry (no `driver`, or `driver: "sandbox"`) and any number of
+`driver: "plugin"` entries. A plugin entry names a plugin by its manifest id
+(`pluginKey`) and one of its environment drivers:
+
+```json
+{
+  "name": "Remote Host",
+  "description": "Runs the agent on a remote host",
+  "driver": "plugin",
+  "pluginKey": "example.remote-host-plugin",
+  "driverKey": "tasks",
+  "driverConfig": {}
+}
+```
+
+Names and `pluginKey`–`driverKey` pairs must be unique, and `driverConfig` must
+not contain secret-like keys. Any other key refuses startup. `plugins.autoInstall`
+holds catalog keys, not manifest ids, so boot also refuses to start unless an
+auto-installed bundled or distribution catalog entry installs the entry's
+`pluginKey`.
+
+Boot validates the driver config through the plugin, marks the row
+`managedPluginEnvironment: "<pluginKey>:<driverKey>"`, and adopts an existing
+unmarked row for the same plugin and driver. While the plugin is down, the row is
+archived; it comes back when the worker is ready. Removing an entry never archives
+its row. Plugin entries do not change the instance default.
 
 ### Experimental native remote workspace storage
 
@@ -2904,7 +3032,7 @@ runtimes on Apple Silicon, Intel Mac, and Linux x64 with supported glibc;
 Linux ARM64 remains Legacy until the pinned runtimes support it.
 Unsupported or unqualified targets retain Legacy. Claude over Darwin SSH keeps
 an automatic Legacy default; explicit native execution
-requires matching remote assets. The runner override is in Advanced. Ordinary Claude models default to `claude-opus-5-5`; explicit models
+requires matching remote assets. Agent setup and configuration select the runner automatically and do not expose a runner dropdown. Ordinary Claude models default to `claude-opus-5-5`; explicit models
 and provider routing remain authoritative. Existing agents keep their saved runner. Converting an existing Claude, Codex, OpenCode, or Pi agent selects its
 corresponding provider, preserves compatible models, credentials, workspace,
 and instructions, and resets execution sessions while retaining run history.
@@ -2961,6 +3089,7 @@ them. Existing Pi agents retain their saved runner and native policies.
 Agent configuration uses the same section layout across adapters: model and
 provider belong to **Adapter**, environment variables have their own section,
 and command/extra arguments are folded under **Configuration → Advanced**.
+Advanced is omitted when the selected adapter has no settings in that section.
 Lifecycle, timeout, and interrupt grace settings live under **Advanced Run
 Policy**. Permission selectors with a single valid mode are hidden; a saved
 unsupported mode still exposes remediation.
@@ -3020,8 +3149,12 @@ their existing preparation order.
 OpenCode defaults to `allow`, with explicit `ask` and `deny` options; ACPX
 defaults to `approve-all`, with explicit `approve-paperclip`, `approve-reads`,
 and `deny-all` options. Codex conversion keeps a non-empty model and
-otherwise stores the shared `gpt-5.6-sol` default. The native execution boundary
-applies the same default to older runner rows whose model is missing or blank.
+otherwise stores the shared `gpt-6.1-sol` default (half the `gpt-5.6-sol` token
+price on the reviewed OpenAI rate card in `server/src/services/codex-pricing.ts`).
+The native execution boundary applies the same default to older runner rows whose
+model is missing or blank; a stored model, including `gpt-5.6-sol`, is never
+rewritten. A remote Codex CLI older than 0.159.0 falls back to an older compatible
+Sol model (`gpt-6-sol`, then `gpt-5.6-sol`).
 
 For an Agent Chat test drive, configure two agents with Paperclip Runner: native Codex and ACPX Claude. Connect
 the Claude account through the agent's **AI connection** section (or supply an
@@ -3357,7 +3490,7 @@ successful warm-session retention or admit another provider turn.
 Run the credential-free real-process restart suite with:
 
 ```sh
-pnpm --filter @paperclipai/paperclip-runner build:runner-binaries
+pnpm --filter @paperclipai/paperclip-runner run build:runner-binaries
 pnpm exec vitest run server/src/services/native-runtime/native-runner-restart-recovery.integration.test.ts
 pnpm --filter @paperclipai/paperclip-runner exec vitest run src/live/runnerd-codex-transport-adoption.test.ts -t 'adopts a live runner'
 ```

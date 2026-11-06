@@ -1,7 +1,7 @@
 use crate::generated_acpx_profiles::{
     acpx_release_profile, ACPX_DRIVER_KIND, QUALIFIED_ACPX_VERSION,
 };
-use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::fs::{self, DirBuilder, File};
 use std::io::{Read, Write};
 use std::net::TcpListener;
@@ -70,6 +70,8 @@ pub const ACPX_PROVIDER_STATE_FILE: &str = "acpx-provider-state.json";
 const ACPX_PROVIDER_STATE_SCHEMA: &str = "paperclip.runner.acpx-provider-state.v3";
 const MAX_PROVIDER_STATE_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_PENDING_EVENTS: usize = 8_320;
+// Matches the bounded number of pending ACPX tool calls.
+const MAX_OPEN_SEMANTIC_CALLS: usize = 4_096;
 const MAX_EVENTS_PER_POLL: usize = 128;
 const PROVIDER_LIFETIME_CONFIRMATION_TIMEOUT: Duration = Duration::from_secs(5);
 const PROVIDER_LIFETIME_CONFIRMATION_RETRY: Duration = Duration::from_millis(10);
@@ -597,6 +599,13 @@ struct AcpxDurableState {
     pending_runtime_requests: BTreeMap<String, Value>,
     #[serde(default = "initial_event_sequence")]
     next_event_sequence: u64,
+    /// Semantic tool calls emitted to the controller without a result yet.
+    #[serde(default)]
+    open_semantic_calls: BTreeSet<String>,
+    /// Open calls of a turn lost to a runner restart. The restored provider
+    /// never sees their results; the controller may still deliver them.
+    #[serde(default)]
+    retired_semantic_calls: BTreeSet<String>,
 }
 
 impl AcpxDurableState {
@@ -623,6 +632,8 @@ impl AcpxDurableState {
             pending_events: VecDeque::new(),
             pending_runtime_requests: BTreeMap::new(),
             next_event_sequence: initial_event_sequence(),
+            open_semantic_calls: BTreeSet::new(),
+            retired_semantic_calls: BTreeSet::new(),
         }
     }
 
@@ -789,6 +800,31 @@ impl AcpxDurableState {
             if let Some(id) = event.payload.get("requestId").and_then(Value::as_str) {
                 self.pending_runtime_requests.remove(id);
             }
+        } else if let Some(call_id) = event
+            .payload
+            .pointer("/semantic_tool/callId")
+            .and_then(Value::as_str)
+        {
+            // Remember semantic calls the controller may still answer. A lost
+            // turn's open calls become retired calls on restore, so a later
+            // controller result for them settles instead of failing.
+            match event.event_type.as_str() {
+                "semantic_tool.input"
+                    if self.open_semantic_calls.len() < MAX_OPEN_SEMANTIC_CALLS =>
+                {
+                    self.open_semantic_calls.insert(call_id.to_owned());
+                }
+                "semantic_tool.result" => {
+                    self.open_semantic_calls.remove(call_id);
+                }
+                _ => {}
+            }
+        } else if matches!(
+            event.event_type.as_str(),
+            "turn.completed" | "turn.failed" | "turn.cancelled" | "turn.interrupted"
+        ) {
+            // A provider-observed terminal settles its calls in the live bridge.
+            self.open_semantic_calls.clear();
         }
         self.next_event_sequence = next_sequence;
         self.pending_events.push_back(PolledEvent {
@@ -1116,6 +1152,9 @@ impl AcpxCommandExecutor {
         let previous_turn = state.active_turn_id.clone();
         if unsafe_active {
             self.context.provider_turn_id = None;
+            if self.restore_conversation_after_lost_turn(previous_turn.clone())? {
+                return Ok(());
+            }
             let state = self
                 .state
                 .as_mut()
@@ -1134,6 +1173,13 @@ impl AcpxCommandExecutor {
                     "providerTerminalObserved": false,
                     "code": "acpx_active_turn_recovery_closed",
                     "providerShutdownFailed": true,
+                    // Keep the cause through the controller facade, which
+                    // forwards only the structured error of a failed turn.
+                    "error": {
+                        "code": "acpx_active_turn_recovery_closed",
+                        "recoverable": false,
+                        "message": "The runner restarted during this turn and could not restore the conversation.",
+                    },
                 }),
             })?;
             state.push(NormalizedProviderEvent {
@@ -1169,6 +1215,82 @@ impl AcpxCommandExecutor {
         self.recovery_pending_effects = None;
         self.session = Some(session);
         self.save_state()
+    }
+
+    /// Restores the conversation of a turn that was active when the runner
+    /// died, without inventing its outcome. The original provider lifetime
+    /// must have lost its fence quorum first, so no second provider can act on
+    /// the same session. The lost turn is recorded with a recoverable
+    /// `provider_turn_lost_on_restore` cause and the run stays open, so the
+    /// controller can send its single same-conversation continuation. Returns
+    /// false, leaving state untouched, when restoration is not safe.
+    fn restore_conversation_after_lost_turn(
+        &mut self,
+        previous_turn: Option<String>,
+    ) -> Result<bool, DurableRunnerError> {
+        let Some(state) = self.state.as_ref() else {
+            return Ok(false);
+        };
+        // An accepted result, an unanswered runtime request, or an active goal
+        // needs its own reconciliation; a plain continuation cannot settle it.
+        let Some(identity) = state.identity.as_ref() else {
+            return Ok(false);
+        };
+        if previous_turn.is_none()
+            || state.provider_exit_unconfirmed
+            || state.semantic_result.is_some()
+            || !state.pending_runtime_requests.is_empty()
+            || !(state.goal_projection.is_null() || goal_is_dormant(&state.goal_projection))
+        {
+            return Ok(false);
+        }
+        match await_provider_lifetime_fence(identity.provider_lifetime_fence_candidates) {
+            // Release the quorum so the restored provider can inherit it.
+            Ok(listeners) => drop(listeners),
+            Err(_) => return Ok(false),
+        }
+        let Ok(session) = self.start_session(true) else {
+            return Ok(false);
+        };
+        let identity = session.identity().clone();
+        let process_id = session.process_id();
+        let turn_controls = session.turn_control_capabilities();
+        let state = self
+            .state
+            .as_mut()
+            .expect("ACPX state remains available during recovery");
+        state.lifecycle = "session_open".to_owned();
+        state.active_turn_id = None;
+        state.turn_controls = turn_controls;
+        // The controller may still answer the lost turn's semantic calls.
+        // The restored provider never issued them, so settle them on arrival.
+        let open = std::mem::take(&mut state.open_semantic_calls);
+        state.retired_semantic_calls.extend(open);
+        state.push(NormalizedProviderEvent {
+            event_type: "session.resumed".to_owned(),
+            priority: EventPriority::P0,
+            payload: session_event_payload(&state.descriptor, &identity, process_id, turn_controls),
+        })?;
+        state.push(NormalizedProviderEvent {
+            event_type: "turn.failed".to_owned(),
+            priority: EventPriority::P0,
+            payload: json!({
+                "provider": "acpx",
+                "providerTurnId": previous_turn,
+                "status": "failed",
+                "providerTerminalObserved": false,
+                "code": "provider_turn_lost_on_restore",
+                "error": {
+                    "code": "provider_turn_lost_on_restore",
+                    "recoverable": true,
+                    "message": "The runner restored the conversation after process loss, but the previous turn is no longer active.",
+                },
+            }),
+        })?;
+        self.recovery_pending_effects = None;
+        self.session = Some(session);
+        self.save_state()?;
+        Ok(true)
     }
 
     fn start_session(&self, recovering: bool) -> Result<AcpxProviderSession, DurableRunnerError> {
@@ -2123,6 +2245,20 @@ impl AcpxCommandExecutor {
         let result: ToolResult = serde_json::from_value(payload.clone()).map_err(|error| {
             DurableRunnerError::invalid(format!("semantic tool result is invalid: {error}"))
         })?;
+        if let Some(state) = self.state.as_ref() {
+            if state.retired_semantic_calls.contains(&result.call_id) {
+                // The call belonged to a turn lost to a runner restart. Its
+                // provider process is gone; acknowledge the controller result
+                // so the call settles, without sending it to the new provider.
+                // The retained receipt makes this idempotent: a delivery left
+                // indeterminate by a crash replays to the same acknowledgement.
+                return Ok(CommandExecution::result(json!({
+                    "status": "delivered",
+                    "callId": result.call_id,
+                    "retired": true,
+                })));
+            }
+        }
         self.session
             .as_mut()
             .ok_or_else(|| DurableRunnerError::invalid("ACPX session is unavailable"))?
@@ -2521,6 +2657,18 @@ fn goal_terminal_disposition<'a>(
 }
 
 impl CommandExecutor for AcpxCommandExecutor {
+    /// A restored session keeps durable receipts for the lost turn's calls.
+    /// Acknowledging one is idempotent and never reaches the provider or the
+    /// business operation, so an indeterminate delivery may replay. Live
+    /// calls have no durable receipt; without retired receipts this stays off.
+    fn can_reconcile_result_delivery(&mut self) -> Result<bool, DurableRunnerError> {
+        self.restore()?;
+        Ok(self
+            .state
+            .as_ref()
+            .is_some_and(|state| !state.retired_semantic_calls.is_empty()))
+    }
+
     fn host_park_ready(&mut self) -> Result<bool, DurableRunnerError> {
         self.ensure_persistence_healthy()?;
         let Some(state) = self.state.as_ref() else {
@@ -5020,6 +5168,14 @@ mod tests {
         assert_eq!(events[0].payload["replayAllowed"], false);
         assert_eq!(events[1].event_type, "turn.failed");
         assert_eq!(events[1].payload["providerShutdownFailed"], true);
+        // An unanswered runtime request (and an unproven original lifetime)
+        // keeps the close path. Its cause survives the controller facade and
+        // is not offered for the restart continuation.
+        assert_eq!(
+            events[1].payload["error"]["code"],
+            "acpx_active_turn_recovery_closed"
+        );
+        assert_eq!(events[1].payload["error"]["recoverable"], false);
         assert_eq!(events[2].event_type, "run.terminal");
         assert_eq!(events[2].payload["schema"], "paperclip.prp.terminal.v1");
         assert_eq!(events[2].payload["turnTerminalState"], "failed");
@@ -5046,6 +5202,74 @@ mod tests {
         .expect("parse cleared ACPX state");
         assert!(!persisted.provider_exit_unconfirmed);
         assert!(!marker.exists());
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn lost_turn_restoration_refuses_unreconciled_state_before_touching_the_provider() {
+        let directory = temporary_directory("lost-turn-guards");
+        let provider_descriptor: AcpxProviderDescriptor =
+            serde_json::from_value(descriptor("claude")).unwrap();
+        let operations = Vec::new();
+        let tool_set = AuthorizedToolSet {
+            schema: TOOL_SET_SCHEMA.to_owned(),
+            schema_version: 1,
+            catalog_digest: authorized_tool_catalog_digest(&operations).unwrap(),
+            operations,
+        };
+        let identity = AcpxProviderSessionIdentity {
+            kind: "acpx".to_owned(),
+            normalized_session_id: "session-1".to_owned(),
+            acpx_record_id: "record-1".to_owned(),
+            backend_session_id: "backend-1".to_owned(),
+            agent_session_id: "agent-1".to_owned(),
+            profile_digest: provider_descriptor.command_digest.clone(),
+            workspace_digest: format!("sha256:{}", "a".repeat(64)),
+            requested_model: provider_descriptor.model.clone(),
+            effective_model: provider_descriptor.model.clone(),
+            permission_mode: Some(provider_descriptor.permission_mode),
+            mode: provider_descriptor.mode.clone(),
+            pi_thinking_level: provider_descriptor.pi_thinking_level,
+            claude_effort: provider_descriptor.claude_effort.clone(),
+            grok_effort: provider_descriptor.grok_effort.clone(),
+            grok_disable_web_search: provider_descriptor.grok_disable_web_search.clone(),
+            provider_lifetime_fence_candidates: [60_001, 60_002, 60_003],
+        };
+        let guards: [(&str, fn(&mut AcpxDurableState)); 4] = [
+            ("provider_exit_unconfirmed", |state| {
+                state.provider_exit_unconfirmed = true
+            }),
+            ("accepted_semantic_result", |state| {
+                state.semantic_result = Some(json!({"reportedWorkDisposition": "done"}))
+            }),
+            ("unanswered_runtime_request", |state| {
+                state
+                    .pending_runtime_requests
+                    .insert("input-1".to_owned(), pending_input_request("input-1"));
+            }),
+            ("active_goal", |state| {
+                state.goal_projection = json!({"goal": {"status": "active"}})
+            }),
+        ];
+        for (label, seed) in guards {
+            let mut state =
+                AcpxDurableState::new(provider_descriptor.clone(), tool_set.clone(), "d".into());
+            state.lifecycle = "turn_active".to_owned();
+            state.identity = Some(identity.clone());
+            state.active_turn_id = Some("turn-1".to_owned());
+            seed(&mut state);
+            let mut executor =
+                AcpxCommandExecutor::with_runner_config(&directory, &test_config(&directory, None));
+            executor.state = Some(state.clone());
+            assert!(
+                !executor
+                    .restore_conversation_after_lost_turn(Some("turn-1".to_owned()))
+                    .unwrap(),
+                "{label} must keep the close path"
+            );
+            assert!(executor.session.is_none(), "{label} started a provider");
+            assert_eq!(executor.state, Some(state), "{label} changed saved state");
+        }
         fs::remove_dir_all(directory).unwrap();
     }
 
