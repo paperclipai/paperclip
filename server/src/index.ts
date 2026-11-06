@@ -1353,9 +1353,10 @@ async function startServerWithDatabaseTeardown(
   if (skillVersionRetentionWorker) trackHeartbeatSchedulerWork(skillVersionRetentionWorker.ready);
   const workspaceRecoveryWork = registerWorkspaceRecoveryWork(db, deliveryWork, workspaceRecoveryRuntime,
     accountingHeartbeat.resumeRemoteStopComments, () => !heartbeatSchedulerStopped);
-  // Each native cleanup quarantine is logged with its cause when created.
-  const unsubscribeNativeCleanupQuarantineLog = logNativeCleanupQuarantines(logger);
-  server.on("close", unsubscribeNativeCleanupQuarantineLog);
+  // Each native cleanup quarantine is logged with its cause when created. The
+  // subscription lives with the process: closes that fail during shutdown,
+  // after HTTP closes, still need their cause logged.
+  logNativeCleanupQuarantines(logger);
   const localLoginCleanup = localAiLoginService(db);
   const localLoginCleanupWork = registerExecutionControlWork(deliveryWork, [
     { queue: DELIVERY_QUEUES.localLoginCleanup, run: localLoginCleanup.reapExpired, next: localLoginCleanup.nextCleanupAt },
