@@ -14558,6 +14558,7 @@ export function issueRoutes(
         "Issue not found",
       );
       if (!existing) return;
+      if (!(await assertIssueReadAllowed(req, res, existing))) return;
 
       const actor = getActorInfo(req);
       const decisionId = randomUUID();
@@ -14600,6 +14601,7 @@ export function issueRoutes(
             ...transition.patch,
             actorAgentId: actor.agentId ?? null,
             actorUserId: actor.actorType === "user" ? actor.actorId : null,
+            actorRunId: actor.runId ?? null,
           },
           tx,
         );
