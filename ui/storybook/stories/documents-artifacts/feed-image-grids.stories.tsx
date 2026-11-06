@@ -111,8 +111,10 @@ export const Gallery = { render: () => <Feed />, play: async ({ canvasElement })
   await userEvent.click(canvas.getAllByRole("button", { name: /^Open gallery:/ })[1]);
   const body = within(canvasElement.ownerDocument.body);
   await expect(body.getByRole("dialog")).toBeVisible();
+  await expect(body.getByRole("link", { name: "Open original 02-openai-kebab.png" })).toHaveAttribute("href", images[1].href);
   await expect(body.getByRole("link", { name: "Download 02-openai-kebab.png" })).toBeVisible();
   await userEvent.keyboard("{ArrowRight}");
+  await expect(body.getByRole("link", { name: "Open original 03-default-changed.png" })).toHaveAttribute("href", images[2].href);
   await expect(body.getByRole("link", { name: "Download 03-default-changed.png" })).toBeVisible();
 } } satisfies Story;
 

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
 import { Dialog as DialogPrimitive } from "radix-ui";
-import { ChevronLeft, ChevronRight, Download, X } from "lucide-react";
-import { attachmentDownloadPath, attachmentFilename } from "@/lib/issue-attachments";
+import { ChevronLeft, ChevronRight, Download, ExternalLink, X } from "lucide-react";
+import { attachmentDownloadPath, attachmentFilename, attachmentOpenPath } from "@/lib/issue-attachments";
 import { isVideoLikeOutput } from "@/lib/issue-output";
 
 export interface GalleryMediaItem {
@@ -115,6 +115,17 @@ export function ImageGalleryModal({
               <span className="tabular-nums text-xs">
                 {currentIndex + 1} / {items.length}
               </span>
+              <a
+                href={attachmentOpenPath(current)}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-white/50 hover:text-white transition-colors"
+                title="Open original"
+                aria-label={`Open original ${filename}`}
+                onClick={(e) => e.stopPropagation()}
+              >
+                <ExternalLink className="h-4.5 w-4.5" />
+              </a>
               <a
                 href={attachmentDownloadPath(current)}
                 download={filename}

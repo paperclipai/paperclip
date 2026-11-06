@@ -15,7 +15,10 @@ export function TaskChatImageGrid({ items }: { items: TaskChatMaterializedResour
   });
   return (
     <IssueGalleryContext.Provider value={(src) => {
-      if (!openIssueGallery?.(src)) setSelected(images.findIndex(({ source }) => source.contentPath === src));
+      if (openIssueGallery?.(src)) return true;
+      const index = images.findIndex(({ source }) => source.contentPath === src || source.openPath === src);
+      if (index < 0) return false;
+      setSelected(index);
       return true;
     }}>
       <div className="tc-image-grid" role="group" aria-label={`${images.length} ${images.length === 1 ? "image" : "images"}`} data-testid="task-chat-image-grid">

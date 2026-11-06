@@ -183,6 +183,32 @@ describe("TaskChatProtocolCard", () => {
     expect(container.querySelector('button[aria-label^="Open gallery:"]')).not.toBeNull();
   });
 
+  it("opens an image when its original path differs from its preview URL", async () => {
+    const product = workProduct({
+      type: "artifact",
+      title: "screen.png",
+      url: "/images/preview.png",
+      metadata: { contentType: "image/png", originalFilename: "screen.png", openPath: "/images/original.png" },
+    });
+    renderCard(root, {
+      id: "resource:image",
+      kind: "protocol",
+      surface: "resource",
+      resourceKind: "deliverable",
+      title: product.title,
+      subtitle: "Image",
+      href: product.url,
+      workProduct: product,
+    });
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('button[aria-label="Open gallery: screen.png"]')!.click();
+    });
+
+    expect(document.body.querySelector('[role="dialog"]')).not.toBeNull();
+    expect(document.body.querySelector('[role="dialog"] img')?.getAttribute("src")).toBe("/images/preview.png");
+  });
+
   it.each([
     ["image/png", "compact"], ["video/webm", "compact"],
     ["image/png", "gallery"], ["video/webm", "gallery"],
