@@ -20,6 +20,25 @@ describe("parseCursorCloudStdoutLine", () => {
     ).toEqual([{ kind: "system", ts, text: "running: Reattached" }]);
   });
 
+  it("keeps streamed assistant and thinking fragments as untrimmed deltas", () => {
+    const line = (message: Record<string, unknown>) =>
+      JSON.stringify({ type: "cursor_cloud.message", message });
+
+    expect(parseCursorCloudStdoutLine(line({ type: "thinking", text: "I need to recover a " }), ts)).toEqual([
+      { kind: "thinking", ts, text: "I need to recover a ", delta: true },
+    ]);
+    expect(parseCursorCloudStdoutLine(line({ type: "thinking", text: "\n\n" }), ts)).toEqual([
+      { kind: "thinking", ts, text: "\n\n", delta: true },
+    ]);
+    expect(parseCursorCloudStdoutLine(line({ type: "thinking", text: "" }), ts)).toEqual([]);
+    expect(
+      parseCursorCloudStdoutLine(
+        line({ type: "assistant", message: { content: [{ type: "text", text: " pick" }] } }),
+        ts,
+      ),
+    ).toEqual([{ kind: "assistant", ts, text: " pick", delta: true }]);
+  });
+
   it("parses assistant text and tool lifecycle SDK messages", () => {
     const assistantLine = JSON.stringify({
       type: "cursor_cloud.message",
@@ -34,7 +53,7 @@ describe("parseCursorCloudStdoutLine", () => {
       },
     });
     expect(parseCursorCloudStdoutLine(assistantLine, ts)).toEqual([
-      { kind: "assistant", ts, text: "Working on it." },
+      { kind: "assistant", ts, text: "Working on it.", delta: true },
       { kind: "tool_call", ts, name: "read_file", toolUseId: "tool-1", input: { path: "README.md" } },
     ]);
 
