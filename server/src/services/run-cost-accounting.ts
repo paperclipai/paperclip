@@ -39,18 +39,20 @@ async function readAccountingClosure(db: Db, runId: string) {
   return closure;
 }
 
-/** A native run's receipt source is closed when recovery reached terminal
- * failure and the run no longer records a provider process identity: recovery
- * clears it only after verifying that process stopped. */
-const closedNativeReceiptSource = sql`${heartbeatRuns.runtimeMode} = 'native'
+/** A failed native run's receipt source is closed when recovery reached
+ * terminal failure and the run no longer records a provider process identity:
+ * recovery clears it only after verifying that process stopped. A cancelled
+ * run keeps its accounting drain: Stop recovery can still deliver the final
+ * receipt through the original or a reattached recorder. */
+const closedNativeReceiptSource = sql`${heartbeatRuns.runtimeMode} = 'native' and ${heartbeatRuns.status} = 'failed'
   and ${heartbeatRuns.processPid} is null and ${heartbeatRuns.processGroupId} is null
   and exists (select 1 from ${nativeRunFinalizations} where ${nativeRunFinalizations.runId} = ${heartbeatRuns.id}
     and ${nativeRunFinalizations.companyId} = ${heartbeatRuns.companyId}
     and ${nativeRunFinalizations.resultId} is null and ${nativeRunFinalizations.phase} = 'terminal_failure')`;
 
 async function nativeReceiptSourceClosed(db: Db, run: Pick<typeof heartbeatRuns.$inferSelect,
-  "id" | "companyId" | "runtimeMode" | "processPid" | "processGroupId">) {
-  if (run.runtimeMode !== "native" || run.processPid !== null || run.processGroupId !== null) return false;
+  "id" | "companyId" | "runtimeMode" | "status" | "processPid" | "processGroupId">) {
+  if (run.runtimeMode !== "native" || run.status !== "failed" || run.processPid !== null || run.processGroupId !== null) return false;
   const [coordinator] = await db.select({ phase: nativeRunFinalizations.phase, resultId: nativeRunFinalizations.resultId })
     .from(nativeRunFinalizations).where(and(eq(nativeRunFinalizations.runId, run.id), eq(nativeRunFinalizations.companyId, run.companyId)));
   return coordinator?.phase === "terminal_failure" && coordinator.resultId === null;

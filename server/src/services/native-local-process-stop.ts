@@ -71,10 +71,16 @@ export async function recordNativeLocalProcessStop(db: Db, run: Pick<typeof hear
     payload: { processPid: run.processPid, processGroupId: run.processGroupId,
       processStartedAt: run.processStartedAt?.toISOString() ?? null },
   });
-  // A stopped provider closes its usage source. Accounting may now settle a
-  // terminal run whose final receipt can no longer arrive.
-  await notifyDeliveryWork(db, DELIVERY_QUEUES.accounting, run.companyId);
   return true;
+}
+
+/** Transaction form for callers that clear the process identity: a stopped
+ * provider closes its usage source, so accounting may settle a terminal run
+ * whose final receipt can no longer arrive. */
+export async function recordNativeLocalProcessStopInTransaction(tx: Db, run: Parameters<typeof recordNativeLocalProcessStop>[1]) {
+  const recorded = await recordNativeLocalProcessStop(tx, run);
+  if (recorded) await notifyDeliveryWork(tx, DELIVERY_QUEUES.accounting, run.companyId);
+  return recorded;
 }
 
 /** Only server-authored evidence counts. A later launch invalidates the receipt. */

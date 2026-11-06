@@ -123,6 +123,30 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(await f.block()).toMatchObject({ reason: "New work must wait while a native run recovers its unfinished accounting." });
   });
 
+  // Chaos waves: a run that had just succeeded was terminal for ~100 ms before
+  // its charge committed. The evaluator read that gap as a hard stop, paused the
+  // company and cancelled unrelated running work, which then never settled.
+  it("holds admission without a hard stop while a finished run's charge commits", async () => {
+    const f = await fixture();
+    await db.update(heartbeatRuns).set({ status: "succeeded", errorCode: null,
+      usageJson: sql`${heartbeatRuns.usageJson} || '{"accountingReceiptReady":true,"costUsd":0.1}'::jsonb` })
+      .where(eq(heartbeatRuns.id, f.run.id));
+    // Its coordinator already applied the result, so nothing counts it as recovering.
+    await db.delete(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.run.id));
+    const runningId = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: runningId, companyId: f.companyId, agentId: f.otherAgentId,
+      invocationSource: "assignment", status: "running" });
+    await budgetService(db).evaluateAffectedScopes(f.companyId, f.agentId, null);
+    await flushBudgetEvaluationWork(db);
+    const [company] = await db.select().from(companies).where(eq(companies.id, f.companyId));
+    expect(company).toMatchObject({ status: "active", pauseReason: null });
+    expect(await db.select().from(budgetIncidents).where(eq(budgetIncidents.companyId, f.companyId))).toHaveLength(0);
+    const [policy] = await db.select().from(budgetPolicies).where(eq(budgetPolicies.id, f.policy.id));
+    expect(policy.enforcementVersion).toBe(f.policy.enforcementVersion);
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runningId)))[0].status).toBe("running");
+    expect(await f.block()).toMatchObject({ reason: "Company cannot start work while completed runs await accounting." });
+  });
+
   it("keeps the debt pending while native recovery can still produce a result", async () => {
     const f = await fixture({ phase: "observed" });
     expect(await reconcileRunCosts(db)).toMatchObject({ accounted: 0 });

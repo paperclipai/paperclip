@@ -260,13 +260,24 @@ function shouldResolveSoftIncident(policy: PolicyRow, observed: ObservedSpend) {
     || compareCents(observed.totalExact, Math.ceil(policy.amount * policy.warnPercent / 100)) < 0;
 }
 
+/** Spend reached the limit, or the operator blocks unpriced usage. Only this
+ * opens a hard-stop incident, pauses a scope, or stops running work. */
+function hardStopReached(policy: PolicyRow, observed: Awaited<ReturnType<typeof computeObservedSpend>>) {
+  if (!policy.isActive || !policy.hardStopEnabled || policy.amount <= 0) return false;
+  return compareCents(observed.totalExact, policy.amount) >= 0 || unpricedUsageBlocks(policy, observed);
+}
+
+/** Admission also waits while completed runs await accounting. That unknown
+ * is a separate conservative restriction: it holds new work only. A run that
+ * finishes moments before its charge commits must not pause the company or
+ * cancel unrelated running work. */
 function observedBlocks(policy: PolicyRow, observed: Awaited<ReturnType<typeof computeObservedSpend>>) {
   if (!policy.isActive || !policy.hardStopEnabled || policy.amount <= 0) return false;
-  return compareCents(observed.totalExact, policy.amount) >= 0 || (observed.pendingRunCount - observed.recoveringRunCount) > 0 || unpricedUsageBlocks(policy, observed);
+  return hardStopReached(policy, observed) || (observed.pendingRunCount - observed.recoveringRunCount) > 0;
 }
 export async function policyBlocks(db: Db, policy: PolicyRow) {
   if (!policy.isActive || !policy.hardStopEnabled || policy.amount <= 0) return false;
-  return observedBlocks(policy, await computeObservedSpend(db, policy));
+  return hardStopReached(policy, await computeObservedSpend(db, policy));
 }
 
 /** Supplemental handoff check after authoritative accounting admission commits.
@@ -694,9 +705,14 @@ export function budgetServiceInTransaction(db: Db, publications: ActivityPublica
     for (const [index, policy] of policies.entries()) {
       const observed = observations[index];
       if (observedBlocks(policy, observed)) {
-        await createIncidentIfNeeded(policy, "hard", observed);
-        await pauseAndCancelScopeForBudget(policy, !scope.budgetHeld);
+        if (hardStopReached(policy, observed)) {
+          await createIncidentIfNeeded(policy, "hard", observed);
+          await pauseAndCancelScopeForBudget(policy, !scope.budgetHeld);
+        }
         const title = scopeType === "company" ? "Company" : scopeType === "agent" ? "Agent" : "Project";
+        if (!hardStopReached(policy, observed)) {
+          return { scopeType, scopeId, scopeName: scope.name, reason: `${title} cannot start work while completed runs await accounting.` };
+        }
         if (observed.pendingRunCount > 0) {
           return { scopeType, scopeId, scopeName: scope.name, reason: `${title} cannot start work while completed runs await accounting.` };
         }
@@ -766,7 +782,7 @@ export function budgetServiceInTransaction(db: Db, publications: ActivityPublica
         }
       }
 
-      if (observedBlocks(policy, observed)) {
+      if (hardStopReached(policy, observed)) {
         await resolveOpenSoftIncidents(policy.id, policy.companyId);
         const hardIncident = await createIncidentIfNeeded(policy, "hard", observed);
         await pauseAndCancelScopeForBudget(policy);
@@ -972,7 +988,7 @@ export function budgetServiceInTransaction(db: Db, publications: ActivityPublica
           if (row.notifyEnabled && compareCents(observed.totalExact, softThreshold) >= 0 && (!row.hardStopEnabled || compareCents(observed.totalExact, row.amount) < 0)) {
             await createIncidentIfNeeded(row, "soft", observed);
           }
-          if (observedBlocks(row, observed)) {
+          if (hardStopReached(row, observed)) {
             await resolveOpenSoftIncidents(row.id, row.companyId);
             await createIncidentIfNeeded(row, "hard", observed);
             await pauseAndCancelScopeForBudget(row);

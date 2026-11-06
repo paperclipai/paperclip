@@ -1763,7 +1763,10 @@ publication is fenced separately from settlement. Inputs arriving or committing
 later stay pending; no global sequence watermark consumes them. Limited-budget
 admission refuses relevant unevaluated inputs older than fifteen seconds.
 Unchanged idle decisions do not expire; unknown accounting retains its separate
-conservative admission restriction. Provider reporting and cancellation delays
+conservative admission restriction. Completed runs that await accounting hold
+new work only: they never open a hard-stop incident, pause a scope, or stop
+running work. Only spend at the limit, or unpriced usage under a blocking
+policy, does that. Provider reporting and cancellation delays
 remain additional to evaluation lag. Cancellation delivery is asynchronous and
 scoped; committed per-run Stop survives policy changes and restart until existing
 stop proof succeeds. Budget resume cannot clear a manual hold.
