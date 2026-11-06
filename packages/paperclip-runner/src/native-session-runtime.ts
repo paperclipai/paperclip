@@ -231,6 +231,12 @@ export interface ExecuteNativeSessionOptions {
   /** Resume the active durable session goal after a bounded heartbeat rollover. */
   resumeSessionGoalHeartbeat?: boolean;
   /**
+   * Compact the resumed provider session's context instead of starting an
+   * ordinary turn. The run settles with a synthesized result once the
+   * provider's compaction turn completes; it does no task work.
+   */
+  sessionCompaction?: { requestId: string } | null;
+  /**
    * Wait for the backend's close contract before returning a durable result.
    * Use this only for backends whose close path is internally bounded and
    * carries required persistence (for example, a remote runner checkpoint).
@@ -901,6 +907,8 @@ async function consumeTurn(
   resumeInterruptedTurn?: (event: PrpEvent, signal: AbortSignal) => Promise<boolean>,
   checkpointGovernedWait?: (wait: NonNullable<PersistedNativeSession["governedWait"]>, signal: AbortSignal) => Promise<void>,
   initialGovernedWait?: PersistedNativeSession["governedWait"],
+  /** Settles a compaction-only turn, which reports no semantic result. */
+  compactionResult?: PrpStructuredRunResult,
 ) {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const appendAbort = new AbortController();
@@ -1289,6 +1297,14 @@ async function consumeTurn(
       }
       if (isTurnTerminal(event)) {
         if (providerFailure) throw providerFailure;
+        if (compactionResult && event.eventType === "turn.completed") {
+          return {
+            event,
+            eventCount,
+            highestContiguousSourceSeq,
+            governedResult: compactionResult,
+          };
+        }
         if (semanticResultProposal === null && governedResult === null &&
             inputTimers.size === 0 && await resumeInterruptedTurn?.(event, appendAbort.signal)) continue;
         return {
@@ -1532,6 +1548,34 @@ export async function applyNativeSessionGoalControl(
       ? { tokenBudget: control.tokenBudget }
       : {}),
   });
+}
+
+/**
+ * Result for a compaction-only run. Compaction does no task work, so the
+ * result yields with no continuation; the server preserves the task status.
+ */
+export function sessionCompactionResult(input: NativeExecutionInput): PrpStructuredRunResult {
+  const summary = "Context compacted on request.";
+  return {
+    schema: "paperclip.run_result.v1",
+    reportedWorkDisposition: "yielded",
+    summary,
+    completionClaim: {
+      contractRevision: input.completionContract.contract.revision,
+      objectiveSatisfied: false,
+      criteria: input.completionContract.contract.criteria.map((criterion) => ({
+        criterionId: criterion.id,
+        status: "unknown",
+        evidenceRefs: [],
+        explanation: "A context compaction run does no task work.",
+      })),
+      remainingWork: [],
+    },
+    evidence: [],
+    verification: [],
+    attentionRequests: [],
+    artifacts: [],
+  };
 }
 
 function sessionGoalResult(
@@ -2571,6 +2615,7 @@ export async function executeNativeSession(
                 await checkpoint(signal);
               },
               governedWait,
+              options.sessionCompaction ? sessionCompactionResult(input) : undefined,
             )
           : Promise.resolve({
               event: recoveryTerminal,
@@ -2592,7 +2637,21 @@ export async function executeNativeSession(
             !adoptedProviderTerminal &&
             !checkpointedDispositionTerminal &&
             !dispositionRecoveryStillOwned));
-        if (options.sessionGoalControl) {
+        if (options.sessionCompaction) {
+          // Compaction summarizes existing provider context. A new session or
+          // one that is still running a turn has nothing safe to compact.
+          if (!recovered || !shouldStartFreshTurn) {
+            throw new Error(
+              "native_context_compaction_unavailable: the agent has no idle resumed session to compact",
+            );
+          }
+          await session.startTurn({
+            message: { role: "user", text: "" },
+            continuation: true,
+            compact: true,
+          });
+          await checkpoint();
+        } else if (options.sessionGoalControl) {
           // Explicit controls remain authoritative after controller loss. In
           // particular, pause/clear/edit must reach a recovered session even
           // while its provider turn is still active.

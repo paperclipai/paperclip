@@ -2235,6 +2235,136 @@ impl CodexProvider {
         )
     }
 
+    /// Starts Codex's on-demand context compaction. Codex runs compaction as
+    /// its own turn, but `thread/compact/start` answers `{}`, so the turn
+    /// identity is bound from the `turn/started` notification that follows.
+    /// Messages read while waiting stay buffered for normal event delivery.
+    pub(crate) fn start_compaction_turn(&mut self) -> Result<Value, LocalRunnerError> {
+        if self.config.provider != "codex" {
+            return Err(LocalRunnerError::invalid(
+                "on-demand context compaction requires Codex",
+            ));
+        }
+        if self.quarantined {
+            return Err(LocalRunnerError::invalid(
+                "Codex provider is quarantined after unsafe recovered work",
+            ));
+        }
+        if self.active_provider_turn_id.is_some() {
+            return Err(LocalRunnerError::invalid(
+                "Codex already has an active provider turn",
+            ));
+        }
+        if self.ambiguous_turn_start_pending {
+            return Err(LocalRunnerError::invalid(
+                "Codex has an unresolved ambiguous provider turn start",
+            ));
+        }
+        self.rollover_settled_turn_epoch_if_needed()?;
+        let prior_reconciliation_pending = self.completion_reconciliation_pending;
+        self.completion_reconciliation_pending = false;
+        let prior_buffered_message_count = self.pending_messages.len();
+        self.ambiguous_turn_start_pending = true;
+        let runtime_request_scope = new_runtime_request_scope()?;
+        match self.request_classified(
+            "thread/compact/start",
+            json!({"threadId": self.thread_id}),
+        ) {
+            Ok(_) => {}
+            Err(ProviderRequestError::Rejected(error)) => {
+                let definite_rejection = self
+                    .pending_messages
+                    .iter()
+                    .skip(prior_buffered_message_count)
+                    .all(|buffered| is_unbound_rejected_turn_diagnostic(&buffered.value));
+                if definite_rejection {
+                    self.ambiguous_turn_start_pending = false;
+                    self.completion_reconciliation_pending = prior_reconciliation_pending;
+                }
+                return Err(error);
+            }
+            Err(ProviderRequestError::Ambiguous(error)) => return Err(error),
+        }
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        let mut scanned = prior_buffered_message_count;
+        loop {
+            while scanned < self.pending_messages.len() {
+                let message = &self.pending_messages[scanned].value;
+                scanned += 1;
+                if message.get("method").and_then(Value::as_str) != Some("turn/started")
+                    || message.get("id").is_some()
+                {
+                    continue;
+                }
+                let params = message.get("params").cloned().unwrap_or(Value::Null);
+                validate_notification_binding(&self.thread_id, None, &params)?;
+                let provider_turn_id = match bounded_provider_turn_id(notification_turn_id(&params))
+                {
+                    Ok(provider_turn_id) => provider_turn_id,
+                    Err(error) => {
+                        // Codex accepted the compaction without a usable
+                        // identity. It cannot be bound or interrupted, so
+                        // terminate it like an invalid turn/start response.
+                        self.rejected_accepted_turn = Some(RejectedAcceptedTurn::InvalidIdentity);
+                        self.expected_shutdown = true;
+                        self.completed_turn_authority = None;
+                        let _ = self.cancel_pending_requests();
+                        let _ = self.process.terminate_group();
+                        return Err(error);
+                    }
+                };
+                if self.settled_provider_turn_ids.contains(&provider_turn_id) {
+                    return Err(self.reject_accepted_reused_turn_identity(provider_turn_id));
+                }
+                self.accept_replacement_turn(provider_turn_id.clone(), runtime_request_scope);
+                return Ok(json!({"turn": {"id": provider_turn_id}}));
+            }
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            if remaining.is_zero() {
+                // The start stays ambiguous: a late turn/started is still
+                // adopted by the ambiguous-start validator.
+                return Err(LocalRunnerError::invalid(
+                    "Codex thread/compact/start did not report its turn within 30 seconds",
+                ));
+            }
+            let Some(line) = self.receive_provider_stdout_line(remaining)? else {
+                if let Some(exit) = self.process.try_wait()? {
+                    self.drain_provider_diagnostics(Duration::from_millis(50));
+                    let diagnostic_suffix = self.provider_diagnostic_suffix();
+                    return Err(LocalRunnerError::invalid(format!(
+                        "Codex exited before its compaction turn started (exitCode={:?}, signal={:?}){diagnostic_suffix}",
+                        exit.exit_code, exit.signal
+                    )));
+                }
+                continue;
+            };
+            let trace_frame_id = self.trace_inbound(&line);
+            let message = parse_provider_message(&line)?;
+            if self
+                .pending_messages
+                .len()
+                .saturating_add(self.deferred_ambiguous_messages.len())
+                >= MAX_BUFFERED_MESSAGES
+            {
+                return Err(LocalRunnerError::invalid(
+                    "Codex emitted too many messages before its compaction turn started",
+                ));
+            }
+            let retained_bytes = json_size(&message, "buffered Codex provider message")?;
+            self.pending_message_bytes =
+                retain_buffered_message_bytes(self.pending_message_bytes, retained_bytes)
+                    .ok_or_else(|| {
+                        LocalRunnerError::invalid(
+                            "Codex buffered messages exceed the 16 MiB aggregate limit",
+                        )
+                    })?;
+            self.pending_messages.push_back(BufferedProviderMessage {
+                value: message,
+                trace_frame_id,
+            });
+        }
+    }
+
     pub fn steer_turn(&mut self, message: &str) -> Result<Value, LocalRunnerError> {
         let turn_id = self
             .active_provider_turn_id

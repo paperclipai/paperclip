@@ -205,6 +205,11 @@ export interface NativeSession {
     requestedCollaborationMode?: "default" | "plan";
     /** OpenCode/OpenRouter only. Applies to this turn, never subsequent turns. */
     reasoningMode?: "default" | "disabled";
+    /**
+     * Run the provider's own context compaction as this turn instead of
+     * submitting `message`. Only for a resumed session with prior context.
+     */
+    compact?: true;
   }): Promise<{
     turnId: string;
     effectiveCollaborationMode?: "default" | "plan";

@@ -3619,6 +3619,18 @@ impl CodexCommandExecutor {
             }
             Some(_) => return Err(DurableRunnerError::invalid("invalid turn.reasoningMode")),
         };
+        // `compact` starts the provider's on-demand context compaction as
+        // this turn. It carries no user text, skills, or reasoning overrides.
+        let compact = match payload.get("compact") {
+            None | Some(Value::Bool(false)) => false,
+            Some(Value::Bool(true)) => true,
+            Some(_) => return Err(DurableRunnerError::invalid("turn.start compact must be a boolean")),
+        };
+        if compact && (!skills.is_empty() || reasoning_mode.is_some() || payload.get("text").is_some()) {
+            return Err(DurableRunnerError::invalid(
+                "a compaction turn.start cannot carry text, skills, or a reasoning mode",
+            ));
+        }
         self.restore_provider_if_needed()?;
         if reasoning_mode.is_some()
             && self
@@ -3677,10 +3689,24 @@ impl CodexCommandExecutor {
                 ))
             })?;
         self.rollover_provider_identity_epochs_if_needed()?;
-        let text = payload
-            .get("text")
-            .and_then(Value::as_str)
-            .ok_or_else(|| DurableRunnerError::invalid("turn.start payload.text is required"))?;
+        let text = if compact {
+            ""
+        } else {
+            payload
+                .get("text")
+                .and_then(Value::as_str)
+                .ok_or_else(|| DurableRunnerError::invalid("turn.start payload.text is required"))?
+        };
+        if compact
+            && self
+                .state
+                .as_ref()
+                .is_some_and(|state| state.config.provider != "codex")
+        {
+            return Err(DurableRunnerError::invalid(
+                "on-demand context compaction requires Codex",
+            ));
+        }
         let cwd = self
             .state
             .as_ref()
@@ -3716,16 +3742,20 @@ impl CodexCommandExecutor {
             rejected_accepted_turn,
         ) = {
             let provider = self.ensure_provider()?;
-            let result = provider.start_turn_with_options_and_effort(
-                text,
-                &cwd,
-                CodexTurnOptions {
-                    skills: &skills,
-                    reasoning_mode,
-                },
-                payload.get("effort"),
-                run_id.as_deref(),
-            );
+            let result = if compact {
+                provider.start_compaction_turn()
+            } else {
+                provider.start_turn_with_options_and_effort(
+                    text,
+                    &cwd,
+                    CodexTurnOptions {
+                        skills: &skills,
+                        reasoning_mode,
+                    },
+                    payload.get("effort"),
+                    run_id.as_deref(),
+                )
+            };
             (
                 result,
                 provider.completed_turn_authority().is_some(),

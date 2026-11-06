@@ -3,8 +3,8 @@ import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-const api = vi.hoisted(() => ({ getContextUsage: vi.fn() }));
-vi.mock("@/api/issues", () => ({ issuesApi: { getContextUsage: api.getContextUsage } }));
+const api = vi.hoisted(() => ({ getContextUsage: vi.fn(), compactContext: vi.fn() }));
+vi.mock("@/api/issues", () => ({ issuesApi: { getContextUsage: api.getContextUsage, compactContext: api.compactContext } }));
 import { ApiError } from "@/api/api-error";
 import { IssueContextUsageRow } from "./context-usage-row";
 
@@ -73,6 +73,44 @@ describe("IssueContextUsageRow", () => {
     render("agent-2"); await settle();
     expect(api.getContextUsage).toHaveBeenCalledTimes(2);
     expect(container.textContent).toBe("");
+  });
+
+  function openCard() {
+    const trigger = container.querySelector<HTMLButtonElement>("[data-testid=context-usage-meter]");
+    expect(trigger).toBeTruthy();
+    flushSync(() => trigger!.click());
+    return document.body.querySelector<HTMLButtonElement>("[data-testid=context-usage-compact]");
+  }
+
+  it("asks the agent to compact from the hover card", async () => {
+    api.getContextUsage.mockResolvedValue({ ...reading, compaction: { status: "available", reasonCode: null, reason: null } });
+    api.compactContext.mockReturnValue(new Promise(() => {}));
+    render(); await settle();
+    const button = openCard();
+    expect(button?.textContent).toContain("Compact now");
+    expect(button?.disabled).toBe(false);
+    flushSync(() => button!.click()); await settle();
+    expect(api.compactContext).toHaveBeenCalledWith("issue-1");
+    expect(document.body.querySelector("[data-testid=context-usage-compact]")?.textContent).toContain("Compacting…");
+  });
+
+  it("explains why compaction is unavailable", async () => {
+    api.getContextUsage.mockResolvedValue({
+      ...reading,
+      compaction: { status: "unavailable", reasonCode: "agent_busy", reason: "Available when the agent finishes its current run." },
+    });
+    render(); await settle();
+    const button = openCard();
+    expect(button?.disabled).toBe(true);
+    expect(document.body.textContent).toContain("Available when the agent finishes its current run.");
+  });
+
+  it("shows a compaction already in progress", async () => {
+    api.getContextUsage.mockResolvedValue({ ...reading, compaction: { status: "pending", reasonCode: null, reason: null, runId: "run-2" } });
+    render(); await settle();
+    const button = openCard();
+    expect(button?.disabled).toBe(true);
+    expect(button?.textContent).toContain("Compacting…");
   });
 
   it("keeps the last reading when a refresh fails", async () => {
