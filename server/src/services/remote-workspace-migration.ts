@@ -253,9 +253,7 @@ async function inspect(db: ReadDb, input: { companyId: string; workspaceId: stri
   if (service) reasons.push("workspace_runtime_service_unsettled");
   const recoveryIssueIds = [...new Set([workspace.sourceIssueId, ...referencedRuns.map(run => run.issueId),
     ...legacyRecoverySources.map(source => source.issueId)].filter((id): id is string => Boolean(id)))];
-  const recoveries = recoveryIssueIds.length ? await db.select({ id: issueRecoveryActions.id, sourceIssueId: issueRecoveryActions.sourceIssueId,
-    status: issueRecoveryActions.status, updatedAt: issueRecoveryActions.updatedAt, kind: issueRecoveryActions.kind,
-    cause: issueRecoveryActions.cause, evidence: issueRecoveryActions.evidence }).from(issueRecoveryActions).where(and(
+  const recoveries = recoveryIssueIds.length ? await db.select().from(issueRecoveryActions).where(and(
     eq(issueRecoveryActions.companyId, workspace.companyId), inArray(issueRecoveryActions.sourceIssueId, recoveryIssueIds),
     inArray(issueRecoveryActions.status, ["active", "escalated"]),
   )) : [];
@@ -266,6 +264,8 @@ async function inspect(db: ReadDb, input: { companyId: string; workspaceId: stri
       const held = await inspectOnlineLegacyWorkspaceRecoveryHold(db, { workspace, recovery });
       if (!held) { reasons.push("workspace_recovery_unresolved"); continue; }
       onlineRecoveryHolds.push({ actionId: recovery.id, ...held });
+      if (held.preparedSource && !legacyRecoverySources.some(source => source.runId === held.preparedSource!.runId))
+        legacyRecoverySources.push(held.preparedSource);
       if (held.finalizedHold) {
         finalizedRecoveryHolds.push(held.finalizedHold);
         if (held.finalizedHold.source && !legacyRecoverySources.some(source => source.runId === held.finalizedHold!.source!.runId))

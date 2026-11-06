@@ -325,6 +325,12 @@ async function workspaceArchive(input: {
       const directoryStat = await fs.lstat(directory);
       if (!directoryStat.isDirectory() || directoryStat.isSymbolicLink() || await fs.realpath(directory) !== directory) fail("changed");
       const names = (await fs.readdir(directory)).sort();
+      if (input.requireNoGit && (names.includes("commondir") || names.includes("gitdir")
+        || names.includes("objects") && names.some(name => ["HEAD", "refs", "packed-refs"].includes(name))
+        || names.includes("HEAD") && names.includes("config")
+        || path.basename(directory) === "info" && names.some(name => ["alternates", "http-alternates"].includes(name)))) {
+        fail("online_source_git_requires_shared_fence");
+      }
       const inRepository = parentIsRepository || names.includes(".git");
       if (skipGit && names.includes(".git") && !excluded(relative ? `${relative}/.git` : ".git")) {
         if (input.requireNoGit) fail("online_source_git_requires_shared_fence");

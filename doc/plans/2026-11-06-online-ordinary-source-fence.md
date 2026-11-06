@@ -30,7 +30,9 @@ local workspace if migration published remote authority while selection waited.
 
 The archive owner retains all stable-read, mutation, cancellation, normalization,
 restore and digest checks. Scoped ordinary captures reject included Git metadata
-before reading it. The self-contained remote script contract remains intact.
+before reading it. Bare repository shapes, detached Git administration and
+object-store alternates also require the larger Git fence. The self-contained
+remote script contract remains intact.
 The existing nested imported-child gate remains in force.
 
 Terminal native recovery sources use the canonical online preservation helper.
@@ -39,6 +41,14 @@ after acquiring it, and compares journaled fingerprints under publication row
 locks. Coordinator ownership must be null, including an expired owner. Provider
 allocations, finalization checkpoints and task warnings remain present. Unknown
 file recovery and other aliases' unproven recovery remain blockers.
+
+The finalizer's known failed-export watchdog can retain a prepared source. Its
+company, task, run, failure cause and canonical action fingerprint must match.
+The coordinator must have a terminal failure with no owner or future retry.
+The board-owned action must have no wake policy or separate file-recovery marker.
+The proof retains `preparedSource` explicitly and never calls it finalized. The
+original action, prepared descriptor and allocations remain unchanged. Its full
+action/source fingerprint is checked under the same physical finalizer lock.
 
 The separate company-scoped `reconcileOnlineWorkspaceOperations` entry retires
 only a superseded operation with an exact later successful finalization receipt,

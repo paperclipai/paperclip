@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { sql, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { activityLog, agents, companies, createDb, environmentLeases, environments, executionWorkspaceSnapshots, executionWorkspaces, heartbeatRuns, issues, nativeRunFinalizations, projects, workspaceOperations, type Db } from "@paperclipai/db";
+import { activityLog, agents, companies, createDb, environmentLeases, environments, executionWorkspaceSnapshots, executionWorkspaces, heartbeatRuns, issueRecoveryActions, issues, nativeRunFinalizations, projects, workspaceOperations, type Db } from "@paperclipai/db";
 import { readRemoteWorkspaceAuthority, readRemoteWorkspaceRunReference } from "@paperclipai/shared";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
 import { resolveManagedProjectWorkspaceDir, resolvePaperclipInstanceRoot } from "../home-paths.js";
@@ -18,6 +18,7 @@ import { materializeManagedProjectWorkspace } from "./managed-repository-checkou
 import { withExecutionWorkspaceLifecycleLock } from "./execution-workspace-lifecycle-lock.js";
 import { IsolatedRepositorySourceBusy, withIsolatedRepositorySourceLock, withWorkspaceSourceLocks } from "./workspace-source-lock.js";
 import { tryLockNativeWorkspaceFinalization } from "./native-runtime/native-workspace-finalization-ownership.js";
+import { recordNativeFinalizationFailure } from "./native-runtime/native-run-finalizer.js";
 
 const support = await getEmbeddedPostgresTestSupport();
 describe.skipIf(!support.supported)("online ordinary physical source fence", () => {
@@ -232,16 +233,23 @@ describe.skipIf(!support.supported)("online ordinary physical source fence", () 
     const reference = { schema: "paperclip.native-workspace-sync/v3", state: "prepared", workspaceId: f.workspaceId,
       leaseId: randomUUID(), providerLeaseId: randomUUID(), remoteCwd: "/workspaces/retained",
       descriptorSha256: "12".repeat(32), baselineSha256: "34".repeat(32), resourceDisposition: "destroy" };
-    const [run] = await db.insert(heartbeatRuns).values({ id: runId, companyId: f.companyId, agentId: agent.id,
+    await db.insert(heartbeatRuns).values({ id: runId, companyId: f.companyId, agentId: agent.id,
       nativeIssueId: f.aliases[0].issue.id, status: "failed", runtimeMode: "native", runnerProfileJson: { nativeWorkspaceSync: reference } }).returning();
-    const [owner] = await db.insert(nativeRunFinalizations).values({ companyId: f.companyId, issueId: f.aliases[0].issue.id,
-      runId, phase: "terminal_failure", failureCode: "native_workspace_sync_out_retry_exhausted" }).returning();
+    await db.insert(nativeRunFinalizations).values({ companyId: f.companyId, issueId: f.aliases[0].issue.id,
+      runId, phase: "observed" });
     const [environment] = await db.insert(environments).values({ name: runId, driver: "daytona" }).returning();
     const [lease] = await db.insert(environmentLeases).values({ id: reference.leaseId, companyId: f.companyId,
       issueId: f.aliases[0].issue.id, heartbeatRunId: runId, executionWorkspaceId: f.workspaceId, environmentId: environment.id,
       provider: "daytona", providerLeaseId: reference.providerLeaseId, status: "retained", leasePolicy: "retain_on_failure",
       metadata: { remoteCwd: reference.remoteCwd } }).returning();
-    return { ...f, run, owner, lease };
+    await recordNativeFinalizationFailure({ db, runId, error: new Error("native_workspace_sync_out_unrecoverable"),
+      failureScope: "workspace", permanent: true });
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    const [owner] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, runId));
+    const [warning] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, f.aliases[0].issue.id));
+    expect(warning).toMatchObject({ kind: "active_run_watchdog", cause: "native_workspace_sync_out_unrecoverable",
+      status: "active", evidence: { runId } });
+    return { ...f, run, owner, lease, warning };
   }
   it("imports a terminal prepared source while retaining its original provider and finalization obligations", async () => {
     const f = await recoveryFixture(), put = storage.putFile.bind(storage);
@@ -256,6 +264,7 @@ describe.skipIf(!support.supported)("online ordinary physical source fence", () 
     await expect(migrateRemoteWorkspace({ db, storage, ...f, apply: true })).resolves.toMatchObject({ applied: true });
     expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.run.id)))[0]).toEqual(f.owner);
     expect((await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.lease.id)))[0]).toEqual(f.lease);
+    expect((await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, f.warning.id)))[0]).toEqual(f.warning);
     expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, unrelated.id)))[0]).toEqual(unrelated);
     const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.run.id));
     expect(run.runnerProfileJson?.nativeWorkspaceSync).toEqual(f.run.runnerProfileJson?.nativeWorkspaceSync);

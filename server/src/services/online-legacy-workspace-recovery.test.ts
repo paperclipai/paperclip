@@ -8,6 +8,7 @@ import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } fro
 import { inspectOnlineLegacyWorkspaceRecoveryHold, inspectOnlineLegacyWorkspaceRecoverySource,
   lockOnlineLegacyWorkspaceRecoverySources } from "./online-legacy-workspace-recovery.js";
 import { tryLockNativeWorkspaceFinalization } from "./native-runtime/native-workspace-finalization-ownership.js";
+import { nativeSha256 } from "./native-runtime/canonical.js";
 
 const support = await getEmbeddedPostgresTestSupport();
 describe.skipIf(!support.supported)("online legacy source preservation", () => {
@@ -54,6 +55,50 @@ describe.skipIf(!support.supported)("online legacy source preservation", () => {
     };
   }
   const inspect = (f: Awaited<ReturnType<typeof fixture>>) => inspectOnlineLegacyWorkspaceRecoverySource(db, f);
+  async function preparedWarning(f: Awaited<ReturnType<typeof fixture>>) {
+    const cause = "native_workspace_sync_out_retry_exhausted";
+    const [warning] = await db.insert(issueRecoveryActions).values({ companyId: f.companyId, sourceIssueId: f.issue.id,
+      kind: "active_run_watchdog", cause, fingerprint: nativeSha256({ runId: f.runId, failureCode: cause }),
+      ownerType: "board", returnOwnerAgentId: f.agent.id, nextAction: "Preserve the failed export",
+      evidence: { runId: f.runId, coordinatorAttempt: 3 } }).returning();
+    return warning;
+  }
+
+  it("preserves a prepared failed-export warning under its exact source and physical lock", async () => {
+    const f = await fixture(), recovery = await preparedWarning(f), before = await retained(f);
+    const held = await inspectOnlineLegacyWorkspaceRecoveryHold(db, { workspace: f.workspace, recovery });
+    expect(held).toMatchObject({ finalizedHold: null, preparedSource: {
+      runId: f.runId, issueId: f.issue.id, reference: f.reference,
+    } });
+    await db.transaction(async tx => {
+      expect(await lockOnlineLegacyWorkspaceRecoverySources(tx as unknown as Db, {
+        companyId: f.companyId, sources: [], holds: [held!],
+      })).toBe(true);
+      await db.transaction(async other => {
+        expect(await tryLockNativeWorkspaceFinalization(other as unknown as Db, f)).toBe(false);
+      });
+      expect(await inspectOnlineLegacyWorkspaceRecoveryHold(tx, { workspace: f.workspace, recovery })).toEqual(held);
+    });
+    expect(await retained(f)).toEqual(before);
+    const changed = await inspectOnlineLegacyWorkspaceRecoveryHold(db, { workspace: f.workspace,
+      recovery: { ...recovery, evidence: { ...recovery.evidence, coordinatorAttempt: 4 } } });
+    expect(changed?.fingerprint).not.toBe(held?.fingerprint);
+  });
+
+  it.each(["run", "task", "fingerprint", "recovery_owner", "file_marker"])("rejects a prepared warning with changed %s binding", async kind => {
+    const f = await fixture(), recovery = await preparedWarning(f);
+    if (kind === "run") recovery.evidence = { runId: randomUUID() };
+    if (kind === "task") {
+      const [child] = await db.insert(issues).values({ companyId: f.companyId, parentId: f.issue.id, title: "Related task" }).returning();
+      recovery.sourceIssueId = child.id;
+    }
+    if (kind === "fingerprint") recovery.fingerprint = "00".repeat(32);
+    if (kind === "recovery_owner") recovery.evidence = { ...recovery.evidence, systemRecovery: { state: "running" } };
+    if (kind === "file_marker") recovery.evidence = { ...recovery.evidence, workspaceRecovery: true };
+    const before = await retained(f);
+    expect(await inspectOnlineLegacyWorkspaceRecoveryHold(db, { workspace: f.workspace, recovery })).toBeNull();
+    expect(await retained(f)).toEqual(before);
+  });
 
   it("preserves every source and historical process identity while unrelated object-backed work remains active", async () => {
     const f = await fixture();
