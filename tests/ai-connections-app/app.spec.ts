@@ -203,7 +203,7 @@ for (const [provider, label, adapter] of [["anthropic", "Claude", "claude_local"
     else await expect(page.getByText("ABCD-EFGH", { exact: true })).toBeVisible();
     await signIn.click();
     expect(await page.evaluate(() => (window as unknown as { loginDestination: string }).loginDestination)).toBe("https://provider.example/authorize");
-    await expect(page.getByRole("button", { name: "Waiting for code", exact: true })).toBeDisabled();
+    await expect(page.getByRole("button", { name: provider === "openai" ? "Waiting for auth…" : "Waiting for code", exact: true })).toBeDisabled();
     // The shared footer label animates; capture after it has settled.
     await page.waitForTimeout(600);
     await page.screenshot({ path: testInfo.outputPath(`${provider}-onboarding-browser-login.png`), fullPage: true });

@@ -401,7 +401,7 @@ describe("Codex app-server Codex driver", () => {
       { runDelta: first, runDeltaComplete: true },
       { runDelta: { ...first, ...second }, runDeltaComplete: false },
     ]);
-    expect(await session.usage()).toMatchObject({ runDeltaComplete: false });
+    expect(await session.usage!()).toMatchObject({ runDeltaComplete: false });
   });
 
   it("keeps usage reported between runs in the next run's delta so totals stay exact", async () => {
@@ -478,7 +478,7 @@ describe("Codex app-server Codex driver", () => {
     expect(events.some((event) => event.eventType === "session.failed")).toBe(
       false,
     );
-    expect(await session.usage()).toMatchObject({
+    expect(await session.usage!()).toMatchObject({
       total: { inputTokens: 10, outputTokens: 4 },
     });
   });

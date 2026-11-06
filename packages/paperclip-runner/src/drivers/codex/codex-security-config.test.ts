@@ -1,6 +1,8 @@
 import { createRequire } from "node:module";
 import { execFileSync } from "node:child_process";
-import { dirname, resolve } from "node:path";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import { resolvePinnedCodexCommand } from "./codex-command.js";
 import { evalProviderTransportOptions } from "../../cli/eval-provider-runtime.js";
 import { describe, expect, it } from "vitest";
@@ -358,8 +360,57 @@ describe("Codex security configuration", () => {
       "features.plugins": false,
       "features.multi_agent": false,
       "features.memories": false,
-      "features.image_generation": false,
     });
+  });
+
+  it("N-12: lets an API-key Codex agent generate images with its existing provider key instead of asking for another", () => {
+    // Codex API path: the agent's OpenAI key reaches only the trusted
+    // app-server process. Codex's built-in image tool uses that provider auth;
+    // with it disabled the agent falls back to an OPENAI_API_KEY script that
+    // the sandboxed shell can never see, so it asks the user for a second key.
+    const source = {
+      HOME: "/host/home", CODEX_HOME: "/host/codex", PATH: "/safe/bin",
+      OPENAI_API_KEY: "agent-provider-key",
+    };
+    const args = createIsolatedCodexAppServerArgs(source);
+    const serialized = args.join("\n");
+    expect(args).not.toContain("image_generation");
+    for (const mode of ["default", "plan"] as const) {
+      expect(createSecuredCodexThreadParams("/workspace", mode, true, false, source).config)
+        .not.toHaveProperty("features.image_generation");
+    }
+    // The tool saves results under CODEX_HOME/generated_images; the agent must
+    // be able to read (and so copy) them into the workspace, nothing else there.
+    for (const profile of ["paperclip-runner-workspace-only", "paperclip-runner-workspace-read-only"]) {
+      const rules = args.find((arg) => arg.startsWith(`permissions.${profile}.filesystem=`))!;
+      expect(rules).toContain('"/host/codex"="none"');
+      expect(rules).toContain('"/host/codex/generated_images"="read"');
+    }
+    // The existing key is reused by the provider, never exposed to the shell.
+    expect(serialized).not.toContain("OPENAI_API_KEY");
+    expect(serialized).not.toContain("agent-provider-key");
+  });
+
+  it("N-12: grants generated images in preconfigured mode only when CODEX_HOME is outside HOME", () => {
+    const inside = createIsolatedCodexAppServerArgs({ HOME: "/users/executor", CODEX_HOME: "/users/executor/.codex", PAPERCLIP_RUNNER_HOME_MODE: "preconfigured" }).join("\n");
+    expect(inside).not.toContain("generated_images");
+    const outside = createIsolatedCodexAppServerArgs({ HOME: "/users/executor", CODEX_HOME: "/var/lib/codex-home", PAPERCLIP_RUNNER_HOME_MODE: "preconfigured" }).join("\n");
+    expect(outside.match(/"\/var\/lib\/codex-home\/generated_images"="read"/g)).toHaveLength(2);
+    expect(outside).not.toContain('"/var/lib/codex-home"=');
+  });
+
+  it("N-12: the pinned Codex binary keeps built-in image generation enabled under the isolated launch", () => {
+    const codexHome = mkdtempSync(join(tmpdir(), "paperclip-n12-codex-home-"));
+    try {
+      const args = createIsolatedCodexAppServerArgs({ PATH: process.env.PATH, HOME: codexHome, CODEX_HOME: codexHome });
+      const output = execFileSync(resolvePinnedCodexCommand(), [...args.slice(0, -1), "features", "list"], {
+        env: { PATH: process.env.PATH, HOME: codexHome, CODEX_HOME: codexHome },
+        encoding: "utf8", timeout: 30_000, maxBuffer: 256 * 1024,
+      });
+      expect(output.split("\n").find((line) => /^image_generation\s/.test(line))).toMatch(/\strue\s*$/);
+    } finally {
+      rmSync(codexHome, { recursive: true, force: true });
+    }
   });
 
   it("keeps automatic execution inside the workspace without host credentials and with normal network access", () => {

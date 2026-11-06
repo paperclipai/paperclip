@@ -417,7 +417,7 @@ export function createPostgresRunDispatchAdapter(
     facts.issueAssigneeAgentId = issue.assigneeAgentId;
     facts.issueExecutionRunId = issue.executionRunId;
     facts.issueCheckoutRunId = issue.checkoutRunId;
-    if (input.conversationContinuation) {
+    if (input.conversationContinuation || retryReason === "interrupted_preparation") {
       facts.pendingResponse = await connectionContinuationPendingResponse(dbOrTx as unknown as Db,
         issue, input.responsibleUserId, input.runId);
     }
@@ -657,7 +657,7 @@ export function createPostgresRunDispatchAdapter(
         unresolvedBlockerIssueIds: readiness.unresolvedBlockerIssueIds,
         unresolvedBlockerCount: readiness.unresolvedBlockerCount,
       } : null,
-      pendingResponse: issue && (input.conversationContinuation || context.connectionIntentResolution === "existing_connection")
+      pendingResponse: issue && (input.conversationContinuation || retryReason === "interrupted_preparation" || context.connectionIntentResolution === "existing_connection")
         ? await connectionContinuationPendingResponse(dbOrTx as unknown as Db, issue, input.responsibleUserId, input.runId)
         : null,
       issueFound: issue !== null,

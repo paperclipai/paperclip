@@ -472,6 +472,7 @@ Invariants:
 - single assignee only
 - task must trace to company goal chain via `goal_id`, `parent_id`, or project-goal linkage
 - `in_progress` requires assignee
+- agent task presentation reserves **In Progress** for a task-linked queued or running run; inactive tasks project recovery as **Blocked**, pending responses/review as **In Review**, scheduled checks as **Monitoring**, or remaining work as **Todo** without changing lifecycle/admission state
 - an `in_review -> done | cancelled` verdict is authorized against the current review policy while the issue row is locked; a policy change in the same request or a concurrent request cannot relax that verdict gate
 - accepting or rejecting the review-confirmation interaction locks the issue row before resolving the interaction and reauthorizes against the current review policy in that transaction
 - accepting a fresh `request_confirmation` for the current issue's `plan` revision changes `work_mode = planning` to `work_mode = standard` in the same transaction as the accepted interaction; the existing agent-return transition also moves an eligible `in_review` issue to `todo` without changing its agent owner
@@ -1762,7 +1763,10 @@ publication is fenced separately from settlement. Inputs arriving or committing
 later stay pending; no global sequence watermark consumes them. Limited-budget
 admission refuses relevant unevaluated inputs older than fifteen seconds.
 Unchanged idle decisions do not expire; unknown accounting retains its separate
-conservative admission restriction. Provider reporting and cancellation delays
+conservative admission restriction. Completed runs that await accounting hold
+new work only: they never open a hard-stop incident, pause a scope, or stop
+running work. Only spend at the limit, or unpriced usage under a blocking
+policy, does that. Provider reporting and cancellation delays
 remain additional to evaluation lag. Cancellation delivery is asynchronous and
 scoped; committed per-run Stop survives policy changes and restart until existing
 stop proof succeeds. Budget resume cannot clear a manual hold.
@@ -1877,6 +1881,12 @@ Native runs retain final usage receipts during a bounded accounting-only drain
 after a governed wait cancels provider work. This does not accept late messages,
 tool calls, or new completion proposals. Missing or incomplete receipts continue
 to block budget admission.
+After native recovery reaches terminal failure, an incomplete receipt holds new
+work as recovering accounting; it does not open a hard-stop incident. When the
+run no longer records a provider process (recovery clears it only after a
+verified stop), no producer can deliver the receipt. Accounting then records
+its known part as an unpriced charge, so the unpriced-usage policy governs
+admission. A later receipt still posts through late-receipt reconciliation.
 A controller that detaches for server restart loses checkpoint and completion
 write authority. A closing event stream is not proof that the governed run
 finished; the replacement controller must adopt and settle the original run.

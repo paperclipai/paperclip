@@ -9,7 +9,9 @@ import type { CommandManagedRuntimeRunner } from "./command-managed-runtime.js";
 import {
   createUnrelatedHistoryGraftCommit,
   GIT_SYNC_COMMIT_IDENTITY_ARGS,
+  listProjectRepositoryStagingPaths,
   PROJECT_REPOSITORIES_DIR,
+  PROJECT_REPOSITORY_STAGING_PATTERN,
   readSanitizedOriginRemoteUrl,
 } from "./git-workspace-sync.js";
 import type { RunProcessResult } from "./server-utils.js";
@@ -1100,6 +1102,7 @@ export async function listLocalProjectRepositories(localDir: string): Promise<st
   }
   const repositories: string[] = [];
   for (const entry of await fs.readdir(root, { withFileTypes: true })) {
+    if (entry.isDirectory() && PROJECT_REPOSITORY_STAGING_PATTERN.test(entry.name)) continue;
     if (!entry.isDirectory() || !PROJECT_REPOSITORY_NAME_PATTERN.test(entry.name)) {
       throw new Error("Invalid project repository directory");
     }
@@ -1644,9 +1647,11 @@ export async function prepareWorkspaceForSshExecution(input: {
   onProgress?: RuntimeProgressSink;
   workspaceFileMode?: "all";
   workspaceExclude?: string[];
-}): Promise<{ gitBacked: boolean; repositories?: string[] }> {
+}): Promise<{ gitBacked: boolean; repositories?: string[]; excludedPaths?: string[] }> {
   const remoteDir = input.remoteDir ?? input.spec.remoteCwd;
   const gitSnapshot = input.workspaceFileMode === "all" ? null : await readLocalGitWorkspaceSnapshot(input.localDir);
+  const excludedPaths = await listProjectRepositoryStagingPaths(input.localDir);
+  const excludedResult = excludedPaths.length > 0 ? { excludedPaths } : {};
 
   if (gitSnapshot) {
     const repositories = await listLocalProjectRepositories(input.localDir);
@@ -1655,7 +1660,7 @@ export async function prepareWorkspaceForSshExecution(input: {
       localDir: input.localDir,
       remoteDir,
       snapshot: gitSnapshot,
-      exclude: repositories.length > 0 ? [PROJECT_REPOSITORIES_DIR] : [],
+      exclude: repositories.length > 0 ? [PROJECT_REPOSITORIES_DIR] : excludedPaths,
       onProgress: input.onProgress,
       progressLabel: "workspace",
     });
@@ -1675,7 +1680,7 @@ export async function prepareWorkspaceForSshExecution(input: {
         progressLabel: relative,
       });
     }
-    return { gitBacked: true, ...(repositories.length > 0 ? { repositories } : {}) };
+    return { gitBacked: true, ...(repositories.length > 0 ? { repositories } : {}), ...excludedResult };
   }
 
   await clearRemoteDirectory({
@@ -1687,11 +1692,11 @@ export async function prepareWorkspaceForSshExecution(input: {
     spec: input.spec,
     localDir: input.localDir,
     remoteDir,
-    exclude: [".paperclip-runtime", ...(input.workspaceFileMode === "all" ? input.workspaceExclude ?? [] : [])],
+    exclude: [".paperclip-runtime", ...excludedPaths, ...(input.workspaceFileMode === "all" ? input.workspaceExclude ?? [] : [])],
     onProgress: input.onProgress,
     progressLabel: "workspace",
   });
-  return { gitBacked: false };
+  return { gitBacked: false, ...excludedResult };
 }
 
 export async function restoreWorkspaceFromSshExecution(input: {

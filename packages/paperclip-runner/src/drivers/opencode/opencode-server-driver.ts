@@ -90,6 +90,7 @@ import {
   canonicalOpenCodeMcpToolName,
   startOpenCodeMcpBridge,
   type OpenCodeMcpBridge,
+  type OpenCodeMcpBridgeOptions,
 } from "./mcp-bridge.js";
 import { nativeMcpLaunchBinding } from "../native-mcp.js";
 import {
@@ -399,6 +400,7 @@ export class OpenCodeServerDriver implements HarnessDriver {
           root,
           cwd,
           trace,
+          onRejectedCall: (call, error) => session?.observeRejectedToolCall(call, error),
           dispatch: (call) => {
             if (session === null)
               throw new Error("OpenCode session is not ready for tool calls");
@@ -450,6 +452,7 @@ export class OpenCodeServerDriver implements HarnessDriver {
           snapshot,
           now: this.#options.now ?? (() => new Date()),
           observabilityEnvironment: this.#options.environment,
+          managedToolNames: this.#options.dynamicTools?.map(tool => text(tool.name)).filter(Boolean),
           onDiagnostic: this.#options.onDiagnostic,
         });
         session.startEventPump();
@@ -573,11 +576,13 @@ class OpenCodeHarnessSession implements HarnessSession {
     snapshot: PersistedHarnessSession | null;
     now: () => Date;
     observabilityEnvironment?: NodeJS.ProcessEnv;
+    managedToolNames?: readonly string[];
     onDiagnostic?: (message: string) => void;
   }) {
     this.#runtime = input.runtime;
     this.#companyObservability = createOpenCodeCompanyObservability({
       environment: input.observabilityEnvironment, model: input.model, sensitiveValues: input.runtime.sensitiveValues,
+      managedToolNames: input.managedToolNames,
       onDiagnostic: input.onDiagnostic ?? ((message) => console.warn(message)),
     });
     this.#fetch = input.fetcher;
@@ -1126,6 +1131,18 @@ class OpenCodeHarnessSession implements HarnessSession {
       { turnId: request.turnId, itemId: request.itemId },
       { bypassTerminalTurnGate: true },
     );
+  }
+
+  observeRejectedToolCall(call: { tool: string; callId: string; arguments: unknown }, error: string): void {
+    const turnId = this.#activeTurnId;
+    if (!turnId || this.#closed) return;
+    const itemId = `${call.callId}:rejected:${randomBytes(12).toString("hex")}`;
+    this.#emit("item.started", {
+      kind: "dynamicToolCall", item: { type: "tool_call", id: itemId, name: call.tool, arguments: call.arguments },
+    }, { turnId, itemId });
+    this.#emit("item.completed", {
+      kind: "dynamicToolCall", item: { type: "tool_result", id: itemId, tool_use_id: itemId, is_error: true, error: redact(error) },
+    }, { turnId, itemId });
   }
 
   async dispatchTool(call: {
@@ -2425,6 +2442,7 @@ async function startRuntime(input: {
   root: string;
   cwd: string;
   trace: ProviderTraceFileSink | null;
+  onRejectedCall?: OpenCodeMcpBridgeOptions["onRejectedCall"];
   dispatch: (call: {
     tool: string;
     callId: string;
@@ -2463,6 +2481,7 @@ async function startRuntime(input: {
   const bridge = await startOpenCodeMcpBridge({
     tools: input.options.dynamicTools,
     handler: input.dispatch,
+    onRejectedCall: input.onRejectedCall,
     onDiagnostic: input.options.onDiagnostic,
     ...(input.options.durableToolRequests ? { timeoutMs: null } : {}),
   }).catch(async (error) => {

@@ -75,6 +75,128 @@ suite("remote workspace snapshot storage", () => {
     expect(row?.status).toBe("pending"); expect((row?.metadata?.uploads as unknown[]).length).toBe(1);
     await expect(uploadWorkspaceSnapshot({ ...f.upload, manifestDigest: "b".repeat(64) })).rejects.toThrow("operation_content_changed");
   });
+  it("recaptures only an unavailable unpublished operation while retaining every attempt", async () => {
+    const f = await fixture(), put = storage.putFile.bind(storage);
+    storage.putFile = async () => { throw new Error("upload_part InternalError"); };
+    await expect(uploadWorkspaceSnapshot(f.upload)).rejects.toThrow("upload_part InternalError");
+    const [pending] = await db.select().from(executionWorkspaceSnapshots);
+    const original = (pending!.metadata!.uploads as Record<string, unknown>[])[0]!;
+    await fs.rm(f.archivePath);
+    await fs.writeFile(path.join(f.cwd, "saved.txt"), "equivalent logical source, different physical capture\n");
+    const captured = await captureRemoteWorkspaceDirectory({ cwd: f.cwd, archivePath: f.archivePath });
+    const retry = { ...f.upload, manifestDigest: captured.manifestDigest, unpublishedRecapture: { sourceOperationId: f.operationId } };
+    await expect(uploadWorkspaceSnapshot({ ...retry, unpublishedRecapture: { sourceOperationId: randomUUID() } })).rejects.toThrow("operation_binding_changed");
+    storage.putFile = put;
+    const ref = await uploadWorkspaceSnapshot(retry);
+    expect(ref.manifestDigest).toBe(captured.manifestDigest);
+    const [saved] = await db.select().from(executionWorkspaceSnapshots);
+    expect(saved!.metadata!.uploads).toEqual([original, expect.objectContaining({ objectKey: ref.objectKey, manifestDigest: captured.manifestDigest })]);
+    // The capability does not reopen a published snapshot.
+    await expect(uploadWorkspaceSnapshot({ ...retry, manifestDigest: f.captured.manifestDigest })).rejects.toThrow("operation_content_changed");
+  });
+  it("prefers an available prior capture over a different recapture", async () => {
+    const f = await fixture(), put = storage.putFile.bind(storage);
+    storage.putFile = async input => { await put(input); throw new Error("lost upload reply"); };
+    await expect(uploadWorkspaceSnapshot(f.upload)).rejects.toThrow("lost upload reply");
+    await fs.rm(f.archivePath);
+    const ref = await uploadWorkspaceSnapshot({ ...f.upload, manifestDigest: "b".repeat(64), unpublishedRecapture: { sourceOperationId: f.operationId } });
+    expect(ref.manifestDigest).toBe(f.captured.manifestDigest);
+    expect((await db.select().from(executionWorkspaceSnapshots))[0]!.metadata!.uploads).toHaveLength(1);
+  });
+  it("rechecks prior objects after encryption before recording a recapture", async () => {
+    const f = await fixture(), put = storage.putFile.bind(storage), head = storage.headObject.bind(storage);
+    let savedInput!: Parameters<StorageService["putFile"]>[0];
+    storage.putFile = async input => {
+      const parts: Buffer[] = [];
+      for await (const bytes of input.body) parts.push(Buffer.from(bytes));
+      savedInput = { ...input, body: Buffer.concat(parts) };
+      throw new Error("upload interrupted before persistence");
+    };
+    await expect(uploadWorkspaceSnapshot(f.upload)).rejects.toThrow("upload interrupted before persistence");
+    let heads = 0;
+    storage.headObject = async (...args) => { if (++heads === 2) await put(savedInput); return head(...args); };
+    storage.putFile = put;
+    const ref = await uploadWorkspaceSnapshot({ ...f.upload, manifestDigest: "b".repeat(64), unpublishedRecapture: { sourceOperationId: f.operationId } });
+    expect(ref.manifestDigest).toBe(f.captured.manifestDigest);
+    expect(heads).toBe(2);
+    expect((await db.select().from(executionWorkspaceSnapshots))[0]!.metadata!.uploads).toHaveLength(1);
+  });
+  it("refuses stale recapture admission when another attempt enters the ledger", async () => {
+    const f = await fixture(), head = storage.headObject.bind(storage);
+    storage.putFile = async () => { throw new Error("upload unavailable"); };
+    await expect(uploadWorkspaceSnapshot(f.upload)).rejects.toThrow("upload unavailable");
+    let ready!: () => void, release!: () => void;
+    const paused = new Promise<void>(resolve => { ready = resolve; }), resume = new Promise<void>(resolve => { release = resolve; });
+    let heads = 0;
+    storage.headObject = async (...args) => { if (++heads === 1) { ready(); await resume; } return head(...args); };
+    const stale = uploadWorkspaceSnapshot({ ...f.upload, manifestDigest: "b".repeat(64), unpublishedRecapture: { sourceOperationId: f.operationId } });
+    try {
+      await paused;
+      await expect(uploadWorkspaceSnapshot(f.upload)).rejects.toThrow("upload unavailable");
+      release();
+      await expect(stale).rejects.toThrow("upload_attempts_changed");
+      const [saved] = await db.select().from(executionWorkspaceSnapshots);
+      expect(saved).toMatchObject({ status: "pending", objectKey: null });
+      expect(saved!.metadata!.uploads).toHaveLength(2);
+    } finally { release(); await Promise.allSettled([stale]); }
+  });
+  it.each(["unknown", "corrupt"])("refuses recapture when a prior object is %s", async state => {
+    const f = await fixture(), put = storage.putFile.bind(storage);
+    storage.putFile = async input => { await put(input); throw new Error("lost upload reply"); };
+    await expect(uploadWorkspaceSnapshot(f.upload)).rejects.toThrow("lost upload reply");
+    if (state === "unknown") storage.headObject = async () => { throw new Error("HEAD unavailable"); };
+    else {
+      const [pending] = await db.select().from(executionWorkspaceSnapshots);
+      const [attempt] = pending!.metadata!.uploads as { objectKey: string }[];
+      await fs.writeFile(path.join(root, "objects", attempt!.objectKey), "corrupt object");
+    }
+    await expect(uploadWorkspaceSnapshot({ ...f.upload, manifestDigest: "b".repeat(64), unpublishedRecapture: { sourceOperationId: f.operationId } }))
+      .rejects.toThrow(state === "unknown" ? "HEAD unavailable" : "object_hash_mismatch");
+    const [saved] = await db.select().from(executionWorkspaceSnapshots);
+    expect(saved).toMatchObject({ status: "pending", objectKey: null });
+    expect(saved!.metadata!.uploads).toHaveLength(1);
+  });
+  it.each(["original", "recapture", "original-with-lost-reply"])("keeps a %s winner when another physical capture finishes late", async winner => {
+    const f = await fixture(), put = storage.putFile.bind(storage);
+    const deferred = () => {
+      let resolve!: () => void;
+      const promise = new Promise<void>(ready => { resolve = ready; });
+      return { resolve, promise };
+    };
+    const originalReady = deferred(), originalRelease = deferred(), recaptureReady = deferred(), recaptureRelease = deferred();
+    let calls = 0;
+    storage.putFile = async input => {
+      const first = ++calls === 1;
+      if (first) { originalReady.resolve(); await originalRelease.promise; }
+      else { recaptureReady.resolve(); await recaptureRelease.promise; }
+      const saved = await put(input);
+      if (first && winner === "original-with-lost-reply") throw new Error("late original upload reply lost");
+      return saved;
+    };
+    const unpublishedRecapture = { sourceOperationId: f.operationId };
+    const original = uploadWorkspaceSnapshot({ ...f.upload, unpublishedRecapture });
+    let recapture: ReturnType<typeof uploadWorkspaceSnapshot> | undefined;
+    try {
+      await originalReady.promise;
+      const archivePath = path.join(root, "recaptured.pcws");
+      await fs.writeFile(path.join(f.cwd, "saved.txt"), "different physical capture\n");
+      const captured = await captureRemoteWorkspaceDirectory({ cwd: f.cwd, archivePath });
+      recapture = uploadWorkspaceSnapshot({ ...f.upload, archivePath, manifestDigest: captured.manifestDigest, unpublishedRecapture });
+      await recaptureReady.promise;
+      (winner === "recapture" ? recaptureRelease : originalRelease).resolve();
+      if (winner === "original-with-lost-reply") {
+        await expect(original).rejects.toThrow("late original upload reply lost");
+        recaptureRelease.resolve();
+      }
+      const saved = await (winner === "original" ? original : recapture);
+      expect(saved.manifestDigest).toBe(winner === "recapture" ? captured.manifestDigest : f.captured.manifestDigest);
+      originalRelease.resolve(); recaptureRelease.resolve();
+      if (winner !== "original-with-lost-reply") expect(await original).toEqual(saved);
+      expect(await recapture).toEqual(saved);
+      expect(await getWorkspaceSnapshot(db, { ...f, snapshotId: f.row.id })).toEqual(saved);
+      expect((await db.select().from(executionWorkspaceSnapshots))[0]!.metadata!.uploads).toHaveLength(2);
+    } finally { originalRelease.resolve(); recaptureRelease.resolve(); await Promise.allSettled([original, recapture]); }
+  });
   it("authenticates a lost-reply archive without publishing its pending upload", async () => {
     const f = await fixture(), put = storage.putFile.bind(storage);
     storage.putFile = async input => { await put(input); throw new Error("lost upload reply"); };

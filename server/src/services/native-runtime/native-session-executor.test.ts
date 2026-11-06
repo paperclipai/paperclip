@@ -116,6 +116,7 @@ import { acknowledgedNativeStopExecutionHasStopped, isAcknowledgedNativeStop } f
 import { admittedNativeProviderPack, nativeProviderPackAdmissionPending, rememberAdmittedNativeProviderPack } from "./native-provider-pack-admission.js";
 import { canonicalProviderPackJson } from "./remote-provider-pack-verification.js";
 import * as providerPackAdmission from "./native-provider-pack-admission.js";
+import * as nativeExecutionDriver from "./native-runner-execution-driver.js";
 
 vi.mock("node:fs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs")>();
@@ -274,7 +275,7 @@ const state = vi.hoisted(() => ({
   release: null as null | (() => void),
 }));
 
-vi.mock("../../runtime-api.js", () => ({ resolveLocalRuntimeApiUrl: state.localRuntimeApiUrl }));
+vi.mock("../../runtime-api.js", async importOriginal => ({ ...await importOriginal<typeof import("../../runtime-api.js")>(), resolveLocalRuntimeApiUrl: state.localRuntimeApiUrl }));
 
 const accountingEvents = vi.hoisted(() => ({ committed: undefined as undefined | ((event: PrpEvent) => Promise<void>), duplicate: undefined as undefined | ((event: PrpEvent) => Promise<void>) }));
 vi.mock("./paperclip-control-plane-port.js", async importOriginal => {
@@ -1638,6 +1639,82 @@ describe("native incomplete-bootstrap evidence", () => {
       await rm(root, { recursive: true, force: true });
     }
   });
+
+  // A restart can land after the runner connected and acknowledged
+  // run.prepare but before session.open finished. Both journals then prove no
+  // provider session or turn exists, so recovery may bootstrap again.
+  const connectedBeforeSessionOpen = () => ({
+    controlPlane: {
+      schema: "paperclip.runner.durable.control-plane-state.v2",
+      identity: { runId: "run-1", normalizedSessionId: "session-1" },
+      bootstrapHistory: { schema: "paperclip.runner.bootstrap-history.v1", credentialsIssued: 1, adopted: false },
+      commands: [
+        { type: "run.prepare", status: "completed", result: { status: "completed" } },
+        { type: "session.open", status: "pending", result: null },
+      ] as Array<Record<string, unknown>>,
+      committedEvents: [] as unknown[],
+      ackedSourceSeq: 0,
+      connectionCount: 1,
+      freshBootstraps: 1,
+    } as Record<string, unknown>,
+    runner: {
+      schema: "paperclip.runner.durable.state.v1",
+      lifecycle: "ready",
+      nextSourceSeq: 1,
+      ackedSourceSeq: 0,
+      outbox: [] as unknown[],
+      processedCommands: {
+        command_prp_00000001: { commandType: "run.prepare", status: "completed" },
+        command_prp_00000002: { commandType: "session.open", status: "pending",
+          result: { code: "execution_indeterminate" } },
+      } as Record<string, Record<string, unknown>>,
+    } as Record<string, unknown>,
+  });
+
+  async function provesWith(fixture: ReturnType<typeof connectedBeforeSessionOpen>, runner: "present" | "absent" | "torn" = "present") {
+    const root = await mkdtemp(join(tmpdir(), "native-bootstrap-connected-"));
+    try {
+      await mkdir(join(root, "control-plane"), { recursive: true });
+      await writeFile(join(root, "control-plane", "control-plane-state.json"), JSON.stringify(fixture.controlPlane));
+      if (runner !== "absent") {
+        await mkdir(join(root, "runner"), { recursive: true });
+        await writeFile(join(root, "runner", "runner-state.json"),
+          runner === "torn" ? "{\"schema\":" : JSON.stringify(fixture.runner));
+      }
+      return runnerdStateProvesIncompleteBootstrap(root);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  }
+
+  it("allows a fresh bootstrap after connect and run.prepare when session.open never completed", async () => {
+    expect(await provesWith(connectedBeforeSessionOpen())).toBe(true);
+    expect(await provesWith(connectedBeforeSessionOpen(), "absent")).toBe(true);
+    const preparing = connectedBeforeSessionOpen();
+    (preparing.controlPlane.commands as Array<Record<string, unknown>>)[0]!.status = "pending";
+    expect(await provesWith(preparing)).toBe(true);
+  });
+
+  it.each<[string, (fixture: ReturnType<typeof connectedBeforeSessionOpen>) => void]>([
+    ["session.open completed", f => { (f.controlPlane.commands as Array<Record<string, unknown>>)[1]!.status = "completed"; }],
+    ["an event was committed", f => { f.controlPlane.committedEvents = [{ eventType: "session.started" }]; }],
+    ["an event was acknowledged", f => { f.controlPlane.ackedSourceSeq = 1; }],
+    ["a turn was issued", f => { (f.controlPlane.commands as unknown[]).push({ type: "turn.start", status: "pending" }); }],
+    ["run.prepare failed", f => { (f.controlPlane.commands as Array<Record<string, unknown>>)[0]!.status = "failed"; }],
+    ["the state was adopted", f => { f.controlPlane.bootstrapHistory = { adopted: true }; }],
+    ["a warm transition is retained", f => { f.controlPlane.warmTransition = { receipt: {} }; }],
+    ["the runner emitted an uncommitted event", f => { f.runner.nextSourceSeq = 2; f.runner.outbox = [{ sourceSeq: 1 }]; }],
+    ["the runner completed session.open", f => { (f.runner.processedCommands as Record<string, Record<string, unknown>>).command_prp_00000002!.status = "completed"; }],
+    ["the runner processed a turn", f => { (f.runner.processedCommands as Record<string, unknown>).command_prp_00000003 = { commandType: "turn.start", status: "pending" }; }],
+  ])("stays fail-closed when %s", async (_label, mutate) => {
+    const fixture = connectedBeforeSessionOpen();
+    mutate(fixture);
+    expect(await provesWith(fixture)).toBe(false);
+  });
+
+  it("stays fail-closed when the runner journal is unreadable", async () => {
+    expect(await provesWith(connectedBeforeSessionOpen(), "torn")).toBe(false);
+  });
 });
 
 describe("native provider usage normalization", () => {
@@ -1802,7 +1879,7 @@ describe("remote provider pack manifest", () => {
     return JSON.stringify(value);
   };
 
-  it.each(["opencode", "opencode-dirty", "opencode-diagnostics", "opencode-diagnostics-stale", "cursor", "claude-x64", "claude-arm64"] as const)("uses the bundled Linux image authority for remote %s without controller overrides", async provider => {
+  it.each(["opencode", "opencode-continuation", "opencode-continuation-missing", "opencode-continuation-no-receipt", "opencode-continuation-replacement", "opencode-dirty", "opencode-diagnostics", "opencode-diagnostics-stale", "cursor", "claude-x64", "claude-arm64"] as const)("uses the bundled Linux image authority for remote %s without controller overrides", async provider => {
     const architecture = provider === "claude-arm64" ? "arm64" : "x64";
     const claude = provider.startsWith("claude-");
     const opencode = provider.startsWith("opencode");
@@ -1881,6 +1958,7 @@ describe("remote provider pack manifest", () => {
       const transport = state.createTransport.mock.calls.at(-1)![0] as RunnerTransportOptions & {
         controlPlaneRegistration: (authority: unknown) => Promise<unknown>;
         environment?: NodeJS.ProcessEnv;
+        runnerArtifact?: { version: string; digest: string };
       };
       expect(transport.runnerBinary).toBe(state.bundledRunnerBinary);
       if (opencode) {
@@ -1901,7 +1979,7 @@ describe("remote provider pack manifest", () => {
       expect(transport).toMatchObject({ providerPackAuthorityDigest: installed.digest,
         providerNodeCommand: "/opt/paperclip-runner/provider-pack/node_modules/node/bin/node",
         providerNodeCommandSha256: installed.payload.artifacts.nodeCommand.sha256 });
-      if (provider === "opencode" || provider === "opencode-dirty") {
+      if (provider === "opencode" || provider.startsWith("opencode-continuation") || provider === "opencode-dirty") {
         const identity = { ...remoteExecution.binding, sessionId: remoteExecution.session.normalizedSessionId! };
         const session = { identity: () => identity } as never;
         const backend = state.createBackend.mock.results.at(-1)!.value;
@@ -1926,6 +2004,75 @@ describe("remote provider pack manifest", () => {
       expect(execute.mock.calls.filter(([call]) => call.args?.[0] === "--build-metadata")).toHaveLength(1);
       expect(execute.mock.calls.some(([call]) => call.args?.[0] === "-e" || call.args?.[0] === "--version")).toBe(false);
       expect(syncIn.mock.calls.every(([operations]) => operations.every(operation => operation.files.every(file => file.kind === "file")))).toBe(true);
+      if (provider.startsWith("opencode-continuation")) {
+        const identity = transport.prpIdentity!;
+        await mkdir(join(transport.stateDirectory!, "control-plane"), { recursive: true });
+        await writeFile(join(transport.stateDirectory!, "control-plane", "control-plane-state.json"), JSON.stringify(durableControlPlaneState(identity)));
+        await mkdir(join(transport.stateDirectory!, "runner"), { recursive: true });
+        await writeFile(join(transport.stateDirectory!, "runner", "runner-state.json"), JSON.stringify(durableRunnerState(identity, "suspended")));
+        const next = structuredClone(manifest);
+        next.payload.runnerSourceRevision = "b".repeat(40);
+        next.payload.artifacts.opencodeProxy.sha256 = "sha256:" + "f".repeat(64);
+        next.payload.bridgeDigest = "sha256:" + createHash("sha256")
+          .update(next.payload.artifacts.opencodeProxy.sha256 + "\n" + digest + "\n" + next.payload.distDigest).digest("hex");
+        next.digest = "sha256:" + createHash("sha256").update(canonical(next.payload)).digest("hex");
+        await writeFile(state.bundledPackManifestPath!, JSON.stringify(next));
+        const currentDaemon = Buffer.concat([daemon, Buffer.from("newly qualified daemon bytes")]);
+        await writeFile(state.bundledRunnerBinary!, currentDaemon);
+        // A normal next turn restores this provider session; it is not a live
+        // daemon reattachment. Enabling diagnostics must not replace the
+        // already admitted proxy behind that retained provider state.
+        const receiptPath = join(transport.stateDirectory!, "provider-pack-authority.json");
+        const receiptBefore = await readFile(receiptPath, "utf8");
+        if (provider === "opencode-continuation-no-receipt") await rm(receiptPath);
+        const prepareRemote = vi.spyOn(nativeExecutionDriver, "prepareNativeRemoteRunner");
+        const backendsBefore = state.createBackend.mock.calls.length;
+        const selectedExecute = provider === "opencode-continuation-missing"
+          ? async (command: { command: string; args?: string[] }) => command.args?.[0] === "--build-metadata"
+            ? { ...await execute(command), stdout: JSON.stringify({
+              schema: "paperclip-runner/runnerd-build-metadata/v1", binaryName: "paperclip-runnerd",
+              packageName: "@paperclipai/paperclip-runner", binaryContractVersion: 2,
+              durableSessionCapabilities: ["unlimited_runtime", "connection_lease_renewal"], prpTransportModes: ["listen_ws"],
+              providerPacks: [{ root: "/opt/paperclip-runner/provider-pack", manifest: next, immutable: true }],
+            }) } : execute(command)
+          : execute;
+        const continuation = createRunnerdBackend({ db: leaseDb(remoteExecution), execution: remoteExecution,
+          runnerInstanceId: identity.runnerInstanceId, runnerIngressAuthorized: true,
+          runnerEnvironment: configuredEnvironmentProjection(provider === "opencode-continuation-replacement" ? {} : { PAPERCLIP_OPENCODE_PERFORMANCE_DIAGNOSTICS: "1" }),
+          runnerExecutionTarget: { kind: "remote", transport: "sandbox", remoteCwd: "/workspace",
+            environmentId: "environment", leaseId: "lease", providerKey: "daytona",
+            effectiveCapabilities: { runnerWebSocketIngress: true }, runner: { execute: selectedExecute, syncIn } } as never });
+        if (provider === "opencode-continuation-missing" || provider === "opencode-continuation-no-receipt") {
+          await expect(continuation).rejects.toThrow("image provider pack did not match the bundled release identity");
+          expect(state.createBackend).toHaveBeenCalledTimes(backendsBefore);
+          if (provider === "opencode-continuation-missing") expect(await readFile(receiptPath, "utf8")).toBe(receiptBefore);
+          else expect(existsSync(receiptPath)).toBe(false);
+          return;
+        }
+        const continued = await continuation;
+        state.createBackend.mock.calls.at(-1)![1].codexTransportFactory!();
+        expect(state.createTransport.mock.calls.at(-1)![0]).toMatchObject({
+          providerPackAuthorityDigest: installed.digest,
+          opencodeProxySha256: installed.payload.artifacts.opencodeProxy.sha256,
+          opencodeProxyPath: "/opt/paperclip-runner/provider-pack/dist/cli/opencode-app-server-proxy.cjs",
+          runnerArtifact: { version: transport.runnerArtifact!.version, digest: "sha256:" + createHash("sha256").update(currentDaemon).digest("hex") },
+        });
+        if (provider === "opencode-continuation-replacement") {
+          const preparation = prepareRemote.mock.calls.at(-1)![0];
+          const backend = state.createBackend.mock.results.at(-1)!.value;
+          Object.assign(backend, { openSession: async () => {
+            await nativeExecutionDriver.prepareNativeRemoteRunner(preparation);
+            return { identity: () => ({ ...remoteExecution.binding, sessionId: remoteExecution.session.normalizedSessionId! }) };
+          } });
+          const priorIdentity = { ...remoteExecution.binding, sessionId: remoteExecution.session.normalizedSessionId! };
+          await continued.openReplacementSession!({ identity: priorIdentity }, {
+            backendKind: "runner", identity: priorIdentity, sessionId: priorIdentity.sessionId,
+            providerSessionId: "prior-provider-session", activeTurnId: null, terminal: null,
+          });
+          state.createBackend.mock.calls.at(-1)![1].codexTransportFactory!();
+          expect(state.createTransport.mock.calls.at(-1)![0]).toMatchObject({ providerPackAuthorityDigest: installed.digest });
+        }
+      }
       if (provider === "claude-x64" || provider === "opencode") {
         const admitted = opencode ? installed : manifest;
         const identity = transport.prpIdentity!;
@@ -14997,10 +15144,11 @@ describe("runnerd provider runtime wiring", () => {
     const driver = { prepareLaunch: vi.fn(), runnerProcessLauncher: launcher, controlPlaneRegistration: registration };
     state.toolAuthorityDefinitions.mockImplementation(async binding => binding.readRemoteTaskFile ? [{ name: "register_deliverable" }] as never : []);
     const readWorkspaceFile = vi.fn(async () => Buffer.from("proof"));
-    const owner = vi.spyOn(pluginTaskRuntime, "createPluginRunnerTaskOwner").mockReturnValue({ launcher, registration, driver, readWorkspaceFile, isRetired: () => false, rebind:vi.fn() });
+    const release = vi.fn(async () => {}), resume = vi.fn(async () => "resumed" as const);
+    const owner = vi.spyOn(pluginTaskRuntime, "createPluginRunnerTaskOwner").mockReturnValue({ launcher, registration, driver, readWorkspaceFile, release, resume, isRetired: () => false, rebind:vi.fn() });
     const task = vi.fn(async (operation: unknown) => {
       environmentTaskOperationSchema.parse(operation);
-      return { kind: "description", launchPreparationVersion: 1, projectAuthCheckVersion: 1, ...(kind === "codex" ? { workspaceFileReadVersion: 1 } : {}), taskId: "task", runner: { version: "fixture", digest: `sha256:${"a".repeat(64)}` } };
+      return { kind: "description", launchPreparationVersion: 1, projectAuthCheckVersion: 1, releaseResumeVersion: 1, ...(kind === "codex" ? { workspaceFileReadVersion: 1 } : {}), taskId: "task", runner: { version: "fixture", digest: `sha256:${"a".repeat(64)}` } };
     });
     const target = { kind: "remote", transport: "sandbox", providerKey: "plugin", leaseId: "plugin-task-lease",
       remoteCwd: "/unused", runnerTask: task, runnerTaskProjectIds: ["10000000-0000-4000-8000-000000000001"] } as const;
@@ -15017,7 +15165,7 @@ describe("runnerd provider runtime wiring", () => {
       expect(state.toolAuthorityDefinitions).toHaveBeenCalledWith(expect.objectContaining({ assignedMcpTools }));
       expect(state.createAssignedMcpTools).toHaveBeenCalledWith(expect.objectContaining({ gatewayPublicId: "assigned-test", bearerToken: "fixture-mcp-secret" }));
       expect(owner).toHaveBeenCalledWith(expect.objectContaining({ task, projectIds: target.runnerTaskProjectIds,
-        credentialIdentity: undefined }));
+        credentialIdentity: undefined, releaseResumeVersion: 1 }));
       expect(state.createBackend.mock.calls.at(-1)![1]).toMatchObject({ workingDirectoryAuthority: "runner_prepared_launch", environment: {} });
       state.createBackend.mock.calls.at(-1)![1].codexTransportFactory!();
       const options = state.createTransport.mock.calls.at(-1)![0];
@@ -15031,6 +15179,8 @@ describe("runnerd provider runtime wiring", () => {
         expect(options).not.toHaveProperty(key);
       }
       expect(task.mock.calls).toEqual([[{ kind: "describe" }]]);
+      expect(release).not.toHaveBeenCalled();
+      expect(resume).not.toHaveBeenCalled();
       const binding = state.toolAuthorityDefinitions.mock.calls.at(-1)![0] as unknown as {
         readRemoteApiFile?: (path: string, maxBytes: number) => Promise<Buffer>;
         readRemoteTaskFile?: (file: {contentRef: string;byteSize: number;sha256: string}) => Promise<Buffer>;
