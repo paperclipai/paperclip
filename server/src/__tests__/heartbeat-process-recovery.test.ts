@@ -5698,7 +5698,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         const [waiting] = await db.select().from(issues).where(eq(issues.id, issueId));
         expect(waiting).toMatchObject({ status: "in_progress", executionRunId: afterFailure[1]!.id });
         expect(await getExecutionBlocker(db, companyId, issueId)).toBeNull();
-        expect(await taskInterruptionPresentation(db, waiting!)).toMatchObject({ state: "retry_scheduled", responsibility: "system" });
+        expect(await taskInterruptionPresentation(db, waiting!)).toMatchObject({ state: "retry_scheduled", responsibility: "system",
+          providerFailure: { httpStatus: 502, phase: "startup", retryability: "transient" } });
         expect(mockAdapterExecute).not.toHaveBeenCalled();
 
         await promoteLatestScheduledRetry(heartbeat, agentId);
