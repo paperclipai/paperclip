@@ -78,6 +78,7 @@ export const DELIVERY_QUEUES = {
   secretProposalExpiry: "secret-proposal-expiry",
   customImageExpiry: "custom-image-expiry",
   historicalCleanup: "historical-cleanup",
+  managedEnvironmentDefault: "managed-environment-default",
   adapterLoginCleanup: "adapter-login-cleanup",
   setupTokenCleanup: "setup-token-cleanup",
   localLoginCleanup: "local-login-cleanup",

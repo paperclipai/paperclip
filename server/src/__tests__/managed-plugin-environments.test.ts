@@ -14,9 +14,14 @@ import {
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { environmentService } from "../services/environments.js";
 import { MANAGED_CONFIG_ENV_KEY, parseManagedConfigEnv } from "../services/managed-config.js";
-import { applyManagedEnvironments } from "../services/managed-environments.js";
+import {
+  applyManagedEnvironments,
+  managedPluginInstanceDefaultPending,
+  retryManagedPluginInstanceDefault,
+} from "../services/managed-environments.js";
 import {
   applyManagedPluginInstanceDefault,
+  cancelPendingManagedEnvironmentDefault,
   readManagedEnvironmentDefaultDecision,
 } from "../services/managed-environment-default.js";
 import { createLifecycleDriver } from "../services/agent-lifecycle-driver.js";
@@ -376,6 +381,117 @@ const support = await getEmbeddedPostgresTestSupport();
       const [row] = await pluginRows();
       expect(await instanceDefault()).toBe(row!.id);
       expect(await readManagedEnvironmentDefaultDecision(db)).toMatchObject({ status: "applied", reason: "no_agents_follow_default" });
+    });
+
+    it("never replaces an admin's explicit choice made while the decision is pending", async () => {
+      running = false;
+      await boot();
+      expect(await readManagedEnvironmentDefaultDecision(db)).toMatchObject({ status: "pending" });
+
+      // The admin explicitly clears the default (the route writes it, then
+      // cancels the pending decision, in one transaction).
+      await db.transaction(async (tx) => {
+        await setInstanceDefault(null);
+        expect(await cancelPendingManagedEnvironmentDefault(tx as unknown as Db, { instanceDefaultDeclared: true })).toBe(true);
+      });
+      running = true;
+      for (const listener of [...readyListeners]) listener({ pluginId });
+      await vi.waitFor(async () => expect((await pluginRows())[0]?.status).toBe("active"));
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      expect(await instanceDefault()).toBeNull();
+      expect(await readManagedEnvironmentDefaultDecision(db)).toMatchObject({ status: "declined", reason: "admin_changed_default" });
+    });
+
+    it("waits for an in-flight agent insert, then sees that agent (controlled overlap)", async () => {
+      running = false;
+      await boot();
+      running = true;
+      // Make the row active without going through recovery, so only the
+      // decision runs below.
+      const row = (await environmentService(db).ensureManagedPluginEnvironment({
+        name: "Remote Host", description: "Runs the agent on a remote host",
+        pluginKey: PLUGIN_KEY, driverKey: "tasks", driverConfig: {}, workerManager,
+      })).environment;
+      const companyId = await company();
+
+      let releaseInsert!: () => void;
+      const insertHeld = new Promise<void>((resolve) => { releaseInsert = resolve; });
+      let inserted!: () => void;
+      const insertDone = new Promise<void>((resolve) => { inserted = resolve; });
+      const agentWrite = db.transaction(async (tx) => {
+        await tx.insert(agents).values({ id: randomUUID(), companyId, name: "Racing agent", adapterType: "process", defaultEnvironmentId: null });
+        inserted();
+        await insertHeld;
+      });
+      await insertDone;
+
+      let settled = false;
+      const decision = applyManagedPluginInstanceDefault(db, { environment: row, marker: MARKER })
+        .then((outcome) => { settled = true; return outcome; });
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      // The decision waits on the SHARE lock behind the uncommitted insert.
+      expect(settled).toBe(false);
+
+      releaseInsert();
+      await agentWrite;
+      expect(await decision).toMatchObject({ status: "declined", reason: "agents_follow_default" });
+      expect(await instanceDefault()).toBeNull();
+    });
+
+    it("holds new agent writes until the decision commits", async () => {
+      running = false;
+      await boot();
+      running = true;
+      const row = (await environmentService(db).ensureManagedPluginEnvironment({
+        name: "Remote Host", description: "Runs the agent on a remote host",
+        pluginKey: PLUGIN_KEY, driverKey: "tasks", driverConfig: {}, workerManager,
+      })).environment;
+      const companyId = await company();
+
+      // Hold the decision's locks open by holding the instance default row
+      // in another transaction until the agent insert has been attempted.
+      let releaseDefault!: () => void;
+      const defaultHeld = new Promise<void>((resolve) => { releaseDefault = resolve; });
+      let defaultLocked!: () => void;
+      const defaultLockTaken = new Promise<void>((resolve) => { defaultLocked = resolve; });
+      const blocker = db.transaction(async (tx) => {
+        await tx.select().from(instanceSettings).where(eq(instanceSettings.singletonKey, "default")).for("update");
+        defaultLocked();
+        await defaultHeld;
+      });
+      await defaultLockTaken;
+      // The decision takes SHARE on agents, then waits for the default row.
+      const decision = applyManagedPluginInstanceDefault(db, { environment: row, marker: MARKER });
+      await new Promise((resolve) => setTimeout(resolve, 200));
+
+      let agentInserted = false;
+      const agentWrite = db.insert(agents)
+        .values({ id: randomUUID(), companyId, name: "Late agent", adapterType: "process", defaultEnvironmentId: null })
+        .then(() => { agentInserted = true; });
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      expect(agentInserted).toBe(false);
+
+      releaseDefault();
+      await blocker;
+      expect(await decision).toMatchObject({ status: "applied" });
+      await agentWrite;
+      expect(agentInserted).toBe(true);
+      // The agent inserted after the commit follows the new default.
+      expect(await instanceDefault()).toBe(row.id);
+    });
+
+    it("lets the retry worker finish a decision from durable state", async () => {
+      const config = managedConfig([defaultEntry]);
+      expect(await managedPluginInstanceDefaultPending(db, config)).toBe(true);
+      await boot([remoteHostEntry]);
+      expect(await managedPluginInstanceDefaultPending(db, config)).toBe(true);
+
+      await retryManagedPluginInstanceDefault(db, config);
+      const [row] = await pluginRows();
+      expect(await instanceDefault()).toBe(row!.id);
+      expect(await managedPluginInstanceDefaultPending(db, config)).toBe(false);
+      expect(await managedPluginInstanceDefaultPending(db, managedConfig([remoteHostEntry]))).toBe(false);
     });
 
     it("prepares a new agent that follows the default with the plugin, and one set to the sandbox without it", async () => {

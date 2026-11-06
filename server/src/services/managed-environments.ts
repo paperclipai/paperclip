@@ -72,6 +72,7 @@ import { resolveBundledCatalogRoot, resolveBundledPluginInstalls } from "./bundl
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 import {
   applyManagedPluginInstanceDefault,
+  readManagedEnvironmentDefaultDecision,
   type ManagedEnvironmentDefaultOutcome,
 } from "./managed-environment-default.js";
 import {
@@ -193,6 +194,12 @@ export interface ApplyManagedEnvironmentsOptions {
    * attempts. Defaults to a controller nobody stops (tests).
    */
   recovery?: ManagedEnvironmentRecovery;
+  /**
+   * Asks the owning retry worker (the `managed-environment-default` delivery
+   * queue in `index.ts`) to re-run a failed `instanceDefault` decision. That
+   * worker keeps retrying while `managedPluginInstanceDefaultPending` holds.
+   */
+  requestInstanceDefaultRetry?: () => void;
   /** Test seam: overrides the one-time instance default decision. */
   applyPluginInstanceDefault?: (input: {
     environment: { id: string; status: string } | null;
@@ -610,7 +617,11 @@ export async function applyManagedEnvironments(
         logger.warn(context, "managed plugin environment is not active yet; its instanceDefault waits until it is");
       }
     } catch (err) {
-      logger.error({ err, name: spec.name, marker }, "failed to evaluate the managed plugin environment's instance default");
+      logger.error(
+        { err, name: spec.name, marker },
+        "failed to evaluate the managed plugin environment's instance default; retrying",
+      );
+      opts.requestInstanceDefaultRetry?.();
     }
   };
 
@@ -817,4 +828,58 @@ export async function applyManagedEnvironments(
     outcomes,
     pluginOutcomes,
   };
+}
+
+/** The plugin entry that declares `instanceDefault`, if any (at most one). */
+function instanceDefaultSpec(managedConfig: ManagedInstanceConfig | null) {
+  return managedConfig?.pluginEnvironments.find((spec) => spec.instanceDefault) ?? null;
+}
+
+/**
+ * Whether the `instanceDefault` decision still has work to do, read from
+ * durable state: the document declares one, and the decision was never
+ * recorded, or it is pending while the entry's row is already active. A
+ * decision pending on an inactive row waits for that row's recovery instead.
+ */
+export async function managedPluginInstanceDefaultPending(
+  db: Db,
+  managedConfig: ManagedInstanceConfig | null,
+): Promise<boolean> {
+  const spec = instanceDefaultSpec(managedConfig);
+  if (!spec) return false;
+  const decision = await readManagedEnvironmentDefaultDecision(db);
+  if (!decision) return true;
+  if (decision.status !== "pending") return false;
+  const row = await environmentService(db).findManagedPluginEnvironment({
+    pluginKey: spec.pluginKey,
+    driverKey: spec.driverKey,
+  });
+  return row?.status === "active";
+}
+
+/**
+ * Re-run the `instanceDefault` decision from durable state: the entry's row
+ * as it stands (an archived or missing row counts as not active). Used by
+ * the retry worker after an inline decision failed.
+ */
+export async function retryManagedPluginInstanceDefault(
+  db: Db,
+  managedConfig: ManagedInstanceConfig | null,
+): Promise<void> {
+  const spec = instanceDefaultSpec(managedConfig);
+  if (!spec) return;
+  const row = await environmentService(db).findManagedPluginEnvironment({
+    pluginKey: spec.pluginKey,
+    driverKey: spec.driverKey,
+  });
+  const outcome = await applyManagedPluginInstanceDefault(db, {
+    environment: row ? { id: row.id, status: row.status === "active" ? "active" : "unavailable" } : null,
+    marker: managedPluginEnvironmentMarker(spec),
+  });
+  if (outcome.status !== "already_decided") {
+    logger.info(
+      { name: spec.name, decision: outcome.status, reason: outcome.reason },
+      "managed plugin environment instance default evaluated by the retry worker",
+    );
+  }
 }

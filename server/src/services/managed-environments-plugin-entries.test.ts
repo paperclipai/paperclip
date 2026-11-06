@@ -559,7 +559,8 @@ describe("applyManagedEnvironments plugin entries", () => {
       expect(settings.update).not.toHaveBeenCalled();
     });
 
-    it("keeps an ensure counted when the default decision fails", async () => {
+    it("keeps an ensure counted and asks the retry worker for a failed default decision", async () => {
+      const requestInstanceDefaultRetry = vi.fn();
       const result = await applyManagedEnvironments(noDb, configWith([pluginEntry({ instanceDefault: true })]), {
         env: {},
         workerManager: workerManager(),
@@ -568,8 +569,10 @@ describe("applyManagedEnvironments plugin entries", () => {
         resolveEnvironmentPlugin: readyPlugin(),
         autoInstalledPluginKeys: [PLUGIN_KEY],
         applyPluginInstanceDefault: vi.fn().mockRejectedValue(new Error("db exploded")),
+        requestInstanceDefaultRetry,
       });
       expect(result).toMatchObject({ ensured: 1, failed: 0 });
+      expect(requestInstanceDefaultRetry).toHaveBeenCalledTimes(1);
     });
   });
 

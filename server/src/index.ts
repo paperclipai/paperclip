@@ -138,6 +138,8 @@ import {
   feedbackService,
   applyManagedEnvironments,
   createManagedEnvironmentRecovery,
+  managedPluginInstanceDefaultPending,
+  retryManagedPluginInstanceDefault,
   backfillPrincipalAccessCompatibility,
   backfillLegacyToolOAuthTokens,
   bootstrapExecutionPolicyFromEnv,
@@ -1197,12 +1199,23 @@ async function startServerWithDatabaseTeardown(
   // activates before its provider driver is registered; the worker manager
   // additionally gates each entry on a live plugin worker (and archives the
   // row of a provider that did not come up).
+  // A failed one-time `instanceDefault` decision is retried by this worker
+  // until it is recorded, from the decision row (durable state), never by a
+  // standing timer: once decided, the queue is idle.
+  const managedEnvironmentDefaultWorker = managedConfig?.pluginEnvironments.some((spec) => spec.instanceDefault)
+    ? deliveryWork.register(DELIVERY_QUEUES.managedEnvironmentDefault, {
+        retryMs: 60_000,
+        run: () => retryManagedPluginInstanceDefault(db as any, managedConfig),
+        hasPending: () => managedPluginInstanceDefaultPending(db as any, managedConfig),
+      })
+    : null;
   try {
     const appLocals = (app as {
       locals?: { bundledPluginsStartup?: Promise<unknown>; managedBundledPluginKeys?: readonly string[] };
     }).locals;
     const managedEnvironmentsResult = await applyManagedEnvironments(db as any, managedConfig, {
       recovery: managedEnvironmentRecovery,
+      requestInstanceDefaultRetry: managedEnvironmentDefaultWorker ? () => managedEnvironmentDefaultWorker.wake() : undefined,
       pluginsReady: appLocals?.bundledPluginsStartup,
       autoInstalledPluginKeys: appLocals?.managedBundledPluginKeys,
       workerManager: pluginWorkerManager,

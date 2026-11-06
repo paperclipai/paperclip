@@ -17,6 +17,9 @@
  *   a later boot), the default is set only if no agent follows the default
  *   by then and the current default is still replaceable; otherwise the
  *   existing default stays and the decision is `declined`.
+ * - An admin's explicit default write ends a decision that has not applied
+ *   yet (`cancelPendingManagedEnvironmentDefault`), so recovery never
+ *   replaces it.
  */
 
 import { and, eq, isNull, ne, sql } from "drizzle-orm";
@@ -25,6 +28,8 @@ import { agents, environments, instanceSettings } from "@paperclipai/db";
 import { instanceSettingsService } from "./instance-settings.js";
 
 export const MANAGED_ENVIRONMENT_DEFAULT_DECISION_KEY = "managed-environment-default:v1";
+/** Singleton key of the instance settings row that holds `defaultEnvironmentId`. */
+const INSTANCE_DEFAULT_SETTINGS_KEY = "default";
 
 export type ManagedEnvironmentDefaultDecisionStatus = "pending" | "applied" | "declined";
 
@@ -34,6 +39,7 @@ export type ManagedEnvironmentDefaultReason =
   | "instance_has_agents"
   | "agents_follow_default"
   | "tenant_default"
+  | "admin_changed_default"
   | "environment_not_active";
 
 export interface ManagedEnvironmentDefaultDecision {
@@ -97,8 +103,35 @@ export async function applyManagedPluginInstanceDefault(
   db: Db,
   input: { environment: { id: string; status: string } | null; marker: string },
 ): Promise<ManagedEnvironmentDefaultOutcome> {
+  // Cheap exit without locks once the decision is final, or while it waits
+  // for a row that is still not active.
+  const known = await readManagedEnvironmentDefaultDecision(db);
+  if (known && known.status !== "pending") {
+    return { status: "already_decided", reason: known.reason, previousDefaultEnvironmentId: null };
+  }
+  if (known?.status === "pending" && input.environment?.status !== "active") {
+    return { status: "pending", reason: "environment_not_active", previousDefaultEnvironmentId: null };
+  }
   return await db.transaction(async (tx) => {
     const settings = instanceSettingsService(tx as unknown as Db);
+    // Lock order, shared with `cancelPendingManagedEnvironmentDefault` (the
+    // admin default write): agents, then the instance default row, then the
+    // decision row, then any environment row.
+    //
+    // SHARE on `agents` waits for in-flight agent writes and blocks new ones
+    // (inserts, and an agent switching to follow the default) until this
+    // transaction commits. So the "no agents" / "no agent follows the
+    // default" check below stays true until the new default is visible, and
+    // an agent created right after selects its setup plugins against it.
+    await tx.execute(sql`lock table ${agents} in share mode`);
+    // Lock the instance default row, so an admin's concurrent default write
+    // either commits first (and this pass reads it) or waits for this one.
+    await settings.get();
+    await tx
+      .select({ id: instanceSettings.id })
+      .from(instanceSettings)
+      .where(eq(instanceSettings.singletonKey, INSTANCE_DEFAULT_SETTINGS_KEY))
+      .for("update");
     // The insert claims the decision for this pass; a concurrent pass waits on
     // the conflict, then reads what this one recorded.
     const claimed = await tx
@@ -178,4 +211,47 @@ export async function applyManagedPluginInstanceDefault(
     }
     return await record("applied", firstEvaluation ? "no_agents" : "no_agents_follow_default");
   });
+}
+
+/**
+ * An explicit default write by an admin ends a decision that has not applied
+ * yet: a pending decision, or (when the managed config declares an
+ * `instanceDefault` entry) one that was never recorded, becomes `declined`
+ * with reason `admin_changed_default`, so recovery can never replace the
+ * admin's choice later. Call it in the same transaction as the default
+ * write, after that write (the instance default row is locked first, as in
+ * `applyManagedPluginInstanceDefault`).
+ */
+export async function cancelPendingManagedEnvironmentDefault(
+  tx: Pick<Db, "insert" | "select" | "update">,
+  input: { instanceDefaultDeclared: boolean },
+): Promise<boolean> {
+  if (input.instanceDefaultDeclared) {
+    await tx
+      .insert(instanceSettings)
+      .values({ singletonKey: MANAGED_ENVIRONMENT_DEFAULT_DECISION_KEY, general: {} })
+      .onConflictDoNothing({ target: instanceSettings.singletonKey });
+  }
+  const [row] = await tx
+    .select()
+    .from(instanceSettings)
+    .where(eq(instanceSettings.singletonKey, MANAGED_ENVIRONMENT_DEFAULT_DECISION_KEY))
+    .for("update");
+  if (!row) return false;
+  const recorded = readDecision(row.general);
+  if (recorded && recorded.status !== "pending") return false;
+  const decision: ManagedEnvironmentDefaultDecision = {
+    version: 1,
+    status: "declined",
+    reason: "admin_changed_default",
+    environmentMarker: recorded?.environmentMarker ?? "",
+    environmentId: recorded?.environmentId ?? null,
+    previousDefaultEnvironmentId: recorded?.previousDefaultEnvironmentId ?? null,
+    decidedAt: new Date().toISOString(),
+  };
+  await tx
+    .update(instanceSettings)
+    .set({ general: decision as unknown as Record<string, unknown>, updatedAt: new Date() })
+    .where(eq(instanceSettings.id, row.id));
+  return true;
 }

@@ -30,6 +30,18 @@ import {
   type ActivityPublication,
 } from "../services/index.js";
 import { environmentService } from "../services/environments.js";
+import { getManagedInstanceConfig } from "../services/managed-config.js";
+import { cancelPendingManagedEnvironmentDefault } from "../services/managed-environment-default.js";
+
+/** Whether the managed config declares a plugin entry with `instanceDefault`. */
+function managedInstanceDefaultDeclared(): boolean {
+  try {
+    return getManagedInstanceConfig()?.pluginEnvironments.some((spec) => spec.instanceDefault) ?? false;
+  } catch {
+    // A malformed document refuses startup, so a running server never gets here.
+    return false;
+  }
+}
 import { assertEnvironmentSelectionForCompany } from "./environment-selection.js";
 import { assertBoardOrgAccess, getActorInfo } from "./authz.js";
 
@@ -175,11 +187,22 @@ export function instanceSettingsRoutes(db: Db, pluginWorkers?: PluginWorkerManag
         ? await environments.findManagedSandboxEnvironment(undefined, { includeArchived: true })
         : null;
       const updated = await db.transaction(async (tx) => {
+        // Lock order shared with `applyManagedPluginInstanceDefault`: the
+        // instance default row (this write), then the managed default
+        // decision, then any environment row.
+        const written = await svc.update(req.body, { db: tx });
+        if (writesDefault) {
+          // An explicit choice ends a managed `instanceDefault` decision that
+          // has not applied yet, so recovery never replaces it later.
+          await cancelPendingManagedEnvironmentDefault(tx as unknown as Db, {
+            instanceDefaultDeclared: managedInstanceDefaultDeclared(),
+          });
+        }
         if (managedSandbox?.metadata?.managedDefaultStamped === true) {
           const { managedDefaultStamped: _cleared, ...remainingMetadata } = managedSandbox.metadata;
           await environments.update(managedSandbox.id, { metadata: remainingMetadata }, { db: tx });
         }
-        return svc.update(req.body, { db: tx });
+        return written;
       });
       const actor = getActorInfo(req);
       const companyIds = await svc.listCompanyIds();
