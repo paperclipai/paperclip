@@ -1774,6 +1774,18 @@ class DurableCoreStore {
   }
 }
 
+/** Why an authenticated runner connection lost its lease authority. */
+export interface DurablePrpConnectionLeaseFailure {
+  readonly code: "connection_lease_expired" | "connection_lease_revoked";
+  readonly leaseId: string;
+  readonly expiresAtUnixMs: number;
+  readonly observedAtUnixMs: number;
+}
+
+type SerializedFrame =
+  | { readonly raw: unknown }
+  | { readonly decrypted: Record<string, unknown> };
+
 /** Reason supplied when a transport-neutral PRP peer closes. */
 export interface TransportCloseReason {
   readonly code?: number;
@@ -2004,6 +2016,7 @@ export class DurablePrpControlPlane {
   // next authentication. Diagnostic only: it never gates authority.
   #runnerDisconnectedAt: number | null = null;
   #connectionProcessing = new Map<AuthorityConnection, Promise<void>>();
+  #connectionLeaseFailure: DurablePrpConnectionLeaseFailure | null = null;
   #pendingSemanticCalls = new Set<string>();
   #semanticCallbacksRetired = false;
   #semanticResultPersistenceFailed = false;
@@ -2912,11 +2925,40 @@ export class DurablePrpControlPlane {
   attachWireConnection(wire: PrpWireConnection): PrpWireAttachment {
     let connection!: AuthorityConnection;
     let processing = Promise.resolve();
+    // Frames received before the secure channel existed (or behind such a
+    // frame) are decrypted in order by the serialized chain. Once none are
+    // pending, frames are decrypted on arrival so that lease renewal can be
+    // answered without waiting for an earlier event's business commit.
+    let undecryptedFrames = 0;
     connection = new AuthorityConnection({
       wire,
       onJson: (value) => {
+        let frame: SerializedFrame;
+        if (connection.secureChannel !== null && undecryptedFrames === 0) {
+          const decrypted = this.#decryptOnArrival(connection, value);
+          if (decrypted === null) return;
+          if (decrypted.kind === "lease_renew" || decrypted.kind === "pong") {
+            // Lease renewal is liveness, not a state-changing frame. It must
+            // never queue behind a slow event commit (a long silent tool call
+            // otherwise lets the runner's lease lapse). It still commits the
+            // renewed expiry durably before its reply, and its admission is
+            // checked against persisted authority exactly as before.
+            try {
+              this.#handleDecrypted(connection, decrypted);
+            } catch {
+              connection.close();
+            }
+            return;
+          }
+          frame = { decrypted };
+        } else {
+          undecryptedFrames += 1;
+          frame = { raw: value };
+        }
         processing = processing
-          .then(() => this.#handleJson(connection, value))
+          .then(() => "raw" in frame
+            ? this.#handleJson(connection, frame.raw).finally(() => { undecryptedFrames -= 1; })
+            : this.#handleDecryptedFrame(connection, frame.decrypted))
           .catch(() => connection.close());
         const tail = processing;
         this.#connectionProcessing.set(connection, tail);
@@ -2927,6 +2969,7 @@ export class DurablePrpControlPlane {
         void tail.then(release, release);
       },
       onClose: () => {
+        this.#recordLeaseFailureIfLapsed(connection);
         this.#connections.delete(connection);
         if (connection.secureChannel !== null && this.activeRunnerConnectionCount() === 0)
           this.#runnerDisconnectedAt ??= Date.now();
@@ -2958,6 +3001,43 @@ export class DurablePrpControlPlane {
       connection.close();
       return;
     }
+    await this.#handleDecryptedFrame(connection, envelope);
+  }
+
+  /** Decrypt one secure frame in arrival order; null when it closed the connection. */
+  #decryptOnArrival(
+    connection: AuthorityConnection,
+    wire: unknown,
+  ): Record<string, unknown> | null {
+    try {
+      this.#store.assertWritable();
+      return decryptSecureJson(connection.secureChannel!, wire);
+    } catch {
+      try {
+        this.#store.state.malformedFrames += 1;
+        this.#store.save();
+      } finally {
+        connection.close();
+      }
+      return null;
+    }
+  }
+
+  /** Handle one decrypted renewal or pong immediately, outside the frame chain. */
+  #handleDecrypted(
+    connection: AuthorityConnection,
+    envelope: Record<string, unknown>,
+  ): void {
+    this.#store.assertWritable();
+    if (!this.#admitEnvelopeVersion(connection, envelope)) return;
+    if (!this.#admitAuthenticatedFrame(connection)) return;
+    if (envelope.kind === "lease_renew") this.#renewLease(connection, envelope);
+  }
+
+  #admitEnvelopeVersion(
+    connection: AuthorityConnection,
+    envelope: Record<string, unknown>,
+  ): boolean {
     const envelopeVersion = envelope.version;
     const expectedVersion =
       connection.lease?.protocolVersion ??
@@ -2972,8 +3052,63 @@ export class DurablePrpControlPlane {
         : envelopeVersion !== expectedVersion)
     ) {
       connection.close();
-      return;
+      return false;
     }
+    return true;
+  }
+
+  /**
+   * Admit every post-handshake frame against persisted authority before
+   * dispatch, including lease_renew. Renewal cannot revive a revoked or
+   * expired credential or bypass changes to its persisted binding. A lapsed
+   * or revoked lease is recorded so the owner can report why the runner left.
+   */
+  #admitAuthenticatedFrame(connection: AuthorityConnection): boolean {
+    if (
+      connection.secureChannel === null ||
+      connection.lease === null ||
+      canonicalJson(this.#store.state.leases[connection.lease.credentialId]) !==
+        canonicalJson(connection.lease) ||
+      connection.lease.revokedAt !== null ||
+      connection.lease.expiresAtUnixMs <= Date.now()
+    ) {
+      this.#recordLeaseFailureIfLapsed(connection);
+      connection.close();
+      return false;
+    }
+    return true;
+  }
+
+  #recordLeaseFailureIfLapsed(connection: AuthorityConnection): void {
+    const lease = connection.lease;
+    if (lease === null || connection.secureChannel === null) return;
+    const now = Date.now();
+    const revoked = lease.revokedAt !== null;
+    if (!revoked && lease.expiresAtUnixMs > now) return;
+    this.#connectionLeaseFailure = {
+      code: revoked ? "connection_lease_revoked" : "connection_lease_expired",
+      leaseId: lease.leaseId,
+      expiresAtUnixMs: lease.expiresAtUnixMs,
+      observedAtUnixMs: now,
+    };
+  }
+
+  /**
+   * Why the most recent authenticated runner connection lost its authority,
+   * or null while the current connection's lease is valid. A runner whose
+   * lease lapses exits without another authenticated frame, so the socket
+   * close alone would otherwise look like an ordinary transport loss.
+   */
+  get connectionLeaseFailure(): DurablePrpConnectionLeaseFailure | null {
+    return this.#connectionLeaseFailure === null ? null : { ...this.#connectionLeaseFailure };
+  }
+
+  async #handleDecryptedFrame(
+    connection: AuthorityConnection,
+    envelope: Record<string, unknown>,
+  ): Promise<void> {
+    this.#store.assertWritable();
+    if (!this.#admitEnvelopeVersion(connection, envelope)) return;
     const kind = envelope.kind;
     if (connection.secureChannel === null && kind === "auth_hello") {
       this.#authHello(connection, envelope);
@@ -2983,20 +3118,9 @@ export class DurablePrpControlPlane {
       await this.#authResponse(connection, envelope);
       return;
     }
-    // Admit every post-handshake frame against persisted authority before
-    // dispatch, including lease_renew. Renewal cannot revive a revoked or
-    // expired credential or bypass changes to its persisted binding.
-    if (
-      connection.secureChannel === null ||
-      connection.lease === null ||
-      canonicalJson(this.#store.state.leases[connection.lease.credentialId]) !==
-        canonicalJson(connection.lease) ||
-      connection.lease.revokedAt !== null ||
-      connection.lease.expiresAtUnixMs <= Date.now()
-    ) {
-      connection.close();
-      return;
-    }
+    if (!this.#admitAuthenticatedFrame(connection)) return;
+    // After admission the lease is non-null; keep the narrowed reference.
+    if (connection.lease === null) return;
     if (kind === "lease_renew") {
       this.#renewLease(connection, envelope);
       return;
@@ -3108,15 +3232,21 @@ export class DurablePrpControlPlane {
     // Repeating a request after a lost reply replays the persisted expiry.
     // It never extends a credential twice for the same observed generation.
     if (expectedExpiry === lease.expiresAtUnixMs) {
-      const candidate = structuredClone(this.#store.state);
-      const renewed = candidate.leases[lease.credentialId]!;
-      renewed.expiresAtUnixMs = Math.max(
+      const expiresAtUnixMs = Math.max(
         lease.expiresAtUnixMs,
         Date.now() + this.#connectionLeaseTtlMs,
       );
-      renewed.expiresAt = new Date(renewed.expiresAtUnixMs).toISOString();
-      candidate.lastLeaseExpiresAt = renewed.expiresAt;
-      this.#store.commit(candidate);
+      const renewed = {
+        ...structuredClone(lease),
+        expiresAtUnixMs,
+        expiresAt: new Date(expiresAtUnixMs).toISOString(),
+      };
+      // Renewal runs outside the frame chain, so an event's staged write can
+      // be in flight. save() absorbs that admitted event into this write; an
+      // explicit commit() would invalidate it and close a healthy connection.
+      this.#store.state.leases[lease.credentialId] = renewed;
+      this.#store.state.lastLeaseExpiresAt = renewed.expiresAt;
+      this.#store.save();
       connection.lease = this.#store.state.leases[lease.credentialId]!;
     }
     this.#sendJson(connection,
@@ -3642,6 +3772,7 @@ export class DurablePrpControlPlane {
     }
 
     this.#store.state.connectionCount += 1;
+    this.#connectionLeaseFailure = null;
     this.#store.state.lastLeaseId = lease.leaseId;
     this.#store.state.lastLeaseExpiresAt = lease.expiresAt;
 

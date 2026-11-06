@@ -455,6 +455,63 @@ describe("runner provider-ingress WebSocket wire", () => {
     }
   });
 
+  it("names an expired runner connection lease in the run log and terminal error", async () => {
+    vi.useFakeTimers();
+    const first = new FakeSocket();
+    const create = sockets.create;
+    let opens = 0;
+    sockets.create = () => {
+      opens += 1;
+      if (opens === 1) return openingSocket(first);
+      const refused = new FakeSocket();
+      refused.readyState = WebSocket.CONNECTING;
+      queueMicrotask(() => {
+        refused.readyState = WebSocket.CLOSED;
+        refused.emit("error", new Error("fixture runner exited"));
+      });
+      return refused;
+    };
+    const endpoint = {
+      kind: "authenticated_websocket" as const,
+      websocketUrl: "wss://preview.invalid/api/runner/v1/connect/run-lease-expired",
+      secretHeaders: [],
+      generation: "generation-lease-expired",
+      refresh: vi.fn(async () => endpoint),
+      close: vi.fn(async () => undefined),
+    };
+    let leaseFailure: { code: string } | null = null;
+    const states: Array<[string, string | undefined]> = [];
+    const handle = connectRunnerPrpIngress({
+      authority: {
+        attachWireConnection: vi.fn(() => ({ isAuthenticated: () => true })),
+        activeRunnerConnectionCount: () => 0,
+        get connectionLeaseFailure() { return leaseFailure; },
+      } as unknown as DurablePrpControlPlane,
+      endpoint,
+      recoveryGraceMs: 10_000,
+      onStateChange: (state, code) => states.push([state, code]),
+    });
+    const failure = vi.fn();
+    void handle.failure.catch(failure);
+    try {
+      await vi.advanceTimersByTimeAsync(0);
+      await handle.ready;
+      // The runner's lease lapsed; it exits and the socket closes.
+      leaseFailure = { code: "connection_lease_expired" };
+      first.close(1006);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(states).toContainEqual(["reconnecting", "runner_connection_lease_expired"]);
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(failure).toHaveBeenCalledWith(
+        expect.objectContaining({ code: "runner_connection_lease_expired" }),
+      );
+    } finally {
+      await handle.close();
+      sockets.create = create;
+      vi.useRealTimers();
+    }
+  });
+
   it("keeps a quiet but live runner attached through a long silent tool call", async () => {
     vi.useFakeTimers();
     const live = new FakeSocket();

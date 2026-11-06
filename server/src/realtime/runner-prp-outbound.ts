@@ -21,7 +21,9 @@ const DEFAULT_LIVENESS_TIMEOUT_MS = 90_000;
 
 export type RunnerIngressFailureCode =
   | "runner_ingress_unavailable"
-  | "runner_ingress_auth_failed";
+  | "runner_ingress_auth_failed"
+  | "runner_connection_lease_expired"
+  | "runner_connection_lease_revoked";
 
 export class RunnerIngressConnectionError extends Error {
   constructor(
@@ -354,6 +356,10 @@ export function connectRunnerPrpIngress(input: {
   const loop = (async () => {
     let attempt = 0;
     let recoveryDeadline = startupDeadline;
+    // A runner whose connection lease lapsed exits without another
+    // authenticated frame. Keep the authority's reason so the run log and the
+    // terminal error name it instead of a generic transport loss.
+    let leaseFailureCode: RunnerIngressFailureCode | null = null;
     while (!abort.signal.aborted) {
       try {
         input.onStateChange?.(attempt === 0 ? "connecting" : "reconnecting");
@@ -387,6 +393,7 @@ export function connectRunnerPrpIngress(input: {
         }
         input.onStateChange?.("authenticated");
         attempt = 0;
+        leaseFailureCode = null;
         const stopLiveness = opened.wire.monitorLiveness({
           intervalMs: input.livenessIntervalMs ?? DEFAULT_LIVENESS_INTERVAL_MS,
           timeoutMs: input.livenessTimeoutMs ?? DEFAULT_LIVENESS_TIMEOUT_MS,
@@ -397,6 +404,13 @@ export function connectRunnerPrpIngress(input: {
           stopLiveness();
         }
         recoveryDeadline = Date.now() + recoveryGraceMs;
+        const leaseFailure = input.authority.connectionLeaseFailure ?? null;
+        if (leaseFailure) {
+          leaseFailureCode = leaseFailure.code === "connection_lease_revoked"
+            ? "runner_connection_lease_revoked"
+            : "runner_connection_lease_expired";
+          input.onStateChange?.("reconnecting", leaseFailureCode);
+        }
       } catch (error) {
         // close() owns intentional shutdown. openEndpoint rejects its pending
         // handshake when the abort signal fires, but that cancellation is not
@@ -434,6 +448,14 @@ export function connectRunnerPrpIngress(input: {
           const terminal =
             failure instanceof RunnerIngressConnectionError
               ? failure
+              : leaseFailureCode !== null
+                ? new RunnerIngressConnectionError(
+                  leaseFailureCode,
+                  leaseFailureCode === "runner_connection_lease_revoked"
+                    ? "The runner's connection lease was revoked."
+                    : "The runner's connection lease expired before it was renewed.",
+                  { cause: failure },
+                )
               : new RunnerIngressConnectionError(
                   statusCode === 401 || statusCode === 403
                     ? "runner_ingress_auth_failed"
