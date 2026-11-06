@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
@@ -8,8 +8,18 @@ import type { RemoteWorkspaceSource } from "@paperclipai/shared";
 import { remoteWorkspaceArchiveScript, remoteWorkspaceCaptureFailureMessage, remoteWorkspaceFailureDetail } from "./remote-workspace-snapshot-archive.js";
 import type { GitRemoteAuthProvider } from "./git-credentials.js";
 import { classifyWorkspaceRestoreFailure } from "@paperclipai/adapter-utils/workspace-restore-merge";
+import { MAX_SANDBOX_SYNC_TIMEOUT_MS, type SandboxSyncOperation } from "@paperclipai/adapter-utils/sandbox-managed-runtime";
 
 export type RemoteWorkspaceTarget = Extract<AdapterExecutionTarget, { transport: "sandbox" }>;
+
+async function transferArchive(target: RemoteWorkspaceTarget, direction: "syncIn" | "syncOut",
+  operations: SandboxSyncOperation[], byteSize: number) {
+  if (!Number.isSafeInteger(byteSize) || byteSize <= 0) throw new Error("remote_workspace_archive_size_invalid");
+  const timeoutMs = Math.min(MAX_SANDBOX_SYNC_TIMEOUT_MS, 60_000 + Math.ceil(byteSize / 1024 ** 2) * 1_000);
+  return timeoutMs > 300_000
+    ? target.runner![direction]!(operations, { minimumTimeoutMs: timeoutMs })
+    : target.runner![direction]!(operations);
+}
 
 const checkoutConfiguredRefScript = String.raw`if(input.ref){const remoteRef=input.ref.replace(/^refs\/heads\//,'');
  const selected=await git(['rev-parse','--verify','--end-of-options',input.ref+'^{commit}'])
@@ -388,9 +398,29 @@ export async function cleanupRemoteWorkspaceArchive(input: {
   await command(input.target, "cleanup", ["-e", script, input.remoteCwd, input.operationId], undefined, 10_000);
 }
 
+/**
+ * Wall-clock milliseconds for each save phase, filled in as each phase ends so a
+ * failed save still reports the phases it finished. It holds only durations and
+ * archive counts, never paths or provider text.
+ */
+export type RemoteWorkspaceSavePhaseTiming = {
+  /** Archive helper install plus in-sandbox capture. */
+  captureMs?: number;
+  /** Provider download of the captured archive. */
+  transferMs?: number;
+  /** Server-side re-hash of the downloaded archive. */
+  verifyMs?: number;
+  byteSize?: number;
+  entries?: number;
+};
+
+const elapsedSince = (started: number) => Math.max(0, Math.round(performance.now() - started));
+
 export async function captureRemoteWorkspaceArchive(input: {
-  target: RemoteWorkspaceTarget; remoteCwd: string; operationId: string;
+  target: RemoteWorkspaceTarget; remoteCwd: string; operationId: string; timing?: RemoteWorkspaceSavePhaseTiming;
 }) {
+  const timing = input.timing ?? {};
+  const captureStarted = performance.now();
   const staged = await installArchiveHelper(input.target, input.remoteCwd, input.operationId);
   // Publish the archive and receipt as one immutable directory. Concurrent
   // invocations own separate attempts; no invocation unlinks another's archive.
@@ -434,14 +464,20 @@ export async function captureRemoteWorkspaceArchive(input: {
   };
   if (!["legacy", "captured"].includes(layout) || !/^[a-f0-9]{64}$/.test(receipt.manifestDigest) || !/^[a-f0-9]{64}$/.test(receipt.sha256)
     || !Number.isSafeInteger(receipt.byteSize) || receipt.byteSize <= 0) throw new Error("remote_workspace_capture_receipt_invalid");
+  timing.captureMs = elapsedSince(captureStarted); timing.byteSize = receipt.byteSize;
+  if (Number.isSafeInteger(receipt.entries) && receipt.entries >= 0) timing.entries = receipt.entries;
   const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-workspace-upload-"));
   const archivePath = path.join(root, "workspace.pcws");
   try {
-    await input.target.runner!.syncOut!([{ operationId: input.operationId,
+    const transferStarted = performance.now();
+    await transferArchive(input.target, "syncOut", [{ operationId: input.operationId,
       files: [{ kind: "file", sourcePath: layout === "captured" ? path.posix.join(staged.directory, "captured", "workspace.pcws") : staged.archive, targetPath: archivePath }],
-    }]);
+    }], receipt.byteSize);
+    timing.transferMs = elapsedSince(transferStarted);
+    const verifyStarted = performance.now();
     const hash = createHash("sha256"); let bytes = 0;
     for await (const chunk of createReadStream(archivePath)) { hash.update(chunk); bytes += chunk.length; }
+    timing.verifyMs = elapsedSince(verifyStarted);
     if (hash.digest("hex") !== receipt.sha256 || bytes !== receipt.byteSize) throw new Error("remote_workspace_capture_transfer_mismatch");
     return { ...receipt, archivePath, cleanup: () => rm(root, { recursive: true, force: true }) };
   } catch (error) {
@@ -454,21 +490,24 @@ export async function captureRemoteWorkspaceArchive(input: {
 export async function restoreRemoteWorkspaceDirectory(input: {
   target: RemoteWorkspaceTarget; remoteCwd: string; archivePath: string; manifestDigest: string; restorationIdentity: string; allowEmptyRoot?: boolean;
   allocationFiles?: Array<{ relativePath: string; sha256: string }>;
+  /** The server proved this sandbox's root is the workspace's own earlier allocation, fully saved. */
+  replaceRetiredRoot?: boolean;
 }) {
+  if (input.replaceRetiredRoot && input.allowEmptyRoot) throw new Error("remote_workspace_restore_mode_invalid");
   if (!/^[a-f0-9]{64}$/.test(input.restorationIdentity)) throw new Error("remote_workspace_restore_identity_invalid");
   const id = input.restorationIdentity;
   const operationId = `${id.slice(0, 8)}-${id.slice(8, 12)}-${id.slice(12, 16)}-${id.slice(16, 20)}-${id.slice(20, 32)}`;
   // Stage outside the destination; the restore validator requires an empty target.
   const parent = path.posix.dirname(input.remoteCwd);
   const staged = await installArchiveHelper(input.target, parent, operationId);
-  await input.target.runner!.syncIn!([{ operationId,
+  await stat(input.archivePath).then(archive => transferArchive(input.target, "syncIn", [{ operationId,
     files: [{ kind: "file", sourcePath: input.archivePath, targetPath: staged.archive }],
-  }]).catch((error: unknown) => { noteProviderRefusal("upload", error); throw error; });
+  }], archive.size)).catch((error: unknown) => { noteProviderRefusal("upload", error); throw error; });
   // Publish the restored folder and its identity together. A lost successful
   // reply can then adopt the same files without repeating a destructive restore.
   const restore = String.raw`const fs=require('node:fs/promises'),path=require('node:path'),cp=require('node:child_process'),crypto=require('node:crypto');
   ${DISK_FULL_CHECK}${CAPTURE_FAILURE_CHECK}${SETUP_FAILURE_CHECK}let stage='validate';
-  (async()=>{const [helper,archive,root,digest,identity,allowEmpty,rawFiles]=process.argv.slice(1),files=JSON.parse(rawFiles);
+  (async()=>{const [helper,archive,root,digest,identity,allowEmpty,rawFiles,replaceRetired]=process.argv.slice(1),files=JSON.parse(rawFiles);
    if(!/^[a-f0-9]{64}$/.test(identity)||!Array.isArray(files)||files.length>8)throw Error('invalid_identity');
    for(const file of files)if(!/^\.paperclip-runtime\/[a-zA-Z0-9_-]+\.json$/.test(file.relativePath)
      ||file.relativePath==='.paperclip-runtime/workspace-restored.json'||!/^[a-f0-9]{64}$/.test(file.sha256))throw Error('invalid_allocation');
@@ -487,7 +526,32 @@ export async function restoreRemoteWorkspaceDirectory(input: {
      const content=await fs.readFile(name);if(crypto.createHash('sha256').update(content).digest('hex')!==file.sha256)throw Error('allocation_changed');
      return {name:path.basename(name),content};}));
    };
-   const parked=root+'.allocation-'+identity;
+   // A retired root holds a Paperclip preparation or restore receipt; anything else is unknown.
+   const ownReceipt=async p=>{
+    const runtime=path.join(p,'.paperclip-runtime');if(!await stat(runtime))return false;await directory(runtime);
+    for(const [name,key] of [['workspace-restored.json','identity'],['workspace-ready.json','preparationIdentity']]){
+     const file=path.join(runtime,name),s=await stat(file);if(!s)continue;
+     if(!s.isFile()||s.isSymbolicLink()||s.nlink!==1||s.size>16384)throw Error('unsafe_receipt');
+     if(/^[a-f0-9]{64}$/.test(String(JSON.parse(await fs.readFile(file,'utf8'))?.[key])))return true;}
+    return false;
+   };
+   const parked=root+'.allocation-'+identity,retired=root+'.retired-'+identity;
+   // Runtime state beside the files (for example a retained runner session) is
+   // never saved; it belongs to this sandbox. Move it into the restored root
+   // before removing the retired one. Its old receipts and export staging stay behind.
+   // Only an authorized replace with this identity creates that path, so a repeat
+   // of the same restore finishes an interrupted carry without a new proof.
+   // Saved directory modes can be read-only. Make the parked tree's own directories
+   // owner-writable without following symlinks, then remove it.
+   const removeRetired=async()=>{if(!await stat(retired))return;
+    stage='carry_runtime';const from=path.join(retired,'.paperclip-runtime'),to=path.join(root,'.paperclip-runtime');
+    if(await stat(from)){await directory(from);await directory(to);
+     for(const name of await fs.readdir(from)){
+      if(['workspace-ready.json','workspace-restored.json','workspace-snapshots'].includes(name)||await stat(path.join(to,name)))continue;
+      await fs.rename(path.join(from,name),path.join(to,name));}}
+    stage='cleanup_parked';const open=async d=>{const s=await fs.lstat(d);if(!s.isDirectory()||s.isSymbolicLink())return;
+     await fs.chmod(d,(s.mode&0o7777)|0o700);for(const name of await fs.readdir(d))await open(path.join(d,name));};
+    await open(retired);await fs.rm(retired,{recursive:true,force:true});};
    stage='allocation';if(await stat(parked)){if(allowEmpty!=='true')throw Error('unexpected_allocation');await allocation(parked);if(!await stat(root))await fs.rename(parked,root);}
    stage='inspect_root';const prior=await stat(root);if(prior)await directory(root);
    const marker=path.join(root,'.paperclip-runtime','workspace-restored.json');
@@ -495,11 +559,17 @@ export async function restoreRemoteWorkspaceDirectory(input: {
     stage='existing_receipt';await directory(path.dirname(marker));const file=await fs.lstat(marker);
     if(!file.isFile()||file.isSymbolicLink()||file.nlink!==1||file.size>16384)throw Error('unsafe_receipt');
     const receipt=JSON.parse(await fs.readFile(marker,'utf8'));
-    if(receipt.identity!==identity||receipt.manifestDigest!==digest)throw Error('workspace_owner_changed');
-    if(await stat(parked)){await allocation(parked);await fs.rm(parked,{recursive:true});}return;
+    if(receipt.identity===identity&&receipt.manifestDigest===digest){
+     if(await stat(parked)){await allocation(parked);await fs.rm(parked,{recursive:true});}
+     await removeRetired();return;}
+    if(replaceRetired!=='true')throw Error('workspace_owner_changed');
    }
-   if(prior&&allowEmpty!=='true')throw Error('occupied_root');
-   stage='allocation';const retained=prior?await allocation(root):[];
+   stage='inspect_root';
+   // Replacing is allowed only for a root the server proved is this workspace's
+   // own earlier allocation whose last use ended in a completed final save.
+   const retire=Boolean(prior)&&replaceRetired==='true'&&await ownReceipt(root);
+   if(prior&&!retire&&allowEmpty!=='true')throw Error('occupied_root');
+   stage='allocation';const retained=prior&&!retire?await allocation(root):[];
    if(!prior&&files.length)throw Error('allocation_missing');
    stage='extract';const staged=await fs.mkdtemp(root+'.restoring-');
    try{
@@ -508,13 +578,17 @@ export async function restoreRemoteWorkspaceDirectory(input: {
     for(const file of retained)await fs.writeFile(path.join(runtime,file.name),file.content,{flag:'wx',mode:0o600});
     await fs.writeFile(path.join(runtime,'workspace-restored.json'),JSON.stringify({identity,manifestDigest:digest}),{flag:'wx',mode:0o600});
     stage='publish';if(await fs.realpath(path.dirname(root))!==path.dirname(root))throw Error('unsafe_root');
-    if(prior){await allocation(root);if(await stat(parked))throw Error('occupied_parking');await fs.rename(root,parked);}
-    try{await fs.rename(staged,root);}catch(e){if(prior&&!await stat(root))await fs.rename(parked,root);throw e;}
-    stage='cleanup_parked';if(prior){await allocation(parked);await fs.rm(parked,{recursive:true});}
+    const holding=retire?retired:parked;
+    if(prior){if(retire){if(!await ownReceipt(root))throw Error('occupied_root');}else await allocation(root);
+     if(await stat(holding))throw Error('occupied_parking');await fs.rename(root,holding);}
+    try{await fs.rename(staged,root);}catch(e){if(prior&&!await stat(root))await fs.rename(holding,root);throw e;}
+    stage='cleanup_parked';if(prior&&!retire){await allocation(parked);await fs.rm(parked,{recursive:true});}
+    await removeRetired();
    }finally{await fs.rm(staged,{recursive:true,force:true});}
   })().catch(error=>{process.stderr.write(setupFailure('remote_workspace_restore_failed',stage,error));process.exitCode=1});`;
   await command(input.target, "restore", ["-e", restore, staged.helper, staged.archive, input.remoteCwd,
-    input.manifestDigest, input.restorationIdentity, String(input.allowEmptyRoot === true), JSON.stringify(input.allocationFiles ?? [])]);
+    input.manifestDigest, input.restorationIdentity, String(input.allowEmptyRoot === true), JSON.stringify(input.allocationFiles ?? []),
+    String(input.replaceRetiredRoot === true)]);
   // Publish the restored location before cleanup can fail, stall, or lose its
   // reply. The owner journals this receipt and then reclaims disposable staging.
   return { operationId, stagingRoot: parent, cleanupPending: true };

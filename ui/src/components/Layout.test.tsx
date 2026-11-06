@@ -6,6 +6,11 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Layout } from "./Layout";
 
+const classicWorkspace = vi.hoisted(() => ({ enabled: true }));
+vi.mock("@/hooks/useCoordinatorWorkspaceEnabled", () => ({
+  useCoordinatorWorkspaceEnabled: () => ({ enabled: !classicWorkspace.enabled, loaded: true, userId: "viewer" }),
+}));
+
 const mockDesignSandbox = vi.hoisted(() => ({ enabled: false }));
 vi.mock("@/context/DesignSandboxContext", () => ({ useDesignSandbox: () => mockDesignSandbox.enabled }));
 vi.mock("./DesignSandboxSidebar", () => ({ DesignSandboxSidebar: () => <div>Proposed sidebar</div> }));
@@ -224,6 +229,7 @@ vi.mock("../context/DialogContext", () => ({
 vi.mock("../context/PanelContext", () => ({
   usePanel: () => ({
     togglePanelVisible: vi.fn(),
+    setPanelVisible: vi.fn(),
   }),
 }));
 
@@ -312,6 +318,7 @@ describe("Layout", () => {
   let container: HTMLDivElement;
 
   beforeEach(() => {
+    classicWorkspace.enabled = true;
     mockDesignSandbox.enabled = false;
     container = document.createElement("div");
     document.body.appendChild(container);
@@ -351,6 +358,20 @@ describe("Layout", () => {
     container.remove();
     document.body.innerHTML = "";
     vi.clearAllMocks();
+  });
+
+  it("uses the standard workspace presentation when Classic is off", async () => {
+    classicWorkspace.enabled = false;
+    const root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    try {
+      await act(async () => renderLayoutView(root, queryClient));
+      await flushReact();
+      expect(container.querySelector(".coordinator-workspace")).not.toBeNull();
+      classicWorkspace.enabled = true;
+      await act(async () => renderLayoutView(root, queryClient));
+      expect(container.querySelector(".coordinator-workspace")).toBeNull();
+    } finally { await act(async () => root.unmount()); queryClient.clear(); }
   });
 
   it("does not render the deployment explainer in the shared layout", async () => {

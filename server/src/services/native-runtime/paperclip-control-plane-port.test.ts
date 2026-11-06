@@ -390,7 +390,7 @@ describe("PaperclipControlPlanePort conformance", () => {
       }; },
     };
     const options = { backend, controlPlane: port, timeoutMs: 2_000,
-      ...(mode === "checkpoint timeout" ? { checkpointTimeoutMs: 100 } : {}),
+      ...(mode === "checkpoint timeout" ? { checkpointTimeoutMs: 1_000 } : {}),
       runnerInstanceId: runnerId, controlPlaneInstanceId: "park-control",
       input: parseNativeExecutionInput({ schema: "paperclip.native-execution-input.v1", binding: {
         companyId: identity.companyId, runId: identity.runId, issueId: identity.issueId, agentId: identity.agentId, executionWorkspaceId: "park-workspace" },
@@ -414,13 +414,13 @@ describe("PaperclipControlPlanePort conformance", () => {
       expect(rows.some(row => row.eventType === "turn.interrupted")).toBe(true);
       expect(triggerConsumed).toBe(true);
       if (mode !== "unscoped terminal") {
-        await new Promise(resolve => setTimeout(resolve, 700));
+        if (mode === "settles") await new Promise(resolve => setTimeout(resolve, 700));
+        else expect(await outcome).toMatchObject({ error: { message: "native session checkpoint timed out after 1000ms" } });
         expect(await db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, identity.runId))).toEqual([]);
         releaseObserver();
         await observerDone;
         if (mode === "settles") expect(await outcome).not.toHaveProperty("error");
         else {
-          expect(await outcome).toMatchObject({ error: { message: "native session checkpoint timed out after 100ms" } });
           expect(await db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, identity.runId))).toEqual([]);
           const restored = new PaperclipControlPlanePort(db, { ...identity, completionContractId: fixtureContractId,
             completionContractSha256: contractSha, sourceInstanceId: runnerId, controlPlaneSourceInstanceId: "park-control" });
@@ -585,6 +585,32 @@ describe("PaperclipControlPlanePort conformance", () => {
       expect(replayed).toBe(1);
       expect(await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, f.identity.runId))).toHaveLength(1);
     } finally { release(); await duplicate; }
+  });
+
+  it("joins the deferred observer it saw on arrival even when that observer settles during the duplicate's persistence", async () => {
+    let release!: () => void, unlock!: () => void, locked!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const unlocked = new Promise<void>(resolve => { unlock = resolve; });
+    const lockHeld = new Promise<void>(resolve => { locked = resolve; });
+    let observed = 0, duplicates = 0;
+    const f = await terminalObserverFixture({ async onCommittedEvent() { observed++; await gate; },
+      async onDuplicateEvent() { duplicates++; } });
+    const signal = new AbortController().signal;
+    await f.port.appendEvent(f.event, { signal, deferPostCommitObservers: true });
+    const lock = db.transaction(async tx => {
+      await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(eq(heartbeatRuns.id, f.identity.runId)).for("update");
+      locked(); await unlocked;
+    });
+    let duplicate: Promise<unknown> | undefined;
+    try {
+      await lockHeld;
+      duplicate = f.port.appendEvent(f.event, { signal });
+      release(); await new Promise(resolve => setTimeout(resolve, 0));
+      unlock(); await lock;
+      expect(await duplicate).toMatchObject({ disposition: "duplicate" });
+      expect(observed).toBe(1);
+      expect(duplicates).toBe(0);
+    } finally { release(); unlock(); await lock; await duplicate?.catch(() => {}); }
   });
 
   it.each(["company", "agent", "run", "session", "source", "failed", "unproven", "nonterminal", "unscoped"] as const)("does not grant deferred terminal authority to %s evidence", async fault => {

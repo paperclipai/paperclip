@@ -90,6 +90,7 @@ import { createOAuthClientRegistration } from "../services/tool-access/oauth/cli
 import { createPersonalConnectionIdentity } from "../services/tool-access/connections/personal-identity.js";
 import { createConnectionSetupPolicy } from "../services/tool-access/connections/setup-policy.js";
 import { toolAccessPolicyService } from "../services/tool-access-policy.js";
+import { connectionIntentService } from "../services/connection-intents.js";
 import { secretService } from "../services/secrets.js";
 import {
   canonicalToolArguments,
@@ -954,14 +955,14 @@ describeEmbeddedPostgres("tool access service", () => {
     if (externalDatabaseUrl) {
       await applyPendingMigrations(externalDatabaseUrl);
       db = createDb(externalDatabaseUrl, { maxConnections: 4 });
-      await instanceSettingsService(db).updateExperimental({ enableMemoryConnectors: true });
+      await instanceSettingsService(db).updateExperimental({ enableMemoryConnectors: true, enableGoogleWorkspaceConnector: true });
       return;
     }
     tempDb = await startEmbeddedPostgresTestDatabase(
       "paperclip-tool-access-service-",
     );
     db = createDb(tempDb.connectionString, { maxConnections: 4 });
-    await instanceSettingsService(db).updateExperimental({ enableMemoryConnectors: true });
+    await instanceSettingsService(db).updateExperimental({ enableMemoryConnectors: true, enableGoogleWorkspaceConnector: true });
   }, 20_000);
 
   afterEach(async () => {
@@ -2154,6 +2155,15 @@ describeEmbeddedPostgres("tool access service", () => {
       let replacementFinished: Promise<unknown> | undefined;
       try {
         await waitForFirstReplacementLock(cleanupPid);
+        releaseFirstReplacement();
+        await firstReplacement;
+        await membershipIsLocked;
+
+        // Start the empty replacement only once cleanup owns the membership
+        // row. Had it queued behind the first replacement too, both waiters
+        // would wake on that commit and race for the row; a replacement that
+        // wins it legitimately widens before cleanup, which made the
+        // fail-closed outcome below depend on scheduling.
         let replacementSettled = false;
         const replacement = replacementService
           .replaceConnectionGrantMembers(connection.id, grant.id, [])
@@ -2165,12 +2175,10 @@ describeEmbeddedPostgres("tool access service", () => {
             replacementSettled = true;
           });
         replacementFinished = replacement;
-        await waitForFirstReplacementLock(replacementPid);
-        expect(replacementSettled).toBe(false);
-
-        releaseFirstReplacement();
-        await firstReplacement;
-        await membershipIsLocked;
+        await vi.waitFor(async () => {
+          const [waiting] = await db.execute<{ blockers: number[] }>(sql`select pg_blocking_pids(${replacementPid}) as blockers`);
+          expect(waiting!.blockers).toContain(cleanupPid);
+        }, { timeout: 5000 });
         expect(replacementSettled).toBe(false);
         releaseCleanup();
         await cleanup;
@@ -10813,8 +10821,8 @@ describeEmbeddedPostgres("tool access service", () => {
     ).toBe(versionCountBeforeAccessRevocation);
   });
 
-  it.each(["page", "task"] as const)(
-    "activates and discovers actions for a fresh personal OAuth callback from %s without widening task access",
+  it.each(["page", "task", "task-all-agents"] as const)(
+    "activates personal OAuth from %s with the selected audience only after finalization",
     async (host) => {
       vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_ID", "slack-client-id");
       vi.stubEnv(
@@ -10828,7 +10836,7 @@ describeEmbeddedPostgres("tool access service", () => {
       const otherAgent = await createAgent(db, company.id);
       const { issue, run } = await createIssueAndRun(db, company.id, agent.id);
       const interaction =
-        host === "task"
+        host !== "page"
           ? (
               await db
                 .insert(issueThreadInteractions)
@@ -10965,12 +10973,12 @@ describeEmbeddedPostgres("tool access service", () => {
         });
       for (const entry of [searchMessagesEntry, sendMessageEntry]) {
         await expect(decide(entry)).resolves.toMatchObject(
-          host === "task"
+          host !== "page"
             ? { decision: "deny" }
             : { decision: "allow", reasonCode: "allow_profile" },
         );
       }
-      if (host === "task") {
+      if (host !== "page") {
         await expect(
           db
             .select()
@@ -11008,14 +11016,26 @@ describeEmbeddedPostgres("tool access service", () => {
         personalGrant.credentialSecretRefs.map((ref) => ref.configPath).sort(),
       ).toEqual(["oauth.access_token", "oauth.refresh_token"]);
 
-      const finished = await service.finalizeOAuthAccess(
+      if (host === "task-all-agents") {
+        const intents = connectionIntentService(db);
+        await intents.updatePhase(interaction!.id, "authorizing", userId, {
+          setupAccess: { connectionId: connected.connectionId, access: "all_agents" },
+          canManageOrganizationGrant: true,
+        });
+        await expect(intents.complete(interaction!.id, connected.connectionId, userId, { canManageOrganizationGrant: true, oauthCompletion: true }))
+          .resolves.toMatchObject({ status: "accepted" });
+      }
+      const finished = host === "task-all-agents" ? {
+        profileEntries: await db.select().from(toolProfileEntries).where(eq(toolProfileEntries.profileId, callbackProfile!.id)),
+        profileBindings: await db.select().from(toolProfileBindings).where(eq(toolProfileBindings.profileId, callbackProfile!.id)),
+      } : await service.finalizeOAuthAccess(
         company.id,
         connected.connectionId,
         {
           grantKind: "user",
         },
         { actorType: "user", actorId: userId },
-        host === "task" ? agent.id : undefined,
+        host !== "page" ? agent.id : undefined,
       );
       expect(finished.profileEntries).toHaveLength(2);
       expect(finished.profileBindings).toEqual([
@@ -11036,6 +11056,11 @@ describeEmbeddedPostgres("tool access service", () => {
             ),
           ),
       ).resolves.toHaveLength(host === "task" ? 0 : 1);
+      if (host === "task-all-agents") {
+        await expect(decide(searchMessagesEntry, otherAgent.id)).resolves.toMatchObject({ decision: "allow" });
+        expect((await service.getEffectiveToolAssignmentsForAgent(company.id, otherAgent.id)).installedConnections)
+          .toEqual(expect.arrayContaining([expect.objectContaining({ id: connected.connectionId })]));
+      }
       if (host === "task") {
         await expect(decide(searchMessagesEntry)).resolves.toMatchObject({
           decision: "allow",
@@ -11131,7 +11156,7 @@ describeEmbeddedPostgres("tool access service", () => {
         {
           redirectUri: "https://paperclip.example/api/tools/oauth/callback",
           actor: { actorType: "user", actorId: userId },
-          interactionId: interaction?.id,
+          interactionId: host === "task-all-agents" ? undefined : interaction?.id,
         },
       );
       await expect(
