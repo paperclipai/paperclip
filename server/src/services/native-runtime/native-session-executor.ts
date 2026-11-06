@@ -6050,8 +6050,15 @@ export async function restoreRemoteBootstrapCheckpointForRecovery(input: {
   // controller state. An empty root holds no evidence; remove it so the fresh
   // bootstrap does not read it as an unreadable identity.
   if (readdirSync(input.root).length === 0) {
-    rmdirSync(input.root);
-    return;
+    try {
+      rmdirSync(input.root);
+      return;
+    } catch (error) {
+      // An entry that appeared after the read goes through the checks below.
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === "ENOENT") return;
+      if (code !== "ENOTEMPTY" && code !== "EEXIST") throw error;
+    }
   }
   if (readRunnerdDurableIdentity(input.root) !== null) return;
   const marker = readRunnerdDurableIdentity(input.root, true);
