@@ -1,5 +1,6 @@
-import { and, eq, sql } from "drizzle-orm";
+import { and, asc, eq, gt, sql } from "drizzle-orm";
 import { agentWakeupRequests, heartbeatRuns, issues, type Db } from "@paperclipai/db";
+import { isUniqueViolation } from "../db-errors.js";
 import { logActivity } from "./activity-log.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { getExecutionBlocker } from "./execution-blocker.js";
@@ -27,6 +28,12 @@ type Wakeup = (agentId: string, opts: {
 /** A claim older than this with no saved wake belongs to an interrupted dispatcher. */
 export const PAUSE_RESUME_CLAIM_STALE_MS = 60_000;
 
+/** Queue admission accepts one saved wake per interrupted run under this key. */
+export const PAUSE_RESUME_WAKE_INDEX = "agent_wakeup_requests_tree_hold_resume_uq";
+
+const SWEEP_PAGE_SIZE = 25;
+const SWEEP_MAX_CANDIDATES = 500;
+
 export function pauseResumeWakeKey(runId: string) {
   return `tree-hold-resume:${runId}`;
 }
@@ -50,13 +57,13 @@ async function setResumeState(db: Db, input: {
     ? sql`not (coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) ? 'treeHoldResume')`
     : sql`${heartbeatRuns.resultJson}->'treeHoldResume'->>'claimedAt' is not distinct from ${input.expectedClaimedAt}`;
   return db.transaction(async tx => {
+    // A pending claim arms the recovery sweep in the same commit, so a crash
+    // before the wake is saved is retried. Intent is registered before the write.
+    if (input.next.state === "pending") await notifyDeliveryWork(tx, DELIVERY_QUEUES.executionContinuation);
     const [row] = await tx.update(heartbeatRuns).set({
       resultJson: sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) || ${JSON.stringify({ treeHoldResume: input.next })}::jsonb`,
     }).where(and(eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.id, input.runId),
       eq(heartbeatRuns.status, "cancelled"), guard)).returning({ id: heartbeatRuns.id });
-    // A pending claim arms the recovery sweep in the same commit, so a crash
-    // before the wake is saved is retried.
-    if (row && input.next.state === "pending") await notifyDeliveryWork(tx, DELIVERY_QUEUES.executionContinuation);
     return Boolean(row);
   });
 }
@@ -65,7 +72,7 @@ async function dispatch(db: Db, input: {
   companyId: string; issueId: string; agentId: string; runId: string; holdId: string;
   claimedAt: string; rootIssueId: string | null; actor: ResumeActor; wakeup: Wakeup;
 }) {
-  await input.wakeup(input.agentId, {
+  const saved = await input.wakeup(input.agentId, {
     source: "assignment",
     triggerDetail: "system",
     reason: "issue_tree_resumed",
@@ -83,7 +90,12 @@ async function dispatch(db: Db, input: {
       holdId: input.holdId,
       interruptedRunId: input.runId,
     },
+  }).then(() => true, (error: unknown) => {
+    // Another dispatcher already saved this run's resume wake; it owns the work.
+    if (isUniqueViolation(error, PAUSE_RESUME_WAKE_INDEX)) return false;
+    throw error;
   });
+  if (!saved) return;
   await setResumeState(db, { companyId: input.companyId, runId: input.runId, expectedClaimedAt: input.claimedAt,
     next: { holdId: input.holdId, state: "delivered", claimedAt: input.claimedAt, deliveredAt: new Date().toISOString() } });
 }
@@ -150,11 +162,32 @@ export async function hasPendingPauseResume(db: Db) {
  * Otherwise the task's current state is checked again before one dispatch.
  */
 export async function deliverPendingPauseResumes(db: Db, wakeup: Wakeup, now = new Date()) {
-  const rows = await db.select({
-    id: heartbeatRuns.id, companyId: heartbeatRuns.companyId, agentId: heartbeatRuns.agentId,
-    createdAt: heartbeatRuns.createdAt, resultJson: heartbeatRuns.resultJson,
-    issueId: sql<string | null>`coalesce(${heartbeatRuns.issueId}::text, ${heartbeatRuns.contextSnapshot}->>'issueId')`,
-  }).from(heartbeatRuns).where(pendingResumePredicate(new Date(now.getTime() - PAUSE_RESUME_CLAIM_STALE_MS))).limit(25);
+  const staleBefore = new Date(now.getTime() - PAUSE_RESUME_CLAIM_STALE_MS);
+  // Page through the stale claims: a claim still waiting on a pause or blocker
+  // is skipped without a write, so a fixed first batch could starve the rest.
+  let after: string | null = null;
+  for (let seen = 0; seen < SWEEP_MAX_CANDIDATES;) {
+    const rows: PendingResumeRow[] = await db.select({
+      id: heartbeatRuns.id, companyId: heartbeatRuns.companyId, agentId: heartbeatRuns.agentId,
+      createdAt: heartbeatRuns.createdAt, resultJson: heartbeatRuns.resultJson,
+      issueId: sql<string | null>`coalesce(${heartbeatRuns.issueId}::text, ${heartbeatRuns.contextSnapshot}->>'issueId')`,
+    }).from(heartbeatRuns)
+      .where(and(pendingResumePredicate(staleBefore), after ? gt(heartbeatRuns.id, after) : undefined))
+      .orderBy(asc(heartbeatRuns.id)).limit(SWEEP_PAGE_SIZE);
+    if (!rows.length) return;
+    seen += rows.length;
+    after = rows[rows.length - 1]!.id;
+    await deliverPendingPage(db, wakeup, now, rows);
+    if (rows.length < SWEEP_PAGE_SIZE) return;
+  }
+}
+
+type PendingResumeRow = {
+  id: string; companyId: string; agentId: string; createdAt: Date;
+  resultJson: Record<string, unknown> | null; issueId: string | null;
+};
+
+async function deliverPendingPage(db: Db, wakeup: Wakeup, now: Date, rows: PendingResumeRow[]) {
   for (const run of rows) {
     const claim = run.resultJson?.treeHoldResume as { holdId?: unknown; claimedAt?: unknown } | undefined;
     if (typeof claim?.claimedAt !== "string" || typeof claim.holdId !== "string" || !run.issueId) continue;

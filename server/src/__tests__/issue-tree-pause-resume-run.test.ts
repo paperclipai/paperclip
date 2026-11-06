@@ -345,6 +345,82 @@ describeEmbeddedPostgres("subtree pause and release of an in-flight child run", 
     expect(await hasPendingPauseResume(db)).toBe(false);
   });
 
+  it("does not let a stalled dispatcher repeat a resume the sweep already took over", async () => {
+    const fixture = await seedTree();
+    const { holdId } = await pauseWhilePreparing(fixture);
+    preparationGate.release?.();
+    await drainHeartbeatRunsToQuiescence(db, heartbeat);
+    await db.update(issueTreeHolds).set({ status: "released", releasedAt: new Date() }).where(eq(issueTreeHolds.id, holdId));
+
+    // The first dispatcher claims the work, then stalls before its wake is saved.
+    const { resumePauseInterruptedWork, deliverPendingPauseResumes } = await import("../services/issue-tree-resume.js");
+    let resumeStalled!: () => void;
+    const stalled = new Promise<void>((resolve) => { resumeStalled = resolve; });
+    let continueStalled!: () => void;
+    const gate = new Promise<void>((resolve) => { continueStalled = resolve; });
+    const slow = resumePauseInterruptedWork(db, {
+      companyId: fixture.companyId, issueIds: [fixture.childId], actor: { actorType: "system", actorId: "system" },
+      wakeup: async (agentId, opts) => { resumeStalled(); await gate; return heartbeat.wakeup(agentId, opts); },
+    });
+    await stalled;
+
+    // The sweep takes over the stale claim and the replacement run finishes
+    // while the task stays open.
+    await deliverPendingPauseResumes(db, (agentId, opts) => heartbeat.wakeup(agentId, opts), new Date(Date.now() + 5 * 60_000));
+    await drainHeartbeatRunsToQuiescence(db, heartbeat);
+    await db.update(issues).set({ status: "in_progress", completedAt: null }).where(eq(issues.id, fixture.childId));
+
+    continueStalled();
+    expect(await slow).toEqual([]);
+    await drainHeartbeatRunsToQuiescence(db, heartbeat);
+    const runs = await childRuns(fixture.childId);
+    expect(runs.map((run) => run.contextSnapshot?.wakeReason)).toEqual(["issue_assigned", "issue_tree_resumed"]);
+    const wakes = await db.select().from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.idempotencyKey, `tree-hold-resume:${runs[0]!.id}`));
+    expect(wakes).toHaveLength(1);
+  });
+
+  it("visits every stale resume claim even when the first page is still paused", async () => {
+    const fixture = await seedTree();
+    const { interruptedRunId, holdId } = await pauseWhilePreparing(fixture);
+    preparationGate.release?.();
+    await drainHeartbeatRunsToQuiescence(db, heartbeat);
+    await db.update(issueTreeHolds).set({ status: "released", releasedAt: new Date() }).where(eq(issueTreeHolds.id, holdId));
+
+    // A full page of claims on tasks under another active pause sorts first.
+    const pausedRootId = randomUUID();
+    await db.insert(issues).values({ id: pausedRootId, companyId: fixture.companyId, title: "Paused root", status: "in_progress",
+      priority: "medium", responsibleUserId: "responsible-user", assigneeUserId: "responsible-user", issueNumber: 10,
+      identifier: `${fixture.prefix}-10` });
+    const pausedChildIds = Array.from({ length: 25 }, () => randomUUID());
+    for (const [index, id] of pausedChildIds.entries()) {
+      await db.insert(issues).values({ id, companyId: fixture.companyId, parentId: pausedRootId, title: `Paused ${index}`,
+        status: "in_progress", priority: "medium", responsibleUserId: "responsible-user", assigneeAgentId: fixture.agentId,
+        issueNumber: 11 + index, identifier: `${fixture.prefix}-${11 + index}` });
+    }
+    const otherPause = await request(app).post(`/api/issues/${pausedRootId}/tree-holds`).send({ mode: "pause" });
+    expect(otherPause.status).toBe(201);
+    const claimedAt = new Date(Date.now() - 5 * 60_000).toISOString();
+    const pendingClaim = { treeHoldResume: { holdId: otherPause.body.hold.id, state: "pending", claimedAt } };
+    await db.insert(heartbeatRuns).values(pausedChildIds.map((issueId, index) => ({
+      id: `00000000-0000-4000-8000-${String(index).padStart(12, "0")}`, companyId: fixture.companyId, agentId: fixture.agentId,
+      status: "cancelled", finishedAt: new Date(Date.now() - 10 * 60_000), createdAt: new Date(Date.now() - 10 * 60_000),
+      contextSnapshot: { issueId }, resultJson: pendingClaim,
+    })));
+    // The runnable claim sorts after that page.
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, interruptedRunId));
+    await db.update(heartbeatRuns).set({ resultJson: { ...run!.resultJson, treeHoldResume: { holdId, state: "pending", claimedAt } } })
+      .where(eq(heartbeatRuns.id, interruptedRunId));
+    expect(interruptedRunId > `00000000-0000-4000-8000-${String(24).padStart(12, "0")}`).toBe(true);
+
+    const { deliverPendingPauseResumes } = await import("../services/issue-tree-resume.js");
+    await deliverPendingPauseResumes(db, (agentId, opts) => heartbeat.wakeup(agentId, opts));
+    await drainHeartbeatRunsToQuiescence(db, heartbeat);
+
+    const runs = await childRuns(fixture.childId);
+    expect(runs.map((row) => row.contextSnapshot?.wakeReason)).toEqual(["issue_assigned", "issue_tree_resumed"]);
+  });
+
   it("re-dispatches a queued child run that the pause cancelled before it started", async () => {
     const fixture = await seedTree();
     // Occupy the agent's only slot so the child's run stays queued.
