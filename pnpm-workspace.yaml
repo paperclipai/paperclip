@@ -17,7 +17,7 @@ packages:
 # versions read patch configuration only from the workspace manifest.
 patchedDependencies:
   postgres@3.4.9: patches/postgres@3.4.9.patch
-  embedded-postgres@18.1.0-beta.16: patches/embedded-postgres@18.1.0-beta.16.patch
+  embedded-postgres@18.4.0-beta.17: patches/embedded-postgres@18.4.0-beta.17.patch
   acpx@0.12.0: patches/acpx@0.12.0.patch
   acpx@0.13.1: patches/acpx@0.13.1.patch
   "@agentclientprotocol/claude-agent-acp@0.73.0": patches/@agentclientprotocol__claude-agent-acp@0.73.0.patch
@@ -47,3 +47,11 @@ overrides:
   # Parsers and highlighters must share NodeProp IDs from one Lezer instance.
   # Mixed copies can interpret unrelated node metadata as highlighting tags.
   "@lezer/common": "^1.5.2"
+  "@embedded-postgres/darwin-arm64": "18.4.0-beta.17"
+  "@embedded-postgres/darwin-x64": "18.4.0-beta.17"
+  "@embedded-postgres/linux-arm": "18.4.0-beta.17"
+  "@embedded-postgres/linux-arm64": "18.4.0-beta.17"
+  "@embedded-postgres/linux-ia32": "18.4.0-beta.17"
+  "@embedded-postgres/linux-ppc64": "18.4.0-beta.17"
+  "@embedded-postgres/linux-x64": "18.4.0-beta.17"
+  "@embedded-postgres/windows-x64": "18.4.0-beta.17"
