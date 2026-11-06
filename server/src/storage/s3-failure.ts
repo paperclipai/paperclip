@@ -40,8 +40,9 @@ export function recordS3Failure(error: unknown, operation: StorageFailureOperati
  * A GetObject body can fail after send() resolved, for example when the
  * socket resets mid-download. The response names the request; the stream
  * error's own code (ECONNRESET) names the failure better than its name.
+ * `bodyReads` counts the reads of a resumed body; the response is the last.
  */
-export function recordS3BodyFailure(error: unknown, response: unknown): void {
+export function recordS3BodyFailure(error: unknown, response: unknown, bodyReads?: number): void {
   const metadata = ownValue(response, "$metadata");
   recordStorageFailure(error, {
     provider: "s3",
@@ -49,7 +50,7 @@ export function recordS3BodyFailure(error: unknown, response: unknown): void {
     errorCode: matching(ownValue(error, "code"), ERROR_CODE) ?? matching(ownValue(error, "name"), ERROR_CODE) ?? "unknown",
     httpStatus: integerIn(ownValue(metadata, "httpStatusCode"), 100, 599),
     requestId: matching(ownValue(metadata, "requestId"), REQUEST_ID),
-    attempts: integerIn(ownValue(metadata, "attempts"), 1, 100),
+    attempts: integerIn(bodyReads, 1, 100) ?? integerIn(ownValue(metadata, "attempts"), 1, 100),
   });
 }
 
