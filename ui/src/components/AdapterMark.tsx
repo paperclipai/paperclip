@@ -24,6 +24,7 @@ const brandMarks: Record<string, { src: string; dark?: string }> = {
       ["hermes_local", "hermesagent"],
       ["hermes_gateway", "hermesagent"],
       ["pi_local", "pi"],
+      ["kimchi_local", "kimchi"],
     ].map(([type, icon]) => [
       type,
       {
