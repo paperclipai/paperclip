@@ -31,7 +31,7 @@ use crate::provider_bridge::{
     TOOL_SET_SCHEMA,
 };
 use crate::provider_events::{
-    normalize_codex_notification, normalize_codex_notification_in,
+    codex_context_usage, normalize_codex_notification, normalize_codex_notification_in,
     normalized_codex_terminal_event_type, with_terminal_outcome, NormalizedProviderEvent,
 };
 use crate::stable_identity::{is_stable_id, DURABLE_STABLE_ID_CHARS, SHORT_STABLE_ID_CHARS};
@@ -723,6 +723,11 @@ fn normalize_provider_notification(
             .codex_usage
             .get_or_insert_with(|| CodexRunUsage::new(true))
             .observe(total, historical);
+        let context = if historical {
+            None
+        } else {
+            codex_context_usage(params)
+        };
         let mut normalized_params = params.clone();
         let emit_usage = !historical || (had_baseline && increases_known_usage);
         if historical && emit_usage {
@@ -743,6 +748,9 @@ fn normalize_provider_notification(
             if event.event_type == "usage.reported" {
                 event.payload["runDeltaAvailable"] = json!(complete);
                 event.payload["runDeltaBasis"] = json!("run");
+                if let Some(context) = &context {
+                    event.payload["context"] = context.clone();
+                }
             }
         }
         return Ok(events);
@@ -4232,7 +4240,7 @@ impl CodexCommandExecutor {
         self.provider
             .as_mut()
             .expect("provider remains present while rejecting its tool call")
-            .deliver_tool_result(&rejection)
+            .deliver_tool_rejection(&rejection)
             .map_err(|delivery_error| {
                 DurableRunnerError::invalid(format!(
                     "failed to return the semantic tool rejection: {delivery_error}"
@@ -4313,15 +4321,22 @@ impl CodexCommandExecutor {
     }
 
     fn settle_receipt_limit_interrupt_after_deadline(&mut self) -> Result<(), DurableRunnerError> {
-        let interrupt_accepted = self
-            .state
-            .as_ref()
-            .is_some_and(|state| state.receipt_limit_interrupt_accepted);
         let provider_shutdown_failed = self
             .provider
             .as_mut()
             .is_some_and(|provider| provider.shutdown().is_err());
+        self.settle_receipt_limit_after_shutdown(provider_shutdown_failed)
+    }
+
+    fn settle_receipt_limit_after_shutdown(
+        &mut self,
+        provider_shutdown_failed: bool,
+    ) -> Result<(), DurableRunnerError> {
         self.provider = None;
+        let interrupt_accepted = self
+            .state
+            .as_ref()
+            .is_some_and(|state| state.receipt_limit_interrupt_accepted);
         let identity = self.event_identity()?;
         let state = self
             .state
@@ -4381,44 +4396,40 @@ impl CodexCommandExecutor {
         self.save_state()
     }
 
-    fn retry_receipt_limit_interrupt(&mut self) -> Result<(), DurableRunnerError> {
-        let (should_retry, attempts, persisted_deadline) =
-            self.state.as_ref().map_or((false, 0, None), |state| {
-                (
-                    state.receipt_limit_interrupt_pending
-                        && state.active_provider_turn_id.is_some(),
-                    state.receipt_limit_interrupt_attempts,
-                    state.receipt_limit_interrupt_deadline_unix_ms,
-                )
-            });
-        if !should_retry {
-            return Ok(());
-        }
-        let now_unix_ms = current_unix_ms()?;
-        let deadline_unix_ms = match persisted_deadline {
-            Some(deadline) => deadline,
-            None => {
-                // Older durable state did not record this additive field. Give
-                // an already-pending interruption one complete bounded window
-                // after recovery rather than falling back on poll count alone.
-                let timeout_ms = if self
-                    .state
-                    .as_ref()
-                    .is_some_and(|state| state.receipt_limit_interrupt_accepted)
-                {
-                    RECEIPT_LIMIT_ACCEPTED_TERMINAL_DEADLINE_MS
-                } else {
-                    RECEIPT_LIMIT_INTERRUPT_TERMINAL_DEADLINE_MS
-                };
-                let deadline = receipt_limit_deadline_after(timeout_ms)?;
-                self.state
-                    .as_mut()
-                    .expect("Codex state remains available while adding its receipt-limit deadline")
-                    .receipt_limit_interrupt_deadline_unix_ms = Some(deadline);
-                self.save_state()?;
-                deadline
-            }
+    fn receipt_limit_interrupt_deadline(&mut self) -> Result<Option<u64>, DurableRunnerError> {
+        let Some(state) = self.state.as_ref().filter(|state| {
+            state.receipt_limit_interrupt_pending && state.active_provider_turn_id.is_some()
+        }) else {
+            return Ok(None);
         };
+        if let Some(deadline) = state.receipt_limit_interrupt_deadline_unix_ms {
+            return Ok(Some(deadline));
+        }
+        // Preserve the existing legacy-journal window, once, without retrying a provider RPC.
+        let timeout = if state.receipt_limit_interrupt_accepted {
+            RECEIPT_LIMIT_ACCEPTED_TERMINAL_DEADLINE_MS
+        } else {
+            RECEIPT_LIMIT_INTERRUPT_TERMINAL_DEADLINE_MS
+        };
+        let deadline = receipt_limit_deadline_after(timeout)?;
+        self.state
+            .as_mut()
+            .expect("pending interruption has state")
+            .receipt_limit_interrupt_deadline_unix_ms = Some(deadline);
+        self.save_state()?;
+        Ok(Some(deadline))
+    }
+
+    fn retry_receipt_limit_interrupt(&mut self) -> Result<(), DurableRunnerError> {
+        let Some(deadline_unix_ms) = self.receipt_limit_interrupt_deadline()? else {
+            return Ok(());
+        };
+        let attempts = self
+            .state
+            .as_ref()
+            .expect("pending interruption has state")
+            .receipt_limit_interrupt_attempts;
+        let now_unix_ms = current_unix_ms()?;
         // Attempts bound network traffic, while the durable wall-clock deadline
         // gives an accepted asynchronous interruption time to deliver its
         // authoritative terminal. The provider is always polled once more below
@@ -4465,6 +4476,24 @@ impl CodexCommandExecutor {
             return Ok(());
         };
         if current_unix_ms()? >= deadline {
+            if self
+                .state
+                .as_ref()
+                .is_some_and(|state| state.config.provider == "codex")
+            {
+                if let Some(provider) = self.provider.as_mut() {
+                    // A bounded poll may leave a real terminal behind its raw
+                    // prefix. Fence now, but drain it across poll/ACK batches
+                    // before a missing-terminal fallback can replace evidence.
+                    let drained = provider
+                        .fence_local_receipt_limit()
+                        .map_err(|error| DurableRunnerError::invalid(error.to_string()))?;
+                    if drained.output_empty {
+                        self.settle_receipt_limit_after_shutdown(false)?;
+                    }
+                    return Ok(());
+                }
+            }
             self.settle_receipt_limit_interrupt_after_deadline()?;
         }
         Ok(())
@@ -4777,6 +4806,13 @@ impl CodexCommandExecutor {
     }
 
     fn poll_current_provider(&mut self) -> Result<(), DurableRunnerError> {
+        self.poll_current_provider_with_control(true)
+    }
+
+    fn poll_current_provider_with_control(
+        &mut self,
+        allow_control: bool,
+    ) -> Result<(), DurableRunnerError> {
         // Receipt-limit interruption is autonomous recovery. It must advance
         // even while older durable events await acknowledgement, otherwise a
         // slow or disconnected controller can keep an exhausted provider turn
@@ -4785,6 +4821,25 @@ impl CodexCommandExecutor {
         let receipt_limit_terminal_poll = self.state.as_ref().is_some_and(|state| {
             state.receipt_limit_interrupt_pending && state.active_provider_turn_id.is_some()
         });
+        let local_deadline = self
+            .state
+            .as_ref()
+            .filter(|state| receipt_limit_terminal_poll && state.config.provider == "codex")
+            .and_then(|state| state.receipt_limit_interrupt_deadline_unix_ms);
+        if let Some(deadline) = local_deadline {
+            if current_unix_ms()? >= deadline {
+                if let Some(provider) = self.provider.as_mut() {
+                    // Verify EOF into bounded raw storage before slow per-event
+                    // persistence can exhaust the ordinary process-exit grace.
+                    let fenced = provider
+                        .fence_local_receipt_limit()
+                        .map_err(|error| DurableRunnerError::invalid(error.to_string()))?;
+                    if !fenced.stdout_drained {
+                        return Ok(());
+                    }
+                }
+            }
+        }
         if !receipt_limit_terminal_poll
             && self
                 .state
@@ -4797,14 +4852,18 @@ impl CodexCommandExecutor {
             return self.settle_receipt_limit_interrupt_if_deadline_elapsed();
         }
         for _ in 0..MAX_EVENTS_PER_POLL {
-            let event = self
+            let provider = self
                 .provider
                 .as_mut()
-                .expect("provider remains present while polling")
-                .poll()
-                .map_err(|error| {
-                    DurableRunnerError::invalid(format!("Codex provider failed: {error}"))
-                })?;
+                .expect("provider remains present while polling");
+            let event = (if allow_control {
+                provider.poll()
+            } else {
+                provider.poll_disconnected()
+            })
+            .map_err(|error| {
+                DurableRunnerError::invalid(format!("Codex provider failed: {error}"))
+            })?;
             let Some(event) = event else { break };
             let trace_frame_id = self
                 .provider
@@ -5465,6 +5524,21 @@ impl CommandExecutor for CodexCommandExecutor {
         self.retained_events()
     }
 
+    fn poll_disconnected_events(&mut self) -> Result<Vec<PolledEvent>, DurableRunnerError> {
+        // Only an already-admitted local Codex process can supply passive
+        // output. Recovery, facades and cleanup retain their connected path.
+        if self.provider.is_some()
+            && self.state.as_ref().is_some_and(|state| {
+                state.config.provider == "codex"
+                    && state.startup_attempt.is_none()
+                    && !state.receipt_limit_interrupt_pending
+            })
+        {
+            self.poll_current_provider_with_control(false)?;
+        }
+        self.retained_events()
+    }
+
     fn retained_events(&mut self) -> Result<Vec<PolledEvent>, DurableRunnerError> {
         if let Some(error) = &self.startup_evidence_error {
             return Err(error.clone());
@@ -5476,6 +5550,46 @@ impl CommandExecutor for CodexCommandExecutor {
             .flat_map(|state| state.pending_events.iter())
             .cloned()
             .collect())
+    }
+
+    fn maintain_disconnected_provider(
+        &mut self,
+    ) -> Result<Option<std::time::Instant>, DurableRunnerError> {
+        // Local Codex ownership cannot prove termination of a remote facade.
+        // Never restore a provider merely to service its cleanup deadline.
+        if self.provider.is_none()
+            || !self.state.as_ref().is_some_and(|state| {
+                state.config.provider == "codex" && state.startup_attempt.is_none()
+            })
+        {
+            return Ok(None);
+        }
+        let Some(deadline) = self.receipt_limit_interrupt_deadline()? else {
+            return Ok(None);
+        };
+        let remaining = deadline.saturating_sub(current_unix_ms()?);
+        if remaining > 0 {
+            return std::time::Instant::now()
+                .checked_add(std::time::Duration::from_millis(remaining))
+                .map(Some)
+                .ok_or_else(|| {
+                    DurableRunnerError::invalid(
+                        "Codex receipt-limit deadline is outside the local clock",
+                    )
+                });
+        }
+        let drained = self
+            .provider
+            .as_mut()
+            .expect("local provider remains owned")
+            .fence_local_receipt_limit()
+            .map_err(|error| DurableRunnerError::invalid(error.to_string()))?;
+        // FIFO evidence may contain a real terminal. Keep it for ordinary
+        // connected processing instead of manufacturing a conflicting fallback.
+        if drained.output_empty {
+            self.settle_receipt_limit_after_shutdown(false)?;
+        }
+        Ok(drained.next_drain_deadline)
     }
 
     fn maintain_backpressured_provider(&mut self) -> Result<(), DurableRunnerError> {
@@ -5918,6 +6032,123 @@ mod tests {
             unauthorized_result.result["error"]["message"],
             GENERIC_INVALID_TOOL_CALL_MESSAGE
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn disconnected_poll_never_restores_an_unopened_facade() {
+        let directory = std::env::temp_dir().join(format!(
+            "paperclip-offline-no-restore-{}",
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(&directory).unwrap();
+        fs::write(
+            directory.join(CODEX_PROVIDER_STATE_FILE),
+            b"not a provider state",
+        )
+        .unwrap();
+        let mut executor = CodexCommandExecutor::new(&directory);
+        assert!(executor.poll_disconnected_events().unwrap().is_empty());
+        assert!(executor.maintain_disconnected_provider().unwrap().is_none());
+        assert!(!executor.restore_checked);
+        executor.state = Some(opencode_result_state());
+        assert!(executor.poll_disconnected_events().unwrap().is_empty());
+        assert!(executor.maintain_disconnected_provider().unwrap().is_none());
+        assert!(!executor.restore_checked);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn disconnected_codex_output_is_durable_and_terminal_control_waits_for_reconnect() {
+        let directory =
+            std::env::temp_dir().join(format!("paperclip-offline-codex-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&directory).unwrap();
+        let goal_called = directory.join("goal-called");
+        let script = format!(
+            r#"
+while IFS= read -r line; do
+  case "$line" in
+    *'"method":"initialize"'*) printf '%s\n' '{{"id":1,"result":{{}}}}' ;;
+    *'"method":"thread/start"'*) printf '%s\n' '{{"id":2,"result":{{"thread":{{"id":"thread-1"}}}}}}' ;;
+    *'"method":"turn/start"'*)
+      printf '%s\n' '{{"id":3,"result":{{"turn":{{"id":"turn-1"}}}}}}'
+      printf '%s\n' '{{"method":"turn/started","params":{{"threadId":"thread-1","turn":{{"id":"turn-1","status":"inProgress"}}}}}}'
+      printf '%s\n' '{{"method":"item/agentMessage/delta","params":{{"threadId":"thread-1","turnId":"turn-1","delta":"retained offline output"}}}}'
+      printf '%s\n' '{{"method":"turn/completed","params":{{"threadId":"thread-1","turn":{{"id":"turn-1","status":"completed"}}}}}}' ;;
+    *'"method":"thread/goal/get"'*)
+      touch '{}'
+      printf '%s\n' '{{"id":4,"result":{{"goal":null}}}}' ;;
+  esac
+done
+"#,
+            goal_called.display()
+        );
+        let mut state = opencode_result_state();
+        state.config.provider = "codex".to_owned();
+        state.config.driver = "codex_app_server".to_owned();
+        state.config.command = PathBuf::from("/bin/sh");
+        state.config.args = vec!["-c".to_owned(), script];
+        state.config.model = None;
+        state.goal_capability = Some(SessionGoalCapability::codex_available());
+        let mut provider = CodexProvider::start(&state.config, None).unwrap();
+        provider.start_turn("Test", &state.config.cwd).unwrap();
+        state.provider_process_generation = provider.process_generation();
+        let mut executor = CodexCommandExecutor::new(&directory);
+        executor.state = Some(state);
+        executor.provider = Some(provider);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let mut observed = Vec::new();
+        loop {
+            assert!(std::time::Instant::now() < deadline);
+            let events = executor.poll_disconnected_events().unwrap();
+            if events.is_empty() {
+                continue;
+            }
+            let saved: CodexProviderState =
+                serde_json::from_slice(&fs::read(executor.state_path()).unwrap()).unwrap();
+            assert_eq!(saved.pending_events, events);
+            let count = events.len();
+            observed.extend(events);
+            executor.acknowledge_events(count).unwrap();
+            if observed
+                .iter()
+                .any(|event| event.payload["text"] == "retained offline output")
+            {
+                break;
+            }
+        }
+        let start = observed
+            .iter()
+            .position(|event| event.event_type == "turn.started")
+            .unwrap();
+        let text = observed
+            .iter()
+            .position(|event| event.payload["text"] == "retained offline output")
+            .unwrap();
+        assert!(start < text);
+        let started = std::time::Instant::now();
+        for _ in 0..5 {
+            assert!(executor.poll_disconnected_events().unwrap().is_empty());
+        }
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
+        assert!(!goal_called.exists());
+        assert_eq!(
+            executor
+                .state
+                .as_ref()
+                .unwrap()
+                .active_provider_turn_id
+                .as_deref(),
+            Some("turn-1")
+        );
+        let events = executor.poll_events().unwrap();
+        assert!(goal_called.exists());
+        assert!(events
+            .iter()
+            .any(|event| event.event_type == "turn.completed"));
+        executor.provider.as_mut().unwrap().shutdown().unwrap();
+        fs::remove_dir_all(directory).unwrap();
     }
 
     fn opencode_result_state() -> CodexProviderState {
@@ -7870,6 +8101,437 @@ mod tests {
             state.settled_provider_turn_filter
         );
         recovered.validate().unwrap();
+    }
+
+    #[cfg(unix)]
+    fn disconnected_receipt_limit_fixture(
+        mode: &str,
+        deadline: u64,
+    ) -> (CodexCommandExecutor, PathBuf, u64) {
+        let directory = std::env::temp_dir().join(format!(
+            "paperclip-offline-receipt-limit-{}",
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(&directory).unwrap();
+        let ready = directory.join("ready");
+        let script = r#"
+trap '' TERM
+while IFS= read -r line; do
+  case "$line" in
+    *'"method":"initialize"'*) printf '%s\n' '{"id":1,"result":{}}' ;;
+    *'"method":"thread/start"'*) printf '%s\n' '{"id":2,"result":{"thread":{"id":"thread-1"}}}' ;;
+    *'"method":"turn/start"'*)
+      printf '%s\n' '{"id":3,"result":{"turn":{"id":"turn-1"}}}'
+      case "$1" in prefix*) printf '%s\n' '{"method":"item/agentMessage/delta","params":{"threadId":"thread-1","turnId":"turn-1","delta":"predecessor output"}}' ;; esac
+      case "$1" in many*)
+        count=0
+        while [ "$count" -lt "$4" ]; do
+          printf '{"method":"item/agentMessage/delta","params":{"threadId":"thread-1","turnId":"turn-1","delta":"prefix-%s"}}\n' "$count"
+          count=$((count + 1))
+        done ;;
+      esac
+      case "$1" in requests_terminal)
+        printf '%s\n' \
+          '{"method":"item/completed","params":{"threadId":"thread-1","turnId":"turn-1","item":{"type":"collabAgentToolCall","tool":"spawnAgent","status":"completed","senderThreadId":"thread-1","receiverThreadIds":["child-thread"]}}}' \
+          '{"id":91,"method":"item/tool/call","params":{"threadId":"child-thread"}}' \
+          '{"id":92,"method":"item/tool/requestUserInput","params":{"threadId":"child-thread","questions":"malformed"}}' \
+          '{"id":93,"method":"mcpServer/elicitation/request","params":{"threadId":"child-thread","_meta":{"codex_approval_kind":"mcp_tool_call"}}}' \
+          '{"id":94,"method":"unsupported/withoutParams"}' \
+          '{"id":95,"method":"unsupported/malformedParams","params":"malformed"}' \
+          '{"id":96}' \
+          '{"method":"item/agentMessage/delta","params":{"threadId":"thread-1","turnId":"turn-1","delta":"after denied child requests"}}'
+        ;;
+      esac
+      case "$1" in *terminal) printf '%s\n' '{"method":"turn/completed","params":{"threadId":"thread-1","turn":{"id":"turn-1","status":"completed"}}}' ;; esac
+      printf ready > "$2"
+      while :; do sleep 1; done ;;
+    *'"id":'*) printf '%s\n' "$line" >> "$3" ;;
+  esac
+done
+"#;
+        let mut state = opencode_result_state();
+        state.config.provider = "codex".to_owned();
+        state.config.driver = "codex_app_server".to_owned();
+        state.config.command = PathBuf::from("/bin/sh");
+        state.config.args = vec![
+            "-c".to_owned(),
+            script.to_owned(),
+            "fixture".to_owned(),
+            mode.to_owned(),
+            ready.to_string_lossy().into_owned(),
+            directory
+                .join("unexpected-rpc")
+                .to_string_lossy()
+                .into_owned(),
+            (MAX_EVENTS_PER_POLL * 2 + 17).to_string(),
+        ];
+        state.config.model = None;
+        state.goal_capability = Some(SessionGoalCapability::codex_available());
+        let mut provider = CodexProvider::start(&state.config, None).unwrap();
+        provider.start_turn("Test", &state.config.cwd).unwrap();
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !ready.exists() {
+            assert!(std::time::Instant::now() < until);
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        state.provider_process_generation = provider.process_generation();
+        state
+            .begin_receipt_limit_stop(
+                "limited-call".to_owned(),
+                "fixture-tool".to_owned(),
+                deadline,
+            )
+            .unwrap();
+        state.record_receipt_limit_interrupt_attempt().unwrap();
+        let mut executor = CodexCommandExecutor::new(&directory);
+        executor.event_identity = Some(ProviderEventIdentity {
+            runner_instance_id: "runner".to_owned(),
+            run_id: "run".to_owned(),
+            normalized_session_id: "session".to_owned(),
+            turn_id: "turn".to_owned(),
+            item_id: "item".to_owned(),
+        });
+        executor.state = Some(state);
+        executor.provider = Some(provider);
+        executor.save_state().unwrap();
+        (executor, directory, deadline)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn disconnected_receipt_limit_preserves_a_future_deadline_without_rpc_or_facade_claims() {
+        let (mut executor, directory, deadline) =
+            disconnected_receipt_limit_fixture("silent", current_unix_ms().unwrap() + 60_000);
+        for _ in 0..2 {
+            assert!(
+                executor.maintain_disconnected_provider().unwrap().unwrap()
+                    > std::time::Instant::now()
+            );
+            assert_eq!(
+                executor
+                    .state
+                    .as_ref()
+                    .unwrap()
+                    .receipt_limit_interrupt_deadline_unix_ms,
+                Some(deadline)
+            );
+            assert_eq!(
+                executor
+                    .state
+                    .as_ref()
+                    .unwrap()
+                    .receipt_limit_interrupt_attempts,
+                1
+            );
+            assert!(!executor
+                .provider
+                .as_mut()
+                .unwrap()
+                .process_exited()
+                .unwrap());
+        }
+        // A local proxy handle cannot attest that a remote provider was stopped.
+        executor.state.as_mut().unwrap().config.provider = "cursor_cloud".to_owned();
+        executor
+            .state
+            .as_mut()
+            .unwrap()
+            .receipt_limit_interrupt_deadline_unix_ms = Some(1);
+        assert!(executor.maintain_disconnected_provider().unwrap().is_none());
+        assert!(
+            executor
+                .state
+                .as_ref()
+                .unwrap()
+                .receipt_limit_interrupt_pending
+        );
+        assert!(!executor
+            .provider
+            .as_mut()
+            .unwrap()
+            .process_exited()
+            .unwrap());
+        assert!(!directory.join("unexpected-rpc").exists());
+        assert!(!executor.restore_checked);
+        executor
+            .provider
+            .as_mut()
+            .unwrap()
+            .fence_local_receipt_limit()
+            .unwrap();
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn disconnected_receipt_limit_stops_a_hanging_provider_at_its_original_deadline() {
+        for accepted in [false, true] {
+            let (mut executor, directory, deadline) =
+                disconnected_receipt_limit_fixture("silent", 1);
+            executor
+                .state
+                .as_mut()
+                .unwrap()
+                .receipt_limit_interrupt_accepted = accepted;
+            assert_eq!(
+                executor
+                    .state
+                    .as_ref()
+                    .unwrap()
+                    .receipt_limit_interrupt_deadline_unix_ms,
+                Some(deadline)
+            );
+            let started = std::time::Instant::now();
+            executor.maintain_disconnected_provider().unwrap();
+            assert!(started.elapsed() < std::time::Duration::from_secs(1));
+            if let Some(provider) = executor.provider.as_mut() {
+                // The owned process is already dead even if the reader has not yet observed EOF.
+                assert!(provider.process_exited().unwrap());
+            }
+            while executor
+                .state
+                .as_ref()
+                .unwrap()
+                .receipt_limit_interrupt_pending
+            {
+                assert!(started.elapsed() < std::time::Duration::from_secs(1));
+                executor.maintain_disconnected_provider().unwrap();
+            }
+            let state = executor.state.as_ref().unwrap();
+            assert_eq!(state.lifecycle, "closed");
+            assert!(state.pending_events.iter().any(|event| event.event_type
+                == if accepted {
+                    "turn.interrupted"
+                } else {
+                    "turn.failed"
+                }));
+            assert!(!directory.join("unexpected-rpc").exists());
+            assert!(!executor.restore_checked);
+            fs::remove_dir_all(directory).unwrap();
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn disconnected_receipt_limit_preserves_terminal_and_its_fifo_prefix_for_reconnect() {
+        for mode in ["terminal", "prefix_terminal", "prefix_only"] {
+            let (mut executor, directory, deadline) = disconnected_receipt_limit_fixture(mode, 1);
+            let retained = executor.state.as_ref().unwrap().pending_events.clone();
+            assert!(executor.maintain_disconnected_provider().unwrap().is_none());
+            assert!(executor
+                .provider
+                .as_mut()
+                .unwrap()
+                .process_exited()
+                .unwrap());
+            let state = executor.state.as_ref().unwrap();
+            assert_eq!(state.pending_events, retained);
+            assert!(state.receipt_limit_interrupt_pending);
+            assert_eq!(state.receipt_limit_interrupt_attempts, 1);
+            assert_eq!(
+                state.receipt_limit_interrupt_deadline_unix_ms,
+                Some(deadline)
+            );
+            assert!(!directory.join("unexpected-rpc").exists());
+            // The ordinary connected path drains the exact prefix before it
+            // accepts a terminal or applies the honest missing-terminal fallback.
+            executor.restore_checked = true;
+            let events = executor.poll_events().unwrap();
+            let terminal = events
+                .iter()
+                .position(|event| {
+                    event.event_type
+                        == if mode == "prefix_only" {
+                            "turn.failed"
+                        } else {
+                            "turn.completed"
+                        }
+                })
+                .unwrap();
+            if mode.starts_with("prefix") {
+                let prefix = events
+                    .iter()
+                    .position(|event| {
+                        serde_json::to_string(&event.payload)
+                            .unwrap()
+                            .contains("predecessor output")
+                    })
+                    .unwrap();
+                assert!(prefix < terminal);
+            }
+            assert!(
+                !executor
+                    .state
+                    .as_ref()
+                    .unwrap()
+                    .receipt_limit_interrupt_pending
+            );
+            assert!(!directory.join("unexpected-rpc").exists());
+            fs::remove_dir_all(directory).unwrap();
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn fenced_receipt_limit_replays_child_and_unavailable_requests_before_root_terminal() {
+        let (mut executor, directory, _) =
+            disconnected_receipt_limit_fixture("requests_terminal", 1);
+        executor.restore_checked = true;
+        let mut observed = Vec::new();
+        for _ in 0..10 {
+            let events = executor.poll_events().unwrap();
+            let count = events.len();
+            observed.extend(events);
+            executor.acknowledge_events(count).unwrap();
+            if !executor
+                .state
+                .as_ref()
+                .unwrap()
+                .receipt_limit_interrupt_pending
+            {
+                break;
+            }
+        }
+        let terminal = observed
+            .iter()
+            .position(|event| event.event_type == "turn.completed")
+            .expect("the real root terminal survives every queued courtesy rejection");
+        assert_eq!(
+            observed
+                .iter()
+                .filter(|event| event.event_type == "turn.completed")
+                .count(),
+            1
+        );
+        assert!(!observed.iter().any(|event| matches!(
+            event.event_type.as_str(),
+            "turn.failed" | "turn.interrupted" | "semantic_tool.input" | "runtime_request.created"
+        )));
+        let prefix = observed
+            .iter()
+            .position(|event| event.payload["text"] == "after denied child requests")
+            .unwrap();
+        assert!(prefix < terminal);
+        assert!(
+            observed[..terminal]
+                .iter()
+                .filter(|event| {
+                    serde_json::to_string(&event.payload)
+                        .unwrap()
+                        .contains("unsupported Codex request")
+                        || serde_json::to_string(&event.payload)
+                            .unwrap()
+                            .contains("authorized only for the parent task")
+                })
+                .count()
+                >= 5
+        );
+        assert!(!directory.join("unexpected-rpc").exists());
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[cfg(unix)]
+    fn assert_disconnected_receipt_limit_drains_batches(mode: &str, has_terminal: bool) {
+        let (mut executor, directory, _) = disconnected_receipt_limit_fixture(mode, 1);
+        executor.maintain_disconnected_provider().unwrap();
+        assert!(executor
+            .provider
+            .as_mut()
+            .unwrap()
+            .process_exited()
+            .unwrap());
+        executor.restore_checked = true;
+        let mut observed = Vec::new();
+        let mut batches = 0;
+        loop {
+            let events = executor.poll_events().unwrap();
+            assert!(events.len() <= MAX_EVENTS_PER_POLL + 3);
+            let count = events.len();
+            observed.extend(events);
+            executor.acknowledge_events(count).unwrap();
+            batches += 1;
+            assert!(batches <= 10);
+            let state = executor.state.as_ref().unwrap();
+            if !state.receipt_limit_interrupt_pending
+                && state.pending_events.is_empty()
+                && state.queued_events.is_empty()
+            {
+                break;
+            }
+        }
+        let texts = observed
+            .iter()
+            .filter(|event| event.event_type == "item.delta")
+            .map(|event| event.payload["text"].as_str().unwrap().to_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            texts.len(),
+            MAX_EVENTS_PER_POLL * 2 + 17,
+            "{mode}: {batches} batches, last={:?}",
+            texts.last()
+        );
+        assert!(batches >= 3);
+        assert_eq!(
+            texts,
+            (0..MAX_EVENTS_PER_POLL * 2 + 17)
+                .map(|index| format!("prefix-{index}"))
+                .collect::<Vec<_>>()
+        );
+        let ids = observed
+            .iter()
+            .map(|event| &event.executor_event_id)
+            .collect::<HashSet<_>>();
+        assert_eq!(ids.len(), observed.len());
+        assert_eq!(
+            observed
+                .iter()
+                .filter(|event| event.event_type
+                    == if has_terminal {
+                        "turn.completed"
+                    } else {
+                        "turn.failed"
+                    })
+                .count(),
+            1
+        );
+        assert!(!observed.iter().any(|event| event.event_type
+            == if has_terminal {
+                "turn.failed"
+            } else {
+                "turn.completed"
+            }));
+        let terminal = observed
+            .iter()
+            .position(|event| {
+                event.event_type
+                    == if has_terminal {
+                        "turn.completed"
+                    } else {
+                        "turn.failed"
+                    }
+            })
+            .unwrap();
+        assert!(
+            observed
+                .iter()
+                .rposition(|event| event.event_type == "item.delta")
+                .unwrap()
+                < terminal
+        );
+        assert!(!directory.join("unexpected-rpc").exists());
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn disconnected_receipt_limit_drains_large_prefix_before_real_terminal() {
+        assert_disconnected_receipt_limit_drains_batches("many_terminal", true);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn disconnected_receipt_limit_drains_large_prefix_before_missing_terminal_fallback() {
+        assert_disconnected_receipt_limit_drains_batches("many_only", false);
     }
 
     #[test]

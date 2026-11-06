@@ -30,7 +30,7 @@ import type {
 
 import { acpxProfileClientCapabilities, bindAcpxExtensionTurn, validateAcpxRichEvent, createAcpxProfileExtensionAdapter, type AcpxExtensionInput } from "../drivers/acpx/profile-extensions.js";
 import type { PaperclipQuestionSet } from "../contracts/question-set.js";
-import { acpxToolDetailFromRuntimeEvent, acpxToolInputPath, boundedAcpMeta, canonicalProviderEventsFromAcpxRuntimeEvent, type AcpRuntimeEventShape, createAcpxToolEventNormalizer, createGrokMessageNormalizer } from "../provider-events.js";
+import { acpxToolDetailFromRuntimeEvent, acpxToolInputPath, boundedAcpMeta, canonicalProviderEventsFromAcpxRuntimeEvent, claudePlanProposalEvent, type AcpRuntimeEventShape, createAcpxToolEventNormalizer, createGrokMessageNormalizer } from "../provider-events.js";
 import { acpxOpaqueToolItemId, createClaudeSubagentLineageTracker } from "../claude-subagent-lineage.js";
 import { claudeHookCanonicalEvent } from "../governance-events.js";
 import { createPiMessageProjection, type PiProjectedMessageEvent } from "../drivers/acpx/pi-message-projection.js";
@@ -447,6 +447,13 @@ async function dispatch(
         text: boundedText(request.params.message, "message", 1024 * 1024),
         onExtensionRequest: extensions.onExtensionRequest,
         onExtensionNotification: extensions.onExtensionNotification,
+        onPlanProposal: (proposal) => {
+          if (turnId !== currentTurnId || host !== activeHost) return;
+          const event = claudePlanProposalEvent(proposal);
+          validateAcpxRichEvent(event);
+          emit("runtime.rich_event", { ...event }, currentTurnId);
+          planProposalTurns.add(currentTurnId);
+        },
         onElicitation: (providerRequest, context) =>
           waitForInput(currentTurnId, providerRequest, context),
         onPermissionRequest: (providerRequest, context) =>
@@ -666,6 +673,9 @@ async function dispatch(
   throw new Error("unreachable ACPX sidecar command");
 }
 
+/** Turns whose native plan approval was declined after capturing the proposal. */
+const planProposalTurns = new Set<string>();
+
 async function pumpTurn(
   currentTurnId: string,
   runtimeTurn: AcpxRuntimeTurn,
@@ -777,6 +787,11 @@ async function pumpTurn(
   } finally {
     rejectTurnWaiters(currentTurnId, "ACPX turn became terminal");
     if (turnId === currentTurnId) turnId = null;
+  }
+  // Declining Claude's native plan approval interrupts its turn. The captured
+  // proposal is this turn's deliverable, so the turn completes normally.
+  if (planProposalTurns.delete(currentTurnId) && terminal.status === "cancelled") {
+    terminal = { status: "completed", stopReason: "end_turn" };
   }
   // A terminal frame is also runnerd's permission to recycle this provider.
   // Publish it only after no callback can inherit this turn's mutable binding.

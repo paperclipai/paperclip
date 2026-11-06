@@ -1,5 +1,6 @@
 import { join } from "node:path";
 import { probePluginRunnerEnvironment } from "./native-runtime/plugin-runner-probe.js";
+import { pluginRunnerAiConnectionRequiredTestResult } from "./plugin-runner-ai-connection.js";
 import { registerPluginTaskCredentialHandoff } from "./plugin-task-credential-writeback.js";
 import { randomUUID } from "node:crypto";
 import { agents, companies, type Db } from "@paperclipai/db";
@@ -16,6 +17,7 @@ import { environmentService } from "./environments.js";
 import { environmentRuntimeService } from "./environment-runtime.js";
 import { resolveEnvironmentExecutionTarget } from "./environment-execution-target.js";
 import { prepareManagedAiRuntime, assertManagedAiProjectAuth } from "./ai-connection-runtime.js";
+import { isRunnerRevisionMismatch, runnerRevisionMismatchTestResult } from "./runner-revision-mismatch.js";
 import { aiConnectionService } from "./ai-connections.js";
 import { validateAiApiKey } from "./ai-api-key-test.js";
 import { probeCopilotExecutionTarget } from "./copilot-connection-probe.js";
@@ -573,8 +575,17 @@ export function agentEnvironmentTestService(db: Db, pluginWorkerManager?: Plugin
         return { adapterType, status: "fail" as const, testedAt: new Date().toISOString(), checks: [{ code: error instanceof HttpError ? String(asRecord(error.details)?.code ?? "COPILOT_REQUEST_FAILED") : "COPILOT_REQUEST_FAILED", level: "error" as const, message: error instanceof HttpError ? error.message : "Copilot metadata verification failed." }] };
       }
     }
-    await assertManagedAiProjectAuth(context.config, binding.provider, context.executionTarget);
     const target = context.executionTarget;
+    // A preconfigured Runner home does not use the managed connection, so run admission refuses it.
+    if (adapterType === "paperclip_runner" && context.config.homeMode === "preconfigured"
+      && target?.kind === "remote" && target.transport === "sandbox" && target.runnerTask) {
+      return pluginRunnerAiConnectionRequiredTestResult(adapterType, true);
+    }
+    try { await assertManagedAiProjectAuth(context.config, binding.provider, context.executionTarget); }
+    catch (error) {
+      if (!isRunnerRevisionMismatch(error)) throw error;
+      return runnerRevisionMismatchTestResult(adapterType);
+    }
     const result = adapterType === "paperclip_runner" && target?.kind === "remote" && target.transport === "sandbox" && target.runnerTask
       ? await probePluginRunnerEnvironment(context, { identity: managed.identity, accountIdentity: managed.sessionIdentity,
           home: managed.home ? join(managed.home, "provider") : undefined })

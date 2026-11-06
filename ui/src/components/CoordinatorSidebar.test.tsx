@@ -11,7 +11,7 @@ import { queryKeys } from "@/lib/queryKeys";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 const fixture = vi.hoisted(() => ({ attention: vi.fn(), summary: vi.fn(), openNewIssue: vi.fn(), pathname: "/COO/issues", collapsed: false, userId: "reviewer", chats: [] as Array<{ isUnreadForMe: boolean }>,
-  recentTasks: [] as Array<Record<string, unknown>>, projects: [] as Array<Record<string, unknown>>, projectTasks: vi.fn() }));
+  recentTasks: [] as Array<Record<string, unknown>>, projects: [] as Array<Record<string, unknown>>, projectTasks: vi.fn(), enableCases: false }));
 vi.mock("@/hooks/useAgentChatNavigation", () => ({ useAgentChatNavigation: () => ({
   companyId: "company", userId: fixture.userId, agents: { data: [] }, chats: { data: fixture.chats }, session: { isSuccess: true },
 }) }));
@@ -20,6 +20,7 @@ vi.mock("@/api/issues", () => ({ issuesApi: { listCompact: fixture.projectTasks 
 vi.mock("@/context/DialogContext", () => ({ useDialogActions: () => ({ openNewIssue: fixture.openNewIssue }) }));
 vi.mock("@/context/SidebarContext", () => ({ useSidebar: () => ({ collapsed: fixture.collapsed, peeking: false, isMobile: false, setSidebarOpen: vi.fn() }) }));
 vi.mock("@/api/attention", () => ({ attentionApi: { list: fixture.attention, summary: fixture.summary } }));
+vi.mock("@/api/instanceSettings", () => ({ instanceSettingsApi: { getExperimental: async () => ({ enableCases: fixture.enableCases }) } }));
 vi.mock("@/api/projects", () => ({ projectsApi: { list: async () => fixture.projects } }));
 vi.mock("./SidebarCompanyMenu", () => ({ SidebarCompanyMenu: () => null }));
 vi.mock("@/lib/router", () => ({
@@ -45,7 +46,7 @@ function summary(items: AttentionItem[]) {
 let root: Root, container: HTMLDivElement, client: QueryClient;
 beforeEach(() => {
   vi.clearAllMocks(); localStorage.clear(); fixture.collapsed = false; fixture.userId = "reviewer"; fixture.pathname = "/COO/issues";
-  fixture.chats = []; fixture.recentTasks = []; fixture.projects = [];
+  fixture.chats = []; fixture.recentTasks = []; fixture.projects = []; fixture.enableCases = false;
   fixture.summary.mockResolvedValue(summary([pending("question"), pending("review")]));
   container = document.createElement("div"); document.body.appendChild(container); root = createRoot(container);
   client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -79,6 +80,12 @@ describe("Coordinator task creation", () => {
 });
 
 describe("Coordinator pinned pages", () => {
+  it.each([false, true])("keeps Cases reachable in More only when enabled (%s)", async enabled => {
+    fixture.enableCases = enabled;
+    await renderSidebar();
+    await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="More workspace pages"]')!.click());
+    expect(document.querySelector('a[href="/cases"]') !== null).toBe(enabled);
+  });
   it("announces unread chat totals in expanded and collapsed navigation", async () => {
     fixture.chats = [{ isUnreadForMe: true }, { isUnreadForMe: false }, { isUnreadForMe: true }];
     await renderSidebar();
@@ -149,7 +156,7 @@ async function renderSidebar() {
 }
 const decisionLink = () => container.querySelector('a[href="/decisions"]')!;
 
-describe("Coordinator Needs You badge", () => {
+describe("Coordinator Inbox badge", () => {
   it("counts every canonical outstanding decision even when none arrived today", async () => {
     // Personal page filters and completed receipts are separate cache entries.
     client.setQueryData([...coordinatorAttentionQueryKey("company"), { search: "no match" }], feed([]));
@@ -172,13 +179,13 @@ describe("Coordinator Needs You badge", () => {
     await act(async () => { await client.invalidateQueries({ queryKey: queryKeys.attention("company") }); });
     await flush();
     expect(decisionLink().querySelector('[data-slot="badge"]')).toBeNull();
-    expect(decisionLink().textContent).toBe("Needs you");
+    expect(decisionLink().textContent).toBe("Inbox");
   });
 
   it("announces the full outstanding count when the sidebar is collapsed", async () => {
     fixture.collapsed = true;
     await renderSidebar();
-    expect(decisionLink().getAttribute("aria-label")).toBe("Needs you, 2 decisions");
+    expect(decisionLink().getAttribute("aria-label")).toBe("Inbox, 2 decisions");
   });
 });
 
@@ -204,7 +211,7 @@ describe("Coordinator collection reads", () => {
     expect(fixture.attention).not.toHaveBeenCalled();
   });
 
-  it("reuses the page-owned complete feed on Needs You without a second summary read", async () => {
+  it("reuses the page-owned complete feed on Inbox without a second summary read", async () => {
     fixture.pathname = "/COO/decisions";
     client.setQueryData(coordinatorAttentionQueryKey("company"), feed([pending("review")]));
     await renderSidebar();

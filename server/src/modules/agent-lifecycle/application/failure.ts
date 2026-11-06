@@ -3,12 +3,14 @@ import type { LifecycleFailure } from "./ports.js";
 // Only fixed text may leave this boundary. Provider errors can contain secrets.
 const reasons = {
   harness_test_failed: "The execution test did not pass. Open Configuration and run the agent test to inspect the failed checks.",
+  ai_connection_required: "This agent's environment requires a managed AI connection and an isolated Runner home. Check both in Configuration, then retry.",
   harness_auth_failed: "Authentication failed. Check the agent's AI connection or sign in to its execution tool, then retry.",
   harness_model_unavailable: "The selected model is unavailable. Choose a model supported by the agent's AI connection in Configuration, then retry.",
   harness_command_unavailable: "The execution command was not found. Check the command and its installation in the agent's environment, then retry.",
   harness_cwd_invalid: "The working directory is unavailable. Check the working directory in Configuration, then retry.",
   harness_probe_timed_out: "The execution test timed out. Paperclip will retry automatically. If this continues, run the agent test in Configuration.",
   harness_probe_unexpected_output: "The execution test did not return the expected response. Run the agent test in Configuration to inspect the failed checks.",
+  runner_revision_mismatch: "The remote Runner is being updated to match this Paperclip version. Paperclip will check again automatically.",
   test_environment_unavailable: "The test environment is unavailable. Check the agent's environment in Configuration. Paperclip will retry automatically.",
   required_plugin_unavailable: "A required plugin is unavailable. Check the plugin's status in Settings. Paperclip will retry automatically.",
   invalid_lifecycle_result: "A required plugin returned an invalid result. Check the plugin's status in Settings. Paperclip will retry automatically.",
@@ -16,7 +18,7 @@ const reasons = {
 
 const transientCodes = new Set(["ECONNREFUSED", "ECONNRESET", "ETIMEDOUT", "40001", "40P01", "53300", "57P01"]);
 const configurationFailures = new Set([
-  "harness_auth_failed", "harness_model_unavailable",
+  "ai_connection_required", "harness_auth_failed", "harness_model_unavailable",
   "harness_command_unavailable", "harness_cwd_invalid", "harness_probe_unexpected_output",
 ]);
 

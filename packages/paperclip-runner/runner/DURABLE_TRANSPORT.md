@@ -41,6 +41,19 @@ source sequence the runner has produced; acknowledged prefixes are removed
 atomically from durable state. After disconnect, every remaining event is sent
 again with the same identity and source sequence.
 
+After disconnect, runnerd tries Core when reconnect is due. Between attempts,
+live Codex processes can drain local output into the outbox. Work that
+needs a provider request waits for Core, including managed-provider history
+reads and unanswered tools or approvals. Runnerd suspends
+intake during terminal delivery or an authority transition.
+
+If Codex hits its tool-receipt limit during reconnect, runnerd stops its local
+process group at the original deadline. It reads the remaining stdout in short
+intervals, then replays the frames in order across as many batches as needed.
+Only confirmed EOF with no terminal permits a missing-terminal result.
+If stdout stays open or the buffer lacks room for one maximum-size frame,
+runnerd reports uncertainty and keeps the events already committed to disk.
+
 Executors retain polled events until runnerd acknowledges each event after its
 outbox commit. Batches commit one event at a time, so a later oversized event or
 capacity failure cannot roll back the accepted prefix or discard the
@@ -69,6 +82,11 @@ the P0 reserve. When the soft limit is reached, the runner enters backpressure
 and rejects the new non-P0 event rather than silently losing it. Exhausting the
 P0 reserve is an explicit unrecoverable condition.
 
+While disconnected, soft-limit backpressure retains the rejected event and its
+suffix at the provider owner until replay ACKs free outbox space. Oversized
+events or exhausted hard limits stop the owned provider and preserve the
+accepted durable prefix.
+
 ## Recovering Codex between turns
 
 Suppose run A finishes a turn, its Runner exits, and run B wants to continue
@@ -76,7 +94,7 @@ the conversation. Core uses ordinary recovery for A, then attaches B with
 authenticated `run.attach`. If the original process is alive, its owner can
 verify and adopt it instead.
 
-**Is A idle?** Before launch, the host driver (`sourceRecoveryVersion: 1`)
+**Is A idle?** Before launch, the host driver (`codexSourceRecoveryVersion: 1`)
 checks that A’s process stopped and its saved session was idle. After launch,
 the Runner (`recoveryIntegrityVersion: 1`) verifies that Codex restored an idle
 session when no command effect is uncertain. It reads the goal, then the

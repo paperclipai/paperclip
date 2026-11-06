@@ -53,6 +53,7 @@ import type {
 import { validatePrpStructuredRunResult } from "../../protocol/replay-contract.js";
 import {
   canonicalProviderEventsFromAcpxRuntimeEvent,
+  claudePlanProposalEvent,
   createAcpxToolEventNormalizer,
   createGrokMessageNormalizer,
 } from "../../provider-events.js";
@@ -84,6 +85,7 @@ import {
 import {
   ACPX_TURN_CANCELLATION_SHUTDOWN_BOUND_MS,
   AcpxRuntimeHost,
+  type AcpxPlanProposal,
   type AcpxRetainedCleanupFailure,
   type AcpxRuntimeTurn,
   type OpenAcpxRuntimeHostOptions,
@@ -883,6 +885,17 @@ class CodexAcpxSession implements HarnessSession {
     return { steering: capability.steering, queuedFollowUp: capability.queuedFollowUp === true };
   }
 
+  readonly #planProposalTurns = new Set<string>();
+
+  #recordPlanProposal(turnId: string, proposal: AcpxPlanProposal): void {
+    if (this.#activeTurnId !== turnId) return;
+    const event = claudePlanProposalEvent(proposal);
+    validateAcpxRichEvent(event);
+    if (this.#emit(event.eventType, event.payload, { turnId, itemId: event.itemId })) {
+      this.#planProposalTurns.add(turnId);
+    }
+  }
+
   async startTurn(input: {
     message: NativeUserMessage;
   }): Promise<{ turnId: string }> {
@@ -947,6 +960,7 @@ class CodexAcpxSession implements HarnessSession {
         requestId: `${safeId(this.#input.runId, "run")}:${turnId}`,
         onExtensionRequest: extensions.onExtensionRequest,
         onExtensionNotification: extensions.onExtensionNotification,
+        onPlanProposal: (proposal) => this.#recordPlanProposal(turnId, proposal),
         onPermissionRequest: (request, context) =>
           this.#handlePermission(turnId, request, context, toolEvidence),
         onElicitation: (request, context) =>
@@ -1543,6 +1557,15 @@ class CodexAcpxSession implements HarnessSession {
           }),
           "turn.completed",
           { status: "completed", stopReason: result.stopReason ?? null },
+        );
+      } else if (result.status === "cancelled" && this.#planProposalTurns.has(turnId)) {
+        // Declining Claude's native plan approval interrupts its turn. The
+        // proposal is this turn's deliverable, so it completes normally.
+        this.#publishTerminal(
+          turnId,
+          canonicalJson({ status: "completed", semanticResult: null }),
+          "turn.completed",
+          { status: "completed", stopReason: "end_turn" },
         );
       } else if (result.status === "cancelled") {
         const reaffirmedSemanticResult =

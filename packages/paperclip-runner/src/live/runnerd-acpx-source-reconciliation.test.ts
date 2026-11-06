@@ -56,7 +56,7 @@ async function fixture(agent: "codex" | "claude" = "codex", nativeSource = false
   let recovering = false;
   const options: CapabilityRunnerdCodexTransportOptions = {
     provider: "acpx", acpxAgent: agent, runnerBinary: binary, stateDirectory: root, prpIdentity: identity,
-    runnerArtifact: readRunnerdArtifactBinding(binary), sourceRecoveryVersion: 1, acpxSourceRecoveryVersion: 1,
+    runnerArtifact: readRunnerdArtifactBinding(binary), codexSourceRecoveryVersion: 1, acpxSourceRecoveryVersion: 1,
     lifecyclePolicy: { mode: "warm", idleTimeoutMs: 60_000 }, runnerProcessReconnectGraceMs: null, runnerReconnectGraceMs: 3_000,
     controlPlaneRegistration: async next => {
       const generation = ++registrationGeneration; authority = next;

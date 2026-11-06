@@ -662,7 +662,8 @@ impl DurableState {
             self.record_diagnostic("outbox soft limit reached; non-P0 event rejected");
             return Err(DurableRunnerError::invalid(
                 "outbox soft limit reached; reserved storage is available only to P0 events",
-            ));
+            )
+            .with_classification("outbox_backpressure"));
         }
         if projected > config.max_outbox_bytes {
             self.lifecycle = "unrecoverable".to_owned();
@@ -2640,6 +2641,24 @@ fn current_timestamp() -> Result<String, DurableRunnerError> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn keeps_a_long_plan_proposal_whole_past_the_display_preview_bound() {
+        use super::*;
+        let markdown = format!("# Plan\n{}", "- step\n".repeat(2_000).trim_end());
+        assert!(markdown.len() > 4096);
+        let payload = json!({
+            "schema": "paperclip.plan.proposed.v1",
+            "proposalId": "plan-1",
+            "status": "completed",
+            "markdown": markdown,
+            "source": "codex_plan_item",
+        });
+        let stored =
+            preserve_bounded_display_content("plan.proposed", &payload, sanitize_value(&payload))
+                .unwrap();
+        assert_eq!(stored["markdown"].as_str(), Some(markdown.as_str()));
+    }
+
     #[test]
     fn governance_display_records_survive_the_durable_writer_unchanged() {
         use super::*;

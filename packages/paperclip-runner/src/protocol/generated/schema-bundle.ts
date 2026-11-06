@@ -1823,6 +1823,9 @@ export const providerEventSchema = {
       "$ref": "#/$defs/plan"
     },
     {
+      "$ref": "#/$defs/planProposal"
+    },
+    {
       "$ref": "#/$defs/toolExecution"
     },
     {
@@ -1976,6 +1979,42 @@ export const providerEventSchema = {
             "null"
           ],
           "minimum": 1
+        }
+      },
+      "additionalProperties": false
+    },
+    "planProposal": {
+      "type": "object",
+      "description": "A provider-authored proposed plan document awaiting human approval (Codex plan item, Claude ExitPlanMode). Paperclip may synchronize a completed proposal into the issue's durable Plan document; it is distinct from the within-turn plan.updated checklist.",
+      "required": [
+        "schema",
+        "proposalId",
+        "status",
+        "markdown",
+        "source"
+      ],
+      "properties": {
+        "schema": {
+          "const": "paperclip.plan.proposed.v1"
+        },
+        "proposalId": {
+          "$ref": "#/$defs/id"
+        },
+        "status": {
+          "enum": [
+            "streaming",
+            "completed"
+          ]
+        },
+        "markdown": {
+          "type": "string",
+          "maxLength": 60000
+        },
+        "source": {
+          "enum": [
+            "codex_plan_item",
+            "claude_exit_plan_mode"
+          ]
         }
       },
       "additionalProperties": false
@@ -3634,6 +3673,25 @@ export const usageSchema = {
     },
     "runDelta": {
       "$ref": "#/$defs/measurement"
+    },
+    "context": {
+      "description": "Live context-window occupancy for the provider session after this usage, when the provider reports it.",
+      "type": "object",
+      "required": [
+        "usedTokens",
+        "windowTokens"
+      ],
+      "properties": {
+        "usedTokens": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "windowTokens": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "additionalProperties": false
     }
   },
   "additionalProperties": false,
@@ -4958,6 +5016,7 @@ export const eventSchema = {
         "harness.exited",
         "harness.diagnostic",
         "plan.updated",
+        "plan.proposed",
         "tool.execution.started",
         "tool.execution.progressed",
         "tool.execution.completed",
@@ -5123,6 +5182,22 @@ export const eventSchema = {
         "properties": {
           "payload": {
             "$ref": "https://paperclip.dev/schemas/prp/v1/provider-event.schema.json#/$defs/plan"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "eventType": {
+            "const": "plan.proposed"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "https://paperclip.dev/schemas/prp/v1/provider-event.schema.json#/$defs/planProposal"
           }
         }
       }
@@ -5723,6 +5798,7 @@ export const eventV2Schema = {
         "harness.exited",
         "harness.diagnostic",
         "plan.updated",
+        "plan.proposed",
         "tool.execution.started",
         "tool.execution.progressed",
         "tool.execution.completed",
@@ -6055,6 +6131,7 @@ export const eventV3Schema = {
         "harness.exited",
         "harness.diagnostic",
         "plan.updated",
+        "plan.proposed",
         "tool.execution.started",
         "tool.execution.progressed",
         "tool.execution.completed",

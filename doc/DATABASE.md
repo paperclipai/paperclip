@@ -225,6 +225,13 @@ indexes concurrently and can resume an interrupted build without blocking run
 writes for the full build. The indexes add storage and run-write overhead; they
 do not change task visibility or secret redaction.
 
+The task Context row reads the agent's latest context-window reading through
+two small partial indexes on `heartbeat_run_events`. One index covers only usage
+items, by run and time. The other index covers only `context.compacted` events,
+by company and normalized session. Migration 0432 builds both indexes
+concurrently. A poll therefore reads a few index entries, not a run's full event
+history.
+
 The chat wake-notice sweep compares UUID columns directly against guarded,
 canonical lowercase UUID payload values. Malformed and noncanonical payloads
 still match nothing. The query can use existing primary keys without adding a
@@ -1897,3 +1904,14 @@ pre-upgrade database transactions before enabling independent writers. Do not ru
 pre-upgrade synchronous counter/evaluation writers beside unlocked writers.
 Rollback must use a compatible version that reads the ledger and retains the
 durable evaluation feed; a pre-contract binary is not a safe rollback target.
+
+## Standard workspace and Classic opt-in
+
+Migration `0433_workspace_defaults.sql` adds `classic_workspace_enabled`, default
+false, to personal workspace preferences and sets the legacy Coordinator column's
+default to true. Existing rows retain their old Coordinator experiment values,
+but those values no longer select the active workspace. API reads derive
+`coordinatorWorkspaceEnabled` from the inverse of the Classic choice. Saves
+retain the existing account and company-audit checks. Replaying the migration
+preserves explicit Classic choices. Agent Chat ignores its retired stored flag
+without rewriting instance settings. No task, agent, or execution state changes.

@@ -3,7 +3,7 @@ use sha2::{Digest, Sha256};
 
 use crate::acpx_event_payload::{AcpxRuntimeEventKind, AcpxTurnStatus};
 use crate::acpx_provider_state::{is_reserved_terminal_operation, AcpxProviderStateEvent};
-use crate::durable::{redact_text, sanitize_value, EventPriority};
+use crate::durable::{redact_sensitive_text_values, redact_text, sanitize_value, EventPriority};
 use crate::local_runner::LocalRunnerError;
 use crate::provider_bridge::{semantic_value_digest, ToolResult};
 use crate::stable_identity::{
@@ -551,6 +551,71 @@ fn require_projected_turn(
     Ok(())
 }
 
+/// Matches the `plan.proposed` schema bound: a proposed-plan document stays
+/// complete through this boundary so the TypeScript mapper can save it.
+const MAX_PLAN_PROPOSAL_CHARS: usize = 60_000;
+
+/// Splits one `<proposed_plan>` block out of a message. The tags must sit on
+/// their own lines outside fenced code, so quoting or documenting the tag
+/// never creates a proposal. Mirrors `splitProposedPlanBlock` in TypeScript.
+fn proposed_plan_block(value: &str) -> Option<String> {
+    let lines: Vec<&str> = value.split('\n').collect();
+    let mut fence: Option<char> = None;
+    let mut start: Option<usize> = None;
+    for (index, line) in lines.iter().enumerate() {
+        let trimmed = line.trim();
+        let marker = trimmed.chars().next().filter(|first| {
+            (*first == '`' || *first == '~') && trimmed.starts_with(&first.to_string().repeat(3))
+        });
+        // Fences are tracked inside the block too, so a fenced example tag in
+        // the plan never opens or closes it.
+        if let Some(marker) = marker {
+            fence = match fence {
+                None => Some(marker),
+                Some(open) if open == marker => None,
+                Some(open) => Some(open),
+            };
+            continue;
+        }
+        if fence.is_some() {
+            continue;
+        }
+        if start.is_none() && trimmed.eq_ignore_ascii_case("<proposed_plan>") {
+            start = Some(index);
+        } else if let Some(open) = start {
+            if trimmed.eq_ignore_ascii_case("</proposed_plan>") {
+                return Some(lines[open + 1..index].join("\n").trim().to_owned());
+            }
+        }
+    }
+    None
+}
+
+/// A proposed-plan document, redacted and bounded by the `plan.proposed`
+/// schema rather than the short display bound, which would cut it.
+fn plan_proposal_markdown(value: &str) -> String {
+    // Only a wrapper around the whole document is removed. Literal tags inside
+    // the plan (an inline or fenced example) stay part of its text.
+    let trimmed = value.trim();
+    let mut lines: Vec<&str> = trimmed.split('\n').collect();
+    if lines
+        .first()
+        .is_some_and(|line| line.trim().eq_ignore_ascii_case("<proposed_plan>"))
+    {
+        lines.remove(0);
+        if lines
+            .last()
+            .is_some_and(|line| line.trim().eq_ignore_ascii_case("</proposed_plan>"))
+        {
+            lines.pop();
+        }
+    }
+    redact_sensitive_text_values(lines.join("\n").trim())
+        .chars()
+        .take(MAX_PLAN_PROPOSAL_CHARS)
+        .collect()
+}
+
 fn bounded_text(value: &str, max_chars: usize) -> String {
     let redacted = redact_text(value);
     if redacted.chars().count() <= max_chars {
@@ -765,6 +830,44 @@ fn measurement(value: &Value) -> Value {
         "requests": value.get("requests").and_then(Value::as_u64).unwrap_or(0),
         "providerCostUsd": value.get("providerCostUsd").and_then(Value::as_f64).filter(|value| *value >= 0.0).unwrap_or(0.0),
     })
+}
+
+/// Context-window occupancy from a Codex `thread/tokenUsage/updated` payload.
+/// Codex sizes the live context by the most recent request's total tokens.
+pub(crate) fn codex_context_usage(params: &Value) -> Option<Value> {
+    let usage = params.get("tokenUsage").unwrap_or(params);
+    let window = usage
+        .get("modelContextWindow")
+        .and_then(Value::as_u64)
+        .filter(|value| *value > 0)?;
+    let last = usage.get("last")?;
+    let used = last
+        .get("totalTokens")
+        .and_then(Value::as_u64)
+        .or_else(|| {
+            let input = last.get("inputTokens").and_then(Value::as_u64)?;
+            Some(
+                input.saturating_add(
+                    last.get("outputTokens")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(0),
+                ),
+            )
+        })?;
+    Some(json!({"usedTokens": used, "windowTokens": window}))
+}
+
+/// Context-window occupancy from an ACP `usage_update` (`used` of `size`).
+fn acpx_context_usage(payload: &Value) -> Option<Value> {
+    let window = payload
+        .get("size")
+        .and_then(Value::as_f64)
+        .filter(|value| value.is_finite() && *value >= 1.0)?;
+    let used = payload
+        .get("used")
+        .and_then(Value::as_f64)
+        .filter(|value| value.is_finite() && *value >= 0.0)?;
+    Some(json!({"usedTokens": used.round() as u64, "windowTokens": window.round() as u64}))
 }
 
 /// Converts Codex app-server notifications into provider-neutral PRP events.
@@ -1217,6 +1320,41 @@ pub fn normalize_codex_notification_in(
             let item_type = string(provider_item.get("type"));
             let provider_phase = string(provider_item.get("phase"));
             let completed = method == "item/completed";
+            // A proposed plan travels as a schema-bounded rich event, so the
+            // durable display bound never cuts the document.
+            let proposal = match (item_type, method) {
+                ("plan", "item/started") => Some((false, String::new())),
+                ("plan", "item/completed") => Some((
+                    true,
+                    plan_proposal_markdown(string(provider_item.get("text"))),
+                )),
+                ("agentMessage", "item/completed")
+                    if provider_phase.is_empty() || provider_phase == "final_answer" =>
+                {
+                    proposed_plan_block(string(provider_item.get("text")))
+                        .map(|block| (true, plan_proposal_markdown(&block)))
+                        .filter(|(_, markdown)| !markdown.is_empty())
+                }
+                _ => None,
+            };
+            if let Some((proposal_completed, markdown)) = proposal {
+                push(
+                    &mut events,
+                    "plan.proposed",
+                    if proposal_completed {
+                        EventPriority::P1
+                    } else {
+                        EventPriority::P2
+                    },
+                    json!({
+                        "schema": "paperclip.plan.proposed.v1",
+                        "proposalId": item_id,
+                        "status": if proposal_completed { "completed" } else { "streaming" },
+                        "markdown": markdown,
+                        "source": "codex_plan_item",
+                    }),
+                );
+            }
             if item_type == "fileChange" {
                 let file_changes =
                     crate::tool_file_changes::codex_file_changes(provider_item.get("changes"), cwd);
@@ -1408,7 +1546,10 @@ pub fn normalize_acpx_runtime_event(
         AcpxRuntimeEventKind::Plan => stable_id(turn_id, fallback_item_id),
         _ => stable_id(string(payload.get("messageId")), fallback_item_id),
     };
-    match kind {
+    let compaction = matches!(kind, AcpxRuntimeEventKind::ProviderNotice)
+        .then(|| acpx_compaction_notice_completed(payload, turn_id))
+        .flatten();
+    let mut events = match kind {
         AcpxRuntimeEventKind::TextDelta => vec![NormalizedProviderEvent {
             event_type: "item.delta".to_owned(),
             priority: EventPriority::P2,
@@ -1483,6 +1624,48 @@ pub fn normalize_acpx_runtime_event(
             true,
         )],
         AcpxRuntimeEventKind::SemanticResult | AcpxRuntimeEventKind::Done => Vec::new(),
+    };
+    events.extend(compaction);
+    events
+}
+
+/// A completed `context_compaction` notice (the sidecar's form of Claude's
+/// compaction banner) also marks a context compaction.
+fn acpx_compaction_notice_completed(
+    payload: &Value,
+    turn_id: &str,
+) -> Option<NormalizedProviderEvent> {
+    if string(payload.get("category")) != "context_compaction" {
+        return None;
+    }
+    let completed = payload
+        .get("details")
+        .and_then(Value::as_array)?
+        .iter()
+        .any(|detail| {
+            string(detail.get("name")) == "Phase" && string(detail.get("value")) == "completed"
+        });
+    if !completed {
+        return None;
+    }
+    Some(acpx_context_compacted(&stable_id(
+        &format!("{turn_id}:{}", string(payload.get("noticeKey"))),
+        "acpx-compaction",
+    )))
+}
+
+fn acpx_context_compacted(compaction_id: &str) -> NormalizedProviderEvent {
+    NormalizedProviderEvent {
+        event_type: "context.compacted".to_owned(),
+        priority: EventPriority::P1,
+        payload: json!({
+            "schema": "paperclip.context.compacted.v1",
+            "compactionId": compaction_id,
+            "reason": "provider",
+            "preTokens": Value::Null,
+            "postTokens": Value::Null,
+            "sameSession": true,
+        }),
     }
 }
 
@@ -1633,7 +1816,7 @@ fn normalize_acpx_status(
             "requests": 1,
             "providerCostUsd": if turn_cost { provider_cost } else { 0.0 },
         });
-        let usage = NormalizedProviderEvent {
+        let mut usage = NormalizedProviderEvent {
             event_type: "usage.reported".to_owned(),
             priority: EventPriority::P0,
             payload: json!({
@@ -1649,6 +1832,9 @@ fn normalize_acpx_status(
                 "runDelta": run_delta,
             }),
         };
+        if let Some(context) = acpx_context_usage(payload) {
+            usage.payload["context"] = context;
+        }
         // Claude forwards its SDK rate_limit_event on usage_update; the
         // sidecar passes only the sanitized `rateLimit` fields.
         let rate_limits = payload.get("rateLimit").and_then(|info| {
@@ -2199,6 +2385,86 @@ mod tests {
     }
 
     #[test]
+    fn acpx_usage_carries_context_window_occupancy() {
+        let usage = normalize_acpx_status(
+            &json!({"tag": "usage_update", "used": 34076, "size": 200000}),
+            "item",
+            "turn-1",
+            1,
+        );
+        assert_eq!(
+            usage[0].payload["context"],
+            json!({"usedTokens": 34076, "windowTokens": 200000})
+        );
+        for missing in [
+            json!({"tag": "usage_update", "used": 10}),
+            json!({"tag": "usage_update", "used": 10, "size": 0}),
+        ] {
+            let usage = normalize_acpx_status(&missing, "item", "turn-1", 1);
+            assert!(usage[0].payload.get("context").is_none());
+        }
+    }
+
+    #[test]
+    fn codex_context_usage_reads_last_request_and_model_window() {
+        assert_eq!(
+            codex_context_usage(&json!({"tokenUsage": {
+                "total": {"inputTokens": 76682, "outputTokens": 1089},
+                "last": {"inputTokens": 26000, "outputTokens": 672, "totalTokens": 26672},
+                "modelContextWindow": 258400,
+            }})),
+            Some(json!({"usedTokens": 26672, "windowTokens": 258400}))
+        );
+        assert_eq!(
+            codex_context_usage(&json!({"tokenUsage": {
+                "last": {"inputTokens": 100, "outputTokens": 20}, "modelContextWindow": 1000,
+            }})),
+            Some(json!({"usedTokens": 120, "windowTokens": 1000}))
+        );
+        assert_eq!(
+            codex_context_usage(&json!({"tokenUsage": {"last": {"totalTokens": 5}}})),
+            None
+        );
+    }
+
+    #[test]
+    fn compaction_banner_text_alone_is_not_a_compaction() {
+        // The sidecar turns Claude's banner into a `context_compaction`
+        // notice; only that notice marks the compaction, so it is counted once.
+        let events = normalize_acpx_runtime_event(
+            AcpxRuntimeEventKind::TextDelta,
+            &json!({"text": "\n\nCompacting completed."}),
+            None,
+            "fallback",
+            "turn-1",
+            0,
+        );
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event_type, "item.delta");
+    }
+
+    #[test]
+    fn completed_compaction_notice_emits_context_compacted() {
+        let notice = |phase: &str| {
+            normalize_acpx_runtime_event(
+                AcpxRuntimeEventKind::ProviderNotice,
+                &json!({"severity": "info", "category": "context_compaction",
+                    "summary": "Compacting context", "noticeKey": "compaction-1",
+                    "details": [{"name": "Phase", "value": phase}]}),
+                None,
+                "fallback",
+                "turn-1",
+                0,
+            )
+        };
+        assert_eq!(notice("running").len(), 1);
+        let completed = notice("completed");
+        assert_eq!(completed.len(), 2);
+        assert_eq!(completed[1].event_type, "context.compacted");
+        assert_eq!(completed[1].payload["compactionId"], "turn-1:compaction-1");
+    }
+
+    #[test]
     fn performance_diagnostics_keep_only_bounded_content_free_measurements() {
         let mut spans = vec![json!({"name":"private prompt","startedAtMs":1,"endedAtMs":2})];
         for _ in 0..200 {
@@ -2660,6 +2926,93 @@ mod tests {
             }
             assert!(!events[0].payload.to_string().contains("secret"));
         }
+    }
+
+    #[test]
+    fn emits_complete_long_plan_proposals_as_rich_events() {
+        let body = format!("# Plan\n{}", "- step\n".repeat(1_000).trim_end());
+        let message = format!("Ready for review.\n<proposed_plan>\n{body}\n</proposed_plan>");
+        assert!(message.chars().count() > MAX_TEXT_CHARS);
+        // A message carries prose around the block; a plan item is the
+        // wrapped document itself.
+        let plan_item = format!("<proposed_plan>\n{body}\n</proposed_plan>");
+        for (kind, text) in [("agentMessage", &message), ("plan", &plan_item)] {
+            let events = normalize_codex_notification(
+                "item/completed",
+                &json!({"item": {"id": "item-1", "type": kind, "phase": "final_answer", "text": text}}),
+            );
+            let proposal = events
+                .iter()
+                .find(|event| event.event_type == "plan.proposed")
+                .unwrap_or_else(|| panic!("{kind} emits a proposal"));
+            assert_eq!(
+                proposal.payload["markdown"].as_str(),
+                Some(body.as_str()),
+                "{kind}"
+            );
+            assert_eq!(proposal.payload["proposalId"], "item-1");
+            assert_eq!(proposal.payload["status"], "completed");
+        }
+        let started = normalize_codex_notification(
+            "item/started",
+            &json!({"item": {"id": "plan-1", "type": "plan", "text": ""}}),
+        );
+        assert_eq!(started[0].event_type, "plan.proposed");
+        assert_eq!(started[0].payload["status"], "streaming");
+        // Quoted, fenced or non-final mentions never become proposals.
+        for (phase, text) in [
+            (
+                "final_answer",
+                "Use:\n```\n<proposed_plan>\n# P\n</proposed_plan>\n```",
+            ),
+            (
+                "final_answer",
+                "Inline <proposed_plan>x</proposed_plan> mention.",
+            ),
+            ("commentary", "<proposed_plan>\n# P\n</proposed_plan>"),
+        ] {
+            let events = normalize_codex_notification(
+                "item/completed",
+                &json!({"item": {"id": "m", "type": "agentMessage", "phase": phase, "text": text}}),
+            );
+            assert!(
+                events
+                    .iter()
+                    .all(|event| event.event_type != "plan.proposed"),
+                "{text}"
+            );
+        }
+    }
+
+    #[test]
+    fn keeps_a_plan_whole_when_it_contains_a_fenced_closing_tag_example() {
+        let body =
+            "# Plan\n\n1. Document:\n```\n<proposed_plan>\nexample\n</proposed_plan>\n```\n2. Ship";
+        let events = normalize_codex_notification(
+            "item/completed",
+            &json!({"item": {"id": "msg-9", "type": "agentMessage", "phase": "final_answer",
+                "text": format!("Ready.\n<proposed_plan>\n{body}\n</proposed_plan>")}}),
+        );
+        let proposal = events
+            .iter()
+            .find(|event| event.event_type == "plan.proposed")
+            .unwrap();
+        assert_eq!(proposal.payload["markdown"].as_str(), Some(body));
+    }
+
+    #[test]
+    fn keeps_literal_proposed_plan_tags_inside_a_plan_body() {
+        let body = "# Plan\n\n1. Format: `<proposed_plan>x</proposed_plan>`\n\n```\n<proposed_plan>\nsample\n</proposed_plan>\n```";
+        let events = normalize_codex_notification(
+            "item/completed",
+            &json!({"item": {"id": "plan-2", "type": "plan", "text": format!("<proposed_plan>\n{body}\n</proposed_plan>")}}),
+        );
+        assert_eq!(events[0].payload["markdown"].as_str(), Some(body));
+        let bare = normalize_codex_notification(
+            "item/completed",
+            &json!({"item": {"id": "plan-3", "type": "plan", "text": body}}),
+        );
+        assert_eq!(bare[0].payload["markdown"].as_str(), Some(body));
     }
 
     #[test]

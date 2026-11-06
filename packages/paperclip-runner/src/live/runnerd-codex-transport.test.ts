@@ -3108,6 +3108,20 @@ it("rehydrates normalized usage with the opened driver binding", () => {
   });
 });
 
+it("keeps reported context-window occupancy on rehydrated usage", () => {
+  const base = { cumulative: { inputTokens: 10 }, runDelta: { inputTokens: 3 }, runDeltaAvailable: true };
+  const params = rehydrateRunnerdUsageNotification(
+    { ...base, context: { usedTokens: 26672, windowTokens: 258400 } },
+    "opened-thread-1",
+    "active-turn-1",
+  );
+  expect(params.tokenUsage).toMatchObject({ context: { usedTokens: 26672, windowTokens: 258400 } });
+  for (const context of [undefined, { usedTokens: -1, windowTokens: 10 }, { usedTokens: 1, windowTokens: 0 }]) {
+    const rehydrated = rehydrateRunnerdUsageNotification({ ...base, context }, "opened-thread-1", "active-turn-1");
+    expect(rehydrated.tokenUsage).not.toHaveProperty("context");
+  }
+});
+
 it("rehydrates durable cumulative usage for a cold thread read", () => {
   expect(
     rehydrateRunnerdThreadTokenUsage({ inputTokens: 12, outputTokens: 3 }),
@@ -3886,7 +3900,7 @@ it.each(["admission-only", "admission-only-mismatched-model", "complete", "api-k
     } else {
       await expect(probe).rejects.toThrow(mode === "missing-runtime" ? /ENOENT|unavailable|cleanup/i : mode === "admission-only-mismatched-model" || mode === "mismatched-model" || mode === "remote-mismatched-model" || mode === "model-refresh-error" || mode === "model-cleanup-error" || mode === "missing-model" ? /observed model|mismatched provider model/i : /timed out|cleanup|suspension/i);
       if (mode === "late-remote-release-error") {
-        expect(registrationReleased).toBe(true); expect(cleanupConfirmed).toBe(false);
+        await vi.waitFor(() => expect(registrationReleased).toBe(true)); expect(cleanupConfirmed).toBe(false);
         expect((await stat(runtimeDirectory)).isDirectory()).toBe(true);
       }
       if (mode === "model-refresh-error") {

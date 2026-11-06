@@ -84,6 +84,12 @@ transaction's task and run locks. Read and comment access follows normal policy.
 
 Board-initiated reassignments, agent API keys, native executions, and handoffs to
 another agent still require the outgoing execution to stop before ownership changes.
+A native Stop can take longer than the request. When its durable Stop fence is
+committed, the reassignment applies at once and the new assignee's wake waits
+behind the stopping run. When that run releases the task, its Stop still does not
+promote the stopped agent's own queued work, but it does promote the current
+assignee's waiting wake. A run that finished on its own before the Stop needs no
+stop. The request refuses the reassignment only when no Stop was recorded.
 
 ## 3. Status Semantics
 
@@ -438,6 +444,14 @@ timestamp. Admission preserves the old run and any unknown action outcomes. It
 does not replay the cancelled turn or reset recovery limits.
 
 ### Known execution waits at admission
+
+A queued wake cancelled by the dependency gate is an expected admission wait,
+not a failed provider attempt. Task views use the queue's saved dependency
+receipt to keep the existing dependency state without a failure banner or Retry
+action. This includes the heartbeat queue receipt and the dispatcher's stale-queue
+receipt for unstarted legacy or native runs. Actual provider failures, pending
+recovery, and current approval or pause gates retain their existing presentation
+and execution checks.
 
 A known execution hold is a waiting condition, not a new execution attempt. Every issue wake must read the current effective reconciliation hold under the issue admission lock before creating a run. Resolved recovery bookkeeping can still carry a no-replay hold; only clearing the effective hold makes admission eligible again. The final dispatch gate remains required for changes after admission.
 
@@ -888,6 +902,11 @@ remote configuration. An unchanged follow-up reuses that configuration without
 reporting strategy drift. Real strategy, source, mode and environment changes
 retain their existing replacement checks.
 
+Managed sandbox reconciliation preserves the environment revision used by session
+and workspace freshness checks when only its name, description, or managed metadata
+changes. It still records the update in the activity log. Configuration or
+availability changes advance that revision and retain normal replacement checks.
+
 Older remote Git workspaces can retain the temporary `project_primary`
 fingerprint. That fingerprint alone cannot distinguish the old preparation bug
 from a genuinely configured `project_primary` strategy; the remote workspace row
@@ -1207,6 +1226,38 @@ explain its wait without a page reload or idle polling.
 Newer saved input keeps its own receipt while the existing Retry explanation stays
 visible. Terminal waits direct the user to send new input and hide the Retry action
 that cannot continue that attempt.
+
+When a native attempt fails before launch because its predecessor's session is
+quarantined, explicit task Retry verifies the retained journal's actual owner.
+That owner must belong to the same company, task, agent, workspace, native session,
+and runner instance. Its controller must have settled, its local leases must be
+released, and its recorded worker, provider, and tool processes must be absent.
+A host-bound launch receipt with the exact process birth can establish the stop
+when an older server did not write a stop receipt. A later launch invalidates it.
+The failed attempt must have no launch evidence and must retain that same process
+identity. Missing or conflicting evidence keeps Retry deferred.
+
+This proof retires cleanup ownership only. It preserves the old journal, saved
+result, and uncertain action outcomes. The admitted turn uses a fresh native
+session under current authority. The old tool-contract fingerprint therefore
+does not gate physical cleanup; existing compatibility checks still govern
+session reuse and automatic replacement.
+Raw runner journal events and normalized run-log events have independent sequence
+numbers. Cleanup validates each normalized receipt's own sequence, event ID, and
+digest, then matches the ordered provider lifecycle identities across the two
+streams. It does not compare their sequence numbers to one another.
+
+The committed stop proof also names its successor, canonical Retry receipt, and
+local execution workspace. Workspace preparation uses `resume_stopped_native_workspace`
+only for that exact admitted successor and unchanged active task binding. It
+rechecks the directory and refuses pending workspace operations or another live
+lease. Environment selection pins that workspace again before preparation. This
+keeps saved files in place while the provider session starts fresh. An unrelated
+Retry or changed binding cannot borrow the proof or silently replace the files
+with an empty attempt directory.
+Projectless runs use their run ID as a transient workspace placeholder. That
+placeholder cannot authorize managed workspace reuse; those successors keep the
+existing fresh-workspace preparation path while retaining the old directory.
 
 A continuation cancelled by the queued-run gate while waiting for review did not start a provider. Its matching dispatch-gate receipt and unclaimed execution fields keep this deliberate wait out of unknown-action reconciliation. Pending review and decision gates still apply. If an older server already created a recovery hold for this exact state, Retry or a new user message can request one fresh turn after the server verifies there is no provider, coordinator, or unfinished cleanup. Saved user input is reconsidered through the same admission path; the cancelled turn is not replayed.
 
@@ -3159,6 +3210,14 @@ match. A successor must pass the existing same-controller preparation or native
 ownership checks. The backup transaction checks this authority again after
 upload, and a late predecessor cannot replace a newer conversation backup.
 This grants no new lease or permission to start provider work.
+
+The remote backend captures its backup fence while its run still owns the
+controller lease. A suspended provider can then publish its backup while an
+accepted result is still saving the workspace, before finalization commits.
+Warm attachments replace that captured fence with the current run's authority;
+an older backend's close callback uses the current attachment's fence. Publication
+still revalidates the boot, generation, accepted result, and successor authority
+before and after upload. A released, uncommitted run cannot acquire a new fence.
 
 Local durable control-plane state is bounded at 256 MiB in the server,
 runnerd recovery, and durable control-plane readers. These paths synchronously

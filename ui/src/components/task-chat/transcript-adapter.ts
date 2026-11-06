@@ -8,6 +8,7 @@
 import { foldApprovedAutoReviews } from "./fold-auto-reviews";
 import { isFatalProviderError, isStatusNotice, isStatusNoticePayload, statusNoticeCategory } from "./status-notice-presentation";
 import type { TranscriptEntry } from "@/adapters";
+import { formatContextTokens } from "@/lib/context-tokens";
 import { turnChangesFromEditRows } from "./turn-file-changes";
 import type {
   TaskChatDiff,
@@ -24,6 +25,7 @@ import type {
   TaskChatMessageItem,
   TaskChatPlanDocumentItem,
   TaskChatRuntimeRequestItem,
+  TaskChatMarkerItem,
   TaskChatSubagent,
   TaskChatSubagentGroupItem,
 } from "./task-chat-model";
@@ -131,6 +133,30 @@ export function flattenSelfTalk(text: string): string {
     .replace(/__/g, "")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+/** "Context compacted · 230k → 38k tokens" divider for a provider compaction. */
+export function contextCompactedMarker(
+  entry: Extract<TranscriptEntry, { kind: "provider_activity" }>,
+  id: string,
+): TaskChatMarkerItem {
+  const count = (value: unknown) =>
+    typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
+  const pre = count(entry.payload.preTokens);
+  const post = count(entry.payload.postTokens);
+  const detail = pre !== null && post !== null
+    ? `${formatContextTokens(pre)} → ${formatContextTokens(post)} tokens`
+    : pre !== null
+      ? `from ${formatContextTokens(pre)} tokens`
+      : undefined;
+  return {
+    id,
+    kind: "marker",
+    variant: "context_compacted",
+    label: "Context compacted",
+    ...(detail ? { detail } : {}),
+    createdAtIso: entry.ts,
+  };
 }
 
 function diffKind(changeType: string): "add" | "remove" | "context" | "hunk" {
@@ -282,6 +308,7 @@ const PROVIDER_DETAIL_KEYS: Record<
   readonly string[]
 > = {
   plan: ["revision", "syncStatus", "documentRevision", "complete"],
+  plan_proposal: ["status", "source"],
   tool_execution: [
     "transport",
     "operation",
@@ -347,6 +374,7 @@ function providerActivityKey(
 ): string {
   const idKeys = [
     "planId",
+    "proposalId",
     "executionId",
     "researchId",
     "delegationId",
@@ -478,10 +506,12 @@ function providerActivityItem(
   const rawOutput =
     entry.family === "tool_execution"
       ? stringValue(entry.payload.output)
-      : undefined;
+      : entry.family === "plan_proposal"
+        ? stringValue(entry.payload.markdown)
+        : undefined;
   const outputTruncated =
     entry.payload.outputTruncated === true ||
-    Boolean(rawOutput && rawOutput.length > PROTOCOL_OUTPUT_MAX);
+    Boolean(rawOutput && entry.family !== "plan_proposal" && rawOutput.length > PROTOCOL_OUTPUT_MAX);
   const summary =
     entry.summary && entry.summary !== entry.eventType
       ? entry.summary
@@ -503,7 +533,10 @@ function providerActivityItem(
     steps,
     links,
     children,
-    output: rawOutput ? rawOutput.slice(0, PROTOCOL_OUTPUT_MAX) : undefined,
+    // A proposed plan is a document, bounded by its own 60k event schema.
+    output: rawOutput
+      ? rawOutput.slice(0, entry.family === "plan_proposal" ? 60_000 : PROTOCOL_OUTPUT_MAX)
+      : undefined,
     outputTruncated,
     transcriptIndex: index,
     startedAt: entry.ts,
@@ -972,6 +1005,12 @@ export function transcriptToTaskChatItems(
         break;
       }
       case "provider_activity": {
+        if (entry.eventType === "context.compacted") {
+          // One entry per compaction; producers may reuse a thread-scoped id.
+          items.push(contextCompactedMarker(entry, `${runId}:compaction:${String(entry.payload.compactionId ?? "")}:${i}`));
+          resetInline();
+          break;
+        }
         // Use producer classification, including the legacy generic Codex
         // categories, never message-text matching. The run transcript still
         // retains these diagnostics.
@@ -1362,7 +1401,7 @@ export function paperclipRunnerActivityItems(
         return normalizedName !== "paperclip_finish";
       }
       case "marker":
-        return item.variant === "interrupted";
+        return item.variant === "interrupted" || item.variant === "context_compacted";
       case "protocol":
         // Completion is already represented by task state and the final answer.
         // Keep its event in the inspector, but omit it from feed rows and counts.
@@ -1467,6 +1506,24 @@ export function paperclipRunnerAcceptedResponseWake(
   ) ? result : undefined;
 }
 
+function normalizedWaitText(value: string) {
+  return value.replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+/**
+ * A yielded turn's control-plane wait label ("Waiting for <card>.") that some
+ * providers echo as final prose. It duplicates the card, so it is not a reply.
+ */
+export function isYieldedWaitStub(
+  text: string,
+  waitSummaries: readonly (string | null | undefined)[] = [],
+): boolean {
+  const normalized = normalizedWaitText(text);
+  if (!normalized) return true;
+  if (waitSummaries.some((summary) => summary && normalizedWaitText(summary) === normalized)) return true;
+  return !text.trim().includes("\n") && /^waiting for\b/.test(normalized);
+}
+
 /** Resolve a terminal reply without presenting ordinary yielded waits as answers. */
 export function paperclipRunnerFinalResponse(
   parsed: readonly TaskChatItem[],
@@ -1476,32 +1533,53 @@ export function paperclipRunnerFinalResponse(
     fallbackSummary?: string | null;
     /** Structured summaries are terminal fallbacks, never live partial replies. */
     allowFallback?: boolean;
+    /** Run metadata established a yielded wait even if the transcript lacks its result. */
+    yielded?: boolean;
+    /** The yielded result's wait summary, when known outside the transcript. */
+    waitSummary?: string | null;
   },
 ): TaskChatMessageItem | undefined {
   // A yielded result is a control-plane wait boundary, not an assistant reply.
   // Some providers historically labeled their "waiting for input" prose as a
   // final message, so disposition must take precedence over message channel.
-  const yielded = parsed.some(
-    (item) =>
+  const yieldedResults = parsed.filter(
+    (item): item is TaskChatRunResultItem =>
       item.kind === "protocol" &&
       item.surface === "run_result" &&
       item.disposition === "yielded",
   );
-  if (yielded) {
+  if (yieldedResults.length > 0 || options?.yielded) {
     const accepted =
       options?.allowFallback === false
         ? undefined
         : paperclipRunnerAcceptedResponseWake(parsed, options?.runId);
-    if (!accepted) return undefined;
-    return {
-      id: `${accepted.id}:final-response`,
-      kind: "message",
-      author: "agent",
-      authorName: options?.agentName,
-      text: accepted.summary.trim(),
-      channel: "final",
-      streaming: false,
-    };
+    if (accepted) {
+      return {
+        id: `${accepted.id}:final-response`,
+        kind: "message",
+        author: "agent",
+        authorName: options?.agentName,
+        text: accepted.summary.trim(),
+        channel: "final",
+        streaming: false,
+      };
+    }
+    // The wait itself is not an answer, but prose the agent wrote for the user
+    // before yielding (e.g. explaining the question card it just posted) is.
+    // It streamed into view while the turn was live; dropping it on settle
+    // makes the conversation flash and lose that reply. Wait stubs are
+    // skipped, not terminal: a provider may echo one after its reply.
+    const waitSummaries = [
+      options?.waitSummary,
+      ...yieldedResults.map((result) => result.summary),
+    ];
+    for (let index = parsed.length - 1; index >= 0; index -= 1) {
+      const item = parsed[index];
+      if (item.kind !== "message" || item.channel !== "final") continue;
+      if (isYieldedWaitStub(item.text, waitSummaries)) continue;
+      return item;
+    }
+    return undefined;
   }
   for (let index = parsed.length - 1; index >= 0; index -= 1) {
     const item = parsed[index];
@@ -2013,6 +2091,19 @@ export function buildTurnTimelineRows(
       current = null;
       rows.push(item);
     } else if (item.kind === "plan_document") {
+      current = null;
+      rows.push(item);
+    } else if (item.kind === "marker" && item.variant === "context_compacted") {
+      // A compaction divides the turn, so it closes the current phase.
+      current = null;
+      rows.push(item);
+    } else if (
+      item.kind === "protocol" &&
+      item.surface === "provider_activity" &&
+      item.family === "plan_proposal"
+    ) {
+      // A proposed plan is a deliverable, so it gets its own row instead of
+      // folding into the collapsed activity phase.
       current = null;
       rows.push(item);
     } else if (
