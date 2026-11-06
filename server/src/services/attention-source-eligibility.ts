@@ -11,8 +11,17 @@ export function recoveryActionAttentionCondition() {
 export const ATTENTION_BUDGET_WARNING_PERCENT = 85;
 export const ATTENTION_AGENT_ERROR_STATUS = "error";
 
+function confirmationAudienceKey(row: { issueId: string; addresseeUserId?: string | null; addresseeAgentId?: string | null }) {
+  return `${row.issueId}:${row.addresseeUserId ?? ""}:${row.addresseeAgentId ?? ""}`;
+}
+
 function payloadFlag(payload: unknown, key: string) {
   return Boolean(payload && typeof payload === "object" && key in payload && (payload as Record<string, unknown>)[key]);
+}
+
+/** Tool actions and secret proposals gate one specific action; creation never supersedes siblings for them either. */
+function governedAction(payload: unknown) {
+  return payloadFlag(payload, "toolAction") || payloadFlag(payload, "secretProposal");
 }
 
 /**
@@ -20,8 +29,10 @@ function payloadFlag(payload: unknown, key: string) {
  * ordinary confirmation — pending, or already answered/expired. Without the
  * settled case, answering the newest card (from chat or anywhere else)
  * resurfaces the older ask it replaced. Quality approvals stay
- * independent; tool-action approvals are gates for distinct calls, so a settled
- * one never hides another.
+ * independent; tool-action and secret-proposal approvals gate one specific
+ * action, so they neither hide nor are hidden by a settled confirmation.
+ * Only an ask to the same recipient settles it, so one person's answer never
+ * hides a request addressed to someone else.
  */
 export function collapsePendingConfirmationsToNewest<T extends {
   id: string;
@@ -29,6 +40,8 @@ export function collapsePendingConfirmationsToNewest<T extends {
   kind: string;
   createdAt: Date;
   payload: unknown;
+  addresseeUserId?: string | null;
+  addresseeAgentId?: string | null;
 }>(rows: T[], newestSettledConfirmationAt: ReadonlyMap<string, Date> = new Map()) {
   const independent = (row: T) => payloadFlag(row.payload, "qualityReview");
   const newestByGroup = new Map<string, T>();
@@ -48,7 +61,7 @@ export function collapsePendingConfirmationsToNewest<T extends {
   return rows.filter((row) => {
     if (row.kind !== "request_confirmation" || independent(row)) return true;
     if (newestByGroup.get(`${row.issueId}:${row.kind}`)?.id !== row.id) return false;
-    const settledAt = payloadFlag(row.payload, "toolAction") ? undefined : newestSettledConfirmationAt.get(row.issueId);
+    const settledAt = governedAction(row.payload) ? undefined : newestSettledConfirmationAt.get(confirmationAudienceKey(row));
     return !settledAt || settledAt.getTime() <= row.createdAt.getTime();
   });
 }
@@ -56,12 +69,14 @@ export function collapsePendingConfirmationsToNewest<T extends {
 // Cancelled/failed replacements do not settle the ask, so an older card returns.
 const SETTLED_CONFIRMATION_STATUSES = ["accepted", "rejected", "answered", "expired"] as const;
 
-/** Newest answered/expired ordinary confirmation per issue (see the collapse above). */
+/** Newest answered/expired ordinary confirmation per issue and recipient (see the collapse above). */
 export async function loadNewestSettledConfirmationAt(db: Db, companyId: string, issueIds: string[]) {
   const ids = [...new Set(issueIds)];
   if (ids.length === 0) return new Map<string, Date>();
   const rows = await db.select({
     issueId: issueThreadInteractions.issueId,
+    addresseeUserId: issueThreadInteractions.addresseeUserId,
+    addresseeAgentId: issueThreadInteractions.addresseeAgentId,
     createdAt: sql<string>`max(${issueThreadInteractions.createdAt})::text`,
   }).from(issueThreadInteractions).where(and(
     eq(issueThreadInteractions.companyId, companyId),
@@ -70,8 +85,9 @@ export async function loadNewestSettledConfirmationAt(db: Db, companyId: string,
     inArray(issueThreadInteractions.status, [...SETTLED_CONFIRMATION_STATUSES]),
     sql`jsonb_typeof(${issueThreadInteractions.payload}->'qualityReview') is distinct from 'object'`,
     sql`jsonb_typeof(${issueThreadInteractions.payload}->'toolAction') is distinct from 'object'`,
-  )).groupBy(issueThreadInteractions.issueId);
-  return new Map(rows.map((row) => [row.issueId, new Date(row.createdAt)]));
+    sql`jsonb_typeof(${issueThreadInteractions.payload}->'secretProposal') is distinct from 'object'`,
+  )).groupBy(issueThreadInteractions.issueId, issueThreadInteractions.addresseeUserId, issueThreadInteractions.addresseeAgentId);
+  return new Map(rows.map((row) => [confirmationAudienceKey(row), new Date(row.createdAt)]));
 }
 
 export function readRunIssueId(contextSnapshot: Record<string, unknown> | null) {
