@@ -41,12 +41,14 @@ async function readAccountingClosure(db: Db, runId: string) {
 
 /** Every remote allocation of the run carries a provider termination receipt
  * bound to that exact lease and run (mirrors hasRemoteTerminationReceipt): the
- * sandbox is stopped or destroyed, so no runner there can report usage. */
+ * sandbox is stopped or destroyed, so no runner there can report usage. The
+ * per-lease check uses "is not true": a missing receipt makes it NULL, which
+ * must never count as proof. */
 const remoteExecutionTerminated = sql`exists (select 1 from ${environmentLeases} remote_lease
     where remote_lease.company_id = ${heartbeatRuns.companyId} and remote_lease.heartbeat_run_id = ${heartbeatRuns.id})
   and not exists (select 1 from ${environmentLeases} remote_lease
     where remote_lease.company_id = ${heartbeatRuns.companyId} and remote_lease.heartbeat_run_id = ${heartbeatRuns.id}
-      and not (remote_lease.provider is not null and remote_lease.provider <> 'local'
+      and (remote_lease.provider is not null and remote_lease.provider <> 'local'
         and remote_lease.provider_lease_id is not null and remote_lease.released_at is not null
         and remote_lease.cleanup_status = 'success' and remote_lease.status in ('released', 'expired', 'failed')
         and remote_lease.metadata->'remoteExecutionTermination'->>'schema' = 'paperclip.remote-termination.v1'
@@ -55,7 +57,7 @@ const remoteExecutionTerminated = sql`exists (select 1 from ${environmentLeases}
         and remote_lease.metadata->'remoteExecutionTermination'->>'leaseId' = remote_lease.id::text
         and remote_lease.metadata->'remoteExecutionTermination'->>'provider' = remote_lease.provider
         and remote_lease.metadata->'remoteExecutionTermination'->>'providerLeaseId' = remote_lease.provider_lease_id
-        and remote_lease.metadata->'remoteExecutionTermination'->>'state' in ('stopped', 'destroyed')))`;
+        and remote_lease.metadata->'remoteExecutionTermination'->>'state' in ('stopped', 'destroyed')) is not true)`;
 
 /** A native run's receipt source is closed only with positive stop evidence,
  * after recovery ended in terminal failure without a result:

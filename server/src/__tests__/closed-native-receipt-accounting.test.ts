@@ -249,6 +249,8 @@ const support = await getEmbeddedPostgresTestSupport();
 
   it.each([
     ["a sandbox that may still run", [{ receipt: "none", released: false }]],
+    // Older plugins release successfully without returning a receipt.
+    ["a released sandbox without a termination receipt", [{ receipt: "none" }]],
     ["one of two sandboxes without a receipt", [{ receipt: "destroyed" }, { receipt: "none", released: false }]],
     ["a receipt for another sandbox", [{ receipt: "foreign" }]],
     ["no sandbox at all", []],
