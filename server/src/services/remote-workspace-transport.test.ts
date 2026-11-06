@@ -20,6 +20,7 @@ import {
 } from "./remote-workspace-transport.js";
 import { classifyNativeWorkspaceFailure } from "./native-runtime/native-workspace-failure.js";
 import { restoreRemoteWorkspaceArchive } from "./remote-workspace-snapshot-archive.js";
+import { readWorkspaceInventory } from "./remote-workspace-readonly-inventory.js";
 
 const exec = promisify(execFile);
 
@@ -600,6 +601,16 @@ describe("remote workspace transport safety with real sandbox commands", () => {
     expect(await fs.readFile(path.join(workspace, "saved.txt"), "utf8")).toBe(fault === "source changed" ? "newer work\n" : "retained work\n");
     expect(copiedRoot).toBeDefined();
     await expect(fs.access(copiedRoot!)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("rejects internal Git config symlinks before controller normalization can follow an include", async () => {
+    await fs.mkdir(path.join(workspace, ".git"));
+    const outside = path.join(scratch, "outside-config");
+    await fs.writeFile(outside, "[user]\nname = outside\n");
+    await fs.writeFile(path.join(workspace, "payload-config"), `[include]\npath = ${outside}\n`);
+    await fs.symlink("../payload-config", path.join(workspace, ".git", "config"));
+    await expect(readWorkspaceInventory(workspace, true)).rejects.toThrow("remote_workspace_readonly_capture_unsafe");
+    expect(await fs.readFile(outside, "utf8")).toBe("[user]\nname = outside\n");
   });
 
   it.each(["worktree pointer", "alternate store", "config include", "core worktree"])("retains a full sandbox with a %s instead of resolving controller paths", async fault => {

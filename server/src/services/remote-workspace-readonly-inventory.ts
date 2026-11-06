@@ -19,6 +19,9 @@ export async function readWorkspaceInventory(root: string, controllerCopy = fals
       // can use this fallback; the sandbox remains retained otherwise.
       const parts = next.split("/"), git = parts.lastIndexOf(".git");
       if (name === ".git" && !stat.isDirectory()) fail();
+      // Git follows configuration and administrative links itself. A link
+      // inside this tree must not bypass the controller config-file check.
+      if (git >= 0 && stat.isSymbolicLink()) fail();
       if (git >= 0 && ["commondir", "config.worktree", "objects/info/alternates", "objects/info/http-alternates"]
         .includes(parts.slice(git + 1).join("/"))) fail();
       if (stat.isSocket()) { exclude.push(next); continue; }
