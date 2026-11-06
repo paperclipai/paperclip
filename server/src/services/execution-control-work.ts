@@ -6,6 +6,8 @@ import { type DeliveryQueue } from "./delivery-work-notifications.js";
 import { EXECUTION_RECONCILIATION_INTERVAL_MS } from "./execution-control-deadline.js";
 import { obsoleteExecutionConversationHold, unresolvedExecutionDispositions } from "./execution-recovery-resolution.js";
 import { nativeReplacementPending } from "./native-runtime/native-safe-replacement.js";
+import { nextAbandonedNativeOwnerReleaseAt } from "./native-runtime/native-failed-run-owner-release.js";
+import { hasPendingPauseResume } from "./issue-tree-resume.js";
 
 export function registerExecutionControlWork(
   coordinator: ReturnType<typeof createDeliveryWorkCoordinator>,
@@ -58,13 +60,14 @@ export function executionControlSchedule(db: Db) {
   };
   return {
     async finalization() {
-      const [native, legacy] = await Promise.all([
+      const [native, legacy, abandonedOwner] = await Promise.all([
         db.select({ at: nativeRunFinalizations.controlDeadlineAt }).from(nativeRunFinalizations)
           .where(isNotNull(nativeRunFinalizations.controlDeadlineAt)).orderBy(asc(nativeRunFinalizations.controlDeadlineAt)).limit(1),
         db.select({ at: heartbeatRuns.executionControlDeadlineAt }).from(heartbeatRuns)
           .where(isNotNull(heartbeatRuns.executionControlDeadlineAt)).orderBy(asc(heartbeatRuns.executionControlDeadlineAt)).limit(1),
+        nextAbandonedNativeOwnerReleaseAt(db),
       ]);
-      return deadline([native[0]?.at, legacy[0]?.at]);
+      return deadline([native[0]?.at, legacy[0]?.at, abandonedOwner]);
     },
     async workspaceRecovery() {
       const at = await nextWorkspaceRecoveryAt(db);
@@ -81,7 +84,7 @@ export function executionControlSchedule(db: Db) {
         eq(issueRecoveryActions.status, "resolved"),
         sql`${issueRecoveryActions.evidence}->>'continuationDelivery' = 'pending'`,
       )).limit(1);
-      return rows.length ? retry() : null;
+      return rows.length || await hasPendingPauseResume(db) ? retry() : null;
     },
     async status() {
       const rows = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns)

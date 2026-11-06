@@ -41,20 +41,25 @@ function isAlreadyExistsError(error: unknown): boolean {
   return code === "EEXIST" || code === "ENOTEMPTY";
 }
 
-function sanitizeRemoteClaudeSettings(raw: string): string {
+export type RemoteClaudePermissionDefaultMode = "default" | "bypassPermissions";
+
+function sanitizeRemoteClaudeSettings(
+  raw: string | null,
+  defaultMode: RemoteClaudePermissionDefaultMode,
+): string {
   let parsed: unknown;
   try {
-    parsed = JSON.parse(raw);
+    parsed = raw === null ? null : JSON.parse(raw);
   } catch {
-    return JSON.stringify({ permissions: { defaultMode: "default" } });
+    return JSON.stringify({ permissions: { defaultMode } });
   }
 
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    return JSON.stringify({ permissions: { defaultMode: "default" } });
+    return JSON.stringify({ permissions: { defaultMode } });
   }
 
   const settings = { ...(parsed as Record<string, unknown>) };
-  settings.permissions = { defaultMode: "default" };
+  settings.permissions = { defaultMode };
   delete settings.hooks;
   delete settings.mcpServers;
   delete settings.permissionMode;
@@ -62,16 +67,22 @@ function sanitizeRemoteClaudeSettings(raw: string): string {
   return JSON.stringify(settings);
 }
 
-async function collectSeedFiles(sourceDir: string): Promise<SeedFile[]> {
+async function collectSeedFiles(
+  sourceDir: string,
+  defaultMode: RemoteClaudePermissionDefaultMode,
+): Promise<SeedFile[]> {
   const files: SeedFile[] = [];
   for (const name of SEEDED_SHARED_FILES) {
     const sourcePath = path.join(sourceDir, name);
-    if (!(await pathExists(sourcePath))) continue;
-    const rawContents = await fs.readFile(sourcePath);
-    const contents = name === "settings.json"
-      ? Buffer.from(sanitizeRemoteClaudeSettings(rawContents.toString("utf8")), "utf8")
-      : rawContents;
-    files.push({ name, sourcePath, contents });
+    const exists = await pathExists(sourcePath);
+    if (name === "settings.json") {
+      if (!exists && defaultMode === "default") continue;
+      const raw = exists ? (await fs.readFile(sourcePath)).toString("utf8") : null;
+      files.push({ name, sourcePath, contents: Buffer.from(sanitizeRemoteClaudeSettings(raw, defaultMode), "utf8") });
+      continue;
+    }
+    if (!exists) continue;
+    files.push({ name, sourcePath, contents: await fs.readFile(sourcePath) });
   }
   return files;
 }
@@ -187,6 +198,7 @@ export async function prepareClaudeConfigSeed(
   env: NodeJS.ProcessEnv,
   onLog: AdapterExecutionContext["onLog"],
   companyId?: string,
+  options: { permissionDefaultMode?: RemoteClaudePermissionDefaultMode } = {},
 ): Promise<string> {
   const sourceDir = resolveSharedClaudeConfigDir(env);
   const targetRootDir = resolveManagedClaudeConfigSeedDir(env, companyId);
@@ -195,7 +207,7 @@ export async function prepareClaudeConfigSeed(
     return targetRootDir;
   }
 
-  const copiedFiles = await collectSeedFiles(sourceDir);
+  const copiedFiles = await collectSeedFiles(sourceDir, options.permissionDefaultMode ?? "default");
   const snapshotKey = await buildSeedSnapshotKey(copiedFiles);
   const targetDir = await materializeSeedSnapshot({
     rootDir: targetRootDir,
@@ -292,6 +304,97 @@ export async function materializeRemoteClaudeConfig(input: {
       result.exitCode === 0 &&
       !result.timedOut &&
       result.stdout.includes(CLAUDE_TOOL_SHELL_PREFIX_INSTALLED_MARKER),
+  };
+}
+
+type ClaudeLocalSettings = { settings: Record<string, unknown>; permissions: Record<string, unknown> };
+
+function parseClaudeLocalSettings(raw: string | null): ClaudeLocalSettings | null {
+  if (raw === null) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+  const settings = parsed as Record<string, unknown>;
+  const permissions =
+    settings.permissions && typeof settings.permissions === "object" && !Array.isArray(settings.permissions)
+      ? (settings.permissions as Record<string, unknown>)
+      : {};
+  return { settings, permissions };
+}
+
+function withClaudeLocalDefaultMode(local: ClaudeLocalSettings, defaultMode: unknown): string {
+  const permissions = { ...local.permissions };
+  if (defaultMode === undefined) delete permissions.defaultMode;
+  else permissions.defaultMode = defaultMode;
+  return `${JSON.stringify({ ...local.settings, permissions }, null, 2)}\n`;
+}
+
+export interface RemoteClaudeLocalPermissionOverride {
+  beforeRestore: () => Promise<void>;
+  afterRestore: () => Promise<void>;
+}
+
+export async function overrideRemoteClaudeLocalPermissionMode(input: {
+  runId: string;
+  target: AdapterExecutionTarget | null | undefined;
+  workspaceLocalDir: string;
+  workspaceRemoteDir: string;
+  defaultMode: RemoteClaudePermissionDefaultMode;
+  options: AdapterExecutionTargetShellOptions;
+}): Promise<RemoteClaudeLocalPermissionOverride | null> {
+  const localPath = path.join(input.workspaceLocalDir, ".claude", "settings.local.json");
+  const original = await fs.readFile(localPath, "utf8").catch(() => null);
+  const originalLocal = parseClaudeLocalSettings(original);
+  if (original === null || !originalLocal) return null;
+  const originalMode = originalLocal.permissions.defaultMode;
+  if (originalMode === input.defaultMode) return null;
+  const overridden = withClaudeLocalDefaultMode(originalLocal, input.defaultMode);
+  const remotePath = shellQuote(path.posix.join(input.workspaceRemoteDir, ".claude", "settings.local.json"));
+  const quietOptions: AdapterExecutionTargetShellOptions = { ...input.options, onLog: async () => {} };
+  const writeRemote = (contents: string) =>
+    runAdapterExecutionTargetShellCommand(
+      input.runId,
+      input.target,
+      `if [ -f ${remotePath} ]; then printf '%s' ${shellQuote(contents)} > ${remotePath}; fi`,
+      quietOptions,
+    );
+  const applied = await writeRemote(overridden);
+  if (applied.exitCode !== 0 || applied.timedOut) {
+    await input.options.onLog?.("stderr", "[paperclip] Could not apply the Claude permission mode to the sandbox workspace settings.\n");
+  }
+  return {
+    beforeRestore: async () => {
+      try {
+        const read = await runAdapterExecutionTargetShellCommand(
+          input.runId,
+          input.target,
+          `cat ${remotePath}`,
+          quietOptions,
+        );
+        if (read.exitCode !== 0 || read.timedOut) return;
+        if (read.stdout === overridden) {
+          await writeRemote(original);
+          return;
+        }
+        const current = parseClaudeLocalSettings(read.stdout);
+        if (current?.permissions.defaultMode === input.defaultMode) {
+          await writeRemote(withClaudeLocalDefaultMode(current, originalMode));
+        }
+      } catch {
+        await input.options.onLog?.("stderr", "[paperclip] Could not reset the Claude permission mode in the sandbox workspace settings.\n");
+      }
+    },
+    afterRestore: async () => {
+      const current = parseClaudeLocalSettings(await fs.readFile(localPath, "utf8").catch(() => null));
+      if (current?.permissions.defaultMode !== input.defaultMode) return;
+      await fs.writeFile(localPath, withClaudeLocalDefaultMode(current, originalMode)).catch(async () => {
+        await input.options.onLog?.("stderr", "[paperclip] Could not restore the host Claude workspace settings after the sandbox run.\n");
+      });
+    },
   };
 }
 

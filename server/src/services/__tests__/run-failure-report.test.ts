@@ -55,9 +55,8 @@ describeEmbeddedPostgres("reportRunFailure", () => {
   }, 20_000);
 
   beforeEach(() => {
-    // Unknown host values intentionally count as secrets, including short values
-    // such as "1". Keep these fixtures independent of the developer/CI environment
-    // and add secret values explicitly in the tests that exercise redaction.
+    // Keep fixtures independent of host credentials. Add credential values
+    // explicitly in the tests that exercise redaction.
     inheritedEnv = process.env;
     process.env = Object.fromEntries(
       ["PATH", "HOME", "USER", "USERNAME", "LOGNAME", "USERPROFILE", "TMPDIR", "TEMP", "TMP"]
@@ -470,9 +469,11 @@ describeEmbeddedPostgres("reportRunFailure", () => {
   it.each([
     ["no finalization fields", { finalizationPhase: undefined, finalizationReasonCode: undefined }],
     ["an earlier finalization phase", { finalizationPhase: "retryable_failure", finalizationReasonCode: undefined }],
+    ["only the adapter's resultJson", { nativeProviderFailure: undefined, finalizationPhase: undefined, finalizationReasonCode: undefined }],
   ] as const)("keeps a scheduled native capacity retry local when the run row has %s", async (_label, resultJson) => {
-    // A late terminal write can replace the finalizer's fields with an earlier
-    // resultJson. The successor created by the committed decision still proves it.
+    // The live heartbeat's failed-status write replaces the finalizer's
+    // resultJson with the adapter's copy. The successor created by the
+    // committed decision still proves the scheduled retry.
     const run = await nativeCapacityFailure({ resultJson });
     await reportRunFailure(db, run);
     expect(mockCaptureRunFailure).not.toHaveBeenCalled();
@@ -486,8 +487,7 @@ describeEmbeddedPostgres("reportRunFailure", () => {
     ["the successor belongs to another task", { retry: { contextSnapshot: { issueId: randomUUID() } } }],
     ["the run has no native task", { run: { nativeIssueId: null } }],
     ["finalization has no fields and no retry run exists", { resultJson: { finalizationPhase: undefined, finalizationReasonCode: undefined }, retry: null }],
-    ["the diagnostic is not typed capacity evidence", { resultJson: { nativeProviderFailure: { provider: "codex", category: "turn_failed" } } }],
-    ["the diagnostic is missing", { resultJson: { nativeProviderFailure: undefined } }],
+    ["the diagnostic is missing and no retry run exists", { resultJson: { nativeProviderFailure: undefined }, retry: null }],
     ["the run is legacy", { run: { runtimeMode: "legacy" } }],
     ["the run has a signal", { run: { signal: "SIGTERM" } }],
     ["the run timed out", { run: { status: "timed_out" } }],
@@ -892,6 +892,33 @@ describeEmbeddedPostgres("reportRunFailure", () => {
     expect(mockCaptureRunFailure).toHaveBeenCalledTimes(1);
   });
 
+  function aiConnectionRequiredRun(overrides: Partial<typeof heartbeatRuns.$inferSelect> = {}) {
+    return buildRun({
+      errorCode: "configuration_incomplete",
+      executionStage: "preparing",
+      resultJson: {
+        configurationIncomplete: { reason: "ai_connection_required", actionUrl: "/agents/fixture/runtime" },
+        executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+      },
+      ...overrides,
+    });
+  }
+
+  it("keeps a plugin Runner-task run without a managed AI connection actionable on the task", async () => {
+    await seedCompanyAndAgent();
+    await reportRunFailure(db, aiConnectionRequiredRun(), { phase: "setup" });
+    expect(mockCaptureRunFailure).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { executionStage: "executing" },
+    { resultJson: { configurationIncomplete: { reason: "ai_connection_required" }, executionRecovery: { kind: "bootstrap", providerWorkStarted: true } } },
+  ])("reports AI-connection-required markers without an exact pre-dispatch outcome: %j", async (overrides) => {
+    await seedCompanyAndAgent();
+    await reportRunFailure(db, aiConnectionRequiredRun(overrides), { phase: "setup" });
+    expect(mockCaptureRunFailure).toHaveBeenCalledTimes(1);
+  });
+
   function localPathConfigurationRun(overrides: Partial<typeof heartbeatRuns.$inferSelect> = {}) {
     return buildRun({
       errorCode: "workspace_validation_failed",
@@ -1091,12 +1118,45 @@ describeEmbeddedPostgres("reportRunFailure", () => {
     expect(captured).not.toHaveProperty("secretValues");
   });
 
-  it("still redacts short values from unknown host settings", async () => {
+  it("masks an inherited Bedrock credential from every failure projection", async () => {
     await seedCompanyAndAgent();
-    vi.stubEnv("FIXTURE_CUSTOM_VALUE", "1");
+    const token = "opaque-bedrock-credential";
+    vi.stubEnv("AWS_BEARER_TOKEN_BEDROCK", token);
+    const text = `upstream rejected ${token}`;
+    await reportRunFailure(db, buildRun({ error: text, resultJson: { terminalSessionFailure: { details: text } } }), {
+      error: new Error(text), adapterErrorMeta: { causeMessage: text },
+    });
+    expect(mockCaptureRunFailure).toHaveBeenCalledOnce();
+    const captured = mockCaptureRunFailure.mock.calls[0][0];
+    expect(captured.errorMessage).toBe("upstream rejected ***REDACTED***");
+    expect(captured.diagnostics.provider.details).toBe("upstream rejected ***REDACTED***");
+    expect(JSON.stringify(captured)).not.toContain(token);
+  });
 
-    await reportRunFailure(db, buildRun());
+  it("keeps run metadata and prose readable with short non-secret host settings", async () => {
+    await seedCompanyAndAgent();
+    vi.stubEnv("FIXTURE_FLAG", "1");
+    vi.stubEnv("FIXTURE_WORKERS", "2");
+    vi.stubEnv("FIXTURE_MODE", "safe");
+    vi.stubEnv("SORT_KEY", "created_at");
+    const error = "Column created_at is missing. Reconcile any uncertain external action before safely continuing this task.";
+    const run = buildRun({ error, runtimeMode: "native", driverKind: "codex_app_server", driverVersion: "phase6-v2",
+      startedAt: new Date("2026-10-19T19:18:20.617Z"), finishedAt: new Date("2026-10-19T19:21:20.385Z"),
+      runnerProfileJson: { nativeExecutionInput: { provider: { kind: "codex", model: "gpt-6.1-sol" } } },
+    });
 
+    await reportRunFailure(db, run);
+
+    expect(mockCaptureRunFailure).toHaveBeenCalledOnce();
+    const captured = mockCaptureRunFailure.mock.calls[0][0];
+    expect(captured.errorMessage).toBe(error);
+    expect(captured.diagnostics.execution).toMatchObject({ driverVersion: "phase6-v2", model: "gpt-6.1-sol",
+      startedAt: "2026-10-19T19:18:20.617Z", finishedAt: "2026-10-19T19:21:20.385Z" });
+  });
+
+  it("still masks a short declared runtime secret", async () => {
+    await seedCompanyAndAgent();
+    await reportRunFailure(db, buildRun(), { secretValues: ["1"] });
     expect(mockCaptureRunFailure.mock.calls[0][0].errorMessage)
       .toBe(`the provider process exited with code ${REDACTED_EVENT_VALUE}`);
   });

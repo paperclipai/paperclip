@@ -859,7 +859,7 @@ describe("AgentConfigForm environment selector", () => {
   });
 
   it.each(["explicit", "instance", "managed", "env-draft"])("qualifies a saved Daytona Claude agent and upgrades with its legacy turn limit (%s environment)", async mode => {
-    const environment = makeEnvironment({ id: "daytona-computer", name: "Paperclip Computer", driver: "sandbox", status: "active",
+    const environment = makeEnvironment({ id: "daytona-computer", name: "Paperclip Sandbox", driver: "sandbox", status: "active",
       config: { provider: "daytona", snapshot: "managed-snapshot" }, metadata: { managedByPaperclip: true } });
     const inventory = (qualified: boolean) => [
       { type: "claude_local", supportedRunners: qualified ? ["paperclip", "legacy"] : ["legacy"], defaultRunner: qualified ? "paperclip" : "legacy" },
@@ -917,7 +917,7 @@ describe("AgentConfigForm environment selector", () => {
   });
 
   it.each(["probe", "unsupported", "settings-changed"])("does not save after Daytona %s", async failure => {
-    const environment = makeEnvironment({ id: "daytona-computer", name: "Paperclip Computer", driver: "sandbox", status: "active",
+    const environment = makeEnvironment({ id: "daytona-computer", name: "Paperclip Sandbox", driver: "sandbox", status: "active",
       config: { provider: "daytona", snapshot: "managed-snapshot" } });
     mockAdaptersApi.list.mockResolvedValue([{ type: "claude_local", supportedRunners: ["legacy"], defaultRunner: "legacy" }, { type: "paperclip_runner", supportedRunners: ["legacy"], defaultRunner: "legacy" }]);
     let finish!: () => void;
@@ -1680,12 +1680,12 @@ describe("AgentConfigForm environment selector", () => {
     expect(selector?.textContent).toContain("Fake Sandbox · sandbox");
   });
 
-  it("labels the platform-managed instance default by name, without the driver key", async () => {
+  it.each(["Paperclip Sandbox", "Paperclip Computer", "Custom managed environment"])("labels the platform-managed instance default %s by its configured name", async (name) => {
     mockInstanceSettingsApi.get.mockResolvedValue({ defaultEnvironmentId: "managed-1" });
     const result = await renderForm([
       makeEnvironment({
         id: "managed-1",
-        name: "Paperclip Computer",
+        name,
         driver: "sandbox",
         config: { provider: "daytona" },
         metadata: { managedByPaperclip: true },
@@ -1695,10 +1695,23 @@ describe("AgentConfigForm environment selector", () => {
 
     const selector = await environmentOptions(result.container);
 
-    expect(selector?.textContent).toContain("Default: Paperclip Computer");
-    expect(selector?.textContent).toContain("Paperclip Computer");
+    expect(selector?.textContent).toContain(`Default: ${name}`);
+    expect(selector?.textContent).toContain(name);
     expect(selector?.textContent).not.toContain("(sandbox)");
     expect(selector?.textContent).not.toContain("· sandbox");
+  });
+
+  it("uses Paperclip Sandbox while the managed default environment is unavailable", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableEnvironments: true, enableManagedSandboxOnly: true });
+    mockInstanceSettingsApi.get.mockResolvedValue({ defaultEnvironmentId: null });
+    const result = await renderForm([
+      makeEnvironment({ id: "other-sandbox", name: "Other sandbox", driver: "sandbox", config: { provider: "daytona" } }),
+    ]);
+    roots.push(result.root);
+
+    const selector = await environmentOptions(result.container);
+    expect(selector?.textContent).toContain("Default: Paperclip Sandbox");
+    expect(selector?.textContent).not.toContain("Paperclip Computer");
   });
 
   it("renders non-local adapter config fields in the Adapter card", async () => {
@@ -3435,6 +3448,25 @@ describe("AgentConfigForm environment selector", () => {
 
     expect(findButton(container, "Cancel")).toBeFalsy();
     expect(mockAgentsApi.cancelClaudeSetupTokenLogin).not.toHaveBeenCalled();
+  });
+  it.each(["claude_local", "codex_local"])("offers inline retry for %s when its host has no retry footer", async adapterType => {
+    const claude = adapterType === "claude_local";
+    const statusApi = claude ? mockAgentsApi.getClaudeSetupTokenLoginStatus : mockAgentsApi.getAdapterAuthLoginStatus;
+    statusApi.mockResolvedValueOnce({ sessionId: claude ? "claude-session-1" : "session-1", status: "failed", expiresAt: null });
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    roots.push(root);
+    await act(async () => renderFormView(root, createFormQueryClient(),
+      <AdapterLoginPanel companyId="company-1" adapterType={adapterType} environmentId="sandbox-1" chrome="onboarding" autoStart />));
+    await flushUntil(() => Boolean(findButton(container, "Retry sign-in")));
+    expect(container.textContent).toContain("Sign-in didn’t finish");
+    const startApi = claude ? mockAgentsApi.startClaudeSetupTokenLogin : mockAgentsApi.startAdapterAuthLogin;
+    startApi.mockResolvedValueOnce({ sessionId: "retry-session", status: "starting", expiresAt: null });
+    await clickByText(container, "Retry sign-in");
+    await flushUntil(() => (container.textContent ?? "").includes("Sign in to"));
+    expect(startApi).toHaveBeenCalledTimes(2);
+    expect(findButton(container, "Retry sign-in")).toBeUndefined();
   });
   it("offers an apply-existing affordance when the status route reports a stored value", async () => {
     mockAgentsApi.getClaudeOAuthTokenStatus.mockResolvedValue({

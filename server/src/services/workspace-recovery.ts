@@ -10,7 +10,7 @@ import { beginIdleTrackedWork } from "./task-admission.js";
 import { writeEnvironmentCleanup } from "./environment-cleanup-notifications.js";
 import { resumePreservedResultFinalization } from "./preserved-result-finalization.js";
 import { reclaimInactiveNativeProviderCache } from "./native-runtime/retained-provider-cache.js";
-import { REMOTE_WORKSPACE_SANDBOX_DISK_FULL } from "./remote-workspace-transport.js";
+import { REMOTE_WORKSPACE_SANDBOX_DISK_FULL, sandboxProviderFailureLabel } from "./remote-workspace-transport.js";
 import { and, asc, eq, gt, inArray, ne, notInArray, or, sql } from "drizzle-orm";
 import { agentWakeupRequests, environmentLeases, executionWorkspaces, heartbeatRuns, issues, issueRecoveryActions, nativeRunFinalizations, workspaceOperations, type Db } from "@paperclipai/db";
 import { remoteWorkspaceRunReferenceSchema, type Environment, type EnvironmentLease } from "@paperclipai/shared";
@@ -420,12 +420,19 @@ export async function recoverRetainedWorkspace(input: Source & { db: Db; environ
             ? new SystemRecoveryFailure("source_unavailable", "use_alternative_strategy")
             : new SystemRecoveryFailure(current!.phase === "verify_execution" ? "provider_unavailable" : "export_interrupted", "retry_transient");
       const retryAfterAt = (error as { retryAfterAt?: unknown })?.retryAfterAt;
+      // A generic transient code says only that the step can be retried. Keep
+      // why it failed in closed labels so a repeated deferral is diagnosable.
+      // A classified failure already names its subsystem.
+      const generic = !(error instanceof SystemRecoveryFailure) && failure.retryClass === "retry_transient"
+        && (failure.code === "provider_unavailable" || failure.code === "export_interrupted");
+      const cause = generic ? sandboxProviderFailureLabel(error) : undefined;
       await updateSystemRecovery(db, input, current!, failSystemRecovery(current!, failure, {
         ...(typeof retryAfterAt === "number" && Number.isFinite(retryAfterAt) ? { retryAfterAt } : {}),
+        ...(cause ? { cause } : {}),
       }));
       if (failure.retryClass === "recheck_evidence" && ["agent_stop_unconfirmed", "copyback_stop_unconfirmed"].includes(failure.code))
         await recheckStoppedWorkspaceRecovery(db, input, false);
-      logger.warn({ err: error, runId: input.runId, failureCode: failure.code, phase: current!.phase }, "Workspace preservation deferred; source retained");
+      logger.warn({ err: error, runId: input.runId, failureCode: failure.code, failureCause: cause?.label, phase: current!.phase }, "Workspace preservation deferred; source retained");
     } finally { clearInterval(observer); await observing; }
   };
   const owned = await withNativeWorkspaceFinalizationOwnership({ db, companyId: input.companyId, runId: input.runId,
@@ -489,10 +496,16 @@ export function retainedWorkspaceCandidates(db: Db, cursor?: string, unfinishedO
     and ${agentWakeupRequests.status} = 'deferred_issue_execution' and ${agentWakeupRequests.requestedByActorType} = 'user'
     and ${agentWakeupRequests.payload}->>'issueId' = ${issueRecoveryActions.sourceIssueId}::text)`;
   const interruptedPreparation = sql`(${heartbeatRuns.runtimeMode} = 'legacy'
-    and ${heartbeatRuns.status} = 'interrupted'
+    and (${heartbeatRuns.status} = 'interrupted' or (${heartbeatRuns.status} = 'failed'
+      and ${heartbeatRuns.errorCode} = 'process_lost'
+      and ${heartbeatRuns.resultJson}#>>'{executionRecovery,kind}' = 'bootstrap'
+      and ${heartbeatRuns.resultJson}#>'{executionRecovery,providerWorkStarted}' = 'false'::jsonb))
     and ${heartbeatRuns.runtimeModeResolvedAt} is null and ${heartbeatRuns.executionStage} = 'preparing'
     and ${heartbeatRuns.runnerProfileJson}#>>'{adapterDispatch,adapterType}' = 'paperclip_runner'
-    and ${issueRecoveryActions.evidence}#>>'{automaticRecovery,replay}' = 'blocked'
+    and (${issueRecoveryActions.evidence}#>>'{automaticRecovery,replay}' = 'blocked'
+      or (${issueRecoveryActions.evidence}#>>'{automaticRecovery,replay}' = 'allowed'
+        and ${issueRecoveryActions.evidence}->>'bootstrapPreparationSettledAt' is not null
+        and coalesce(${issueRecoveryActions.evidence}->>'bootstrapPreparationContinuation', 'pending') in ('pending', 'deferred')))
     and exists (select 1 from ${issues} where ${issues.companyId} = ${heartbeatRuns.companyId}
       and ${issues.id} = ${issueRecoveryActions.sourceIssueId} and ${issues.assigneeAgentId} = ${heartbeatRuns.agentId}
       and ${issues.status} in ('todo', 'in_progress', 'in_review', 'blocked')
@@ -505,7 +518,10 @@ export function retainedWorkspaceCandidates(db: Db, cursor?: string, unfinishedO
         then (${issueRecoveryActions.evidence}->>'runId')::uuid end`)))
     .where(and(inArray(heartbeatRuns.status, terminal),
       workspaceRecoverySourceEligible(true),
-      unfinishedOnly ? sql`${issueRecoveryActions.evidence}#>>'{systemRecovery,state}' in ('scheduled', 'running', 'awaiting_evidence')` : undefined,
+      unfinishedOnly ? sql`(${issueRecoveryActions.evidence}#>>'{systemRecovery,state}' in ('scheduled', 'running', 'awaiting_evidence')
+        or (${issueRecoveryActions.evidence}#>>'{systemRecovery,state}' = 'complete'
+          and ${issueRecoveryActions.evidence}->>'bootstrapPreparationSettledAt' is not null
+          and coalesce(${issueRecoveryActions.evidence}->>'bootstrapPreparationContinuation', 'pending') = 'pending'))` : undefined,
       obligationsOnly ? sql`(${issueRecoveryActions.evidence}#>>'{systemRecovery,state}' in ('scheduled', 'running', 'awaiting_evidence')
         or (${issueRecoveryActions.evidence}#>>'{systemRecovery,state}' = 'complete' and (${cleanup} or ${interruptedPreparation})) or ${waitingInput})` : undefined,
       sql`(${issueRecoveryActions.evidence}#>>'{systemRecovery,state}' in ('scheduled', 'running', 'awaiting_evidence', 'complete', 'exhausted')

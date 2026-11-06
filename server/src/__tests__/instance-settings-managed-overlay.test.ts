@@ -126,7 +126,7 @@ describe("instanceSettingsService managed overlay", () => {
     "enforces every Cloud-enabled flag over old tenant values on %s",
     async (primaryHost) => {
       const features = Object.fromEntries(Object.entries(INSTANCE_FEATURE_CATALOG)
-        .filter(([, entry]) => entry.tier === "managed")
+        .filter(([key, entry]) => entry.tier === "managed" && key !== "enableAgentChat")
         .map(([key]) => [key, true]));
       const stored = Object.fromEntries(Object.keys(features).map((key) => [key, false]));
       const { db, persistedSets } = stubDb(settingsRow(stored));

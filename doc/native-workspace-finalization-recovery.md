@@ -159,8 +159,12 @@ checks under short coordinator, issue and run row locks, atomically with the
 owner claim. The task must still be open, assigned to the run or its authoritative
 review participant, and bound to that running native execution and accepted
 result. A different checkout, newer execution or queued/running legacy execution
-prevents takeover. Publication checks repeat this validation; row locks are never
-held across physical copyback I/O.
+prevents takeover. A later wake for the same assignee that has never started,
+such as the answer to the run's question, does not. Its claim waits for this
+run's execution lock, so it waits for this copyback. Counting it would block both
+runs. Another agent's run and a recovery-action wake still prevent takeover.
+Publication checks repeat this validation, so a wake that starts during copyback
+stops publication. Row locks are never held across physical copyback I/O.
 
 The harness endpoint is `POST /v1/tenant/workspace-worker-stop`. The fleet-wide
 server token authorizes a read request, never stop evidence: responses must be
