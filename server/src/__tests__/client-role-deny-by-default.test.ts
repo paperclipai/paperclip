@@ -379,13 +379,25 @@ describe("no company-scope decision bypasses the role check", () => {
 
   /**
    * Company-scope reads that are deliberately role-blind, with the reason.
-   * None of them returns company data to the caller.
+   * Most build or carry an actor and return no company data at all. The two
+   * session-bootstrap entries are the exception and are called out below:
+   * they return the same company rows as `GET /companies`, which is itself
+   * deliberately role-blind because a client has to see the company it
+   * belongs to in order to reach a portal inside it.
    */
   const ROLE_BLIND_BY_DESIGN: Record<string, string> = {
     // Builds the actor in the first place.
     "middleware/auth.ts": "derives companyIds from memberships",
     // Request body, not an actor scope.
     "routes/access.ts": "reads companyIds from the request body",
+    // GET /get-session picks a first-paint projection from the caller's own
+    // scope. It duplicates GET /companies?scope=accessible plus the caller's
+    // own board access, so it is role-blind for the same reason that list is.
+    "routes/auth.ts": "session bootstrap projection of the caller's own scope",
+    // Builds that projection: filters the company list to the caller's own
+    // companyIds and returns only the caller's own access row. See the
+    // payload note under this object.
+    "services/board-bootstrap.ts": "projects the caller's own scope for first paint",
     // Chooses which company a session is scoped to at login.
     "services/board-auth.ts": "session company selection",
     // Identity continuity for a handoff; returns no company data.
@@ -397,6 +409,20 @@ describe("no company-scope decision bypasses the role check", () => {
     // Wires the resolver; the deny is applied in live-events-ws.ts.
     "index.ts": "passes the cloud actor through to the websocket upgrade",
   };
+
+  /**
+   * Payload note, recorded because it narrows what "role-blind is fine here"
+   * means. A company row from `companyService.list()` is wider than the
+   * company's identity: besides id, name, description and logo it carries
+   * `budgetMonthlyCents`, `spentMonthlyCents`, `interactionResolverGovernance`
+   * and `defaultResponsibleUserId`. Every active member already receives that
+   * row from `GET /companies` on master, `viewer` included, so this is not a
+   * client-specific hole and not a regression from this change -- but a
+   * principal with zero grants arguably should see the name and nothing more.
+   * Narrowing the row for a client principal is a deliberate follow-up rather
+   * than part of this change, because it alters a response shape every staff
+   * role reads.
+   */
 
   async function sourceFiles(dir: string): Promise<string[]> {
     const entries = await readdir(dir, { withFileTypes: true });
@@ -549,6 +575,14 @@ describe("the viewer-shaped authority check is a known, pinned gap", () => {
     "routes/dot-runner.ts",
     "routes/issues.ts",
     "routes/muse.ts",
+    // Arrived in master after this branch opened. `canChangeResponsibleUser`
+    // mirrors assertCompanyAccess's write restriction on a GET route, so its
+    // `=== "viewer"` reads every other role as able to write. Gated subset:
+    // the only caller is GET /routines/:id, behind `getAccessibleResource`,
+    // which this change makes 404 for a client -- and the predicate ends in
+    // `access.canUser(..., "tasks:assign")`, which a client fails anyway on
+    // an empty grant set.
+    "routes/routines.ts",
     "routes/tool-access.ts",
     "routes/tool-gateway.ts",
     "services/authorization.ts",
