@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { parseCommand, parseReplayRef, waveIdFor } from "./config.js";
-import { K4_HOLD_RANGE_MS, createRng, observedFaultSchedule, planTasks, planWave, replayWave, taskFaultSchedule } from "./scheduler.js";
+import { K4_HOLD_RANGE_MS, STORM_GAP_RANGE_MS, createRng, observedFaultSchedule, planStorm, planTasks, planWave, replayWave,
+  stormActive, stormFaultDue, taskFaultSchedule, type StormState } from "./scheduler.js";
 import type { WaveOptions } from "./types.js";
 import { workloadDefinitions } from "./workloads.js";
 
@@ -140,5 +141,73 @@ describe("Daytona options", () => {
     expect(() => parseCommand(["--env", "daytona", "--daytona-image", image, "--concurrency", "11"])).toThrow(/exceeds the Daytona vCPU budget of 40/);
     expect(() => parseCommand(["--env", "daytona", "--daytona-image", "ghcr.io/x/y:latest"])).toThrow(/immutable runner image/);
     expect(() => parseCommand(["--env", "local", "--daytona-cpu", "2"])).toThrow(/only to --env daytona/);
+  });
+});
+
+describe("K13 restart storm", () => {
+  const stormOptions: WaveOptions = { ...options, faults: ["K1", "K2", "K4", "K6"], tasks: 40, concurrency: 6, stormMinutes: 60 };
+
+  it("plans a seeded storm of 2–4 minute gaps drawn from the chosen faults that fills the duration", () => {
+    const storm = planStorm(42, 60, stormOptions.faults);
+    expect(planStorm(42, 60, stormOptions.faults)).toEqual(storm);
+    expect(storm.durationMs).toBe(3_600_000);
+    const gaps = storm.faults.map(fault => fault.gapMs);
+    expect(gaps.every(gap => gap >= STORM_GAP_RANGE_MS[0] && gap <= STORM_GAP_RANGE_MS[1])).toBe(true);
+    expect(gaps.reduce((sum, gap) => sum + gap, 0)).toBeGreaterThanOrEqual(storm.durationMs);
+    expect(gaps.slice(0, -1).reduce((sum, gap) => sum + gap, 0)).toBeLessThan(storm.durationMs);
+    for (const fault of storm.faults) {
+      expect(stormOptions.faults).toContain(fault.kind);
+      if (fault.kind === "K4") expect(fault.holdMs).toBeGreaterThanOrEqual(K4_HOLD_RANGE_MS[0]);
+      else expect(fault.holdMs).toBe(0);
+    }
+    expect(new Set(storm.faults.map(fault => fault.kind)).size).toBeGreaterThan(1);
+  });
+
+  it("gives storm tasks no fault of their own", () => {
+    const plan = planWave("w-20261106T101112-s42", stormOptions);
+    expect(plan.storm?.faults.length).toBeGreaterThan(10);
+    expect(plan.tasks).toHaveLength(40);
+    for (const task of plan.tasks) {
+      expect(task.fault).toBe("K13");
+      expect(taskFaultSchedule(task)).toEqual([]);
+    }
+    expect(planWave("w-20261106T101112-s42", options).storm).toBeUndefined();
+    expect(() => planTasks({ ...stormOptions, triggers: ["comment"], workloads: ["C1"] })).toThrow(/own clock/);
+  });
+
+  it("fires each fault after its gap from the previous fault settling, and stops when the storm ends", () => {
+    const storm = { durationMs: 600_000, faults: [{ kind: "K1" as const, holdMs: 0, gapMs: 120_000 },
+      { kind: "K4" as const, holdMs: 200_000, gapMs: 180_000 }, { kind: "K2" as const, holdMs: 0, gapMs: 120_000 }] };
+    const state: StormState = { startedAt: 0, fired: 0, lastSettledAt: null };
+    expect(stormFaultDue(storm, state, 119_999)).toBeNull();
+    expect(stormFaultDue(storm, state, 120_000)).toEqual(storm.faults[0]);
+    state.fired = 1; state.lastSettledAt = 150_000;
+    expect(stormFaultDue(storm, state, 329_999)).toBeNull();
+    expect(stormFaultDue(storm, state, 330_000)).toEqual(storm.faults[1]);
+    // The K4 hold settles late; the next gap runs from then, not from when it fired.
+    state.fired = 2; state.lastSettledAt = 560_000;
+    expect(stormActive(storm, state, 599_999)).toBe(true);
+    expect(stormFaultDue(storm, state, 599_999)).toBeNull();
+    expect(stormActive(storm, state, 600_000)).toBe(false);
+    expect(stormFaultDue(storm, state, 700_000)).toBeNull();
+    state.fired = 3;
+    expect(stormFaultDue({ ...storm, durationMs: 10_000_000 }, state, 9_000_000)).toBeNull();
+  });
+
+  it("parses --storm-minutes with storm defaults and keeps replays storm-free", () => {
+    const parsed = parseCommand(["--storm-minutes", "60", "--concurrency", "6", "--adapters", "codex,claude,opencode", "--seed", "5"]);
+    if (parsed.mode !== "wave") throw new Error("expected wave");
+    expect(parsed.options).toMatchObject({ stormMinutes: 60, faults: ["K1", "K2", "K4", "K6"], tasks: 200, concurrency: 6 });
+    const plain = parseCommand(["--seed", "5"]);
+    if (plain.mode !== "wave") throw new Error("expected wave");
+    expect(plain.options).toMatchObject({ faults: ["K1", "K2", "K4"], tasks: 8 });
+    expect(plain.options.stormMinutes).toBeUndefined();
+    expect(() => parseCommand(["--storm-minutes", "0"])).toThrow(/between 1 and 240/);
+    expect(() => parseCommand(["--replay", "w-20261106T101112-s42/t03", "--storm-minutes", "5"])).toThrow(/reproduces the saved plan/);
+    const plan = planWave("w-20261106T101112-s42", stormOptions);
+    const replay = replayWave(plan, { waveId: plan.waveId, taskId: "t02" }, 1, {}, [{ kind: "K6", holdMs: 0, atMs: 90_000 }]);
+    expect(replay.options.stormMinutes).toBeUndefined();
+    expect(replay.storm).toBeUndefined();
+    expect(taskFaultSchedule(replay.tasks[0]!)).toEqual([{ kind: "K6", holdMs: 0, atMs: 90_000 }]);
   });
 });

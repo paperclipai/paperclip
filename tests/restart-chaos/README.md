@@ -34,6 +34,25 @@ A replay inherits the masks saved in the source wave's `plan.json`;
 Each fault receipt records the host 1-minute load average (`loadAvg1m`); treat
 timeout failures above about 16 as load-suspect.
 
+## Restart storm (K13, `--storm-minutes`)
+
+```sh
+node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/main.ts --env local \
+  --adapters codex,claude,opencode --concurrency 6 --storm-minutes 60 --seed 7
+```
+
+A storm wave fires faults on its own seeded clock instead of one fault per
+task. Each fault is drawn from `--faults` (default K1, K2, K4, K6) and fires
+2–4 minutes after the previous one settled (server ready), so a K4 hold never
+eats the next gap. Each fault hits every task in flight. While the storm lasts
+the harness launches a new task whenever one rests, keeping `--concurrency`
+in flight; `--tasks` (default 200) is only the pool. When the storm ends no
+new task or fault starts, the in-flight tasks drain to rest or their deadline,
+and only launched tasks are graded. Storm tasks show fault `K13` in the ledger;
+`storm_fault`, `storm_started` and `storm_ended` are in the timeline and the
+receipts are in `faults.json`. A replay of a storm task fires the faults that
+crossed it, without a new storm. Only `--triggers time` applies.
+
 ## Daytona (`--env daytona`)
 
 The control plane stays local; agent runs execute in Daytona sandboxes from an
