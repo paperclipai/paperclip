@@ -12,6 +12,8 @@ vi.mock("@/lib/artifact-card-data", async (importOriginal) => ({
   loadArtifactCsv: vi.fn(),
 }));
 
+(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+
 describe("CSV preview consent", () => {
   it("does not fetch any CSV until its preview is requested", async () => {
     const load = vi
@@ -84,5 +86,67 @@ describe("CSV preview consent", () => {
       container.remove();
       vi.clearAllMocks();
     }
+  });
+});
+
+
+describe("inline patch attachment preview", () => {
+  const text = "--- a/file\n+++ b/file\n@@ -1 +1 @@\n-old\n+<script>new</script>\n";
+  async function mount(overrides: Partial<React.ComponentProps<typeof IssueArtifactFile>> = {}) {
+    const container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await act(async () => root.render(<QueryClientProvider client={client}><IssueArtifactFile
+      id="patch" attachmentId="patch" title="Fix preview" summary="" author="" updatedAt="Today"
+      filename="fix.patch" contentType="application/octet-stream" byteSize={100}
+      contentPath="/api/attachments/patch/content" downloadPath="/api/attachments/patch/content?download=1"
+      {...overrides}
+    /></QueryClientProvider>));
+    return { container, cleanup: async () => { await act(async () => root.unmount()); client.clear(); container.remove(); vi.unstubAllGlobals(); } };
+  }
+
+  it.each([
+    { filename: "fix.patch", contentType: "application/octet-stream" },
+    { filename: "download", contentType: "text/x-diff" },
+  ])("loads and highlights $filename in the real card", async (overrides) => {
+    const fetch = vi.fn().mockResolvedValue(new Response(text)); vi.stubGlobal("fetch", fetch);
+    const { container, cleanup } = await mount(overrides);
+    try {
+      await vi.waitFor(() => expect(container.querySelector('[data-patch-line="add"]')).not.toBeNull());
+      expect(container.querySelector("pre")?.textContent).toBe(text);
+      expect(container.querySelector("script")).toBeNull();
+      expect(container.querySelector('a[download]')?.getAttribute("href")).toBe("/api/attachments/patch/content?download=1");
+      expect(fetch).toHaveBeenCalledWith("/api/attachments/patch/content", expect.objectContaining({ credentials: "same-origin", redirect: "error", signal: expect.any(AbortSignal) }));
+    } finally { await cleanup(); }
+  });
+
+  it.each([
+    { contentPath: "https://example.com/fix.patch" },
+    { byteSize: 512 * 1024 + 1 },
+    { filename: "notes.txt", contentType: "text/plain" },
+  ])("keeps the download fallback without fetching ineligible source %j", async (overrides) => {
+    const fetch = vi.fn(); vi.stubGlobal("fetch", fetch);
+    const { container, cleanup } = await mount(overrides);
+    try {
+      expect(fetch).not.toHaveBeenCalled();
+      expect(container.querySelector('a[download]')).not.toBeNull();
+      expect(container.querySelector('[data-patch-line]')).toBeNull();
+    } finally { await cleanup(); }
+  });
+
+  it("keeps download after a load failure and retries the patch preview", async () => {
+    const fetch = vi.fn().mockRejectedValueOnce(new Error("Patch preview failed")).mockResolvedValueOnce(new Response(text));
+    vi.stubGlobal("fetch", fetch);
+    const { container, cleanup } = await mount();
+    try {
+      await vi.waitFor(() => expect(container.textContent).toContain("Patch preview failed"));
+      expect(container.querySelector('a[download]')).not.toBeNull();
+      const retry = Array.from(container.querySelectorAll("button")).find(button => button.textContent?.includes("Retry"));
+      expect(retry).toBeDefined();
+      await act(async () => retry!.click());
+      await vi.waitFor(() => expect(container.querySelector('[data-patch-line="add"]')).not.toBeNull());
+      expect(fetch).toHaveBeenCalledTimes(2);
+    } finally { await cleanup(); }
   });
 });

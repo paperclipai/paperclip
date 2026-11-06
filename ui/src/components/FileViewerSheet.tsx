@@ -365,6 +365,7 @@ export function FileContentViewer({ content, highlightedLine, onLoaded, previewM
               ref={isHighlighted ? highlightedLineRef : undefined}
               data-line-number={lineNumber}
               data-patch-line={patchLineKinds?.[index]}
+              data-line-selected={isHighlighted || undefined}
               className={cn(
                 "grid grid-cols-(--gtc-5)",
                 patchLineKinds && "paperclip-patch-line",

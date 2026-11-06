@@ -5331,3 +5331,5 @@ span.paperclip-patch-line { display: block; }
 .paperclip-patch-line[data-patch-line="skip"] { color: var(--patch-meta-fg); }
 
 .paperclip-patch-preview .paperclip-patch-line { overflow: hidden; text-overflow: ellipsis; white-space: pre; }
+
+.paperclip-patch-line[data-line-selected] { background: var(--code-highlight-bg-resolved); }

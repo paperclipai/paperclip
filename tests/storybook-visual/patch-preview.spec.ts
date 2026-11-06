@@ -27,6 +27,17 @@ for (const theme of ["light", "dark"]) {
         for (const pre of await page.locator("main pre").all()) {
           expect(await pre.evaluate((node) => node.scrollWidth <= node.clientWidth + 1)).toBe(true);
         }
+        if (story === "workspace-tab") {
+          const selected = page.locator('[data-line-selected]');
+          await expect(selected).toHaveAttribute("data-line-number", "8");
+          const ordinaryAdded = page.locator('[data-patch-line="add"]:not([data-line-selected])').first();
+          expect(await selected.evaluate((node) => getComputedStyle(node).backgroundColor)).not.toBe(await ordinaryAdded.evaluate((node) => getComputedStyle(node).backgroundColor));
+        }
+        if (story === "document") {
+          await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
+          await page.getByRole("button", { name: "Copy code", exact: true }).click();
+          await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(await page.locator("main pre code").textContent());
+        }
         await expect(page.locator("main script")).toHaveCount(0);
         await page.screenshot({ path: testInfo.outputPath(`${story}-${theme}-${width}.png`), fullPage: true });
       });

@@ -655,6 +655,7 @@ function CodeBlock({
   const code = Array.isArray(children) ? children.find(isValidElement) : children;
   const patchCode = isValidElement<{ className?: string; children?: ReactNode }>(code)
     && /\blanguage-(diff|patch)\b/i.test(code.props.className ?? "");
+  const patchText = patchCode ? flattenText(code.props.children) : null;
   const [copied, setCopied] = useState(false);
   const [failed, setFailed] = useState(false);
   const [wrapLines, setWrapLines] = useState(false);
@@ -664,7 +665,7 @@ function CodeBlock({
   useEffect(() => () => clearTimeout(timerRef.current), []);
 
   const handleCopy = useCallback(async () => {
-    const text = preRef.current?.innerText ?? flattenText(children);
+    const text = patchText ?? preRef.current?.innerText ?? flattenText(children);
     try {
       await copyTextToClipboard(text);
       setFailed(false);
@@ -678,7 +679,7 @@ function CodeBlock({
       setCopied(false);
       setFailed(false);
     }, 1500);
-  }, [children]);
+  }, [children, patchText]);
 
   const copyLabel = failed ? "Copy failed" : copied ? "Copied!" : "Copy";
   const wrapLabel = wrapLines ? "Unwrap lines" : "Wrap lines";
@@ -700,7 +701,7 @@ function CodeBlock({
             : null),
         }}
       >
-        {patchCode ? <code className="language-diff"><PatchLines text={flattenText(code.props.children)} /></code> : children}
+        {patchText !== null ? <code className="language-diff"><PatchLines text={patchText} /></code> : children}
       </pre>
       <div
         className="paperclip-markdown-codeblock-actions"

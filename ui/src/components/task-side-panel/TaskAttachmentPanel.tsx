@@ -15,33 +15,8 @@ import { isHtmlPreview } from "@/lib/html-preview";
 import { attachmentDownloadPath, isMarkdownAttachment, isTextAttachment } from "@/lib/issue-attachments";
 import { queryKeys } from "@/lib/queryKeys";
 
-export const TEXT_PREVIEW_MAX_BYTES = 512 * 1024;
-
-/** Bound the actual response, not just producer-supplied attachment metadata. */
-export async function readTextPreview(response: Response) {
-  // Carry the status so the shared classification can tell an outage (503) from a real failure.
-  if (!response.ok) throw Object.assign(new Error(`Could not load file (${response.status}).`), { status: response.status });
-  if (!response.body) throw new Error("The file response is empty.");
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder("utf-8", { fatal: true });
-  let bytes = 0;
-  let text = "";
-  try {
-    while (true) {
-      const chunk = await reader.read();
-      if (chunk.done) break;
-      bytes += chunk.value.byteLength;
-      if (bytes > TEXT_PREVIEW_MAX_BYTES) throw new Error("This file is too large to preview. Download it instead.");
-      text += decoder.decode(chunk.value, { stream: true });
-    }
-    text += decoder.decode();
-    if (text.includes("\0")) throw new Error("This file contains binary data. Download it instead.");
-    return text;
-  } finally {
-    await reader.cancel();
-    reader.releaseLock();
-  }
-}
+import { readTextPreview, TEXT_PREVIEW_MAX_BYTES } from "@/lib/text-preview";
+export { readTextPreview, TEXT_PREVIEW_MAX_BYTES } from "@/lib/text-preview";
 
 export function TextAttachmentPreview({ title, text, markdown, html = false, csv = false, patch = isPatchFile(title), downloadUrl }: {
   title: string;

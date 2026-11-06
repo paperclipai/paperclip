@@ -21,6 +21,14 @@ describe("patch source", () => {
     expect(markup.replace(/<[^>]*>/g, "").replaceAll("&lt;", "<").replaceAll("&gt;", ">")).toBe(source);
   });
 
+  it("distinguishes later file headers in a unified patch without git separators", () => {
+    const source = "--- a/one\n+++ b/one\n@@ -1 +1 @@\n--- old\n+++ new\n--- a/two\n+++ b/two\n@@ -0,0 +1 @@\n+new file\n";
+    const markup = renderToStaticMarkup(<PatchLines text={source} />);
+    expect(markup.match(/data-patch-line="add"/g)).toHaveLength(2);
+    expect(markup.match(/data-patch-line="remove"/g)).toHaveLength(1);
+    expect(markup.match(/data-patch-line="skip"/g)).toHaveLength(4);
+  });
+
   it("renders all lines in a large patch", () => {
     const source = "@@ -1 +1,2000 @@\n-old\n" + "+new\n".repeat(2000);
     const markup = renderToStaticMarkup(<PatchLines text={source} />);

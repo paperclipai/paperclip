@@ -1,5 +1,8 @@
+import { useState } from "react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { IssueArtifactFile } from "@/components/artifacts/IssueArtifactCard";
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { expect, within, userEvent } from "storybook/test";
+import { expect, within, userEvent, waitFor } from "storybook/test";
 import { DocumentCard } from "@/components/artifacts/RichArtifactCards";
 import { TextAttachmentPreview } from "@/components/task-side-panel/TaskAttachmentPanel";
 import { FileContentViewer } from "@/components/FileViewerSheet";
@@ -16,8 +19,18 @@ const meta = {
       status: "current",
       implementation: "production",
       boundary: "fixtures",
-      notes: "Production document cards, attachment and workspace source views, and Markdown. Static patch data includes long unbroken lines, multiple files, and literal HTML. No live file fetch or save.",
+      notes: "Production file-loading attachment card, document cards, attachment and workspace source views, and Markdown. Simulated attachment fetch and static patch data includes long unbroken lines, multiple files, and literal HTML. No live storage or save.",
     },
+  },
+  beforeEach: () => {
+    const originalFetch = window.fetch;
+    const fixtureFetch: typeof window.fetch = async (input, init) => {
+      const path = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url, window.location.origin).pathname;
+      if (path === "/api/attachments/patch-story/content") return new Response(patchText, { headers: { "content-type": "application/octet-stream" } });
+      return originalFetch(input, init);
+    };
+    window.fetch = fixtureFetch;
+    return () => { if (window.fetch === fixtureFetch) window.fetch = originalFetch; };
   },
   decorators: [(Story) => <main className="min-h-screen bg-background p-4 text-foreground"><Story /></main>],
 } satisfies Meta;
@@ -29,11 +42,19 @@ const card = {
   author: "Engineer", updatedAt: "Just now", filename: "preview-layout.patch", body: patchText,
 };
 
+function InlineAttachment() {
+  const [client] = useState(() => new QueryClient({ defaultOptions: { queries: { retry: false } } }));
+  return <QueryClientProvider client={client}><div className="w-full max-w-md"><IssueArtifactFile
+    {...card} id="patch-story" attachmentId="patch-story" contentType="application/octet-stream"
+    contentPath="/api/attachments/patch-story/content" downloadPath="/api/attachments/patch-story/content?download=1" byteSize={patchText.length}
+  /></div></QueryClientProvider>;
+}
+
 export const InlinePatch: Story = {
-  render: () => <div className="w-full max-w-md"><DocumentCard {...card} /></div>,
+  render: () => <InlineAttachment />,
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expect(canvasElement.querySelector('[data-patch-line="add"]')).not.toBeNull();
+    await waitFor(() => expect(canvasElement.querySelector('[data-patch-line="add"]')).not.toBeNull());
     await userEvent.click(canvas.getByRole("button", { name: "Read document" }));
     const dialog = within(canvasElement.ownerDocument.body).getByRole("dialog");
     await expect(dialog.querySelector("pre")?.textContent).toBe(patchText);

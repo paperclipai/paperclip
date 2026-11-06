@@ -375,6 +375,7 @@ function Markdown({ body, preview = false }: { body: string; preview?: boolean }
 }
 
 export interface DocumentCardProps extends ArtifactIdentity {
+  patch?: boolean;
   filename: string;
   revision?: number | null;
   body: string;
@@ -383,7 +384,7 @@ export interface DocumentCardProps extends ArtifactIdentity {
   actions?: ReactNode;
 }
 export function DocumentCard(props: DocumentCardProps) {
-  const patch = isPatchFile(props.filename);
+  const patch = props.patch ?? isPatchFile(props.filename);
   const content = (body: string, preview = false) => patch
     ? <pre className={preview
       ? "paperclip-patch-preview m-0 min-w-0 overflow-hidden whitespace-pre font-mono text-xs leading-5"
