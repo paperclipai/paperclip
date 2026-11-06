@@ -1227,7 +1227,7 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
 
     if (!committedBudgetCancellation && !options.expectedStatus && options.resultJson?.cancelledByActorType === "user") {
       if (quotaLineage.has(runId) || quotaLineage.size >= 100) throw conflict("Invalid quota replacement lineage");
-      if (run.issueId && isLegacyQuotaPrestartStopCandidate(run)) {
+      if (isLegacyQuotaPrestartStopCandidate(run)) {
         const actor = options.cancellationRequestedByUserId ?? (typeof options.resultJson?.cancelledByUserId === "string" ? options.resultJson.cancelledByUserId : null);
         const correlation = { companyId: run.companyId, runId, requestId: options.cancellationRequestId, userId: actor };
         const legacyStop = await fenceLegacyQuotaPrestartStop(db, { ...correlation, issueId: run.issueId });

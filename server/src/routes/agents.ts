@@ -3203,7 +3203,7 @@ export function agentRoutes(
         let runtime: ReturnType<typeof poolMemberRuntimeConfig>;
         try {
           runtime = poolMemberRuntimeConfig(member, adapterType);
-          assertPoolAdapterPolicyCompatible(config, adapterType, runtime.adapterType);
+          assertPoolAdapterPolicyCompatible(config, adapterType, runtime.adapterType, runtime.config);
         } catch { continue; }
         compatible = true;
         const allowUninstalledShared = newAgent && await canInstallSharedAiConnectionForNewAgent(db, req, companyId, member.binding);

@@ -514,6 +514,18 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
     expect((await db.select().from(issues).where(eq(issues.id, issue.id)))[0]?.status).toBe("in_progress");
   });
 
+  it.each([false, true])("uses only host-authored execution settlement metadata (trusted=%s)", async trusted => {
+    const f = await fixture({ runtimeMode: "legacy" });
+    const settlement = { providerStopped: true as const, workspaceSettled: true as const, actionOutcomes: "unknown" as const };
+    f.input.adapterResult = { exitCode: 1, signal: null, timedOut: false, errorCode: "provider_quota",
+      resultJson: { executionSettlement: settlement, executionRecovery: { kind: "bootstrap", providerWorkStarted: false } },
+      ...(trusted ? { executionSettlement: settlement } : {}) };
+    await f.completion.completeRun(f.input);
+    const saved = await read(f.run.id);
+    expect(saved?.resultJson?.executionSettlement).toEqual(trusted ? settlement : undefined);
+    expect(saved?.resultJson?.executionRecovery).toBeUndefined();
+  });
+
   it("persists usage, accounting, final logs, presentation and the next task session", async () => {
     const f = await fixture();
     await f.completion.completeRun(f.input);

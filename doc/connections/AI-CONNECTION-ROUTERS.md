@@ -13,6 +13,11 @@ A confirmed local runner crash uses a five-minute cooldown. Accounts sharing the
 same stored credential and epoch share a cooldown. Independently stored
 credentials are not assumed to represent the same external account.
 
+Provider changes must preserve the configured execution policy. Incompatible
+CLI permission flags and custom command wrappers are rejected before selection.
+Explicit CLI/ACP engine choices remain in place for compatible local Claude and
+Codex changes. Filesystem and network restrictions keep their existing checks.
+
 Before selecting an account for a task without an existing pin, the host may
 read the responsible user's authorized Claude subscription usage. When an
 account-wide limit is exhausted, extra usage is disabled, and the provider gives
@@ -38,6 +43,9 @@ evidence is unavailable, the task remains held for recovery. A provider switch
 starts a separate provider conversation with bounded Paperclip task history;
 provider-private conversation state and full tool history are not transferred.
 The task's existing account sessions remain isolated by credential identity.
+Background runs without an issue retain their original pool affinity and receive
+a bounded, untrusted progress handoff. They do not reuse another provider's
+agent-wide session. Stop also fences these background successors.
 
 AI routers are virtual, company-scoped connections owned by a capability-gated
 plugin (`ai.connections.route`). The instance flag `enableAiConnectionRouters`

@@ -1,4 +1,4 @@
-import { and, eq, inArray, ne, or, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, ne, or, sql } from "drizzle-orm";
 import { agentTaskSessions, agentWakeupRequests, agents, aiConnectionTaskPins, heartbeatRuns, issues, type Db } from "@paperclipai/db";
 import { aiConnectionRouterService } from "../ai-connection-router.js";
 import { conflict } from "../../errors.js";
@@ -90,7 +90,7 @@ export async function switchUnstartedLegacyQuotaPin(tx: Db, input: { companyId: 
 
 /** Serialize user Stop with a not-yet-started pool retry. */
 export function isLegacyQuotaPrestartStopCandidate(run: typeof heartbeatRuns.$inferSelect): boolean {
-  if (run.runtimeMode !== "native" && run.issueId && poolFailureKind(run)) return true;
+  if (run.runtimeMode !== "native" && poolFailureKind(run)) return true;
   const fence = run.runnerProfileJson?.[KEY] as Record<string, unknown> | undefined;
   const recovery = run.resultJson?.executionRecovery as Record<string, unknown> | undefined;
   return run.status === "cancelled" && run.errorCode === "ai_connection_pool_exhausted" && Boolean(run.issueId) &&
@@ -98,12 +98,13 @@ export function isLegacyQuotaPrestartStopCandidate(run: typeof heartbeatRuns.$in
     fence.companyId === run.companyId && fence.agentId === run.agentId && recovery?.kind === "ai_connection_wait" && recovery.providerWorkStarted === false;
 }
 
-export async function fenceLegacyQuotaPrestartStop(db: Db, input: { companyId: string; runId: string; issueId: string; requestId?: string; userId?: string | null }) {
+export async function fenceLegacyQuotaPrestartStop(db: Db, input: { companyId: string; runId: string; issueId: string | null; requestId?: string; userId?: string | null }) {
   const requestId = cancellationRequestId(input.requestId);
   const userId = input.userId ?? null;
   return db.transaction(async tx => {
-    await tx.select({ id: issues.id }).from(issues).where(and(eq(issues.companyId, input.companyId), eq(issues.id, input.issueId))).for("update");
-    const [run] = await tx.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.id, input.runId), eq(heartbeatRuns.issueId, input.issueId))).for("update");
+    if (input.issueId) await tx.select({ id: issues.id }).from(issues).where(and(eq(issues.companyId, input.companyId), eq(issues.id, input.issueId))).for("update");
+    const issueScope = input.issueId ? eq(heartbeatRuns.issueId, input.issueId) : isNull(heartbeatRuns.issueId);
+    const [run] = await tx.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.id, input.runId), issueScope)).for("update");
     if (!run || !isLegacyQuotaPrestartStopCandidate(run)) return null;
     const previous = run.resultJson?.legacyQuotaStopRequested as Record<string, unknown> | undefined;
     const attempts = previous && Array.isArray(previous.attempts) ? previous.attempts as Array<Record<string, unknown>>
@@ -114,7 +115,7 @@ export async function fenceLegacyQuotaPrestartStop(db: Db, input: { companyId: s
     if (previous && !knownAttempt && previous.acknowledgedAt != null)
       throw conflict("Cancellation request belongs to another actor or conflicts with an earlier Stop");
     const [successor] = await tx.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, run.companyId),
-      eq(heartbeatRuns.retryOfRunId, run.id), eq(heartbeatRuns.agentId, run.agentId), eq(heartbeatRuns.issueId, input.issueId))).limit(1);
+      eq(heartbeatRuns.retryOfRunId, run.id), eq(heartbeatRuns.agentId, run.agentId), issueScope)).limit(1);
     const now = new Date().toISOString();
     const nextAttempts = knownAttempt ? attempts : [...attempts, { requestId: requestId ?? null, userId, requestedAt: now }];
     const stop = previous ? { ...previous, attempts: nextAttempts, ...(!successor ? { acknowledgedAt: previous.acknowledgedAt ?? now } : {}) }

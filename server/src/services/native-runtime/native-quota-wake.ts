@@ -1,6 +1,7 @@
 import { sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { notifyExecutionRunWork } from "../execution-control-notifications.js";
+import { notifyScheduledRetryDispatch } from "../run-dispatch-notifications.js";
 
 /** Call inside the producer's transaction before changing a pool or account. */
 export async function reopenNativeQuotaPoolWaits(
@@ -8,6 +9,7 @@ export async function reopenNativeQuotaPoolWaits(
   input: { companyId: string; poolId?: string; connectionId?: string },
 ): Promise<number> {
   await notifyExecutionRunWork(tx, { companyId: input.companyId });
+  await notifyScheduledRetryDispatch(tx, { companyId: input.companyId });
   const pool = input.poolId
     ? sql`r.context_snapshot->'aiRouterSelection'->>'poolId' = ${input.poolId}`
     // A credential can be shared by different grants and connections. Wake all
@@ -19,5 +21,10 @@ export async function reopenNativeQuotaPoolWaits(
       and f.result_id is null and coalesce(f.failure_detail->>'successorRunId', '') = ''
       and coalesce(f.failure_detail->>'replacementDenied', '') = '' and f.next_attempt_at is not null
       and ${pool} returning f.run_id`);
-  return rows.length;
+  const legacy = await tx.execute<{ id: string }>(sql`update heartbeat_runs r set scheduled_retry_at = now(),
+      context_snapshot = r.context_snapshot #- '{aiPoolFailover,waitingUntil}', updated_at = now()
+    where r.company_id = ${input.companyId} and r.runtime_mode = 'legacy' and r.status = 'scheduled_retry'
+      and r.context_snapshot->'aiPoolFailover'->>'waitingUntil' is not null
+      and r.scheduled_retry_at > now() and ${pool} returning r.id`);
+  return rows.length + legacy.length;
 }

@@ -4,7 +4,7 @@ import { providerFailureFromError } from "../../vendor/paperclip-runner/index.js
 import { createHash } from "node:crypto";
 import { extractClaudeRetryNotBefore, isClaudeProviderQuotaError } from "@paperclipai/adapter-claude-local/server";
 import { nativeTaskSessionPublicationHandled } from "../native-runtime/native-task-session-publication.js";
-import { poolFailureKind, POOL_ACCOUNT_DEFAULT_COOLDOWN_MS } from "./pool-failover.js";
+import { poolFailureKind, POOL_ACCOUNT_DEFAULT_COOLDOWN_MS, hasCompanyPoolAffinity } from "./pool-failover.js";
 import { effectiveRunAgent } from "./effective-run-adapter.js";
 import { settledResponsePublicationSql } from "../native-runtime/native-response-publication-receipt.js";
 import { notifyChatRunMilestones } from "../chat-run-milestone-notifications.js";
@@ -120,7 +120,7 @@ export async function recordVerifiedRouterQuotaCooldown(db: Db, input: {
     const credentialIdentity = grantId && input.credentialIdentity ? quotaIdentityFromSessionSnapshot(grantId, input.credentialIdentity) : null;
     if (!poolId || !uuid.test(poolId) || !connectionId || !uuid.test(connectionId) || !grantId || !credentialIdentity || !taskKey) return false;
     const taskMatches = run.scopeKind === "issue" ? taskKey === run.issueId || Boolean(issue?.identifier && taskKey === issue.identifier)
-      : taskKey === run.id || (taskKey === "__heartbeat__" && run.invocationSource === "timer" && context.wakeSource === "timer");
+      : await hasCompanyPoolAffinity(tx as unknown as Db, run, taskKey);
     if (!taskMatches) return false;
     const [agent] = await tx.select().from(agents).where(and(eq(agents.id, run.agentId), eq(agents.companyId, run.companyId))).for("share");
     const configured = parseObject(parseObject(agent?.runtimeConfig).aiConnection);
@@ -129,7 +129,8 @@ export async function recordVerifiedRouterQuotaCooldown(db: Db, input: {
       .innerJoin(aiConnectionPools, and(eq(aiConnectionPools.id, aiConnectionTaskPins.poolId), eq(aiConnectionPools.companyId, aiConnectionTaskPins.companyId)))
       .where(and(eq(aiConnectionTaskPins.companyId, run.companyId), eq(aiConnectionTaskPins.poolId, poolId),
         eq(aiConnectionTaskPins.agentId, run.agentId), eq(aiConnectionTaskPins.taskKey, taskKey),
-        sql`${aiConnectionTaskPins.selection} = ${JSON.stringify(selection)}::jsonb`,
+        sql`(${aiConnectionTaskPins.selection} - 'runtimeConfig' - 'notes' - 'adapterType') =
+          (${JSON.stringify(selection)}::jsonb - 'runtimeConfig' - 'notes' - 'adapterType')`,
         sql`${aiConnectionTaskPins.member}->>'id' = ${selection.memberId ?? ""}`,
         sql`${aiConnectionTaskPins.member}->'binding' = ${JSON.stringify(binding)}::jsonb`,
         sql`${aiConnectionPools.config}->'members' @> jsonb_build_array(${aiConnectionTaskPins.member})`)).for("update");
@@ -737,10 +738,8 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
             ...parseObject(adapterResult.resultJson),
             ...(adapterResult.executionRecovery
               ? { executionRecovery: adapterResult.executionRecovery }
-              : {}),
-            ...(adapterResult.executionSettlement
-              ? { executionSettlement: adapterResult.executionSettlement }
-              : {}),
+              : run.runtimeMode !== "native" ? { executionRecovery: undefined } : {}),
+            executionSettlement: adapterResult.executionSettlement,
             ...(outcome === "cancelled" ? controllerLeaseLossResultJson(signal) : {}),
             configFreshness: configFreshnessResultMetadata,
           },

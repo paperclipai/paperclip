@@ -13,13 +13,14 @@ import { AI_CONNECTION_POOL_WAIT_RETRY_REASON } from "../../modules/run-dispatch
 import { createHeartbeatRetries, type HeartbeatRetryDependencies } from "./retries.js";
 import { fenceLegacyQuotaPrestartStop, switchUnstartedLegacyQuotaPin } from "./quota-prestart-fence.js";
 import { recordVerifiedRouterQuotaCooldown } from "./run-completion.js";
+import { reopenNativeQuotaPoolWaits } from "../native-runtime/native-quota-wake.js";
 
 describe("legacy quota prestart retry", () => {
   let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>, db: Db, home: string;
   beforeAll(async () => { home = await mkdtemp(path.join(os.tmpdir(), "quota-prestart-home-")); vi.stubEnv("PAPERCLIP_HOME", home);
     vi.stubEnv("PAPERCLIP_INSTANCE_ID", "legacy-quota-test"); database = await startEmbeddedPostgresTestDatabase("legacy-quota-prestart-"); db = createDb(database.connectionString, { maxConnections: 8 }); }, 90_000);
   afterAll(async () => { await db?.$client.end(); await database?.cleanup(); vi.unstubAllEnvs(); if (home) await rm(home, { recursive: true, force: true }); });
-  async function fixture(postStart = false) {
+  async function fixture(postStart = false, taskless = false) {
     const companyId = randomUUID(), userId = randomUUID();
     await db.insert(companies).values({ id: companyId, name: "Quota prestart", issuePrefix: `Q${companyId.slice(0, 8)}` });
     await db.insert(authUsers).values({ id: userId, name: "User", email: `${userId}@example.test`, createdAt: new Date(), updatedAt: new Date() });
@@ -34,11 +35,12 @@ describe("legacy quota prestart retry", () => {
     const [updatedAgent] = await db.update(agents).set({ runtimeConfig: { aiConnection: { mode: "router", connectionId: pool.id } } }).where(eq(agents.id, agent.id)).returning();
     const [issue] = await db.insert(issues).values({ companyId, title: "Task", identifier: `Q${companyId.slice(0, 8)}-1`, status: "in_progress", assigneeAgentId: agent.id }).returning();
     const startedAt = new Date(Date.now() - 10_000);
-    const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId: agent.id, scopeKind: "issue", issueId: issue.id, status: "running", startedAt,
-      contextSnapshot: { issueId: issue.id, aiRouterTaskKey: issue.id }, responsibleUserId: userId }).returning();
+    const runId = randomUUID(), taskKey = taskless ? runId : issue.id;
+    const [run] = await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId: agent.id, scopeKind: taskless ? "company" : "issue", issueId: taskless ? null : issue.id, status: "running", startedAt,
+      contextSnapshot: { ...(!taskless ? { issueId: issue.id } : {}), aiRouterTaskKey: taskKey }, responsibleUserId: userId }).returning();
     const fetch = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("offline fixture"));
     let selected;
-    try { selected = await router.resolve({ companyId, poolId: pool.id, agentId: agent.id, userId, adapterType: "claude_local", taskKey: issue.id }); }
+    try { selected = await router.resolve({ companyId, poolId: pool.id, agentId: agent.id, userId, adapterType: "claude_local", taskKey }); }
     finally { fetch.mockRestore(); }
     const [grant] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, first.grantId));
     const ref = grant!.credentialSecretRefs.find(item => item.configPath === "ai.credential")!;
@@ -58,7 +60,7 @@ describe("legacy quota prestart retry", () => {
       expect(await recordVerifiedRouterQuotaCooldown(db, { companyId, agentId: agent.id, runId: run.id,
         credentialIdentity: `${first.grantId}:fixture:${ref.secretId}:${secret!.aiSessionEpoch}`, retryNotBefore: null })).toBe(true);
     }
-    await db.update(issues).set({ executionRunId: run.id, checkoutRunId: run.id }).where(eq(issues.id, issue.id));
+    if (!taskless) await db.update(issues).set({ executionRunId: run.id, checkoutRunId: run.id }).where(eq(issues.id, issue.id));
     const deps = { hasCaseHandoffForRun: async () => false, getRun: async () => null, getAgent: async () => undefined,
       resolveSessionBeforeForWakeup: async () => null, resolveResponsibleUserIdForRunContext: async () => userId,
       getAgentInvokability: async () => ({ invokable: true }), appendRunEvent: async () => undefined,
@@ -87,6 +89,23 @@ describe("legacy quota prestart retry", () => {
     expect(successor?.sessionIdBefore).toBeNull();
     expect(successor!.scheduledRetryAt!.getTime()).toBeLessThan(Date.now() + 10_000);
   }, 30_000);
+  it("continues an agent heartbeat without an issue using bounded progress and the original affinity", async () => {
+    const f = await fixture(true, true);
+    expect((await f.schedule()).outcome).toBe("scheduled");
+    const [successor] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, f.source.id));
+    expect(successor?.scopeKind).toBe("company");
+    expect(successor?.issueId).toBeNull();
+    expect(successor?.contextSnapshot?.aiRouterSelection).toMatchObject({ memberId: f.members[1]!.id });
+    expect(successor?.contextSnapshot?.aiRouterTaskKey).toBe(f.source.id);
+    expect(successor?.contextSnapshot?.paperclipSessionHandoffMarkdown).toContain("Completed the first change");
+    expect(successor?.contextSnapshot?.forceFreshSession).toBe(true);
+  }, 30_000);
+  it("serializes Stop for a failed background run without an issue", async () => {
+    const f = await fixture(true, true);
+    expect(await fenceLegacyQuotaPrestartStop(db, { companyId: f.companyId, runId: f.source.id, issueId: null })).toMatchObject({ kind: "fenced" });
+    expect((await f.schedule()).outcome).toBe("not_scheduled");
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, f.source.id))).toHaveLength(0);
+  }, 30_000);
   it("creates one backup successor when two workers reconcile the same interrupted run", async () => {
     const f = await fixture(true);
     const results = await Promise.all([f.schedule(), f.schedule()]);
@@ -94,6 +113,27 @@ describe("legacy quota prestart retry", () => {
     expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, f.source.id))).toHaveLength(1);
     const [pin] = await db.select().from(aiConnectionTaskPins).where(eq(aiConnectionTaskPins.poolId, f.pool.id));
     expect(pin?.selection.memberId).toBe(f.members[1]!.id);
+  }, 30_000);
+  it("does not commit a changed pin when the original user continuation is denied", async () => {
+    const f = await fixture(true);
+    const [source] = await db.update(heartbeatRuns).set({ contextSnapshot: { ...f.source.contextSnapshot,
+      explicitUserContinuation: { previousRunId: randomUUID() } } }).where(eq(heartbeatRuns.id, f.source.id)).returning();
+    Object.assign(f.source, source);
+    expect((await f.schedule()).outcome).toBe("not_scheduled");
+    const [pin] = await db.select().from(aiConnectionTaskPins).where(eq(aiConnectionTaskPins.poolId, f.pool.id));
+    expect(pin?.selection.memberId).toBe(f.members[0]!.id);
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, f.source.id))).toHaveLength(0);
+  }, 30_000);
+  it("attributes quota after a task changes model effort without changing its pinned account", async () => {
+    const f = await fixture(true);
+    const selection = { ...f.selected, runtimeConfig: { ...f.selected.runtimeConfig, effort: "low" }, notes: ["Task effort override"] };
+    const [source] = await db.update(heartbeatRuns).set({ contextSnapshot: { ...f.source.contextSnapshot, aiRouterSelection: selection } })
+      .where(eq(heartbeatRuns.id, f.source.id)).returning();
+    Object.assign(f.source, source);
+    await db.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, f.source.id));
+    expect(await recordVerifiedRouterQuotaCooldown(db, { companyId: f.companyId, agentId: f.agent.id, runId: f.source.id,
+      credentialIdentity: f.credentialIdentity, retryNotBefore: null })).toBe(true);
+    expect((await f.schedule()).outcome).toBe("scheduled");
   }, 30_000);
   it.each(["auth", "runner"] as const)("uses the backup after a confirmed %s failure", async failureKind => {
     const f = await fixture(true);
@@ -133,6 +173,15 @@ describe("legacy quota prestart retry", () => {
     expect(successor?.contextSnapshot?.aiRouterSelection).toMatchObject({ memberId: second.id });
     expect(successor?.scheduledRetryAt?.getTime()).toBe(deadline.getTime());
     expect(successor?.contextSnapshot?.aiPoolFailover).toMatchObject({ reason: "quota", waitingUntil: deadline.toISOString() });
+    await expect(db.transaction(async tx => {
+      expect(await reopenNativeQuotaPoolWaits(tx as unknown as Db, { companyId: f.companyId, poolId: f.pool.id })).toBe(1);
+      throw new Error("rollback reconnect");
+    })).rejects.toThrow("rollback reconnect");
+    const [unchanged] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, successor!.id));
+    expect(unchanged?.scheduledRetryAt?.getTime()).toBe(deadline.getTime());
+    expect(await db.transaction(tx => reopenNativeQuotaPoolWaits(tx as unknown as Db, { companyId: f.companyId, poolId: f.pool.id }))).toBe(1);
+    const [reopened] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, successor!.id));
+    expect(reopened!.scheduledRetryAt!.getTime()).toBeLessThan(Date.now() + 1_000);
   }, 30_000);
   it("atomically switches one pin and creates one immediate successor across concurrent claims", async () => {
     const f = await fixture();

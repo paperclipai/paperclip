@@ -5,7 +5,7 @@ import { normalizeAgentNameKey } from "../agent-name-key.js";
 import { notifyStatusCardIssueChange } from "../status-card-notifications.js";
 import { notifyScheduledRetryDispatch } from "../run-dispatch-notifications.js";
 import { switchUnstartedLegacyQuotaPin } from "./quota-prestart-fence.js";
-import { poolFailureKind, switchFailedPoolPin } from "./pool-failover.js";
+import { poolFailureKind, switchFailedPoolPin, poolConversationHandoff } from "./pool-failover.js";
 import { deriveTaskKeyWithHeartbeatFallback } from "./run-state.js";
 import { infrastructureRetryDelayMs } from "../system-recovery-state.js";
 import {
@@ -150,6 +150,7 @@ export const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS =
   BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS.length;
 
 const PROVIDER_QUOTA_RETRY_DELAYS_MS = [30_000, 60_000, 120_000, 60_000] as const;
+class PoolContinuationUnavailable extends Error {}
 
 /** A policy decision only: callers must establish and recheck evidence under
  * the same durable claim used to create the successor and transition its pin. */
@@ -1079,17 +1080,31 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
           }
         }
 
-        if (poolFailure && issueId) {
-          const transition = await switchFailedPoolPin(tx as unknown as Db, { run, agent, userId: responsibleUserId });
-          if (!transition || transition.kind !== "selected") return {
-            outcome: "not_scheduled", issueId, errorCode: "issue_execution_lock_changed",
-            reason: "No authorized backup with settled predecessor execution is available", details: {},
+        const scheduledRunId = randomUUID();
+        if (contextSnapshot.explicitUserContinuation) {
+          const continuation = issueId && (retryReason === "transient_failure" || retryReason === RUNNER_REVISION_WAIT_RETRY_REASON) ? await admitExplicitContinuationRetry({
+            db: tx as unknown as Db, companyId: run.companyId, issueId, agentId: run.agentId,
+            parentRunId: run.id, successorRunId: scheduledRunId, now,
+          }) : null;
+          if (!continuation) return {
+            outcome: "not_scheduled", issueId,
+            errorCode: "continuation_user_authorization_missing",
+            reason: "The automatic retry could not revalidate the original user continuation.",
+            details: {},
           };
+          retryContextSnapshot.explicitUserContinuation = continuation;
+          retryContextSnapshot.previousRunId = continuation.previousRunId;
+        }
+
+        if (poolFailure) {
+          const transition = await switchFailedPoolPin(tx as unknown as Db, { run, agent, userId: responsibleUserId });
+          if (!transition || transition.kind !== "selected") throw new PoolContinuationUnavailable();
           schedule.dueAt = transition.retryAt ?? now;
           schedule.delayMs = Math.max(0, schedule.dueAt.getTime() - now.getTime());
           retryContextSnapshot.aiRouterSelection = transition.selection;
           retryContextSnapshot.previousRunId = run.id;
           retryContextSnapshot.forceFreshSession = true;
+          if (!issueId) retryContextSnapshot.paperclipSessionHandoffMarkdown = poolConversationHandoff(run);
           retryContextSnapshot.aiPoolFailover = { sourceRunId: run.id, reason: poolFailure,
             ...(schedule.dueAt > now ? { waitingUntil: schedule.dueAt.toISOString() } : {}) };
           retryContextSnapshot.scheduledRetryAt = schedule.dueAt.toISOString();
@@ -1108,21 +1123,6 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
             retryContextSnapshot.aiRouterSelection = selected;
             retryContextSnapshot.scheduledRetryAt = now.toISOString();
           }
-        }
-        const scheduledRunId = randomUUID();
-        if (contextSnapshot.explicitUserContinuation) {
-          const continuation = issueId && (retryReason === "transient_failure" || retryReason === RUNNER_REVISION_WAIT_RETRY_REASON) ? await admitExplicitContinuationRetry({
-            db: tx as unknown as Db, companyId: run.companyId, issueId, agentId: run.agentId,
-            parentRunId: run.id, successorRunId: scheduledRunId, now,
-          }) : null;
-          if (!continuation) return {
-            outcome: "not_scheduled", issueId,
-            errorCode: "continuation_user_authorization_missing",
-            reason: "The automatic retry could not revalidate the original user continuation.",
-            details: {},
-          };
-          retryContextSnapshot.explicitUserContinuation = continuation;
-          retryContextSnapshot.previousRunId = continuation.previousRunId;
         }
 
         await notifyAttentionRetentionWork(tx, { companyId: run.companyId });
@@ -1339,7 +1339,11 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
           reusedExisting: false,
         };
       },
-    );
+    ).catch((error): ScheduledRetryTransactionResult => {
+      if (!(error instanceof PoolContinuationUnavailable)) throw error;
+      return { outcome: "not_scheduled", issueId, errorCode: "issue_execution_lock_changed",
+        reason: "No authorized backup with settled predecessor execution is available", details: {} };
+    });
 
     if (scheduleResult.outcome === "not_scheduled") {
       await appendRunEvent(run, {

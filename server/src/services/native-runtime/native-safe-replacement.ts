@@ -633,6 +633,7 @@ export async function reconcileSafeNativeReplacements(
             companyId: run.companyId, poolId, agentId: run.agentId, taskKey,
             expectedSelection: selection as unknown as AiConnectionRouterSelection,
             userId: run.responsibleUserId, adapterType: agent.adapterType, attemptedMemberIds,
+            sourceAdapterConfig: { ...record(agent.adapterConfig), ...record(record(task.assigneeAdapterOverrides).adapterConfig) },
           };
           let transition = await router.transitionQuotaPin(transitionInput);
           if (transition.kind !== "selected") {
