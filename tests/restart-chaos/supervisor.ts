@@ -112,7 +112,8 @@ export class ChaosSupervisor {
     try { return statSync(this.paths.serverLogPath).size + this.log.writableLength; } catch { return 0; }
   }
 
-  async start(): Promise<void> {
+  /** `extraEnvironment` is kept for every restart (e.g. the Daytona image's runnerd and provider pack paths). */
+  async start(extraEnvironment: Record<string, string> = {}): Promise<void> {
     const { temporaryRoot, home, configPath } = this.paths;
     const reservation = await prepareRunnerE2EServerConfig({ temporaryRoot, configPath, serverPort: this.port });
     await reservation?.close();
@@ -138,6 +139,7 @@ export class ChaosSupervisor {
       PAPERCLIP_STORAGE_LOCAL_DIR: path.join(temporaryRoot, "storage"), PAPERCLIP_SECRETS_PROVIDER: "local_encrypted",
       PAPERCLIP_SECRETS_STRICT_MODE: "true", PAPERCLIP_DB_BACKUP_ENABLED: "false",
       PAPERCLIP_DB_BACKUP_DIR: path.join(temporaryRoot, "backups"), PAPERCLIP_OPEN_ON_LISTEN: "false",
+      ...extraEnvironment,
     };
     const environment = buildPaperclipServerEnvironment(source, overrides);
     assertIsolatedServerEnvironment(environment, { temporaryRoot, paperclipHome: home, configPath });
