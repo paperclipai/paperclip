@@ -2,7 +2,8 @@ import { randomUUID } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
-  agents, budgetIncidents, budgetPolicies, budgetReservations, companies, costEvents, createDb, heartbeatRunEvents, heartbeatRuns, issues,
+  agents, budgetIncidents, budgetPolicies, budgetReservations, companies, costEvents, createDb, environmentLeases, environments,
+  heartbeatRunEvents, heartbeatRuns, issues,
   nativeRunFinalizations, type Db,
 } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
@@ -208,6 +209,55 @@ const support = await getEmbeddedPostgresTestSupport();
     const [policy] = await db.select().from(budgetPolicies).where(eq(budgetPolicies.id, f.policy.id));
     expect((await budgetService(db).overview(f.companyId)).policies[0]?.status).not.toBe("hard_stop");
     expect(policy.id).toBe(f.policy.id);
+  });
+
+  // Daytona wave: a remote run's lost receipt held all new company work even
+  // after its sandbox was destroyed. A remote run has no local stop event and
+  // keeps its recorded remote process identity.
+  async function remoteFixture(options: { status?: "failed" | "cancelled"; leases?: Array<{
+    receipt?: "destroyed" | "stopped" | "none" | "foreign"; released?: boolean;
+  }> } = {}) {
+    const f = await fixture({ processPid: 443, stopEvidence: false });
+    if (options.status) await db.update(heartbeatRuns).set({ status: options.status }).where(eq(heartbeatRuns.id, f.run.id));
+    const [environment] = await db.insert(environments).values({ name: `Daytona ${f.run.id}`, driver: "sandbox",
+      config: { provider: "daytona" } }).returning();
+    for (const lease of options.leases ?? [{ receipt: "destroyed" }]) {
+      const id = randomUUID(), providerLeaseId = randomUUID(), released = lease.released !== false;
+      const receipt = lease.receipt ?? "destroyed";
+      await db.insert(environmentLeases).values({ id, environmentId: environment.id, companyId: f.companyId,
+        issueId: f.issue.id, heartbeatRunId: f.run.id, provider: "daytona", providerLeaseId, leasePolicy: "ephemeral",
+        status: released ? "expired" : "active", cleanupStatus: released ? "success" : null,
+        releasedAt: released ? new Date() : null,
+        metadata: receipt === "none" ? {} : { remoteExecutionTermination: { schema: "paperclip.remote-termination.v1",
+          companyId: f.companyId, runId: f.run.id, leaseId: id, provider: "daytona",
+          providerLeaseId: receipt === "foreign" ? randomUUID() : providerLeaseId,
+          state: receipt === "foreign" ? "destroyed" : receipt, confirmedAt: new Date().toISOString() } } });
+    }
+    return f;
+  }
+
+  it.each(["failed", "cancelled"] as const)("settles a %s remote run once every sandbox has a termination receipt", async status => {
+    const f = await remoteFixture({ status, leases: [{ receipt: "destroyed" }, { receipt: "stopped" }] });
+    expect(await f.block()).not.toBeNull();
+    expect(await reconcileRunCosts(db)).toMatchObject({ accounted: 1 });
+    await flushBudgetEvaluationWork(db);
+    expect((await f.readRun()).costAccountingPending).toBe(false);
+    expect(await f.charges()).toMatchObject([{ costStatus: "unpriced" }]);
+    expect((await f.reservation()).state).toBe("settled");
+    expect(await f.block()).toBeNull();
+  });
+
+  it.each([
+    ["a sandbox that may still run", [{ receipt: "none", released: false }]],
+    ["one of two sandboxes without a receipt", [{ receipt: "destroyed" }, { receipt: "none", released: false }]],
+    ["a receipt for another sandbox", [{ receipt: "foreign" }]],
+    ["no sandbox at all", []],
+  ] as const)("keeps a remote run's debt pending with %s", async (_label, leases) => {
+    const f = await remoteFixture({ leases: [...leases] });
+    expect(await reconcileRunCosts(db)).toMatchObject({ accounted: 0 });
+    expect(await accountRunCost(db, f.run.id)).toBe(false);
+    expect((await f.readRun()).costAccountingPending).toBe(true);
+    expect(await f.charges()).toHaveLength(0);
   });
 
   it("keeps the debt pending while native recovery can still produce a result", async () => {
