@@ -30,8 +30,10 @@ import { RemoteWorkspaceOperationError, RemoteWorkspaceOperationTimeoutError, Re
 import { EnvironmentRunError } from "../environment-run-orchestrator.js";
 import { ReusableSandboxResumeError } from "../reusable-sandbox-resume-error.js";
 import { PluginWorkerUnavailableError } from "../plugin-worker-unavailable-error.js";
-import { environmentTaskErrorCodeData, JsonRpcCallError, PluginEnvironmentTaskError } from "@paperclipai/plugin-sdk";
+import { environmentTaskErrorCodeData, JsonRpcCallError, PluginEnvironmentTaskError, PluginWorkspaceOperationError, workspaceOperationErrorData } from "@paperclipai/plugin-sdk";
 import { RUNNER_REVISION_MISMATCH_RETRY } from "../runner-revision-mismatch.js";
+import { workspaceProviderCallFailure } from "../workspace-provider-failure.js";
+import { logger } from "../../middleware/logger.js";
 import { unprocessable } from "../../errors.js";
 import { createHeartbeatLifecycle, type HeartbeatLifecycleDependencies } from "./run-lifecycle.js";
 import { createHeartbeatRunPreparation, ConfigurationIncompleteFailure, classifyManagedProjectAuthFailure } from "./run-preparation.js";
@@ -998,6 +1000,36 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
     expect(await read(f.run.id)).toMatchObject({ status: "failed", errorCode: "runner_revision_mismatch" });
     expect(f.deps.scheduleBoundedRetryForRun).toHaveBeenCalledWith(expect.objectContaining({ id: f.run.id }), f.agent, RUNNER_REVISION_MISMATCH_RETRY);
     expect(f.deps.scheduleInteractionContinuationInfrastructureRetryIfEligible).not.toHaveBeenCalled();
+  });
+
+  it("records a workspace provider's reason on the run and in the setup failure log without retrying", async () => {
+    const f = await fixture();
+    const logged = vi.spyOn(logger, "error");
+    onTestFinished(() => logged.mockRestore());
+    const rejection = new JsonRpcCallError({ code: -32002, message: "Invalid runtime computer connection",
+      data: workspaceOperationErrorData(new PluginWorkspaceOperationError("runtime_connection_invalid")) });
+    await f.completion.failRunSetup(f.setup(workspaceProviderCallFailure(rejection)));
+    const failed = await read(f.run.id);
+    expect(failed).toMatchObject({ status: "failed", errorCode: "setup_failed",
+      error: "The selected runtime's saved connection is invalid; reprovision the runtime before retrying",
+      resultJson: { workspaceProviderFailure: { kind: "provider", reason: "runtime_connection_invalid", retryable: false } } });
+    expect(JSON.stringify(failed)).not.toContain("Invalid runtime computer connection");
+    expect(f.deps.scheduleBoundedRetryForRun).not.toHaveBeenCalled();
+    const setupLog = logged.mock.calls.find(call => call[1] === "heartbeat execution setup failed");
+    expect(setupLog?.[0]).toMatchObject({ runId: f.run.id, errorCode: "setup_failed",
+      workspaceProviderFailure: { kind: "provider", reason: "runtime_connection_invalid", retryable: false } });
+  });
+
+  it("retries a workspace operation the stopped provider worker never received", async () => {
+    const f = await fixture();
+    const refusal = new PluginWorkerUnavailableError({ pluginId: "plugin-1", workerStatus: "stopped",
+      message: 'Cannot call "workspaceOperation" — worker for "plugin-1" is stopped' });
+    f.deps.scheduleBoundedRetryForRun.mockResolvedValueOnce({ outcome: "not_scheduled", reason: "Fixture scheduler boundary", issueId: null });
+    await f.completion.failRunSetup(f.setup(workspaceProviderCallFailure(refusal)));
+    expect(await read(f.run.id)).toMatchObject({ status: "failed", errorCode: "plugin_worker_unavailable",
+      error: "Workspace storage provider is not running; retry the same workspace",
+      resultJson: { workspaceProviderFailure: { kind: "worker_unavailable", reason: null, retryable: true } } });
+    expect(f.deps.scheduleBoundedRetryForRun).toHaveBeenCalledWith(expect.objectContaining({ id: f.run.id }), f.agent);
   });
 
   it("keeps a found project authentication conflict a configuration gap that blocks for the board", async () => {
