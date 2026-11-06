@@ -20,7 +20,7 @@ import {
   shouldForwardOpenCodeProxyItem,
 } from "./opencode-proxy-events.js";
 import { enqueueOpenCodeProxyInput, openCodeProxyCompletionFeedback } from "./opencode-proxy-input.js";
-import { createOpenCodeProxyOutput } from "./opencode-proxy-output.js";
+import { createBackpressuredFrameWriter, createOpenCodeProxyOutput } from "./opencode-proxy-output.js";
 import {
   assertOpenCodeProxyCollaborationMode,
   openCodeProxyCollaborationModes,
@@ -59,18 +59,39 @@ const announcedTurnIds = new Set<string>();
 const launchBinding = trustedOpenCodeLaunchBinding(process.argv.slice(2));
 const usageLedger = new OpenCodeProxyUsageLedger();
 
-const output = createOpenCodeProxyOutput(value => {
-  process.stdout.write(`${JSON.stringify(value)}\n`);
-});
+// runnerd reads this stream only after its controller acknowledges earlier
+// events. Keep that backlog in a queue we control so an abandoned tool call
+// can still be withdrawn before runnerd dispatches it.
+const stdoutFrames = createBackpressuredFrameWriter(process.stdout);
+const output = createOpenCodeProxyOutput((value, options) => stdoutFrames.write(value, options));
 const send = output.send;
 
-function requestController(method: string, params: unknown, retainEnvelope = false): Promise<unknown> {
-  if (controllerInputClosed) return Promise.reject(new Error("OpenCode controller input is closed"));
-  const id = `opencode-${nextServerRequestId++}`;
-  send({ id, method, params });
-  return new Promise((resolveValue, reject) =>
-    pending.set(id, { resolve: resolveValue, reject, retainEnvelope }),
+function abandonedToolCallError(): Error {
+  return new Error(
+    "Paperclip tool call was abandoned by the MCP client before it was dispatched; it did not run.",
   );
+}
+
+function requestController(
+  method: string,
+  params: unknown,
+  retainEnvelope = false,
+  signal?: AbortSignal,
+): Promise<unknown> {
+  if (controllerInputClosed) return Promise.reject(new Error("OpenCode controller input is closed"));
+  if (signal?.aborted) return Promise.reject(abandonedToolCallError());
+  const id = `opencode-${nextServerRequestId++}`;
+  return new Promise((resolveValue, reject) => {
+    pending.set(id, { resolve: resolveValue, reject, retainEnvelope });
+    // Once written, the request belongs to runnerd and its result is awaited
+    // even if the client leaves. Before that, a cancelled call is withdrawn.
+    send({ id, method, params }, signal ? {
+      signal,
+      onAbandoned: () => {
+        if (pending.delete(id)) reject(abandonedToolCallError());
+      },
+    } : undefined);
+  });
 }
 
 function record(value: unknown): Record<string, unknown> {
@@ -145,7 +166,7 @@ async function open(
         callId: call.callId,
         tool: call.tool,
         arguments: call.arguments,
-      }),
+      }, false, call.signal),
     onDiagnostic: (message) => process.stderr.write(`[opencode] ${message}\n`),
     // runnerd gives this proxy its own process group. Keep `opencode serve` in
     // that same group so runnerd's TERM/KILL fallback cannot orphan it.
@@ -498,6 +519,7 @@ function shutdown(exitCode = 0): Promise<void> {
       .catch(() => {});
     await eventPump?.catch(() => {});
     output.flush();
+    stdoutFrames.drain();
     // A failed turn can be the last frame before a fatal exit. Pipe writes
     // are asynchronous on some platforms, so let it reach runnerd first.
     await new Promise<void>((resolve) => process.stdout.write("", () => resolve()));

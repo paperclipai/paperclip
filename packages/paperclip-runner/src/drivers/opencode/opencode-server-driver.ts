@@ -172,6 +172,12 @@ type DynamicToolHandler = (call: {
   threadId: string;
   turnId: string;
   arguments: unknown;
+  /**
+   * Aborts when the MCP client abandons the call (cancel notification or a
+   * dropped connection). A handler that has not yet handed the call to its
+   * controller must not dispatch it after this fires.
+   */
+  signal?: AbortSignal;
 }) => Promise<unknown>;
 
 export type OpenCodeCompletionFeedback = (result: PrpStructuredRunResult, call: {
@@ -1149,6 +1155,7 @@ class OpenCodeHarnessSession implements HarnessSession {
     tool: string;
     callId: string;
     arguments: unknown;
+    signal?: AbortSignal;
   }): Promise<unknown> {
     this.#pendingToolCalls += 1;
     this.#clearEmptyResponseAckTimer();
@@ -1156,7 +1163,7 @@ class OpenCodeHarnessSession implements HarnessSession {
     finally { this.#pendingToolCalls -= 1; }
   }
 
-  async #dispatchToolCall(call: { tool: string; callId: string; arguments: unknown }): Promise<unknown> {
+  async #dispatchToolCall(call: { tool: string; callId: string; arguments: unknown; signal?: AbortSignal }): Promise<unknown> {
     // The authenticated MCP bridge has resolved this against its closed
     // declared catalog. A second prefix strip changes legitimate operation IDs.
     const tool = call.tool;
@@ -1279,6 +1286,7 @@ class OpenCodeHarnessSession implements HarnessSession {
         threadId: this.#providerSessionId,
         turnId,
         arguments: call.arguments,
+        ...(call.signal ? { signal: call.signal } : {}),
       });
       this.#emit(
         "item.completed",
@@ -2447,6 +2455,7 @@ async function startRuntime(input: {
     tool: string;
     callId: string;
     arguments: unknown;
+    signal?: AbortSignal;
   }) => Promise<unknown>;
 }): Promise<OpenCodeRuntime> {
   const taskEnvironment = configuredOpenCodeEnvironment(input.options.environment);

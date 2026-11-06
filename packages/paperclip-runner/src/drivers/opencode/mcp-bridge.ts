@@ -312,6 +312,12 @@ async function handleRequest(
     context.calls.set(callId, { fingerprint, promise: execution });
     context.controllers.set(callId, controller!);
     void execution.finally(() => context.controllers.delete(callId)).catch(() => undefined);
+    // A client that drops its connection has abandoned the call just like one
+    // that sends notifications/cancelled. Abort so a call still waiting to be
+    // handed to the controller is never dispatched after the client gave up.
+    response.once("close", () => {
+      if (!response.writableFinished) controller!.abort();
+    });
   }
   try {
     const result = await execution;
